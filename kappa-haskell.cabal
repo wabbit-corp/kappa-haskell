@@ -34,35 +34,10 @@ common deps
 library
     import:           warnings, deps
     exposed-modules:
-        Kappa.Check
-        Kappa.Check.Infer
-        Kappa.Check.Instances
-        Kappa.Check.Match
-        Kappa.Check.Monad
-        Kappa.Check.Unify
-        Kappa.Core
         Kappa.Diagnostic
-        Kappa.Diagnostic.Codes
-        Kappa.Diagnostic.Render
-        Kappa.Eval
-        Kappa.Interp
-        Kappa.Json
         Kappa.Lexer
-        Kappa.Parser
-        Kappa.Parser.Decl
-        Kappa.Parser.Expr
-        Kappa.Parser.Monad
-        Kappa.Parser.Pattern
-        Kappa.Parser.Type
-        Kappa.Pipeline
-        Kappa.Prelude
-        Kappa.Pretty
-        Kappa.Resolve
         Kappa.Source
-        Kappa.Syntax
-        Kappa.TestHarness
         Kappa.Token
-        Kappa.Value
 
     hs-source-dirs:   src
     default-language: GHC2021
