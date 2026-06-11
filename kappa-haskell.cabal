@@ -1,27 +1,93 @@
 cabal-version:   3.8
 name:            kappa-haskell
 version:         0.1.0.0
+synopsis:        A Haskell implementation of the Kappa language
+description:
+    Lexer, parser, resolver, elaborator, interpreter, prelude, CLI and
+    conformance test harness for the Kappa language as specified in
+    docs/Spec.md. Targets the @kappa-v1@ portable profile surface that is
+    implementable without backend codegen; see SPEC_COVERAGE.md.
 license:         MIT
 license-file:    LICENSE
 build-type:      Simple
 extra-doc-files: CHANGELOG.md
 
 common warnings
-    ghc-options: -Wall
+    ghc-options:
+        -Wall -Wcompat -Widentities -Wincomplete-record-updates
+        -Wincomplete-uni-patterns -Wmissing-export-lists
+        -Wredundant-constraints -Wpartial-fields
+
+common deps
+    build-depends:
+        , base        >=4.17 && <5
+        , bytestring  >=0.11
+        , containers  >=0.6
+        , directory   >=1.3
+        , filepath    >=1.4
+        , mtl         >=2.2
+        , process     >=1.6
+        , text        >=2.0
+        , time        >=1.12
+        , transformers >=0.5
 
 library
-    import:           warnings
-    exposed-modules:  MyLib
-    build-depends:    base ^>=4.17.2.0
+    import:           warnings, deps
+    exposed-modules:
+        Kappa.Check
+        Kappa.Check.Infer
+        Kappa.Check.Instances
+        Kappa.Check.Match
+        Kappa.Check.Monad
+        Kappa.Check.Unify
+        Kappa.Core
+        Kappa.Diagnostic
+        Kappa.Diagnostic.Codes
+        Kappa.Diagnostic.Render
+        Kappa.Eval
+        Kappa.Interp
+        Kappa.Json
+        Kappa.Lexer
+        Kappa.Parser
+        Kappa.Parser.Decl
+        Kappa.Parser.Expr
+        Kappa.Parser.Monad
+        Kappa.Parser.Pattern
+        Kappa.Parser.Type
+        Kappa.Pipeline
+        Kappa.Prelude
+        Kappa.Pretty
+        Kappa.Resolve
+        Kappa.Source
+        Kappa.Syntax
+        Kappa.TestHarness
+        Kappa.Token
+        Kappa.Value
+
     hs-source-dirs:   src
     default-language: GHC2021
+    default-extensions:
+        DerivingStrategies
+        LambdaCase
+        MultiWayIf
+        OverloadedStrings
+        RecordWildCards
+        StrictData
 
-executable kappa-haskell
-    import:           warnings
+executable kappa
+    import:           warnings, deps
     main-is:          Main.hs
-    build-depends:
-        base ^>=4.17.2.0,
-        kappa-haskell
-
+    build-depends:    kappa-haskell
     hs-source-dirs:   app
     default-language: GHC2021
+    default-extensions: LambdaCase, OverloadedStrings
+    ghc-options:      -rtsopts "-with-rtsopts=-K64m"
+
+test-suite kappa-test
+    import:           warnings, deps
+    type:             exitcode-stdio-1.0
+    main-is:          Spec.hs
+    build-depends:    kappa-haskell
+    hs-source-dirs:   test
+    default-language: GHC2021
+    default-extensions: LambdaCase, OverloadedStrings
