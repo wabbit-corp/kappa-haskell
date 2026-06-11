@@ -1,0 +1,10 @@
+--! assertNoErrors
+--! assertType choose Bool -> Int -> Int -> Int
+--! assertType message String
+--! assertDeclKinds signature, let, signature, let
+
+choose : Bool -> Int -> Int -> Int
+let choose flag left right = if flag then left else right
+
+message : String
+let message = "hello"

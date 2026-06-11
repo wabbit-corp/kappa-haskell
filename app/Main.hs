@@ -1,4 +1,4 @@
--- | The @kappa@ CLI: check and run.
+-- | The @kappa@ CLI: check, run, and the Appendix T test harness.
 module Main (main) where
 
 import Control.Monad (forM_, unless, when)
@@ -12,6 +12,7 @@ import Kappa.Eval (Globals (..))
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
 import Kappa.Source
+import Kappa.TestHarness (Summary (..), runTestPath, summarize)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.IO (hPutStrLn, stderr)
@@ -22,8 +23,9 @@ main = do
   case args of
     ["check", path] -> cmdCheck path
     ["run", path] -> cmdRun path
+    ["test", path] -> cmdTest path
     _ -> do
-      hPutStrLn stderr "usage: kappa (check|run) FILE.kp"
+      hPutStrLn stderr "usage: kappa (check|run|test) PATH"
       exitFailure
 
 renderDiag :: Diagnostic -> String
@@ -66,3 +68,16 @@ cmdRun path = do
     RunFail msg -> do
       hPutStrLn stderr ("runtime failure: " <> T.unpack msg)
       exitWith (ExitFailure 1)
+
+-- | Appendix T harness over a file or directory tree (§T.2, §T.8).
+cmdTest :: FilePath -> IO ()
+cmdTest path = do
+  reports <- runTestPath path
+  let s = summarize reports
+  putStrLn $
+    "total " <> show (length reports)
+      <> ": " <> show (sPass s) <> " passed, "
+      <> show (sFail s) <> " failed, "
+      <> show (sUnsupported s) <> " unsupported, "
+      <> show (sHarnessError s) <> " harness errors"
+  if sFail s > 0 || sHarnessError s > 0 then exitFailure else exitSuccess

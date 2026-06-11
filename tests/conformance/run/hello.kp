@@ -1,0 +1,8 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "hello, world\n"
+--! assertExitCode 0
+
+main : UIO Unit
+let main = do
+    printlnString "hello, world"

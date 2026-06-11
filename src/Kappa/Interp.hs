@@ -2,8 +2,12 @@
 -- left-to-right evaluation) with the §18.8 do-kernel semantics:
 -- completion records, LIFO exit actions run exactly once, loop @else@
 -- only on no-break completion, typed IO failures via catch\/finally.
+--
+-- Output goes through an 'RT' sink so the Appendix T harness can run
+-- programs in-process and capture stdout ('runMainCaptured').
 module Kappa.Interp
   ( runMain
+  , runMainCaptured
   , RunResult (..)
   ) where
 
@@ -33,6 +37,12 @@ data Completion
   | CplContinue (Maybe Text)
   | CplReturn Value
 
+-- | Runtime context: evaluation context plus the stdout sink.
+data RT = RT
+  { rtEC :: !EvalCtx
+  , rtEmit :: !(Text -> IO ())
+  }
+
 preludeMod :: ModuleName
 preludeMod = ModuleName ["std", "prelude"]
 
@@ -42,72 +52,89 @@ prelG = GName preludeMod
 unitV :: Value
 unitV = VCtor (prelG "Unit") []
 
--- | Run @main@ (an IO computation).
+-- | Run @main@ (an IO computation) writing to real stdout.
 runMain :: Globals -> MetaState -> GName -> IO RunResult
 runMain globals metas mainG = do
-  let ec = EvalCtx globals metas
-  case Map.lookup mainG (globalsMap globals) of
+  let rt = RT (EvalCtx globals metas) (\t -> TIO.putStr t >> hFlush stdout)
+  runMainRT rt mainG
+
+-- | Run @main@ capturing everything written via printString\/printlnString
+-- (Appendix T @mode run@ support); returns the result and the output.
+runMainCaptured :: Globals -> MetaState -> GName -> IO (RunResult, Text)
+runMainCaptured globals metas mainG = do
+  buf <- newIORef []
+  let rt = RT (EvalCtx globals metas) (\t -> modifyIORef' buf (t :))
+  r <- runMainRT rt mainG
+  out <- T.concat . reverse <$> readIORef buf
+  pure (r, out)
+
+runMainRT :: RT -> GName -> IO RunResult
+runMainRT rt mainG =
+  case Map.lookup mainG (globalsMap (ecGlobals (rtEC rt))) of
     Just gd | Just v <- gdValue gd -> do
-      r <- try (runIOValue ec v)
+      r <- try (runIOValue rt v)
       case r of
         Right _ -> pure RunOk
         Left (KappaError e) -> pure (RunFail (renderValueShallow e))
     _ -> pure (RunFail "main is not defined")
 
 -- | Execute a value of IO type to completion.
-runIOValue :: EvalCtx -> Value -> IO Value
-runIOValue ec v = case force ec v of
+runIOValue :: RT -> Value -> IO Value
+runIOValue rt v = case force (rtEC rt) v of
   VDoV items env -> do
-    r <- runScope ec env items
+    r <- runScope rt env items
     case r of
       CplNormal x -> pure x
       CplReturn x -> pure x
       _ -> pure unitV
-  VPrim p args -> runPrimIO ec p args
+  VPrim p args -> runPrimIO rt p args
   other -> pure other
 
 -- | Run embedded monadic splices (§18.3): the elaborator marks them as
 -- applications of the internal @__runIO@ primitive. The walk is
 -- left-to-right, executes each splice exactly once, and does not enter
 -- lambda or suspension bodies (splices do not cross those boundaries).
-runSplices :: EvalCtx -> Value -> IO Value
-runSplices ec v0 = case v0 of
+runSplices :: RT -> Value -> IO Value
+runSplices rt v0 = case v0 of
   -- scan the RAW value: forcing first would β-reduce past unrun splices
   VPrim "__runIO" (a : restArgs) -> do
-    r <- runIOValue ec =<< runSplices ec a
-    runSplices ec (foldl (\f x -> vapp ec f Expl x) r restArgs)
+    r <- runIOValue rt =<< runSplices rt a
+    runSplices rt (foldl (\f x -> vapp ec f Expl x) r restArgs)
   VGlobN g sp
     | gnameText g == "__runIO"
     , (implPrefix, (Expl, a) : restSp) <- span ((== Impl) . fst) sp -> do
         _ <- pure implPrefix -- erased type arguments of the splice marker
-        r <- runIOValue ec =<< runSplices ec a
-        runSplices ec (evalApp ec r restSp)
+        r <- runIOValue rt =<< runSplices rt a
+        runSplices rt (evalApp ec r restSp)
   VGlobN g sp -> do
-    sp' <- mapM (\(ic, a) -> (,) ic <$> runSplices ec a) sp
+    sp' <- mapM (\(ic, a) -> (,) ic <$> runSplices rt a) sp
     pure (force ec (VGlobN g sp'))
   VFlex m sp -> do
-    sp' <- mapM (\(ic, a) -> (,) ic <$> runSplices ec a) sp
+    sp' <- mapM (\(ic, a) -> (,) ic <$> runSplices rt a) sp
     pure (force ec (VFlex m sp'))
   VPrim p args -> do
-    args' <- mapM (runSplices ec) args
+    args' <- mapM (runSplices rt) args
     pure (force ec (rebuild p args'))
     where
       rebuild q as = case evalPurePrim q (map (force ec) as) of
         Just r -> r
         Nothing -> VPrim q as
-  VCtor g args -> VCtor g <$> mapM (runSplices ec) args
-  VRecordV fs -> VRecordV <$> mapM (\(n, a) -> (,) n <$> runSplices ec a) fs
-  VInject t a -> VInject t <$> runSplices ec a
+  VCtor g args -> VCtor g <$> mapM (runSplices rt) args
+  VRecordV fs -> VRecordV <$> mapM (\(n, a) -> (,) n <$> runSplices rt a) fs
+  VInject t a -> VInject t <$> runSplices rt a
   _ -> pure (force ec v0)
+  where
+    ec = rtEC rt
 
 -- | Evaluate a term and execute its splices.
-evalK :: EvalCtx -> Env -> Term -> IO Value
-evalK ec env t = runSplices ec (eval ec env t)
+evalK :: RT -> Env -> Term -> IO Value
+evalK rt env t = runSplices rt (eval (rtEC rt) env t)
 
 -- One do-scope: exit actions are scheduled here and run exactly once,
 -- LIFO, on every way out (§18.7, §18.8.3).
-runScope :: EvalCtx -> Env -> [KItem] -> IO Completion
-runScope ec env0 items0 = do
+runScope :: RT -> Env -> [KItem] -> IO Completion
+runScope rt env0 items0 = do
+  let ec = rtEC rt
   exitsRef <- newIORef []
   let runExits = do
         exits <- readIORef exitsRef
@@ -119,42 +146,42 @@ runScope ec env0 items0 = do
       go _ [] = leave (CplNormal unitV)
       go env (item : rest) = case item of
         KExpr t -> do
-          x <- runIOValue ec =<< evalK ec env t
+          x <- runIOValue rt =<< evalK rt env t
           if null rest then leave (CplNormal x) else go env rest
         KLet _ pat t -> do
-          x <- evalK ec env t
+          x <- evalK rt env t
           bindOrDie pat x $ \bs -> go (reverse bs ++ env) rest
         KBind _ pat t -> do
-          x <- runIOValue ec =<< evalK ec env t
+          x <- runIOValue rt =<< evalK rt env t
           bindOrDie pat x $ \bs -> go (reverse bs ++ env) rest
         KLetQ pat t mElse -> do
-          x <- evalK ec env t
+          x <- evalK rt env t
           case matchPat ec pat x of
             Just bs -> go (reverse bs ++ env) rest
             Nothing -> case mElse of
               Just (rp, fe) -> case matchPat ec rp x of
                 Just bs -> do
-                  r <- runIOValue ec =<< evalK ec (reverse bs ++ env) fe
+                  r <- runIOValue rt =<< evalK rt (reverse bs ++ env) fe
                   leave (CplNormal r)
                 Nothing -> leave =<< throwIO (KappaError (VLit (LitStr "let? else: residue pattern failed")))
               Nothing -> leave =<< throwIO (KappaError (VLit (LitStr "let? pattern failed and no Alternative is available")))
         KVarItem _ t -> do
-          ref <- newIORef =<< evalK ec env t
+          ref <- newIORef =<< evalK rt env t
           go (VRef ref : env) rest
         KAssign refT monadic rhsT -> do
           rhs <-
             if monadic
-              then runIOValue ec =<< evalK ec env rhsT
-              else evalK ec env rhsT
+              then runIOValue rt =<< evalK rt env rhsT
+              else evalK rt env rhsT
           case force ec (eval ec env refT) of
             VRef ref -> writeIORef ref rhs
             _ -> throwIO (KappaError (VLit (LitStr "assignment target is not a var")))
           go env rest
-        KReturn _ t -> leave . CplReturn =<< evalK ec env t
+        KReturn _ t -> leave . CplReturn =<< evalK rt env t
         KBreak ml -> leave (CplBreak ml)
         KContinue ml -> leave (CplContinue ml)
         KDefer _ t -> do
-          modifyIORef' exitsRef ((() <$ (runIOValue ec =<< evalK ec env t)) :)
+          modifyIORef' exitsRef ((() <$ (runIOValue rt =<< evalK rt env t)) :)
           go env rest
         KWhile ml cond body mels -> loopOut =<< whileLoop env ml cond body mels
         KFor ml pat src body mels -> loopOut =<< forLoop env ml pat src body mels
@@ -174,9 +201,9 @@ runScope ec env0 items0 = do
 
       whileLoop env ml cond body mels = loop
         where
-          loop = (asBool <$> evalK ec env cond) >>= \cv -> case cv of
+          loop = (asBool <$> evalK rt env cond) >>= \cv -> case cv of
             Just True -> do
-              r <- runScope ec env body
+              r <- runScope rt env body
               case r of
                 CplNormal _ -> loop
                 CplContinue l | l `targets` ml -> loop
@@ -186,14 +213,14 @@ runScope ec env0 items0 = do
             Nothing -> throwIO (KappaError (VLit (LitStr "while condition was not a Bool")))
 
       forLoop env ml pat src body mels = do
-        srcV <- evalK ec env src
+        srcV <- evalK rt env src
         loop (listElems srcV)
         where
           loop [] = runElse env mels
           loop (x : xs) = case matchPat ec pat x of
             Nothing -> throwIO (KappaError (VLit (LitStr "for pattern failed")))
             Just bs -> do
-              r <- runScope ec (reverse bs ++ env) body
+              r <- runScope rt (reverse bs ++ env) body
               case r of
                 CplNormal _ -> loop xs
                 CplContinue l | l `targets` ml -> loop xs
@@ -201,13 +228,13 @@ runScope ec env0 items0 = do
                 other -> pure other
 
       runElse env mels = case mels of
-        Just els -> runScope ec env els
+        Just els -> runScope rt env els
         Nothing -> pure (CplNormal unitV)
 
       pickIf env [] mels = runElse env mels
       pickIf env ((c, body) : more) mels =
-        (asBool <$> evalK ec env c) >>= \cv -> case cv of
-          Just True -> runScope ec env body
+        (asBool <$> evalK rt env c) >>= \cv -> case cv of
+          Just True -> runScope rt env body
           Just False -> pickIf env more mels
           Nothing -> throwIO (KappaError (VLit (LitStr "if condition was not a Bool")))
 
@@ -227,44 +254,41 @@ runScope ec env0 items0 = do
 
 -- ── IO primitives ────────────────────────────────────────────────────
 
-intOf :: Value -> Maybe Integer
-intOf = \case
-  VLit (LitInt n) -> Just n
-  _ -> Nothing
+runPrimIO :: RT -> Text -> [Value] -> IO Value
+runPrimIO rt p rawArgs = do
+  args <- mapM (runSplices rt) rawArgs
+  runPrimIO' rt p args
 
-runPrimIO :: EvalCtx -> Text -> [Value] -> IO Value
-runPrimIO ec p rawArgs = do
-  args <- mapM (runSplices ec) rawArgs
-  runPrimIO' ec p args
-
-runPrimIO' :: EvalCtx -> Text -> [Value] -> IO Value
-runPrimIO' ec p args = case (p, map (force ec) args) of
-  ("printString", [VLit (LitStr s)]) -> TIO.putStr s >> hFlush stdout >> pure unitV
-  ("printlnString", [VLit (LitStr s)]) -> TIO.putStrLn s >> pure unitV
+runPrimIO' :: RT -> Text -> [Value] -> IO Value
+runPrimIO' rt p args = case (p, map (force ec) args) of
+  ("printString", [VLit (LitStr s)]) -> rtEmit rt s >> pure unitV
+  ("printlnString", [VLit (LitStr s)]) -> rtEmit rt (s <> "\n") >> pure unitV
   ("ioPure", [v]) -> pure v
   ("throwIO", [e]) -> throwIO (KappaError e)
   ("catchIO", [body, handler]) -> do
-    r <- try (runIOValue ec body)
+    r <- try (runIOValue rt body)
     case r of
       Right v -> pure v
-      Left (KappaError e) -> runIOValue ec (vapp ec handler Expl e)
+      Left (KappaError e) -> runIOValue rt (vapp ec handler Expl e)
   ("finallyIO", [body, fin]) -> do
-    r <- try (runIOValue ec body)
-    _ <- runIOValue ec fin
+    r <- try (runIOValue rt body)
+    _ <- runIOValue rt fin
     case r of
       Right v -> pure v
       Left err -> throwIO (err :: KappaError)
-  ("__runIO", [action]) -> runIOValue ec action
+  ("__runIO", [action]) -> runIOValue rt action
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
   ("ioBind", [m, k]) -> do
-    a <- runIOValue ec m
-    runIOValue ec (vapp ec k Expl a)
+    a <- runIOValue rt m
+    runIOValue rt (vapp ec k Expl a)
   ("ioThen", [m, k]) -> do
-    _ <- runIOValue ec m
-    runIOValue ec k
+    _ <- runIOValue rt m
+    runIOValue rt k
   _ ->
     throwIO . KappaError . VLit . LitStr $
       "unhandled IO primitive: " <> p <> "/" <> T.pack (show (length args))
         <> " args=" <> T.intercalate " ; " (map (renderTerm . quote ec 0) args)
+  where
+    ec = rtEC rt

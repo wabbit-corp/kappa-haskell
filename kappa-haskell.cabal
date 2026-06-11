@@ -48,6 +48,7 @@ library
         Kappa.Resolve
         Kappa.Source
         Kappa.Syntax
+        Kappa.TestHarness
         Kappa.Token
 
     hs-source-dirs:   src

@@ -22,7 +22,6 @@ module Kappa.Check
   , preludeModule
   ) where
 
-import Control.Monad (forM, forM_, unless, when, zipWithM)
 import Control.Monad.State.Strict
 import Data.List (foldl', nub, sortOn, (\\))
 import Data.Map.Strict (Map)
@@ -100,6 +99,8 @@ data CtxEntry = CtxEntry
   { ceName :: !Text
   , ceType :: !Value
   , ceImplicitLocal :: !Bool
+  , ceVarBind :: !Bool
+  -- ^ Introduced by @var@ (§18.6.1): reads auto-dereference.
   }
 
 data Ctx = Ctx
@@ -115,7 +116,12 @@ ctxLen = length . ctxEntries
 
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
 bindCtx n implocal ty (Ctx es env) =
-  Ctx (CtxEntry n ty implocal : es) (VRigid (length env) [] : env)
+  Ctx (CtxEntry n ty implocal False : es) (VRigid (length env) [] : env)
+
+-- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
+bindCtxVar :: Text -> Value -> Ctx -> Ctx
+bindCtxVar n ty (Ctx es env) =
+  Ctx (CtxEntry n ty False True : es) (VRigid (length env) [] : env)
 
 lookupCtx :: Text -> Ctx -> Maybe (Int, CtxEntry)
 lookupCtx n (Ctx es _) = go 0 es
@@ -314,7 +320,9 @@ etaCtor ec g cty = build 0 [] (eval ec [] cty)
 resolveName :: Ctx -> Name -> CheckM (Term, Value)
 resolveName ctx (Name n sp) =
   case lookupCtx n ctx of
-    Just (i, e) -> pure (CVar i, ceType e)
+    Just (i, e)
+      | ceVarBind e -> derefVar ctx i (ceType e)
+      | otherwise -> pure (CVar i, ceType e)
     Nothing -> do
       mg <- lookupGlobalName n
       case mg of
@@ -329,6 +337,20 @@ resolveName ctx (Name n sp) =
       errAt sp "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "'")
       anyHole emptyCtxDummy
     emptyCtxDummy = ctx
+
+-- | A read of a @var@-bound name (§18.6.1): elaborate to a splice that
+-- reads the cell, @__runIO (readRef x)@, typed at the element type.
+derefVar :: Ctx -> Int -> Value -> CheckM (Term, Value)
+derefVar ctx i refTy = do
+  elemTy <-
+    forceM refTy >>= \case
+      VGlobN (GName _ "Ref") [(_, a)] -> pure a
+      _ -> freshMetaV ctx
+  e <- freshMeta
+  aTm <- quoteIn ctx elemTy
+  let rd = CApp Expl (CApp Impl (CApp Impl (CGlob (gPrel "readRef")) e) aTm) (CVar i)
+      run = CApp Expl (CApp Impl (CApp Impl (CGlob (gPrel "__runIO")) e) aTm) rd
+  pure (run, elemTy)
 
 -- universe spellings: Type, Type0, Type1, ..., and '*' (§11.1)
 sortName :: Text -> Maybe Int
@@ -736,6 +758,10 @@ infer ctx expr = case expr of
     errAt sp "E_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
       "'impossible' is not provably unreachable here"
     anyHole ctx
+  EOpChain {} -> do
+    -- the resolver re-associates every chain (§5.5.2); reaching one here
+    -- means a resolution diagnostic was already emitted for it
+    anyHole ctx
   where
     tupleField i = "_" <> T.pack (show (i + 1))
     lam1 sp nm f =
@@ -1038,7 +1064,8 @@ elabFloatLit ctx v msuf sp _ = case msuf of
 
 elabString :: Ctx -> StringLit -> [InterpPart] -> Span -> CheckM (Term, Value)
 elabString ctx sl parts sp = case (slPrefix sl, parts) of
-  (Nothing, []) ->
+  (Nothing, _) ->
+    -- interpolation applies only to prefixed strings (§6.3.4)
     case slFragments sl of
       [FragLit t] -> pure (CLit (LitStr t), VGlobN (gPrel "String") [])
       [] -> pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
@@ -1757,7 +1784,7 @@ elabPattern ctx0 pat0 ty0 = do
           mr <- resolveCtor ctx cref
           case mr of
             Nothing -> pure (CPWild, ctx)
-            Just (g, ci) -> do
+            Just (_, ci) -> do
               let fieldNames = mapMaybe fst (ciFields ci)
               forM_ fields $ \(n, _) ->
                 unless (nameText n `elem` fieldNames) $
@@ -1872,7 +1899,7 @@ elabTry ctx body excepts mfin sp = do
 
 -- do blocks (§18.2): the carrier is IO in this implementation.
 elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
-elabDo ctx items sp mexpected = do
+elabDo ctx items _sp mexpected = do
   (errT, resT) <- do
     me <- traverse forceM mexpected
     case me of
@@ -1935,7 +1962,7 @@ elabDo ctx items sp mexpected = do
           (rhsTm, rhsTy) <- infer c rhs
           (rhsTm1, rhsTy1) <- insertAllImplicits c (nameSpan n) rhsTm rhsTy
           let refTy = VGlobN (gPrel "Ref") [(Expl, rhsTy1)]
-              c' = bindCtx (nameText n) False refTy c
+              c' = bindCtxVar (nameText n) refTy c
           ks <- goItems c' errT resT rest
           pure (KVarItem (nameText n) rhsTm1 : ks)
         DoAssign n monadic rhs asp -> do
@@ -2610,9 +2637,6 @@ elabInstance (InstanceDecl premises hd members) sp = do
       -- elaborate under fvs bound
       let ctx0 = foldl (\c v -> bindCtx v False (VSort 0) c) emptyCtx fvs
       premTms <- forM premises $ \p -> fst <$> inferType ctx0 p
-      let ctxP = foldl (\c (i, _) -> bindCtx ("__p" <> T.pack (show i)) True (VSort 0) c) ctx0 (zip [0 :: Int ..] premises)
-      -- NOTE: premise types in ctxP entries are imprecise (VSort 0) for
-      -- locals; re-bind precisely below.
       ctxP' <- bindPremises ctx0 premTms
       argTms <- mapM (\e -> fst <$> inferType ctxP' e) argEs
       -- member definitions checked against member types

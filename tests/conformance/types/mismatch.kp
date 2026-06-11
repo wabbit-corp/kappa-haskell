@@ -1,0 +1,6 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+x : Integer
+let x = "nope" --!! E_TYPE_MISMATCH
