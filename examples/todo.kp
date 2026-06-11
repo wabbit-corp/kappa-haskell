@@ -1,0 +1,132 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "==================================\ntodo: 4 tasks, 2 urgent\n  1. [ ] write the spec coverage report (high)\n  2. [ ] water the plants (low)\n  3. [ ] fix the parser (medium)\n  4. [ ] ship the examples (high)\ntotal effort: 9\n==================================\ndone: fix the parser\nerror: no task titled 'buy a yacht'\n==================================\n  1. [ ] write the spec coverage report (high)\n  2. [ ] water the plants (low)\n  3. [x] fix the parser (medium)\n  4. [ ] ship the examples (high)\n3 still open\n"
+--! assertExitCode 0
+
+-- todo.kp — a small console todo-list manager.
+--
+-- Exercises: data declarations, record types (projection + `.{ }`
+-- functional patch), Option, traits (Show/Eq instances for a user
+-- type), lists (map/filter/foldl), while and for loops with mutable
+-- variables, try/except over typed IO errors, and f"" interpolation.
+
+data Priority : Type =
+    Low
+    Medium
+    High
+
+instance Show Priority =
+    let show p =
+        match p
+        case Low -> "low"
+        case Medium -> "medium"
+        case High -> "high"
+
+instance Eq Priority =
+    let (==) a b =
+        match (a, b)
+        case (Low, Low) -> True
+        case (Medium, Medium) -> True
+        case (High, High) -> True
+        case _ -> False
+
+weight : Priority -> Integer
+let weight p =
+    match p
+    case Low -> 1
+    case Medium -> 2
+    case High -> 3
+
+type Task = (title : String, prio : Priority, done : Bool)
+
+task : String -> Priority -> Task
+let task title prio = (title = title, prio = prio, done = False)
+
+checkbox : Task -> String
+let checkbox t = if t.done then "[x]" else "[ ]"
+
+renderTask : Task -> String
+let renderTask t = f"${checkbox t} ${t.title} (${show t.prio})"
+
+isPending : Task -> Bool
+let isPending t = not t.done
+
+isUrgent : Task -> Bool
+let isUrgent t = t.prio == High
+
+addEffort : Integer -> Task -> Integer
+let addEffort acc t = addInt acc (weight t.prio)
+
+printTasks : List Task -> UIO Unit
+let printTasks tasks = do
+    var n = 1
+    for t in tasks do
+        printlnString f"  ${showInt n}. ${renderTask t}"
+        n = addInt n 1
+
+-- Print a horizontal rule, built with a while loop over mutable state.
+rule : Integer -> UIO Unit
+let rule width = do
+    var line = ""
+    var k = 0
+    while ltInt k width do
+        line = stringAppend line "="
+        k = addInt k 1
+    printlnString line
+
+-- Pure update: mark the first task with the given title as done.
+markDone : String -> List Task -> Option (List Task)
+let markDone title tasks =
+    match tasks
+    case Nil -> None
+    case t :: rest ->
+        if t.title == title then Some (t.{ done = True } :: rest)
+        else
+            match markDone title rest
+            case Some fixed -> Some (t :: fixed)
+            case None -> None
+
+completeOrFail : String -> List Task -> IO String (List Task)
+let completeOrFail title tasks =
+    match markDone title tasks
+    case Some updated -> pure updated
+    case None -> raise f"no task titled '${title}'"
+
+-- Effectful wrapper: update the store or raise a String error.
+attempt : Ref (List Task) -> String -> IO String Unit
+let attempt store title = do
+    let tasks <- readRef store
+    let updated <- completeOrFail title tasks
+    writeRef store updated
+    printlnString f"done: ${title}"
+
+main : UIO Unit
+let main = do
+    let t1 = task "write the spec coverage report" High
+    let t2 = task "water the plants" Low
+    let t3 = task "fix the parser" Medium
+    let t4 = task "ship the examples" High
+    let tasks = t1 :: t2 :: t3 :: t4 :: Nil
+    let urgent = listLength (filter isUrgent tasks)
+    rule 34
+    printlnString f"todo: ${showInt (listLength tasks)} tasks, ${showInt urgent} urgent"
+    printTasks tasks
+    printlnString f"total effort: ${showInt (foldl addEffort 0 tasks)}"
+
+    rule 34
+    let store <- newRef tasks
+    try attempt store "fix the parser"
+    except msg ->
+        printlnString f"error: ${msg}"
+    try attempt store "buy a yacht"
+    except msg ->
+        printlnString f"error: ${msg}"
+
+    rule 34
+    let after <- readRef store
+    printTasks after
+    var open = 0
+    for t in after do
+        if isPending t then
+            open = addInt open 1
+    printlnString f"${showInt open} still open"
