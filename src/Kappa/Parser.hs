@@ -326,14 +326,14 @@ pLetDef = do
     named = try $ do
       n <- pSigName
       binders <- pParamBinders
-      resTy <- optionMaybe (token TokColon *> pExprNoDecreases)
+      resTy <- optionMaybe (token TokColon *> noEq pExprNoDecreases)
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
       pure (LetDef (Just n) Nothing binders resTy dec body)
     patBinding = do
       pat <- pPattern
-      ty <- optionMaybe (token TokColon *> pExpr)
+      ty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
       body <- pDefBody
       pure (LetDef Nothing (Just pat) [] ty Nothing body)
@@ -372,7 +372,7 @@ pDataDecl = do
   pKeyword "data"
   n <- pSigName
   params <- pParamBinders
-  kind <- optionMaybe (token TokColon *> pExpr)
+  kind <- optionMaybe (token TokColon *> noEq pExpr)
   ctors <-
     optionMaybe (token TokEquals) >>= \case
       Nothing -> pure []
@@ -433,7 +433,7 @@ pCtorBinder =
       susp <- pSuspension
       n <- pIdent
       token TokColon
-      ty <- pExprArg
+      ty <- noEq pExprArg
       def <- optionMaybe (token TokEquals *> pExprArg)
       pure (Binder False prefix susp NoReceiver False (Just n) False (Just ty) def sp)
     parenParam = try $ do
@@ -453,7 +453,7 @@ pTypeAlias mods start = do
   pKeyword "type"
   n <- pSigName
   params <- pParamBinders
-  kind <- optionMaybe (token TokColon *> pExpr)
+  kind <- optionMaybe (token TokColon *> noEq pExpr)
   rhs <- optionMaybe (token TokEquals *> pSuiteOrExpr)
   pEndDecl
   DTypeAlias mods n params kind rhs <$> spanFrom start
@@ -754,7 +754,7 @@ pProjection mods start = do
   n <- pIdent
   binders <- pParamBinders
   token TokColon
-  resTy <- pExpr
+  resTy <- noEq pExpr
   token TokEquals
   body <- accessorBody <|> (ProjSelector <$> pSuiteOrExpr)
   pEndDecl
@@ -863,7 +863,7 @@ pParamBinder = parenBinder <|> bare
     parenBinder = try $ do
       sp <- currentSpan
       token TokLParen
-      bs <- pBinderBody sp True
+      bs <- pBinderBody sp False
       token TokRParen
       pure bs
     bare = do
@@ -892,7 +892,7 @@ pBinderBody sp allowDefault = implicitB <|> inoutB <|> explicitB
       susp <- pSuspension
       (recv, names) <- pBinderNames
       token TokColon
-      ty <- pExpr
+      ty <- tyP
       def <- pDefault
       pure [Binder True prefix susp recv False n False (Just ty) def sp | n <- names]
     inoutB = do
@@ -908,11 +908,15 @@ pBinderBody sp allowDefault = implicitB <|> inoutB <|> explicitB
       prefix <- pBinderPrefix
       susp <- pSuspension
       (recv, names) <- pBinderNames
-      mty <- optionMaybe (token TokColon *> pExpr)
+      mty <- optionMaybe (token TokColon *> tyP)
       when (length names > 1 && not (isJust mty)) $
         parseFail "multiple binder names require a shared type annotation"
       def <- pDefault
       pure [Binder False prefix susp recv False n False mty def sp | n <- names]
+    -- '=' may join the binder type's operator chain (propositional
+    -- equality, §11.4.1) except where a default clause is admissible
+    -- (constructor parameters, §10.1).
+    tyP = if allowDefault then noEq pExpr else pExpr
     pDefault
       | allowDefault = optionMaybe (token TokEquals *> pExpr)
       | otherwise = pure Nothing
@@ -1264,7 +1268,12 @@ pChainElems = do
   where
     pChainRest = do
       t <- peekToken
+      eqok <- eqAllowed
       case t of
+        TokEquals | eqok -> do
+          sp <- currentSpan
+          void anyToken
+          continueAfterOp (Name "=" sp)
         TokOperator op
           | op /= "=>" && op /= "*" || op == "*" -> do
               -- '*' could be a wildcard only in imports; safe here.
@@ -1980,7 +1989,7 @@ pLetBind = implicitBind <|> ordinaryBind
       start <- currentSpan
       prefix <- pBinderPrefix
       pat <- pPattern
-      mty <- optionMaybe (token TokColon *> pExpr)
+      mty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
       e <- pSuiteOrExpr
       sp <- spanFrom start
@@ -2187,7 +2196,7 @@ pDoItem = do
     ordinaryDo start = try $ do
       prefix <- pBinderPrefix
       pat <- pPattern
-      mty <- optionMaybe (token TokColon *> pExpr)
+      mty <- optionMaybe (token TokColon *> noEq pExpr)
       arrow <- (token TokBackArrow >> pure True) <|> (token TokEquals >> pure False)
       e <- pSuiteOrExpr
       sp <- spanFrom start

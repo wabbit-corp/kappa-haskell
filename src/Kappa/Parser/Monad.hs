@@ -25,6 +25,8 @@ module Kappa.Parser.Monad
   , sepBy
   , sepBy1
   , keepSoftNewlines
+  , noEq
+  , eqAllowed
   , recordRecovered
   , skipPast
   , eof
@@ -40,6 +42,7 @@ data PState = PState
   { psToks :: ![Located]
   , psLast :: !Span
   , psSoftNL :: !Bool -- ^ True = soft newlines are significant
+  , psEqOk :: !Bool -- ^ may '=' join an operator chain here? (§11.4.1)
   , psRecovered :: ![Diagnostic]
   }
 
@@ -85,7 +88,7 @@ mergeErr e1 e2
 
 runP :: P a -> [Located] -> Either PErr (a, [Diagnostic])
 runP (P f) toks =
-  case f (PState toks startSpan False []) of
+  case f (PState toks startSpan False True []) of
     Left e -> Left e
     Right (a, s) -> Right (a, reverse (psRecovered s))
   where
@@ -179,6 +182,17 @@ keepSoftNewlines :: P a -> P a
 keepSoftNewlines (P f) = P $ \s -> do
   (a, s') <- f s {psSoftNL = True}
   pure (a, s' {psSoftNL = psSoftNL s})
+
+-- | Parse with '=' excluded from operator chains: used for annotation
+-- positions where '=' terminates the enclosing binding instead of
+-- denoting propositional equality (§11.4.1 vs §9.1).
+noEq :: P a -> P a
+noEq (P f) = P $ \s -> do
+  (a, s') <- f s {psEqOk = False}
+  pure (a, s' {psEqOk = psEqOk s})
+
+eqAllowed :: P Bool
+eqAllowed = P $ \s -> Right (psEqOk s, s)
 
 recordRecovered :: Diagnostic -> P ()
 recordRecovered d = P $ \s -> Right ((), s {psRecovered = d : psRecovered s})

@@ -1,0 +1,401 @@
+-- | The implicit prelude (Spec §28): builtin types and primitives
+-- registered directly, plus an embedded @std.prelude@ source compiled
+-- through the ordinary pipeline. SPEC_COVERAGE.md documents which parts
+-- of the §28.2 normative minimum are provided.
+module Kappa.Prelude
+  ( builtinState
+  , preludeSource
+  , evalPurePrim
+  ) where
+
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import Kappa.Check
+import Kappa.Core
+import Kappa.Eval (GlobalDef (..), evalPurePrim)
+import Kappa.Source (ModuleName (..))
+
+prel :: Text -> GName
+prel = GName preludeModule
+
+-- small Pi-type builders (closed terms, evaluated lazily by the checker)
+infixr 5 ~>
+(~>) :: Term -> Term -> Term
+a ~> b = CPi Expl QW "_" a b
+
+piI :: Q -> Text -> Term -> Term -> Term
+piI = CPi Impl
+
+tcon :: Text -> Term
+tcon = CGlob . prel
+
+-- | Initial state: builtin types and primitives under @std.prelude@.
+builtinState :: CheckState
+builtinState =
+  initCheckState
+    { csModule = preludeModule
+    , csGlobals = Map.fromList (types ++ prims)
+    , csCtors = Map.fromList ctors
+    , csDatas = Map.fromList datas
+    }
+  where
+    opaqueTy t = GlobalDef t Nothing False
+    prim name t = (prel name, GlobalDef t (Just (VPrim name [])) False)
+
+    tType = CSort 0
+    tyV t = evalClosed t
+    types =
+      [ (prel "Integer", opaqueTy (tyV tType))
+      , (prel "Nat", opaqueTy (tyV tType))
+      , (prel "Double", opaqueTy (tyV tType))
+      , (prel "String", opaqueTy (tyV tType))
+      , (prel "UnicodeScalar", opaqueTy (tyV tType))
+      , (prel "Bytes", opaqueTy (tyV tType))
+      , (prel "Thunk", opaqueTy (tyV (tType ~> tType)))
+      , (prel "Need", opaqueTy (tyV (tType ~> tType)))
+      , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
+      , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) : a -> Type
+        (prel "=", opaqueTy (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tType))))
+      , (prel "refl", GlobalDef reflTy Nothing False)
+      ]
+    reflTy =
+      tyV $
+        piI Q0 "a" tType $
+          piI Q0 "x" (CVar 0) $
+            CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)
+    ctors =
+      [ (prel "refl", CtorInfo (prel "=") (quoteClosedTy reflTy) [])
+      ]
+    datas =
+      [ (prel "=", DataInfo [prel "refl"] 3)
+      ]
+    quoteClosedTy _ = piI Q0 "a" tType (piI Q0 "x" (CVar 0) (CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)))
+
+    tInt = tcon "Integer"
+    tNat = tcon "Nat"
+    tDouble = tcon "Double"
+    tStr = tcon "String"
+    tBool = tcon "Bool" -- defined by prelude source; fine as neutral
+    tScalar = tcon "UnicodeScalar"
+    tUnit = tcon "Unit"
+    io e a = CApp Expl (CApp Expl (tcon "IO") e) a
+    refT a = CApp Expl (tcon "Ref") a
+    forallE body = piI Q0 "e" tType body -- erased error param
+    forallEA body = piI Q0 "e" tType (piI Q0 "a" tType body)
+
+    prims =
+      [ prim "addInt" (tyV (tInt ~> tInt ~> tInt))
+      , prim "subInt" (tyV (tInt ~> tInt ~> tInt))
+      , prim "mulInt" (tyV (tInt ~> tInt ~> tInt))
+      , prim "divInt" (tyV (tInt ~> tInt ~> tInt))
+      , prim "modInt" (tyV (tInt ~> tInt ~> tInt))
+      , prim "negInt" (tyV (tInt ~> tInt))
+      , prim "eqInt" (tyV (tInt ~> tInt ~> tBool))
+      , prim "ltInt" (tyV (tInt ~> tInt ~> tBool))
+      , prim "leInt" (tyV (tInt ~> tInt ~> tBool))
+      , prim "addDouble" (tyV (tDouble ~> tDouble ~> tDouble))
+      , prim "subDouble" (tyV (tDouble ~> tDouble ~> tDouble))
+      , prim "mulDouble" (tyV (tDouble ~> tDouble ~> tDouble))
+      , prim "divDouble" (tyV (tDouble ~> tDouble ~> tDouble))
+      , prim "negDouble" (tyV (tDouble ~> tDouble))
+      , prim "eqDouble" (tyV (tDouble ~> tDouble ~> tBool)) -- raw-bit equality (§6.1.3)
+      , prim "ltDouble" (tyV (tDouble ~> tDouble ~> tBool))
+      , prim "floatEq" (tyV (tDouble ~> tDouble ~> tBool)) -- IEEE numeric equality
+      , prim "eqStr" (tyV (tStr ~> tStr ~> tBool))
+      , prim "ltStr" (tyV (tStr ~> tStr ~> tBool))
+      , prim "eqScalar" (tyV (tScalar ~> tScalar ~> tBool))
+      , prim "stringAppend" (tyV (tStr ~> tStr ~> tStr))
+      , prim "showInt" (tyV (tInt ~> tStr))
+      , prim "showDouble" (tyV (tDouble ~> tStr))
+      , prim "showStringLit" (tyV (tStr ~> tStr))
+      , prim "showScalar" (tyV (tScalar ~> tStr))
+      , prim "intToDouble" (tyV (tInt ~> tDouble))
+      , prim "natOfInt" (tyV (tInt ~> tNat)) -- internal: Nat and Integer share representation
+      , prim "natToInt" (tyV (tNat ~> tInt))
+      , prim "printString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
+      , prim "printlnString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
+      , prim "ioPure" (tyV (forallEA (CVar 0 ~> io (CVar 2) (CVar 1))))
+      , prim "throwIO" (tyV (forallEA (CVar 1 ~> io (CVar 2) (CVar 1))))
+      , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
+      , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
+      , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
+      , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
+      , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
+      , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
+      ]
+
+-- Evaluate a closed type term without globals (only built-in structure).
+evalClosed :: Term -> Value
+evalClosed = go []
+  where
+    go env = \case
+      CVar i -> env !! i
+      CGlob g -> VGlobN g []
+      CPi ic q n a b -> VPi ic q n (go env a) (Closure env b)
+      CApp ic f a -> app (go env f) ic (go env a)
+      CSort n -> VSort n
+      t -> VPrim (T.pack (show t)) []
+    app (VGlobN g sp) ic a = VGlobN g (sp ++ [(ic, a)])
+    app f _ _ = f
+
+
+-- | Embedded @std.prelude@ source (§28.2 subset; see SPEC_COVERAGE.md).
+preludeSource :: Text
+preludeSource =
+  T.unlines
+    [ "data Void : Type"
+    , ""
+    , "data Unit : Type ="
+    , "    Unit"
+    , ""
+    , "data Bool : Type ="
+    , "    True"
+    , "    False"
+    , ""
+    , "data Ordering : Type ="
+    , "    LT"
+    , "    EQ"
+    , "    GT"
+    , ""
+    , "data Option (a : Type) : Type ="
+    , "    None"
+    , "    Some a"
+    , ""
+    , "data Result (e : Type) (a : Type) : Type ="
+    , "    Ok a"
+    , "    Err e"
+    , ""
+    , "data List (a : Type) : Type ="
+    , "    Nil"
+    , "    (::) (head : a) (tail : List a)"
+    , ""
+    , "type Int = Integer"
+    , "type Float = Double"
+    , "type UIO (a : Type) = IO Void a"
+    , ""
+    , "not : Bool -> Bool"
+    , "let not b = if b then False else True"
+    , ""
+    , "(&&) : Bool -> Thunk Bool -> Bool"
+    , "let (&&) lhs rhs = if lhs then force rhs else False"
+    , ""
+    , "(||) : Bool -> Thunk Bool -> Bool"
+    , "let (||) lhs rhs = if lhs then True else force rhs"
+    , ""
+    , "trait Show (a : Type) ="
+    , "    show : a -> String"
+    , ""
+    , "trait Eq (a : Type) ="
+    , "    (==) : a -> a -> Bool"
+    , ""
+    , "trait Ord (a : Type) ="
+    , "    compare : a -> a -> Ordering"
+    , ""
+    , "trait Add (a : Type) ="
+    , "    add : a -> a -> a"
+    , ""
+    , "trait Mul (a : Type) ="
+    , "    multiply : a -> a -> a"
+    , ""
+    , "trait Negatable (a : Type) ="
+    , "    negate : a -> a"
+    , ""
+    , "trait CheckedSub (a : Type) ="
+    , "    subDefined : a -> a -> Bool"
+    , "    subtractUnchecked : a -> a -> a"
+    , ""
+    , "trait CheckedDiv (a : Type) ="
+    , "    divDefined : a -> a -> Bool"
+    , "    divideUnchecked : a -> a -> a"
+    , ""
+    , "trait CheckedMod (a : Type) ="
+    , "    modDefined : a -> a -> Bool"
+    , "    moduloUnchecked : a -> a -> a"
+    , ""
+    , "trait FromInteger (t : Type) ="
+    , "    fromInteger : Nat -> t"
+    , ""
+    , "trait FromFloat (t : Type) ="
+    , "    fromFloat : Double -> t"
+    , ""
+    , "(+) : forall (a : Type). (@_ : Add a) -> a -> a -> a"
+    , "let (+) x y = add x y"
+    , ""
+    , "(*) : forall (a : Type). (@_ : Mul a) -> a -> a -> a"
+    , "let (*) x y = multiply x y"
+    , ""
+    , "(-) : forall (a : Type). (@_ : CheckedSub a) -> (x : a) -> (y : a) -> (@_ : subDefined x y = True) -> a"
+    , "let (-) x y = subtractUnchecked x y"
+    , ""
+    , "(/) : forall (a : Type). (@_ : CheckedDiv a) -> (x : a) -> (y : a) -> (@_ : divDefined x y = True) -> a"
+    , "let (/) x y = divideUnchecked x y"
+    , ""
+    , "(%) : forall (a : Type). (@_ : CheckedMod a) -> (x : a) -> (y : a) -> (@_ : modDefined x y = True) -> a"
+    , "let (%) x y = moduloUnchecked x y"
+    , ""
+    , "(/=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
+    , "let (/=) x y = not (x == y)"
+    , ""
+    , "(<) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
+    , "let (<) x y ="
+    , "    match compare x y"
+    , "    case LT -> True"
+    , "    case EQ -> False"
+    , "    case GT -> False"
+    , ""
+    , "(<=) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
+    , "let (<=) x y ="
+    , "    match compare x y"
+    , "    case LT -> True"
+    , "    case EQ -> True"
+    , "    case GT -> False"
+    , ""
+    , "(>) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
+    , "let (>) x y = not (x <= y)"
+    , ""
+    , "(>=) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
+    , "let (>=) x y = not (x < y)"
+    , ""
+    , "instance Eq Integer ="
+    , "    let (==) x y = eqInt x y"
+    , ""
+    , "instance Ord Integer ="
+    , "    let compare x y = if ltInt x y then LT elif eqInt x y then EQ else GT"
+    , ""
+    , "instance Show Integer ="
+    , "    let show x = showInt x"
+    , ""
+    , "instance Add Integer ="
+    , "    let add x y = addInt x y"
+    , ""
+    , "instance Mul Integer ="
+    , "    let multiply x y = mulInt x y"
+    , ""
+    , "instance Negatable Integer ="
+    , "    let negate x = negInt x"
+    , ""
+    , "instance CheckedSub Integer ="
+    , "    let subDefined x y = True"
+    , "    let subtractUnchecked x y = subInt x y"
+    , ""
+    , "instance CheckedDiv Integer ="
+    , "    let divDefined x y = not (eqInt y 0)"
+    , "    let divideUnchecked x y = divInt x y"
+    , ""
+    , "instance CheckedMod Integer ="
+    , "    let modDefined x y = not (eqInt y 0)"
+    , "    let moduloUnchecked x y = modInt x y"
+    , ""
+    , "instance FromInteger Integer ="
+    , "    let fromInteger n = natToInt n"
+    , ""
+    , "instance FromInteger Double ="
+    , "    let fromInteger n = intToDouble (natToInt n)"
+    , ""
+    , "instance Eq Double ="
+    , "    let (==) x y = eqDouble x y"
+    , ""
+    , "instance Show Double ="
+    , "    let show x = showDouble x"
+    , ""
+    , "instance Add Double ="
+    , "    let add x y = addDouble x y"
+    , ""
+    , "instance Mul Double ="
+    , "    let multiply x y = mulDouble x y"
+    , ""
+    , "instance Eq String ="
+    , "    let (==) x y = eqStr x y"
+    , ""
+    , "instance Show String ="
+    , "    let show x = x"
+    , ""
+    , "instance Add String ="
+    , "    let add x y = stringAppend x y"
+    , ""
+    , "instance Eq Bool ="
+    , "    let (==) x y = if x then y else not y"
+    , ""
+    , "instance Show Bool ="
+    , "    let show b = if b then \"True\" else \"False\""
+    , ""
+    , "(++) : String -> String -> String"
+    , "let (++) x y = stringAppend x y"
+    , ""
+    , "print : forall (a : Type). (@_ : Show a) -> a -> UIO Unit"
+    , "let print value = printString (show value)"
+    , ""
+    , "println : forall (a : Type). (@_ : Show a) -> a -> UIO Unit"
+    , "let println value = printlnString (show value)"
+    , ""
+    , "pure : forall (e : Type) (a : Type). a -> IO e a"
+    , "let pure x = ioPure x"
+    , ""
+    , "throwError : forall (e : Type) (a : Type). e -> IO e a"
+    , "let throwError err = throwIO err"
+    , ""
+    , "raise : forall (e : Type) (a : Type). e -> IO e a"
+    , "let raise err = throwIO err"
+    , ""
+    , "catchError : forall (e : Type) (a : Type). IO e a -> (e -> IO e a) -> IO e a"
+    , "let catchError body handler = catchIO body handler"
+    , ""
+    , "identity : forall (a : Type). a -> a"
+    , "let identity x = x"
+    , ""
+    , "(|>) : forall (a : Type) (b : Type). a -> (a -> b) -> b"
+    , "let (|>) x f = f x"
+    , ""
+    , "(<|) : forall (a : Type) (b : Type). (a -> b) -> a -> b"
+    , "let (<|) f x = f x"
+    , ""
+    , "listAppend : forall (a : Type). List a -> List a -> List a"
+    , "let listAppend xs ys ="
+    , "    match xs"
+    , "    case Nil -> ys"
+    , "    case x :: rest -> x :: listAppend rest ys"
+    , ""
+    , "concatMap : forall (a : Type) (b : Type). (a -> List b) -> List a -> List b"
+    , "let concatMap f xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> listAppend (f x) (concatMap f rest)"
+    , ""
+    , "map : forall (a : Type) (b : Type). (a -> b) -> List a -> List b"
+    , "let map f xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> f x :: map f rest"
+    , ""
+    , "filter : forall (a : Type). (a -> Bool) -> List a -> List a"
+    , "let filter p xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> if p x then x :: filter p rest else filter p rest"
+    , ""
+    , "foldl : forall (a : Type) (b : Type). (b -> a -> b) -> b -> List a -> b"
+    , "let foldl f acc xs ="
+    , "    match xs"
+    , "    case Nil -> acc"
+    , "    case x :: rest -> foldl f (f acc x) rest"
+    , ""
+    , "foldr : forall (a : Type) (b : Type). (a -> b -> b) -> b -> List a -> b"
+    , "let foldr f z xs ="
+    , "    match xs"
+    , "    case Nil -> z"
+    , "    case x :: rest -> f x (foldr f z rest)"
+    , ""
+    , "listLength : forall (a : Type). List a -> Integer"
+    , "let listLength xs ="
+    , "    match xs"
+    , "    case Nil -> 0"
+    , "    case _ :: rest -> addInt 1 (listLength rest)"
+    , ""
+    , "orElse : forall (a : Type). Option a -> a -> a"
+    , "let orElse o d ="
+    , "    match o"
+    , "    case Some x -> x"
+    , "    case None -> d"
+    ]

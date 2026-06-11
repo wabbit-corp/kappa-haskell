@@ -34,12 +34,20 @@ common deps
 library
     import:           warnings, deps
     exposed-modules:
+        Kappa.Check
+        Kappa.Core
         Kappa.Diagnostic
+        Kappa.Eval
+        Kappa.Interp
+        Kappa.Lexer
         Kappa.Parser
         Kappa.Parser.Monad
-        Kappa.Syntax
-        Kappa.Lexer
+        Kappa.Pipeline
+        Kappa.Prelude
+        Kappa.Pretty
+        Kappa.Resolve
         Kappa.Source
+        Kappa.Syntax
         Kappa.Token
 
     hs-source-dirs:   src
