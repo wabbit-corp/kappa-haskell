@@ -686,7 +686,15 @@ infer ctx expr = case expr of
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
     , Just lvl <- sortName (nameText n) ->
-        pure (CSort lvl, VSort (lvl + 1))
+        -- '*' is a universe spelling only when it does not resolve to
+        -- an operator (the prelude defines multiplication) (§11.1)
+        if nameText n == "*"
+          then do
+            mg <- lookupGlobalName "*"
+            case mg of
+              Just _ -> resolveName ctx n
+              Nothing -> pure (CSort lvl, VSort (lvl + 1))
+          else pure (CSort lvl, VSort (lvl + 1))
     | otherwise -> resolveName ctx n
   EHole mn sp -> do
     (tm, ty) <- anyHole ctx
@@ -1023,6 +1031,11 @@ inferType ctx e = do
 -- type-position inference: prefer the type facet for head names (§7.2).
 inferT :: Ctx -> Expr -> CheckM (Term, Value)
 inferT ctx e = case e of
+  -- in type position a universe spelling (incl. '*') is the universe
+  EVar n
+    | Nothing <- lookupCtx (nameText n) ctx
+    , Just lvl <- sortName (nameText n) ->
+        pure (CSort lvl, VSort (lvl + 1))
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
     , Nothing <- sortName (nameText n) -> do
@@ -1133,6 +1146,9 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
 elabNamedBlock :: Ctx -> Term -> Value -> [(Name, Maybe Expr)] -> Span -> [Arg] -> CheckM (Term, Value)
 elabNamedBlock ctx fTm fTy items sp rest = do
   st <- get
+  forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \dn ->
+    errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa.application.named")
+      ("named argument '" <> dn <> "' is supplied more than once")
   case ctorOf fTm of
     Just g | Just ci <- Map.lookup g (csCtors st) -> do
       let fieldNames = mapMaybe fst (ciFields ci)
@@ -1152,16 +1168,40 @@ elabNamedBlock ctx fTm fTy items sp rest = do
               pure Nothing
       -- run the spine with mixed surface/core arguments
       goSpine fTm fTy (catMaybes args)
-    _ -> do
-      errAt sp "E_NAMED_ARG_NOT_CTOR" (Just "kappa.application.named")
-        "named-argument application requires a constructor with named parameters in this implementation"
-      pure (fTm, fTy)
+    -- ordinary function: match named items against the remaining
+    -- explicit Pi binder names (§16.1.7.2)
+    _ -> goPiNamed fTm fTy [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
   where
     ctorOf = \case
       CLam _ _ _ b -> ctorOf b
       CCtor g _ -> Just g
       CGlob g -> Just g
       _ -> Nothing
+    goPiNamed tm ty0 remaining = do
+      ty <- forceM ty0
+      case ty of
+        VPi Impl _ _ dom clo -> do
+          iTm <- resolveImplicit ctx sp dom
+          iV <- evalIn ctx iTm
+          ty' <- clApp clo iV
+          goPiNamed (CApp Impl tm iTm) ty' remaining
+        VPi Expl _ nm dom clo
+          | Just e <- lookup nm remaining -> do
+              aTm <- check ctx e dom
+              aV <- evalIn ctx aTm
+              ty' <- clApp clo aV
+              goPiNamed (CApp Expl tm aTm) ty' [(n, x) | (n, x) <- remaining, n /= nm]
+          | not (null remaining) -> do
+              errAt sp "E_NAMED_ARG_MISSING" (Just "kappa.application.named")
+                ("missing named argument '" <> nm <> "'")
+              pure (tm, ty)
+        _
+          | null remaining -> elabSpine ctx sp tm ty rest
+          | otherwise -> do
+              forM_ remaining $ \(n, _) ->
+                errAt sp "E_NAMED_ARG_UNKNOWN" (Just "kappa.application.named")
+                  ("callee has no named parameter '" <> n <> "'")
+              pure (tm, ty)
     goSpine tm ty [] = elabSpine ctx sp tm ty rest
     goSpine tm ty0 (a : as) = do
       ty <- forceM ty0
