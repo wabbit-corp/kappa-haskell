@@ -1,0 +1,19 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "* 7\nplain\n"
+
+trait Pretty a =
+    pretty : a -> String
+    let banner : a -> String = \x -> stringAppend "* " (pretty x)
+
+instance Pretty Integer =
+    let pretty n = showInt n
+
+instance Pretty String =
+    let pretty s = s
+    let banner s = s
+
+main : UIO Unit
+let main = do
+    printlnString (banner 7)
+    printlnString (banner "plain")

@@ -402,7 +402,40 @@ runSuiteDir dir = guardExceptions dir $ do
     if hasKtest
       then Just . (,) ktestPath <$> readSourceFile ktestPath
       else pure Nothing
-  runSuite dir (zip files srcs) mktest
+  runSuite dir (orderByImports (zip files srcs)) mktest
+
+-- | Order suite files so that imported modules compile first (light
+-- textual scan of @module@ headers and @import@ lines; cycles keep the
+-- original order).
+orderByImports :: [(FilePath, Text)] -> [(FilePath, Text)]
+orderByImports files
+  | length files < 2 = files
+  | otherwise = go [] (map describe files)
+  where
+    describe f@(_, src) = (headerModule src, importedModules src, f)
+    allMods = mapMaybe (\(m, _, _) -> m) (map describe files)
+    go _ [] = []
+    go done rest =
+      case break ready rest of
+        (_, []) -> [f | (_, _, f) <- rest] -- cyclic or unresolvable: keep order
+        (pre, (m, _, f) : post) ->
+          f : go (maybe done (: done) m) (pre ++ post)
+      where
+        ready (_, imps, _) =
+          all (\i -> i `elem` done || i `notElem` allMods) imps
+    headerModule src =
+      case [ws | l <- take 10 (T.lines src), let ws = T.words l, "module" `elem` ws] of
+        (ws : _) -> case drop 1 (dropWhile (/= "module") ws) of
+          (m : _) -> Just m
+          [] -> Nothing
+        [] -> Nothing
+    importedModules src =
+      [ T.dropWhileEnd (== '.') (T.takeWhile (\c -> c /= '*' && c /= '(' && c /= ' ') m)
+      | l <- T.lines src
+      , Just rest0 <- [T.stripPrefix "import " (T.stripStart l)]
+      , let m = T.strip rest0
+      , not (T.null m)
+      ]
 
 guardExceptions :: FilePath -> IO TestReport -> IO TestReport
 guardExceptions label act = do
@@ -713,10 +746,14 @@ assertType path src cu nm tyExpr =
                     )
   where
     st = cuState cu
+    -- the assertion is file-relative: resolve in the origin file's module
+    originMod = case parseModule path src of
+      Right (m, _) | Just mp <- modHeader m -> ModuleName (modPathName mp)
+      _ -> cuModule cu
     (qualMod, baseName) = splitQualified nm
     lookupTarget =
       let candidates =
-            [GName (cuModule cu) nm]
+            [GName originMod nm, GName (cuModule cu) nm]
               ++ [GName (ModuleName qm) baseName | Just qm <- [qualMod]]
               ++ [g | Just g <- [Map.lookup nm (csScope st)]]
        in case mapMaybe (`Map.lookup` csGlobals st) candidates of
@@ -729,11 +766,11 @@ assertType path src cu nm tyExpr =
         Right (m, _) ->
           let fixities = fileFixities path src
               (m', _) = resolveModule fixities m
-              st0 = st {csModule = cuModule cu, csDiags = []}
+              st0 = st {csModule = originMod, csDiags = []}
               (st1, ds) = checkModule st0 m'
            in if hasErrors ds
                 then Left ("assertType: expected type is ill-formed: " <> tyExpr)
-                else case Map.lookup (GName (cuModule cu) probeName) (csGlobals st1) of
+                else case Map.lookup (GName originMod probeName) (csGlobals st1) of
                   Just probe -> Right (st1, gdType probe)
                   Nothing -> Left "assertType: internal probe failure"
 
@@ -787,15 +824,19 @@ declKind = \case
 -- ── Tree walking ─────────────────────────────────────────────────────
 
 -- | Run a path: a @.kp@ file is a single-file inline test; a directory
--- containing @suite.ktest@ or @main.kp@ is one directory suite (§T.2);
--- any other directory recurses. Prints one result line per test.
+-- containing @suite.ktest@ or @main.kp@ is one directory suite (§T.2),
+-- as is a directory given directly as the argument that contains @.kp@
+-- files; any other directory recurses. Prints one result line per test.
 runTestPath :: FilePath -> IO [TestReport]
-runTestPath root = do
+runTestPath = runTestPathAt True
+
+runTestPathAt :: Bool -> FilePath -> IO [TestReport]
+runTestPathAt topLevel root = do
   isDir <- doesDirectoryExist root
   if not isDir
     then emitOne (runTestFile root)
     else do
-      suite <- isSuiteRoot root
+      suite <- isSuiteRoot topLevel root
       if suite
         then emitOne (runSuiteDir root)
         else do
@@ -804,7 +845,7 @@ runTestPath root = do
           dirs <- filterM doesDirectoryExist paths
           let files = [p | p <- paths, ".kp" `isSuffixOf` p, p `notElem` dirs]
           fileReps <- concat <$> mapM (emitOne . runTestFile) files
-          dirReps <- concat <$> mapM runTestPath dirs
+          dirReps <- concat <$> mapM (runTestPathAt False) dirs
           pure (fileReps ++ dirReps)
   where
     emitOne act = do
@@ -812,11 +853,17 @@ runTestPath root = do
       putStrLn (T.unpack (reportLine rep))
       pure [rep]
 
-isSuiteRoot :: FilePath -> IO Bool
-isSuiteRoot dir = do
+isSuiteRoot :: Bool -> FilePath -> IO Bool
+isSuiteRoot topLevel dir = do
   hasKtest <- doesFileExist (dir </> "suite.ktest")
   hasMain <- doesFileExist (dir </> "main.kp")
-  pure (hasKtest || hasMain)
+  direct <-
+    if topLevel && not (hasKtest || hasMain)
+      then do
+        entries <- listDirectory dir
+        pure (any (".kp" `isSuffixOf`) entries)
+      else pure False
+  pure (hasKtest || hasMain || direct)
 
 collectKp :: FilePath -> IO [FilePath]
 collectKp dir = do

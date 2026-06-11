@@ -21,8 +21,17 @@ if [ ! -d "$FIXTURES" ]; then
 fi
 
 echo "running kappa test over $FIXTURES ..." >&2
-# One process for the whole corpus: the embedded prelude is compiled once.
-cabal run -v0 kappa -- test "$FIXTURES" >"$RAW_LOG" 2>&1 || true
+BIN="$(cabal list-bin kappa 2>/dev/null)"
+if [ -z "$BIN" ]; then
+  echo "kappa binary not found; run 'cabal build' first" >&2
+  exit 2
+fi
+# One invocation per fixture directory: each is one §T.2 suite root
+# (multi-file fixtures compile all their .kp files together).
+: >"$RAW_LOG"
+for d in "$FIXTURES"/*/; do
+  "$BIN" test "${d%/}" >>"$RAW_LOG" 2>&1 || true
+done
 
 pass=$(grep -c '^PASS '          "$RAW_LOG" || true)
 fail=$(grep -c '^FAIL '          "$RAW_LOG" || true)

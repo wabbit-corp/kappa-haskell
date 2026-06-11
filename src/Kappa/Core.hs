@@ -104,7 +104,9 @@ data CorePat
   | CPLit !Literal
   | CPCtor !GName ![CorePat]
   | CPTuple ![CorePat]
-  | CPRecord ![(Text, CorePat)] !Bool -- ^ fields, has-rest
+  | CPRecord ![(Text, CorePat)] !(Maybe Text)
+  -- ^ fields, optional rest binder (binds the remaining fields; @Just ""@
+  -- discards them)
   | CPInject !Text !CorePat -- ^ variant member pattern
   | CPInjectRest ![Text] -- ^ residual-row pattern: excluded tags
   | CPOr ![CorePat]

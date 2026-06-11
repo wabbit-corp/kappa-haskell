@@ -23,7 +23,7 @@ module Kappa.Check
   ) where
 
 import Control.Monad.State.Strict
-import Data.List (elemIndex, foldl', nub, sortOn, (\\))
+import Data.List (elemIndex, foldl', nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
@@ -54,6 +54,8 @@ data CtorInfo = CtorInfo
 data TraitInfo = TraitInfo
   { tiParamCount :: !Int
   , tiMembers :: ![Text]
+  , tiDefaults :: !(Map Text LetDef)
+  -- ^ default member definitions, instantiated per instance (§14.2.3)
   }
 
 data InstanceEntry = InstanceEntry
@@ -900,8 +902,15 @@ check ctx expr expected0 = do
         Nothing -> CThunkE <$> check ctx expr a
     (ETuple es sp, VRecordT fs)
       | length es == length fs -> do
-          tms <- zipWithM (\e (_, t) -> check ctx e t) es fs
-          _ <- pure sp
+          -- expected-type-directed punning (§13.1.2): a parenthesized
+          -- list of bare names matching the record's field names is the
+          -- punned record literal
+          let punVars = [(nameText n, EVar n) | EVar n <- es]
+          tms <-
+            if length punVars == length es && sort (map fst punVars) == map fst fs
+              then forM fs $ \(fn, fty) ->
+                check ctx (fromMaybe (ETuple es sp) (lookup fn punVars)) fty
+              else zipWithM (\e (_, t) -> check ctx e t) es fs
           pure (CRecordV (zip (map fst fs) tms))
     _ -> do
       (tm, ty) <- infer ctx expr
@@ -1874,7 +1883,7 @@ elabPattern ctx0 pat0 ty0 = do
       CPAs n p -> n : corePatNames p
       CPCtor _ ps -> concatMap corePatNames ps
       CPTuple ps -> concatMap corePatNames ps
-      CPRecord fs _ -> concatMap (corePatNames . snd) fs
+      CPRecord fs mr -> concatMap (corePatNames . snd) fs ++ [nm | Just nm <- [mr], not (T.null nm)]
       CPInject _ p -> corePatNames p
       -- or-pattern alternatives bind the same names; count one side
       CPOr (p : _) -> corePatNames p
@@ -1911,7 +1920,14 @@ elabPattern ctx0 pat0 ty0 = do
           (ps', ctx') <-
             goList ctx [(fromMaybe (PVar n) mp, fromMaybe (VSort 0) (lookup (nameText n) fields)) | (_, n, mp) <- fs]
           let names = [nameText n | (_, n, _) <- fs]
-          pure (CPRecord (zip names ps') (isJust mrest), ctx')
+          case mrest of
+            Just (PatRestBind restN) -> do
+              -- ..rest binds the remaining fields as a record (§17.2.5)
+              let remaining = [(fn, ft) | (fn, ft) <- fields, fn `notElem` names]
+                  ctx'' = bindCtx (nameText restN) False (VRecordT remaining) ctx'
+              pure (CPRecord (zip names ps') (Just (nameText restN)), ctx'')
+            Just PatRestDiscard -> pure (CPRecord (zip names ps') (Just ""), ctx')
+            Nothing -> pure (CPRecord (zip names ps') Nothing, ctx')
         POr ps sp -> do
           rs <- mapM (\p -> go ctx p ty) ps
           let pats = map fst rs
@@ -2007,7 +2023,7 @@ elabPattern ctx0 pat0 ty0 = do
       CPAs _ p -> 1 + patBindersCount p
       CPCtor _ ps -> sum (map patBindersCount ps)
       CPTuple ps -> sum (map patBindersCount ps)
-      CPRecord fs _ -> sum (map (patBindersCount . snd) fs)
+      CPRecord fs mr -> sum (map (patBindersCount . snd) fs) + (case mr of Just nm | not (T.null nm) -> 1; _ -> 0)
       CPInject _ p -> patBindersCount p
       CPInjectRest _ -> 1
       CPOr ps -> case ps of
@@ -2449,7 +2465,8 @@ headerTrait (TraitDecl supers n params members) sp = do
   dictV <- evalIn emptyCtx dictTm
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
   addGlobal g (GlobalDef tyV (Just dictV) False)
-  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) [mn | (mn, _, _) <- ms]) (csTraits st)}
+  let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _) _ <- members]
+  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) [mn | (mn, _, _) <- ms] defaults) (csTraits st)}
   -- member projection globals: m : forall params. (@d : Tr params) -> τ
   forM_ ms $ \(mn, mtyTm, _mdef) -> do
     let dictTy =
@@ -2514,7 +2531,7 @@ patBindersC = \case
   CPLit _ -> 0
   CPCtor _ ps -> sum (map patBindersC ps)
   CPTuple ps -> sum (map patBindersC ps)
-  CPRecord fs _ -> sum (map (patBindersC . snd) fs)
+  CPRecord fs mr -> sum (map (patBindersC . snd) fs) + (case mr of Just nm | not (T.null nm) -> 1; _ -> 0)
   CPInject _ p -> patBindersC p
   CPInjectRest _ -> 1
   CPOr ps -> case ps of
@@ -2867,10 +2884,18 @@ elabInstance (InstanceDecl premises hd members) sp = do
             memberTyV <- memberSigInstance g mn argTms ctxP'
             tm <- checkMemberAgainst ctxP' memberTyV mbinders mResTy mbody msp
             pure (Just (mn, tm))
-          Nothing -> do
-            errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa.trait.member-missing")
-              ("instance does not define member '" <> mn <> "'")
-            pure Nothing
+          Nothing -> case Map.lookup mn (tiDefaults ti) of
+            -- the trait's default definition fills the member (§14.2.3)
+            -- the default's own annotation mentions trait parameters
+            -- and is superseded by the instantiated member type
+            Just (LetDef _ _ dbinders _ _ dbody) -> do
+              memberTyV <- memberSigInstance g mn argTms ctxP'
+              tm <- checkMemberAgainst ctxP' memberTyV dbinders Nothing dbody sp
+              pure (Just (mn, tm))
+            Nothing -> do
+              errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa.trait.member-missing")
+                ("instance does not define member '" <> mn <> "'")
+              pure Nothing
       flushPending
       let fields = sortOn fst (catMaybes dictFields)
           dictBody = CRecordV fields

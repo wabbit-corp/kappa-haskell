@@ -275,8 +275,13 @@ matchPat ctx pat v0 =
         (CPTuple ps, VRecordV fs)
           | length ps == length fs ->
               concatM [matchPat ctx p a | (p, (_, a)) <- zip ps fs]
-        (CPRecord pfs _, VRecordV fs) ->
-          concatM [maybe Nothing (matchPat ctx p) (lookup n fs) | (n, p) <- pfs]
+        (CPRecord pfs mrest, VRecordV fs) -> do
+          sub <- concatM [maybe Nothing (matchPat ctx p) (lookup n fs) | (n, p) <- pfs]
+          case mrest of
+            Just nm | not (T.null nm) ->
+              -- bind the remaining fields as a narrower record (§17.2.5)
+              Just (sub ++ [VRecordV [(n, x) | (n, x) <- fs, n `notElem` map fst pfs]])
+            _ -> Just sub
         (CPInject t p, VInject t' x) | t == t' -> matchPat ctx p x
         (CPInjectRest excl, VInject t _) | t `notElem` excl -> Just [v]
         (CPOr ps, _) -> firstJust [matchPat ctx p v | p <- ps]
