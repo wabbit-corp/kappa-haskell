@@ -1,0 +1,27 @@
+cabal-version:   3.8
+name:            kappa-haskell
+version:         0.1.0.0
+license:         MIT
+license-file:    LICENSE
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common warnings
+    ghc-options: -Wall
+
+library
+    import:           warnings
+    exposed-modules:  MyLib
+    build-depends:    base ^>=4.17.2.0
+    hs-source-dirs:   src
+    default-language: GHC2021
+
+executable kappa-haskell
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        base ^>=4.17.2.0,
+        kappa-haskell
+
+    hs-source-dirs:   app
+    default-language: GHC2021
