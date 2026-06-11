@@ -78,7 +78,9 @@ data CheckState = CheckState
   , csModuleAliases :: !(Map Text ModuleName)
   , csModuleExports :: !(Map ModuleName [Text])
   , csFresh :: !Int
-  , csPending :: ![(MetaId, Value, Span)] -- ^ postponed implicit goals
+  , csPending :: ![(MetaId, Value, Span, Ctx)]
+  -- ^ postponed implicit goals with the local context they were raised
+  -- in (premise dictionaries live there, §14.3.2)
   }
 
 initCheckState :: CheckState
@@ -384,23 +386,26 @@ resolveImplicit ctx sp goal = do
   case g of
     VSort _ -> freshMeta
     _ -> do
-      -- §16.3.3 step 1: the local implicit context always goes first.
-      mLoc <- localCandidate ctx g
       isTrait <- isTraitGoal g
+      isEq <- isEqGoal g
       flexed <- goalHasFlex g
-      case mLoc of
-        Just tm -> pure tm
-        Nothing
-          | isTrait && flexed -> do
-              -- postpone global search until explicit arguments solve
-              -- the head metavariables (§16.1.7.1 spine order)
-              m <- freshMeta
-              let mid = case m of
-                    CMeta i -> i
-                    _ -> error "freshMeta"
-              modify' $ \st -> st {csPending = (mid, g, sp) : csPending st}
-              pure m
-          | otherwise -> do
+      if (isTrait || isEq) && flexed
+        then do
+          -- postpone resolution until explicit arguments solve the head
+          -- metavariables (§16.1.7.1 spine order); committing to a local
+          -- candidate now could wrongly solve the metas
+          m <- freshMeta
+          let mid = case m of
+                CMeta i -> i
+                _ -> error "freshMeta"
+          modify' $ \st -> st {csPending = (mid, g, sp, ctx) : csPending st}
+          pure m
+        else do
+          -- §16.3.3 step 1: the local implicit context goes first.
+          mLoc <- localCandidate ctx g
+          case mLoc of
+            Just tm -> pure tm
+            Nothing -> do
               mInst <- instanceSearch ctx sp g
               case mInst of
                 Just tm -> pure tm
@@ -408,8 +413,7 @@ resolveImplicit ctx sp goal = do
                   mProp <- propProof g
                   case mProp of
                     Just tm -> pure tm
-                    Nothing -> do
-                      isEq <- isEqGoal g
+                    Nothing ->
                       if isTrait || isEq
                         then do
                           gT <- quoteIn ctx g
@@ -458,28 +462,86 @@ flushPending = do
   st <- get
   let pend = reverse (csPending st)
   put st {csPending = []}
-  forM_ pend $ \(mid, goal, sp) -> do
+  forM_ pend $ \(mid, goal, sp, ctx) -> do
     stNow <- get
     case Map.lookup mid (csMetas stNow) of
       Just (Just _) -> pure ()
       _ -> do
         g <- forceM goal
-        mLoc <- localCandidate emptyCtx g
+        mLoc <- localCandidate ctx g
         r <- case mLoc of
           Just tm -> pure (Just tm)
           Nothing -> do
-            mi <- instanceSearch emptyCtx sp g
+            mi <- instanceSearch ctx sp g
             case mi of
               Just tm -> pure (Just tm)
               Nothing -> propProof g
         case r of
           Just tm -> do
-            v <- evalIn emptyCtx tm
+            v <- evalIn ctx tm
             solveMeta mid v
           Nothing -> do
             ec <- ec_
             errAt sp "E_IMPLICIT_UNSOLVED" (Just "kappa.implicit.unsolved")
-              ("could not resolve implicit argument of type " <> renderTerm (quote ec 0 g))
+              ("could not resolve implicit argument of type " <> renderTerm (quote ec (ctxLen ctx) g))
+
+-- | Replace solved metavariables by their solutions, quoted at the
+-- correct binder depth. Run after 'flushPending' so terms stored as
+-- globals (and instance dictionaries) contain no live 'CMeta' whose
+-- solution mentions local rigids (premise dictionaries, §14.3.2).
+zonkTermM :: Int -> Term -> CheckM Term
+zonkTermM depth0 t0 = do
+  ec <- ec_
+  let goI :: Int -> [KItem] -> [KItem]
+      goI _ [] = []
+      goI d (k : ks) =
+        let (k', d') = goK d k
+         in k' : goI d' ks
+      goK d = \case
+        KBind q p t -> (KBind q p (go d t), d + patBindersC p)
+        KLet q p t -> (KLet q p (go d t), d + patBindersC p)
+        KLetQ p t mElse ->
+          ( KLetQ p (go d t) (fmap (\(rp, e) -> (rp, go (d + patBindersC rp) e)) mElse)
+          , d + patBindersC p
+          )
+        KExpr t -> (KExpr (go d t), d)
+        KVarItem n t -> (KVarItem n (go d t), d + 1)
+        KAssign r monadic t -> (KAssign (go d r) monadic (go d t), d)
+        KReturn l t -> (KReturn l (go d t), d)
+        k@KBreak {} -> (k, d)
+        k@KContinue {} -> (k, d)
+        KWhile l c b e -> (KWhile l (go d c) (goI d b) (fmap (goI d) e), d)
+        KFor l p s b e -> (KFor l p (go d s) (goI (d + patBindersC p) b) (fmap (goI d) e), d)
+        KIf alts e -> (KIf [(go d c, goI d b) | (c, b) <- alts] (fmap (goI d) e), d)
+        KDefer l t -> (KDefer l (go d t), d)
+        KUsing p a r -> (KUsing p (go d a) (go d r), d)
+      go :: Int -> Term -> Term
+      go d = \case
+        CMeta m -> case Map.lookup m (ecMetas ec) of
+          Just (Just v) -> quote ec d v
+          _ -> CMeta m
+        CVar i -> CVar i
+        CGlob g -> CGlob g
+        CLam ic q n b -> CLam ic q n (go (d + 1) b)
+        CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
+        CApp ic f a -> CApp ic (go d f) (go d a)
+        CSort s -> CSort s
+        CLit l -> CLit l
+        CCtor g as -> CCtor g (map (go d) as)
+        CMatch s alts ->
+          CMatch (go d s) [CaseAlt p (fmap (go (d + patBindersC p)) gd) (go (d + patBindersC p) b) | CaseAlt p gd b <- alts]
+        CRecordT fs -> CRecordT [(n, go d t) | (n, t) <- fs]
+        CRecordV fs -> CRecordV [(n, go d t) | (n, t) <- fs]
+        CProj e f -> CProj (go d e) f
+        CVariantT ms -> CVariantT (map (go d) ms)
+        CInject tg e -> CInject tg (go d e)
+        CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
+        CDo items -> CDo (goI d items)
+        CThunkE e -> CThunkE (go d e)
+        CLazyE e -> CLazyE (go d e)
+        CForceE e -> CForceE (go d e)
+        CIf a b c -> CIf (go d a) (go d b) (go d c)
+  pure (go depth0 t0)
 
 isTraitGoal :: Value -> CheckM Bool
 isTraitGoal v =
@@ -545,9 +607,13 @@ tryInstance depth ctx goalArgs ie
           if all isJust prems
             then do
               metaTms <- mapM (quoteIn ctx) =<< mapM (evalIn emptyCtx) metas
-              let dict =
-                    foldl' (\f a -> CApp Expl f a)
-                      (foldl' (\f a -> CApp Impl f a) (CGlob (ieDict ie)) metaTms)
+              -- the dictionary lambda binds only the head's type
+              -- variables and then the premise dictionaries; the metas
+              -- standing for premise slots are not applied
+              let nFv = ieTeleLen ie - length (iePremises ie)
+                  dict =
+                    foldl' (\f a -> CApp Impl f a)
+                      (foldl' (\f a -> CApp Impl f a) (CGlob (ieDict ie)) (take nFv metaTms))
                       (catMaybes prems)
               pure (Just dict)
             else put saved >> pure Nothing
@@ -802,6 +868,12 @@ check ctx expr expected0 = do
       (tm, ty) <- elabLet ctx binds body (Just expected)
       expectType ctx (exprSpan body) ty expected
       pure tm
+    -- expected-type-directed injection (§13.1.3) must see literals too
+    (_, VVariantT members)
+      | not (isVariant expr) -> do
+          (tm, ty) <- infer ctx expr
+          (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
+          injectInto ctx tm1 ty1 members expected (exprSpan expr)
     (EIntLit v msuf sp, _) -> do
       (tm, ty) <- elabIntLit ctx v msuf sp (Just expected)
       expectType ctx sp ty expected
@@ -822,11 +894,6 @@ check ctx expr expected0 = do
       case r of
         Just tm -> pure tm
         Nothing -> CThunkE <$> check ctx expr a
-    (_, VVariantT members)
-      | not (isVariant expr) -> do
-          (tm, ty) <- infer ctx expr
-          (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
-          injectInto ctx tm1 ty1 members expected (exprSpan expr)
     (ETuple es sp, VRecordT fs)
       | length es == length fs -> do
           tms <- zipWithM (\e (_, t) -> check ctx e t) es fs
@@ -910,7 +977,24 @@ inferT ctx e = case e of
   EApp f args -> do
     (fTm, fTy) <- inferT ctx f
     elabSpine ctx (exprSpan f) fTm fTy args
+  -- a parenthesized tuple in type position is a positional record type
+  -- (§13.1): (Integer, String) ≡ (_1 : Integer, _2 : String)
+  ETuple es _ -> do
+    fields <- forM (zip [1 :: Int ..] es) $ \(i, fe) -> do
+      (t, _) <- inferType ctx fe
+      pure ("_" <> T.pack (show i), t)
+    pure (CRecordT fields, VSort 0)
+  -- (x : T) in type position is a single-field record type (§13.1); the
+  -- parser cannot distinguish it from an ascription
+  EAscription (EVar n) tyE _
+    | isLowerName (nameText n) -> do
+        (t, _) <- inferType ctx tyE
+        pure (CRecordT [(nameText n, t)], VSort 0)
   _ -> infer ctx e
+  where
+    isLowerName t = case T.uncons t of
+      Just (c, _) -> c >= 'a' && c <= 'z'
+      Nothing -> False
 
 elabForall :: Ctx -> [Binder] -> Expr -> CheckM (Term, Value)
 elabForall ctx0 bs0 body = go ctx0 bs0
@@ -963,14 +1047,26 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
       errAt (exprSpan e) "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
         "an explicit implicit argument was supplied, but the callee has no implicit parameter here (§16.1.7.1)"
       pure (fTm, fTy)
-    (ArgExplicit e, _) -> do
-      fT <- quoteIn ctx fTy
-      report $
-        withNote ("callee type: " <> renderTerm fT) $
-          diag SevError StageElaborate "E_APPLICATION_NON_CALLABLE" (Just "kappa.application.non-callable")
-            (exprSpan e)
-            "this expression is not callable"
-      anyHole ctx
+    (ArgExplicit e, _)
+      -- a saturated constructor given extra arguments (§10.1.1)
+      | Just _ <- termHeadCtor fTm -> do
+          errAt (exprSpan e) "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.application.arity")
+            "too many arguments in constructor application"
+          anyHole ctx
+      | otherwise -> do
+          fT <- quoteIn ctx fTy
+          report $
+            withNote ("callee type: " <> renderTerm fT) $
+              diag SevError StageElaborate "E_APPLICATION_NON_CALLABLE" (Just "kappa.application.non-callable")
+                (exprSpan e)
+                "this expression is not callable"
+          anyHole ctx
+  where
+    termHeadCtor = \case
+      CApp _ f _ -> termHeadCtor f
+      CLam _ _ _ b -> termHeadCtor b
+      CCtor g _ -> Just g
+      _ -> Nothing
 
 -- named constructor application (§10.1.1): supplied fields + defaults in
 -- constructor order.
@@ -1161,6 +1257,18 @@ elabDot ctx e member = do
         VRecordT fs
           | Just fty <- lookup (nameText mname) fs ->
               pure (CProj tm1 (nameText mname), fty)
+          | otherwise -> do
+              -- a record receiver without the field: try method sugar,
+              -- otherwise report the missing field (§13.1.4)
+              mg <- lookupGlobalName (nameText mname)
+              case mg of
+                Just _ -> methodSugar tm1 t mname
+                Nothing -> do
+                  errAt (nameSpanOf member) "E_RECORD_PROJECTION_MISSING_FIELD"
+                    (Just "kappa.record.unknown-field")
+                    ("record has no field '" <> nameText mname
+                       <> "' (fields: " <> T.intercalate ", " (map fst fs) <> ")")
+                  anyHole ctx
         -- trait-dictionary member projection d.(==) (§14.2.1)
         VGlobN traitG spine -> do
           st <- get
@@ -1877,25 +1985,31 @@ elabTry ctx body excepts mfin sp = do
   resT <- freshMetaV ctx
   bodyTm <- check ctx body (ioType errT resT)
   errT' <- forceM errT
-  handlerTm <- do
-    -- \err -> match err cases
-    let nm = "__err"
-        ctx' = bindCtx nm False errT' ctx
-    alts <- forM excepts $ \(ExceptCase pat mguard hbody csp) -> do
-      (patC, ctx'', _) <- elabPattern ctx' pat errT'
-      gTm <- traverse (\g -> check ctx'' g (VGlobN (gPrel "Bool") [])) mguard
-      hTm <- check ctx'' hbody (ioType errT' resT)
-      _ <- pure csp
-      pure (CaseAlt patC gTm hTm)
-    checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
-    pure (CLam Expl QW nm (CMatch (CVar 0) alts))
-  let caught = CApp Expl (CApp Expl (CGlob (gPrel "catchIO")) bodyTm) handlerTm
+  -- handlers discharge the body's error type; the try expression's own
+  -- error type is whatever the handlers / finalizer may still raise
+  outErr <- if null excepts then pure errT' else freshMetaV ctx
+  caught <-
+    if null excepts
+      then pure bodyTm
+      else do
+        -- \err -> match err cases
+        let nm = "__err"
+            ctx' = bindCtx nm False errT' ctx
+        alts <- forM excepts $ \(ExceptCase pat mguard hbody csp) -> do
+          (patC, ctx'', _) <- elabPattern ctx' pat errT'
+          gTm <- traverse (\g -> check ctx'' g (VGlobN (gPrel "Bool") [])) mguard
+          hTm <- check ctx'' hbody (ioType outErr resT)
+          _ <- pure csp
+          pure (CaseAlt patC gTm hTm)
+        checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
+        let handlerTm = CLam Expl QW nm (CMatch (CVar 0) alts)
+        pure (CApp Expl (CApp Expl (CGlob (gPrel "catchIO")) bodyTm) handlerTm)
   final <- case mfin of
     Nothing -> pure caught
     Just finE -> do
-      finTm <- check ctx finE (ioType errT' (VGlobN (gPrel "Unit") []))
+      finTm <- check ctx finE (ioType outErr (VGlobN (gPrel "Unit") []))
       pure (CApp Expl (CApp Expl (CGlob (gPrel "finallyIO")) caught) finTm)
-  pure (final, ioType errT' resT)
+  pure (final, ioType outErr resT)
 
 -- do blocks (§18.2): the carrier is IO in this implementation.
 elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
@@ -2371,14 +2485,25 @@ bodyPass = \case
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 elabLetDecl _ (LetDef (Just n) Nothing binders mResTy mdec body) sp = do
+  -- resolve any goals postponed from signature elaboration first, so the
+  -- signature's value is canonical while checking the body
+  flushPending
   g <- ownName n
   st <- get
   msig <- pure (Map.lookup g (csGlobals st))
   case msig of
     Just gd | Nothing <- gdValue gd -> do
+      -- Pending goals raised inside the signature may have been solved
+      -- to the signature's own binder rigids; re-quote the type so the
+      -- solutions are baked in as proper de Bruijn variables.
+      sigTy <- do
+        ec <- ec_
+        evalIn emptyCtx (quote ec 0 (gdType gd))
+      addGlobal g gd {gdType = sigTy}
       -- signature first: check the definition against it (recursion OK)
-      tm <- checkAgainstSig (gdType gd) binders body sp
+      tm0 <- checkAgainstSig sigTy binders body sp
       flushPending
+      tm <- zonkTermM 0 tm0
       tmV <- evalIn emptyCtx tm
       let recursive = occursGlobal g tm
       reducible <-
@@ -2393,11 +2518,15 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy mdec body) sp = do
             pure okStructural
           else pure True
       _ <- pure mdec
-      addGlobal g gd {gdValue = Just tmV, gdReducible = reducible}
+      addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
     _ -> do
-      -- no preceding signature: non-recursive; infer
-      (tm, ty) <- elabFunction binders mResTy body sp
+      -- no preceding signature: pre-register the name so self-references
+      -- resolve and are reported as recursion-without-signature (§9.2)
+      placeholderTy <- freshMetaV emptyCtx
+      addGlobal g (GlobalDef placeholderTy Nothing False)
+      (tm0, ty) <- elabFunction binders mResTy body sp
       flushPending
+      tm <- zonkTermM 0 tm0
       when (occursGlobal g tm) $
         errAt sp "E_RECURSION_NO_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
           "recursive definitions require a preceding signature declaration (§15, §9.2)"
@@ -2622,6 +2751,7 @@ elabFunction binders mResTy body sp = do
 
 elabInstance :: InstanceDecl -> Span -> CheckM ()
 elabInstance (InstanceDecl premises hd members) sp = do
+  flushPending
   -- head must be Trait args...
   (traitG, argEs) <- splitHead hd
   st <- get
@@ -2639,6 +2769,19 @@ elabInstance (InstanceDecl premises hd members) sp = do
       premTms <- forM premises $ \p -> fst <$> inferType ctx0 p
       ctxP' <- bindPremises ctx0 premTms
       argTms <- mapM (\e -> fst <$> inferType ctxP' e) argEs
+      -- register the instance before checking members so member bodies
+      -- can use the instance being defined (recursive instances, §14.3)
+      dictName <- freshNameM ("__inst_" <> gnameText g <> "_")
+      stm0 <- get
+      let dictG = GName (csModule stm0) dictName
+      dictTy <- instanceDictTy g fvs premTms argTms
+      addGlobal dictG (GlobalDef dictTy Nothing False)
+      modify' $ \s ->
+        s
+          { csInstances =
+              InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
+                : csInstances s
+          }
       -- member definitions checked against member types
       dictFields <- forM (tiMembers ti) $ \mn -> do
         case findMember mn members of
@@ -2653,24 +2796,12 @@ elabInstance (InstanceDecl premises hd members) sp = do
       flushPending
       let fields = sortOn fst (catMaybes dictFields)
           dictBody = CRecordV fields
-          wrapped =
-            foldr (\_ acc -> CLam Impl QW "__p" acc) (foldr (\v acc -> CLam Impl Q0 v acc) dictBody (reverse fvs)) premises
           -- order: fvs outermost, then premises
-          wrapped' =
+          wrapped =
             foldr (\v acc -> CLam Impl Q0 v acc) (foldr (\_ acc -> CLam Impl QW "__p" acc) dictBody premises) fvs
-      _ <- pure wrapped
-      dictName <- freshNameM ("__inst_" <> gnameText g <> "_")
-      stm <- get
-      let dictG = GName (csModule stm) dictName
+      wrapped' <- zonkTermM 0 wrapped
       dictV <- evalIn emptyCtx wrapped'
-      dictTy <- instanceDictTy g fvs premTms argTms
       addGlobal dictG (GlobalDef dictTy (Just dictV) True)
-      modify' $ \s ->
-        s
-          { csInstances =
-              InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
-                : csInstances s
-          }
   where
     splitHead e = case e of
       EApp f args -> do
@@ -2742,8 +2873,14 @@ elabInstance (InstanceDecl premises hd members) sp = do
           check ctx body t
 
     instanceDictTy traitG fvs premTms argTms = do
+      -- premises were elaborated under the fv binders only; the k-th
+      -- premise domain sits under k earlier premise binders, so shift by
+      -- k. The head ('argTms') was elaborated under fvs + all premises
+      -- and is already correctly indexed.
       let dictHead = foldl (\f a -> CApp Expl f a) (CGlob traitG) argTms
-          withPrems = foldr (\p acc -> CPi Impl QW "__p" p (shiftTerm 1 0 acc)) dictHead premTms
+          withPrems = go (0 :: Int) premTms
+          go _ [] = dictHead
+          go k (p : ps) = CPi Impl QW "__p" (shiftTerm k 0 p) (go (k + 1) ps)
           nest [] = withPrems
           nest (v : vs) = CPi Impl Q0 v (CSort 0) (nest vs)
       evalIn emptyCtx (nest fvs)

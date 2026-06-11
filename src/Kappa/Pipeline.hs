@@ -13,7 +13,6 @@ import qualified Data.Text as T
 import Kappa.Check
 import Kappa.Core (GName (..), gnameText)
 import Kappa.Diagnostic
-import Kappa.Eval (Globals (..))
 import Kappa.Parser (parseModule)
 import Kappa.Prelude (builtinState, preludeSource)
 import Kappa.Resolve (defaultFixities, resolveModule)

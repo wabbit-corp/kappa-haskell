@@ -1637,7 +1637,12 @@ pParenExpr start = do
           rest <- sepBy pRecItem (token TokComma)
           void (optional (token TokComma))
           token TokRParen
-          ERecordLit (i1 : rest) <$> spanFrom start
+          -- punning needs at least one explicit `label = expr` item;
+          -- an all-bare list is a tuple (positional record), not a
+          -- punned record literal (§13.1.2)
+          if any (\(RecItem _ _ mv) -> isJust mv) (i1 : rest)
+            then ERecordLit (i1 : rest) <$> spanFrom start
+            else parseFail "all-bare parenthesized names are a tuple"
         TokRParen -> do
           void anyToken
           case i1 of
@@ -2055,7 +2060,8 @@ pMatchCase = do
       MatchImpossible <$> spanFrom start
     ordinaryCase start = do
       pat <- pPattern
-      g <- optionMaybe (pKeyword "if" *> pExpr)
+      -- guard: a chain expression; the case's '->' must stay visible
+      g <- optionMaybe (pKeyword "if" *> pChainExpr)
       token TokArrow
       body <- pSuiteOrExpr
       MatchCase pat g body <$> spanFrom start
@@ -2286,7 +2292,8 @@ pDoIf start = do
     branchSuite
   DoIf ((c, thenItems) : elifs) els <$> spanFrom start
   where
-    branchSuite = pDoSuite <|> ((: []) . DoExpr <$> pExpr)
+    -- inline branches are single do-items so break/continue/return work
+    branchSuite = pDoSuite <|> ((: []) <$> pDoItem)
 
 -- try / except / finally (§19.2) and try match (§19.3)
 pTryExpr :: P Expr
@@ -2329,7 +2336,7 @@ pExceptCase = do
   start <- currentSpan
   pKeyword "except"
   pat <- pPattern
-  g <- optionMaybe (pKeyword "if" *> pExpr)
+  g <- optionMaybe (pKeyword "if" *> pChainExpr)
   token TokArrow
   body <- pSuiteOrExpr
   ExceptCase pat g body <$> spanFrom start

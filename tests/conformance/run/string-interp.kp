@@ -1,0 +1,9 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2 plus 3 is 5; greeting=hi\n"
+
+main : UIO Unit
+let main = do
+    let total = addInt 2 3
+    let greeting = "hi"
+    printlnString f"2 plus 3 is ${total}; greeting=$greeting"

@@ -1,4 +1,3 @@
---! x-pending try/except/finally surface syntax not yet implemented
 --! mode run
 --! assertNoErrors
 --! assertStdout "caught: boom\nfinally\nafter\n"

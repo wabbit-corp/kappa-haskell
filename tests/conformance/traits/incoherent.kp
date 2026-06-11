@@ -1,0 +1,13 @@
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+
+trait Label (a : Type) =
+    label : a -> String
+
+instance Label Integer =
+    let label n = "first"
+
+instance Label Integer =
+    let label n = "second"
+
+use : String
+let use = label 5 --!! E_INSTANCE_INCOHERENT

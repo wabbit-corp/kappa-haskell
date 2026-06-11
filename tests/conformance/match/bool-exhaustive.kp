@@ -1,0 +1,14 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "yes\nno\n"
+
+answer : Bool -> String
+let answer b =
+    match b
+    case True -> "yes"
+    case False -> "no"
+
+main : UIO Unit
+let main = do
+    printlnString (answer True)
+    printlnString (answer False)

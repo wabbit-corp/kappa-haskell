@@ -13,8 +13,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Check
 import Kappa.Core
-import Kappa.Eval (GlobalDef (..), evalPurePrim)
-import Kappa.Source (ModuleName (..))
+import Kappa.Eval (evalPurePrim)
 
 prel :: Text -> GName
 prel = GName preludeModule

@@ -1,0 +1,6 @@
+--! assertDiagnostic error E_MATCH_NOT_EXHAUSTIVE
+
+answer : Bool -> String
+let answer b =
+    match b
+    case True -> "yes"

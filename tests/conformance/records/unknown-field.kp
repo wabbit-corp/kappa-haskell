@@ -1,8 +1,7 @@
---! x-pending E_UNKNOWN_FIELD on projections not yet emitted
---! assertDiagnostic error E_UNKNOWN_FIELD
+--! assertDiagnostic error E_RECORD_PROJECTION_MISSING_FIELD
 
 r : (x : Integer)
 let r = (x = 1)
 
 bad : Integer
-let bad = r.y --!! E_UNKNOWN_FIELD
+let bad = r.y --!! E_RECORD_PROJECTION_MISSING_FIELD

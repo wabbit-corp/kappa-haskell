@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "int 7\nstr direct\n"
+
+describe : (| Integer | String |) -> String
+let describe v =
+    match v
+    case (| n : Integer |) -> stringAppend "int " (showInt n)
+    case (| s : String |) -> stringAppend "str " s
+
+injected : (| Integer | String |)
+let injected = 7
+
+main : UIO Unit
+let main = do
+    printlnString (describe injected)
+    printlnString (describe "direct")

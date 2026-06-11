@@ -593,39 +593,40 @@ lexSourceTokens path src = goLineStart st0 [1] []
                   pure (Left (T.pack (reverse litAcc)) : Right (FragInterp name (spanAt (adv '$' st) st')) : more)
               | opener `T.isPrefixOf` content -> do
                   let exprStart = advN (T.length opener) st
-                  (payload, st') <- scanBraced exprStart
+                  (payload, restContent, st') <- scanBraced exprStart (T.drop (T.length opener) content)
                   frag <- mkInterp payload (spanAt exprStart st')
-                  more <- go (adv '}' st') [] (stIn (adv '}' st'))
+                  more <- go (adv '}' st') [] restContent
                   pure (Left (T.pack (reverse litAcc)) : Right frag : more)
               | otherwise -> go (adv c st) (c : litAcc) rest
 
-        -- Scan to the matching '}' at nesting level 0 starting after the
-        -- opener; returns payload text and the state at the '}'.
-        scanBraced st = goB st (0 :: Int) []
+        -- Scan the string CONTENT to the matching '}' at nesting level
+        -- 0 starting after the opener; returns payload text, the content
+        -- remaining after the '}', and the state at the '}' (for spans).
+        scanBraced st0' txt0 = goB st0' txt0 (0 :: Int) []
           where
-            goB cur depth chs = case peek cur of
+            goB cur txt depth chs = case T.uncons txt of
               Nothing ->
                 lexErr sp "E_UNTERMINATED_INTERPOLATION" Nothing
                   "unterminated interpolation in prefixed string (Spec §6.3.4)"
-              Just '}'
-                | depth == 0 -> pure (T.pack (reverse chs), cur)
-                | otherwise -> goB (adv '}' cur) (depth - 1) ('}' : chs)
-              Just ch
-                | ch `elem` ("([{" :: String) -> goB (adv ch cur) (depth + 1) (ch : chs)
-                | ch `elem` (")]" :: String) -> goB (adv ch cur) (depth - 1) (ch : chs)
+              Just ('}', restT)
+                | depth == 0 -> pure (T.pack (reverse chs), restT, cur)
+                | otherwise -> goB (adv '}' cur) restT (depth - 1) ('}' : chs)
+              Just (ch, restT)
+                | ch `elem` ("([{" :: String) -> goB (adv ch cur) restT (depth + 1) (ch : chs)
+                | ch `elem` (")]" :: String) -> goB (adv ch cur) restT (depth - 1) (ch : chs)
                 | ch == '"' -> do
-                    (lit, cur') <- skipStringLit (adv ch cur)
-                    goB cur' depth (reverse ('"' : lit ++ "\"") ++ chs)
-                | otherwise -> goB (adv ch cur) depth (ch : chs)
+                    (lit, restT', cur') <- skipStringLit (adv ch cur) restT
+                    goB cur' restT' depth (reverse ('"' : lit ++ "\"") ++ chs)
+                | otherwise -> goB (adv ch cur) restT depth (ch : chs)
 
-            skipStringLit cur = goS cur []
+            skipStringLit cur txt = goS cur txt []
               where
-                goS c2 chs2 = case peek c2 of
-                  Just '"' -> pure (reverse chs2, adv '"' c2)
-                  Just '\\'
-                    | Just nxt <- peekAt 1 c2 ->
-                        goS (adv nxt (adv '\\' c2)) (nxt : '\\' : chs2)
-                  Just ch2 -> goS (adv ch2 c2) (ch2 : chs2)
+                goS c2 t2 chs2 = case T.uncons t2 of
+                  Just ('"', r2) -> pure (reverse chs2, r2, adv '"' c2)
+                  Just ('\\', r2)
+                    | Just (nxt, r3) <- T.uncons r2 ->
+                        goS (adv nxt (adv '\\' c2)) r3 (nxt : '\\' : chs2)
+                  Just (ch2, r2) -> goS (adv ch2 c2) r2 (ch2 : chs2)
                   Nothing ->
                     lexErr sp "E_UNTERMINATED_INTERPOLATION" Nothing
                       "unterminated string inside interpolation"

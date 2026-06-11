@@ -1,0 +1,8 @@
+--! assertDiagnostic error E_UNKNOWN_FIELD
+--! assertErrorCount 1
+
+base : (x : Integer, y : Integer)
+let base = (x = 1, y = 2)
+
+bad : (x : Integer, y : Integer)
+let bad = base.{ z = 3 } --!! E_UNKNOWN_FIELD

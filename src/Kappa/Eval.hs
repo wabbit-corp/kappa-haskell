@@ -59,7 +59,8 @@ lookupGlobal ctx g = Map.lookup g (globalsMap (ecGlobals ctx))
 eval :: EvalCtx -> Env -> Term -> Value
 eval ctx env = \case
   CVar i -> env !! i
-  CGlob g -> VGlobN g []
+  -- primitives quoted by 'quote' round-trip back to 'VPrim'
+  CGlob g@(GName m p) -> if m == primModule then VPrim p [] else VGlobN g []
   CLam ic q n body -> VLam ic q n (Closure env body)
   CPi ic q n a b -> VPi ic q n (eval ctx env a) (Closure env b)
   CApp ic f a -> vapp ctx (eval ctx env f) ic (eval ctx env a)
@@ -102,13 +103,26 @@ vapp ctx fv ic av = case fv of
     | ic == Impl -> VCtor g args
     | otherwise -> VCtor g (args ++ [av])
   VPrim p args
+    -- an implicit argument to a stuck application must not be erased;
+    -- nest another marker so 'force' can replay it faithfully
+    | isStuckMarker p, ic == Impl -> VPrim (stuckAppMarker Impl) [fv, av]
     | ic == Impl -> VPrim p args
     | otherwise ->
         let args' = args ++ [av]
          in case evalPurePrim p (map (force ctx) args') of
               Just v -> v
               Nothing -> VPrim p args'
-  _ -> VPrim "__stuck_app" [fv, av]
+  -- stuck application: keep the icit so 'force' can re-apply once the
+  -- head becomes canonical (e.g. a solved meta's dictionary projection).
+  _ -> VPrim (stuckAppMarker ic) [fv, av]
+
+stuckAppMarker :: Icit -> Text
+stuckAppMarker = \case
+  Expl -> "__stuck_app"
+  Impl -> "__stuck_appI"
+
+isStuckMarker :: Text -> Bool
+isStuckMarker p = p == "__stuck_app" || p == "__stuck_appI"
 
 evalApp :: EvalCtx -> Value -> [(Icit, Value)] -> Value
 evalApp ctx = foldl (\f (ic, a) -> vapp ctx f ic a)
@@ -126,7 +140,10 @@ vforce ctx v = case force ctx v of
   where
     runSusp (Closure env body) = eval ctx env body
 
--- | Unfold solved metas and (reducible) global heads at the value root.
+-- | Unfold solved metas and (reducible) global heads at the value root,
+-- and re-reduce values that got stuck on a then-unsolved metavariable
+-- (projections, applications, ifs and matches re-fire once their head
+-- becomes canonical).
 force :: EvalCtx -> Value -> Value
 force ctx = go (1000 :: Int)
   where
@@ -140,20 +157,58 @@ force ctx = go (1000 :: Int)
         , Just body <- gdValue gd
         , gdReducible gd || isPrimRoot body ->
             go (fuel - 1) (evalApp ctx body sp)
+      -- a stuck application: explicit over-applications append to the
+      -- marker's argument list, so replay the head against all of them
+      VPrim p (f : a : rest)
+        | Just ic <- stuckAppIcit p
+        , f' <- go (fuel - 1) f
+        , reapplicable f' ->
+            go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' ic a) rest)
       VPrim p sp
         | Just v' <- evalPurePrim p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
+      VProjN inner fld
+        | VRecordV fs <- go (fuel - 1) inner
+        , Just x <- lookup fld fs ->
+            go (fuel - 1) x
+      VIfN c t f -> case go (fuel - 1) c of
+        VCtor (GName _ "True") [] -> go (fuel - 1) (closRun t)
+        VCtor (GName _ "False") [] -> go (fuel - 1) (closRun f)
+        _ -> v
+      VMatchN scrut alts env
+        | Just v' <- tryReduceMatch ctx scrut alts env ->
+            go (fuel - 1) v'
       _ -> v
       where
         isPrimRoot = \case
           VPrim _ [] -> True
           _ -> False
+        stuckAppIcit = \case
+          "__stuck_app" -> Just Expl
+          "__stuck_appI" -> Just Impl
+          _ -> Nothing
+        -- shapes 'vapp' can make progress on (avoids rebuilding the same
+        -- stuck application forever)
+        reapplicable = \case
+          VLam {} -> True
+          VRigid {} -> True
+          VFlex {} -> True
+          VGlobN {} -> True
+          VCtor {} -> True
+          VPrim p _ | p /= "__stuck_app" && p /= "__stuck_appI" -> True
+          _ -> False
+        closRun (Closure env body) = eval ctx env body
 
 -- ι-reduction of match when the scrutinee is canonical.
 reduceMatch :: EvalCtx -> Value -> [CaseAlt] -> Env -> Value
 reduceMatch ctx scrut alts env =
-  case tryAlts alts of
+  case tryReduceMatch ctx scrut alts env of
     Just v -> v
     Nothing -> VMatchN scrut alts env
+
+-- | 'Just' iff some alternative definitely fires (used by 'force' to
+-- re-reduce matches stuck on metavariables).
+tryReduceMatch :: EvalCtx -> Value -> [CaseAlt] -> Env -> Maybe Value
+tryReduceMatch ctx scrut alts env = tryAlts alts
   where
     scrut' = force ctx scrut
     tryAlts [] = Nothing
@@ -225,8 +280,41 @@ matchPat ctx pat v0 =
 
 -- ── Quotation ────────────────────────────────────────────────────────
 
+-- | Quotation-time forcing: resolve solved metavariables and replay
+-- applications stuck on them, but do NOT δ-unfold globals. Quoting must
+-- terminate on recursive definitions and produce small, re-evaluable
+-- terms (zonking depends on this; unfolding a recursive dictionary here
+-- would diverge).
+forceQ :: EvalCtx -> Value -> Value
+forceQ ctx = go (1000 :: Int)
+  where
+    go :: Int -> Value -> Value
+    go 0 v = v
+    go fuel v = case v of
+      VFlex m sp
+        | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->
+            go (fuel - 1) (evalApp ctx sol sp)
+      VPrim p (f : a : rest)
+        | p == "__stuck_app" || p == "__stuck_appI"
+        , f' <- go (fuel - 1) f
+        , progressed f' ->
+            go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' (markerIcit p) a) rest)
+      VPrim p sp
+        | Just v' <- evalPurePrim p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
+      _ -> v
+      where
+        markerIcit p = if p == "__stuck_appI" then Impl else Expl
+        progressed = \case
+          VLam {} -> True
+          VRigid {} -> True
+          VFlex {} -> True
+          VGlobN {} -> True
+          VCtor {} -> True
+          VPrim p _ | p /= "__stuck_app" && p /= "__stuck_appI" -> True
+          _ -> False
+
 quote :: EvalCtx -> Int -> Value -> Term
-quote ctx lvl v = case force ctx v of
+quote ctx lvl v = case forceQ ctx v of
   VRigid l sp -> quoteSpine (CVar (lvl - 1 - l)) sp
   VFlex m sp -> quoteSpine (CMeta m) sp
   VGlobN g sp -> quoteSpine (CGlob g) sp
@@ -250,14 +338,19 @@ quote ctx lvl v = case force ctx v of
   VThunkV (Closure env body) -> CThunkE (quoteUnder env body)
   VLazyV (Closure env body) -> CLazyE (quoteUnder env body)
   VIfN c t f ->
+    -- branch closures bind nothing: run them in their own env
     CIf
       (quote ctx lvl c)
-      (quote ctx lvl (closApply ctx t (VRecordV [])))
-      (quote ctx lvl (closApply ctx f (VRecordV [])))
+      (quote ctx lvl (closRun t))
+      (quote ctx lvl (closRun f))
   VPrim p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
+  -- runtime-only values; never legitimately quoted, render opaquely
+  VRef _ -> CGlob (GName primModule "__ref")
+  VIOAction p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
   where
     quoteSpine = foldl (\f (ic, a) -> CApp ic f (quote ctx lvl a))
     quoteAlt _ alt = alt
+    closRun (Closure env body) = eval ctx env body
     quoteUnder env body
       | null env = body
       | otherwise = body -- conservative; suspensions compare by closure body
@@ -308,11 +401,15 @@ convertible ctx = go (200 :: Int)
       (VInject t1 x1, VInject t2 x2) -> t1 == t2 && go (fuel - 1) lvl x1 x2
       (VProjN e1 f1, VProjN e2 f2) -> f1 == f2 && go (fuel - 1) lvl e1 e2
       (VIfN c1 t1 f1, VIfN c2 t2 f2) ->
-        go (fuel - 1) lvl c1 c2 && goClos fuel lvl t1 t2 && goClos fuel lvl f1 f2
+        -- if-branch closures bind nothing
+        go (fuel - 1) lvl c1 c2
+          && go (fuel - 1) lvl (closRun t1) (closRun t2)
+          && go (fuel - 1) lvl (closRun f1) (closRun f2)
       (VPrim p1 a1, VPrim p2 a2) ->
         p1 == p2 && length a1 == length a2 && and (zipWith (go (fuel - 1) lvl) a1 a2)
       _ -> False
       where
+        closRun (Closure env body) = eval ctx env body
         goClos fl l c1 c2 =
           let x = VRigid l []
            in go (fl - 1) (l + 1) (closApply ctx c1 x) (closApply ctx c2 x)
