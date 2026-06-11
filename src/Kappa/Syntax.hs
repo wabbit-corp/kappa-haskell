@@ -1,0 +1,624 @@
+-- | Surface abstract syntax (Spec Part II–IV).
+--
+-- Kappa is dependently typed, so the surface grammar of types and terms is
+-- unified into one 'Expr' family; the elaborator interprets expressions in
+-- type position. Operator applications are kept as flat 'EOpChain's at
+-- parse time and re-associated during resolution, because fixity is
+-- block-scoped and import-sensitive (§5.5.2) and therefore not known to a
+-- single-pass parser.
+module Kappa.Syntax
+  ( Name (..)
+  , ModPath (..)
+  , modPathName
+  , Quantity (..)
+  , BorrowMark (..)
+  , BinderPrefix (..)
+  , emptyPrefix
+  , Suspension (..)
+  , Receiver (..)
+  , Binder (..)
+  , simpleBinder
+  , Arg (..)
+  , OpElem (..)
+  , DotMember (..)
+  , RecItem (..)
+  , RecTypeField (..)
+  , PatchItem (..)
+  , PatchValue (..)
+  , VariantArm (..)
+  , Expr (..)
+  , InterpPart (..)
+  , CompKind (..)
+  , ProjBody (..)
+  , exprSpan
+  , LetBind (..)
+  , DoItem (..)
+  , MatchCase (..)
+  , HandlerCase (..)
+  , ExceptCase (..)
+  , CompClause (..)
+  , CompYield (..)
+  , OnConflict (..)
+  , Pattern (..)
+  , patternSpan
+  , PatRest (..)
+  , Lit (..)
+  , CtorRef (..)
+  , Decl (..)
+  , Visibility (..)
+  , DeclMods (..)
+  , noMods
+  , LetDef (..)
+  , Decreases (..)
+  , DataDecl (..)
+  , CtorDecl (..)
+  , TraitDecl (..)
+  , TraitMember (..)
+  , InstanceDecl (..)
+  , EffectDecl (..)
+  , EffectOp (..)
+  , FixityDecl (..)
+  , FixityKind (..)
+  , ImportSpec (..)
+  , ModuleRef (..)
+  , ImportItem (..)
+  , KindSelector (..)
+  , ExceptItem (..)
+  , ExpectForm (..)
+  , Module (..)
+  ) where
+
+import Data.Text (Text)
+import Kappa.Source (Span (..))
+import Kappa.Token (QuotedLit, StringLit)
+
+-- | An identifier occurrence with its source span.
+data Name = Name
+  { nameText :: !Text
+  , nameSpan :: !Span
+  }
+  deriving stock (Eq, Show)
+
+newtype ModPath = ModPath [Name]
+  deriving stock (Eq, Show)
+
+modPathName :: ModPath -> [Text]
+modPathName (ModPath ns) = map nameText ns
+
+-- | Surface quantities (§12.1.1). @QTerm@ is a quantity expression
+-- (a variable of classifier @Quantity@).
+data Quantity
+  = QZero
+  | QOne
+  | QOmega
+  | QAtMostOne -- ^ @<=1@
+  | QAtLeastOne -- ^ @>=1@
+  | QTerm !Name
+  deriving stock (Eq, Show)
+
+-- | @&@ or @&[region]@.
+newtype BorrowMark = BorrowMark (Maybe Name)
+  deriving stock (Eq, Show)
+
+data BinderPrefix = BinderPrefix
+  { bpQuantity :: !(Maybe Quantity)
+  , bpBorrow :: !(Maybe BorrowMark)
+  }
+  deriving stock (Eq, Show)
+
+emptyPrefix :: BinderPrefix
+emptyPrefix = BinderPrefix Nothing Nothing
+
+data Suspension = SuspThunk | SuspLazy
+  deriving stock (Eq, Show)
+
+-- | Receiver marking on binders: @(this : T)@ / @(this x : T)@ (§12.1.1).
+data Receiver
+  = NoReceiver
+  | ReceiverSelf
+  | ReceiverNamed !Name
+  deriving stock (Eq, Show)
+
+-- | A unified binder, used by lambdas, named-function parameters,
+-- constructor parameters, Pi types, and trait\/data headers.
+data Binder = Binder
+  { bImplicit :: !Bool
+  , bPrefix :: !BinderPrefix
+  , bSusp :: !(Maybe Suspension)
+  , bReceiver :: !Receiver
+  , bInout :: !Bool
+  , bName :: !(Maybe Name)
+  -- ^ 'Nothing' for @_@ and the unit binder @()@.
+  , bUnitBinder :: !Bool
+  , bType :: !(Maybe Expr)
+  , bDefault :: !(Maybe Expr)
+  -- ^ Constructor parameter default (§10.1).
+  , bSpan :: !Span
+  }
+  deriving stock (Show)
+
+simpleBinder :: Name -> Binder
+simpleBinder n =
+  Binder False emptyPrefix Nothing NoReceiver False (Just n) False Nothing Nothing (nameSpan n)
+
+-- | One argument of an application spine (§16.1.7).
+data Arg
+  = ArgExplicit !Expr
+  | ArgImplicit !Expr -- ^ @\@e@
+  | ArgNamedBlock ![(Name, Maybe Expr)] !Span -- ^ @f { x = 1, y }@
+  | ArgInout !Expr !Span -- ^ @~place@ (§18.9.3)
+  deriving stock (Show)
+
+-- | Flat operator-chain element; re-associated by the resolver.
+data OpElem
+  = ChainOperand !Expr
+  | ChainOp !Name
+  deriving stock (Show)
+
+-- | The member position of a dotted chain step.
+data DotMember
+  = DotName !Name
+  | DotOperator !Name -- ^ @d.(==)@
+  deriving stock (Show)
+
+-- | Record-literal item: @x = e@, punning @x@, or implicit @\@ok = e@.
+data RecItem = RecItem
+  { riImplicit :: !Bool
+  , riName :: !Name
+  , riValue :: !(Maybe Expr)
+  }
+  deriving stock (Show)
+
+-- | Record-type field (§13.2.1).
+data RecTypeField = RecTypeField
+  { rtfOpaque :: !Bool
+  , rtfImplicit :: !Bool
+  , rtfPrefix :: !BinderPrefix
+  , rtfSusp :: !(Maybe Suspension)
+  , rtfName :: !Name
+  , rtfType :: !Expr
+  }
+  deriving stock (Show)
+
+-- | Record-patch item (§13.2.5–§13.2.6).
+data PatchItem
+  = PatchUpdate ![(Bool, Name)] !PatchValue -- ^ path of (implicit?, seg) with @=@
+  | PatchExtend !Name !Expr -- ^ @l := e@
+  | PatchSection !Expr !Expr -- ^ @(.proj args) = e@
+  deriving stock (Show)
+
+newtype PatchValue = PatchValue Expr
+  deriving stock (Show)
+
+-- | One arm of a variant form @(| ... |)@: payload with optional
+-- ascription. Interpretation (type vs injection) is position-dependent.
+data VariantArm = VariantArm
+  { vaExpr :: !Expr
+  , vaType :: !(Maybe Expr)
+  }
+  deriving stock (Show)
+
+data Expr
+  = EVar !Name
+  | EHole !(Maybe Name) !Span -- ^ @_@ (expression position) or @?name@
+  | EIntLit !Integer !(Maybe Name) !Span
+  | EFloatLit !Double !(Maybe Name) !Span
+  | EStringLit !StringLit ![InterpPart] !Span
+  | EQuotedLit !QuotedLit !Span
+  | EUnit !Span
+  | ETuple ![Expr] !Span
+  | ERecordLit ![RecItem] !Span
+  | ERecordType ![RecTypeField] !(Maybe Expr) !Span
+  | EApp !Expr ![Arg]
+  | EDot !Expr !DotMember
+  | EQDot !Expr !DotMember
+  | ERecordPatch !Expr ![PatchItem] !Span
+  | EReceiverSection ![DotMember] ![Arg] !Span -- ^ @(.f args)@
+  | ESectionLeft !Expr !Name !Span -- ^ @(e op)@
+  | ESectionRight !Name !Expr !Span -- ^ @(op e)@
+  | EOpRef !(Maybe FixityKind) !Name !Span -- ^ @(op)@, @(infix -)@, @(prefix -)@
+  | EOpChain ![OpElem]
+  -- ^ Alternating operands\/operators, re-associated at resolution.
+  | ELambda !(Maybe Name) ![Binder] !Expr !Span
+  | ELet ![LetBind] !Expr !Span -- ^ @let ... in@
+  | EBlock ![Decl] !(Maybe Expr) !Span -- ^ pure @block@ (§9.3.1)
+  | EDo !(Maybe Name) ![DoItem] !Span
+  | EIf ![(Expr, Expr)] !(Maybe Expr) !Span
+  | EMatch !Expr ![MatchCase] !Span
+  | ETry !Expr ![ExceptCase] !(Maybe Expr) !Span
+  | ETryMatch !Expr ![MatchCase] ![ExceptCase] !(Maybe Expr) !Span
+  | EHandle !Bool !Expr !Expr ![HandlerCase] !Span -- ^ deep? label scrutinee cases
+  | EIs !Expr !CtorRef
+  | EThunk !Expr !Span
+  | ELazy !Expr !Span
+  | EForce !Expr !Span
+  | ESeal !Expr !Expr !Span
+  | EOpenExists !Expr ![Name] !Pattern !Expr !Span
+  | ESealExists ![(Name, Expr)] !Expr !Expr !Span
+  | EListLit ![Expr] !Span
+  | ESetLit ![Expr] !Span
+  | EMapLit ![(Expr, Expr)] !Span
+  | EComprehension !CompKind ![CompClause] !CompYield !Span
+  | EArrow !Binder !Expr -- ^ Pi: @(q x : A) -> B@ or @A -> B@
+  | EForall ![Binder] !Expr !Span
+  | EExists ![Binder] !Expr !Span
+  | ETraitArrow !Expr !Expr -- ^ @C => T@
+  | EEffRow ![(Name, Expr)] !(Maybe Expr) !Span
+  | EVariant ![VariantArm] !(Maybe Expr) !Span
+  | EOptionSugar !Expr !Span -- ^ @T?@
+  | EAscription !Expr !Expr !Span -- ^ @(e : T)@
+  | ECaptures !Expr ![Name] !Span
+  | EBang !Expr !Span -- ^ @!e@ monadic splice
+  | EQuote !Expr !Span -- ^ @'{ e }@
+  | ESplice !Expr !Span -- ^ @$( e )@
+  | EImpossible !Span
+  | EKindQualified !KindSelector !Name !Span -- ^ @type T@, @trait C@, ... (§7.1.1)
+  | EModuleSig !Name !Span -- ^ @moduleSig M@ (§7.5)
+  deriving stock (Show)
+
+-- | A parsed interpolation: index into the string fragments and the
+-- parsed payload expression.
+data InterpPart = InterpPart
+  { ipIndex :: !Int
+  , ipExpr :: !Expr
+  }
+  deriving stock (Show)
+
+data CompKind = CompList | CompSet | CompMap !(Maybe OnConflict) | CompCarrier !Expr
+  deriving stock (Show)
+
+data CompClause
+  = CFor !Bool !Bool !Pattern !Expr !Span
+  -- ^ refutable? borrowedItems? pat source; @for x in &e@ is borrowed source
+  | CLet !Bool !Pattern !(Maybe Expr) !Expr !Span -- ^ refutable? pat type rhs
+  | CIf !Expr
+  | COrderBy ![(Bool, Expr)] !Span -- ^ (descending?, key)
+  | CSkip !Expr !Span
+  | CTake !Expr !Span
+  | CDistinct !(Maybe Expr) !Span
+  | CGroupBy !Expr ![(Name, Expr, Maybe Expr)] !Name !Span -- ^ key, aggregates (name, expr, using), into
+  | CJoin !Bool !Pattern !Expr !Expr !(Maybe Name) !Span -- ^ left? pat source on into
+  deriving stock (Show)
+
+data CompYield
+  = YieldExpr !Expr
+  | YieldPair !Expr !Expr -- ^ map comprehension @yield k : v@
+  deriving stock (Show)
+
+data OnConflict
+  = KeepLast
+  | KeepFirst
+  | CombineUsing !Expr
+  | CombineWith !Expr
+  deriving stock (Show)
+
+data LetBind = LetBind
+  { lbImplicit :: !Bool -- ^ @(\@q x : T) = e@ implicit local (§9.3)
+  , lbPrefix :: !BinderPrefix
+  , lbPattern :: !Pattern
+  , lbType :: !(Maybe Expr)
+  , lbExpr :: !Expr
+  , lbSpan :: !Span
+  }
+  deriving stock (Show)
+
+data DoItem
+  = DoBind !LetBind -- ^ @let pat <- e@ (lbExpr is the action)
+  | DoLet !LetBind -- ^ @let pat = e@
+  | DoLetQ !Pattern !Expr !(Maybe (Pattern, Expr)) !Span -- ^ @let? p = e [else rp -> fe]@
+  | DoVar !Name !Expr !Span -- ^ @var x = e@
+  | DoAssign !Name !Bool !Expr !Span -- ^ @x = e@ \/ @x <- e@ (monadic?)
+  | DoExpr !Expr
+  | DoUsing !Pattern !Expr !Span
+  | DoDefer !(Maybe Name) !Expr !Span -- ^ @defer[\@label] e@
+  | DoReturn !(Maybe Name) !(Maybe Expr) !Span
+  | DoBreak !(Maybe Name) !Span
+  | DoContinue !(Maybe Name) !Span
+  | DoWhile !(Maybe Name) !Expr ![DoItem] !(Maybe [DoItem]) !Span -- ^ label cond body else
+  | DoFor !(Maybe Name) !Pattern !Expr ![DoItem] !(Maybe [DoItem]) !Span
+  | DoIf ![(Expr, [DoItem])] !(Maybe [DoItem]) !Span -- ^ statement-if with suites
+  | DoDecl !Decl -- ^ block-scope declaration (§18.2, §9.3.1)
+  deriving stock (Show)
+
+data MatchCase
+  = MatchCase !Pattern !(Maybe Expr) !Expr !Span -- ^ pat guard body
+  | MatchImpossible !Span -- ^ @case impossible@
+  deriving stock (Show)
+
+data HandlerCase
+  = HandlerReturn !Pattern !Expr !Span
+  | HandlerOp !Name ![Pattern] !Name !Expr !Span -- ^ op, arg pats, k, body
+  deriving stock (Show)
+
+data ExceptCase = ExceptCase !Pattern !(Maybe Expr) !Expr !Span
+  deriving stock (Show)
+
+data Pattern
+  = PWild !Span
+  | PVar !Name
+  | PLit !Lit !Span
+  | PAs !Name !Pattern
+  | PCtor !CtorRef ![Pattern] !Span
+  | PCtorNamed !CtorRef ![(Name, Maybe Pattern)] !Span
+  | PActive !CtorRef ![Expr] !Pattern !Span -- ^ active pattern: head, args, view pattern
+  | PTuple ![Pattern] !Span
+  | PUnit !Span
+  | PRecord ![(Bool, Name, Maybe Pattern)] !(Maybe PatRest) !Span
+  | PTyped !Pattern !Expr !Span
+  | POr ![Pattern] !Span
+  | POpChain !Pattern ![(Name, Pattern)] !Span -- ^ infix ctor chains, e.g. @x :: xs@
+  | PVariant !(Maybe Name) !(Maybe Expr) !Bool !(Maybe Name) !Span
+  -- ^ @(| x : T |)@ \/ @(| x |)@ \/ @(| _ : T |)@ \/ @(| ..rest |)@:
+  -- binder, type, isWild, restBinder
+  deriving stock (Show)
+
+data PatRest = PatRestDiscard | PatRestBind !Name
+  deriving stock (Show)
+
+data Lit
+  = LInt !Integer !(Maybe Text)
+  | LFloat !Double !(Maybe Text)
+  | LString !Text
+  | LScalar !Char
+  deriving stock (Eq, Show)
+
+-- | A constructor reference: bare @C@ or type-scoped @T.C@.
+data CtorRef = CtorRef
+  { crQualifier :: !(Maybe Name)
+  , crName :: !Name
+  }
+  deriving stock (Show)
+
+data Visibility = VisDefault | VisPublic | VisPrivate
+  deriving stock (Eq, Show)
+
+data DeclMods = DeclMods
+  { dmVisibility :: !Visibility
+  , dmOpaque :: !Bool
+  , dmScoped :: !Bool
+  }
+  deriving stock (Eq, Show)
+
+noMods :: DeclMods
+noMods = DeclMods VisDefault False False
+
+data Decl
+  = DSig !DeclMods !Name !Expr !Span
+  | DLet !DeclMods !LetDef !Span
+  | DData !DeclMods !DataDecl !Span
+  | DTypeAlias !DeclMods !Name ![Binder] !(Maybe Expr) !(Maybe Expr) !Span
+  -- ^ name params kind rhs
+  | DTrait !DeclMods !TraitDecl !Span
+  | DInstance !InstanceDecl !Span
+  | DDerive !Expr !Span -- ^ @derive Eq Foo@: applied trait expression
+  | DEffect !DeclMods !EffectDecl !Span
+  | DFixity !FixityDecl !Span
+  | DImport ![ImportSpec] !Span
+  | DExport ![ImportSpec] !Span
+  | DExpect !DeclMods !ExpectForm !Span
+  | DPattern !DeclMods !LetDef !Span -- ^ active-pattern definition (§17.3.1)
+  | DProjection !DeclMods !Name ![Binder] !Expr !ProjBody !Span
+  | DTopSplice !Expr !Span -- ^ top-level @$( ... )@ (§21.2)
+  deriving stock (Show)
+
+data ProjBody
+  = ProjSelector !Expr -- ^ selector body (yield\/if\/match expression form)
+  | ProjAccessors ![(Text, Maybe Binder, Expr)] -- ^ get\/set\/inout\/sink clauses
+  deriving stock (Show)
+
+data LetDef = LetDef
+  { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
+  , ldPattern :: !(Maybe Pattern) -- ^ 'Just' for pattern bindings
+  , ldBinders :: ![Binder]
+  , ldResultType :: !(Maybe Expr)
+  , ldDecreases :: !(Maybe Decreases)
+  , ldBody :: !Expr
+  }
+  deriving stock (Show)
+
+data Decreases
+  = DecMeasure !Expr !(Maybe Expr) !(Maybe Expr) -- ^ measure [by R] [using proof]
+  | DecStructural ![Name]
+  deriving stock (Show)
+
+data DataDecl = DataDecl
+  { ddName :: !Name
+  , ddParams :: ![Binder]
+  , ddKind :: !(Maybe Expr)
+  , ddCtors :: ![CtorDecl]
+  }
+  deriving stock (Show)
+
+data CtorDecl = CtorDecl
+  { cdName :: !Name
+  , cdBinders :: ![Binder] -- ^ positional fields become unnamed binders
+  , cdGadtType :: !(Maybe Expr) -- ^ GADT-style result signature (§10.2)
+  , cdSpan :: !Span
+  }
+  deriving stock (Show)
+
+data TraitDecl = TraitDecl
+  { trSupers :: ![Expr] -- ^ supertrait context @C1, ..., Cn =>@
+  , trName :: !Name
+  , trParams :: ![Binder]
+  , trMembers :: ![TraitMember]
+  }
+  deriving stock (Show)
+
+data TraitMember
+  = TraitSig !Name !Expr !Span
+  | TraitDefault !LetDef !Span
+  deriving stock (Show)
+
+data InstanceDecl = InstanceDecl
+  { inPremises :: ![Expr] -- ^ @Eq a =>@ premises
+  , inHead :: !Expr
+  , inMembers :: ![Decl] -- ^ member signatures and definitions
+  }
+  deriving stock (Show)
+
+data EffectDecl = EffectDecl
+  { effName :: !Name
+  , effParams :: ![Binder]
+  , effOps :: ![EffectOp]
+  , effIsLabelDecl :: !Bool -- ^ @effect label l : E@ form
+  , effLabelType :: !(Maybe Expr)
+  }
+  deriving stock (Show)
+
+data EffectOp = EffectOp
+  { eoQuantity :: !(Maybe Quantity)
+  , eoName :: !Name
+  , eoType :: !Expr
+  , eoSpan :: !Span
+  }
+  deriving stock (Show)
+
+data FixityDecl = FixityDecl
+  { fxKind :: !FixityKind
+  , fxPrec :: !Int
+  , fxOp :: !Name
+  }
+  deriving stock (Show)
+
+data FixityKind
+  = InfixN
+  | InfixL
+  | InfixR
+  | Prefix
+  | Postfix
+  deriving stock (Eq, Show)
+
+data ModuleRef
+  = RefPath !ModPath
+  | RefUrl !Text !Span
+  deriving stock (Show)
+
+data ImportSpec
+  = ImportModule !ModuleRef !(Maybe Name) -- ^ @import M [as A]@
+  | ImportItems !ModuleRef ![ImportItem]
+  | ImportAll !ModuleRef ![ExceptItem]
+  | ImportSingleton !ModuleRef !Name -- ^ @import M.x@ sugar (disambiguated semantically, §8.3)
+  deriving stock (Show)
+
+data ImportItem = ImportItem
+  { iiUnhide :: !Bool
+  , iiClarify :: !Bool
+  , iiKind :: !(Maybe KindSelector)
+  , iiName :: !Name
+  , iiCtorAll :: !Bool -- ^ @T(..)@
+  , iiAlias :: !(Maybe Name)
+  }
+  deriving stock (Show)
+
+data KindSelector = SelTerm | SelType | SelTrait | SelCtor | SelEffectLabel | SelModule
+  deriving stock (Eq, Show)
+
+data ExceptItem = ExceptItem !(Maybe KindSelector) !Name
+  deriving stock (Show)
+
+data ExpectForm
+  = ExpectTerm !Name !Expr
+  | ExpectType !Name ![Binder] !(Maybe Expr)
+  | ExpectData !Name ![Binder] !Expr
+  | ExpectTrait !Name ![Binder] !(Maybe Expr)
+  deriving stock (Show)
+
+-- | A parsed source file.
+data Module = Module
+  { modAttrs :: ![Name]
+  , modHeader :: !(Maybe ModPath)
+  , modDecls :: ![Decl]
+  }
+  deriving stock (Show)
+
+exprSpan :: Expr -> Span
+exprSpan = \case
+  EVar n -> nameSpan n
+  EHole _ sp -> sp
+  EIntLit _ _ sp -> sp
+  EFloatLit _ _ sp -> sp
+  EStringLit _ _ sp -> sp
+  EQuotedLit _ sp -> sp
+  EUnit sp -> sp
+  ETuple _ sp -> sp
+  ERecordLit _ sp -> sp
+  ERecordType _ _ sp -> sp
+  EApp f args -> case args of
+    [] -> exprSpan f
+    _ -> exprSpan f `spanTo` lastArgSpan (last args)
+  EDot e m -> exprSpan e `spanTo` memberSpan m
+  EQDot e m -> exprSpan e `spanTo` memberSpan m
+  ERecordPatch _ _ sp -> sp
+  EReceiverSection _ _ sp -> sp
+  ESectionLeft _ _ sp -> sp
+  ESectionRight _ _ sp -> sp
+  EOpRef _ _ sp -> sp
+  EOpChain els -> case els of
+    [] -> error "empty op chain"
+    (e : _) -> elemSpan e `spanTo` elemSpan (last els)
+  ELambda _ _ _ sp -> sp
+  ELet _ _ sp -> sp
+  EBlock _ _ sp -> sp
+  EDo _ _ sp -> sp
+  EIf _ _ sp -> sp
+  EMatch _ _ sp -> sp
+  ETry _ _ _ sp -> sp
+  ETryMatch _ _ _ _ sp -> sp
+  EHandle _ _ _ _ sp -> sp
+  EIs e c -> exprSpan e `spanTo` nameSpan (crName c)
+  EThunk _ sp -> sp
+  ELazy _ sp -> sp
+  EForce _ sp -> sp
+  ESeal _ _ sp -> sp
+  EOpenExists _ _ _ _ sp -> sp
+  ESealExists _ _ _ sp -> sp
+  EListLit _ sp -> sp
+  ESetLit _ sp -> sp
+  EMapLit _ sp -> sp
+  EComprehension _ _ _ sp -> sp
+  EArrow b e -> bSpan b `spanTo` exprSpan e
+  EForall _ _ sp -> sp
+  EExists _ _ sp -> sp
+  ETraitArrow a b -> exprSpan a `spanTo` exprSpan b
+  EEffRow _ _ sp -> sp
+  EVariant _ _ sp -> sp
+  EOptionSugar _ sp -> sp
+  EAscription _ _ sp -> sp
+  ECaptures _ _ sp -> sp
+  EBang _ sp -> sp
+  EQuote _ sp -> sp
+  ESplice _ sp -> sp
+  EImpossible sp -> sp
+  EKindQualified _ _ sp -> sp
+  EModuleSig _ sp -> sp
+  where
+    memberSpan (DotName n) = nameSpan n
+    memberSpan (DotOperator n) = nameSpan n
+    elemSpan (ChainOperand e) = exprSpan e
+    elemSpan (ChainOp n) = nameSpan n
+    lastArgSpan = \case
+      ArgExplicit e -> exprSpan e
+      ArgImplicit e -> exprSpan e
+      ArgNamedBlock _ sp -> sp
+      ArgInout _ sp -> sp
+
+spanTo :: Span -> Span -> Span
+spanTo a b = a {spanEnd = spanEnd b}
+
+patternSpan :: Pattern -> Span
+patternSpan = \case
+  PWild sp -> sp
+  PVar n -> nameSpan n
+  PLit _ sp -> sp
+  PAs n p -> nameSpan n `spanTo` patternSpan p
+  PCtor _ _ sp -> sp
+  PCtorNamed _ _ sp -> sp
+  PActive _ _ _ sp -> sp
+  PTuple _ sp -> sp
+  PUnit sp -> sp
+  PRecord _ _ sp -> sp
+  PTyped _ _ sp -> sp
+  POr _ sp -> sp
+  POpChain _ _ sp -> sp
+  PVariant _ _ _ _ sp -> sp

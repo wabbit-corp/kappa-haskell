@@ -35,6 +35,9 @@ library
     import:           warnings, deps
     exposed-modules:
         Kappa.Diagnostic
+        Kappa.Parser
+        Kappa.Parser.Monad
+        Kappa.Syntax
         Kappa.Lexer
         Kappa.Source
         Kappa.Token
