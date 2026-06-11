@@ -172,6 +172,7 @@ preludeSource =
     , ""
     , "type Int = Integer"
     , "type Float = Double"
+    , "type Char = UnicodeScalar" -- sanctioned alias (§28.5)
     , "type UIO (a : Type) = IO Void a"
     , ""
     , "not : Bool -> Bool"
@@ -236,6 +237,9 @@ preludeSource =
     , ""
     , "(/=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
     , "let (/=) x y = not (x == y)"
+    , ""
+    , "(!=) : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool"
+    , "let (!=) x y = not (x == y)"
     , ""
     , "(<) : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool"
     , "let (<) x y ="

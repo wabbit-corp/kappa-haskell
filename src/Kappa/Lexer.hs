@@ -679,11 +679,11 @@ lexSourceTokens path src = goLineStart st0 [1] []
           let mbytes = decodeByteView body
           case mprefix of
             Nothing -> do
-              txt <- maybe (lexErr sp "E_UNICODE_SCALAR_LITERAL_MALFORMED" Nothing "invalid Unicode scalar literal") pure mtext
+              txt <- maybe (lexErr sp "E_UNICODE_INVALID_SCALAR_LITERAL" Nothing "invalid Unicode scalar literal") pure mtext
               case T.unpack txt of
                 [_] -> pure (TokQuoted (QuotedLit Nothing body mtext mbytes), s2)
                 _ ->
-                  lexErrNote sp "E_UNICODE_SCALAR_LITERAL_MALFORMED" Nothing
+                  lexErrNote sp "E_UNICODE_INVALID_SCALAR_LITERAL" Nothing
                     "a Unicode scalar literal must contain exactly one Unicode scalar value (Spec §6.4)"
                     ["for one user-perceived character with several scalars, use a prefixed literal such as g'...'"]
             Just _ -> pure (TokQuoted (QuotedLit mprefix body mtext mbytes), s2)

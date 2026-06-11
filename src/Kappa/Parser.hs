@@ -1980,6 +1980,11 @@ pLetIn = do
   start <- currentSpan
   pKeyword "let"
   binds <- letBlock <|> ((: []) <$> pLetBind)
+  -- `in` may start its own (equally indented) continuation line
+  void $ optional $ try $ do
+    void (many1 pNewline)
+    ok <- lookAheadIs (pKeyword "in")
+    if ok then pure () else parseFail "expected 'in'"
   pKeyword "in"
   body <- pSuiteOrExpr
   ELet binds body <$> spanFrom start
@@ -2119,7 +2124,12 @@ pBlockItems = go []
       if done
         then pure (reverse acc, Nothing)
         else do
-          item <- (Left <$> try pLocalDecl) <|> (Right <$> pExpr)
+          -- `let … <newline> in …` is a let-in expression, not a local
+          -- declaration followed by a stray `in`
+          item <-
+            (Right <$> try letInExpr)
+              <|> (Left <$> try pLocalDecl)
+              <|> (Right <$> pExpr)
           case item of
             Left d -> go (d : acc)
             Right e -> do
@@ -2128,6 +2138,9 @@ pBlockItems = go []
               if isEnd
                 then pure (reverse acc, Just e)
                 else parseFail "only the final item of a block may be an expression"
+    letInExpr = do
+      ok <- lookAheadIs (pKeyword "let")
+      if ok then pLetIn else parseFail "not a let-in expression"
 
 -- Local declarations inside block/do (§9.3.1).
 pLocalDecl :: P Decl

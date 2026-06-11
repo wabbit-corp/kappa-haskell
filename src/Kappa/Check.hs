@@ -23,7 +23,7 @@ module Kappa.Check
   ) where
 
 import Control.Monad.State.Strict
-import Data.List (foldl', nub, sortOn, (\\))
+import Data.List (elemIndex, foldl', nub, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
@@ -680,7 +680,7 @@ infer ctx expr = case expr of
     (tm, ty) <- anyHole ctx
     tyT <- quoteIn ctx ty
     report $
-      diag SevError StageElaborate "E_UNSOLVED_HOLE" (Just "kappa.hole.unsolved") sp
+      diag SevError StageElaborate "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved") sp
         (("hole " <> maybe "_" (("?" <>) . nameText) mn) <> " : " <> renderTerm tyT)
     pure (tm, ty)
   EIntLit v msuf sp -> elabIntLit ctx v msuf sp Nothing
@@ -1221,6 +1221,26 @@ elabDot ctx e member = do
   let mname = case member of
         DotName n -> n
         DotOperator n -> n
+  -- fully-qualified module path, e.g. std.prelude.Bool or main.T (§8.3)
+  mPath <- case modulePathOf e of
+    Just segs@(s0 : _) | Nothing <- lookupCtx s0 ctx -> do
+      let g = GName (ModuleName segs) (nameText mname)
+      st <- get
+      if Map.member g (csGlobals st) || Map.member g (csCtors st)
+        then globalTerm g
+        else pure Nothing
+    _ -> pure Nothing
+  case mPath of
+    Just r -> pure r
+    Nothing -> elabDotUnqualified ctx e member mname
+  where
+    modulePathOf = \case
+      EVar (Name s _) -> Just [s]
+      EDot inner (DotName (Name s _)) -> (++ [s]) <$> modulePathOf inner
+      _ -> Nothing
+
+elabDotUnqualified :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
+elabDotUnqualified ctx e member mname = do
   -- module-qualified reference?
   case e of
     EVar (Name base bsp) -> do
@@ -1260,48 +1280,62 @@ elabDot ctx e member = do
         _unusedBsp = bsp
     _ -> ordinary mname
   where
-    ordinary mname = do
+    ordinary mn0 = do
       (tm, ty) <- infer ctx e
       (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
       t <- forceM ty1
       case t of
         VRecordT fs
-          | Just fty <- lookup (nameText mname) fs ->
-              pure (CProj tm1 (nameText mname), fty)
+          | Just fty <- lookup (nameText mn0) fs ->
+              pure (CProj tm1 (nameText mn0), fty)
           | otherwise -> do
               -- a record receiver without the field: try method sugar,
               -- otherwise report the missing field (§13.1.4)
-              mg <- lookupGlobalName (nameText mname)
+              mg <- lookupGlobalName (nameText mn0)
               case mg of
-                Just _ -> methodSugar tm1 t mname
+                Just _ -> methodSugar tm1 t mn0
                 Nothing -> do
                   errAt (nameSpanOf member) "E_RECORD_PROJECTION_MISSING_FIELD"
                     (Just "kappa.record.unknown-field")
-                    ("record has no field '" <> nameText mname
+                    ("record has no field '" <> nameText mn0
                        <> "' (fields: " <> T.intercalate ", " (map fst fs) <> ")")
                   anyHole ctx
         -- trait-dictionary member projection d.(==) (§14.2.1)
-        VGlobN traitG spine -> do
+        VGlobN headG spine -> do
           st <- get
-          case Map.lookup traitG (csTraits st) of
+          case Map.lookup headG (csTraits st) of
             Just ti
-              | nameText mname `elem` tiMembers ti -> do
-                  memberTy <- memberTypeOf traitG (nameText mname) (map snd spine) tm1
-                  pure (CProj tm1 (nameText mname), memberTy)
-            _ -> methodSugar tm1 t mname
-        _ -> methodSugar tm1 t mname
+              | nameText mn0 `elem` tiMembers ti -> do
+                  memberTy <- memberTypeOf headG (nameText mn0) (map snd spine) tm1
+                  pure (CProj tm1 (nameText mn0), memberTy)
+            _ ->
+              -- named-field projection on single-constructor data (§10.2)
+              case Map.lookup headG (csDatas st) of
+                Just di
+                  | [ctorG] <- diCtors di
+                  , Just ci <- Map.lookup ctorG (csCtors st)
+                  , Just idx <- elemIndex (Just (nameText mn0)) (map fst (ciFields ci)) -> do
+                      fieldTys <- ctorFieldTypes ctx ctorG ci t (nameSpanOf member)
+                      fty <- case drop idx fieldTys of
+                        (x : _) -> pure x
+                        [] -> freshMetaV ctx
+                      let arity = length (ciFields ci)
+                          pats = [if i == idx then CPVar "__field" else CPWild | i <- [0 .. arity - 1]]
+                      pure (CMatch tm1 [CaseAlt (CPCtor ctorG pats) Nothing (CVar 0)], fty)
+                _ -> methodSugar tm1 t mn0
+        _ -> methodSugar tm1 t mn0
 
     -- method-call sugar (§7.4): recv.name args → name recv (receiver
     -- insertion at the first explicit binder).
-    methodSugar recvTm recvTy mname = do
-      mg <- lookupGlobalName (nameText mname)
+    methodSugar recvTm recvTy mn0 = do
+      mg <- lookupGlobalName (nameText mn0)
       case mg of
         Just g -> do
           mt <- globalTerm g
           case mt of
             Just (fTm, fTy) -> applyRecv fTm fTy recvTm recvTy
-            Nothing -> failMember recvTy mname
-        Nothing -> failMember recvTy mname
+            Nothing -> failMember recvTy mn0
+        Nothing -> failMember recvTy mn0
 
     applyRecv fTm fTy0 recvTm recvTy = do
       fTy <- forceM fTy0
@@ -1321,13 +1355,13 @@ elabDot ctx e member = do
             "member is not callable with a receiver"
           anyHole ctx
 
-    failMember recvTy mname = do
+    failMember recvTy mn0 = do
       rT <- quoteIn ctx recvTy
       report $
         withNote ("receiver type: " <> renderTerm rT) $
           diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
             (nameSpanOf member)
-            ("no member '" <> nameText mname <> "' on this receiver (§7.3)")
+            ("no member '" <> nameText mn0 <> "' on this receiver (§7.3)")
       anyHole ctx
 
     nameSpanOf = \case
@@ -1625,28 +1659,34 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
 
 elabBlock :: Ctx -> [Decl] -> Maybe Expr -> Span -> CheckM (Term, Value)
 elabBlock ctx ds mfin sp = do
-  -- v1: block-local declarations support local lets only; other local
-  -- declaration forms are reported.
-  binds <- forM ds $ \case
-    DLet _ (LetDef (Just n) Nothing [] mty Nothing rhs) _ ->
-      pure (Just (LetBind False emptyPrefix (PVar n) mty rhs sp))
-    DLet _ (LetDef (Just n) Nothing bs mty _ rhs) dsp ->
-      -- local named function: elaborate as lambda
-      pure (Just (LetBind False emptyPrefix (PVar n) Nothing (ELambda Nothing (annotated bs mty rhs) (bodyOf bs mty rhs) dsp) sp))
-    DLet _ (LetDef Nothing (Just p) [] mty Nothing rhs) _ ->
-      pure (Just (LetBind False emptyPrefix p mty rhs sp))
-    d -> do
-      errAt (declSpan d) "E_UNSUPPORTED" Nothing
-        "this local declaration form is not supported inside block by this implementation"
-      pure Nothing
+  -- v1: block-local declarations support signatures and lets; other
+  -- local declaration forms are reported.
+  binds <- goDecls [] ds
   case mfin of
     Nothing -> do
       errAt sp "E_BLOCK_NO_RESULT" Nothing "a pure block must end with an expression (§9.3.1)"
       anyHole ctx
-    Just fin -> elabLet ctx (catMaybes binds) fin Nothing
+    Just fin -> elabLet ctx binds fin Nothing
   where
-    annotated bs _ _ = bs
-    bodyOf _ _ rhs = rhs
+    goDecls _ [] = pure []
+    goDecls sigs (d : rest) = case d of
+      -- a local signature annotates the following definition (§9.3.1)
+      DSig _ n tyE _ -> goDecls ((nameText n, tyE) : sigs) rest
+      DLet _ (LetDef (Just n) Nothing [] mty Nothing rhs) _ ->
+        (LetBind False emptyPrefix (PVar n) (annOf n mty sigs) rhs sp :) <$> goDecls sigs rest
+      DLet _ (LetDef (Just n) Nothing bs mty _ rhs) dsp -> do
+        -- local named function: elaborate as lambda
+        let lam = ELambda Nothing bs (maybe rhs (\t -> EAscription rhs t dsp) mty) dsp
+        (LetBind False emptyPrefix (PVar n) (lookup (nameText n) sigs) lam sp :) <$> goDecls sigs rest
+      DLet _ (LetDef Nothing (Just p) [] mty Nothing rhs) _ ->
+        (LetBind False emptyPrefix p mty rhs sp :) <$> goDecls sigs rest
+      _ -> do
+        errAt (declSpan d) "E_UNSUPPORTED" Nothing
+          "this local declaration form is not supported inside block by this implementation"
+        goDecls sigs rest
+    annOf n mty sigs = case mty of
+      Just t -> Just t
+      Nothing -> lookup (nameText n) sigs
 
 declSpan :: Decl -> Span
 declSpan = \case
