@@ -1,0 +1,6 @@
+--! assertDiagnostic error E_MATCH_NOT_EXHAUSTIVE
+
+describe : (| Integer | String |) -> String
+let describe v =
+    match v
+    case (| n : Integer |) -> showInt n

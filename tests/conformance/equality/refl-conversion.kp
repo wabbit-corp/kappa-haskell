@@ -1,0 +1,8 @@
+--! x-pending primitive reduction during conversion not yet implemented
+--! assertNoErrors
+
+lemma : 1 + 1 = 2
+let lemma = refl
+
+stringLemma : stringAppend "ab" "cd" = "abcd"
+let stringLemma = refl

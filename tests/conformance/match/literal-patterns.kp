@@ -1,0 +1,16 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "zero\none\nmany\n"
+
+describe : Integer -> String
+let describe n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "many"
+
+main : UIO Unit
+let main = do
+    printlnString (describe 0)
+    printlnString (describe 1)
+    printlnString (describe 7)

@@ -1,0 +1,13 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "14\n"
+--! assertDeclKinds fixity, signature, let, signature, let
+
+infix left 65 (<+>)
+
+(<+>) : Integer -> Integer -> Integer
+let (<+>) x y = addInt (addInt x y) 1
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (4 <+> 4 <+> 4))

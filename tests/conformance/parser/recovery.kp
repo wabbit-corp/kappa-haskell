@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_PARSE
+--! assertType ok Integer
+
+let = 5
+
+ok : Integer
+let ok = 1

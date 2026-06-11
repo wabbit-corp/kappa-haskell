@@ -1,0 +1,4 @@
+--! assertDiagnostic error E_NOT_A_TYPE
+
+x : 42 --!! E_NOT_A_TYPE
+let x = 0

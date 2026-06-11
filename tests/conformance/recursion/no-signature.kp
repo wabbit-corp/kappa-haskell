@@ -1,0 +1,4 @@
+--! x-pending E_RECURSION_NO_SIGNATURE not yet emitted (resolver reports unresolved name)
+--! assertDiagnostic error E_RECURSION_NO_SIGNATURE
+
+let loopy n = loopy n

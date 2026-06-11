@@ -1,0 +1,12 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "found 2\n"
+
+main : UIO Unit
+let main = do
+    for x in 1 :: 2 :: 3 :: Nil do
+        if eqInt x 2 then
+            printlnString "found 2"
+            break
+    else do
+        printlnString "not found"

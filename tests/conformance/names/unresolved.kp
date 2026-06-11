@@ -1,0 +1,4 @@
+--! assertDiagnostic error E_UNRESOLVED_NAME
+
+x : Integer
+let x = nowhere --!! E_UNRESOLVED_NAME

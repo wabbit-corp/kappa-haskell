@@ -171,12 +171,27 @@ reduceMatch ctx scrut alts env =
           | definitelyNoMatch pat scrut' -> tryAlts rest
           | otherwise -> Nothing -- stuck
 
-    definitelyNoMatch pat v = case (pat, v) of
-      (CPCtor g _, VCtor g' _) -> g /= g'
+    -- Recursive: a definite mismatch in any nested sub-pattern rules
+    -- out the whole alternative (e.g. @_ :: y :: _@ vs @1 :: Nil@).
+    definitelyNoMatch pat v0 = case (pat, force ctx v0) of
+      (CPCtor g ps, VCtor g' args) ->
+        g /= g'
+          || ( length ps <= length args
+                 && or
+                   [ definitelyNoMatch p a
+                   | (p, a) <- zip ps (drop (length args - length ps) args)
+                   ]
+             )
       (CPLit l, VLit l') -> l /= l'
-      (CPInject t _, VInject t' _) -> t /= t'
+      (CPTuple ps, VRecordV fs)
+        | length ps == length fs ->
+            or [definitelyNoMatch p a | (p, (_, a)) <- zip ps fs]
+      (CPRecord pfs _, VRecordV fs) ->
+        or [maybe False (definitelyNoMatch p) (lookup n fs) | (n, p) <- pfs]
+      (CPInject t p, VInject t' x) -> t /= t' || definitelyNoMatch p x
       (CPInjectRest excl, VInject t _) -> t `elem` excl
-      (CPOr ps, _) -> all (`definitelyNoMatch` v) ps
+      (CPOr ps, v) -> all (`definitelyNoMatch` v) ps
+      (CPAs _ p, v) -> definitelyNoMatch p v
       _ -> False
 
 -- | First-order pattern matching on values. 'Nothing' means "did not

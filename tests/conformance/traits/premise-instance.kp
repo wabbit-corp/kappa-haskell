@@ -1,0 +1,17 @@
+--! x-pending premise (conditional) instances not yet implemented
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nFalse\nTrue\n"
+
+instance Eq a => Eq (List a) =
+    let (==) xs ys =
+        match (xs, ys)
+        case (Nil, Nil) -> True
+        case (x :: xr, y :: yr) -> if x == y then xr == yr else False
+        case _ -> False
+
+main : UIO Unit
+let main = do
+    printlnString (show ((1 :: 2 :: Nil) == (1 :: 2 :: Nil)))
+    printlnString (show ((1 :: Nil) == (2 :: Nil)))
+    printlnString (show (((1 :: Nil) :: Nil) == ((1 :: Nil) :: Nil)))

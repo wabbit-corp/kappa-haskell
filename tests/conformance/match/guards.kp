@@ -1,0 +1,15 @@
+--! x-pending match case guards not yet implemented
+--! mode run
+--! assertNoErrors
+--! assertStdout "small\nbig\n"
+
+size : Integer -> String
+let size n =
+    match n
+    case m if ltInt m 10 -> "small"
+    case _ -> "big"
+
+main : UIO Unit
+let main = do
+    printlnString (size 3)
+    printlnString (size 30)

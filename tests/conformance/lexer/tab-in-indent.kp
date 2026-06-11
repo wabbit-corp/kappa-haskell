@@ -1,0 +1,5 @@
+--! assertDiagnostic error E_TAB_IN_INDENTATION
+
+f : Bool -> Bool
+let f b =
+	if b then False else True

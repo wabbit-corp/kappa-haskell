@@ -1,0 +1,19 @@
+--! x-pending tuple and record patterns in match not yet implemented
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n7\n"
+
+addPair : (Integer, Integer) -> Integer
+let addPair p =
+    match p
+    case (x, y) -> addInt x y
+
+addRec : (a : Integer, b : Integer) -> Integer
+let addRec r =
+    match r
+    case (a = x, b = y) -> addInt x y
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (addPair (1, 2)))
+    printlnString (showInt (addRec (a = 3, b = 4)))

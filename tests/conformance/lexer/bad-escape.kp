@@ -1,0 +1,5 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_STRING_ESCAPE_INVALID
+
+bad : String
+let bad = "oops \q escape"

@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "warm\nwarm\ncool\n"
+
+data Color : Type =
+    Red
+    Orange
+    Blue
+
+temp : Color -> String
+let temp c =
+    match c
+    case Red | Orange -> "warm"
+    case Blue -> "cool"
+
+main : UIO Unit
+let main = do
+    printlnString (temp Red)
+    printlnString (temp Orange)
+    printlnString (temp Blue)

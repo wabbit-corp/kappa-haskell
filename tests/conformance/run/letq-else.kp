@@ -1,0 +1,15 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "head 1\nempty\n"
+
+describe : List Integer -> UIO Unit
+let describe xs = do
+    let? x :: _ = xs
+    else _ ->
+        printlnString "empty"
+    printlnString (stringAppend "head " (showInt x))
+
+main : UIO Unit
+let main = do
+    describe (1 :: 2 :: Nil)
+    describe Nil

@@ -1,0 +1,12 @@
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType len List Integer -> Integer
+
+len : List Integer -> Integer
+let len xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (len rest)
+
+reduces : len (7 :: 8 :: Nil) = 2
+let reduces = refl

@@ -1,0 +1,17 @@
+--! x-pending for/else with break and continue not yet checkable
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n3\nfour\nfell off\ndone\n"
+
+main : UIO Unit
+let main = do
+    for x in 1 :: 2 :: 3 :: 4 :: 5 :: Nil do
+        if eqInt x 2 then continue
+        if eqInt x 4 then
+            printlnString "four"
+            break
+        printlnString (showInt x)
+    for y in 1 :: Nil do
+        printlnString "fell off"
+    else do
+        printlnString "done"

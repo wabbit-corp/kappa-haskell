@@ -1,0 +1,12 @@
+--! assertDiagnostic error E_MATCH_NOT_EXHAUSTIVE
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+name : Color -> String
+let name c =
+    match c
+    case Red -> "red"
+    case Green -> "green"

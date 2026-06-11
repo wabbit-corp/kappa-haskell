@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_OPERATOR_NO_FIXITY
+
+(<+>) : Integer -> Integer -> Integer
+let (<+>) x y = addInt x y
+
+bad : Integer
+let bad = 1 <+> 2 --!! E_OPERATOR_NO_FIXITY

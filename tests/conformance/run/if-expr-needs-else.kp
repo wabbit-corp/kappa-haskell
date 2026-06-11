@@ -1,0 +1,4 @@
+--! assertDiagnostic error E_IF_MISSING_ELSE
+
+bad : Integer
+let bad = if True then 1 --!! E_IF_MISSING_ELSE

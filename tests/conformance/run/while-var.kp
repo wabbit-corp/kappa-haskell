@@ -1,0 +1,13 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "0\n1\n2\nsum 3\n"
+
+main : UIO Unit
+let main = do
+    var i = 0
+    var total = 0
+    while ltInt i 3 do
+        printlnString (showInt i)
+        total = addInt total 1
+        i = addInt i 1
+    printlnString (stringAppend "sum " (showInt total))

@@ -1,0 +1,4 @@
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+
+y : Integer
+let y = 5 1 --!! E_APPLICATION_NON_CALLABLE

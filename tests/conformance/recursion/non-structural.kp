@@ -1,0 +1,7 @@
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+
+collatzish : Integer -> Integer
+let collatzish n =
+    if eqInt n 1 then 1 else collatzish (divInt n 2)

@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "int 3\nstr hi\n"
+
+describe : (| Integer | String |) -> String
+let describe v =
+    match v
+    case (| n : Integer |) -> stringAppend "int " (showInt n)
+    case (| s : String |) -> stringAppend "str " s
+
+toUnion : Integer -> (| Integer | String |)
+let toUnion n = n
+
+main : UIO Unit
+let main = do
+    printlnString (describe (toUnion 3))
+    printlnString (describe ("hi" : (| Integer | String |)))

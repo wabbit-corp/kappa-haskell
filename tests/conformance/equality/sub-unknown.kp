@@ -1,0 +1,4 @@
+--! assertDiagnostic error E_IMPLICIT_UNSOLVED
+
+f : Integer -> Integer -> Integer
+let f x y = x - y --!! E_IMPLICIT_UNSOLVED

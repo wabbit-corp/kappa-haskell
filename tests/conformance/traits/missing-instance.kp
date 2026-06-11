@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_IMPLICIT_UNSOLVED
+
+trait Pretty (a : Type) =
+    pretty : a -> String
+
+bad : String
+let bad = pretty "hello" --!! E_IMPLICIT_UNSOLVED

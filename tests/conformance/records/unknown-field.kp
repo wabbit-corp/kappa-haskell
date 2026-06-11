@@ -1,0 +1,8 @@
+--! x-pending E_UNKNOWN_FIELD on projections not yet emitted
+--! assertDiagnostic error E_UNKNOWN_FIELD
+
+r : (x : Integer)
+let r = (x = 1)
+
+bad : Integer
+let bad = r.y --!! E_UNKNOWN_FIELD

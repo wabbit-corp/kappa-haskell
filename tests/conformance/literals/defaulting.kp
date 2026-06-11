@@ -1,0 +1,10 @@
+--! assertNoErrors
+--! assertType n Int
+--! assertType n Integer
+--! assertType d Double
+--! assertType pi2 Float
+
+let n = 42
+let d = 1.5
+pi2 : Float
+let pi2 = 3.25

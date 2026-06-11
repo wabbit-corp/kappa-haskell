@@ -1,0 +1,15 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "ada\n36\n37\n"
+
+person : (name : String, age : Integer)
+let person = (name = "ada", age = 36)
+
+older : (name : String, age : Integer)
+let older = person.{ age = 37 }
+
+main : UIO Unit
+let main = do
+    printlnString person.name
+    printlnString (showInt person.age)
+    printlnString (showInt older.age)

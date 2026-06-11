@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n0\n"
+
+firstOr : List Integer -> Integer -> Integer
+let firstOr xs d =
+    match first xs
+    case Some x -> x
+    case None -> d
+
+first : List Integer -> Integer?
+let first xs =
+    match xs
+    case x :: _ -> Some x
+    case Nil -> None
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (firstOr (1 :: 2 :: Nil) 9))
+    printlnString (showInt (firstOr Nil 0))

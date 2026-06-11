@@ -1,0 +1,12 @@
+--! x-pending record field punning not yet implemented
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n"
+
+make : Integer -> (count : Integer)
+let make count = (count = count)
+
+main : UIO Unit
+let main = do
+    let r = (count = 5)
+    printlnString (showInt r.count)

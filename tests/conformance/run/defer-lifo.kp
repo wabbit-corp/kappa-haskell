@@ -1,0 +1,9 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\nsecond\nfirst\n"
+
+main : UIO Unit
+let main = do
+    defer printlnString "first"
+    defer printlnString "second"
+    printlnString "body"

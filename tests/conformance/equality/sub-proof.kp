@@ -1,0 +1,11 @@
+--! x-pending CheckedSub proof obligation discharge not yet implemented
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\n"
+
+d : Integer
+let d = 5 - 3
+
+main : UIO Unit
+let main = do
+    printlnString (showInt d)

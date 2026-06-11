@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_DUPLICATE_DECLARATION
+
+x : Integer
+let x = 1
+
+x : Integer --!! E_DUPLICATE_DECLARATION
+let x = 2

@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "<<3>>\nyes\n"
+
+trait Pretty (a : Type) =
+    pretty : a -> String
+
+instance Pretty Integer =
+    let pretty n = stringAppend "<<" (stringAppend (showInt n) ">>")
+
+instance Pretty Bool =
+    let pretty b = if b then "yes" else "no"
+
+main : UIO Unit
+let main = do
+    printlnString (pretty 3)
+    printlnString (pretty True)

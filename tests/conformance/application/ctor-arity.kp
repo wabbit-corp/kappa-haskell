@@ -1,0 +1,8 @@
+--! x-pending E_CONSTRUCTOR_ARITY_MISMATCH not yet emitted (generic non-callable diagnostic)
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+data Pair : Type =
+    MkPair Integer Integer
+
+p : Pair
+let p = MkPair 1 2 3 --!! E_CONSTRUCTOR_ARITY_MISMATCH

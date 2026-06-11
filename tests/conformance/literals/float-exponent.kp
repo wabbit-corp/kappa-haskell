@@ -1,0 +1,6 @@
+--! assertNoErrors
+--! assertType big Double
+--! assertType big Float
+
+big : Double
+let big = 1e10

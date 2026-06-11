@@ -1,0 +1,18 @@
+--! x-pending try/except/finally surface syntax not yet implemented
+--! mode run
+--! assertNoErrors
+--! assertStdout "caught: boom\nfinally\nafter\n"
+
+risky : IO String Unit
+let risky = do
+    raise "boom"
+    printlnString "unreachable"
+
+main : UIO Unit
+let main = do
+    try risky
+    except msg ->
+        printlnString (stringAppend "caught: " msg)
+    finally ->
+        printlnString "finally"
+    printlnString "after"

@@ -1,0 +1,4 @@
+--! assertDiagnostic error E_TAB_IN_SOURCE
+
+x : Integer
+let x =	1

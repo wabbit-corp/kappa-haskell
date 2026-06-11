@@ -1,0 +1,14 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\n0\n"
+
+secondOrZero : List Integer -> Integer
+let secondOrZero xs =
+    match xs
+    case _ :: y :: _ -> y
+    case _ -> 0
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (secondOrZero (1 :: 2 :: 3 :: Nil)))
+    printlnString (showInt (secondOrZero (1 :: Nil)))

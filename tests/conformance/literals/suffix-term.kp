@@ -1,0 +1,10 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "255\n"
+
+u32 : Nat -> Int
+let u32 n = natToInt n
+
+main : UIO Unit
+let main = do
+    printlnString (showInt 0xFFu32)

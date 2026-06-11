@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_LAYOUT_BAD_DEDENT
+
+f : Bool -> Bool
+let f x =
+    match x
+    case True -> False
+   case False -> True

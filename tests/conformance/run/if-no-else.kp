@@ -1,0 +1,12 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "positive\nend\n"
+
+main : UIO Unit
+let main = do
+    let n = 5
+    if ltInt 0 n then
+        printlnString "positive"
+    if ltInt n 0 then
+        printlnString "negative"
+    printlnString "end"
