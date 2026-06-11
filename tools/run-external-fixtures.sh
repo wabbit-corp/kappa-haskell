@@ -30,7 +30,12 @@ fi
 # (multi-file fixtures compile all their .kp files together).
 : >"$RAW_LOG"
 for d in "$FIXTURES"/*/; do
-  "$BIN" test "${d%/}" >>"$RAW_LOG" 2>&1 || true
+  if ! timeout 60 "$BIN" test "${d%/}" >>"$RAW_LOG" 2>&1; then
+    # ensure a hung/crashed fixture still yields exactly one result line
+    if ! tail -2 "$RAW_LOG" | grep -q "^\(PASS\|FAIL\|UNSUPPORTED\|HARNESS-ERROR\) ${d%/}\$"; then
+      echo "HARNESS-ERROR ${d%/} (timeout or crash)" >>"$RAW_LOG"
+    fi
+  fi
 done
 
 pass=$(grep -c '^PASS '          "$RAW_LOG" || true)

@@ -1297,6 +1297,12 @@ pChainElems = do
           pure []
         _ -> pure []
     continueAfterOp opN = do
+      -- a ')' right after an infix operator means this was a left
+      -- section `(e op)` — refuse so the section parser can take over
+      t <- peekToken
+      case t of
+        TokRParen -> parseFail "trailing operator before ')' (left section)"
+        _ -> pure ()
       -- operator may be followed by newline+indent continuation (§5.4)
       void (optional (try (pNewline *> token TokIndent)))
       pre <- many (ChainOp <$> pPrefixOp)
@@ -1599,10 +1605,13 @@ pParenExpr start = do
         <|> try opRefOrSection
         <|> try recordTypeFields
         <|> try recordLitFields
-        <|> try leftSection
-        <|> exprBased
+        -- exprBased first: trying leftSection eagerly would re-parse the
+        -- inner expression of every paren level (exponential nesting)
+        <|> try exprBased
+        <|> leftSection
 
-    -- (e op): left operator section (§16.1.6)
+    -- (e op): left operator section (§16.1.6); reached only when the
+    -- chain parser refused a trailing operator before ')'
     leftSection = do
       e <- pAppExpr
       opSp <- currentSpan
