@@ -332,6 +332,9 @@ pLetDef = do
       body <- pDefBody
       pure (LetDef (Just n) Nothing binders resTy dec body)
     patBinding = do
+      -- `let &b = e` borrow bindings: the borrow mark is accepted and
+      -- approximated as an ordinary binding (QTT approximation)
+      _ <- optionMaybe pBorrowMark
       pat <- pPattern
       ty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
@@ -858,8 +861,14 @@ pSuspension =
 -- A parameter binder group for named functions / data / trait headers.
 -- A parenthesized group may bind several names (`(x y : A)`).
 pParamBinder :: P [Binder]
-pParamBinder = parenBinder <|> bare
+pParamBinder = unitBinder <|> parenBinder <|> bare
   where
+    -- `let f () : T = ...` — the unit binder (§12.1)
+    unitBinder = try $ do
+      sp <- currentSpan
+      token TokLParen
+      token TokRParen
+      pure [Binder False emptyPrefix Nothing NoReceiver False Nothing True Nothing Nothing sp]
     parenBinder = try $ do
       sp <- currentSpan
       token TokLParen
@@ -1608,8 +1617,8 @@ pParenExpr start = do
       rhs <- pExpr
       pure (foldr EArrow rhs bs)
 
-    -- record type: (l : T, ...) — requires a comma or binder prefix to
-    -- distinguish from ascription.
+    -- record type: (l : T, ...) — requires a comma, a row tail, or a
+    -- binder prefix\/marker to distinguish from ascription.
     recordTypeFields = try $ do
       f1 <- pRecTypeField
       t2 <- peekToken
@@ -1626,6 +1635,15 @@ pParenExpr start = do
           tailRow <- pExpr
           token TokRParen
           ERecordType [f1] (Just tailRow) <$> spanFrom start
+        TokRParen
+          -- single field with a distinguishing marker: (1 v : Int),
+          -- (& b : Buf), (@x : T), (opaque x : T)
+          | rtfOpaque f1
+              || rtfImplicit f1
+              || isJust (bpQuantity (rtfPrefix f1))
+              || isJust (bpBorrow (rtfPrefix f1)) -> do
+              void anyToken
+              ERecordType [f1] Nothing <$> spanFrom start
         _ -> parseFail "not a record type"
 
     recordLitFields = try $ do

@@ -1,14 +1,15 @@
--- | Appendix T standard test harness (single-file inline tests).
+-- | Appendix T standard test harness.
 --
 -- Implements the §T.3 directive syntax, the §T.4 configuration subset
 -- (@mode check@\/@mode run@), the §T.5.1 diagnostic assertions, §T.5.2
 -- type\/shape assertions and §T.5.4 run assertions, with §T.8 result
 -- classification (pass \/ fail \/ unsupported \/ harnessError).
 --
--- Each @.kp@ file is compiled (and for @mode run@, executed in-process
--- with captured stdout) independently; directory arguments recurse over
--- @**/*.kp@. See TESTING.md for the supported subset and deliberate
--- approximations.
+-- Two §T.2 test forms are supported: single-file inline tests, and
+-- directory suites (a directory containing @suite.ktest@ and\/or
+-- @main.kp@ is one suite; all its @.kp@ files are compiled together).
+-- Other directory arguments recurse over @**/*.kp@. See TESTING.md for
+-- the supported subset and deliberate approximations.
 module Kappa.TestHarness
   ( Outcome (..)
   , TestReport (..)
@@ -19,11 +20,11 @@ module Kappa.TestHarness
   , reportLine
   ) where
 
-import Control.Exception (SomeException, try)
-import Control.Monad (filterM, forM)
+import Control.Exception (SomeException, evaluate, try)
+import Control.Monad (filterM)
 import Data.Char (isDigit)
 import Data.List (isSuffixOf, sort)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -31,17 +32,17 @@ import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
 import Kappa.Check (CheckState (..), checkModule)
-import Kappa.Core (GName (..))
+import Kappa.Core
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
 import Kappa.Interp (RunResult (..), runMainCaptured)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileSourceWithPrelude)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
 import Kappa.Pretty (renderTerm)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import Kappa.Syntax
-import System.Directory (doesDirectoryExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>))
 import System.Timeout (timeout)
 
@@ -105,6 +106,8 @@ data Assertion
   | ADiagNext !Sev !Text !Int -- ^ target line resolved at scan time
   | ADiagAt !Text !Sev !Text !Int !(Maybe Int)
   | ADiagFamily !Sev !Text
+  | AErrorCodes ![Text] -- ^ x-compatible: exact multiset of error codes
+  | AEval !Text !Text -- ^ x-compatible: evaluate a global, compare rendering
   | AType !Text !Text
   | ADeclKinds ![Text]
   | AStdout !Text
@@ -147,6 +150,21 @@ unimplementedDirectives =
   , "assertStageDump"
   , "assertTraceCount"
   , "assertFileDeclKinds"
+  ]
+
+-- Non-standard directives used by another implementation's fixture
+-- corpus (not in Appendix T). They are treated like x- extensions:
+-- the test is classified unsupported, not a harness error.
+foreignDirectives :: [Text]
+foreignDirectives =
+  [ "assertRunStdout"
+  , "assertExecute"
+  , "assertEvalErrorContains"
+  , "assertParameterQuantities"
+  , "assertDoItemDescriptors"
+  , "assertInoutParameters"
+  , "assertContainsTokenTexts"
+  , "allow_unsafe_consume"
   ]
 
 -- | Scan all directive lines and inline markers. Returns scanned
@@ -255,11 +273,22 @@ parseDirective allLines lno body =
       "assertStdoutContains" -> withString AStdoutContains
       "assertStderrContains" -> withString AStderrContains
       "assertExitCode" -> withCount AExitCode
+      -- compatibility extensions for the external fixture corpus
+      "assertDiagnosticCodes" ->
+        let codes = map T.strip (T.splitOn "," rest)
+         in if not (null codes) && all (not . T.null) codes
+              then ok (SAssert (AErrorCodes codes))
+              else bad "malformed 'assertDiagnosticCodes' code list"
+      "assertEval" -> case T.words rest of
+        (nm : more) | not (null more) -> ok (SAssert (AEval nm (T.unwords more)))
+        _ -> bad "malformed 'assertEval' directive"
       _
         | "x-" `T.isPrefixOf` name ->
             unsup ("extension directive '" <> name <> "' is not supported")
         | name `elem` unimplementedDirectives ->
             unsup ("directive '" <> name <> "' is not implemented by this harness")
+        | name `elem` foreignDirectives ->
+            unsup ("non-standard directive '" <> name <> "' is not supported")
         | otherwise -> bad ("unknown standard directive '" <> name <> "'")
       where
         noArgs a
@@ -350,39 +379,69 @@ parseStringLiteral t0 = do
 
 -- ── Test execution ───────────────────────────────────────────────────
 
+readSourceFile :: FilePath -> IO Text
+readSourceFile path = do
+  bytes <- BS.readFile path
+  pure (TE.decodeUtf8With TEE.lenientDecode bytes)
+
 -- | Run one @.kp@ test file (§T.2 single-file inline test).
 runTestFile :: FilePath -> IO TestReport
-runTestFile path = do
-  r <- try (runTestFile' path)
+runTestFile path = guardExceptions path $ do
+  src <- readSourceFile path
+  runSuite path [(path, src)] Nothing
+
+-- | Run a §T.2 directory suite: all @.kp@ files under the root compiled
+-- together, directives gathered from @suite.ktest@ plus every file.
+runSuiteDir :: FilePath -> IO TestReport
+runSuiteDir dir = guardExceptions dir $ do
+  files <- collectKp dir
+  srcs <- mapM readSourceFile files
+  let ktestPath = dir </> "suite.ktest"
+  hasKtest <- doesFileExist ktestPath
+  mktest <-
+    if hasKtest
+      then Just . (,) ktestPath <$> readSourceFile ktestPath
+      else pure Nothing
+  runSuite dir (zip files srcs) mktest
+
+guardExceptions :: FilePath -> IO TestReport -> IO TestReport
+guardExceptions label act = do
+  r <- try act
   case r of
     Right rep -> pure rep
     Left (e :: SomeException) ->
-      pure (TestReport path HarnessError ("internal exception: " <> firstLine (T.pack (show e))))
+      pure (TestReport label HarnessError ("internal exception: " <> firstLine (T.pack (show e))))
   where
     firstLine = T.takeWhile (/= '\n')
 
-runTestFile' :: FilePath -> IO TestReport
-runTestFile' path = do
-  bytes <- BS.readFile path
-  let src = TE.decodeUtf8With TEE.lenientDecode bytes
-      (scanned, scanErrs) = scanDirectives src
-  if not (null scanErrs)
-    then pure (TestReport path HarnessError (T.intercalate "; " scanErrs))
-    else do
-      let modes = [m | SMode m <- scanned]
-          entries = [e | SEntry e <- scanned]
-          unsups = [u | SUnsupported u <- scanned]
-          asserts = [a | SAssert a <- scanned]
-      case () of
-        _ | length (dedup modes) > 1 ->
-              pure (TestReport path HarnessError "conflicting 'mode' directives (§T.6)")
-          | not (null unsups) ->
-              pure (TestReport path Unsupported (head unsups))
-          | otherwise -> do
-              let mode = case modes of m : _ -> m; [] -> "check"
-              if not (null entries) && mode /= "run"
-                then pure (TestReport path HarnessError "'entry' is valid only for mode run (§T.4)")
-                else executeTest path src mode entries asserts
+-- | Shared suite driver. @files@ are the compilation roots; directives
+-- come from the optional @suite.ktest@ and from each file (§T.6).
+runSuite :: FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
+runSuite label files mktest = do
+  let sources = maybe [] (: []) mktest ++ files
+      scans = [(p, src, scanDirectives src) | (p, src) <- sources]
+      scanErrs = concat [es | (_, _, (_, es)) <- scans]
+      scanned = [(p, src, s) | (p, src, (ss, _)) <- scans, s <- ss]
+  if null files
+    then pure (TestReport label HarnessError "suite contains no .kp files")
+    else
+      if not (null scanErrs)
+        then pure (TestReport label HarnessError (T.intercalate "; " scanErrs))
+        else do
+          let modes = [m | (_, _, SMode m) <- scanned]
+              entries = [e | (_, _, SEntry e) <- scanned]
+              unsups = [u | (_, _, SUnsupported u) <- scanned]
+              asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
+          case () of
+            _ | length (dedup modes) > 1 ->
+                  pure (TestReport label HarnessError "conflicting 'mode' directives (§T.6)")
+              | not (null unsups) ->
+                  pure (TestReport label Unsupported (head unsups))
+              | otherwise -> do
+                  let mode = case modes of m : _ -> m; [] -> "check"
+                  if not (null entries) && mode /= "run"
+                    then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
+                    else executeSuite label files mode entries asserts
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 
@@ -392,29 +451,33 @@ data RunInfo = RunInfo
   , riExitCode :: !Int
   }
 
-executeTest :: FilePath -> Text -> Text -> [Text] -> [Assertion] -> IO TestReport
-executeTest path src mode entries asserts = do
-  let cu = compileSourceWithPrelude path src
+executeSuite ::
+  FilePath -> [(FilePath, Text)] -> Text -> [Text] -> [(FilePath, Text, Assertion)] -> IO TestReport
+executeSuite label files mode entries asserts = do
+  let cu = case files of
+        [(p, s)] -> compileSourceWithPrelude p s
+        _ -> compileFiles files
+      filePaths = map fst files
       allDiags = cuDiags cu
-      preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) /= path]
-      diags = [d | d <- allDiags, spanFile (dPrimary d) == path]
+      preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) `notElem` filePaths]
+      diags = [d | d <- allDiags, spanFile (dPrimary d) `elem` filePaths]
   if not (null preludeErrs)
-    then pure (TestReport path HarnessError "prelude failed to compile (implementation bug)")
+    then pure (TestReport label HarnessError "prelude failed to compile (implementation bug)")
     else do
       mRun <-
         if mode == "run"
           then Just <$> doRun cu diags
           else pure Nothing
-      results <- mapM (checkAssertion path src cu diags mRun) asserts
+      results <- mapM (\(p, s, a) -> checkAssertion p s cu diags mRun a) asserts
       let fails = [d | AssertFail d <- results]
           herrs = [d | AssertHarnessError d <- results]
       pure $
         if not (null herrs)
-          then TestReport path HarnessError (T.intercalate "; " herrs)
+          then TestReport label HarnessError (T.intercalate "; " herrs)
           else
             if null fails
-              then TestReport path Pass ""
-              else TestReport path Fail (T.intercalate "; " fails)
+              then TestReport label Pass ""
+              else TestReport label Fail (T.intercalate "; " fails)
   where
     doRun cu diags
       | hasErrors diags =
@@ -424,10 +487,9 @@ executeTest path src mode entries asserts = do
               entryName = case entries of
                 (e : _) -> snd (splitQualified e)
                 [] -> "main"
-              mainG = GName (cuModule cu) entryName
-          if not (Map.member mainG (csGlobals st))
-            then pure (RunInfo "" ("error: entrypoint '" <> entryName <> "' is not defined") 1)
-            else do
+          case entryGlobal cu entryName of
+            Nothing -> pure (RunInfo "" ("error: entrypoint '" <> entryName <> "' is not defined") 1)
+            Just mainG -> do
               mres <-
                 timeout runTimeoutMicros $
                   runMainCaptured (Globals (csGlobals st)) (csMetas st) mainG
@@ -436,6 +498,24 @@ executeTest path src mode entries asserts = do
                 Just (RunOk, out) -> pure (RunInfo out "" 0)
                 Just (RunFail msg, out) ->
                   pure (RunInfo out ("runtime failure: " <> msg) 1)
+
+-- | Resolve the run entrypoint: the compiled unit's own module first,
+-- then any non-prelude module in the accumulated state.
+entryGlobal :: CompiledUnit -> Text -> Maybe GName
+entryGlobal cu entryName =
+  let st = cuState cu
+      own = GName (cuModule cu) entryName
+      others =
+        [ g
+        | g@(GName m n) <- Map.keys (csGlobals st)
+        , n == entryName
+        , m /= ModuleName ["std", "prelude"]
+        ]
+   in if Map.member own (csGlobals st)
+        then Just own
+        else case others of
+          (g : _) -> Just g
+          [] -> Nothing
 
 runTimeoutMicros :: Int
 runTimeoutMicros = 30 * 1000 * 1000
@@ -454,6 +534,13 @@ renderDiagLine d =
 -- ── Assertion evaluation ─────────────────────────────────────────────
 
 data AssertResult = AssertOk | AssertFail !Text | AssertHarnessError !Text
+
+-- force an 'AssertResult' (and its message) to normal form
+forceResult :: AssertResult -> AssertResult
+forceResult r = case r of
+  AssertOk -> r
+  AssertFail t -> T.length t `seq` r
+  AssertHarnessError t -> T.length t `seq` r
 
 checkAssertion ::
   FilePath -> Text -> CompiledUnit -> Diagnostics -> Maybe RunInfo -> Assertion -> IO AssertResult
@@ -476,6 +563,7 @@ checkAssertion path src cu diags mRun = \case
           ( \d ->
               dSeverity d == toSeverity sev
                 && dCode d == code
+                && spanFile (dPrimary d) == path
                 && posLine (spanStart (dPrimary d)) == line
           )
           diags
@@ -498,6 +586,17 @@ checkAssertion path src cu diags mRun = \case
     require
       (any (\d -> dSeverity d == toSeverity sev && dFamily d == Just fam) diags)
       ("no diagnostic with family " <> fam <> " was produced")
+  AErrorCodes codes ->
+    let actual = sort (map dCode errors)
+     in require
+          (actual == sort codes)
+          ( "error codes are [" <> T.intercalate ", " (map dCode errors)
+              <> "], expected [" <> T.intercalate ", " codes <> "]"
+          )
+  AEval nm expected -> do
+    -- evaluation may legitimately be deep; guard with the run timeout
+    mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEval cu nm expected)))
+    pure (fromMaybe (AssertFail ("assertEval: evaluation of '" <> nm <> "' timed out")) mr)
   AType nm tyExpr -> pure (assertType path src cu nm tyExpr)
   ADeclKinds kinds -> pure (assertDeclKinds path src kinds)
   AStdout expected -> withRun $ \ri ->
@@ -544,6 +643,52 @@ checkAssertion path src cu diags mRun = \case
 normalizeLF :: Text -> Text
 normalizeLF = T.replace "\r" "\n" . T.replace "\r\n" "\n"
 
+-- | @assertEval name expected@ (compatibility extension): evaluate a
+-- global definition to a value and compare a canonical rendering with
+-- the expected text.
+assertEval :: CompiledUnit -> Text -> Text -> AssertResult
+assertEval cu nm expected =
+  case entryGlobal cu nm >>= \g -> Map.lookup g (csGlobals (cuState cu)) of
+    Nothing -> AssertFail ("assertEval: '" <> nm <> "' is not a defined global")
+    Just gd -> case gdValue gd of
+      Nothing -> AssertFail ("assertEval: '" <> nm <> "' has no value (signature only)")
+      Just v ->
+        let st = cuState cu
+            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True
+            rendered = renderEvalValue ec v
+         in if rendered == T.strip expected
+              then AssertOk
+              else
+                AssertFail
+                  ("assertEval: '" <> nm <> "' evaluates to " <> rendered
+                     <> ", expected " <> T.strip expected)
+
+-- Canonical value rendering for 'assertEval' (literals bare, strings
+-- quoted, constructor applications in juxtaposition form).
+renderEvalValue :: EvalCtx -> Value -> Text
+renderEvalValue ec = go (32 :: Int) False
+  where
+    go :: Int -> Bool -> Value -> Text
+    go 0 _ _ = "…"
+    go fuel nested v = case force ec v of
+      VLit (LitInt n) -> tshow n
+      VLit (LitDouble d) -> tshow d
+      VLit (LitStr s) -> tshow s
+      VLit (LitScalar c) -> tshow c
+      VCtor (GName _ "Unit") [] -> "()"
+      VRecordV [] -> "()"
+      VCtor g [] -> gnameText g
+      -- list cells render infix and unparenthesized: 1 :: 2 :: Nil
+      VCtor (GName _ "::") [h, t] ->
+        go (fuel - 1) True h <> " :: " <> go (fuel - 1) False t
+      VCtor g args ->
+        parenIf nested (T.unwords (gnameText g : map (go (fuel - 1) True) args))
+      VRecordV fs ->
+        "(" <> T.intercalate ", " [n <> " = " <> go (fuel - 1) False x | (n, x) <- fs] <> ")"
+      VInject _ x -> go (fuel - 1) nested x
+      other -> renderTerm (quote ec 0 other)
+    parenIf b t = if b then "(" <> t <> ")" else t
+
 -- | @assertType name typeExpr@ (§T.5.2): elaborate the expected type in
 -- the compiled unit's state through a synthetic signature declaration
 -- and compare with the declaration's recorded type up to definitional
@@ -556,7 +701,7 @@ assertType path src cu nm tyExpr =
       case elabExpected of
         Left err -> AssertHarnessError err
         Right (st', probeTy) ->
-          let ec = EvalCtx (Globals (csGlobals st')) (csMetas st')
+          let ec = EvalCtx (Globals (csGlobals st')) (csMetas st') False
            in if convertible ec 0 (gdType gd) probeTy
                 then AssertOk
                 else
@@ -641,16 +786,37 @@ declKind = \case
 
 -- ── Tree walking ─────────────────────────────────────────────────────
 
--- | Run a file or recurse over a directory's @**/*.kp@; prints one
--- result line per test and returns all reports.
+-- | Run a path: a @.kp@ file is a single-file inline test; a directory
+-- containing @suite.ktest@ or @main.kp@ is one directory suite (§T.2);
+-- any other directory recurses. Prints one result line per test.
 runTestPath :: FilePath -> IO [TestReport]
 runTestPath root = do
   isDir <- doesDirectoryExist root
-  files <- if isDir then collectKp root else pure [root]
-  forM files $ \f -> do
-    rep <- runTestFile f
-    putStrLn (T.unpack (reportLine rep))
-    pure rep
+  if not isDir
+    then emitOne (runTestFile root)
+    else do
+      suite <- isSuiteRoot root
+      if suite
+        then emitOne (runSuiteDir root)
+        else do
+          entries <- sort <$> listDirectory root
+          let paths = [root </> e | e <- entries]
+          dirs <- filterM doesDirectoryExist paths
+          let files = [p | p <- paths, ".kp" `isSuffixOf` p, p `notElem` dirs]
+          fileReps <- concat <$> mapM (emitOne . runTestFile) files
+          dirReps <- concat <$> mapM runTestPath dirs
+          pure (fileReps ++ dirReps)
+  where
+    emitOne act = do
+      rep <- act
+      putStrLn (T.unpack (reportLine rep))
+      pure [rep]
+
+isSuiteRoot :: FilePath -> IO Bool
+isSuiteRoot dir = do
+  hasKtest <- doesFileExist (dir </> "suite.ktest")
+  hasMain <- doesFileExist (dir </> "main.kp")
+  pure (hasKtest || hasMain)
 
 collectKp :: FilePath -> IO [FilePath]
 collectKp dir = do

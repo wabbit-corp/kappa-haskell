@@ -49,6 +49,10 @@ emptyMetas = Map.empty
 data EvalCtx = EvalCtx
   { ecGlobals :: !Globals
   , ecMetas :: !MetaState
+  , ecRuntime :: !Bool
+  -- ^ Runtime evaluation (§32.1): every global with a value unfolds,
+  -- with a deep fuel budget. Conversion-time forcing (False) unfolds
+  -- only conversion-reducible definitions and stays tightly bounded.
   }
 
 lookupGlobal :: EvalCtx -> GName -> Maybe GlobalDef
@@ -145,7 +149,7 @@ vforce ctx v = case force ctx v of
 -- (projections, applications, ifs and matches re-fire once their head
 -- becomes canonical).
 force :: EvalCtx -> Value -> Value
-force ctx = go (1000 :: Int)
+force ctx = go (if ecRuntime ctx then 200000000 else 1000 :: Int)
   where
     go 0 v = v
     go fuel v = case v of
@@ -155,8 +159,14 @@ force ctx = go (1000 :: Int)
       VGlobN g sp
         | Just gd <- lookupGlobal ctx g
         , Just body <- gdValue gd
-        , gdReducible gd || isPrimRoot body ->
-            go (fuel - 1) (evalApp ctx body sp)
+        , ecRuntime ctx || gdReducible gd || isPrimRoot body ->
+            -- runtime is strict (§32.1): force arguments before entry so
+            -- deep recursion does not pile up unreduced argument chains
+            let sp' =
+                  if ecRuntime ctx
+                    then [(ic, go (fuel - 1) a) | (ic, a) <- sp]
+                    else sp
+             in go (fuel - 1) (evalApp ctx body sp')
       -- a stuck application: explicit over-applications append to the
       -- marker's argument list, so replay the head against all of them
       VPrim p (f : a : rest)

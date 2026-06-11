@@ -134,7 +134,7 @@ lookupCtx n (Ctx es _) = go 0 es
       | otherwise = go (i + 1) rest
 
 ec_ :: CheckM EvalCtx
-ec_ = gets (\st -> EvalCtx (Globals (csGlobals st)) (csMetas st))
+ec_ = gets (\st -> EvalCtx (Globals (csGlobals st)) (csMetas st) False)
 
 evalIn :: Ctx -> Term -> CheckM Value
 evalIn ctx t = do
@@ -704,6 +704,10 @@ infer ctx expr = case expr of
     fields <- forM fs $ \f -> do
       (t, _) <- inferType ctx (rtfType f)
       pure (nameText (rtfName f), t)
+    let names = map fst fields
+    forM_ (duplicatesOf names) $ \n ->
+      errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+        ("record type has duplicate field '" <> n <> "'")
     pure (CRecordT (sortOn fst fields), VSort 0)
   EApp f args -> do
     (fTm, fTy) <- infer ctx f
@@ -1192,18 +1196,25 @@ elabString ctx sl parts sp = case (slPrefix sl, parts) of
 -- ── Records, projections, patches ────────────────────────────────────
 
 elabRecordLit :: Ctx -> [RecItem] -> Span -> CheckM (Term, Value)
-elabRecordLit ctx items _sp = do
+elabRecordLit ctx items sp = do
   rs <- forM items $ \(RecItem _ n mv) -> do
     let e = fromMaybe (EVar n) mv -- punning
     (tm, ty) <- infer ctx e
     (tm1, ty1) <- insertAllImplicits ctx (nameSpan n) tm ty
     pure (nameText n, tm1, ty1)
+  forM_ (duplicatesOf [n | (n, _, _) <- rs]) $ \n ->
+    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+      ("record literal has duplicate field '" <> n <> "'")
   -- evaluate fields in source order via lets, assemble canonically
   let sorted = sortOn (\(n, _, _) -> n) rs
   pure
     ( CRecordV [(n, tm) | (n, tm, _) <- sorted]
     , VRecordT [(n, ty) | (n, _, ty) <- sorted]
     )
+
+-- | Names that occur more than once (each reported once).
+duplicatesOf :: [Text] -> [Text]
+duplicatesOf ns = nub [n | n <- ns, length (filter (== n) ns) > 1]
 
 elabDot :: Ctx -> Expr -> DotMember -> CheckM (Term, Value)
 elabDot ctx e member = do
@@ -1454,6 +1465,10 @@ elabPatch ctx e items sp = do
   t <- forceM ty1
   case t of
     VRecordT fs -> do
+      let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
+      forM_ (duplicatesOf updateNames) $ \n ->
+        errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa.record.patch-duplicate")
+          ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
       updates <- forM items $ \case
         PatchUpdate [(False, n)] (PatchValue v) -> do
           case lookup (nameText n) fs of
@@ -1808,8 +1823,22 @@ irrefutableFor ctx pat ty = case pat of
 elabPattern :: Ctx -> Pattern -> Value -> CheckM (CorePat, Ctx, Bool)
 elabPattern ctx0 pat0 ty0 = do
   (p, ctx) <- go ctx0 pat0 ty0
+  forM_ (duplicatesOf (corePatNames p)) $ \n ->
+    errAt (patternSpan pat0) "E_DUPLICATE_PATTERN_BINDER" (Just "kappa.pattern.duplicate-binder")
+      ("pattern binds '" <> n <> "' more than once (§17.2)")
   pure (p, ctx, True)
   where
+    corePatNames :: CorePat -> [Text]
+    corePatNames = \case
+      CPVar n -> [n]
+      CPAs n p -> n : corePatNames p
+      CPCtor _ ps -> concatMap corePatNames ps
+      CPTuple ps -> concatMap corePatNames ps
+      CPRecord fs _ -> concatMap (corePatNames . snd) fs
+      CPInject _ p -> corePatNames p
+      -- or-pattern alternatives bind the same names; count one side
+      CPOr (p : _) -> corePatNames p
+      _ -> []
     go ctx pat tyIn = do
       ty <- forceM tyIn
       case pat of
@@ -2283,6 +2312,9 @@ elabAliasBody params rhs = go emptyCtx params
 headerData :: DataDecl -> Span -> CheckM ()
 headerData (DataDecl n params mkind ctors) sp = do
   g <- ownName n
+  forM_ (duplicatesOf [nameText cn | CtorDecl cn _ _ _ <- ctors]) $ \dn ->
+    errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate")
+      ("duplicate constructor '" <> dn <> "' in data declaration")
   -- data type constructor type: params -> Type
   paramTele <- elabTele emptyCtx params
   let sortT = CSort 0
@@ -2520,6 +2552,12 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy mdec body) sp = do
       _ <- pure mdec
       addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
     _ -> do
+      -- a previous definition with a value: duplicate declaration (§9.2)
+      case msig of
+        Just gd' | isJust (gdValue gd') ->
+          errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate")
+            ("duplicate declaration of '" <> nameText n <> "'")
+        _ -> pure ()
       -- no preceding signature: pre-register the name so self-references
       -- resolve and are reported as recursion-without-signature (§9.2)
       placeholderTy <- freshMetaV emptyCtx
