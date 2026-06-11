@@ -1599,7 +1599,16 @@ pParenExpr start = do
         <|> try opRefOrSection
         <|> try recordTypeFields
         <|> try recordLitFields
+        <|> try leftSection
         <|> exprBased
+
+    -- (e op): left operator section (§16.1.6)
+    leftSection = do
+      e <- pAppExpr
+      opSp <- currentSpan
+      op <- pOperatorTok
+      token TokRParen
+      ESectionLeft e (op {nameSpan = opSp}) <$> spanFrom start
 
     -- A parenthesized Pi binder: `(q x : A) -> B`, `(@t : Type) -> B`,
     -- `(& x : A) -> B`, `(thunk x : A) -> B`, `(x y : A) -> B` (§12.1).

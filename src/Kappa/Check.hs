@@ -658,6 +658,16 @@ binderQ b = case bpQuantity (bPrefix b) of
     | bImplicit b -> QW
     | otherwise -> QW
 
+-- | The binder's annotation with suspension sugar applied: a
+-- @(thunk x : T)@ binder has type @Thunk T@ (§16.2.4).
+binderTypeExpr :: Binder -> Maybe Expr
+binderTypeExpr b = case (bSusp b, bType b) of
+  (Just SuspThunk, Just t) ->
+    Just (EApp (EVar (Name "Thunk" (bSpan b))) [ArgExplicit t])
+  (Just SuspLazy, Just t) ->
+    Just (EApp (EVar (Name "Need" (bSpan b))) [ArgExplicit t])
+  (_, mt) -> mt
+
 -- ── Elaboration ──────────────────────────────────────────────────────
 
 insertAllImplicits :: Ctx -> Span -> Term -> Value -> CheckM (Term, Value)
@@ -723,7 +733,7 @@ infer ctx expr = case expr of
     tm <- check ctx e tyV
     pure (tm, tyV)
   EArrow b body -> do
-    domE <- case bType b of
+    domE <- case binderTypeExpr b of
       Just t -> pure t
       Nothing -> pure (EUnit (bSpan b))
     (domTm, _) <- inferType ctx domE
@@ -874,6 +884,29 @@ check ctx expr expected0 = do
       (tm, ty) <- elabLet ctx binds body (Just expected)
       expectType ctx (exprSpan body) ty expected
       pure tm
+    -- operator/receiver sections check as their lambda desugaring so
+    -- the expected type guides the receiver (§16.1.6)
+    (ESectionLeft e op sp, _) ->
+      check ctx (lamSection sp "__x" (\x -> EApp (EVar op) [ArgExplicit e, ArgExplicit x])) expected
+    (ESectionRight op e sp, _) ->
+      check ctx (lamSection sp "__x" (\x -> EApp (EVar op) [ArgExplicit x, ArgExplicit e])) expected
+    (EReceiverSection ms args sp, _) ->
+      check ctx
+        ( lamSection sp "__x" $ \x ->
+            let base = foldl' EDot x ms
+             in case args of
+                  [] -> base
+                  _ -> EApp base args
+        )
+        expected
+    (EThunk e _, VGlobN (GName _ "Thunk") [(_, a)]) -> CThunkE <$> check ctx e a
+    (ELazy e _, VGlobN (GName _ "Need") [(_, a)]) -> CLazyE <$> check ctx e a
+    (_, VGlobN (GName _ "Thunk") [(_, a)]) -> do
+      -- §16.1.7.1 step 0: try the suspension type itself first
+      r <- tryInferAgainst expr expected
+      case r of
+        Just tm -> pure tm
+        Nothing -> CThunkE <$> check ctx expr a
     -- expected-type-directed injection (§13.1.3) must see literals too
     (_, VVariantT members)
       | not (isVariant expr) -> do
@@ -892,14 +925,6 @@ check ctx expr expected0 = do
       (tm, ty) <- elabVariant ctx arms mtail sp (Just expected)
       expectType ctx sp ty expected
       pure tm
-    (EThunk e _, VGlobN (GName _ "Thunk") [(_, a)]) -> CThunkE <$> check ctx e a
-    (ELazy e _, VGlobN (GName _ "Need") [(_, a)]) -> CLazyE <$> check ctx e a
-    (_, VGlobN (GName _ "Thunk") [(_, a)]) -> do
-      -- §16.1.7.1 step 0: try the suspension type itself first
-      r <- tryInferAgainst expr expected
-      case r of
-        Just tm -> pure tm
-        Nothing -> CThunkE <$> check ctx expr a
     (ETuple es sp, VRecordT fs)
       | length es == length fs -> do
           -- expected-type-directed punning (§13.1.2): a parenthesized
@@ -932,6 +957,11 @@ check ctx expr expected0 = do
       EVariant {} -> True
       _ -> False
 
+-- helper shared by section desugarings
+lamSection :: Span -> Text -> (Expr -> Expr) -> Expr
+lamSection sp nm f =
+  ELambda Nothing [simpleBinder (Name nm sp)] (f (EVar (Name nm sp))) sp
+
 -- expected-type-directed injection / widening (§13.1.3)
 injectInto :: Ctx -> Term -> Value -> [Value] -> Value -> Span -> CheckM Term
 injectInto ctx tm ty members expected sp = do
@@ -954,8 +984,25 @@ injectInto ctx tm ty members expected sp = do
           expectType ctx sp ty expected
           pure tm
 
+-- | Stable member identity of a variant member type (§31.3): rendered
+-- from the alias-normalized type so @Int@ and @Integer@ coincide.
 tagOf :: Ctx -> Value -> CheckM Text
-tagOf ctx v = renderTerm <$> quoteIn ctx v
+tagOf ctx v = do
+  ec <- ec_
+  pure (renderTerm (quote ec (ctxLen ctx) (deepForceV ec v)))
+
+-- normalize alias heads recursively through type structure
+deepForceV :: EvalCtx -> Value -> Value
+deepForceV ec = go (32 :: Int)
+  where
+    go :: Int -> Value -> Value
+    go 0 v = v
+    go fuel v = case force ec v of
+      VGlobN g sp -> VGlobN g [(ic, go (fuel - 1) a) | (ic, a) <- sp]
+      VCtor g as -> VCtor g (map (go (fuel - 1)) as)
+      VRecordT fs -> VRecordT [(n, go (fuel - 1) t) | (n, t) <- fs]
+      VVariantT ms -> VVariantT (map (go (fuel - 1)) ms)
+      v' -> v'
 
 inferType :: Ctx -> Expr -> CheckM (Term, Int)
 inferType ctx e = do
@@ -1587,7 +1634,7 @@ elabLambda ctx0 bs0 body sp mexpected = go ctx0 bs0 mexpected
         Just expectedPi@(VPi ic q nm dom clo)
           | ic == (if bImplicit b then Impl else Expl) -> do
               -- check declared annotation against expected domain
-              forM_ (bType b) $ \tyE -> do
+              forM_ (binderTypeExpr b) $ \tyE -> do
                 (tyTm, _) <- inferType ctx tyE
                 tyV <- evalIn ctx tyTm
                 expectType ctx (bSpan b) dom tyV
@@ -1597,7 +1644,7 @@ elabLambda ctx0 bs0 body sp mexpected = go ctx0 bs0 mexpected
               (inner, _) <- go ctx' rest (Just cod)
               pure (CLam ic q bn inner, expectedPi)
         _ -> do
-          domV <- case bType b of
+          domV <- case binderTypeExpr b of
             Just tyE -> do
               (tyTm, _) <- inferType ctx tyE
               evalIn ctx tyTm
@@ -2421,7 +2468,7 @@ teleCtx = foldl (\c (_, _, nm, _) -> bindCtx nm False (VSort 0) c) emptyCtx
 elabTele :: Ctx -> [Binder] -> CheckM Telescope
 elabTele _ [] = pure []
 elabTele ctx (b : rest) = do
-  domTm <- case bType b of
+  domTm <- case binderTypeExpr b of
     Just t -> fst <$> inferType ctx t
     Nothing -> pure (CSort 0) -- unannotated params default to Type (§11.3.3)
   domV <- evalIn ctx domTm
@@ -2813,7 +2860,7 @@ checkAgainstSig sigTy binders body sp = do
               CLam Impl q nm <$> go ctx' cod (b : rest)
         VPi ic q nm dom clo -> do
           let bn = fromMaybe nm (nameText <$> bName b)
-          forM_ (bType b) $ \tyE -> do
+          forM_ (binderTypeExpr b) $ \tyE -> do
             (tyTm, _) <- inferType ctx tyE
             tyV <- evalIn ctx tyTm
             expectType ctx (bSpan b) dom tyV
