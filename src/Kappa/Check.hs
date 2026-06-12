@@ -2174,18 +2174,21 @@ expandRow (p : ps) = case p of
   _ -> [p : ps]
 
 -- a first-column pattern this analysis treats as matching anything
-isWildLike :: CorePat -> Bool
-isWildLike = \case
+isWildLike :: CheckState -> CorePat -> Bool
+isWildLike st = \case
   CPWild -> True
   CPVar _ -> True
   CPRecord {} -> True -- over-approximation
   CPInject {} -> True -- nested variant injections: over-approximation
   CPInjectRest _ -> True
+  -- an arity-mismatched constructor pattern was already diagnosed;
+  -- do not cascade a non-exhaustiveness report
+  CPCtor c ps -> length ps /= ctorArity st c
   _ -> False
 
-patKey :: CorePat -> Maybe (PatKey, Int)
-patKey = \case
-  CPCtor c ps -> Just (KCtor c, length ps)
+patKey :: CheckState -> CorePat -> Maybe (PatKey, Int)
+patKey st = \case
+  CPCtor c ps | length ps == ctorArity st c -> Just (KCtor c, length ps)
   CPTuple ps -> Just (KTup (length ps), length ps)
   CPLit l -> Just (KLit l, 0)
   _ -> Nothing
@@ -2204,19 +2207,18 @@ specializeRows st k a rows =
   , Just row' <- [spec row]
   ]
   where
-    _ = st
     spec [] = Nothing
     spec (p : ps)
-      | isWildLike p = Just (replicate a CPWild ++ ps)
-      | Just (k', _) <- patKey p, k' == k = Just (subPats p ++ ps)
+      | isWildLike st p = Just (replicate a CPWild ++ ps)
+      | Just (k', _) <- patKey st p, k' == k = Just (subPats p ++ ps)
       | otherwise = Nothing
 
-defaultRows :: [[CorePat]] -> [[CorePat]]
-defaultRows rows =
+defaultRows :: CheckState -> [[CorePat]] -> [[CorePat]]
+defaultRows st rows =
   [ ps
   | row0 <- rows
   , (p : ps) <- expandRow row0
-  , isWildLike p
+  , isWildLike st p
   ]
 
 -- is the all-wildcard row of width n useful w.r.t. the matrix?
@@ -2224,7 +2226,7 @@ wildUseful :: CheckState -> [[CorePat]] -> Int -> Bool
 wildUseful _ rows 0 = null rows
 wildUseful st rows n =
   let firsts = [p | row0 <- rows, (p : _) <- expandRow row0]
-      keys = nub (mapMaybe patKey firsts)
+      keys = nub (mapMaybe (patKey st) firsts)
       complete = case keys of
         ((KTup _, _) : _) -> True
         ks@((KCtor c, _) : _) ->
@@ -2238,7 +2240,7 @@ wildUseful st rows n =
             [ wildUseful st (specializeRows st k a rows) (a + n - 1)
             | (k, a) <- keys
             ]
-        else wildUseful st (defaultRows rows) (n - 1)
+        else wildUseful st (defaultRows st rows) (n - 1)
 
 checkIrrefutable :: Ctx -> Pattern -> Value -> Span -> CheckM ()
 checkIrrefutable ctx pat ty sp = do
