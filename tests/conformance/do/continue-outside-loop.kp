@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_BREAK_OUTSIDE_LOOP
+
+-- §18.6: break/continue are valid only within the body of a while/for
+-- loop; using them outside a loop body is a compile-time error.
+main : UIO Unit
+let main = do
+    printlnString "before"
+    continue
+    printlnString "after"

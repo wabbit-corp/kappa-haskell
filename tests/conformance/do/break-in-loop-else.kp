@@ -1,0 +1,12 @@
+--! assertDiagnostic error E_BREAK_OUTSIDE_LOOP
+
+-- The loop `else` suite runs after the loop has already completed, so
+-- it is not part of the loop body: with no outer loop, a break there
+-- has no target and is a compile-time error (§18.6).
+main : UIO Unit
+let main = do
+    for x in 1 :: Nil do
+        printlnString "body"
+    else do
+        break
+    printlnString "done"

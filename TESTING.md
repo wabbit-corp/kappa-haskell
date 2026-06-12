@@ -4,7 +4,7 @@
 
 ```
 cabal build                                   # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance # in-tree suite (80/80)
+cabal run -v0 kappa -- test tests/conformance # in-tree suite (83/83)
 cabal run -v0 kappa -- test examples          # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp   # one fixture
 tools/run-external-fixtures.sh                # external corpus (see below)
@@ -64,7 +64,7 @@ directives are harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **80/80 passing**, zero unsupported, zero
+`tests/conformance/` — **83/83 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |

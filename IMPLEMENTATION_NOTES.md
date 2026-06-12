@@ -180,7 +180,7 @@ lexical states make recovery guesses worse than a clean stop).
 | Modules (§8) | Import-ordered multi-file suites | No visibility/opacity/export enforcement, URL imports |
 | Lexer recovery (§3.1.14A) | Stops at first lexical error | Multi-error lexical fixtures under-count |
 | Prelude (§28) | §28.2 subset, not closable | Missing names listed in SPEC_COVERAGE.md §28.2 row |
-| Labeled control (§18.2.5, §18.5.1, §18.7) | `break@L`/`continue@L` implemented with compile-time label resolution (`E_LABEL_UNRESOLVED` when no enclosing labeled loop of the do-scope matches); `return@L`/`defer@L` → `E_UNSUPPORTED`; labels on `do`/lambda/`match` parse and are inert | Inert labels are sound here because every construct that could consume them is rejected at its use site (see "Review responses" #2) |
+| Labeled control (§18.2.5, §18.5.1, §18.7) | `break@L`/`continue@L` implemented with compile-time label resolution (`E_LABEL_UNRESOLVED` when no enclosing labeled loop of the do-scope matches); unlabeled `break`/`continue` outside a loop body of the do-scope → `E_BREAK_OUTSIDE_LOOP` (§18.6); `return@L`/`defer@L` → `E_UNSUPPORTED`; labels on `do`/lambda/`match` parse and are inert | Inert labels are sound here because every construct that could consume them is rejected at its use site (see "Review responses" #2). Loop targets never cross a first-class do-value boundary — each do-expression is a fresh scope, so break/continue inside `let inner = do …` are rejected even when `inner` is spliced inside a loop (loud-conservative; matches the "Completion is not first-class" delta above) |
 
 Everything rejected rather than approximated is surfaced as
 `E_UNSUPPORTED` with a note pointing at SPEC_COVERAGE.md (see
@@ -261,5 +261,29 @@ fixed or justified here).
     caller; not worth a module boundary.
 12. **Test hygiene** — fixed. Labeled-loop/labeled-control fixtures
     (`tests/conformance/labels/`), `label@match`, `defer@`, `return@`,
-    and `{}` fixtures added (suite is now 80 fixtures); the test-suite
+    and `{}` fixtures added (suite grew to 80 fixtures in that round,
+    83 with the round-3 additions below); the test-suite
     stanza carries the same `-with-rtsopts=-K64m` as the executable.
+13. **Unlabeled `break`/`continue` outside a loop** — fixed. `elabDo`
+    now tracks one entry per enclosing loop (labeled or not): an
+    unlabeled `break`/`continue` with no enclosing loop in its
+    do-scope is rejected at compile time with `E_BREAK_OUTSIDE_LOOP`
+    (§18.6 "Using them outside a loop body is a compile-time error";
+    `tests/conformance/do/continue-outside-loop.kp`,
+    `do/break-in-loop-else.kp` — the `else` suite runs after the loop,
+    so the loop itself is not a target there). The now-unreachable
+    runtime catch-all in `runIOValue` that silently converted an
+    escaping `CplBreak`/`CplContinue` to unit was replaced with a loud
+    internal error.
+14. **Completion confinement at first-class do-value boundaries** —
+    fixed (loudness) / documented (semantics). The silent half is gone:
+    finding 13's check makes `break` inside `let inner = do break`
+    a compile-time `E_BREAK_OUTSIDE_LOOP` even when `inner` is spliced
+    inside a loop (`tests/conformance/do/break-in-first-class-do.kp`),
+    matching the already-loud labeled case. The semantic delta itself —
+    §18.8.10 lets break exit nested do-scopes, this implementation
+    confines targets to the do-scope the break is written in — is
+    retained deliberately (it is the "Completion is not a first-class
+    core value" representation choice above) and is now stated
+    explicitly in SPEC_COVERAGE.md's §18.2–18.8 row and the deltas
+    table here, instead of only in prose.

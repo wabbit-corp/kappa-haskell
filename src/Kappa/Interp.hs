@@ -86,7 +86,14 @@ runIOValue rt v = case force (rtEC rt) v of
     case r of
       CplNormal x -> pure x
       CplReturn x -> pure x
-      _ -> pure unitV
+      -- unreachable for elaborated programs: break/continue outside a
+      -- loop body of their own do-scope are rejected at compile time
+      -- (E_BREAK_OUTSIDE_LOOP / E_LABEL_UNRESOLVED), and the loop
+      -- machinery in 'runScope' consumes in-loop completions.
+      CplBreak {} ->
+        throwIO (KappaError (VLit (LitStr "internal: break escaped its do-scope")))
+      CplContinue {} ->
+        throwIO (KappaError (VLit (LitStr "internal: continue escaped its do-scope")))
   VPrim p args -> runPrimIO rt p args
   other -> pure other
 

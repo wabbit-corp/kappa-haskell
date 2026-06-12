@@ -1,0 +1,16 @@
+--! assertDiagnostic error E_BREAK_OUTSIDE_LOOP
+
+-- A first-class do value starts a fresh do-scope: a break written in
+-- `inner` has no enclosing loop of its own scope, so it is rejected at
+-- compile time rather than silently swallowed when `inner` is spliced
+-- inside a loop (completion is confined per do-scope; see
+-- IMPLEMENTATION_NOTES.md "Completion is not first-class").
+main : UIO Unit
+let main = do
+    let inner = do
+        printlnString "inner"
+        break
+    while eqInt 1 1 do
+        !inner
+        printlnString "loop-tail"
+    printlnString "done"

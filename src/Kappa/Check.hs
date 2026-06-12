@@ -2202,10 +2202,14 @@ elabTry ctx body excepts mfin sp = do
 
 -- do blocks (§18.2): the carrier is IO in this implementation.
 --
--- @loops@ tracks the labels of the enclosing loops of this do-scope so
--- labeled @break@\/@continue@ are resolved at compile time (§18.2.5).
--- The loop's @else@ suite runs after normal completion, so the loop's
--- own label is not a valid target there.
+-- @loops@ tracks the enclosing loops of this do-scope (one entry per
+-- loop, @Just label@ when labeled) so @break@\/@continue@ are resolved
+-- at compile time: a labeled form must name an enclosing labeled loop
+-- (§18.2.5) and an unlabeled form must occur inside some loop body
+-- (§18.6 "Using them outside a loop body is a compile-time error").
+-- The loop's @else@ suite runs after normal completion, so the loop
+-- itself is not in scope as a target there. Each do-expression starts a
+-- fresh scope: targets never cross a first-class do-value boundary.
 elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
 elabDo ctx items _sp mexpected = do
   (errT, resT) <- do
@@ -2216,7 +2220,7 @@ elabDo ctx items _sp mexpected = do
   kitems <- goItems [] ctx errT resT items
   pure (CDo kitems, ioType errT resT)
   where
-    goItems :: [Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
+    goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
     goItems loops c errT resT (item : rest) = do
       let lastItem = null rest
@@ -2307,11 +2311,11 @@ elabDo ctx items _sp mexpected = do
               pure (CCtor (gPrel "Unit") [])
           ks <- goItems loops c errT resT rest
           pure (KReturn tm : ks)
-        DoBreak ml _ -> do
-          forM_ ml (checkLoopLabel "break")
+        DoBreak ml bsp -> do
+          checkLoopTarget "break" ml bsp
           (KBreak (nameText <$> ml) :) <$> goItems loops c errT resT rest
-        DoContinue ml _ -> do
-          forM_ ml (checkLoopLabel "continue")
+        DoContinue ml csp -> do
+          checkLoopTarget "continue" ml csp
           (KContinue (nameText <$> ml) :) <$> goItems loops c errT resT rest
         DoWhile ml cond body mels _ -> do
           condTm <- check c (desugarBang cond) (VGlobN (gPrel "Bool") [])
@@ -2357,12 +2361,18 @@ elabDo ctx items _sp mexpected = do
                 "this local declaration form inside do is not supported by this implementation"
               goItems loops c errT resT rest
       where
-        withLoop ml = maybe loops (\l -> nameText l : loops) ml
-        checkLoopLabel what l =
-          unless (nameText l `elem` loops) $
-            errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa.do.label-unresolved")
-              (what <> "@" <> nameText l
-                 <> " does not target an enclosing labeled loop of this do-scope (§18.2.5)")
+        withLoop ml = (nameText <$> ml) : loops
+        checkLoopTarget what ml sp = case ml of
+          Just l ->
+            unless (Just (nameText l) `elem` loops) $
+              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa.do.label-unresolved")
+                (what <> "@" <> nameText l
+                   <> " does not target an enclosing labeled loop of this do-scope (§18.2.5)")
+          Nothing ->
+            when (null loops) $
+              errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa.do.break-outside-loop")
+                ("'" <> what
+                   <> "' is valid only within the body of a loop of this do-scope (§18.6)")
 
 -- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
 -- implicit context for the remaining items. @before@ is the context the
