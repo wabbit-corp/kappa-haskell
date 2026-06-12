@@ -14,7 +14,7 @@ Appendix T. Statuses:
 * **Not implemented** — no meaningful support.
 
 Test references are paths under `tests/conformance/` (the in-tree
-suite, 69/69 passing) or `examples/`. The external black-box corpus
+suite, 70/70 passing) or `examples/`. The external black-box corpus
 tally is in `tests/external-results.md` and TESTING.md.
 
 ## Part I. Language Contract and Conformance
@@ -34,7 +34,7 @@ tally is in `tests/external-results.md` and TESTING.md.
 | Section | Status | Notes / tests |
 | --- | --- | --- |
 | §5.1 Identifiers | Implemented | ASCII identifiers. §5.1A Unicode name profile: not implemented (gate inactive). |
-| §5.2 Keywords | Implemented | All keywords are soft: lexed as identifiers, contextually recognized by the parser (`Kappa.Lexer` design note). |
+| §5.2 Keywords | Partial | All keywords lex as identifiers and are recognized contextually. Query/handler keywords — `group`, `by`, `order`, `skip`, `take`, `distinct`, `join`, `yield`, `into`, `when`, `handle`, `deep` — are ordinary identifiers outside their clause contexts, including bare and parenthesized argument position, parameter binders, and assignment targets (`lexer/soft-keyword-identifiers.kp`): they terminate an application-argument run only inside a comprehension body (plus `by` inside a `decreases` measure), and `deep` only when immediately followed by `handle`. Residual delta: keywords that continue an enclosing construct after an expression or start a statement — `then else elif in with case except finally do where if match while for for? let let? var return break continue defer import export instance derive is as on using captures decreases` — still terminate an unparenthesized argument run context-insensitively, so a bare reference to a variable with one of those names in argument position misparses (parenthesized: parse error; bare: statement split, cascading per the §3.1.14A do-block recovery delta above). See KNOWN_SPEC_ISSUES.md #11. |
 | §5.3 Comments | Implemented | Line comments; comment-only lines never affect layout. |
 | §5.4 Whitespace, indentation, continuation | Implemented | Python-style INDENT/DEDENT at bracket depth zero; logical-line indentation is the first token's column. Tabs rejected: `lexer/tab-in-indent.kp`, `lexer/tab-in-source.kp`. Bad dedent: `parser/bad-dedent.kp` (`E_LAYOUT_BAD_DEDENT`). |
 | §5.5.1 Operator tokens, longest match | Implemented | Longest-match-first incl. `let?`/`for?`, `?.`, `?:`, `?name` holes, `~=`, `<[`, `]>` (see KNOWN_SPEC_ISSUES.md for a consequence). |

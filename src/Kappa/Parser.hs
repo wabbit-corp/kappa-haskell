@@ -125,17 +125,46 @@ spanFrom start = do
   end <- lastSpan
   pure start {spanEnd = spanEnd end}
 
--- Keywords that terminate an application-argument sequence when they
--- appear unparenthesized (contextual stop set).
+-- Keywords that always terminate an application-argument sequence when
+-- they appear unparenthesized: each introduces the next part of an
+-- enclosing construct (branch, clause, or statement), so it can never be
+-- a bare argument. Query-clause keywords are deliberately NOT in this
+-- set — §5.2 requires them to parse as ordinary identifiers outside the
+-- contexts where the keyword reading is grammatically possible; see
+-- 'queryStopKeywords' and 'isStopKeywordAt'.
 stopKeywords :: [Text]
 stopKeywords =
   [ "then", "else", "elif", "in", "with", "case", "except", "finally"
-  , "do", "is", "captures", "decreases", "by", "using", "as", "on"
-  , "yield", "into", "group", "order", "skip", "take", "distinct", "join"
+  , "do", "is", "captures", "decreases", "using", "as", "on"
   , "where", "if", "match", "while", "for", "for?", "let", "let?", "var"
   , "return", "break", "continue", "defer", "import", "export", "instance"
-  , "derive", "when", "handle", "deep", "else"
+  , "derive"
   ]
+
+-- Comprehension/query clause keywords (§20.3): they terminate an
+-- argument sequence only while a comprehension body is being parsed
+-- ("by" is additionally activated inside a `decreases` measure clause).
+-- Everywhere else they are ordinary identifiers (§5.2).
+queryStopKeywords :: [Text]
+queryStopKeywords =
+  ["yield", "into", "group", "by", "order", "skip", "take", "distinct", "join"]
+
+-- Is the identifier @kw@, located @n@ tokens ahead of the cursor, acting
+-- as a stop keyword here? `deep` stops only when it begins a
+-- `deep handle` expression (one-token lookahead); query keywords stop
+-- only inside their clause contexts ('withExtraStops').
+isStopKeywordAt :: Int -> Text -> P Bool
+isStopKeywordAt n kw
+  | kw `elem` stopKeywords = pure True
+  | kw == "deep" = (== TokIdent "handle") <$> peekTokenAt (n + 1)
+  | otherwise = (kw `elem`) <$> extraStops
+
+-- Does a stop keyword begin at the current token?
+pAtStopKeyword :: P Bool
+pAtStopKeyword =
+  peekToken >>= \case
+    TokIdent kw -> isStopKeywordAt 0 kw
+    _ -> pure False
 
 -- ── Module structure ─────────────────────────────────────────────────
 
@@ -356,7 +385,9 @@ pDecreases = do
       token TokRParen
       pure ns
     measure = do
-      m <- pExprNoDecreases
+      -- `by` separates the measure from its ordering relation here, so
+      -- it is an active stop keyword within the measure expression only.
+      m <- withExtraStops ["by"] pExprNoDecreases
       by <- optionMaybe (pKeyword "by" *> pExprNoDecreases)
       us <- optionMaybe (pKeyword "using" *> pExprNoDecreases)
       pure (DecMeasure m by us)
@@ -878,9 +909,9 @@ pParamBinder = unitBinder <|> parenBinder <|> bare
     bare = do
       sp <- currentSpan
       n <- try $ do
-        n <- pIdent
-        guard (nameText n `notElem` stopKeywords)
-        pure n
+        stop <- pAtStopKeyword
+        guard (not stop)
+        pIdent
       if nameText n == "_"
         then pure [Binder False emptyPrefix Nothing NoReceiver False Nothing False Nothing Nothing sp]
         else pure [(simpleBinder n) {bSpan = sp}]
@@ -1342,7 +1373,7 @@ pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
     namedBlock = do
       sp <- currentSpan
       token TokLBrace
-      items <- sepBy1 namedItem (token TokComma)
+      items <- clearExtraStops (sepBy1 namedItem (token TokComma))
       void (optional (token TokComma))
       token TokRBrace
       sp' <- spanFrom sp
@@ -1362,10 +1393,8 @@ pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
 -- An argument operand must not begin with a stop keyword.
 pArgOperand :: P Expr
 pArgOperand = do
-  t <- peekToken
-  case t of
-    TokIdent kw | kw `elem` stopKeywords -> parseFail "argument"
-    _ -> pPostfixExpr
+  stop <- pAtStopKeyword
+  if stop then parseFail "argument" else pPostfixExpr
 
 -- Argument-position expression used by thunk/lazy/force.
 pExprArg :: P Expr
@@ -1497,20 +1526,22 @@ pAtom = do
       EModuleSig n <$> spanFrom start
     TokIdent _ -> EVar <$> pIdent
     TokBacktick _ -> EVar <$> pIdent
-    TokLParen -> pParenExpr start
-    TokVariantOpen -> pVariantExpr start
-    TokLBracket -> pListOrComp start
-    TokSetOpen -> pSetOrComp start
-    TokLBrace -> pMapOrComp start
-    TokEffOpen -> pEffRow start
+    -- Brackets close any enclosing clause context, so query keywords
+    -- are ordinary identifiers inside them (§5.2).
+    TokLParen -> clearExtraStops (pParenExpr start)
+    TokVariantOpen -> clearExtraStops (pVariantExpr start)
+    TokLBracket -> clearExtraStops (pListOrComp start)
+    TokSetOpen -> clearExtraStops (pSetOrComp start)
+    TokLBrace -> clearExtraStops (pMapOrComp start)
+    TokEffOpen -> clearExtraStops (pEffRow start)
     TokQuoteBrace -> do
       void anyToken
-      e <- pExpr
+      e <- clearExtraStops pExpr
       token TokRBrace
       EQuote e <$> spanFrom start
     TokSplice -> do
       void anyToken
-      e <- pExpr
+      e <- clearExtraStops pExpr
       token TokRParen
       ESplice e <$> spanFrom start
     TokBang -> do
@@ -1524,18 +1555,20 @@ pAtom = do
     -- an ordinary variable (e.g. the `type` prefixed-string handler).
     kindQualified start kw = do
       nxt <- peekTokenAt 1
-      case nxt of
-        TokIdent t2
-          | t2 `notElem` stopKeywords -> do
-              void anyToken
-              n <- pIdent
-              let sel = case kw of
-                    "type" -> SelType
-                    "trait" -> SelTrait
-                    "effectLabel" -> SelEffectLabel
-                    _ -> SelModule
-              EKindQualified sel n <$> spanFrom start
-        _ -> EVar <$> pIdent
+      qualifies <- case nxt of
+        TokIdent t2 -> not <$> isStopKeywordAt 1 t2
+        _ -> pure False
+      if qualifies
+        then do
+          void anyToken
+          n <- pIdent
+          let sel = case kw of
+                "type" -> SelType
+                "trait" -> SelTrait
+                "effectLabel" -> SelEffectLabel
+                _ -> SelModule
+          EKindQualified sel n <$> spanFrom start
+        else EVar <$> pIdent
 
 -- Atom without sections (constructor bare fields).
 pAtomNoSection :: P Expr
@@ -1858,7 +1891,7 @@ pOnConflict = do
 -- Comprehension bodies: clauses separated by commas or newlines, ending
 -- with a yield (§20.3).
 pCompBody :: P ([CompClause], CompYield)
-pCompBody = keepSoftNewlines $ do
+pCompBody = keepSoftNewlines $ withExtraStops queryStopKeywords $ do
   void (many pCompSep)
   go []
   where
@@ -2272,8 +2305,9 @@ pDoItem = do
       DoLetQ pat e els <$> spanFrom start
     assignOrExpr start = assignItem start <|> labeledLoop start <|> (DoExpr <$> pExpr)
     assignItem start = try $ do
+      stop <- pAtStopKeyword
+      guard (not stop)
       n <- pIdent
-      guard (nameText n `notElem` stopKeywords)
       t2 <- peekToken
       case t2 of
         TokEquals -> do

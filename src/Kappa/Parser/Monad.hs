@@ -25,6 +25,9 @@ module Kappa.Parser.Monad
   , sepBy
   , sepBy1
   , keepSoftNewlines
+  , withExtraStops
+  , clearExtraStops
+  , extraStops
   , noEq
   , eqAllowed
   , recordRecovered
@@ -43,6 +46,7 @@ data PState = PState
   , psLast :: !Span
   , psSoftNL :: !Bool -- ^ True = soft newlines are significant
   , psEqOk :: !Bool -- ^ may '=' join an operator chain here? (§11.4.1)
+  , psStopExtra :: ![Text] -- ^ context-sensitive stop keywords (§5.2)
   , psRecovered :: ![Diagnostic]
   }
 
@@ -88,7 +92,7 @@ mergeErr e1 e2
 
 runP :: P a -> [Located] -> Either PErr (a, [Diagnostic])
 runP (P f) toks =
-  case f (PState toks startSpan False True []) of
+  case f (PState toks startSpan False True [] []) of
     Left e -> Left e
     Right (a, s) -> Right (a, reverse (psRecovered s))
   where
@@ -182,6 +186,25 @@ keepSoftNewlines :: P a -> P a
 keepSoftNewlines (P f) = P $ \s -> do
   (a, s') <- f s {psSoftNL = True}
   pure (a, s' {psSoftNL = psSoftNL s})
+
+-- | Activate additional context-sensitive stop keywords while a clause
+-- context is open (comprehension bodies, @decreases ... by@). Restored
+-- on exit, so the keywords stay ordinary identifiers elsewhere (§5.2).
+withExtraStops :: [Text] -> P a -> P a
+withExtraStops ks (P f) = P $ \s -> do
+  (a, s') <- f s {psStopExtra = ks <> psStopExtra s}
+  pure (a, s' {psStopExtra = psStopExtra s})
+
+-- | Deactivate context-sensitive stop keywords: bracketed sub-expressions
+-- close the clause context, so soft keywords are identifiers again.
+clearExtraStops :: P a -> P a
+clearExtraStops (P f) = P $ \s -> do
+  (a, s') <- f s {psStopExtra = []}
+  pure (a, s' {psStopExtra = psStopExtra s})
+
+-- | The currently active context-sensitive stop keywords.
+extraStops :: P [Text]
+extraStops = P $ \s -> Right (psStopExtra s, s)
 
 -- | Parse with '=' excluded from operator chains: used for annotation
 -- positions where '=' terminates the enclosing binding instead of

@@ -53,6 +53,24 @@ checked against a universe re-enters the type-facet path, so heads of
 nested parenthesized type arguments (`Wrap (Wrap Integer)`,
 `List (Wrap Integer)`) also resolve in the type facet.
 
+**Soft keywords via a two-tier stop set.** Application is
+juxtaposition, so the parser ends an argument run at "stop keywords".
+These are two tiers (§5.2, KNOWN_SPEC_ISSUES.md #11): a structural set
+(`then`/`else`/`with`/`in`/statement starters/…) that always
+terminates, and a query-clause set (`group by order skip take distinct
+join yield into`) that terminates only while a comprehension body is
+open (`withExtraStops` in the parser state; `by` is also activated
+inside a `decreases` measure). Bracketed sub-expressions clear the
+active clause context, so `(take + 2)` inside a comprehension is the
+variable again. `deep` is keyword-read only when immediately followed
+by `handle`; `when` and `handle` are never argument terminators
+(handler expressions are recognized at expression heads, with
+backtracking). Net effect: query/handler keywords are ordinary
+identifiers in binder, assignment, and argument positions
+(`tests/conformance/lexer/soft-keyword-identifiers.kp`); the
+structural tier remains reserved in argument position (delta table
+below, SPEC_COVERAGE.md §5.2).
+
 **Flat operator chains, re-associated after parsing.** Fixity is
 block-scoped and declarable mid-module (§5.5.2), so the parser cannot
 know precedences. It emits flat `EOpChain`/`POpChain` nodes; `Resolve`
@@ -153,6 +171,7 @@ lexical states make recovery guesses worse than a clean stop).
 | Supertraits (§14.1.4, §14.3.3) | Premises enforced at instance declarations (`E_SUPERTRAIT_UNSATISFIED`), satisfiable through depth-bounded transitive conformance paths from the instance's own premises | Use-site implicit resolution does not walk conformance paths (evidence of a subtrait does not discharge a supertrait goal at call sites) |
 | Constructor field defaults (§10.1.1) | Stored on the constructor, elaborated at each application site against the field type | Defaults may not refer to the constructor's other fields |
 | Parse recovery (§3.1.14A) | Declaration-boundary recovery only | A parse error inside a `do` block abandons the block; later block lines cascade as bogus declaration-level errors far from the cause |
+| Soft keywords (§5.2) | Query/handler keywords identifier-usable everywhere outside their clause contexts; structural keywords context-insensitive argument terminators | A bare reference named `then`/`else`/`is`/`as`/`on`/`using`/`where`/… in argument position misparses (full residual list in SPEC_COVERAGE.md §5.2) |
 | GADTs (§17.1.1–17.1.2) | Constructor result unified with scrutinee type | No general index refinement or `impossible` reasoning |
 | Exhaustiveness (§17.1) | Closed ADTs/Bool/variants/records/tuples; literals need catch-all | No guard-aware or flow-aware coverage proofs |
 | Flow typing (§16.4) | None | `&&`/`||`/`not` refinement, transport, lower-bound flow checks absent |

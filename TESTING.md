@@ -4,7 +4,7 @@
 
 ```
 cabal build                                   # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance # in-tree suite (69/69)
+cabal run -v0 kappa -- test tests/conformance # in-tree suite (70/70)
 cabal run -v0 kappa -- test examples          # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp   # one fixture
 tools/run-external-fixtures.sh                # external corpus (see below)
@@ -64,12 +64,12 @@ directives are harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **69/69 passing**, zero unsupported, zero
+`tests/conformance/` — **70/70 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
 | --- | --- |
-| `lexer/` | bad escape, tabs in indent/source, unterminated string |
+| `lexer/` | bad escape, tabs in indent/source, unterminated string, §5.2 soft keywords as ordinary identifiers (argument/binder/assignment positions) |
 | `parser/` | `E_LAYOUT_BAD_DEDENT`, multi-error parse recovery |
 | `literals/` | radix forms, exponent-vs-suffix, suffix terms, defaulting, `FromFloat` literal elaboration |
 | `names/` | `E_UNRESOLVED_NAME`, `E_DUPLICATE_DECLARATION` |

@@ -170,3 +170,32 @@ spec never flags the footgun, and test fixtures that "sanity check"
 float equality portably will silently encode one convention or the
 other. Evidence: `Kappa.Prelude` exposes both `eqDouble` (raw-bit,
 backing `Eq Double`) and `floatEq`, per the letter of the spec.
+
+## 11. §5.2 vs juxtaposition application: soft keywords after an expression are inherently ambiguous
+
+§5.2 (normative) requires that implementations "permit their use as
+ordinary identifiers in contexts where a keyword is not syntactically
+expected". But application is juxtaposition (§16.1.7), so *any*
+identifier directly after an expression is a position where both
+readings can be grammatically live: in `[for x in f take 3 yield x]`
+the `take` may be an argument to `f` or a clause keyword, and §5.2
+gives no tie-break (the clause reading is clearly intended, but the
+spec never says clause keywords win over argument positions inside
+comprehension bodies, nor whether a separator is required). The same
+holds for every expression-continuing keyword: `e is p`, `e captures
+(r)`, `seal e as T`, `decreases m by r`, `if c then a else b` — each
+makes `f is`, `f as`, `f then` (bare references in argument position)
+unparseable-as-identifiers without unbounded context tracking, in
+direct tension with §5.2's blanket "must permit".
+
+This implementation resolves the tension contextually for the
+query/handler keyword family (`group by order skip take distinct join
+yield into when handle deep`): they terminate an argument run only
+inside comprehension bodies (clause reading wins there, identifier
+reading everywhere else; `deep` is keyword-read only when followed by
+`handle`). The expression-continuing/statement keywords remain
+context-insensitive argument terminators — the residual delta
+enumerated in SPEC_COVERAGE.md §5.2. Evidence:
+`tests/conformance/lexer/soft-keyword-identifiers.kp`, and
+`Kappa.Parser` (`stopKeywords` vs `queryStopKeywords` /
+`isStopKeywordAt`).

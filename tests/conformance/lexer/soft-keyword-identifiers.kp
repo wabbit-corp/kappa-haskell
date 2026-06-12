@@ -1,0 +1,57 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "8\n9\n2\n2\n3\n5\n5\n6\n10\n11\n42\n8\n15\n"
+
+-- §5.2: all keywords are soft — implementations must permit their use
+-- as ordinary identifiers in contexts where a keyword is not
+-- syntactically expected. Query/handler keywords (`group`, `by`,
+-- `order`, `skip`, `take`, `distinct`, `join`, `yield`, `into`,
+-- `when`, `handle`, `deep`) must therefore parse as plain identifiers
+-- in argument position, in parenthesized arguments, as parameter
+-- binders, and as assignment targets; they act as clause terminators
+-- only inside comprehension bodies (round-3 review repro shapes).
+
+closeIt : Integer -> Integer
+let closeIt x = x + 1
+
+-- binder position: query keywords as parameter names
+addUp : Integer -> Integer -> Integer
+let addUp take order = take + order
+
+sumList : List Integer -> Integer
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+main : UIO Unit
+let main = do
+    let order = 7
+    println (closeIt order)     -- parenthesized argument (repro 1)
+    let when = 9
+    println when                -- bare argument (silent-misparse repro)
+    let take = 1
+    let group = 2
+    let by = 3
+    let distinct = 4
+    let skip = 5
+    let join = 6
+    let yield = 10
+    let into = 11
+    var handle = 1
+    handle = handle + 41        -- soft keyword as assignment target
+    println (closeIt take)
+    println group
+    println by
+    println (closeIt distinct)
+    println skip
+    println join
+    println yield
+    println into
+    println handle
+    println (addUp take order)
+    -- inside a comprehension body the clause reading wins, but a
+    -- parenthesized sub-expression re-enables the identifier reading
+    let xs = [1, 2, 3, 4, 5, 6]
+    let ys = [for x in xs, if x > (take + 2), yield x]
+    println (sumList ys)
