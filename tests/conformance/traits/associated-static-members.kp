@@ -1,0 +1,59 @@
+module main
+
+-- §14.2.1 associated static members: declared with the unified
+-- `Name : S` form at a compile-time type, defined per instance with
+-- `let Name = ...`, projected from explicit evidence as `d.Name`, and
+-- visible to later member signatures inside the trait body. Two traits
+-- may declare same-spelling associated members (no overloaded
+-- term-level name is induced).
+trait Builder a =
+    Out : Type
+    build : a -> Out
+
+instance Builder Int =
+    let Out = String
+    let build x = primitiveIntToString x
+
+trait Q a =
+    Out : Type
+    fromQ : a -> Out
+
+instance Q Int =
+    let Out = Bool
+    let fromQ x = True
+
+-- projection from an implicit evidence binder in a signature
+buildViaImplicit : (@builder : Builder Int) -> builder.Out
+let buildViaImplicit (@builder : Builder Int) = builder.build 42
+
+-- projection through a type alias parameterized by evidence (§11.3)
+type OutputOf (builder : Builder Int) = builder.Out
+
+buildViaAlias : (@builder : Builder Int) -> Int -> OutputOf builder
+let buildViaAlias (@builder : Builder Int) x = builder.build x
+
+implicitResult : String
+let implicitResult = buildViaImplicit
+
+aliasResult : String
+let aliasResult = buildViaAlias 7
+
+-- explicit dictionaries via summon; same-spelling members stay apart
+qResult : Bool
+let qResult =
+    let dict = summon (Q Int)
+    dict.fromQ 7
+
+summonResult : String
+let summonResult =
+    let dict = summon (Builder Int)
+    dict.build 5
+
+--! assertNoErrors
+--! assertType buildViaImplicit (@builder : Builder Int) -> builder.Out
+--! assertType implicitResult String
+--! assertType qResult Bool
+--! assertEval implicitResult "42"
+--! assertEval aliasResult "7"
+--! assertEval qResult True
+--! assertEval summonResult "5"

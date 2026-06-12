@@ -67,8 +67,9 @@ data TraitInfo = TraitInfo
   { tiParamCount :: !Int
   , tiMembers :: ![Text]
   , tiDefaults :: !(Map Text LetDef)
-  , tiSupers :: ![Term] -- ^ supertrait premises as @\\params -> C params@ (§14.1.4)
-  -- ^ default member definitions, instantiated per instance (§14.2.3)
+  , tiSupers :: ![(Text, Term)]
+  -- ^ supertrait premises as (evidence field name, @\\params -> C params@)
+  -- (§14.1.4); the field carries the supertrait dictionary (§14.3.3)
   }
 
 data InstanceEntry = InstanceEntry
@@ -144,6 +145,11 @@ data CheckState = CheckState
 data ThisMode
   = ThisType ![(Text, Value)]
   | ThisValue ![(Text, Term)] ![(Text, Value)]
+  | ThisTraitSibs ![(Text, Value)]
+  -- ^ trait-body member scope: like 'ThisType', but sibling members
+  -- shadow same-spelling globals (§14.2.1: "Inside the trait body,
+  -- Item refers to the associated static member of the current trait
+  -- evidence")
 
 -- | §16.1.5/§16.1.6 surrounding demand at a descriptor application.
 data PlaceDemand = DemandRead | DemandConsume | DemandOpen
@@ -986,14 +992,20 @@ resolveImplicitQ ctx sp q goal = do
           case mInst of
             Just tm -> pure tm
             Nothing -> do
-              mProp <- propProof g
-              case mProp of
+              -- §14.3.3: project the goal out of in-scope evidence
+              -- through declared-supertrait conformance paths
+              mSup <- if isTrait then superCandidate ctx g else pure Nothing
+              case mSup of
                 Just tm -> pure tm
                 Nothing -> do
-                  mWitness <- isTraitWitness ctx g
-                  case mWitness of
+                  mProp <- propProof g
+                  case mProp of
                     Just tm -> pure tm
-                    Nothing -> unresolved g isTrait isEq
+                    Nothing -> do
+                      mWitness <- isTraitWitness ctx g
+                      case mWitness of
+                        Just tm -> pure tm
+                        Nothing -> unresolved g isTrait isEq
     unresolved g isTrait isEq =
       if isTrait || isEq || q /= Q0
         then do
@@ -1146,7 +1158,12 @@ flushPendingWith final = do
                 mi <- instanceSearch ctx sp g
                 case mi of
                   Just tm -> pure (Just tm)
-                  Nothing -> propProof g
+                  Nothing -> do
+                    -- §14.3.3 conformance paths from local evidence
+                    mSup <- superCandidate ctx g
+                    case mSup of
+                      Just tm -> pure (Just tm)
+                      Nothing -> propProof g
             case r of
               Just tm -> do
                 v <- evalIn ctx tm
@@ -1370,6 +1387,8 @@ infer ctx expr = case expr of
         case mthis of
           Just (ThisType fields) ->
             pure (CGlob thisG, VRecordT (sortOn fst fields))
+          Just (ThisTraitSibs fields) ->
+            pure (CGlob thisG, VRecordT (sortOn fst fields))
           Just (ThisValue vals tys) ->
             pure (CRecordV (sortOn fst vals), VRecordT (sortOn fst tys))
           Nothing -> resolveName ctx n
@@ -1383,10 +1402,15 @@ infer ctx expr = case expr of
         mthis <- gets csThis
         let sib = case mthis of
               Just (ThisType fields) -> isJust (lookup (nameText n) fields)
+              Just (ThisTraitSibs fields) -> isJust (lookup (nameText n) fields)
               Just (ThisValue _ tys) -> isJust (lookup (nameText n) tys)
               Nothing -> False
+            -- §14.2.1: trait-body sibling members shadow globals
+            override = case mthis of
+              Just (ThisTraitSibs _) -> True
+              _ -> False
         mg <- lookupGlobalName (nameText n)
-        if sib && isNothing mg
+        if sib && (override || isNothing mg)
           then infer ctx (EDot (EVar (Name "this" (nameSpan n))) (DotName n))
           else resolveName ctx n
   EVar n
@@ -2123,14 +2147,21 @@ inferT ctx e = case e of
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
     , Nothing <- sortName (nameText n) -> do
-        mg <- lookupGlobalName (nameText n)
-        case mg of
-          Just g -> do
-            mt <- globalType g
-            case mt of
-              Just r -> pure r
+        mthis <- gets csThis
+        case mthis of
+          -- §14.2.1: trait-body sibling members shadow same-spelling
+          -- globals, also in type position
+          Just (ThisTraitSibs fields)
+            | isJust (lookup (nameText n) fields) -> infer ctx e
+          _ -> do
+            mg <- lookupGlobalName (nameText n)
+            case mg of
+              Just g -> do
+                mt <- globalType g
+                case mt of
+                  Just r -> pure r
+                  Nothing -> infer ctx e
               Nothing -> infer ctx e
-          Nothing -> infer ctx e
   -- compatibility accommodation for the external corpus: the corpus
   -- writes the §12.4 sized array as 'Array n elem' over the prelude
   -- collection carrier 'Array : Type -> Type'. The size index is kept
@@ -3285,7 +3316,7 @@ elabDotUnqualified ctx e member mname = do
           case Map.lookup headG (csTraits st) of
             Just ti
               | nameText mn0 `elem` tiMembers ti -> do
-                  memberTy <- memberTypeOf headG (nameText mn0) (map snd spine) tm1
+                  memberTy <- memberTypeOf ctx headG (nameText mn0) (map snd spine) tm1
                   pure (CProj tm1 (nameText mn0), memberTy)
             _ ->
               -- named-field projection on single-constructor data
@@ -3416,8 +3447,8 @@ elabDotUnqualified ctx e member mname = do
       DotName n -> nameSpan n
       DotOperator n -> nameSpan n
 
-memberTypeOf :: GName -> Text -> [Value] -> Term -> CheckM Value
-memberTypeOf traitG member args dictTm = do
+memberTypeOf :: Ctx -> GName -> Text -> [Value] -> Term -> CheckM Value
+memberTypeOf ctx traitG member args dictTm = do
   -- member projection type: stored as global "<trait>.<member>" Pi type;
   -- here we re-derive from the member-projection global.
   mt <- globalTerm (memberGlobal traitG member)
@@ -3429,7 +3460,10 @@ memberTypeOf traitG member args dictTm = do
       t <- forceM ty
       case t of
         VPi Impl _ _ _ clo -> do
-          dv <- evalInEmpty dictTm
+          -- instantiate the dict binder with the receiver itself, so
+          -- associated-static-member projections in the member type
+          -- (§14.2.1) name the receiver's own members
+          dv <- evalIn ctx dictTm
           clApp clo dv
         _ -> pure t
     peel ty (a : as) = do
@@ -3439,9 +3473,6 @@ memberTypeOf traitG member args dictTm = do
           r <- clApp clo a
           peel r as
         _ -> pure t
-    evalInEmpty tm = do
-      ec <- ec_
-      pure (eval ec [] tm)
 
 memberGlobal :: GName -> Text -> GName
 memberGlobal (GName m t) member = GName m (t <> "." <> member)
@@ -7785,42 +7816,83 @@ headerTrait (TraitDecl supers n params members) sp = do
   -- trait constructor: params -> Type
   let tyTm = foldr (\(_, _, nm, t) acc -> CPi Expl Q0 nm t acc) (CSort 0) paramTele
   tyV <- evalIn emptyCtx tyTm
-  -- dict record type: member name -> member type (under params)
   pctx <- teleCtx paramTele
-  memberTys <- forM members $ \case
-    TraitSig mn mtyE _ -> do
-      (mtyTm, _) <- inferType pctx mtyE
-      pure (Just (nameText mn, mtyTm, Nothing))
-    TraitDefault (LetDef (Just mn) _ _ _ _ mty _ body) _ -> do
-      mtyTm <- case mty of
-        Just t -> fst <$> inferType pctx t
-        Nothing -> freshMeta
-      pure (Just (nameText mn, mtyTm, Just body))
-    TraitDefault {} -> pure Nothing
-  let ms = catMaybes memberTys
-      dictBody = CRecordT (sortOn fst [(mn, mt) | (mn, mt, _) <- ms])
-      dictTm = foldr (\(_, _, nm, t) acc -> CLam Expl Q0 nm acc `withDom` t) dictBody paramTele
-      withDom lam _ = lam
+  -- supertrait premises (§14.1.4): their evidence is carried as
+  -- dictionary fields, projected by the compiler as ordinary evidence
+  -- projections (§14.2.1); a parenthesized premise list (C1 a, C2 a)
+  -- is several premises
+  let superList = concatMap (\sx -> case sx of ETuple es _ -> es; _ -> [sx]) supers
+  supPairs <- forM (zip [(0 :: Int) ..] superList) $ \(i, s) -> do
+    (sTm, _) <- inferType pctx s
+    pure (superFieldName i, sTm)
+  -- member declarations in source order; earlier members are in scope
+  -- for later member signatures as §13.2.1 siblings of the evidence
+  -- record ("Inside the trait body, Item refers to the associated
+  -- static member of the current trait evidence", §14.2.1), and free
+  -- lowercase identifiers are implicitly universalized (§14.2/§11.3.3)
+  let paramNames = [nm | (_, _, nm, _) <- paramTele]
+      memberNames =
+        nub $
+          [nameText mn | TraitSig mn _ _ <- members]
+            ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _) _ <- members]
+      elabMemberTy acc mtyE = do
+        fvs <-
+          filterM
+            (\v -> if v `elem` (paramNames ++ memberNames) then pure False else isNothing <$> lookupGlobalName v)
+            (nub (freeLower mtyE))
+        kvs <- mapM (const (freshMetaV pctx)) fvs
+        let mctx = foldl (\c (v, k) -> bindCtx v False k c) pctx (zip fvs kvs)
+        (mtyTm0, _) <- withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
+        kTms <- forM kvs $ \kv -> do
+          kv' <- forceM kv
+          case kv' of
+            VFlex m [] -> solveMeta m (VSort 0) >> pure (CSort 0)
+            _ -> quoteIn pctx kv'
+        let mtyTm = foldr (\(v, kT) b -> CPi Impl Q0 v kT b) mtyTm0 (zip fvs kTms)
+        mtyV <- evalIn pctx mtyTm
+        pure (mtyTm, mtyV)
+      goMembers _acc done [] = pure (reverse done)
+      goMembers acc done (m : rest) = case m of
+        TraitSig mn mtyE _ -> do
+          (mtyTm, mtyV) <- elabMemberTy acc mtyE
+          goMembers (acc ++ [(nameText mn, mtyV)]) ((nameText mn, mtyTm) : done) rest
+        TraitDefault (LetDef (Just mn) _ _ _ _ mty _ _) _
+          -- a default for an already-declared member supplies its
+          -- definition only; the declaration owns the dictionary
+          -- field (§14.2: declaration vs definition forms)
+          | nameText mn `elem` map fst done -> goMembers acc done rest
+          | otherwise -> do
+              (mtyTm, mtyV) <- case mty of
+                Just t -> elabMemberTy acc t
+                Nothing -> do
+                  mTm <- freshMeta
+                  mV <- evalIn pctx mTm
+                  pure (mTm, mV)
+              goMembers (acc ++ [(nameText mn, mtyV)]) ((nameText mn, mtyTm) : done) rest
+        TraitDefault {} -> goMembers acc done rest
+  ms <- goMembers [] [] members
+  let dictBody = CRecordT (sortOn fst (supPairs ++ ms))
+      dictTm = foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) dictBody paramTele
   dictV <- evalIn emptyCtx dictTm
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
   addGlobal g (GlobalDef tyV (Just dictV) False)
   let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _ _ _) _ <- members]
-  -- supertrait premises (§14.1.4), stored as functions of the params;
-  -- a parenthesized premise list (C1 a, C2 a) is several premises
-  let superList = concatMap (\sx -> case sx of ETuple es _ -> es; _ -> [sx]) supers
-  supTms <- forM superList $ \s -> do
-    (sTm, _) <- inferType pctx s
-    pure (foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) sTm paramTele)
-  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) [mn | (mn, _, _) <- ms] defaults supTms) (csTraits st)}
+      supTms = [(fn, foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) sTm paramTele) | (fn, sTm) <- supPairs]
+  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) (map fst ms) defaults supTms) (csTraits st)}
   -- member projection globals: m : forall params. (@d : Tr params) -> τ
-  forM_ ms $ \(mn, mtyTm, _mdef) -> do
+  -- (occurrences of sibling members in τ become projections from the
+  -- dict binder)
+  forM_ ms $ \(mn, mtyTm) -> do
     let dictTy =
           foldl
             (\f i -> CApp Expl f (CVar i))
             (CGlob g)
             (reverse [0 .. length paramTele - 1])
         projTy =
-          foldr (\(_, _, nm, t) acc -> CPi Impl Q0 nm t acc) (CPi Impl QW "__d" dictTy (shiftUnder mtyTm)) paramTele
+          foldr
+            (\(_, _, nm, t) acc -> CPi Impl Q0 nm t acc)
+            (CPi Impl QW "__d" dictTy (substThisTm (CVar 0) (shiftTerm 1 0 mtyTm)))
+            paramTele
         projTm =
           foldr
             (\(_, _, nm, _) acc -> CLam Impl Q0 nm acc)
@@ -7832,10 +7904,11 @@ headerTrait (TraitDecl supers n params members) sp = do
     -- both the bare member name and the qualified projection global
     addGlobal mg (GlobalDef projTyV (Just projV) True)
     addGlobal (memberGlobal g mn) (GlobalDef projTyV (Just projV) True)
-  where
-    -- member type sits under (params, dict); we bound only params when
-    -- elaborating, so weaken by one for the dict binder.
-    shiftUnder = shiftTerm 1 0
+
+-- | The dictionary field carrying the i-th supertrait premise's
+-- evidence (§14.1.4/§14.3.3).
+superFieldName :: Int -> Text
+superFieldName i = "__super" <> T.pack (show i)
 
 shiftTerm :: Int -> Int -> Term -> Term
 shiftTerm by = go
@@ -8640,54 +8713,51 @@ elabInstance (InstanceDecl premises hd members) sp = do
               InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
                 : csInstances s
           }
-      -- §14.1.4/§14.3.3 (minimum): every supertrait premise of the
-      -- trait must be satisfiable at the instance head (from the
-      -- instance's own premises — including their transitive
-      -- supertrait conformance paths — or the global instance set)
-      forM_ (tiSupers ti) $ \supClosed -> do
+      -- §14.1.4/§14.3.3: every supertrait premise of the trait must be
+      -- satisfiable at the instance head (from the instance's own
+      -- premises — including their transitive supertrait conformance
+      -- paths — or the global instance set); the evidence found is
+      -- stored in the dictionary's supertrait field
+      superFields <- forM (tiSupers ti) $ \(fn, supClosed) -> do
         ec <- ec_
         argVs <- mapM (evalIn ctxP') argTms
         supF <- evalIn ctxP' supClosed
         supGoal <- forceM (evalApp ec supF [(Expl, a) | a <- argVs])
-        mLoc <- localCandidate ctxP' sp Q0 supGoal
-        satisfied <- case mLoc of
-          Just _ -> pure True
+        mEv <- traitEvidence ctxP' sp supGoal
+        case mEv of
+          Just tm -> pure (Just (fn, tm))
           Nothing -> do
-            mInst <- instanceSearch ctxP' sp supGoal
-            case mInst of
-              Just _ -> pure True
-              Nothing -> do
-                let premTys = [ceType e | e <- ctxEntries ctxP', ceImplicitLocal e]
-                    anyPath [] = pure False
-                    anyPath (t : ts) = do
-                      found <- supertraitPath ctxP' 4 t supGoal
-                      if found then pure True else anyPath ts
-                anyPath premTys
-        unless satisfied $ do
-          gT <- quoteIn ctxP' supGoal
-          errAt sp "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
-            ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
-      -- member definitions checked against member types
-      dictFields <- forM (tiMembers ti) $ \mn -> do
-        case findMember mn members of
-          Just (LetDef _ _ _ _ mbinders mResTy _ mbody, msp) -> do
-            memberTyV <- memberSigInstance g mn argTms ctxP'
-            tm <- checkMemberAgainst ctxP' memberTyV mbinders mResTy mbody msp
-            pure (Just (mn, tm))
-          Nothing -> case Map.lookup mn (tiDefaults ti) of
-            -- the trait's default definition fills the member (§14.2.3)
-            -- the default's own annotation mentions trait parameters
-            -- and is superseded by the instantiated member type
-            Just (LetDef _ _ _ _ dbinders _ _ dbody) -> do
-              memberTyV <- memberSigInstance g mn argTms ctxP'
-              tm <- checkMemberAgainst ctxP' memberTyV dbinders Nothing dbody sp
-              pure (Just (mn, tm))
-            Nothing -> do
-              errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa.trait.member-missing")
-                ("instance does not define member '" <> mn <> "'")
-              pure Nothing
+            gT <- quoteIn ctxP' supGoal
+            errAt sp "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
+              ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
+            pure Nothing
+      -- member definitions checked against member types, in declaration
+      -- order; already-checked members (associated static members in
+      -- particular) instantiate the dict binder of later member types
+      -- (§14.3.4)
+      let goFields done [] = pure (reverse done)
+          goFields done (mn : rest) = do
+            mfield <- case findMember mn members of
+              Just (LetDef _ _ _ _ mbinders mResTy _ mbody, msp) -> do
+                memberTyV <- memberSigInstance g mn argTms ctxP' (catMaybes superFields ++ reverse done)
+                tm <- checkMemberAgainst ctxP' memberTyV mbinders mResTy mbody msp
+                pure (Just (mn, tm))
+              Nothing -> case Map.lookup mn (tiDefaults ti) of
+                -- the trait's default definition fills the member (§14.2.3)
+                -- the default's own annotation mentions trait parameters
+                -- and is superseded by the instantiated member type
+                Just (LetDef _ _ _ _ dbinders _ _ dbody) -> do
+                  memberTyV <- memberSigInstance g mn argTms ctxP' (catMaybes superFields ++ reverse done)
+                  tm <- checkMemberAgainst ctxP' memberTyV dbinders Nothing dbody sp
+                  pure (Just (mn, tm))
+                Nothing -> do
+                  errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa.trait.member-missing")
+                    ("instance does not define member '" <> mn <> "'")
+                  pure Nothing
+            goFields (maybe done (: done) mfield) rest
+      dictFields <- goFields [] (tiMembers ti)
       flushPending
-      let fields = sortOn fst (catMaybes dictFields)
+      let fields = sortOn fst (catMaybes superFields ++ dictFields)
           dictBody = CRecordV fields
           -- order: fvs outermost, then premises
           wrapped =
@@ -8729,7 +8799,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
           rest <- checkHeadArgs ctx t es
           pure (tm : rest)
 
-    memberSigInstance traitG mn argTms ctx = do
+    memberSigInstance traitG mn argTms ctx doneFields = do
       mt <- globalTerm (memberGlobal traitG mn)
       case mt of
         Just (_, projTy) -> do
@@ -8741,10 +8811,12 @@ elabInstance (InstanceDecl premises hd members) sp = do
           t <- forceM ty
           case t of
             VPi Impl _ _ _ clo -> do
-              -- the dict binder: instantiate with a fresh meta (the dict
-              -- being defined); member types may not depend on it.
-              m <- freshMetaV ctx
-              clApp clo m
+              -- the dict binder: instantiate with the partial dictionary
+              -- being defined, so member types that project earlier
+              -- members — associated static members above all — see the
+              -- instance's definitions (§14.3.4)
+              fvs <- forM doneFields $ \(fn, ftm) -> (,) fn <$> evalIn ctx ftm
+              clApp clo (VRecordV (sortOn fst fvs))
             _ -> pure t
         peelArgs ty (a : as) = do
           t <- forceM ty
@@ -8791,34 +8863,66 @@ elabInstance (InstanceDecl premises hd members) sp = do
           nest (v : vs) = CPi Impl Q0 v (CSort 0) (nest vs)
       evalIn emptyCtx (nest fvs)
 
--- §14.3.3 conformance paths (depth-bounded): evidence of type 'evTy'
--- (a trait application) yields the trait goal 'goal' either directly or
--- through the evidence trait's transitive supertrait premises.
-supertraitPath :: Ctx -> Int -> Value -> Value -> CheckM Bool
-supertraitPath _ 0 _ _ = pure False
-supertraitPath ctx depth evTy goal = do
-  st0 <- get
-  ok <- unify ctx evTy goal
-  if ok
-    then pure True
-    else do
-      put st0
-      ev <- forceM evTy
-      case ev of
-        VGlobN tg args -> do
-          mti <- gets (Map.lookup tg . csTraits)
-          case mti of
-            Just ti -> anyPath (tiSupers ti)
-              where
-                anyPath [] = pure False
-                anyPath (supClosed : rest) = do
-                  ec <- ec_
-                  supF <- evalIn ctx supClosed
-                  supV <- forceM (evalApp ec supF [(Expl, a) | (_, a) <- args])
-                  found <- supertraitPath ctx (depth - 1) supV goal
-                  if found then pure True else anyPath rest
-            Nothing -> pure False
-        _ -> pure False
+-- | Evidence for a trait goal: the local implicit context first
+-- (§16.3.3), then the instance set (§14.3.1), then §14.3.3 supertrait
+-- conformance paths projected from local evidence.
+traitEvidence :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+traitEvidence ctx sp goal = do
+  mLoc <- localCandidate ctx sp Q0 goal
+  case mLoc of
+    Just tm -> pure (Just tm)
+    Nothing -> do
+      mInst <- instanceSearch ctx sp goal
+      case mInst of
+        Just tm -> pure (Just tm)
+        Nothing -> superCandidate ctx goal
+
+-- | §14.3.3 conformance-path selection: project the goal's evidence
+-- out of an in-scope implicit binder through declared-supertrait
+-- dictionary fields.
+superCandidate :: Ctx -> Value -> CheckM (Maybe Term)
+superCandidate ctx goal = go 0 (ctxEntries ctx)
+  where
+    go _ [] = pure Nothing
+    go i (e : rest)
+      | ceImplicitLocal e = do
+          m <- supertraitProject ctx 4 (CVar i) (ceType e) goal
+          case m of
+            Just tm -> pure (Just tm)
+            Nothing -> go (i + 1) rest
+      | otherwise = go (i + 1) rest
+
+-- §14.3.3 conformance paths (depth-bounded): evidence 'evTm' of type
+-- 'evTy' (a trait application) yields the trait goal 'goal' through
+-- the evidence trait's transitive supertrait premises, as a chain of
+-- supertrait-field projections.
+supertraitProject :: Ctx -> Int -> Term -> Value -> Value -> CheckM (Maybe Term)
+supertraitProject _ 0 _ _ _ = pure Nothing
+supertraitProject ctx depth evTm evTy goal = do
+  ev <- forceM evTy
+  case ev of
+    VGlobN tg args -> do
+      mti <- gets (Map.lookup tg . csTraits)
+      case mti of
+        Just ti -> anyPath (tiSupers ti)
+          where
+            anyPath [] = pure Nothing
+            anyPath ((fn, supClosed) : rest) = do
+              ec <- ec_
+              supF <- evalIn ctx supClosed
+              supV <- forceM (evalApp ec supF [(Expl, a) | (_, a) <- args])
+              st0 <- get
+              ok <- unify ctx supV goal
+              if ok
+                then pure (Just (CProj evTm fn))
+                else do
+                  put st0
+                  found <- supertraitProject ctx (depth - 1) (CProj evTm fn) supV goal
+                  case found of
+                    Just tm -> pure (Just tm)
+                    Nothing -> anyPath rest
+        Nothing -> pure Nothing
+    _ -> pure Nothing
 
 -- free lowercase identifiers (implicit universalization, §11.3.3
 -- approximation: ASCII lowercase heads not resolving to globals).

@@ -1,0 +1,53 @@
+module main
+
+-- §14.3.3 conformance-path selection: a goal for a declared supertrait
+-- is projected out of in-scope evidence for the subtrait ("declared
+-- supertraits are projected by the compiler as ordinary evidence
+-- projections", §14.2.1), including transitively, and instance
+-- dictionaries carry the supertrait evidence found at instance
+-- elaboration (§14.1.4).
+trait Parent a =
+    score : a -> Int
+
+trait Parent a => Child a =
+    child : a -> Int
+
+trait Child a => GrandChild a =
+    grand : a -> Int
+
+-- supertrait member through a local implicit binder, no instance needed
+viaProjectedSupertrait : (@child : Child Int) -> Int
+let viaProjectedSupertrait (@child : Child Int) =
+    score 41
+
+-- depth-2 conformance path
+viaGrand : (@g : GrandChild Int) -> Int
+let viaGrand (@g : GrandChild Int) =
+    score 1
+
+-- a default member sees all declared supertrait members (§14.2.3)
+trait LeftScore a =
+    leftScore : a -> Int
+
+trait RightScore a =
+    rightScore : a -> Int
+
+trait (LeftScore a, RightScore a) => Combined a =
+    totalScore : a -> Int
+    let totalScore x = leftScore x + rightScore x
+
+instance LeftScore Int =
+    let leftScore x = x + 1
+
+instance RightScore Int =
+    let rightScore x = x + 2
+
+instance Combined Int =
+
+result : Int
+let result = totalScore 39
+
+--! assertNoErrors
+--! assertType viaProjectedSupertrait (@child : Child Int) -> Int
+--! assertType viaGrand (@g : GrandChild Int) -> Int
+--! assertEval result 81
