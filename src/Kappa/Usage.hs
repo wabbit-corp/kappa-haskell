@@ -68,10 +68,11 @@ data PInfo = PInfo
   , pBorrow :: !Bool
   , pInout :: !Bool
   , pKnown :: !Bool -- ^ from a same-module signature (vs. assumed)
+  , pReceiver :: !Bool -- ^ §7.4 receiver-marked binder
   }
 
 defaultP :: PInfo
-defaultP = PInfo Nothing Nothing False False False
+defaultP = PInfo Nothing Nothing False False False False
 
 -- | Demand interval of a parameter (§12.2.1); 'Nothing' upper = ω.
 pDemand :: PInfo -> (Int, Maybe Int)
@@ -339,7 +340,7 @@ usageDiagnostics m = concatMap analyzeDecl lets
 builtinFns :: Map Text [PInfo]
 builtinFns =
   Map.fromList
-    [ ("unsafeConsume", [PInfo Nothing (Just QOne) False False True])
+    [ ("unsafeConsume", [PInfo Nothing (Just QOne) False False True False])
     ]
 
 -- | Resolve a (possibly aliased) record type to its field list.
@@ -439,9 +440,9 @@ fnParams msig ld =
   where
     binderP b =
       let BinderPrefix mq mb = bPrefix b
-       in PInfo (nameText <$> bName b) mq (isJust mb) (bInout b) True
-    mergeP (PInfo n1 q1 b1 i1 k1) (PInfo n2 q2 b2 i2 k2) =
-      PInfo (n1 `orElse` n2) (q1 `orElse` q2) (b1 || b2) (i1 || i2) (k1 || k2)
+       in PInfo (nameText <$> bName b) mq (isJust mb) (bInout b) True (bReceiver b /= NoReceiver)
+    mergeP (PInfo n1 q1 b1 i1 k1 r1) (PInfo n2 q2 b2 i2 k2 r2) =
+      PInfo (n1 `orElse` n2) (q1 `orElse` q2) (b1 || b2) (i1 || i2) (k1 || k2) (r1 || r2)
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
@@ -1073,6 +1074,13 @@ argSpan = \case
   ArgInout _ sp -> sp
 
 walkApp :: Env -> Expr -> [Arg] -> M R
+walkApp env (EDot recv (DotName m)) args
+  -- §7.4 method-call sugar: the receiver is one ordinary argument of
+  -- the callee, demanded at its receiver-marked binder position
+  | not (Map.member (nameText m) (eVars env))
+  , Just params <- Map.lookup (nameText m) (eFns env)
+  , (i : _) <- [ix | (ix, pp) <- zip [0 ..] params, pReceiver pp] =
+      walkApp env (EVar m) (take i args ++ [ArgExplicit recv] ++ drop i args)
 walkApp env f args
   -- a projection call in an ordinary value position is a non-consuming
   -- read of its yield leaves (§30.2.2.3 ReadProjector)

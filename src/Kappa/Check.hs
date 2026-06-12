@@ -113,6 +113,9 @@ data CheckState = CheckState
   -- ^ §16.1.8: inside explicit-argument checking, a same-head indexed
   -- type mismatch reports E_APPLICATION_ARGUMENT_MISMATCH (a failed
   -- transport at an application boundary)
+  , csReceivers :: !(Map GName [Int])
+  -- ^ §7.4 receiver-marked explicit binder positions (indices among
+  -- the explicit binders) per global, for method-call sugar
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -146,7 +149,7 @@ initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False
+    Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -660,8 +663,25 @@ expectType ctx sp actual expected = do
     -- member is an attempt to unfold a hidden defining equation
     aOp <- opaqueSealHead actual
     eOp <- opaqueSealHead expected
-    if aOp || eOp
+    -- §16.1.8: at an application boundary, a same-head indexed type
+    -- mismatch is a failed transport — an application-argument error
+    retag <- gets csArgIndexRetag
+    sameHead <- do
+      aF <- forceM actual
+      eF <- forceM expected
+      pure $ case (aF, eF) of
+        (VGlobN g1 sp1, VGlobN g2 sp2) ->
+          g1 == g2 && not (null sp1) && length sp1 == length sp2
+        _ -> False
+    if not (aOp || eOp) && retag && sameHead
       then
+        report $
+          withNote ("expected: " <> renderTerm eT) $
+            withNote ("actual:   " <> renderTerm aT) $
+              diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument") sp
+                "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)"
+      else if aOp || eOp
+        then
         report $
           withNote ("expected: " <> renderTerm eT) $
             withNote ("actual:   " <> renderTerm aT) $
@@ -1980,7 +2000,10 @@ elabAppChecked ctx f args expected sp = do
         _ -> pure Nothing
     step tm (Impl, _, _, _, m, _) = pure (CApp Impl tm m)
     step tm (Expl, q, Just e, dom, _, mV) = do
+      oldRetag <- gets csArgIndexRetag
+      modify' $ \st -> st {csArgIndexRetag = True}
       aTm <- withDemand (demandOfQ q) (check ctx e dom)
+      modify' $ \st -> st {csArgIndexRetag = oldRetag}
       aV <- evalIn ctx aTm
       _ <- unify ctx mV aV
       pure (CApp Expl tm aTm)
@@ -2295,7 +2318,10 @@ elabSpineArg ctx sp fTm fTy arg rest = do
     (ArgExplicit e, VPi Expl q _ dom clo) -> do
       domF <- forceM dom
       nBefore <- gets (length . csDiags)
+      oldRetag <- gets csArgIndexRetag
+      modify' $ \st -> st {csArgIndexRetag = True}
       aTm <- withDemand (demandOfQ q) (check ctx e dom)
+      modify' $ \st -> st {csArgIndexRetag = oldRetag}
       -- a non-type argument in a type-former's Type slot is an
       -- application-argument error, not a plain mismatch (§16.1)
       case domF of
@@ -2945,27 +2971,57 @@ elabDotUnqualified ctx e member mname = do
               | [pn] <- pjPlaceNames pj
               , pjIsPlace pj == [True] ->
                   applyDescriptor ctx (nameSpanOf member) dTm dTy (RootsSeparate [(pn, e)])
-            (_, Just (fTm, fTy)) -> applyRecv fTm fTy recvTm recvTy
+            (_, Just (fTm, fTy)) -> case Map.lookup g (csReceivers st) of
+              -- §7.4: eligibility requires exactly one explicit
+              -- receiver-marked binder; the receiver is inserted at it
+              Just [i] -> applyRecvAt i fTm fTy recvTm recvTy
+              Just _ -> do
+                errAt (nameSpanOf member) "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+                  ("'" <> nameText mn0
+                     <> "' does not have exactly one receiver-marked binder, so it is not eligible for method-call sugar (§7.4)")
+                anyHole ctx
+              -- §7.4: a callable without a receiver-marked binder is
+              -- not eligible for method-call sugar
+              Nothing -> do
+                errAt (nameSpanOf member) "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+                  ("'" <> nameText mn0
+                     <> "' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)")
+                anyHole ctx
             (_, Nothing) -> failMember recvTy mn0
         Nothing -> failMember recvTy mn0
 
-    applyRecv fTm fTy0 recvTm recvTy = do
-      fTy <- forceM fTy0
-      case fTy of
-        VPi Impl q _ dom clo -> do
-          iTm <- resolveImplicitQ ctx (nameSpanOf member) q dom
-          iV <- evalIn ctx iTm
-          ty' <- clApp clo iV
-          applyRecv (CApp Impl fTm iTm) ty' recvTm recvTy
-        VPi Expl _ _ dom clo -> do
-          expectType ctx (exprSpan e) recvTy dom
-          rV <- evalIn ctx recvTm
-          ty' <- clApp clo rV
-          pure (CApp Expl fTm recvTm, ty')
-        _ -> do
-          errAt (nameSpanOf member) "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
-            "member is not callable with a receiver"
-          anyHole ctx
+    -- receiver insertion at the receiver-marked explicit binder
+    -- (§7.4): preceding explicit binders become wrapper-lambda
+    -- parameters filled by the remaining call-site arguments
+    applyRecvAt recvIdx fTm0 fTy0 recvTm0 recvTy = go ctx (0 :: Int) fTm0 fTy0
+      where
+        go c depth accTm ty0 = do
+          ty <- forceM ty0
+          case ty of
+            VPi Impl q _ dom clo -> do
+              iTm <- resolveImplicitQ c (nameSpanOf member) q dom
+              iV <- evalIn c iTm
+              ty' <- clApp clo iV
+              go c depth (CApp Impl accTm iTm) ty'
+            VPi Expl _ _ dom clo
+              | depth == recvIdx -> do
+                  let recvTm = shiftTerm (ctxLen c - ctxLen ctx) 0 recvTm0
+                  expectType c (exprSpan e) recvTy dom
+                  rV <- evalIn c recvTm
+                  ty' <- clApp clo rV
+                  pure (CApp Expl accTm recvTm, ty')
+            VPi Expl q nm dom clo -> do
+              let c' = bindCtx nm False dom c
+              cod <- clApp clo (VRigid (ctxLen c) [])
+              (body, bodyTy) <- go c' (depth + 1) (CApp Expl (shiftTerm 1 0 accTm) (CVar 0)) cod
+              domTm <- quoteIn c dom
+              bodyTyTm <- quoteIn c' bodyTy
+              piV <- evalIn c (CPi Expl q nm domTm bodyTyTm)
+              pure (CLam Expl q nm body, piV)
+            _ -> do
+              errAt (nameSpanOf member) "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
+                "member is not callable with a receiver"
+              anyHole ctx
 
     failMember recvTy mn0 = do
       rT <- quoteIn ctx recvTy
@@ -4135,14 +4191,33 @@ checkIf ctx alts mels sp resT = go ctx alts
       refs <- condRefines c cnd
       let ctxR = refineCtx refs c
       cTm <- check ctxR cnd boolT
-      tTm <- check ctxR t resT
+      -- §7.4.1/§16.1.8: a bare rigid Bool condition is branch-local
+      -- equality evidence (b = True in then, b = False in else),
+      -- consulted by conversion through the rigid-fact table
+      let mLvl = case cnd of
+            EVar n -> case lookupCtx (nameText n) c of
+              Just (i, _) -> case drop i (ctxEnv c) of
+                (VRigid l [] : _) -> Just l
+                _ -> Nothing
+              Nothing -> Nothing
+            _ -> Nothing
+          withFact ctorName act = case mLvl of
+            Nothing -> act
+            Just l -> do
+              oldFacts <- gets csFacts
+              modify' $ \st ->
+                st {csFacts = Map.insert l (FactIs (VCtor (gPrel ctorName) [])) (csFacts st)}
+              r <- act
+              modify' $ \st -> st {csFacts = oldFacts}
+              pure r
+      tTm <- withFact "True" (check ctxR t resT)
       -- the negative side refines the subject to the complementary
       -- constructors of its data type (§7.4.1 lacks-refinement); only
       -- a bare `x is C` condition licenses the complement
       negs <- case cnd of
         EIs (EVar _) _ -> complementRefines refs
         _ -> pure []
-      eTm <- go (refineCtx negs c) rest
+      eTm <- withFact "False" (go (refineCtx negs c) rest)
       pure (CIf cTm tTm eTm)
 
 -- | Only a whole-condition single `x is C` test yields a usable
@@ -6813,6 +6888,15 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
   flushPending
   g <- ownName n
   noteDefinition g sp
+  -- §7.4: record receiver-marked explicit binder positions (method
+  -- sugar inserts the receiver at the unique such binder)
+  let recvIdxs =
+        [ i
+        | (i, rb) <- zip [(0 :: Int) ..] [rb | rb <- binders, not (bImplicit rb)]
+        , bReceiver rb /= NoReceiver
+        ]
+  unless (null recvIdxs) $
+    modify' $ \stM -> stM {csReceivers = Map.insert g recvIdxs (csReceivers stM)}
   st <- get
   msig <- pure (Map.lookup g (csGlobals st))
   case msig of
