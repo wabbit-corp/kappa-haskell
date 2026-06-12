@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (91/91)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (110/110)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -102,7 +102,7 @@ private `allow_unsafe_consume`, `assertRunStdout`, `assertExecute`,
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **91/91 passing**, zero unsupported, zero
+`tests/conformance/` — **110/110 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
@@ -117,6 +117,11 @@ harness errors. Layout by area:
 | `types/` | `E_TYPE_MISMATCH`, `E_NOT_A_TYPE` |
 | `application/` | `E_APPLICATION_NON_CALLABLE`, ctor arity, multi-arg lambdas vs polymorphic HOFs |
 | `match/` | exhaustiveness (Bool/or/guards/nested/literal/tuple/record) |
+| `patterns/` | §17.3 active patterns: Option/`Match`/total-view results, residue threading, `let?` over patterns, monadic/linearity rejections |
+| `implicits/` | §16.3.3 local implicit candidates: quantity/borrow-aware resolution, shadowing, same-scope ambiguity (`E_IMPLICIT_AMBIGUOUS`), erased-candidate rejection |
+| `qtt/` | §12.2–§12.4 usage counting: linear drop/overuse, erased runtime use, exit paths, demand scaling, latent closures, borrow escape, record paths, `using`+`defer`, Pi-quantity subsumption |
+| `queries/` | §20 comprehension clauses end to end (`order by`/`skip`/`take`/`distinct`/`group by`/`join`/left-join `into`, conflict policies) and §20.9–§20.10 query carriers with plan QTT checks (`E_QUERY_*`) |
+| `collections/` | §20.1 set/map literals incl. empty `{}` |
 | `records/` | projection, patch, punning, unknown-field errors, constructor field defaults (§10.1.1) |
 | `variants/` | closed unions, injection, missing member, `Int?` sugar |
 | `traits/` | user traits, premise instance, defaults, `E_IMPLICIT_UNSOLVED`, `E_INSTANCE_INCOHERENT`, §28.2 base instances, supertrait premise enforcement (`E_SUPERTRAIT_UNSATISFIED`) |
@@ -127,7 +132,7 @@ harness errors. Layout by area:
 | `labels/` | §18.2.5 labeled loops: plain `break` confined to its labeled loop, `break@outer`/`continue@outer` across an inner loop, `E_LABEL_UNRESOLVED` for missing/non-loop targets, inert `label@match` |
 | `do/` | implicit do-bindings `let (@x : T) = e` joining the local implicit context (§16.3.3) |
 | `shape/` | `assertDeclKinds` |
-| `unsupported/` | handle/seal/exists/`{}` map literal/`return@label`/`defer@label` → `E_UNSUPPORTED` |
+| `unsupported/` | handle/seal/exists/`return@label`/`defer@label` → `E_UNSUPPORTED` |
 
 `examples/` is also a harness suite: `examples/todo.kp` carries an
 exact `assertStdout` golden transcript (see `examples/README.md`).
@@ -145,22 +150,25 @@ raw per-fixture log at `/tmp/external-raw.log`.
 first error message) and `/tmp/triage-summary.txt` (per-category
 outcome counts and top error codes).
 
-Current tally over **924 fixture suites** (one result per fixture):
+Current tally over **929 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 313 |
-| fail | 530 |
+| pass | 507 |
+| fail | 371 |
 | unsupported | 40 |
-| harness error | 41 |
+| harness error | 11 |
 
-All 41 harness errors are fixtures using the other implementation's
+All 11 harness errors are fixtures using the other implementation's
 private, non-`x-` directives that Appendix T does not define
-(`allow_unsafe_consume`, `assertRunStdout`, `assertExecute`,
-`assertEvalErrorContains`, `assertParameterQuantities`,
+(`assertRunStdout`, `assertExecute`, `assertEvalErrorContains`,
 `assertDoItemDescriptors`, `assertInoutParameters`,
 `assertContainsTokenTexts`); per §T.3 an unknown non-extension
-directive *is* a harness error. `tests/external-results.md` carries
+directive *is* a harness error (`allow_unsafe_consume`,
+`assertParameterQuantities`, `assertEval`, and
+`assertDiagnosticCodes` are likewise nonstandard but are implemented
+as documented compatibility extensions, as §T.1 permits — see the
+directive table above). `tests/external-results.md` carries
 the full breakdown: a per-category table, the §T.8 classification
 rationale with spec citations, and a "Blocked classifications"
 section (maintained in `tests/external-blocked.md`, appended on
@@ -170,11 +178,12 @@ classifies every non-pass as outside-spec (mandated
 unsupported/harnessError), spec conflict, or tracked gap. Unsupported
 is now only unmet capabilities/backends/modes, unsupported `x-*`
 extensions, and incremental suites. Failures are dominated by
-unimplemented subsystems — QTT usage/borrow enforcement, the
-Unicode/bytes text stack, query comprehensions, projection
-declarations, macros/elaborator reflection, dependent records — and
-by diagnostic-code selection deltas at application boundaries (see
-the ranked gap table at the end of `tests/external-results.md`).
+unimplemented subsystems — the Unicode/bytes text stack,
+macros/elaborator reflection (which also gates the remaining query
+and deriving fixtures), projection/accessor descriptors, dependent
+records, sealing/static-object facets, `BorrowView` — and by
+diagnostic-code selection deltas at application boundaries (see the
+ranked gap table at the end of `tests/external-results.md`).
 
 ## Conventions
 
