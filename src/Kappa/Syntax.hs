@@ -520,7 +520,7 @@ data ExceptItem = ExceptItem !(Maybe KindSelector) !Name
 data ExpectForm
   = ExpectTerm !Name !Expr
   | ExpectType !Name ![Binder] !(Maybe Expr)
-  | ExpectData !Name ![Binder] !Expr
+  | ExpectData !Name ![Binder] !(Maybe Expr)
   | ExpectTrait !Name ![Binder] !(Maybe Expr)
   deriving stock (Show)
 

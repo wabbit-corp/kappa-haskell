@@ -89,6 +89,10 @@ eval ctx env = \case
   CVariantT ms -> VVariantT (map (eval ctx env) ms)
   CInject tag e -> VInject tag (eval ctx env e)
   CLet _ _ _ rhs body -> eval ctx (eval ctx env rhs : env) body
+  CLetRec _ _ _ rhs body ->
+    -- recursive local definition: tie the knot lazily (the rhs is a
+    -- lambda, so forcing the binding terminates)
+    let env' = eval ctx env' rhs : env in eval ctx env' body
   CMeta m -> case Map.lookup m (ecMetas ctx) of
     Just (Just v) -> v
     _ -> VFlex m []

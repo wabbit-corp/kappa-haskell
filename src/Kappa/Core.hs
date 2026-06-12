@@ -82,6 +82,7 @@ data Term
   | CVariantT ![Term] -- ^ canonical member order
   | CInject !Text !Term -- ^ member-identity tag + payload
   | CLet !Q !Text !Term !Term !Term -- ^ q, name, type, rhs, body
+  | CLetRec !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
   | CMeta !MetaId
   | CDo ![KItem] -- ^ §18.8 do kernel; executed natively
   | CThunkE !Term -- ^ Delay

@@ -46,6 +46,7 @@ renderTerm = go 0
       CVariantT ms -> "(| " <> T.intercalate " | " (map (go 0) ms) <> " |)"
       CInject t e -> paren (p > 0) ("(| " <> go 0 e <> " : " <> t <> " |)")
       CLet _ n _ rhs body -> paren (p > 0) ("let " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
+      CLetRec _ n _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
       CMeta m -> "?m" <> tshow m
       CDo _ -> "do ..."
       CThunkE e -> paren (p > 1) ("thunk " <> go 2 e)

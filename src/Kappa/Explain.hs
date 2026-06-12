@@ -128,6 +128,16 @@ registry =
       "An infix operator is used without any fixity declaration in scope, so the expression cannot be grouped."
   , ent "E_OR_PATTERN_BINDINGS" (Just "kappa.pattern.or-bindings")
       "The alternatives of an or-pattern do not bind exactly the same variables at the same types."
+  , ent "E_EXPECT_AMBIGUOUS" (Just "kappa.expect.ambiguous")
+      "More than one definition in the compilation unit satisfies a single 'expect' declaration (Spec 9.4)."
+  , ent "E_EXPECT_UNSATISFIED" (Just "kappa.expect.unsatisfied")
+      "An 'expect' declaration names a required external declaration, but no definition, backend intrinsic, or imported artifact in the compilation unit satisfies it (Spec 9.4)."
+  , ent "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.cycle")
+      "A value-level definition refers to itself without an intervening function abstraction, so its evaluation can never terminate."
+  , ent "E_SIGNATURE_UNSATISFIED" (Just "kappa.signature.unsatisfied")
+      "A non-expect top-level term signature has no matching definition in the same source file (Spec 9.1)."
+  , ent "E_UNEXPECTED_INDENTATION" (Just "kappa.parse.error")
+      "A top-level declaration begins at a deeper indentation level than the module's declaration level (Spec 5.4)."
   , ent "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error")
       "The source text does not conform to the Kappa grammar at this position."
   , ent "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.arity")

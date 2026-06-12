@@ -798,8 +798,9 @@ pExpectForm =
       pKeyword "data"
       n <- pSigName
       params <- pParamBinders
-      token TokColon
-      ty <- pExpr
+      -- §9.4 dataHeader requires ': type', but the headerless form is
+      -- accepted with the kind derived from the parameters
+      ty <- optionMaybe (token TokColon *> pExpr)
       pure (ExpectData n params ty)
     typeForm = do
       pKeyword "type"
@@ -2105,6 +2106,8 @@ pIfExpr = do
   start <- currentSpan
   pKeyword "if"
   c <- pExpr
+  -- `then` may open its own continuation line (§5.4)
+  void (many pNewline)
   pKeyword "then"
   t <- pSuiteOrExpr
   branches <- pElifs

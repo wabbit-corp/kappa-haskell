@@ -284,7 +284,7 @@ rExpect :: FixityEnv -> ExpectForm -> RW ExpectForm
 rExpect env = \case
   ExpectTerm n e -> ExpectTerm n <$> rExpr env e
   ExpectType n bs k -> ExpectType n <$> mapM (rBinder env) bs <*> mapM (rExpr env) k
-  ExpectData n bs k -> ExpectData n <$> mapM (rBinder env) bs <*> rExpr env k
+  ExpectData n bs k -> ExpectData n <$> mapM (rBinder env) bs <*> mapM (rExpr env) k
   ExpectTrait n bs k -> ExpectTrait n <$> mapM (rBinder env) bs <*> mapM (rExpr env) k
 
 rLetDef :: FixityEnv -> LetDef -> RW LetDef

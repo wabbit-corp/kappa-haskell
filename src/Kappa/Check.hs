@@ -19,6 +19,7 @@ module Kappa.Check
   , InstanceEntry (..)
   , GlobalDef (..)
   , checkModule
+  , expectUnsatisfiedDiags
   , preludeModule
   ) where
 
@@ -84,12 +85,16 @@ data CheckState = CheckState
   , csPending :: ![(MetaId, Value, Span, Ctx)]
   -- ^ postponed implicit goals with the local context they were raised
   -- in (premise dictionaries live there, §14.3.2)
+  , csExpects :: !(Map GName (Span, Int))
+  -- ^ §9.4 expect declarations: span and number of satisfiers seen
+  , csSigPending :: !(Map GName Span)
+  -- ^ §9.1 top-level signatures not yet satisfied in this file
   }
 
 initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
-    (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 []
+    (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -122,6 +127,12 @@ ctxLen = length . ctxEntries
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
 bindCtx n implocal ty (Ctx es env) =
   Ctx (CtxEntry n ty implocal False : es) (VRigid (length env) [] : env)
+
+-- | Bind a local definition: the environment carries the definiens, so
+-- conversion sees through local lets (delta for locals, §15.1).
+bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
+bindCtxLet n implocal ty v (Ctx es env) =
+  Ctx (CtxEntry n ty implocal False : es) (v : env)
 
 -- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
 bindCtxVar :: Text -> Value -> Ctx -> Ctx
@@ -262,6 +273,7 @@ occursMeta m = go
       CVariantT ms -> any go ms
       CInject _ e -> go e
       CLet _ _ a b c -> go a || go b || go c
+      CLetRec _ _ a b c -> go a || go b || go c
       CIf a b c -> go a || go b || go c
       CThunkE e -> go e
       CLazyE e -> go e
@@ -560,6 +572,7 @@ zonkTermM depth0 t0 = do
         CVariantT ms -> CVariantT (map (go d) ms)
         CInject tg e -> CInject tg (go d e)
         CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
+        CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
         CDo items -> CDo (goI d items)
         CThunkE e -> CThunkE (go d e)
         CLazyE e -> CLazyE (go d e)
@@ -803,12 +816,21 @@ infer ctx expr = case expr of
   -- a do-scope label is only consumable by defer@label, which is
   -- rejected as unsupported at its use site, so the label is inert here
   EDo _ items sp -> elabDo ctx items sp Nothing
-  EThunk e _ -> do
-    (tm, ty) <- infer ctx e
-    pure (CThunkE tm, VGlobN (gPrel "Thunk") [(Expl, ty)])
-  ELazy e _ -> do
-    (tm, ty) <- infer ctx e
-    pure (CLazyE tm, VGlobN (gPrel "Need") [(Expl, ty)])
+  EThunk e sp
+    -- §5.2: soft keywords shadowed by a local binding are ordinary names
+    | Just _ <- lookupCtx "thunk" ctx ->
+        infer ctx (EApp (EVar (Name "thunk" sp)) [ArgExplicit e])
+    | otherwise -> do
+        (tm, ty) <- infer ctx e
+        pure (CThunkE tm, VGlobN (gPrel "Thunk") [(Expl, ty)])
+  ELazy e sp
+    | Just _ <- lookupCtx "lazy" ctx ->
+        infer ctx (EApp (EVar (Name "lazy" sp)) [ArgExplicit e])
+    | otherwise -> do
+        (tm, ty) <- infer ctx e
+        pure (CLazyE tm, VGlobN (gPrel "Need") [(Expl, ty)])
+  EForce e sp | Just _ <- lookupCtx "force" ctx ->
+    infer ctx (EApp (EVar (Name "force" sp)) [ArgExplicit e])
   EForce e sp -> do
     (tm, ty) <- infer ctx e
     t <- forceM ty
@@ -904,6 +926,12 @@ check ctx expr expected0 = do
           (tm, ty) <- inferT ctx (EVar n)
           expectType ctx (nameSpan n) ty expected
           pure tm
+    -- (x : T) checked against a universe is a single-field record type
+    -- (§13.1); the parser cannot distinguish it from an ascription
+    (EAscription (EVar _) _ sp, VSort _) -> do
+      (tm, ty) <- inferT ctx expr
+      expectType ctx sp ty expected
+      pure tm
     -- §7.2: an application checked against a universe is a type
     -- position, so its head prefers the type facet of a same-spelling
     -- data family; arguments of sort 'Type' recurse through this same
@@ -1751,11 +1779,24 @@ elabLambda ctx0 bs0 body sp mexpected = go ctx0 bs0 mexpected
 elabLet :: Ctx -> [LetBind] -> Expr -> Maybe Value -> CheckM (Term, Value)
 elabLet ctx0 binds body mexpected = go ctx0 binds []
   where
+    mkLet (q, n, tyT, rhs, isRec) b
+      | isRec = CLetRec q n tyT rhs b
+      | otherwise = CLet q n tyT rhs b
     go ctx [] acc = do
       (bodyTm, bodyTy) <- case mexpected of
         Just t -> (,t) <$> check ctx body t
         Nothing -> infer ctx body
-      pure (foldl' (\b (q, n, tyT, rhs) -> CLet q n tyT rhs b) bodyTm acc, bodyTy)
+      pure (foldl' (flip mkLet) bodyTm acc, bodyTy)
+    -- an annotated local function may refer to itself (§9.2 mirrored
+    -- locally): elaborate the lambda under its own binder
+    go ctx (LetBind implocal prefix (PVar n) (Just tyE) rhs@ELambda {} sp : rest) acc = do
+      (tyTm, _) <- inferType ctx tyE
+      tyV <- evalIn ctx tyTm
+      let q = qOf (bpQuantity prefix)
+          ctxRec = bindCtx (nameText n) implocal tyV ctx
+      tm <- check ctxRec rhs tyV
+      _ <- pure sp
+      go ctxRec rest ((q, nameText n, tyTm, tm, True) : acc)
     go ctx (LetBind implocal prefix pat mty rhs sp : rest) acc = do
       (rhsTm, rhsTy) <- case mty of
         Just tyE -> do
@@ -1769,13 +1810,15 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
       case pat of
         PVar n -> do
           rhsTyTm <- quoteIn ctx rhsTy
+          rhsV <- evalIn ctx rhsTm
           let q = qOf (bpQuantity prefix)
-              ctx' = bindCtxDef (nameText n) implocal rhsTy ctx
-          go ctx' rest ((q, nameText n, rhsTyTm, rhsTm) : acc)
+              ctx' = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
+          go ctx' rest ((q, nameText n, rhsTyTm, rhsTm, False) : acc)
         PWild _ -> do
           rhsTyTm <- quoteIn ctx rhsTy
-          let ctx' = bindCtxDef "_" False rhsTy ctx
-          go ctx' rest ((QW, "_", rhsTyTm, rhsTm) : acc)
+          rhsV <- evalIn ctx rhsTm
+          let ctx' = bindCtxLet "_" False rhsTy rhsV ctx
+          go ctx' rest ((QW, "_", rhsTyTm, rhsTm, False) : acc)
         _ -> do
           -- irrefutable destructuring: elaborate as single-case match by
           -- rewriting `let pat = rhs; rest` to `match rhs case pat -> ...`
@@ -1783,15 +1826,13 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           (bodyTm, bodyTy) <- goUnder ctx' rest
           checkIrrefutable ctx pat rhsTy sp
           let matchTm = CMatch rhsTm [CaseAlt patC Nothing bodyTm]
-          pure (foldl' (\b (q, n, tyT, r) -> CLet q n tyT r b) matchTm acc, bodyTy)
+          pure (foldl' (flip mkLet) matchTm acc, bodyTy)
       where
         goUnder c rs = case rs of
           [] -> case mexpected of
             Just t -> (,t) <$> check c body t
             Nothing -> infer c body
           _ -> elabLet c rs body mexpected
-    bindCtxDef n implocal ty c = bindCtx n implocal ty c
-
 elabBlock :: Ctx -> [Decl] -> Maybe Expr -> Span -> CheckM (Term, Value)
 elabBlock ctx ds mfin sp = do
   -- v1: block-local declarations support signatures and lets; other
@@ -1815,6 +1856,12 @@ elabBlock ctx ds mfin sp = do
         (LetBind False emptyPrefix (PVar n) (lookup (nameText n) sigs) lam sp :) <$> goDecls sigs rest
       DLet _ (LetDef Nothing (Just p) [] mty Nothing rhs) _ ->
         (LetBind False emptyPrefix p mty rhs sp :) <$> goDecls sigs rest
+      -- a local type alias is a type-level let binding (§9.3.1, §10.2)
+      DTypeAlias _ n params _ (Just rhs) dsp ->
+        let (body, ann) = case params of
+              [] -> (rhs, Just (EVar (Name "Type" dsp)))
+              bs -> (ELambda Nothing bs rhs dsp, Nothing)
+         in (LetBind False emptyPrefix (PVar n) ann body sp :) <$> goDecls sigs rest
       _ -> do
         errAt (declSpan d) "E_UNSUPPORTED" Nothing
           "this local declaration form is not supported inside block by this implementation"
@@ -1902,8 +1949,13 @@ checkExhaustive ctx sp ty alts = do
         st <- get
         case Map.lookup g (csDatas st) of
           Just di -> do
-            let covered = nub (concat [coveredCtors p | (p, Nothing) <- alts])
-                missing = diCtors di \\ covered
+            let rows = [[p] | (p, Nothing) <- alts]
+                missing =
+                  [ c
+                  | c <- diCtors di
+                  , let a = ctorArity st c
+                  , wildUseful st (specializeRows st (KCtor c) a rows) (a :: Int)
+                  ]
             unless (null missing) $
               report $
                 withNote ("missing cases: " <> T.intercalate ", " (map gnameText missing)) $
@@ -1933,11 +1985,6 @@ checkExhaustive ctx sp ty alts = do
       CPAs _ p -> isCatchAll p
       CPOr ps -> any isCatchAll ps
       _ -> False
-    coveredCtors = \case
-      CPCtor g ps | all irrefutableSub ps -> [g]
-      CPAs _ p -> coveredCtors p
-      CPOr ps -> concatMap coveredCtors ps
-      _ -> []
     irrefutableSub = \case
       CPWild -> True
       CPVar _ -> True
@@ -1956,6 +2003,94 @@ checkExhaustive ctx sp ty alts = do
       CPRecord fs _ -> all (irrefutableSub . snd) fs
       CPTuple ps -> all irrefutableSub ps
       p -> isCatchAll p
+
+-- §17.1 exhaustiveness for nested constructor patterns, via pattern-
+-- matrix usefulness (Maranget-style, over-approximating coverage for
+-- record, variant and as-patterns so positives never regress): a match
+-- is non-exhaustive iff the all-wildcard row is useful w.r.t. the
+-- unguarded rows.
+data PatKey = KCtor !GName | KTup !Int | KLit !Literal
+  deriving stock (Eq)
+
+ctorArity :: CheckState -> GName -> Int
+ctorArity st c = case Map.lookup c (csCtors st) of
+  Just ci -> length (ciFields ci)
+  Nothing -> 0
+
+-- unwrap as/or patterns into plain alternatives for the first column
+expandRow :: [CorePat] -> [[CorePat]]
+expandRow [] = [[]]
+expandRow (p : ps) = case p of
+  CPAs _ q -> expandRow (q : ps)
+  CPOr qs -> concat [expandRow (q : ps) | q <- qs]
+  _ -> [p : ps]
+
+-- a first-column pattern this analysis treats as matching anything
+isWildLike :: CorePat -> Bool
+isWildLike = \case
+  CPWild -> True
+  CPVar _ -> True
+  CPRecord {} -> True -- over-approximation
+  CPInject {} -> True -- nested variant injections: over-approximation
+  CPInjectRest _ -> True
+  _ -> False
+
+patKey :: CorePat -> Maybe (PatKey, Int)
+patKey = \case
+  CPCtor c ps -> Just (KCtor c, length ps)
+  CPTuple ps -> Just (KTup (length ps), length ps)
+  CPLit l -> Just (KLit l, 0)
+  _ -> Nothing
+
+subPats :: CorePat -> [CorePat]
+subPats = \case
+  CPCtor _ ps -> ps
+  CPTuple ps -> ps
+  _ -> []
+
+specializeRows :: CheckState -> PatKey -> Int -> [[CorePat]] -> [[CorePat]]
+specializeRows st k a rows =
+  [ row'
+  | row0 <- rows
+  , row <- expandRow row0
+  , Just row' <- [spec row]
+  ]
+  where
+    _ = st
+    spec [] = Nothing
+    spec (p : ps)
+      | isWildLike p = Just (replicate a CPWild ++ ps)
+      | Just (k', _) <- patKey p, k' == k = Just (subPats p ++ ps)
+      | otherwise = Nothing
+
+defaultRows :: [[CorePat]] -> [[CorePat]]
+defaultRows rows =
+  [ ps
+  | row0 <- rows
+  , (p : ps) <- expandRow row0
+  , isWildLike p
+  ]
+
+-- is the all-wildcard row of width n useful w.r.t. the matrix?
+wildUseful :: CheckState -> [[CorePat]] -> Int -> Bool
+wildUseful _ rows 0 = null rows
+wildUseful st rows n =
+  let firsts = [p | row0 <- rows, (p : _) <- expandRow row0]
+      keys = nub (mapMaybe patKey firsts)
+      complete = case keys of
+        ((KTup _, _) : _) -> True
+        ks@((KCtor c, _) : _) ->
+          case Map.lookup c (csCtors st) >>= \ci -> Map.lookup (ciData ci) (csDatas st) of
+            Just di -> all (\dc -> KCtor dc `elem` map fst ks) (diCtors di)
+            Nothing -> False
+        _ -> False -- literals: never a complete signature here
+   in if complete
+        then
+          or
+            [ wildUseful st (specializeRows st k a rows) (a + n - 1)
+            | (k, a) <- keys
+            ]
+        else wildUseful st (defaultRows rows) (n - 1)
 
 checkIrrefutable :: Ctx -> Pattern -> Value -> Span -> CheckM ()
 checkIrrefutable ctx pat ty sp = do
@@ -2469,9 +2604,40 @@ elabComprehension ctx kind clauses yld sp = case kind of
 -- preceding-signature recursion rule (§15.16, §9.2).
 checkModule :: CheckState -> Module -> (CheckState, Diagnostics)
 checkModule st0 m =
-  let (_, st1) = runState (mapM_ headerPass (modDecls m) >> mapM_ bodyPass (modDecls m)) st0
+  let passes = do
+        mapM_ predeclarePass (modDecls m)
+        mapM_ headerPass (modDecls m)
+        mapM_ bodyPass (modDecls m)
+        sigSatisfactionPass
+      (_, st1) = runState passes (st0 {csSigPending = Map.empty})
    in -- 'report' prepends; restore emission (source) order here
       (st1 {csDiags = []}, reverse (csDiags st1))
+
+-- §9.1: a non-expect top-level term signature must be satisfied by
+-- exactly one matching definition in the same source file.
+sigSatisfactionPass :: CheckM ()
+sigSatisfactionPass = do
+  st <- get
+  unless (csModule st == preludeModule) $
+    forM_ (Map.toList (csSigPending st)) $ \(g, sp) ->
+      errAt sp "E_SIGNATURE_UNSATISFIED" (Just "kappa.signature.unsatisfied")
+        ("top-level signature '" <> gnameText g
+           <> "' has no definition in this source file (Spec §9.1); use 'expect term' for external requirements (§9.4)")
+
+-- Pre-register data type-constructor names so declarations in one file
+-- may refer to data types declared later (§10.1: declaration order
+-- within a module is immaterial for type references).
+predeclarePass :: Decl -> CheckM ()
+predeclarePass = \case
+  DData _ (DataDecl n params _ _) _ -> do
+    g <- ownName n
+    exists <- gets (Map.member g . csGlobals)
+    unless exists $ do
+      paramTele <- elabTele emptyCtx params
+      let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) (CSort 0) paramTele
+      tyV <- evalIn emptyCtx tyTm
+      addGlobal g (GlobalDef tyV Nothing False)
+  _ -> pure ()
 
 headerPass :: Decl -> CheckM ()
 headerPass = \case
@@ -2486,14 +2652,20 @@ headerPass = \case
     tyV <- evalIn emptyCtx tyTm
     g <- ownName n
     exists <- gets (Map.member g . csGlobals)
-    when exists $
+    isExpected <- gets (Map.member g . csExpects)
+    when (exists && not isExpected) $
       errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate") ("duplicate declaration of '" <> nameText n <> "'")
     addGlobal g (GlobalDef tyV Nothing False)
+    -- §9.1: the signature awaits its same-file definition (an expected
+    -- name is governed by §9.4 satisfaction instead)
+    unless isExpected $
+      modify' $ \st -> st {csSigPending = Map.insert g sp (csSigPending st)}
   DData _ dd sp -> headerData dd sp
-  DTypeAlias _ n params _ (Just rhs) _ -> do
+  DTypeAlias _ n params _ (Just rhs) sp -> do
     -- alias: a definition at a universe type
     (tm, ty) <- elabAliasBody params rhs
     g <- ownName n
+    noteDefinition g sp
     tmV <- evalIn emptyCtx tm
     addGlobal g (GlobalDef ty (Just tmV) True)
   DTypeAlias _ n params _ Nothing _ -> do
@@ -2543,6 +2715,7 @@ headerData (DataDecl n params _mkind ctors) sp = do
   -- the optional kind annotation is not validated: every data type
   -- lives at 'Type' in this implementation (see SPEC_COVERAGE.md)
   g <- ownName n
+  noteDefinition g sp
   forM_ (duplicatesOf [nameText cn | CtorDecl cn _ _ _ <- ctors]) $ \dn ->
     errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate")
       ("duplicate constructor '" <> dn <> "' in data declaration")
@@ -2561,7 +2734,7 @@ headerData (DataDecl n params _mkind ctors) sp = do
         pure tm
       Nothing -> do
         -- ordinary ctor: params implicit, fields explicit, result = data applied
-        fieldsTele <- elabTele (teleCtx paramTele) binders
+        fieldsTele <- elabTele' paramTele binders
         let resultT =
               foldl
                 (\f i -> CApp Expl f (CVar i))
@@ -2586,8 +2759,19 @@ headerData (DataDecl n params _mkind ctors) sp = do
       ETraitArrow _ rest -> gadtFields rest
       _ -> []
 
-teleCtx :: Telescope -> Ctx
-teleCtx = foldl (\c (_, _, nm, _) -> bindCtx nm False (VSort 0) c) emptyCtx
+-- bind each telescope entry at its elaborated domain type (the domain
+-- term is closed over the preceding entries)
+teleCtx :: Telescope -> CheckM Ctx
+teleCtx = foldM step emptyCtx
+  where
+    step c (_, _, nm, domTm) = do
+      domV <- evalIn c domTm
+      pure (bindCtx nm False domV c)
+
+elabTele' :: Telescope -> [Binder] -> CheckM Telescope
+elabTele' tele bs = do
+  ctx <- teleCtx tele
+  elabTele ctx bs
 
 -- elaborate binders to a telescope (left to right).
 elabTele :: Ctx -> [Binder] -> CheckM Telescope
@@ -2605,7 +2789,7 @@ elabTele ctx (b : rest) = do
 
 elabUnderParams :: Telescope -> Expr -> CheckM (Term, Value)
 elabUnderParams tele e = do
-  let ctx = teleCtx tele
+  ctx <- teleCtx tele
   (tm, _) <- inferType ctx e
   -- close over params as implicit Pi
   let closed = foldr (\(_, _, nm, t) acc -> CPi Impl Q0 nm t acc) tm tele
@@ -2614,12 +2798,13 @@ elabUnderParams tele e = do
 headerTrait :: TraitDecl -> Span -> CheckM ()
 headerTrait (TraitDecl supers n params members) sp = do
   g <- ownName n
+  noteDefinition g sp
   paramTele <- elabTele emptyCtx params
   -- trait constructor: params -> Type
   let tyTm = foldr (\(_, _, nm, t) acc -> CPi Expl Q0 nm t acc) (CSort 0) paramTele
   tyV <- evalIn emptyCtx tyTm
   -- dict record type: member name -> member type (under params)
-  let pctx = teleCtx paramTele
+  pctx <- teleCtx paramTele
   memberTys <- forM members $ \case
     TraitSig mn mtyE _ -> do
       (mtyTm, _) <- inferType pctx mtyE
@@ -2692,6 +2877,7 @@ shiftTerm by = go
       CVariantT ms -> CVariantT (map (go d) ms)
       CInject t e -> CInject t (go d e)
       CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
+      CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta m -> CMeta m
       CDo items -> CDo items
       CThunkE e -> CThunkE (go d e)
@@ -2715,12 +2901,14 @@ patBindersC = \case
   CPAs _ p -> 1 + patBindersC p
 
 headerExpect :: ExpectForm -> Span -> CheckM ()
-headerExpect form _sp = case form of
+headerExpect form sp = case form of
   ExpectTerm n tyE -> do
-    (tyTm, _) <- inferType emptyCtx tyE
-    tyV <- evalIn emptyCtx tyTm
     g <- ownName n
-    addGlobal g (GlobalDef tyV Nothing False)
+    fresh <- registerExpect g
+    when fresh $ do
+      (tyTm, _) <- inferType emptyCtx tyE
+      tyV <- evalIn emptyCtx tyTm
+      addGlobal g (GlobalDef tyV Nothing False)
   ExpectType n params _ -> abstractType n params
   ExpectData n params _ -> do
     abstractType n params
@@ -2730,8 +2918,47 @@ headerExpect form _sp = case form of
   where
     abstractType n params = do
       g <- ownName n
-      tyV <- aliasKind params
-      addGlobal g (GlobalDef tyV Nothing False)
+      fresh <- registerExpect g
+      when fresh $ do
+        tyV <- aliasKind params
+        addGlobal g (GlobalDef tyV Nothing False)
+    -- Record the §9.4 expectation. When the name is already defined
+    -- earlier in the unit, that definition is its (single) satisfier and
+    -- the existing global is kept. Returns True when the expect should
+    -- introduce the declaration into the global table itself.
+    registerExpect g = do
+      st <- get
+      let satisfied = case Map.lookup g (csGlobals st) of
+            Just gd -> isJust (gdValue gd)
+            Nothing -> Map.member g (csDatas st) || Map.member g (csTraits st)
+          count = if satisfied then 1 else 0
+      put st {csExpects = Map.insert g (sp, count) (csExpects st)}
+      pure (not satisfied)
+
+-- | Note a top-level definition of @g@: it satisfies a pending same-file
+-- signature (§9.1) and counts toward §9.4 expect satisfaction (a second
+-- satisfier is ambiguous).
+noteDefinition :: GName -> Span -> CheckM ()
+noteDefinition g sp = do
+  st <- get
+  put st {csSigPending = Map.delete g (csSigPending st)}
+  case Map.lookup g (csExpects st) of
+    Nothing -> pure ()
+    Just (esp, cnt) -> do
+      modify' $ \st' -> st' {csExpects = Map.insert g (esp, cnt + 1) (csExpects st')}
+      when (cnt + 1 == 2) $
+        errAt sp "E_EXPECT_AMBIGUOUS" (Just "kappa.expect.ambiguous")
+          ("more than one definition satisfies expected declaration '" <> gnameText g <> "' (Spec §9.4)")
+
+-- | §9.4: expects with no satisfier at the end of the compilation unit.
+expectUnsatisfiedDiags :: CheckState -> Diagnostics
+expectUnsatisfiedDiags st =
+  [ diag SevError StageElaborate "E_EXPECT_UNSATISFIED" (Just "kappa.expect.unsatisfied") sp
+      ("expected declaration '" <> gnameText g
+         <> "' is not satisfied by any definition, backend intrinsic, or imported artifact in this compilation unit (Spec §9.4)")
+  | (g, (sp, n)) <- Map.toList (csExpects st)
+  , n == 0
+  ]
 
 bodyPass :: Decl -> CheckM ()
 bodyPass = \case
@@ -2755,6 +2982,7 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
   -- signature's value is canonical while checking the body
   flushPending
   g <- ownName n
+  noteDefinition g sp
   st <- get
   msig <- pure (Map.lookup g (csGlobals st))
   case msig of
@@ -2772,17 +3000,28 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
       tm <- zonkTermM 0 tm0
       tmV <- evalIn emptyCtx tm
       let recursive = occursGlobal g tm
+          isFunction = case tm of
+            CLam {} -> True
+            _ -> not (null binders)
       reducible <-
-        if recursive
+        if recursive && not isFunction
           then do
-            let okStructural = structuralOK g binders tm
-            unless okStructural $
-              report $
-                withNote "the definition is accepted but not conversion-reducible (§15.1)" $
-                  diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.unverified") sp
-                    ("could not verify structural termination of '" <> nameText n <> "' (§15.3)")
-            pure okStructural
-          else pure True
+            -- a self-referential value (no intervening function
+            -- abstraction) is a definitional cycle (§15.3, §16.4)
+            errAt sp "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.cycle")
+              ("recursive value cycle: '" <> nameText n
+                 <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15.3)")
+            pure False
+          else if recursive
+            then do
+              let okStructural = structuralOK g binders tm
+              unless okStructural $
+                report $
+                  withNote "the definition is accepted but not conversion-reducible (§15.1)" $
+                    diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.unverified") sp
+                      ("could not verify structural termination of '" <> nameText n <> "' (§15.3)")
+              pure okStructural
+            else pure True
       addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
     _ -> do
       -- a previous definition with a value: duplicate declaration (§9.2)
@@ -2845,6 +3084,7 @@ occursGlobal g = go
       CVariantT ms -> any go ms
       CInject _ e -> go e
       CLet _ _ a b c -> go a || go b || go c
+      CLetRec _ _ a b c -> go a || go b || go c
       CIf a b c -> go a || go b || go c
       CThunkE e -> go e
       CLazyE e -> go e
@@ -2912,6 +3152,11 @@ structuralOK g _ tm0 =
       CLet _ _ a b c -> do
         ra <- collect d sub a
         rb <- collect d sub b
+        rc <- collect (d + 1) sub c
+        pure (ra ++ rb ++ rc)
+      CLetRec _ _ a b c -> do
+        ra <- collect d sub a
+        rb <- collect (d + 1) sub b
         rc <- collect (d + 1) sub c
         pure (ra ++ rb ++ rc)
       CIf a b c -> concat3 <$> collect d sub a <*> collect d sub b <*> collect d sub c

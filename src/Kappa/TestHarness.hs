@@ -987,7 +987,10 @@ assertType path src cu nm tyExpr =
           let fixities = fileFixities path src
               (m', _) = resolveModule fixities m
               st0 = st {csModule = originMod, csScope = probeScope, csDiags = []}
-              (st1, ds) = checkModule st0 m'
+              (st1, ds0) = checkModule st0 m'
+              -- the probe is deliberately definitionless; §9.1
+              -- satisfaction does not apply to it
+              ds = [d | d <- ds0, dCode d /= "E_SIGNATURE_UNSATISFIED"]
            in if hasErrors ds
                 then
                   Left

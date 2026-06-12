@@ -82,7 +82,8 @@ compileSourceWithPrelude path src =
                   , csDiags = []
                   }
               (st1, cdiags) = checkModule st0 m'
-           in CompiledUnit st1 (pdiags ++ recovered ++ rdiags ++ cdiags) effName (fileTrace True)
+              ediags = expectUnsatisfiedDiags st1
+           in CompiledUnit st1 (pdiags ++ recovered ++ rdiags ++ cdiags ++ ediags) effName (fileTrace True)
 
 -- | Unqualified scope induced by a module's import declarations over an
 -- accumulated state (§7.1 visibility, import-selected): the prelude
@@ -141,7 +142,8 @@ compileFilesWith nameOf files =
                 (st1, cdiags) = checkModule st0 m'
              in (st1, (recovered ++ rdiags ++ cdiags) : chunks, fileTrace True : trc)
       (finalSt, diagChunks, traceChunks) = foldl' step (pst, [pdiags], []) files
-      allDiags = concat (reverse diagChunks)
+      -- §9.4: expect satisfaction is judged over the whole unit
+      allDiags = concat (reverse diagChunks) ++ expectUnsatisfiedDiags finalSt
       lastName = case reverse files of
         ((p, _) : _) -> nameOf p
         [] -> ModuleName ["main"]
