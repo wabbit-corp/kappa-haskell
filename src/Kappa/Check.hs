@@ -2047,15 +2047,19 @@ elabPatch ctx e items sp = do
   case t of
     VRecordT fs -> do
       let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
+          extendNames = [nameText n | PatchExtend n _ <- items]
       forM_ (duplicatesOf updateNames) $ \n ->
         errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa.record.patch-duplicate")
           ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
-      updates <- forM items $ \case
+      forM_ (duplicatesOf extendNames) $ \n ->
+        errAt sp "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa.row.extension-duplicate")
+          ("row extension introduces label '" <> n <> "' more than once (§13.2.6)")
+      results <- forM items $ \case
         PatchUpdate [(False, n)] (PatchValue v) -> do
           case lookup (nameText n) fs of
             Just fty -> do
               vt <- check ctx v fty
-              pure (Just (nameText n, vt))
+              pure (Just (nameText n, vt, Nothing))
             Nothing -> do
               errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.record.unknown-field")
                 ("record has no field '" <> nameText n <> "'")
@@ -2063,15 +2067,39 @@ elabPatch ctx e items sp = do
         PatchUpdate _ _ -> do
           errAt sp "E_UNSUPPORTED" Nothing "nested or implicit patch paths are not supported by this implementation"
           pure Nothing
-        PatchExtend n _ -> do
-          errAt (nameSpan n) "E_UNSUPPORTED" Nothing "row extension ':=' requires open records, which this implementation does not support"
-          pure Nothing
+        -- §13.2.6 row extension: the label must be absent; the result
+        -- row gains the field
+        PatchExtend n v ->
+          case lookup (nameText n) fs of
+            Just fty -> do
+              errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.extension-existing")
+                ("row extension ':=' introduces '" <> nameText n <> "', but the record already has that field (§13.2.6)")
+              vt <- check ctx v fty
+              pure (Just (nameText n, vt, Nothing))
+            Nothing -> do
+              (vt0, vty0) <- infer ctx v
+              (vt, vty) <- insertAllImplicits ctx (exprSpan v) vt0 vty0
+              pure (Just (nameText n, vt, Just vty))
         PatchSection _ _ -> do
           errAt sp "E_UNSUPPORTED" Nothing "projection-section updates are not supported by this implementation"
           pure Nothing
-      let ups = catMaybes updates
-          fields = [(n, fromMaybe (CProj tm1 n) (lookup n ups)) | (n, _) <- fs]
-      pure (CRecordV fields, t)
+      let entries = catMaybes results
+          ups = [(n, vt) | (n, vt, _) <- entries]
+          news =
+            foldl
+              (\acc p -> if fst p `elem` map fst acc then acc else acc ++ [p])
+              []
+              [(n, (vt, vty)) | (n, vt, Just vty) <- entries, n `notElem` map fst fs]
+          allTypes = sortOn fst (fs ++ [(n, vty) | (n, (_, vty)) <- news])
+          fields =
+            [ ( n
+              , fromMaybe
+                  (maybe (CProj tm1 n) fst (lookup n news))
+                  (lookup n ups)
+              )
+            | (n, _) <- allTypes
+            ]
+      pure (CRecordV fields, VRecordT allTypes)
     _ -> do
       errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
       anyHole ctx
