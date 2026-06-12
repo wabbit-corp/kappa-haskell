@@ -1104,6 +1104,13 @@ pPatApp = do
           case args of
             [] -> pure hd
             _ -> PCtor ref args <$> spanFrom start
+    -- a lowercase head applied to argument atoms is an active-pattern
+    -- application (§17.3.2); the checker validates the head
+    PVar n -> do
+      args <- many pPatArgAtom
+      case args of
+        [] -> pure hd
+        _ -> PCtor (CtorRef Nothing n) args <$> spanFrom start
     _ -> pure hd
 
 -- A constructor-argument pattern atom must not begin with a stop

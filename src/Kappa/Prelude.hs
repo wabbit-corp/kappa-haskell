@@ -703,6 +703,11 @@ preludeSource =
     , "summon : (goal : Type) -> (@ev : goal) -> goal" -- §14.3.2
     , "let summon goal @ev = ev"
     , ""
+    , -- §17.3: partial active patterns that thread a residue on a miss
+      "data Match (a : Type) (r : Type) : Type ="
+    , "    Hit (value : a)"
+    , "    Miss (residue : r)"
+    , ""
     , -- §20.10.1: query modes, cardinality, and reified quantities
       "data QueryUse : Type ="
     , "    Reusable"

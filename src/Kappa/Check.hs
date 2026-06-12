@@ -94,13 +94,23 @@ data CheckState = CheckState
   , csManifest :: !(Map GName ())
   -- ^ §2.8.4 manifest bindings (no widening signature): reified
   -- static-object identity is preserved through them
+  , csActive :: !(Map GName APInfo)
+  -- ^ §17.3 active-pattern definitions and their result classification
+  }
+
+-- | Active-pattern result classification (§17.3.1).
+data APResult = APOption | APMatch | APTotal
+  deriving stock (Eq, Show)
+
+newtype APInfo = APInfo
+  { apResult :: APResult
   }
 
 initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty
+    Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -117,6 +127,10 @@ data CtxEntry = CtxEntry
   , ceImplicitLocal :: !Bool
   , ceVarBind :: !Bool
   -- ^ Introduced by @var@ (§18.6.1): reads auto-dereference.
+  , ceQ :: !(Maybe S.Quantity)
+  -- ^ Quantity prefix of an implicit local binder (§16.3.3).
+  , ceBorrow :: !Bool
+  -- ^ @\@&@-marked implicit local: may not escape into closures.
   }
 
 data Ctx = Ctx
@@ -126,31 +140,45 @@ data Ctx = Ctx
   -- ^ §7.4.1 flow refinement: variable → possible constructors.
   , ctxAliases :: !(Map Text Text)
   -- ^ §7.4.3 stable aliases: @let q = p@ makes q transport p's refinement.
+  , ctxBarriers :: ![Int]
+  -- ^ Context lengths at which lambda bodies began (closure
+  -- boundaries for §16.3.3 borrow-escape and scope grouping).
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] [] Map.empty Map.empty
+emptyCtx = Ctx [] [] Map.empty Map.empty []
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
 
+-- | Mark a closure boundary: entries below it are captured (§16.2.1).
+pushCtxBarrier :: Ctx -> Ctx
+pushCtxBarrier ctx = ctx {ctxBarriers = ctxLen ctx : ctxBarriers ctx}
+
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
-bindCtx n implocal ty (Ctx es env refs als) =
-  Ctx (CtxEntry n ty implocal False : es) (VRigid (length env) [] : env)
-    (Map.delete n refs) (Map.delete n als)
+bindCtx n implocal ty (Ctx es env refs als bars) =
+  Ctx (CtxEntry n ty implocal False Nothing False : es) (VRigid (length env) [] : env)
+    (Map.delete n refs) (Map.delete n als) bars
 
 -- | Bind a local definition: the environment carries the definiens, so
 -- conversion sees through local lets (delta for locals, §15.1).
 bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
-bindCtxLet n implocal ty v (Ctx es env refs als) =
-  Ctx (CtxEntry n ty implocal False : es) (v : env)
-    (Map.delete n refs) (Map.delete n als)
+bindCtxLet n implocal ty v (Ctx es env refs als bars) =
+  Ctx (CtxEntry n ty implocal False Nothing False : es) (v : env)
+    (Map.delete n refs) (Map.delete n als) bars
 
 -- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
 bindCtxVar :: Text -> Value -> Ctx -> Ctx
-bindCtxVar n ty (Ctx es env refs als) =
-  Ctx (CtxEntry n ty False True : es) (VRigid (length env) [] : env)
-    (Map.delete n refs) (Map.delete n als)
+bindCtxVar n ty (Ctx es env refs als bars) =
+  Ctx (CtxEntry n ty False True Nothing False : es) (VRigid (length env) [] : env)
+    (Map.delete n refs) (Map.delete n als) bars
+
+-- | Record the implicit binder prefix on the most recent entry
+-- (quantity and borrow marker, §16.3.3).
+setTopPrefix :: BinderPrefix -> Ctx -> Ctx
+setTopPrefix (BinderPrefix mq mb) ctx = case ctxEntries ctx of
+  (e : rest) -> ctx {ctxEntries = e {ceQ = mq, ceBorrow = isJust mb} : rest}
+  [] -> ctx
 
 -- | The §7.4.3 stable-alias root of a variable.
 refineRoot :: Ctx -> Text -> Text
@@ -536,7 +564,14 @@ unsupported ctx sp what = reportUnsupported sp what >> anyHole ctx
 -- ── Implicit resolution (§16.3.3) ────────────────────────────────────
 
 resolveImplicit :: Ctx -> Span -> Value -> CheckM Term
-resolveImplicit ctx sp goal = do
+resolveImplicit ctx sp goal = resolveImplicitQ ctx sp Q0 goal
+
+-- | Resolve an implicit argument for a binder of quantity @q@ (§16.3.3).
+-- The quantity distinguishes runtime implicits (which demand an actual
+-- candidate, fixtures' @\@ω env : Env@ style) from erased ones (whose
+-- values may be inferred later by unification).
+resolveImplicitQ :: Ctx -> Span -> Q -> Value -> CheckM Term
+resolveImplicitQ ctx sp q goal = do
   g <- forceM goal
   kindLike <- isKindLike (ctxLen ctx) g
   case g of
@@ -558,7 +593,7 @@ resolveImplicit ctx sp goal = do
           pure m
         else do
           -- §16.3.3 step 1: the local implicit context goes first.
-          mLoc <- localCandidate ctx g
+          mLoc <- localCandidate ctx sp q g
           case mLoc of
             Just tm -> pure tm
             Nothing -> do
@@ -570,11 +605,12 @@ resolveImplicit ctx sp goal = do
                   case mProp of
                     Just tm -> pure tm
                     Nothing ->
-                      if isTrait || isEq
+                      if isTrait || isEq || q /= Q0
                         then do
                           gT <- quoteIn ctx g
                           errAt sp "E_IMPLICIT_UNSOLVED" (Just "kappa.implicit.unsolved")
-                            ("could not resolve implicit argument of type " <> renderTerm gT)
+                            ("could not resolve implicit argument of type " <> renderTerm gT
+                               <> (if isTrait || isEq then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
                           freshMeta
                         else freshMeta
 
@@ -590,16 +626,56 @@ isKindLike lvl v = do
       isKindLike (lvl + 1) cod
     _ -> pure False
 
-localCandidate :: Ctx -> Value -> CheckM (Maybe Term)
-localCandidate ctx goal = go 0 (ctxEntries ctx)
+localCandidate :: Ctx -> Span -> Q -> Value -> CheckM (Maybe Term)
+localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
   where
-    go _ [] = pure Nothing
-    go i (e : rest)
-      | ceImplicitLocal e = do
+    -- anonymous binders are not referenceable and never shadow
+    shadowName e = [ceName e | ceName e `notElem` ["_", "_ev"]]
+    go _ _ [] = pure Nothing
+    go i seen (e : rest)
+      | ceImplicitLocal e
+      , ceName e `notElem` seen = do
           st0 <- get
           ok <- unify ctx (ceType e) goal
-          if ok then pure (Just (CVar i)) else put st0 >> go (i + 1) rest
-      | otherwise = go (i + 1) rest
+          if ok
+            then do
+              checkAmbiguous i (shadowName e ++ seen) rest
+              checkCandidate i e
+              pure (Just (CVar i))
+            else put st0 >> go (i + 1) (shadowName e ++ seen) rest
+      | otherwise = go (i + 1) (shadowName e ++ seen) rest
+    -- a second matching candidate in the same scope (no closure
+    -- boundary between the two) is ambiguous (§16.3.3)
+    checkAmbiguous i seen rest = do
+      let lvlOf ix = ctxLen ctx - 1 - ix
+      next <- findNext (i + 1) seen rest
+      forM_ next $ \j -> do
+        let l1 = lvlOf i
+            l2 = lvlOf j
+            separated = any (\b -> l2 < b && b <= l1) (ctxBarriers ctx)
+        unless separated $
+          errAt sp "E_IMPLICIT_AMBIGUOUS" (Just "kappa.implicit.ambiguous")
+            "two implicit candidates in the same scope satisfy this implicit goal; the resolution is ambiguous (§16.3.3)"
+    findNext _ _ [] = pure Nothing
+    findNext j seen (e : rest)
+      | ceImplicitLocal e
+      , ceName e `notElem` seen = do
+          st0 <- get
+          ok <- unify ctx (ceType e) goal
+          put st0
+          if ok then pure (Just j) else findNext (j + 1) (shadowName e ++ seen) rest
+      | otherwise = findNext (j + 1) (shadowName e ++ seen) rest
+    checkCandidate i e = do
+      -- an erased candidate cannot satisfy a runtime implicit (§12.2)
+      when (q /= Q0 && ceQ e == Just S.QZero) $
+        errAt sp "E_QTT_ERASED_RUNTIME_USE" (Just "kappa.qtt.erased-runtime-use")
+          ("the implicit candidate '" <> ceName e <> "' is erased (@0) and cannot satisfy a runtime implicit binder (§12.2)")
+      -- a borrowed candidate may not be captured across a closure
+      -- boundary (§16.3.3, §12.3.2)
+      let lvl = ctxLen ctx - 1 - i
+      when (ceBorrow e && any (> lvl) (ctxBarriers ctx)) $
+        errAt sp "E_QTT_BORROW_ESCAPE" (Just "kappa.qtt.borrow-escape")
+          ("the borrowed implicit candidate '" <> ceName e <> "' may not be captured by a closure (§12.3.2)")
 
 goalHasFlex :: Value -> CheckM Bool
 goalHasFlex v = do
@@ -636,7 +712,7 @@ flushPending = do
       Just (Just _) -> pure ()
       _ -> do
         g <- forceM goal
-        mLoc <- localCandidate ctx g
+        mLoc <- localCandidate ctx sp Q0 g
         r <- case mLoc of
           Just tm -> pure (Just tm)
           Nothing -> do
@@ -765,7 +841,7 @@ tryInstance depth ctx goalArgs ie
         then do
           let premVs = [eval ec (reverse metaVs) p | p <- iePremises ie]
           prems <- forM premVs $ \pv -> do
-            mLoc <- localCandidate ctx pv
+            mLoc <- localCandidate ctx noSpan Q0 pv
             case mLoc of
               Just t -> pure (Just t)
               Nothing -> do
@@ -841,8 +917,8 @@ insertAllImplicits :: Ctx -> Span -> Term -> Value -> CheckM (Term, Value)
 insertAllImplicits ctx sp tm ty = do
   t <- forceM ty
   case t of
-    VPi Impl _ _ dom clo -> do
-      arg <- resolveImplicit ctx sp dom
+    VPi Impl q _ dom clo -> do
+      arg <- resolveImplicitQ ctx sp q dom
       argV <- evalIn ctx arg
       ty' <- clApp clo argV
       insertAllImplicits ctx sp (CApp Impl tm arg) ty'
@@ -1333,8 +1409,8 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Impl fTm aTm) ty' rest
-    (_, VPi Impl _ _ dom clo) -> do
-      iTm <- resolveImplicit ctx sp dom
+    (_, VPi Impl q _ dom clo) -> do
+      iTm <- resolveImplicitQ ctx sp q dom
       iV <- evalIn ctx iTm
       ty' <- clApp clo iV
       elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
@@ -1357,7 +1433,8 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
     (ArgImplicit e, _) -> do
       errAt (exprSpan e) "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
         "an explicit implicit argument was supplied, but the callee has no implicit parameter here (§16.1.7.1)"
-      pure (fTm, fTy)
+      -- recovery: do not cascade a type mismatch from the broken spine
+      anyHole ctx
     (ArgExplicit e, _)
       -- a saturated constructor given extra arguments (§10.1.1)
       | Just _ <- termHeadCtor fTm -> do
@@ -1451,8 +1528,8 @@ elabNamedBlock ctx fTm fTy items sp rest = do
     goPiNamed tm ty0 remaining = do
       ty <- forceM ty0
       case ty of
-        VPi Impl _ _ dom clo -> do
-          iTm <- resolveImplicit ctx sp dom
+        VPi Impl q _ dom clo -> do
+          iTm <- resolveImplicitQ ctx sp q dom
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
           goPiNamed (CApp Impl tm iTm) ty' remaining
@@ -1477,8 +1554,8 @@ elabNamedBlock ctx fTm fTy items sp rest = do
     goSpine ctxAcc tm ty0 (a@(_, _, _) : as) = do
       ty <- forceM ty0
       case ty of
-        VPi Impl _ _ dom clo -> do
-          iTm <- resolveImplicit ctx sp dom
+        VPi Impl q _ dom clo -> do
+          iTm <- resolveImplicitQ ctx sp q dom
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
           goSpine ctxAcc (CApp Impl tm iTm) ty' (a : as)
@@ -1934,8 +2011,8 @@ elabDotUnqualified ctx e member mname = do
     applyRecv fTm fTy0 recvTm recvTy = do
       fTy <- forceM fTy0
       case fTy of
-        VPi Impl _ _ dom clo -> do
-          iTm <- resolveImplicit ctx (nameSpanOf member) dom
+        VPi Impl q _ dom clo -> do
+          iTm <- resolveImplicitQ ctx (nameSpanOf member) q dom
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
           applyRecv (CApp Impl fTm iTm) ty' recvTm recvTy
@@ -2240,7 +2317,10 @@ elabVariant ctx arms mtail sp mexpected = do
 -- ── Lambdas, lets, blocks ────────────────────────────────────────────
 
 elabLambda :: Ctx -> [Binder] -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
-elabLambda ctx0 bs0 body sp mexpected = go ctx0 bs0 mexpected
+elabLambda ctx0 bs0 body sp mexpected =
+  -- the lambda is a closure boundary: borrowed implicit locals from
+  -- the surrounding scope may not be captured into it (§16.3.3)
+  go (pushCtxBarrier ctx0) bs0 mexpected
   where
     go ctx [] mexp = case mexp of
       Just t -> do
@@ -2296,7 +2376,11 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
     go ctx [] acc = do
       (bodyTm, bodyTy) <- case mexpected of
         Just t -> (,t) <$> check ctx body t
-        Nothing -> infer ctx body
+        Nothing -> do
+          -- trailing implicits resolve against the let-local implicit
+          -- context, not the caller's (§16.3.3)
+          (tm, ty) <- infer ctx body
+          insertAllImplicits ctx (exprSpan body) tm ty
       pure (foldl' (flip mkLet) bodyTm acc, bodyTy)
     -- an annotated local function may refer to itself (§9.2 mirrored
     -- locally): elaborate the lambda under its own binder
@@ -2335,7 +2419,8 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           rhsTyTm <- quoteIn ctx rhsTy
           rhsV <- evalIn ctx rhsTm
           let q = qOf (bpQuantity prefix)
-              ctx1 = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
+              ctx0' = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
+              ctx1 = if implocal then setTopPrefix prefix ctx0' else ctx0'
               -- §7.4.3 stable alias: `let q = p` transports refinement
               ctx' = case rhs of
                 EVar pn | Just _ <- lookupCtx (nameText pn) ctx ->
@@ -2477,6 +2562,199 @@ condRefines _ctx = go
 
 checkMatch :: Ctx -> Expr -> [MatchCase] -> Span -> Value -> CheckM Term
 checkMatch ctx scrut cases sp resT = do
+  hasAp <- or <$> mapM caseUsesActive cases
+  if hasAp
+    then do
+      lowered <- lowerActiveMatch ctx scrut cases sp
+      check ctx lowered resT
+    else checkMatchPlain ctx scrut cases sp resT
+  where
+    caseUsesActive = \case
+      MatchCase pat _ _ _ -> patUsesActive pat
+      MatchImpossible _ -> pure False
+    patUsesActive pat = case pat of
+      PCtor cref ps _ | not (null ps) -> do
+        mc <- peekCtor ctx cref
+        case mc of
+          Just _ -> pure False
+          Nothing -> do
+            mAp <- lookupActivePattern cref
+            case mAp of
+              Just _ -> pure True
+              Nothing -> isJust <$> lookupGlobalName (nameText (crName cref))
+      PActive {} -> pure True
+      _ -> pure False
+
+-- | 'resolveCtor' without the unresolved-constructor diagnostic: used
+-- while classifying possible active-pattern heads (§17.3.2).
+peekCtor :: Ctx -> CtorRef -> CheckM (Maybe (GName, CtorInfo))
+peekCtor ctx cref = do
+  st0 <- get
+  r <- resolveCtor ctx cref
+  case r of
+    Just _ -> pure r
+    Nothing -> put st0 >> pure Nothing
+
+-- | Find an active pattern by (unqualified) head name; same-module
+-- definitions take precedence over imported ones (§17.3).
+lookupActivePattern :: CtorRef -> CheckM (Maybe APInfo)
+lookupActivePattern (CtorRef _ n) = do
+  st <- get
+  let nm = nameText n
+      cands = [(g, i) | (g, i) <- Map.toList (csActive st), gnameText g == nm]
+      own = [i | (GName m _, i) <- cands, m == csModule st]
+  pure $ case own ++ map snd cands of
+    (i : _) -> Just i
+    [] -> Nothing
+
+-- | Lower a match containing active-pattern cases (§17.3.2) into
+-- nested matches over the pattern functions' results: Option results
+-- test Some/None, Match results thread the Miss residue into the
+-- remaining cases, and total view results match the view value
+-- directly (consecutive cases with the same head share one view
+-- match, preserving exhaustiveness over the view type).
+lowerActiveMatch :: Ctx -> Expr -> [MatchCase] -> Span -> CheckM Expr
+lowerActiveMatch ctx scrut cases sp = case scrut of
+  EVar _ -> goCases scrut cases
+  _ -> do
+    sv <- freshNameM "__apscrut"
+    let svn = Name sv sp
+    inner <- goCases (EVar svn) cases
+    pure (ELet [LetBind False emptyPrefix (PVar svn) Nothing scrut sp] inner sp)
+  where
+    goCases se cs = do
+      classified <- mapM classify cs
+      build se classified
+    classify c@(MatchImpossible _) = pure (CPlain c)
+    classify c@(MatchCase pat mguard body csp) = case pat of
+      PCtor cref ps _ | not (null ps) -> do
+        mc <- peekCtor ctx cref
+        case mc of
+          Just _ -> pure (CPlain c)
+          Nothing -> do
+            mAp <- lookupActivePattern cref
+            case mAp of
+              Just info -> case mapM activePatArgExpr (init ps) of
+                Just args -> pure (CActive (crName cref) info args (last ps) mguard body csp)
+                Nothing -> do
+                  errAt csp "E_UNSUPPORTED" Nothing "this active-pattern argument form is not supported by this implementation"
+                  pure (CBad csp)
+              Nothing -> do
+                mg <- lookupGlobalName (nameText (crName cref))
+                case mg of
+                  Just _ -> do
+                    errAt csp "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa.pattern.head")
+                      ("'" <> nameText (crName cref)
+                         <> "' is neither a constructor nor an active pattern, so it cannot head a pattern (§17.3.2)")
+                    pure (CBad csp)
+                  Nothing -> pure (CPlain c)
+      PActive cref args vp psp -> do
+        mAp <- lookupActivePattern cref
+        case mAp of
+          Just info -> pure (CActive (crName cref) info args vp mguard body psp)
+          Nothing -> do
+            errAt psp "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa.pattern.head")
+              ("'" <> nameText (crName cref) <> "' is not an active pattern (§17.3.2)")
+            pure (CBad psp)
+      _ -> pure (CPlain c)
+    apApp n args se = EApp (EVar n) (map ArgExplicit (args ++ [se]))
+    pcon nm ps = PCtor (CtorRef Nothing (Name nm sp)) ps sp
+
+    build se classified = case classified of
+      [] -> pure (EMatch se [] sp)
+      (CBad _ : rest) -> build se rest
+      (CPlain _ : _) -> do
+        let (plains, rest) = span isPlain classified
+            plainCases = [c | CPlain c <- plains]
+        if null rest
+          then pure (EMatch se plainCases sp)
+          else do
+            r <- freshNameM "__apk"
+            let rn = Name r sp
+            inner <- build (EVar rn) rest
+            pure (EMatch se (plainCases ++ [MatchCase (PVar rn) Nothing inner sp]) sp)
+      (CActive n info args vp mguard body csp : rest) -> case apResult info of
+        APOption -> do
+          inner <- build se rest
+          pure $
+            EMatch (apApp n args se)
+              [ MatchCase (pcon "Some" [vp]) mguard body csp
+              , MatchCase (PWild sp) Nothing inner sp
+              ]
+              sp
+        APMatch -> do
+          r <- freshNameM "__apresid"
+          let rn = Name r sp
+          inner <- build (EVar rn) rest
+          pure $
+            EMatch (apApp n args se)
+              [ MatchCase (pcon "Hit" [vp]) mguard body csp
+              , MatchCase (pcon "Miss" [PVar rn]) Nothing inner sp
+              ]
+              sp
+        APTotal -> do
+          let sameHead = \case
+                CActive n2 i2 _ _ _ _ _ -> nameText n2 == nameText n && apResult i2 == APTotal
+                _ -> False
+              (run, rest') = span sameHead (CActive n info args vp mguard body csp : rest)
+              viewCases = [MatchCase vp' g' b' c' | CActive _ _ _ vp' g' b' c' <- run]
+          extra <-
+            if null rest'
+              then pure []
+              else do
+                inner <- build se rest'
+                pure [MatchCase (PWild sp) Nothing inner sp]
+          pure (EMatch (apApp n args se) (viewCases ++ extra) sp)
+      where
+        isPlain = \case
+          CPlain _ -> True
+          _ -> False
+
+-- | One classified match case during active-pattern lowering.
+data CaseClass
+  = CPlain !MatchCase
+  | CActive !Name !APInfo ![Expr] !Pattern !(Maybe Expr) !Expr !Span
+  | CBad !Span
+
+-- | Rewrite @let? P args (vp) = e@ over an active pattern P into the
+-- corresponding match on @P args e@ (§17.3.2). A Match-result pattern
+-- threads a residue, which a plain @let?@ cannot receive.
+rewriteActiveLetQ :: Ctx -> Pattern -> Expr -> Span -> CheckM (Pattern, Expr)
+rewriteActiveLetQ ctx pat rhs dsp = case pat of
+  PCtor cref ps psp | not (null ps) -> do
+    mc <- peekCtor ctx cref
+    case mc of
+      Just _ -> pure (pat, rhs)
+      Nothing -> do
+        mAp <- lookupActivePattern cref
+        case mAp of
+          Nothing -> pure (pat, rhs)
+          Just info -> case mapM activePatArgExpr (init ps) of
+            Nothing -> pure (pat, rhs)
+            Just args -> do
+              let app = EApp (EVar (crName cref)) (map ArgExplicit (args ++ [rhs]))
+                  vp = last ps
+              case apResult info of
+                APOption -> pure (PCtor (CtorRef Nothing (Name "Some" psp)) [vp] psp, app)
+                APMatch -> do
+                  errAt dsp "E_ACTIVE_PATTERN_MATCH_RESULT_NOT_ALLOWED_IN_PLAIN_LET_QUESTION"
+                    (Just "kappa.pattern.active")
+                    "a Match-result active pattern threads a residue on a miss and may not be used in a plain 'let?'; use a match with a residue case instead (§17.3.2)"
+                  pure (PCtor (CtorRef Nothing (Name "Hit" psp)) [vp] psp, app)
+                APTotal -> pure (vp, app)
+  _ -> pure (pat, rhs)
+
+-- | Convert an active-pattern argument (written in pattern position)
+-- to the expression it denotes (§17.3.2).
+activePatArgExpr :: Pattern -> Maybe Expr
+activePatArgExpr = \case
+  PLit (LInt v msuf) psp -> Just (EIntLit v ((`Name` psp) <$> msuf) psp)
+  PLit (LFloat v msuf) psp -> Just (EFloatLit v ((`Name` psp) <$> msuf) psp)
+  PVar n -> Just (EVar n)
+  _ -> Nothing
+
+checkMatchPlain :: Ctx -> Expr -> [MatchCase] -> Span -> Value -> CheckM Term
+checkMatchPlain ctx scrut cases sp resT = do
   (sTm, sTy) <- infer ctx scrut
   (sTm1, sTy1) <- insertAllImplicits ctx (exprSpan scrut) sTm sTy
   alts <- fmap catMaybes . forM cases $ \case
@@ -3011,10 +3289,34 @@ elabDo ctx items _sp mexpected = do
               (tyTm, _) <- inferType c tyE
               evalIn c tyTm
             Nothing -> freshMetaV c
-          rhsTm <- check c (desugarBang rhs) (ioType errT aT)
+          let rhsD = desugarBang rhs
+          st0 <- get
+          n0 <- gets (length . csDiags)
+          rhsTm0 <- check c rhsD (ioType errT aT)
+          n1 <- gets (length . csDiags)
+          rhsTm <-
+            if n1 == n0
+              then pure rhsTm0
+              else do
+                -- container bind (§18.3 accommodation): a do block in a
+                -- non-IO container position binds through that container
+                put st0
+                (tm0, ty0) <- infer c rhsD
+                (tm1, ty1) <- insertAllImplicits c bsp tm0 ty0
+                ty1F <- forceM ty1
+                case ty1F of
+                  VGlobN (GName _ h) args
+                    | h /= "IO"
+                    , ((_, lastArg) : _) <- reverse args -> do
+                        expectType c bsp lastArg aT
+                        pure tm1
+                  _ -> do
+                    -- not container-shaped: restore the IO diagnosis
+                    put st0
+                    check c rhsD (ioType errT aT)
           checkIrrefutable c pat aT bsp
           (patC, cBound, _) <- elabPattern c pat aT
-          let c' = markImplicitLocal implocal c cBound
+          let c' = markImplicitLocal implocal prefix c cBound
           ks <- goItems loops c' errT resT rest
           pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
         DoLet (LetBind implocal prefix pat mty rhs bsp) -> do
@@ -3035,10 +3337,11 @@ elabDo ctx items _sp mexpected = do
                   | Just _ <- lookupCtx (nameText pn) c ->
                       addCtxAlias (nameText qn) (nameText pn) cBound
                 _ -> cBound
-          let c' = markImplicitLocal implocal c cBound'
+          let c' = markImplicitLocal implocal prefix c cBound'
           ks <- goItems loops c' errT resT rest
           pure (KLet (qOf (bpQuantity prefix)) patC rhsTm : ks)
-        DoLetQ pat rhs mElse _ -> do
+        DoLetQ pat0 rhs0 mElse dsp -> do
+          (pat, rhs) <- rewriteActiveLetQ c pat0 rhs0 dsp
           (rhsTm, rhsTy) <- infer c rhs
           (patC, c', _) <- elabPattern c pat rhsTy
           mElse' <- forM mElse $ \(rp, fe) -> do
@@ -3184,11 +3487,13 @@ statementInferable = \case
 -- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
 -- implicit context for the remaining items. @before@ is the context the
 -- pattern was elaborated in; the entries added on top of it are marked.
-markImplicitLocal :: Bool -> Ctx -> Ctx -> Ctx
-markImplicitLocal False _ after = after
-markImplicitLocal True before after@(Ctx es _ _ _) =
-  let (new, old) = splitAt (length es - ctxLen before) es
-   in after {ctxEntries = map (\e -> e {ceImplicitLocal = True}) new ++ old}
+markImplicitLocal :: Bool -> BinderPrefix -> Ctx -> Ctx -> Ctx
+markImplicitLocal False _ _ after = after
+markImplicitLocal True (BinderPrefix mq mb) before after =
+  let es = ctxEntries after
+      (new, old) = splitAt (length es - ctxLen before) es
+      mark e = e {ceImplicitLocal = True, ceQ = mq, ceBorrow = isJust mb}
+   in after {ctxEntries = map mark new ++ old}
 
 -- `!e` splicing inside do items (§18.3): rewritten to runIO marker the
 -- interpreter understands; typing treats !e : a where e : IO err a.
@@ -4469,8 +4774,7 @@ bodyPass :: Decl -> CheckM ()
 bodyPass = \case
   DLet mods ld sp -> elabLetDecl mods ld sp
   DInstance inst sp -> elabInstance inst sp
-  DPattern _ _ sp ->
-    errAt sp "E_UNSUPPORTED" Nothing "active-pattern declarations are not supported by this implementation"
+  DPattern mods ld sp -> elabActivePatternDecl mods ld sp
   DProjection _ _ _ _ _ sp ->
     errAt sp "E_UNSUPPORTED" Nothing "projection declarations are not supported by this implementation"
   DDerive _ sp ->
@@ -4478,6 +4782,56 @@ bodyPass = \case
   DTopSplice _ sp ->
     errAt sp "E_UNSUPPORTED" Nothing "top-level splices are not supported by this implementation"
   _ -> pure ()
+
+-- | An active-pattern declaration (§17.3.1) elaborates as an ordinary
+-- function definition (the pattern name is also a first-class value)
+-- and registers pattern metadata: its result classification and the
+-- number of pattern arguments before the scrutinee.
+elabActivePatternDecl :: DeclMods -> LetDef -> Span -> CheckM ()
+elabActivePatternDecl mods ld sp = do
+  elabLetDecl mods ld sp
+  case ldName ld of
+    Nothing -> pure ()
+    Just n -> do
+      g <- ownName n
+      mgd <- gets (Map.lookup g . csGlobals)
+      forM_ mgd $ \gd -> do
+        (_argc, res) <- unrollExplicit 0 (gdType gd)
+        resF <- forceM res
+        let kind = case resF of
+              VGlobN (GName _ "Option") _ -> Right APOption
+              VGlobN (GName _ "Match") _ -> Right APMatch
+              VGlobN (GName _ h) _ | h `elem` ["IO", "STM", "Elab"] -> Left h
+              _ -> Right APTotal
+        case kind of
+          Left h ->
+            errAt sp "E_ACTIVE_PATTERN_MONADIC_RESULT" (Just "kappa.pattern.active")
+              ("an active pattern's result type may not be the monadic type '" <> h
+                 <> "'; return Option, Match, or a total view type (§17.3.1)")
+          Right k -> do
+            -- an Option/total-view pattern cannot return a residue, so
+            -- a linear scrutinee would be lost on the miss path
+            let explBinders = [b | b <- ldBinders ld, not (bImplicit b)]
+                scrutLinear = case reverse explBinders of
+                  (b : _) ->
+                    bpQuantity (bPrefix b) `elem` [Just S.QOne, Just S.QAtLeastOne]
+                      && isNothing (bpBorrow (bPrefix b))
+                  [] -> False
+            when (scrutLinear && k /= APMatch) $
+              errAt sp "E_ACTIVE_PATTERN_LINEARITY_VIOLATION" (Just "kappa.pattern.active")
+                "this active pattern consumes a linear scrutinee but cannot thread a residue back on a miss; return 'Match item residue' instead (§17.3)"
+            modify' $ \st -> st {csActive = Map.insert g (APInfo k) (csActive st)}
+  where
+    unrollExplicit :: Int -> Value -> CheckM (Int, Value)
+    unrollExplicit = goU 0
+      where
+        goU expl lvl v = do
+          vf <- forceM v
+          case vf of
+            VPi ic _ _ _ clo -> do
+              inner <- clApp clo (VRigid lvl [])
+              goU (if ic == Expl then expl + 1 else expl) (lvl + 1) inner
+            _ -> pure (expl, vf)
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 -- the parsed decreases clause is not consulted: termination is verified
@@ -4827,7 +5181,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
         argVs <- mapM (evalIn ctxP') argTms
         supF <- evalIn ctxP' supClosed
         supGoal <- forceM (evalApp ec supF [(Expl, a) | a <- argVs])
-        mLoc <- localCandidate ctxP' supGoal
+        mLoc <- localCandidate ctxP' sp Q0 supGoal
         satisfied <- case mLoc of
           Just _ -> pure True
           Nothing -> do
