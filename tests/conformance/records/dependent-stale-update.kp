@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §13.2.5: updating a dependency without repairing the dependent
+-- field leaves it stale
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+bad : Sized -> Sized
+let bad (s : Sized) : Sized = s.{ len = 2 }

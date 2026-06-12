@@ -24,7 +24,7 @@ module Kappa.Check
   ) where
 
 import Control.Monad.State.Strict
-import Data.List (elemIndex, foldl', nub, sort, sortOn, (\\))
+import Data.List (elemIndex, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
@@ -105,7 +105,17 @@ data CheckState = CheckState
   , csDemand :: !PlaceDemand
   -- ^ surrounding place demand of the expression being elaborated
   -- (selects the §16.1.5/§16.1.6 eliminator and accessor capability)
+  , csThis :: !(Maybe ThisMode)
+  -- ^ §13.2.1 sibling-reference scope: what @this@ denotes inside a
+  -- dependent record type, literal, or update being elaborated
   }
+
+-- | What @this.label@ resolves to (§13.2.1): inside a record type,
+-- the telescope prefix elaborated so far; inside a record literal or
+-- update, the sibling field values already elaborated.
+data ThisMode
+  = ThisType ![(Text, Value)]
+  | ThisValue ![(Text, Term)] ![(Text, Value)]
 
 -- | §16.1.5/§16.1.6 surrounding demand at a descriptor application.
 data PlaceDemand = DemandRead | DemandConsume | DemandOpen
@@ -131,7 +141,7 @@ initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty Map.empty Map.empty Map.empty DemandRead
+    Map.empty Map.empty Map.empty Map.empty DemandRead Nothing
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -275,6 +285,137 @@ demandOfQ :: Q -> PlaceDemand
 demandOfQ q
   | q `elem` [Q1, QGe1] = DemandConsume
   | otherwise = DemandRead
+
+-- | Run an action with @this@ denoting the given §13.2.1 sibling scope.
+withThis :: Maybe ThisMode -> CheckM a -> CheckM a
+withThis tm act = do
+  old <- gets csThis
+  modify' $ \st -> st {csThis = tm}
+  r <- act
+  modify' $ \st -> st {csThis = old}
+  pure r
+
+-- | The neutral standing for the record under §13.2.1 elaboration.
+thisG :: GName
+thisG = gPrel "__this"
+
+-- | Does a term mention the §13.2.1 @this@ neutral?
+mentionsThis :: Term -> Bool
+mentionsThis = \case
+  CGlob g -> g == thisG
+  CVar _ -> False
+  CLam _ _ _ b -> mentionsThis b
+  CPi _ _ _ a b -> mentionsThis a || mentionsThis b
+  CApp _ f a -> mentionsThis f || mentionsThis a
+  CSort _ -> False
+  CLit _ -> False
+  CCtor _ as -> any mentionsThis as
+  CMatch s alts ->
+    mentionsThis s
+      || or [maybe False mentionsThis g || mentionsThis b | CaseAlt _ g b <- alts]
+  CRecordT fs -> any (mentionsThis . snd) fs
+  CRecordV fs -> any (mentionsThis . snd) fs
+  CProj e _ -> mentionsThis e
+  CVariantT ms -> any mentionsThis ms
+  CInject _ e -> mentionsThis e
+  CLet _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
+  CLetRec _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
+  CMeta _ -> False
+  CDo _ -> False
+  CThunkE e -> mentionsThis e
+  CLazyE e -> mentionsThis e
+  CForceE e -> mentionsThis e
+  CIf a b c -> mentionsThis a || mentionsThis b || mentionsThis c
+
+-- | The sibling field labels a §13.2.1 field type depends on.
+thisDepsOf :: Term -> [Text]
+thisDepsOf = nub . go
+  where
+    go = \case
+      CProj e f
+        | CGlob g <- e, g == thisG -> [f]
+        | otherwise -> go e
+      CGlob _ -> []
+      CVar _ -> []
+      CLam _ _ _ b -> go b
+      CPi _ _ _ a b -> go a ++ go b
+      CApp _ f a -> go f ++ go a
+      CSort _ -> []
+      CLit _ -> []
+      CCtor _ as -> concatMap go as
+      CMatch s alts -> go s ++ concat [maybe [] go g ++ go b | CaseAlt _ g b <- alts]
+      CRecordT fs -> concatMap (go . snd) fs
+      CRecordV fs -> concatMap (go . snd) fs
+      CVariantT ms -> concatMap go ms
+      CInject _ e -> go e
+      CLet _ _ a b c -> go a ++ go b ++ go c
+      CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CMeta _ -> []
+      CDo _ -> []
+      CThunkE e -> go e
+      CLazyE e -> go e
+      CForceE e -> go e
+      CIf a b c -> go a ++ go b ++ go c
+
+-- | Substitute a receiver term (well-scoped at the substitution site)
+-- for the §13.2.1 @this@ neutral, shifting under binders.
+substThisTm :: Term -> Term -> Term
+substThisTm recv = go 0
+  where
+    go d t = case t of
+      CGlob g | g == thisG -> shiftTerm d 0 recv
+      CGlob _ -> t
+      CVar _ -> t
+      CLam ic q n b -> CLam ic q n (go (d + 1) b)
+      CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
+      CApp ic f a -> CApp ic (go d f) (go d a)
+      CSort _ -> t
+      CLit _ -> t
+      CCtor g as -> CCtor g (map (go d) as)
+      CMatch s alts ->
+        CMatch (go d s)
+          [CaseAlt p (fmap (go (d + patBindersC p)) g) (go (d + patBindersC p) b) | CaseAlt p g b <- alts]
+      CRecordT fs -> CRecordT [(n, go d x) | (n, x) <- fs]
+      CRecordV fs -> CRecordV [(n, go d x) | (n, x) <- fs]
+      CProj e f -> CProj (go d e) f
+      CVariantT ms -> CVariantT (map (go d) ms)
+      CInject tag e -> CInject tag (go d e)
+      CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
+      CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
+      CMeta _ -> t
+      CDo _ -> t
+      CThunkE e -> CThunkE (go d e)
+      CLazyE e -> CLazyE (go d e)
+      CForceE e -> CForceE (go d e)
+      CIf a b c -> CIf (go d a) (go d b) (go d c)
+
+-- | Substitute a receiver term for @this@ inside a field-type value
+-- (§13.2.1 dependent projection).
+substThisInto :: Ctx -> Term -> Value -> CheckM Value
+substThisInto ctx recv fty = do
+  ftyTm <- quoteIn ctx fty
+  if mentionsThis ftyTm
+    then evalIn ctx (substThisTm recv ftyTm)
+    else pure fty
+
+-- | Does any field type of the record mention @this@?
+recordTypeIsDependent :: Ctx -> [(Text, Value)] -> CheckM Bool
+recordTypeIsDependent ctx fs =
+  or <$> mapM (fmap mentionsThis . quoteIn ctx . snd) fs
+
+-- | Topologically sort labelled items by their dependency labels;
+-- 'Nothing' on a cycle.
+topoFields :: [(Text, [Text], a)] -> Maybe [a]
+topoFields = goT []
+  where
+    goT _ [] = Just []
+    goT doneLs pending =
+      case [x | x@(_, ds, _) <- pending, all (`elem` doneLs) ds] of
+        [] -> Nothing
+        ready -> do
+          let readyLs = [l | (l, _, _) <- ready]
+              rest = [x | x@(l, _, _) <- pending, l `notElem` readyLs]
+          ((map (\(_, _, a) -> a) ready) ++) <$> goT (doneLs ++ readyLs) rest
 
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
@@ -975,6 +1116,18 @@ insertAllImplicits ctx sp tm ty = do
 
 infer :: Ctx -> Expr -> CheckM (Term, Value)
 infer ctx expr = case expr of
+  -- §13.2.1 sibling references: inside a dependent record type,
+  -- literal, or update, an unshadowed 'this' denotes the record
+  EVar n
+    | nameText n == "this"
+    , Nothing <- lookupCtx "this" ctx -> do
+        mthis <- gets csThis
+        case mthis of
+          Just (ThisType fields) ->
+            pure (CGlob thisG, VRecordT (sortOn fst fields))
+          Just (ThisValue vals tys) ->
+            pure (CRecordV (sortOn fst vals), VRecordT (sortOn fst tys))
+          Nothing -> resolveName ctx n
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
     , Just lvl <- sortName (nameText n) ->
@@ -1013,14 +1166,29 @@ infer ctx expr = case expr of
   ERecordLit items sp -> elabRecordLit ctx items sp
   ERecordType fs mtail sp -> do
     when (isJust mtail) . void $ unsupported ctx sp "open record row tails"
-    fields <- forM fs $ \f -> do
-      (t, _) <- inferType ctx (rtfType f)
-      pure (nameText (rtfName f), t)
-    let names = map fst fields
+    let names = [nameText (rtfName f) | f <- fs]
+        deps f = [l | l <- surfaceThisRefs (rtfType f), l `elem` names]
+        ordered = topoFields [(nameText (rtfName f), deps f, f) | f <- fs]
     forM_ (duplicatesOf names) $ \n ->
       errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
         ("record type has duplicate field '" <> n <> "'")
-    pure (CRecordT (sortOn fst fields), VSort 0)
+    case ordered of
+      Nothing -> do
+        errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+          "the field-dependency graph of this record type contains a cycle (§13.2.1)"
+        fields <- forM names $ \n -> (,) n <$> freshMeta
+        pure (CRecordT (sortOn fst fields), VSort 0)
+      Just fsOrdered -> do
+        -- §13.2.1: elaborate the telescope in dependency order; later
+        -- field types see earlier fields through 'this'
+        fields <- goDep [] fsOrdered
+        pure (CRecordT (sortOn fst fields), VSort 0)
+    where
+      goDep _ [] = pure []
+      goDep done (f : rest) = do
+        (t, _) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
+        tV <- evalIn ctx t
+        ((nameText (rtfName f), t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
   -- carrier-prefixed comprehension (§20.9): a type-valued head applied
   -- to a comprehension literal selects a collection carrier
   EApp f args
@@ -1290,6 +1458,24 @@ check ctx expr expected0 = do
       (tm, ty) <- elabVariant ctx arms mtail sp (Just expected)
       expectType ctx sp ty expected
       pure tm
+    -- §13.2.1 dependent record literals: sibling references through
+    -- 'this' (in field types or initializers) need telescope-ordered
+    -- elaboration
+    (ERecordLit items lsp, VRecordT fs) -> do
+      depTy <- recordTypeIsDependent ctx fs
+      let depVal =
+            isNothing (lookupCtx "this" ctx)
+              && not (null (concat [surfaceThisRefs e | RecItem _ _ (Just e) <- items]))
+      if depTy || depVal
+        then do
+          (tm, ty) <- elabDependentRecordLit ctx items fs lsp
+          expectType ctx lsp ty expected
+          pure tm
+        else do
+          (tm, ty) <- infer ctx expr
+          (tm1, ty1) <- insertAllImplicits ctx lsp tm ty
+          expectType ctx lsp ty1 expected
+          pure tm1
     (ETuple es sp, VRecordT fs)
       | length es == length fs -> do
           -- expected-type-directed punning (§13.1.2): a parenthesized
@@ -1439,6 +1625,24 @@ inferT ctx e = case e of
               Just r -> pure r
               Nothing -> infer ctx e
           Nothing -> infer ctx e
+  -- compatibility accommodation for the external corpus: the corpus
+  -- writes the §12.4 sized array as 'Array n elem' over the prelude
+  -- collection carrier 'Array : Type -> Type'. The size index is kept
+  -- for definitional equality inside a phantom '__sizedOf n elem'
+  -- element, so 'Array n a ≡ Array m a' iff 'n ≡ m'.
+  EApp (EVar hd) [ArgExplicit nE, ArgExplicit elemE]
+    | nameText hd == "Array"
+    , Nothing <- lookupCtx "Array" ctx -> do
+        mg <- lookupGlobalName "Array"
+        if mg /= Just (gPrel "Array")
+          then do
+            (fTm, fTy) <- inferT ctx (EVar hd)
+            elabSpine ctx (nameSpan hd) fTm fTy [ArgExplicit nE, ArgExplicit elemE]
+          else do
+            nTm <- check ctx nE (VGlobN (gPrel "Nat") [])
+            (elemTm, _) <- inferType ctx elemE
+            let sized = CApp Expl (CApp Expl (CGlob (gPrel "__sizedOf")) nTm) elemTm
+            pure (CApp Expl (CGlob (gPrel "Array")) sized, VSort 0)
   EApp f args -> do
     (fTm, fTy) <- inferT ctx f
     elabSpine ctx (exprSpan f) fTm fTy args
@@ -1573,7 +1777,10 @@ applyDescriptor ctx sp dTm dTy0 supply = do
     VGlobN (GName pm "Projector") [(_, rootsV), (_, focusV)]
       | pm == preludeModule -> do
           placeTms <- elabRootsSupply ctx sp rootsV supply
-          pure (foldl (CApp Expl) dTm placeTms, focusV)
+          focusV' <- case placeTms of
+            [single] -> substThisInto ctx single focusV
+            _ -> pure focusV
+          pure (foldl (CApp Expl) dTm placeTms, focusV')
     VRecordT capFs -> do
       mcaps <- bundleCapsM capFs
       case mcaps of
@@ -1602,7 +1809,10 @@ applyDescriptor ctx sp dTm dTy0 supply = do
             if T.null readCap
               then fst <$> anyHole ctx
               else pure (foldl (CApp Expl) (CProj dTm readCap) placeTms)
-          pure (tm, focusV)
+          focusV' <- case placeTms of
+            [single] -> substThisInto ctx single focusV
+            _ -> pure focusV
+          pure (tm, focusV')
         _ -> do
           errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa.projection.descriptor")
             "expected a projector or accessor-bundle descriptor value here (§16.1.5)"
@@ -2249,8 +2459,10 @@ elabDotUnqualified ctx e member mname = do
       t <- forceM ty1
       case t of
         VRecordT fs
-          | Just fty <- lookup (nameText mn0) fs ->
-              pure (CProj tm1 (nameText mn0), fty)
+          | Just fty <- lookup (nameText mn0) fs -> do
+              -- §13.2.1: a dependent field type sees the receiver as 'this'
+              fty' <- substThisInto ctx tm1 fty
+              pure (CProj tm1 (nameText mn0), fty')
           | otherwise -> do
               -- a record receiver without the field: try method sugar,
               -- otherwise report the missing field (§13.1.4)
@@ -2509,7 +2721,17 @@ elabPatchWith nested ctx e items sp = do
   (tm, ty) <- infer ctx e
   (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
   t <- forceM ty1
+  dep <- case t of
+    VRecordT fs -> do
+      depTy <- recordTypeIsDependent ctx fs
+      let depVal =
+            isNothing (lookupCtx "this" ctx)
+              && not
+                (null (concat [surfaceThisRefs v | PatchUpdate _ (PatchValue v) <- items]))
+      pure (depTy || depVal)
+    _ -> pure False
   case t of
+    VRecordT fs | dep -> elabDependentPatch ctx tm1 fs items sp
     VRecordT fs -> do
       let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
           extendNames = [nameText n | PatchExtend n _ <- items]
@@ -2655,6 +2877,102 @@ elabSectionUpdate ctx baseE recv rhs sp = case recv of
       errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
         "the projection-section update target must resolve to a stable place, a selector projection, or an accessor bundle providing 'set' (§13.2.5, §30.2.2.4)"
       pure (baseTm, baseTy)
+
+-- | A record literal against a §13.2.1 dependent record type (or one
+-- whose initializers use sibling references): fields elaborate in
+-- dependency order; each initializer sees the earlier siblings as
+-- 'this' and checks against its field type with 'this' substituted.
+elabDependentRecordLit :: Ctx -> [RecItem] -> [(Text, Value)] -> Span -> CheckM (Term, Value)
+elabDependentRecordLit ctx items fs sp = do
+  let supplied = [(nameText n, fromMaybe (EVar n) me) | RecItem _ n me <- items]
+  forM_ (duplicatesOf (map fst supplied)) $ \n ->
+    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+      ("record literal has duplicate field '" <> n <> "'")
+  if sort (map fst supplied) /= map fst fs
+    then do
+      errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+        ( "record literal fields do not match the expected record type (expected: "
+            <> T.intercalate ", " (map fst fs) <> ")"
+        )
+      pure (CRecordV [], VRecordT fs)
+    else do
+      annotated <- forM fs $ \(nm, fty) -> do
+        ftyTm <- quoteIn ctx fty
+        let e = fromMaybe (EVar (Name nm sp)) (lookup nm supplied)
+            deps =
+              nub (thisDepsOf ftyTm ++ [l | l <- surfaceThisRefs e, l `elem` map fst fs])
+        pure (nm, deps, (nm, fty, e))
+      case topoFields annotated of
+        Nothing -> do
+          errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+            "the sibling references of this record literal form a cycle (§13.2.1)"
+          anyHole ctx
+        Just ordered -> do
+          allFields <- goLit [] [] ordered
+          pure (CRecordV (sortOn fst allFields), VRecordT fs)
+  where
+    goLit _ _ [] = pure []
+    goLit doneV doneT ((nm, fty, e) : rest) = do
+      fty' <- substThisInto ctx (CRecordV (sortOn fst doneV)) fty
+      tm <- withThis (Just (ThisValue doneV doneT)) (check ctx e fty')
+      ((nm, tm) :) <$> goLit ((nm, tm) : doneV) ((nm, fty') : doneT) rest
+
+-- | A record update on a §13.2.1 dependent record: updated fields check
+-- against their field types with 'this' bound to the evolving record;
+-- a non-updated field whose type depends on an updated field must still
+-- be well-typed after the update (else it needed repair).
+elabDependentPatch :: Ctx -> Term -> [(Text, Value)] -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabDependentPatch ctx baseTm fs items sp = do
+  ups <- fmap catMaybes . forM items $ \case
+    PatchUpdate [(_, n)] (PatchValue v)
+      | nameText n `elem` map fst fs -> pure (Just (nameText n, v))
+      | otherwise -> do
+          errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.record.unknown-field")
+            ("record has no field '" <> nameText n <> "'")
+          pure Nothing
+    it -> do
+      errAt (patchItemSpan it sp) "E_UNSUPPORTED" Nothing
+        "this update form is not supported on a dependent record"
+      pure Nothing
+  forM_ (duplicatesOf (map fst ups)) $ \n ->
+    errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa.record.patch-duplicate")
+      ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
+  annotated <- forM fs $ \(nm, fty) -> do
+    ftyTm <- quoteIn ctx fty
+    pure (nm, thisDepsOf ftyTm, (nm, fty, thisDepsOf ftyTm))
+  case topoFields annotated of
+    Nothing -> do
+      errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+        "the field-dependency graph of this record type contains a cycle (§13.2.1)"
+      anyHole ctx
+    Just ordered -> do
+      allFields <- goUp ups [] [] ordered
+      -- staleness (§13.2.5): a kept field whose type mentions an
+      -- updated sibling keeps its old value of the OLD instantiation
+      let newRec = CRecordV (sortOn fst allFields)
+      forM_ ordered $ \(nm, fty, deps) ->
+        when (nm `notElem` map fst ups && not (null (deps `intersect` map fst ups))) $ do
+          oldTy <- substThisInto ctx baseTm fty
+          newTy <- substThisInto ctx newRec fty
+          ok <- unify ctx oldTy newTy
+          unless ok $
+            errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+              ( "the dependent field '" <> nm
+                  <> "' is stale after this update; it must be repaired in the same update (§13.2.5)"
+              )
+      pure (newRec, VRecordT fs)
+  where
+    goUp _ _ _ [] = pure []
+    goUp ups doneV doneT ((nm, fty, _) : rest) = do
+      fty' <- substThisInto ctx (CRecordV (sortOn fst doneV)) fty
+      tm <- case lookup nm ups of
+        Just v -> withThis (Just (ThisValue doneV doneT)) (check ctx v fty')
+        Nothing -> pure (CProj baseTm nm)
+      ((nm, tm) :) <$> goUp ups ((nm, tm) : doneV) ((nm, fty') : doneT) rest
+    patchItemSpan it dflt = case it of
+      PatchUpdate ((_, n) : _) _ -> nameSpan n
+      PatchExtend n _ -> nameSpan n
+      _ -> dflt
 
 -- ── Variants ─────────────────────────────────────────────────────────
 
@@ -4969,7 +5287,9 @@ elabTele _ [] = pure []
 elabTele ctx (b : rest) = do
   domTm <- case binderTypeExpr b of
     Just t -> fst <$> inferType ctx t
-    Nothing -> pure (CSort 0) -- unannotated params default to Type (§11.3.3)
+    -- an unannotated param's kind is inferred from its uses (a fresh
+    -- meta; unconstrained params still default to Type, §11.3.3)
+    Nothing -> freshMeta
   domV <- evalIn ctx domTm
   let nm = maybe "_" nameText (bName b)
       ic = if bImplicit b then Impl else Expl
@@ -5275,9 +5595,15 @@ elabProjectionDecl _mods n binders resTyE body sp = do
       Nothing -> freshMeta
     tyV <- evalIn ctxD tyTm
     pure (maybe "_" nameText (bName b), tyTm, tyV)
-  (focusTm, _) <- inferType ctxD resTyE
-  focusV <- evalIn ctxD focusTm
   let placesLex = sortOn (\(nm, _, _) -> nm) places0
+      ctxPl = foldl (\c (nm, _, tv) -> bindCtx nm False tv c) ctxD placesLex
+      nPl = length placesLex
+  -- the declared focus may depend on the place binders (e.g.
+  -- 'Array this.len Byte'); in the descriptor type a unique root is
+  -- represented by the §13.2.1 'this' neutral
+  (focusTmP, _) <- inferType ctxPl resTyE
+  focusV <- evalIn ctxPl focusTmP
+  let focusTm = placesToThis nPl focusTmP
       rootsTm = CRecordT [(nm, t) | (nm, t, _) <- placesLex]
       placeNames = [nm | (nm, _, _) <- places0]
       lamsOrd t = foldr (\(q, nm, _) acc -> CLam Expl q nm acc) t ordTele
@@ -5300,8 +5626,7 @@ elabProjectionDecl _mods n binders resTyE body sp = do
             "each 'yield' operand must be a stable place rooted in a 'place' binder of this projection (§9.1.1)"
           pure Nothing
       let bodyE = stripYields bodyE0
-          ctxBody = foldl (\c (nm, _, tv) -> bindCtx nm False tv c) ctxD placesLex
-      bodyTm <- check ctxBody bodyE focusV
+      bodyTm <- check ctxPl bodyE focusV
       let coreTy = pisOrd (app2 "Projector" rootsTm focusTm)
           defTm = lamsOrd (foldr (\(nm, _, _) acc -> CLam Expl QW nm acc) bodyTm placesLex)
       registerProjection g coreTy defTm $
@@ -5389,6 +5714,41 @@ elabProjectionDecl _mods n binders resTyE body sp = do
       EBlock ds (Just fin) bsp -> EBlock ds (Just (stripYields fin)) bsp
       EAscription e tyE asp -> EAscription (stripYields e) tyE asp
       e -> e
+
+-- | Rewrite references to the innermost @n@ binders (a projection's
+-- place binders) into the §13.2.1 @this@ neutral, dropping the binders.
+-- Used to express a root-dependent focus type under Δ alone.
+placesToThis :: Int -> Term -> Term
+placesToThis n = go 0
+  where
+    go d t = case t of
+      CVar i
+        | i >= d ->
+            if i - d < n then CGlob thisG else CVar (i - n)
+        | otherwise -> t
+      CGlob _ -> t
+      CLam ic q nm b -> CLam ic q nm (go (d + 1) b)
+      CPi ic q nm a b -> CPi ic q nm (go d a) (go (d + 1) b)
+      CApp ic f a -> CApp ic (go d f) (go d a)
+      CSort _ -> t
+      CLit _ -> t
+      CCtor g as -> CCtor g (map (go d) as)
+      CMatch s alts ->
+        CMatch (go d s)
+          [CaseAlt p (fmap (go (d + patBindersC p)) g) (go (d + patBindersC p) b) | CaseAlt p g b <- alts]
+      CRecordT fs -> CRecordT [(nm, go d x) | (nm, x) <- fs]
+      CRecordV fs -> CRecordV [(nm, go d x) | (nm, x) <- fs]
+      CProj e f -> CProj (go d e) f
+      CVariantT ms -> CVariantT (map (go d) ms)
+      CInject tag e -> CInject tag (go d e)
+      CLet q nm a b c -> CLet q nm (go d a) (go d b) (go (d + 1) c)
+      CLetRec q nm a b c -> CLetRec q nm (go d a) (go (d + 1) b) (go (d + 1) c)
+      CMeta _ -> t
+      CDo _ -> t
+      CThunkE e -> CThunkE (go d e)
+      CLazyE e -> CLazyE (go d e)
+      CForceE e -> CForceE (go d e)
+      CIf a b c -> CIf (go d a) (go d b) (go d c)
 
 -- | Elaborate the ordinary (non-place) binders of a projection in
 -- declaration order, returning the extended context and the telescope.

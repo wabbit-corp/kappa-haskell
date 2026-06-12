@@ -1,0 +1,13 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_RECORD_DEPENDENCY_CYCLE, E_RECORD_DEPENDENCY_CYCLE
+
+-- §13.2.1: cyclic field dependencies are rejected, in types and in
+-- literal sibling references
+
+type BadT : Type = (x : this.y, y : this.x)
+
+type Pair : Type = (x : Int, y : Int)
+
+bad : Pair
+let bad : Pair = (x = this.y, y = this.x)

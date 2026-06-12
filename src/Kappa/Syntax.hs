@@ -32,6 +32,7 @@ module Kappa.Syntax
   , ProjBody (..)
   , projBinderGroups
   , projYieldPlaces
+  , surfaceThisRefs
   , exprSpan
   , LetBind (..)
   , DoItem (..)
@@ -70,6 +71,7 @@ module Kappa.Syntax
   , Module (..)
   ) where
 
+import Data.List (nub)
 import Data.Text (Text)
 import Kappa.Source (Span (..))
 import Kappa.Token (QuotedLit, StringLit)
@@ -424,6 +426,56 @@ projBinderGroups = go
       , (grp@(_ : _), rest') <- span (\b' -> bSpan b' == bSpan b) rest =
           (True, last grp) : go rest'
       | otherwise = (False, b) : go rest
+
+-- | Surface §13.2.1 sibling references: the labels of @this.label@
+-- occurrences in an expression.
+surfaceThisRefs :: Expr -> [Text]
+surfaceThisRefs = nub . go
+  where
+    go = \case
+      EDot (EVar b) (DotName l)
+        | nameText b == "this" -> [nameText l]
+      EDot e _ -> go e
+      EQDot e _ -> go e
+      EVar _ -> []
+      EApp f args -> go f ++ concatMap goArg args
+      EAscription e t _ -> go e ++ go t
+      EArrow b e -> maybe [] go (bType b) ++ go e
+      EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      EExists bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      ETraitArrow a b -> go a ++ go b
+      ETuple es _ -> concatMap go es
+      ERecordLit items _ -> concat [go e | RecItem _ _ (Just e) <- items]
+      ERecordType rfs mtail _ ->
+        concatMap (go . rtfType) rfs ++ maybe [] go mtail
+      EOptionSugar e _ -> go e
+      EVariant arms mtail _ ->
+        concatMap (go . vaExpr) arms ++ maybe [] go mtail
+      EOpChain els -> concat [go x | ChainOperand x <- els]
+      EIf alts mels _ -> concat [go c ++ go b | (c, b) <- alts] ++ maybe [] go mels
+      ECaptures e _ _ -> go e
+      EElvis a b _ -> go a ++ go b
+      ESectionLeft e _ _ -> go e
+      ESectionRight _ e _ -> go e
+      EThunk e _ -> go e
+      ELazy e _ -> go e
+      EForce e _ -> go e
+      EListLit es _ -> concatMap go es
+      ERecordPatch e items _ ->
+        go e
+          ++ concat
+            [ case it of
+                PatchUpdate _ (PatchValue v) -> go v
+                PatchExtend _ v -> go v
+                PatchSection r v -> go r ++ go v
+            | it <- items
+            ]
+      _ -> []
+    goArg = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      ArgInout e _ -> go e
+      ArgNamedBlock items _ -> concat [maybe [] go me | (_, me) <- items]
 
 -- | The stable places a selector-form projection body yields: pairs of
 -- (root binder name, field-path suffix). Yields whose operand is not a

@@ -78,6 +78,9 @@ builtinState =
       , (prel "Map", opaqueTy (tyV (tType ~> tType ~> tType)))
       , (prel "Array", opaqueTy (tyV (tType ~> tType)))
       , (prel "Quantity", opaqueTy (tyV tType)) -- §12.1.1 reified quantities
+      , -- phantom carrier for the corpus 'Array n elem' accommodation
+        -- (see inferT in Kappa.Check)
+        (prel "__sizedOf", opaqueTy (tyV (tcon "Nat" ~> tType ~> tType)))
       , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
       , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> tType ~> tType)))
       , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> tType ~> tType))) -- §20.10.2

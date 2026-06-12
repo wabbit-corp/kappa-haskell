@@ -98,11 +98,21 @@ data VInfo = VInfo
   , vTaint :: !(Maybe Span) -- ^ closure capturing a borrow, formed here
   , vLatent :: !Usage -- ^ per-call captured usage (closure-valued bindings)
   , vFields :: ![(Text, Maybe Quantity)] -- ^ record fields, when known
+  , vDeps :: ![(Text, [Text])] -- ^ §13.2.1 field dependencies (field ↦ siblings its type mentions)
   , vSpan :: !Span -- ^ binding site (drop reports)
   }
 
 plainV :: Text -> Span -> VInfo
-plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] sp
+plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] sp
+
+-- | Expand a borrow lock over a field path with the §12.4 dependency
+-- rule: borrowing a dependent field also locks the fields its type
+-- mentions ("dependent fields are not disjoint merely because their
+-- labels differ").
+lockWithDeps :: VInfo -> [Text] -> [[Text]]
+lockWithDeps vi path = case path of
+  (f : _) -> path : [[d] | d <- fromMaybe [] (lookup f (vDeps vi))]
+  [] -> [path]
 
 -- | The taint a bare occurrence of the binding carries: a closure that
 -- captured a borrow, or a @using@-scoped resource escaping itself.
@@ -218,6 +228,8 @@ data Env = Env
   -- ^ local bindings holding a (partially applied) projection descriptor
   , eBorrowAliases :: !(Map Text (Text, [Text]))
   -- ^ borrowed place-alias bindings: binder key ↦ root key + path (§12.4)
+  , eFieldDeps :: !(Map Text [(Text, [Text])])
+  -- ^ record type alias ↦ §13.2.1 field dependencies
   }
 
 -- | §9.1.1 projection shape for the §12.4 footprint analysis.
@@ -286,6 +298,12 @@ usageDiagnostics m = concatMap analyzeDecl lets
         | DTypeAlias _ n [] _ (Just rhs) _ <- decls
         , ERecordType {} <- [rhs]
         ]
+    aliasDeps =
+      Map.fromList
+        [ (nameText n, fieldDepsOf fs)
+        | DTypeAlias _ n [] _ (Just rhs) _ <- decls
+        , ERecordType fs _ _ <- [rhs]
+        ]
     fieldsOf (ERecordType fs _ _) =
       [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
     fieldsOf _ = []
@@ -311,7 +329,7 @@ usageDiagnostics m = concatMap analyzeDecl lets
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet fns aliases ctors projs sigTy ld) (S [] False 0)
+          final = execState (analyzeLet fns aliases aliasDeps ctors projs sigTy ld) (S [] False 0)
        in if sBail final then [] else reverse (sDiags final)
 
 -- Callee demand for prelude helpers the fixtures rely on.
@@ -337,6 +355,29 @@ resolveFields aliases = go
       EAscription e _ _ -> go e
       ECaptures e _ _ -> go e
       _ -> []
+
+-- | Resolve a (possibly aliased) record type to its §13.2.1 field
+-- dependencies: field ↦ sibling labels its type mentions via 'this'.
+resolveDeps :: Map Text [(Text, [Text])] -> Expr -> [(Text, [Text])]
+resolveDeps depAliases = go
+  where
+    go = \case
+      ERecordType fs _ _ -> fieldDepsOf fs
+      EVar n -> Map.findWithDefault [] (nameText n) depAliases
+      EAscription e _ _ -> go e
+      ECaptures e _ _ -> go e
+      _ -> []
+
+-- | §13.2.1 field dependencies of a surface record type.
+fieldDepsOf :: [RecTypeField] -> [(Text, [Text])]
+fieldDepsOf fs =
+  [ (nameText (rtfName f), deps)
+  | f <- fs
+  , let deps = [l | l <- surfaceThisRefs (rtfType f), l `elem` names]
+  , not (null deps)
+  ]
+  where
+    names = [nameText (rtfName f) | f <- fs]
 
 -- ── Signature alignment ──────────────────────────────────────────────
 
@@ -406,15 +447,16 @@ fnParams msig ld =
 analyzeLet ::
   Map Text [PInfo] ->
   Map Text [(Text, Maybe Quantity)] ->
+  Map Text [(Text, [Text])] ->
   Map Text [(Text, [Maybe Quantity])] ->
   Map Text ProjUse ->
   Maybe Expr ->
   LetDef ->
   M ()
-analyzeLet fns aliases ctors projs msig ld = do
+analyzeLet fns aliases aliasDeps ctors projs msig ld = do
   let aligned = alignParams (ldBinders ld) (maybe [] sigBinders msig)
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty
+  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps
   checkInoutResult msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
@@ -433,8 +475,9 @@ analyzeLet fns aliases ctors projs msig ld = do
             anon = mark == Just (BorrowMark Nothing)
             ty = bType b `orElse` (bType =<< ms)
             fields = maybe [] (resolveFields aliases) ty
+            deps = maybe [] (resolveDeps aliasDeps) ty
         k <- freshKey (nameText n)
-        pure (Just (nameText n, VInfo k q (isJust mark) anon False Nothing Map.empty fields (bSpan b)))
+        pure (Just (nameText n, VInfo k q (isJust mark) anon False Nothing Map.empty fields deps (bSpan b)))
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
@@ -545,6 +588,17 @@ resolveBorrowAlias env (vi, path, sp) =
   case Map.lookup (vKey vi) (eBorrowAliases env) of
     Just (rootK, rootPath) -> (rootK, rootPath ++ path, sp)
     Nothing -> (vKey vi, path, sp)
+
+-- | The lock set a lexical borrow of a place opens: the path itself
+-- (rebased through borrow aliases) plus, for a §13.2.1 dependent
+-- record, the sibling fields the borrowed field's type mentions.
+borrowLocks :: Env -> (VInfo, [Text], Span) -> [(Text, [Text])]
+borrowLocks env pl@(vi, path, _) =
+  let (rootK, fullPath, _) = resolveBorrowAlias env pl
+      depLocks
+        | rootK == vKey vi = drop 1 (lockWithDeps vi path)
+        | otherwise = []
+   in (rootK, fullPath) : [(rootK, p) | p <- depLocks]
 
 -- | A fully applied §9.1.1 projection (or local descriptor binding)
 -- call: the stable places its yield leaves touch, plus the auxiliary
@@ -842,11 +896,12 @@ lamBind env b = case bName b of
   Just n -> do
     let BinderPrefix mq mb = bPrefix b
         fields = maybe [] (resolveFields (eAliases env)) (bType b)
+        deps = maybe [] (resolveDeps (eFieldDeps env)) (bType b)
     k <- freshKey (nameText n)
     pure
       ( Just
           ( nameText n
-          , VInfo k mq (isJust mb) (mb == Just (BorrowMark Nothing)) False Nothing Map.empty fields (bSpan b)
+          , VInfo k mq (isJust mb) (mb == Just (BorrowMark Nothing)) False Nothing Map.empty fields deps (bSpan b)
           )
       )
 
@@ -1098,6 +1153,15 @@ walkArg env params arg p = case arg of
           ( R (scaleU d u `seqU` latent) (vEscape vi sp) Map.empty
           , [FMove (vKey vi) path sp | fst d >= 1]
           )
+    -- a definite consume of a deeper (non-linear) path still conflicts
+    -- with a live borrow of an overlapping path (§12.4)
+    | consuming
+    , Just (vi, path, sp) <- placeOf env e -> do
+        checkBorrowOverlap env vi path sp
+        pure
+          ( rPlain (Map.singleton (vKey vi) touchC)
+          , [FMove (vKey vi) path sp]
+          )
     | otherwise -> do
         R u t l <- walkE env e
         let d = pDemand p
@@ -1157,11 +1221,12 @@ walkBinds env binds = go env binds
         if borrowed
           then case place of
             -- `let & v = p.f` opens a lexical borrow of the place: a
-            -- non-consuming read that locks overlapping paths (§12.4);
-            -- borrowing through a borrowed alias locks the original
-            Just pl@(vi, _, _) -> do
-              let (rootK, fullPath, _) = resolveBorrowAlias envc pl
-              pure (Map.singleton (vKey vi) touchC, Nothing, Map.empty, [(rootK, fullPath)])
+            -- non-consuming read that locks overlapping paths (§12.4,
+            -- §13.2.1: plus the fields a dependent field's type
+            -- mentions); borrowing through a borrowed alias locks the
+            -- original
+            Just pl@(vi, _, _) ->
+              pure (Map.singleton (vKey vi) touchC, Nothing, Map.empty, borrowLocks envc pl)
             -- `let & v = proj places` locks every yield leaf for the
             -- binder's scope (§30.2.2.3 BorrowProjector)
             Nothing
@@ -1171,8 +1236,7 @@ walkBinds env binds = go env binds
                         foldr (seqU . fst . flatR)
                           (Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places])
                           rs
-                      locks = [(rk, fp) | pl <- places, let (rk, fp, _) = resolveBorrowAlias envc pl]
-                  pure (u', Nothing, Map.empty, locks)
+                  pure (u', Nothing, Map.empty, concatMap (borrowLocks envc) places)
             Nothing -> do
               r <- walkE envc rhs
               let (u', t') = flatR r
@@ -1195,6 +1259,7 @@ walkBinds env binds = go env binds
             _ -> Nothing
           q = if single then mq `orElse` inherited else Nothing
           fields = maybe [] (resolveFields (eAliases envc)) mty
+          fdeps = maybe [] (resolveDeps (eFieldDeps envc)) mty
           mk nm = do
             k <- freshKey nm
             pure
@@ -1207,6 +1272,7 @@ walkBinds env binds = go env binds
                   (if single then taint else Nothing)
                   (if single then latent else Map.empty)
                   fields
+                  fdeps
                   bsp
               )
       -- every pattern name is bound (untracked entries still shadow

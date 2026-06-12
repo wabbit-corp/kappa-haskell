@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.1 dependent record telescopes: later field types reference
+-- earlier fields through 'this'; literals may reorder; projection
+-- substitutes the receiver; updates repair dependent fields (§13.2.5)
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+makeVec : (n : Nat) -> Vec n Byte
+let makeVec (n : Nat) : Vec n Byte = VNil
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+makeSized : Nat -> Sized
+let makeSized (n : Nat) : Sized =
+    (buf = makeVec this.len, len = n)
+
+getBuf : (s : Sized) -> Vec s.len Byte
+let getBuf (s : Sized) : Vec s.len Byte = s.buf
+
+resize : Sized -> Sized
+let resize (s : Sized) : Sized = s.{ len = 2, buf = makeVec this.len }
+
+type TypeBox : Type = (T : Type, value : this.T)
+
+box : TypeBox
+let box : TypeBox = (T = Int, value = 1)
+
+projected : box.T
+let projected : box.T = box.value
