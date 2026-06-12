@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (84/84)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (91/91)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -73,6 +73,7 @@ Implemented:
 | `assertStdoutFile PATH`, `assertStderrFile PATH` | golden files, LF-normalized; unreadable golden file is a harness error (§T.8) |
 | `assertTraceCount EVENT SUBJECT RELOP N` | portable trace counts; this pipeline records `parse`/file, `buildKFrontIR`/file, `lowerKCore`/module per compiled file (the prelude bootstrap contributes none); all other portable event/subject pairs count 0 |
 | `assertDiagnosticCodes c1, c2, …`, `assertEval NAME EXPR` | compatibility extensions for the external corpus (§T.1 allows nonstandard directives) |
+| `x-assertEval`, `x-assertEvalErrorContains`, `x-assertDeclDescriptors`, `x-assertTraitMembers` | supported `x-` extensions (§T.3/§T.1); `assertEval` subjects resolve in the directive file's own module (§T.6); unsupported `x-` directives still classify the test unsupported per §T.3 |
 
 A `mode run` entry whose final value is not `Unit` is rendered to
 stdout followed by a newline (matching the reference run task, e.g.
@@ -99,13 +100,16 @@ private `allow_unsafe_consume`, `assertRunStdout`, `assertExecute`,
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **84/84 passing**, zero unsupported, zero
+`tests/conformance/` — **91/91 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
 | --- | --- |
-| `lexer/` | bad escape, tabs in indent/source, unterminated string, §5.2 soft keywords as ordinary identifiers (argument/binder/assignment positions) |
-| `parser/` | `E_LAYOUT_BAD_DEDENT`, multi-error parse recovery |
+| `lexer/` | bad escape, tabs in indent/source, unterminated string, multi-error recovery, §5.2 soft keywords as ordinary identifiers (argument/binder/assignment positions) |
+| `parser/` | `E_LAYOUT_BAD_DEDENT`, multi-error parse recovery, misindented declarations (§5.4) |
+| `data/` | constructor field defaults at `data` declarations (§10.1.1) |
+| `prelude/` | container trait stack: `map`/`filter`/`foldr`/`traverse`/`(>>=)`/`(++)` over `List`/`Option`/`String` (§28.2) |
+| `refinement/` | §16.4 flow refinement: `is`-tests through `&&`/`\|\|`, stable-alias transport, refined field projection; `?.` diagnostic codes |
 | `literals/` | radix forms, exponent-vs-suffix, suffix terms, defaulting, `FromFloat` literal elaboration |
 | `names/` | `E_UNRESOLVED_NAME`, `E_DUPLICATE_DECLARATION` |
 | `types/` | `E_TYPE_MISMATCH`, `E_NOT_A_TYPE` |
@@ -139,13 +143,13 @@ raw per-fixture log at `/tmp/external-raw.log`.
 first error message) and `/tmp/triage-summary.txt` (per-category
 outcome counts and top error codes).
 
-Current tally over **922 fixture suites** (one result per fixture):
+Current tally over **924 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 178 |
-| fail | 629 |
-| unsupported | 74 |
+| pass | 313 |
+| fail | 530 |
+| unsupported | 40 |
 | harness error | 41 |
 
 All 41 harness errors are fixtures using the other implementation's
@@ -154,17 +158,21 @@ private, non-`x-` directives that Appendix T does not define
 `assertEvalErrorContains`, `assertParameterQuantities`,
 `assertDoItemDescriptors`, `assertInoutParameters`,
 `assertContainsTokenTexts`); per §T.3 an unknown non-extension
-directive *is* a harness error. The unsupported and failure buckets,
-and the §T.8 classification rationale with spec citations, are broken
-down in `tests/external-results.md`: unsupported is now only unmet
-capabilities/backends/modes, unsupported `x-*` extensions,
-structured-diagnostic assertions, and incremental suites; failures are
-dominated by unimplemented subsystems (flow typing, rows/dependent
-records, staging/derive, std modules beyond the prelude, sealing,
-statics, QTT borrow checking) and by the corpus asserting its own
-implementation-defined diagnostic code names where the spec does not
-pin a portable alias (e.g. `E_NAME_UNRESOLVED` vs this implementation's
-`E_UNRESOLVED_NAME`).
+directive *is* a harness error. `tests/external-results.md` carries
+the full breakdown: a per-category table, the §T.8 classification
+rationale with spec citations, and a "Blocked classifications"
+section (maintained in `tests/external-blocked.md`, appended on
+regeneration; `tools/run-external-fixtures.sh --regen` rebuilds the
+report from the existing raw log without re-running the corpus) that
+classifies every non-pass as outside-spec (mandated
+unsupported/harnessError), spec conflict, or tracked gap. Unsupported
+is now only unmet capabilities/backends/modes, unsupported `x-*`
+extensions, and incremental suites. Failures are dominated by
+unimplemented subsystems — QTT usage/borrow enforcement, the
+Unicode/bytes text stack, query comprehensions, projection
+declarations, macros/elaborator reflection, dependent records — and
+by diagnostic-code selection deltas at application boundaries (see
+the ranked gap table at the end of `tests/external-results.md`).
 
 ## Conventions
 

@@ -2,7 +2,12 @@
 # Run the Appendix T harness over the external black-box fixture corpus
 # (another implementation's test suite) IN PLACE, and tally results.
 #
-# Usage: tools/run-external-fixtures.sh [FIXTURES_DIR] [RESULTS_MD] [STATS_TXT] [RAW_LOG]
+# Usage: tools/run-external-fixtures.sh [--regen] [FIXTURES_DIR] [RESULTS_MD] [STATS_TXT] [RAW_LOG]
+#
+# With --regen the corpus is not re-executed: the report is rebuilt
+# from the existing raw log (useful after editing the hand-maintained
+# blocked-classification notes in tests/external-blocked.md, which are
+# appended verbatim to the generated report).
 #
 # The raw per-fixture log (default /tmp/external-raw.log) feeds
 # tools/triage-external.sh.
@@ -13,35 +18,50 @@
 # outside the portable subset, are classified `unsupported` per §T.8.
 set -u
 
+REGEN=0
+if [ "${1:-}" = "--regen" ]; then
+  REGEN=1
+  shift
+fi
+
 FIXTURES="${1:-/opt/workspaces/kappa/tests/Kappa.Compiler.Tests/Fixtures}"
 RESULTS_MD="${2:-tests/external-results.md}"
 STATS_TXT="${3:-/tmp/external-stats.txt}"
 RAW_LOG="${4:-/tmp/external-raw.log}"
+BLOCKED_MD="$(dirname "$RESULTS_MD")/external-blocked.md"
 
 if [ ! -d "$FIXTURES" ]; then
   echo "fixtures directory not found: $FIXTURES" >&2
   exit 2
 fi
 
-echo "running kappa test over $FIXTURES ..." >&2
-BIN="$(cabal list-bin kappa 2>/dev/null)"
-if [ -z "$BIN" ]; then
-  echo "kappa binary not found; run 'cabal build' first" >&2
-  exit 2
-fi
-# One invocation per fixture directory: each is one §T.2 suite root
-# (multi-file fixtures compile all their .kp files together; --suite
-# forces this even when all .kp files live in subdirectories).
-: >"$RAW_LOG"
-for d in "$FIXTURES"/*/; do
-  # kappa exits nonzero when a fixture fails, which is a normal result;
-  # only synthesize a result line when none was produced (hang/crash)
-  if ! timeout 60 "$BIN" test --suite "${d%/}" >>"$RAW_LOG" 2>&1; then
-    if ! tail -3 "$RAW_LOG" | grep -qF "${d%/}"; then
-      echo "HARNESS-ERROR ${d%/} (timeout or crash)" >>"$RAW_LOG"
-    fi
+if [ "$REGEN" = 1 ]; then
+  if [ ! -s "$RAW_LOG" ]; then
+    echo "--regen: raw log $RAW_LOG not found or empty" >&2
+    exit 2
   fi
-done
+  echo "regenerating $RESULTS_MD from $RAW_LOG (corpus not re-run) ..." >&2
+else
+  echo "running kappa test over $FIXTURES ..." >&2
+  BIN="$(cabal list-bin kappa 2>/dev/null)"
+  if [ -z "$BIN" ]; then
+    echo "kappa binary not found; run 'cabal build' first" >&2
+    exit 2
+  fi
+  # One invocation per fixture directory: each is one §T.2 suite root
+  # (multi-file fixtures compile all their .kp files together; --suite
+  # forces this even when all .kp files live in subdirectories).
+  : >"$RAW_LOG"
+  for d in "$FIXTURES"/*/; do
+    # kappa exits nonzero when a fixture fails, which is a normal result;
+    # only synthesize a result line when none was produced (hang/crash)
+    if ! timeout 60 "$BIN" test --suite "${d%/}" >>"$RAW_LOG" 2>&1; then
+      if ! tail -3 "$RAW_LOG" | grep -qF "${d%/}"; then
+        echo "HARNESS-ERROR ${d%/} (timeout or crash)" >>"$RAW_LOG"
+      fi
+    fi
+  done
+fi
 
 pass=$(grep -c '^PASS '          "$RAW_LOG" || true)
 fail=$(grep -c '^FAIL '          "$RAW_LOG" || true)
@@ -73,6 +93,41 @@ total=$((pass + fail + unsup + herr))
   echo "| unsupported | $unsup |"
   echo "| harness error | $herr |"
   echo "| **total** | **$total** |"
+  echo
+  echo "## Per-category results"
+  echo
+  echo "Category is the first dot segment of the fixture directory name"
+  echo "(first underscore token for undotted names), as in"
+  echo "\`tools/triage-external.sh\`."
+  echo
+  echo "| category | total | pass | fail | unsupported | harness error |"
+  echo "|---|---|---|---|---|---|"
+  awk '
+  /^(PASS|FAIL|UNSUPPORTED|HARNESS-ERROR) \// {
+    n = split($2, segs, "/"); name = segs[n]
+    cat = name
+    if (index(name, ".") > 0) { split(name, ds, "."); cat = ds[1] }
+    else { split(name, us, "_"); cat = us[1] }
+    cats[cat] = 1; total[cat]++
+    count[cat SUBSEP $1]++
+  }
+  END {
+    ncat = 0
+    for (c in cats) order[++ncat] = c
+    for (i = 2; i <= ncat; i++) {
+      v = order[i]; j = i - 1
+      while (j >= 1 && (total[order[j]] < total[v] || (total[order[j]] == total[v] && order[j] > v))) {
+        order[j + 1] = order[j]; j--
+      }
+      order[j + 1] = v
+    }
+    for (i = 1; i <= ncat; i++) {
+      c = order[i]
+      printf "| %s | %d | %d | %d | %d | %d |\n", c, total[c], \
+        count[c SUBSEP "PASS"] + 0, count[c SUBSEP "FAIL"] + 0, \
+        count[c SUBSEP "UNSUPPORTED"] + 0, count[c SUBSEP "HARNESS-ERROR"] + 0
+    }
+  }' "$RAW_LOG"
   echo
   echo "## Classification rules (Appendix T)"
   echo
@@ -124,6 +179,10 @@ total=$((pass + fail + unsup + herr))
   echo '```'
   grep '^HARNESS-ERROR ' "$RAW_LOG" | sed "s|$FIXTURES/||"
   echo '```'
+  if [ -f "$BLOCKED_MD" ]; then
+    echo
+    cat "$BLOCKED_MD"
+  fi
 } >"$RESULTS_MD"
 
 echo "raw log: $RAW_LOG" >&2
