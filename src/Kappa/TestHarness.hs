@@ -1664,10 +1664,12 @@ declDescriptor d = case d of
           VisPrivate -> "private "
           VisDefault -> ""
         opq = if dmOpaque mods then "opaque " else ""
+    -- the corpus's descriptor keeps the fixity CLASS only (the
+    -- associativity is not part of the descriptor)
     fixityWord = \case
       InfixN -> "infix"
-      InfixL -> "infix left"
-      InfixR -> "infix right"
+      InfixL -> "infix"
+      InfixR -> "infix"
       Prefix -> "prefix"
       Postfix -> "postfix"
     expectNm = \case

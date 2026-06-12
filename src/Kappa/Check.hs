@@ -733,6 +733,24 @@ expectType ctx sp actual expected = do
         (VGlobN g1 sp1, VGlobN g2 sp2) ->
           g1 == g2 && not (null sp1) && length sp1 == length sp2
         _ -> False
+    -- §16.1.7.1: a mismatch while checking an explicit argument is an
+    -- application-argument error when both sides are canonical
+    -- non-function types (the argument simply does not fit the
+    -- parameter); same-head indexed mismatches additionally cite the
+    -- failed transport (§16.1.8)
+    flatArgMismatch <- do
+      if not retag || sameHead
+        then pure False
+        else do
+          aF <- forceM actual
+          eF <- forceM expected
+          let canonical = \case
+                VGlobN _ _ -> True
+                VCtor _ _ -> True
+                VRecordT _ -> True
+                VSort _ -> True
+                _ -> False
+          pure (canonical aF && canonical eF)
     if not (aOp || eOp) && retag && sameHead
       then
         report $
@@ -740,6 +758,13 @@ expectType ctx sp actual expected = do
             withNote ("actual:   " <> renderTerm aT) $
               diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument") sp
                 "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)"
+      else if not (aOp || eOp) && flatArgMismatch
+        then
+        report $
+          withNote ("expected: " <> renderTerm eT) $
+            withNote ("actual:   " <> renderTerm aT) $
+              diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument") sp
+                "the supplied argument's type does not match the parameter type (§16.1.7.1)"
       else if aOp || eOp
         then
         report $
@@ -2985,7 +3010,16 @@ elabIntLit ctx v msuf sp mexp = case msuf of
       then badLiteralSuffix ctx suf
       else do
         (fTm, fTy) <- resolveName ctx suf
-        elabSpine ctx sp fTm fTy [ArgExplicit (EIntLit v Nothing sp)] -- payload : Nat
+        admits <- suffixDomAdmits ctx "FromInteger" ["Int", "Nat", "Integer"] fTy
+        if admits
+          then elabSpine ctx sp fTm fTy [ArgExplicit (EIntLit v Nothing sp)] -- payload : Nat
+          else do
+            -- §6.1.6: the literal payload is the suffix application's
+            -- argument; a parameter type admitting no integer literal
+            -- is an application-argument mismatch
+            errAt sp "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
+              ("the suffix function's parameter type admits no integer literal payload (§6.1.6)")
+            anyHole ctx
   Nothing -> do
     expected <- maybe (pure Nothing) (fmap Just . forceM) mexp
     case expected of
@@ -3015,7 +3049,13 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
       then badLiteralSuffix ctx suf
       else do
         (fTm, fTy) <- resolveName ctx suf
-        elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
+        admits <- suffixDomAdmits ctx "FromFloat" ["Float", "Double"] fTy
+        if admits
+          then elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
+          else do
+            errAt sp "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
+              ("the suffix function's parameter type admits no float literal payload (§6.1.6)")
+            anyHole ctx
   Nothing -> do
     expected <- maybe (pure Nothing) (fmap Just . forceM) mexp
     case expected of
@@ -3034,6 +3074,26 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
       VFlex {} -> Nothing
       t@VGlobN {} -> Just t
       _ -> Nothing
+
+-- | Does the suffix function's first explicit parameter admit the
+-- literal payload (§6.1.6)? Either a literal-typed parameter or one
+-- with the corresponding literal-trait instance.
+suffixDomAdmits :: Ctx -> Text -> [Text] -> Value -> CheckM Bool
+suffixDomAdmits ctx traitName litHeads = goPeel (ctxLen ctx)
+  where
+    goPeel lvl ty = do
+      t <- forceM ty
+      case t of
+        VPi Impl _ _ _ clo -> clApp clo (VRigid lvl []) >>= goPeel (lvl + 1)
+        VPi Expl _ _ dom _ -> do
+          d <- forceM dom
+          case d of
+            VGlobN (GName _ n) []
+              | n `elem` litHeads -> pure True
+            VGlobN {} ->
+              isJust <$> instanceSearch ctx (Span "" (Pos 0 0) (Pos 0 0)) (VGlobN (gPrel traitName) [(Expl, d)])
+            _ -> pure True
+        _ -> pure True
 
 elabString :: Ctx -> StringLit -> [InterpPart] -> Span -> CheckM (Term, Value)
 elabString ctx sl parts sp = case (slPrefix sl, parts) of
@@ -3603,10 +3663,22 @@ elabDotUnqualified ctx e member mname = do
     failMember recvTy mn0 = do
       recvF <- forceM recvTy
       case recvF of
-        -- an unsolved flex receiver type means the receiver itself did
-        -- not elaborate (e.g. an unresolved name); a member error on
-        -- '?m' would be cascade noise (§3.1.14 recovery hygiene)
-        VFlex {} -> pure ()
+        -- an unsolved flex receiver type usually means the receiver
+        -- itself did not elaborate (e.g. an unresolved name); a member
+        -- error on '?m' would be cascade noise (§3.1.14 recovery
+        -- hygiene) — but only when the receiver actually reported
+        VFlex {} -> do
+          ds <- gets csDiags
+          let recvSp = exprSpan e
+              within dd =
+                spanFile (dPrimary dd) == spanFile recvSp
+                  && spanStart (dPrimary dd) >= spanStart recvSp
+                  && spanEnd (dPrimary dd) <= spanEnd recvSp
+          unless (any (\dd -> isError dd && within dd) ds) $
+            report $
+              diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+                (nameSpanOf member)
+                ("no member '" <> nameText mn0 <> "' is known on this receiver (its type is undetermined, §7.3)")
         _ -> do
           rT <- quoteIn ctx recvF
           report $
@@ -5184,8 +5256,13 @@ checkMatchPlain ctx scrut cases sp resT = do
           modify' $ \st -> st {csFacts = oldFacts}
           let prior' = prior ++ [g | CPCtor g _ <- [patC]]
           pure (accAlts ++ [CaseAlt patC gTm bTm], prior')
+  nErrsBefore <- gets (length . filter isError . csDiags)
   (alts, _) <- foldM goCase ([], []) cases
-  checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
+  nErrsAfter <- gets (length . filter isError . csDiags)
+  -- §3.1: a match whose arms already failed to type against the
+  -- scrutinee gets no piled-on exhaustiveness diagnostic
+  when (nErrsAfter == nErrsBefore) $
+    checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
   pure (CMatch sTm1 alts)
 
 scrutineeEmpty :: Value -> CheckM Bool
@@ -5422,7 +5499,19 @@ elabPattern ctx0 pat0 ty0 = do
           -- constructor pattern (lowercase ctors exist, e.g. ω-free code)
           | otherwise -> pure (CPVar (nameText n), bindCtx (nameText n) False ty ctx)
         PUnit _ -> pure (CPCtor (gPrel "Unit") [], ctx)
-        PLit l _ -> pure (CPLit (coreLit l), ctx)
+        PLit l _ -> do
+          -- §17.2.1: a literal pattern's type must agree with a known
+          -- concrete scrutinee type
+          st0 <- get
+          case ty of
+            VGlobN h _
+              | Map.member h (csDatas st0)
+              , not (litHeadAgrees (coreLit l) h) -> do
+                  hT <- quoteIn ctx ty
+                  errOnce (patternSpan pat) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                    ("a literal pattern cannot match a scrutinee of type '" <> renderTerm hT <> "' (§17.2.1)")
+            _ -> pure ()
+          pure (CPLit (coreLit l), ctx)
         PAs n p -> do
           let ctx1 = bindCtx (nameText n) False ty ctx
           (p', ctx2) <- go ctx1 p ty
@@ -5520,6 +5609,15 @@ elabPattern ctx0 pat0 ty0 = do
           case mr of
             Nothing -> pure (CPWild, ctx)
             Just (g, ci) -> do
+              -- §17.1: the cases' constructor patterns must belong to
+              -- the (known) scrutinee type
+              case ty of
+                VGlobN h _ | h /= ciData ci -> do
+                  hT <- quoteIn ctx ty
+                  errOnce sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                    ("constructor pattern of type '" <> gnameText (ciData ci)
+                       <> "' cannot match a scrutinee of type '" <> renderTerm hT <> "' (§17.1)")
+                _ -> pure ()
               fieldTys <- ctorFieldTypes ctx g ci ty sp
               when (length ps /= length fieldTys) $
                 errAt sp "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.arity")
@@ -5564,6 +5662,13 @@ elabPattern ctx0 pat0 ty0 = do
       LFloat v _ -> LitDouble v
       LString s -> LitStr s
       LScalar c -> LitScalar c
+    -- conservatively: only flag literal/data disagreements where the
+    -- data type is plainly not the literal's family
+    litHeadAgrees lit h = case lit of
+      LitInt _ -> gnameText h `elem` ["Int", "Nat", "Integer"]
+      LitDouble _ -> gnameText h `elem` ["Float", "Double"]
+      LitStr _ -> gnameText h == "String"
+      LitScalar _ -> gnameText h `elem` ["UnicodeScalar", "Char"]
 
 -- instantiate the constructor's field types against the scrutinee type
 -- (GADT-lite: unify the constructor's result with the scrutinee type).
