@@ -13,7 +13,7 @@ fixture falls in exactly one class:
    here; the failure is honest, retained as `fail`, and queued (cited
    to the defining section).
 
-### Outside Spec.md: spec-mandated `unsupported` (40 fixtures)
+### Outside Spec.md: spec-mandated `unsupported` (34 fixtures)
 
 Evidence for each fixture is the quoted directive reason in the
 "Unsupported, by reason" breakdown above and the per-fixture line in
@@ -51,12 +51,6 @@ the raw log (`/tmp/external-raw.log`).
   `lexical.operator_identifiers_fixity.operator_tokens.operator_sections.positive`).
   These assert raw token streams / constructor tables / module
   identity dumps this harness does not expose.
-- **`requires capability unicodeSourceWarnings`** (4:
-  `unicode.text.appendix_t.901/902/903/905_optional_*_warning`) and
-  **`legacyCharAlias`** (2: `unicode.text.appendix_t.900`, `…904`):
-  neither name appears in the §T.4 portable capability list, so the
-  precondition is unmet here → unsupported (§T.8). (The fixtures
-  themselves mark these "optional".)
 - **`requires capability incremental`** (2:
   `patch.import_stability.reload_same_identity`,
   `static_objects.incremental_static_object_identity_body_change`):
@@ -115,40 +109,35 @@ extensions, as §T.1 permits; see TESTING.md.)
   `E_NAME_UNRESOLVED` under the §3.1.2A portable-alias rules (the
   spec fixes no `E_TYPE_MISMATCH` for unresolved references;
   unresolved *implicit obligations* are already matched through the
-  documented `E_IMPLICIT_UNSOLVED ↔ E_TYPE_MISMATCH` §3.1.2A alias).
+  documented `E_UNSOLVED_IMPLICIT ↔ E_TYPE_MISMATCH` §3.1.2A alias).
 
 ### Tracked gaps (spec-defined, not implemented; honest `fail`s)
 
-The remaining 366 tracked-gap failures (371 fails minus the 5
+The remaining 175 tracked-gap failures (180 fails minus the 5
 spec-conflict fixtures above) group by feature, ranked by fixture
 count (classification from the raw log; one fixture may exhibit
 several gaps — it is counted under the dominant one):
 
 | rank | feature gap | spec | ~fixtures |
 |---|---|---|---|
-| 1 | Unicode text stack: `Byte`/`Grapheme`/`Bytes` types, `g"…"`/`b"…"` quoted-literal forms, `std.unicode`/`std.bytes`, ranges over text (`unicode.text.*`) | §6.4–§6.5, §20.2, §29.4–§29.5 | 86 |
-| 2 | Macros/elaborator reflection: `Elab`/`Syntax`, quote literals `'{…}`, splices, prefixed-string interpolation handlers, `FromComprehensionRaw`/`Plan` custom sinks, `std.deriving.shape` (`macros.*` 30, `queries.appendix_t.realistic.*` 18, `deriving.shape.*` 10, `patch.diagnostics.macro_failure_related_origin`) | §21–§23, §22, §6.3.4–§6.3.5, §20.10.9 | 59 |
-| 3 | Projection declarations and projector/accessor descriptors, incl. `inout` over projected places (`types.projections.*` 37, `effects.inout.*` 9, `appendices.test_harness.projector_descriptor…`) | §9.1.1, §16.1.5–§16.1.6, §18.9.3 | 47 |
-| 4 | Dependent records: `this`-dependent fields, update/repair, open rows `:=` (`types.records.*` 24, `this_nonfirst_*` 4, `patch.diagnostics.dependent_record_repair_payload`) | §13.2 (dependent fields, §13.2.9 repair), §13.1.5 (rows), §16.1.5 (`this` binders) | 29 |
-| 5 | Sealing/opacity and static-object facets: `seal` packages, opaque signature members, trait/effect-label facets, kind selectors (`modules.sealing.*` 13, `static_objects.*` 15) | §13.4–§13.5, §8.3, §7.5–§7.6, §7.1.1 | 28 |
-| 6 | `BorrowView`/`captureBorrow` projection borrows, zipper/projector-descriptor quantities (`borrow_qtt.030_borrow.*` 13, `types.universes.*` 13) | §12.4.3, §12.2 | 26 |
-| 7 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.pending.*`) | §3.1.14A, §5.4, §9 | 16 |
-| 8 | Effect handlers: resumption-capture QTT, handler clauses, `using`/do-item quantities (`borrow_qtt.100_interactions.*` 8, residual `effects.*` 3) | §18.1, §19.5, §12.2 | 11 |
-| 9 | Required standard modules: `std.bridge`, `std.ffi`, `std.atomic`, `std.gradual`, `std.supervisor`, `std.hash` runtime-hashing surface | §29.1–§29.3, §25–§26 | 8 |
-| 10 | Record/suspension `Need`/`Thunk`-typed lazy field insertion (`record_*` 5, `suspension_*` 2) | §11.2, §16.2.2 | 7 |
-| 11 | Associated trait type members; use-site supertrait conformance paths (`traits.instances.*`, `traits.members.positive_*`, `expressions.implicit_parameters.positive_supertrait_projection`) | §14.2.1, §14.1.4 | 7 |
-| 12 | Definitional-equality residue: record η, irrefutable tuple lets, optional-type sugar over parenthesized/tuple types, capture subsumption (`definitional_equality.*`) | §31.1, §13.1.9 | 6 |
-| 13 | Named-application preserved metadata and named-block diagnostics (`named_reject_*`) | §16.1.7 | 5 |
-| 14 | Application implicit-insertion diagnostics: `E_APPLICATION_ARGUMENT_MISMATCH` selection, explicit `@`-arguments to explicit binders (`app_reject_*`) | §16.1.7.1, §3.1.2A | 5 |
-| 15 | Equality transport through branch evidence (`transport_*`) | §16.1.8, §16.4 | 4 |
+| 1 | Macros/elaborator reflection: `Elab`/`Syntax`, quote literals `'{…}`, splices, prefixed-string interpolation handlers, `FromComprehensionRaw`/`Plan` custom sinks, `std.deriving.shape` (`macros.*` 30, `queries.appendix_t.realistic.*` 18, `deriving.shape.*` 10) | §21–§23, §22, §6.3.4–§6.3.5, §20.10.9 | 58 |
+| 2 | Sealing/opacity and static-object facets: `seal` packages, opaque signature members, trait/effect-label facets, kind selectors (`modules.sealing.*` 13, `static_objects.*` 14) | §13.4–§13.5, §8.3, §7.5–§7.6, §7.1.1 | 27 |
+| 3 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.pending.*`) | §3.1.14A, §5.4, §9 | 15 |
+| 4 | `BorrowView`/`captureBorrow` projection borrows, zipper/projector-descriptor quantities, resumption-capture QTT (`borrow_qtt.*` 8, residual `effects.*` 5) | §12.4.3, §12.2, §18.1, §19.5 | 13 |
+| 5 | Associated trait type members; use-site supertrait conformance paths (`traits.*` 9, `app_reject_*` implicit-insertion diagnostics 5) | §14.2.1, §14.1.4, §16.1.7.1 | 14 |
+| 6 | Required standard modules: `std.bridge`, `std.ffi`, `std.atomic`, `std.gradual`, `std.supervisor` (`bridge`/`ffi`/`atomic`/`gradual`/`supervisor` fixtures) | §29.1–§29.2, §25–§26 | 7 |
+| 7 | Record/suspension `Need`/`Thunk`-typed lazy field insertion (`record_*` 5, `suspension_*` 2) | §11.2, §16.2.2 | 7 |
+| 8 | Definitional-equality residue: record η, irrefutable tuple lets, optional-type sugar over parenthesized/tuple types, capture subsumption (`definitional_equality.*` 5, `this_nonfirst_*` 4) | §31.1, §13.1.9, §13.2.1 | 9 |
+| 9 | Named-application preserved metadata and named-block diagnostics (`named_reject_*`) | §16.1.7 | 5 |
+| 10 | Import item-kind selectors and URL-import pinning (`modules.imports.*`) | §8.3–§8.4 | 5 |
+| 11 | Equality transport through branch evidence (`transport_*`) | §16.1.8, §16.4 | 4 |
+| 12 | Union injection inference without expected type (`union_*`) | §13.3 | 3 |
+| 13 | Misc expression-level deltas (`expressions.*`) | §16 | 5 |
 
-The remainder (~22) is a long tail: import item-kind selectors and
-URL-import pinning (`modules.imports.*` 5, §8), union injection
-inference without expected type (`union_*` 3, §13.3), lexical
-suffix/fixity/brace-after-layout deltas (`lexical.*` 3, §5.4–§6.1),
-misc expression-level deltas (`expressions.*` 4), and one fixture
-each for boolean-proposition coercion (§11.4.2), non-sort type
-application, deep value `show`/equality, parser recovery without
-crash, short-circuit suspended-operand typing (§16.1.3), `Result`
-error-propagation example, and linear-function argument-quantity
-subsumption (`arrow_reject_*`, §12.2.1).
+The remainder (~10) is a long tail of one or two fixtures each:
+boolean-proposition coercion (§11.4.2), deep value `show`/equality
+(`interpreter`, `examples`), parser recovery without crash,
+short-circuit suspended-operand typing (§16.1.3), linear-function
+argument-quantity subsumption (`arrow_reject_*`, §12.2.1), patch
+diagnostics payloads, and `core_semantics` evaluation deltas beyond
+the spec conflicts above.
