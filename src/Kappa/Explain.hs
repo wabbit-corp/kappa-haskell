@@ -154,6 +154,18 @@ registry =
       "A field projection names a field that the record type does not contain."
   , ent "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
       "A recursive definition lacks a type signature; recursion requires a declared signature for checking."
+  , ent "E_RECURSIVE_TYPE_ALIAS" (Just "kappa.type.recursive-alias")
+      "A type alias refers to itself; recursive type aliases are not admitted — use a data declaration."
+  , ent "E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE" (Just "kappa.import.url")
+      "A URL module import without a #sha256:/#ref: pin is not reproducible and is rejected in package mode."
+  , ent "E_URL_IMPORT_UNSUPPORTED" (Just "kappa.import.url")
+      "A pinned URL module import names content this implementation cannot fetch; URL module fetching is not provided."
+  , ent "E_URL_IMPORT_REF_PIN_REQUIRES_LOCK" (Just "kappa.import.url")
+      "A ref:-pinned URL import requires the resolved digest to be recorded in a lockfile in package mode; no lockfile machinery exists here."
+  , ent "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+      "A kind-qualified name expression's selector does not agree with the named declaration's facet (e.g. 'trait' on a data type)."
+  , ent "E_QTT_BORROW_ESCAPE" (Just "kappa.qtt.borrow-escape")
+      "A closure or value capturing a borrowed binding (or a reified BorrowView) escapes the borrow's scope through the result."
   , ent "E_REFUTABLE_LET_PATTERN" (Just "kappa.pattern.refutable-binding")
       "A 'let' binding uses a refutable pattern; only irrefutable patterns may appear in plain let bindings."
   , ent "E_SAFE_NAVIGATION_RECEIVER_NOT_OPTION" (Just "kappa.type.mismatch")

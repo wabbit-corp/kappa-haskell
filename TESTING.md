@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (155/155)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (165/165)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -109,7 +109,7 @@ permits nonstandard directives), and the rest remain harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **155/155 passing**, zero unsupported, zero
+`tests/conformance/` — **165/165 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
@@ -164,12 +164,12 @@ raw per-fixture log at `/tmp/external-raw.log`.
 first error message) and `/tmp/triage-summary.txt` (per-category
 outcome counts and top error codes).
 
-Current tally over **941 fixture suites** (one result per fixture):
+Current tally over **945 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 866 |
-| fail | 65 |
+| pass | 913 |
+| fail | 22 |
 | unsupported | 10 |
 | harness error | 0 |
 
@@ -194,12 +194,15 @@ existing raw log without re-running the corpus) that classifies every
 non-pass as outside-spec (mandated unsupported/harnessError), spec
 conflict, or tracked gap. The §21–§23
 metaprogramming lane (macros, deriving-shape, query sinks, the
-§21.6 convenience reflection queries, §23 staged code) is fully
-clear; the remaining failures are dominated by fuzz
-recovery-cascade deltas, static-object kind selectors, associated
-trait type members, and diagnostic-code selection deltas at
-application boundaries (see the ranked gap table at the end of
-`tests/external-results.md`).
+§21.6 convenience reflection queries, §23 staged code), the
+§14.2.1 associated-static-member/supertrait lane, static-object
+kind selectors, import kind selectors/re-exports, and the
+checked-arithmetic branch-refinement lane are fully clear; the 22
+remaining failures are 9 cited spec conflicts and 13 tracked gaps
+(recovery-cascade parity, §13.2.11 existentials, layout-continuation
+and diagnostic-code selection deltas at application boundaries) —
+see the per-fixture tables at the end of
+`tests/external-results.md`.
 
 ## Conventions
 
