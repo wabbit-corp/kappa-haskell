@@ -1,0 +1,29 @@
+module main
+
+-- §7.1.1 kind-qualified name expressions: the selector must agree with
+-- the named facet, and §7.1/§7.2 facet selection in term positions.
+data Box (a : Type) : Type =
+    Box (value : a)
+
+data Person : Type =
+    Person (name : String)
+
+-- `trait` selector on a data type is rejected
+bad1 : Type -> Type
+let bad1 = trait Box
+
+-- `type` selector on a trait is rejected
+bad2 : Type
+let bad2 = type Eq
+
+-- in unqualified term-expression position the same-spelling
+-- constructor facet wins even under a sort-typed signature (§7.1);
+-- the reified type facet needs the explicit selector (§7.1.1)
+bad3 : Type
+let bad3 = Person
+
+good : Type
+let good = type Person
+
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_STATIC_OBJECT_KIND_MISMATCH, E_STATIC_OBJECT_KIND_MISMATCH, E_TYPE_EQUALITY_MISMATCH

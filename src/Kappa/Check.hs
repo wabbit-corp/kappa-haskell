@@ -3101,18 +3101,56 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
         errAt sp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
           ("no module named '" <> n <> "' is in scope (Spec §2.8.6)")
         anyHole ctx
+  -- §7.1.1: resolution is by ordinary lookup in the selected position,
+  -- so lexically scoped declarations precede globals: a §9.3.1.1
+  -- scoped-effect declaration provides both a type facet (its effect
+  -- interface, §7.6) and an effect-label facet (its canonical self
+  -- label)
+  SelEffectLabel
+    | Just eli <- Map.lookup (nameText (Name n nsp)) (ctxEffLabels ctx) ->
+        pure (CGlob (eliLabel eli), VGlobN (gPrel "EffLabel") [])
+  SelType
+    | Just (i, e) <- lookupCtx n ctx -> do
+        t <- forceM (ceType e)
+        case t of
+          VSort _ -> pure (CVar i, ceType e)
+          _ -> do
+            errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+              ("'" <> n <> "' is not a type in this scope; the 'type' selector does not apply (Spec §7.1.1)")
+            anyHole ctx
   _ -> do
     mg <- lookupGlobalName n
-    -- §2.8.3: the selector must agree with the named facet — a trait
-    -- has no type facet, so `type C` on a trait is rejected
+    -- §2.8.3/§7.1.1: the selector must agree with the named facet — a
+    -- trait has no type facet, so `type C` on a trait is rejected, and
+    -- `trait T` on a non-trait declaration is rejected
     isTrait <- case mg of
       Just g -> gets (Map.member g . csTraits)
+      Nothing -> pure False
+    isLabelG <- case mg of
+      Just g -> do
+        mt <- gets (fmap gdType . Map.lookup g . csGlobals)
+        case mt of
+          Just tv ->
+            forceM tv >>= \case
+              VGlobN lg [] -> pure (lg == gPrel "EffLabel")
+              _ -> pure False
+          Nothing -> pure False
       Nothing -> pure False
     if sel == SelType && isTrait
       then do
         errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
           ("'" <> n <> "' names a trait; the 'type' selector does not apply (Spec §2.8.3)")
         anyHole ctx
+      else if sel == SelTrait && isJust mg && not isTrait
+        then do
+          errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+            ("'" <> n <> "' does not name a trait; the 'trait' selector requires a trait declaration (Spec §7.1.1)")
+          anyHole ctx
+      else if sel == SelEffectLabel && isJust mg && not isLabelG
+        then do
+          errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+            ("'" <> n <> "' does not name an effect label; the 'effectLabel' selector requires an effect-label declaration (Spec §7.1.1)")
+          anyHole ctx
       else do
         mr <- case mg of
           Just g -> globalType g
@@ -3555,7 +3593,7 @@ elabIs ctx e cref = do
     Nothing -> anyHole ctx
 
 resolveCtor :: Ctx -> CtorRef -> CheckM (Maybe (GName, CtorInfo))
-resolveCtor _ (CtorRef mqual n) = do
+resolveCtor ctx (CtorRef mqual n) = do
   st <- get
   let candidates = case mqual of
         Nothing ->
@@ -3574,9 +3612,31 @@ resolveCtor _ (CtorRef mqual n) = do
     (g : _) -> do
       pure ((,) g <$> Map.lookup g (csCtors st))
     [] -> do
-      errAt (nameSpan n) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-        ("unresolved constructor '" <> nameText n <> "'")
-      pure Nothing
+      -- §2.8.4/§7.6: a rebound type object preserves its identity for
+      -- dotted lookup — the qualifier may be a local or module binding
+      -- whose manifest value is a data type constructor
+      mDataG <- case mqual of
+        Just q -> do
+          mv <- case lookupCtx (nameText q) ctx of
+            Just (i, _) -> manifestValue ctx (CVar i)
+            Nothing -> do
+              mg <- lookupGlobalName (nameText q)
+              case mg of
+                Just g -> manifestValue ctx (CGlob g)
+                Nothing -> pure Nothing
+          case mv of
+            Just (VGlobN dg []) | Map.member dg (csDatas st) -> pure (Just dg)
+            _ -> pure Nothing
+        Nothing -> pure Nothing
+      case mDataG of
+        Just dg
+          | Just di <- Map.lookup dg (csDatas st)
+          , (ctorG : _) <- [c | c <- diCtors di, gnameText c == nameText n] ->
+              pure ((,) ctorG <$> Map.lookup ctorG (csCtors st))
+        _ -> do
+          errAt (nameSpan n) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+            ("unresolved constructor '" <> nameText n <> "'")
+          pure Nothing
   where
     inScope st g@(GName m _) =
       m == csModule st || Map.lookup (gnameText g) (csScope st) == Just g || isPrel m
@@ -4137,15 +4197,20 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
       -- §9.1.2: a let pattern that is a bare capitalized name not naming
       -- any constructor in scope is an ordinary (rebinding) binder,
       -- e.g. `let M = type MaybeBox` (§2.8.3)
-      pat <- case pat0 of
-        PCtor (CtorRef Nothing n) [] _ -> do
-          st <- get
-          let isCtor =
-                any
-                  (\g -> gnameText g == nameText n)
-                  (Map.keys (csCtors st))
-          pure (if isCtor then pat0 else PVar n)
-        _ -> pure pat0
+      pat <- do
+        st <- get
+        let isCtor n = any (\g -> gnameText g == nameText n) (Map.keys (csCtors st))
+            -- applies recursively inside tuple/record let patterns:
+            -- `let (F = G, value = v) = pkg` rebinds the type object
+            -- under G (§2.8.4)
+            normRebind p = case p of
+              PCtor (CtorRef Nothing n) [] _
+                | not (isCtor n) -> PVar n
+              PTuple ps tsp -> PTuple (map normRebind ps) tsp
+              PRecord items mr rsp ->
+                PRecord [(o, f, fmap normRebind mp) | (o, f, mp) <- items] mr rsp
+              _ -> p
+        pure (normRebind pat0)
       (rhsTm, rhsTy) <- case mty of
         Just tyE -> do
           (tyTm, _) <- inferType ctx tyE
@@ -8375,7 +8440,30 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
         evalIn emptyCtx (quote ec 0 (gdType gd))
       addGlobal g gd {gdType = sigTy}
       -- signature first: check the definition against it (recursion OK)
-      tm0 <- checkAgainstSig sigTy binders body sp
+      -- §7.1/§7.2: a definition body is a term-expression position, so
+      -- the same-spelling constructor facet wins there even under a
+      -- sort-typed signature (reaching the reified type facet requires
+      -- the explicit `type T` selector, §7.1.1)
+      ctorFacetWins <- case body of
+        EVar bn | null binders -> do
+          sigF <- forceM sigTy
+          case sigF of
+            VSort _ -> do
+              mg <- lookupGlobalName (nameText bn)
+              case mg of
+                Just bg -> gets (Map.member bg . csCtors)
+                Nothing -> pure False
+            _ -> pure False
+        _ -> pure False
+      tm0 <-
+        if ctorFacetWins
+          then case body of
+            EVar bn -> do
+              (tm', ty') <- infer emptyCtx (EVar bn)
+              expectType emptyCtx (nameSpan bn) ty' sigTy
+              pure tm'
+            _ -> checkAgainstSig sigTy binders body sp
+          else checkAgainstSig sigTy binders body sp
       flushPending
       tm <- zonkTermM 0 tm0
       tmV <- evalIn emptyCtx tm

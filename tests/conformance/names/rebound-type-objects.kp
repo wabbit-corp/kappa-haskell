@@ -1,0 +1,43 @@
+module main
+
+-- §2.8.4/§7.6: rebinding a static object preserves its semantic-object
+-- identity for downstream dotted lookup — through a signature-governed
+-- module let, a record package member, and a §9.1.2 destructuring
+-- rebind; pattern heads resolve constructors through the rebinding.
+data Box (a : Type) : Type =
+    Box (value : a)
+
+F : Type -> Type
+let F = type Box
+
+unwrap : F Int -> Int
+let unwrap b =
+    match b
+    case F.Box n -> n
+
+pkg : (T : Type -> Type, value : T Int)
+let pkg = (T = Option, value = Some 1)
+
+opened : Int
+let opened =
+    block
+        let (T = G, value = v) = pkg
+        match v
+        case G.Some n -> n
+        case G.None -> 0
+
+-- §9.3.1.1 scoped effects provide a type facet to the selector
+scopedTypeFacet : Unit
+let scopedTypeFacet =
+    block
+        scoped effect State =
+            get : Unit -> Int
+
+        let T = type State
+        ()
+
+result : Int
+let result = unwrap (Box 41) + opened
+
+--! assertNoErrors
+--! assertEval result 42
