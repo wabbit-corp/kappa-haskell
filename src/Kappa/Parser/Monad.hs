@@ -25,6 +25,7 @@ module Kappa.Parser.Monad
   , sepBy
   , sepBy1
   , keepSoftNewlines
+  , hideSoftNewlines
   , withExtraStops
   , clearExtraStops
   , extraStops
@@ -185,6 +186,14 @@ sepBy1 p sep = (:) <$> p <*> many (sep *> p)
 keepSoftNewlines :: P a -> P a
 keepSoftNewlines (P f) = P $ \s -> do
   (a, s') <- f s {psSoftNL = True}
+  pure (a, s' {psSoftNL = psSoftNL s})
+
+-- | Run a parser with soft newlines hidden again: bracketed
+-- sub-expressions inside comprehension clauses are ordinary bracketed
+-- syntax, so their internal newlines are soft (§5.4).
+hideSoftNewlines :: P a -> P a
+hideSoftNewlines (P f) = P $ \s -> do
+  (a, s') <- f s {psSoftNL = False}
   pure (a, s' {psSoftNL = psSoftNL s})
 
 -- | Activate additional context-sensitive stop keywords while a clause

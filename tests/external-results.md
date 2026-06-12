@@ -118,7 +118,7 @@ Category is the first dot segment of the fixture directory name
 ## Failures
 
 ```
-FAIL active_accept_match_threads_linear_miss_residue (expected 0 errors, got 3; first error: E_UNSUPPORTED "active-pattern declarations are not supported by this implementation" at line 12)
+FAIL active_accept_match_threxternal fixtures: /opt/workspaces/kappa/tests/Kappa.Compiler.Tests/Fixtures
 FAIL active_accept_option_borrowed_scrutinee (expected 0 errors, got 3; first error: E_UNSUPPORTED "active-pattern declarations are not supported by this implementation" at line 7)
 FAIL active_accept_pattern_arguments (expected 0 errors, got 3; first error: E_UNSUPPORTED "active-pattern declarations are not supported by this implementation" at line 7)
 FAIL active_accept_pattern_as_expression_value (expected 0 errors, got 2; first error: E_UNSUPPORTED "active-pattern declarations are not supported by this implementation" at line 7)

@@ -1332,17 +1332,7 @@ pArrowExpr = do
     -- an arrow at end of line continues on the next line (same or
     -- deeper indentation) within signatures and type expressions (§5.4)
     pArrowRhs = do
-      t <- peekToken
-      case t of
-        TokNewline _ -> do
-          nxt <- peekTokenAt 1
-          case nxt of
-            TokIndent -> anyToken >> anyToken >> pure ()
-            TokDedent -> pure ()
-            TokEOF -> pure ()
-            TokNewline _ -> pure ()
-            _ -> void anyToken
-        _ -> pure ()
+      pArrowCont
       pOpenExpr <|> pArrowExpr
     mkArrow lhs rhs =
       let b = case lhs of
@@ -1361,6 +1351,22 @@ pArrowExpr = do
         | nameText n == "_" -> Just (NoReceiver, Nothing)
         | otherwise -> Just (NoReceiver, Just n)
       _ -> Nothing
+
+-- | An arrow at end of line continues on the next line (same or deeper
+-- indentation) within signatures and type expressions (§5.4).
+pArrowCont :: P ()
+pArrowCont = do
+  t <- peekToken
+  case t of
+    TokNewline _ -> do
+      nxt <- peekTokenAt 1
+      case nxt of
+        TokIndent -> anyToken >> anyToken >> pure ()
+        TokDedent -> pure ()
+        TokEOF -> pure ()
+        TokNewline _ -> pure ()
+        _ -> void anyToken
+    _ -> pure ()
 
 -- Operator chains: prefix ops and operands alternating with infix ops.
 pChainExpr :: P Expr
@@ -1659,21 +1665,22 @@ pAtom = do
     TokIdent _ -> EVar <$> pIdent
     TokBacktick _ -> EVar <$> pIdent
     -- Brackets close any enclosing clause context, so query keywords
-    -- are ordinary identifiers inside them (§5.2).
-    TokLParen -> clearExtraStops (pParenExpr start)
-    TokVariantOpen -> clearExtraStops (pVariantExpr start)
-    TokLBracket -> clearExtraStops (pListOrComp start)
-    TokSetOpen -> clearExtraStops (pSetOrComp start)
-    TokLBrace -> clearExtraStops (pMapOrComp start)
-    TokEffOpen -> clearExtraStops (pEffRow start)
+    -- are ordinary identifiers inside them and their internal newlines
+    -- are soft again (§5.2, §5.4).
+    TokLParen -> inBrackets (pParenExpr start)
+    TokVariantOpen -> inBrackets (pVariantExpr start)
+    TokLBracket -> inBrackets (pListOrComp start)
+    TokSetOpen -> inBrackets (pSetOrComp start)
+    TokLBrace -> inBrackets (pMapOrComp start)
+    TokEffOpen -> inBrackets (pEffRow start)
     TokQuoteBrace -> do
       void anyToken
-      e <- clearExtraStops pExpr
+      e <- inBrackets pExpr
       token TokRBrace
       EQuote e <$> spanFrom start
     TokSplice -> do
       void anyToken
-      e <- clearExtraStops pExpr
+      e <- inBrackets pExpr
       token TokRParen
       ESplice e <$> spanFrom start
     TokBang -> do
@@ -1795,6 +1802,7 @@ pParenExpr start = do
         _ -> parseFail "not a binder"
       token TokRParen
       token TokArrow
+      pArrowCont
       rhs <- pExpr
       pure (foldr EArrow rhs bs)
 
@@ -1935,6 +1943,12 @@ pEffRow start = do
       e <- pExpr
       pure (l, e)
 
+-- | Bracketed sub-expressions close any enclosing comprehension clause
+-- context: stop keywords become ordinary identifiers and newlines are
+-- soft again until the bracket closes (§5.2, §5.4).
+inBrackets :: P a -> P a
+inBrackets = hideSoftNewlines . clearExtraStops
+
 -- Lists and list comprehensions (§20).
 pListOrComp :: Span -> P Expr
 pListOrComp start = do
@@ -2038,6 +2052,16 @@ pCompBody = keepSoftNewlines $ withExtraStops queryStopKeywords $ do
 pCompSep :: P ()
 pCompSep = token TokComma <|> pNewline
 
+-- | A token that opens a bracketed expression form.
+pOpenBracketTok :: P ()
+pOpenBracketTok = satisfy "opening bracket" $ \case
+  TokLBracket -> Just ()
+  TokLParen -> Just ()
+  TokLBrace -> Just ()
+  TokSetOpen -> Just ()
+  TokVariantOpen -> Just ()
+  _ -> Nothing
+
 pCompClause :: P CompClause
 pCompClause = do
   start <- currentSpan
@@ -2099,6 +2123,9 @@ pCompClause = do
       pat <- pPattern
       mty <- optionMaybe (token TokColon *> pCompExpr)
       token TokEquals
+      -- the bound expression may open on a continuation line (§5.4)
+      cont <- lookAheadIs (pNewline *> pOpenBracketTok)
+      when cont pNewline
       e <- pCompExpr
       CLet refut pat mty e <$> spanFrom start
     orderKeys =

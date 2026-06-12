@@ -1,0 +1,10 @@
+--! assertNoErrors
+--! assertType m Map String Integer
+--! assertType empty_ Map Integer Integer
+
+-- Map literals build the built-in map type (§20.1).
+m : Map String Integer
+let m = { "a": 1, "b": 2 }
+
+empty_ : Map Integer Integer
+let empty_ = {}

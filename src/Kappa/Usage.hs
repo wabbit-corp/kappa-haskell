@@ -475,7 +475,9 @@ closeVar vi u = do
     overuse what occs =
       emit "E_QTT_LINEAR_OVERUSE" "kappa.qtt.linear-overuse"
         (occAt occs)
-        ("'" <> what <> "' is used more often than its quantity permits (§12.2)")
+        ("'" <> what <> "' is consumed more often than its "
+           <> (if vQ vi == Just QOne then "linear" else "affine")
+           <> " quantity permits (§12.2)")
     occAt occs = case drop 1 occs of
       (sp : _) -> sp
       [] -> vSpan vi
@@ -615,7 +617,7 @@ walkE env e0 = case e0 of
   EListLit es _ -> walks es
   ESetLit es _ -> walks es
   EMapLit kvs _ -> walks (concatMap (\(k, v) -> [k, v]) kvs)
-  EComprehension {} -> bailOut >> pure rNone
+  EComprehension _ cls y _ -> walkComp env cls y (exprSpan e0)
   EArrow {} -> pure rNone -- type position: erased
   ERecordType {} -> pure rNone
   EForall {} -> pure rNone
@@ -662,6 +664,61 @@ walkE env e0 = case e0 of
 firstJust :: [Span] -> Maybe Span
 firstJust (s : _) = Just s
 firstJust [] = Nothing
+
+-- | Comprehension usage (§20.10.5): each generator/join source is
+-- evaluated exactly once for the pipeline, so a one-shot source place
+-- is consumed once per comprehension. All other clause expressions run
+-- once per row; demands on outer variables are scaled by the pipeline
+-- cardinality, approximated as [0, ω]. Row binders introduced by
+-- clause patterns are tracked separately by elaboration (§20.10.4) and
+-- enter this analysis untracked.
+walkComp :: Env -> [CompClause] -> CompYield -> Span -> M R
+walkComp env0 cls0 y sp = go env0 cls0 []
+  where
+    go env [] acc = do
+      yu <- scaled env (case y of YieldExpr e -> [e]; YieldPair k v -> [k, v])
+      pure (rPlain (foldr seqU yu acc))
+    go env (c : rest) acc = case c of
+      CFor _ _ pat src _ -> do
+        su <- once env src
+        env' <- bindPat env pat
+        go env' rest (su : acc)
+      CLet _ pat _ rhs _ -> do
+        u <- scaled env [rhs]
+        env' <- bindPat env pat
+        go env' rest (u : acc)
+      CIf e -> withScaled env rest acc [e]
+      COrderBy ks _ -> withScaled env rest acc (map snd ks)
+      CSkip e _ -> withScaled env rest acc [e]
+      CTake e _ -> withScaled env rest acc [e]
+      CDistinct me _ -> withScaled env rest acc (maybeToList me)
+      CGroupBy k aggs n _ -> do
+        u <- scaled env (k : concatMap (\(_, e, mu) -> e : maybeToList mu) aggs)
+        env' <- bindName env n
+        go env' rest (u : acc)
+      CJoin _ pat src cond mInto _ -> do
+        su <- once env src
+        envP <- bindPat env pat
+        cu <- scaled envP [cond]
+        env' <- case mInto of
+          Just n -> bindName env n
+          Nothing -> pure envP
+        go env' rest (su : cu : acc)
+    withScaled env rest acc es = do
+      u <- scaled env es
+      go env rest (u : acc)
+    once env src = fst . flatR <$> walkE env src
+    scaled env es = do
+      rs <- mapM (walkE env) es
+      pure (scaleU (0, Nothing) (foldr (seqU . fst . flatR) Map.empty rs))
+    bindPat env pat = do
+      shadow <- forM (patVars pat) $ \nm -> do
+        k <- freshKey nm
+        pure (nm, plainV k sp)
+      pure (bindVars shadow env)
+    bindName env n = do
+      k <- freshKey (nameText n)
+      pure (bindVars [(nameText n, plainV k sp)] env)
 
 -- ── Lambda binders and matches ───────────────────────────────────────
 

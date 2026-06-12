@@ -896,6 +896,20 @@ infer ctx expr = case expr of
       errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
         ("record type has duplicate field '" <> n <> "'")
     pure (CRecordT (sortOn fst fields), VSort 0)
+  -- carrier-prefixed comprehension (§20.9): a type-valued head applied
+  -- to a comprehension literal selects a collection carrier
+  EApp f args
+    | not (null args)
+    , ArgExplicit (EComprehension k cs y csp) <- last args -> do
+        st0 <- get
+        let preArgs = init args
+        mPrefix <- carrierPrefix ctx f preArgs
+        case mPrefix of
+          Just prefix -> elabComprehensionC ctx k cs y csp (Just prefix)
+          Nothing -> do
+            put st0
+            (fTm, fTy) <- infer ctx f
+            elabSpine ctx (exprSpan f) fTm fTy args
   EApp f args -> do
     (fTm, fTy) <- infer ctx f
     elabSpine ctx (exprSpan f) fTm fTy args
@@ -980,10 +994,26 @@ infer ctx expr = case expr of
       ( foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) tms
       , VGlobN (gPrel "List") [(Expl, elemT)]
       )
-  -- no Map type or constructor exists in the prelude, so '{}' would
-  -- elaborate to a stuck neutral; report it like the non-empty case
-  EMapLit _ sp -> unsupported ctx sp "map literals"
-  ESetLit _ sp -> unsupported ctx sp "set literals"
+  EMapLit kvs _ -> do
+    keyT <- freshMetaV ctx
+    valT <- freshMetaV ctx
+    entries <- forM kvs $ \(k, v) -> do
+      kTm <- check ctx k keyT
+      vTm <- check ctx v valT
+      pure (CRecordV [("key", kTm), ("value", vTm)])
+    let listTm = foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) entries
+    pure
+      ( CApp Expl (CGlob (gPrel "__mapFromEntries")) listTm
+      , VGlobN (gPrel "Map") [(Expl, keyT), (Expl, valT)]
+      )
+  ESetLit es _ -> do
+    elemT <- freshMetaV ctx
+    tms <- mapM (\e -> check ctx e elemT) es
+    let listTm = foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) tms
+    pure
+      ( CApp Expl (CGlob (gPrel "__setFromList")) listTm
+      , VGlobN (gPrel "Set") [(Expl, elemT)]
+      )
   ESectionLeft e op sp ->
     infer ctx (lam1 sp "__x" (\x -> EApp (EVar op) [ArgExplicit e, ArgExplicit x]))
   ESectionRight op e sp ->
@@ -3185,37 +3215,812 @@ desugarBang = \case
       ArgImplicit e -> ArgImplicit (desugarBang e)
       a -> a
 
--- ── Comprehensions (§20, list subset) ────────────────────────────────
+-- ── Comprehensions (§20) ─────────────────────────────────────────────
+--
+-- Lowered per the §20.10 normative algebra, realized directly over
+-- lists (the §20.10.11 as-if rule). A first pass infers the plan
+-- (source kinds, use mode, cardinality, orderedness, row-entry
+-- quantities) against a state snapshot; a second pass desugars to
+-- surface syntax and elaborates once.
+
+-- | How a generator source is iterated (§20.10.2 built-in obligations).
+data SrcKind = SKList | SKArray | SKSet | SKMap | SKOption | SKQuery | SKUnknown
+  deriving stock (Eq, Show)
+
+-- | Cardinality approximation (§20.10.1).
+data QCard = CZero | COne | CZeroOrOne | COneOrMore | CZeroOrMore
+  deriving stock (Eq, Show)
+
+cardName :: QCard -> Text
+cardName = \case
+  CZero -> "QZero"
+  COne -> "QOne"
+  CZeroOrOne -> "QZeroOrOne"
+  COneOrMore -> "QOneOrMore"
+  CZeroOrMore -> "QZeroOrMore"
+
+cardIv :: QCard -> (Int, Maybe Int)
+cardIv = \case
+  CZero -> (0, Just 0)
+  COne -> (1, Just 1)
+  CZeroOrOne -> (0, Just 1)
+  COneOrMore -> (1, Nothing)
+  CZeroOrMore -> (0, Nothing)
+
+cardOf :: (Int, Maybe Int) -> QCard
+cardOf = \case
+  (0, Just 0) -> CZero
+  (1, Just 1) -> COne
+  (0, Just 1) -> CZeroOrOne
+  (1, Nothing) -> COneOrMore
+  _ -> CZeroOrMore
+
+mulCard :: QCard -> QCard -> QCard
+mulCard a b =
+  let (al, ah) = cardIv a
+      (bl, bh) = cardIv b
+      hi = case (ah, bh) of
+        (Just x, Just y) -> Just (min 1 (x * y))
+        (Just 0, _) -> Just 0
+        (_, Just 0) -> Just 0
+        _ -> Nothing
+   in cardOf (min 1 (al * bl), hi)
+
+filterCard :: QCard -> QCard
+filterCard c = let (_, h) = cardIv c in cardOf (0, h)
+
+-- | May the inferred cardinality be checked against the demanded one
+-- (interval subset, §20.10.1)?
+cardSub :: QCard -> QCard -> Bool
+cardSub a b =
+  let (al, ah) = cardIv a
+      (bl, bh) = cardIv b
+      hiOk = case (ah, bh) of
+        (_, Nothing) -> True
+        (Just x, Just y) -> x <= y
+        (Nothing, Just _) -> False
+   in al >= bl && hiOk
+
+cardManyHi :: QCard -> Bool
+cardManyHi c = case snd (cardIv c) of
+  Nothing -> True
+  Just h -> h > 1
+
+cardZeroLo :: QCard -> Bool
+cardZeroLo c = fst (cardIv c) == 0
+
+-- | What pass 1 learned about one generator source.
+data SrcInfo = SrcInfo
+  { siKind :: !SrcKind
+  , siItem :: !Value
+  , siOrdered :: !Bool
+  , siOneShot :: !Bool
+  , siCard :: !QCard
+  , siItemLinear :: !Bool
+  }
+
+sourceInfo :: Ctx -> Value -> CheckM SrcInfo
+sourceInfo ctx ty = do
+  t <- forceM ty
+  case t of
+    VGlobN (GName _ "List") [(_, a)] -> pure (SrcInfo SKList a True False CZeroOrMore False)
+    VGlobN (GName _ "Array") [(_, a)] -> pure (SrcInfo SKArray a True False CZeroOrMore False)
+    VGlobN (GName _ "Set") [(_, a)] -> pure (SrcInfo SKSet a False False CZeroOrMore False)
+    VGlobN (GName _ "Map") [(_, k), (_, v)] ->
+      pure (SrcInfo SKMap (VRecordT [("key", k), ("value", v)]) False False CZeroOrMore False)
+    VGlobN (GName _ "Option") [(_, a)] -> pure (SrcInfo SKOption a True False CZeroOrOne False)
+    VGlobN (GName _ "QueryCore") [(_, m), (_, q), (_, a)] -> do
+      (oneShot, card) <- decodeQueryMode m
+      lin <- decodeLinearQuantity q
+      pure (SrcInfo SKQuery a True oneShot card lin)
+    _ -> do
+      item <- freshMetaV ctx
+      pure (SrcInfo SKUnknown item True False CZeroOrMore False)
+
+decodeQueryMode :: Value -> CheckM (Bool, QCard)
+decodeQueryMode m0 = do
+  m <- forceM m0
+  case m of
+    VCtor (GName _ "QueryMode") [u0, c0] -> do
+      u <- forceM u0
+      c <- forceM c0
+      let oneShot = case u of
+            VCtor (GName _ "OneShot") _ -> True
+            _ -> False
+          card = case c of
+            VCtor (GName _ "QZero") _ -> CZero
+            VCtor (GName _ "QOne") _ -> COne
+            VCtor (GName _ "QZeroOrOne") _ -> CZeroOrOne
+            VCtor (GName _ "QOneOrMore") _ -> COneOrMore
+            _ -> CZeroOrMore
+      pure (oneShot, card)
+    _ -> pure (False, CZeroOrMore)
+
+-- | Is the quantity value the linear quantity @1@?
+decodeLinearQuantity :: Value -> CheckM Bool
+decodeLinearQuantity q0 = do
+  q <- forceM q0
+  pure $ case q of
+    VPrim "__quantityOfNat" [VLit (LitInt 1)] -> True
+    _ -> False
+
+-- | Does the variable occur (syntactically) in the expression?
+occursVar :: Text -> Expr -> Bool
+occursVar v = go
+  where
+    go = \case
+      EVar (Name n _) -> n == v
+      EApp f as -> go f || any goA as
+      EDot b _ -> go b
+      EQDot b _ -> go b
+      EOpChain els -> or [go x | ChainOperand x <- els]
+      ETuple es _ -> any go es
+      ERecordLit is _ -> or [go e | RecItem _ _ (Just e) <- is]
+      ERecordPatch b items _ ->
+        go b
+          || or
+            [ case it of
+                PatchUpdate _ (PatchValue e) -> go e
+                PatchExtend _ e -> go e
+                PatchSection a e -> go a || go e
+            | it <- items
+            ]
+      EListLit es _ -> any go es
+      ESetLit es _ -> any go es
+      EMapLit kvs _ -> any (\(k, w) -> go k || go w) kvs
+      EIf alts mels _ -> any (\(c, t) -> go c || go t) alts || maybe False go mels
+      EMatch s cs _ -> go s || or [maybe False go g || go b | MatchCase _ g b _ <- cs]
+      ELambda _ _ b _ -> go b
+      ELet bs b _ -> any (go . lbExpr) bs || go b
+      EAscription e _ _ -> go e
+      ESectionLeft e _ _ -> go e
+      ESectionRight _ e _ -> go e
+      EElvis a b _ -> go a || go b
+      EIs e _ -> go e
+      EThunk e _ -> go e
+      ELazy e _ -> go e
+      EForce e _ -> go e
+      EBang e _ -> go e
+      EStringLit _ parts _ -> any (go . ipExpr) parts
+      EDo _ items _ -> any goItem items
+      EComprehension _ cls yy _ ->
+        any goClause cls || any go (yieldExprsOf yy)
+      _ -> False
+    goA = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      ArgInout e _ -> go e
+      ArgNamedBlock fs _ -> or [maybe False go me | (_, me) <- fs]
+    goItem = \case
+      DoBind lb -> go (lbExpr lb)
+      DoLet lb -> go (lbExpr lb)
+      DoLetQ _ e mfb _ -> go e || maybe False (go . snd) mfb
+      DoExpr e -> go e
+      _ -> True -- conservative for loops/var/defer items
+    goClause = \case
+      S.CFor _ _ _ src _ -> go src
+      S.CLet _ _ _ rhs _ -> go rhs
+      S.CIf e -> go e
+      S.COrderBy ks _ -> any (go . snd) ks
+      S.CSkip e _ -> go e
+      S.CTake e _ -> go e
+      S.CDistinct me _ -> maybe False go me
+      S.CGroupBy k aggs _ _ -> go k || or [go e || maybe False go mu | (_, e, mu) <- aggs]
+      S.CJoin _ _ src cond _ _ -> go src || go cond
+
+yieldExprsOf :: CompYield -> [Expr]
+yieldExprsOf = \case
+  YieldExpr e -> [e]
+  YieldPair k v -> [k, v]
+
+-- | Surface pattern variables, in binding order.
+surfPatVars :: Pattern -> [Name]
+surfPatVars = \case
+  PWild _ -> []
+  PVar n -> [n]
+  PLit _ _ -> []
+  PAs n p -> n : surfPatVars p
+  PCtor _ ps _ -> concatMap surfPatVars ps
+  PCtorNamed _ fs _ -> concatMap surfPatVars [p | (_, Just p) <- fs]
+  PActive _ _ p _ -> surfPatVars p
+  PTuple ps _ -> concatMap surfPatVars ps
+  PUnit _ -> []
+  PRecord fs mrest _ ->
+    concatMap (\(_, n, mp) -> maybe [n] surfPatVars mp) fs
+      ++ [n | Just (PatRestBind n) <- [mrest]]
+  PTyped p _ _ -> surfPatVars p
+  POr ps _ -> case ps of
+    (p : _) -> surfPatVars p
+    [] -> []
+  POpChain p chain _ -> surfPatVars p ++ concatMap (surfPatVars . snd) chain
+  PVariant mb _ _ mrest _ -> maybe [] pure mb ++ maybe [] pure mrest
+
+-- | Per-clause pass-1 annotation consumed by the desugaring pass.
+data CAnn = CAnn
+  { caKind :: !SrcKind -- ^ generator/join source kind
+  , caForceRefut :: !Bool -- ^ desugar with a wildcard fallback case
+  }
+
+defaultAnn :: CAnn
+defaultAnn = CAnn SKUnknown False
+
+-- | Pass-1 result: plan metadata plus pending diagnostics.
+data CompPlan = CompPlan
+  { cpAnns :: ![CAnn]
+  , cpOneShot :: !Bool
+  , cpCard :: !QCard
+  , cpItemLinear :: !Bool
+  , cpDiags :: ![(Span, Text, Maybe Text, Text)]
+  }
+
+-- | Pass 1: infer the comprehension plan. Elaboration side effects
+-- (diagnostics, metas) are rolled back; only the plan survives.
+planComp :: Ctx -> [S.CompClause] -> CompYield -> Span -> CheckM CompPlan
+planComp ctx0 clauses yld _sp = do
+  st0 <- get
+  plan <- go ctx0 [] True False COne [] [] clauses
+  put st0
+  pure plan
+  where
+    linsOf row = [v | (v, True) <- row]
+    directComponent v = goD
+      where
+        goD = \case
+          EVar (Name n _) -> n == v
+          ETuple es _ -> any goD es
+          ERecordLit is _ -> or [goD e | RecItem _ _ (Just e) <- is]
+          EAscription e _ _ -> goD e
+          _ -> False
+    pend csp code fam msg = (csp, code, fam, msg)
+    dropMsg what vs csp =
+      pend csp "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.query.row-quantity")
+        (what <> " may discard the current row, but linear row entry '"
+           <> T.intercalate "', '" vs <> "' is not droppable (§20.10.4)")
+    go _ctx row _ordered oneShot card anns diags [] = do
+      -- the yielded item carries quantity 1 only when a linear row
+      -- entry flows into it as a direct component (not when an
+      -- application consumes the entry and yields its result)
+      let lins = linsOf row
+          itemLinear = not (null [v | v <- lins, any (directComponent v) (yieldExprsOf yld)])
+      pure (CompPlan (reverse anns) oneShot card itemLinear (reverse diags))
+    go ctx row ordered oneShot card anns diags (c : cs) = case c of
+      S.CFor refut _ pat src csp -> do
+        (_, srcTy) <- infer ctx src
+        si <- sourceInfo ctx srcTy
+        irr <- irrefutableFor ctx pat (siItem si)
+        let lins = linsOf row
+            refutD =
+              [ pend csp "E_QUERY_FOR_REFUTABLE" (Just "kappa.query.refutable-for")
+                  "the pattern of a 'for' clause must be irrefutable for the element type; use the refutable form 'for?' instead (§20.4)"
+              | not refut && not irr
+              ]
+            dropD = [dropMsg "the refutable generator 'for?'" lins csp | refut, not (null lins)]
+            dupD =
+              [ pend csp "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.query.row-quantity")
+                  ("a nested 'for' over a zero-or-many source may drop or duplicate the current row, but linear row entry '"
+                     <> T.intercalate "', '" lins <> "' is neither droppable nor duplicable (§20.10.4)")
+              | not refut
+              , not (null lins)
+              , cardManyHi (siCard si) || cardZeroLo (siCard si)
+              ]
+        (_, ctx', _) <- elabPattern ctx pat (siItem si)
+        let row' = row ++ [(nameText n, siItemLinear si) | n <- surfPatVars pat]
+        go ctx' row' (ordered && siOrdered si) (oneShot || siOneShot si)
+          (mulCard card (siCard si))
+          (CAnn (siKind si) (not irr) : anns)
+          (reverse (refutD ++ dropD ++ dupD) ++ diags)
+          cs
+      S.CLet refut pat mty rhs csp -> do
+        rhsTy <- case mty of
+          Just tyE -> do
+            (tyTm, _) <- inferType ctx tyE
+            tyV <- evalIn ctx tyTm
+            _ <- check ctx rhs tyV
+            pure tyV
+          Nothing -> snd <$> infer ctx rhs
+        irr <- irrefutableFor ctx pat rhsTy
+        let lins = linsOf row
+            refutD =
+              [ pend csp "E_REFUTABLE_LET_PATTERN" (Just "kappa.pattern.refutable-binding")
+                  "a 'let' comprehension clause requires an irrefutable pattern; use 'let?' instead (§20.4.1)"
+              | not refut && not irr
+              ]
+            dropD = [dropMsg "the refutable binding 'let?'" lins csp | refut, not (null lins)]
+        (_, ctx', _) <- elabPattern ctx pat rhsTy
+        let row' = row ++ [(nameText n, False) | n <- surfPatVars pat]
+        go ctx' row' ordered oneShot (if refut then filterCard card else card)
+          (CAnn SKUnknown (not irr) : anns)
+          (reverse (refutD ++ dropD) ++ diags)
+          cs
+      S.CIf cond -> do
+        let lins = linsOf row
+            dropD =
+              [ pend (exprSpan cond) "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.query.row-quantity")
+                  ("an 'if' filter may drop the current row, but linear row entry '"
+                     <> T.intercalate "', '" lins <> "' is not droppable (§20.10.4)")
+              | not (null lins)
+              ]
+        go ctx row ordered oneShot (filterCard card) (defaultAnn : anns) (dropD ++ diags) cs
+      S.COrderBy keys csp -> do
+        let lins = linsOf row
+        consumed <- concat <$> mapM (consumesLin ctx lins . snd) keys
+        let consD =
+              [ pend csp "E_QUERY_ORDER_KEY_CONSUMES" (Just "kappa.query.order-key")
+                  ("an 'order by' key is checked in a non-consuming context, but this key consumes linear row entry '"
+                     <> T.intercalate "', '" (nub consumed) <> "' (§20.6.1)")
+              | not (null consumed)
+              ]
+        go ctx row True oneShot card (defaultAnn : anns) (consD ++ diags) cs
+      S.CSkip _ csp -> pagingClause ctx row ordered oneShot card anns diags cs "skip" csp
+      S.CTake _ csp -> pagingClause ctx row ordered oneShot card anns diags cs "take" csp
+      S.CDistinct _ csp -> do
+        let lins = linsOf row
+            dropD = [dropMsg "'distinct' deduplication" lins csp | not (null lins)]
+        go ctx row ordered oneShot (filterCard card) (defaultAnn : anns) (dropD ++ diags) cs
+      S.CGroupBy key aggs n csp -> do
+        (_, kTy) <- infer ctx key
+        aggTys <- forM aggs $ \(an, ae, _) -> do
+          (_, aTy) <- infer ctx ae
+          pure (nameText an, aTy)
+        let keyD =
+              [ pend csp "E_QUERY_GROUP_KEY_FIELD" (Just "kappa.query.group")
+                  "the group record always contains the field 'key'; an aggregate may not be named 'key' (§20.7)"
+              | any ((== "key") . fst) aggTys
+              ]
+            recTy = VRecordT (sortOn fst (("key", kTy) : aggTys))
+            ctx' = bindCtx (nameText n) False recTy ctx
+        go ctx' [(nameText n, False)] False oneShot CZeroOrMore (defaultAnn : anns) (keyD ++ diags) cs
+      S.CJoin left pat src cond mInto csp -> do
+        (_, srcTy) <- infer ctx src
+        si <- sourceInfo ctx srcTy
+        let lins = linsOf row
+        case (left, mInto) of
+          (True, Just into) -> do
+            let captured = [v | v <- lins, occursVar v src || occursVar v cond]
+                capD =
+                  [ pend csp "E_QUERY_LEFT_JOIN_LINEAR_CAPTURE" (Just "kappa.query.left-join")
+                      ("the delayed inner query of a 'left join ... into' may not capture linear row entry '"
+                         <> T.intercalate "', '" captured <> "' (§20.8)")
+                  | not (null captured)
+                  ]
+                qTy =
+                  VGlobN (gPrel "QueryCore")
+                    [ (Expl, VCtor (gPrel "QueryMode") [VCtor (gPrel "Reusable") [], VCtor (gPrel "QZeroOrMore") []])
+                    , (Expl, VPrim "__omegaQ" [])
+                    , (Expl, siItem si)
+                    ]
+                ctx' = bindCtx (nameText into) False qTy ctx
+                row' = row ++ [(nameText into, False)]
+            go ctx' row' (ordered && siOrdered si) (oneShot || siOneShot si) card
+              (CAnn (siKind si) False : anns) (capD ++ diags) cs
+          _ -> do
+            let dupD =
+                  [ pend csp "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.query.row-quantity")
+                      ("a 'join' may drop or duplicate the current row, but linear row entry '"
+                         <> T.intercalate "', '" lins <> "' is neither droppable nor duplicable (§20.10.4)")
+                  | not (null lins)
+                  ]
+            (_, ctx', _) <- elabPattern ctx pat (siItem si)
+            let row' = row ++ [(nameText nm, siItemLinear si) | nm <- surfPatVars pat]
+            go ctx' row' (ordered && siOrdered si) (oneShot || siOneShot si)
+              (mulCard card (filterCard (siCard si)))
+              (CAnn (siKind si) False : anns) (dupD ++ diags) cs
+    pagingClause ctx row ordered oneShot card anns diags cs what csp = do
+      let lins = linsOf row
+          ordD =
+            [ pend csp "E_QUERY_UNORDERED_PAGING" (Just "kappa.query.orderedness")
+                ("'" <> what <> "' requires an Ordered pipeline, but the pipeline is unordered here; insert an 'order by' before paging (§20.6.2)")
+            | not ordered
+            ]
+          dropD = [dropMsg ("'" <> what <> "' paging") lins csp | not (null lins)]
+      go ctx row ordered oneShot (filterCard card) (defaultAnn : anns) (ordD ++ dropD ++ diags) cs
+
+-- | Which linear row entries does an ordering/distinct key expression
+-- consume? Direct arguments at borrow-or-unrestricted callee binders
+-- are non-consuming; quantity-1/>=1 binders and bare moves consume.
+consumesLin :: Ctx -> [Text] -> Expr -> CheckM [Text]
+consumesLin _ [] _ = pure []
+consumesLin ctx lins e0 = case e0 of
+  EVar (Name v _) -> pure [v | v `elem` lins]
+  EDot b _ -> case b of
+    EVar _ -> pure [] -- borrowed place read (§12.4 approximation)
+    _ -> consumesLin ctx lins b
+  EAscription e _ _ -> consumesLin ctx lins e
+  EApp (EVar f) args -> do
+    st0 <- get
+    (_, fTy0) <- resolveName ctx f
+    fTy <- forceM fTy0
+    put st0
+    let explQs = piExplQs fTy
+        explArgs = [e | ArgExplicit e <- args]
+        slot (mq, arg) = case arg of
+          EVar (Name v _)
+            | v `elem` lins ->
+                pure [v | mq `elem` [Just Q1, Just QGe1, Nothing]]
+          _ -> consumesLin ctx lins arg
+    concat <$> mapM slot (zip (map Just explQs ++ repeat Nothing) explArgs)
+  _ -> pure [v | v <- lins, occursVar v e0]
+  where
+    piExplQs ty = case ty of
+      VPi Expl q _ _ clo -> q : piExplQs (peek clo)
+      VPi Impl _ _ _ clo -> piExplQs (peek clo)
+      _ -> []
+    -- peeking under the binder with a dummy is enough for quantities
+    peek (Closure env body) =
+      eval (EvalCtx (Globals Map.empty) Map.empty False) (VSort 0 : env) body
+
+-- | The elaborated carrier prefix of a prefixed comprehension (§20.9):
+-- the prefix term and its (forced) type.
+type CarrierPrefix = (Term, Value)
 
 elabComprehension :: Ctx -> CompKind -> [S.CompClause] -> CompYield -> Span -> CheckM (Term, Value)
-elabComprehension ctx kind clauses yld sp = case kind of
-  CompList -> do
-    e <- desugar clauses
-    infer ctx e
-  _ -> unsupported ctx sp "non-list comprehensions"
+elabComprehension ctx kind clauses yld sp = elabComprehensionC ctx kind clauses yld sp Nothing
+
+elabComprehensionC :: Ctx -> CompKind -> [S.CompClause] -> CompYield -> Span -> Maybe CarrierPrefix -> CheckM (Term, Value)
+elabComprehensionC ctx kind clauses yld sp mCarrier = do
+  plan <- planComp ctx clauses yld sp
+  forM_ (cpDiags plan) $ \(dsp, code, fam, msg) -> errAt dsp code fam msg
+  lowered <- desugarComp ctx (zip clauses (cpAnns plan ++ repeat defaultAnn)) yld sp
+  case mCarrier of
+    Just prefix -> collectCarrier ctx plan lowered prefix sp
+    Nothing -> case kind of
+      CompList -> infer ctx lowered
+      CompSet -> do
+        eqLam <- pairEqLam sp
+        infer ctx (prelApp1 sp "__setFromList" [prelApp1 sp "__distinctBy" [lowered, eqLam]])
+      CompMap mconf -> do
+        eqLam <- pairEqLam sp
+        comb <- conflictLam ctx mconf sp
+        infer ctx (prelApp1 sp "__mapFromEntries" [prelApp1 sp "__mapResolve" [lowered, eqLam, comb]])
+      CompCarrier _ -> infer ctx lowered
+
+prelApp1 :: Span -> Text -> [Expr] -> Expr
+prelApp1 sp n es = EApp (EVar (Name n sp)) (map ArgExplicit es)
+
+-- | @\\a b -> a == b@.
+pairEqLam :: Span -> CheckM Expr
+pairEqLam sp = do
+  a <- freshNameM "__a"
+  b <- freshNameM "__b"
+  let an = Name a sp
+      bn = Name b sp
+  pure $
+    ELambda Nothing [simpleBinder an, simpleBinder bn]
+      (EApp (EOpRef Nothing (Name "==" sp) sp) [ArgExplicit (EVar an), ArgExplicit (EVar bn)])
+      sp
+
+-- | The map-conflict combine function (§20.5.1); default keep last.
+conflictLam :: Ctx -> Maybe OnConflict -> Span -> CheckM Expr
+conflictLam ctx mconf sp = case fromMaybe KeepLast mconf of
+  KeepLast -> two (\_ b -> EVar b)
+  KeepFirst -> two (\a _ -> EVar a)
+  CombineWith f -> pure f
+  CombineUsing w -> case ctorRefOfExpr w of
+    Just cref -> do
+      a <- freshNameM "__old"
+      b <- freshNameM "__new"
+      x <- freshNameM "__x"
+      let an = Name a sp
+          bn = Name b sp
+          xn = Name x sp
+          wrap e = EApp w [ArgExplicit e]
+          appended = prelApp1 sp "append" [wrap (EVar an), wrap (EVar bn)]
+      pure $
+        ELambda Nothing [simpleBinder an, simpleBinder bn]
+          (EMatch appended [MatchCase (PCtor cref [PVar xn] sp) Nothing (EVar xn) sp] sp)
+          sp
+    Nothing -> do
+      _ <- unsupported ctx sp "this 'combine using' wrapper form"
+      two (\_ b -> EVar b)
   where
-    yieldExpr = case yld of
+    two f = do
+      a <- freshNameM "__old"
+      b <- freshNameM "__new"
+      let an = Name a sp
+          bn = Name b sp
+      pure (ELambda Nothing [simpleBinder an, simpleBinder bn] (f an bn) sp)
+
+ctorRefOfExpr :: Expr -> Maybe CtorRef
+ctorRefOfExpr = \case
+  EVar n -> Just (CtorRef Nothing n)
+  EDot (EVar q) (DotName n) -> Just (CtorRef (Just q) n)
+  _ -> Nothing
+
+-- | Speculatively elaborate the head of a possible carrier-prefixed
+-- comprehension (§20.9). 'Just' when the prefix is type-valued: either
+-- a fully applied result type or a unary @Type -> Type@ sink head. The
+-- caller restores elaboration state when this returns 'Nothing'.
+carrierPrefix :: Ctx -> Expr -> [Arg] -> CheckM (Maybe CarrierPrefix)
+carrierPrefix ctx f preArgs = do
+  let headE = if null preArgs then f else EApp f preArgs
+  case f of
+    EVar _ -> goInfer headE
+    EDot _ _ -> goInfer headE
+    EApp _ _ -> goInfer headE
+    _ -> pure Nothing
+  where
+    goInfer headE = do
+      n0 <- gets (length . csDiags)
+      (hTm, hTy) <- infer ctx headE
+      n1 <- gets (length . csDiags)
+      hTy' <- forceM hTy
+      if n1 /= n0
+        then pure Nothing
+        else case hTy' of
+          VSort _ -> pure (Just (hTm, hTy'))
+          VPi Expl _ _ dom _ -> do
+            domF <- forceM dom
+            case domF of
+              VSort _ -> pure (Just (hTm, hTy'))
+              _ -> pure Nothing
+          _ -> pure Nothing
+
+-- | Terminal collection through an explicit carrier prefix (§20.9).
+collectCarrier :: Ctx -> CompPlan -> Expr -> CarrierPrefix -> Span -> CheckM (Term, Value)
+collectCarrier ctx plan lowered (prefTm, prefTy) sp = do
+  (listTm0, listTy) <- infer ctx lowered
+  itemV <- elemOfList listTy
+  candidate <- case prefTy of
+    VSort _ -> evalIn ctx prefTm
+    VPi Expl _ _ _ _ -> do
+      itemTm <- quoteIn ctx itemV
+      evalIn ctx (CApp Expl prefTm itemTm)
+    _ -> freshMetaV ctx
+  cand <- forceM candidate
+  case cand of
+    VGlobN (GName _ "QueryCore") [(_, m), (_, q), (_, a)] -> do
+      (expOneShot, expCard) <- decodeQueryMode m
+      expLinear <- decodeLinearQuantity q
+      when (cpOneShot plan && not expOneShot) $
+        errAt sp "E_QUERY_MODE_MISMATCH" (Just "kappa.query.mode")
+          "this comprehension's plan is one-shot, but the carrier requires a reusable query; use 'OnceQuery [ ... ]' or an explicitly indexed 'QueryCore' carrier (§20.9)"
+      unless (cardSub (cpCard plan) expCard) $
+        errAt sp "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa.query.cardinality")
+          ("the inferred plan cardinality " <> cardName (cpCard plan)
+             <> " cannot be checked against the demanded cardinality " <> cardName expCard
+             <> "; cardinality may only be widened (§20.10.1)")
+      when (cpItemLinear plan && not expLinear) $
+        errAt sp "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa.query.item-quantity")
+          "the yielded item is available only at linear quantity 1, but the carrier demands unrestricted (ω) items (§20.9)"
+      listTm <- checkAsList listTm0 listTy a
+      pure (CApp Expl (CGlob (gPrel "__queryFromList")) listTm, candidate)
+    VGlobN (GName _ "Array") [(_, a)] -> do
+      listTm <- checkAsList listTm0 listTy a
+      pure (CApp Expl (CGlob (gPrel "__arrayFromList")) listTm, candidate)
+    VGlobN (GName _ "List") [(_, a)] -> do
+      listTm <- checkAsList listTm0 listTy a
+      pure (listTm, candidate)
+    VGlobN (GName _ "Set") [(_, a)] -> do
+      listTm <- checkAsList listTm0 listTy a
+      pure (CApp Expl (CGlob (gPrel "__setFromList")) listTm, candidate)
+    _ -> unsupported ctx sp "this comprehension carrier"
+  where
+    elemOfList ty = do
+      t <- forceM ty
+      case t of
+        VGlobN (GName _ "List") [(_, a)] -> pure a
+        _ -> freshMetaV ctx
+    checkAsList tm ty a = do
+      expectType ctx sp ty (VGlobN (gPrel "List") [(Expl, a)])
+      pure tm
+
+-- | Pass 2: desugar the clause pipeline over lists (§20.10.11 as-if).
+-- The pipeline expression has type @List Row@ where @Row@ is the tuple
+-- of the variables bound so far.
+desugarComp :: Ctx -> [(S.CompClause, CAnn)] -> CompYield -> Span -> CheckM Expr
+desugarComp ctx clauses yld sp = do
+  (vars, pipe) <- foldM step ([], EListLit [EUnit sp] sp) clauses
+  yf <- perRow vars (yieldElem yld)
+  pure (prelApp1 sp "__pipeMap" [pipe, yf])
+  where
+    yieldElem = \case
       YieldExpr e -> e
-      YieldPair k _ -> k
-    desugar [] = pure (EListLit [yieldExpr] sp)
-    desugar (c : rest) = do
-      inner <- desugar rest
-      case c of
-        S.CFor False False pat src _ -> do
-          x <- freshNameM "__c"
-          let xe = Name x sp
-          pure $
-            EApp (EVar (Name "concatMap" sp))
-              [ ArgExplicit (ELambda Nothing [simpleBinder xe] (EMatch (EVar xe) [MatchCase pat Nothing inner sp] sp) sp)
-              , ArgExplicit src
+      YieldPair k v ->
+        ERecordLit [RecItem False (Name "key" sp) (Just k), RecItem False (Name "value" sp) (Just v)] sp
+
+    rowE vars = case vars of
+      [] -> EUnit sp
+      [v] -> EVar v
+      vs -> ETuple (map EVar vs) sp
+    rowP vars = case vars of
+      [] -> PWild sp
+      [v] -> PVar v
+      vs -> PTuple (map PVar vs) sp
+
+    perRow vars body = do
+      r <- freshNameM "__row"
+      let rn = Name r sp
+      pure $
+        ELambda Nothing [simpleBinder rn]
+          (EMatch (EVar rn) [MatchCase (rowP vars) Nothing body sp] sp)
+          sp
+
+    cmap f l = prelApp1 sp "__pipeConcatMap" [l, f]
+
+    wrapSrc k src = case k of
+      SKQuery -> prelApp1 sp "__queryToList" [src]
+      SKSet -> prelApp1 sp "__setToList" [src]
+      SKMap -> prelApp1 sp "__mapToList" [src]
+      SKOption -> prelApp1 sp "__optionToList" [src]
+      SKArray -> prelApp1 sp "__arrayToList" [src]
+      _ -> src
+
+    -- element function: match one element against the pattern, emit
+    -- the extended row on success (wildcard fallback when filtering)
+    elemLam pat filtering successBody = do
+      el <- freshNameM "__el"
+      let en = Name el sp
+          cases =
+            MatchCase pat Nothing successBody sp
+              : [MatchCase (PWild sp) Nothing (EListLit [] sp) sp | filtering]
+      pure (ELambda Nothing [simpleBinder en] (EMatch (EVar en) cases sp) sp)
+
+    step (vars, pipe) (clause, ann) = case clause of
+      S.CFor refut _ pat src _ -> do
+        let vars' = vars ++ surfPatVars pat
+            filtering = refut || caForceRefut ann
+        ef <- elemLam pat filtering (EListLit [rowE vars'] sp)
+        f <- perRow vars (cmap ef (wrapSrc (caKind ann) src))
+        pure (vars', cmap f pipe)
+      S.CLet refut pat mty rhs _ -> do
+        let vars' = vars ++ surfPatVars pat
+            filtering = refut || caForceRefut ann
+            rhs' = maybe rhs (\t -> EAscription rhs t sp) mty
+            cases =
+              MatchCase pat Nothing (EListLit [rowE vars'] sp) sp
+                : [MatchCase (PWild sp) Nothing (EListLit [] sp) sp | filtering]
+        f <- perRow vars (EMatch rhs' cases sp)
+        pure (vars', cmap f pipe)
+      S.CIf cond -> do
+        f <- perRow vars (EIf [(cond, EListLit [rowE vars] sp)] (Just (EListLit [] sp)) sp)
+        pure (vars, cmap f pipe)
+      S.COrderBy keys _ -> do
+        -- decorate-sort-undecorate: pair each row with its key tuple,
+        -- stably sort on the keys, then drop the decoration (§20.6.1)
+        let keyTuple = case keys of
+              [(_, k)] -> k
+              _ -> ETuple (map snd keys) sp
+        deco <- perRow vars (ETuple [keyTuple, rowE vars] sp)
+        cmp <- decoCmpLam keys
+        und <- undecorateLam
+        pure
+          ( vars
+          , prelApp1 sp "__pipeMap"
+              [prelApp1 sp "__sortBy" [prelApp1 sp "__pipeMap" [pipe, deco], cmp], und]
+          )
+      S.CSkip n _ -> pure (vars, prelApp1 sp "__listDrop" [n, pipe])
+      S.CTake n _ -> pure (vars, prelApp1 sp "__listTake" [n, pipe])
+      S.CDistinct Nothing _ -> do
+        eqLam <- rowEqLam vars
+        pure (vars, prelApp1 sp "__distinctBy" [pipe, eqLam])
+      S.CDistinct (Just k) _ -> do
+        -- decorate with the key, dedupe on it via Eq, undecorate
+        deco <- perRow vars (ETuple [k, rowE vars] sp)
+        pure (vars, prelApp1 sp "__distinctOnFst" [prelApp1 sp "__pipeMap" [pipe, deco]])
+      S.CGroupBy key aggs n _ -> do
+        kf <- perRow vars key
+        eqLam <- pairEqLam sp
+        let groups = prelApp1 sp "__groupBy" [pipe, kf, eqLam]
+        g <- freshNameM "__g"
+        let gn = Name g sp
+            gRows = EDot (EVar gn) (DotName (Name "rows" sp))
+        aggItems <- forM aggs $ \(an, ae, mUsing) -> do
+          valF <- perRow vars ae
+          body <- case mUsing of
+            Nothing -> pure (prelApp1 sp "__aggFold" [gRows, valF])
+            Just w -> case ctorRefOfExpr w of
+              Just cref -> do
+                r <- freshNameM "__r"
+                x <- freshNameM "__x"
+                let rn = Name r sp
+                    xn = Name x sp
+                    wrapF =
+                      ELambda Nothing [simpleBinder rn]
+                        (EApp w [ArgExplicit (EApp valF [ArgExplicit (EVar rn)])])
+                        sp
+                    folded = prelApp1 sp "__aggFold" [gRows, wrapF]
+                pure (EMatch folded [MatchCase (PCtor cref [PVar xn] sp) Nothing (EVar xn) sp] sp)
+              Nothing -> do
+                _ <- unsupported ctx (exprSpan w) "this aggregate 'using' wrapper form"
+                pure (prelApp1 sp "__aggFold" [gRows, valF])
+          pure (RecItem False an (Just body))
+        let rec' =
+              ERecordLit
+                (RecItem False (Name "key" sp) (Just (EDot (EVar gn) (DotName (Name "key" sp)))) : aggItems)
+                sp
+            gLam = ELambda Nothing [simpleBinder gn] rec' sp
+        pure ([n], prelApp1 sp "__pipeMap" [groups, gLam])
+      S.CJoin True pat src cond (Just into) _ -> do
+        let vars' = vars ++ [into]
+        ef <- elemLamKeep pat cond
+        let matches = cmap ef (wrapSrc (caKind ann) src)
+            qVal = prelApp1 sp "__queryOfMatches" [matches]
+            inner = ELet [LetBind False emptyPrefix (PVar into) Nothing qVal sp] (EListLit [rowE vars'] sp) sp
+        f <- perRow vars inner
+        pure (vars', cmap f pipe)
+      S.CJoin _ pat src cond _ _ -> do
+        let vars' = vars ++ surfPatVars pat
+        ef <- elemLam pat True (EIf [(cond, EListLit [rowE vars'] sp)] (Just (EListLit [] sp)) sp)
+        f <- perRow vars (cmap ef (wrapSrc (caKind ann) src))
+        pure (vars', cmap f pipe)
+
+    -- left join: keep the matching element itself (§20.8)
+    elemLamKeep pat cond = do
+      el <- freshNameM "__el"
+      let en = Name el sp
+          succBody = EIf [(cond, EListLit [EVar en] sp)] (Just (EListLit [] sp)) sp
+          cases =
+            [ MatchCase pat Nothing succBody sp
+            , MatchCase (PWild sp) Nothing (EListLit [] sp) sp
+            ]
+      pure (ELambda Nothing [simpleBinder en] (EMatch (EVar en) cases sp) sp)
+
+    -- row equality: componentwise (==) over the row tuple (§20.6.3)
+    rowEqLam vars = do
+      ra <- freshNameM "__ra"
+      rb <- freshNameM "__rb"
+      asV <- mapM (const (freshNameM "__qa")) vars
+      bsV <- mapM (const (freshNameM "__qb")) vars
+      let ran = Name ra sp
+          rbn = Name rb sp
+          aNames = map (`Name` sp) asV
+          bNames = map (`Name` sp) bsV
+          eqOne a b = EApp (EOpRef Nothing (Name "==" sp) sp) [ArgExplicit (EVar a), ArgExplicit (EVar b)]
+          trueE = EVar (Name "True" sp)
+          falseE = EVar (Name "False" sp)
+          conj = foldr (\(a, b) acc -> EIf [(eqOne a b, acc)] (Just falseE) sp) trueE (zip aNames bNames)
+          body =
+            EMatch (EVar ran)
+              [MatchCase (rowP aNames) Nothing (EMatch (EVar rbn) [MatchCase (rowP bNames) Nothing conj sp] sp) sp]
+              sp
+      pure (ELambda Nothing [simpleBinder ran, simpleBinder rbn] body sp)
+
+    -- lexicographic stable comparator over decorated (keys, row)
+    -- pairs (§20.6.1); 'desc' swaps the comparison operands
+    decoCmpLam keys = do
+      ra <- freshNameM "__pa"
+      rb <- freshNameM "__pb"
+      asV <- mapM (const (freshNameM "__ka")) keys
+      bsV <- mapM (const (freshNameM "__kb")) keys
+      let ran = Name ra sp
+          rbn = Name rb sp
+          aNames = map (`Name` sp) asV
+          bNames = map (`Name` sp) bsV
+          keyP ns = case ns of
+            [v] -> PVar v
+            vs -> PTuple (map PVar vs) sp
+          pairP ns = PTuple [keyP ns, PWild sp] sp
+          cmpOne desc a b =
+            let (x, y) = if desc then (b, a) else (a, b)
+             in prelApp1 sp "compare" [EVar x, EVar y]
+          chain [] = prelApp1 sp "compare" [EIntLit 0 Nothing sp, EIntLit 0 Nothing sp]
+          chain [(desc, a, b)] = cmpOne desc a b
+          chain ((desc, a, b) : restK) =
+            EMatch (cmpOne desc a b)
+              [ MatchCase (PCtor (CtorRef Nothing (Name "EQ" sp)) [] sp) Nothing (chain restK) sp
+              , MatchCase (PVar (Name "__o" sp)) Nothing (EVar (Name "__o" sp)) sp
               ]
-        S.CIf cond ->
-          pure (EIf [(cond, inner)] (Just (EListLit [] sp)) sp)
-        S.CLet False pat mty rhs lsp ->
-          pure (ELet [LetBind False emptyPrefix pat mty rhs lsp] inner sp)
-        _ -> do
-          _ <- unsupported ctx sp "this comprehension clause"
-          pure inner
+              sp
+          keyed = [(desc, a, b) | ((desc, _), (a, b)) <- zip keys (zip aNames bNames)]
+          body =
+            EMatch (EVar ran)
+              [ MatchCase (pairP aNames) Nothing
+                  (EMatch (EVar rbn) [MatchCase (pairP bNames) Nothing (chain keyed) sp] sp)
+                  sp
+              ]
+              sp
+      pure (ELambda Nothing [simpleBinder ran, simpleBinder rbn] body sp)
+
+    -- drop the (keys, row) decoration after sorting
+    undecorateLam = do
+      p <- freshNameM "__p"
+      r <- freshNameM "__r"
+      let pn = Name p sp
+          rn = Name r sp
+      pure $
+        ELambda Nothing [simpleBinder pn]
+          (EMatch (EVar pn) [MatchCase (PTuple [PWild sp, PVar rn] sp) Nothing (EVar rn) sp] sp)
+          sp
 
 -- ── Declarations ─────────────────────────────────────────────────────
 

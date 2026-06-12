@@ -246,9 +246,11 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
           -- Recovery (§2.1A): scan the whole Unicode identifier, record
           -- the gating diagnostic, and hand the parser an ordinary
           -- identifier token. A lone @ω@ is the §12.1.1 quantity token of
-          -- the base grammar, not a gated Unicode name.
+          -- the base grammar, not a gated Unicode name; likewise a lone
+          -- @ρ@ is the region-variable spelling used by the §20.10.2
+          -- capture-annotation grammar.
           let (name, s') = takeUniIdent s
-           in if name == "ω"
+           in if name == "ω" || name == "ρ"
                 then pure (TokIdent name, s')
                 else
                   pure

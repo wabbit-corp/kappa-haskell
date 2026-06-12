@@ -1,5 +1,0 @@
---! assertDiagnostic error E_UNSUPPORTED
-
--- '{}' is an (empty) map literal; no Map type exists in this
--- implementation's prelude, so it is reported like the non-empty case.
-let m = {}

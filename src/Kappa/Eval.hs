@@ -481,6 +481,17 @@ evalPurePrim p args = case (p, args) of
   ("natToInt", [VLit (LitInt a)]) -> int a
   -- discard a (linear) value: implicit type argument + the value
   ("unsafeConsume", [_, _]) -> Just (VCtor (GName (ModuleName ["std", "prelude"]) "Unit") [])
+  -- §20 collection carriers are list-backed at runtime (§20.10.11
+  -- as-if rule); conversion/wrapping is the identity on the element
+  -- stream (modes, quantities, and orderedness are static metadata)
+  ("__queryFromList", [v]) -> Just v
+  ("__queryToList", [v]) -> Just v
+  ("__setFromList", [v]) -> Just v
+  ("__setToList", [v]) -> Just v
+  ("__arrayFromList", [v]) -> Just v
+  ("__arrayToList", [v]) -> Just v
+  ("__mapFromEntries", [v]) -> Just v
+  ("__mapToList", [v]) -> Just v
   _ -> Nothing
   where
     int = Just . VLit . LitInt

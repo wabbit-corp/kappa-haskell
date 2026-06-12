@@ -72,6 +72,14 @@ builtinState =
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
       , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
+      , -- §20 collection carriers and the §20.10 query core
+        (prel "Set", opaqueTy (tyV (tType ~> tType)))
+      , (prel "Map", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "Array", opaqueTy (tyV (tType ~> tType)))
+      , (prel "Quantity", opaqueTy (tyV tType)) -- §12.1.1 reified quantities
+      , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
+      , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> tType ~> tType)))
+      , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> tType ~> tType))) -- §20.10.2
       , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) : a -> Type
         (prel "=", opaqueTy (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tType))))
       , (prel "refl", GlobalDef reflTy Nothing False)
@@ -98,6 +106,12 @@ builtinState =
     tUnit = tcon "Unit"
     io e a = CApp Expl (CApp Expl (tcon "IO") e) a
     refT a = CApp Expl (tcon "Ref") a
+    listT a = CApp Expl (tcon "List") a
+    setT a = CApp Expl (tcon "Set") a
+    arrayT a = CApp Expl (tcon "Array") a
+    mapT k v = CApp Expl (CApp Expl (tcon "Map") k) v
+    queryT m q a = CApp Expl (CApp Expl (CApp Expl (tcon "QueryCore") m) q) a
+    entryT k v = CRecordT [("key", k), ("value", v)]
     forallE body = piI Q0 "e" tType body -- erased error param
     forallEA body = piI Q0 "e" tType (piI Q0 "a" tType body)
 
@@ -144,6 +158,20 @@ builtinState =
       , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
       , -- §18.1.13: aborted STM alternative (the `empty` action)
         prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
+      , -- §20 collection/query plumbing (the §20.10.11 as-if list model)
+        prim "__quantityOfNat" (tyV (tNat ~> tcon "Quantity"))
+      , prim "__queryFromList"
+          (tyV (piI Q0 "m" (tcon "QueryMode") (piI Q0 "q" (tcon "Quantity") (piI Q0 "a" tType (listT (CVar 0) ~> queryT (CVar 3) (CVar 2) (CVar 1))))))
+      , prim "__queryToList"
+          (tyV (piI Q0 "m" (tcon "QueryMode") (piI Q0 "q" (tcon "Quantity") (piI Q0 "a" tType (queryT (CVar 2) (CVar 1) (CVar 0) ~> listT (CVar 1))))))
+      , prim "__setFromList" (tyV (piI Q0 "a" tType (listT (CVar 0) ~> setT (CVar 1))))
+      , prim "__setToList" (tyV (piI Q0 "a" tType (setT (CVar 0) ~> listT (CVar 1))))
+      , prim "__arrayFromList" (tyV (piI Q0 "a" tType (listT (CVar 0) ~> arrayT (CVar 1))))
+      , prim "__arrayToList" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> listT (CVar 1))))
+      , prim "__mapFromEntries"
+          (tyV (piI Q0 "k" tType (piI Q0 "v" tType (listT (entryT (CVar 1) (CVar 0)) ~> mapT (CVar 2) (CVar 1)))))
+      , prim "__mapToList"
+          (tyV (piI Q0 "k" tType (piI Q0 "v" tType (mapT (CVar 1) (CVar 0) ~> listT (entryT (CVar 2) (CVar 1))))))
       , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
@@ -159,6 +187,7 @@ evalClosed = go []
       CPi ic q n a b -> VPi ic q n (go env a) (Closure env b)
       CApp ic f a -> app (go env f) ic (go env a)
       CSort n -> VSort n
+      CRecordT fs -> VRecordT [(n, go env t) | (n, t) <- fs]
       t -> VPrim (T.pack (show t)) []
     app (VGlobN g sp) ic a = VGlobN g (sp ++ [(ic, a)])
     app f _ _ = f
@@ -673,4 +702,131 @@ preludeSource =
     , ""
     , "summon : (goal : Type) -> (@ev : goal) -> goal" -- §14.3.2
     , "let summon goal @ev = ev"
+    , ""
+    , -- §20.10.1: query modes, cardinality, and reified quantities
+      "data QueryUse : Type ="
+    , "    Reusable"
+    , "    OneShot"
+    , ""
+    , "data QueryCard : Type ="
+    , "    QZero"
+    , "    QOne"
+    , "    QZeroOrOne"
+    , "    QOneOrMore"
+    , "    QZeroOrMore"
+    , ""
+    , "data QueryMode : Type ="
+    , "    QueryMode (use : QueryUse) (card : QueryCard)"
+    , ""
+    , "instance FromInteger Quantity ="
+    , "    let fromInteger n = __quantityOfNat n"
+    , ""
+    , -- §20.9 standard first-class query aliases
+      "type Query (a : Type) = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) ω a"
+    , "type OnceQuery (a : Type) = QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) ω a"
+    , "type SingletonQuery (a : Type) = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω a"
+    , ""
+    , -- §20 comprehension-lowering support library (internal). The
+      -- pipeline argument comes first so the row type is solved before
+      -- the generated per-row lambdas elaborate.
+      "__pipeConcatMap : forall (a : Type) (b : Type). List a -> (a -> List b) -> List b"
+    , "let __pipeConcatMap xs f = concatMap f xs"
+    , ""
+    , "__pipeMap : forall (a : Type) (b : Type). List a -> (a -> b) -> List b"
+    , "let __pipeMap xs f = map f xs"
+    , ""
+    , "__listDrop : forall (a : Type). Integer -> List a -> List a"
+    , "let __listDrop n xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> if leInt n 0 then xs else __listDrop (subInt n 1) rest"
+    , ""
+    , "__listTake : forall (a : Type). Integer -> List a -> List a"
+    , "let __listTake n xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> if leInt n 0 then Nil else x :: __listTake (subInt n 1) rest"
+    , ""
+    , "__sortInsert : forall (a : Type). (a -> a -> Ordering) -> a -> List a -> List a"
+    , "let __sortInsert cmp x ys ="
+    , "    match ys"
+    , "    case Nil -> x :: Nil"
+    , "    case y :: rest ->"
+    , "        match cmp x y"
+    , "        case GT -> y :: __sortInsert cmp x rest"
+    , "        case _ -> x :: y :: rest"
+    , ""
+    , "__sortBy : forall (a : Type). List a -> (a -> a -> Ordering) -> List a" -- stable (§20.6.1)
+    , "let __sortBy xs cmp ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> __sortInsert cmp x (__sortBy rest cmp)"
+    , ""
+    , "__queryOfMatches : forall (a : Type). List a -> Query a" -- left-join inner query (§20.8)
+    , "let __queryOfMatches xs = __queryFromList xs"
+    , ""
+    , "__distinctOnFstAcc : forall (k : Type) (r : Type). List k -> List (_1 : k, _2 : r) -> (@_ : Eq k) -> List r"
+    , "let __distinctOnFstAcc seen xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case p :: rest ->"
+    , "        match p"
+    , "        case (kx, rx) -> if __anyEq (\\a -> \\b -> a == b) kx seen then __distinctOnFstAcc seen rest else rx :: __distinctOnFstAcc (kx :: seen) rest"
+    , ""
+    , "__distinctOnFst : forall (k : Type) (r : Type). List (_1 : k, _2 : r) -> (@_ : Eq k) -> List r" -- keep first (§20.6.3)
+    , "let __distinctOnFst xs = __distinctOnFstAcc Nil xs"
+    , ""
+    , "__anyEq : forall (a : Type). (a -> a -> Bool) -> a -> List a -> Bool"
+    , "let __anyEq eq x ys ="
+    , "    match ys"
+    , "    case Nil -> False"
+    , "    case y :: rest -> if eq x y then True else __anyEq eq x rest"
+    , ""
+    , "__distinctByAcc : forall (a : Type). (a -> a -> Bool) -> List a -> List a -> List a"
+    , "let __distinctByAcc eq seen xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case x :: rest -> if __anyEq eq x seen then __distinctByAcc eq seen rest else x :: __distinctByAcc eq (x :: seen) rest"
+    , ""
+    , "__distinctBy : forall (a : Type). List a -> (a -> a -> Bool) -> List a" -- keep first (§20.6.3)
+    , "let __distinctBy xs eq = __distinctByAcc eq Nil xs"
+    , ""
+    , "__optionToList : forall (a : Type). Option a -> List a"
+    , "let __optionToList o ="
+    , "    match o"
+    , "    case None -> Nil"
+    , "    case Some x -> x :: Nil"
+    , ""
+    , "__groupInsert : forall (k : Type) (r : Type). (k -> k -> Bool) -> k -> r -> List (key : k, rows : List r) -> List (key : k, rows : List r)"
+    , "let __groupInsert eq k0 row gs ="
+    , "    match gs"
+    , "    case Nil -> (key = k0, rows = row :: Nil) :: Nil"
+    , "    case g :: rest -> if eq g.key k0 then (key = g.key, rows = listAppend g.rows (row :: Nil)) :: rest else g :: __groupInsert eq k0 row rest"
+    , ""
+    , "__groupByAcc : forall (k : Type) (r : Type). (r -> k) -> (k -> k -> Bool) -> List (key : k, rows : List r) -> List r -> List (key : k, rows : List r)"
+    , "let __groupByAcc keyOf eq acc xs ="
+    , "    match xs"
+    , "    case Nil -> acc"
+    , "    case x :: rest -> __groupByAcc keyOf eq (__groupInsert eq (keyOf x) x acc) rest"
+    , ""
+    , "__groupBy : forall (k : Type) (r : Type). List r -> (r -> k) -> (k -> k -> Bool) -> List (key : k, rows : List r)"
+    , "let __groupBy xs keyOf eq = __groupByAcc keyOf eq Nil xs" -- groups in first-encounter order (§20.7)
+    , ""
+    , "__aggFold : forall (r : Type) (w : Type). List r -> (r -> w) -> (@_ : Monoid w) -> w"
+    , "let __aggFold rows f = foldl (\\acc x -> append acc (f x)) empty rows"
+    , ""
+    , "__mapEntryCombine : forall (k : Type) (v : Type). (k -> k -> Bool) -> (v -> v -> v) -> k -> v -> List (key : k, value : v) -> v"
+    , "let __mapEntryCombine eq comb k0 acc rest ="
+    , "    match rest"
+    , "    case Nil -> acc"
+    , "    case other :: more -> __mapEntryCombine eq comb k0 (if eq k0 other.key then comb acc other.value else acc) more"
+    , ""
+    , "__mapResolveAcc : forall (k : Type) (v : Type). (k -> k -> Bool) -> (v -> v -> v) -> List k -> List (key : k, value : v) -> List (key : k, value : v)"
+    , "let __mapResolveAcc eq comb seen es ="
+    , "    match es"
+    , "    case Nil -> Nil"
+    , "    case e :: rest -> if __anyEq eq e.key seen then __mapResolveAcc eq comb seen rest else (key = e.key, value = __mapEntryCombine eq comb e.key e.value rest) :: __mapResolveAcc eq comb (e.key :: seen) rest"
+    , ""
+    , "__mapResolve : forall (k : Type) (v : Type). List (key : k, value : v) -> (k -> k -> Bool) -> (v -> v -> v) -> List (key : k, value : v)"
+    , "let __mapResolve es eq comb = __mapResolveAcc eq comb Nil es" -- first-occurrence key order (§20.5.1)
     ]
