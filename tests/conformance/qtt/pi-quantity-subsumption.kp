@@ -1,0 +1,26 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §12.2.1: a function whose binder demand is contained in the expected
+-- binder's demand may stand at that type (1 ⊑ ω), but not the reverse
+-- (an ω-demand function may ignore the linear argument). Subsumption
+-- applies only along the outer Pi spine, never under records.
+module main
+
+linearId : (1 x : Int) -> Int
+let linearId (1 x : Int) : Int = x
+
+useOmegaFn : ((x : Int) -> Int) -> Int
+let useOmegaFn (fn : (x : Int) -> Int) : Int = fn 0
+
+omegaIgnore : (x : Int) -> Int
+let omegaIgnore (x : Int) : Int = 0
+
+useLinearFn : ((1 x : Int) -> Int) -> Int
+let useLinearFn (fn : (1 x : Int) -> Int) : Int = fn 0
+
+okNarrowDemand : Int
+let okNarrowDemand : Int = useOmegaFn linearId
+
+badWideDemand : Int
+let badWideDemand : Int = useLinearFn omegaIgnore

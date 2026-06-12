@@ -239,14 +239,38 @@ addGlobal g gd = modify' $ \st -> st {csGlobals = Map.insert g gd (csGlobals st)
 
 -- ── Unification ──────────────────────────────────────────────────────
 
-unify :: Ctx -> Value -> Value -> CheckM Bool
-unify ctx = goTop
+-- | Pi binder-quantity subsumption (§12.2.1): a function whose demand
+-- interval is contained in the expected binder's demand may stand at
+-- that type — every argument capability satisfying the expected demand
+-- also satisfies the actual one (e.g. a @(1 x : A) -> B@ value may be
+-- used where @(x : A) -> B@ is expected, but not vice versa).
+qSubsumes :: Q -> Q -> Bool
+qSubsumes qa qe = qa == qe || qInterval qa `contained` qInterval qe
   where
-    goTop a b = do
+    qInterval :: Q -> (Int, Maybe Int)
+    qInterval = \case
+      Q0 -> (0, Just 0)
+      Q1 -> (1, Just 1)
+      QLe1 -> (0, Just 1)
+      QGe1 -> (1, Nothing)
+      QW -> (0, Nothing)
+    contained (lo1, hi1) (lo2, hi2) =
+      lo1 >= lo2 && case (hi1, hi2) of
+        (_, Nothing) -> True
+        (Nothing, Just _) -> False
+        (Just h1, Just h2) -> h1 <= h2
+
+unify :: Ctx -> Value -> Value -> CheckM Bool
+unify ctx = goTop True
+  where
+    -- qok: §12.2.1 binder-quantity subsumption applies only along the
+    -- outer Pi spine of the unified types, never under records, type
+    -- arguments, or domains (no deep subsumption)
+    goTop qok a b = do
       a' <- forceM a
       b' <- forceM b
-      go (ctxLen ctx) a' b'
-    go lvl a b = case (a, b) of
+      go qok (ctxLen ctx) a' b'
+    go qok lvl a b = case (a, b) of
       (VFlex m [], t) -> solveFlex lvl m t
       (t, VFlex m []) -> solveFlex lvl m t
       -- applied metas: first-order decomposition (?m a̅ ≡ G b̅ pre a̅'
@@ -256,8 +280,8 @@ unify ctx = goTop
       (VFlex m sp, t) | not (null sp) -> solveFlexSpine lvl m sp t
       (t, VFlex m sp) | not (null sp) -> solveFlexSpine lvl m sp t
       (VSort m, VSort n) -> pure (m <= n) -- cumulativity (§11.1.1)
-      (VPi i1 q1 _ d1 c1, VPi i2 q2 _ d2 c2) | i1 == i2 && q1 == q2 -> do
-        ok <- goTop d1 d2
+      (VPi i1 q1 _ d1 c1, VPi i2 q2 _ d2 c2) | i1 == i2 && (q1 == q2 || (qok && qSubsumes q1 q2)) -> do
+        ok <- goTop False d1 d2
         if not ok
           then pure False
           else do
@@ -266,23 +290,23 @@ unify ctx = goTop
             b2 <- clApp c2 x
             b1' <- forceM b1
             b2' <- forceM b2
-            go (lvl + 1) b1' b2'
+            go qok (lvl + 1) b1' b2'
       (VRecordT f1, VRecordT f2) | map fst f1 == map fst f2 ->
-        andM [goTop x y | ((_, x), (_, y)) <- zip f1 f2]
+        andM [goTop False x y | ((_, x), (_, y)) <- zip f1 f2]
       (VVariantT m1, VVariantT m2) | length m1 == length m2 ->
-        andM (zipWith goTop m1 m2)
+        andM (zipWith (goTop False) m1 m2)
       (VCtor g1 a1, VCtor g2 a2) | g1 == g2 && length a1 == length a2 ->
-        andM (zipWith goTop a1 a2)
+        andM (zipWith (goTop False) a1 a2)
       (VGlobN g1 sp1, VGlobN g2 sp2)
         | g1 == g2 && length sp1 == length sp2 -> do
-            ok <- andM (zipWith (\(_, x) (_, y) -> goTop x y) sp1 sp2)
+            ok <- andM (zipWith (\(_, x) (_, y) -> goTop False x y) sp1 sp2)
             if ok then pure True else fallback lvl a b
       -- rigid-rigid spine decomposition (incomplete but standard; the
       -- definitional-equality fallback still decides the rest)
       (VRigid l1 sp1, VRigid l2 sp2)
         | l1 == l2 && length sp1 == length sp2 && not (null sp1) -> do
             st0 <- get
-            ok <- andM (zipWith (\(_, x) (_, y) -> goTop x y) sp1 sp2)
+            ok <- andM (zipWith (\(_, x) (_, y) -> goTop False x y) sp1 sp2)
             if ok then pure True else put st0 >> fallback lvl a b
       _ -> fallback lvl a b
       where
@@ -299,7 +323,7 @@ unify ctx = goTop
             ok <- solveFlex lvl m (VGlobN g pre)
             oks <-
               if ok
-                then andM' [goTop x y | ((_, x), (_, y)) <- zip sp post]
+                then andM' [goTop False x y | ((_, x), (_, y)) <- zip sp post]
                 else pure False
             if oks then pure True else put st0 >> fallback lvl (VFlex m sp) t
       VRigid l sp2
@@ -309,7 +333,7 @@ unify ctx = goTop
             ok <- solveFlex lvl m (VRigid l pre)
             oks <-
               if ok
-                then andM' [goTop x y | ((_, x), (_, y)) <- zip sp post]
+                then andM' [goTop False x y | ((_, x), (_, y)) <- zip sp post]
                 else pure False
             if oks then pure True else put st0 >> fallback lvl (VFlex m sp) t
       VFlex m2 sp2
@@ -318,7 +342,7 @@ unify ctx = goTop
             ok <- solveFlex lvl m (VFlex m2 [])
             oks <-
               if ok
-                then andM' [goTop x y | ((_, x), (_, y)) <- zip sp sp2]
+                then andM' [goTop False x y | ((_, x), (_, y)) <- zip sp sp2]
                 else pure False
             if oks then pure True else put st0 >> fallback lvl (VFlex m sp) t
       _ -> fallback lvl (VFlex m sp) t
@@ -331,7 +355,7 @@ unify ctx = goTop
         Just (Just sol) -> do
           sol' <- forceM sol
           t' <- forceM t
-          go lvl sol' t'
+          go False lvl sol' t'
         _ -> case t of
           -- a meta is trivially equal to itself; the occurs check must
           -- not reject reflexive flex-flex problems
@@ -1644,15 +1668,26 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
         anyHole ctx
   _ -> do
     mg <- lookupGlobalName n
-    mr <- case mg of
-      Just g -> globalType g
-      Nothing -> pure Nothing
-    case mr of
-      Just r -> pure r
-      Nothing -> do
-        errAt nsp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
-          ("kind-qualified name does not resolve to a static object: '" <> n <> "' (Spec §2.8.6)")
+    -- §2.8.3: the selector must agree with the named facet — a trait
+    -- has no type facet, so `type C` on a trait is rejected
+    isTrait <- case mg of
+      Just g -> gets (Map.member g . csTraits)
+      Nothing -> pure False
+    if sel == SelType && isTrait
+      then do
+        errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+          ("'" <> n <> "' names a trait; the 'type' selector does not apply (Spec §2.8.3)")
         anyHole ctx
+      else do
+        mr <- case mg of
+          Just g -> globalType g
+          Nothing -> pure Nothing
+        case mr of
+          Just r -> pure r
+          Nothing -> do
+            errAt nsp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
+              ("kind-qualified name does not resolve to a static object: '" <> n <> "' (Spec §2.8.6)")
+            anyHole ctx
 
 -- | §2.8.4: the manifest value of a receiver term — resolved through
 -- local definientia, module-level lets without widening signatures,
