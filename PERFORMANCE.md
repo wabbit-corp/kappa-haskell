@@ -43,6 +43,33 @@ Subtracting the ~0.03 s floor, checking throughput is roughly
 **25k–30k simple declarations/s**, scaling near-linearly in both time
 and memory over this range.
 
+### 2a. Literal-heavy files (lexer scaling by literal family)
+
+```
+tools/gen-stress.sh 32000 /tmp/stress-float.kp float   # 64k float decls
+tools/gen-stress.sh 32000 /tmp/stress-char.kp  char    # 64k char decls
+/usr/bin/time -f "%es" $(cabal list-bin kappa) check /tmp/stress-float.kp
+```
+
+`gen-stress.sh` takes a third KIND argument (`int`/`float`/`char`)
+because float and quoted-literal scanning use multi-character lexer
+lookahead. An earlier `peekAt` implementation called
+`T.length`/`T.index` on the *remaining input* per lookahead — O(rest)
+in text-2.x — making literal-heavy files quadratic (measured ~3.3x per
+size doubling; 64k char literals took ~20 s). Lookahead is now
+`T.uncons . T.drop n` with n ≤ 2. Best of 3, `kappa check`:
+
+| decls | int | float | char |
+| --- | --- | --- | --- |
+| 16,000 | 0.60 s | 0.41 s | 0.42 s |
+| 32,000 | 1.23 s | 0.92 s | 0.84 s |
+| 64,000 | 2.37 s | 1.78 s | 1.58 s |
+
+Per-doubling factor is ~1.9–2.2x for every literal family (the residue
+above 2x is elaborator map growth/GC, identical across families), and
+float/char files are no slower than int files of the same shape — the
+literal-kind asymmetry is gone.
+
 ### 3. Runtime loop: summing 0..99,999
 
 ```

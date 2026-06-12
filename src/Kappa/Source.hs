@@ -9,12 +9,7 @@ module Kappa.Source
   , Span (..)
   , ModuleName (..)
   , moduleNameText
-  , SourceFile (..)
-  , mkSourceFile
-  , spanUnion
-  , posBefore
   , noSpan
-  , lineAt
   ) where
 
 import Data.Text (Text)
@@ -41,34 +36,6 @@ newtype ModuleName = ModuleName [Text]
 
 moduleNameText :: ModuleName -> Text
 moduleNameText (ModuleName segs) = T.intercalate "." segs
-
--- | A loaded source file together with its line index (for diagnostics).
-data SourceFile = SourceFile
-  { sfPath :: !FilePath
-  , sfText :: !Text
-  , sfLines :: ![Text]
-  }
-  deriving stock (Show)
-
-mkSourceFile :: FilePath -> Text -> SourceFile
-mkSourceFile path txt = SourceFile path txt (T.lines txt)
-
--- | The 1-based line @n@ of a file, or empty if out of range.
-lineAt :: SourceFile -> Int -> Text
-lineAt sf n = case drop (n - 1) (sfLines sf) of
-  l : _ -> l
-  [] -> ""
-
--- | Smallest span covering both arguments (assumes same file).
-spanUnion :: Span -> Span -> Span
-spanUnion a b =
-  Span
-    (spanFile a)
-    (min (spanStart a) (spanStart b))
-    (max (spanEnd a) (spanEnd b))
-
-posBefore :: Pos -> Pos -> Bool
-posBefore = (<)
 
 -- | A placeholder span for synthesized constructs (e.g. prelude builtins).
 noSpan :: Span

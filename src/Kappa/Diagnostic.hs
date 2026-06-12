@@ -1,32 +1,29 @@
 -- | Structured diagnostics (Spec §3.1).
 --
--- A diagnostic is a typed record (§3.1.1); human-readable and JSON output
--- are renderings of the same record (§1, §3.1.8, §3.1.9). Codes are stable
--- symbolic identifiers (§3.1.2); families use the @kappa.*@ dotted spelling.
+-- A diagnostic is a typed record (§3.1.1); the human-readable output is a
+-- rendering of that record (§1, §3.1.8). Codes are stable symbolic
+-- identifiers (§3.1.2); families use the @kappa.*@ dotted spelling. Of the
+-- optional §3.1.1 fields this implementation models notes and helps; the
+-- related-origin list, sub-span labels and machine payload have no
+-- producer or renderer here and are deliberately not represented.
 module Kappa.Diagnostic
   ( Severity (..)
   , Stage (..)
   , DiagnosticCode
   , DiagnosticFamily
-  , RelatedRole (..)
-  , relatedRoleText
-  , Related (..)
-  , DiagLabel (..)
   , Diagnostic (..)
   , diag
   , withNote
   , withHelp
-  , withLabel
-  , withRelated
   , isError
   , Diagnostics
   , hasErrors
-  , sortDiagnostics
+  , renderDiagnostic
   ) where
 
-import Data.List (sortOn)
 import Data.Text (Text)
-import Kappa.Source (Span)
+import qualified Data.Text as T
+import Kappa.Source (Pos (..), Span (..))
 
 data Severity = SevError | SevWarning | SevNote | SevInfo
   deriving stock (Eq, Ord, Show)
@@ -48,74 +45,7 @@ type DiagnosticCode = Text
 -- | Standardized dotted family, e.g. @kappa.type.mismatch@ (§3.1.2).
 type DiagnosticFamily = Text
 
--- | Standardized related-origin roles (§3.1.1A).
-data RelatedRole
-  = RoleDefinitionSite
-  | RoleDeclarationSite
-  | RoleSignatureSite
-  | RoleUseSite
-  | RoleCallSite
-  | RoleBinderSite
-  | RoleFieldDeclarationSite
-  | RoleConstructorDeclarationSite
-  | RoleTraitDeclarationSite
-  | RoleInstanceDeclarationSite
-  | RoleImplicitCandidateSite
-  | RoleSelectedCandidateSite
-  | RoleRejectedCandidateSite
-  | RoleImportSite
-  | RoleExportSite
-  | RoleFeatureGateSite
-  | RoleDesugaredFrom
-  | RoleObligationIntroducedHere
-  | RoleObligationRequiredHere
-  | RoleConsumedHere
-  | RoleUsedAfterConsume
-  | RoleFixTarget
-  deriving stock (Eq, Ord, Show)
-
-relatedRoleText :: RelatedRole -> Text
-relatedRoleText = \case
-  RoleDefinitionSite -> "definition-site"
-  RoleDeclarationSite -> "declaration-site"
-  RoleSignatureSite -> "signature-site"
-  RoleUseSite -> "use-site"
-  RoleCallSite -> "call-site"
-  RoleBinderSite -> "binder-site"
-  RoleFieldDeclarationSite -> "field-declaration-site"
-  RoleConstructorDeclarationSite -> "constructor-declaration-site"
-  RoleTraitDeclarationSite -> "trait-declaration-site"
-  RoleInstanceDeclarationSite -> "instance-declaration-site"
-  RoleImplicitCandidateSite -> "implicit-candidate-site"
-  RoleSelectedCandidateSite -> "selected-candidate-site"
-  RoleRejectedCandidateSite -> "rejected-candidate-site"
-  RoleImportSite -> "import-site"
-  RoleExportSite -> "export-site"
-  RoleFeatureGateSite -> "feature-gate-site"
-  RoleDesugaredFrom -> "desugared-from"
-  RoleObligationIntroducedHere -> "obligation-introduced-here"
-  RoleObligationRequiredHere -> "obligation-required-here"
-  RoleConsumedHere -> "consumed-here"
-  RoleUsedAfterConsume -> "used-after-consume"
-  RoleFixTarget -> "fix-target"
-
--- | A related origin with a stable role (§3.1.1A).
-data Related = Related
-  { relSpan :: !Span
-  , relRole :: !RelatedRole
-  , relMessage :: !(Maybe Text)
-  }
-  deriving stock (Show)
-
--- | A labelled sub-span rendered inside source snippets.
-data DiagLabel = DiagLabel
-  { lblSpan :: !Span
-  , lblText :: !Text
-  }
-  deriving stock (Show)
-
--- | Diagnostic record per §3.1.1. @payload@ is rendered as a JSON object of
--- family-specific key\/value pairs.
+-- | Diagnostic record per §3.1.1 (implemented subset).
 data Diagnostic = Diagnostic
   { dCode :: !DiagnosticCode
   , dFamily :: !(Maybe DiagnosticFamily)
@@ -123,11 +53,8 @@ data Diagnostic = Diagnostic
   , dStage :: !Stage
   , dPrimary :: !Span
   , dMessage :: !Text
-  , dLabels :: ![DiagLabel]
   , dNotes :: ![Text]
   , dHelps :: ![Text]
-  , dRelated :: ![Related]
-  , dPayload :: ![(Text, Text)]
   }
   deriving stock (Show)
 
@@ -141,11 +68,8 @@ diag sev stage code fam sp msg =
     , dStage = stage
     , dPrimary = sp
     , dMessage = msg
-    , dLabels = []
     , dNotes = []
     , dHelps = []
-    , dRelated = []
-    , dPayload = []
     }
 
 withNote :: Text -> Diagnostic -> Diagnostic
@@ -153,12 +77,6 @@ withNote n d = d {dNotes = dNotes d ++ [n]}
 
 withHelp :: Text -> Diagnostic -> Diagnostic
 withHelp h d = d {dHelps = dHelps d ++ [h]}
-
-withLabel :: Span -> Text -> Diagnostic -> Diagnostic
-withLabel sp t d = d {dLabels = dLabels d ++ [DiagLabel sp t]}
-
-withRelated :: Span -> RelatedRole -> Maybe Text -> Diagnostic -> Diagnostic
-withRelated sp role msg d = d {dRelated = dRelated d ++ [Related sp role msg]}
 
 isError :: Diagnostic -> Bool
 isError d = dSeverity d == SevError
@@ -168,8 +86,24 @@ type Diagnostics = [Diagnostic]
 hasErrors :: Diagnostics -> Bool
 hasErrors = any isError
 
--- | Deterministic primary-position order (file, then start position).
-sortDiagnostics :: Diagnostics -> Diagnostics
-sortDiagnostics = sortOn (\d -> (spanKey (dPrimary d)))
-  where
-    spanKey sp = (show sp)
+-- | The canonical human-readable rendering (§3.1.8), shared by the CLI
+-- and the Appendix T harness:
+--
+-- > path:line:col: severity[CODE] (family): message
+-- >   note: ...
+-- >   help: ...
+renderDiagnostic :: Diagnostic -> Text
+renderDiagnostic d =
+  let Span f (Pos l c) _ = dPrimary d
+      sev = case dSeverity d of
+        SevError -> "error"
+        SevWarning -> "warning"
+        SevNote -> "note"
+        SevInfo -> "info"
+      tshow = T.pack . show
+   in T.pack f <> ":" <> tshow l <> ":" <> tshow c <> ": "
+        <> sev <> "[" <> dCode d <> "]"
+        <> maybe "" (\fam -> " (" <> fam <> ")") (dFamily d)
+        <> ": " <> dMessage d
+        <> T.concat (map ("\n  note: " <>) (dNotes d))
+        <> T.concat (map ("\n  help: " <>) (dHelps d))

@@ -13,7 +13,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Check
 import Kappa.Core
-import Kappa.Eval (evalPurePrim)
+import Kappa.Eval (evalPurePrim, lookupEnv)
 
 prel :: Text -> GName
 prel = GName preludeModule
@@ -131,7 +131,7 @@ evalClosed :: Term -> Value
 evalClosed = go []
   where
     go env = \case
-      CVar i -> env !! i
+      CVar i -> lookupEnv i env
       CGlob g -> VGlobN g []
       CPi ic q n a b -> VPi ic q n (go env a) (Closure env b)
       CApp ic f a -> app (go env f) ic (go env a)

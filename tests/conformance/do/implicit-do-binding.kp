@@ -1,0 +1,13 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n"
+
+-- §16.3.3: an implicit do-binding `let (@x : T) = e` joins the local
+-- implicit context, so the implicit argument of g resolves to x.
+g : (@n : Integer) -> Integer
+let g (@n : Integer) = n
+
+main : UIO Unit
+let main = do
+    let (@x : Integer) = 5
+    printlnString (showInt g)

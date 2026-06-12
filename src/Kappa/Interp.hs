@@ -101,9 +101,10 @@ runSplices rt v0 = case v0 of
     r <- runIOValue rt =<< runSplices rt a
     runSplices rt (foldl (\f x -> vapp ec f Expl x) r restArgs)
   VGlobN g sp
+    -- the implicit prefix holds the splice marker's erased type
+    -- arguments; only the explicit argument onward matters here
     | gnameText g == "__runIO"
-    , (implPrefix, (Expl, a) : restSp) <- span ((== Impl) . fst) sp -> do
-        _ <- pure implPrefix -- erased type arguments of the splice marker
+    , (_implPrefix, (Expl, a) : restSp) <- span ((== Impl) . fst) sp -> do
         r <- runIOValue rt =<< runSplices rt a
         runSplices rt (evalApp ec r restSp)
   VGlobN g sp -> do
@@ -177,10 +178,10 @@ runScope rt env0 items0 = do
             VRef ref -> writeIORef ref rhs
             _ -> throwIO (KappaError (VLit (LitStr "assignment target is not a var")))
           go env rest
-        KReturn _ t -> leave . CplReturn =<< evalK rt env t
+        KReturn t -> leave . CplReturn =<< evalK rt env t
         KBreak ml -> leave (CplBreak ml)
         KContinue ml -> leave (CplContinue ml)
-        KDefer _ t -> do
+        KDefer t -> do
           modifyIORef' exitsRef ((() <$ (runIOValue rt =<< evalK rt env t)) :)
           go env rest
         KWhile ml cond body mels -> loopOut =<< whileLoop env ml cond body mels
@@ -238,8 +239,13 @@ runScope rt env0 items0 = do
           Just False -> pickIf env more mels
           Nothing -> throwIO (KappaError (VLit (LitStr "if condition was not a Bool")))
 
-      targets _ Nothing = True
-      targets l ml = l == ml
+      -- Does a break/continue carrying label @l@ target the loop labeled
+      -- @ml@ (§18.2.5)? An unlabeled break/continue targets the nearest
+      -- enclosing loop (i.e. this one); a labeled one passes through
+      -- every loop until it reaches the loop carrying its label.
+      targets :: Maybe Text -> Maybe Text -> Bool
+      targets Nothing _ = True
+      targets (Just l) ml = Just l == ml
 
       asBool x = case force ec x of
         VCtor (GName _ "True") [] -> Just True

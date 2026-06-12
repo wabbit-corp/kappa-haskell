@@ -1,0 +1,14 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "i=1\ni=2\ndone\n"
+
+-- §18.2.5: continue@outer from inside an unlabeled inner loop resumes
+-- the next iteration of the labeled outer loop.
+main : UIO Unit
+let main = do
+    outer@for i in 1 :: 2 :: Nil do
+        printlnString f"i=${i}"
+        for j in 1 :: 2 :: Nil do
+            continue@outer
+        printlnString "unreachable-outer-body"
+    printlnString "done"

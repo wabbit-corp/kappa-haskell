@@ -4,7 +4,7 @@
 
 ```
 cabal build                                   # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance # in-tree suite (70/70)
+cabal run -v0 kappa -- test tests/conformance # in-tree suite (80/80)
 cabal run -v0 kappa -- test examples          # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp   # one fixture
 tools/run-external-fixtures.sh                # external corpus (see below)
@@ -64,7 +64,7 @@ directives are harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **70/70 passing**, zero unsupported, zero
+`tests/conformance/` — **80/80 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
@@ -83,8 +83,10 @@ harness errors. Layout by area:
 | `recursion/` | no-signature error, structural (clean), unverified warning |
 | `fixity/` | user fixity, `E_OPERATOR_NO_FIXITY`, parenthesized prefix negation (§5.5.1.1) |
 | `run/` | hello, while/var, for+break/continue+else, defer LIFO, try/except/finally, `let?`-else, early return, interpolation, statement-if |
+| `labels/` | §18.2.5 labeled loops: plain `break` confined to its labeled loop, `break@outer`/`continue@outer` across an inner loop, `E_LABEL_UNRESOLVED` for missing/non-loop targets, inert `label@match` |
+| `do/` | implicit do-bindings `let (@x : T) = e` joining the local implicit context (§16.3.3) |
 | `shape/` | `assertDeclKinds` |
-| `unsupported/` | handle/seal/exists → `E_UNSUPPORTED` |
+| `unsupported/` | handle/seal/exists/`{}` map literal/`return@label`/`defer@label` → `E_UNSUPPORTED` |
 
 `examples/` is also a harness suite: `examples/todo.kp` carries an
 exact `assertStdout` golden transcript (see `examples/README.md`).

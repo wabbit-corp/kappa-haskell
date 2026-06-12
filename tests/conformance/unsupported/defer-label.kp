@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_UNSUPPORTED
+
+-- defer@label schedules onto a labeled outer do-scope (§18.7); the
+-- §18.8 kernel here only schedules onto the current scope, so the
+-- labeled form is rejected rather than run too early.
+main : UIO Unit
+let main = outer@do
+    defer@outer printlnString "deferred"
+    printlnString "body"

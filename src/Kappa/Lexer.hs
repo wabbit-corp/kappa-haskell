@@ -34,6 +34,8 @@ import Data.Char
   , ord
   )
 import Data.List (foldl')
+import Data.List.NonEmpty (NonEmpty (..))
+import qualified Data.List.NonEmpty as NE
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Word (Word8)
@@ -67,7 +69,7 @@ lexSource path src =
       Left (foldl' (flip withNote) (diag SevError StageLex code fam sp msg) notes)
 
 lexSourceTokens :: FilePath -> Text -> LexM [Located]
-lexSourceTokens path src = goLineStart st0 [1] []
+lexSourceTokens path src = goLineStart st0 (1 :| []) []
   where
     st0 = St src 1 1
 
@@ -94,10 +96,11 @@ lexSourceTokens path src = goLineStart st0 [1] []
     peek :: St -> Maybe Char
     peek = fmap fst . T.uncons . stIn
 
+    -- O(n) lookahead (n <= 2 at every call site). Crucially this avoids
+    -- 'T.length'/'T.index' on the remaining input, which are O(rest) in
+    -- text-2.x and would make literal-heavy files quadratic to lex.
     peekAt :: Int -> St -> Maybe Char
-    peekAt n s
-      | n < T.length (stIn s) = Just (T.index (stIn s) n)
-      | otherwise = Nothing
+    peekAt n s = fmap fst (T.uncons (T.drop n (stIn s)))
 
     startsWith :: Text -> St -> Bool
     startsWith t s = t `T.isPrefixOf` stIn s
@@ -105,28 +108,30 @@ lexSourceTokens path src = goLineStart st0 [1] []
     -- ── Layout at the start of a logical line (depth 0) ──────────────
 
     -- Skip whitespace, blank lines and comments until the first real
-    -- token of the next logical line, then apply the indent rule.
-    goLineStart :: St -> [Int] -> [Located] -> LexM [Located]
+    -- token of the next logical line, then apply the indent rule. The
+    -- indent stack is non-empty by construction (the base level 1 is
+    -- never popped).
+    goLineStart :: St -> NonEmpty Int -> [Located] -> LexM [Located]
     goLineStart s indents acc = do
       s' <- skipBlank s
       case peek s' of
         Nothing -> do
           let nl = [Located (TokNewline False) (here s') | needsNewline acc]
-              dedents = map (const (Located TokDedent (here s'))) (drop 1 indents)
+              dedents = map (const (Located TokDedent (here s'))) (NE.tail indents)
           pure (reverse (Located TokEOF (here s') : dedents ++ nl ++ acc))
         Just _ -> do
           let col = stCol s'
-              top = head indents
+              top = NE.head indents
           if
             | col > top ->
-                goLine s' (col : indents) (Located TokIndent (here s') : acc) []
+                goLine s' (NE.cons col indents) (Located TokIndent (here s') : acc) []
             | col == top -> goLine s' indents acc []
             | otherwise -> do
-                let (popped, rest) = span (> col) indents
+                let (popped, rest) = NE.span (> col) indents
                 case rest of
-                  (r : _)
+                  (r : more)
                     | r == col ->
-                        goLine s' rest (map (const (Located TokDedent (here s'))) popped ++ acc) []
+                        goLine s' (r :| more) (map (const (Located TokDedent (here s'))) popped ++ acc) []
                   _ ->
                     lexErr (here s') "E_LAYOUT_BAD_DEDENT" Nothing
                       "dedent does not match any enclosing indentation level"
@@ -177,7 +182,7 @@ lexSourceTokens path src = goLineStart st0 [1] []
     -- The bracket stack tracks open delimiters: depth > 0 disables
     -- layout and softens newlines.
 
-    goLine :: St -> [Int] -> [Located] -> [Token] -> LexM [Located]
+    goLine :: St -> NonEmpty Int -> [Located] -> [Token] -> LexM [Located]
     goLine s indents acc brackets = case peek s of
       Nothing
         | null brackets -> goLineStart s indents acc
@@ -656,7 +661,7 @@ lexSourceTokens path src = goLineStart st0 [1] []
               | ch == '"' = skipStr (i + 1) depth rest
               | ch == ':' && depth == 0 = Just (T.take i t, T.drop (i + 1) t)
               | otherwise = goC (i + 1) depth rest
-            skipStr i depth ('\\' : c2 : rest) = skipStr (i + 2) depth ([c2] `seq` rest)
+            skipStr i depth ('\\' : _ : rest) = skipStr (i + 2) depth rest
             skipStr i depth ('"' : rest) = goC (i + 1) depth rest
             skipStr i depth (_ : rest) = skipStr (i + 1) depth rest
             skipStr _ _ [] = Nothing

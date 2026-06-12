@@ -555,7 +555,8 @@ exprSpan = \case
   ESectionRight _ _ sp -> sp
   EOpRef _ _ sp -> sp
   EOpChain els -> case els of
-    [] -> error "empty op chain"
+    -- the parser builds chains from at least one operand ('pChainElems')
+    [] -> error "Kappa.Syntax.exprSpan: internal error: empty operator chain"
     (e : _) -> elemSpan e `spanTo` elemSpan (last els)
   ELambda _ _ _ sp -> sp
   ELet _ _ sp -> sp

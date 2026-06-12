@@ -159,8 +159,10 @@ clApp (Closure env body) v = do
   ec <- ec_
   pure (eval ec (v : env) body)
 
+-- | Record a diagnostic. Diagnostics accumulate in reverse (prepend)
+-- order; 'checkModule' restores source order once at the end.
 report :: Diagnostic -> CheckM ()
-report d = modify' $ \st -> st {csDiags = csDiags st ++ [d]}
+report d = modify' $ \st -> st {csDiags = d : csDiags st}
 
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
@@ -367,7 +369,10 @@ sortName t
   | t == "Type" || t == "*" = Just 0
   | Just rest <- T.stripPrefix "Type" t
   , not (T.null rest)
-  , T.all (\c -> c >= '0' && c <= '9') rest =
+  , T.all (\c -> c >= '0' && c <= '9') rest
+  , -- bounds check: a suffix this long would overflow 'Int'; treat the
+    -- spelling as an ordinary (unresolved) identifier instead
+    T.length rest <= 9 =
       Just (read (T.unpack rest))
   | otherwise = Nothing
 
@@ -377,13 +382,15 @@ anyHole ctx = do
   ty <- freshMetaV ctx
   pure (m, ty)
 
-unsupported :: Ctx -> Span -> Text -> CheckM (Term, Value)
-unsupported ctx sp what = do
+reportUnsupported :: Span -> Text -> CheckM ()
+reportUnsupported sp what =
   report $
     withNote "see SPEC_COVERAGE.md for the implemented subset" $
       diag SevError StageElaborate "E_UNSUPPORTED" Nothing sp
         (what <> " is not supported by this implementation")
-  anyHole ctx
+
+unsupported :: Ctx -> Span -> Text -> CheckM (Term, Value)
+unsupported ctx sp what = reportUnsupported sp what >> anyHole ctx
 
 -- ── Implicit resolution (§16.3.3) ────────────────────────────────────
 
@@ -514,13 +521,13 @@ zonkTermM depth0 t0 = do
         KExpr t -> (KExpr (go d t), d)
         KVarItem n t -> (KVarItem n (go d t), d + 1)
         KAssign r monadic t -> (KAssign (go d r) monadic (go d t), d)
-        KReturn l t -> (KReturn l (go d t), d)
+        KReturn t -> (KReturn (go d t), d)
         k@KBreak {} -> (k, d)
         k@KContinue {} -> (k, d)
         KWhile l c b e -> (KWhile l (go d c) (goI d b) (fmap (goI d) e), d)
         KFor l p s b e -> (KFor l p (go d s) (goI (d + patBindersC p) b) (fmap (goI d) e), d)
         KIf alts e -> (KIf [(go d c, goI d b) | (c, b) <- alts] (fmap (goI d) e), d)
-        KDefer l t -> (KDefer l (go d t), d)
+        KDefer t -> (KDefer (go d t), d)
         KUsing p a r -> (KUsing p (go d a) (go d r), d)
       go :: Int -> Term -> Term
       go d = \case
@@ -761,17 +768,17 @@ infer ctx expr = case expr of
   EExists _ _ sp -> unsupported ctx sp "exists types"
   ETraitArrow c rest -> do
     (cTm, _) <- inferType ctx c
-    let ctx' = bindCtx "_ev" True undefinedV ctx
-        undefinedV = VSort 0
     cV <- evalIn ctx cTm
-    let ctx2 = bindCtx "_ev" True cV ctx
-    (restTm, _) <- inferType ctx2 rest
-    _ <- pure ctx'
+    -- the evidence binder joins the local implicit context (§16.3.3)
+    let ctx' = bindCtx "_ev" True cV ctx
+    (restTm, _) <- inferType ctx' rest
     pure (CPi Impl QW "_ev" cTm restTm, VSort 0)
   EOptionSugar t _ -> do
     (tm, _) <- inferType ctx t
     pure (CApp Expl (CGlob (gPrel "Option")) tm, VSort 0)
   EVariant arms mtail sp -> elabVariant ctx arms mtail sp Nothing
+  -- a lambda label is only consumable by return@label (§18.5.1), which
+  -- is rejected as unsupported at its use site, so the label is inert
   ELambda _ bs body sp -> elabLambda ctx bs body sp Nothing
   ELet binds body _ -> elabLet ctx binds body Nothing
   EBlock ds fin sp -> elabBlock ctx ds fin sp
@@ -783,6 +790,8 @@ infer ctx expr = case expr of
     resT <- freshMetaV ctx
     tm <- checkMatch ctx scrut cases sp resT
     pure (tm, resT)
+  -- a do-scope label is only consumable by defer@label, which is
+  -- rejected as unsupported at its use site, so the label is inert here
   EDo _ items sp -> elabDo ctx items sp Nothing
   EThunk e _ -> do
     (tm, ty) <- infer ctx e
@@ -806,11 +815,9 @@ infer ctx expr = case expr of
       ( foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) tms
       , VGlobN (gPrel "List") [(Expl, elemT)]
       )
-  EMapLit [] _ -> do
-    k <- freshMetaV ctx
-    v <- freshMetaV ctx
-    pure (CGlob (gPrel "mapEmpty"), VGlobN (gPrel "Map") [(Expl, k), (Expl, v)])
-  EMapLit _ sp -> unsupported ctx sp "non-empty map literals"
+  -- no Map type or constructor exists in the prelude, so '{}' would
+  -- elaborate to a stuck neutral; report it like the non-empty case
+  EMapLit _ sp -> unsupported ctx sp "map literals"
   ESetLit _ sp -> unsupported ctx sp "set literals"
   ESectionLeft e op sp ->
     infer ctx (lam1 sp "__x" (\x -> EApp (EVar op) [ArgExplicit e, ArgExplicit x]))
@@ -1372,7 +1379,7 @@ elabDotUnqualified :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
 elabDotUnqualified ctx e member mname = do
   -- module-qualified reference?
   case e of
-    EVar (Name base bsp) -> do
+    EVar (Name base _) -> do
       st <- get
       case lookupCtx base ctx of
         Just _ -> ordinary mname
@@ -1405,8 +1412,6 @@ elabDotUnqualified ctx e member mname = do
                   case [c | c <- diCtors di, gnameText c == nm] of
                     (c : _) -> Just c
                     [] -> Nothing
-      where
-        _unusedBsp = bsp
     _ -> ordinary mname
   where
     ordinary mn0 = do
@@ -1547,8 +1552,6 @@ elabSafeNav ctx e member = do
             "the result type of '?.' is undetermined; annotate the member type (§16.1.1.2)"
           pure (bodyTm, bodyT)
         u -> pure (CCtor (gPrel "Some") [bodyTm], u)
-      bodyTyQ <- quoteIn ctx' (VGlobN (gPrel "Option") [(Expl, resTy)])
-      _ <- pure bodyTyQ
       let alts =
             [ CaseAlt (CPCtor (gPrel "Some") [CPVar "__nav"]) Nothing wrapTm
             , CaseAlt (CPCtor (gPrel "None") []) Nothing (CCtor (gPrel "None") [])
@@ -1569,28 +1572,14 @@ elabIs ctx e cref = do
   (tm1, _) <- insertAllImplicits ctx (exprSpan e) tm ty
   mg <- resolveCtor ctx cref
   case mg of
-    Just (g, _) -> do
-      let alts =
-            [ CaseAlt (CPCtor g (replicate (ctorArity g) CPWild)) Nothing (CCtor (gPrel "True") [])
-            , CaseAlt CPWild Nothing (CCtor (gPrel "False") [])
-            ]
-      arity <- ctorArityM g
-      let alts' =
+    Just (g, ci) -> do
+      let arity = length (ciFields ci)
+          alts =
             [ CaseAlt (CPCtor g (replicate arity CPWild)) Nothing (CCtor (gPrel "True") [])
             , CaseAlt CPWild Nothing (CCtor (gPrel "False") [])
             ]
-      _ <- pure alts
-      pure (CMatch tm1 alts', VGlobN (gPrel "Bool") [])
+      pure (CMatch tm1 alts, VGlobN (gPrel "Bool") [])
     Nothing -> anyHole ctx
-  where
-    ctorArity _ = 0
-
-ctorArityM :: GName -> CheckM Int
-ctorArityM g = do
-  st <- get
-  pure $ case Map.lookup g (csCtors st) of
-    Just ci -> length [() | (_, _) <- ciFields ci]
-    Nothing -> 0
 
 resolveCtor :: Ctx -> CtorRef -> CheckM (Maybe (GName, CtorInfo))
 resolveCtor _ (CtorRef mqual n) = do
@@ -1746,8 +1735,6 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
       (bodyTm, bodyTy) <- case mexpected of
         Just t -> (,t) <$> check ctx body t
         Nothing -> infer ctx body
-      bodyTyTm <- quoteIn ctx bodyTy
-      _ <- pure bodyTyTm
       pure (foldl' (\b (q, n, tyT, rhs) -> CLet q n tyT rhs b) bodyTm acc, bodyTy)
     go ctx (LetBind implocal prefix pat mty rhs sp : rest) acc = do
       (rhsTm, rhsTy) <- case mty of
@@ -1772,8 +1759,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
         _ -> do
           -- irrefutable destructuring: elaborate as single-case match by
           -- rewriting `let pat = rhs; rest` to `match rhs case pat -> ...`
-          (patC, ctx', bindersOK) <- elabPattern ctx pat rhsTy
-          unless bindersOK $ pure ()
+          (patC, ctx', _) <- elabPattern ctx pat rhsTy
           (bodyTm, bodyTy) <- goUnder ctx' rest
           checkIrrefutable ctx pat rhsTy sp
           let matchTm = CMatch rhsTm [CaseAlt patC Nothing bodyTm]
@@ -1864,11 +1850,10 @@ checkMatch ctx scrut cases sp resT = do
         errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
           "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
       pure Nothing
-    MatchCase pat mguard body csp -> do
+    MatchCase pat mguard body _ -> do
       (patC, ctx', _) <- elabPattern ctx pat sTy1
       gTm <- traverse (\g -> check ctx' g (VGlobN (gPrel "Bool") [])) mguard
       bTm <- check ctx' body resT
-      _ <- pure csp
       pure (Just (CaseAlt patC gTm bTm))
   checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
   pure (CMatch sTm1 alts)
@@ -2052,11 +2037,11 @@ elabPattern ctx0 pat0 ty0 = do
           rs <- mapM (\p -> go ctx p ty) ps
           let pats = map fst rs
           case rs of
-            ((_, ctx1) : _) -> do
+            ((p1, ctx1) : _) -> do
               -- §17.2.3: each alternative must bind the same names; we
               -- approximate by requiring the same binder count.
-              let counts = map (\(p, _) -> patBindersCount p) rs
-              unless (all (== head counts) counts) $
+              let count1 = patBindersCount p1
+              unless (all (\(p, _) -> patBindersCount p == count1) rs) $
                 errAt sp "E_OR_PATTERN_BINDINGS" (Just "kappa.pattern.or-bindings")
                   "all alternatives of an or-pattern must bind the same names (§17.2.3)"
               pure (CPOr pats, ctx1)
@@ -2200,11 +2185,10 @@ elabTry ctx body excepts mfin sp = do
         -- \err -> match err cases
         let nm = "__err"
             ctx' = bindCtx nm False errT' ctx
-        alts <- forM excepts $ \(ExceptCase pat mguard hbody csp) -> do
+        alts <- forM excepts $ \(ExceptCase pat mguard hbody _) -> do
           (patC, ctx'', _) <- elabPattern ctx' pat errT'
           gTm <- traverse (\g -> check ctx'' g (VGlobN (gPrel "Bool") [])) mguard
           hTm <- check ctx'' hbody (ioType outErr resT)
-          _ <- pure csp
           pure (CaseAlt patC gTm hTm)
         checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
         let handlerTm = CLam Expl QW nm (CMatch (CVar 0) alts)
@@ -2217,6 +2201,11 @@ elabTry ctx body excepts mfin sp = do
   pure (final, ioType outErr resT)
 
 -- do blocks (§18.2): the carrier is IO in this implementation.
+--
+-- @loops@ tracks the labels of the enclosing loops of this do-scope so
+-- labeled @break@\/@continue@ are resolved at compile time (§18.2.5).
+-- The loop's @else@ suite runs after normal completion, so the loop's
+-- own label is not a valid target there.
 elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
 elabDo ctx items _sp mexpected = do
   (errT, resT) <- do
@@ -2224,12 +2213,12 @@ elabDo ctx items _sp mexpected = do
     case me of
       Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) -> pure (e, a)
       _ -> (,) <$> freshMetaV ctx <*> freshMetaV ctx
-  kitems <- goItems ctx errT resT items
+  kitems <- goItems [] ctx errT resT items
   pure (CDo kitems, ioType errT resT)
   where
-    goItems :: Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
-    goItems _ _ _ [] = pure []
-    goItems c errT resT (item : rest) = do
+    goItems :: [Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
+    goItems _ _ _ _ [] = pure []
+    goItems loops c errT resT (item : rest) = do
       let lastItem = null rest
       case item of
         DoExpr e -> do
@@ -2239,7 +2228,7 @@ elabDo ctx items _sp mexpected = do
               else do
                 a <- freshMetaV c
                 check c (desugarBang e) (ioType errT a)
-          (KExpr tm :) <$> goItems c errT resT rest
+          (KExpr tm :) <$> goItems loops c errT resT rest
         DoBind (LetBind implocal prefix pat mty rhs bsp) -> do
           aT <- case mty of
             Just tyE -> do
@@ -2248,9 +2237,9 @@ elabDo ctx items _sp mexpected = do
             Nothing -> freshMetaV c
           rhsTm <- check c (desugarBang rhs) (ioType errT aT)
           checkIrrefutable c pat aT bsp
-          (patC, c', _) <- elabPattern c pat aT
-          markImplicitLocal implocal pat c'
-          ks <- goItems c' errT resT rest
+          (patC, cBound, _) <- elabPattern c pat aT
+          let c' = markImplicitLocal implocal c cBound
+          ks <- goItems loops c' errT resT rest
           pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
         DoLet (LetBind implocal prefix pat mty rhs bsp) -> do
           (rhsTm, rhsTy) <- case mty of
@@ -2263,26 +2252,25 @@ elabDo ctx items _sp mexpected = do
               (tm, ty) <- infer c rhs
               insertAllImplicits c bsp tm ty
           checkIrrefutable c pat rhsTy bsp
-          (patC, c', _) <- elabPattern c pat rhsTy
-          markImplicitLocal implocal pat c'
-          ks <- goItems c' errT resT rest
+          (patC, cBound, _) <- elabPattern c pat rhsTy
+          let c' = markImplicitLocal implocal c cBound
+          ks <- goItems loops c' errT resT rest
           pure (KLet (qOf (bpQuantity prefix)) patC rhsTm : ks)
-        DoLetQ pat rhs mElse isp -> do
+        DoLetQ pat rhs mElse _ -> do
           (rhsTm, rhsTy) <- infer c rhs
           (patC, c', _) <- elabPattern c pat rhsTy
           mElse' <- forM mElse $ \(rp, fe) -> do
             (rpC, c2, _) <- elabPattern c rp rhsTy
             feTm <- check c2 fe (ioType errT resT)
             pure (rpC, feTm)
-          _ <- pure isp
-          ks <- goItems c' errT resT rest
+          ks <- goItems loops c' errT resT rest
           pure (KLetQ patC rhsTm mElse' : ks)
         DoVar n rhs _ -> do
           (rhsTm, rhsTy) <- infer c rhs
           (rhsTm1, rhsTy1) <- insertAllImplicits c (nameSpan n) rhsTm rhsTy
           let refTy = VGlobN (gPrel "Ref") [(Expl, rhsTy1)]
               c' = bindCtxVar (nameText n) refTy c
-          ks <- goItems c' errT resT rest
+          ks <- goItems loops c' errT resT rest
           pure (KVarItem (nameText n) rhsTm1 : ks)
         DoAssign n monadic rhs asp -> do
           mref <- pure (lookupCtx (nameText n) c)
@@ -2295,67 +2283,95 @@ elabDo ctx items _sp mexpected = do
                     if monadic
                       then check c (desugarBang rhs) (ioType errT a)
                       else check c (desugarBang rhs) a
-                  ks <- goItems c errT resT rest
+                  ks <- goItems loops c errT resT rest
                   pure (KAssign (CVar i) monadic rhsTm : ks)
                 _ -> do
                   errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa.do.assign-non-var")
                     ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
-                  goItems c errT resT rest
+                  goItems loops c errT resT rest
             Nothing -> do
               errAt asp "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved")
                 ("unresolved name '" <> nameText n <> "'")
-              goItems c errT resT rest
-        DoReturn _ me rsp -> do
+              goItems loops c errT resT rest
+        DoReturn ml me rsp -> do
+          -- return@label targets named functions or labeled lambdas
+          -- (§18.5.1); this implementation's kernel only returns from
+          -- the current do-scope, so a labeled return is rejected
+          -- rather than silently retargeted.
+          forM_ ml $ \l ->
+            reportUnsupported (nameSpan l) "labeled return (return@label)"
           tm <- case me of
             Just e -> check c (desugarBang e) resT
             Nothing -> do
               expectType c rsp (VGlobN (gPrel "Unit") []) resT
               pure (CCtor (gPrel "Unit") [])
-          ks <- goItems c errT resT rest
-          pure (KReturn Nothing tm : ks)
-        DoBreak ml _ -> (KBreak (nameText <$> ml) :) <$> goItems c errT resT rest
-        DoContinue ml _ -> (KContinue (nameText <$> ml) :) <$> goItems c errT resT rest
+          ks <- goItems loops c errT resT rest
+          pure (KReturn tm : ks)
+        DoBreak ml _ -> do
+          forM_ ml (checkLoopLabel "break")
+          (KBreak (nameText <$> ml) :) <$> goItems loops c errT resT rest
+        DoContinue ml _ -> do
+          forM_ ml (checkLoopLabel "continue")
+          (KContinue (nameText <$> ml) :) <$> goItems loops c errT resT rest
         DoWhile ml cond body mels _ -> do
           condTm <- check c (desugarBang cond) (VGlobN (gPrel "Bool") [])
-          bodyKs <- goItems c errT (VGlobN (gPrel "Unit") []) body
-          elsKs <- traverse (goItems c errT (VGlobN (gPrel "Unit") [])) mels
-          ks <- goItems c errT resT rest
+          bodyKs <- goItems (withLoop ml) c errT (VGlobN (gPrel "Unit") []) body
+          elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
+          ks <- goItems loops c errT resT rest
           pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
         DoFor ml pat src body mels fsp -> do
           elemT <- freshMetaV c
           srcTm <- check c (desugarBang src) (VGlobN (gPrel "List") [(Expl, elemT)])
           checkIrrefutable c pat elemT fsp
           (patC, c', _) <- elabPattern c pat elemT
-          bodyKs <- goItems c' errT (VGlobN (gPrel "Unit") []) body
-          elsKs <- traverse (goItems c errT (VGlobN (gPrel "Unit") [])) mels
-          ks <- goItems c errT resT rest
+          bodyKs <- goItems (withLoop ml) c' errT (VGlobN (gPrel "Unit") []) body
+          elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
+          ks <- goItems loops c errT resT rest
           pure (KFor (nameText <$> ml) patC srcTm bodyKs elsKs : ks)
         DoIf alts mels _ -> do
           alts' <- forM alts $ \(cond, body) -> do
             condTm <- check c (desugarBang cond) (VGlobN (gPrel "Bool") [])
-            bodyKs <- goItems c errT (VGlobN (gPrel "Unit") []) body
+            bodyKs <- goItems loops c errT (VGlobN (gPrel "Unit") []) body
             pure (condTm, bodyKs)
-          elsKs <- traverse (goItems c errT (VGlobN (gPrel "Unit") [])) mels
-          ks <- goItems c errT resT rest
+          elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
+          ks <- goItems loops c errT resT rest
           pure (KIf alts' elsKs : ks)
-        DoDefer _ e dsp -> do
+        DoDefer ml e _ -> do
+          -- defer@label schedules onto a labeled outer do-scope
+          -- (§18.7); the kernel only schedules onto the current scope,
+          -- so a labeled defer is rejected rather than run too early.
+          forM_ ml $ \l ->
+            reportUnsupported (nameSpan l) "labeled defer (defer@label)"
           eTm <- check c (desugarBang e) (ioType errT (VGlobN (gPrel "Unit") []))
-          _ <- pure dsp
-          ks <- goItems c errT resT rest
-          pure (KDefer Nothing eTm : ks)
+          ks <- goItems loops c errT resT rest
+          pure (KDefer eTm : ks)
         DoUsing _ _ usp -> do
           _ <- unsupported c usp "'using' resource binds"
-          goItems c errT resT rest
+          goItems loops c errT resT rest
         DoDecl d -> do
           case d of
             DLet _ (LetDef (Just n) Nothing [] mty Nothing rhs) dsp ->
-              goItems c errT resT (DoLet (LetBind False emptyPrefix (PVar n) mty rhs dsp) : rest)
+              goItems loops c errT resT (DoLet (LetBind False emptyPrefix (PVar n) mty rhs dsp) : rest)
             _ -> do
               errAt (declSpan d) "E_UNSUPPORTED" Nothing
                 "this local declaration form inside do is not supported by this implementation"
-              goItems c errT resT rest
+              goItems loops c errT resT rest
       where
-        markImplicitLocal _ _ _ = pure ()
+        withLoop ml = maybe loops (\l -> nameText l : loops) ml
+        checkLoopLabel what l =
+          unless (nameText l `elem` loops) $
+            errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa.do.label-unresolved")
+              (what <> "@" <> nameText l
+                 <> " does not target an enclosing labeled loop of this do-scope (§18.2.5)")
+
+-- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
+-- implicit context for the remaining items. @before@ is the context the
+-- pattern was elaborated in; the entries added on top of it are marked.
+markImplicitLocal :: Bool -> Ctx -> Ctx -> Ctx
+markImplicitLocal False _ after = after
+markImplicitLocal True before (Ctx es env) =
+  let (new, old) = splitAt (length es - ctxLen before) es
+   in Ctx (map (\e -> e {ceImplicitLocal = True}) new ++ old) env
 
 -- `!e` splicing inside do items (§18.3): rewritten to runIO marker the
 -- interpreter understands; typing treats !e : a where e : IO err a.
@@ -2421,7 +2437,8 @@ elabComprehension ctx kind clauses yld sp = case kind of
 checkModule :: CheckState -> Module -> (CheckState, Diagnostics)
 checkModule st0 m =
   let (_, st1) = runState (mapM_ headerPass (modDecls m) >> mapM_ bodyPass (modDecls m)) st0
-   in (st1 {csDiags = []}, csDiags st1)
+   in -- 'report' prepends; restore emission (source) order here
+      (st1 {csDiags = []}, reverse (csDiags st1))
 
 headerPass :: Decl -> CheckM ()
 headerPass = \case
@@ -2440,21 +2457,18 @@ headerPass = \case
       errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate") ("duplicate declaration of '" <> nameText n <> "'")
     addGlobal g (GlobalDef tyV Nothing False)
   DData _ dd sp -> headerData dd sp
-  DTypeAlias _ n params _ (Just rhs) sp -> do
+  DTypeAlias _ n params _ (Just rhs) _ -> do
     -- alias: a definition at a universe type
     (tm, ty) <- elabAliasBody params rhs
     g <- ownName n
-    tyV <- pure ty
     tmV <- evalIn emptyCtx tm
-    _ <- pure sp
-    addGlobal g (GlobalDef tyV (Just tmV) True)
+    addGlobal g (GlobalDef ty (Just tmV) True)
   DTypeAlias _ n params _ Nothing _ -> do
     g <- ownName n
     tyV <- aliasKind params
     addGlobal g (GlobalDef tyV Nothing False)
   DTrait _ td sp -> headerTrait td sp
-  DEffect _ ed sp -> do
-    _ <- pure ed
+  DEffect _ _ sp ->
     errAt sp "E_UNSUPPORTED" Nothing "effect declarations are accepted syntactically but not elaborated by this implementation"
   DExpect _ form sp -> headerExpect form sp
   _ -> pure ()
@@ -2492,7 +2506,9 @@ elabAliasBody params rhs = go emptyCtx params
       pure (CLam (if bImplicit b then Impl else Expl) Q0 nm tm, tyV)
 
 headerData :: DataDecl -> Span -> CheckM ()
-headerData (DataDecl n params mkind ctors) sp = do
+headerData (DataDecl n params _mkind ctors) sp = do
+  -- the optional kind annotation is not validated: every data type
+  -- lives at 'Type' in this implementation (see SPEC_COVERAGE.md)
   g <- ownName n
   forM_ (duplicatesOf [nameText cn | CtorDecl cn _ _ _ <- ctors]) $ \dn ->
     errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate")
@@ -2500,11 +2516,10 @@ headerData (DataDecl n params mkind ctors) sp = do
   -- data type constructor type: params -> Type
   paramTele <- elabTele emptyCtx params
   let sortT = CSort 0
-  _ <- pure mkind
   let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) sortT paramTele
   tyV <- evalIn emptyCtx tyTm
   addGlobal g (GlobalDef tyV Nothing False)
-  ctorGs <- forM ctors $ \(CtorDecl cn binders mgadt csp) -> do
+  ctorGs <- forM ctors $ \(CtorDecl cn binders mgadt _) -> do
     cg <- ownName cn
     cty <- case mgadt of
       Just sig -> do
@@ -2523,13 +2538,11 @@ headerData (DataDecl n params mkind ctors) sp = do
               foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) resultT
                 ([(Impl, Q0, nm, t) | (_, _, nm, t) <- paramTele] ++ fieldsTele)
         pure full
-    _ <- pure csp
     let fields = ctorFieldsOf binders mgadt
     modify' $ \st -> st {csCtors = Map.insert cg (CtorInfo g cty fields) (csCtors st)}
     pure cg
   modify' $ \st -> st {csDatas = Map.insert g (DataInfo ctorGs (length params)) (csDatas st)}
   where
-    _unusedSp = sp
     ctorFieldsOf binders mgadt = case mgadt of
       Just sig -> gadtFields sig
       Nothing -> [(nameText <$> bName b, bDefault b) | b <- binders, not (bImplicit b)]
@@ -2702,7 +2715,9 @@ bodyPass = \case
   _ -> pure ()
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
-elabLetDecl _ (LetDef (Just n) Nothing binders mResTy mdec body) sp = do
+-- the parsed decreases clause is not consulted: termination is verified
+-- by the structural analysis below (see IMPLEMENTATION_NOTES.md)
+elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
   -- resolve any goals postponed from signature elaboration first, so the
   -- signature's value is canonical while checking the body
   flushPending
@@ -2735,7 +2750,6 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy mdec body) sp = do
                     ("could not verify structural termination of '" <> nameText n <> "' (§15.3)")
             pure okStructural
           else pure True
-      _ <- pure mdec
       addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
     _ -> do
       -- a previous definition with a value: duplicate declaration (§9.2)
@@ -2811,11 +2825,11 @@ occursGlobal g = go
       KExpr t -> go t
       KVarItem _ t -> go t
       KAssign _ _ t -> go t
-      KReturn _ t -> go t
+      KReturn t -> go t
       KWhile _ c b e -> go c || any goK b || maybe False (any goK) e
       KFor _ _ s b e -> go s || any goK b || maybe False (any goK) e
       KIf alts e -> any (\(c, b) -> go c || any goK b) alts || maybe False (any goK) e
-      KDefer _ t -> go t
+      KDefer t -> go t
       KUsing _ a r -> go a || go r
       _ -> False
 
@@ -3092,11 +3106,10 @@ elabInstance (InstanceDecl premises hd members) sp = do
         peelArgs ty [] = do
           t <- forceM ty
           case t of
-            VPi Impl _ _ dom clo -> do
+            VPi Impl _ _ _ clo -> do
               -- the dict binder: instantiate with a fresh meta (the dict
               -- being defined); member types may not depend on it.
               m <- freshMetaV ctx
-              _ <- pure dom
               clApp clo m
             _ -> pure t
         peelArgs ty (a : as) = do

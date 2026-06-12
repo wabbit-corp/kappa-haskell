@@ -1,0 +1,12 @@
+--! assertNoErrors
+--! assertEval r 1
+
+-- §18.2.5: a label may prefix a match expression; no construct can
+-- target it in the supported subset, so it must be accepted and inert.
+f : Integer -> Integer
+let f x = m@match x
+    case 0 -> 1
+    case _ -> 2
+
+r : Integer
+let r = f 0

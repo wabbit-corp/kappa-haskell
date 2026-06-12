@@ -12,8 +12,7 @@ app/Main.hs              CLI: kappa (check|run|test) PATH
 src/Kappa/
   Source.hs              positions, spans, module names
   Diagnostic.hs          structured diagnostics (§3.1): severity, stage,
-                         code, family, labels, notes/helps, related
-                         origins with standardized roles (§3.1.1A)
+                         code, family, notes/helps; shared text renderer
   Token.hs, Lexer.hs     hand-rolled lexer + Python-style layout (§5–§6);
                          all literal families, interpolation fragments
   Syntax.hs              surface AST (unified term/type expression grammar)
@@ -24,7 +23,7 @@ src/Kappa/
                          (§5.5.2), import scope checks (§8)
   Core.hs                KCore subset (§30.2): de Bruijn terms, values,
                          closures; structured CDo/KItem for do-blocks
-  Eval.hs                NbE: eval/quote/convertible/normalize (§31.1);
+  Eval.hs                NbE: eval/quote/convertible (§31.1);
                          pure primitive reduction
   Check.hs               bidirectional elaborator (§16/§17/§14/§6.1.5/§18):
                          unification, implicit resolution, traits,
@@ -181,7 +180,86 @@ lexical states make recovery guesses worse than a clean stop).
 | Modules (§8) | Import-ordered multi-file suites | No visibility/opacity/export enforcement, URL imports |
 | Lexer recovery (§3.1.14A) | Stops at first lexical error | Multi-error lexical fixtures under-count |
 | Prelude (§28) | §28.2 subset, not closable | Missing names listed in SPEC_COVERAGE.md §28.2 row |
+| Labeled control (§18.2.5, §18.5.1, §18.7) | `break@L`/`continue@L` implemented with compile-time label resolution (`E_LABEL_UNRESOLVED` when no enclosing labeled loop of the do-scope matches); `return@L`/`defer@L` → `E_UNSUPPORTED`; labels on `do`/lambda/`match` parse and are inert | Inert labels are sound here because every construct that could consume them is rejected at its use site (see "Review responses" #2) |
 
 Everything rejected rather than approximated is surfaced as
 `E_UNSUPPORTED` with a note pointing at SPEC_COVERAGE.md (see
-`unsupported` in `Check.hs` and the per-declaration rejections).
+`unsupported`/`reportUnsupported` in `Check.hs` and the per-declaration
+rejections).
+
+## Review responses
+
+Responses to the adversarial code-quality review (each finding either
+fixed or justified here).
+
+1. **Labeled `break`/`continue` targeting (BLOCKER)** — fixed.
+   `Kappa.Interp.targets` was keyed on the loop's label instead of the
+   break's: an unlabeled `break` now targets the nearest loop (labeled
+   or not), and `break@L`/`continue@L` pass through every loop until
+   the one labeled `L` (`src/Kappa/Interp.hs`). Conformance fixtures
+   added under `tests/conformance/labels/` cover both reported
+   misbehaviours plus `continue@outer`.
+2. **Silently discarded labels** — fixed by rejection or shown inert.
+   `return@L` and `defer@L` now emit `E_UNSUPPORTED` at the label
+   (`elabDo`); `break@L`/`continue@L` are resolved at compile time
+   against the enclosing loop labels of the do-scope
+   (`E_LABEL_UNRESOLVED` otherwise, per §18.2.5 "compile-time error").
+   Labels on `do`, lambdas, and `match` remain accepted and inert:
+   the only constructs that could consume them (`defer@`, `return@`,
+   `break@`/`continue@`) all diagnose at their own use sites, so an
+   unconsumed label cannot change program meaning. The parser comment
+   at `pMatchExpr` records this. `markImplicitLocal` is no longer a
+   no-op: `let (@x : T) = e` in a do-block joins the local implicit
+   context (`tests/conformance/do/implicit-do-binding.kp`).
+3. **Quadratic lexer lookahead** — fixed. `peekAt` is now
+   `T.uncons . T.drop n` (n ≤ 2) instead of `T.length`/`T.index` over
+   the remaining input. Float-/char-literal-heavy files now scale like
+   int-heavy ones (PERFORMANCE.md §2a; `tools/gen-stress.sh` grew
+   `float`/`char` modes to keep this measurable).
+4. **`sortDiagnostics`** — deleted (it was dead, and its `show`-based
+   key was wrong anyway). Diagnostics are emitted in source order by
+   construction (single pass per file; `checkModule` restores order).
+5. **Dead exported API** — trimmed. Removed `withLabel`/`withRelated`/
+   `RelatedRole`/`relatedRoleText`/`Related`/`DiagLabel` and the
+   `dLabels`/`dRelated`/`dPayload` fields (no producer or renderer
+   existed; the doc header records the deliberate subset), and
+   `SourceFile`/`mkSourceFile`/`lineAt`/`spanUnion`/`posBefore`,
+   `Eval.normalize`, `Parser.parseTypeText`.
+6. **Warning-suppression hacks** — removed: the always-true guards, the
+   `keepSkip`/`peekFirstMeaningful`/`srcPadded` aliases, the pointless
+   `seq`, every `_ <- pure x` discard, `_unusedBsp`/`_unusedSp`,
+   the dead `elabIs` stub (rewritten to use the real constructor
+   arity), and `pExprNoDecreases` (whose comment was wrong; `decreases`
+   is a global stop keyword, so plain `pExpr` already stops there).
+7. **Partial functions** — the lexer indent stack is a `NonEmpty Int`;
+   `env !! i` is a checked `lookupEnv` with a contextual message (used
+   by `Eval` and `Prelude`); the or-pattern binder check no longer uses
+   `head`; `exprSpan`'s empty-chain `error` documents the parser
+   invariant; `sortName` bounds-checks the universe suffix before
+   `read`, so `Type99999999999999999999` is an unresolved name instead
+   of a negative level.
+8. **O(n²) diagnostic accumulation** — `report` prepends and
+   `checkModule` reverses once; `compileFiles` accumulates per-file
+   chunks and concatenates once.
+9. **`{}` map literal** — now `E_UNSUPPORTED` like the non-empty case
+   (`tests/conformance/unsupported/map-literal.kp`). Defining a real
+   `Map` just for the empty literal would be a stub value with no
+   operations, which is the same trap one step later.
+10. **Duplicated diagnostic renderers** — extracted to
+    `Kappa.Diagnostic.renderDiagnostic`, used by both the CLI and the
+    harness (the harness now renders notes/helps too; its assertions
+    are containment-based, so fixtures are unaffected).
+11. **Splitting `Check.hs`** — justified, not done. Three of the four
+    proposed submodules are mutually recursive with the bidirectional
+    core: pattern elaboration calls `inferType`/`check` (typed and
+    variant patterns), do-elaboration calls `check` and is called from
+    `infer`, and instance elaboration checks member bodies via
+    `check`. Splitting them needs `hs-boot` files or a record of
+    callbacks, both of which obscure more than a sectioned single
+    module (the section headers the review credits). The termination
+    analysis alone is extractable but is ~100 lines with a single
+    caller; not worth a module boundary.
+12. **Test hygiene** — fixed. Labeled-loop/labeled-control fixtures
+    (`tests/conformance/labels/`), `label@match`, `defer@`, `return@`,
+    and `{}` fixtures added (suite is now 80 fixtures); the test-suite
+    stanza carries the same `-with-rtsopts=-K64m` as the executable.

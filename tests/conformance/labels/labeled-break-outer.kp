@@ -1,0 +1,14 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "inner\ndone\n"
+
+-- §18.2.5: break@outer from inside an unlabeled inner loop exits the
+-- labeled outer loop, skipping the rest of the outer body.
+main : UIO Unit
+let main = do
+    outer@for i in 1 :: 2 :: Nil do
+        for j in 1 :: 2 :: Nil do
+            printlnString "inner"
+            break@outer
+        printlnString "unreachable-outer-body"
+    printlnString "done"

@@ -1,0 +1,8 @@
+--! assertDiagnostic error E_LABEL_UNRESOLVED
+
+-- §18.2.5: break@label may target a labeled loop only; a labeled
+-- do-scope is not a valid target.
+main : UIO Unit
+let main = scope@do
+    break@scope
+    printlnString "after"

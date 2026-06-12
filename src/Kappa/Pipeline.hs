@@ -72,9 +72,11 @@ compileSourceWithPrelude path src =
 compileFiles :: [(FilePath, Text)] -> CompiledUnit
 compileFiles files =
   let (pst, pdiags) = preludeState
-      step (st, diags) (path, src) =
+      -- diagnostics accumulate as reversed chunks and are concatenated
+      -- once at the end (appending per file would be quadratic)
+      step (st, chunks) (path, src) =
         case parseModule path src of
-          Left ds -> (st, diags ++ ds)
+          Left ds -> (st, ds : chunks)
           Right (m, recovered) ->
             let effName = case modHeader m of
                   Just mp -> ModuleName (modPathName mp)
@@ -102,8 +104,9 @@ compileFiles files =
                   _ -> sc
                 st0 = st {csModule = effName, csScope = scope, csDiags = []}
                 (st1, cdiags) = checkModule st0 m'
-             in (st1, diags ++ recovered ++ rdiags ++ cdiags)
-      (finalSt, allDiags) = foldl' step (pst, pdiags) files
+             in (st1, (recovered ++ rdiags ++ cdiags) : chunks)
+      (finalSt, diagChunks) = foldl' step (pst, [pdiags]) files
+      allDiags = concat (reverse diagChunks)
       lastName = case reverse files of
         ((p, _) : _) -> moduleNameOf p
         [] -> ModuleName ["main"]

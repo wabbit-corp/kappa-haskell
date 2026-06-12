@@ -11,7 +11,6 @@ import Kappa.Diagnostic
 import Kappa.Eval (Globals (..))
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
-import Kappa.Source
 import Kappa.TestHarness (Summary (..), runTestPath, summarize)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
@@ -28,34 +27,18 @@ main = do
       hPutStrLn stderr "usage: kappa (check|run|test) PATH"
       exitFailure
 
-renderDiag :: Diagnostic -> String
-renderDiag d =
-  let Span f (Pos l c) _ = dPrimary d
-      sev = case dSeverity d of
-        SevError -> "error"
-        SevWarning -> "warning"
-        SevNote -> "note"
-        SevInfo -> "info"
-      notes = concatMap (\n -> "\n  note: " <> T.unpack n) (dNotes d)
-      helps = concatMap (\h -> "\n  help: " <> T.unpack h) (dHelps d)
-   in f <> ":" <> show l <> ":" <> show c <> ": " <> sev <> "[" <> T.unpack (dCode d) <> "]"
-        <> maybe "" (\fam -> " (" <> T.unpack fam <> ")") (dFamily d)
-        <> ": " <> T.unpack (dMessage d)
-        <> notes
-        <> helps
-
 cmdCheck :: FilePath -> IO ()
 cmdCheck path = do
   src <- TIO.readFile path
   let cu = compileSourceWithPrelude path src
-  forM_ (cuDiags cu) (hPutStrLn stderr . renderDiag)
+  forM_ (cuDiags cu) (TIO.hPutStrLn stderr . renderDiagnostic)
   if hasErrors (cuDiags cu) then exitFailure else exitSuccess
 
 cmdRun :: FilePath -> IO ()
 cmdRun path = do
   src <- TIO.readFile path
   let cu = compileSourceWithPrelude path src
-  forM_ (cuDiags cu) (hPutStrLn stderr . renderDiag)
+  forM_ (cuDiags cu) (TIO.hPutStrLn stderr . renderDiagnostic)
   when (hasErrors (cuDiags cu)) exitFailure
   let st = cuState cu
       mainG = GName (cuModule cu) "main"

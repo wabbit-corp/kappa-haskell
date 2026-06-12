@@ -16,10 +16,10 @@ module Kappa.Eval
   , force
   , quote
   , convertible
-  , normalize
   , matchPat
   , vapp
   , evalPurePrim
+  , lookupEnv
   ) where
 
 import Data.Map.Strict (Map)
@@ -60,9 +60,19 @@ lookupGlobal ctx g = Map.lookup g (globalsMap (ecGlobals ctx))
 
 -- ── Evaluation ───────────────────────────────────────────────────────
 
+-- | Checked de Bruijn lookup. An out-of-range index is an elaborator
+-- bug; fail with context instead of a bare 'Prelude.!!' pattern error.
+lookupEnv :: Int -> Env -> Value
+lookupEnv i env = case drop i env of
+  v : _ -> v
+  [] ->
+    error
+      ("Kappa.Eval.lookupEnv: internal error: de Bruijn index " ++ show i
+         ++ " out of range (environment has " ++ show (length env) ++ " entries)")
+
 eval :: EvalCtx -> Env -> Term -> Value
 eval ctx env = \case
-  CVar i -> env !! i
+  CVar i -> lookupEnv i env
   -- primitives quoted by 'quote' round-trip back to 'VPrim'
   CGlob g@(GName m p) -> if m == primModule then VPrim p [] else VGlobN g []
   CLam ic q n body -> VLam ic q n (Closure env body)
@@ -431,9 +441,6 @@ convertible ctx = go (200 :: Int)
         goSpine fl l sp1 sp2 =
           length sp1 == length sp2
             && and (zipWith (\(_, a) (_, b) -> go (fl - 1) l a b) sp1 sp2)
-
-normalize :: EvalCtx -> Env -> Term -> Term
-normalize ctx env t = quote ctx (length env) (eval ctx env t)
 
 -- | Pure primitive reduction shared by conversion and runtime.
 evalPurePrim :: Text -> [Value] -> Maybe Value

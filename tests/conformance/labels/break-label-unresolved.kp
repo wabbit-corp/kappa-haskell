@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_LABEL_UNRESOLVED
+
+-- §18.2.5: break@L targeting a label that does not name an enclosing
+-- loop is a compile-time error.
+main : UIO Unit
+let main = do
+    while eqInt 1 2 do
+        break@missing
+    printlnString "after"

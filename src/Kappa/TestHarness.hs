@@ -514,7 +514,7 @@ executeSuite label files mode entries asserts = do
   where
     doRun cu diags
       | hasErrors diags =
-          pure (RunInfo "" (T.unlines (map renderDiagLine diags)) 1)
+          pure (RunInfo "" (T.unlines (map renderDiagnostic diags)) 1)
       | otherwise = do
           let st = cuState cu
               entryName = case entries of
@@ -552,17 +552,6 @@ entryGlobal cu entryName =
 
 runTimeoutMicros :: Int
 runTimeoutMicros = 30 * 1000 * 1000
-
-renderDiagLine :: Diagnostic -> Text
-renderDiagLine d =
-  let Span f (Pos l c) _ = dPrimary d
-      sev = case dSeverity d of
-        SevError -> "error"
-        SevWarning -> "warning"
-        SevNote -> "note"
-        SevInfo -> "info"
-   in T.pack f <> ":" <> tshow l <> ":" <> tshow c <> ": "
-        <> sev <> "[" <> dCode d <> "]: " <> dMessage d
 
 -- ── Assertion evaluation ─────────────────────────────────────────────
 

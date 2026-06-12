@@ -14,7 +14,6 @@
 module Kappa.Parser
   ( parseModule
   , parseExprText
-  , parseTypeText
   ) where
 
 import Control.Applicative (Alternative (..), optional)
@@ -48,9 +47,6 @@ parseExprText path src = do
     Right (e, _) -> Right e
   where
     pTopExpr = pSkipLayout *> pExpr
-
-parseTypeText :: FilePath -> Text -> Either Diagnostic Expr
-parseTypeText = parseExprText
 
 errToDiag :: PErr -> Diagnostic
 errToDiag (PErr sp msg expected) =
@@ -224,12 +220,10 @@ pDecl = do
     Just "data" -> do
       d <- pDataDecl
       withSpan (DData mods d)
-    Just "type"
-      | not (dmScoped mods) || True -> do
-          -- `type` may also begin a kind-qualified expression, but at
-          -- declaration position it is always the alias form.
-          d <- pTypeAlias mods start
-          pure d
+    Just "type" -> do
+      -- `type` may also begin a kind-qualified expression, but at
+      -- declaration position it is always the alias form.
+      pTypeAlias mods start
     Just "trait" -> do
       d <- pTraitDecl
       withSpan (DTrait mods d)
@@ -335,7 +329,7 @@ pMods = go noMods
       peekIdent >>= \case
         Just "public" | dmVisibility acc == VisDefault -> pKeyword "public" >> go acc {dmVisibility = VisPublic}
         Just "private" | dmVisibility acc == VisDefault -> pKeyword "private" >> go acc {dmVisibility = VisPrivate}
-        Just "opaque" | not (dmOpaque acc), notTypeAliasAhead -> pKeyword "opaque" >> go acc {dmOpaque = True}
+        Just "opaque" | not (dmOpaque acc) -> pKeyword "opaque" >> go acc {dmOpaque = True}
         Just "scoped" | not (dmScoped acc) -> do
           -- `scoped` only before data/type/trait/effect
           nxt <- peekTokenAt 1
@@ -343,8 +337,6 @@ pMods = go noMods
             TokIdent k | k `elem` ["data", "type", "trait", "effect"] -> pKeyword "scoped" >> go acc {dmScoped = True}
             _ -> pure acc
         _ -> pure acc
-      where
-        notTypeAliasAhead = True
 
 -- let definitions: named function, simple value, or pattern binding.
 pLetDef :: P LetDef
@@ -355,7 +347,9 @@ pLetDef = do
     named = try $ do
       n <- pSigName
       binders <- pParamBinders
-      resTy <- optionMaybe (token TokColon *> noEq pExprNoDecreases)
+      -- "decreases" is a global stop keyword, so the result type ends
+      -- before any decreases clause
+      resTy <- optionMaybe (token TokColon *> noEq pExpr)
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
@@ -387,18 +381,14 @@ pDecreases = do
     measure = do
       -- `by` separates the measure from its ordering relation here, so
       -- it is an active stop keyword within the measure expression only.
-      m <- withExtraStops ["by"] pExprNoDecreases
-      by <- optionMaybe (pKeyword "by" *> pExprNoDecreases)
-      us <- optionMaybe (pKeyword "using" *> pExprNoDecreases)
+      m <- withExtraStops ["by"] pExpr
+      by <- optionMaybe (pKeyword "by" *> pExpr)
+      us <- optionMaybe (pKeyword "using" *> pExpr)
       pure (DecMeasure m by us)
 
 -- A definition body: inline expression or indented suite (§9.3.1 sugar).
 pDefBody :: P Expr
 pDefBody = pSuiteOrExpr
-
--- Expression in signature/annotation position: stops before `decreases`.
-pExprNoDecreases :: P Expr
-pExprNoDecreases = pExpr
 
 -- data declarations (§10.1)
 pDataDecl :: P DataDecl
@@ -1315,8 +1305,9 @@ pChainElems = do
           void anyToken
           continueAfterOp (Name "=" sp)
         TokOperator op
-          | op /= "=>" && op /= "*" || op == "*" -> do
-              -- '*' could be a wildcard only in imports; safe here.
+          -- '=>' never continues a chain; '*' could be a wildcard only
+          -- in imports, so it is safe as an infix operator here.
+          | op /= "=>" -> do
               opN <- pOperatorTok
               continueAfterOp opN
         TokElvis -> do
@@ -1581,14 +1572,12 @@ parseInterps sl _sp = go 0 (slFragments sl)
     go _ [] = pure []
     go i (frag : rest) = case frag of
       FragLit _ -> go (i + 1) rest
-      FragInterp src isp -> withParsed i src isp rest Nothing
-      FragInterpFmt src isp _ -> withParsed i src isp rest Nothing
-    withParsed i src isp rest _ =
-      case parseExprText (spanFile isp) srcPadded of
+      FragInterp src isp -> withParsed i src isp rest
+      FragInterpFmt src isp _ -> withParsed i src isp rest
+    withParsed i src isp rest =
+      case parseExprText (spanFile isp) src of
         Left d -> parseFailAt isp (dMessage d)
         Right e -> (InterpPart i e :) <$> go (i + 1) rest
-      where
-        srcPadded = src
 
 -- Parenthesized forms: unit, grouping, ascription, tuples, record
 -- literals, record types, sections, operator references.
@@ -1809,10 +1798,10 @@ pEffRow start = do
 pListOrComp :: Span -> P Expr
 pListOrComp start = do
   token TokLBracket
-  t <- peekFirstMeaningful
+  t <- peekToken
   case t of
     TokRBracket -> do
-      void (keepSkip (token TokRBracket))
+      token TokRBracket
       EListLit [] <$> spanFrom start
     TokIdent kw | kw `elem` ["yield", "for", "for?"] -> do
       (cs, y) <- pCompBody
@@ -1823,16 +1812,11 @@ pListOrComp start = do
       void (optional (token TokComma))
       token TokRBracket
       EListLit es <$> spanFrom start
-  where
-    keepSkip = id
-
-peekFirstMeaningful :: P Token
-peekFirstMeaningful = peekToken
 
 pSetOrComp :: Span -> P Expr
 pSetOrComp start = do
   token TokSetOpen
-  t <- peekFirstMeaningful
+  t <- peekToken
   case t of
     TokSetClose -> do
       token TokSetClose
@@ -1850,7 +1834,7 @@ pSetOrComp start = do
 pMapOrComp :: Span -> P Expr
 pMapOrComp start = do
   token TokLBrace
-  t <- peekFirstMeaningful
+  t <- peekToken
   case t of
     TokRBrace -> do
       token TokRBrace
@@ -2097,14 +2081,17 @@ pIfExpr = do
       pKeyword "else"
       pSuiteOrExpr
 
+-- A match label is inert in the supported subset: no construct may
+-- target it (break/continue target loops, defer targets do-scopes,
+-- return targets functions and lambdas, §18.2.5), so it is accepted
+-- and dropped here.
 pMatchExpr :: Maybe Name -> P Expr
-pMatchExpr label = do
+pMatchExpr _inertLabel = do
   start <- currentSpan
   pKeyword "match"
   scrut <- pExpr
   cases <- pCaseBlock
   sp <- spanFrom start
-  let _ = label
   pure (EMatch scrut cases sp)
 
 -- Aligned or indented case clauses (§17.1).

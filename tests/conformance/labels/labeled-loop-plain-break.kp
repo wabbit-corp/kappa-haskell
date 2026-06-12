@@ -1,0 +1,12 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "in-loop\nafter-labeled-loop\n"
+
+-- §18.2.5: an unlabeled break targets the nearest enclosing loop even
+-- when that loop carries a label; it must not escape past it.
+main : UIO Unit
+let main = do
+    l@while eqInt 1 1 do
+        printlnString "in-loop"
+        break
+    printlnString "after-labeled-loop"

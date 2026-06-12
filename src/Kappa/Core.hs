@@ -121,13 +121,13 @@ data KItem
   | KExpr !Term
   | KVarItem !Text !Term -- ^ var x = e
   | KAssign !Term !Bool !Term -- ^ ref-term, monadic?, rhs (x = e / x <- e)
-  | KReturn !(Maybe Text) !Term
+  | KReturn !Term
   | KBreak !(Maybe Text)
   | KContinue !(Maybe Text)
   | KWhile !(Maybe Text) !Term ![KItem] !(Maybe [KItem])
   | KFor !(Maybe Text) !CorePat !Term ![KItem] !(Maybe [KItem])
   | KIf ![(Term, [KItem])] !(Maybe [KItem])
-  | KDefer !(Maybe Text) !Term
+  | KDefer !Term
   | KUsing !CorePat !Term !Term -- ^ pattern, acquire, release-dict-member
   deriving stock (Eq, Show)
 

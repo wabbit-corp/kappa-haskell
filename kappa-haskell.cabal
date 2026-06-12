@@ -78,3 +78,6 @@ test-suite kappa-test
     hs-source-dirs:   test
     default-language: GHC2021
     default-extensions: LambdaCase, OverloadedStrings
+    -- same RTS stack limit as the executable, so deep-recursion fixtures
+    -- behave identically under 'cabal test' and the CLI
+    ghc-options:      -rtsopts "-with-rtsopts=-K64m"
