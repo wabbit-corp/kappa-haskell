@@ -383,8 +383,20 @@ pMods = go noMods
 pLetDef :: P LetDef
 pLetDef = do
   -- Try named definition first: name binder* [: T] [decreases ...] = body
-  named <|> patBinding
+  implicitBinding <|> named <|> patBinding
   where
+    -- `let (@q x : T) = e` implicit local candidate (§9.3)
+    implicitBinding = try $ do
+      token TokLParen
+      token TokAt
+      prefix <- pBinderPrefix
+      n <- pIdent
+      token TokColon
+      ty <- noEq pExpr
+      token TokRParen
+      token TokEquals
+      body <- pDefBody
+      pure (LetDef Nothing True (Just (PVar n)) prefix [] (Just ty) Nothing body)
     named = try $ do
       n <- pSigName
       binders <- pParamBinders
@@ -394,7 +406,7 @@ pLetDef = do
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
-      pure (LetDef (Just n) Nothing emptyPrefix binders resTy dec body)
+      pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec body)
     patBinding = do
       -- `let 1 x = e` / `let &b = e` prefixed bindings (§12.2, §12.3.1)
       prefix <- pBinderPrefix
@@ -402,7 +414,7 @@ pLetDef = do
       ty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
       body <- pDefBody
-      pure (LetDef Nothing (Just pat) prefix [] ty Nothing body)
+      pure (LetDef Nothing False (Just pat) prefix [] ty Nothing body)
 
 pDecreases :: P Decreases
 pDecreases = do

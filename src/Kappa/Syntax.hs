@@ -409,6 +409,7 @@ data ProjBody
 
 data LetDef = LetDef
   { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
+  , ldImplicit :: !Bool -- ^ @let (\@q x : T) = e@ implicit local (§9.3)
   , ldPattern :: !(Maybe Pattern) -- ^ 'Just' for pattern bindings
   , ldPrefix :: !BinderPrefix -- ^ @let 1 pat = e@ / @let & pat = e@ prefix (§12.2, §12.3.1)
   , ldBinders :: ![Binder]

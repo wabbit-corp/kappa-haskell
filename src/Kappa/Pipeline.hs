@@ -273,7 +273,7 @@ moduleExportNames m = nub (concatMap go (modDecls m))
       VisDefault -> not pbd
     go = \case
       DSig mods n _ _ -> [nameText n | vis mods]
-      DLet mods (LetDef (Just n) _ _ _ _ _ _) _ -> [nameText n | vis mods]
+      DLet mods (LetDef (Just n) _ _ _ _ _ _ _) _ -> [nameText n | vis mods]
       DData mods (DataDecl n _ _ ctors) _
         | vis mods -> nameText n : [nameText cn | CtorDecl cn _ _ _ <- ctors]
       DTypeAlias mods n _ _ _ _ -> [nameText n | vis mods]

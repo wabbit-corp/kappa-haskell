@@ -1006,10 +1006,10 @@ walkBinds env binds = go env binds
 declsToBinds :: [Decl] -> M [LetBind]
 declsToBinds [] = pure []
 declsToBinds (d : ds) = case d of
-  DLet _ (LetDef (Just n) Nothing prefix [] _ Nothing body) sp ->
+  DLet _ (LetDef (Just n) _ Nothing prefix [] _ Nothing body) sp ->
     (LetBind False prefix (PVar n) Nothing body sp :) <$> declsToBinds ds
-  DLet _ (LetDef Nothing (Just pat) prefix [] mty Nothing body) sp ->
-    (LetBind False prefix pat mty body sp :) <$> declsToBinds ds
+  DLet _ (LetDef Nothing imp (Just pat) prefix [] mty Nothing body) sp ->
+    (LetBind imp prefix pat mty body sp :) <$> declsToBinds ds
   DSig {} -> declsToBinds ds
   _ -> bailOut >> pure []
 
