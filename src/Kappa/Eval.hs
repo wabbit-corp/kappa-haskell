@@ -471,6 +471,10 @@ convertible ctx = go (200 :: Int)
       -- record η: zero-field record ≡ Unit value
       (VRecordV [], VCtor (GName _ "Unit") []) -> True
       (VCtor (GName _ "Unit") [], VRecordV []) -> True
+      -- record η (§31.1): a literal of projections of one neutral
+      -- receiver is that receiver
+      (VRecordV fs@(_ : _), t) | etaRecord fs t -> True
+      (t, VRecordV fs@(_ : _)) | etaRecord fs t -> True
       (VVariantT m1, VVariantT m2) ->
         length m1 == length m2 && and (zipWith (go (fuel - 1) lvl) m1 m2)
       (VInject t1 x1, VInject t2 x2) -> t1 == t2 && go (fuel - 1) lvl x1 x2
@@ -496,6 +500,9 @@ convertible ctx = go (200 :: Int)
         goSpine fl l sp1 sp2 =
           length sp1 == length sp2
             && and (zipWith (\(_, a) (_, b) -> go (fl - 1) l a b) sp1 sp2)
+        etaRecord fs t = case t of
+          VRecordV _ -> False -- the structural rule above decides
+          _ -> all (\(f, x) -> go (fuel - 1) lvl x (vproj ctx t f)) fs
 
 -- | Pure primitive reduction shared by conversion and runtime.
 evalPurePrim :: Text -> [Value] -> Maybe Value

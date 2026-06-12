@@ -74,6 +74,8 @@ builtinState =
       , (prel "Byte", opaqueTy (tyV tType)) -- §28.2 single byte (§6.5 'b' handler)
       , (prel "Bytes", opaqueTy (tyV tType))
       , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
+      , -- §12.3.1 capture-annotated type former: part of type identity (§31.1)
+        (prel "__captures", opaqueTy (tyV (tType ~> tcon "Region" ~> tType)))
       , (prel "Duration", opaqueTy (tyV tType)) -- §18.1 monotonic time difference
       , (prel "Instant", opaqueTy (tyV tType)) -- §18.1 monotonic time value
       , (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13

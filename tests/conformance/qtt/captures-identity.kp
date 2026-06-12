@@ -1,0 +1,15 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- §12.3.1/§31.1: the capture set is part of type identity; capture
+-- subsumption is NOT definitional equality. A closure literal still
+-- introduces at the underlying type.
+
+makeGetter : forall (s : Region). (&[s] x : Int) -> ((Unit -> Int) captures (s))
+let makeGetter (@0 s : Region) (&[s] x : Int) : ((Unit -> Int) captures (s)) =
+    \() -> x
+
+bad :
+    forall (s : Region) (t : Region).
+    (((Unit -> Int) captures (s, t)) -> ((Unit -> Int) captures (s)))
+let bad (f : ((Unit -> Int) captures (s, t))) : ((Unit -> Int) captures (s)) = f

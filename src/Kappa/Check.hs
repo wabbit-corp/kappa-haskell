@@ -694,6 +694,22 @@ expectType ctx sp actual expected = do
               diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
                 "type mismatch"
 
+-- | Is the value a §12.3.1 capture-annotated type?
+isCapturesV :: Value -> Bool
+isCapturesV = \case
+  VGlobN (GName pm "__captures") _ | pm == preludeModule -> True
+  _ -> False
+
+-- | Strip §12.3.1 capture-annotation layers (elimination positions use
+-- the underlying type; the annotation itself is part of type identity).
+peelCapturesM :: Value -> CheckM Value
+peelCapturesM v = do
+  v' <- forceM v
+  case v' of
+    VGlobN (GName pm "__captures") ((_, inner) : _)
+      | pm == preludeModule -> peelCapturesM inner
+    _ -> pure v'
+
 -- | Is the value (in whnf) headed by a projection of an opaque member
 -- of a sealed package (§13.2.10)?
 opaqueSealHead :: Value -> CheckM Bool
@@ -1552,7 +1568,21 @@ infer ctx expr = case expr of
     anyHole ctx
   ERecordPatch e items sp -> elabPatch ctx e items sp
   EComprehension k cs y sp -> elabComprehension ctx k cs y sp
-  ECaptures e _ _ -> infer ctx e -- erased capture annotation
+  -- §12.3.1/§31.1: the capture set is part of type identity; encode
+  -- as a left-nested '__captures' spine in canonical (sorted) order
+  ECaptures e regions _ -> do
+    (tTm, _) <- inferType ctx e
+    rs <- forM regions $ \rn -> do
+      (rTm, rTy) <- infer ctx (EVar rn)
+      expectType ctx (nameSpan rn) rTy (VGlobN (gPrel "Region") [])
+      pure rTm
+    let sorted = sortOn renderTerm (nub rs)
+        capTm =
+          foldl'
+            (\acc r -> CApp Expl (CApp Expl (CGlob (gPrel "__captures")) acc) r)
+            tTm
+            sorted
+    pure (capTm, VSort 0)
   EKindQualified sel n sp -> elabKindQualified ctx sel n sp
   EModuleSig _ sp -> unsupported ctx sp "moduleSig"
   EImpossible sp -> do
@@ -1578,6 +1608,12 @@ check ctx expr expected0 = do
           cod <- clApp clo (VRigid (ctxLen ctx) [])
           inner <- check ctx' (ELambda l bs body sp) cod
           pure (CLam Impl q nm inner)
+    -- §12.3.1: a closure literal checked at a capture-annotated type
+    -- introduces at the underlying type (the annotation licenses the
+    -- captures; it does not change the introduction form)
+    (ELambda {}, VGlobN (GName pm "__captures") ((_, inner) : _))
+      | pm == preludeModule ->
+          check ctx expr =<< forceM inner
     (ELambda _ bs body sp, _) -> do
       (tm, ty) <- elabLambda ctx bs body sp (Just expected)
       expectType ctx sp ty expected
@@ -1715,10 +1751,13 @@ check ctx expr expected0 = do
       fst <$> anyHole ctx
     (ERecordLit items lsp, VRecordT fs) -> do
       depTy <- recordTypeIsDependent ctx fs
+      -- a capture-annotated field type needs field-directed checking
+      -- (the closure literal introduces at the underlying type)
+      capTy <- or <$> mapM (fmap isCapturesV . forceM . snd) fs
       let depVal =
             isNothing (lookupCtx "this" ctx)
               && not (null (concat [surfaceThisRefs e | RecItem _ _ (Just e) <- items]))
-      if depTy || depVal
+      if depTy || depVal || capTy
         then do
           (tm, ty) <- elabDependentRecordLit ctx items fs lsp
           expectType ctx lsp ty expected
@@ -1728,6 +1767,11 @@ check ctx expr expected0 = do
           (tm1, ty1) <- insertAllImplicits ctx lsp tm ty
           expectType ctx lsp ty1 expected
           pure tm1
+    -- a parenthesized list in type position is the tuple type (§13.1)
+    (ETuple {}, VSort _) -> do
+      (tm, ty) <- inferT ctx expr
+      expectType ctx (exprSpan expr) ty expected
+      pure tm
     (ETuple es sp, VRecordT fs)
       | length es == length fs -> do
           -- expected-type-directed punning (§13.1.2): a parenthesized
@@ -2249,7 +2293,8 @@ stablePlaceExpr = \case
 elabSpine :: Ctx -> Span -> Term -> Value -> [Arg] -> CheckM (Term, Value)
 elabSpine _ _ fTm fTy [] = pure (fTm, fTy)
 elabSpine ctx sp fTm fTy0 (arg : rest) = do
-  fTy <- forceM fTy0
+  -- §12.3.1: a capture-annotated callable applies at its underlying type
+  fTy <- peelCapturesM fTy0
   case arg of
     -- §18.9.3/§18.9.6: '~' is valid only inside a do block; recover
     -- with a hole so the broken spine does not cascade a type mismatch
@@ -3761,14 +3806,65 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           let ctx' = bindCtxLet "_" False rhsTy rhsV ctx
           go ctx' rest ((QW, "_", rhsTyTm, rhsTm, False) : acc)
         _ -> do
-          -- irrefutable destructuring: elaborate as single-case match by
-          -- rewriting `let pat = rhs; rest` to `match rhs case pat -> ...`
-          (patC, ctx', _) <- elabPattern ctx pat rhsTy
-          (bodyTm, bodyTy) <- goUnder ctx' rest
-          checkIrrefutable ctx pat rhsTy sp
-          let matchTm = CMatch rhsTm [CaseAlt patC Nothing bodyTm]
-          pure (foldl' (flip mkLet) matchTm acc, bodyTy)
+          rhsTyF <- forceM rhsTy
+          let mProj = case (pat, rhsTyF) of
+                -- a variables-only tuple/record pattern over a closed
+                -- record type destructures by projection, so the
+                -- binding normalizes for definitional equality (§31.1)
+                (PTuple ps _, VRecordT fs)
+                  | Just ns <- mapM patVarName ps
+                  , length ns == length fs ->
+                      Just (zip ns (map fst fs), fs)
+                (PRecord items Nothing _, VRecordT fs)
+                  | Just ns <- mapM recItemVar items
+                  , sort (map fst ns) == map fst fs ->
+                      Just ([(fromMaybe Nothing (lookup f ns), f) | (f, _) <- fs], fs)
+                _ -> Nothing
+          case mProj of
+            Just (named, fs) -> do
+              rhsTyTm <- quoteIn ctx rhsTy
+              rhsV <- evalIn ctx rhsTm
+              let q = qOf (bpQuantity prefix)
+                  scrutN = "__scrut"
+                  ctxS = bindCtxLet scrutN False rhsTy rhsV ctx
+              let bindFields c _ [] = pure (c, [])
+                  bindFields c i ((mn, f) : restFs) = do
+                    let projTm = CProj (CVar i) f
+                    projV <- evalIn c projTm
+                    fldTy <- case lookup f fs of
+                      Just t -> substThisInto c (CVar i) t
+                      Nothing -> freshMetaV c
+                    fldTyTm <- quoteIn c fldTy
+                    let nm = maybe "_" nameText mn
+                        c' = bindCtxLet nm False fldTy projV c
+                    (cFin, more) <- bindFields c' (i + 1) restFs
+                    pure (cFin, (nm, fldTyTm, projTm) : more)
+              (ctxFin, projBinds) <- bindFields ctxS 0 named
+              (bodyTm, bodyTy) <- goUnder ctxFin rest
+              checkIrrefutable ctx pat rhsTy sp
+              let inner = foldr (\(nm, tyT, tm) b -> CLet q nm tyT tm b) bodyTm projBinds
+                  whole = CLet q scrutN rhsTyTm rhsTm inner
+              pure (foldl' (flip mkLet) whole acc, bodyTy)
+            Nothing -> do
+              -- irrefutable destructuring: elaborate as single-case
+              -- match by rewriting `let pat = rhs; rest` to
+              -- `match rhs case pat -> ...`
+              (patC, ctx', _) <- elabPattern ctx pat rhsTy
+              (bodyTm, bodyTy) <- goUnder ctx' rest
+              checkIrrefutable ctx pat rhsTy sp
+              let matchTm = CMatch rhsTm [CaseAlt patC Nothing bodyTm]
+              pure (foldl' (flip mkLet) matchTm acc, bodyTy)
       where
+        patVarName = \case
+          PVar n -> Just (Just n)
+          PWild _ -> Just Nothing
+          _ -> Nothing
+        recItemVar (False, f, mp) = case mp of
+          Nothing -> Just (nameText f, Just f)
+          Just (PVar n) -> Just (nameText f, Just n)
+          Just (PWild _) -> Just (nameText f, Nothing)
+          _ -> Nothing
+        recItemVar _ = Nothing
         goUnder c rs = case rs of
           [] -> case mexpected of
             Just t -> (,t) <$> check c body t

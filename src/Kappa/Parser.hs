@@ -1615,9 +1615,12 @@ pSuffixes e = do
       m <- pDotMember
       pSuffixes (EQDot e m)
     -- Adjacent `?` = Option sugar (§13.1.9), tighter than application.
+    -- Adjacency is measured against the last consumed token (the
+    -- closing paren of a parenthesized type, not the inner expression).
     TokOperator "?" -> do
       sp <- currentSpan
-      end <- pure (spanEnd (exprSpan e))
+      prevEnd <- spanEnd <$> lastSpan
+      let end = max prevEnd (spanEnd (exprSpan e))
       if spanStart sp == end
         then do
           void anyToken

@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.1 conversion details mirrored from the external corpus:
+-- record eta, irrefutable tuple-let normalization, optional-type
+-- sugar on parenthesized types (§13.1.9).
+
+etaProof : forall (r : (x : Int, y : Int)). r = (x = r.x, y = r.y)
+let etaProof r = refl
+
+bothStep : (Int, Int) -> (Int, Int)
+let bothStep pair =
+    let (left, right) = pair
+    (left + 1, right + 1)
+
+sameStep : forall (pair : (Int, Int)). bothStep pair = let (left, right) = pair in (left + 1, right + 1)
+let sameStep pair = refl
+
+maybeCallable : (Unit -> Int)?
+let maybeCallable = Some (\() -> 42)
+
+maybePair : (Int, String)?
+let maybePair = Some (42, "ok")
