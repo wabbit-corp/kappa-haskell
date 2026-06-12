@@ -1,0 +1,19 @@
+--! assertNoErrors
+
+-- §12.2 usage intervals: a linear binding consumed exactly once on
+-- every path; borrow-uses (§12.3) do not consume.
+module main
+
+data Token : Type =
+    Token
+
+inspect : (& t : Token) -> Unit
+let inspect t = ()
+
+consume : (1 t : Token) -> Unit
+let consume t = unsafeConsume t
+
+demo : (1 t : Token) -> Unit
+let demo t =
+    let _ = inspect t
+    if True then consume t else consume t

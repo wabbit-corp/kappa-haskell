@@ -1,0 +1,8 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE
+
+-- §12.2.1: erased (quantity 0) parameters cannot be used at runtime.
+module main
+
+bad : (@0 n : Nat) -> Unit -> Nat
+let bad n = \_ -> n

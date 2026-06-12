@@ -74,6 +74,8 @@ Implemented:
 | `assertTraceCount EVENT SUBJECT RELOP N` | portable trace counts; this pipeline records `parse`/file, `buildKFrontIR`/file, `lowerKCore`/module per compiled file (the prelude bootstrap contributes none); all other portable event/subject pairs count 0 |
 | `assertDiagnosticCodes c1, c2, …`, `assertEval NAME EXPR` | compatibility extensions for the external corpus (§T.1 allows nonstandard directives) |
 | `x-assertEval`, `x-assertEvalErrorContains`, `x-assertDeclDescriptors`, `x-assertTraitMembers` | supported `x-` extensions (§T.3/§T.1); `assertEval` subjects resolve in the directive file's own module (§T.6); unsupported `x-` directives still classify the test unsupported per §T.3 |
+| `allow_unsafe_consume` | compatibility config (no-op): the corpus gates its `unsafeConsume` linear sink behind it; this prelude always provides `unsafeConsume : (@0 a : Type) -> (1 x : a) -> Unit` (and `printInt`) as documented extras beyond the §28.2 minimum |
+| `assertParameterQuantities NAME q1 q2 …` | compatibility extension: the named let's explicit parameters carry exactly these §12.1.1 binder prefixes (`0`/`1`/`ω`/`<=1`/`>=1`/`&`/`&[r]`; bare default renders `ω`) |
 
 A `mode run` entry whose final value is not `Unit` is rendered to
 stdout followed by a newline (matching the reference run task, e.g.

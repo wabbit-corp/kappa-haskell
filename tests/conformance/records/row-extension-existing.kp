@@ -1,0 +1,10 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_ROW_EXTENSION_EXISTING_FIELD
+
+-- §13.2.6: ':=' may only introduce an absent label.
+module main
+
+type Point : Type = (x : Int, y : Int)
+
+bad : Point -> Point
+let bad (p : Point) : Point = p.{ x := 9 }

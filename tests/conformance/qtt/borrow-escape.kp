@@ -1,0 +1,15 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §12.3.2: a closure capturing an anonymous borrow may not escape
+-- through the result.
+module main
+
+data Box : Type =
+    Box Int
+
+read : (& b : Box) -> Int
+let read b = 0
+
+bad : (& b : Box) -> (Unit -> Int)
+let bad b = \_ -> read b

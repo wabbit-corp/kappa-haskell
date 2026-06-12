@@ -1,0 +1,11 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §12.2.5: a linear binding untouched on some path is dropped.
+module main
+
+data Token : Type =
+    Token
+
+bad : (1 t : Token) -> Unit
+let bad t = ()

@@ -1,0 +1,16 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §12.2: a linear binding used on two sequential paths is overused.
+module main
+
+data Token : Type =
+    Token
+
+consume : (1 t : Token) -> Unit
+let consume t = unsafeConsume t
+
+bad : (1 t : Token) -> Unit
+let bad t =
+    let _ = consume t
+    consume t

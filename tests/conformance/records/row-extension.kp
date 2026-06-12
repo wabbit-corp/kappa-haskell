@@ -1,0 +1,16 @@
+--! assertNoErrors
+
+-- §13.2.6 closed-record row extension and §13.2.5 nested patch paths.
+module main
+
+type Base : Type = (name : String,)
+type Extended : Type = (name : String, age : Int)
+
+extend : Base -> Extended
+let extend (b : Base) : Extended = b.{ name = "Ada", age := 36 }
+
+type Address : Type = (city : String, zip : Int)
+type User : Type = (name : String, address : Address)
+
+relocate : User -> User
+let relocate (u : User) : User = u.{ address.city = "Paris" }
