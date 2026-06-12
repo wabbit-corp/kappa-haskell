@@ -91,12 +91,16 @@ data CheckState = CheckState
   -- ^ §9.4 expect declarations: span and number of satisfiers seen
   , csSigPending :: !(Map GName Span)
   -- ^ §9.1 top-level signatures not yet satisfied in this file
+  , csManifest :: !(Map GName ())
+  -- ^ §2.8.4 manifest bindings (no widening signature): reified
+  -- static-object identity is preserved through them
   }
 
 initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
+    Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -1634,6 +1638,33 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
           ("kind-qualified name does not resolve to a static object: '" <> n <> "' (Spec §2.8.6)")
         anyHole ctx
 
+-- | §2.8.4: the manifest value of a receiver term — resolved through
+-- local definientia, module-level lets without widening signatures,
+-- record projections of such, and direct (immediately-used) results.
+-- A binding under a widening signature forgets static-object identity.
+manifestValue :: Ctx -> Term -> CheckM (Maybe Value)
+manifestValue ctx tm = case tm of
+  CGlob g -> do
+    st <- get
+    if Map.member g (csManifest st) || Map.member g (csDatas st)
+      then case Map.lookup g (csGlobals st) >>= gdValue of
+        Just v -> Just <$> forceM v
+        Nothing -> pure (Just (VGlobN g []))
+      else pure Nothing
+  CProj t f -> do
+    mv <- manifestValue ctx t
+    case mv of
+      Just (VRecordV fs) | Just v <- lookup f fs -> Just <$> forceM v
+      _ -> pure Nothing
+  CVar i -> case drop i (ctxEnv ctx) of
+    (v : _) -> do
+      v' <- forceM v
+      pure $ case v' of
+        VRigid {} -> Nothing -- an opaque binder, not a let definiens
+        _ -> Just v'
+    [] -> pure Nothing
+  _ -> Just <$> (evalIn ctx tm >>= forceM)
+
 -- a reified module object (§2.8.6): a record carrying the module
 -- identity in a tag field, so member access through rebindings works
 moduleObjectFor :: ModuleName -> (Term, Value)
@@ -1734,10 +1765,11 @@ elabDotUnqualified ctx e member mname = do
       (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
       -- §2.8.3/§2.8.6: a receiver VALUE that is a reified type object
       -- selects static constructors; a reified module object selects
-      -- module members
-      rv <- evalIn ctx tm1 >>= forceM
+      -- module members. Only §2.8.4 manifest bindings (no widening
+      -- signature) preserve the identity.
+      mrv <- manifestValue ctx tm1
       st0 <- get
-      case rv of
+      case fromMaybe (VRecordV []) mrv of
         VGlobN d _
           | Just di <- Map.lookup d (csDatas st0)
           , (ctorG : _) <- [c | c <- diCtors di, gnameText c == nameText mn0] -> do
@@ -3471,6 +3503,11 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
   noteDefinition g sp
   st <- get
   msig <- pure (Map.lookup g (csGlobals st))
+  case msig of
+    Just gd | Nothing <- gdValue gd -> pure ()
+    _ ->
+      -- no governing signature: the binding is manifest (§2.8.4)
+      modify' $ \stM -> stM {csManifest = Map.insert g () (csManifest stM)}
   case msig of
     Just gd | Nothing <- gdValue gd -> do
       -- Pending goals raised inside the signature may have been solved
