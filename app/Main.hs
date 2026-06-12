@@ -9,9 +9,10 @@ import Kappa.Check (CheckState (..))
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
 import Kappa.Eval (Globals (..))
+import Kappa.Explain (lookupCode, renderEntry)
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
-import Kappa.TestHarness (Summary (..), runTestPath, summarize)
+import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.IO (hPutStrLn, stderr)
@@ -22,10 +23,21 @@ main = do
   case args of
     ["check", path] -> cmdCheck path
     ["run", path] -> cmdRun path
-    ["test", path] -> cmdTest path
+    ["test", path] -> cmdTest runTestPath path
+    ["test", "--suite", path] -> cmdTest runTestSuitePath path
+    ["explain", code] -> cmdExplain (T.pack code)
     _ -> do
-      hPutStrLn stderr "usage: kappa (check|run|test) PATH"
+      hPutStrLn stderr "usage: kappa (check|run|test [--suite]) PATH | kappa explain CODE"
       exitFailure
+
+-- | §3.1.2A: print the registry explanation for a diagnostic code;
+-- unknown codes are rejected deterministically.
+cmdExplain :: T.Text -> IO ()
+cmdExplain code = case lookupCode code of
+  Just e -> TIO.putStr (renderEntry e) >> exitSuccess
+  Nothing -> do
+    TIO.hPutStrLn stderr ("error: unknown diagnostic code '" <> code <> "'")
+    exitFailure
 
 cmdCheck :: FilePath -> IO ()
 cmdCheck path = do
@@ -53,9 +65,10 @@ cmdRun path = do
       exitWith (ExitFailure 1)
 
 -- | Appendix T harness over a file or directory tree (§T.2, §T.8).
-cmdTest :: FilePath -> IO ()
-cmdTest path = do
-  reports <- runTestPath path
+-- @--suite@ treats the directory as exactly one suite root.
+cmdTest :: (FilePath -> IO [TestReport]) -> FilePath -> IO ()
+cmdTest runner path = do
+  reports <- runner path
   let s = summarize reports
   putStrLn $
     "total " <> show (length reports)

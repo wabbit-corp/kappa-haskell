@@ -38,6 +38,7 @@ library
         Kappa.Core
         Kappa.Diagnostic
         Kappa.Eval
+        Kappa.Explain
         Kappa.Interp
         Kappa.Lexer
         Kappa.Parser
@@ -45,6 +46,7 @@ library
         Kappa.Pipeline
         Kappa.Prelude
         Kappa.Pretty
+        Kappa.Regex
         Kappa.Resolve
         Kappa.Source
         Kappa.Syntax

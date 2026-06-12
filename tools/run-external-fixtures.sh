@@ -2,7 +2,10 @@
 # Run the Appendix T harness over the external black-box fixture corpus
 # (another implementation's test suite) IN PLACE, and tally results.
 #
-# Usage: tools/run-external-fixtures.sh [FIXTURES_DIR] [RESULTS_MD] [STATS_TXT]
+# Usage: tools/run-external-fixtures.sh [FIXTURES_DIR] [RESULTS_MD] [STATS_TXT] [RAW_LOG]
+#
+# The raw per-fixture log (default /tmp/external-raw.log) feeds
+# tools/triage-external.sh.
 #
 # Each fixture directory (main.kp + optional suite.ktest) is executed as
 # one Appendix T directory suite by `kappa test`. Fixtures exercising
@@ -13,7 +16,7 @@ set -u
 FIXTURES="${1:-/opt/workspaces/kappa/tests/Kappa.Compiler.Tests/Fixtures}"
 RESULTS_MD="${2:-tests/external-results.md}"
 STATS_TXT="${3:-/tmp/external-stats.txt}"
-RAW_LOG="$(mktemp /tmp/external-raw.XXXXXX.log)"
+RAW_LOG="${4:-/tmp/external-raw.log}"
 
 if [ ! -d "$FIXTURES" ]; then
   echo "fixtures directory not found: $FIXTURES" >&2
@@ -27,12 +30,13 @@ if [ -z "$BIN" ]; then
   exit 2
 fi
 # One invocation per fixture directory: each is one §T.2 suite root
-# (multi-file fixtures compile all their .kp files together).
+# (multi-file fixtures compile all their .kp files together; --suite
+# forces this even when all .kp files live in subdirectories).
 : >"$RAW_LOG"
 for d in "$FIXTURES"/*/; do
   # kappa exits nonzero when a fixture fails, which is a normal result;
   # only synthesize a result line when none was produced (hang/crash)
-  if ! timeout 60 "$BIN" test "${d%/}" >>"$RAW_LOG" 2>&1; then
+  if ! timeout 60 "$BIN" test --suite "${d%/}" >>"$RAW_LOG" 2>&1; then
     if ! tail -3 "$RAW_LOG" | grep -qF "${d%/}"; then
       echo "HARNESS-ERROR ${d%/} (timeout or crash)" >>"$RAW_LOG"
     fi
@@ -69,6 +73,38 @@ total=$((pass + fail + unsup + herr))
   echo "| unsupported | $unsup |"
   echo "| harness error | $herr |"
   echo "| **total** | **$total** |"
+  echo
+  echo "## Classification rules (Appendix T)"
+  echo
+  echo "- **unsupported** per §T.8 covers: unmet \`requires\` preconditions"
+  echo "  (§T.4 — capabilities provided: \`runTask\`, \`pipelineTrace\`; not"
+  echo "  provided: \`stageDumps\`, \`incremental\`, and the nonstandard"
+  echo "  \`unicodeSourceWarnings\`/\`legacyCharAlias\` names, which §T.4"
+  echo "  does not list among the portable capabilities), \`x-\` extension"
+  echo "  directives this harness does not support (§T.3: an unsupported"
+  echo "  \`x-\` directive makes the test unsupported, never silently"
+  echo "  ignored), modes and backends with no implementation here"
+  echo "  (\`mode compile\`/\`mode analyze\`, \`backend\` profiles other"
+  echo "  than \`interpreter\` — there are no code generators; §T.4 makes"
+  echo "  unmet \`requires backend\` unsupported and \`scriptMode\` is not"
+  echo "  implemented), incremental step suites (§T.7 presumes Chapter 34"
+  echo "  session reuse; the \`incremental\` capability is not claimed),"
+  echo "  and the structured-diagnostic/stage-dump assertions (§T.5.1"
+  echo "  payload/label/related/fix/suppression, §T.5.3) whose underlying"
+  echo "  record fields this implementation's diagnostics do not carry."
+  echo "- **harness error** per §T.3: *\"Any unknown standard directive,"
+  echo "  malformed directive, or ill-typed directive argument is a harness"
+  echo "  error.\"* The corpus directives \`allow_unsafe_consume\`,"
+  echo "  \`assertRunStdout\`, \`assertExecute\`, \`assertEvalErrorContains\`,"
+  echo "  \`assertParameterQuantities\`, \`assertDoItemDescriptors\`,"
+  echo "  \`assertInoutParameters\`, and \`assertContainsTokenTexts\` appear"
+  echo "  nowhere in Appendix T (§T.4 configuration list, §T.5 assertion"
+  echo "  lists) nor anywhere else in Spec.md; they are another"
+  echo "  implementation's private, non-\`x-\`-prefixed directives, so the"
+  echo "  spec-mandated outcome is harnessError. (\`assertEval\` and"
+  echo "  \`assertDiagnosticCodes\` are likewise nonstandard but have an"
+  echo "  evident portable meaning; this harness implements them as"
+  echo "  documented compatibility extensions, as §T.1 permits.)"
   echo
   echo "## Unsupported, by reason"
   echo

@@ -1,21 +1,29 @@
 -- | Appendix T standard test harness.
 --
 -- Implements the §T.3 directive syntax, the §T.4 configuration subset
--- (@mode check@\/@mode run@), the §T.5.1 diagnostic assertions, §T.5.2
--- type\/shape assertions and §T.5.4 run assertions, with §T.8 result
--- classification (pass \/ fail \/ unsupported \/ harnessError).
+-- (@mode check@\/@mode run@, the @interpreter@ backend profile, the
+-- @runTask@ and @pipelineTrace@ capabilities), the §T.5.1 diagnostic
+-- assertions (including @assertDiagnosticMatch@ over a small
+-- ECMAScript-style regex engine and @assertDiagnosticExplainExists@
+-- over the §3.1.2A registry), §T.5.2 type\/shape assertions, §T.5.4 run
+-- assertions (including golden stdout\/stderr files), §T.5.5 portable
+-- trace counts, with §T.8 result classification (pass \/ fail \/
+-- unsupported \/ harnessError).
 --
--- Two §T.2 test forms are supported: single-file inline tests, and
--- directory suites (a directory containing @suite.ktest@ and\/or
--- @main.kp@ is one suite; all its @.kp@ files are compiled together).
--- Other directory arguments recurse over @**/*.kp@. See TESTING.md for
--- the supported subset and deliberate approximations.
+-- Test forms (§T.2): single-file inline tests; directory suites (a
+-- directory containing @suite.ktest@ and\/or @main.kp@ is one suite;
+-- all its @.kp@ files are compiled together); incremental step suites
+-- are recognized but classified unsupported (this implementation keeps
+-- no Chapter 34 session state, so it does not claim the @incremental@
+-- capability). Other directory arguments recurse over @**/*.kp@. See
+-- TESTING.md for the supported subset and deliberate approximations.
 module Kappa.TestHarness
   ( Outcome (..)
   , TestReport (..)
   , Summary (..)
   , runTestFile
   , runTestPath
+  , runTestSuitePath
   , summarize
   , reportLine
   ) where
@@ -35,15 +43,17 @@ import Kappa.Check (CheckState (..), checkModule)
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
-import Kappa.Interp (RunResult (..), runMainCaptured)
+import Kappa.Explain (explainExists)
+import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
+import Kappa.Pipeline (CompiledUnit (..), compileFilesIn, importScopeFor)
 import Kappa.Pretty (renderTerm)
+import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import Kappa.Syntax
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.Timeout (timeout)
 
 -- ── Public types ─────────────────────────────────────────────────────
@@ -105,15 +115,22 @@ data Assertion
   | ADiag !Sev !Text
   | ADiagNext !Sev !Text !Int -- ^ target line resolved at scan time
   | ADiagAt !Text !Sev !Text !Int !(Maybe Int)
+  | ADiagAtRange !Text !Sev !Text !Int !Int !Int !Int
+  | ADiagMatch !Text !Regex -- ^ original pattern text + compiled form
   | ADiagFamily !Sev !Text
+  | AExplainExists !Text -- ^ §3.1.2A registry lookup, code or family
   | AErrorCodes ![Text] -- ^ x-compatible: exact multiset of error codes
   | AEval !Text !Text -- ^ x-compatible: evaluate a global, compare rendering
   | AType !Text !Text
   | ADeclKinds ![Text]
+  | AFileDeclKinds !Text ![Text] -- ^ path is suite-root relative
   | AStdout !Text
   | AStdoutContains !Text
   | AStderrContains !Text
+  | AStdoutFile !Text
+  | AStderrFile !Text
   | AExitCode !Int
+  | ATraceCount !Text !Text !Text !Int -- ^ event subject relop n
 
 -- One scanned directive, already classified.
 data Scanned
@@ -131,41 +148,49 @@ declKindNames =
   , "trait", "instance", "derive", "effect", "pattern", "expect"
   ]
 
--- Standard directives we recognize but do not implement: per TESTING.md
--- these classify the test as unsupported rather than failing it.
-unimplementedDirectives :: [Text]
-unimplementedDirectives =
-  [ "assertDiagnosticAt" -- only the range form; handled separately
-  , "assertDiagnosticMatch"
-  , "assertDiagnosticPayload"
+-- Standard directives whose subject matter this implementation does not
+-- produce at all: structured-diagnostic payloads, labels, related
+-- origins, fix-its, suppression summaries, and Chapter 34 stage dumps.
+-- Diagnostic records here carry none of those fields, so the assertions
+-- could never be satisfied; the test exercises an unsupported feature
+-- and is classified unsupported (§T.8) rather than failed. Documented
+-- in TESTING.md.
+structuredUnsupported :: [Text]
+structuredUnsupported =
+  [ "assertDiagnosticPayload"
   , "assertDiagnosticLabel"
   , "assertDiagnosticRelated"
   , "assertDiagnosticFix"
   , "assertDiagnosticFixCount"
   , "assertDiagnosticFixCompiles"
-  , "assertDiagnosticExplainExists"
   , "assertSuppressedDiagnostic"
-  , "assertStdoutFile"
-  , "assertStderrFile"
   , "assertStageDump"
-  , "assertTraceCount"
-  , "assertFileDeclKinds"
   ]
 
--- Non-standard directives used by another implementation's fixture
--- corpus (not in Appendix T). They are treated like x- extensions:
--- the test is classified unsupported, not a harness error.
-foreignDirectives :: [Text]
-foreignDirectives =
-  [ "assertRunStdout"
-  , "assertExecute"
-  , "assertEvalErrorContains"
-  , "assertParameterQuantities"
-  , "assertDoItemDescriptors"
-  , "assertInoutParameters"
-  , "assertContainsTokenTexts"
-  , "allow_unsafe_consume"
+-- §T.4 portable capabilities this harness provides. @runTask@: programs
+-- are executed in-process by the tree-walking interpreter. @
+-- pipelineTrace@: portable (event, subject) counts are recorded for
+-- parse\/buildKFrontIR\/lowerKCore. Not provided: @stageDumps@ (no
+-- Chapter 34 checkpoint serialization) and @incremental@ (no session
+-- state survives between suite roots).
+supportedCapabilities :: [Text]
+supportedCapabilities = ["runTask", "pipelineTrace"]
+
+-- §T.5.5 portable trace vocabulary.
+traceEventNames :: [Text]
+traceEventNames =
+  [ "parse", "buildKFrontIR", "advancePhase", "emitInterface", "lowerKCore"
+  , "evaluateElaboration", "lowerKBackendIR", "lowerTarget", "reuse", "verify"
   ]
+
+traceSubjectNames :: [Text]
+traceSubjectNames =
+  [ "file", "declaration", "module", "interface", "KCoreUnit"
+  , "KBackendIRUnit", "targetUnit"
+  ]
+
+traceRelops :: [Text]
+traceRelops = ["=", "!=", "<", "<=", ">", ">="]
 
 -- | Scan all directive lines and inline markers. Returns scanned
 -- directives in file order and harness errors.
@@ -227,7 +252,10 @@ parseDirective allLines lno body =
         _ -> bad "malformed 'mode' directive"
       "packageMode" -> ok SConfigNoop -- the default (§T.4)
       "scriptMode" -> unsup "scriptMode is not supported"
-      "backend" -> unsup "backend profiles are not supported"
+      "backend" -> case args of
+        ["interpreter"] -> ok SConfigNoop -- the only provided profile
+        [p] -> unsup ("backend " <> p <> " is not provided")
+        _ -> bad "malformed 'backend' directive"
       "entry" -> case args of
         [q] -> ok (SEntry q)
         _ -> bad "malformed 'entry' directive"
@@ -240,8 +268,11 @@ parseDirective allLines lno body =
       "requires" -> case args of
         ["mode", "package"] -> ok SConfigNoop -- met: packageMode is the default
         ["mode", "script"] -> unsup "requires mode script: scriptMode unsupported"
-        ("backend" : _) -> unsup "requires backend: no backends"
-        ("capability" : c) -> unsup ("requires capability " <> T.unwords c <> ": not provided")
+        ["backend", "interpreter"] -> ok SConfigNoop -- met (§T.4)
+        ("backend" : p) -> unsup ("requires backend " <> T.unwords p <> ": not provided")
+        ["capability", c]
+          | c `elem` supportedCapabilities -> ok SConfigNoop
+          | otherwise -> unsup ("requires capability " <> c <> ": not provided")
         _ -> bad "malformed 'requires' directive"
       "assertNoErrors" -> noArgs ANoErrors
       "assertNoWarnings" -> noArgs ANoWarnings
@@ -251,28 +282,70 @@ parseDirective allLines lno body =
       "assertDiagnosticNext" -> nextAssert
       "assertDiagnosticHere" -> nextAssert -- deprecated alias (§T.5.1)
       "assertDiagnosticFamily" -> withSevCode ADiagFamily
-      "assertDiagnosticAt"
-        | "-" `elem` args -> unsup "assertDiagnosticAt range form is not supported"
-        | otherwise -> case args of
-            [p, sevT, code, lnT]
-              | Just sev <- parseSev sevT, Just n <- parseNat lnT ->
-                  ok (SAssert (ADiagAt p sev code n Nothing))
-            [p, sevT, code, lnT, colT]
-              | Just sev <- parseSev sevT, Just n <- parseNat lnT, Just c <- parseNat colT ->
-                  ok (SAssert (ADiagAt p sev code n (Just c)))
-            _ -> bad "malformed 'assertDiagnosticAt' directive"
+      "assertDiagnosticMatch"
+        | T.null rest -> bad "malformed 'assertDiagnosticMatch' directive (empty pattern)"
+        | otherwise -> case compileRegex rest of
+            Right re -> ok (SAssert (ADiagMatch rest re))
+            Left err -> bad ("invalid 'assertDiagnosticMatch' pattern: " <> err)
+      "assertDiagnosticExplainExists" -> case args of
+        [cf] -> ok (SAssert (AExplainExists cf))
+        _ -> bad "malformed 'assertDiagnosticExplainExists' directive"
+      "assertDiagnosticAt" -> case args of
+        [p, sevT, code, lnT]
+          | Just sev <- parseSev sevT, Just n <- parseNat lnT ->
+              ok (SAssert (ADiagAt p sev code n Nothing))
+        [p, sevT, code, lnT, colT]
+          | Just sev <- parseSev sevT, Just n <- parseNat lnT, Just c <- parseNat colT ->
+              ok (SAssert (ADiagAt p sev code n (Just c)))
+        [p, sevT, code, slT, scT, "-", elT, ecT]
+          | Just sev <- parseSev sevT
+          , Just sl <- parseNat slT, Just sc <- parseNat scT
+          , Just el <- parseNat elT, Just ec <- parseNat ecT ->
+              ok (SAssert (ADiagAtRange p sev code sl sc el ec))
+        _ -> bad "malformed 'assertDiagnosticAt' directive"
       "assertType" -> case args of
         (nm : tyToks) | not (null tyToks) -> ok (SAssert (AType nm (T.unwords tyToks)))
         _ -> bad "malformed 'assertType' directive"
       "assertDeclKinds" ->
-        let kinds = map T.strip (T.splitOn "," rest)
-         in if not (null kinds) && all (`elem` declKindNames) kinds && all (not . T.null) kinds
-              then ok (SAssert (ADeclKinds kinds))
-              else bad "malformed 'assertDeclKinds' kind list"
+        case parseKindList rest of
+          Just kinds -> ok (SAssert (ADeclKinds kinds))
+          Nothing -> bad "malformed 'assertDeclKinds' kind list"
+      "assertFileDeclKinds" -> case T.words rest of
+        (p : kindToks) | not (null kindToks) ->
+          case parseKindList (T.unwords kindToks) of
+            Just kinds -> ok (SAssert (AFileDeclKinds p kinds))
+            Nothing -> bad "malformed 'assertFileDeclKinds' kind list"
+        _ -> bad "malformed 'assertFileDeclKinds' directive"
       "assertStdout" -> withString AStdout
       "assertStdoutContains" -> withString AStdoutContains
       "assertStderrContains" -> withString AStderrContains
+      "assertStdoutFile" -> withPath AStdoutFile
+      "assertStderrFile" -> withPath AStderrFile
       "assertExitCode" -> withCount AExitCode
+      "assertTraceCount" -> case args of
+        [ev, subj, rel, nT]
+          | Just n <- parseNat nT
+          , rel `elem` traceRelops ->
+              if ev `elem` traceEventNames && subj `elem` traceSubjectNames
+                then ok (SAssert (ATraceCount ev subj rel n))
+                else bad "non-portable event or subject in 'assertTraceCount' (§T.5.5)"
+        _ -> bad "malformed 'assertTraceCount' directive"
+      -- §T.7 cross-step assertions: syntax is validated, but the
+      -- incremental capability is not provided, so the suite using
+      -- them classifies unsupported (the 'requires capability
+      -- incremental' gate, when present, is reported first).
+      "assertStepNoErrors" -> stepAssert 1
+      "assertStepErrorCount" -> stepAssert 2
+      "assertStepWarningCount" -> stepAssert 2
+      "assertStepTraceCount" -> case args of
+        [stepT, ev, subj, rel, nT]
+          | Just _ <- parseNat stepT
+          , Just _ <- parseNat nT
+          , rel `elem` traceRelops
+          , ev `elem` traceEventNames
+          , subj `elem` traceSubjectNames ->
+              unsup "cross-step assertions need capability 'incremental', which is not provided (§T.7)"
+        _ -> bad "malformed 'assertStepTraceCount' directive"
       -- compatibility extensions for the external fixture corpus
       "assertDiagnosticCodes" ->
         let codes = map T.strip (T.splitOn "," rest)
@@ -285,11 +358,13 @@ parseDirective allLines lno body =
       _
         | "x-" `T.isPrefixOf` name ->
             unsup ("extension directive '" <> name <> "' is not supported")
-        | name `elem` unimplementedDirectives ->
-            unsup ("directive '" <> name <> "' is not implemented by this harness")
-        | name `elem` foreignDirectives ->
-            unsup ("non-standard directive '" <> name <> "' is not supported")
-        | otherwise -> bad ("unknown standard directive '" <> name <> "'")
+        | name `elem` structuredUnsupported ->
+            unsup ("directive '" <> name <> "' asserts structured-diagnostic/stage-dump data this implementation does not produce")
+        | otherwise ->
+            -- §T.3: any unknown non-extension directive is a harness
+            -- error (this covers other implementations' private
+            -- directives, which are not part of Appendix T)
+            bad ("unknown directive '" <> name <> "' is not defined by Appendix T (§T.3)")
       where
         noArgs a
           | null args = ok (SAssert a)
@@ -310,6 +385,20 @@ parseDirective allLines lno body =
         withString f = case parseStringLiteral rest of
           Just s -> ok (SAssert (f s))
           Nothing -> bad ("malformed string literal in '" <> name <> "' directive")
+        withPath f = case args of
+          [p] -> ok (SAssert (f p))
+          _ -> bad ("malformed '" <> name <> "' directive")
+        stepAssert n
+          | length args == n && all (\a -> parseNat a /= Nothing) args =
+              unsup "cross-step assertions need capability 'incremental', which is not provided (§T.7)"
+          | otherwise = bad ("malformed '" <> name <> "' directive")
+
+parseKindList :: Text -> Maybe [Text]
+parseKindList t =
+  let kinds = map T.strip (T.splitOn "," t)
+   in if not (null kinds) && all (`elem` declKindNames) kinds && all (not . T.null) kinds
+        then Just kinds
+        else Nothing
 
 -- | First following line that is nonblank, not comment-only, and not a
 -- directive line (§T.5.1).
@@ -384,11 +473,12 @@ readSourceFile path = do
   bytes <- BS.readFile path
   pure (TE.decodeUtf8With TEE.lenientDecode bytes)
 
--- | Run one @.kp@ test file (§T.2 single-file inline test).
+-- | Run one @.kp@ test file (§T.2 single-file inline test). The suite
+-- root for relative paths is the containing directory (§T.2).
 runTestFile :: FilePath -> IO TestReport
 runTestFile path = guardExceptions path $ do
   src <- readSourceFile path
-  runSuite path [(path, src)] Nothing
+  runSuite path (takeDirectory path) [(path, src)] Nothing
 
 -- | Run a §T.2 directory suite: all @.kp@ files under the root compiled
 -- together, directives gathered from @suite.ktest@ plus every file.
@@ -402,7 +492,7 @@ runSuiteDir dir = guardExceptions dir $ do
     if hasKtest
       then Just . (,) ktestPath <$> readSourceFile ktestPath
       else pure Nothing
-  runSuite dir (orderByImports (zip files srcs)) mktest
+  runSuite dir dir (orderByImports (zip files srcs)) mktest
 
 -- | Order suite files so that imported modules compile first (light
 -- textual scan of @module@ headers and @import@ lines; cycles keep the
@@ -449,8 +539,8 @@ guardExceptions label act = do
 
 -- | Shared suite driver. @files@ are the compilation roots; directives
 -- come from the optional @suite.ktest@ and from each file (§T.6).
-runSuite :: FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
-runSuite label files mktest = do
+runSuite :: FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
+runSuite label root files mktest = do
   let sources = maybe [] (: []) mktest ++ files
       scans = [(p, src, scanDirectives src) | (p, src) <- sources]
       scanErrs = concat [es | (_, _, (_, es)) <- scans]
@@ -474,7 +564,7 @@ runSuite label files mktest = do
                   let mode = case modes of m : _ -> m; [] -> "check"
                   if not (null entries) && mode /= "run"
                     then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                    else executeSuite label files mode entries asserts
+                    else executeSuite label root files mode entries asserts
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 
@@ -485,11 +575,11 @@ data RunInfo = RunInfo
   }
 
 executeSuite ::
-  FilePath -> [(FilePath, Text)] -> Text -> [Text] -> [(FilePath, Text, Assertion)] -> IO TestReport
-executeSuite label files mode entries asserts = do
-  let cu = case files of
-        [(p, s)] -> compileSourceWithPrelude p s
-        _ -> compileFiles files
+  FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
+  [(FilePath, Text, Assertion)] -> IO TestReport
+executeSuite label root files mode entries asserts = do
+  -- the suite root is the §8.1 source root for module-path derivation
+  let cu = compileFilesIn root files
       filePaths = map fst files
       allDiags = cuDiags cu
       preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) `notElem` filePaths]
@@ -501,7 +591,7 @@ executeSuite label files mode entries asserts = do
         if mode == "run"
           then Just <$> doRun cu diags
           else pure Nothing
-      results <- mapM (\(p, s, a) -> checkAssertion p s cu diags mRun a) asserts
+      results <- mapM (\(p, s, a) -> checkAssertion root p s files cu diags mRun a) asserts
       let fails = [d | AssertFail d <- results]
           herrs = [d | AssertHarnessError d <- results]
       pure $
@@ -525,11 +615,20 @@ executeSuite label files mode entries asserts = do
             Just mainG -> do
               mres <-
                 timeout runTimeoutMicros $
-                  runMainCaptured (Globals (csGlobals st)) (csMetas st) mainG
+                  runMainCapturedValue (Globals (csGlobals st)) (csMetas st) mainG
               case mres of
                 Nothing -> pure (RunInfo "" "error: test timed out" 1)
-                Just (RunOk, out) -> pure (RunInfo out "" 0)
-                Just (RunFail msg, out) ->
+                Just (RunOk, mv, out) ->
+                  -- a non-Unit entry result is rendered to stdout, like
+                  -- the reference run task (e.g. @let main = 42@)
+                  let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True
+                      extra = case mv of
+                        Just v
+                          | not (isUnitValue ec v) ->
+                              renderEvalValue ec v <> "\n"
+                        _ -> ""
+                   in pure (RunInfo (out <> extra) "" 0)
+                Just (RunFail msg, _, out) ->
                   pure (RunInfo out ("runtime failure: " <> msg) 1)
 
 -- | Resolve the run entrypoint: the compiled unit's own module first,
@@ -565,14 +664,15 @@ forceResult r = case r of
   AssertHarnessError t -> T.length t `seq` r
 
 checkAssertion ::
-  FilePath -> Text -> CompiledUnit -> Diagnostics -> Maybe RunInfo -> Assertion -> IO AssertResult
-checkAssertion path src cu diags mRun = \case
+  FilePath -> FilePath -> Text -> [(FilePath, Text)] -> CompiledUnit ->
+  Diagnostics -> Maybe RunInfo -> Assertion -> IO AssertResult
+checkAssertion root path src files cu diags mRun = \case
   ANoErrors ->
-    countIs "errors" 0 (length errors)
+    countErrorsIs 0
   ANoWarnings ->
     countIs "warnings" 0 (length warnings)
   AErrorCount n ->
-    countIs "errors" n (length errors)
+    countErrorsIs n
   AWarningCount n ->
     countIs "warnings" n (length warnings)
   ADiag sev code ->
@@ -604,10 +704,33 @@ checkAssertion path src cu diags mRun = \case
           diags
       )
       ("no diagnostic " <> describe sev code <> " at " <> p <> ":" <> tshow line)
+  ADiagAtRange p sev code sl sc el ec ->
+    require
+      ( any
+          ( \d ->
+              dSeverity d == toSeverity sev
+                && dCode d == code
+                && T.pack (spanFile (dPrimary d)) `endsWithPath` p
+                && spanStart (dPrimary d) == Pos sl sc
+                && spanEnd (dPrimary d) == Pos el ec
+          )
+          diags
+      )
+      ( "no diagnostic " <> describe sev code <> " at " <> p <> ":"
+          <> tshow sl <> ":" <> tshow sc <> "-" <> tshow el <> ":" <> tshow ec
+      )
+  ADiagMatch pat re ->
+    require
+      (any (regexSearch re . dMessage) diags)
+      ("no diagnostic message matches /" <> pat <> "/" <> sawMessages)
   ADiagFamily sev fam ->
     require
       (any (\d -> dSeverity d == toSeverity sev && dFamily d == Just fam) diags)
       ("no diagnostic with family " <> fam <> " was produced")
+  AExplainExists cf ->
+    require
+      (explainExists cf)
+      ("no registered explanation for diagnostic code or family '" <> cf <> "' (§3.1.2A)")
   AErrorCodes codes ->
     let actual = sort (map dCode errors)
      in require
@@ -620,7 +743,20 @@ checkAssertion path src cu diags mRun = \case
     mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEval cu nm expected)))
     pure (fromMaybe (AssertFail ("assertEval: evaluation of '" <> nm <> "' timed out")) mr)
   AType nm tyExpr -> pure (assertType path src cu nm tyExpr)
-  ADeclKinds kinds -> pure (assertDeclKinds path src kinds)
+  ADeclKinds kinds -> pure (assertDeclKinds "assertDeclKinds" path src kinds)
+  AFileDeclKinds p kinds ->
+    case [(fp, fsrc) | (fp, fsrc) <- files, T.pack fp `endsWithPath` p] of
+      ((fp, fsrc) : _) -> pure (assertDeclKinds "assertFileDeclKinds" fp fsrc kinds)
+      [] -> do
+        -- fall back to the suite root on disk (§T.5.2 path resolution)
+        let fp = root </> T.unpack p
+        exists <- doesFileExist fp
+        if exists
+          then do
+            fsrc <- readSourceFile fp
+            pure (assertDeclKinds "assertFileDeclKinds" fp fsrc kinds)
+          else
+            pure (AssertHarnessError ("assertFileDeclKinds: no suite file '" <> p <> "'"))
   AStdout expected -> withRun $ \ri ->
     let actual = normalizeLF (riStdout ri)
         want = normalizeLF expected
@@ -635,16 +771,44 @@ checkAssertion path src cu diags mRun = \case
     require
       (normalizeLF expected `T.isInfixOf` normalizeLF (riStderr ri))
       ("stderr does not contain " <> tshow (normalizeLF expected))
+  AStdoutFile p -> goldenCompare p "stdout" riStdout
+  AStderrFile p -> goldenCompare p "stderr" riStderr
   AExitCode n -> withRun $ \ri ->
     require
       (riExitCode ri == n)
       ("exit code was " <> tshow (riExitCode ri) <> ", expected " <> tshow n)
+  ATraceCount ev subj rel n ->
+    let actual = length [() | (e, s) <- cuTrace cu, e == ev, s == subj]
+        holds = case rel of
+          "=" -> actual == n
+          "!=" -> actual /= n
+          "<" -> actual < n
+          "<=" -> actual <= n
+          ">" -> actual > n
+          ">=" -> actual >= n
+          _ -> False -- unreachable: validated at scan time
+     in require
+          holds
+          ( "trace count " <> ev <> "/" <> subj <> " is " <> tshow actual
+              <> ", expected " <> rel <> " " <> tshow n
+          )
   where
     errors = filter isError diags
     warnings = filter (\d -> dSeverity d == SevWarning) diags
     require b detail = pure (if b then AssertOk else AssertFail detail)
     countIs what n actual =
       require (actual == n) ("expected " <> tshow n <> " " <> what <> ", got " <> tshow actual)
+    -- error-count mismatches cite the first error, which makes failure
+    -- triage over a large corpus far more informative
+    countErrorsIs n =
+      let actual = length errors
+          firstE = case errors of
+            (d : _)
+              | actual /= n ->
+                  "; first error: " <> dCode d <> " " <> tshow (dMessage d)
+                    <> " at line " <> tshow (posLine (spanStart (dPrimary d)))
+            _ -> ""
+       in require (actual == n) ("expected " <> tshow n <> " errors, got " <> tshow actual <> firstE)
     describe sev code = sevText sev <> "[" <> code <> "]"
     sevText = \case
       SError -> "error"
@@ -657,9 +821,33 @@ checkAssertion path src cu diags mRun = \case
           " (saw: "
             <> T.intercalate ", " [dCode d <> "@" <> tshow (posLine (spanStart (dPrimary d))) | d <- diags]
             <> ")"
+    sawMessages
+      | null diags = " (no diagnostics)"
+      | otherwise =
+          " (saw: "
+            <> T.intercalate "; " (take 3 [tshow (dMessage d) | d <- diags])
+            <> ")"
     withRun k = case mRun of
       Just ri -> k ri
       Nothing -> pure (AssertHarnessError "run assertion outside mode run (§T.5.4)")
+    goldenCompare p what sel = withRun $ \ri -> do
+      let fp = root </> T.unpack p
+      exists <- doesFileExist fp
+      if not exists
+        then pure (AssertHarnessError ("unreadable golden file '" <> p <> "' (§T.8)"))
+        else do
+          expected <- readSourceFile fp
+          let actual = normalizeLF (sel ri)
+              want = normalizeLF expected
+          if actual == want
+            then pure AssertOk
+            else
+              pure
+                ( AssertFail
+                    ( what <> " does not match golden file " <> p
+                        <> ": expected " <> tshow want <> ", got " <> tshow actual
+                    )
+                )
     endsWithPath actual rel = actual == rel || ("/" <> rel) `T.isSuffixOf` actual
 
 normalizeLF :: Text -> Text
@@ -684,6 +872,14 @@ assertEval cu nm expected =
                 AssertFail
                   ("assertEval: '" <> nm <> "' evaluates to " <> rendered
                      <> ", expected " <> T.strip expected)
+
+-- | Unit results (the normal completion of an IO program) produce no
+-- run-task output.
+isUnitValue :: EvalCtx -> Value -> Bool
+isUnitValue ec v = case force ec v of
+  VCtor (GName _ "Unit") [] -> True
+  VRecordV [] -> True
+  _ -> False
 
 -- Canonical value rendering for 'assertEval' (literals bare, strings
 -- quoted, constructor applications in juxtaposition form).
@@ -713,15 +909,21 @@ renderEvalValue ec = go (32 :: Int) False
 
 -- | @assertType name typeExpr@ (§T.5.2): elaborate the expected type in
 -- the compiled unit's state through a synthetic signature declaration
--- and compare with the declaration's recorded type up to definitional
--- equality ('convertible').
+-- (checked in the origin file's module with the origin file's import
+-- scope) and compare with the declaration's recorded type up to
+-- definitional equality ('convertible').
+--
+-- If the expected type does not parse or does not elaborate in this
+-- implementation, the assertion cannot be satisfied and the test
+-- *fails* (with a precise reason); the directive itself is well-formed,
+-- so this is not a harness error (§T.8).
 assertType :: FilePath -> Text -> CompiledUnit -> Text -> Text -> AssertResult
 assertType path src cu nm tyExpr =
   case lookupTarget of
     Nothing -> AssertFail ("name '" <> nm <> "' does not resolve to a typed declaration")
     Just gd ->
       case elabExpected of
-        Left err -> AssertHarnessError err
+        Left err -> AssertFail err
         Right (st', probeTy) ->
           let ec = EvalCtx (Globals (csGlobals st')) (csMetas st') False
            in if convertible ec 0 (gdType gd) probeTy
@@ -735,8 +937,9 @@ assertType path src cu nm tyExpr =
                     )
   where
     st = cuState cu
+    originParse = parseModule path src
     -- the assertion is file-relative: resolve in the origin file's module
-    originMod = case parseModule path src of
+    originMod = case originParse of
       Right (m, _) | Just mp <- modHeader m -> ModuleName (modPathName mp)
       _ -> cuModule cu
     (qualMod, baseName) = splitQualified nm
@@ -749,16 +952,27 @@ assertType path src cu nm tyExpr =
             (gd : _) -> Just gd
             [] -> Nothing
     probeName = "__assert_type_probe"
+    -- The probe sees the same unqualified scope as the origin file:
+    -- prelude plus that file's imports over the accumulated state.
+    probeScope = case originParse of
+      Right (m, _) -> importScopeFor st m
+      Left _ -> csScope st
     elabExpected =
       case parseModule "<assertType>" (probeName <> " : " <> tyExpr <> "\n") of
         Left _ -> Left ("assertType: expected type does not parse: " <> tyExpr)
         Right (m, _) ->
           let fixities = fileFixities path src
               (m', _) = resolveModule fixities m
-              st0 = st {csModule = originMod, csDiags = []}
+              st0 = st {csModule = originMod, csScope = probeScope, csDiags = []}
               (st1, ds) = checkModule st0 m'
            in if hasErrors ds
-                then Left ("assertType: expected type is ill-formed: " <> tyExpr)
+                then
+                  Left
+                    ( "assertType: expected type does not elaborate: " <> tyExpr
+                        <> case [dMessage d | d <- ds, isError d] of
+                          (msg : _) -> " (" <> msg <> ")"
+                          [] -> ""
+                    )
                 else case Map.lookup (GName originMod probeName) (csGlobals st1) of
                   Just probe -> Right (st1, gdType probe)
                   Nothing -> Left "assertType: internal probe failure"
@@ -776,19 +990,19 @@ splitQualified t = case T.splitOn "." t of
   [x] -> (Nothing, x)
   segs -> (Just (init segs), last segs)
 
--- | @assertDeclKinds@ (§T.5.2): compare top-level declaration kinds in
--- source order (module header excluded).
-assertDeclKinds :: FilePath -> Text -> [Text] -> AssertResult
-assertDeclKinds path src expected =
+-- | @assertDeclKinds@ \/ @assertFileDeclKinds@ (§T.5.2): compare
+-- top-level declaration kinds in source order (module header excluded).
+assertDeclKinds :: Text -> FilePath -> Text -> [Text] -> AssertResult
+assertDeclKinds which path src expected =
   case parseModule path src of
-    Left _ -> AssertFail "assertDeclKinds: file does not parse"
+    Left _ -> AssertFail (which <> ": file does not parse")
     Right (m, _) ->
       let actual = map declKind (modDecls m)
        in if actual == expected
             then AssertOk
             else
               AssertFail
-                ( "decl kinds are [" <> T.intercalate ", " actual
+                ( which <> ": decl kinds are [" <> T.intercalate ", " actual
                     <> "], expected [" <> T.intercalate ", " expected <> "]"
                 )
 
@@ -813,11 +1027,31 @@ declKind = \case
 -- ── Tree walking ─────────────────────────────────────────────────────
 
 -- | Run a path: a @.kp@ file is a single-file inline test; a directory
--- containing @suite.ktest@ or @main.kp@ is one directory suite (§T.2),
--- as is a directory given directly as the argument that contains @.kp@
--- files; any other directory recurses. Prints one result line per test.
+-- containing @step0@ or @incremental.ktest@ is one incremental step
+-- suite (§T.7); a directory containing @suite.ktest@ or @main.kp@ is
+-- one directory suite (§T.2), as is a directory given directly as the
+-- argument that contains @.kp@ files; any other directory recurses.
+-- Prints one result line per test.
 runTestPath :: FilePath -> IO [TestReport]
 runTestPath = runTestPathAt True
+
+-- | Run a path as exactly one suite (the @kappa test --suite@ form):
+-- the directory is the §T.2 suite root even when its @.kp@ files all
+-- live in subdirectories, so one fixture is always one result.
+runTestSuitePath :: FilePath -> IO [TestReport]
+runTestSuitePath root = do
+  isDir <- doesDirectoryExist root
+  if not isDir
+    then emitReport (runTestFile root)
+    else do
+      incr <- isIncrementalRoot root
+      emitReport (if incr then runIncrementalDir root else runSuiteDir root)
+
+emitReport :: IO TestReport -> IO [TestReport]
+emitReport act = do
+  rep <- act
+  putStrLn (T.unpack (reportLine rep))
+  pure [rep]
 
 runTestPathAt :: Bool -> FilePath -> IO [TestReport]
 runTestPathAt topLevel root = do
@@ -825,22 +1059,54 @@ runTestPathAt topLevel root = do
   if not isDir
     then emitOne (runTestFile root)
     else do
-      suite <- isSuiteRoot topLevel root
-      if suite
-        then emitOne (runSuiteDir root)
+      incr <- isIncrementalRoot root
+      if incr
+        then emitOne (runIncrementalDir root)
         else do
-          entries <- sort <$> listDirectory root
-          let paths = [root </> e | e <- entries]
-          dirs <- filterM doesDirectoryExist paths
-          let files = [p | p <- paths, ".kp" `isSuffixOf` p, p `notElem` dirs]
-          fileReps <- concat <$> mapM (emitOne . runTestFile) files
-          dirReps <- concat <$> mapM (runTestPathAt False) dirs
-          pure (fileReps ++ dirReps)
+          suite <- isSuiteRoot topLevel root
+          if suite
+            then emitOne (runSuiteDir root)
+            else do
+              entries <- sort <$> listDirectory root
+              let paths = [root </> e | e <- entries]
+              dirs <- filterM doesDirectoryExist paths
+              let files = [p | p <- paths, ".kp" `isSuffixOf` p, p `notElem` dirs]
+              fileReps <- concat <$> mapM (emitOne . runTestFile) files
+              dirReps <- concat <$> mapM (runTestPathAt False) dirs
+              pure (fileReps ++ dirReps)
   where
-    emitOne act = do
-      rep <- act
-      putStrLn (T.unpack (reportLine rep))
-      pure [rep]
+    emitOne = emitReport
+
+-- | §T.2 form 3: a directory with @step0@\/@step1@\/… subdirectories
+-- (and optionally @incremental.ktest@) is one incremental step suite.
+isIncrementalRoot :: FilePath -> IO Bool
+isIncrementalRoot dir = do
+  hasStep0 <- doesDirectoryExist (dir </> "step0")
+  hasKtest <- doesFileExist (dir </> "incremental.ktest")
+  pure (hasStep0 || hasKtest)
+
+-- | Incremental step suites need Chapter 34 session reuse, which this
+-- implementation does not keep: the @incremental@ capability is not
+-- claimed (§T.4), so these suites classify as unsupported — via their
+-- own @requires@ directives when present, otherwise directly. Scan
+-- errors in @incremental.ktest@ still surface as harness errors.
+runIncrementalDir :: FilePath -> IO TestReport
+runIncrementalDir dir = guardExceptions dir $ do
+  let ktestPath = dir </> "incremental.ktest"
+  hasKtest <- doesFileExist ktestPath
+  scanned <-
+    if hasKtest
+      then scanDirectives <$> readSourceFile ktestPath
+      else pure ([], [])
+  case scanned of
+    (_, errs@(_ : _)) ->
+      pure (TestReport dir HarnessError (T.intercalate "; " errs))
+    (ss, []) ->
+      pure $ case [u | SUnsupported u <- ss] of
+        (u : _) -> TestReport dir Unsupported u
+        [] ->
+          TestReport dir Unsupported
+            "incremental step suites require capability 'incremental', which this harness does not provide (§T.4, §T.7)"
 
 isSuiteRoot :: Bool -> FilePath -> IO Bool
 isSuiteRoot topLevel dir = do

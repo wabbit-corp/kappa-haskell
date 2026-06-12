@@ -8,6 +8,7 @@
 module Kappa.Interp
   ( runMain
   , runMainCaptured
+  , runMainCapturedValue
   , RunResult (..)
   ) where
 
@@ -56,27 +57,35 @@ unitV = VCtor (prelG "Unit") []
 runMain :: Globals -> MetaState -> GName -> IO RunResult
 runMain globals metas mainG = do
   let rt = RT (EvalCtx globals metas True) (\t -> TIO.putStr t >> hFlush stdout)
-  runMainRT rt mainG
+  fst <$> runMainRT rt mainG
 
 -- | Run @main@ capturing everything written via printString\/printlnString
 -- (Appendix T @mode run@ support); returns the result and the output.
 runMainCaptured :: Globals -> MetaState -> GName -> IO (RunResult, Text)
 runMainCaptured globals metas mainG = do
-  buf <- newIORef []
-  let rt = RT (EvalCtx globals metas True) (\t -> modifyIORef' buf (t :))
-  r <- runMainRT rt mainG
-  out <- T.concat . reverse <$> readIORef buf
+  (r, _, out) <- runMainCapturedValue globals metas mainG
   pure (r, out)
 
-runMainRT :: RT -> GName -> IO RunResult
+-- | Like 'runMainCaptured', but also returns the entrypoint's final
+-- value (when it completed normally), so the test harness can render a
+-- non-Unit result like the reference run task does.
+runMainCapturedValue :: Globals -> MetaState -> GName -> IO (RunResult, Maybe Value, Text)
+runMainCapturedValue globals metas mainG = do
+  buf <- newIORef []
+  let rt = RT (EvalCtx globals metas True) (\t -> modifyIORef' buf (t :))
+  (r, mv) <- runMainRT rt mainG
+  out <- T.concat . reverse <$> readIORef buf
+  pure (r, mv, out)
+
+runMainRT :: RT -> GName -> IO (RunResult, Maybe Value)
 runMainRT rt mainG =
   case Map.lookup mainG (globalsMap (ecGlobals (rtEC rt))) of
     Just gd | Just v <- gdValue gd -> do
       r <- try (runIOValue rt v)
       case r of
-        Right _ -> pure RunOk
-        Left (KappaError e) -> pure (RunFail (renderValueShallow e))
-    _ -> pure (RunFail "main is not defined")
+        Right x -> pure (RunOk, Just x)
+        Left (KappaError e) -> pure (RunFail (renderValueShallow e), Nothing)
+    _ -> pure (RunFail "main is not defined", Nothing)
 
 -- | Execute a value of IO type to completion.
 runIOValue :: RT -> Value -> IO Value
