@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_PROJECTION_DESCRIPTOR_ROOTS_LITERAL_REQUIRED, E_PROJECTION_ROOT_INVALID
+
+-- §16.1.5: multi-root descriptor applications require a record-literal
+-- roots argument of stable places
+
+type Cell = (value : Int)
+
+makeCell : Unit -> Cell
+let makeCell () : Cell = (value = 0)
+
+projection chooseBetweenCells (chooseLeft : Bool) (place leftRoot : Cell) (place rightRoot : Cell) : Int =
+    if chooseLeft then
+        yield leftRoot.value
+    else
+        yield rightRoot.value
+
+badBare : Cell -> Int
+let badBare (left : Cell) : Int =
+    block
+        let proj = chooseBetweenCells True
+        proj left
+
+badNonPlace : Cell -> Int
+let badNonPlace (right : Cell) : Int =
+    block
+        let proj = chooseBetweenCells True
+        proj (leftRoot = makeCell (), rightRoot = right)

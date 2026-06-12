@@ -1,0 +1,59 @@
+--! mode check
+--! assertNoErrors
+
+-- §9.1.1 selector form: projection facet, term facet, descriptor
+-- application (§16.1.5), receiver sugar (§7.4)
+
+type Cell = (value : Int)
+type Pair = (left : Int, right : Int)
+
+projection cellValue (place this : Cell) : Int =
+    yield this.value
+
+projection choosePairField (chooseLeft : Bool) (place this : Pair) : Int =
+    if chooseLeft then
+        yield this.left
+    else
+        yield this.right
+
+projection chooseBetweenCells (chooseLeft : Bool) (place leftRoot : Cell) (place rightRoot : Cell) : Int =
+    if chooseLeft then
+        yield leftRoot.value
+    else
+        yield rightRoot.value
+
+readDirect : Cell -> Int
+let readDirect (cell : Cell) : Int = cellValue cell
+
+readSugar : Cell -> Int
+let readSugar (cell : Cell) : Int = cell.cellValue
+
+readMixedOrder : Pair -> Int
+let readMixedOrder (pair : Pair) : Int = choosePairField True pair
+
+descriptorBare : Cell -> Int
+let descriptorBare (cell : Cell) : Int =
+    block
+        let proj = cellValue
+        proj cell
+
+descriptorPack : Cell -> Int
+let descriptorPack (cell : Cell) : Int =
+    block
+        let proj = cellValue
+        proj (this = cell,)
+
+descriptorMultiRoot : Cell -> Cell -> Int
+let descriptorMultiRoot (left : Cell) (right : Cell) : Int =
+    block
+        let proj = chooseBetweenCells True
+        proj (leftRoot = left, rightRoot = right)
+
+storedDescriptor : Unit -> Projector (this : Cell,) Int
+let storedDescriptor () : Projector (this : Cell,) Int = cellValue
+
+composed : Cell -> Int
+let composed (cell : Cell) : Int =
+    block
+        let selfInt = cellValue
+        cellValue cell

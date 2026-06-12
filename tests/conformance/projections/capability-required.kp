@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_PROJECTION_CAPABILITY_REQUIRED
+
+-- §16.1.6: a consuming use demands the 'sink' accessor
+
+type Cell = (value : Int)
+
+consumeInt : (1 x : Int) -> Int
+let consumeInt (1 x : Int) : Int = x
+
+projection cellLens (place this : Cell) : Int =
+    get -> this.value
+
+    set (new_value : Int) ->
+        this.{ value = new_value }
+
+bad : (1 cell : Cell) -> Int
+let bad (1 cell : Cell) : Int = consumeInt (cellLens cell)

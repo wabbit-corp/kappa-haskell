@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4/§30.2.2.3: a borrowed selector locks every yield leaf, so
+-- consuming an overlapping root while the borrow is live is an error
+
+data Buffer : Type =
+    Buffer
+
+type Pair = (1 buf : Buffer)
+
+consumeWhole : (1 p : Pair) -> Pair
+let consumeWhole (1 p : Pair) : Pair = p
+
+projection chooseBuf (place a : Pair) (place b : Pair) (which : Bool) : Buffer =
+    if which then yield a.buf else yield b.buf
+
+bad : (1 a : Pair) -> (1 b : Pair) -> Bool -> Pair
+let bad a b which =
+    let & p = chooseBuf a b which
+    consumeWhole a

@@ -81,6 +81,15 @@ builtinState =
       , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
       , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> tType ~> tType)))
       , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> tType ~> tType))) -- §20.10.2
+      , -- §12.4.3 first-class projector and accessor descriptors
+        (prel "Projector", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "Getter", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "Opener", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "Setter", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "Sinker", opaqueTy (tyV (tType ~> tType ~> tType)))
+      , (prel "composeProjector", GlobalDef composeProjectorTy (Just (VPrim "composeProjector" [])) False)
+      , (prel "captureBorrow", GlobalDef captureBorrowTy (Just (VPrim "captureBorrow" [])) False)
+      , (prel "withBorrowView", GlobalDef withBorrowViewTy (Just (VPrim "withBorrowView" [])) False)
       , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) : a -> Type
         (prel "=", opaqueTy (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tType))))
       , (prel "refl", GlobalDef reflTy Nothing False)
@@ -90,6 +99,32 @@ builtinState =
         piI Q0 "a" tType $
           piI Q0 "x" (CVar 0) $
             CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)
+    projT r f = CApp Expl (CApp Expl (tcon "Projector") r) f
+    -- §12.4.3 composeProjector (one-field root packs of the middle
+    -- projector are admitted structurally, hence the extra parameter)
+    composeProjectorTy =
+      tyV $
+        piI Q0 "roots" tType $
+          piI Q0 "mid" tType $
+            piI Q0 "midRoots" tType $
+              piI Q0 "focus" tType $
+                CPi Expl QW "_" (projT (CVar 3) (CVar 2)) $
+                  CPi Expl QW "_" (projT (CVar 2) (CVar 1)) $
+                    projT (CVar 5) (CVar 2)
+    captureBorrowTy =
+      tyV $
+        piI Q0 "ρ" (tcon "Region") $
+          piI Q0 "a" tType $
+            CPi Expl QW "_" (CVar 0) $
+              CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)
+    withBorrowViewTy =
+      tyV $
+        piI Q0 "ρ" (tcon "Region") $
+          piI Q0 "a" tType $
+            piI Q0 "r" tType $
+              CPi Expl QW "_" (CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)) $
+                CPi Expl QW "_" (CPi Expl QW "_" (CVar 2) (CVar 2)) $
+                  CVar 2
     ctors =
       [ (prel "refl", CtorInfo (prel "=") (quoteClosedTy reflTy) [])
       ]
@@ -223,6 +258,11 @@ preludeSource =
     , "data List (a : Type) : Type ="
     , "    Nil"
     , "    (::) (head : a) (tail : List a)"
+    , ""
+    , -- §12.4.3 canonical zipper: an opened owned focus plus a linear
+      -- filler back to the whole
+      "data Zipper (whole : Type) (focus : Type) (replace : Type) : Type ="
+    , "    Zipper (focus : focus) (1 fill : replace -> whole)"
     , ""
     , "type Int = Integer"
     , "type Float = Double"

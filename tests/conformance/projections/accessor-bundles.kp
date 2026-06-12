@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+
+-- §9.1.1 expanded form: get/set/sink clauses, synthesized open (§16.1.6),
+-- projection-section update (§13.2.5)
+
+type Cell = (value : Int)
+
+consumeInt : (1 x : Int) -> Int
+let consumeInt (1 x : Int) : Int = x
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+projection cellLens (place this : Cell) : Int =
+    get -> this.value
+
+    set (new_value : Int) ->
+        this.{ value = new_value }
+
+projection sinkOnly (place this : Cell) : Int =
+    sink -> this.value
+
+readThroughGet : Cell -> Int
+let readThroughGet (cell : Cell) : Int = cellLens cell
+
+readSugar : Cell -> Int
+let readSugar (cell : Cell) : Int = cell.cellLens
+
+consumeThroughSink : (1 cell : Cell) -> Int
+let consumeThroughSink (1 cell : Cell) : Int = consumeInt (sinkOnly cell)
+
+sectionUpdate : Cell -> Cell
+let sectionUpdate (cell : Cell) : Cell = cell.{ (.cellLens) = 42 }

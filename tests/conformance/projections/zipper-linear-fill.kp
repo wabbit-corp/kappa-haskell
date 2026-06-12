@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §12.4.3: Zipper packages a focus with a linear fill closure
+
+type Cell = (value : Int)
+
+fillOnce : (1 z : Zipper Cell Int Int) -> Cell
+let fillOnce (1 z : Zipper Cell Int Int) : Cell = z.fill 1
+
+bad : (1 z : Zipper Cell Int Int) -> (Cell, Cell)
+let bad (1 z : Zipper Cell Int Int) : (Cell, Cell) =
+    (z.fill 1, z.fill 2)

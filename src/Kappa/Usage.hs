@@ -212,10 +212,27 @@ data Env = Env
   , eAliases :: !(Map Text [(Text, Maybe Quantity)])
   , eCtors :: !(Map Text [(Text, [Maybe Quantity])])
   -- ^ ctor name → all sibling ctors of its data type with field quantities
+  , eProjs :: !(Map Text ProjUse)
+  -- ^ §9.1.1 projection definitions of the module
+  , eDescs :: !(Map Text ProjUse)
+  -- ^ local bindings holding a (partially applied) projection descriptor
+  , eBorrowAliases :: !(Map Text (Text, [Text]))
+  -- ^ borrowed place-alias bindings: binder key ↦ root key + path (§12.4)
+  }
+
+-- | §9.1.1 projection shape for the §12.4 footprint analysis.
+data ProjUse = ProjUse
+  { puIsPlace :: ![Bool] -- ^ per explicit binder, declaration order
+  , puPlaceNames :: ![Text] -- ^ place binder names, declaration order
+  , puYields :: ![(Text, [Text])] -- ^ yield leaves: place name, path suffix
   }
 
 bindVars :: [(Text, VInfo)] -> Env -> Env
-bindVars bs env = env {eVars = foldr (uncurry Map.insert) (eVars env) bs}
+bindVars bs env =
+  env
+    { eVars = foldr (uncurry Map.insert) (eVars env) bs
+    , eDescs = foldr (Map.delete . fst) (eDescs env) bs
+    }
 
 addBorrows :: [(Text, [Text])] -> Env -> Env
 addBorrows bs env = env {eBorrows = bs ++ eBorrows env}
@@ -247,6 +264,22 @@ usageDiagnostics m = concatMap analyzeDecl lets
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
     lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    projs =
+      Map.fromList
+        [ (nameText n, ProjUse isPlace placeNames yields)
+        | DProjection _ n bs _ body _ <- decls
+        , let groups = projBinderGroups bs
+              isPlace = map fst groups
+              placeNames = [maybe "_" nameText (bName b) | (True, b) <- groups]
+              yields = case body of
+                ProjSelector e ->
+                  [ (root, path)
+                  | Right (root, path) <- projYieldPlaces e
+                  , root `elem` placeNames
+                  ]
+                -- an accessor bundle's footprint is its whole root
+                ProjAccessors _ -> [(p, []) | p <- placeNames]
+        ]
     aliases =
       Map.fromList
         [ (nameText n, fieldsOf rhs)
@@ -278,7 +311,7 @@ usageDiagnostics m = concatMap analyzeDecl lets
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet fns aliases ctors sigTy ld) (S [] False 0)
+          final = execState (analyzeLet fns aliases ctors projs sigTy ld) (S [] False 0)
        in if sBail final then [] else reverse (sDiags final)
 
 -- Callee demand for prelude helpers the fixtures rely on.
@@ -296,6 +329,11 @@ resolveFields aliases = go
       ERecordType fs _ _ ->
         [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
       EVar n -> Map.findWithDefault [] (nameText n) aliases
+      -- the §12.4.3 prelude zipper: a linear fill closure
+      EApp (EVar n) _
+        | nameText n == "Zipper"
+        , not (Map.member "Zipper" aliases) ->
+            [("focus", Nothing), ("fill", Just QOne)]
       EAscription e _ _ -> go e
       ECaptures e _ _ -> go e
       _ -> []
@@ -369,13 +407,14 @@ analyzeLet ::
   Map Text [PInfo] ->
   Map Text [(Text, Maybe Quantity)] ->
   Map Text [(Text, [Maybe Quantity])] ->
+  Map Text ProjUse ->
   Maybe Expr ->
   LetDef ->
   M ()
-analyzeLet fns aliases ctors msig ld = do
+analyzeLet fns aliases ctors projs msig ld = do
   let aligned = alignParams (ldBinders ld) (maybe [] sigBinders msig)
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = Env (Map.fromList binds) fns [] aliases ctors
+  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty
   checkInoutResult msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
@@ -496,6 +535,81 @@ placeOf env = \case
   EDot b (DotName f) -> do
     (vi, path, _) <- placeOf env b
     pure (vi, path ++ [nameText f], nameSpan f)
+  _ -> Nothing
+
+-- | Resolve a place through any §12.4 borrowed place-alias binding:
+-- @let & x = root.path@ makes @x.f@ an alias of @root.path.f@ for
+-- borrow-lock purposes.
+resolveBorrowAlias :: Env -> (VInfo, [Text], Span) -> (Text, [Text], Span)
+resolveBorrowAlias env (vi, path, sp) =
+  case Map.lookup (vKey vi) (eBorrowAliases env) of
+    Just (rootK, rootPath) -> (rootK, rootPath ++ path, sp)
+    Nothing -> (vKey vi, path, sp)
+
+-- | A fully applied §9.1.1 projection (or local descriptor binding)
+-- call: the stable places its yield leaves touch, plus the auxiliary
+-- expressions (ordinary arguments, descriptor head) to walk normally.
+projPlacesOf :: Env -> Expr -> Maybe ([(VInfo, [Text], Span)], [Expr])
+projPlacesOf env e0 = case e0 of
+  EApp (EVar f) args
+    | not (Map.member (nameText f) (eVars env))
+    , Just pu <- Map.lookup (nameText f) (eProjs env)
+    , length args == length (puIsPlace pu)
+    , or (puIsPlace pu) -> do
+        let split = zip (puIsPlace pu) args
+            placeArgs =
+              [ (nm, e)
+              | ((True, ArgExplicit e), nm) <-
+                  zip [p | p@(True, _) <- split] (puPlaceNames pu)
+              ]
+            ordArgs = [e | (False, ArgExplicit e) <- split]
+        (places, aux) <- packPlaces pu placeArgs
+        pure (places, ordArgs ++ aux)
+    | Just du <- Map.lookup (nameText f) (eDescs env)
+    , [arg] <- args -> do
+        e <- case arg of
+          ArgExplicit e -> Just e
+          ArgInout e _ -> Just e
+          _ -> Nothing
+        (places, aux) <- case (puPlaceNames du, e) of
+          (_, ERecordLit items _) ->
+            packPlaces du
+              [(nameText fn, fe) | RecItem _ fn (Just fe) <- items]
+          ([pn], _) -> packPlaces du [(pn, e)]
+          _ -> Nothing
+        pure (places, EVar f : aux)
+  _ -> Nothing
+  where
+    -- map each yield leaf through the supplied place arguments; place
+    -- arguments that are not stable places are walked normally
+    packPlaces pu pairs = do
+      let leaves =
+            [ (root, suffix, lookup root pairs)
+            | (root, suffix) <- puYields pu
+            ]
+      resolved <- Just (mapMaybe leafPlace leaves)
+      let aux = [e | (_, e) <- pairs, Nothing <- [placeOf env e]]
+      pure (resolved, aux)
+    leafPlace (_, suffix, Just argE) = do
+      (vi, path, sp) <- placeOf env argE
+      pure (vi, path ++ suffix, sp)
+    leafPlace _ = Nothing
+
+-- | Does this expression denote a (partially applied) projection
+-- descriptor value (§16.1.5)?
+descOf :: Env -> Expr -> Maybe ProjUse
+descOf env = \case
+  EVar f
+    | not (Map.member (nameText f) (eVars env))
+    , Just pu <- Map.lookup (nameText f) (eProjs env) ->
+        Just pu
+    | Just du <- Map.lookup (nameText f) (eDescs env) -> Just du
+  EApp (EVar f) args
+    | not (Map.member (nameText f) (eVars env))
+    , Just pu <- Map.lookup (nameText f) (eProjs env)
+    , length args == length (filter not (puIsPlace pu)) ->
+        Just pu
+  EAscription e _ _ -> descOf env e
   _ -> Nothing
 
 pathsOverlap :: [Text] -> [Text] -> Bool
@@ -870,6 +984,14 @@ argSpan = \case
   ArgInout _ sp -> sp
 
 walkApp :: Env -> Expr -> [Arg] -> M R
+walkApp env f args
+  -- a projection call in an ordinary value position is a non-consuming
+  -- read of its yield leaves (§30.2.2.3 ReadProjector)
+  | Just (places, aux) <- projPlacesOf env (EApp f args) = do
+      rs <- mapM (walkE env) aux
+      let u = foldr (seqU . fst . flatR) Map.empty rs
+          touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
+      pure (rPlain (u `seqU` touch))
 walkApp env f args = do
   hr <- walkE env f
   let (hu, _ht) = flatR hr -- an application calls its head exactly once
@@ -933,6 +1055,20 @@ walkArg env params arg p = case arg of
         (,[]) <$> walkE env e
     | pQuantity p == Just QZero -> pure (rNone, []) -- erased argument
     | pBorrow p -> borrowish e
+    -- a projection call argument touches its yield leaves: a move per
+    -- leaf under a consuming parameter (§30.2.2.3 MoveProjector), a
+    -- call-scoped borrow otherwise (ReadProjector)
+    | consuming
+    , Just (places, aux) <- projPlacesOf env e -> do
+        rs <- mapM (walkE env) aux
+        us <- mapM (\(vi, path, psp) -> movePlace env vi path psp) places
+        let u = foldr seqU (foldr (seqU . fst . flatR) Map.empty rs) us
+        pure (rPlain u, [FMove (vKey vi) path psp | (vi, path, psp) <- places])
+    | Just (places, aux) <- projPlacesOf env e -> do
+        rs <- mapM (walkE env) aux
+        let u = foldr (seqU . fst . flatR) Map.empty rs
+            touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
+        pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
     | consuming
     , Just (vi, [], sp) <- placeOf env e
     , vBorrowed vi -> do
@@ -993,7 +1129,15 @@ walkArg env params arg p = case arg of
           ( rPlain (Map.singleton (vKey vi) touchC)
           , [FBorrow (vKey vi) path]
           )
-      Nothing -> (,[]) <$> walkE env e
+      Nothing
+        -- a projection call in borrow demand borrows every yield leaf
+        -- for the call (§30.2.2.3 BorrowProjector)
+        | Just (places, aux) <- projPlacesOf env e -> do
+            rs <- mapM (walkE env) aux
+            let u = foldr (seqU . fst . flatR) Map.empty rs
+                touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
+            pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
+        | otherwise -> (,[]) <$> walkE env e
 
 -- ── Bindings and do items ────────────────────────────────────────────
 
@@ -1013,9 +1157,22 @@ walkBinds env binds = go env binds
         if borrowed
           then case place of
             -- `let & v = p.f` opens a lexical borrow of the place: a
-            -- non-consuming read that locks overlapping paths (§12.4)
-            Just (vi, path, _) ->
-              pure (Map.singleton (vKey vi) touchC, Nothing, Map.empty, [(vKey vi, path)])
+            -- non-consuming read that locks overlapping paths (§12.4);
+            -- borrowing through a borrowed alias locks the original
+            Just pl@(vi, _, _) -> do
+              let (rootK, fullPath, _) = resolveBorrowAlias envc pl
+              pure (Map.singleton (vKey vi) touchC, Nothing, Map.empty, [(rootK, fullPath)])
+            -- `let & v = proj places` locks every yield leaf for the
+            -- binder's scope (§30.2.2.3 BorrowProjector)
+            Nothing
+              | Just (places, aux) <- projPlacesOf envc rhs -> do
+                  rs <- mapM (walkE envc) aux
+                  let u' =
+                        foldr (seqU . fst . flatR)
+                          (Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places])
+                          rs
+                      locks = [(rk, fp) | pl <- places, let (rk, fp, _) = resolveBorrowAlias envc pl]
+                  pure (u', Nothing, Map.empty, locks)
             Nothing -> do
               r <- walkE envc rhs
               let (u', t') = flatR r
@@ -1055,7 +1212,28 @@ walkBinds env binds = go env binds
       -- every pattern name is bound (untracked entries still shadow
       -- outer bindings); only prefixed/tainted ones carry checks
       bound <- mapM mk names
-      (segs, env') <- go (addBorrows brs (bindVars bound envc)) rest
+      -- a borrowed binding of a place is a place alias for §12.4 locks;
+      -- a binding of a (partial) projection application is a descriptor
+      let aliasEntries =
+            [ (vKey vi, (rk, fp))
+            | borrowed
+            , Just pl <- [place]
+            , let (rk, fp, _) = resolveBorrowAlias envc pl
+            , (_, vi) <- bound
+            ]
+          descEntries =
+            [ (nm, du)
+            | not borrowed
+            , [nm] <- [names]
+            , Just du <- [descOf envc rhs]
+            ]
+          envb0 = bindVars bound envc
+          envb =
+            envb0
+              { eDescs = foldr (uncurry Map.insert) (eDescs envb0) descEntries
+              , eBorrowAliases = foldr (uncurry Map.insert) (eBorrowAliases envb0) aliasEntries
+              }
+      (segs, env') <- go (addBorrows brs envb) rest
       pure ((u, bound, brs) : segs, env')
     orElse (Just x) _ = Just x
     orElse Nothing y = y

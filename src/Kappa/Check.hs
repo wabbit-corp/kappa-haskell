@@ -99,6 +99,24 @@ data CheckState = CheckState
   , csFacts :: !(Map Int RigidFact)
   -- ^ Branch-local dependent-match facts about rigid levels (§7.4.1),
   -- consulted by conversion-time match reduction
+  , csProjections :: !(Map GName ProjInfo)
+  -- ^ §9.1.1 projection definitions: binder structure for the
+  -- projection facet at application sites
+  , csDemand :: !PlaceDemand
+  -- ^ surrounding place demand of the expression being elaborated
+  -- (selects the §16.1.5/§16.1.6 eliminator and accessor capability)
+  }
+
+-- | §16.1.5/§16.1.6 surrounding demand at a descriptor application.
+data PlaceDemand = DemandRead | DemandConsume | DemandOpen
+  deriving stock (Eq, Show)
+
+-- | §9.1.1 projection-facet metadata (one entry per declared name).
+data ProjInfo = ProjInfo
+  { pjIsPlace :: ![Bool] -- ^ per explicit binder, declaration order
+  , pjPlaceNames :: ![Text] -- ^ place binder names, declaration order
+  , pjSelector :: !Bool -- ^ selector form (vs expanded accessor form)
+  , pjYields :: ![(Text, [Text])] -- ^ selector yield places: root binder, path
   }
 
 -- | Active-pattern result classification (§17.3.1).
@@ -113,7 +131,7 @@ initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty Map.empty Map.empty
+    Map.empty Map.empty Map.empty Map.empty DemandRead
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -242,6 +260,21 @@ clApp (Closure env body) v = do
 -- order; 'checkModule' restores source order once at the end.
 report :: Diagnostic -> CheckM ()
 report d = modify' $ \st -> st {csDiags = d : csDiags st}
+
+-- | Run an action under a given §16.1.5 place demand, restoring the
+-- ambient demand afterwards.
+withDemand :: PlaceDemand -> CheckM a -> CheckM a
+withDemand d act = do
+  old <- gets csDemand
+  modify' $ \st -> st {csDemand = d}
+  r <- act
+  modify' $ \st -> st {csDemand = old}
+  pure r
+
+demandOfQ :: Q -> PlaceDemand
+demandOfQ q
+  | q `elem` [Q1, QGe1] = DemandConsume
+  | otherwise = DemandRead
 
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
@@ -1003,8 +1036,12 @@ infer ctx expr = case expr of
             (fTm, fTy) <- infer ctx f
             elabSpine ctx (exprSpan f) fTm fTy args
   EApp f args -> do
-    (fTm, fTy) <- infer ctx f
-    elabSpine ctx (exprSpan f) fTm fTy args
+    mproj <- projectionHead ctx f
+    case mproj of
+      Just (g, pj) -> elabProjApp ctx (exprSpan f) g pj args
+      Nothing -> do
+        (fTm, fTy) <- infer ctx f
+        elabSpine ctx (exprSpan f) fTm fTy args
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
   EElvis l r sp -> elabElvis ctx l r sp
@@ -1268,9 +1305,31 @@ check ctx expr expected0 = do
     _ -> do
       (tm, ty) <- infer ctx expr
       (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
-      expectType ctx (exprSpan expr) ty1 expected
+      special <- projDescriptorMismatch ctx expr ty1 expected
+      unless special $
+        expectType ctx (exprSpan expr) ty1 expected
       pure tm1
   where
+    -- §16.1.5: a fully applied projection in descriptor-typed position
+    -- gets the dedicated diagnostic rather than a plain mismatch
+    projDescriptorMismatch c ex actual expect = case expect of
+      VGlobN (GName pm dn) _
+        | pm == preludeModule
+        , dn `elem` ["Projector", "Getter", "Opener", "Setter", "Sinker"]
+        , EApp f args <- ex -> do
+            mproj <- projectionHead c f
+            case mproj of
+              Just (_, pj) | projFullApp pj args -> do
+                ok <- unify c actual expect
+                if ok
+                  then pure False
+                  else do
+                    errAt (exprSpan ex) "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED"
+                      (Just "kappa.projection.descriptor")
+                      "a fully applied projection denotes its focus value, not a first-class descriptor; use the unapplied projection name (§16.1.5)"
+                    pure True
+              _ -> pure False
+      _ -> pure False
     tryInferAgainst e t = do
       saved <- get
       (tm, ty) <- infer ctx e
@@ -1420,10 +1479,228 @@ elabForall ctx0 bs0 body = go ctx0 bs0
       pure (CPi Impl q nm domTm restTm, VSort 0)
 
 -- application spine (§16.1.7.1)
+-- ── Projection applications (§16.1.5, §16.1.6) ───────────────────────
+
+-- | Resolve an application head to a projection facet, if any.
+projectionHead :: Ctx -> Expr -> CheckM (Maybe (GName, ProjInfo))
+projectionHead ctx = \case
+  EVar hn
+    | Nothing <- lookupCtx (nameText hn) ctx -> do
+        mg <- lookupGlobalName (nameText hn)
+        st <- get
+        pure $ do
+          g <- mg
+          pj <- Map.lookup g (csProjections st)
+          pure (g, pj)
+  _ -> pure Nothing
+
+-- | Does a projection-head application supply every declared binder?
+projFullApp :: ProjInfo -> [Arg] -> Bool
+projFullApp pj args =
+  all isExpl args && length args == length (pjIsPlace pj) && or (pjIsPlace pj)
+  where
+    isExpl = \case
+      ArgExplicit _ -> True
+      _ -> False
+
+-- | Application of a named projection (§9.1.1): a full application in
+-- declaration order supplies the place binders directly; otherwise the
+-- ordinary term facet (descriptor) is applied (§16.1.5).
+elabProjApp :: Ctx -> Span -> GName -> ProjInfo -> [Arg] -> CheckM (Term, Value)
+elabProjApp ctx sp g pj args = do
+  mt <- globalTerm g
+  case mt of
+    Nothing -> anyHole ctx
+    Just (dTm, dTy)
+      | projFullApp pj args -> do
+          let split = zip (pjIsPlace pj) args
+              ordArgs = [a | (False, a) <- split]
+              placePairs =
+                [ (nm, e)
+                | ((True, ArgExplicit e), nm) <-
+                    zip [p | p@(True, _) <- split] (pjPlaceNames pj)
+                ]
+          (dTm1, dTy1) <- elabSpine ctx sp dTm dTy ordArgs
+          applyDescriptor ctx sp dTm1 dTy1 (RootsSeparate placePairs)
+      | otherwise -> elabSpine ctx sp dTm dTy args
+
+-- | How the place arguments of a descriptor application are supplied.
+data RootsSupply
+  = RootsSeparate ![(Text, Expr)] -- ^ full application: place binder ↦ argument
+  | RootsSingle !Expr -- ^ §16.1.5 single roots argument
+
+-- | The accessor capabilities of a structural bundle record type
+-- (§16.1.6): @Just [(field, roots, focus)]@ when every field is an
+-- accessor descriptor.
+bundleCapsM :: [(Text, Value)] -> CheckM (Maybe [(Text, Value, Value)])
+bundleCapsM fs
+  | null fs = pure Nothing
+  | otherwise = do
+      caps <- forM fs $ \(nm, tv) -> do
+        t <- forceM tv
+        pure $ case t of
+          VGlobN (GName pm former) [(_, roots), (_, focus)]
+            | pm == preludeModule
+            , lookup nm capFormers == Just former ->
+                Just (nm, roots, focus)
+          _ -> Nothing
+      pure (sequence caps)
+  where
+    capFormers = [("get", "Getter"), ("open", "Opener"), ("set", "Setter"), ("sink", "Sinker")]
+
+-- | If the callee elaborates to a projector or accessor-bundle
+-- descriptor, elaborate the §16.1.5/§16.1.6 descriptor application.
+descriptorApp :: Ctx -> Span -> Term -> Value -> Expr -> Maybe PlaceDemand -> CheckM (Maybe (Term, Value))
+descriptorApp ctx sp fTm fTy e mdemand = case fTy of
+  VGlobN (GName pm "Projector") [_, _]
+    | pm == preludeModule -> Just <$> run
+  VRecordT caps -> do
+    mb <- bundleCapsM caps
+    case mb of
+      Just _ -> Just <$> run
+      Nothing -> pure Nothing
+  _ -> pure Nothing
+  where
+    run = maybe id withDemand mdemand (applyDescriptor ctx sp fTm fTy (RootsSingle e))
+
+-- | Apply a descriptor value to its roots (§16.1.5/§16.1.6): validate
+-- the place pack, select the eliminator for the surrounding demand, and
+-- yield the focus.
+applyDescriptor :: Ctx -> Span -> Term -> Value -> RootsSupply -> CheckM (Term, Value)
+applyDescriptor ctx sp dTm dTy0 supply = do
+  dTy <- forceM dTy0
+  case dTy of
+    VGlobN (GName pm "Projector") [(_, rootsV), (_, focusV)]
+      | pm == preludeModule -> do
+          placeTms <- elabRootsSupply ctx sp rootsV supply
+          pure (foldl (CApp Expl) dTm placeTms, focusV)
+    VRecordT capFs -> do
+      mcaps <- bundleCapsM capFs
+      case mcaps of
+        Just caps@((_, rootsV, focusV) : _) -> do
+          demand <- gets csDemand
+          let want = case demand of
+                DemandRead -> "get"
+                DemandConsume -> "sink"
+                DemandOpen -> "open"
+              capNames = [nm | (nm, _, _) <- caps]
+          placeTms <- elabRootsSupply ctx sp rootsV supply
+          unless (want `elem` capNames) $
+            errAt sp "E_PROJECTION_CAPABILITY_REQUIRED" (Just "kappa.projection.capability")
+              ( "this use requires the '" <> capabilityWord demand
+                  <> "' capability, but the accessor bundle provides only: "
+                  <> T.intercalate ", " capNames <> " (§16.1.6)"
+              )
+          -- the value facet of the application always reads through
+          -- 'get' when available (under '~' the §18.9 threading reads
+          -- the focus and fills through 'set'/'open' at usage level)
+          let readCap
+                | demand == DemandConsume && "sink" `elem` capNames = "sink"
+                | "get" `elem` capNames = "get"
+                | otherwise = ""
+          tm <-
+            if T.null readCap
+              then fst <$> anyHole ctx
+              else pure (foldl (CApp Expl) (CProj dTm readCap) placeTms)
+          pure (tm, focusV)
+        _ -> do
+          errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa.projection.descriptor")
+            "expected a projector or accessor-bundle descriptor value here (§16.1.5)"
+          anyHole ctx
+    _ -> do
+      errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa.projection.descriptor")
+        "expected a projector or accessor-bundle descriptor value here (§16.1.5)"
+      anyHole ctx
+  where
+    capabilityWord = \case
+      DemandRead -> "get"
+      DemandConsume -> "sink"
+      DemandOpen -> "open"
+
+-- | Elaborate the roots of a descriptor application in place-pack mode
+-- (§16.1.5): each supplied field must be a stable place expression of
+-- the corresponding field type. Returns the place terms in canonical
+-- (lexicographic) root order.
+elabRootsSupply :: Ctx -> Span -> Value -> RootsSupply -> CheckM [Term]
+elabRootsSupply ctx _sp rootsV supply = do
+  rootsF <- forceM rootsV
+  let rfs = case rootsF of
+        VRecordT fs -> fs
+        _ -> []
+  case supply of
+    RootsSeparate pairs ->
+      forM rfs $ \(nm, fty) ->
+        case lookup nm pairs of
+          Just e -> elabPlaceArg ctx e fty
+          Nothing -> fst <$> anyHole ctx
+    RootsSingle e -> case rfs of
+      [(nm, fty)] -> case e of
+        ERecordLit items isp -> do
+          let fields = [(nameText fn, fe) | RecItem _ fn (Just fe) <- items]
+          case fields of
+            [(fn, fe)]
+              | fn == nm, length items == 1 -> (: []) <$> elabPlaceArg ctx fe fty
+            _ -> do
+              errAt isp "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa.projection.roots")
+                ("the roots record literal must supply exactly the field '" <> nm <> "' (§16.1.5)")
+              (: []) . fst <$> anyHole ctx
+        _ -> (: []) <$> elabPlaceArg ctx e fty
+      _ -> case e of
+        ERecordLit items isp -> do
+          let fields = [(nameText fn, fe) | RecItem _ fn (Just fe) <- items]
+          if sort (map fst fields) /= map fst rfs || length items /= length fields
+            then do
+              errAt isp "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa.projection.roots")
+                ( "the roots record literal must supply exactly the fields: "
+                    <> T.intercalate ", " (map fst rfs) <> " (§16.1.5)"
+                )
+              mapM (const (fst <$> anyHole ctx)) rfs
+            else forM rfs $ \(nm, fty) ->
+              case lookup nm fields of
+                Just fe -> elabPlaceArg ctx fe fty
+                Nothing -> fst <$> anyHole ctx
+        _ -> do
+          errAt (exprSpan e) "E_PROJECTION_DESCRIPTOR_ROOTS_LITERAL_REQUIRED" (Just "kappa.projection.roots")
+            "the roots argument of a multi-root projector descriptor application must be a closed record literal (§16.1.5)"
+          _ <- infer ctx e
+          mapM (const (fst <$> anyHole ctx)) rfs
+
+-- | One root of a place pack: must be a stable place expression
+-- (§12.4.1) of the root field's type.
+elabPlaceArg :: Ctx -> Expr -> Value -> CheckM Term
+elabPlaceArg ctx e fty
+  | stablePlaceExpr e = withDemand DemandRead (check ctx e fty)
+  | otherwise = do
+      errAt (exprSpan e) "E_PROJECTION_ROOT_INVALID" (Just "kappa.projection.roots")
+        "a projection place argument must be a stable place expression (§12.4.1, §16.1.5)"
+      _ <- withDemand DemandRead (infer ctx e)
+      fst <$> anyHole ctx
+
+-- | Syntactic stable-place check (§12.4.1 subset: variables and
+-- record\/constructor field paths).
+stablePlaceExpr :: Expr -> Bool
+stablePlaceExpr = \case
+  EVar _ -> True
+  EDot e (DotName _) -> stablePlaceExpr e
+  EAscription e _ _ -> stablePlaceExpr e
+  _ -> False
+
 elabSpine :: Ctx -> Span -> Term -> Value -> [Arg] -> CheckM (Term, Value)
 elabSpine _ _ fTm fTy [] = pure (fTm, fTy)
 elabSpine ctx sp fTm fTy0 (arg : rest) = do
   fTy <- forceM fTy0
+  -- §16.1.5/§16.1.6: a descriptor-typed callee consumes its roots
+  -- argument in place-pack mode
+  mdesc <- case arg of
+    ArgExplicit e -> descriptorApp ctx sp fTm fTy e Nothing
+    ArgInout e _ -> descriptorApp ctx sp fTm fTy e (Just DemandOpen)
+    _ -> pure Nothing
+  case mdesc of
+    Just (tm', ty') -> elabSpine ctx sp tm' ty' rest
+    Nothing -> elabSpineArg ctx sp fTm fTy arg rest
+
+elabSpineArg :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
+elabSpineArg ctx sp fTm fTy arg rest = do
   case (arg, fTy) of
     (ArgImplicit e, VPi Impl _ _ dom clo) -> do
       aTm <- check ctx e dom
@@ -1435,8 +1712,15 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
       iV <- evalIn ctx iTm
       ty' <- clApp clo iV
       elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
-    (ArgExplicit e, VPi Expl _ _ dom clo) -> do
-      aTm <- check ctx e dom
+    (ArgExplicit e, VPi Expl q _ dom clo) -> do
+      aTm <- withDemand (demandOfQ q) (check ctx e dom)
+      aV <- evalIn ctx aTm
+      ty' <- clApp clo aV
+      elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
+    -- a '~place' marker against a callable parameter: the place value
+    -- is demanded in open mode (§18.9.3, §16.1.6)
+    (ArgInout e _, VPi Expl _ _ dom clo) -> do
+      aTm <- withDemand DemandOpen (check ctx e dom)
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
@@ -2023,10 +2307,17 @@ elabDotUnqualified ctx e member mname = do
       mg <- lookupGlobalName (nameText mn0)
       case mg of
         Just g -> do
+          st <- get
           mt <- globalTerm g
-          case mt of
-            Just (fTm, fTy) -> applyRecv fTm fTy recvTm recvTy
-            Nothing -> failMember recvTy mn0
+          case (Map.lookup g (csProjections st), mt) of
+            -- receiver-projection sugar (§7.4): the receiver place
+            -- supplies the unique place binder
+            (Just pj, Just (dTm, dTy))
+              | [pn] <- pjPlaceNames pj
+              , pjIsPlace pj == [True] ->
+                  applyDescriptor ctx (nameSpanOf member) dTm dTy (RootsSeparate [(pn, e)])
+            (_, Just (fTm, fTy)) -> applyRecv fTm fTy recvTm recvTy
+            (_, Nothing) -> failMember recvTy mn0
         Nothing -> failMember recvTy mn0
 
     applyRecv fTm fTy0 recvTm recvTy = do
@@ -2213,6 +2504,7 @@ elabPatch = elabPatchWith False
 
 -- @nested@ selects the §13.2.5 path diagnostic for unknown fields.
 elabPatchWith :: Bool -> Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabPatchWith _ ctx e [PatchSection recv rhs] sp = elabSectionUpdate ctx e recv rhs sp
 elabPatchWith nested ctx e items sp = do
   (tm, ty) <- infer ctx e
   (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
@@ -2281,7 +2573,9 @@ elabPatchWith nested ctx e items sp = do
               (vt, vty) <- insertAllImplicits ctx (exprSpan v) vt0 vty0
               pure (Just (nameText n, vt, Just vty))
         PatchSection _ _ -> do
-          errAt sp "E_UNSUPPORTED" Nothing "projection-section updates are not supported by this implementation"
+          -- a projection-section item mixed with other patch items
+          errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
+            "a projection-section update must be the only item of its update (§13.2.5, §30.2.2.4)"
           pure Nothing
       let entries = catMaybes (results0 ++ groupUps)
           ups = [(n, vt) | (n, vt, _) <- entries]
@@ -2303,6 +2597,64 @@ elabPatchWith nested ctx e items sp = do
     _ -> do
       errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
       anyHole ctx
+
+-- | Projection-section update @lhs.{ (.member args) = rhs }@
+-- (§13.2.5, §30.2.2.4): the member must resolve to a stable field, a
+-- single-leaf selector projection, or an accessor bundle providing
+-- @set@; the update rebuilds the root.
+elabSectionUpdate :: Ctx -> Expr -> Expr -> Expr -> Span -> CheckM (Term, Value)
+elabSectionUpdate ctx baseE recv rhs sp = case recv of
+  EReceiverSection (DotName mn : _) sArgs _ -> do
+    (baseTm, baseTy0) <- infer ctx baseE
+    baseTy <- forceM baseTy0
+    mg <- lookupGlobalName (nameText mn)
+    st <- get
+    let mpj = (\g -> (,) g <$> Map.lookup g (csProjections st)) =<< mg
+    case (baseTy, mpj) of
+      -- a plain stable field: FillPlace, i.e. the ordinary update
+      (VRecordT fs, _)
+        | nameText mn `elem` map fst fs, null sArgs ->
+            elabPatchWith False ctx baseE [PatchUpdate [(False, mn)] (PatchValue rhs)] sp
+      (_, Just (g, pj))
+        | pjSelector pj ->
+            case (sArgs, nub (pjYields pj)) of
+              -- unique static leaf: FillProjector ≡ nested field update
+              ([], [(_, path@(_ : _))]) ->
+                elabPatchWith False ctx baseE
+                  [PatchUpdate [(False, Name seg (nameSpan mn)) | seg <- path] (PatchValue rhs)] sp
+              -- whole-root leaf: filling replaces the root
+              ([], [(_, [])]) -> do
+                rhsTm <- check ctx rhs baseTy
+                pure (rhsTm, baseTy)
+              _ -> unsupportedTarget (baseTm, baseTy)
+        | otherwise -> do
+            mt <- globalTerm g
+            case mt of
+              Nothing -> unsupportedTarget (baseTm, baseTy)
+              Just (dTm, dTy) -> do
+                (dTm1, dTy1) <- elabSpine ctx sp dTm dTy sArgs
+                dTyF <- forceM dTy1
+                mcaps <- case dTyF of
+                  VRecordT capFs -> bundleCapsM capFs
+                  _ -> pure Nothing
+                case [(r, f) | ("set", r, f) <- fromMaybe [] mcaps] of
+                  ((rootsV, focusV) : _) -> do
+                    rootsF <- forceM rootsV
+                    case rootsF of
+                      VRecordT [(_, sV)] -> expectType ctx (exprSpan baseE) baseTy sV
+                      _ -> pure ()
+                    rhsTm <- check ctx rhs focusV
+                    pure (CApp Expl (CApp Expl (CProj dTm1 "set") baseTm) rhsTm, baseTy)
+                  [] -> unsupportedTarget (baseTm, baseTy)
+      _ -> unsupportedTarget (baseTm, baseTy)
+  _ -> do
+    (baseTm, baseTy) <- infer ctx baseE
+    unsupportedTarget (baseTm, baseTy)
+  where
+    unsupportedTarget (baseTm, baseTy) = do
+      errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
+        "the projection-section update target must resolve to a stable place, a selector projection, or an accessor bundle providing 'set' (§13.2.5, §30.2.2.4)"
+      pure (baseTm, baseTy)
 
 -- ── Variants ─────────────────────────────────────────────────────────
 
@@ -4834,8 +5186,7 @@ bodyPass = \case
   DLet mods ld sp -> elabLetDecl mods ld sp
   DInstance inst sp -> elabInstance inst sp
   DPattern mods ld sp -> elabActivePatternDecl mods ld sp
-  DProjection _ _ _ _ _ sp ->
-    errAt sp "E_UNSUPPORTED" Nothing "projection declarations are not supported by this implementation"
+  DProjection mods n bs ty body sp -> elabProjectionDecl mods n bs ty body sp
   DDerive _ sp ->
     errAt sp "E_UNSUPPORTED" Nothing "derive declarations are not supported by this implementation"
   DTopSplice _ sp ->
@@ -4891,6 +5242,178 @@ elabActivePatternDecl mods ld sp = do
               inner <- clApp clo (VRigid lvl [])
               goU (if ic == Expl then expl + 1 else expl) (lvl + 1) inner
             _ -> pure (expl, vf)
+
+-- | A projection definition (§9.1.1). Both forms register a term facet
+-- global (a first-class descriptor) plus 'csProjections' metadata used
+-- by the application-site elaborators of §16.1.5/§16.1.6.
+--
+--   * selector form: term facet @Δ -> Projector Roots T@; the runtime
+--     value is @λΔ. λplaces. body@ with each @yield p@ reading @p@.
+--   * expanded form: term facet @Δ -> Bundle@, a structural record of
+--     @Getter/Opener/Setter/Sinker@ accessor closures with the §9.1.1
+--     descriptor-field synthesis (get+set ⇒ open, inout ⇒ set).
+--
+-- Place lambdas/applications use the canonical (lexicographic) order of
+-- the @Roots@ record so descriptor applications can be elaborated from
+-- the roots record type alone.
+elabProjectionDecl :: DeclMods -> Name -> [Binder] -> Expr -> ProjBody -> Span -> CheckM ()
+elabProjectionDecl _mods n binders resTyE body sp = do
+  flushPending
+  g <- ownName n
+  let groups = projBinderGroups binders
+      placeBs = [b | (True, b) <- groups]
+      ordBs = [b | (False, b) <- groups]
+  when (null placeBs) $
+    errAt sp "E_PROJECTION_MISSING_PLACE_BINDER" (Just "kappa.projection.place-binder")
+      "a projection definition must contain at least one 'place' binder (§9.1.1)"
+  -- Δ context: ordinary binders, declaration order
+  (ctxD, ordTele) <- elabOrdBinders emptyCtx ordBs
+  -- place binder types and the focus, under the full Δ
+  places0 <- forM placeBs $ \b -> do
+    tyTm <- case binderTypeExpr b of
+      Just tyE -> fst <$> inferType ctxD tyE
+      Nothing -> freshMeta
+    tyV <- evalIn ctxD tyTm
+    pure (maybe "_" nameText (bName b), tyTm, tyV)
+  (focusTm, _) <- inferType ctxD resTyE
+  focusV <- evalIn ctxD focusTm
+  let placesLex = sortOn (\(nm, _, _) -> nm) places0
+      rootsTm = CRecordT [(nm, t) | (nm, t, _) <- placesLex]
+      placeNames = [nm | (nm, _, _) <- places0]
+      lamsOrd t = foldr (\(q, nm, _) acc -> CLam Expl q nm acc) t ordTele
+      pisOrd t = foldr (\(q, nm, ty) acc -> CPi Expl q nm ty acc) t ordTele
+      app2 h a b = CApp Expl (CApp Expl (CGlob (gPrel h)) a) b
+  case body of
+    ProjSelector bodyE0 -> do
+      let yields0 = projYieldPlaces bodyE0
+      yields <- fmap catMaybes . forM yields0 $ \case
+        Right (root, path)
+          -- with no place binders at all the declaration-level
+          -- diagnostic already covers every yield
+          | root `elem` placeNames || null placeNames -> pure (Just (root, path))
+        Right (_, _) -> do
+          errAt sp "E_PROJECTION_YIELD_INVALID" (Just "kappa.projection.yield")
+            "each 'yield' operand must be a stable place rooted in a 'place' binder of this projection (§9.1.1)"
+          pure Nothing
+        Left ysp -> do
+          errAt ysp "E_PROJECTION_YIELD_INVALID" (Just "kappa.projection.yield")
+            "each 'yield' operand must be a stable place rooted in a 'place' binder of this projection (§9.1.1)"
+          pure Nothing
+      let bodyE = stripYields bodyE0
+          ctxBody = foldl (\c (nm, _, tv) -> bindCtx nm False tv c) ctxD placesLex
+      bodyTm <- check ctxBody bodyE focusV
+      let coreTy = pisOrd (app2 "Projector" rootsTm focusTm)
+          defTm = lamsOrd (foldr (\(nm, _, _) acc -> CLam Expl QW nm acc) bodyTm placesLex)
+      registerProjection g coreTy defTm $
+        ProjInfo [isP | (isP, _) <- groups] placeNames True yields
+    ProjAccessors clauses -> do
+      forM_ (duplicatesOf [k | (k, _, _) <- clauses]) $ \k ->
+        errAt sp "E_PROJECTION_ACCESSOR_CLAUSE_DUPLICATE" (Just "kappa.projection.accessor")
+          ("the accessor clause '" <> k <> "' appears more than once (§9.1.1)")
+      when (length placeBs /= 1) $
+        errAt sp "E_PROJECTION_EXPANDED_ACCESSOR_PLACE_BINDER_MISMATCH" (Just "kappa.projection.accessor")
+          "an expanded-form projection must have exactly one 'place' binder (§9.1.1)"
+      case places0 of
+        [] -> pure ()
+        ((pName, pTyTm, pTyV) : _) -> do
+          let ctxP = bindCtx pName False pTyV ctxD
+              zipperTm = CApp Expl (CApp Expl (CApp Expl (CGlob (gPrel "Zipper")) pTyTm) focusTm) focusTm
+          zipperV <- evalIn ctxD zipperTm
+          let clauseOf k = [(mb, e) | (k', mb, e) <- clauses, k' == k]
+              getC = clauseOf "get"
+              setC = clauseOf "set"
+              inoutC = clauseOf "inout"
+              sinkC = clauseOf "sink"
+          -- direct clause bodies
+          getTm <- forM (take 1 getC) $ \(_, e) -> check ctxP e focusV
+          sinkTm <- forM (take 1 sinkC) $ \(_, e) -> check ctxP e focusV
+          inoutTm <- forM (take 1 inoutC) $ \(_, e) -> check ctxP e zipperV
+          setTm <- forM (take 1 setC) $ \(mb, e) -> do
+            let nv = fromMaybe "new_value" (mb >>= fmap nameText . bName)
+            nvV <- case mb >>= bType of
+              Just tyE -> do
+                (t, _) <- inferType ctxD tyE
+                evalIn ctxD t
+              Nothing -> pure focusV
+            tm <- check (bindCtx nv False nvV ctxP) e pTyV
+            pure (nv, tm)
+          -- synthesized descriptors (§9.1.1)
+          synthOpen <-
+            case (inoutTm, getC, setC) of
+              ([], ((_, getE) : _), ((mb, setE) : _)) -> do
+                let nvB = fromMaybe (simpleBinder (Name "new_value" sp)) mb
+                    openE =
+                      EApp (EVar (Name "Zipper" sp))
+                        [ ArgExplicit getE
+                        , ArgExplicit (ELambda Nothing [nvB] setE sp)
+                        ]
+                tm <- check ctxP openE zipperV
+                pure [tm]
+              _ -> pure []
+          synthSet <-
+            case (setTm, inoutC) of
+              ([], ((_, inoutE) : _)) -> do
+                let newE = EVar (Name "__new" sp)
+                    fillE = EApp (EDot inoutE (DotName (Name "fill" sp))) [ArgExplicit newE]
+                tm <- check (bindCtx "__new" False focusV ctxP) fillE pTyV
+                pure [("__new", tm)]
+              _ -> pure []
+          let lamP t = CLam Expl QW pName t
+              caps =
+                [ ("get", app2 "Getter" rootsTm focusTm, lamP t) | t <- take 1 getTm ]
+                  ++ [ ("open", app2 "Opener" rootsTm focusTm, lamP t)
+                     | t <- take 1 (inoutTm ++ synthOpen)
+                     ]
+                  ++ [ ("set", app2 "Setter" rootsTm focusTm, lamP (CLam Expl Q1 nv t))
+                     | (nv, t) <- take 1 (setTm ++ synthSet)
+                     ]
+                  ++ [ ("sink", app2 "Sinker" rootsTm focusTm, lamP t) | t <- take 1 sinkTm ]
+              capsSorted = sortOn (\(nm, _, _) -> nm) caps
+              coreTy = pisOrd (CRecordT [(nm, t) | (nm, t, _) <- capsSorted])
+              defTm = lamsOrd (CRecordV [(nm, t) | (nm, _, t) <- capsSorted])
+          registerProjection g coreTy defTm $
+            ProjInfo [isP | (isP, _) <- groups] placeNames False []
+  where
+    stripYields e0 = case e0 of
+      EApp (EVar y) [ArgExplicit e] | nameText y == "yield" -> e
+      EIf alts mels isp ->
+        EIf [(c, stripYields b) | (c, b) <- alts] (stripYields <$> mels) isp
+      EMatch scrut cases msp ->
+        EMatch scrut
+          [ case c of
+              MatchCase p mg b csp -> MatchCase p mg (stripYields b) csp
+              other -> other
+          | c <- cases
+          ]
+          msp
+      EBlock ds (Just fin) bsp -> EBlock ds (Just (stripYields fin)) bsp
+      EAscription e tyE asp -> EAscription (stripYields e) tyE asp
+      e -> e
+
+-- | Elaborate the ordinary (non-place) binders of a projection in
+-- declaration order, returning the extended context and the telescope.
+elabOrdBinders :: Ctx -> [Binder] -> CheckM (Ctx, [(Q, Text, Term)])
+elabOrdBinders ctx0 [] = pure (ctx0, [])
+elabOrdBinders ctx0 (b : bs) = do
+  tyTm <- case binderTypeExpr b of
+    Just tyE -> fst <$> inferType ctx0 tyE
+    Nothing -> freshMeta
+  tyV <- evalIn ctx0 tyTm
+  let nm = maybe "_" nameText (bName b)
+      ctx1 = bindCtx nm (bImplicit b) tyV ctx0
+  (ctx2, rest) <- elabOrdBinders ctx1 bs
+  pure (ctx2, (binderQ b, nm, tyTm) : rest)
+
+-- | Register a projection's term facet and projection-facet metadata.
+registerProjection :: GName -> Term -> Term -> ProjInfo -> CheckM ()
+registerProjection g coreTy defTm pj = do
+  flushPending
+  coreTy' <- zonkTermM 0 coreTy
+  defTm' <- zonkTermM 0 defTm
+  tyV <- evalIn emptyCtx coreTy'
+  tmV <- evalIn emptyCtx defTm'
+  addGlobal g (GlobalDef tyV (Just tmV) False)
+  modify' $ \st -> st {csProjections = Map.insert g pj (csProjections st)}
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 -- the parsed decreases clause is not consulted: termination is verified

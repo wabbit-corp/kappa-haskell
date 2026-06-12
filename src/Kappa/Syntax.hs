@@ -30,6 +30,8 @@ module Kappa.Syntax
   , InterpPart (..)
   , CompKind (..)
   , ProjBody (..)
+  , projBinderGroups
+  , projYieldPlaces
   , exprSpan
   , LetBind (..)
   , DoItem (..)
@@ -406,6 +408,49 @@ data ProjBody
   = ProjSelector !Expr -- ^ selector body (yield\/if\/match expression form)
   | ProjAccessors ![(Text, Maybe Binder, Expr)] -- ^ get\/set\/inout\/sink clauses
   deriving stock (Show)
+
+-- | Recover the §9.1.1 binder structure of a projection declaration:
+-- a @(place x : T)@ group parses as two same-span binders, the first
+-- spelled @place@. Returns the effective explicit binders in
+-- declaration order, flagged with whether each is a place binder
+-- (the @place@ marker and any receiver spelling are collapsed away).
+projBinderGroups :: [Binder] -> [(Bool, Binder)]
+projBinderGroups = go
+  where
+    go [] = []
+    go (b : rest)
+      | Just n <- bName b
+      , nameText n == "place"
+      , (grp@(_ : _), rest') <- span (\b' -> bSpan b' == bSpan b) rest =
+          (True, last grp) : go rest'
+      | otherwise = (False, b) : go rest
+
+-- | The stable places a selector-form projection body yields: pairs of
+-- (root binder name, field-path suffix). Yields whose operand is not a
+-- variable-rooted dotted path are reported as 'Left' spans.
+projYieldPlaces :: Expr -> [Either Span (Text, [Text])]
+projYieldPlaces = go
+  where
+    go = \case
+      EApp (EVar y) [ArgExplicit e]
+        | nameText y == "yield" -> [classify e]
+      EIf alts mels _ ->
+        concatMap (go . snd) alts ++ maybe [] go mels
+      EMatch _ cases _ ->
+        concat [go body | MatchCase _ _ body _ <- cases]
+      EBlock _ (Just fin) _ -> go fin
+      EAscription e _ _ -> go e
+      e -> [Left (exprSpan e)]
+    classify e = case placePath e of
+      Just (root, path) -> Right (root, path)
+      Nothing -> Left (exprSpan e)
+    placePath = \case
+      EVar n -> Just (nameText n, [])
+      EDot b (DotName f) -> do
+        (root, path) <- placePath b
+        Just (root, path ++ [nameText f])
+      EAscription e _ _ -> placePath e
+      _ -> Nothing
 
 data LetDef = LetDef
   { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
