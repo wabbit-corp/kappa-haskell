@@ -1,0 +1,30 @@
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE, E_DEFER_ABRUPT_CONTROL
+
+-- §19.5: a using-scoped resource may not escape its do-scope.
+-- §18.7: a deferred action may not return out of itself.
+module main
+
+data Handle : Type =
+    MkHandle Int
+
+openFile : String -> IO Handle
+let openFile name = pure (MkHandle 1)
+
+badEscape : IO Handle
+let badEscape = do
+    using h <- openFile "data.txt"
+    pure h
+
+badDeferReturn : UIO Unit
+let badDeferReturn =
+    do
+        defer
+            do
+                return ()
+        pure ()
+
+okUse : IO Int
+let okUse = do
+    using h <- openFile "data.txt"
+    pure 1

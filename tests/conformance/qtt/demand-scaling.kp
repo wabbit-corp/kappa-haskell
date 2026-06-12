@@ -1,0 +1,19 @@
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP, E_QTT_LINEAR_OVERUSE
+
+-- §12.2.1–§12.2.2: an argument is counted at the callee parameter's
+-- demand interval, so a relevant capability does not satisfy an affine
+-- demand and a linear capability does not satisfy an unrestricted one.
+module main
+
+mayIgnore : (<=1 x : Int) -> Int
+let mayIgnore (<=1 x : Int) : Int = 0
+
+anyTimes : Int -> Int
+let anyTimes (x : Int) : Int = 0
+
+badRelevantToAffine : (>=1 x : Int) -> Int
+let badRelevantToAffine (>=1 x : Int) : Int = mayIgnore x
+
+badLinearToUnrestricted : (1 x : Int) -> Int
+let badLinearToUnrestricted (1 x : Int) : Int = anyTimes x

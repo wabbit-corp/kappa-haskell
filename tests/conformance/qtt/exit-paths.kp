@@ -1,0 +1,34 @@
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP, E_QTT_LINEAR_DROP
+
+-- §12.2.5, §18.2: positive lower bounds hold on every completion path —
+-- an early return and a loop break are completion paths of the
+-- bindings in scope.
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+badReturnBeforeUse : (>=1 x : Int) -> Bool -> UIO Unit
+let badReturnBeforeUse (>=1 x : Int) (b : Bool) : UIO Unit =
+    do
+        if b then
+            return ()
+        let _ = strictId x
+        pure ()
+
+badBreakSkipsRelevant : Bool -> UIO Unit
+let badBreakSkipsRelevant (cond : Bool) : UIO Unit =
+    do
+        while cond do
+            let >=1 x = 1
+            break
+        pure ()
+
+okReturnAfterUse : (>=1 x : Int) -> Bool -> UIO Unit
+let okReturnAfterUse (>=1 x : Int) (b : Bool) : UIO Unit =
+    do
+        let _ = strictId x
+        if b then
+            return ()
+        pure ()

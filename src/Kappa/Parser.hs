@@ -596,7 +596,8 @@ pInstanceDecl = do
   members <-
     optionMaybe (token TokEquals) >>= \case
       Nothing -> pure []
-      Just () -> pInstanceMembers
+      -- an empty member suite is permitted: `instance Shareable Cell =`
+      Just () -> pInstanceMembers <|> pure []
   pure (InstanceDecl premises hd members)
 
 pInstanceHead :: P ([Expr], Expr)

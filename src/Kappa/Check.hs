@@ -1083,6 +1083,12 @@ check ctx expr expected0 = do
       case r of
         Just tm -> pure tm
         Nothing -> CThunkE <$> check ctx expr a
+    (_, VGlobN (GName _ "Need") [(_, a)]) -> do
+      -- §16.1.7.1 lazy insertion: a value in Need position suspends
+      r <- tryInferAgainst expr expected
+      case r of
+        Just tm -> pure tm
+        Nothing -> CLazyE <$> check ctx expr a
     -- expected-type-directed injection (§13.1.3) must see literals too
     (_, VVariantT members)
       | not (isVariant expr) -> do

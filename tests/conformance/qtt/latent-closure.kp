@@ -1,0 +1,27 @@
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP, E_QTT_LINEAR_OVERUSE
+
+-- §16.2.1: a closure's captured usage is multiplied by its consumption:
+-- zero for an unused binding (the relevant capture is dropped), ω for a
+-- flow into an unrestricted parameter (the linear capture is overused).
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+callAnyTimes : (k : Unit -> Int) -> Int
+let callAnyTimes (k : Unit -> Int) : Int = 0
+
+badUncalled : (>=1 x : Int) -> Unit
+let badUncalled (>=1 x : Int) : Unit =
+    let f = \() -> strictId x
+    in ()
+
+badUnrestrictedSlot : (1 y : Int) -> Int
+let badUnrestrictedSlot (1 y : Int) : Int =
+    callAnyTimes (\() -> y)
+
+okOneShot : (>=1 x : Int) -> Int
+let okOneShot (>=1 x : Int) : Int =
+    let f = \() -> strictId x
+    in f ()

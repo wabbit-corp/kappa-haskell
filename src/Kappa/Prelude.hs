@@ -274,6 +274,8 @@ preludeSource =
     , "trait One (a : Type) ="
     , "    one : a"
     , ""
+    , "trait Shareable (a : Type)" -- §12.3 marker: shared-borrow-safe
+    , ""
     , "trait Monoid (a : Type) =" -- §28.2.2
     , "    empty : a"
     , "    append : a -> a -> a"

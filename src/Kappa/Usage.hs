@@ -94,6 +94,7 @@ data VInfo = VInfo
   , vQ :: !(Maybe Quantity) -- ^ counted quantity (@1@, @<=1@, @>=1@, @0@)
   , vBorrowed :: !Bool
   , vAnonBorrow :: !Bool -- ^ anonymous @&@ borrow: capture may not escape
+  , vUsing :: !Bool -- ^ @using@-scoped resource: may not escape itself (§19.5)
   , vTaint :: !(Maybe Span) -- ^ closure capturing a borrow, formed here
   , vLatent :: !Usage -- ^ per-call captured usage (closure-valued bindings)
   , vFields :: ![(Text, Maybe Quantity)] -- ^ record fields, when known
@@ -101,7 +102,15 @@ data VInfo = VInfo
   }
 
 plainV :: Text -> Span -> VInfo
-plainV k sp = VInfo k Nothing False False Nothing Map.empty [] sp
+plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] sp
+
+-- | The taint a bare occurrence of the binding carries: a closure that
+-- captured a borrow, or a @using@-scoped resource escaping itself.
+vEscape :: VInfo -> Span -> Maybe Span
+vEscape vi sp
+  | Just t <- vTaint vi = Just t
+  | vUsing vi = Just sp
+  | otherwise = Nothing
 
 -- | Quantity-1 field names of a tracked record binding (§12.4).
 linFields :: VInfo -> [Text]
@@ -386,7 +395,7 @@ analyzeLet fns aliases ctors msig ld = do
             ty = bType b `orElse` (bType =<< ms)
             fields = maybe [] (resolveFields aliases) ty
         k <- freshKey (nameText n)
-        pure (Just (nameText n, VInfo k q (isJust mark) anon Nothing Map.empty fields (bSpan b)))
+        pure (Just (nameText n, VInfo k q (isJust mark) anon False Nothing Map.empty fields (bSpan b)))
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
@@ -394,14 +403,28 @@ analyzeLet fns aliases ctors msig ld = do
 -- declared result as a record field of the same name.
 checkInoutResult :: Maybe Expr -> LetDef -> M ()
 checkInoutResult msig ld =
-  forM_ [b | b <- ldBinders ld, bInout b, Just _ <- [bName b]] $ \b -> do
-    let nm = maybe "" nameText (bName b)
-        resTy = ldResultType ld `orElse` (sigResult <$> msig)
+  forM_ inouts $ \(nm, bsp) -> do
+    let resTy = ldResultType ld `orElse` (sigResult <$> msig)
     forM_ resTy $ \ty ->
       unless (threadsField nm (unwrapIO ty)) $
-        emit "E_QTT_INOUT_THREADED_FIELD_MISSING" "kappa.qtt.inout-threading" (bSpan b)
+        emit "E_QTT_INOUT_THREADED_FIELD_MISSING" "kappa.qtt.inout-threading" bsp
           ("the result type does not thread the inout place '" <> nm <> "' back as a field (§18.9.3)")
   where
+    -- a definition binder claims its signature binder's inout marker
+    aligned = alignParams (ldBinders ld) (maybe [] sigBinders msig)
+    inouts
+      | null (ldBinders ld) =
+          [ (nameText n, bSpan b)
+          | b <- maybe [] sigBinders msig
+          , bInout b
+          , Just n <- [bName b]
+          ]
+      | otherwise =
+          [ (nameText n, bSpan b)
+          | (b, ms) <- aligned
+          , bInout b || maybe False bInout ms
+          , Just n <- [bName b `orElse` (bName =<< ms)]
+          ]
     orElse (Just x) _ = Just x
     orElse Nothing y = y
     sigResult e = case sigBinders e of
@@ -516,7 +539,7 @@ walkE env e0 = case e0 of
   EVar n -> case Map.lookup (nameText n) (eVars env) of
     Just vi -> do
       u <- movePlace env vi [] (nameSpan n)
-      pure (R u (vTaint vi) (vLatent vi))
+      pure (R u (vEscape vi (nameSpan n)) (vLatent vi))
     Nothing -> pure rNone
   EHole {} -> pure rNone
   EIntLit {} -> pure rNone
@@ -652,7 +675,7 @@ lamBind env b = case bName b of
     pure
       ( Just
           ( nameText n
-          , VInfo k mq (isJust mb) (mb == Just (BorrowMark Nothing)) Nothing Map.empty fields (bSpan b)
+          , VInfo k mq (isJust mb) (mb == Just (BorrowMark Nothing)) False Nothing Map.empty fields (bSpan b)
           )
       )
 
@@ -869,8 +892,17 @@ walkArg env params arg p = case arg of
             then movePlace env vi path sp
             else pure (placeUse vi path sp)
         let latent = scaleU d (vLatent vi)
+        -- a tainted closure binding may flow only into an at-most-once
+        -- consuming position, like a directly written closure (§12.3.2)
+        case vTaint vi of
+          Just tsp
+            | pKnown p
+            , pQuantity p `notElem` [Just QOne, Just QAtMostOne] ->
+                emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" tsp
+                  "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
+          _ -> pure ()
         pure
-          ( rPlain (scaleU d u `seqU` latent)
+          ( R (scaleU d u `seqU` latent) (vEscape vi sp) Map.empty
           , [FMove (vKey vi) path sp | fst d >= 1]
           )
     | otherwise -> do
@@ -957,6 +989,7 @@ walkBinds env binds = go env binds
                   q
                   borrowed
                   anon
+                  False
                   (if single then taint else Nothing)
                   (if single then latent else Map.empty)
                   fields
@@ -1021,9 +1054,16 @@ walkItems env0 items0 = go env0 items0
         pure fl' {fT = if null rest then (exprSpan e <$ t) else fT fl'}
       DoLet lb -> bindLike env lb rest
       DoBind lb -> bindLike env lb rest
-      DoUsing pat rhs sp ->
+      DoUsing pat rhs sp -> do
         -- §19.5: the bound resource is borrowed for the rest of scope
-        bindLike env (LetBind False (BinderPrefix Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp) rest
+        -- and may not itself escape the do-scope
+        (segs, env') <- walkBinds env [LetBind False (BinderPrefix Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp]
+        let bound = concat [b | (_, b, _) <- segs]
+            u = foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
+            markUsing = foldr (\(nm, _) -> Map.adjust (\vi -> vi {vUsing = True}) nm) (eVars env') bound
+        fl <- go env' {eVars = markUsing} rest
+        forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
+        pure (prefixFlow u fl)
       DoLetQ pat rhs mElse sp -> do
         u <- fst . flatR <$> walkE env rhs
         -- the else handler is an alternative completion path (§18.2)

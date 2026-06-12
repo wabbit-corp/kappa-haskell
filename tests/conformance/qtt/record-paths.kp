@@ -1,0 +1,30 @@
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE, E_QTT_LINEAR_DROP, E_QTT_BORROW_OVERLAP
+
+-- §12.4: projecting a quantity-1 field consumes that path (and the
+-- receiving binding inherits its linearity); a record patch restores
+-- the patched path while consuming the residue; a `let &` borrow locks
+-- overlapping paths for its lexical scope.
+module main
+
+data Buffer : Type =
+    Buffer
+
+type WithBuf : Type = (1 buf : Buffer, len : Nat)
+
+badCopyConsumed : (1 r : WithBuf) -> WithBuf
+let badCopyConsumed (1 r : WithBuf) : WithBuf =
+    block
+        let old = r.buf
+        r.{ len = 2 }
+
+badConsumeWhileBorrowed : (1 r : WithBuf) -> Buffer
+let badConsumeWhileBorrowed (1 r : WithBuf) : Buffer =
+    let & view = r.buf
+    in r.buf
+
+okRestore : (1 r : WithBuf) -> WithBuf
+let okRestore (1 r : WithBuf) : WithBuf =
+    block
+        let 1 old = r.buf
+        r.{ buf = old }
