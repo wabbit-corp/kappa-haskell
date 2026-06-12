@@ -2038,9 +2038,13 @@ resolveCtor _ (CtorRef mqual n) = do
       m == csModule st || Map.lookup (gnameText g) (csScope st) == Just g || isPrel m
     isPrel m = m == preludeModule
 
--- record patch (§13.2.5): closed records, '='-updates only.
+-- record patch (§13.2.5): closed records, '='-updates and ':='-extends.
 elabPatch :: Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
-elabPatch ctx e items sp = do
+elabPatch = elabPatchWith False
+
+-- @nested@ selects the §13.2.5 path diagnostic for unknown fields.
+elabPatchWith :: Bool -> Ctx -> Expr -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabPatchWith nested ctx e items sp = do
   (tm, ty) <- infer ctx e
   (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
   t <- forceM ty1
@@ -2048,24 +2052,51 @@ elabPatch ctx e items sp = do
     VRecordT fs -> do
       let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
           extendNames = [nameText n | PatchExtend n _ <- items]
+          -- nested paths (§13.2.5): group by head segment
+          nestedHeads =
+            foldr (\n acc -> if nameText n `elem` map nameText acc then acc else n : acc) []
+              [h | PatchUpdate ((False, h) : _ : _) _ <- items]
       forM_ (duplicatesOf updateNames) $ \n ->
         errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa.record.patch-duplicate")
           ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
       forM_ (duplicatesOf extendNames) $ \n ->
         errAt sp "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa.row.extension-duplicate")
           ("row extension introduces label '" <> n <> "' more than once (§13.2.6)")
-      results <- forM items $ \case
+      forM_ [h | h <- nestedHeads, nameText h `elem` updateNames] $ \h ->
+        errAt (nameSpan h) "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa.record.patch-prefix-conflict")
+          ("record patch both replaces '" <> nameText h <> "' and updates a path beneath it (§13.2.5)")
+      groupUps <- forM nestedHeads $ \h -> do
+        let subItems =
+              [ PatchUpdate restPath v
+              | PatchUpdate ((False, h0) : restPath@(_ : _)) v <- items
+              , nameText h0 == nameText h
+              ]
+        if nameText h `elem` map fst fs
+          then do
+            (htm, _) <- elabPatchWith True ctx (EDot e (DotName h)) subItems sp
+            pure (Just (nameText h, htm, Nothing))
+          else do
+            errAt (nameSpan h) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.record.patch-unknown-path")
+              ("record patch path starts at unknown field '" <> nameText h <> "' (§13.2.5)")
+            pure Nothing
+      results0 <- forM items $ \case
         PatchUpdate [(False, n)] (PatchValue v) -> do
           case lookup (nameText n) fs of
             Just fty -> do
               vt <- check ctx v fty
               pure (Just (nameText n, vt, Nothing))
             Nothing -> do
-              errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.record.unknown-field")
-                ("record has no field '" <> nameText n <> "'")
+              if nested
+                then
+                  errAt (nameSpan n) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.record.patch-unknown-path")
+                    ("record patch path names unknown field '" <> nameText n <> "' (§13.2.5)")
+                else
+                  errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.record.unknown-field")
+                    ("record has no field '" <> nameText n <> "'")
               pure Nothing
+        PatchUpdate ((False, _) : _ : _) _ -> pure Nothing -- grouped above
         PatchUpdate _ _ -> do
-          errAt sp "E_UNSUPPORTED" Nothing "nested or implicit patch paths are not supported by this implementation"
+          errAt sp "E_UNSUPPORTED" Nothing "implicit patch paths are not supported by this implementation"
           pure Nothing
         -- §13.2.6 row extension: the label must be absent; the result
         -- row gains the field
@@ -2083,7 +2114,7 @@ elabPatch ctx e items sp = do
         PatchSection _ _ -> do
           errAt sp "E_UNSUPPORTED" Nothing "projection-section updates are not supported by this implementation"
           pure Nothing
-      let entries = catMaybes results
+      let entries = catMaybes (results0 ++ groupUps)
           ups = [(n, vt) | (n, vt, _) <- entries]
           news =
             foldl
