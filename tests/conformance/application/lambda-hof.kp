@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "6\n1\n15\n6\n"
+
+-- §16.2 / §16.1.7.1: multi-argument unannotated lambdas check against
+-- polymorphic higher-order parameters (regression: reflexive flex-flex
+-- unification problems must succeed).
+
+xs : List Integer
+let xs = 1 :: 2 :: 3 :: Nil
+
+apply2 : (b -> a -> b) -> b -> a -> b
+let apply2 f z x = f z x
+
+main : UIO Unit
+let main = do
+    println (foldl (\acc x -> acc + x) 0 xs)
+    println (foldl (\acc x -> acc) 1 xs)
+    println (apply2 (\acc x -> acc + x) 10 5)
+    println (foldr (\x acc -> x + acc) 0 xs)

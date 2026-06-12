@@ -372,7 +372,21 @@ rExpr env = go
       ERecordPatch e items sp -> ERecordPatch <$> go e <*> mapM goPatch items <*> pure sp
       EReceiverSection ms args sp -> EReceiverSection ms <$> mapM goArg args <*> pure sp
       ESectionLeft e op sp -> ESectionLeft <$> go e <*> pure op <*> pure sp
-      ESectionRight op e sp -> ESectionRight op <$> go e <*> pure sp
+      -- §5.5.1.1: `(op e)` is unary prefix application when a matching
+      -- `prefix` fixity for `op` is in scope (e.g. `(-1)` is negation);
+      -- only otherwise is it a right operator section.
+      ESectionRight op e sp
+        | Just _ <- prefixOf env (nameText op) -> do
+            let els = case e of
+                  EOpChain inner -> ChainOp op : inner
+                  _ -> [ChainOp op, ChainOperand e]
+            els' <- mapM goElem els
+            reassoc env sp els'
+        | otherwise -> ESectionRight op <$> go e <*> pure sp
+      -- §5.5.1: `(prefix -)` denotes unary negation, not checked
+      -- subtraction (the prefix reading of `-` is `negate`, §6.1.4).
+      EOpRef (Just Prefix) op sp
+        | nameText op == "-" -> pure (EVar (op {nameText = "negate", nameSpan = sp}))
       e@EOpRef {} -> pure e
       ELambda l bs body sp -> ELambda l <$> mapM (rBinder env) bs <*> go body <*> pure sp
       ELet binds body sp -> ELet <$> mapM (rLetBind env) binds <*> go body <*> pure sp

@@ -1,0 +1,22 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "-1\n-5\n-7\n1\n-1.5\n"
+
+-- §5.5.1.1: `(op e)` is unary prefix application when a `prefix` fixity
+-- for `op` is in scope; `(-)` has `prefix 80` in the §28.2.3 table, so
+-- `(-1)` is negation, not a right section. §5.5.1: `(prefix -)` denotes
+-- unary negation.
+
+f : Integer -> Integer
+let f x = x
+
+a : Integer
+let a = 5
+
+main : UIO Unit
+let main = do
+    println (f (-1))
+    println (- a)
+    println ((prefix -) 7)
+    println (- 1 + 2)
+    println (-1.5)

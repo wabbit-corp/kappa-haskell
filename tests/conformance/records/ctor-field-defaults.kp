@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "Ada\nTrue\nFalse\n3\n11\n"
+
+-- §10.1.1: a missing label in named constructor application is
+-- permitted iff the constructor parameter has a default.
+
+data User : Type =
+    User (name : String) (active : Bool = True)
+
+data Pt : Type =
+    Pt (x : Integer = 0) (y : Integer = 1)
+
+main : UIO Unit
+let main = do
+    let ada = User { name = "Ada" }
+    let bob = User { name = "Bob", active = False }
+    match ada
+    case User n a -> do
+        println n
+        println a
+    match bob
+    case User _ a -> println a
+    match Pt { y = 3 }
+    case Pt a b -> println (a + b)
+    match Pt { x = 10 }
+    case Pt a b -> println (a + b)

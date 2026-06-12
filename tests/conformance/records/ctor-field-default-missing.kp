@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_NAMED_ARG_MISSING
+
+-- §10.1.1: omitting a label whose parameter has no default is an error.
+
+data User : Type =
+    User (name : String) (active : Bool = True)
+
+bad : User
+let bad = User { active = False } --!! E_NAMED_ARG_MISSING

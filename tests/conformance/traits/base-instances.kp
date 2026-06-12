@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nLT\n()\n'x'\nTrue\nFalse\nTrue\nTrue\nEQ\n"
+
+-- §28.2: portable Eq/Ord/Show instances for the base types this
+-- implementation provides (Unit, Bool, UnicodeScalar, String, Integer,
+-- Double, Ordering, Nat via aliases Int/Float/Char).
+
+main : UIO Unit
+let main = do
+    println ('a' == 'a')
+    println (compare 1 2 == LT)
+    println (show (compare 1 2))
+    println ()
+    println 'x'
+    println ("abc" < "abd")
+    println (True < True)
+    println (1.5 < 2.5)
+    println ('a' < 'b')
+    println (compare EQ EQ)

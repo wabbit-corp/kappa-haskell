@@ -26,7 +26,7 @@ import Control.Monad.State.Strict
 import Data.List (elemIndex, foldl', nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Core
@@ -48,13 +48,14 @@ data DataInfo = DataInfo
 data CtorInfo = CtorInfo
   { ciData :: !GName
   , ciType :: !Term
-  , ciFields :: ![(Maybe Text, Maybe Term)] -- ^ explicit fields: name, default
+  , ciFields :: ![(Maybe Text, Maybe Expr)] -- ^ explicit fields: name, default (§10.1.1; elaborated at the application site)
   }
 
 data TraitInfo = TraitInfo
   { tiParamCount :: !Int
   , tiMembers :: ![Text]
   , tiDefaults :: !(Map Text LetDef)
+  , tiSupers :: ![Term] -- ^ supertrait premises as @\\params -> C params@ (§14.1.4)
   -- ^ default member definitions, instantiated per instance (§14.2.3)
   }
 
@@ -234,10 +235,14 @@ unify ctx = goTop
           sol' <- forceM sol
           t' <- forceM t
           go lvl sol' t'
-        _ -> do
-          ec <- ec_
-          let tm = quote ec lvl t
-          if occursMeta m tm then pure False else solveMeta m t >> pure True
+        _ -> case t of
+          -- a meta is trivially equal to itself; the occurs check must
+          -- not reject reflexive flex-flex problems
+          VFlex m' [] | m' == m -> pure True
+          _ -> do
+            ec <- ec_
+            let tm = quote ec lvl t
+            if occursMeta m tm then pure False else solveMeta m t >> pure True
 
 occursMeta :: MetaId -> Term -> Bool
 occursMeta m = go
@@ -1161,7 +1166,9 @@ elabNamedBlock ctx fTm fTy items sp rest = do
         case mname >>= \fn -> lookup fn supplied of
           Just e -> pure (Just (Left e))
           Nothing -> case mdef of
-            Just d -> pure (Just (Right d))
+            -- field default (§10.1.1): elaborated here, at the
+            -- application site, against the field's type
+            Just d -> pure (Just (Left d))
             Nothing -> do
               errAt sp "E_NAMED_ARG_MISSING" (Just "kappa.application.named")
                 ("missing constructor argument" <> maybe "" (\n -> " '" <> n <> "'") mname)
@@ -1252,11 +1259,28 @@ elabIntLit ctx v msuf sp mexp = case msuf of
       _ -> Nothing
 
 elabFloatLit :: Ctx -> Double -> Maybe Name -> Span -> Maybe Value -> CheckM (Term, Value)
-elabFloatLit ctx v msuf sp _ = case msuf of
+elabFloatLit ctx v msuf sp mexp = case msuf of
   Just suf -> do
     (fTm, fTy) <- resolveName ctx suf
     elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
-  Nothing -> pure (CLit (LitDouble v), VGlobN (gPrel "Double") [])
+  Nothing -> do
+    expected <- maybe (pure Nothing) (fmap Just . forceM) mexp
+    case expected of
+      Just t
+        | isFloatHead t -> pure (CLit (LitDouble v), t)
+        | Just other <- nonDefault t -> do
+            -- FromFloat elaboration (§6.1.5)
+            dict <- resolveImplicit ctx sp (VGlobN (gPrel "FromFloat") [(Expl, other)])
+            pure (CApp Expl (CProj dict "fromFloat") (CLit (LitDouble v)), other)
+      _ -> pure (CLit (LitDouble v), VGlobN (gPrel "Double") []) -- defaulting (§6.1.5)
+  where
+    isFloatHead = \case
+      VGlobN (GName _ n) [] -> n `elem` ["Float", "Double"]
+      _ -> False
+    nonDefault = \case
+      VFlex {} -> Nothing
+      t@VGlobN {} -> Just t
+      _ -> Nothing
 
 elabString :: Ctx -> StringLit -> [InterpPart] -> Span -> CheckM (Term, Value)
 elabString ctx sl parts sp = case (slPrefix sl, parts) of
@@ -2393,7 +2417,13 @@ checkModule st0 m =
 headerPass :: Decl -> CheckM ()
 headerPass = \case
   DSig _ n tyE sp -> do
-    (tyTm, _) <- inferType emptyCtx tyE
+    -- §11.3.3 (approximation): free ASCII-lowercase heads in the
+    -- signature that resolve to no global are implicitly universalized
+    -- as erased implicit Type binders.
+    fvs <- filterM (fmap isNothing . lookupGlobalName) (nub (freeLower tyE))
+    let ctx0 = foldl (\c v -> bindCtx v False (VSort 0) c) emptyCtx fvs
+    (tyTm0, _) <- inferType ctx0 tyE
+    let tyTm = foldr (\v acc -> CPi Impl Q0 v (CSort 0) acc) tyTm0 fvs
     tyV <- evalIn emptyCtx tyTm
     g <- ownName n
     exists <- gets (Map.member g . csGlobals)
@@ -2493,9 +2523,9 @@ headerData (DataDecl n params mkind ctors) sp = do
     _unusedSp = sp
     ctorFieldsOf binders mgadt = case mgadt of
       Just sig -> gadtFields sig
-      Nothing -> [(nameText <$> bName b, Nothing) | b <- binders, not (bImplicit b)]
+      Nothing -> [(nameText <$> bName b, bDefault b) | b <- binders, not (bImplicit b)]
     gadtFields = \case
-      EArrow b rest | not (bImplicit b) -> (nameText <$> bName b, Nothing) : gadtFields rest
+      EArrow b rest | not (bImplicit b) -> (nameText <$> bName b, bDefault b) : gadtFields rest
       EArrow _ rest -> gadtFields rest
       EForall _ rest _ -> gadtFields rest
       ETraitArrow _ rest -> gadtFields rest
@@ -2553,7 +2583,11 @@ headerTrait (TraitDecl supers n params members) sp = do
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
   addGlobal g (GlobalDef tyV (Just dictV) False)
   let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _) _ <- members]
-  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) [mn | (mn, _, _) <- ms] defaults) (csTraits st)}
+  -- supertrait premises (§14.1.4), stored as functions of the params
+  supTms <- forM supers $ \s -> do
+    (sTm, _) <- inferType pctx s
+    pure (foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) sTm paramTele)
+  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) [mn | (mn, _, _) <- ms] defaults supTms) (csTraits st)}
   -- member projection globals: m : forall params. (@d : Tr params) -> τ
   forM_ ms $ \(mn, mtyTm, _mdef) -> do
     let dictTy =
@@ -2575,7 +2609,6 @@ headerTrait (TraitDecl supers n params members) sp = do
     addGlobal mg (GlobalDef projTyV (Just projV) True)
     addGlobal (memberGlobal g mn) (GlobalDef projTyV (Just projV) True)
   where
-    _unusedSupers = supers
     -- member type sits under (params, dict); we bound only params when
     -- elaborating, so weaken by one for the dict binder.
     shiftUnder = shiftTerm 1 0
@@ -2964,6 +2997,33 @@ elabInstance (InstanceDecl premises hd members) sp = do
               InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
                 : csInstances s
           }
+      -- §14.1.4/§14.3.3 (minimum): every supertrait premise of the
+      -- trait must be satisfiable at the instance head (from the
+      -- instance's own premises — including their transitive
+      -- supertrait conformance paths — or the global instance set)
+      forM_ (tiSupers ti) $ \supClosed -> do
+        ec <- ec_
+        argVs <- mapM (evalIn ctxP') argTms
+        supF <- evalIn ctxP' supClosed
+        supGoal <- forceM (evalApp ec supF [(Expl, a) | a <- argVs])
+        mLoc <- localCandidate ctxP' supGoal
+        satisfied <- case mLoc of
+          Just _ -> pure True
+          Nothing -> do
+            mInst <- instanceSearch ctxP' sp supGoal
+            case mInst of
+              Just _ -> pure True
+              Nothing -> do
+                let premTys = [ceType e | e <- ctxEntries ctxP', ceImplicitLocal e]
+                    anyPath [] = pure False
+                    anyPath (t : ts) = do
+                      found <- supertraitPath ctxP' 4 t supGoal
+                      if found then pure True else anyPath ts
+                anyPath premTys
+        unless satisfied $ do
+          gT <- quoteIn ctxP' supGoal
+          errAt sp "E_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
+            ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
       -- member definitions checked against member types
       dictFields <- forM (tiMembers ti) $ \mn -> do
         case findMember mn members of
@@ -3075,6 +3135,35 @@ elabInstance (InstanceDecl premises hd members) sp = do
           nest (v : vs) = CPi Impl Q0 v (CSort 0) (nest vs)
       evalIn emptyCtx (nest fvs)
 
+-- §14.3.3 conformance paths (depth-bounded): evidence of type 'evTy'
+-- (a trait application) yields the trait goal 'goal' either directly or
+-- through the evidence trait's transitive supertrait premises.
+supertraitPath :: Ctx -> Int -> Value -> Value -> CheckM Bool
+supertraitPath _ 0 _ _ = pure False
+supertraitPath ctx depth evTy goal = do
+  st0 <- get
+  ok <- unify ctx evTy goal
+  if ok
+    then pure True
+    else do
+      put st0
+      ev <- forceM evTy
+      case ev of
+        VGlobN tg args -> do
+          mti <- gets (Map.lookup tg . csTraits)
+          case mti of
+            Just ti -> anyPath (tiSupers ti)
+              where
+                anyPath [] = pure False
+                anyPath (supClosed : rest) = do
+                  ec <- ec_
+                  supF <- evalIn ctx supClosed
+                  supV <- forceM (evalApp ec supF [(Expl, a) | (_, a) <- args])
+                  found <- supertraitPath ctx (depth - 1) supV goal
+                  if found then pure True else anyPath rest
+            Nothing -> pure False
+        _ -> pure False
+
 -- free lowercase identifiers (implicit universalization, §11.3.3
 -- approximation: ASCII lowercase heads not resolving to globals).
 freeLower :: Expr -> [Text]
@@ -3085,12 +3174,18 @@ freeLower = go
         | isLowerHead n -> [n]
         | otherwise -> []
       EApp f args -> go f ++ concatMap goArg args
-      EArrow b e -> maybe [] go (bType b) ++ go e
+      EArrow b e -> maybe [] go (bType b) ++ withoutBinders [b] (go e)
+      EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ withoutBinders bs (go e)
       ETraitArrow a b -> go a ++ go b
       EOptionSugar e _ -> go e
       ETuple es _ -> concatMap go es
-      EDot e _ -> go e
+      -- a dotted head (module path / projection, e.g. `main.Big`) is
+      -- never an implicitly-universalized type variable
+      EDot {} -> []
       _ -> []
+    withoutBinders bs fvs =
+      let bound = [nameText n | b <- bs, Just n <- [bName b]]
+       in filter (`notElem` bound) fvs
     goArg = \case
       ArgExplicit e -> go e
       ArgImplicit e -> go e

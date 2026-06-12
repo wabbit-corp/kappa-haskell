@@ -458,6 +458,7 @@ evalPurePrim p args = case (p, args) of
   ("eqStr", [VLit (LitStr a), VLit (LitStr b)]) -> bool (a == b)
   ("ltStr", [VLit (LitStr a), VLit (LitStr b)]) -> bool (a < b)
   ("eqScalar", [VLit (LitScalar a), VLit (LitScalar b)]) -> bool (a == b)
+  ("ltScalar", [VLit (LitScalar a), VLit (LitScalar b)]) -> bool (a < b)
   ("stringAppend", [VLit (LitStr a), VLit (LitStr b)]) -> Just (VLit (LitStr (a <> b)))
   ("showInt", [VLit (LitInt a)]) -> str (T.pack (show a))
   ("showDouble", [VLit (LitDouble a)]) -> str (T.pack (show a))

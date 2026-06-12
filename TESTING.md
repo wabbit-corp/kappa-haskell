@@ -4,7 +4,7 @@
 
 ```
 cabal build                                   # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance # in-tree suite (60/60)
+cabal run -v0 kappa -- test tests/conformance # in-tree suite (68/68)
 cabal run -v0 kappa -- test examples          # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp   # one fixture
 tools/run-external-fixtures.sh                # external corpus (see below)
@@ -64,24 +64,24 @@ directives are harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **60/60 passing**, zero unsupported, zero
+`tests/conformance/` — **68/68 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
 | --- | --- |
 | `lexer/` | bad escape, tabs in indent/source, unterminated string |
 | `parser/` | `E_LAYOUT_BAD_DEDENT`, multi-error parse recovery |
-| `literals/` | radix forms, exponent-vs-suffix, suffix terms, defaulting |
+| `literals/` | radix forms, exponent-vs-suffix, suffix terms, defaulting, `FromFloat` literal elaboration |
 | `names/` | `E_UNRESOLVED_NAME`, `E_DUPLICATE_DECLARATION` |
 | `types/` | `E_TYPE_MISMATCH`, `E_NOT_A_TYPE` |
-| `application/` | `E_APPLICATION_NON_CALLABLE`, ctor arity |
+| `application/` | `E_APPLICATION_NON_CALLABLE`, ctor arity, multi-arg lambdas vs polymorphic HOFs |
 | `match/` | exhaustiveness (Bool/or/guards/nested/literal/tuple/record) |
-| `records/` | projection, patch, punning, unknown-field errors |
+| `records/` | projection, patch, punning, unknown-field errors, constructor field defaults (§10.1.1) |
 | `variants/` | closed unions, injection, missing member, `Int?` sugar |
-| `traits/` | user traits, premise instance, defaults, `E_IMPLICIT_UNSOLVED`, `E_INSTANCE_INCOHERENT` |
+| `traits/` | user traits, premise instance, defaults, `E_IMPLICIT_UNSOLVED`, `E_INSTANCE_INCOHERENT`, §28.2 base instances, supertrait premise enforcement (`E_SUPERTRAIT_UNSATISFIED`) |
 | `equality/` | refl conversion, `subDefined` proof, symbolic failure |
 | `recursion/` | no-signature error, structural (clean), unverified warning |
-| `fixity/` | user fixity, `E_OPERATOR_NO_FIXITY` |
+| `fixity/` | user fixity, `E_OPERATOR_NO_FIXITY`, parenthesized prefix negation (§5.5.1.1) |
 | `run/` | hello, while/var, for+break/continue+else, defer LIFO, try/except/finally, `let?`-else, early return, interpolation, statement-if |
 | `shape/` | `assertDeclKinds` |
 | `unsupported/` | handle/seal/exists → `E_UNSUPPORTED` |
@@ -96,14 +96,19 @@ fixture corpus at `/opt/workspaces/kappa/tests/Kappa.Compiler.Tests/Fixtures`
 (a different implementation's suite, used strictly as black-box
 fixtures, in place) and writes `tests/external-results.md`.
 
-Current tally over **922 fixture suites**:
+Current tally over **925 fixture suites**:
 
 | outcome | count |
 | --- | --- |
-| pass | 159 |
+| pass | 162 |
 | fail | 509 |
 | unsupported | 219 |
 | harness error | 35 |
+
+(Two `traits.members.*` fixtures that passed in earlier tallies did so
+only through a since-fixed unification bug that let ill-typed terms
+through; they now fail honestly — one needs `Functor Option`-style
+`map`, the other pins foreign diagnostic-code names.)
 
 The unsupported and failure buckets are broken down in
 `tests/external-results.md`: unsupported is dominated by non-portable

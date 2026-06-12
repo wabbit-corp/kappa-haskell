@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "21.5\n3.5\n"
+
+-- §6.1.5: float literals elaborate through `fromFloat : Double -> t`
+-- when the expected type has a `FromFloat` instance; `Double`/`Float`
+-- literals stay primitive.
+
+data Celsius : Type =
+    Celsius (v : Double)
+
+instance FromFloat Celsius =
+    let fromFloat d = Celsius d
+
+t : Celsius
+let t = 21.5
+
+d : Float
+let d = 3.5
+
+main : UIO Unit
+let main = do
+    match t
+    case Celsius v -> println v
+    println d
