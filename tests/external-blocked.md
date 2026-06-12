@@ -13,56 +13,31 @@ fixture falls in exactly one class:
    here; the failure is honest, retained as `fail`, and queued (cited
    to the defining section).
 
-### Outside Spec.md: spec-mandated `unsupported` (33 fixtures)
+### Outside Spec.md: spec-mandated `unsupported` (10 fixtures)
 
 Evidence for each fixture is the quoted directive reason in the
 "Unsupported, by reason" breakdown above and the per-fixture line in
 the raw log (`/tmp/external-raw.log`).
 
-- **`mode compile`** (10): `static_objects.lowering_compile_erases_*`
-  (`…kind_qualified_static_object_smoke`, `…module_object_rebinding_smoke`,
-  `…nested_static_object_capture_smoke`, `…record_type_field_smoke`,
-  `…trait_object_constraint_descriptor_smoke`,
-  `…transparent_sealed_type_member_smoke`, `…type_alias_reification_smoke`,
-  `…type_object_argument_smoke`, `…type_object_in_record_return_smoke`,
-  `…type_object_through_named_application_smoke`). `mode compile`
-  presumes a code-generating backend; this implementation provides
-  only the `backend interpreter` profile (§T.4), and §T.8 classifies
-  a test whose mode/backend precondition is unmet as unsupported.
 - **`backend dotnet`** (8): `fuzz.pending.kbackendir.*`. §T.4:
   unmet `requires backend` → unsupported. No `dotnet` backend exists
-  here (no §27 backend profiles are implemented).
-- **Unsupported `x-` extension directives** (12): per §T.3 an
-  `x-`-prefixed directive the harness does not support makes the test
-  **unsupported**, never silently ignored; none of these names is
-  defined by §T.4/§T.5, so implementing them is optional (§T.1).
-  `x-assertContainsTokenKinds` (7: `lexical.identifiers.positive`,
-  `lexical.operator_identifiers_fixity.operator_tokens.positive`,
-  `literals.character_literals_char.positive`,
-  `literals.numeric_literals.positive`,
-  `literals.string_literals.interpolation.positive`,
-  `literals.string_literals.positive_escapes`,
-  `literals.unit_tuples.positive`); `x-assertDataConstructors` (3:
-  `data_types.data_declarations.positive`,
-  `lexical.whitespace_indentation_continuation.positive`,
-  `modules.visibility_opacity_private_opaque.positive`);
-  `x-assertModule` (2: `modules.files.negative_header_mismatch`,
-  `modules.files.positive`).
-  These assert raw token streams / constructor tables / module
-  identity dumps this harness does not expose.
-  (`x-assertContainsTokenTexts` is now implemented — token source
-  texts are directly observable from the lexer — so its one fixture
-  runs normally.)
+  here (no §27 backend profiles are implemented; the only provided
+  profile is `backend interpreter`).
 - **`requires capability incremental`** (2:
   `patch.import_stability.reload_same_identity`,
   `static_objects.incremental_static_object_identity_body_change`):
   §T.7 incremental step suites presume Chapter 34 session reuse; this
   implementation keeps no session state and does not claim the
   capability → unsupported (§T.4/§T.8).
-- **`scriptMode`** (1:
-  `modules.imports.item_kind_selectors.unhide_clarify_import_items.positive`):
-  not among the §T.4 configuration directives this implementation
-  provides; script mode (and §4 `unhide`/`clarify`) is unimplemented.
+
+Previously listed here and since implemented (now run normally):
+`mode compile` (the per-module Term→Value lowering into the
+interpreter's runtime representation is recorded as the
+`lowerKBackendIR`/`module` portable trace step, §T.5.5); `scriptMode`
+(§T.4: compiles without §8.1 path-derived module names); and the
+`x-assertContainsTokenKinds` / `x-assertDataConstructors` /
+`x-assertModule` / `x-assertModuleAttributes` extension directives
+(documented compatibility extensions per §T.1/§T.3).
 
 ### Outside Spec.md: `harnessError` (0 fixtures)
 

@@ -53,7 +53,7 @@ import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import Kappa.Syntax
-import Kappa.Token (Located (..))
+import Kappa.Token (Located (..), StrFragment (..), StringLit (..), Token (..))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (takeDirectory, (</>))
 import System.Timeout (timeout)
@@ -132,6 +132,10 @@ data Assertion
   | AInoutParams !Text ![Text] -- ^ x-compatible: inout parameter names of a let
   | ADoItemDescriptors !Text ![Text] -- ^ x-compatible: do-item shapes of a let body
   | ATokenTexts ![Text] -- ^ x-compatible: token source texts occur in this file
+  | ATokenKinds ![Text] -- ^ x-compatible: token kinds occur in this file
+  | AModuleName !Text -- ^ x-compatible: this file's module-header name
+  | AModuleAttrs ![Text] -- ^ x-compatible: module attributes present
+  | ADataCtors !Text ![Text] -- ^ x-compatible: data type's constructor names in order
   | AType !Text !Text
   | ADeclKinds ![Text]
   | AFileDeclKinds !Text ![Text] -- ^ path is suite-root relative
@@ -147,6 +151,7 @@ data Assertion
 data Scanned
   = SMode !Text
   | SEntry !Text
+  | SScriptMode -- ^ §T.4 scriptMode: no §8.1 path-derived module names
   | SConfigNoop -- ^ accepted configuration with no harness effect
   | SUnsupported !Text -- ^ §T.8 unsupported (requires unmet, x- extension, …)
   | SAssert !Assertion
@@ -266,10 +271,13 @@ parseDirective allLines lno body =
         ["check"] -> ok (SMode "check")
         ["run"] -> ok (SMode "run")
         ["analyze"] -> unsup "mode analyze is not supported"
-        ["compile"] -> unsup "mode compile is not supported (no backends)"
+        -- mode compile: the interpreter's executable form is the
+        -- evaluated KCore global environment; compiling runs the full
+        -- pipeline through that lowering without executing an entry
+        ["compile"] -> ok (SMode "compile")
         _ -> bad "malformed 'mode' directive"
       "packageMode" -> ok SConfigNoop -- the default (§T.4)
-      "scriptMode" -> unsup "scriptMode is not supported"
+      "scriptMode" -> ok SScriptMode
       "backend" -> case args of
         ["interpreter"] -> ok SConfigNoop -- the only provided profile
         [p] -> unsup ("backend " <> p <> " is not provided")
@@ -403,6 +411,27 @@ parseDirective allLines lno body =
       -- supported x- extension directives (§T.3 allows a harness to
       -- implement extension directives; unsupported ones classify the
       -- test unsupported below)
+      "x-assertContainsTokenKinds" ->
+        let kinds = map T.strip (T.splitOn "," rest)
+         in if not (null kinds) && all (`elem` map fst portableTokenKinds) kinds
+              then ok (SAssert (ATokenKinds kinds))
+              else bad "malformed or unknown token kind in 'x-assertContainsTokenKinds'"
+      "x-assertModule" -> case args of
+        [mn] -> ok (SAssert (AModuleName mn))
+        _ -> bad "malformed 'x-assertModule' directive"
+      "x-assertModuleAttributes" ->
+        let attrs = map T.strip (T.splitOn "," rest)
+         in if not (null attrs) && all (not . T.null) attrs
+              then ok (SAssert (AModuleAttrs attrs))
+              else bad "malformed 'x-assertModuleAttributes' directive"
+      "x-assertDataConstructors" -> case T.words rest of
+        (tn : _ : _) ->
+          let ctorPart = T.strip (T.drop (T.length tn) (T.stripStart rest))
+              ctors = map T.strip (T.splitOn "," ctorPart)
+           in if all (not . T.null) ctors
+                then ok (SAssert (ADataCtors tn ctors))
+                else bad "malformed 'x-assertDataConstructors' constructor list"
+        _ -> bad "malformed 'x-assertDataConstructors' directive"
       "x-assertEval" -> evalAssert
       "assertEvalErrorContains" -> evalErrAssert
       "x-assertEvalErrorContains" -> evalErrAssert
@@ -636,6 +665,7 @@ runSuiteWith packageMode label root files mktest preDiags = do
               entries = [e | (_, _, SEntry e) <- scanned]
               unsups = [u | (_, _, SUnsupported u) <- scanned]
               asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
+              scripted = not (null [() | (_, _, SScriptMode) <- scanned])
           case () of
             _ | length (dedup modes) > 1 ->
                   pure (TestReport label HarnessError "conflicting 'mode' directives (§T.6)")
@@ -645,7 +675,7 @@ runSuiteWith packageMode label root files mktest preDiags = do
                   let mode = case modes of m : _ -> m; [] -> "check"
                   if not (null entries) && mode /= "run"
                     then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                    else executeSuite packageMode label root files mode entries asserts preDiags
+                    else executeSuite (packageMode && not scripted) label root files mode entries asserts preDiags
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 
@@ -660,10 +690,17 @@ executeSuite ::
   [(FilePath, Text, Assertion)] -> Diagnostics -> IO TestReport
 executeSuite packageMode label root files mode entries asserts preDiags = do
   -- the suite root is the §8.1 source root for module-path derivation
-  let cu =
+  let cu0 =
         if packageMode
           then compileFilesIn root files
           else compileFiles files
+      -- mode compile: the per-module Term->Value lowering into the
+      -- interpreter's runtime representation is this implementation's
+      -- backend-IR stage; it is recorded once per module (§T.5.5)
+      cu =
+        if mode == "compile"
+          then cu0 {cuTrace = cuTrace cu0 ++ [("lowerKBackendIR", "module") | ("lowerKCore", "module") <- cuTrace cu0]}
+          else cu0
       filePaths = map fst files
       allDiags = preDiags ++ cuDiags cu
       preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) `notElem` filePaths]
@@ -857,6 +894,10 @@ checkAssertion root path src files cu diags mRun = \case
     mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEvalError cu mmod nm sub)))
     pure (fromMaybe (AssertFail ("assertEvalErrorContains: evaluation of '" <> nm <> "' timed out")) mr)
   ADeclDescriptors entries -> pure (assertDeclDescriptors path src entries)
+  ATokenKinds kinds -> pure (assertTokenKinds path src kinds)
+  AModuleName mn -> pure (assertModuleName path src mn)
+  AModuleAttrs attrs -> pure (assertModuleAttrs path src attrs)
+  ADataCtors tn ctors -> pure (assertDataCtors path src tn ctors)
   AParamQuantities nm qs -> pure (assertParamQuantities path src nm qs)
   ATraitMembers tn ms -> pure (assertTraitMembers path src tn ms)
   AExecute nm expected -> execEntry "assertExecute" nm $ \st mv _out ->
@@ -1417,6 +1458,115 @@ assertTokenTexts path src wanted =
                 ( "assertContainsTokenTexts: no token has source text "
                     <> T.intercalate ", " (map tshow missing)
                 )
+
+-- | The portable token-kind names of the @x-assertContainsTokenKinds@
+-- compatibility extension, mapped onto this lexer's token shapes.
+portableTokenKinds :: [(Text, Located -> Bool)]
+portableTokenKinds =
+  [ ("Identifier", \t -> case locTok t of TokIdent {} -> True; _ -> False)
+  , ("IntegerLiteral", \t -> case locTok t of TokInt {} -> True; _ -> False)
+  , ("FloatLiteral", \t -> case locTok t of TokFloat {} -> True; _ -> False)
+  , ("StringLiteral", \t -> case locTok t of TokString {} -> True; _ -> False)
+  , ("CharacterLiteral", \t -> case locTok t of TokQuoted {} -> True; _ -> False)
+  , ("LeftParen", \t -> case locTok t of TokLParen -> True; _ -> False)
+  , ("RightParen", \t -> case locTok t of TokRParen -> True; _ -> False)
+  , ("Operator", \t -> case locTok t of TokOperator {} -> True; _ -> False)
+  , ("Indent", \t -> case locTok t of TokIndent -> True; _ -> False)
+  , ("Dedent", \t -> case locTok t of TokDedent -> True; _ -> False)
+  , -- this lexer keeps an interpolated string as ONE token carrying its
+    -- fragments; the segment kinds map onto the fragment structure
+    ("InterpolatedStringStart", interpolated)
+  , ("InterpolatedStringEnd", interpolated)
+  , ("InterpolationStart", interpolated)
+  , ("InterpolationEnd", interpolated)
+  , ("StringTextSegment", hasTextFragment)
+  ]
+  where
+    interpolated t = case locTok t of
+      TokString sl -> any isInterp (slFragments sl)
+      _ -> False
+    hasTextFragment t = case locTok t of
+      TokString sl -> any isText (slFragments sl)
+      _ -> False
+    isInterp = \case
+      FragInterp {} -> True
+      FragInterpFmt {} -> True
+      FragLit {} -> False
+    isText = \case
+      FragLit {} -> True
+      _ -> False
+
+-- | @x-assertContainsTokenKinds@ (compatibility extension): at least
+-- one token of each named kind occurs in this file.
+assertTokenKinds :: FilePath -> Text -> [Text] -> AssertResult
+assertTokenKinds path src wanted =
+  case lexSource path src of
+    Left _ -> AssertFail "x-assertContainsTokenKinds: file does not lex"
+    Right (_, toks) ->
+      let missing =
+            [ k
+            | k <- wanted
+            , Just pr <- [lookup k portableTokenKinds]
+            , not (any pr toks)
+            ]
+       in if null missing
+            then AssertOk
+            else
+              AssertFail
+                ("x-assertContainsTokenKinds: no token of kind "
+                   <> T.intercalate ", " missing)
+
+-- | @x-assertModule@ (compatibility extension): the module-header name
+-- of this file.
+assertModuleName :: FilePath -> Text -> Text -> AssertResult
+assertModuleName path src expected =
+  case parseModule path src of
+    Left _ -> AssertFail "x-assertModule: file does not parse"
+    Right (m, _) -> case modHeader m of
+      Just mp
+        | T.intercalate "." (modPathName mp) == expected -> AssertOk
+        | otherwise ->
+            AssertFail
+              ( "x-assertModule: module is '"
+                  <> T.intercalate "." (modPathName mp)
+                  <> "', expected '" <> expected <> "'"
+              )
+      Nothing -> AssertFail "x-assertModule: file has no module header"
+
+-- | @x-assertModuleAttributes@ (compatibility extension).
+assertModuleAttrs :: FilePath -> Text -> [Text] -> AssertResult
+assertModuleAttrs path src expected =
+  case parseModule path src of
+    Left _ -> AssertFail "x-assertModuleAttributes: file does not parse"
+    Right (m, _) ->
+      let actual = map nameText (modAttrs m)
+          missing = [a | a <- expected, a `notElem` actual]
+       in if null missing
+            then AssertOk
+            else
+              AssertFail
+                ("x-assertModuleAttributes: missing attribute(s) "
+                   <> T.intercalate ", " missing)
+
+-- | @x-assertDataConstructors@ (compatibility extension): the named
+-- data declaration's constructor names, in declaration order.
+assertDataCtors :: FilePath -> Text -> Text -> [Text] -> AssertResult
+assertDataCtors path src tn expected =
+  case parseModule path src of
+    Left _ -> AssertFail "x-assertDataConstructors: file does not parse"
+    Right (m, _) ->
+      case [dd | DData _ dd _ <- modDecls m, nameText (ddName dd) == tn] of
+        (dd : _) ->
+          let actual = map (nameText . cdName) (ddCtors dd)
+           in if actual == expected
+                then AssertOk
+                else
+                  AssertFail
+                    ( "x-assertDataConstructors: '" <> tn <> "' has constructors ["
+                        <> T.intercalate ", " actual
+                        <> "], expected [" <> T.intercalate ", " expected <> "]"
+                    )
+        [] -> AssertFail ("x-assertDataConstructors: no data declaration '" <> tn <> "' in this file")
 
 -- | Erase metavariable ids from a rendered type (@?m123@ → @?m@), so
 -- that distinct-but-unconstrained metas compare equal in 'assertType'.

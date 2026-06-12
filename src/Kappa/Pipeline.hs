@@ -164,6 +164,23 @@ compileFilesWith packageMode nameOf files =
           (isAscii c && (isLetter c || c == '_'))
             && T.all (\ch -> isAscii ch && (isAlphaNum ch || ch == '_')) rest
         Nothing -> False
+      -- §2.1/§8.1: in package mode an explicit module header must agree
+      -- with the source-root-relative path-derived module name
+      headerMismatchDiags =
+        [ diag SevError StageImports "E_MODULE_PATH_MISMATCH" (Just "kappa.module.path-mismatch")
+            (Span path (Pos 1 1) (Pos 1 1))
+            ( "module header '" <> renderModuleName (ModuleName (modPathName mp))
+                <> "' does not match the path-derived module name '"
+                <> renderModuleName (nameOf path) <> "' (Spec §2.1, §8.1)"
+            )
+        | packageMode
+        , (path, Right (m, _)) <- parsed
+        , Just mp <- [modHeader m]
+        , ModuleName (modPathName mp) /= nameOf path
+        , -- a file that failed UTF-8 decoding (replacement characters
+          -- present) already has its §3.1.3 error; its header is moot
+          maybe True (not . T.any (== '\xFFFD')) (lookup path files)
+        ]
       pathDiags =
         [ diag SevError StageImports "E_MODULE_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
             (Span (frPath fr) (Pos 1 1) (Pos 1 1))
@@ -245,6 +262,7 @@ compileFilesWith packageMode nameOf files =
       allDiags =
         concat parseFails
           ++ pathDiags
+          ++ headerMismatchDiags
           ++ cycleDiags
           ++ concat (reverse diagChunks)
           ++ expectUnsatisfiedDiags finalSt
