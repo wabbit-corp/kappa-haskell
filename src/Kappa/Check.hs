@@ -30,6 +30,8 @@ import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Core
@@ -7885,12 +7887,16 @@ desugarComp ctx clauses yld sp = do
 -- preceding-signature recursion rule (§15.16, §9.2).
 checkModule :: CheckState -> Module -> (CheckState, Diagnostics)
 checkModule st0 m =
-  let sigNames = [nameText n | DSig _ n _ _ <- modDecls m]
+  -- Sets, not lists: every let consults sigNames and every signature
+  -- consults siglessLets, so list membership made large modules
+  -- quadratic (measured ~4x time per size doubling at 16k+ decls)
+  let sigNames = Set.fromList [nameText n | DSig _ n _ _ <- modDecls m]
       siglessLets =
-        [ nameText n
-        | DLet _ (LetDef (Just n) _ _ _ _ _ _ _) _ <- modDecls m
-        , nameText n `notElem` sigNames
-        ]
+        Set.fromList
+          [ nameText n
+          | DLet _ (LetDef (Just n) _ _ _ _ _ _ _) _ <- modDecls m
+          , not (nameText n `Set.member` sigNames)
+          ]
       passes = do
         mapM_ predeclarePass (modDecls m)
         mapM_ (headerPassIn siglessLets) (modDecls m)
@@ -7931,10 +7937,10 @@ predeclarePass = \case
 -- signature whose type mentions such a name (a reified static object,
 -- §2.8.3) is deferred to the body pass, where the binding's value is
 -- available in declaration order.
-headerPassIn :: [Text] -> Decl -> CheckM ()
+headerPassIn :: Set Text -> Decl -> CheckM ()
 headerPassIn siglessLets = \case
   DSig _ _ tyE _
-    | any (`elem` siglessLets) (sigHeadNames tyE) ->
+    | any (`Set.member` siglessLets) (sigHeadNames tyE) ->
         -- deferred to 'bodyPassIn' (the let's value is needed first)
         pure ()
   DSig _ n tyE sp -> do
@@ -8438,10 +8444,10 @@ expectUnsatisfiedDiags st =
 
 -- | Body pass: elaborates definitions, plus any signatures the header
 -- pass deferred because they mention signature-less module lets.
-bodyPassIn :: [Text] -> Decl -> CheckM ()
+bodyPassIn :: Set Text -> Decl -> CheckM ()
 bodyPassIn siglessLets d = case d of
   DSig _ _ tyE _
-    | any (`elem` siglessLets) (sigHeadNames tyE) -> headerPassIn [] d
+    | any (`Set.member` siglessLets) (sigHeadNames tyE) -> headerPassIn Set.empty d
   _ -> bodyPass d
 
 -- names a signature's type may resolve through (heads of applications,
