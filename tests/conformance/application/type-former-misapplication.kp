@@ -1,0 +1,16 @@
+--! mode check
+--! assertDiagnosticCodes E_APPLICATION_NON_CALLABLE, E_APPLICATION_ARGUMENT_MISMATCH, E_APPLICATION_NON_CALLABLE
+
+-- §16.1: type formers are validated like any callable value
+
+badSaturated : Type
+let badSaturated = Int Bool
+
+badArgument : Type
+let badArgument = List 41
+
+badOverApplied : Type
+let badOverApplied = List Int Bool
+
+goodAlias : Type
+let goodAlias = List Int

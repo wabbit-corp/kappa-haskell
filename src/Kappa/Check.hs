@@ -417,6 +417,15 @@ topoFields = goT []
               rest = [x | x@(l, _, _) <- pending, l `notElem` readyLs]
           ((map (\(_, _, a) -> a) ready) ++) <$> goT (doneLs ++ readyLs) rest
 
+-- | Report a diagnostic unless an identical (code, message) one was
+-- already reported — for judgements re-checked once per occurrence of
+-- the same source type (e.g. a signature and its definition binders).
+errOnce :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
+errOnce sp code fam msg = do
+  ds <- gets csDiags
+  unless (any (\d -> dCode d == code && dMessage d == msg) ds) $
+    errAt sp code fam msg
+
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
 
@@ -1165,30 +1174,53 @@ infer ctx expr = case expr of
     pure (CRecordV fields, VRecordT ftys)
   ERecordLit items sp -> elabRecordLit ctx items sp
   ERecordType fs mtail sp -> do
-    when (isJust mtail) . void $ unsupported ctx sp "open record row tails"
     let names = [nameText (rtfName f) | f <- fs]
         deps f = [l | l <- surfaceThisRefs (rtfType f), l `elem` names]
         ordered = topoFields [(nameText (rtfName f), deps f, f) | f <- fs]
     forM_ (duplicatesOf names) $ \n ->
       errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
         ("record type has duplicate field '" <> n <> "'")
+    -- §13.2.1: an explicit field type of an open record may not refer
+    -- to a field that would come only from the residual row
+    let residualRefs =
+          if isJust mtail
+            then nub [(nameText (rtfName f), l) | f <- fs, l <- surfaceThisRefs (rtfType f), l `notElem` names]
+            else []
+    forM_ residualRefs $ \(fn, l) ->
+      errOnce sp "E_RECORD_DEPENDENCY_INVALID" (Just "kappa.record.dependency-invalid")
+        ( "the explicit field '" <> fn <> "' refers to '" <> l
+            <> "', which is not an explicitly listed field of this open record (§13.2.1)"
+        )
+    -- recovery: the invalid labels stand for opaque placeholders so
+    -- the rest of the telescope still elaborates
+    phantoms <- forM (nub (map snd residualRefs)) $ \l -> (,) l <$> freshMetaV ctx
     case ordered of
       Nothing -> do
         errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
           "the field-dependency graph of this record type contains a cycle (§13.2.1)"
         fields <- forM names $ \n -> (,) n <$> freshMeta
-        pure (CRecordT (sortOn fst fields), VSort 0)
+        finish fields
       Just fsOrdered -> do
         -- §13.2.1: elaborate the telescope in dependency order; later
         -- field types see earlier fields through 'this'
-        fields <- goDep [] fsOrdered
-        pure (CRecordT (sortOn fst fields), VSort 0)
+        fields <- goDep phantoms fsOrdered
+        finish [(nameText (rtfName f), t) | (f, t) <- fields]
     where
       goDep _ [] = pure []
       goDep done (f : rest) = do
         (t, _) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
         tV <- evalIn ctx t
-        ((nameText (rtfName f), t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
+        ((f, t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
+      finish fields = case mtail of
+        Nothing -> pure (CRecordT (sortOn fst fields), VSort 0)
+        -- §11.3.1A: open record with a contextual row tail
+        Just tailE -> do
+          rowTm <- check ctx tailE (VGlobN (gPrel "RecRow") [])
+          pure
+            ( CApp Expl (CApp Expl (CGlob (gPrel "__openRec")) rowTm)
+                (CRecordT (sortOn fst fields))
+            , VSort 0
+            )
   -- carrier-prefixed comprehension (§20.9): a type-valued head applied
   -- to a comprehension literal selects a collection carrier
   EApp f args
@@ -1446,6 +1478,23 @@ check ctx expr expected0 = do
           (tm, ty) <- infer ctx expr
           (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
           injectInto ctx tm1 ty1 members expected (exprSpan expr)
+    -- §16.1.7.1/§12.2.1: an all-explicit application checked against a
+    -- known expected type pre-unifies its result type with the
+    -- expectation, so arguments see solved domains (binder quantities
+    -- through polymorphic wrappers, literal defaulting, dependent
+    -- constructor indices)
+    (EApp f args, _)
+      | all isExplicitArg args, not (null args) -> do
+          mproj <- projectionHead ctx f
+          case mproj of
+            Just _ -> do
+              (tm, ty) <- infer ctx expr
+              (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
+              special <- projDescriptorMismatch ctx expr ty1 expected
+              unless special $
+                expectType ctx (exprSpan expr) ty1 expected
+              pure tm1
+            Nothing -> elabAppChecked ctx f args expected (exprSpan expr)
     (EIntLit v msuf sp, _) -> do
       (tm, ty) <- elabIntLit ctx v msuf sp (Just expected)
       expectType ctx sp ty expected
@@ -1523,6 +1572,9 @@ check ctx expr expected0 = do
       if ok then pure (Just tm) else put saved >> pure Nothing
     firstImplicit (b : _) = bImplicit b
     firstImplicit [] = False
+    isExplicitArg = \case
+      ArgExplicit _ -> True
+      _ -> False
     isHole = \case
       EHole {} -> True
       _ -> False
@@ -1643,6 +1695,15 @@ inferT ctx e = case e of
             (elemTm, _) <- inferType ctx elemE
             let sized = CApp Expl (CApp Expl (CGlob (gPrel "__sizedOf")) nTm) elemTm
             pure (CApp Expl (CGlob (gPrel "Array")) sized, VSort 0)
+  -- §11.3.1 row constraints take field labels: 'LacksRec r age'
+  -- elaborates the label to a string literal
+  EApp (EVar hd) [ArgExplicit rowE, ArgExplicit (EVar lbl)]
+    | nameText hd == "LacksRec"
+    , Nothing <- lookupCtx "LacksRec" ctx
+    , Nothing <- lookupCtx (nameText lbl) ctx -> do
+        rowTm <- check ctx rowE (VGlobN (gPrel "RecRow") [])
+        let lacks = CApp Expl (CApp Expl (CGlob (gPrel "LacksRec")) rowTm) (CLit (LitStr (nameText lbl)))
+        pure (lacks, VSort 0)
   EApp f args -> do
     (fTm, fTy) <- inferT ctx f
     elabSpine ctx (exprSpan f) fTm fTy args
@@ -1683,6 +1744,90 @@ elabForall ctx0 bs0 body = go ctx0 bs0
       pure (CPi Impl q nm domTm restTm, VSort 0)
 
 -- application spine (§16.1.7.1)
+-- | Check an all-explicit application against an expected function
+-- type by peeling the callee's Pi spine with placeholder metas,
+-- unifying the result type with the expectation FIRST, and only then
+-- elaborating the arguments — so an argument lambda is checked against
+-- the solved domain (binder quantities included). Falls back to the
+-- ordinary infer-then-unify path when the shape does not match.
+elabAppChecked :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM Term
+elabAppChecked ctx f args expected sp = do
+  st0 <- get
+  (fTm, fTy) <- infer ctx f
+  plan <- peel fTy args []
+  done <- case plan of
+    Nothing -> pure Nothing
+    Just (slots, resTy) -> do
+      ok <- unify ctx resTy expected
+      if not ok
+        then pure Nothing
+        else do
+          tm <- foldM step fTm slots
+          pure (Just tm)
+  case done of
+    Just tm -> pure tm
+    Nothing -> do
+      put st0
+      (tm, ty) <- infer ctx (EApp f args)
+      (tm1, ty1) <- insertAllImplicits ctx sp tm ty
+      expectType ctx sp ty1 expected
+      pure tm1
+  where
+    peel ty [] acc = pure (Just (reverse acc, ty))
+    peel ty as0@(a : as) acc = do
+      tyF <- forceM ty
+      case tyF of
+        VPi Impl q _ dom clo -> do
+          -- only kind-like implicits become bare placeholders; evidence
+          -- implicits keep the ordinary resolution ladder
+          kindLike <- isKindLike (ctxLen ctx) dom
+          if not kindLike
+            then pure Nothing
+            else do
+              m <- freshMeta
+              mV <- evalIn ctx m
+              ty' <- clApp clo mV
+              peel ty' as0 ((Impl, q, Nothing, dom, m, mV) : acc)
+        VPi Expl q _ dom clo
+          | ArgExplicit e <- a -> do
+              m <- freshMeta
+              mV <- evalIn ctx m
+              ty' <- clApp clo mV
+              peel ty' as ((Expl, q, Just e, dom, m, mV) : acc)
+        _ -> pure Nothing
+    step tm (Impl, _, _, _, m, _) = pure (CApp Impl tm m)
+    step tm (Expl, q, Just e, dom, _, mV) = do
+      aTm <- withDemand (demandOfQ q) (check ctx e dom)
+      aV <- evalIn ctx aTm
+      _ <- unify ctx mV aV
+      pure (CApp Expl tm aTm)
+    step tm _ = pure tm
+
+-- | Is the value a (possibly parameterized) type former — i.e. is its
+-- final codomain a universe?
+finalIsSort :: Ctx -> Value -> CheckM Bool
+finalIsSort ctx v0 = go (ctxLen ctx) (8 :: Int) v0
+  where
+    go _ 0 _ = pure False
+    go lvl fuel v = do
+      vf <- forceM v
+      case vf of
+        VSort _ -> pure True
+        VPi _ _ _ _ clo -> clApp clo (VRigid lvl []) >>= go (lvl + 1) (fuel - 1)
+        _ -> pure False
+
+-- | Re-tag type mismatches reported since the marker as
+-- application-argument errors (a literal in a Type parameter slot).
+retagNewMismatches :: Int -> CheckM ()
+retagNewMismatches nBefore = modify' $ \st ->
+  let ds = csDiags st
+      (new, old) = splitAt (length ds - nBefore) ds
+      retag d
+        | dCode d == "E_TYPE_EQUALITY_MISMATCH" =
+            d {dCode = "E_APPLICATION_ARGUMENT_MISMATCH", dFamily = Just "kappa.application.argument"}
+        | otherwise = d
+   in st {csDiags = map retag new ++ old}
+
 -- ── Projection applications (§16.1.5, §16.1.6) ───────────────────────
 
 -- | Resolve an application head to a projection facet, if any.
@@ -1917,13 +2062,54 @@ elabSpineArg ctx sp fTm fTy arg rest = do
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Impl fTm aTm) ty' rest
+    -- a type former's implicit parameters may be saturated positionally
+    -- in type application ('Foo Nat (=)' for 'Foo (@0 a) (@0 p)', §7.2):
+    -- an explicit argument whose type fits the implicit domain fills it
+    (ArgExplicit e, VPi Impl q _ dom clo) -> do
+      former <- finalIsSort ctx fTy
+      filled <-
+        if not former
+          then pure Nothing
+          else do
+            -- speculative: commit only if the whole remaining spine
+            -- elaborates cleanly with the argument in the implicit slot
+            st0 <- get
+            n0 <- gets (length . csDiags)
+            (aTm0, aTy0) <- infer ctx e
+            (aTm, aTy) <- insertAllImplicits ctx (exprSpan e) aTm0 aTy0
+            ok <- unify ctx aTy dom
+            n1 <- gets (length . csDiags)
+            if not (ok && n0 == n1)
+              then put st0 >> pure Nothing
+              else do
+                aV <- evalIn ctx aTm
+                ty' <- clApp clo aV
+                r <- elabSpine ctx sp (CApp Impl fTm aTm) ty' rest
+                n2 <- gets (length . csDiags)
+                if n2 == n0
+                  then pure (Just r)
+                  else put st0 >> pure Nothing
+      case filled of
+        Just r -> pure r
+        Nothing -> do
+          iTm <- resolveImplicitQ ctx sp q dom
+          iV <- evalIn ctx iTm
+          ty' <- clApp clo iV
+          elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
     (_, VPi Impl q _ dom clo) -> do
       iTm <- resolveImplicitQ ctx sp q dom
       iV <- evalIn ctx iTm
       ty' <- clApp clo iV
       elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
     (ArgExplicit e, VPi Expl q _ dom clo) -> do
+      domF <- forceM dom
+      nBefore <- gets (length . csDiags)
       aTm <- withDemand (demandOfQ q) (check ctx e dom)
+      -- a non-type argument in a type-former's Type slot is an
+      -- application-argument error, not a plain mismatch (§16.1)
+      case domF of
+        VSort _ -> retagNewMismatches nBefore
+        _ -> pure ()
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
@@ -2475,6 +2661,16 @@ elabDotUnqualified ctx e member mname = do
                     ("record has no field '" <> nameText mn0
                        <> "' (fields: " <> T.intercalate ", " (map fst fs) <> ")")
                   anyHole ctx
+        -- §11.3.1A: explicit-prefix projection on an open record
+        VGlobN (GName pm "__openRec") [_, (_, prefixV)]
+          | pm == preludeModule -> do
+              pf <- forceM prefixV
+              case pf of
+                VRecordT fs
+                  | Just fty <- lookup (nameText mn0) fs -> do
+                      fty' <- substThisInto ctx tm1 fty
+                      pure (CProj tm1 (nameText mn0), fty')
+                _ -> methodSugar tm1 t mn0
         -- trait-dictionary member projection d.(==) (§14.2.1)
         VGlobN headG spine -> do
           st <- get
@@ -2799,6 +2995,11 @@ elabPatchWith nested ctx e items sp = do
           errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
             "a projection-section update must be the only item of its update (§13.2.5, §30.2.2.4)"
           pure Nothing
+        -- §13.2.5: record updates do not admit field punning
+        PatchPun n -> do
+          errAt (nameSpan n) "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa.record.patch-invalid")
+            ("a record update item must be written 'field = value'; punning '" <> nameText n <> "' is not admitted (§13.2.5)")
+          pure Nothing
       let entries = catMaybes (results0 ++ groupUps)
           ups = [(n, vt) | (n, vt, _) <- entries]
           news =
@@ -2816,9 +3017,76 @@ elabPatchWith nested ctx e items sp = do
             | (n, _) <- allTypes
             ]
       pure (CRecordV fields, VRecordT allTypes)
+    -- §13.2.6 row extension over an open record (§11.3.1A)
+    VGlobN (GName pm "__openRec") [(_, rowV), (_, prefixV)]
+      | pm == preludeModule -> do
+          pf <- forceM prefixV
+          case pf of
+            VRecordT fs -> elabOpenPatch ctx tm1 rowV fs items sp
+            _ -> do
+              errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                "record patch requires a record"
+              anyHole ctx
     _ -> do
       errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
       anyHole ctx
+
+-- | Row extension and explicit-prefix update on an open record
+-- (§13.2.6, §11.3.1A): 'rec.{ l := v }' requires 'LacksRec r l'
+-- evidence in scope and appends the field to the explicit prefix.
+elabOpenPatch :: Ctx -> Term -> Value -> [(Text, Value)] -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabOpenPatch ctx tm1 rowV fs items sp = do
+  results <- forM items $ \case
+    PatchExtend n v
+      | Just fty <- lookup (nameText n) fs -> do
+          errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.extension-existing")
+            ("row extension ':=' introduces '" <> nameText n <> "', but the record already has that field (§13.2.6)")
+          vt <- check ctx v fty
+          pure (Just (nameText n, vt, Nothing))
+      | otherwise -> do
+          -- §13.2.1 uniqueness side condition: the residual row must
+          -- be known to lack the new label
+          let goal =
+                VGlobN (gPrel "LacksRec")
+                  [(Expl, rowV), (Expl, VLit (LitStr (nameText n)))]
+          saved <- get
+          _ <- resolveImplicitQ ctx (nameSpan n) QW goal
+          after <- get
+          when (length (csDiags after) /= length (csDiags saved)) $ do
+            put saved
+            errAt (nameSpan n) "E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT" (Just "kappa.row.extension-lacks")
+              ( "extending the open row with '" <> nameText n
+                  <> "' requires a 'LacksRec r " <> nameText n <> "' constraint in scope (§13.2.1, §13.2.6)"
+              )
+          (vt0, vty0) <- infer ctx v
+          (vt, vty) <- insertAllImplicits ctx (exprSpan v) vt0 vty0
+          pure (Just (nameText n, vt, Just vty))
+    PatchUpdate [(_, n)] (PatchValue v)
+      | Just fty <- lookup (nameText n) fs -> do
+          vt <- check ctx v fty
+          pure (Just (nameText n, vt, Nothing))
+    _ -> do
+      errAt sp "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa.record.patch-invalid")
+        "this update item is not supported on an open record (§13.2.5)"
+      pure Nothing
+  let entries = catMaybes results
+      newFields = [(n, vty) | (n, _, Just vty) <- entries]
+  prefixTms <- mapM (\(n, v) -> (,) n <$> quoteIn ctx v) (sortOn fst (fs ++ newFields))
+  prefixV' <- evalIn ctx (CRecordT prefixTms)
+  let tm' =
+        foldl
+          ( \acc (n, vt, isNew) -> case isNew of
+              Just _ ->
+                CApp Expl
+                  (CApp Expl
+                     (CApp Expl (CGlob (gPrel "__rowExtend")) acc)
+                     (CLit (LitStr n)))
+                  vt
+              Nothing -> acc
+          )
+          tm1
+          entries
+  pure (tm', VGlobN (gPrel "__openRec") [(Expl, rowV), (Expl, prefixV')])
 
 -- | Projection-section update @lhs.{ (.member args) = rhs }@
 -- (§13.2.5, §30.2.2.4): the member must resolve to a stable field, a
@@ -4397,6 +4665,7 @@ occursVar v = go
                 PatchUpdate _ (PatchValue e) -> go e
                 PatchExtend _ e -> go e
                 PatchSection a e -> go a || go e
+                PatchPun _ -> False
             | it <- items
             ]
       EListLit es _ -> any go es
@@ -5163,24 +5432,44 @@ aliasKind params = do
   evalIn emptyCtx (go params)
 
 elabAliasBody :: [Binder] -> Expr -> CheckM (Term, Value)
-elabAliasBody params rhs = go emptyCtx params
+elabAliasBody params rhs = do
+  (tm, kindTm) <- go emptyCtx params
+  tyV <- evalIn emptyCtx kindTm
+  pure (tm, tyV)
   where
     go ctx [] = do
-      (tm, _) <- inferType ctx rhs
-      pure (tm, VSort 0)
+      -- an eta-reduced alias body may itself be a (partially applied)
+      -- type former of higher kind ('type Equal (@0 a) = (=) a', §3.5.1)
+      (tm0, ty0) <- inferT ctx rhs
+      tyF <- forceM ty0
+      former <- finalIsSort ctx tyF
+      case tyF of
+        VSort _ -> pure (tm0, CSort 0)
+        VFlex m [] -> solveMeta m (VSort 0) >> pure (tm0, CSort 0)
+        -- the §18.1 'IO a' accommodation of inferType
+        VPi Expl _ _ _ _
+          | CApp Expl (CGlob g) argTm <- tm0
+          , g == gPrel "IO" -> do
+              m <- freshMeta
+              pure (CApp Expl (CApp Expl (CGlob g) m) argTm, CSort 0)
+        VPi {} | former -> do
+          kTm <- quoteIn ctx tyF
+          pure (tm0, kTm)
+        other -> do
+          oT <- quoteIn ctx other
+          errAt (exprSpan rhs) "E_NOT_A_TYPE" (Just "kappa.type.expected-type")
+            ("expected a type; this expression has type " <> renderTerm oT)
+          pure (tm0, CSort 0)
     go ctx (b : rest) = do
       domTm <- case bType b of
         Just t -> fst <$> inferType ctx t
         Nothing -> pure (CSort 0)
       domV <- evalIn ctx domTm
       let nm = maybe "_" nameText (bName b)
+          ic = if bImplicit b then Impl else Expl
           ctx' = bindCtx nm False domV ctx
-      (tm, _) <- go ctx' rest
-      ty' <- do
-        innerK <- pure (CSort 0)
-        pure (CPi (if bImplicit b then Impl else Expl) Q0 nm domTm innerK)
-      tyV <- evalIn ctx ty'
-      pure (CLam (if bImplicit b then Impl else Expl) Q0 nm tm, tyV)
+      (tm, innerK) <- go ctx' rest
+      pure (CLam ic Q0 nm tm, CPi ic Q0 nm domTm innerK)
 
 headerData :: DataDecl -> Span -> CheckM ()
 headerData (DataDecl n params _mkind ctors) sp = do
@@ -6303,6 +6592,10 @@ freeLower = go
       EVar (Name n _)
         | isLowerHead n -> [n]
         | otherwise -> []
+      -- the label argument of a row constraint is not a type variable
+      -- (§11.3.1: 'LacksRec r age')
+      EApp f@(EVar hd) [rowA, ArgExplicit (EVar _)]
+        | nameText hd == "LacksRec" -> go f ++ goArg rowA
       EApp f args -> go f ++ concatMap goArg args
       EArrow b e -> maybe [] go (bType b) ++ withoutBinders [b] (go e)
       EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ withoutBinders bs (go e)

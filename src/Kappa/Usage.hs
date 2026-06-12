@@ -1015,11 +1015,13 @@ walkPatch env base items sp = do
       PatchUpdate _ (PatchValue v) -> [v]
       PatchExtend _ v -> [v]
       PatchSection _ v -> [v]
+      PatchPun _ -> []
     patchLabels = \case
       PatchUpdate ((_, n) : _) _ -> [nameText n]
       PatchUpdate [] _ -> []
       PatchExtend n _ -> [nameText n]
       PatchSection {} -> []
+      PatchPun n -> [nameText n]
     walks es = do
       rs <- mapM (walkE env) es
       pure (foldr (seqU . fst . flatR) Map.empty rs)

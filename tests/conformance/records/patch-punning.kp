@@ -1,0 +1,10 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_RECORD_PATCH_INVALID_ITEM
+
+-- §13.2.5: record updates do not admit field punning
+
+type Point : Type = (x : Int, y : Int)
+
+bad : Point -> Int -> Point
+let bad (p : Point) (x : Int) : Point = p.{ x }

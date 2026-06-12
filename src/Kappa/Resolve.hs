@@ -444,6 +444,7 @@ rExpr env = go
       PatchUpdate path (PatchValue e) -> PatchUpdate path . PatchValue <$> go e
       PatchExtend n e -> PatchExtend n <$> go e
       PatchSection r e -> PatchSection <$> go r <*> go e
+      PatchPun n -> pure (PatchPun n)
 
     goExcept (ExceptCase p g e sp) =
       ExceptCase <$> rPattern env p <*> mapM go g <*> go e <*> pure sp

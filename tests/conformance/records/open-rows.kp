@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1A open record rows: row-polymorphic functions, LacksRec
+-- constraints, row extension (§13.2.6), explicit-prefix projection
+
+addAge :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (name : String | r) -> (name : String, age : Int | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }
+
+readName : forall (r : RecRow). (name : String | r) -> String
+let readName (@0 r : RecRow) (rec : (name : String | r)) : String = rec.name

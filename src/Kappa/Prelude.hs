@@ -81,6 +81,13 @@ builtinState =
       , -- phantom carrier for the corpus 'Array n elem' accommodation
         -- (see inferT in Kappa.Check)
         (prel "__sizedOf", opaqueTy (tyV (tcon "Nat" ~> tType ~> tType)))
+      , -- §11.3.1 record rows: row kind, the lacks constraint (labels
+        -- are elaborated to string literals), and the open-record
+        -- encoding '__openRec r (explicit-prefix record type)'
+        (prel "RecRow", opaqueTy (tyV tType))
+      , (prel "LacksRec", opaqueTy (tyV (tcon "RecRow" ~> tStr ~> tType)))
+      , (prel "__openRec", opaqueTy (tyV (tcon "RecRow" ~> tType ~> tType)))
+      , (prel "__rowExtend", opaqueTy (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))))
       , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
       , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> tType ~> tType)))
       , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> tType ~> tType))) -- §20.10.2

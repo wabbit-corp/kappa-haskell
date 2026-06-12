@@ -189,6 +189,7 @@ data PatchItem
   = PatchUpdate ![(Bool, Name)] !PatchValue -- ^ path of (implicit?, seg) with @=@
   | PatchExtend !Name !Expr -- ^ @l := e@
   | PatchSection !Expr !Expr -- ^ @(.proj args) = e@
+  | PatchPun !Name -- ^ bare @x@ (invalid, §13.2.5)
   deriving stock (Show)
 
 newtype PatchValue = PatchValue Expr
@@ -468,6 +469,7 @@ surfaceThisRefs = nub . go
                 PatchUpdate _ (PatchValue v) -> go v
                 PatchExtend _ v -> go v
                 PatchSection r v -> go r ++ go v
+                PatchPun _ -> []
             | it <- items
             ]
       _ -> []

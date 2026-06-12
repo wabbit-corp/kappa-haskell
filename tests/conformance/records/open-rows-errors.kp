@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT, E_ROW_EXTENSION_EXISTING_FIELD
+
+-- §13.2.1/§13.2.6: extension needs a LacksRec constraint, and may not
+-- introduce an explicitly listed field
+
+badMissing : forall (r : RecRow). (name : String | r) -> (name : String, age : Int | r)
+let badMissing (@0 r : RecRow) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }
+
+badExisting : forall (r : RecRow). (name : String | r) -> (name : String | r)
+let badExisting (@0 r : RecRow) (rec : (name : String | r)) : (name : String | r) =
+    rec.{ name := "Grace" }

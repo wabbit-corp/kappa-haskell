@@ -406,7 +406,7 @@ pLetDef = do
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
-      pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec body)
+      pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec (desugarRecordParams binders body))
     patBinding = do
       -- `let 1 x = e` / `let &b = e` prefixed bindings (§12.2, §12.3.1)
       prefix <- pBinderPrefix
@@ -415,6 +415,25 @@ pLetDef = do
       token TokEquals
       body <- pDefBody
       pure (LetDef Nothing False (Just pat) prefix [] ty Nothing body)
+
+-- | Bind the fields of a §13.2 record-typed parameter
+-- ('(x : Int, y : Int)', parsed as a hidden '__rp*' binder) by
+-- prefixing the body with a destructuring let.
+desugarRecordParams :: [Binder] -> Expr -> Expr
+desugarRecordParams bs body = foldr wrap body bs
+  where
+    wrap b acc
+      | Just n <- bName b
+      , "__rp" `T.isPrefixOf` nameText n
+      , Just (ERecordType fs _ _) <- bType b =
+          ELet
+            [ LetBind False emptyPrefix
+                (PRecord [(False, rtfName f, Nothing) | f <- fs] Nothing (bSpan b))
+                Nothing (EVar n) (bSpan b)
+            ]
+            acc
+            (bSpan b)
+      | otherwise = acc
 
 pDecreases :: P Decreases
 pDecreases = do
@@ -951,8 +970,27 @@ pSuspension =
 -- A parameter binder group for named functions / data / trait headers.
 -- A parenthesized group may bind several names (`(x y : A)`).
 pParamBinder :: P [Binder]
-pParamBinder = unitBinder <|> bareImplicit <|> parenBinder <|> bare
+pParamBinder = unitBinder <|> bareImplicit <|> recordParam <|> parenBinder <|> bare
   where
+    -- `let f (x : Int, y : Int) : T = ...` — a record-typed parameter
+    -- destructured into its fields (§13.2); desugared by 'pLetDef'
+    recordParam = try $ do
+      sp <- currentSpan
+      token TokLParen
+      f1 <- recField
+      fs <- many1 (token TokComma *> recField)
+      token TokRParen
+      let nm =
+            "__rp" <> T.pack (show (posLine (spanStart sp)))
+              <> "_" <> T.pack (show (posCol (spanStart sp)))
+          field (n, t) = RecTypeField False False emptyPrefix Nothing n t
+          recTy = ERecordType (map field (f1 : fs)) Nothing sp
+      pure [Binder False emptyPrefix Nothing NoReceiver False (Just (Name nm sp)) False (Just recTy) Nothing sp]
+    recField = do
+      n <- pIdent
+      token TokColon
+      t <- noEq pExpr
+      pure (n, t)
     -- `let f () : T = ...` — the unit binder (§12.1)
     unitBinder = try $ do
       sp <- currentSpan
@@ -1611,13 +1649,21 @@ pDotMember =
       pure (DotOperator op)
 
 pPatchItem :: P PatchItem
-pPatchItem = extension <|> sectionUpdate <|> update
+pPatchItem = extension <|> sectionUpdate <|> try update <|> pun
   where
     extension = try $ do
       n <- pIdent
       pOperatorNamed ":="
       e <- pExpr
       pure (PatchExtend n e)
+    -- a bare label parses as a (rejected, §13.2.5) punned item
+    pun = do
+      n <- pIdent
+      nxt <- peekToken
+      case nxt of
+        TokComma -> pure (PatchPun n)
+        TokRBrace -> pure (PatchPun n)
+        _ -> parseFail "expected '=' in record update item"
     sectionUpdate = try $ do
       token TokLParen
       token TokDot
