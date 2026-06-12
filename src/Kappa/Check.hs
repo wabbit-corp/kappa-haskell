@@ -1393,7 +1393,7 @@ propProof goal = do
             then pure Nothing
             else do
               let lf = factReduce ec facts (4 :: Int) (force ec l)
-                  rf = factReduce ec facts 4 (force ec r)
+                  rf = factReduce ec facts (4 :: Int) (force ec r)
               pure $
                 if convertible ec 0 lf rf
                   then Just (CCtor (gPrel "refl") [])
@@ -2155,7 +2155,7 @@ check ctx expr expected0 = do
                   pure tm1
                 Nothing -> checkFallthrough expected
             Nothing -> checkFallthrough expected
-    (_, expected) -> checkFallthrough expected
+    _ -> checkFallthrough expected
   where
     checkFallthrough expected = do
       (tm, ty) <- infer ctx expr
@@ -5698,6 +5698,11 @@ elabPattern ctx0 pat0 ty0 = do
       LitDouble _ -> gnameText h `elem` ["Float", "Double"]
       LitStr _ -> gnameText h == "String"
       LitScalar _ -> gnameText h `elem` ["UnicodeScalar", "Char"]
+      -- byte/bytes/grapheme literals have no surface pattern form
+      -- (coreLit never produces them); never flag
+      LitByte _ -> True
+      LitBytes _ -> True
+      LitGrapheme _ -> True
 
 -- instantiate the constructor's field types against the scrutinee type
 -- (GADT-lite: unify the constructor's result with the scrutinee type).
