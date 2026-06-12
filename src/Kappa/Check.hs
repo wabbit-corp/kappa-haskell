@@ -85,6 +85,8 @@ data CheckState = CheckState
   , csPending :: ![(MetaId, Value, Span, Ctx)]
   -- ^ postponed implicit goals with the local context they were raised
   -- in (premise dictionaries live there, §14.3.2)
+  , csScopeAmbig :: !(Map Text [GName])
+  -- ^ §7.1 names provided ambiguously by several wildcard imports
   , csExpects :: !(Map GName (Span, Int))
   -- ^ §9.4 expect declarations: span and number of satisfiers seen
   , csSigPending :: !(Map GName Span)
@@ -94,7 +96,7 @@ data CheckState = CheckState
 initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
-    (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty
+    (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -347,15 +349,26 @@ resolveName ctx (Name n sp) =
       | ceVarBind e -> derefVar ctx i (ceType e)
       | otherwise -> pure (CVar i, ceType e)
     Nothing -> do
-      mg <- lookupGlobalName n
-      case mg of
-        Just g -> do
-          mt <- globalTerm g
-          case mt of
-            Just r -> pure r
+      st <- get
+      case Map.lookup n (csScopeAmbig st) of
+        Just gs -> do
+          errAt sp "E_NAME_AMBIGUOUS" (Just "kappa.name.ambiguous")
+            ( "name '" <> n <> "' is ambiguous; it is provided by "
+                <> T.intercalate " and " [renderMod mg | GName mg _ <- gs]
+                <> " (qualify the name or import it explicitly, Spec §7.1)"
+            )
+          anyHole ctx
+        Nothing -> do
+          mg <- lookupGlobalName n
+          case mg of
+            Just g -> do
+              mt <- globalTerm g
+              case mt of
+                Just r -> pure r
+                Nothing -> failUnresolved
             Nothing -> failUnresolved
-        Nothing -> failUnresolved
   where
+    renderMod (ModuleName segs) = "module " <> T.intercalate "." segs
     failUnresolved = do
       errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "'")
       anyHole emptyCtxDummy
@@ -886,7 +899,7 @@ infer ctx expr = case expr of
   ERecordPatch e items sp -> elabPatch ctx e items sp
   EComprehension k cs y sp -> elabComprehension ctx k cs y sp
   ECaptures e _ _ -> infer ctx e -- erased capture annotation
-  EKindQualified _ n _ -> resolveName ctx n
+  EKindQualified sel n sp -> elabKindQualified ctx sel n sp
   EModuleSig _ sp -> unsupported ctx sp "moduleSig"
   EImpossible sp -> do
     errAt sp "E_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
@@ -1405,23 +1418,87 @@ elabDot ctx e member = do
   let mname = case member of
         DotName n -> n
         DotOperator n -> n
-  -- fully-qualified module path, e.g. std.prelude.Bool or main.T (§8.3)
-  mPath <- case modulePathOf e of
-    Just segs@(s0 : _) | Nothing <- lookupCtx s0 ctx -> do
-      let g = GName (ModuleName segs) (nameText mname)
-      st <- get
-      if Map.member g (csGlobals st) || Map.member g (csCtors st)
-        then globalTerm g
-        else pure Nothing
-    _ -> pure Nothing
-  case mPath of
-    Just r -> pure r
-    Nothing -> elabDotUnqualified ctx e member mname
+  -- reified module objects: (module a).b chains (§2.8.6)
+  case modObjPathOf e of
+    Just segs -> elabModuleMember ctx (segs ++ [nameText mname]) (nameSpan mname)
+    Nothing -> do
+      -- fully-qualified module path, e.g. std.prelude.Bool or main.T (§8.3)
+      mPath <- case modulePathOf e of
+        Just segs@(s0 : _) | Nothing <- lookupCtx s0 ctx -> do
+          let mn = ModuleName segs
+              g = GName mn (nameText mname)
+          st <- get
+          if (Map.member g (csGlobals st) || Map.member g (csCtors st))
+            && memberVisible st mn (nameText mname)
+            then globalTerm g
+            else pure Nothing
+        _ -> pure Nothing
+      case mPath of
+        Just r -> pure r
+        Nothing -> elabDotUnqualified ctx e member mname
   where
     modulePathOf = \case
       EVar (Name s _) -> Just [s]
       EDot inner (DotName (Name s _)) -> (++ [s]) <$> modulePathOf inner
       _ -> Nothing
+    modObjPathOf = \case
+      EKindQualified SelModule (Name s _) _ -> Just [s]
+      EDot inner (DotName (Name s _)) -> (++ [s]) <$> modObjPathOf inner >>= ensureModObj
+      _ -> Nothing
+      where
+        ensureModObj segs = Just segs
+
+-- visibility of a member of another module (§8.5): only exported names
+-- are accessible from outside the defining module
+memberVisible :: CheckState -> ModuleName -> Text -> Bool
+memberVisible st mn nm =
+  mn == csModule st
+    || case Map.lookup mn (csModuleExports st) of
+      Just ex -> nm `elem` ex
+      Nothing -> True -- prelude and unknown modules: unrestricted
+
+-- a member completion of a reified module path: either a deeper module
+-- object or nothing nameable (§2.8.6)
+elabModuleMember :: Ctx -> [Text] -> Span -> CheckM (Term, Value)
+elabModuleMember ctx segs sp = do
+  st <- get
+  if Map.member (ModuleName segs) (csModuleExports st) || ModuleName segs == csModule st
+    then pure moduleObject
+    else do
+      errAt sp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
+        ("no module named '" <> T.intercalate "." segs <> "' is in this compilation unit (Spec §2.8.6)")
+      anyHole ctx
+
+-- §2.8.6 kind-qualified static-object expressions: select the named
+-- facet; an unknown subject is E_STATIC_OBJECT_UNRESOLVED.
+elabKindQualified :: Ctx -> KindSelector -> Name -> Span -> CheckM (Term, Value)
+elabKindQualified ctx sel (Name n nsp) sp = case sel of
+  SelModule -> do
+    st <- get
+    let known =
+          Map.member (ModuleName [n]) (csModuleExports st)
+            || Map.member n (csModuleAliases st)
+    if known
+      then pure moduleObject
+      else do
+        errAt sp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
+          ("no module named '" <> n <> "' is in scope (Spec §2.8.6)")
+        anyHole ctx
+  _ -> do
+    mg <- lookupGlobalName n
+    mr <- case mg of
+      Just g -> globalType g
+      Nothing -> pure Nothing
+    case mr of
+      Just r -> pure r
+      Nothing -> do
+        errAt nsp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
+          ("kind-qualified name does not resolve to a static object: '" <> n <> "' (Spec §2.8.6)")
+        anyHole ctx
+
+-- the trivial reified module object (§2.8.6): identity only
+moduleObject :: (Term, Value)
+moduleObject = (CRecordV [], VRecordT [])
 
 elabDotUnqualified :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
 elabDotUnqualified ctx e member mname = do
@@ -1430,23 +1507,52 @@ elabDotUnqualified ctx e member mname = do
     EVar (Name base _) -> do
       st <- get
       case lookupCtx base ctx of
-        Just _ -> ordinary mname
+        Just (i, _) -> do
+          -- a local rebinding of a reified type object (§2.8.3): its
+          -- definiens names the data type, select the constructor
+          mv <- case drop i (ctxEnv ctx) of
+            (v : _) -> Just <$> forceM v
+            [] -> pure Nothing
+          case mv of
+            Just (VGlobN d _)
+              | Just di <- Map.lookup d (csDatas st)
+              , (ctorG : _) <- [c | c <- diCtors di, gnameText c == nameText mname] -> do
+                  mt <- globalTerm ctorG
+                  case mt of
+                    Just r -> pure r
+                    Nothing -> ordinary mname
+            _ -> ordinary mname
         Nothing ->
           case Map.lookup base (csModuleAliases st) of
             Just modName -> do
               let g = GName modName (nameText mname)
-              mt <- globalTerm g
+              mt <-
+                if memberVisible st modName (nameText mname)
+                  then globalTerm g
+                  else pure Nothing -- private members are not accessible (§8.5)
               case mt of
                 Just r -> pure r
                 Nothing -> do
                   errAt (nameSpan mname) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-                    ("module '" <> base <> "' has no member '" <> nameText mname <> "'")
+                    ("module '" <> base <> "' has no exported member '" <> nameText mname <> "' (Spec §8.5)")
                   anyHole ctx
             Nothing -> do
               -- static member of a type: T.C selects constructor (§7.3)
               mg <- lookupGlobalName base
               stx <- get
-              case mg of
+              mDataG <- case mg of
+                Just tyG
+                  | Map.member tyG (csDatas stx) -> pure (Just tyG)
+                  | Just gd <- Map.lookup tyG (csGlobals stx)
+                  , Just v <- gdValue gd -> do
+                      -- a rebound reified type object (§2.8.3): the
+                      -- binding's value names the data type
+                      v' <- forceM v
+                      pure $ case v' of
+                        VGlobN d _ | Map.member d (csDatas stx) -> Just d
+                        _ -> Nothing
+                _ -> pure Nothing
+              case mDataG of
                 Just tyG
                   | Just di <- Map.lookup tyG (csDatas stx)
                   , Just ctorG <- lookupCtorIn di (nameText mname) -> do
@@ -1797,7 +1903,19 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
       tm <- check ctxRec rhs tyV
       _ <- pure sp
       go ctxRec rest ((q, nameText n, tyTm, tm, True) : acc)
-    go ctx (LetBind implocal prefix pat mty rhs sp : rest) acc = do
+    go ctx (LetBind implocal prefix pat0 mty rhs sp : rest) acc = do
+      -- §9.1.2: a let pattern that is a bare capitalized name not naming
+      -- any constructor in scope is an ordinary (rebinding) binder,
+      -- e.g. `let M = type MaybeBox` (§2.8.3)
+      pat <- case pat0 of
+        PCtor (CtorRef Nothing n) [] _ -> do
+          st <- get
+          let isCtor =
+                any
+                  (\g -> gnameText g == nameText n)
+                  (Map.keys (csCtors st))
+          pure (if isCtor then pat0 else PVar n)
+        _ -> pure pat0
       (rhsTm, rhsTy) <- case mty of
         Just tyE -> do
           (tyTm, _) <- inferType ctx tyE

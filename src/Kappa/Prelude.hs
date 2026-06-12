@@ -51,6 +51,7 @@ builtinState =
       , (prel "String", opaqueTy (tyV tType))
       , (prel "UnicodeScalar", opaqueTy (tyV tType))
       , (prel "Bytes", opaqueTy (tyV tType))
+      , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
       , (prel "Thunk", opaqueTy (tyV (tType ~> tType)))
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))

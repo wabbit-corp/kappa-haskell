@@ -46,7 +46,7 @@ import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, forc
 import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileFilesIn, importScopeFor)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
@@ -478,7 +478,7 @@ readSourceFile path = do
 runTestFile :: FilePath -> IO TestReport
 runTestFile path = guardExceptions path $ do
   src <- readSourceFile path
-  runSuite path (takeDirectory path) [(path, src)] Nothing
+  runSuiteWith False path (takeDirectory path) [(path, src)] Nothing
 
 -- | Run a §T.2 directory suite: all @.kp@ files under the root compiled
 -- together, directives gathered from @suite.ktest@ plus every file.
@@ -540,7 +540,11 @@ guardExceptions label act = do
 -- | Shared suite driver. @files@ are the compilation roots; directives
 -- come from the optional @suite.ktest@ and from each file (§T.6).
 runSuite :: FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
-runSuite label root files mktest = do
+runSuite = runSuiteWith True
+
+-- single-file tests are script-mode (§8.1 package path rules off)
+runSuiteWith :: Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
+runSuiteWith packageMode label root files mktest = do
   let sources = maybe [] (: []) mktest ++ files
       scans = [(p, src, scanDirectives src) | (p, src) <- sources]
       scanErrs = concat [es | (_, _, (_, es)) <- scans]
@@ -564,7 +568,7 @@ runSuite label root files mktest = do
                   let mode = case modes of m : _ -> m; [] -> "check"
                   if not (null entries) && mode /= "run"
                     then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                    else executeSuite label root files mode entries asserts
+                    else executeSuite packageMode label root files mode entries asserts
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 
@@ -575,11 +579,14 @@ data RunInfo = RunInfo
   }
 
 executeSuite ::
-  FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
+  Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
   [(FilePath, Text, Assertion)] -> IO TestReport
-executeSuite label root files mode entries asserts = do
+executeSuite packageMode label root files mode entries asserts = do
   -- the suite root is the §8.1 source root for module-path derivation
-  let cu = compileFilesIn root files
+  let cu =
+        if packageMode
+          then compileFilesIn root files
+          else compileFiles files
       filePaths = map fst files
       allDiags = cuDiags cu
       preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) `notElem` filePaths]

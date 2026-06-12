@@ -177,7 +177,8 @@ pModule = do
 
 pModuleHeader :: P ([Name], Maybe ModPath)
 pModuleHeader = try $ do
-  attrs <- many (token TokAt *> pIdent)
+  -- module attributes may sit on their own lines (§8.1)
+  attrs <- many (token TokAt *> pIdent <* pSkipLayout)
   pKeyword "module"
   path <- pModPath
   pHardNewline <|> eof
