@@ -287,3 +287,18 @@ fixed or justified here).
     core value" representation choice above) and is now stated
     explicitly in SPEC_COVERAGE.md's §18.2–18.8 row and the deltas
     table here, instead of only in prose.
+15. **`if c then do break` inside a loop (info)** — justified, not
+    changed. `then do …` introduces a nested first-class do-expression,
+    which is a fresh do-scope, so the `break` is rejected at compile
+    time with `E_BREAK_OUTSIDE_LOOP` (§18.6) rather than targeting the
+    enclosing loop; the idiomatic statement-`if` (`if c then` + layout,
+    as in `tests/conformance/run/for-break-continue.kp`) targets the
+    loop as expected. This is the per-do-scope confinement delta of
+    #14 surfacing through a syntax variant, not a separate behavior:
+    making this one spelling transparent while `let inner = do break`
+    stays confined would need an ad-hoc "syntactically immediate do"
+    carve-out in `elabDo`, splitting one rule into two. The rejection
+    is loud, names the rule and section, and the documented delta
+    (SPEC_COVERAGE.md §18.2–18.8 row; "Completion is not a first-class
+    core value" above) covers it — per the reviewer, no action
+    required.
