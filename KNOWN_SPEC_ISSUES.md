@@ -199,3 +199,32 @@ enumerated in SPEC_COVERAGE.md §5.2. Evidence:
 `tests/conformance/lexer/soft-keyword-identifiers.kp`, and
 `Kappa.Parser` (`stopKeywords` vs `queryStopKeywords` /
 `isStopKeywordAt`).
+
+## 12. §21.6 vs §21.2: the convenience reflection queries are `Elab`-typed, but corpus programs use them as plain values
+
+§21.6 types the convenience queries in `Elab`
+(`defEqSyntax : … -> Elab Bool`,
+`headSymbolSyntax : … -> Elab (Option Symbol)`), §21.2 makes
+`$( … )`/`reifyCore` the only re-entry from elaboration-time
+reflection into ordinary terms and forbids any "generic splice or
+coercion … from meta-phase ordinary values directly into ordinary
+runtime terms", and §11.1.6 lists `Symbol` among the elaboration-time
+only, erased types. Yet the external corpus's static-object
+reflection fixtures (`static_objects.reflection_accept_*`) bind
+`sameType : Bool` directly to `defEqSyntax '{ … } '{ … }` and
+`match` on `headSymbolSyntax '{ … }` in an ordinary definition,
+asserting **no errors** — under the `Elab` signatures alone these
+bodies cannot typecheck (`Elab Bool ≠ Bool`), and no spec rule says
+an `Elab` query in an ordinary position is run implicitly.
+
+The two readings cannot both hold; this implementation reconciles
+them narrowly: the §21.6 wording that these operations "are
+elaboration-time queries" is taken to license the elaborator running
+an *applied standardized query* at its call site when (and only when)
+the expected type is not `Elab`-headed, residualizing the first-order
+result; in an `Elab`-typed position the spec signature is kept
+(`tests/conformance/macros/reflection-query-elab.kp`). The
+accommodation is restricted to `defEqSyntax`/`headSymbolSyntax` —
+no generic meta-to-object coercion exists. Evidence:
+`Kappa.Check.elabReflQuery`,
+`tests/conformance/macros/reflection-queries.kp`.

@@ -87,26 +87,34 @@ a harness error.
 
 ### Tracked gaps (spec-defined, not implemented; honest `fail`s)
 
-The remaining 124 tracked-gap failures (129 fails minus the 5
+The remaining 59 tracked-gap failures (64 fails minus the 5
 spec-conflict fixtures above) group by feature, ranked by fixture
 count (classification from the raw log; one fixture may exhibit
-several gaps — it is counted under the dominant one):
+several gaps — it is counted under the dominant one). The §21–§23
+metaprogramming lane (macros, `Elab`/`Syntax`, deriving-shape,
+custom query sinks, the §21.6 convenience reflection queries, and
+§23 staged code) is fully clear in the corpus: `macros.*` 32/32,
+`deriving.*` 10/10, `queries.*` 54/54, plus the staging and
+static-object reflection fixtures.
 
 | rank | feature gap | spec | ~fixtures |
 |---|---|---|---|
-| 1 | Macros/elaborator reflection: `Elab`/`Syntax`, quote literals `'{…}`, splices, prefixed-string interpolation handlers, `FromComprehensionRaw`/`Plan` custom sinks, `std.deriving.shape` (`macros.*` 30, `queries.*` macro-realistic ~14, `deriving.shape.*` 10) | §21–§23, §22, §6.3.4–§6.3.5, §20.10.9 | 54 |
-| 2 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.*` 15, `parser` 1, `lexical` continuation/interpolation 2, `literals` 1) | §3.1.14A, §5.4, §9 | 19 |
-| 3 | Static-object reflection facets: `defEqSyntax`/`headSymbolSyntax` reflection, effect-label kind selectors inside `scoped effect`, reified-static fallback ambiguity, rebound type-object ctor patterns (`static_objects.*` 12) | §2.8.3–§2.8.6, §7.1.1, §17.3.2 | 12 |
-| 4 | Associated trait type members (`Out`, `Element`), trait-default members with parameters, use-site supertrait projection evidence (`traits.*` 9, `expressions.implicit_parameters` 1) | §14.2.1, §14.1.4, §14.3 | 10 |
-| 5 | Application implicit-insertion diagnostic calibration: literal-defaulting and unsolved-implicit failures at argument positions report `E_APPLICATION_ARGUMENT_MISMATCH`/`E_TYPE_EQUALITY_MISMATCH` in the corpus where this implementation reports `E_UNSOLVED_IMPLICIT`/`E_APPLICATION_NONCALLABLE` (`app_reject_*` 4, `types.literals` 1, `lexical.numbers` 1) | §16.1.7.1, §3.1.2A | 6 |
-| 6 | Import item-kind selectors (ctor/type facet wildcards) and URL-import pinning codes (`modules.imports.*` 5, `static_objects` export-facade 1) | §8.3–§8.4 | 6 |
-| 7 | Queries non-macro residue: query-clause name resolution and instance-head deltas (`queries.*` ~4) | §20 | 4 |
-| 8 | `BorrowView`/`captureBorrow` projection borrows, code-quote capture, exists-type escapes (`borrow_qtt.*` 3) | §12.4.3, §12.2 | 3 |
-| 9 | Misc expression-level deltas: bare-minus/operator sections under checked application, dependent-case result types, misindentation code (`expressions.*` 5) | §16 | 5 |
-| 10 | Runtime-model deltas: source-order named-constructor field evaluation with runtime-trapping division (§28.2.1 proof-carrying `(/)` rejects `1 / 0` statically here), evaluation-time name-resolution failure for a wildcard-imported constructor, recursion-depth guard, deep value `show` (`data_types` 1, `modules…negative_wildcard_ctor` 1, `runtime` 1, `interpreter` 1, `examples` 1) | §10.1.1, §8.3, §32.1 | 5 |
+| 1 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.*` 14, `parser` 1) | §3.1.14A, §5.4, §9 | 15 |
+| 2 | Static-object kind selectors and identity: effect-label kind selectors inside `scoped effect`, reified-static fallback ambiguity, kind-selector rejections, rebound type-object ctor patterns, package-member type objects, export-facade kind-qualified aliases (`static_objects.*` 9) | §2.8.3–§2.8.6, §7.1.1, §7.6, §17.3.2, §8.3 | 9 |
+| 3 | Associated trait type members (`Out`, `Element`), trait-default members with parameters, use-site supertrait projection evidence (`traits.instances/.members` 6, `expressions.implicit_parameters` 1) | §14.2.1, §14.1.4, §14.3 | 7 |
+| 4 | Application implicit-insertion diagnostic calibration: literal-defaulting and unsolved-implicit failures at argument positions report `E_APPLICATION_ARGUMENT_MISMATCH`/`E_TYPE_EQUALITY_MISMATCH`/`E_TYPE_MISMATCH` in the corpus where this implementation reports `E_UNSOLVED_IMPLICIT`/`E_APPLICATION_NONCALLABLE`/… (`app_reject_*` 4, `lexical.numbers` 1, `patterns…guard_and_literal` 1) | §16.1.7.1, §3.1.2A | 6 |
+| 5 | Import item-kind selectors (ctor/type facet wildcards), symbolic-term imports, and URL-import pinning codes (`modules.imports.*` 6) | §8.3–§8.4 | 6 |
+| 6 | Misc expression-level deltas: bare-minus/operator sections under checked application, dependent-case result types, named-application labels, misindentation code, short-circuit suspended-operand typing (`expressions.*` 5, `short` 1) | §16 | 6 |
+| 7 | Runtime-model deltas: source-order named-constructor field evaluation with runtime-trapping division (§28.2.1 proof-carrying `(/)` rejects `1 / 0` statically here), recursion-depth guard, deep value `show`, `Result` propagation example (`data_types` 1, `runtime` 1, `interpreter` 1, `examples` 1) | §10.1.1, §32.1 | 4 |
+| 8 | `BorrowView`/`captureBorrow` projection borrows and exists-type escapes (`borrow_qtt.*` 2) | §12.4.3, §12.2 | 2 |
 
-The remainder (~10) is a long tail of one or two fixtures each:
-boolean-proposition coercion (§11.4.2), short-circuit
-suspended-operand typing (§16.1.3), linear-function argument-quantity
-subsumption (`arrow_reject_*`, §12.2.1), `patterns`, `short`, `patch`
-diagnostics payloads, and the sealed `exists` surface.
+The remainder (4) is a long tail of one fixture each:
+linear-function argument-quantity subsumption (`arrow_reject_*`,
+§12.2.1), scrutinee-vs-constructor pattern typing diagnostics
+(`patterns…scrutinee_constructor`, §17.1), the operator-token
+fixity surface (`lexical.operator_identifiers_fixity…`, §5.5.3),
+and the corpus prelude term `integerToInt`
+(`types.literals.positive_local_frominteger_instance`): Spec.md
+defines no such conversion (§28.2 names `intToNat`/`natToInt`
+etc., not `integerToInt`) — retained as an honest fail pending a
+documented compatibility decision.

@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (143/143)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (155/155)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -109,7 +109,7 @@ permits nonstandard directives), and the rest remain harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **143/143 passing**, zero unsupported, zero
+`tests/conformance/` — **155/155 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
@@ -140,6 +140,9 @@ harness errors. Layout by area:
 | `labels/` | §18.2.5 labeled loops: plain `break` confined to its labeled loop, `break@outer`/`continue@outer` across an inner loop, `E_LABEL_UNRESOLVED` for missing/non-loop targets, inert `label@match` |
 | `do/` | implicit do-bindings `let (@x : T) = e` joining the local implicit context (§16.3.3) |
 | `shape/` | `assertDeclKinds` |
+| `macros/` | §21 metaprogramming: quote/splice macros, §21.4 hygiene escape, macro-duplicated linear splices, Elab do reflection, §6.3.4 interpolated prefixed-string handlers, and the §21.6 convenience reflection queries (`defEqSyntax`/`headSymbolSyntax`/`sameSymbol` in ordinary positions with value asserts, plus their Elab-typed action forms) |
+| `deriving/` | §22 `std.deriving.shape` reflection (`inspectAdt`, `matchAdt`, opacity) |
+| `staging/` | §23 staged code: the quote/escape/`genlet`/`closeCode`/`runCode` pipeline with a user `Lift` instance, `E_QTT_BORROW_ESCAPE` for a quote capturing a borrowed parameter (§12.3.2), `E_CODE_ESCAPE_OUTSIDE_QUOTE` |
 | `effects/` | §18.1 algebraic effects: deep/shallow handlers, multi-shot resumption, one-shot overuse, multi-shot linear-capture rejection |
 | `projections/` | §9.1.1/§16.1.6 projection declarations: selectors, accessor bundles, footprints, zipper linear fill, `E_PROJECTION_CAPABILITY_REQUIRED` |
 | `unicode/` | §3.1.3 source hygiene, invalid UTF-8 recovery, `g`/`b` quoted literals, §29.4 `std.unicode` runtime, scalar ranges |
@@ -189,12 +192,14 @@ with spec citations, and a "Blocked classifications" section
 `tools/run-external-fixtures.sh --regen` rebuilds the report from the
 existing raw log without re-running the corpus) that classifies every
 non-pass as outside-spec (mandated unsupported/harnessError), spec
-conflict, or tracked gap. Failures are dominated by
-macros/elaborator reflection (which also gates the remaining query
-and deriving fixtures), fuzz recovery-cascade deltas, static-object
-reflection facets, associated trait type members, and
-diagnostic-code selection deltas at application boundaries (see the
-ranked gap table at the end of `tests/external-results.md`).
+conflict, or tracked gap. The §21–§23
+metaprogramming lane (macros, deriving-shape, query sinks, the
+§21.6 convenience reflection queries, §23 staged code) is fully
+clear; the remaining failures are dominated by fuzz
+recovery-cascade deltas, static-object kind selectors, associated
+trait type members, and diagnostic-code selection deltas at
+application boundaries (see the ranked gap table at the end of
+`tests/external-results.md`).
 
 ## Conventions
 
