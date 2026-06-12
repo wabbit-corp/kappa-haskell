@@ -927,7 +927,7 @@ pSuspension =
 -- A parameter binder group for named functions / data / trait headers.
 -- A parenthesized group may bind several names (`(x y : A)`).
 pParamBinder :: P [Binder]
-pParamBinder = unitBinder <|> parenBinder <|> bare
+pParamBinder = unitBinder <|> bareImplicit <|> parenBinder <|> bare
   where
     -- `let f () : T = ...` — the unit binder (§12.1)
     unitBinder = try $ do
@@ -935,6 +935,13 @@ pParamBinder = unitBinder <|> parenBinder <|> bare
       token TokLParen
       token TokRParen
       pure [Binder False emptyPrefix Nothing NoReceiver False Nothing True Nothing Nothing sp]
+    -- `let f @ev x = ...` — bare implicit binder without annotation (§12.1)
+    bareImplicit = try $ do
+      sp <- currentSpan
+      token TokAt
+      n <- pIdent
+      let mn = if nameText n == "_" then Nothing else Just n
+      pure [Binder True emptyPrefix Nothing NoReceiver False mn False Nothing Nothing sp]
     parenBinder = try $ do
       sp <- currentSpan
       token TokLParen
@@ -1163,8 +1170,14 @@ pParenPattern start = do
     TokRParen -> do
       void anyToken
       PUnit <$> spanFrom start
-    _ -> recordPat <|> tupleOrTypedOrGroup
+    _ -> opCtorPat <|> recordPat <|> tupleOrTypedOrGroup
   where
+    -- @((::) x xs)@: a parenthesized operator names a constructor in
+    -- pattern position, exactly as in expressions (§17.1).
+    opCtorPat = try $ do
+      op <- pOperatorTok
+      token TokRParen
+      pure (PCtor (CtorRef Nothing op) [] (nameSpan op))
     recordPat = try $ do
       (fields, mrest) <- pRecordPatFields
       token TokRParen

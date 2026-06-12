@@ -121,6 +121,9 @@ data Assertion
   | AExplainExists !Text -- ^ §3.1.2A registry lookup, code or family
   | AErrorCodes ![Text] -- ^ x-compatible: exact multiset of error codes
   | AEval !Text !Text -- ^ x-compatible: evaluate a global, compare rendering
+  | AEvalError !Text !Text -- ^ x-compatible: evaluation fails, message contains
+  | ADeclDescriptors ![Text] -- ^ x-compatible: decl kind+name descriptors
+  | ATraitMembers !Text ![Text] -- ^ x-compatible: trait member names in order
   | AType !Text !Text
   | ADeclKinds ![Text]
   | AFileDeclKinds !Text ![Text] -- ^ path is suite-root relative
@@ -352,9 +355,27 @@ parseDirective allLines lno body =
          in if not (null codes) && all (not . T.null) codes
               then ok (SAssert (AErrorCodes codes))
               else bad "malformed 'assertDiagnosticCodes' code list"
-      "assertEval" -> case T.words rest of
-        (nm : more) | not (null more) -> ok (SAssert (AEval nm (T.unwords more)))
-        _ -> bad "malformed 'assertEval' directive"
+      "assertEval" -> evalAssert
+      -- supported x- extension directives (§T.3 allows a harness to
+      -- implement extension directives; unsupported ones classify the
+      -- test unsupported below)
+      "x-assertEval" -> evalAssert
+      "x-assertEvalErrorContains" -> case T.words rest of
+        (nm : more) | not (null more) -> ok (SAssert (AEvalError nm (T.unwords more)))
+        _ -> bad "malformed 'x-assertEvalErrorContains' directive"
+      "x-assertDeclDescriptors" ->
+        let entries = map (T.unwords . T.words) (T.splitOn "," rest)
+         in if not (null entries) && all (not . T.null) entries
+              then ok (SAssert (ADeclDescriptors entries))
+              else bad "malformed 'x-assertDeclDescriptors' descriptor list"
+      "x-assertTraitMembers" -> case T.words rest of
+        (tn : _ : _) ->
+          let memberPart = T.strip (T.drop (T.length tn) (T.stripStart rest))
+              members = map T.strip (T.splitOn "," memberPart)
+           in if all (not . T.null) members
+                then ok (SAssert (ATraitMembers tn members))
+                else bad "malformed 'x-assertTraitMembers' member list"
+        _ -> bad "malformed 'x-assertTraitMembers' directive"
       _
         | "x-" `T.isPrefixOf` name ->
             unsup ("extension directive '" <> name <> "' is not supported")
@@ -366,6 +387,9 @@ parseDirective allLines lno body =
             -- directives, which are not part of Appendix T)
             bad ("unknown directive '" <> name <> "' is not defined by Appendix T (§T.3)")
       where
+        evalAssert = case T.words rest of
+          (nm : more) | not (null more) -> ok (SAssert (AEval nm (T.unwords more)))
+          _ -> bad ("malformed '" <> name <> "' directive")
         noArgs a
           | null args = ok (SAssert a)
           | otherwise = bad ("directive '" <> name <> "' takes no arguments")
@@ -748,6 +772,11 @@ checkAssertion root path src files cu diags mRun = \case
     -- evaluation may legitimately be deep; guard with the run timeout
     mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEval cu nm expected)))
     pure (fromMaybe (AssertFail ("assertEval: evaluation of '" <> nm <> "' timed out")) mr)
+  AEvalError nm sub -> do
+    mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEvalError cu nm sub)))
+    pure (fromMaybe (AssertFail ("assertEvalErrorContains: evaluation of '" <> nm <> "' timed out")) mr)
+  ADeclDescriptors entries -> pure (assertDeclDescriptors path src entries)
+  ATraitMembers tn ms -> pure (assertTraitMembers path src tn ms)
   AType nm tyExpr -> pure (assertType path src cu nm tyExpr)
   ADeclKinds kinds -> pure (assertDeclKinds "assertDeclKinds" path src kinds)
   AFileDeclKinds p kinds ->
@@ -903,6 +932,51 @@ assertEval cu nm expected =
                   ("assertEval: '" <> nm <> "' evaluates to " <> rendered
                      <> ", expected " <> T.strip expected)
 
+-- | @x-assertEvalErrorContains name substring@ (compatibility
+-- extension): evaluating the global must fail at runtime with a message
+-- containing the substring. Runtime failures surface in the pure
+-- evaluator as stuck primitive applications whose reduction is
+-- undefined (division by zero, @std.testing.failNow@).
+assertEvalError :: CompiledUnit -> Text -> Text -> AssertResult
+assertEvalError cu nm sub =
+  case entryGlobal cu nm >>= \g -> Map.lookup g (csGlobals (cuState cu)) of
+    Nothing -> AssertFail ("assertEvalErrorContains: '" <> nm <> "' is not a defined global")
+    Just gd -> case gdValue gd of
+      Nothing -> AssertFail ("assertEvalErrorContains: '" <> nm <> "' has no value (signature only)")
+      Just v ->
+        let st = cuState cu
+            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True
+         in case findRuntimeError ec (64 :: Int) v of
+              Just msg
+                | sub `T.isInfixOf` msg -> AssertOk
+                | otherwise ->
+                    AssertFail
+                      ("evaluation of '" <> nm <> "' failed with " <> tshow msg
+                         <> ", expected a message containing " <> tshow sub)
+              Nothing ->
+                AssertFail
+                  ("'" <> nm <> "' evaluated without a runtime error (expected message containing "
+                     <> tshow sub <> ")")
+  where
+    findRuntimeError ec = go
+      where
+        go 0 _ = Nothing
+        go fuel v = case force ec v of
+          VPrim "failNow" (a : _)
+            | VLit (LitStr m) <- force ec a -> Just m
+          VPrim p [_, b]
+            | p == "divInt" || p == "modInt"
+            , VLit (LitInt 0) <- force ec b ->
+                Just "Division by zero"
+          VPrim _ args -> firstJust (map (go (fuel - 1)) args)
+          VCtor _ args -> firstJust (map (go (fuel - 1)) args)
+          VRecordV fs -> firstJust (map (go (fuel - 1) . snd) fs)
+          VInject _ x -> go (fuel - 1) x
+          _ -> Nothing
+    firstJust ms = case [m | Just m <- ms] of
+      (m : _) -> Just m
+      [] -> Nothing
+
 -- | Unit results (the normal completion of an IO program) produce no
 -- run-task output.
 isUnitValue :: EvalCtx -> Value -> Bool
@@ -1038,6 +1112,115 @@ assertDeclKinds which path src expected =
                 ( which <> ": decl kinds are [" <> T.intercalate ", " actual
                     <> "], expected [" <> T.intercalate ", " expected <> "]"
                 )
+
+-- | @x-assertDeclDescriptors@ (compatibility extension): like
+-- 'assertDeclKinds' but each entry also carries the declared name (and
+-- explicit modifiers), e.g. @signature value, let value, trait Show@.
+assertDeclDescriptors :: FilePath -> Text -> [Text] -> AssertResult
+assertDeclDescriptors path src expected =
+  case parseModule path src of
+    Left _ -> AssertFail "x-assertDeclDescriptors: file does not parse"
+    Right (m, _) ->
+      let actual = map declDescriptor (modDecls m)
+          norm = map (T.unwords . T.words)
+       in if norm actual == norm expected
+            then AssertOk
+            else
+              AssertFail
+                ( "x-assertDeclDescriptors: decl descriptors are ["
+                    <> T.intercalate ", " actual
+                    <> "], expected [" <> T.intercalate ", " expected <> "]"
+                )
+
+-- | @x-assertTraitMembers Trait m1, m2@ (compatibility extension):
+-- the named trait declares exactly these member names, in order.
+assertTraitMembers :: FilePath -> Text -> Text -> [Text] -> AssertResult
+assertTraitMembers path src tn expected =
+  case parseModule path src of
+    Left _ -> AssertFail "x-assertTraitMembers: file does not parse"
+    Right (m, _) ->
+      case [td | DTrait _ td _ <- modDecls m, nameText (trName td) == tn] of
+        [] -> AssertFail ("x-assertTraitMembers: no trait '" <> tn <> "' in this file")
+        (td : _) ->
+          let actual = dedupe [n | Just n <- map memberName (trMembers td)]
+           in if actual == expected
+                then AssertOk
+                else
+                  AssertFail
+                    ( "x-assertTraitMembers: trait '" <> tn <> "' members are ["
+                        <> T.intercalate ", " actual
+                        <> "], expected [" <> T.intercalate ", " expected <> "]"
+                    )
+  where
+    memberName = \case
+      TraitSig n _ _ -> Just (nameText n)
+      TraitDefault ld _ -> nameText <$> ldName ld
+    dedupe = foldr (\x acc -> x : filter (/= x) acc) []
+
+-- | Decl descriptor rendering for @x-assertDeclDescriptors@: explicit
+-- modifiers, the decl kind, and the declared name (import\/export
+-- specs render in source-like form).
+declDescriptor :: Decl -> Text
+declDescriptor d = case d of
+  DSig mods n _ _ -> modsPrefix mods <> "signature " <> nameText n
+  DLet mods ld _ -> modsPrefix mods <> "let" <> nameSuffix (ldName ld)
+  DData mods dd _ -> modsPrefix mods <> "data " <> nameText (ddName dd)
+  DTypeAlias mods n _ _ _ _ -> modsPrefix mods <> "type " <> nameText n
+  DTrait mods td _ -> modsPrefix mods <> "trait " <> nameText (trName td)
+  DInstance {} -> "instance"
+  DDerive {} -> "derive"
+  DEffect mods ed _ -> modsPrefix mods <> "effect " <> nameText (effName ed)
+  DFixity (FixityDecl k _ op) _ -> "fixity " <> fixityWord k <> " " <> nameText op
+  DImport specs _ -> "import " <> T.intercalate " | " (map renderSpec specs)
+  DExport specs _ -> "export " <> T.intercalate " | " (map renderSpec specs)
+  DExpect mods form _ -> modsPrefix mods <> "expect " <> expectNm form
+  DPattern mods ld _ -> modsPrefix mods <> "pattern" <> nameSuffix (ldName ld)
+  DProjection mods n _ _ _ _ -> modsPrefix mods <> "projection " <> nameText n
+  DTopSplice {} -> "splice"
+  where
+    nameSuffix = maybe "" (\n -> " " <> nameText n)
+    modsPrefix mods = vis <> opq
+      where
+        vis = case dmVisibility mods of
+          VisPublic -> "public "
+          VisPrivate -> "private "
+          VisDefault -> ""
+        opq = if dmOpaque mods then "opaque " else ""
+    fixityWord = \case
+      InfixN -> "infix"
+      InfixL -> "infix left"
+      InfixR -> "infix right"
+      Prefix -> "prefix"
+      Postfix -> "postfix"
+    expectNm = \case
+      ExpectTerm n _ -> nameText n
+      ExpectType n _ _ -> nameText n
+      ExpectData n _ _ -> nameText n
+      ExpectTrait n _ _ -> nameText n
+    renderSpec = \case
+      ImportModule r Nothing -> renderRef r
+      ImportModule r (Just a) -> renderRef r <> " as " <> nameText a
+      ImportItems r items -> renderRef r <> ".(" <> T.intercalate " + " (map renderItem items) <> ")"
+      ImportAll r _ -> renderRef r <> ".*"
+      ImportSingleton r n -> renderRef r <> "." <> nameText n
+    renderRef = \case
+      RefPath mp -> T.intercalate "." (modPathName mp)
+      RefUrl u _ -> "\"" <> u <> "\""
+    renderItem it =
+      T.unwords
+        ( ["unhide" | iiUnhide it]
+            ++ ["clarify" | iiClarify it]
+            ++ maybe [] (\k -> [selWord k]) (iiKind it)
+            ++ [nameText (iiName it) <> (if iiCtorAll it then "(..)" else "")]
+        )
+        <> maybe "" (\a -> " as " <> nameText a) (iiAlias it)
+    selWord = \case
+      SelTerm -> "term"
+      SelType -> "type"
+      SelTrait -> "trait"
+      SelCtor -> "ctor"
+      SelEffectLabel -> "effect label"
+      SelModule -> "module"
 
 declKind :: Decl -> Text
 declKind = \case

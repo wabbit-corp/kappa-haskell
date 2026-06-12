@@ -214,6 +214,12 @@ unify ctx = goTop
     go lvl a b = case (a, b) of
       (VFlex m [], t) -> solveFlex lvl m t
       (t, VFlex m []) -> solveFlex lvl m t
+      -- applied metas: first-order decomposition (?m a̅ ≡ G b̅ pre a̅'
+      -- solves ?m := G b̅ pre and unifies the argument tails pairwise) —
+      -- the standard Miller-adjacent approximation for higher-kinded
+      -- goals like ?f Int ≡ Option Int (§14.3.1)
+      (VFlex m sp, t) | not (null sp) -> solveFlexSpine lvl m sp t
+      (t, VFlex m sp) | not (null sp) -> solveFlexSpine lvl m sp t
       (VSort m, VSort n) -> pure (m <= n) -- cumulativity (§11.1.1)
       (VPi i1 q1 _ d1 c1, VPi i2 q2 _ d2 c2) | i1 == i2 && q1 == q2 -> do
         ok <- goTop d1 d2
@@ -236,6 +242,13 @@ unify ctx = goTop
         | g1 == g2 && length sp1 == length sp2 -> do
             ok <- andM (zipWith (\(_, x) (_, y) -> goTop x y) sp1 sp2)
             if ok then pure True else fallback lvl a b
+      -- rigid-rigid spine decomposition (incomplete but standard; the
+      -- definitional-equality fallback still decides the rest)
+      (VRigid l1 sp1, VRigid l2 sp2)
+        | l1 == l2 && length sp1 == length sp2 && not (null sp1) -> do
+            st0 <- get
+            ok <- andM (zipWith (\(_, x) (_, y) -> goTop x y) sp1 sp2)
+            if ok then pure True else put st0 >> fallback lvl a b
       _ -> fallback lvl a b
       where
         andM [] = pure True
@@ -243,6 +256,40 @@ unify ctx = goTop
     fallback lvl a b = do
       ec <- ec_
       pure (convertible ec lvl a b)
+    solveFlexSpine lvl m sp t = case t of
+      VGlobN g sp2
+        | length sp2 >= length sp -> do
+            st0 <- get
+            let (pre, post) = splitAt (length sp2 - length sp) sp2
+            ok <- solveFlex lvl m (VGlobN g pre)
+            oks <-
+              if ok
+                then andM' [goTop x y | ((_, x), (_, y)) <- zip sp post]
+                else pure False
+            if oks then pure True else put st0 >> fallback lvl (VFlex m sp) t
+      VRigid l sp2
+        | length sp2 >= length sp -> do
+            st0 <- get
+            let (pre, post) = splitAt (length sp2 - length sp) sp2
+            ok <- solveFlex lvl m (VRigid l pre)
+            oks <-
+              if ok
+                then andM' [goTop x y | ((_, x), (_, y)) <- zip sp post]
+                else pure False
+            if oks then pure True else put st0 >> fallback lvl (VFlex m sp) t
+      VFlex m2 sp2
+        | length sp2 == length sp -> do
+            st0 <- get
+            ok <- solveFlex lvl m (VFlex m2 [])
+            oks <-
+              if ok
+                then andM' [goTop x y | ((_, x), (_, y)) <- zip sp sp2]
+                else pure False
+            if oks then pure True else put st0 >> fallback lvl (VFlex m sp) t
+      _ -> fallback lvl (VFlex m sp) t
+      where
+        andM' [] = pure True
+        andM' (mx : ms) = mx >>= \ok -> if ok then andM' ms else pure False
     solveFlex lvl m t = do
       st <- get
       case Map.lookup m (csMetas st) of
@@ -432,8 +479,9 @@ unsupported ctx sp what = reportUnsupported sp what >> anyHole ctx
 resolveImplicit :: Ctx -> Span -> Value -> CheckM Term
 resolveImplicit ctx sp goal = do
   g <- forceM goal
+  kindLike <- isKindLike (ctxLen ctx) g
   case g of
-    VSort _ -> freshMeta
+    _ | kindLike -> freshMeta -- type\/type-constructor params are inferred
     _ -> do
       isTrait <- isTraitGoal g
       isEq <- isEqGoal g
@@ -470,6 +518,18 @@ resolveImplicit ctx sp goal = do
                             ("could not resolve implicit argument of type " <> renderTerm gT)
                           freshMeta
                         else freshMeta
+
+-- | Kind-like goals — @Type@, @Type -> Type@, … — are inferred from
+-- use sites (metavariables), never searched as evidence (§16.3.3).
+isKindLike :: Int -> Value -> CheckM Bool
+isKindLike lvl v = do
+  t <- forceM v
+  case t of
+    VSort _ -> pure True
+    VPi _ _ _ _ clo -> do
+      cod <- clApp clo (VRigid lvl [])
+      isKindLike (lvl + 1) cod
+    _ -> pure False
 
 localCandidate :: Ctx -> Value -> CheckM (Maybe Term)
 localCandidate ctx goal = go 0 (ctxEntries ctx)
@@ -3470,7 +3530,13 @@ elabInstance (InstanceDecl premises hd members) sp = do
       let ctx0 = foldl (\c v -> bindCtx v False (VSort 0) c) emptyCtx fvs
       premTms <- forM premises $ \p -> fst <$> inferType ctx0 p
       ctxP' <- bindPremises ctx0 premTms
-      argTms <- mapM (\e -> fst <$> inferType ctxP' e) argEs
+      -- head arguments check against the trait constructor's parameter
+      -- types (so type constructors are valid arguments of
+      -- higher-kinded traits, §14.1.2)
+      traitTy <- gets (fmap gdType . Map.lookup g . csGlobals)
+      argTms <- case traitTy of
+        Just tt -> checkHeadArgs ctxP' tt argEs
+        Nothing -> mapM (\e -> fst <$> inferType ctxP' e) argEs
       -- register the instance before checking members so member bodies
       -- can use the instance being defined (recursive instances, §14.3)
       dictName <- freshNameM ("__inst_" <> gnameText g <> "_")
@@ -3558,6 +3624,20 @@ elabInstance (InstanceDecl premises hd members) sp = do
     bindPremises ctx (p : rest) = do
       pv <- evalIn ctx p
       bindPremises (bindCtx "__prem" True pv ctx) rest
+
+    checkHeadArgs _ _ [] = pure []
+    checkHeadArgs ctx ty (e : es) = do
+      t <- forceM ty
+      case t of
+        VPi Expl _ _ dom clo -> do
+          tm <- check ctx e dom
+          v <- evalIn ctx tm
+          rest <- clApp clo v >>= \cod -> checkHeadArgs ctx cod es
+          pure (tm : rest)
+        _ -> do
+          tm <- fst <$> inferType ctx e
+          rest <- checkHeadArgs ctx t es
+          pure (tm : rest)
 
     memberSigInstance traitG mn argTms ctx = do
       mt <- globalTerm (memberGlobal traitG mn)
