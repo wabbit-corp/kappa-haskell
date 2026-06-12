@@ -218,6 +218,7 @@ data Expr
   | ESectionRight !Name !Expr !Span -- ^ @(op e)@
   | EOpRef !(Maybe FixityKind) !Name !Span -- ^ @(op)@, @(infix -)@, @(prefix -)@
   | EOpChain ![OpElem]
+  | EElvis !Expr !Expr !Span -- ^ @l ?: r@ (§16.1.2), built by the resolver
   -- ^ Alternating operands\/operators, re-associated at resolution.
   | ELambda !(Maybe Name) ![Binder] !Expr !Span
   | ELet ![LetBind] !Expr !Span -- ^ @let ... in@
@@ -554,6 +555,7 @@ exprSpan = \case
   ESectionLeft _ _ sp -> sp
   ESectionRight _ _ sp -> sp
   EOpRef _ _ sp -> sp
+  EElvis _ _ sp -> sp
   EOpChain els -> case els of
     -- the parser builds chains from at least one operand ('pChainElems')
     [] -> error "Kappa.Syntax.exprSpan: internal error: empty operator chain"

@@ -32,7 +32,7 @@ import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Data.Char (isDigit)
 import Data.List (isSuffixOf, sort)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -46,7 +46,7 @@ import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, forc
 import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
@@ -680,6 +680,32 @@ entryGlobal cu entryName =
           (g : _) -> Just g
           [] -> Nothing
 
+-- | Resolve an assertEval subject: the module of the directive's own
+-- file wins (§T.6 directives assert about their file), then the
+-- 'entryGlobal' search.
+evalGlobal :: CompiledUnit -> Maybe ModuleName -> Text -> Maybe GName
+evalGlobal cu mmod nm =
+  case mmod of
+    Just mn
+      | Map.member (GName mn nm) (csGlobals (cuState cu)) -> Just (GName mn nm)
+    _ -> entryGlobal cu nm
+
+-- | The module a suite file defines: its header when present, else the
+-- §8.1 path-derived name relative to the suite root.
+moduleForFile :: FilePath -> FilePath -> Text -> Maybe ModuleName
+moduleForFile root path src
+  | ".kp" `isSuffixOf` path = Just (fromMaybe (moduleNameRelTo root path) headerName)
+  | otherwise = Nothing -- suite.ktest: no module of its own
+  where
+    headerName = listToMaybe
+      [ ModuleName (T.splitOn "." m)
+      | l <- take 20 (T.lines src)
+      , not ("--" `T.isPrefixOf` T.stripStart l)
+      , (pre, _kw : rest) <- [break (== "module") (T.words l)]
+      , all ("@" `T.isPrefixOf`) pre
+      , (m : _) <- [rest]
+      ]
+
 runTimeoutMicros :: Int
 runTimeoutMicros = 30 * 1000 * 1000
 
@@ -770,10 +796,12 @@ checkAssertion root path src files cu diags mRun = \case
       )
   AEval nm expected -> do
     -- evaluation may legitimately be deep; guard with the run timeout
-    mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEval cu nm expected)))
+    let mmod = moduleForFile root path src
+    mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEval cu mmod nm expected)))
     pure (fromMaybe (AssertFail ("assertEval: evaluation of '" <> nm <> "' timed out")) mr)
   AEvalError nm sub -> do
-    mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEvalError cu nm sub)))
+    let mmod = moduleForFile root path src
+    mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEvalError cu mmod nm sub)))
     pure (fromMaybe (AssertFail ("assertEvalErrorContains: evaluation of '" <> nm <> "' timed out")) mr)
   ADeclDescriptors entries -> pure (assertDeclDescriptors path src entries)
   ATraitMembers tn ms -> pure (assertTraitMembers path src tn ms)
@@ -915,9 +943,9 @@ normalizeLF = T.replace "\r" "\n" . T.replace "\r\n" "\n"
 -- | @assertEval name expected@ (compatibility extension): evaluate a
 -- global definition to a value and compare a canonical rendering with
 -- the expected text.
-assertEval :: CompiledUnit -> Text -> Text -> AssertResult
-assertEval cu nm expected =
-  case entryGlobal cu nm >>= \g -> Map.lookup g (csGlobals (cuState cu)) of
+assertEval :: CompiledUnit -> Maybe ModuleName -> Text -> Text -> AssertResult
+assertEval cu mmod nm expected =
+  case evalGlobal cu mmod nm >>= \g -> Map.lookup g (csGlobals (cuState cu)) of
     Nothing -> AssertFail ("assertEval: '" <> nm <> "' is not a defined global")
     Just gd -> case gdValue gd of
       Nothing -> AssertFail ("assertEval: '" <> nm <> "' has no value (signature only)")
@@ -937,9 +965,9 @@ assertEval cu nm expected =
 -- containing the substring. Runtime failures surface in the pure
 -- evaluator as stuck primitive applications whose reduction is
 -- undefined (division by zero, @std.testing.failNow@).
-assertEvalError :: CompiledUnit -> Text -> Text -> AssertResult
-assertEvalError cu nm sub =
-  case entryGlobal cu nm >>= \g -> Map.lookup g (csGlobals (cuState cu)) of
+assertEvalError :: CompiledUnit -> Maybe ModuleName -> Text -> Text -> AssertResult
+assertEvalError cu mmod nm sub =
+  case evalGlobal cu mmod nm >>= \g -> Map.lookup g (csGlobals (cuState cu)) of
     Nothing -> AssertFail ("assertEvalErrorContains: '" <> nm <> "' is not a defined global")
     Just gd -> case gdValue gd of
       Nothing -> AssertFail ("assertEvalErrorContains: '" <> nm <> "' has no value (signature only)")

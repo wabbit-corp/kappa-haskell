@@ -242,14 +242,9 @@ reassoc env sp els0 = do
                 loop (opApply op lhs rhs) minPrec rest'
       _ -> pure (lhs, els)
 
-    -- `?:` is reserved syntax: desugar per §16.1.2.
+    -- `?:` is reserved syntax (§16.1.2): elaborated as the Elvis form
     mkOp op l r
-      | nameText op == "?:" =
-          EMatch l
-            [ MatchCase (PCtor (CtorRef Nothing (op {nameText = "Some"})) [PVar (op {nameText = "__elvis"})] (nameSpan op)) Nothing (EVar (op {nameText = "__elvis"})) (nameSpan op)
-            , MatchCase (PCtor (CtorRef Nothing (op {nameText = "None"})) [] (nameSpan op)) Nothing r (nameSpan op)
-            ]
-            (nameSpan op)
+      | nameText op == "?:" = EElvis l r (nameSpan op)
       | otherwise = opApply op l r
 
 -- ── Traversal ────────────────────────────────────────────────────────
@@ -402,6 +397,7 @@ rExpr env = go
       EHandle d l scrut cs sp ->
         EHandle d <$> go l <*> go scrut <*> mapM goHandler cs <*> pure sp
       EIs e c -> EIs <$> go e <*> pure c
+      EElvis l r sp -> EElvis <$> go l <*> go r <*> pure sp
       EThunk e sp -> EThunk <$> go e <*> pure sp
       ELazy e sp -> ELazy <$> go e <*> pure sp
       EForce e sp -> EForce <$> go e <*> pure sp

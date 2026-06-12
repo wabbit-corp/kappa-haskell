@@ -8,6 +8,7 @@ module Kappa.Pipeline
   , TraceEvent
   , compileFiles
   , compileFilesIn
+  , moduleNameRelTo
   , compileSourceWithPrelude
   , importScopeFor
   ) where

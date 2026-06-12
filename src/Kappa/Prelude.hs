@@ -64,6 +64,10 @@ builtinState =
       , (prel "UnicodeScalar", opaqueTy (tyV tType))
       , (prel "Bytes", opaqueTy (tyV tType))
       , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
+      , (prel "Duration", opaqueTy (tyV tType)) -- §18.1 monotonic time difference
+      , (prel "Instant", opaqueTy (tyV tType)) -- §18.1 monotonic time value
+      , (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
+      , (prel "TVar", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
       , (prel "Thunk", opaqueTy (tyV (tType ~> tType)))
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
@@ -234,6 +238,30 @@ preludeSource =
     , ""
     , "trait FromFloat (t : Type) ="
     , "    fromFloat : Double -> t"
+    , ""
+    , "trait FromString (t : Type) =" -- §28.2 (ordinary library trait)
+    , "    fromString : String -> t"
+    , ""
+    , "instance FromString String ="
+    , "    let fromString s = s"
+    , ""
+    , "trait EuclideanSemiring (a : Type) =" -- §28.2.1 (Nat only)
+    , "    euclideanDivMod : a -> a -> (a, a)"
+    , ""
+    , "instance EuclideanSemiring Nat ="
+    , "    let euclideanDivMod x y = (natOfInt (divInt (natToInt x) (natToInt y)), natOfInt (modInt (natToInt x) (natToInt y)))"
+    , ""
+    , "trait Monad (m : Type -> Type) =" -- §28.2.2 (operational subset)
+    , "    (>>=) : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b"
+    , ""
+    , "instance Monad Option ="
+    , "    let (>>=) o f ="
+    , "        match o"
+    , "        case None -> None"
+    , "        case Some x -> f x"
+    , ""
+    , "trait Releasable (m : Type -> Type) (a : Type) =" -- §29.x resources
+    , "    release : a -> m Unit"
     , ""
     , "trait Zero (a : Type) ="
     , "    zero : a"

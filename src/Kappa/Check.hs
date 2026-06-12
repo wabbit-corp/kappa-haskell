@@ -873,6 +873,7 @@ infer ctx expr = case expr of
     elabSpine ctx (exprSpan f) fTm fTy args
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
+  EElvis l r sp -> elabElvis ctx l r sp
   EIs e cref -> elabIs ctx e cref
   EAscription e tyE _ -> do
     (tyTm, _) <- inferType ctx tyE
@@ -1831,6 +1832,30 @@ memberTypeOf traitG member args dictTm = do
 
 memberGlobal :: GName -> Text -> GName
 memberGlobal (GName m t) member = GName m (t <> "." <> member)
+
+-- Elvis `l ?: r` (§16.1.2): unwrap an Option left operand, with the
+-- right operand as the None fallback.
+elabElvis :: Ctx -> Expr -> Expr -> Span -> CheckM (Term, Value)
+elabElvis ctx l r sp = do
+  (lTm, lTy) <- infer ctx l
+  (lTm1, lTy1) <- insertAllImplicits ctx (exprSpan l) lTm lTy
+  t <- forceM lTy1
+  case t of
+    VGlobN (GName _ "Option") [(_, payloadTy)] -> do
+      rTm <- check ctx r payloadTy
+      let alts =
+            [ CaseAlt (CPCtor (gPrel "Some") [CPVar "__elvis"]) Nothing (CVar 0)
+            , CaseAlt (CPCtor (gPrel "None") []) Nothing rTm
+            ]
+      pure (CMatch lTm1 alts, payloadTy)
+    _ -> do
+      lT <- quoteIn ctx t
+      report $
+        withNote ("left operand type: " <> renderTerm lT) $
+          diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
+            "the left operand of the Elvis operator '?:' must have type Option T (§16.1.2)"
+      _ <- check ctx r t
+      pure (lTm1, t)
 
 -- safe navigation e?.m (§16.1.1.2)
 elabSafeNav :: Ctx -> Expr -> DotMember -> CheckM (Term, Value)

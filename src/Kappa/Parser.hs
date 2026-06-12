@@ -1076,11 +1076,18 @@ pPatApp = do
       case namedArgs of
         Just fields -> PCtorNamed ref fields <$> spanFrom start
         Nothing -> do
-          args <- many pPatAtom
+          args <- many pPatArgAtom
           case args of
             [] -> pure hd
             _ -> PCtor ref args <$> spanFrom start
     _ -> pure hd
+
+-- A constructor-argument pattern atom must not begin with a stop
+-- keyword: `case True if g -> …` ends the pattern before the guard.
+pPatArgAtom :: P Pattern
+pPatArgAtom = do
+  stop <- pAtStopKeyword
+  if stop then parseFail "pattern argument" else pPatAtom
 
 pNamedPatArgs :: P [(Name, Maybe Pattern)]
 pNamedPatArgs = do
@@ -2575,8 +2582,24 @@ pForall = do
   pKeyword "forall"
   bs <- concat <$> many1 pQuantBinder
   token TokDot
+  pQuantBodyNewline
   body <- pExpr
   EForall bs body <$> spanFrom start
+
+-- the body of a quantifier may continue on the next line (§5.4)
+pQuantBodyNewline :: P ()
+pQuantBodyNewline = do
+  t <- peekToken
+  case t of
+    TokNewline _ -> do
+      nxt <- peekTokenAt 1
+      case nxt of
+        TokIndent -> anyToken >> anyToken >> pure ()
+        TokDedent -> pure ()
+        TokEOF -> pure ()
+        TokNewline _ -> pure ()
+        _ -> void anyToken
+    _ -> pure ()
 
 pExists :: P Expr
 pExists = do
@@ -2584,6 +2607,7 @@ pExists = do
   pKeyword "exists"
   bs <- concat <$> many1 pQuantBinder
   token TokDot
+  pQuantBodyNewline
   body <- pExpr
   EExists bs body <$> spanFrom start
 
