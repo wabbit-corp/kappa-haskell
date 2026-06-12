@@ -137,6 +137,9 @@ data CheckState = CheckState
   , csRecordOrders :: !(Map GName [Text])
   -- ^ Written field order of record type aliases (§22.2 shape order;
   -- core record types are canonicalized to lexicographic order)
+  , csReExports :: !(Map ModuleName (Map Text GName))
+  -- ^ §8.4 re-exports: per module, exported spelling ↦ the originating
+  -- declaration in another module (aliased and kind-selected items)
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -176,7 +179,7 @@ initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
-    Map.empty Map.empty Map.empty
+    Map.empty Map.empty Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -2007,14 +2010,58 @@ check ctx expr expected0 = do
                 check ctx (fromMaybe (ETuple es sp) (lookup fn punVars)) fty
               else zipWithM (\e (_, t) -> check ctx e t) es fs
           pure (CRecordV (zip (map fst fs) tms))
-    _ -> do
+    -- expected-type-directed constructor selection: when the expected
+    -- type is a data type declaring a constructor with the bare head's
+    -- spelling and ordinary resolution would yield a same-spelling
+    -- constructor of a *different* data type (or nothing at all), the
+    -- expected type's constructor is selected — constructors are
+    -- static members of their data type (§7.2) and the unqualified
+    -- spelling abbreviates that selection in checked position
+    (e, VGlobN dgName _)
+      | Just (hn, args) <- bareCtorHead e
+      , Nothing <- lookupCtx (nameText hn) ctx -> do
+          st0 <- get
+          mRetarget <- case Map.lookup dgName (csDatas st0) of
+            Just di
+              | (ctorG : _) <- [c | c <- diCtors di, gnameText c == nameText hn] -> do
+                  mg <- lookupGlobalName (nameText hn)
+                  case mg of
+                    Nothing -> pure (Just ctorG)
+                    Just g
+                      | g /= ctorG
+                      , Just ci <- Map.lookup g (csCtors st0)
+                      , ciData ci /= dgName ->
+                          pure (Just ctorG)
+                    _ -> pure Nothing
+            _ -> pure Nothing
+          case mRetarget of
+            Just ctorG -> do
+              mt <- globalTerm ctorG
+              case mt of
+                Just (hTm, hTy) -> do
+                  (tm, ty) <- elabSpine ctx (exprSpan e) hTm hTy args
+                  (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
+                  expectType ctx (exprSpan e) ty1 expected
+                  pure tm1
+                Nothing -> checkFallthrough expected
+            Nothing -> checkFallthrough expected
+    (_, expected) -> checkFallthrough expected
+  where
+    checkFallthrough expected = do
       (tm, ty) <- infer ctx expr
       (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
       special <- projDescriptorMismatch ctx expr ty1 expected
       unless special $
         expectType ctx (exprSpan expr) ty1 expected
       pure tm1
-  where
+    -- a bare (possibly applied) capitalized head
+    bareCtorHead = \case
+      EVar n | upperHead n -> Just (n, [])
+      EApp (EVar n) args | upperHead n -> Just (n, args)
+      _ -> Nothing
+    upperHead n = case T.uncons (nameText n) of
+      Just (c, _) -> c >= 'A' && c <= 'Z'
+      Nothing -> False
     -- §16.1.5: a fully applied projection in descriptor-typed position
     -- gets the dedicated diagnostic rather than a plain mismatch
     projDescriptorMismatch c ex actual expect = case expect of

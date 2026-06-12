@@ -40,7 +40,7 @@ import Kappa.Prelude
   , stdSupervisorSource
   , stdUnicodeSource
   )
-import Kappa.Resolve (defaultFixities, resolveModule)
+import Kappa.Resolve (defaultFixities, fixitiesOf, resolveModule)
 import Kappa.Source
 import Kappa.Syntax
 import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
@@ -227,7 +227,10 @@ compileFilesWith packageMode nameOf files =
       step (st, chunks, trc) mn = case Map.lookup mn byName of
         Nothing -> (st, chunks, trc)
         Just (m, frs) ->
-          let (m', rdiags) = resolveModule defaultFixities m
+          let -- §5.5: exported fixity declarations are imported together
+              -- with the corresponding operator name
+              importedFix = importedFixities m
+              (m', rdiags) = resolveModule (Map.unionWith (++) importedFix defaultFixities) m
               ie = buildImportsIn unitModules st m'
               st0 =
                 st
@@ -258,10 +261,51 @@ compileFilesWith packageMode nameOf files =
                   else usageDiagnostics (csExpansions st1) m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
-           in ( st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
+              -- §8.4 re-exports: record where each aliased/selected
+              -- export item originates, so importers resolve to the
+              -- original declaration (identity preserved downstream)
+              reExps =
+                Map.fromList
+                  [ (alias, GName (ModuleName (modPathName mp)) (nameText (iiName it)))
+                  | DExport ss _ <- modDecls m'
+                  , ImportItems (RefPath mp) items <- ss
+                  , it <- items
+                  , let alias = maybe (nameText (iiName it)) nameText (iiAlias it)
+                  ]
+           in ( st1
+                  { csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)
+                  , csReExports =
+                      if Map.null reExps
+                        then csReExports st1
+                        else Map.insert mn reExps (csReExports st1)
+                  }
               , (preDiags ++ udiags) : chunks
               , ftrace : trc
               )
+      -- §5.5: the fixities a module's imports bring along — an
+      -- operator's exported fixity is imported together with the
+      -- operator name (computed from the unit's parsed sources, which
+      -- are ordered by §8.2 dependency order)
+      exportedFixOf mn = case Map.lookup mn byName of
+        Just (em, _) ->
+          let names = moduleExportNames em
+           in Map.filterWithKey (\op _ -> op `elem` names) (fixitiesOf (modDecls em))
+        Nothing -> Map.empty
+      importedFixities m =
+        Map.unionsWith
+          (++)
+          [pickFix spec | DImport ss _ <- modDecls m, spec <- ss]
+      pickFix = \case
+        ImportItems (RefPath mp) items ->
+          let env = exportedFixOf (ModuleName (modPathName mp))
+              wanted = [nameText (iiName it) | it <- items, Nothing <- [iiAlias it]]
+           in Map.filterWithKey (\op _ -> op `elem` wanted) env
+        ImportAll (RefPath mp) excepts ->
+          let exc = [nameText n | ExceptItem _ n <- excepts]
+           in Map.filterWithKey (\op _ -> op `notElem` exc) (exportedFixOf (ModuleName (modPathName mp)))
+        ImportSingleton (RefPath mp) n ->
+          Map.filterWithKey (\op _ -> op == nameText n) (exportedFixOf (ModuleName (modPathName mp)))
+        _ -> Map.empty
       (finalSt, diagChunks, traceChunks) = foldl' step (pst, [pdiags], []) order
       -- §9.4: expect satisfaction is judged over the whole unit
       allDiags =
@@ -366,6 +410,14 @@ moduleExportNames m = nub (concatMap go (modDecls m))
       DTypeAlias mods n _ _ _ _ -> [nameText n | vis mods]
       DTrait mods td _ -> [nameText (trName td) | vis mods]
       DExpect mods form _ -> [nameText (expectName form) | vis mods]
+      -- §8.4 re-exports: `export M.(x [as y], ...)` exports the items
+      -- under their (aliased) spellings
+      DExport ss _ -> concatMap reExpNames ss
+      _ -> []
+    reExpNames = \case
+      ImportItems (RefPath _) items ->
+        [maybe (nameText (iiName it)) nameText (iiAlias it) | it <- items]
+      ImportSingleton (RefPath _) n -> [nameText n]
       _ -> []
     expectName = \case
       ExpectTerm n _ -> n
@@ -407,6 +459,10 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
       ImportSingleton (RefUrl {}) _ -> True
       _ -> False
     exportsOf mn = Map.lookup mn (csModuleExports st)
+    -- §8.4: an item exported by `export M.(x as y)` resolves to the
+    -- originating declaration in M, preserving identity downstream
+    reExpsOf mn = Map.findWithDefault Map.empty mn (csReExports st)
+    exportTarget mn nm = Map.findWithDefault (GName mn nm) nm (reExpsOf mn)
     knownModule mn =
       mn == preludeModule
         || Map.member mn (csModuleExports st)
@@ -420,10 +476,10 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
     err ie sp code fam msg =
       ie {ieDiags = ieDiags ie ++ [diag SevError StageImports code (Just fam) sp msg]}
     addSpec ie (spec, sp) = case spec of
-      ImportModule (RefUrl {}) _ -> urlErr ie sp
-      ImportItems (RefUrl {}) _ -> urlErr ie sp
-      ImportAll (RefUrl {}) _ -> urlErr ie sp
-      ImportSingleton (RefUrl {}) _ -> urlErr ie sp
+      ImportModule (RefUrl u _) _ -> urlErr ie sp u
+      ImportItems (RefUrl u _) _ -> urlErr ie sp u
+      ImportAll (RefUrl u _) _ -> urlErr ie sp u
+      ImportSingleton (RefUrl u _) _ -> urlErr ie sp u
       ImportModule (RefPath mp) malias ->
         let mn = pathModule mp
          in if not (knownModule mn)
@@ -438,7 +494,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
               then unknownModule ie sp mn
               else
                 foldl'
-                  (\acc nm -> addWildName acc nm (GName mn nm))
+                  (\acc nm -> addWildName acc nm (exportTarget mn nm))
                   ie
                   [nm | nm <- wildMembers mn, nm `notElem` exceptNames]
       ImportItems (RefPath mp) items ->
@@ -450,7 +506,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
         let mn = pathModule mp
             asModule = ModuleName (modPathName mp ++ [nameText n])
          in if knownModule mn && nameText n `elem` memberNames mn
-              then addExplicit ie (nameText n) (GName mn (nameText n))
+              then addExplicit ie (nameText n) (exportTarget mn (nameText n))
               else
                 if knownModule asModule
                   then ie
@@ -463,7 +519,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
     addItem mn sp ie it =
       let nm = nameText (iiName it)
           alias = maybe nm nameText (iiAlias it)
-          g = GName mn nm
+          g = exportTarget mn nm
        in if nm `elem` memberNames mn
             then case kindMismatch g (iiKind it) of
               Just why ->
@@ -493,7 +549,9 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
         | isData g || not (isCtor g) -> Nothing
         | otherwise -> Just "type"
       Just SelCtor
-        | isCtor g -> Nothing
+        -- §8.3.1: `ctor` selects a data constructor, including the
+        -- same-spelling constructor facet of a data family (§7.2)
+        | Map.member g (csCtors st) -> Nothing
         | otherwise -> Just "ctor"
       Just SelTerm
         | isData g || isTrait g -> Just "term"
@@ -528,9 +586,22 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
             { ieScope = Map.insert alias g (ieScope ie)
             , ieWild = alias : ieWild ie
             }
-    urlErr ie sp =
-      err ie sp "E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE" "kappa.import.url"
-        "URL module imports must be pinned in package mode (Spec §8.3.2)"
+    -- §8.3.3 URL pins select the failure mode: no fetching machinery
+    -- exists here, so a sha256-pinned import is unsupported outright; a
+    -- ref-pinned import additionally needs the package-mode lockfile
+    -- this implementation does not keep; an unpinned import violates
+    -- package mode before fetching would even be attempted
+    urlErr ie sp url = case T.breakOn "#" url of
+      (_, pin)
+        | "#ref:" `T.isPrefixOf` pin ->
+            err ie sp "E_URL_IMPORT_REF_PIN_REQUIRES_LOCK" "kappa.import.url"
+              "a 'ref:'-pinned URL import requires the resolved digest to be recorded in a lockfile in package mode (Spec §8.3.3); this implementation keeps no lockfile"
+        | "#" `T.isPrefixOf` pin ->
+            err ie sp "E_URL_IMPORT_UNSUPPORTED" "kappa.import.url"
+              "URL module fetching is not supported by this implementation (Spec §8.3.2)"
+      _ ->
+        err ie sp "E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE" "kappa.import.url"
+          "URL module imports must be pinned in package mode (Spec §8.3.2)"
     unknownModule ie sp mn =
       err ie sp "E_MODULE_NAME_UNRESOLVED" "kappa.name.unresolved"
         ("imported module '" <> renderModuleName mn <> "' is not part of this compilation unit (Spec §8.2)")

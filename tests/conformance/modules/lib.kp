@@ -1,0 +1,8 @@
+module lib
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+infix left 60 (+++)
+(+++) : Int -> Int -> Int
+let (+++) x y = x + y

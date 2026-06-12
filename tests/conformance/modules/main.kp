@@ -1,0 +1,26 @@
+module main
+
+import lib.(type Box, ctor Box), lib.((+++))
+import facade.(type PublicPair)
+
+-- §8.3.1 ctor kind selector imports the same-spelling constructor
+-- facet; §5.5 the exported fixity of (+++) comes along with the name;
+-- §8.4 the aliased re-export PublicPair preserves lib.Pair's identity.
+boxed : Box Int
+let boxed = Box 41
+
+summed : Int
+let summed = 20 +++ 22
+
+paired : PublicPair Int
+let paired = PublicPair.MkPair 1
+
+unwrapped : Int
+let unwrapped =
+    match boxed
+    case Box n -> n
+
+--! assertNoErrors
+--! assertType paired PublicPair Int
+--! assertEval summed 42
+--! assertEval unwrapped 41

@@ -1,0 +1,4 @@
+module libdeep
+
+data Pair (a : Type) : Type =
+    MkPair (value : a)
