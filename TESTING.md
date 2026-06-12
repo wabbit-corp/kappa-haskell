@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (140/140)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (143/143)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -52,9 +52,10 @@ Implemented:
 
 | Directive | Notes |
 | --- | --- |
-| `mode check` / `mode run` | `analyze`/`compile` classify unsupported |
+| `mode check` / `mode run` / `mode compile` | `compile` runs the full pipeline without executing an entry, recording the per-module Term→Value lowering as the `lowerKBackendIR`/`module` portable trace step (§T.5.5); `analyze` classifies unsupported |
 | `entry NAME` | alternate entry point |
-| `packageMode`, `dumpFormat json\|sexpr`, `requires mode package` | accepted no-ops (defaults) |
+| `scriptMode` | compiles the suite without §8.1 path-derived module names (§T.4; module headers stand alone); `requires mode script` still classifies unsupported |
+| `packageMode`, `dumpFormat json\|sexpr`, `requires mode package` | accepted no-ops (defaults); in package mode a module header that disagrees with the §8.1 path-derived name is `E_MODULE_PATH_MISMATCH` |
 | `backend interpreter`, `requires backend interpreter` | accepted (the in-process interpreter) |
 | `requires capability runTask\|pipelineTrace` | met; other capabilities classify unsupported |
 | `requires capability legacyCharAlias\|unicodeSourceWarnings` | met (documented §T.1 compatibility extensions: the §28.5 `Char` alias; the §3.1.3 source-hygiene warnings) |
@@ -72,9 +73,11 @@ Implemented:
 | `assertStdout "…"`, `assertStdoutContains "…"` | exact golden / substring |
 | `assertStderrContains "…"`, `assertExitCode N` | |
 | `assertStdoutFile PATH`, `assertStderrFile PATH` | golden files, LF-normalized; unreadable golden file is a harness error (§T.8) |
-| `assertTraceCount EVENT SUBJECT RELOP N` | portable trace counts; this pipeline records `parse`/file, `buildKFrontIR`/file, `lowerKCore`/module per compiled file (the prelude bootstrap contributes none); all other portable event/subject pairs count 0 |
+| `assertTraceCount EVENT SUBJECT RELOP N` | portable trace counts; this pipeline records `parse`/file, `buildKFrontIR`/file, `lowerKCore`/module per compiled file, plus `lowerKBackendIR`/module under `mode compile` (the prelude bootstrap contributes none); all other portable event/subject pairs count 0 |
 | `assertDiagnosticCodes c1, c2, …`, `assertEval NAME EXPR` | compatibility extensions for the external corpus (§T.1 allows nonstandard directives) |
 | `x-assertEval`, `x-assertEvalErrorContains`, `x-assertDeclDescriptors`, `x-assertTraitMembers` | supported `x-` extensions (§T.3/§T.1); `assertEval` subjects resolve in the directive file's own module (§T.6); unsupported `x-` directives still classify the test unsupported per §T.3 |
+| `x-assertContainsTokenKinds k1, k2, …` | supported `x-` extension: portable token-kind names mapped onto this lexer (interpolation segment kinds map to fragment structure) |
+| `x-assertModule NAME`, `x-assertModuleAttributes a1, …`, `x-assertDataConstructors TYPE c1, …` | supported `x-` extensions: the directive file's module-header name, its module attributes, and a data type's constructor names in declaration order |
 | `allow_unsafe_consume` | compatibility config (no-op): the corpus gates its `unsafeConsume` linear sink behind it; this prelude always provides `unsafeConsume : (@0 a : Type) -> (1 x : a) -> Unit` (and `printInt`) as documented extras beyond the §28.2 minimum |
 | `assertParameterQuantities NAME q1 q2 …` | compatibility extension: the named let's explicit parameters carry exactly these §12.1.1 binder prefixes (`0`/`1`/`ω`/`<=1`/`>=1`/`&`/`&[r]`; bare default renders `ω`, an `inout` parameter renders `1` per §18.9.3) |
 | `assertExecute NAME EXPECTED`, `assertRunStdout NAME EXPECTED` | compatibility extensions: run the named IO global regardless of `mode` (compile errors fail the assertion) and compare the final value rendering / the trimmed captured stdout |
@@ -92,8 +95,8 @@ and `assertSuppressedDiagnostic` (§T.5.1) and `assertStageDump` (§T.5.3)
 related origins, fix-its, or suppression summaries, and there is no
 Chapter 34 stage-dump serialization, so the asserted data does not
 exist; all unsupported `x-*` extensions (§T.3 mandates unsupported);
-`scriptMode`, `mode analyze|compile`, non-`interpreter` backends,
-`runArgs`, `stdinFile`; `requires` of unprovided capabilities (§T.4
+`mode analyze`, non-`interpreter` backends, `runArgs`, `stdinFile`,
+`requires mode script`; `requires` of unprovided capabilities (§T.4
 mandates unsupported).
 
 **Harness errors** (§T.3: "any unknown standard directive, malformed
@@ -106,12 +109,13 @@ permits nonstandard directives), and the rest remain harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **140/140 passing**, zero unsupported, zero
+`tests/conformance/` — **143/143 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
 | --- | --- |
 | `lexer/` | bad escape, tabs in indent/source, unterminated string, multi-error recovery, §5.2 soft keywords as ordinary identifiers (argument/binder/assignment positions) |
+| `lexical/` | multiline-string trailing newline (§6.3.3 closing-delimiter content line) |
 | `parser/` | `E_LAYOUT_BAD_DEDENT`, multi-error parse recovery, misindented declarations (§5.4) |
 | `data/` | constructor field defaults at `data` declarations (§10.1.1) |
 | `prelude/` | container trait stack: `map`/`filter`/`foldr`/`traverse`/`(>>=)`/`(++)` over `List`/`Option`/`String` (§28.2) |
@@ -123,20 +127,23 @@ harness errors. Layout by area:
 | `match/` | exhaustiveness (Bool/or/guards/nested/literal/tuple/record) |
 | `patterns/` | §17.3 active patterns: Option/`Match`/total-view results, residue threading, `let?` over patterns, monadic/linearity rejections |
 | `implicits/` | §16.3.3 local implicit candidates: quantity/borrow-aware resolution, shadowing, same-scope ambiguity (`E_IMPLICIT_AMBIGUOUS`), erased-candidate rejection |
-| `qtt/` | §12.2–§12.4 usage counting: linear drop/overuse, erased runtime use, exit paths, demand scaling, latent closures, borrow escape, record paths, `using`+`defer`, Pi-quantity subsumption |
+| `qtt/` | §12.2–§12.4 usage counting: linear drop/overuse, erased runtime use, exit paths, demand scaling, latent closures, borrow escape, record paths, `using`+`defer`, Pi-quantity subsumption, capture-set type identity (§12.3.1: `captures-identity.kp`) |
 | `queries/` | §20 comprehension clauses end to end (`order by`/`skip`/`take`/`distinct`/`group by`/`join`/left-join `into`, conflict policies) and §20.9–§20.10 query carriers with plan QTT checks (`E_QUERY_*`) |
 | `collections/` | §20.1 set/map literals incl. empty `{}` |
-| `records/` | projection, patch, punning, unknown-field errors, constructor field defaults (§10.1.1) |
+| `records/` | projection, patch, punning, unknown-field errors, constructor field defaults (§10.1.1), dependent telescopes/`this` siblings (§13.2.1), open rows (§13.2.6), sealed packages — opaque-member stuckness and `E_SEAL_*` rejections (§13.2.10: `seal-opaque.kp`, `seal-errors.kp`) |
 | `variants/` | closed unions, injection, missing member, `Int?` sugar |
 | `traits/` | user traits, premise instance, defaults, `E_IMPLICIT_UNSOLVED`, `E_INSTANCE_INCOHERENT`, §28.2 base instances, supertrait premise enforcement (`E_SUPERTRAIT_UNSATISFIED`) |
-| `equality/` | refl conversion, `subDefined` proof, symbolic failure |
+| `equality/` | refl conversion, `subDefined` proof, symbolic failure, §31.1 conversion details — record η, projection-based tuple-let destructuring (`defeq-conversions.kp`) |
 | `recursion/` | no-signature error, structural (clean), unverified warning |
 | `fixity/` | user fixity, `E_OPERATOR_NO_FIXITY`, parenthesized prefix negation (§5.5.1.1) |
 | `run/` | hello, while/var, for+break/continue+else, defer LIFO, try/except/finally, `let?`-else, early return, interpolation, statement-if |
 | `labels/` | §18.2.5 labeled loops: plain `break` confined to its labeled loop, `break@outer`/`continue@outer` across an inner loop, `E_LABEL_UNRESOLVED` for missing/non-loop targets, inert `label@match` |
 | `do/` | implicit do-bindings `let (@x : T) = e` joining the local implicit context (§16.3.3) |
 | `shape/` | `assertDeclKinds` |
-| `unsupported/` | handle/seal/exists/`return@label`/`defer@label` → `E_UNSUPPORTED` |
+| `effects/` | §18.1 algebraic effects: deep/shallow handlers, multi-shot resumption, one-shot overuse, multi-shot linear-capture rejection |
+| `projections/` | §9.1.1/§16.1.6 projection declarations: selectors, accessor bundles, footprints, zipper linear fill, `E_PROJECTION_CAPABILITY_REQUIRED` |
+| `unicode/` | §3.1.3 source hygiene, invalid UTF-8 recovery, `g`/`b` quoted literals, §29.4 `std.unicode` runtime, scalar ranges |
+| `unsupported/` | top-level `effect` declarations (`scoped effect` is the supported form), `exists`, `return@label`, `defer@label` → `E_UNSUPPORTED` |
 
 `examples/` is also a harness suite: `examples/todo.kp` carries an
 exact `assertStdout` golden transcript (see `examples/README.md`).
@@ -154,38 +161,38 @@ raw per-fixture log at `/tmp/external-raw.log`.
 first error message) and `/tmp/triage-summary.txt` (per-category
 outcome counts and top error codes).
 
-Current tally over **929 fixture suites** (one result per fixture):
+Current tally over **941 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 507 |
-| fail | 371 |
-| unsupported | 40 |
-| harness error | 11 |
+| pass | 802 |
+| fail | 129 |
+| unsupported | 10 |
+| harness error | 0 |
 
-All 11 harness errors are fixtures using the other implementation's
-private, non-`x-` directives that Appendix T does not define
-(`assertRunStdout`, `assertExecute`, `assertEvalErrorContains`,
-`assertDoItemDescriptors`, `assertInoutParameters`,
-`assertContainsTokenTexts`); per §T.3 an unknown non-extension
-directive *is* a harness error (`allow_unsafe_consume`,
-`assertParameterQuantities`, `assertEval`, and
-`assertDiagnosticCodes` are likewise nonstandard but are implemented
-as documented compatibility extensions, as §T.1 permits — see the
-directive table above). `tests/external-results.md` carries
-the full breakdown: a per-category table, the §T.8 classification
-rationale with spec citations, and a "Blocked classifications"
-section (maintained in `tests/external-blocked.md`, appended on
-regeneration; `tools/run-external-fixtures.sh --regen` rebuilds the
-report from the existing raw log without re-running the corpus) that
-classifies every non-pass as outside-spec (mandated
-unsupported/harnessError), spec conflict, or tracked gap. Unsupported
-is now only unmet capabilities/backends/modes, unsupported `x-*`
-extensions, and incremental suites. Failures are dominated by
-unimplemented subsystems — the Unicode/bytes text stack,
+There are no harness errors: every private, non-`x-` directive the
+corpus actually uses has an evident portable meaning and is
+implemented as a documented compatibility extension, as §T.1 permits
+(`allow_unsafe_consume`, `assertParameterQuantities`, `assertEval`,
+`assertDiagnosticCodes`, `assertExecute`, `assertRunStdout`,
+`assertEvalErrorContains`, `assertDoItemDescriptors`,
+`assertInoutParameters`, `assertContainsTokenTexts` — see the
+directive table above); per §T.3 any future unknown non-extension
+directive remains a harness error. The 10 unsupported are all
+spec-mandated: `requires backend dotnet` (8 fixtures; §T.4 — no
+backend profiles exist here) and `requires capability incremental`
+(2; §T.7 presumes Chapter 34 session reuse, which this implementation
+does not claim). `tests/external-results.md` carries the full
+breakdown: a per-category table, the §T.8 classification rationale
+with spec citations, and a "Blocked classifications" section
+(maintained in `tests/external-blocked.md`, appended on regeneration;
+`tools/run-external-fixtures.sh --regen` rebuilds the report from the
+existing raw log without re-running the corpus) that classifies every
+non-pass as outside-spec (mandated unsupported/harnessError), spec
+conflict, or tracked gap. Failures are dominated by
 macros/elaborator reflection (which also gates the remaining query
-and deriving fixtures), projection/accessor descriptors, dependent
-records, sealing/static-object facets, `BorrowView` — and by
+and deriving fixtures), fuzz recovery-cascade deltas, static-object
+reflection facets, associated trait type members, and
 diagnostic-code selection deltas at application boundaries (see the
 ranked gap table at the end of `tests/external-results.md`).
 
