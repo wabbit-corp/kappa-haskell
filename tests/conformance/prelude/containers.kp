@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! x-assertEval doubledHead 4
+--! x-assertEval optMapped 6
+--! x-assertEval folded 6
+--! x-assertEval joined 1 :: 2 :: 3 :: Nil
+--! x-assertEval seqd Some (1 :: 2 :: Nil)
+
+doubledHead : Integer
+let doubledHead =
+    match map (\x -> x * 2) (2 :: 9 :: Nil)
+    case y :: _ -> y
+    case Nil -> 0
+
+optMapped : Integer
+let optMapped = orElse (map (\x -> x * 2) (Some 3)) 0
+
+folded : Integer
+let folded = foldr (\x -> \acc -> x + acc) 0 (1 :: 2 :: 3 :: Nil)
+
+joined : List Integer
+let joined = (1 :: Nil) ++ (2 :: 3 :: Nil)
+
+seqd : Option (List Integer)
+let seqd = sequence (Some 1 :: Some 2 :: Nil)

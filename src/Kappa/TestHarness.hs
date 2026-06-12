@@ -988,28 +988,40 @@ isUnitValue ec v = case force ec v of
 -- Canonical value rendering for 'assertEval' (literals bare, strings
 -- quoted, constructor applications in juxtaposition form).
 renderEvalValue :: EvalCtx -> Value -> Text
-renderEvalValue ec = go (32 :: Int) False
+renderEvalValue ec = go (32 :: Int) RTop
   where
-    go :: Int -> Bool -> Value -> Text
+    go :: Int -> RenderPos -> Value -> Text
     go 0 _ _ = "…"
-    go fuel nested v = case force ec v of
+    go fuel pos v = case force ec v of
       VLit (LitInt n) -> tshow n
-      VLit (LitDouble d) -> tshow d
+      VLit (LitDouble d)
+        -- canonical numeric rendering: integral doubles print bare
+        | not (isNaN d || isInfinite d)
+        , d == fromInteger (round d :: Integer) ->
+            tshow (round d :: Integer)
+        | otherwise -> tshow d
       VLit (LitStr s) -> tshow s
       VLit (LitScalar c) -> tshow c
       VCtor (GName _ "Unit") [] -> "()"
       VRecordV [] -> "()"
       VCtor g [] -> gnameText g
-      -- list cells render infix and unparenthesized: 1 :: 2 :: Nil
+      -- list cells render infix: 1 :: 2 :: Nil, parenthesized when an
+      -- application argument or a left operand (precedence-aware)
       VCtor (GName _ "::") [h, t] ->
-        go (fuel - 1) True h <> " :: " <> go (fuel - 1) False t
+        parenIf (pos /= RTop) (go (fuel - 1) ROpLeft h <> " :: " <> go (fuel - 1) RTop t)
       VCtor g args ->
-        parenIf nested (T.unwords (gnameText g : map (go (fuel - 1) True) args))
+        -- constructor applications need parens only in argument position
+        parenIf (pos == RArg) (T.unwords (gnameText g : map (go (fuel - 1) RArg) args))
       VRecordV fs ->
-        "(" <> T.intercalate ", " [n <> " = " <> go (fuel - 1) False x | (n, x) <- fs] <> ")"
-      VInject _ x -> go (fuel - 1) nested x
+        "(" <> T.intercalate ", " [n <> " = " <> go (fuel - 1) RTop x | (n, x) <- fs] <> ")"
+      VInject _ x -> go (fuel - 1) pos x
       other -> renderTerm (quote ec 0 other)
     parenIf b t = if b then "(" <> t <> ")" else t
+
+-- rendering position for 'renderEvalValue': top level, application
+-- argument, or left operand of an infix cell
+data RenderPos = RTop | RArg | ROpLeft
+  deriving stock (Eq)
 
 -- | @assertType name typeExpr@ (§T.5.2): elaborate the expected type in
 -- the compiled unit's state through a synthetic signature declaration

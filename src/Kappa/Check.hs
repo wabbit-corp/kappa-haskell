@@ -118,31 +118,62 @@ data CtxEntry = CtxEntry
 data Ctx = Ctx
   { ctxEntries :: ![CtxEntry]
   , ctxEnv :: !Env
+  , ctxRefines :: !(Map Text [GName])
+  -- ^ §7.4.1 flow refinement: variable → possible constructors.
+  , ctxAliases :: !(Map Text Text)
+  -- ^ §7.4.3 stable aliases: @let q = p@ makes q transport p's refinement.
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] []
+emptyCtx = Ctx [] [] Map.empty Map.empty
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
 
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
-bindCtx n implocal ty (Ctx es env) =
+bindCtx n implocal ty (Ctx es env refs als) =
   Ctx (CtxEntry n ty implocal False : es) (VRigid (length env) [] : env)
+    (Map.delete n refs) (Map.delete n als)
 
 -- | Bind a local definition: the environment carries the definiens, so
 -- conversion sees through local lets (delta for locals, §15.1).
 bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
-bindCtxLet n implocal ty v (Ctx es env) =
+bindCtxLet n implocal ty v (Ctx es env refs als) =
   Ctx (CtxEntry n ty implocal False : es) (v : env)
+    (Map.delete n refs) (Map.delete n als)
 
 -- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
 bindCtxVar :: Text -> Value -> Ctx -> Ctx
-bindCtxVar n ty (Ctx es env) =
+bindCtxVar n ty (Ctx es env refs als) =
   Ctx (CtxEntry n ty False True : es) (VRigid (length env) [] : env)
+    (Map.delete n refs) (Map.delete n als)
+
+-- | The §7.4.3 stable-alias root of a variable.
+refineRoot :: Ctx -> Text -> Text
+refineRoot ctx = go (16 :: Int)
+  where
+    go 0 n = n
+    go fuel n = case Map.lookup n (ctxAliases ctx) of
+      Just n' -> go (fuel - 1) n'
+      Nothing -> n
+
+-- | Record §7.4.1 refinements (through alias roots).
+refineCtx :: [(Text, [GName])] -> Ctx -> Ctx
+refineCtx refs ctx =
+  ctx {ctxRefines = foldr add (ctxRefines ctx) refs}
+  where
+    add (n, gs) = Map.insert (refineRoot ctx n) gs
+
+-- | Record a stable alias @q = p@ (§7.4.3).
+addCtxAlias :: Text -> Text -> Ctx -> Ctx
+addCtxAlias q p ctx = ctx {ctxAliases = Map.insert q p (ctxAliases ctx)}
+
+-- | Current refinement of a variable, through its alias root.
+ctxRefinementOf :: Ctx -> Text -> Maybe [GName]
+ctxRefinementOf ctx n = Map.lookup (refineRoot ctx n) (ctxRefines ctx)
 
 lookupCtx :: Text -> Ctx -> Maybe (Int, CtxEntry)
-lookupCtx n (Ctx es _) = go 0 es
+lookupCtx n ctx = go 0 (ctxEntries ctx)
   where
     go _ [] = Nothing
     go i (e : rest)
@@ -1687,19 +1718,32 @@ elabDotUnqualified ctx e member mname = do
                   memberTy <- memberTypeOf headG (nameText mn0) (map snd spine) tm1
                   pure (CProj tm1 (nameText mn0), memberTy)
             _ ->
-              -- named-field projection on single-constructor data (§10.2)
+              -- named-field projection on single-constructor data
+              -- (§10.2), or on a §7.4.1 flow-refined subset of the
+              -- constructors when the receiver is a refined variable
               case Map.lookup headG (csDatas st) of
                 Just di
-                  | [ctorG] <- diCtors di
-                  , Just ci <- Map.lookup ctorG (csCtors st)
-                  , Just idx <- elemIndex (Just (nameText mn0)) (map fst (ciFields ci)) -> do
-                      fieldTys <- ctorFieldTypes ctx ctorG ci t (nameSpanOf member)
-                      fty <- case drop idx fieldTys of
-                        (x : _) -> pure x
-                        [] -> freshMetaV ctx
-                      let arity = length (ciFields ci)
-                          pats = [if i == idx then CPVar "__field" else CPWild | i <- [0 .. arity - 1]]
-                      pure (CMatch tm1 [CaseAlt (CPCtor ctorG pats) Nothing (CVar 0)], fty)
+                  | ctors <- projectableCtors ctx di
+                  , not (null ctors)
+                  , Just alts0 <-
+                      sequence
+                        [ do
+                            ci <- Map.lookup ctorG (csCtors st)
+                            idx <- elemIndex (Just (nameText mn0)) (map fst (ciFields ci))
+                            Just (ctorG, ci, idx)
+                        | ctorG <- ctors
+                        ] -> do
+                      fty <- do
+                        let (ctorG, ci, idx) = head alts0
+                        fieldTys <- ctorFieldTypes ctx ctorG ci t (nameSpanOf member)
+                        case drop idx fieldTys of
+                          (x : _) -> pure x
+                          [] -> freshMetaV ctx
+                      let altOf (ctorG, ci, idx) =
+                            let arity = length (ciFields ci)
+                                pats = [if i == idx then CPVar "__field" else CPWild | i <- [0 .. arity - 1]]
+                             in CaseAlt (CPCtor ctorG pats) Nothing (CVar 0)
+                      pure (CMatch tm1 (map altOf alts0), fty)
                 _ -> methodSugar tm1 t mn0
         _ -> methodSugar tm1 t mn0
 
@@ -1741,6 +1785,18 @@ elabDotUnqualified ctx e member mname = do
             (nameSpanOf member)
             ("no member '" <> nameText mn0 <> "' on this receiver (§7.3)")
       anyHole ctx
+
+    -- which constructors a field projection may assume (§10.2 single
+    -- constructor, or the §7.4.1 flow-refined subset for a refined
+    -- variable receiver)
+    projectableCtors c di
+      | [ctorG] <- diCtors di = [ctorG]
+      | EVar n <- e
+      , Just gs <- ctxRefinementOf c (nameText n)
+      , not (null gs)
+      , all (`elem` diCtors di) gs =
+          gs
+      | otherwise = []
 
     nameSpanOf = \case
       DotName n -> nameSpan n
@@ -1792,7 +1848,7 @@ elabSafeNav ctx e member = do
       (wrapTm, resTy) <- case bodyT of
         VGlobN (GName _ "Option") [(_, u)] -> pure (bodyTm, u)
         VFlex {} -> do
-          errAt (memberSpan member) "E_SAFE_NAV_GENERIC_AMBIGUOUS" (Just "kappa.type.mismatch")
+          errAt (memberSpan member) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
             "the result type of '?.' is undetermined; annotate the member type (§16.1.1.2)"
           pure (bodyTm, bodyT)
         u -> pure (CCtor (gPrel "Some") [bodyTm], u)
@@ -1801,8 +1857,12 @@ elabSafeNav ctx e member = do
             , CaseAlt (CPCtor (gPrel "None") []) Nothing (CCtor (gPrel "None") [])
             ]
       pure (CMatch pTm1 alts, VGlobN (gPrel "Option") [(Expl, resTy)])
+    VFlex {} -> do
+      errAt (exprSpan e) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
+        "the receiver type of '?.' is undetermined here, so the navigation is ambiguous; annotate the receiver (§16.1.1.2)"
+      anyHole ctx
     _ -> do
-      errAt (exprSpan e) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+      errAt (exprSpan e) "E_SAFE_NAVIGATION_RECEIVER_NOT_OPTION" (Just "kappa.type.mismatch")
         "the receiver of '?.' must have type Option T (§16.1.1.2)"
       anyHole ctx
   where
@@ -2020,7 +2080,12 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           rhsTyTm <- quoteIn ctx rhsTy
           rhsV <- evalIn ctx rhsTm
           let q = qOf (bpQuantity prefix)
-              ctx' = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
+              ctx1 = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
+              -- §7.4.3 stable alias: `let q = p` transports refinement
+              ctx' = case rhs of
+                EVar pn | Just _ <- lookupCtx (nameText pn) ctx ->
+                  addCtxAlias (nameText n) (nameText pn) ctx1
+                _ -> ctx1
           go ctx' rest ((q, nameText n, rhsTyTm, rhsTm, False) : acc)
         PWild _ -> do
           rhsTyTm <- quoteIn ctx rhsTy
@@ -2109,10 +2174,51 @@ checkIf ctx alts mels sp resT = go alts
           "if without else is only permitted as a do-block statement (§16.4, §18.4)"
         pure (CCtor (gPrel "Unit") [])
     go ((c, t) : rest) = do
-      cTm <- check ctx c boolT
-      tTm <- check ctx t resT
+      -- §7.4.1 flow refinement: constructor tests in the condition
+      -- refine their subjects in the condition's own conjuncts and in
+      -- the then-branch
+      refs <- condRefines ctx c
+      let ctxR = refineCtx refs ctx
+      cTm <- check ctxR c boolT
+      tTm <- check ctxR t resT
       eTm <- go rest
       pure (CIf cTm tTm eTm)
+
+-- | §7.4.1/§7.4.2 refinements induced by an if-condition: `x is C`
+-- refines x to {C}; conjunction collects both sides; disjunction
+-- refines a subject to the union of constructors when both sides
+-- refine it.
+condRefines :: Ctx -> Expr -> CheckM [(Text, [GName])]
+condRefines _ctx = go
+  where
+    go = \case
+      EIs (EVar n) cref -> do
+        mg <- quietCtor cref
+        pure [(nameText n, [g]) | Just g <- [mg]]
+      EApp (EVar (Name op _)) [ArgExplicit l, ArgExplicit r]
+        | op == "&&" -> (++) <$> go l <*> go r
+        | op == "||" -> do
+            ls <- go l
+            rs <- go r
+            pure [(x, gs ++ gs') | (x, gs) <- ls, (x', gs') <- rs, x == x']
+      EThunk e _ -> go e
+      _ -> pure []
+    quietCtor (CtorRef mqual n) = do
+      st <- get
+      let inScope g@(GName m _) =
+            m == csModule st || Map.lookup (gnameText g) (csScope st) == Just g || m == preludeModule
+          cands = case mqual of
+            Nothing ->
+              [g | (g, _) <- Map.toList (csCtors st), gnameText g == nameText n, inScope g]
+            Just q ->
+              [ ctorG
+              | (dg, di) <- Map.toList (csDatas st)
+              , gnameText dg == nameText q
+              , inScope dg
+              , ctorG <- diCtors di
+              , gnameText ctorG == nameText n
+              ]
+      pure (case cands of (g : _) -> Just g; [] -> Nothing)
 
 checkMatch :: Ctx -> Expr -> [MatchCase] -> Span -> Value -> CheckM Term
 checkMatch ctx scrut cases sp resT = do
@@ -2407,7 +2513,7 @@ elabPattern ctx0 pat0 ty0 = do
               -- approximate by requiring the same binder count.
               let count1 = patBindersCount p1
               unless (all (\(p, _) -> patBindersCount p == count1) rs) $
-                errAt sp "E_OR_PATTERN_BINDINGS" (Just "kappa.pattern.or-bindings")
+                errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa.pattern.or-bindings")
                   "all alternatives of an or-pattern must bind the same names (§17.2.3)"
               pure (CPOr pats, ctx1)
             [] -> pure (CPWild, ctx)
@@ -2625,7 +2731,13 @@ elabDo ctx items _sp mexpected = do
               insertAllImplicits c bsp tm ty
           checkIrrefutable c pat rhsTy bsp
           (patC, cBound, _) <- elabPattern c pat rhsTy
-          let c' = markImplicitLocal implocal c cBound
+          let cBound' = case (pat, rhs) of
+                -- §7.4.3 stable alias: `let q = p` transports refinement
+                (PVar qn, EVar pn)
+                  | Just _ <- lookupCtx (nameText pn) c ->
+                      addCtxAlias (nameText qn) (nameText pn) cBound
+                _ -> cBound
+          let c' = markImplicitLocal implocal c cBound'
           ks <- goItems loops c' errT resT rest
           pure (KLet (qOf (bpQuantity prefix)) patC rhsTm : ks)
         DoLetQ pat rhs mElse _ -> do
@@ -2747,9 +2859,9 @@ elabDo ctx items _sp mexpected = do
 -- pattern was elaborated in; the entries added on top of it are marked.
 markImplicitLocal :: Bool -> Ctx -> Ctx -> Ctx
 markImplicitLocal False _ after = after
-markImplicitLocal True before (Ctx es env) =
+markImplicitLocal True before after@(Ctx es _ _ _) =
   let (new, old) = splitAt (length es - ctxLen before) es
-   in Ctx (map (\e -> e {ceImplicitLocal = True}) new ++ old) env
+   in after {ctxEntries = map (\e -> e {ceImplicitLocal = True}) new ++ old}
 
 -- `!e` splicing inside do items (§18.3): rewritten to runIO marker the
 -- interpreter understands; typing treats !e : a where e : IO err a.
@@ -3575,7 +3687,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
                 anyPath premTys
         unless satisfied $ do
           gT <- quoteIn ctxP' supGoal
-          errAt sp "E_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
+          errAt sp "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
             ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
       -- member definitions checked against member types
       dictFields <- forM (tiMembers ti) $ \mn -> do

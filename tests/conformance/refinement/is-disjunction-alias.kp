@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+--! x-assertEval viaAlias 42
+
+data Payload : Type =
+    IntBox (value : Integer)
+    NatBox (value : Integer)
+    Empty
+
+readValue : Payload -> Integer
+let readValue p =
+    block
+        let q = p
+        if q is IntBox || q is NatBox then p.value else 0
+
+viaAlias : Integer
+let viaAlias = readValue (NatBox 42)

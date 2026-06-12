@@ -1,0 +1,8 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_SAFE_NAVIGATION_RECEIVER_NOT_OPTION
+
+type Inner = (c : Integer)
+type Outer = (b : Inner)
+
+bad : Outer -> Option Inner
+let bad a = a?.b

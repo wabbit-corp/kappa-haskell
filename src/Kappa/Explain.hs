@@ -47,6 +47,7 @@ portableAlias c = lookup c table
   where
     table =
       [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
+      , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
       , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
       , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
       ]
@@ -126,7 +127,7 @@ registry =
       "A numeric literal is lexically malformed (bad digits for its radix, misplaced separators, or an invalid exponent)."
   , ent "E_OPERATOR_NO_FIXITY" (Just "kappa.fixity.unbound")
       "An infix operator is used without any fixity declaration in scope, so the expression cannot be grouped."
-  , ent "E_OR_PATTERN_BINDINGS" (Just "kappa.pattern.or-bindings")
+  , ent "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa.pattern.or-bindings")
       "The alternatives of an or-pattern do not bind exactly the same variables at the same types."
   , ent "E_EXPECT_AMBIGUOUS" (Just "kappa.expect.ambiguous")
       "More than one definition in the compilation unit satisfies a single 'expect' declaration (Spec 9.4)."
@@ -154,7 +155,9 @@ registry =
       "A recursive definition lacks a type signature; recursion requires a declared signature for checking."
   , ent "E_REFUTABLE_LET_PATTERN" (Just "kappa.pattern.refutable-binding")
       "A 'let' binding uses a refutable pattern; only irrefutable patterns may appear in plain let bindings."
-  , ent "E_SAFE_NAV_GENERIC_AMBIGUOUS" (Just "kappa.type.mismatch")
+  , ent "E_SAFE_NAVIGATION_RECEIVER_NOT_OPTION" (Just "kappa.type.mismatch")
+      "The receiver of a '?.' safe-navigation expression is not an Option value."
+  , ent "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
       "A safe-navigation '?.' chain has an ambiguous generic receiver, so the implicit Option threading cannot be decided."
   , ent "E_SIGNATURE_ARITY" (Just "kappa.type.signature-arity")
       "A definition binds more parameters than its declared signature provides function arrows for."
@@ -162,7 +165,7 @@ registry =
       "A splice expression appears outside the do-block context that would give it meaning."
   , ent "E_STRING_ESCAPE_INVALID" Nothing
       "A string or character literal contains an invalid escape sequence."
-  , ent "E_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
+  , ent "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
       "An instance is declared for a trait whose supertrait constraint has no visible instance for the same type."
   , ent "E_TAB_IN_INDENTATION" Nothing
       "A horizontal tab appears in the indentation of a line; Kappa layout indentation must use spaces only."

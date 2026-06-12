@@ -1,4 +1,4 @@
---! assertDiagnostic error E_SUPERTRAIT_UNSATISFIED
+--! assertDiagnostic error E_TRAIT_SUPERTRAIT_UNSATISFIED
 
 -- §14.1.4: an instance of a trait with a supertrait premise requires
 -- evidence for the supertrait at the instance head.
@@ -9,5 +9,5 @@ trait MyEq (a : Type) =
 trait MyEq a => MyOrd (a : Type) =
     myLt : a -> a -> Bool
 
-instance MyOrd Integer = --!! E_SUPERTRAIT_UNSATISFIED
+instance MyOrd Integer = --!! E_TRAIT_SUPERTRAIT_UNSATISFIED
     let myLt x y = ltInt x y

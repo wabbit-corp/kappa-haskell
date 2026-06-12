@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+--! x-assertEval fromBox 42
+--! x-assertEval fromEmpty 0
+
+data Payload : Type =
+    Box (value : Integer)
+    Empty
+
+readOrZero : Payload -> Integer
+let readOrZero p =
+    if p is Box && p.value == 41 then p.value + 1 else 0
+
+fromBox : Integer
+let fromBox = readOrZero (Box 41)
+
+fromEmpty : Integer
+let fromEmpty = readOrZero Empty

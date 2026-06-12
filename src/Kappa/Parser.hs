@@ -1298,7 +1298,21 @@ pArrowExpr = do
       pure (ETraitArrow lhs rhs)
     _ -> pure lhs
   where
-    pArrowRhs = pOpenExpr <|> pArrowExpr
+    -- an arrow at end of line continues on the next line (same or
+    -- deeper indentation) within signatures and type expressions (§5.4)
+    pArrowRhs = do
+      t <- peekToken
+      case t of
+        TokNewline _ -> do
+          nxt <- peekTokenAt 1
+          case nxt of
+            TokIndent -> anyToken >> anyToken >> pure ()
+            TokDedent -> pure ()
+            TokEOF -> pure ()
+            TokNewline _ -> pure ()
+            _ -> void anyToken
+        _ -> pure ()
+      pOpenExpr <|> pArrowExpr
     mkArrow lhs rhs =
       let b = case lhs of
             EAscription inner ty sp ->
@@ -1337,7 +1351,17 @@ pIsSuffix e = do
     else do
       pKeyword "is"
       c <- pCtorRef
-      pure (EIs e c)
+      let ei = EIs e c
+      -- the chain may continue after the test: `p is C && …` (§16.3.4);
+      -- the right-hand side re-enters the chain parser, so further
+      -- is-tests nest correctly
+      t <- peekToken
+      case t of
+        TokOperator op | op /= "=>" -> do
+          opN <- pOperatorTok
+          rhs <- pChainExpr
+          pure (EOpChain [ChainOperand ei, ChainOp opN, ChainOperand rhs])
+        _ -> pure ei
 
 pCtorRef :: P CtorRef
 pCtorRef = do
@@ -1385,10 +1409,21 @@ pChainElems = do
         _ -> pure ()
       -- operator may be followed by newline+indent continuation (§5.4)
       void (optional (try (pNewline *> token TokIndent)))
-      pre <- many (ChainOp <$> pPrefixOp)
-      nxt <- ChainOperand <$> pAppExpr
-      rest <- pChainRest
-      pure (ChainOp opN : pre ++ nxt : rest)
+      -- an open expression (let-in, if, match, lambda, …) may close the
+      -- chain as its final operand (§16.1.8)
+      mOpen <- optionMaybe pOpenTailOperand
+      case mOpen of
+        Just e -> pure [ChainOp opN, ChainOperand e]
+        Nothing -> do
+          pre <- many (ChainOp <$> pPrefixOp)
+          nxt <- ChainOperand <$> pAppExpr
+          rest <- pChainRest
+          pure (ChainOp opN : pre ++ nxt : rest)
+
+-- An open expression (let-in, if, match, lambda, …) as the final
+-- operand of an operator chain (§16.1.8).
+pOpenTailOperand :: P Expr
+pOpenTailOperand = try pOpenExpr
 
 pPrefixOp :: P Name
 pPrefixOp = try $ do
