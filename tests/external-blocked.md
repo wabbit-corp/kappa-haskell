@@ -9,40 +9,37 @@ fixture falls in exactly one class:
    cites the directive and the spec section that does *not* define it.
 2. **Spec conflict** — the fixture's expectation contradicts a
    specific Spec.md requirement; both sides are cited.
-3. **Tracked gap** — the feature is spec-defined but not implemented
-   here; the failure is honest, retained as `fail`, and queued (cited
-   to the defining section).
+3. **Tracked gap** — the feature or diagnostic-calibration behavior is
+   spec-compatible but not implemented here; the failure is honest,
+   retained as `fail`, and queued (cited to the governing section).
 
 ### Outside Spec.md: spec-mandated `unsupported` (10 fixtures)
 
 Evidence for each fixture is the quoted directive reason in the
 "Unsupported, by reason" breakdown above and the per-fixture line in
-the raw log (`/tmp/external-raw.log`).
+the raw log (`/tmp/external-raw.log`). §T.4: *"`requires ...`
+directives are preconditions. If any required condition is not met,
+the test result is **unsupported**, not failed."* §T.8 defines the
+`unsupported` outcome accordingly.
 
-- **`backend dotnet`** (8): `fuzz.pending.kbackendir.*`. §T.4:
-  unmet `requires backend` → unsupported. No `dotnet` backend exists
-  here (no §27 backend profiles are implemented; the only provided
-  profile is `backend interpreter`).
+- **`requires backend dotnet`** (8): `fuzz.pending.kbackendir.*`.
+  §T.4 `requires backend <profile>` is a precondition; no `dotnet`
+  backend exists here (no §27 backend profiles are implemented; the
+  only provided profile is `backend interpreter`).
 - **`requires capability incremental`** (2:
   `patch.import_stability.reload_same_identity`,
   `static_objects.incremental_static_object_identity_body_change`):
-  §T.7 incremental step suites presume Chapter 34 session reuse; this
-  implementation keeps no session state and does not claim the
-  capability → unsupported (§T.4/§T.8).
-
-Previously listed here and since implemented (now run normally):
-`mode compile` (the per-module Term→Value lowering into the
-interpreter's runtime representation is recorded as the
-`lowerKBackendIR`/`module` portable trace step, §T.5.5); `scriptMode`
-(§T.4: compiles without §8.1 path-derived module names); and the
-`x-assertContainsTokenKinds` / `x-assertDataConstructors` /
-`x-assertModule` / `x-assertModuleAttributes` extension directives
-(documented compatibility extensions per §T.1/§T.3).
+  `incremental` is one of §T.4's portable capability names; §T.7
+  incremental step suites presume Chapter 34 session/cache reuse
+  ("the harness preserves any caches, query results, module
+  interfaces, ... that the compiler may legally reuse under Chapter
+  34"). This implementation keeps no session state and does not claim
+  the capability → unsupported (§T.4/§T.8).
 
 ### Outside Spec.md: `harnessError` (0 fixtures)
 
-§T.3: *"Any unknown standard directive, malformed directive, or
-ill-typed directive argument is a harness error."* The corpus's
+§T.8: *"`harnessError` means the test itself was malformed, for
+example because of an unknown standard directive ..."*. The corpus's
 private, non-`x-`-prefixed directives appear nowhere in Appendix T
 (§T.3 grammar, §T.4 configuration list, §T.5 assertion lists) nor
 anywhere else in Spec.md. All of those actually used by the corpus
@@ -57,64 +54,137 @@ documented compatibility extensions, as §T.1 permits (see TESTING.md):
 future private directive without an evident portable meaning remains
 a harness error.
 
-### Spec conflicts (fixture expectation contradicts Spec.md)
+### Spec conflicts (fixture expectation contradicts Spec.md; 9 fixtures)
 
 - `core_semantics.evaluation.positive`
   (`runtime_error_division_by_zero.kp`) asserts `let result = 1 / 0`
-  elaborates with **no errors**. §28.2.1 defines
-  `(/) : … -> (@_ : divDefined x y = True) -> a` with
-  `instance CheckedDiv Integer` computing `divDefined x y = not (y == 0)`,
-  so the implicit obligation reduces to `False = True`, which is
-  uninhabited — a conforming checker must reject. The fixture's
-  `assertNoErrors` contradicts §28.2.1.
+  elaborates with **no errors** and traps at runtime. §28.2.1 defines
+  `(/) : ... (x : a) -> (y : a) -> (@_ : divDefined x y = True) -> a`
+  ("`/` is checked division. It requires proof that the denominator is
+  valid for the selected `CheckedDiv` instance"), and §28.2.3 fixes
+  the Integer domain as `divDefined x y = (y /= zero)`. For literals
+  `1`/`0` the obligation reduces definitionally to `False = True`,
+  which is uninhabited; the §3.2.4 `kappa.implicit.unsolved` family
+  ("an implicit argument cannot be synthesized") is an error, so
+  `assertNoErrors` is unsatisfiable in a conforming implementation.
+  §28.2.1 additionally forbids the escape hatch: "The portable prelude
+  MUST NOT provide unchecked division-by-zero ... under these operator
+  names."
+- `data_types.constructors.positive_named_field_source_order_evaluation`
+  contains `let boom = 1 / 0` under `assertNoErrors` — the same
+  §28.2.1/§28.2.3 contradiction as above (the source-order behavior it
+  pins is unreachable behind the ill-typed division).
 - `core_semantics.evaluation.runtime_negative`
   (`user_defined_and_is_eager.kp`) redefines
-  `(&&) : Int -> Int -> Int` and applies it as `False && failNow "…"`
-  under `result : Bool`, asserting **no errors**: `False : Bool` and
-  `failNow … : a` flow into `Int` parameters and the `Int` result is
-  ascribed `Bool`, which §16.1.7.1 application checking must reject.
-  It additionally requires the *discarded* second argument to be
-  evaluated, which §15.1 normalization does not mandate.
-- `traits.members.negative_member_unresolved_at_lowering`,
-  `traits.members.negative_value_position_member_reference`,
-  `traits.members.negative_opaque_member_operator_wrong_code` expect
-  `E_TYPE_MISMATCH` for conditions that include genuinely unresolved
-  names; §7.1 name-resolution failures render here as
-  `E_NAME_UNRESOLVED` under the §3.1.2A portable-alias rules (the
-  spec fixes no `E_TYPE_MISMATCH` for unresolved references;
-  unresolved *implicit obligations* are already matched through the
-  documented `E_UNSOLVED_IMPLICIT ↔ E_TYPE_MISMATCH` §3.1.2A alias).
+  `(&&) : Int -> Int -> Int` in module scope (shadowing the prelude
+  `(&&) : Bool -> Thunk Bool -> Bool` per §7.1 nearest-binding-group
+  lookup and §28.1), then asserts `result : Bool` with
+  `result = False && failNow "..."` elaborates with **no errors**:
+  `False : Bool` flows into an `Int` parameter and the `Int` result is
+  ascribed `Bool` — §16.1.7.1 application checking and §3.2.3
+  `kappa.type.mismatch` make both rejections mandatory. (Were the
+  prelude `&&` selected instead, the `Thunk` second operand would not
+  be evaluated and the asserted runtime error could not occur either.)
+- `modules.imports.item_kind_selectors.negative_wildcard_ctor` asserts
+  that after `import foo.*` the program compiles clean but `Box 42`
+  fails **at runtime** with "Name 'Box' is not in scope". §8.3.1:
+  "`import M.*` imports all exported binding groups except
+  distinct-spelling constructors" and "A same-spelling data family is
+  imported as one binding group containing its type facet and its
+  same-spelling constructor facet (§7.2)". `data Box a = Box a` is a
+  same-spelling family, so the wildcard import brings the constructor
+  facet; a conforming implementation accepts and evaluates `Box 42`,
+  so the asserted runtime name failure cannot occur.
+- `static_objects.kind_accept_effect_label_kind_qualified_inside_scoped_effect`
+  asserts `let L = effect-label State` elaborates with no errors.
+  §7.1 (declaration kinds): "The internal declaration kind for effect
+  labels is written `effect-label` in this specification. Its
+  source-level selector spelling is `effectLabel`, **because
+  hyphenated words are not identifiers in Kappa source**." §7.1.1
+  grammar: `kindQualifiedSelector ::= 'type' | 'trait' |
+  'effectLabel' | 'module'`; §5 (keywords): "`effectLabel` is a soft
+  keyword used only as a source-level kind-qualified selector".
+  §3.2.2's `kappa.import.effect-label-selector` family even names the
+  spelling `effect-label` an *invalid selector spelling*. The fixture
+  text is therefore not a conforming program; `effect-label` lexes as
+  `effect - label` and cannot elaborate.
+- `static_objects.kind_reject_effect_label_selector_on_type` asserts
+  **exactly one** error for `let bad = effect-label Token` — the count
+  presumes `effect-label` is recognized as a single selector token and
+  rejected once, which the same §7.1/§7.1.1/§5 spelling rules
+  contradict (here the nonconforming spelling produces an unresolved
+  `effect`/`label` cascade instead).
+- `traits.members.negative_member_unresolved_at_lowering` asserts two
+  `E_TYPE_MISMATCH` errors for ordinary uses of `traverse` at
+  `Option (List Int)`. The §28.2 prelude term list includes
+  `traverse` as a §14.2.1 overloaded member, and this implementation
+  provides `Traversable List`, `Traversable Option`, and
+  `Applicative Option` instances (§28.2 mandates *at least* the
+  minimum; instances beyond it are permitted). Under §14.2.1 ("A bare
+  occurrence of `m` elaborates to projection from synthesized implicit
+  evidence") and the §14.3.1 instance-resolution algorithm both uses
+  are well-typed, so a conforming implementation accepts; the
+  fixture's `assertErrorCount 2` pins another implementation's
+  member-lowering limitation, not a spec requirement.
+- `traits.members.negative_opaque_member_operator_wrong_code` asserts
+  exactly three `E_TYPE_MISMATCH` errors; one of the three probes,
+  `apply1 (\o -> o >>= (\x -> Some (x + 41))) (Some 1) : Option Int`,
+  is well-typed by §14.2.1 overloaded-member elaboration with the
+  §28.2.2 `Monad Option` instance once `apply1`'s type arguments are
+  solved (§16.3.3 postponed goals). The two genuinely ill-typed probes
+  (no `Ord CI`/`Eq CI` instances) are rejected here with
+  `kappa.implicit.unsolved` (§3.2.4), whose §3.1.4 portable alias
+  `E_TYPE_MISMATCH` matches the expected spelling — the residual
+  disagreement is the mandated rejection of the well-typed first
+  probe, which contradicts §14.3.1.
+- `traits.members.negative_value_position_member_reference` asserts
+  exactly two errors. Both member references are rejected here
+  (unsatisfiable `Monoid (f a)` / `Releasable m a` goals,
+  §3.2.4 `kappa.implicit.unsolved` ↔ portable `E_TYPE_MISMATCH`), but
+  `anyRelease x = release x` is *one* ill-typed expression that this
+  implementation reports twice (the unsolved carrier `?m Unit` also
+  fails against the declared `Unit` result). The fixture's exact-count
+  expectation encodes the other implementation's one-diagnostic
+  lowering of the same condition; the conditions themselves are
+  rejected consistently with §3.2.4. Kept here because the *count*
+  pin, like the two entries above, is implementation-shaped rather
+  than spec-derived (§3.1.11 sets quality goals, not exact counts).
 
-### Tracked gaps (spec-defined, not implemented; honest `fail`s)
+### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 13 fixtures)
 
-The remaining 59 tracked-gap failures (64 fails minus the 5
-spec-conflict fixtures above) group by feature, ranked by fixture
-count (classification from the raw log; one fixture may exhibit
-several gaps — it is counted under the dominant one). The §21–§23
-metaprogramming lane (macros, `Elab`/`Syntax`, deriving-shape,
-custom query sinks, the §21.6 convenience reflection queries, and
-§23 staged code) is fully clear in the corpus: `macros.*` 32/32,
-`deriving.*` 10/10, `queries.*` 54/54, plus the staging and
-static-object reflection fixtures.
+Diagnostic-spelling notes below use §3.1.4: only the listed portable
+aliases are normative comparison keys; both implementations' other
+code spellings are implementation-defined. This harness's
+`assertDiagnosticCodes` already matches through portable aliases in
+both directions (TESTING.md).
 
-| rank | feature gap | spec | ~fixtures |
-|---|---|---|---|
-| 1 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.*` 14, `parser` 1) | §3.1.14A, §5.4, §9 | 15 |
-| 2 | Static-object kind selectors and identity: effect-label kind selectors inside `scoped effect`, reified-static fallback ambiguity, kind-selector rejections, rebound type-object ctor patterns, package-member type objects, export-facade kind-qualified aliases (`static_objects.*` 9) | §2.8.3–§2.8.6, §7.1.1, §7.6, §17.3.2, §8.3 | 9 |
-| 3 | Associated trait type members (`Out`, `Element`), trait-default members with parameters, use-site supertrait projection evidence (`traits.instances/.members` 6, `expressions.implicit_parameters` 1) | §14.2.1, §14.1.4, §14.3 | 7 |
-| 4 | Application implicit-insertion diagnostic calibration: literal-defaulting and unsolved-implicit failures at argument positions report `E_APPLICATION_ARGUMENT_MISMATCH`/`E_TYPE_EQUALITY_MISMATCH`/`E_TYPE_MISMATCH` in the corpus where this implementation reports `E_UNSOLVED_IMPLICIT`/`E_APPLICATION_NONCALLABLE`/… (`app_reject_*` 4, `lexical.numbers` 1, `patterns…guard_and_literal` 1) | §16.1.7.1, §3.1.2A | 6 |
-| 5 | Import item-kind selectors (ctor/type facet wildcards), symbolic-term imports, and URL-import pinning codes (`modules.imports.*` 6) | §8.3–§8.4 | 6 |
-| 6 | Misc expression-level deltas: bare-minus/operator sections under checked application, dependent-case result types, named-application labels, misindentation code, short-circuit suspended-operand typing (`expressions.*` 5, `short` 1) | §16 | 6 |
-| 7 | Runtime-model deltas: source-order named-constructor field evaluation with runtime-trapping division (§28.2.1 proof-carrying `(/)` rejects `1 / 0` statically here), recursion-depth guard, deep value `show`, `Result` propagation example (`data_types` 1, `runtime` 1, `interpreter` 1, `examples` 1) | §10.1.1, §32.1 | 4 |
-| 8 | `BorrowView`/`captureBorrow` projection borrows and exists-type escapes (`borrow_qtt.*` 2) | §12.4.3, §12.2 | 2 |
+| fixture | gap | spec |
+|---|---|---|
+| `app_reject_at_argument_to_explicit_binder` | `idInt @1` (an `@`-payload supplied to an *explicit* binder) reports `kappa.application.argument` here; the corpus expects its `kappa.type.mismatch` spelling. Neither code is the §3.2 `kappa.application.explicit-implicit-classifier` family (portable `E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`) that is closest to this condition; aligning to it is queued. | §3.2, §3.1.4, §16.1.7 |
+| `app_reject_explicit_implicit_wrong_type` | `readEnv @1 7`: the literal `@`-payload at type `Env` raises an unsolved `FromInteger Env` goal here (§6.1.5) and reports `kappa.implicit.unsolved`; the corpus expects an application-argument code. The §3.2 family for a mistyped explicit-implicit payload mandates portable `E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`, which neither implementation emits yet; alignment queued. | §3.2, §6.1.5, §16.3.3 |
+| `app_reject_too_many_arguments` | `idInt 1 2` reports `kappa.application.non-callable` here (§3.2's registered family: "the head of an application has a type that is not a function or callable value" — `idInt 1 : Int`), portable `E_APPLICATION_NON_CALLABLE` (§3.1.4); the corpus expects its generic type-mismatch spelling for over-application. | §3.1.4, §3.2 |
+| `arrow_reject_unrestricted_argument_function_to_linear_expected` | passing an `ω`-binder function where a `1`-binder function is expected reports `kappa.type.mismatch` here (quantities are part of function-type identity, §31.1/§12.2.1); the corpus expects an application-argument code for the same rejection. | §12.2.1, §31.1, §3.1.4 |
+| `borrow_qtt.030_borrow.reject_borrow_view_escape_anonymous` | §13.2.11 anonymous existential packages (`exists (s : Region). BorrowView s Int` and explicit-witness sealing) are not implemented (`E_UNSUPPORTED`); the §12.4.3 escape rejection behind them is therefore not reached. | §13.2.11, §13.2.10, §12.4.3 |
+| `fuzz.pending.reject_builtin_arithmetic_non_numeric_operand` | one ill-typed operand (`i0 * 2` over a function-typed `i0`) yields the expected mismatch *plus* the postponed `Mul`-goal failure (two diagnostics for one cause); single-cause cascade suppression at goal flush is queued (§3.1.11 quality invariants). | §3.1.11, §16.3.3 |
+| `fuzz.pending.reject_compile_time_parameter_runtime_arithmetic` | arithmetic over a `Type`-typed binder cascades into four diagnostics here vs the corpus's one; same single-cause suppression gap. | §3.1.11 |
+| `fuzz.pending.reject_constructor_runtime_type_field` | an unclosed bracket inside a constructor alternative swallows the rest of the file (newlines are soft inside brackets, §5.2), producing one syntax error where the corpus recovers at the next declaration and reports two; in-bracket recovery is queued (§3.1.14A). | §5.2, §3.1.14A |
+| `fuzz.pending.reject_malformed_constructor_keyword` | same unclosed-bracket recovery gap (one error vs two). | §5.2, §3.1.14A |
+| `fuzz.pending.reject_dotted_value_root` | `let i0 = i0.right` is rejected here as a member access on an undetermined receiver (the own name resolves to the §9.2 pre-registration so sig-less recursion can be reported); the corpus's resolution model leaves the own name unresolved (`E_NAME_UNRESOLVED`, twice — the failed declaration also binds nothing). Spec fixes neither model's diagnostic spelling (§9.2/§15 only require rejection of sig-less recursion). | §9.2, §15, §7.1 |
+| `fuzz.pending.reject_invalid_do_bind_indented_continuation` | a more-indented line after a complete do-bind RHS parses as a §5.2 continuation (application) here and fails as `E_APPLICATION_NONCALLABLE`; the corpus's layout rejects it as a syntax error. The §5.4 layout text does not decide do-item continuation lines explicitly. | §5.4, §18.4 |
+| `fuzz.pending.reject_invalid_indented_expression_continuation` | same layout-continuation difference (our parse yields one downstream type error, the corpus's two). | §5.4 |
+| `parser.recovery.negative_malformed_tuple_parameter_no_crash` | `let i1 (1 i1 :)3` — declaration-level recovery reports once here; the corpus's recovery yields two diagnostics. No crash either way (the §3.1.14A minimum contract is met); cascade-shape parity is queued. | §3.1.14A |
 
-The remainder (4) is a long tail of one fixture each:
-linear-function argument-quantity subsumption (`arrow_reject_*`,
-§12.2.1), scrutinee-vs-constructor pattern typing diagnostics
-(`patterns…scrutinee_constructor`, §17.1), the operator-token
-fixity surface (`lexical.operator_identifiers_fixity…`, §5.5.3),
-and the corpus prelude term `integerToInt`
-(`types.literals.positive_local_frominteger_instance`): Spec.md
-defines no such conversion (§28.2 names `intToNat`/`natToInt`
-etc., not `integerToInt`) — retained as an honest fail pending a
-documented compatibility decision.
+Cleared since the previous revision of this ledger (all now PASS):
+the §14.2.1 associated-static-member lane (`traits.instances.*` 4),
+trait defaults with parameters (2), §14.3.3 supertrait projection,
+static-object kind selectors and rebound-identity (6 + export facade),
+import `ctor` selectors / aliased re-exports / fixity imports /
+URL-pin codes (5), §28.2.1 divDefined via boolean branch refinement
+(`examples.expr_eval`), runtime recursion depth guard, deep-value
+rendering, `integerToInt` (§T.1 compatibility export), bare operator
+references (§5.5.1, 2), alias-parameter generalization, named-block
+duplicate labels, misindented case body, recursive type aliases (2),
+data-constructor salvage, instance-declaration recovery hygiene,
+numeric-function application mismatches (3), literal-suffix mismatch,
+fixity descriptor format, pattern/scrutinee agreement (2), BorrowView
+closure escape.

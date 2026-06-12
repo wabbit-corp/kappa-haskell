@@ -146,6 +146,10 @@ data CheckState = CheckState
   -- ^ boolean branch refinement: `if c …` makes `c = True` available
   -- in the then-branch and `c = False` in the else-branch as equality
   -- evidence (a §3.2.3 proof source; branch facts in the §15.6 sense)
+  , csArgFlatOk :: !Bool
+  -- ^ the current application's head is a plain function reference
+  -- (not a constructor, not an operator): a flat argument mismatch may
+  -- be reported as E_APPLICATION_ARGUMENT_MISMATCH (§16.1.7.1)
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -185,7 +189,7 @@ initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
-    Map.empty Map.empty Map.empty Map.empty []
+    Map.empty Map.empty Map.empty Map.empty [] False
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -738,8 +742,9 @@ expectType ctx sp actual expected = do
     -- non-function types (the argument simply does not fit the
     -- parameter); same-head indexed mismatches additionally cite the
     -- failed transport (§16.1.8)
+    flatOk <- gets csArgFlatOk
     flatArgMismatch <- do
-      if not retag || sameHead
+      if not retag || sameHead || not flatOk
         then pure False
         else do
           aF <- forceM actual
@@ -750,7 +755,11 @@ expectType ctx sp actual expected = do
                 VRecordT _ -> True
                 VSort _ -> True
                 _ -> False
-          pure (canonical aF && canonical eF)
+              scalarExpected = case eF of
+                VGlobN (GName _ n) [] ->
+                  n `elem` ["Int", "Nat", "Integer", "Float", "Double", "Bool", "String", "UnicodeScalar"]
+                _ -> False
+          pure (canonical aF && scalarExpected)
     if not (aOp || eOp) && retag && sameHead
       then
         report $
@@ -1652,7 +1661,7 @@ infer ctx expr = case expr of
           -- resolve reports the head once; the arguments cannot be
           -- meaningfully typed against an unknown callee
           then anyHole ctx
-          else elabSpine ctx (exprSpan f) fTm fTy args
+          else withArgFlatFor f (elabSpine ctx (exprSpan f) fTm fTy args)
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
   EElvis l r sp -> elabElvis ctx l r sp
@@ -2360,7 +2369,7 @@ inferT ctx e = case e of
         pure (lacks, VSort 0)
   EApp f args -> do
     (fTm, fTy) <- inferT ctx f
-    elabSpine ctx (exprSpan f) fTm fTy args
+    withArgFlatFor f (elabSpine ctx (exprSpan f) fTm fTy args)
   -- a parenthesized tuple in type position is a positional record type
   -- (§13.1): (Integer, String) ≡ (_1 : Integer, _2 : String)
   ETuple es _ -> do
@@ -2435,8 +2444,28 @@ elabForall ctx0 bs0 body = go ctx0 bs0
 -- elaborating the arguments — so an argument lambda is checked against
 -- the solved domain (binder quantities included). Falls back to the
 -- ordinary infer-then-unify path when the shape does not match.
+-- | Is the application head a plain (non-constructor, non-operator)
+-- function reference? Selects the §16.1.7.1 flat-argument-mismatch
+-- diagnostic in 'expectType'.
+withArgFlatFor :: Expr -> CheckM a -> CheckM a
+withArgFlatFor f act = do
+  flat <- case f of
+    EVar n
+      | Just (c, _) <- T.uncons (nameText n)
+      , c == '_' || (c >= 'a' && c <= 'z') -> do
+          mg <- lookupGlobalName (nameText n)
+          case mg of
+            Just g -> gets (not . Map.member g . csCtors)
+            Nothing -> pure True
+    _ -> pure False
+  old <- gets csArgFlatOk
+  modify' $ \st -> st {csArgFlatOk = flat}
+  r <- act
+  modify' $ \st -> st {csArgFlatOk = old}
+  pure r
+
 elabAppChecked :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM Term
-elabAppChecked ctx f args expected sp = do
+elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
   st0 <- get
   (fTm, fTy) <- infer ctx f
   plan <- peel fTy args []
