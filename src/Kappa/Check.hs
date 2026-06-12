@@ -694,6 +694,12 @@ expectType ctx sp actual expected = do
               diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
                 "type mismatch"
 
+-- | Is the value a §16.1.7.1 suspension type (Thunk/Need)?
+isSuspV :: Value -> Bool
+isSuspV = \case
+  VGlobN (GName pm n) _ | pm == preludeModule, n == "Thunk" || n == "Need" -> True
+  _ -> False
+
 -- | Is the value a §12.3.1 capture-annotated type?
 isCapturesV :: Value -> Bool
 isCapturesV = \case
@@ -1293,6 +1299,22 @@ infer ctx expr = case expr of
           Just (ThisValue vals tys) ->
             pure (CRecordV (sortOn fst vals), VRecordT (sortOn fst tys))
           Nothing -> resolveName ctx n
+  -- §13.2.1: a bare identifier in a sibling-reference position is
+  -- shorthand for 'this.label' when that reading is unambiguous (the
+  -- name resolves to nothing else)
+  EVar n
+    | Nothing <- lookupCtx (nameText n) ctx
+    , nameText n /= "this"
+    , Nothing <- sortName (nameText n) -> do
+        mthis <- gets csThis
+        let sib = case mthis of
+              Just (ThisType fields) -> isJust (lookup (nameText n) fields)
+              Just (ThisValue _ tys) -> isJust (lookup (nameText n) tys)
+              Nothing -> False
+        mg <- lookupGlobalName (nameText n)
+        if sib && isNothing mg
+          then infer ctx (EDot (EVar (Name "this" (nameSpan n))) (DotName n))
+          else resolveName ctx n
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
     , Just lvl <- sortName (nameText n) ->
@@ -1351,7 +1373,19 @@ infer ctx expr = case expr of
   ERecordLit items sp -> elabRecordLit ctx items sp
   ERecordType fs mtail sp -> do
     let names = [nameText (rtfName f) | f <- fs]
-        deps f = [l | l <- surfaceThisRefs (rtfType f), l `elem` names]
+    -- §13.2.1: bare sibling-reference shorthand counts toward the
+    -- field-dependency graph when the bare reading is unambiguous
+    bareSibs <-
+      filterM
+        (\l -> do
+           mg <- lookupGlobalName l
+           pure (isNothing mg && isNothing (lookupCtx l ctx) && isNothing (sortName l)))
+        names
+    let deps f =
+          nub
+            ( [l | l <- surfaceThisRefs (rtfType f), l `elem` names]
+                ++ [l | l <- surfaceVarNames (rtfType f), l `elem` bareSibs]
+            )
         ordered = topoFields [(nameText (rtfName f), deps f, f) | f <- fs]
     forM_ (duplicatesOf names) $ \n ->
       errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
@@ -1384,7 +1418,13 @@ infer ctx expr = case expr of
     where
       goDep _ [] = pure []
       goDep done (f : rest) = do
-        (t, _) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
+        (t0, _) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
+        -- §13.2.1/§16.1.7.1: a suspension-marked field declares the
+        -- suspension type; literals insert the suspension at the field
+        let t = case rtfSusp f of
+              Just SuspThunk -> CApp Expl (CGlob (gPrel "Thunk")) t0
+              Just SuspLazy -> CApp Expl (CGlob (gPrel "Need")) t0
+              Nothing -> t0
         tV <- evalIn ctx t
         ((f, t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
       finish fields = case mtail of
@@ -1698,13 +1738,13 @@ check ctx expr expected0 = do
       r <- tryInferAgainst expr expected
       case r of
         Just tm -> pure tm
-        Nothing -> CThunkE <$> check ctx expr a
+        Nothing -> suspInsert CThunkE a
     (_, VGlobN (GName _ "Need") [(_, a)]) -> do
       -- §16.1.7.1 lazy insertion: a value in Need position suspends
       r <- tryInferAgainst expr expected
       case r of
         Just tm -> pure tm
-        Nothing -> CLazyE <$> check ctx expr a
+        Nothing -> suspInsert CLazyE a
     -- expected-type-directed injection (§13.1.3) must see literals too
     (_, VVariantT members)
       | not (isVariant expr) -> do
@@ -1751,9 +1791,22 @@ check ctx expr expected0 = do
       fst <$> anyHole ctx
     (ERecordLit items lsp, VRecordT fs) -> do
       depTy <- recordTypeIsDependent ctx fs
-      -- a capture-annotated field type needs field-directed checking
-      -- (the closure literal introduces at the underlying type)
-      capTy <- or <$> mapM (fmap isCapturesV . forceM . snd) fs
+      -- a capture-annotated or suspension-typed field needs
+      -- field-directed checking (the literal introduces at the
+      -- underlying type; §16.1.7.1 inserts the suspension)
+      let needsDirected fuel v0
+            | fuel <= (0 :: Int) = pure False
+            | otherwise = do
+                v <- forceM v0
+                if isCapturesV v || isSuspV v
+                  then pure True
+                  else case v of
+                    VRecordT fs' -> or <$> mapM (needsDirected (fuel - 1) . snd) fs'
+                    -- a variant-typed field takes expected-type-directed
+                    -- injection (§13.1.3)
+                    VVariantT _ -> pure True
+                    _ -> pure False
+      capTy <- or <$> mapM (needsDirected 4 . snd) fs
       let depVal =
             isNothing (lookupCtx "this" ctx)
               && not (null (concat [surfaceThisRefs e | RecItem _ _ (Just e) <- items]))
@@ -1812,6 +1865,14 @@ check ctx expr expected0 = do
                     pure True
               _ -> pure False
       _ -> pure False
+    -- §16.1.7.1: a failed suspension insertion at an application
+    -- boundary is an application-argument error
+    suspInsert wrap a = do
+      retag <- gets csArgIndexRetag
+      nBefore <- gets (length . csDiags)
+      tm <- wrap <$> check ctx expr a
+      when retag (retagNewMismatches nBefore)
+      pure tm
     tryInferAgainst e t = do
       saved <- get
       (tm, ty) <- infer ctx e
@@ -1961,6 +2022,28 @@ inferT ctx e = case e of
       (t, _) <- inferType ctx fe
       pure ("_" <> T.pack (show i), t)
     pure (CRecordT fields, VSort 0)
+  -- §7.2: in type position a module-qualified name selects the TYPE
+  -- facet of a same-spelling data family (term position prefers the
+  -- constructor facet)
+  EDot (EVar b) (DotName m)
+    | Nothing <- lookupCtx (nameText b) ctx -> do
+        st <- get
+        let mmn = case Map.lookup (nameText b) (csModuleAliases st) of
+              Just target -> Just target
+              Nothing
+                | ModuleName [nameText b] == csModule st -> Just (csModule st)
+                | Map.member (ModuleName [nameText b]) (csModuleExports st) ->
+                    Just (ModuleName [nameText b])
+                | otherwise -> Nothing
+        case mmn of
+          Just mn
+            | g <- GName mn (nameText m)
+            , Map.member g (csGlobals st) -> do
+                mr <- globalType g
+                case mr of
+                  Just r -> pure r
+                  Nothing -> infer ctx e
+          _ -> infer ctx e
   -- (x : T) in type position is a single-field record type (§13.1); the
   -- parser cannot distinguish it from an ascription
   EAscription (EVar n) tyE _
@@ -2438,9 +2521,6 @@ elabSpineArg ctx sp fTm fTy arg rest = do
 elabNamedBlock :: Ctx -> Term -> Value -> [(Name, Maybe Expr)] -> Span -> [Arg] -> CheckM (Term, Value)
 elabNamedBlock ctx fTm fTy items sp rest = do
   st <- get
-  forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \dn ->
-    errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa.application.named")
-      ("named argument '" <> dn <> "' is supplied more than once")
   mCtorG <- case ctorOf fTm of
     Just g -> pure (Just g)
     Nothing -> case fTm of
@@ -2452,6 +2532,14 @@ elabNamedBlock ctx fTm fTy items sp rest = do
           pure (valueCtorOf v')
         [] -> pure Nothing
       _ -> pure Nothing
+  forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \dn ->
+    case mCtorG of
+      Just g | Map.member g (csCtors st) ->
+        errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa.application.named")
+          ("named argument '" <> dn <> "' is supplied more than once")
+      -- §16.1.7.2: on an ordinary callee a malformed block is a
+      -- telescope mismatch
+      _ -> blockMismatch
   case mCtorG of
     Just g | Just ci <- Map.lookup g (csCtors st) -> do
       let fieldNames = mapMaybe fst (ciFields ci)
@@ -2478,6 +2566,11 @@ elabNamedBlock ctx fTm fTy items sp rest = do
     -- explicit Pi binder names (§16.1.7.2)
     _ -> goPiNamed fTm fTy [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
   where
+    -- §16.1.7.2: one diagnostic per malformed block on an ordinary
+    -- callee (a telescope mismatch, not a named-argument code)
+    blockMismatch =
+      errOnce sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+        "the named-argument block does not match the callee's remaining parameter telescope (§16.1.7.2)"
     ctorOf = \case
       CLam _ _ _ b -> ctorOf b
       CCtor g _ -> Just g
@@ -2503,16 +2596,18 @@ elabNamedBlock ctx fTm fTy items sp rest = do
               ty' <- clApp clo aV
               goPiNamed (CApp Expl tm aTm) ty' [(n, x) | (n, x) <- remaining, n /= nm]
           | not (null remaining) -> do
-              errAt sp "E_NAMED_ARG_MISSING" (Just "kappa.application.named")
-                ("missing named argument '" <> nm <> "'")
-              pure (tm, ty)
+              blockMismatch
+              anyHole ctx
         _
-          | null remaining -> elabSpine ctx sp tm ty rest
+          | null remaining, null rest -> pure (tm, ty)
+          | null remaining -> do
+              -- §16.1.7.2: the named-argument block is the final
+              -- argument of its application site
+              blockMismatch
+              anyHole ctx
           | otherwise -> do
-              forM_ remaining $ \(n, _) ->
-                errAt sp "E_NAMED_ARG_UNKNOWN" (Just "kappa.application.named")
-                  ("callee has no named parameter '" <> n <> "'")
-              pure (tm, ty)
+              blockMismatch
+              anyHole ctx
     goSpine _ tm ty [] = elabSpine ctx sp tm ty rest
     goSpine ctxAcc tm ty0 (a@(_, _, _) : as) = do
       ty <- forceM ty0
@@ -3673,6 +3768,20 @@ elabVariant ctx arms mtail sp mexpected = do
         Nothing -> infer ctx payload
       tm2 <- injectInto ctx tm ty members (VVariantT members) sp
       pure (tm2, VVariantT members)
+    -- §13.1.3: a single non-type arm with no expected union type is
+    -- an injection the term grammar does not admit standalone
+    ([VariantArm payload Nothing], Nothing) -> do
+      st0 <- get
+      n0 <- gets (length . csDiags)
+      r <- inferType ctx payload
+      n1 <- gets (length . csDiags)
+      if n1 == n0
+        then pure (CVariantT [fst r], VSort 0)
+        else do
+          put st0
+          errAt sp "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error")
+            "a union injection (| e |) is admitted only against an expected union type (§13.1.3)"
+          anyHole ctx
     _ -> do
       -- type formation: every arm is a type
       memberTms <- forM arms $ \(VariantArm e mty) -> do

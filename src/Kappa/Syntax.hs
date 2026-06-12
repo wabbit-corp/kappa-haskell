@@ -33,6 +33,7 @@ module Kappa.Syntax
   , projBinderGroups
   , projYieldPlaces
   , surfaceThisRefs
+  , surfaceVarNames
   , exprSpan
   , LetBind (..)
   , DoItem (..)
@@ -474,6 +475,47 @@ surfaceThisRefs = nub . go
                 PatchPun _ -> []
             | it <- items
             ]
+      _ -> []
+    goArg = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      ArgInout e _ -> go e
+      ArgNamedBlock items _ -> concat [maybe [] go me | (_, me) <- items]
+
+-- | The bare identifiers a surface type/initializer expression
+-- mentions in head positions (§13.2.1 bare sibling-reference
+-- shorthand candidates). Conservative: does not account for shadowing
+-- under inner binders.
+surfaceVarNames :: Expr -> [Text]
+surfaceVarNames = nub . go
+  where
+    go = \case
+      EVar n -> [nameText n]
+      EDot e _ -> go e
+      EQDot e _ -> go e
+      EApp f args -> go f ++ concatMap goArg args
+      EAscription e t _ -> go e ++ go t
+      EArrow b e -> maybe [] go (bType b) ++ go e
+      EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      EExists bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      ETraitArrow a b -> go a ++ go b
+      ETuple es _ -> concatMap go es
+      ERecordLit items _ -> concat [go e | RecItem _ _ (Just e) <- items]
+      ERecordType rfs mtail _ ->
+        concatMap (go . rtfType) rfs ++ maybe [] go mtail
+      EOptionSugar e _ -> go e
+      EVariant arms mtail _ ->
+        concatMap (go . vaExpr) arms ++ maybe [] go mtail
+      EOpChain els -> concat [go x | ChainOperand x <- els]
+      EIf alts mels _ -> concat [go c ++ go b | (c, b) <- alts] ++ maybe [] go mels
+      ECaptures e _ _ -> go e
+      EElvis a b _ -> go a ++ go b
+      ESectionLeft e _ _ -> go e
+      ESectionRight _ e _ -> go e
+      EThunk e _ -> go e
+      ELazy e _ -> go e
+      EForce e _ -> go e
+      EListLit es _ -> concatMap go es
       _ -> []
     goArg = \case
       ArgExplicit e -> go e

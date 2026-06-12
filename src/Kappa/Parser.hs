@@ -1884,11 +1884,12 @@ pParenExpr start = do
           ERecordType [f1] (Just tailRow) <$> spanFrom start
         TokRParen
           -- single field with a distinguishing marker: (1 v : Int),
-          -- (& b : Buf), (@x : T), (opaque x : T)
+          -- (& b : Buf), (@x : T), (opaque x : T), (thunk v : T)
           | rtfOpaque f1
               || rtfImplicit f1
               || isJust (bpQuantity (rtfPrefix f1))
-              || isJust (bpBorrow (rtfPrefix f1)) -> do
+              || isJust (bpBorrow (rtfPrefix f1))
+              || isJust (rtfSusp f1) -> do
               void anyToken
               ERecordType [f1] Nothing <$> spanFrom start
         _ -> parseFail "not a record type"
