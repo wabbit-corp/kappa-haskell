@@ -142,6 +142,8 @@ builtinState =
       , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
       , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
+      , -- §18.1.13: aborted STM alternative (the `empty` action)
+        prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
       , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
@@ -472,6 +474,19 @@ preludeSource =
     , ""
     , "pure : forall (e : Type) (a : Type). a -> IO e a"
     , "let pure x = ioPure x"
+    , ""
+    , -- §18.1.13: `empty` (the aborted alternative) resolves through
+      -- Monoid, so STM-shaped do-scopes can sequence it as an action
+      "instance Monoid (IO e a) ="
+    , "    let empty = stmAbort"
+    , "    let append x y = catchIO x (\\err -> y)"
+    , ""
+    , -- §18.11: structured-concurrency handles (check-mode support)
+      "data Fiber (e : Type) (a : Type) : Type ="
+    , "    MkFiberHandle"
+    , ""
+    , "fork : forall (e : Type) (a : Type) (r : Type). IO e a -> IO r (Fiber e a)"
+    , "let fork action = ioPure MkFiberHandle"
     , ""
     , "throwError : forall (e : Type) (a : Type). e -> IO e a"
     , "let throwError err = throwIO err"

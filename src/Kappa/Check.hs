@@ -2874,6 +2874,11 @@ elabDo ctx items _sp mexpected = do
   (errT, resT, doTy) <- case me of
     Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) ->
       pure (e, a, Nothing)
+    -- an STM-typed do sequences IO-shaped items (§18.1.13); the kernel
+    -- runs it as the underlying action
+    Just expd@(VGlobN (GName _ "STM") [(_, a)]) -> do
+      e <- freshMetaV ctx
+      pure (e, a, Just expd)
     -- pure-result do (corpus): a do block in a position expecting a
     -- known non-IO type sequences pure statements; the §18.8 kernel
     -- passes pure statement values through, so it runs unchanged
