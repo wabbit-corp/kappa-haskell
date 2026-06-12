@@ -1290,12 +1290,26 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
           errAt (exprSpan e) "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.application.arity")
             "too many arguments in constructor application"
           anyHole ctx
-      | otherwise -> do
+      -- a data-type head applied in term position selects its
+      -- same-named constructor (§2.8.3 static-object term facet)
+      | CGlob dg <- fTm -> do
+          st <- get
+          case Map.lookup dg (csDatas st) of
+            Just di
+              | (ctorG : _) <- [c | c <- diCtors di, gnameText c == gnameText dg] -> do
+                  mt <- globalTerm ctorG
+                  case mt of
+                    Just (cTm, cTy) -> elabSpine ctx sp cTm cTy (ArgExplicit e : rest)
+                    Nothing -> noncallable e
+            _ -> noncallable e
+      | otherwise -> noncallable e
+      where
+        noncallable e' = do
           fT <- quoteIn ctx fTy
           report $
             withNote ("callee type: " <> renderTerm fT) $
               diag SevError StageElaborate "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
-                (exprSpan e)
+                (exprSpan e')
                 "this expression is not callable"
           anyHole ctx
   where
@@ -1585,7 +1599,7 @@ elabModuleMember :: Ctx -> [Text] -> Span -> CheckM (Term, Value)
 elabModuleMember ctx segs sp = do
   st <- get
   if Map.member (ModuleName segs) (csModuleExports st) || ModuleName segs == csModule st
-    then pure moduleObject
+    then pure (moduleObjectFor (ModuleName segs))
     else do
       errAt sp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
         ("no module named '" <> T.intercalate "." segs <> "' is in this compilation unit (Spec §2.8.6)")
@@ -1597,12 +1611,14 @@ elabKindQualified :: Ctx -> KindSelector -> Name -> Span -> CheckM (Term, Value)
 elabKindQualified ctx sel (Name n nsp) sp = case sel of
   SelModule -> do
     st <- get
-    let known =
-          Map.member (ModuleName [n]) (csModuleExports st)
-            || Map.member n (csModuleAliases st)
-    if known
-      then pure moduleObject
-      else do
+    let target = case Map.lookup n (csModuleAliases st) of
+          Just mn -> Just mn
+          Nothing
+            | Map.member (ModuleName [n]) (csModuleExports st) -> Just (ModuleName [n])
+            | otherwise -> Nothing
+    case target of
+      Just mn -> pure (moduleObjectFor mn)
+      Nothing -> do
         errAt sp "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
           ("no module named '" <> n <> "' is in scope (Spec §2.8.6)")
         anyHole ctx
@@ -1618,9 +1634,32 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
           ("kind-qualified name does not resolve to a static object: '" <> n <> "' (Spec §2.8.6)")
         anyHole ctx
 
--- the trivial reified module object (§2.8.6): identity only
-moduleObject :: (Term, Value)
-moduleObject = (CRecordV [], VRecordT [])
+-- a reified module object (§2.8.6): a record carrying the module
+-- identity in a tag field, so member access through rebindings works
+moduleObjectFor :: ModuleName -> (Term, Value)
+moduleObjectFor (ModuleName segs) =
+  let tag = "__module:" <> T.intercalate "." segs
+   in (CRecordV [(tag, CRecordV [])], VRecordT [(tag, VRecordT [])])
+
+-- member access on a reified module object (§2.8.6/§8.5)
+moduleMember :: Ctx -> ModuleName -> Name -> CheckM (Term, Value)
+moduleMember ctx modName mname = do
+  st <- get
+  let g = GName modName (nameText mname)
+  mt <-
+    if memberVisible st modName (nameText mname)
+      then case (Map.member g (csDatas st), Map.lookup g (csGlobals st)) of
+        -- a member naming a data type denotes the type facet; term
+        -- applications fall through to its same-named constructor
+        (True, Just gd) -> pure (Just (CGlob g, gdType gd))
+        _ -> globalTerm g
+      else pure Nothing
+  case mt of
+    Just r -> pure r
+    Nothing -> do
+      errAt (nameSpan mname) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+        ("module object has no exported member '" <> nameText mname <> "' (Spec §2.8.6, §8.5)")
+      anyHole ctx
 
 elabDotUnqualified :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
 elabDotUnqualified ctx e member mname = do
@@ -1693,6 +1732,25 @@ elabDotUnqualified ctx e member mname = do
     ordinary mn0 = do
       (tm, ty) <- infer ctx e
       (tm1, ty1) <- insertAllImplicits ctx (exprSpan e) tm ty
+      -- §2.8.3/§2.8.6: a receiver VALUE that is a reified type object
+      -- selects static constructors; a reified module object selects
+      -- module members
+      rv <- evalIn ctx tm1 >>= forceM
+      st0 <- get
+      case rv of
+        VGlobN d _
+          | Just di <- Map.lookup d (csDatas st0)
+          , (ctorG : _) <- [c | c <- diCtors di, gnameText c == nameText mn0] -> do
+              mt <- globalTerm ctorG
+              case mt of
+                Just r -> pure r
+                Nothing -> ordinaryAt mn0 tm1 ty1
+        VRecordV [(tag, _)]
+          | Just modTxt <- T.stripPrefix "__module:" tag ->
+              moduleMember ctx (ModuleName (T.splitOn "." modTxt)) mn0
+        _ -> ordinaryAt mn0 tm1 ty1
+
+    ordinaryAt mn0 tm1 ty1 = do
       t <- forceM ty1
       case t of
         VRecordT fs
@@ -2951,10 +3009,16 @@ elabComprehension ctx kind clauses yld sp = case kind of
 -- preceding-signature recursion rule (§15.16, §9.2).
 checkModule :: CheckState -> Module -> (CheckState, Diagnostics)
 checkModule st0 m =
-  let passes = do
+  let sigNames = [nameText n | DSig _ n _ _ <- modDecls m]
+      siglessLets =
+        [ nameText n
+        | DLet _ (LetDef (Just n) _ _ _ _ _) _ <- modDecls m
+        , nameText n `notElem` sigNames
+        ]
+      passes = do
         mapM_ predeclarePass (modDecls m)
-        mapM_ headerPass (modDecls m)
-        mapM_ bodyPass (modDecls m)
+        mapM_ (headerPassIn siglessLets) (modDecls m)
+        mapM_ (bodyPassIn siglessLets) (modDecls m)
         sigSatisfactionPass
       (_, st1) = runState passes (st0 {csSigPending = Map.empty})
    in -- 'report' prepends; restore emission (source) order here
@@ -2986,8 +3050,16 @@ predeclarePass = \case
       addGlobal g (GlobalDef tyV Nothing False)
   _ -> pure ()
 
-headerPass :: Decl -> CheckM ()
-headerPass = \case
+-- | Header pass, knowing which module-level lets have no signature: a
+-- signature whose type mentions such a name (a reified static object,
+-- §2.8.3) is deferred to the body pass, where the binding's value is
+-- available in declaration order.
+headerPassIn :: [Text] -> Decl -> CheckM ()
+headerPassIn siglessLets = \case
+  DSig _ _ tyE _
+    | any (`elem` siglessLets) (sigHeadNames tyE) ->
+        -- deferred to 'bodyPassIn' (the let's value is needed first)
+        pure ()
   DSig _ n tyE sp -> do
     -- §11.3.3 (approximation): free ASCII-lowercase heads in the
     -- signature that resolve to no global are implicitly universalized
@@ -3342,6 +3414,37 @@ expectUnsatisfiedDiags st =
   | (g, (sp, n)) <- Map.toList (csExpects st)
   , n == 0
   ]
+
+-- | Body pass: elaborates definitions, plus any signatures the header
+-- pass deferred because they mention signature-less module lets.
+bodyPassIn :: [Text] -> Decl -> CheckM ()
+bodyPassIn siglessLets d = case d of
+  DSig _ _ tyE _
+    | any (`elem` siglessLets) (sigHeadNames tyE) -> headerPassIn [] d
+  _ -> bodyPass d
+
+-- names a signature's type may resolve through (heads of applications,
+-- dotted bases, binder domains)
+sigHeadNames :: Expr -> [Text]
+sigHeadNames = go
+  where
+    go = \case
+      EVar (Name t _) -> [t]
+      EApp f args -> go f ++ concatMap goArg args
+      EDot e _ -> go e
+      EQDot e _ -> go e
+      EArrow b e -> maybe [] go (bType b) ++ go e
+      EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      EExists bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      ETuple es _ -> concatMap go es
+      EOptionSugar e _ -> go e
+      ETraitArrow a b -> go a ++ go b
+      EOpChain els -> concat [go x | ChainOperand x <- els]
+      _ -> []
+    goArg = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      _ -> []
 
 bodyPass :: Decl -> CheckM ()
 bodyPass = \case

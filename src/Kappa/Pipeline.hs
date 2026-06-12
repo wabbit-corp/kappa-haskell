@@ -372,17 +372,44 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
           alias = maybe nm nameText (iiAlias it)
           g = GName mn nm
        in if nm `elem` memberNames mn
-            then
-              let ie1 = addExplicit ie alias g
-               in if iiCtorAll it
-                    then foldl' (\acc c -> addExplicit acc (gnameText c) c) ie1 (ctorsOfType g)
-                    else ie1
+            then case kindMismatch g (iiKind it) of
+              Just why ->
+                err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.import.item"
+                  ("'" <> nm <> "' is exported by module '" <> renderModuleName mn
+                     <> "', but not as a " <> why <> " (§8.3 kind selectors)")
+              Nothing ->
+                let ie1 = addExplicit ie alias g
+                 in if iiCtorAll it
+                      then foldl' (\acc c -> addExplicit acc (gnameText c) c) ie1 (ctorsOfType g)
+                      else ie1
             else
               if hasGlobal g
                 then
                   err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.import.item"
                     ("'" <> nm <> "' exists in module '" <> renderModuleName mn <> "' but is not exported (Spec §8.5)")
                 else itemNotFound ie sp mn nm
+    -- §8.3 kind selectors: the selected member must have the stated
+    -- kind (type/trait/ctor/term)
+    kindMismatch g = \case
+      Nothing -> Nothing
+      Just SelTrait
+        | isTrait g -> Nothing
+        | otherwise -> Just "trait"
+      Just SelType
+        | isTrait g -> Just "type"
+        | isData g || not (isCtor g) -> Nothing
+        | otherwise -> Just "type"
+      Just SelCtor
+        | isCtor g -> Nothing
+        | otherwise -> Just "ctor"
+      Just SelTerm
+        | isData g || isTrait g -> Just "term"
+        | otherwise -> Nothing
+      Just _ -> Nothing
+      where
+        isTrait x = Map.member x (csTraits st)
+        isData x = Map.member x (csDatas st)
+        isCtor x = Map.member x (csCtors st) && not (isData x)
     itemNotFound ie sp mn nm =
       err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.import.item"
         ("module '" <> renderModuleName mn <> "' does not export '" <> nm <> "' (Spec §8.3)")
