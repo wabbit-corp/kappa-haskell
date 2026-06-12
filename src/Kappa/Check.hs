@@ -94,9 +94,10 @@ data CheckState = CheckState
   , csModuleAliases :: !(Map Text ModuleName)
   , csModuleExports :: !(Map ModuleName [Text])
   , csFresh :: !Int
-  , csPending :: ![(MetaId, Value, Span, Ctx)]
+  , csPending :: ![(MetaId, Value, Span, Ctx, [(Value, Bool)])]
   -- ^ postponed implicit goals with the local context they were raised
-  -- in (premise dictionaries live there, §14.3.2)
+  -- in (premise dictionaries live there, §14.3.2) and the boolean
+  -- branch facts active at the raise site
   , csScopeAmbig :: !(Map Text [GName])
   -- ^ §7.1 names provided ambiguously by several wildcard imports
   , csExpects :: !(Map GName (Span, Int))
@@ -140,6 +141,10 @@ data CheckState = CheckState
   , csReExports :: !(Map ModuleName (Map Text GName))
   -- ^ §8.4 re-exports: per module, exported spelling ↦ the originating
   -- declaration in another module (aliased and kind-selected items)
+  , csBoolFacts :: ![(Value, Bool)]
+  -- ^ boolean branch refinement: `if c …` makes `c = True` available
+  -- in the then-branch and `c = False` in the else-branch as equality
+  -- evidence (a §3.2.3 proof source; branch facts in the §15.6 sense)
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -179,7 +184,7 @@ initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
-    Map.empty Map.empty Map.empty Map.empty
+    Map.empty Map.empty Map.empty Map.empty []
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -971,7 +976,8 @@ resolveImplicitQ ctx sp q goal = do
           let mid = case m of
                 CMeta i -> i
                 _ -> error "freshMeta"
-          modify' $ \st -> st {csPending = (mid, g, sp, ctx) : csPending st}
+          bfs <- gets csBoolFacts
+          modify' $ \st -> st {csPending = (mid, g, sp, ctx, bfs) : csPending st}
           pure m
         else do
           -- a flex-headed goal type is not searchable evidence: its
@@ -1138,7 +1144,7 @@ flushPendingWith final = do
   st <- get
   let pend = reverse (csPending st)
   put st {csPending = []}
-  forM_ pend $ \(mid, goal, sp, ctx) -> do
+  forM_ pend $ \(mid, goal, sp, ctx, bfs) -> do
     stNow <- get
     case Map.lookup mid (csMetas stNow) of
       Just (Just _) -> pure ()
@@ -1152,7 +1158,7 @@ flushPendingWith final = do
         -- into the stored term (see zonkTermM)
         let noLocalCandidates = not (any ceImplicitLocal (ctxEntries ctx))
         if stillFlex && not final && noLocalCandidates
-          then modify' $ \s -> s {csPending = (mid, goal, sp, ctx) : csPending s}
+          then modify' $ \s -> s {csPending = (mid, goal, sp, ctx, bfs) : csPending s}
           else do
             mLoc <- localCandidate ctx sp Q0 g
             r <- case mLoc of
@@ -1166,7 +1172,14 @@ flushPendingWith final = do
                     mSup <- superCandidate ctx g
                     case mSup of
                       Just tm -> pure (Just tm)
-                      Nothing -> propProof g
+                      Nothing -> do
+                        -- re-enter the boolean branch facts that were
+                        -- in scope when the goal was raised
+                        oldBfs <- gets csBoolFacts
+                        modify' $ \s -> s {csBoolFacts = bfs ++ oldBfs}
+                        r0 <- propProof g
+                        modify' $ \s -> s {csBoolFacts = oldBfs}
+                        pure r0
             case r of
               Just tm -> do
                 v <- evalIn ctx tm
@@ -1326,10 +1339,36 @@ propProof goal = do
   where
     tryRefl l r = do
       ec <- ec_
-      pure $
-        if convertible ec 0 (force ec l) (force ec r)
-          then Just (CCtor (gPrel "refl") [])
-          else Nothing
+      if convertible ec 0 (force ec l) (force ec r)
+        then pure (Just (CCtor (gPrel "refl") []))
+        else do
+          -- boolean branch refinement (§3.2.3 proof source): reduce a
+          -- side stuck on an in-scope `if` condition using the active
+          -- branch facts (`c = True`/`c = False`)
+          facts <- gets csBoolFacts
+          if null facts
+            then pure Nothing
+            else do
+              let lf = factReduce ec facts (4 :: Int) (force ec l)
+                  rf = factReduce ec facts 4 (force ec r)
+              pure $
+                if convertible ec 0 lf rf
+                  then Just (CCtor (gPrel "refl") [])
+                  else Nothing
+    factReduce _ _ 0 v = v
+    factReduce ec facts depth v =
+      let factFor c =
+            case [b | (fv, b) <- facts, convertible ec 0 (force ec fv) (force ec c)] of
+              (b : _) -> Just b
+              [] -> Nothing
+          boolV b = VCtor (gPrel (if b then "True" else "False")) []
+       in case force ec v of
+            v' | Just b <- factFor v' -> boolV b
+            VIfN c t f
+              | Just b <- factFor c ->
+                  let Closure env body = if b then t else f
+                   in factReduce ec facts (depth - 1) (force ec (eval ec env body))
+            v' -> v'
 
 -- ── Quantities (surface → core) ──────────────────────────────────────
 
@@ -4777,15 +4816,25 @@ checkIf ctx alts mels sp resT = go ctx alts
                 _ -> Nothing
               Nothing -> Nothing
             _ -> Nothing
-          withFact ctorName act = case mLvl of
-            Nothing -> act
-            Just l -> do
-              oldFacts <- gets csFacts
-              modify' $ \st ->
-                st {csFacts = Map.insert l (FactIs (VCtor (gPrel ctorName) [])) (csFacts st)}
-              r <- act
-              modify' $ \st -> st {csFacts = oldFacts}
-              pure r
+          withFact ctorName act = do
+            -- the condition's value is boolean branch-refinement
+            -- evidence in the branch (a §3.2.3 proof source); rigid
+            -- conditions additionally feed conversion's fact table
+            cv <- evalIn ctxR cTm
+            oldBool <- gets csBoolFacts
+            modify' $ \st ->
+              st {csBoolFacts = (cv, ctorName == ("True" :: Text)) : csBoolFacts st}
+            r <- case mLvl of
+              Nothing -> act
+              Just l -> do
+                oldFacts <- gets csFacts
+                modify' $ \st ->
+                  st {csFacts = Map.insert l (FactIs (VCtor (gPrel ctorName) [])) (csFacts st)}
+                r0 <- act
+                modify' $ \st -> st {csFacts = oldFacts}
+                pure r0
+            modify' $ \st -> st {csBoolFacts = oldBool}
+            pure r
       tTm <- withFact "True" (check ctxR t resT)
       -- the negative side refines the subject to the complementary
       -- constructors of its data type (§7.4.1 lacks-refinement); only

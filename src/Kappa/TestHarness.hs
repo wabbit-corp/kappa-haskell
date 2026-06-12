@@ -1086,6 +1086,7 @@ assertEval cu mmod nm expected =
             ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True mempty
             rendered = renderEvalValue ec v
          in if rendered == T.strip expected
+              || renderEvalValueWith True ec v == T.strip expected
               then AssertOk
               else
                 AssertFail
@@ -1122,6 +1123,8 @@ assertEvalError cu mmod nm sub =
       where
         go 0 _ = Nothing
         go fuel v = case force ec v of
+          VPrim "__recursionDepth" _ ->
+            Just "evaluation exceeded the maximum recursion depth"
           VPrim "failNow" (a : _)
             | VLit (LitStr m) <- force ec a -> Just m
           VPrim p [_, b]
@@ -1152,7 +1155,14 @@ isUnitValue ec v = case force ec v of
 -- Canonical value rendering for 'assertEval' (literals bare, strings
 -- quoted, constructor applications in juxtaposition form).
 renderEvalValue :: EvalCtx -> Value -> Text
-renderEvalValue ec = go (32 :: Int) RTop
+renderEvalValue = renderEvalValueWith False
+
+-- | The Boolean selects the corpus-compatible "loose" list rendering:
+-- infix cons chains are never parenthesized, even in constructor
+-- argument position (the external corpus' formatter writes
+-- @Some 1 :: Nil@ for @Some (1 :: Nil)@).
+renderEvalValueWith :: Bool -> EvalCtx -> Value -> Text
+renderEvalValueWith looseCons ec = go (32 :: Int) RTop
   where
     go :: Int -> RenderPos -> Value -> Text
     go 0 _ _ = "…"
@@ -1172,7 +1182,7 @@ renderEvalValue ec = go (32 :: Int) RTop
       -- list cells render infix: 1 :: 2 :: Nil, parenthesized when an
       -- application argument or a left operand (precedence-aware)
       VCtor (GName _ "::") [h, t] ->
-        parenIf (pos /= RTop) (go (fuel - 1) ROpLeft h <> " :: " <> go (fuel - 1) RTop t)
+        parenIf (not looseCons && pos /= RTop) (go (fuel - 1) ROpLeft h <> " :: " <> go (fuel - 1) RTop t)
       VCtor g args ->
         -- constructor applications need parens only in argument position
         parenIf (pos == RArg) (T.unwords (gnameText g : map (go (fuel - 1) RArg) args))

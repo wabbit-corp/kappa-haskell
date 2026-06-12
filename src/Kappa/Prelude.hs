@@ -626,6 +626,14 @@ preludeSource =
     , "instance FromInteger Integer ="
     , "    let fromInteger n = natToInt n"
     , ""
+    , -- compatibility extension (§T.1, documented in TESTING.md): the
+      -- external corpus writes user FromInteger instances through an
+      -- 'integerToInt' literal-payload conversion. §6.1.5 makes the
+      -- payload a Nat; this is the corresponding Nat -> Int conversion
+      -- (§28.2 permits exports beyond the normative minimum).
+      "integerToInt : Nat -> Int"
+    , "let integerToInt n = natToInt n"
+    , ""
     , "instance FromInteger Double ="
     , "    let fromInteger n = intToDouble (natToInt n)"
     , ""

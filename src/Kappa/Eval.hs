@@ -197,9 +197,14 @@ vforce ctx v = case force ctx v of
 -- (projections, applications, ifs and matches re-fire once their head
 -- becomes canonical).
 force :: EvalCtx -> Value -> Value
-force ctx = go (if ecRuntime ctx then 200000000 else 1000 :: Int)
+force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
   where
-    go 0 v = v
+    -- runtime evaluation is depth-guarded (§32.1): a divergent
+    -- reduction chain becomes a clean runtime error instead of an
+    -- unbounded host-stack blowup
+    go 0 v
+      | ecRuntime ctx = VPrim "__recursionDepth" []
+      | otherwise = v
     go fuel v = case v of
       VFlex m sp
         | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->

@@ -1,0 +1,13 @@
+module main
+
+-- §32.1 runtime evaluation is depth-guarded: a divergent reduction
+-- becomes a clean runtime error instead of a host-stack blowup.
+loop : Int -> Int
+let loop n = loop n
+
+result : Int
+let result = loop 0
+
+--! mode check
+--! assertNoErrors
+--! assertEvalErrorContains result exceeded the maximum recursion depth

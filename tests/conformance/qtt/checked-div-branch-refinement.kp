@@ -1,0 +1,18 @@
+module main
+
+-- §28.2.1 checked division: the divDefined proof obligation is
+-- discharged by boolean branch refinement (§3.2.3 proof sources) —
+-- in the else branch of `if y == 0`, `(y == 0) = False` is in scope,
+-- so `divDefined x y = not (y == 0) = True` holds definitionally.
+safeDiv : Int -> Int -> Int
+let safeDiv x y = if y == 0 then 0 else x / y
+
+usesGuard : Int
+let usesGuard = safeDiv 10 2
+
+guarded : Int
+let guarded = safeDiv 10 0
+
+--! assertNoErrors
+--! assertEval usesGuard 5
+--! assertEval guarded 0
