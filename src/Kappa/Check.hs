@@ -6638,8 +6638,10 @@ headerTrait (TraitDecl supers n params members) sp = do
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
   addGlobal g (GlobalDef tyV (Just dictV) False)
   let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _ _ _) _ <- members]
-  -- supertrait premises (§14.1.4), stored as functions of the params
-  supTms <- forM supers $ \s -> do
+  -- supertrait premises (§14.1.4), stored as functions of the params;
+  -- a parenthesized premise list (C1 a, C2 a) is several premises
+  let superList = concatMap (\sx -> case sx of ETuple es _ -> es; _ -> [sx]) supers
+  supTms <- forM superList $ \s -> do
     (sTm, _) <- inferType pctx s
     pure (foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) sTm paramTele)
   modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) [mn | (mn, _, _) <- ms] defaults supTms) (csTraits st)}

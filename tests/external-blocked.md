@@ -87,32 +87,26 @@ a harness error.
 
 ### Tracked gaps (spec-defined, not implemented; honest `fail`s)
 
-The remaining 170 tracked-gap failures (175 fails minus the 5
+The remaining 124 tracked-gap failures (129 fails minus the 5
 spec-conflict fixtures above) group by feature, ranked by fixture
 count (classification from the raw log; one fixture may exhibit
 several gaps — it is counted under the dominant one):
 
 | rank | feature gap | spec | ~fixtures |
 |---|---|---|---|
-| 1 | Macros/elaborator reflection: `Elab`/`Syntax`, quote literals `'{…}`, splices, prefixed-string interpolation handlers, `FromComprehensionRaw`/`Plan` custom sinks, `std.deriving.shape` (`macros.*` 30, `queries.appendix_t.realistic.*` 18, `deriving.shape.*` 10) | §21–§23, §22, §6.3.4–§6.3.5, §20.10.9 | 58 |
-| 2 | Sealing/opacity and static-object facets: `seal` packages, opaque signature members, trait/effect-label facets, kind selectors (`modules.sealing.*` 13, `static_objects.*` 14) | §13.4–§13.5, §8.3, §7.5–§7.6, §7.1.1 | 27 |
-| 3 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.pending.*`) | §3.1.14A, §5.4, §9 | 15 |
-| 4 | `BorrowView`/`captureBorrow` projection borrows, code-quote capture, exists-type escapes (`borrow_qtt.*` 3 — the handler/resumption-QTT and `effects.*` fixtures are cleared) | §12.4.3, §12.2 | 3 |
-| 5 | Associated trait type members; use-site supertrait conformance paths (`traits.*` 9, `app_reject_*` implicit-insertion diagnostics 5) | §14.2.1, §14.1.4, §16.1.7.1 | 14 |
-| 6 | Required standard modules: `std.bridge`, `std.ffi`, `std.atomic`, `std.gradual`, `std.supervisor` (`bridge`/`ffi`/`atomic`/`gradual`/`supervisor` fixtures) | §29.1–§29.2, §25–§26 | 7 |
-| 7 | Record/suspension `Need`/`Thunk`-typed lazy field insertion (`record_*` 5, `suspension_*` 2) | §11.2, §16.2.2 | 7 |
-| 8 | Definitional-equality residue: record η, irrefutable tuple lets, optional-type sugar over parenthesized/tuple types, capture subsumption (`definitional_equality.*` 5, `this_nonfirst_*` 4) | §31.1, §13.1.9, §13.2.1 | 9 |
-| 9 | Named-application preserved metadata and named-block diagnostics (`named_reject_*`) | §16.1.7 | 5 |
-| 10 | Import item-kind selectors and URL-import pinning (`modules.imports.*`) | §8.3–§8.4 | 5 |
-| 11 | Equality transport through branch evidence (`transport_*`) | §16.1.8, §16.4 | 4 |
-| 12 | Union injection inference without expected type (`union_*`) | §13.3 | 3 |
-| 13 | Misc expression-level deltas (`expressions.*`) | §16 | 5 |
-| 14 | Runtime-model deltas surfaced by the newly implemented `assertEvalErrorContains`/`assertExecute` directives: source-order named-constructor field evaluation with runtime-trapping division (`data_types.constructors.positive_named_field_source_order_evaluation` — §28.2.1 proof-carrying `(/)` rejects `1 / 0` statically here), evaluation-time name-resolution failure for a wildcard-imported constructor (`modules.imports.item_kind_selectors.negative_wildcard_ctor` — resolution is static here), and a recursion-depth guard with a clean runtime error (`runtime.recursion.negative_divergent_recursion_depth_guard` — the pure evaluator diverges instead) | §10.1.1, §8.3, §32.1 | 3 |
+| 1 | Macros/elaborator reflection: `Elab`/`Syntax`, quote literals `'{…}`, splices, prefixed-string interpolation handlers, `FromComprehensionRaw`/`Plan` custom sinks, `std.deriving.shape` (`macros.*` 30, `queries.*` macro-realistic ~14, `deriving.shape.*` 10) | §21–§23, §22, §6.3.4–§6.3.5, §20.10.9 | 54 |
+| 2 | Fuzz robustness: malformed-construct rejection with specific codes, recovery-cascade and indentation-diagnostic deltas (`fuzz.*` 15, `parser` 1, `lexical` continuation/interpolation 2, `literals` 1) | §3.1.14A, §5.4, §9 | 19 |
+| 3 | Static-object reflection facets: `defEqSyntax`/`headSymbolSyntax` reflection, effect-label kind selectors inside `scoped effect`, reified-static fallback ambiguity, rebound type-object ctor patterns (`static_objects.*` 12) | §2.8.3–§2.8.6, §7.1.1, §17.3.2 | 12 |
+| 4 | Associated trait type members (`Out`, `Element`), trait-default members with parameters, use-site supertrait projection evidence (`traits.*` 9, `expressions.implicit_parameters` 1) | §14.2.1, §14.1.4, §14.3 | 10 |
+| 5 | Application implicit-insertion diagnostic calibration: literal-defaulting and unsolved-implicit failures at argument positions report `E_APPLICATION_ARGUMENT_MISMATCH`/`E_TYPE_EQUALITY_MISMATCH` in the corpus where this implementation reports `E_UNSOLVED_IMPLICIT`/`E_APPLICATION_NONCALLABLE` (`app_reject_*` 4, `types.literals` 1, `lexical.numbers` 1) | §16.1.7.1, §3.1.2A | 6 |
+| 6 | Import item-kind selectors (ctor/type facet wildcards) and URL-import pinning codes (`modules.imports.*` 5, `static_objects` export-facade 1) | §8.3–§8.4 | 6 |
+| 7 | Queries non-macro residue: query-clause name resolution and instance-head deltas (`queries.*` ~4) | §20 | 4 |
+| 8 | `BorrowView`/`captureBorrow` projection borrows, code-quote capture, exists-type escapes (`borrow_qtt.*` 3) | §12.4.3, §12.2 | 3 |
+| 9 | Misc expression-level deltas: bare-minus/operator sections under checked application, dependent-case result types, misindentation code (`expressions.*` 5) | §16 | 5 |
+| 10 | Runtime-model deltas: source-order named-constructor field evaluation with runtime-trapping division (§28.2.1 proof-carrying `(/)` rejects `1 / 0` statically here), evaluation-time name-resolution failure for a wildcard-imported constructor, recursion-depth guard, deep value `show` (`data_types` 1, `modules…negative_wildcard_ctor` 1, `runtime` 1, `interpreter` 1, `examples` 1) | §10.1.1, §8.3, §32.1 | 5 |
 
 The remainder (~10) is a long tail of one or two fixtures each:
-boolean-proposition coercion (§11.4.2), deep value `show`/equality
-(`interpreter`, `examples`), parser recovery without crash,
-short-circuit suspended-operand typing (§16.1.3), linear-function
-argument-quantity subsumption (`arrow_reject_*`, §12.2.1), patch
-diagnostics payloads, and `core_semantics` evaluation deltas beyond
-the spec conflicts above.
+boolean-proposition coercion (§11.4.2), short-circuit
+suspended-operand typing (§16.1.3), linear-function argument-quantity
+subsumption (`arrow_reject_*`, §12.2.1), `patterns`, `short`, `patch`
+diagnostics payloads, and the sealed `exists` surface.
