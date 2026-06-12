@@ -1,0 +1,39 @@
+--! mode check
+--! assertDiagnostic error E_IMPLICIT_UNSOLVED
+--! assertDiagnostic error E_IMPLICIT_AMBIGUOUS
+--! assertDiagnostic error E_QTT_ERASED_RUNTIME_USE
+--! assertType ok Integer
+
+data Env : Type =
+    Env (bias : Int)
+
+addBias : (@ω env : Env) -> Int -> Int
+let addBias (@ω env : Env) (x : Int) : Int =
+    match env
+    case Env bias -> x + bias
+
+-- §16.3.3: a block-local implicit binding is a candidate
+ok : Integer
+let ok =
+    block
+        let (@ω env : Env) = Env 1
+        addBias 2
+
+defaultEnv : Env
+let defaultEnv = Env 3
+
+-- §16.3.3: top-level terms are not implicit candidates
+badTop : Int
+let badTop = addBias 4
+
+-- §16.3.3: two same-scope candidates are ambiguous
+badAmbiguous : (@ω left : Env) -> (@ω right : Env) -> Int
+let badAmbiguous (@ω left : Env) (@ω right : Env) : Int =
+    addBias 0
+
+-- §12.2: an erased candidate cannot satisfy a runtime implicit
+badErased : Int
+let badErased =
+    block
+        let (@0 env : Env) = Env 5
+        addBias 9

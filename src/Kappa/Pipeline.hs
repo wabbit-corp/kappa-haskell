@@ -23,7 +23,7 @@ import Kappa.Check
 import Kappa.Core (GName (..), gnameText)
 import Kappa.Diagnostic
 import Kappa.Parser (parseModule)
-import Kappa.Prelude (builtinState, preludeSource)
+import Kappa.Prelude (builtinState, preludeSource, stdHashSource)
 import Kappa.Resolve (defaultFixities, resolveModule)
 import Kappa.Source
 import Kappa.Syntax
@@ -41,7 +41,8 @@ data CompiledUnit = CompiledUnit
   , cuTrace :: ![TraceEvent]
   }
 
--- | Compile the prelude into the base state.
+-- | Compile the prelude into the base state, followed by the embedded
+-- standard-library modules (currently @std.hash@).
 preludeState :: (CheckState, Diagnostics)
 preludeState =
   case parseModule "<std.prelude>" preludeSource of
@@ -49,7 +50,21 @@ preludeState =
     Right (m, recovered) ->
       let (m', rdiags) = resolveModule defaultFixities m
           (st, diags) = checkModule builtinState m'
-       in (st, recovered ++ rdiags ++ diags)
+          (st', hdiags) = stdModule (ModuleName ["std", "hash"]) "<std.hash>" stdHashSource st
+       in (st', recovered ++ rdiags ++ diags ++ hdiags)
+
+-- | Compile one embedded standard-library module on top of the
+-- prelude state and register its exports.
+stdModule :: ModuleName -> FilePath -> Text -> CheckState -> (CheckState, Diagnostics)
+stdModule mn path src st0 =
+  case parseModule path src of
+    Left ds -> (st0, ds)
+    Right (m, recovered) ->
+      let (m', rdiags) = resolveModule defaultFixities m
+          stIn = st0 {csModule = mn, csScope = preludeScope st0, csDiags = []}
+          (st1, diags) = checkModule stIn m'
+          st2 = st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
+       in (st2, recovered ++ rdiags ++ diags)
 
 -- | Scope with every prelude global visible unqualified (§28.1).
 preludeScope :: CheckState -> Map.Map Text GName

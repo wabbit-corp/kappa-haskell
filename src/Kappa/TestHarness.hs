@@ -660,7 +660,7 @@ executeSuite packageMode label root files mode entries asserts = do
                 Just (RunOk, mv, out) ->
                   -- a non-Unit entry result is rendered to stdout, like
                   -- the reference run task (e.g. @let main = 42@)
-                  let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True
+                  let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True mempty
                       extra = case mv of
                         Just v
                           | not (isUnitValue ec v) ->
@@ -960,7 +960,7 @@ assertEval cu mmod nm expected =
       Nothing -> AssertFail ("assertEval: '" <> nm <> "' has no value (signature only)")
       Just v ->
         let st = cuState cu
-            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True
+            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True mempty
             rendered = renderEvalValue ec v
          in if rendered == T.strip expected
               then AssertOk
@@ -982,7 +982,7 @@ assertEvalError cu mmod nm sub =
       Nothing -> AssertFail ("assertEvalErrorContains: '" <> nm <> "' has no value (signature only)")
       Just v ->
         let st = cuState cu
-            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True
+            ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True mempty
          in case findRuntimeError ec (64 :: Int) v of
               Just msg
                 | sub `T.isInfixOf` msg -> AssertOk
@@ -1078,7 +1078,7 @@ assertType path src cu nm tyExpr =
       case elabExpected of
         Left err -> AssertFail err
         Right (st', probeTy) ->
-          let ec = EvalCtx (Globals (csGlobals st')) (csMetas st') False
+          let ec = EvalCtx (Globals (csGlobals st')) (csMetas st') False mempty
            in if convertible ec 0 (gdType gd) probeTy
                 then AssertOk
                 else

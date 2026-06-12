@@ -1,0 +1,19 @@
+--! mode check
+--! assertDiagnostic error E_IMPLICIT_UNSOLVED
+--! assertType order HashCode -> HashCode -> Ordering
+
+import std.hash.*
+
+-- std.hash: HashCode is an opaque token with Eq/Ord only.
+order : HashCode -> HashCode -> Ordering
+let order h1 h2 = compare h1 h2
+
+same : HashCode -> HashCode -> Bool
+let same h1 h2 = h1 == h2
+
+hashed : Int -> HashCode
+let hashed x = hashWith defaultHashSeed x
+
+-- not showable
+bad : HashCode -> String
+let bad h = show h

@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+
+-- Dependent-match residual normalization: in a later case the
+-- scrutinee is known to lack the earlier constructors, so a stuck
+-- match over it reduces through its catch-all alternative (§7.4.1).
+
+notLT : Ordering -> Bool
+let notLT o =
+    match o
+    case LT -> False
+    case _  -> True
+
+notLTResidual :
+    (o : Ordering) ->
+    match o
+    case LT -> Unit
+    case _  -> notLT o = True
+let notLTResidual o =
+    match o
+    case LT -> ()
+    case _  -> refl
+
+-- §7.4.1: a unique residual constructor licenses field projection
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+extractOrZero : MyOption Int -> Int
+let extractOrZero x =
+    if x is MyNone then
+        0
+    else
+        x.value

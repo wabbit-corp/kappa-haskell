@@ -1,0 +1,51 @@
+--! mode check
+--! assertDiagnostic error E_QUERY_UNORDERED_PAGING
+--! assertDiagnostic error E_QUERY_MODE_MISMATCH
+--! assertDiagnostic error E_QUERY_CARDINALITY_MISMATCH
+--! assertDiagnostic error E_QUERY_ITEM_QUANTITY_MISMATCH
+--! assertDiagnostic error E_QUERY_ROW_NOT_DROPPABLE
+--! assertType good Query Integer
+--! assertType once (1 src : OnceQuery Integer) -> List Integer
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+-- §20.9: a reusable query carrier over a pure plan
+good : Query Integer
+let good =
+    Query [ for x in [1, 2, 3], yield x ]
+
+-- §20.10.2: a one-shot query source is consumed exactly once
+once : (1 src : OnceQuery Integer) -> List Integer
+let once src =
+    [ for x in src, yield x ]
+
+-- §20.6.2: skip on an unordered (set) pipeline
+badPaging : List Integer
+let badPaging =
+    [ for x in {| 2, 1 |}, skip 1, yield x ]
+
+-- §20.9: one-shot plan rejected by the reusable Query carrier
+badMode : (1 src : OnceQuery Integer) -> Query Integer
+let badMode src =
+    Query [ for x in src, yield x ]
+
+-- §20.10.1: cardinality may not narrow to QOne
+badCard : Query Integer -> SingletonQuery Integer
+let badCard q =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω [ for x in q, yield x ]
+
+-- §20.9: linear items cannot satisfy the ω item demand of 'Query'
+badItems : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token) -> Query Token
+let badItems src =
+    Query [ for t in src, yield t ]
+
+-- §20.10.4: an 'if' filter may not drop a linear row entry
+badFilter : Bool -> (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let badFilter flag src =
+    OnceQuery [ for t in src, if flag, yield consumeToken t ]

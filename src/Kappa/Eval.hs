@@ -11,6 +11,7 @@ module Kappa.Eval
   , MetaState
   , emptyMetas
   , EvalCtx (..)
+  , RigidFact (..)
   , eval
   , evalApp
   , force
@@ -45,6 +46,11 @@ type MetaState = Map MetaId (Maybe Value)
 emptyMetas :: MetaState
 emptyMetas = Map.empty
 
+-- | Branch-local fact about a rigid variable, established by the
+-- enclosing match case (§7.4.1 flow refinement at conversion level):
+-- either solved to a constructor value, or known to lack constructors.
+data RigidFact = FactIs !Value | FactNot ![GName]
+
 -- | Evaluation context: globals plus current meta solutions.
 data EvalCtx = EvalCtx
   { ecGlobals :: !Globals
@@ -53,6 +59,9 @@ data EvalCtx = EvalCtx
   -- ^ Runtime evaluation (§32.1): every global with a value unfolds,
   -- with a deep fuel budget. Conversion-time forcing (False) unfolds
   -- only conversion-reducible definitions and stays tightly bounded.
+  , ecFacts :: !(Map Int RigidFact)
+  -- ^ Branch-local facts about rigid levels (dependent-match
+  -- normalization; see Check.checkMatchPlain).
   }
 
 lookupGlobal :: EvalCtx -> GName -> Maybe GlobalDef
@@ -170,6 +179,10 @@ force ctx = go (if ecRuntime ctx then 200000000 else 1000 :: Int)
       VFlex m sp
         | Just (Just sol) <- Map.lookup m (ecMetas ctx) ->
             go (fuel - 1) (evalApp ctx sol sp)
+      -- branch-local dependent-match solution for a rigid (§7.4.1)
+      VRigid l []
+        | Just (FactIs sol) <- Map.lookup l (ecFacts ctx) ->
+            go (fuel - 1) sol
       VGlobN g sp
         | Just gd <- lookupGlobal ctx g
         , Just body <- gdValue gd
@@ -253,6 +266,9 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
     -- Recursive: a definite mismatch in any nested sub-pattern rules
     -- out the whole alternative (e.g. @_ :: y :: _@ vs @1 :: Nil@).
     definitelyNoMatch pat v0 = case (pat, force ctx v0) of
+      -- a rigid known to lack the constructor cannot match it (§7.4.1)
+      (CPCtor g _, VRigid l _)
+        | Just (FactNot gs) <- Map.lookup l (ecFacts ctx) -> g `elem` gs
       (CPCtor g ps, VCtor g' args) ->
         g /= g'
           || ( length ps <= length args

@@ -5,6 +5,7 @@
 module Kappa.Prelude
   ( builtinState
   , preludeSource
+  , stdHashSource
   , evalPurePrim
   ) where
 
@@ -834,4 +835,51 @@ preludeSource =
     , ""
     , "__mapResolve : forall (k : Type) (v : Type). List (key : k, value : v) -> (k -> k -> Bool) -> (v -> v -> v) -> List (key : k, value : v)"
     , "let __mapResolve es eq comb = __mapResolveAcc eq comb Nil es" -- first-occurrence key order (§20.5.1)
+    ]
+
+-- | Embedded @std.hash@ source: hash codes are opaque tokens with
+-- Eq/Ord comparison only — neither numeric nor showable.
+stdHashSource :: Text
+stdHashSource =
+  T.unlines
+    [ "module std.hash"
+    , ""
+    , "data HashSeed : Type ="
+    , "    MkHashSeed (seedValue : Integer)"
+    , ""
+    , "defaultHashSeed : HashSeed"
+    , "let defaultHashSeed = MkHashSeed 0"
+    , ""
+    , "data HashCode : Type ="
+    , "    MkHashCode (codeValue : Integer)"
+    , ""
+    , "trait Hashable (a : Type) ="
+    , "    hashWithSeed : HashSeed -> a -> HashCode"
+    , ""
+    , "hashWith : forall (a : Type). (@_ : Hashable a) -> HashSeed -> a -> HashCode"
+    , "let hashWith seed value = hashWithSeed seed value"
+    , ""
+    , "instance Hashable Integer ="
+    , "    let hashWithSeed seed x ="
+    , "        match seed"
+    , "        case MkHashSeed s -> MkHashCode (addInt (mulInt 31 s) x)"
+    , ""
+    , "instance Hashable String ="
+    , "    let hashWithSeed seed x ="
+    , "        match seed"
+    , "        case MkHashSeed s -> MkHashCode s"
+    , ""
+    , "instance Eq HashCode ="
+    , "    let (==) a b ="
+    , "        match a"
+    , "        case MkHashCode x ->"
+    , "            match b"
+    , "            case MkHashCode y -> eqInt x y"
+    , ""
+    , "instance Ord HashCode ="
+    , "    let compare a b ="
+    , "        match a"
+    , "        case MkHashCode x ->"
+    , "            match b"
+    , "            case MkHashCode y -> if ltInt x y then LT elif eqInt x y then EQ else GT"
     ]

@@ -96,6 +96,9 @@ data CheckState = CheckState
   -- static-object identity is preserved through them
   , csActive :: !(Map GName APInfo)
   -- ^ §17.3 active-pattern definitions and their result classification
+  , csFacts :: !(Map Int RigidFact)
+  -- ^ Branch-local dependent-match facts about rigid levels (§7.4.1),
+  -- consulted by conversion-time match reduction
   }
 
 -- | Active-pattern result classification (§17.3.1).
@@ -110,7 +113,7 @@ initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty Map.empty
+    Map.empty Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -213,7 +216,7 @@ lookupCtx n ctx = go 0 (ctxEntries ctx)
       | otherwise = go (i + 1) rest
 
 ec_ :: CheckM EvalCtx
-ec_ = gets (\st -> EvalCtx (Globals (csGlobals st)) (csMetas st) False)
+ec_ = gets (\st -> EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st))
 
 evalIn :: Ctx -> Term -> CheckM Value
 evalIn ctx t = do
@@ -592,6 +595,19 @@ resolveImplicitQ ctx sp q goal = do
           modify' $ \st -> st {csPending = (mid, g, sp, ctx) : csPending st}
           pure m
         else do
+          -- a flex-headed goal type is not searchable evidence: its
+          -- value is inferred by unification at the use site (§16.3.3)
+          gIsFlex <- do
+            gF <- forceM g
+            pure $ case gF of
+              VFlex {} -> True
+              _ -> False
+          if gIsFlex && not (isTrait || isEq)
+            then freshMeta
+            else resolveLadder g isTrait isEq
+  where
+    resolveLadder g isTrait isEq = do
+      do
           -- §16.3.3 step 1: the local implicit context goes first.
           mLoc <- localCandidate ctx sp q g
           case mLoc of
@@ -1317,6 +1333,11 @@ deepForceV ec = go (32 :: Int)
       v' -> v'
 
 inferType :: Ctx -> Expr -> CheckM (Term, Int)
+-- a match in type position selects the type facet in its arms
+-- (dependent-match types, §17.1.4)
+inferType ctx (EMatch scrut cases msp) = do
+  tm <- checkMatch ctx scrut cases msp (VSort 0)
+  pure (tm, 0)
 inferType ctx e = do
   (tm, ty) <- inferT ctx e
   goSort tm ty
@@ -2504,25 +2525,43 @@ declSpan = \case
 -- ── if / match ───────────────────────────────────────────────────────
 
 checkIf :: Ctx -> [(Expr, Expr)] -> Maybe Expr -> Span -> Value -> CheckM Term
-checkIf ctx alts mels sp resT = go alts
+checkIf ctx alts mels sp resT = go ctx alts
   where
     boolT = VGlobN (gPrel "Bool") []
-    go [] = case mels of
-      Just e -> check ctx e resT
+    go c [] = case mels of
+      Just e -> check c e resT
       Nothing -> do
         errAt sp "E_IF_MISSING_ELSE" (Just "kappa.control.if-missing-else")
           "if without else is only permitted as a do-block statement (§16.4, §18.4)"
         pure (CCtor (gPrel "Unit") [])
-    go ((c, t) : rest) = do
+    go c ((cnd, t) : rest) = do
       -- §7.4.1 flow refinement: constructor tests in the condition
       -- refine their subjects in the condition's own conjuncts and in
       -- the then-branch
-      refs <- condRefines ctx c
-      let ctxR = refineCtx refs ctx
-      cTm <- check ctxR c boolT
+      refs <- condRefines c cnd
+      let ctxR = refineCtx refs c
+      cTm <- check ctxR cnd boolT
       tTm <- check ctxR t resT
-      eTm <- go rest
+      -- the negative side refines the subject to the complementary
+      -- constructors of its data type (§7.4.1 lacks-refinement); only
+      -- a bare `x is C` condition licenses the complement
+      negs <- case cnd of
+        EIs (EVar _) _ -> complementRefines refs
+        _ -> pure []
+      eTm <- go (refineCtx negs c) rest
       pure (CIf cTm tTm eTm)
+    -- only a whole-condition single `x is C` test yields a usable
+    -- complement (a failed conjunction proves nothing positive), and
+    -- only a UNIQUE residual constructor is a usable fact: a wider
+    -- residual would invent a positive fact the test never proved
+    complementRefines refs = fmap concat . forM refs $ \(x, gs) -> do
+      st <- get
+      case nub [ciData ci | g <- gs, Just ci <- [Map.lookup g (csCtors st)]] of
+        [dataG]
+          | Just di <- Map.lookup dataG (csDatas st)
+          , [residual] <- [cg | cg <- diCtors di, cg `notElem` gs] ->
+              pure [(x, [residual])]
+        _ -> pure []
 
 -- | §7.4.1/§7.4.2 refinements induced by an if-condition: `x is C`
 -- refines x to {C}; conjunction collects both sides; disjunction
@@ -2757,18 +2796,38 @@ checkMatchPlain :: Ctx -> Expr -> [MatchCase] -> Span -> Value -> CheckM Term
 checkMatchPlain ctx scrut cases sp resT = do
   (sTm, sTy) <- infer ctx scrut
   (sTm1, sTy1) <- insertAllImplicits ctx (exprSpan scrut) sTm sTy
-  alts <- fmap catMaybes . forM cases $ \case
-    MatchImpossible isp -> do
-      empty <- scrutineeEmpty sTy1
-      unless empty $
-        errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
-          "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
-      pure Nothing
-    MatchCase pat mguard body _ -> do
-      (patC, ctx', _) <- elabPattern ctx pat sTy1
-      gTm <- traverse (\g -> check ctx' g (VGlobN (gPrel "Bool") [])) mguard
-      bTm <- check ctx' body resT
-      pure (Just (CaseAlt patC gTm bTm))
+  -- a variable scrutinee yields branch-local rigid facts: the matched
+  -- nullary constructor on the success side, the lacks-set on later
+  -- cases (dependent-match normalization, §7.4.1)
+  let mLvl = case scrut of
+        EVar n -> case lookupCtx (nameText n) ctx of
+          Just (i, _) -> case drop i (ctxEnv ctx) of
+            (VRigid l [] : _) -> Just l
+            _ -> Nothing
+          Nothing -> Nothing
+        _ -> Nothing
+      goCase (accAlts, prior) c = case c of
+        MatchImpossible isp -> do
+          empty <- scrutineeEmpty sTy1
+          unless empty $
+            errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
+              "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
+          pure (accAlts, prior)
+        MatchCase pat mguard body _ -> do
+          (patC, ctx', _) <- elabPattern ctx pat sTy1
+          let fact = case patC of
+                CPCtor g [] -> Just (FactIs (VCtor g []))
+                _ | not (null prior) -> Just (FactNot prior)
+                _ -> Nothing
+          oldFacts <- gets csFacts
+          forM_ ((,) <$> mLvl <*> fact) $ \(l, f) ->
+            modify' $ \st -> st {csFacts = Map.insert l f (csFacts st)}
+          gTm <- traverse (\g -> check ctx' g (VGlobN (gPrel "Bool") [])) mguard
+          bTm <- check ctx' body resT
+          modify' $ \st -> st {csFacts = oldFacts}
+          let prior' = prior ++ [g | CPCtor g _ <- [patC]]
+          pure (accAlts ++ [CaseAlt patC gTm bTm], prior')
+  (alts, _) <- foldM goCase ([], []) cases
   checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
   pure (CMatch sTm1 alts)
 
@@ -3952,7 +4011,7 @@ consumesLin ctx lins e0 = case e0 of
       _ -> []
     -- peeking under the binder with a dummy is enough for quantities
     peek (Closure env body) =
-      eval (EvalCtx (Globals Map.empty) Map.empty False) (VSort 0 : env) body
+      eval (EvalCtx (Globals Map.empty) Map.empty False Map.empty) (VSort 0 : env) body
 
 -- | The elaborated carrier prefix of a prefixed comprehension (§20.9):
 -- the prefix term and its (forced) type.

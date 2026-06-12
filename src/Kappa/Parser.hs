@@ -1516,6 +1516,8 @@ pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
       e <- pPostfixExpr
       ArgInout e <$> spanFrom sp
     namedBlock = do
+      ok <- namedBlockOk
+      unless ok (parseFail "named-block argument suppressed here")
       sp <- currentSpan
       token TokLBrace
       items <- clearExtraStops (sepBy1 namedItem (token TokComma))
@@ -2101,7 +2103,7 @@ pCompClause = do
     TokIdent "group" -> do
       pKeyword "group"
       pKeyword "by"
-      key <- pCompExpr
+      key <- noNamedBlock pCompExpr
       token TokLBrace
       void (many pCompSep)
       aggs <- sepBy1 pAgg aggSep

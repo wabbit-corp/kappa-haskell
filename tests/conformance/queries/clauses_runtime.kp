@@ -1,0 +1,75 @@
+--! assertNoErrors
+--! assertEval ordered 1
+--! assertEval distincts 33
+--! assertEval paged 5
+--! assertEval grouped 46
+--! assertEval joined 38
+
+-- §20.6–§20.8: order by (stable), distinct by (first representative),
+-- skip/take on an ordered pipeline, group by with Monoid aggregation,
+-- and an inner join.
+
+data SumW : Type =
+    SumW (total : Int)
+
+instance Monoid SumW =
+    let empty = SumW 0
+    let append a b =
+        match a
+        case SumW x ->
+            match b
+            case SumW y -> SumW (x + y)
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+headOr : Int -> List Int -> Int
+let headOr d xs =
+    match xs
+    case Nil -> d
+    case x :: _ -> x
+
+ordered : Int
+let ordered =
+    headOr 0 [
+        for x in [2, 3, 1]
+        order by x
+        yield x
+    ]
+
+distincts : Int
+let distincts =
+    sumList [
+        for row in [(key = 1, value = 11), (key = 1, value = 99), (key = 2, value = 22)]
+        distinct by row.key
+        yield row.value
+    ]
+
+paged : Int
+let paged =
+    sumList [
+        for x in [9, 2, 3, 1, 9]
+        order by x
+        skip 1
+        take 2
+        yield x
+    ]
+
+grouped : Int
+let grouped =
+    sumList [
+        for x in [1, 2, 3, 40]
+        group by (if x < 10 then 0 else 1) { total = x using SumW } into g
+        yield g.total
+    ]
+
+joined : Int
+let joined =
+    sumList [
+        for x in [1, 2]
+        join y in [(1, 10), (2, 20), (2, 3)] on y._1 == x
+        yield x + y._2
+    ]

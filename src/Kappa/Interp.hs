@@ -56,7 +56,7 @@ unitV = VCtor (prelG "Unit") []
 -- | Run @main@ (an IO computation) writing to real stdout.
 runMain :: Globals -> MetaState -> GName -> IO RunResult
 runMain globals metas mainG = do
-  let rt = RT (EvalCtx globals metas True) (\t -> TIO.putStr t >> hFlush stdout)
+  let rt = RT (EvalCtx globals metas True mempty) (\t -> TIO.putStr t >> hFlush stdout)
   fst <$> runMainRT rt mainG
 
 -- | Run @main@ capturing everything written via printString\/printlnString
@@ -72,7 +72,7 @@ runMainCaptured globals metas mainG = do
 runMainCapturedValue :: Globals -> MetaState -> GName -> IO (RunResult, Maybe Value, Text)
 runMainCapturedValue globals metas mainG = do
   buf <- newIORef []
-  let rt = RT (EvalCtx globals metas True) (\t -> modifyIORef' buf (t :))
+  let rt = RT (EvalCtx globals metas True mempty) (\t -> modifyIORef' buf (t :))
   (r, mv) <- runMainRT rt mainG
   out <- T.concat . reverse <$> readIORef buf
   pure (r, mv, out)

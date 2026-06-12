@@ -26,6 +26,8 @@ module Kappa.Parser.Monad
   , sepBy1
   , keepSoftNewlines
   , hideSoftNewlines
+  , noNamedBlock
+  , namedBlockOk
   , withExtraStops
   , clearExtraStops
   , extraStops
@@ -48,6 +50,7 @@ data PState = PState
   , psSoftNL :: !Bool -- ^ True = soft newlines are significant
   , psEqOk :: !Bool -- ^ may '=' join an operator chain here? (§11.4.1)
   , psStopExtra :: ![Text] -- ^ context-sensitive stop keywords (§5.2)
+  , psNoNamedBlock :: !Bool -- ^ suppress named-block arguments (§20.7 group keys)
   , psRecovered :: ![Diagnostic]
   }
 
@@ -93,7 +96,7 @@ mergeErr e1 e2
 
 runP :: P a -> [Located] -> Either PErr (a, [Diagnostic])
 runP (P f) toks =
-  case f (PState toks startSpan False True [] []) of
+  case f (PState toks startSpan False True [] False []) of
     Left e -> Left e
     Right (a, s) -> Right (a, reverse (psRecovered s))
   where
@@ -195,6 +198,17 @@ hideSoftNewlines :: P a -> P a
 hideSoftNewlines (P f) = P $ \s -> do
   (a, s') <- f s {psSoftNL = False}
   pure (a, s' {psSoftNL = psSoftNL s})
+
+-- | Suppress named-block arguments @f { x = 1 }@ while parsing a
+-- position followed by a block-shaped clause body (§20.7 group keys).
+noNamedBlock :: P a -> P a
+noNamedBlock (P f) = P $ \s -> do
+  (a, s') <- f s {psNoNamedBlock = True}
+  pure (a, s' {psNoNamedBlock = psNoNamedBlock s})
+
+-- | May a named-block argument be parsed here?
+namedBlockOk :: P Bool
+namedBlockOk = P $ \s -> Right (not (psNoNamedBlock s), s)
 
 -- | Activate additional context-sensitive stop keywords while a clause
 -- context is open (comprehension bodies, @decreases ... by@). Restored

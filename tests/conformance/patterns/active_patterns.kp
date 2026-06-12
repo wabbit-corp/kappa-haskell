@@ -1,0 +1,58 @@
+--! mode check
+--! assertDiagnostic error E_ACTIVE_PATTERN_MONADIC_RESULT
+--! assertDiagnostic error E_ACTIVE_PATTERN_LINEARITY_VIOLATION
+--! assertDiagnostic error E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN
+--! assertType usePositive Buf -> Integer
+--! assertType useView Pair -> Integer
+
+data Buf : Type =
+    Buf (n : Int)
+
+data Pair : Type =
+    Pair (x : Int) (y : Int)
+
+data PairView : Type =
+    Same (n : Int)
+    Different (x : Int) (y : Int)
+
+-- §17.3.1: Option-result partial pattern over a borrowed scrutinee
+pattern Positive (& b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+usePositive : Buf -> Integer
+let usePositive b =
+    match b
+    case Positive (n) -> n
+    case _ -> 0
+
+-- §17.3.1: total view pattern; exhaustiveness over the view type
+pattern ViewPair (p : Pair) : PairView =
+    match p
+    case Pair x y -> if x == y then Same x else Different x y
+
+useView : Pair -> Integer
+let useView p =
+    match p
+    case ViewPair (Same n) -> n
+    case ViewPair (Different x y) -> x + y
+
+-- §17.3.1: monadic results are rejected
+pattern BadMonadic (x : Int) : UIO Int =
+    pure x
+
+-- §17.3: an Option pattern cannot consume a linear scrutinee (no residue)
+pattern BadLinear (1 b : Buf) : Option Int =
+    match b
+    case Buf n -> Some n
+
+notAPattern : (& b : Buf) -> Option Int
+let notAPattern (& b : Buf) : Option Int =
+    match b
+    case Buf n -> Some n
+
+badHead : Buf -> Integer
+let badHead b =
+    match b
+    case notAPattern (n) -> n
+    case _ -> 0
