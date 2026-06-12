@@ -25,6 +25,7 @@ module Kappa.Check
   ) where
 
 import Control.Monad.State.Strict
+import Data.Data (Data, cast, gmapQ)
 import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -514,12 +515,13 @@ topoFields = goT []
           ((map (\(_, _, a) -> a) ready) ++) <$> goT (doneLs ++ readyLs) rest
 
 -- | Report a diagnostic unless an identical (code, message) one was
--- already reported — for judgements re-checked once per occurrence of
--- the same source type (e.g. a signature and its definition binders).
+-- already reported at the same origin — for judgements re-checked once
+-- per occurrence of the same source type (e.g. a signature and its
+-- definition binders).
 errOnce :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errOnce sp code fam msg = do
   ds <- gets csDiags
-  unless (any (\d -> dCode d == code && dMessage d == msg) ds) $
+  unless (any (\d -> dCode d == code && dMessage d == msg && dPrimary d == sp) ds) $
     errAt sp code fam msg
 
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
@@ -1826,6 +1828,25 @@ check ctx expr expected0 = do
           (tm, ty) <- inferT ctx (EVar n)
           expectType ctx (nameSpan n) ty expected
           pure tm
+    -- §5.5.1: a bare parenthesized operator at a function-typed
+    -- position selects the fixity the expected explicit arity calls
+    -- for — unary `(-)` is the prefix reading (negate); otherwise the
+    -- reference eta-expands so trailing implicit obligations (the
+    -- §28.2.1 checked-arithmetic proofs) insert at the application
+    (e, VPi Expl _ _ _ _)
+      | Just n <- bareOpRef e
+      , isOpSpelling (nameText n)
+      , Nothing <- lookupCtx (nameText n) ctx -> do
+          arity <- explicitArity (ctxLen ctx) expected
+          let sp = nameSpan n
+          if arity == 1 && nameText n == "-"
+            then check ctx (EVar (Name "negate" sp)) expected
+            else do
+              let vars = [Name ("__op" <> T.pack (show i)) sp | i <- [1 .. arity]]
+                  lam =
+                    ELambda Nothing (map simpleBinder vars)
+                      (EApp (EVar n) [ArgExplicit (EVar v) | v <- vars]) sp
+              check ctx lam expected
     -- §18.1.14: Eff r is a monadic carrier, so 'pure' in an Eff-typed
     -- position injects via the Eff kernel (the prelude 'pure' is the IO
     -- instance; carrier-polymorphic 'pure' is not modelled)
@@ -1968,6 +1989,15 @@ check ctx expr expected0 = do
               (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
               expectType ctx (exprSpan expr) ty1 expected
               pure tm1
+    -- §5.5.1: `(-) e` at a non-function expected type selects the
+    -- prefix fixity — the application of bare `(-)` to one explicit
+    -- argument in a saturated position is negation
+    (EApp hd [ArgExplicit a], _)
+      | Just n <- bareOpRef hd
+      , nameText n == "-"
+      , Nothing <- lookupCtx "-" ctx
+      , notPi expected ->
+          check ctx (EApp (EVar (Name "negate" (nameSpan n))) [ArgExplicit a]) expected
     (EApp f args, _)
       | all isExplicitArg args, not (null args) -> do
           mproj <- projectionHead ctx f
@@ -2101,6 +2131,27 @@ check ctx expr expected0 = do
     upperHead n = case T.uncons (nameText n) of
       Just (c, _) -> c >= 'A' && c <= 'Z'
       Nothing -> False
+    isOpSpelling t = case T.uncons t of
+      Just (c, _) ->
+        not (c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= '\128')
+      Nothing -> False
+    notPi = \case
+      VPi {} -> False
+      _ -> True
+    bareOpRef = \case
+      EVar n -> Just n
+      EOpRef Nothing n _ -> Just n
+      _ -> Nothing
+    explicitArity lvl v = do
+      t <- forceM v
+      case t of
+        VPi Expl _ _ _ clo -> do
+          cod <- clApp clo (VRigid lvl [])
+          (1 +) <$> explicitArity (lvl + 1) cod
+        VPi Impl _ _ _ clo -> do
+          cod <- clApp clo (VRigid lvl [])
+          explicitArity (lvl + 1) cod
+        _ -> pure (0 :: Int)
     -- §16.1.5: a fully applied projection in descriptor-typed position
     -- gets the dedicated diagnostic rather than a plain mismatch
     projDescriptorMismatch c ex actual expect = case expect of
@@ -2835,8 +2886,11 @@ elabNamedBlock ctx fTm fTy items sp rest = do
       -- run the spine with mixed surface/core arguments
       goSpine ctx fTm fTy (catMaybes args)
     -- ordinary function: match named items against the remaining
-    -- explicit Pi binder names (§16.1.7.2)
-    _ -> goPiNamed fTm fTy [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
+    -- explicit Pi binder names (§16.1.7.2); a label supplied twice is
+    -- a malformed block
+    _ -> do
+      forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \_ -> blockMismatch
+      goPiNamed fTm fTy [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
   where
     -- §16.1.7.2: one diagnostic per malformed block on an ordinary
     -- callee (a telescope mismatch, not a named-argument code)
@@ -7770,6 +7824,21 @@ headerPassIn siglessLets = \case
       g <- ownName (ddName dd)
       modify' $ \st -> st {csOpaqueDatas = Map.insert g () (csOpaqueDatas st)}
     headerData dd sp
+  DTypeAlias _ n params _ (Just rhs) sp
+    | nameText n `elem` allNamesIn rhs -> do
+        -- §15.16 admits recursive type-alias groups only "when
+        -- admitted"; this implementation does not admit them (aliases
+        -- are transparent definitions, §11.3) — recursion needs a data
+        -- declaration. The alias is salvaged as a fresh metavariable
+        -- so downstream uses do not cascade.
+        errAt sp "E_RECURSIVE_TYPE_ALIAS" (Just "kappa.type.recursive-alias")
+          ("type alias '" <> nameText n
+             <> "' refers to itself; recursive type aliases are not admitted (§15.16) — use a data declaration")
+        g <- ownName n
+        noteDefinition g sp
+        tyV <- aliasKind params
+        mv <- freshMetaV emptyCtx
+        addGlobal g (GlobalDef tyV (Just mv) True)
   DTypeAlias _ n params _ (Just rhs) sp -> do
     -- alias: a definition at a universe type
     (tm, ty) <- elabAliasBody params rhs
@@ -7799,6 +7868,17 @@ ownName n = do
   st <- get
   pure (GName (csModule st) (nameText n))
 
+-- | Every identifier spelled anywhere inside a piece of surface syntax
+-- (generic over-approximation; binder shadowing is ignored). Used for
+-- the recursive-type-alias check.
+allNamesIn :: Expr -> [Text]
+allNamesIn = go
+  where
+    go :: Data a => a -> [Text]
+    go x = case cast x :: Maybe Name of
+      Just n -> [nameText n]
+      Nothing -> concat (gmapQ go x)
+
 aliasKind :: [Binder] -> CheckM Value
 aliasKind params = do
   -- (p1 : K1) -> ... -> Type
@@ -7808,7 +7888,36 @@ aliasKind params = do
 
 elabAliasBody :: [Binder] -> Expr -> CheckM (Term, Value)
 elabAliasBody params rhs = do
-  (tm, kindTm) <- go emptyCtx params
+  (tm0, kindTm0) <- go emptyCtx params
+  -- §11.3.3: unannotated alias parameters whose kind the body does not
+  -- constrain generalize to implicit kind binders ('type Dep x = Nat'
+  -- accepts any-typed x: Dep : (@__k : Type) -> __k -> Type)
+  tm1 <- zonkTermM 0 tm0
+  kindTm1 <- zonkTermM 0 kindTm0
+  st <- get
+  let unsolvedIn t = nub [m | m <- metasOf t, maybe True isNothing (Map.lookup m (csMetas st))]
+      metasOf = \case
+        CMeta m -> [m]
+        CPi _ _ _ a b -> metasOf a ++ metasOf b
+        CLam _ _ _ b -> metasOf b
+        CApp _ f a -> metasOf f ++ metasOf a
+        _ -> []
+      unsolved = unsolvedIn kindTm1
+      k = length unsolved
+      offsets = Map.fromList (zip unsolved [0 :: Int ..])
+      replaceMetas d t = case t of
+        CMeta m | Just i <- Map.lookup m offsets -> CVar (d + (k - 1 - i))
+        CPi ic q nm a b -> CPi ic q nm (replaceMetas d a) (replaceMetas (d + 1) b)
+        CLam ic q nm b -> CLam ic q nm (replaceMetas (d + 1) b)
+        CApp ic f a -> CApp ic (replaceMetas d f) (replaceMetas d a)
+        other -> other
+      (tm, kindTm) =
+        if k == 0
+          then (tm1, kindTm1)
+          else
+            ( foldr (\_ b -> CLam Impl Q0 "__k" b) (replaceMetas 0 tm1) unsolved
+            , foldr (\_ b -> CPi Impl Q0 "__k" (CSort 0) b) (replaceMetas 0 kindTm1) unsolved
+            )
   tyV <- evalIn emptyCtx kindTm
   pure (tm, tyV)
   where
@@ -7838,7 +7947,7 @@ elabAliasBody params rhs = do
     go ctx (b : rest) = do
       domTm <- case bType b of
         Just t -> fst <$> inferType ctx t
-        Nothing -> pure (CSort 0)
+        Nothing -> freshMeta
       domV <- evalIn ctx domTm
       let nm = maybe "_" nameText (bName b)
           ic = if bImplicit b then Impl else Expl

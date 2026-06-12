@@ -221,9 +221,18 @@ recoverDecl :: P ()
 recoverDecl = do
   sp <- currentSpan
   t <- peekToken
+  toks <- pendingTokens
   recordRecovered $
-    diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp
-      ("unexpected " <> tokenDescr t <> " at start of declaration")
+    if misindentSignal toks
+      then
+        -- §5.4 layout: the declaration failed because a clause body is
+        -- indented less than its clause header (the body line dedents
+        -- and a sibling `case` re-indents)
+        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa.parse.error") sp
+          "a clause body is indented less than its clause header (Spec §5.4 layout)"
+      else
+        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp
+          ("unexpected " <> tokenDescr t <> " at start of declaration")
   skipPast (\case TokNewline False -> True; TokEOF -> True; _ -> False)
   void (optional pHardNewline)
   skipIndentedBlocks
@@ -248,6 +257,30 @@ recoverDecl = do
           | depth == 0 -> void anyToken
           | otherwise -> anyToken >> skipToDedent (depth - 1)
         _ -> anyToken >> skipToDedent depth
+
+-- A misindented clause body inside the failed declaration: a body
+-- line dedents below its clause header while a sibling `case` clause
+-- re-indents afterwards (the §5.4 signature of a case body written
+-- left of its `case`).
+misindentSignal :: [Located] -> Bool
+misindentSignal = go (0 :: Int)
+  where
+    go _ [] = False
+    go d (Located t _ : rest) = case t of
+      TokIndent -> go (d + 1) rest
+      TokDedent
+        | d <= 1 -> False
+        | indentCase rest -> True
+        | otherwise -> go (d - 1) rest
+      TokEOF -> False
+      _ -> go d rest
+    indentCase (Located TokIndent _ : Located (TokIdent "case") _ : _) = True
+    indentCase (Located t _ : rest) = case t of
+      TokIndent -> False
+      TokDedent -> False
+      TokEOF -> False
+      _ -> indentCase rest
+    indentCase [] = False
 
 -- ── Declarations ─────────────────────────────────────────────────────
 
@@ -485,9 +518,31 @@ pCtorBlock = indentedCtors <|> inlineCtors
       -- optional '|' before the first and each subsequent alternative
       -- (§10.1 writes both "C1 ‖ C2" stacked and "C1 ‖ | C2" styles)
       void (optional (token TokBar))
+      goodCtors <|> salvageCtors
+    goodCtors = do
       cs <- ctorSeq
       token TokDedent
       pure cs
+    -- §3.1.14A: a malformed constructor alternative is reported and the
+    -- block skipped, salvaging the data declaration's header (the type
+    -- stays usable; its constructors are gone)
+    salvageCtors = do
+      sp <- currentSpan
+      t <- peekToken
+      recordRecovered $
+        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp
+          ("unexpected " <> tokenDescr t <> " in a constructor alternative")
+      skipCtorBlock (0 :: Int)
+      pure []
+    skipCtorBlock depth = do
+      t <- peekToken
+      case t of
+        TokEOF -> pure ()
+        TokIndent -> anyToken >> skipCtorBlock (depth + 1)
+        TokDedent
+          | depth == 0 -> void anyToken
+          | otherwise -> anyToken >> skipCtorBlock (depth - 1)
+        _ -> anyToken >> skipCtorBlock depth
     ctorSeq = do
       x <- pCtorDecl
       void (many pNewline)

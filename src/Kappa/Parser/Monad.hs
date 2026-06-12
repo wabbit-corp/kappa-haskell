@@ -34,6 +34,8 @@ module Kappa.Parser.Monad
   , noEq
   , eqAllowed
   , recordRecovered
+  , recoveredSoFar
+  , pendingTokens
   , skipPast
   , eof
   ) where
@@ -242,6 +244,14 @@ eqAllowed = P $ \s -> Right (psEqOk s, s)
 
 recordRecovered :: Diagnostic -> P ()
 recordRecovered d = P $ \s -> Right ((), s {psRecovered = d : psRecovered s})
+
+-- | The recovered diagnostics recorded so far (newest first).
+recoveredSoFar :: P [Diagnostic]
+recoveredSoFar = P $ \s -> Right (psRecovered s, s)
+
+-- | The not-yet-consumed token stream (for recovery look-ahead).
+pendingTokens :: P [Located]
+pendingTokens = P $ \s -> Right (psToks s, s)
 
 -- | Declaration-level recovery: drop tokens until the predicate holds at
 -- nesting depth zero (tracking INDENT\/DEDENT and brackets), consuming

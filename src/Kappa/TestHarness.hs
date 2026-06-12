@@ -43,7 +43,7 @@ import Kappa.Check (CheckState (..), checkModule)
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
-import Kappa.Explain (codeNames, explainExists)
+import Kappa.Explain (codeNames, explainExists, portableAlias)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)
@@ -1048,8 +1048,16 @@ checkAssertion root path src files cu diags mRun = \case
 -- | §3.1/§3.1.2A code matching: a directive's @<code>@ matches a
 -- diagnostic when it equals the rendered code or the diagnostic's
 -- required portable alias (an implementation may expose either).
+-- §3.1.4 additionally makes the portable alias the cross-
+-- implementation comparison key: when the asserted spelling is another
+-- implementation's nonportable code, it matches iff both spellings
+-- resolve to the same required portable alias.
 diagHasCode :: Text -> Diagnostic -> Bool
-diagHasCode code d = code `elem` codeNames (dCode d)
+diagHasCode code d =
+  code `elem` ours
+    || maybe False (`elem` ours) (portableAlias code)
+  where
+    ours = codeNames (dCode d)
 
 -- | Exact multiset comparison of expected codes against emitted errors,
 -- where each expected spelling may match either the rendered code or

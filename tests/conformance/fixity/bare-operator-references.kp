@@ -1,0 +1,29 @@
+module main
+
+-- §5.5.1: bare (op) selects the fixity the expected type's explicit
+-- arity calls for; unary (-) is the prefix reading (negate), the
+-- 2-ary binding keeps checked subtraction, and trailing §28.2.1 proof
+-- obligations insert at the eta-expanded application.
+neg : Int -> Int
+let neg = (-)
+
+sub : Int -> Int -> Int
+let sub = (-)
+
+negApplied : Int
+let negApplied = (-) 5
+
+plus : Int
+let plus = (+) 5 7
+
+probeNeg : Int
+let probeNeg = neg 9
+
+probeSub : Int
+let probeSub = sub 9 4
+
+--! assertNoErrors
+--! assertEval probeNeg -9
+--! assertEval probeSub 5
+--! assertEval negApplied -5
+--! assertEval plus 12

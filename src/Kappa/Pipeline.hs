@@ -247,9 +247,28 @@ compileFilesWith packageMode nameOf files =
               -- simply be in the unparsed region — do not pile a
               -- §9.1 satisfaction error on top of the parse error
               parseErrored = any isError recovered
+              -- §3.1.14A: a salvaged declaration region that already
+              -- carries a syntax error gets no piled-on semantic
+              -- errors — drop elaboration errors whose primary origin
+              -- lies on a line a parse error covered
+              parseErrLines =
+                [ (spanFile (dPrimary d), ln)
+                | d <- recovered
+                , isError d
+                , ln <- [posLine (spanStart (dPrimary d)) .. posLine (spanEnd (dPrimary d))]
+                ]
+              onParseErrLine d =
+                ( spanFile (dPrimary d)
+                , posLine (spanStart (dPrimary d))
+                )
+                  `elem` parseErrLines
               cdiags =
                 if parseErrored
-                  then [d | d <- cdiags0, dCode d /= "E_SIGNATURE_UNSATISFIED"]
+                  then
+                    [ d | d <- cdiags0
+                    , dCode d /= "E_SIGNATURE_UNSATISFIED"
+                    , not (onParseErrLine d)
+                    ]
                   else cdiags0
               preDiags = recovered ++ rdiags ++ ieDiags ie ++ cdiags
               -- §12.2–§12.4 usage analysis runs only over cleanly
