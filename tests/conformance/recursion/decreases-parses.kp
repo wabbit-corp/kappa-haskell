@@ -1,0 +1,22 @@
+-- §15.11: explicit decreases clauses parse in all portable forms.
+-- Measures are recorded but not verified by this implementation
+-- (SPEC_COVERAGE.md §15); this fixture locks the parse behavior.
+module main
+
+count : Integer -> Integer
+let count n decreases n = n
+
+pair : Integer -> Integer
+let pair n decreases (n) = n
+
+rel : Integer -> Integer
+let rel n decreases n by ltInt = n
+
+structuralForm : List Integer -> Integer
+let structuralForm xs decreases structural xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (structuralForm rest)
+
+--! assertNoErrors
+--! assertDeclKinds signature, let, signature, let, signature, let, signature, let

@@ -381,8 +381,10 @@ pDecreases = do
     measure = do
       -- `by` separates the measure from its ordering relation here, so
       -- it is an active stop keyword within the measure expression only.
-      m <- withExtraStops ["by"] pExpr
-      by <- optionMaybe (pKeyword "by" *> pExpr)
+      -- The measure must stop at `=` (the definition body follows), so
+      -- propositional-equality chains are disabled (§9.1 vs §11.4.1).
+      m <- withExtraStops ["by"] (noEq pExpr)
+      by <- optionMaybe (pKeyword "by" *> noEq pExpr)
       us <- optionMaybe (pKeyword "using" *> pExpr)
       pure (DecMeasure m by us)
 
