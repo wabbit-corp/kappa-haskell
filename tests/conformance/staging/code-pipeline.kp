@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "50\n7\n"
+
+-- §23: staged code. '.< e >.' builds 'Code t' from 'e : t' (§23.2);
+-- '.~c' splices a staged subterm inside a quote; 'genlet' requests
+-- generation-time sharing (§23.5); 'closeCode' closes scope-safe code
+-- (§23.4) and 'runCode' executes it (§23.6). Cross-stage persistence
+-- is lift-based (§23.3): 'Lift'/'liftCode' insert present-stage
+-- values.
+
+double : Integer -> Code Integer
+let double (n : Integer) : Code Integer = .< n + n >.
+
+shared : Code Integer
+let shared = genlet .< 21 + 21 >.
+
+combined : Code Integer
+let combined = .< .~shared + .~(double 4) >.
+
+instance Lift Integer =
+    let liftCode x = __codeQuote x
+
+lifted : Code Integer
+let lifted = liftCode 7
+
+printCode : Code Integer -> UIO Unit
+let printCode (c : Code Integer) = do
+    match closeCode c
+    case Some cc -> do
+        v <- runCode cc
+        println v
+    case None ->
+        printlnString "not closed"
+
+main : UIO Unit
+let main = do
+    printCode combined
+    printCode lifted

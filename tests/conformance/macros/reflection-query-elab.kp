@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType eqAction Elab Bool
+--! assertType headAction Elab (Option Symbol)
+
+-- §21.6: in an Elab-typed position the convenience reflection queries
+-- remain ordinary 'Elab' actions (their spec signatures); only
+-- ordinary positions run them immediately.
+
+eqAction : Elab Bool
+let eqAction =
+    defEqSyntax '{ 1 + 1 } '{ 2 }
+
+headAction : Elab (Option Symbol)
+let headAction =
+    headSymbolSyntax '{ Some 1 }
+
+usesBoth : Syntax Integer -> Elab (Syntax Integer)
+let usesBoth s = do
+    eq <- defEqSyntax s '{ 0 }
+    match eq
+    case True -> pure '{ 0 }
+    case False -> pure '{ ${s} + 0 }
+
+spliced : Integer
+let spliced =
+    $(usesBoth '{ 5 })

@@ -620,6 +620,16 @@ evalPurePrim p args = case (p, args) of
   ("__arrayToList", [v]) -> Just v
   ("__mapFromEntries", [v]) -> Just v
   ("__mapToList", [v]) -> Just v
+  -- §21.6 'sameSymbol' compares resolved declaration identity
+  ("sameSymbol", [VPrim "__symbolV" [VLit (LitStr a)], VPrim "__symbolV" [VLit (LitStr b)]]) ->
+    bool (a == b)
+  -- §23 staged code (the interpreter models a generative code value by
+  -- its present-stage value; every constructed Code value is closed
+  -- under §23.7 by construction)
+  ("__codeEscape", [VPrim "__codeQuote" [v]]) -> Just v
+  ("closeCode", [VPrim "__codeQuote" [v]]) ->
+    Just (VCtor (prelG "Some") [VPrim "__closedCode" [v]])
+  ("genlet", [c@(VPrim "__codeQuote" _)]) -> Just c
   _ -> Nothing
   where
     int = Just . VLit . LitInt

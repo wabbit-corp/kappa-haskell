@@ -129,6 +129,11 @@ builtinState =
         (prel "Syntax", opaqueTy (tyV (CSort 1 ~> tType)))
       , (prel "Elab", opaqueTy (tyV (CSort 1 ~> tType)))
       , (prel "SyntaxOrigin", opaqueTy (tyV tType))
+      , -- §21.6 semantic-reflection symbol identity (compile-time only)
+        (prel "Symbol", opaqueTy (tyV tType))
+      , -- §23.1 generative staged code (not inspectable as Syntax)
+        (prel "Code", opaqueTy (tyV (tType ~> tType)))
+      , (prel "ClosedCode", opaqueTy (tyV (tType ~> tType)))
       , -- §20.9 opaque carriers passed to comprehension sink hooks
         (prel "RawComprehension", opaqueTy (tyV (tType ~> tType)))
       , (prel "ComprehensionPlan", opaqueTy (tyV (tType ~> tType)))
@@ -191,6 +196,9 @@ builtinState =
     tBytes = tcon "Bytes"
     tUnit = tcon "Unit"
     io e a = CApp Expl (CApp Expl (tcon "IO") e) a
+    optionT a = CApp Expl (tcon "Option") a
+    codeT a = CApp Expl (tcon "Code") a
+    closedCodeT a = CApp Expl (tcon "ClosedCode") a
     effT r a = CApp Expl (CApp Expl (tcon "Eff") r) a
     refT a = CApp Expl (tcon "Ref") a
     listT a = CApp Expl (tcon "List") a
@@ -328,6 +336,27 @@ builtinState =
       , prim "syntaxOrigin" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT tOrigin)))
       , prim "normalizeSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
       , prim "withSyntaxOrigin" (tyV (piI Q0 "t" tType (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
+      , prim "whnfSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+      , -- §21.6 semantic-reflection convenience queries (elaboration-time;
+        -- interpreted by 'Kappa.Check.runElab')
+        prim "defEqSyntax"
+          (tyV (piI Q0 "a" tType (piI Q0 "b" tType (synT (CVar 1) ~> synT (CVar 1) ~> elabT tBool))))
+      , prim "headSymbolSyntax"
+          (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (optionT (tcon "Symbol")))))
+      , -- §21.6 'sameSymbol' compares resolved declaration identity
+        prim "sameSymbol" (tyV (tcon "Symbol" ~> tcon "Symbol" ~> tBool))
+      , -- §23 staged code: '.< e >.' elaborates to '__codeQuote e' (the
+        -- interpreter models generative code by its present-stage value,
+        -- §23.3 lift-based cross-stage persistence) and '.~c' to
+        -- '__codeEscape c'
+        prim "__codeQuote" (tyV (piI Q0 "t" tType (CVar 0 ~> codeT (CVar 1))))
+      , prim "__codeEscape" (tyV (piI Q0 "t" tType (codeT (CVar 0) ~> CVar 1)))
+      , -- §23.4-§23.6 closing and running staged code (every Code value
+        -- this interpreter constructs is scope-safe by construction)
+        prim "closeCode"
+          (tyV (piI Q0 "t" tType (codeT (CVar 0) ~> CApp Expl (tcon "Option") (closedCodeT (CVar 1)))))
+      , prim "genlet" (tyV (piI Q0 "t" tType (codeT (CVar 0) ~> codeT (CVar 1))))
+      , prim "runCode" (tyV (piI Q0 "t" tType (closedCodeT (CVar 0) ~> io (tcon "Void") (CVar 1))))
       , prim "warnElab" (tyV (tStr ~> elabT tUnit))
       , prim "failElab" (tyV (piI Q0 "a" tType (tStr ~> elabT (CVar 1))))
       , prim "failElabWith" (tyV (piI Q0 "a" tType (tStr ~> tStr ~> listT tOrigin ~> elabT (CVar 3))))
@@ -494,6 +523,9 @@ preludeSource =
     , "    one : a"
     , ""
     , "trait Shareable (a : Type)" -- §12.3 marker: shared-borrow-safe
+    , ""
+    , "trait Lift (a : Type) =" -- §23.3 lift-based cross-stage persistence
+    , "    liftCode : a -> Code a"
     , ""
     , "trait Monoid (a : Type) =" -- §28.2.2
     , "    empty : a"

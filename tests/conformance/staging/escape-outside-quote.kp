@@ -1,0 +1,11 @@
+--! mode check
+--! assertDiagnostic error E_CODE_ESCAPE_OUTSIDE_QUOTE
+
+-- §23.2: the escape '.~c' is only meaningful inside a '.< ... >.'
+-- code quote.
+
+bad : Integer
+let bad =
+    block
+        let c = .< 1 >.
+        .~c

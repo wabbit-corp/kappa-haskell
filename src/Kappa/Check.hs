@@ -217,6 +217,9 @@ data Ctx = Ctx
   , ctxQuoteSlots :: !(Map Int Value)
   -- ^ Types of the enclosing quote's grafting slots ('EQuoteHole'),
   -- while the quote payload is being checked (§21.1).
+  , ctxCodeDepth :: !Int
+  -- ^ Nesting depth of enclosing §23.2 code quotes ('.~' is only
+  -- meaningful inside one).
   }
 
 -- | A scoped effect's elaborated interface (§9.3.1.1, §18.1.15): label
@@ -235,7 +238,7 @@ data EffOpInfo = EffOpInfo
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False Map.empty Map.empty
+emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False Map.empty Map.empty 0
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
@@ -1512,6 +1515,12 @@ infer ctx expr = case expr of
                 (CRecordT (sortOn fst fields))
             , VSort 0
             )
+  -- §21.6 convenience reflection queries in ordinary (non-Elab)
+  -- positions run at the call site ('elabReflQuery')
+  EApp (EVar qn) args
+    | nameText qn `elem` reflQueryNames
+    , Nothing <- lookupCtx (nameText qn) ctx ->
+        elabReflQuery ctx qn args Nothing
   -- carrier-prefixed comprehension (§20.9): a type-valued head applied
   -- to a comprehension literal selects a collection carrier
   EApp f args
@@ -1673,6 +1682,8 @@ infer ctx expr = case expr of
   ESealExists _ _ _ sp -> unsupported ctx sp "existential packages"
   EOpenExists _ _ _ _ sp -> unsupported ctx sp "existential packages"
   EQuote e sp -> elabQuote ctx e sp Nothing
+  ECodeQuote e sp -> elabCodeQuote ctx e sp Nothing
+  ECodeEscape e sp -> elabCodeEscape ctx e sp
   ESplice e sp -> elabSplice ctx e sp Nothing
   ESpliceInQuote _ sp -> do
     errAt sp "E_QUOTE_SPLICE_OUTSIDE_QUOTE" (Just "kappa.syntax.quotation")
@@ -1772,6 +1783,12 @@ check ctx expr expected0 = do
       | pm == preludeModule -> do
           (tm, _) <- elabQuote ctx qe sp (Just tT)
           pure tm
+    -- §23.2: a code quote checked against 'Code t' elaborates its
+    -- payload at t
+    (ECodeQuote qe sp, VGlobN (GName pm "Code") [(_, tT)])
+      | pm == preludeModule -> do
+          (tm, _) <- elabCodeQuote ctx qe sp (Just tT)
+          pure tm
     -- §21.2: a splice's expected type directs both the admissible
     -- argument types and the elaboration of the produced syntax
     (ESplice se sp, _) -> do
@@ -1852,6 +1869,15 @@ check ctx expr expected0 = do
           (tm, ty) <- infer ctx expr
           (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
           injectInto ctx tm1 ty1 members expected (exprSpan expr)
+    -- §21.6 convenience reflection queries: an 'Elab'-typed position
+    -- keeps the ordinary action; any other position runs the
+    -- elaboration-time query at the call site ('elabReflQuery')
+    (EApp (EVar qn) args, _)
+      | nameText qn `elem` reflQueryNames
+      , Nothing <- lookupCtx (nameText qn) ctx -> do
+          (tm, ty) <- elabReflQuery ctx qn args (Just expected)
+          expectType ctx (exprSpan expr) ty expected
+          pure tm
     -- §16.1.7.1/§12.2.1: an all-explicit application checked against a
     -- known expected type pre-unifies its result type with the
     -- expectation, so arguments see solved domains (binder quantities
@@ -5858,6 +5884,33 @@ elabQuote ctx payload0 sp mexp = do
   qs <- mkQuotedSyntax ctx payload sp
   pure (CQuote qs (map fst slots), synTV tV)
 
+-- | Elaborate a §23.2 staged-code quotation @.< e >.@: if @e : t@ the
+-- quote has type @Code t@. The interpreter models generative code by
+-- its present-stage value ('__codeQuote'); captured present-stage
+-- variables follow the §23.3 lift-based cross-stage persistence of a
+-- simple variable occurrence (the value environment is captured, so
+-- §23.7 scope safety holds by construction). The §12.3.2 escape rules
+-- treat the quote like a closure over its payload ('Kappa.Usage').
+elabCodeQuote :: Ctx -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
+elabCodeQuote ctx e _sp mexp = do
+  tV <- maybe (freshMetaV ctx) pure mexp
+  tm <- check ctx {ctxCodeDepth = ctxCodeDepth ctx + 1} e tV
+  pure (CApp Expl (CGlob (gPrel "__codeQuote")) tm, codeTV tV)
+
+-- | Elaborate a §23.2 escape @.~c@: requires @c : Code t@ and an
+-- enclosing code quote.
+elabCodeEscape :: Ctx -> Expr -> Span -> CheckM (Term, Value)
+elabCodeEscape ctx e sp = do
+  when (ctxCodeDepth ctx == 0) $
+    errAt sp "E_CODE_ESCAPE_OUTSIDE_QUOTE" (Just "kappa.staging.escape")
+      "the escape '.~c' splices a staged subterm and is only meaningful inside a '.< ... >.' code quote (§23.2)"
+  tV <- freshMetaV ctx
+  tm <- check ctx {ctxCodeDepth = max 0 (ctxCodeDepth ctx - 1)} e (codeTV tV)
+  pure (CApp Expl (CGlob (gPrel "__codeEscape")) tm, tV)
+
+codeTV :: Value -> Value
+codeTV t = VGlobN (gPrel "Code") [(Expl, t)]
+
 -- | §21.4 hygiene metadata: rename quote-site local references to
 -- fresh hygienic spellings and record (spelling, original, level).
 mkQuotedSyntax :: Ctx -> Expr -> Span -> CheckM QuotedSyntax
@@ -5936,6 +5989,87 @@ spliceSyntaxValue ctx sp tV sv = do
           modify' $ \st ->
             st {csExpansions = Map.insert sp (renameVarOccurrences back (qsExpr qs)) (csExpansions st)}
           Just <$> check ctx' (qsExpr qs) tV
+
+-- | The §21.6 convenience reflection queries that may be run directly
+-- by the elaborator in ordinary term positions.
+reflQueryNames :: [Text]
+reflQueryNames = ["defEqSyntax", "headSymbolSyntax"]
+
+-- | §21.6: the convenience reflection operations are elaboration-time
+-- queries. In an 'Elab'-typed position an application is an ordinary
+-- 'Elab' action; in any other position the elaborator runs the query
+-- at the call site and residualizes its result (the standardized
+-- queries consume only meta-phase 'Syntax' operands and answer with
+-- portable first-order results, so no §21.2 generic coercion arises).
+elabReflQuery :: Ctx -> Name -> [Arg] -> Maybe Value -> CheckM (Term, Value)
+elabReflQuery ctx qn args mexp = do
+  (fTm, fTy) <- infer ctx (EVar qn)
+  (tm0, ty0) <- elabSpine ctx (nameSpan qn) fTm fTy args
+  (tm1, ty1) <- insertAllImplicits ctx (nameSpan qn) tm0 ty0
+  ty1F <- forceM ty1
+  expElab <- case mexp of
+    Nothing -> pure False
+    Just e -> isElabHeaded <$> forceM e
+  case ty1F of
+    VGlobN (GName pm "Elab") [(_, rT)]
+      | pm == preludeModule
+      , CGlob (GName fm _) <- fTm
+      , fm == preludeModule
+      , not expElab -> do
+          v <- evalRT ctx tm1
+          res <- runElab ctx (nameSpan qn) v
+          case res of
+            Left () -> (,rT) <$> freshMeta
+            Right rv -> do
+              rTm <- quoteIn ctx rv
+              pure (rTm, rT)
+    _ -> pure (tm1, ty1F)
+  where
+    isElabHeaded = \case
+      VGlobN (GName pm "Elab") _ | pm == preludeModule -> True
+      _ -> False
+
+-- | §21.6: elaborate a reflected syntax value at the current call site
+-- (shared by the convenience reflection queries). Ill-scoped or
+-- ill-typed payloads fail with ordinary structured diagnostics
+-- (§21.6.1).
+elabReflPayload :: Ctx -> Span -> Value -> CheckM (Maybe (Term, Ctx))
+elabReflPayload ctx sp sv = do
+  mq <- graftQuoteV ctx sp sv
+  case mq of
+    Nothing -> pure Nothing
+    Just qs -> do
+      ok <- validateCaptures ctx sp (qsCaptures qs)
+      if not ok
+        then pure Nothing
+        else do
+          let ctx' = extendHyg ctx (qsCaptures qs)
+          -- a payload that elaborates as a type is reflected as the
+          -- type expression (so 'defEqSyntax' relates a same-spelling
+          -- data family's type facet to its rebound static object,
+          -- §7.6); other payloads elaborate as ordinary terms
+          mty <- trySpec (fst <$> inferType ctx' (qsExpr qs))
+          case mty of
+            Just tyTm -> pure (Just (tyTm, ctx'))
+            Nothing -> do
+              (tm0, ty0) <- infer ctx' (qsExpr qs)
+              (tm1, _) <- insertAllImplicits ctx' sp tm0 ty0
+              pure (Just (tm1, ctx'))
+
+-- | The global declaration head of an elaborated core term, if any
+-- (§21.6 'headSymbol': None for variables, binders, locals, and
+-- literals).
+headGlobalOf :: Term -> Maybe GName
+headGlobalOf = \case
+  CApp _ f _ -> headGlobalOf f
+  CGlob g@(GName m _) | m /= primModule -> Just g
+  CCtor g _ -> Just g
+  _ -> Nothing
+
+-- | A §21.6 'Symbol' value: resolved declaration identity.
+symbolValue :: GName -> Value
+symbolValue (GName (ModuleName segs) n) =
+  VPrim "__symbolV" [VLit (LitStr (T.intercalate "." segs <> "::" <> n))]
 
 -- | §21.9 phase check: object-phase runtime locals cannot enter an
 -- elaboration-time splice argument (only meta-phase carriers may).
@@ -6052,6 +6186,33 @@ runElab ctx sp v0 = do
             _ -> sp
       pure (Right (VPrim "__syntaxOriginV" [VLit (LitStr (T.pack (show osp)))]))
     VPrim "normalizeSyntax" [s] -> pure (Right s)
+    VPrim "whnfSyntax" [s] -> pure (Right s)
+    -- §21.6 'defEqSyntax': elaborate both syntax values at the current
+    -- call site and answer the same Boolean that 'defEq' would for the
+    -- resulting cores; the query commits no constraints
+    VPrim "defEqSyntax" [s1, s2] -> do
+      m1 <- elabReflPayload ctx sp s1
+      m2 <- elabReflPayload ctx sp s2
+      case (m1, m2) of
+        (Just (tm1, ctx1), Just (tm2, ctx2)) -> do
+          st0 <- get
+          v1 <- evalRT ctx1 tm1
+          v2 <- evalRT ctx2 tm2
+          eq <- unify ctx v1 v2
+          put st0
+          pure (Right (VCtor (gPrel (if eq then "True" else "False")) []))
+        _ -> pure (Left ())
+    -- §21.6 'headSymbolSyntax': Some s only when the elaborated core
+    -- has a global declaration head ('sameSymbol' then compares
+    -- resolved declaration identity, not spelling — a module alias
+    -- path resolves to the same symbol)
+    VPrim "headSymbolSyntax" [s] -> do
+      m <- elabReflPayload ctx sp s
+      pure $ case m of
+        Nothing -> Left ()
+        Just (tm, _) -> Right $ case headGlobalOf tm of
+          Just g -> VCtor (gPrel "Some") [symbolValue g]
+          Nothing -> VCtor (gPrel "None") []
     VPrim "withSyntaxOrigin" [_, s] -> pure (Right s)
     VPrim "warnElab" [m] -> do
       msg <- strValue m

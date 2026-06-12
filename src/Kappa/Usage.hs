@@ -841,6 +841,11 @@ walkE env e0 = case e0 of
   -- is spliced, through the recorded expansion; the quote itself only
   -- captures meta-level syntax data
   EQuote {} -> pure rNone
+  -- §23.2/§12.3.2: a code quote captures its payload's environment
+  -- like a closure, so a borrowed capture escaping through the result
+  -- is a borrow escape; '.~' operands are ordinary uses
+  ECodeQuote body sp -> latentOf env body sp
+  ECodeEscape body _ -> walkE env body
   ESpliceInQuote {} -> pure rNone
   EQuoteHole {} -> pure rNone
   ESplice _ sp -> case Map.lookup sp (eExpansions env) of

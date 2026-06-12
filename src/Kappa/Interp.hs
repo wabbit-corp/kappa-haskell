@@ -286,6 +286,9 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("printString", [VLit (LitStr s)]) -> rtEmit rt s >> pure unitV
   ("printlnString", [VLit (LitStr s)]) -> rtEmit rt (s <> "\n") >> pure unitV
   ("ioPure", [v]) -> pure v
+  -- §23.6: run closed staged code (the closed-code value carries the
+  -- staged computation's present-stage value directly)
+  ("runCode", [VPrim "__closedCode" [v]]) -> pure v
   ("throwIO", [e]) -> throwIO (KappaError e)
   ("catchIO", [body, handler]) -> do
     r <- try (runIOValue rt body)

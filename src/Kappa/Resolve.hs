@@ -424,6 +424,8 @@ rExpr env = go
       ECaptures e rs sp -> ECaptures <$> go e <*> pure rs <*> pure sp
       EBang e sp -> EBang <$> go e <*> pure sp
       EQuote e sp -> EQuote <$> go e <*> pure sp
+      ECodeQuote e sp -> ECodeQuote <$> go e <*> pure sp
+      ECodeEscape e sp -> ECodeEscape <$> go e <*> pure sp
       ESplice e sp -> ESplice <$> go e <*> pure sp
       ESpliceInQuote e sp -> ESpliceInQuote <$> go e <*> pure sp
       e@EQuoteHole {} -> pure e

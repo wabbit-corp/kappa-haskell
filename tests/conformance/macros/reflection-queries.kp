@@ -1,0 +1,60 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nFalse\nTrue\nFalse\nFalse\n"
+
+-- §21.6: the convenience reflection operations are elaboration-time
+-- queries; in ordinary (non-Elab) positions the elaborator runs them
+-- at the call site. 'defEqSyntax' sees a rebound static type object
+-- (§7.6) as the type it rebinds; 'headSymbolSyntax' answers Some only
+-- for a global declaration head; 'sameSymbol' compares resolved
+-- declaration identity.
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+answer : Integer
+let answer = 41
+
+other : Integer
+let other = 40
+
+eqRebound : Bool
+let eqRebound =
+    block
+        let F = type Box
+        defEqSyntax '{ F Integer } '{ Box Integer }
+
+eqDiff : Bool
+let eqDiff = defEqSyntax '{ Box Integer } '{ Box Bool }
+
+sameHead : Bool
+let sameHead =
+    match headSymbolSyntax '{ answer }
+    case Some s1 ->
+        match headSymbolSyntax '{ answer }
+        case Some s2 -> sameSymbol s1 s2
+        case None -> False
+    case None -> False
+
+diffHead : Bool
+let diffHead =
+    match headSymbolSyntax '{ answer }
+    case Some s1 ->
+        match headSymbolSyntax '{ other }
+        case Some s2 -> sameSymbol s1 s2
+        case None -> False
+    case None -> False
+
+litHead : Bool
+let litHead =
+    match headSymbolSyntax '{ 42 }
+    case Some _ -> True
+    case None -> False
+
+main : UIO Unit
+let main = do
+    println eqRebound
+    println eqDiff
+    println sameHead
+    println diffHead
+    println litHead

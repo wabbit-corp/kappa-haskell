@@ -1,0 +1,9 @@
+--! mode check
+--! assertDiagnostic error E_QTT_BORROW_ESCAPE
+
+-- §23.2/§12.3.2: a code quote captures its payload's environment like
+-- a closure, so returning a quote that captures a borrowed parameter
+-- escapes the borrow.
+
+bad : (& x : Integer) -> Code Integer
+let bad (& x : Integer) : Code Integer = .< x >.

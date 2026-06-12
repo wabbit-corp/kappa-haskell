@@ -62,6 +62,7 @@ renderTerm = go 0
       CLazyE e -> paren (p > 1) ("lazy " <> go 2 e)
       CForceE e -> paren (p > 1) ("force " <> go 2 e)
       CIf c t f -> paren (p > 0) ("if " <> go 0 c <> " then " <> go 0 t <> " else " <> go 0 f)
+      CQuote _ slots -> "'{ ... }" <> (if null slots then "" else " [" <> tshow (length slots) <> " slots]")
     paren True t = "(" <> t <> ")"
     paren False t = t
     tshow :: Show a => a -> Text

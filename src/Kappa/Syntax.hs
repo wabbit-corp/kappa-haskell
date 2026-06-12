@@ -258,6 +258,8 @@ data Expr
   | ECaptures !Expr ![Name] !Span
   | EBang !Expr !Span -- ^ @!e@ monadic splice
   | EQuote !Expr !Span -- ^ @'{ e }@
+  | ECodeQuote !Expr !Span -- ^ @.< e >.@ staged code quotation (§23.2)
+  | ECodeEscape !Expr !Span -- ^ @.~c@ escape inside a code quote (§23.2)
   | ESplice !Expr !Span -- ^ @$( e )@
   | ESpliceInQuote !Expr !Span -- ^ @${ e }@ inside a quote (§21.1)
   | EQuoteHole !Int !Span -- ^ internal: grafting slot of an elaborated quote
@@ -739,6 +741,8 @@ exprSpan = \case
   ECaptures _ _ sp -> sp
   EBang _ sp -> sp
   EQuote _ sp -> sp
+  ECodeQuote _ sp -> sp
+  ECodeEscape _ sp -> sp
   ESplice _ sp -> sp
   ESpliceInQuote _ sp -> sp
   EQuoteHole _ sp -> sp

@@ -1492,7 +1492,10 @@ pChainElems = do
         TokOperator op
           -- '=>' never continues a chain; '*' could be a wildcard only
           -- in imports, so it is safe as an infix operator here.
-          | op /= "=>" -> do
+          -- '.<', '>.', and '.~' are reserved §23.2 staging
+          -- punctuation: '>.' closes a code quote and the other two
+          -- begin operands, so none of them continues a chain.
+          | op `notElem` ["=>", ".<", ">.", ".~"] -> do
               opN <- pOperatorTok
               continueAfterOp opN
         TokElvis -> do
@@ -1533,7 +1536,11 @@ pPrefixOp = try $ do
   op <- pOperatorTok
   -- Only `-` and user prefix operators appear here; conservatively treat
   -- any operator directly preceding an operand as prefix when it begins
-  -- the chain (resolution validates fixity).
+  -- the chain (resolution validates fixity). The §23.2 staging
+  -- punctuation runs are operand syntax ('pAtom'), never prefix
+  -- operators.
+  when (nameText op `elem` [".<", ">.", ".~"]) $
+    parseFail "staging punctuation is not a prefix operator"
   pure op
 
 -- Application spines (§16.1.7): postfixExpr applicationArg*, with an
@@ -1773,6 +1780,18 @@ pAtom = do
       e <- inBrackets pExpr
       token TokRBrace
       EQuote e <$> spanFrom start
+    -- §23.2 staged-code quotation '.< e >.' and escape '.~c' (the
+    -- operator runs '.<', '>.', and '.~' are reserved staging
+    -- punctuation; pChainRest never treats them as infix)
+    TokOperator ".<" -> do
+      void anyToken
+      e <- inBrackets pExpr
+      token (TokOperator ">.")
+      ECodeQuote e <$> spanFrom start
+    TokOperator ".~" -> do
+      void anyToken
+      e <- pPostfixExpr
+      ECodeEscape e <$> spanFrom start
     TokSplice -> do
       void anyToken
       e <- inBrackets pExpr
