@@ -345,6 +345,10 @@ builtinFns :: Map Text [PInfo]
 builtinFns =
   Map.fromList
     [ ("unsafeConsume", [PInfo Nothing (Just QOne) False False True False])
+    , -- §14.3.2 'summon': the explicit goal argument is a type, erased
+      -- at runtime (§31.2), so mentioning an erased type binder there
+      -- is not a runtime use
+      ("summon", [PInfo Nothing (Just QZero) False False True False])
     ]
 
 -- | Resolve a (possibly aliased) record type to its field list.

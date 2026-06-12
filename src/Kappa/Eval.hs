@@ -19,6 +19,7 @@ module Kappa.Eval
   , convertible
   , matchPat
   , vapp
+  , vproj
   , evalPurePrim
   , evalPrimCtx
   , lookupEnv

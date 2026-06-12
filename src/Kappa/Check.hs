@@ -851,7 +851,7 @@ resolveName ctx (Name n sp) =
   where
     renderMod (ModuleName segs) = "module " <> T.intercalate "." segs
     failUnresolved = do
-      errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "'")
+      errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "' (not in scope)")
       anyHole emptyCtxDummy
     emptyCtxDummy = ctx
 
@@ -1857,6 +1857,25 @@ check ctx expr expected0 = do
     -- expectation, so arguments see solved domains (binder quantities
     -- through polymorphic wrappers, literal defaulting, dependent
     -- constructor indices)
+    -- §20.9: a carrier-prefixed comprehension in checked position
+    -- still selects its sink through the type-valued prefix (the
+    -- generic application path would apply the data constructor)
+    (EApp f args, _)
+      | not (null args)
+      , ArgExplicit (EComprehension k cs y csp) <- last args -> do
+          st0 <- get
+          mPrefix <- carrierPrefix ctx f (init args)
+          case mPrefix of
+            Just prefix -> do
+              (tm, ty) <- elabComprehensionC ctx k cs y csp (Just prefix)
+              expectType ctx csp ty expected
+              pure tm
+            Nothing -> do
+              put st0
+              (tm, ty) <- infer ctx expr
+              (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
+              expectType ctx (exprSpan expr) ty1 expected
+              pure tm1
     (EApp f args, _)
       | all isExplicitArg args, not (null args) -> do
           mproj <- projectionHead ctx f
@@ -2126,15 +2145,20 @@ inferT ctx e = case e of
   -- §7.2: in type position a module-qualified name selects the TYPE
   -- facet of a same-spelling data family (term position prefers the
   -- constructor facet)
-  EDot (EVar b) (DotName m)
-    | Nothing <- lookupCtx (nameText b) ctx -> do
+  EDot base (DotName m)
+    | Just segNames <- dottedPathOf base
+    , (b : restSegs) <- map nameText segNames
+    , Nothing <- lookupCtx b ctx -> do
         st <- get
-        let mmn = case Map.lookup (nameText b) (csModuleAliases st) of
-              Just target -> Just target
-              Nothing
-                | ModuleName [nameText b] == csModule st -> Just (csModule st)
-                | Map.member (ModuleName [nameText b]) (csModuleExports st) ->
-                    Just (ModuleName [nameText b])
+        let mmn = case Map.lookup b (csModuleAliases st) of
+              Just target
+                | null restSegs -> Just target
+              _
+                | ModuleName (b : restSegs) == csModule st -> Just (csModule st)
+                | Map.member (ModuleName (b : restSegs)) (csModuleExports st) ->
+                    Just (ModuleName (b : restSegs))
+                | null restSegs && Map.member (ModuleName [b]) (csModuleExports st) ->
+                    Just (ModuleName [b])
                 | otherwise -> Nothing
         case mmn of
           Just mn
@@ -2156,6 +2180,10 @@ inferT ctx e = case e of
     isLowerName t = case T.uncons t of
       Just (c, _) -> c >= 'a' && c <= 'z'
       Nothing -> False
+    dottedPathOf = \case
+      EVar b -> Just [b]
+      EDot b (DotName n) -> (++ [n]) <$> dottedPathOf b
+      _ -> Nothing
 
 elabForall :: Ctx -> [Binder] -> Expr -> CheckM (Term, Value)
 elabForall ctx0 bs0 body = go ctx0 bs0
@@ -2831,18 +2859,84 @@ elabString ctx sl parts sp = case (slPrefix sl, parts) of
           pure (CApp Expl (CProj showDict "show") tm1)
         _ -> pure (CLit (LitStr ""))
   (Just p, _) -> do
-    -- §6.3.4: the prefix is resolved by ordinary term name resolution;
-    -- an unknown prefix is an unresolved name, a known one names a
-    -- literal handler this implementation does not provide.
+    -- §6.3.4.3: the prefix is resolved by ordinary term name
+    -- resolution and must elaborate to an 'Elab (InterpolatedMacro t)'
+    -- handler; the §6.3.4.5 fragment pipeline runs at elaboration time
     resolvable <- prefixResolves ctx p
     if resolvable
-      then do
-        _ <- unsupported ctx sp ("the '" <> p <> "' string-literal handler")
-        pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
+      then elabPrefixHandler ctx sl parts sp p
       else do
         errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
           ("unresolved name '" <> p <> "' used as a string-literal prefix (Spec §6.3.4)")
         pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
+
+-- | §6.3.4.3–5: run a prefixed string through its 'InterpolatedMacro'
+-- handler at elaboration time and splice the produced syntax.
+elabPrefixHandler :: Ctx -> StringLit -> [InterpPart] -> Span -> Text -> CheckM (Term, Value)
+elabPrefixHandler ctx sl parts sp p = do
+  let bail = anyHole ctx
+  (hTm, hTy) <- infer ctx (EVar (Name p sp))
+  (hTm1, hTy1) <- insertAllImplicits ctx sp hTm hTy
+  hTyF <- forceM hTy1
+  case hTyF of
+    VGlobN (GName pm "Elab") [(_, inner)]
+      | pm == preludeModule -> do
+          innerF <- forceM inner
+          case innerF of
+            VGlobN (GName pm2 "InterpolatedMacro") [(_, tV)]
+              | pm2 == preludeModule -> do
+                  frags <- fragmentValues
+                  hV <- evalRT ctx hTm1
+                  rDict <- runElab ctx sp hV
+                  case rDict of
+                    Left () -> bail
+                    Right dictV -> do
+                      ec <- ecRT_
+                      let methodV = vproj ec dictV "buildInterpolated"
+                      action <- vappRT methodV [listValue frags]
+                      res <- runElab ctx sp action
+                      case res of
+                        Left () -> bail
+                        Right sv -> do
+                          mtm <- spliceSyntaxValue ctx sp tV sv
+                          case mtm of
+                            Nothing -> bail
+                            Just tm -> pure (tm, tV)
+            _ -> badHandler hTyF >> bail
+    VGlobN (GName pm "InterpolatedMacro") _
+      | pm == preludeModule -> do
+          errAt sp "E_PREFIX_RUNTIME_HANDLER" (Just "kappa.literal.prefixed")
+            "a runtime 'InterpolatedMacro' value is not a valid prefixed-string handler; handler evidence must be meta-phase, an 'Elab (InterpolatedMacro _)' term (§6.3.4.3)"
+          bail
+    _ -> badHandler hTyF >> bail
+  where
+    badHandler ty = do
+      tT <- quoteIn ctx ty
+      errAt sp "E_PREFIX_HANDLER_TYPE" (Just "kappa.literal.prefixed")
+        ("the prefixed-string handler '" <> p
+           <> "' must elaborate to 'Elab (InterpolatedMacro _)'; this term has type "
+           <> renderTerm tT <> " (§6.3.4.3)")
+    -- §6.3.4.4 fragment construction (literal merging and escape
+    -- decoding already performed by the lexer)
+    fragmentValues =
+      forM (zip [0 ..] (slFragments sl)) $ \(i, frag) -> case frag of
+        FragLit t -> pure (VCtor (gPrel "Lit") [VLit (LitStr t)])
+        FragInterp _ isp -> interpValue i isp Nothing
+        FragInterpFmt _ isp fmt -> interpValue i isp (Just fmt)
+    interpValue i isp mfmt = do
+      payload <- case [ipExpr q | q <- parts, ipIndex q == i] of
+        [e] -> do
+          -- elaborate for diagnostics and the fragment's type index;
+          -- the handler receives the quoted surface syntax (§6.3.4.4)
+          (tm0, ty0) <- infer ctx e
+          _ <- insertAllImplicits ctx isp tm0 ty0
+          pure e
+        _ -> pure (EUnit isp)
+      qs <- mkQuotedSyntax ctx payload isp
+      let quoteV = VQuote qs []
+      pure $ case mfmt of
+        Nothing -> VCtor (gPrel "Interp") [quoteV]
+        Just fmt -> VCtor (gPrel "InterpFmt") [quoteV, VLit (LitStr fmt)]
 
 -- ── Records, projections, patches ────────────────────────────────────
 
@@ -3265,12 +3359,19 @@ elabDotUnqualified ctx e member mname = do
               anyHole ctx
 
     failMember recvTy mn0 = do
-      rT <- quoteIn ctx recvTy
-      report $
-        withNote ("receiver type: " <> renderTerm rT) $
-          diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
-            (nameSpanOf member)
-            ("no member '" <> nameText mn0 <> "' on this receiver (§7.3)")
+      recvF <- forceM recvTy
+      case recvF of
+        -- an unsolved flex receiver type means the receiver itself did
+        -- not elaborate (e.g. an unresolved name); a member error on
+        -- '?m' would be cascade noise (§3.1.14 recovery hygiene)
+        VFlex {} -> pure ()
+        _ -> do
+          rT <- quoteIn ctx recvF
+          report $
+            withNote ("receiver type: " <> renderTerm rT) $
+              diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+                (nameSpanOf member)
+                ("no member '" <> nameText mn0 <> "' on this receiver (§7.3)")
       anyHole ctx
 
     -- which constructors a field projection may assume (§10.2 single
@@ -5813,20 +5914,28 @@ elabSplice ctx me sp mexp = do
           case res of
             Left () -> bail
             Right sv -> do
-              mq <- graftQuoteV ctx sp sv
-              case mq of
+              mtmS <- spliceSyntaxValue ctx sp tV sv
+              case mtmS of
                 Nothing -> bail
-                Just qs -> do
-                  ok <- validateCaptures ctx sp (qsCaptures qs)
-                  if not ok
-                    then bail
-                    else do
-                      let ctx' = extendHyg ctx (qsCaptures qs)
-                          back = Map.fromList [(qcHyg c, qcOrig c) | c <- qsCaptures qs]
-                      modify' $ \st ->
-                        st {csExpansions = Map.insert sp (renameVarOccurrences back (qsExpr qs)) (csExpansions st)}
-                      tmS <- check ctx' (qsExpr qs) tV
-                      pure (tmS, tV)
+                Just tmS -> pure (tmS, tV)
+
+-- | Elaborate a produced 'Syntax' value at a splice site (§21.2):
+-- graft, validate hygiene, record the expansion, re-elaborate.
+spliceSyntaxValue :: Ctx -> Span -> Value -> Value -> CheckM (Maybe Term)
+spliceSyntaxValue ctx sp tV sv = do
+  mq <- graftQuoteV ctx sp sv
+  case mq of
+    Nothing -> pure Nothing
+    Just qs -> do
+      ok <- validateCaptures ctx sp (qsCaptures qs)
+      if not ok
+        then pure Nothing
+        else do
+          let ctx' = extendHyg ctx (qsCaptures qs)
+              back = Map.fromList [(qcHyg c, qcOrig c) | c <- qsCaptures qs]
+          modify' $ \st ->
+            st {csExpansions = Map.insert sp (renameVarOccurrences back (qsExpr qs)) (csExpansions st)}
+          Just <$> check ctx' (qsExpr qs) tV
 
 -- | §21.9 phase check: object-phase runtime locals cannot enter an
 -- elaboration-time splice argument (only meta-phase carriers may).
@@ -6802,7 +6911,7 @@ elabComprehensionC ctx kind clauses yld sp mCarrier = do
   forM_ (cpDiags plan) $ \(dsp, code, fam, msg) -> errAt dsp code fam msg
   lowered <- desugarComp ctx (zip clauses (cpAnns plan ++ repeat defaultAnn)) yld sp
   case mCarrier of
-    Just prefix -> collectCarrier ctx plan lowered prefix sp
+    Just prefix -> collectCarrier ctx kind plan lowered prefix sp
     Nothing -> case kind of
       CompList -> infer ctx lowered
       CompSet -> do
@@ -6881,7 +6990,9 @@ carrierPrefix ctx f preArgs = do
   where
     goInfer headE = do
       n0 <- gets (length . csDiags)
-      (hTm, hTy) <- infer ctx headE
+      -- §7.2: a carrier prefix is a type expression, so a same-spelling
+      -- data family selects its TYPE facet (inferT), not the constructor
+      (hTm, hTy) <- inferT ctx headE
       n1 <- gets (length . csDiags)
       hTy' <- forceM hTy
       if n1 /= n0
@@ -6896,8 +7007,8 @@ carrierPrefix ctx f preArgs = do
           _ -> pure Nothing
 
 -- | Terminal collection through an explicit carrier prefix (§20.9).
-collectCarrier :: Ctx -> CompPlan -> Expr -> CarrierPrefix -> Span -> CheckM (Term, Value)
-collectCarrier ctx plan lowered (prefTm, prefTy) sp = do
+collectCarrier :: Ctx -> CompKind -> CompPlan -> Expr -> CarrierPrefix -> Span -> CheckM (Term, Value)
+collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
   (listTm0, listTy) <- infer ctx lowered
   itemV <- elemOfList listTy
   candidate <- case prefTy of
@@ -6907,34 +7018,87 @@ collectCarrier ctx plan lowered (prefTm, prefTy) sp = do
       evalIn ctx (CApp Expl prefTm itemTm)
     _ -> freshMetaV ctx
   cand <- forceM candidate
-  case cand of
-    VGlobN (GName _ "QueryCore") [(_, m), (_, q), (_, a)] -> do
-      (expOneShot, expCard) <- decodeQueryMode m
-      expLinear <- decodeLinearQuantity q
-      when (cpOneShot plan && not expOneShot) $
-        errAt sp "E_QUERY_MODE_MISMATCH" (Just "kappa.query.mode")
-          "this comprehension's plan is one-shot, but the carrier requires a reusable query; use 'OnceQuery [ ... ]' or an explicitly indexed 'QueryCore' carrier (§20.9)"
-      unless (cardSub (cpCard plan) expCard) $
-        errAt sp "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa.query.cardinality")
-          ("the inferred plan cardinality " <> cardName (cpCard plan)
-             <> " cannot be checked against the demanded cardinality " <> cardName expCard
-             <> "; cardinality may only be widened (§20.10.1)")
-      when (cpItemLinear plan && not expLinear) $
-        errAt sp "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa.query.item-quantity")
-          "the yielded item is available only at linear quantity 1, but the carrier demands unrestricted (ω) items (§20.9)"
-      listTm <- checkAsList listTm0 listTy a
-      pure (CApp Expl (CGlob (gPrel "__queryFromList")) listTm, candidate)
-    VGlobN (GName _ "Array") [(_, a)] -> do
-      listTm <- checkAsList listTm0 listTy a
-      pure (CApp Expl (CGlob (gPrel "__arrayFromList")) listTm, candidate)
-    VGlobN (GName _ "List") [(_, a)] -> do
-      listTm <- checkAsList listTm0 listTy a
-      pure (listTm, candidate)
-    VGlobN (GName _ "Set") [(_, a)] -> do
-      listTm <- checkAsList listTm0 listTy a
-      pure (CApp Expl (CGlob (gPrel "__setFromList")) listTm, candidate)
-    _ -> unsupported ctx sp "this comprehension carrier"
+  -- §20.9 custom sinks: a FromComprehensionRaw instance is preferred
+  -- over FromComprehensionPlan; both run their Elab hook here
+  mSink <- sinkHook cand itemV
+  case mSink of
+    Just r -> pure r
+    Nothing -> builtinCarrier listTm0 listTy itemV candidate cand
   where
+    sinkHook cand itemV = do
+      mRaw <- trySpec (instanceSearch ctx sp (VGlobN (gPrel "FromComprehensionRaw") [(Expl, cand)]))
+      mPlan <-
+        case mRaw of
+          Just (Just _) -> pure Nothing
+          _ -> trySpec (instanceSearch ctx sp (VGlobN (gPrel "FromComprehensionPlan") [(Expl, cand)]))
+      let chosen = case (mRaw, mPlan) of
+            (Just (Just dict), _) -> Just (dict, "fromComprehensionRaw", "__rawComprehension")
+            (_, Just (Just dict)) -> Just (dict, "fromComprehensionPlan", "__comprehensionPlan")
+            _ -> Nothing
+      case chosen of
+        Nothing -> pure Nothing
+        Just (dictTm, method, token) -> do
+          ec <- ecRT_
+          dictV <- evalRT ctx dictTm
+          -- the associated Item must be definitionally equal to the
+          -- normalized yielded item type (§20.9)
+          let itemMember = vproj ec dictV "Item"
+          okItem <- unify ctx itemMember itemV
+          if not okItem
+            then do
+              iT <- quoteIn ctx =<< forceM itemMember
+              yT <- quoteIn ctx =<< forceM itemV
+              errAt sp "E_SINK_ITEM_MISMATCH" (Just "kappa.query.sink")
+                ("the selected sink's associated 'Item' type '" <> renderTerm iT
+                   <> "' is not definitionally equal to the yielded item type '" <> renderTerm yT <> "' (§20.9)")
+              Just <$> anyHole ctx
+            else do
+              action <- vappRT (vproj ec dictV method) [VPrim token []]
+              res <- runElab ctx sp action
+              case res of
+                Left () -> Just <$> anyHole ctx
+                Right sv -> do
+                  mtm <- spliceSyntaxValue ctx sp cand sv
+                  case mtm of
+                    Nothing -> Just <$> anyHole ctx
+                    Just tm -> pure (Just (tm, cand))
+    builtinCarrier listTm0 listTy _itemV candidate cand = case cand of
+      VGlobN (GName _ "QueryCore") [(_, m), (_, q), (_, a)] -> do
+        -- §20.9: the Query carriers cannot silently discard map/set
+        -- collection metadata
+        case kind of
+          CompMap _ -> do
+            errAt sp "E_QUERY_METADATA_LOSS" (Just "kappa.query.sink")
+              "a 'Query { ... }' map comprehension is ill-formed: the Query carrier would silently discard the map metadata (§20.9)"
+          CompSet -> do
+            errAt sp "E_QUERY_METADATA_LOSS" (Just "kappa.query.sink")
+              "a 'Query {| ... |}' set comprehension is ill-formed: the Query carrier would silently discard the set metadata (§20.9)"
+          _ -> pure ()
+        (expOneShot, expCard) <- decodeQueryMode m
+        expLinear <- decodeLinearQuantity q
+        when (cpOneShot plan && not expOneShot) $
+          errAt sp "E_QUERY_MODE_MISMATCH" (Just "kappa.query.mode")
+            "this comprehension's plan is one-shot, but the carrier requires a reusable query; use 'OnceQuery [ ... ]' or an explicitly indexed 'QueryCore' carrier (§20.9)"
+        unless (cardSub (cpCard plan) expCard) $
+          errAt sp "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa.query.cardinality")
+            ("the inferred plan cardinality " <> cardName (cpCard plan)
+               <> " cannot be checked against the demanded cardinality " <> cardName expCard
+               <> "; cardinality may only be widened (§20.10.1)")
+        when (cpItemLinear plan && not expLinear) $
+          errAt sp "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa.query.item-quantity")
+            "the yielded item is available only at linear quantity 1, but the carrier demands unrestricted (ω) items (§20.9)"
+        listTm <- checkAsList listTm0 listTy a
+        pure (CApp Expl (CGlob (gPrel "__queryFromList")) listTm, candidate)
+      VGlobN (GName _ "Array") [(_, a)] -> do
+        listTm <- checkAsList listTm0 listTy a
+        pure (CApp Expl (CGlob (gPrel "__arrayFromList")) listTm, candidate)
+      VGlobN (GName _ "List") [(_, a)] -> do
+        listTm <- checkAsList listTm0 listTy a
+        pure (listTm, candidate)
+      VGlobN (GName _ "Set") [(_, a)] -> do
+        listTm <- checkAsList listTm0 listTy a
+        pure (CApp Expl (CGlob (gPrel "__setFromList")) listTm, candidate)
+      _ -> unsupported ctx sp "this comprehension carrier"
     elemOfList ty = do
       t <- forceM ty
       case t of
