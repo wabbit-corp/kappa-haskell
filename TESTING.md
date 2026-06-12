@@ -58,7 +58,7 @@ Implemented:
 | `packageMode`, `dumpFormat json\|sexpr`, `requires mode package` | accepted no-ops (defaults); in package mode a module header that disagrees with the §8.1 path-derived name is `E_MODULE_PATH_MISMATCH` |
 | `backend interpreter`, `requires backend interpreter` | accepted (the in-process interpreter) |
 | `requires capability runTask\|pipelineTrace` | met; other capabilities classify unsupported |
-| `requires capability legacyCharAlias\|unicodeSourceWarnings` | met (documented §T.1 compatibility extensions: the §28.5 `Char` alias; the §3.1.3 source-hygiene warnings) |
+| `requires capability legacyCharAlias\|unicodeSourceWarnings` | met (documented §T.1 compatibility extensions: the §28.2 `Char` compatibility alias; the §3.1.3 source-hygiene warnings) |
 | `assertNoErrors`, `assertNoWarnings` | |
 | `assertErrorCount N`, `assertWarningCount N` | |
 | `assertDiagnostic SEV CODE` | portable alias matching (§3.1.4) |
@@ -142,7 +142,7 @@ harness errors. Layout by area:
 | `shape/` | `assertDeclKinds` |
 | `macros/` | §21 metaprogramming: quote/splice macros, §21.4 hygiene escape, macro-duplicated linear splices, Elab do reflection, §6.3.4 interpolated prefixed-string handlers, and the §21.6 convenience reflection queries (`defEqSyntax`/`headSymbolSyntax`/`sameSymbol` in ordinary positions with value asserts, plus their Elab-typed action forms) |
 | `deriving/` | §22 `std.deriving.shape` reflection (`inspectAdt`, `matchAdt`, opacity) |
-| `staging/` | §23 staged code: the quote/escape/`genlet`/`closeCode`/`runCode` pipeline with a user `Lift` instance, `E_QTT_BORROW_ESCAPE` for a quote capturing a borrowed parameter (§12.3.2), `E_CODE_ESCAPE_OUTSIDE_QUOTE` |
+| `staging/` | §23 staged code: the quote/escape/`genlet`/`closeCode`/`runCode` pipeline with a user `Lift` instance, `E_QTT_BORROW_ESCAPE` for a quote capturing a borrowed parameter (§12.3), `E_CODE_ESCAPE_OUTSIDE_QUOTE` |
 | `effects/` | §18.1 algebraic effects: deep/shallow handlers, multi-shot resumption, one-shot overuse, multi-shot linear-capture rejection |
 | `projections/` | §9.1.1/§16.1.6 projection declarations: selectors, accessor bundles, footprints, zipper linear fill, `E_PROJECTION_CAPABILITY_REQUIRED` |
 | `unicode/` | §3.1.3 source hygiene, invalid UTF-8 recovery, `g`/`b` quoted literals, §29.4 `std.unicode` runtime, scalar ranges |

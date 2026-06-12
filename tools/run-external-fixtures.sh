@@ -135,7 +135,7 @@ total=$((pass + fail + unsup + herr))
   echo "  (§T.4 — capabilities provided: \`runTask\`, \`pipelineTrace\`, and"
   echo "  the nonstandard \`legacyCharAlias\`/\`unicodeSourceWarnings\` names"
   echo "  as documented §T.1 compatibility extensions — the prelude defines"
-  echo "  the §28.5 \`Char\` alias and the pipeline emits the §3.1.3"
+  echo "  the §28.2 \`Char\` compatibility alias and the pipeline emits the §3.1.3"
   echo "  optional source-hygiene warnings; not provided: \`stageDumps\`,"
   echo "  \`incremental\`), \`x-\` extension"
   echo "  directives this harness does not support (§T.3: an unsupported"

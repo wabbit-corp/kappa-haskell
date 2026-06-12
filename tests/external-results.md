@@ -74,7 +74,7 @@ Category is the first dot segment of the fixture directory name
   (§T.4 — capabilities provided: `runTask`, `pipelineTrace`, and
   the nonstandard `legacyCharAlias`/`unicodeSourceWarnings` names
   as documented §T.1 compatibility extensions — the prelude defines
-  the §28.5 `Char` alias and the pipeline emits the §3.1.3
+  the §28.2 `Char` compatibility alias and the pipeline emits the §3.1.3
   optional source-hygiene warnings; not provided: `stageDumps`,
   `incremental`), `x-` extension
   directives this harness does not support (§T.3: an unsupported
