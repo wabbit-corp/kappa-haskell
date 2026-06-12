@@ -50,6 +50,14 @@ renderTerm = go 0
       CLetRec _ n _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
       CMeta m -> "?m" <> tshow m
       CDo _ -> "do ..."
+      CSealE _ e -> paren (p > 1) ("seal " <> go 2 e)
+      CSigT ls e ->
+        case e of
+          CRecordT fs ->
+            "(" <> T.intercalate ", "
+              [(if n `elem` ls then "opaque " else "") <> n <> " : " <> go 0 t | (n, t) <- fs]
+              <> ")"
+          _ -> go p e
       CThunkE e -> paren (p > 1) ("thunk " <> go 2 e)
       CLazyE e -> paren (p > 1) ("lazy " <> go 2 e)
       CForceE e -> paren (p > 1) ("force " <> go 2 e)

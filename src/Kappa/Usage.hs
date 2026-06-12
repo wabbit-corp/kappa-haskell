@@ -809,7 +809,7 @@ walkE env e0 = case e0 of
     r <- walkE env b
     let (u, t) = flatR r
     pure (R u t Map.empty)
-  ESeal {} -> bailOut >> pure rNone
+  ESeal b _ _ -> walkE env b -- §13.2.10: hiding is not a consuming destructor
   EOpenExists {} -> bailOut >> pure rNone
   ESealExists {} -> bailOut >> pure rNone
   EListLit es _ -> walks es

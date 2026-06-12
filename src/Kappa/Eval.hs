@@ -123,6 +123,8 @@ eval ctx env = \case
     Just (Just v) -> v
     _ -> VFlex m []
   CDo items -> VDoV items env
+  CSealE ls e -> VSealV ls (eval ctx env e)
+  CSigT ls e -> VSigT ls (eval ctx env e)
   CThunkE e -> VThunkV (Closure env e)
   CLazyE e -> VLazyV (Closure env e)
   CForceE e -> vforce ctx (eval ctx env e)
@@ -174,6 +176,10 @@ evalApp ctx = foldl (\f (ic, a) -> vapp ctx f ic a)
 vproj :: EvalCtx -> Value -> Text -> Value
 vproj ctx v f = case force ctx v of
   VRecordV fs | Just x <- lookup f fs -> x
+  -- §13.2.10: projection computes through a seal except for opaque
+  -- members, whose defining equations are hidden (runtime projections
+  -- of retained ordinary fields always compute)
+  VSealV ls r | f `notElem` ls || ecRuntime ctx -> vproj ctx r f
   v' -> VProjN v' f
 
 vforce :: EvalCtx -> Value -> Value
@@ -220,10 +226,15 @@ force ctx = go (if ecRuntime ctx then 200000000 else 1000 :: Int)
             go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' ic a) rest)
       VPrim p sp
         | Just v' <- evalPrimCtx ctx p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
-      VProjN inner fld
-        | VRecordV fs <- go (fuel - 1) inner
-        , Just x <- lookup fld fs ->
-            go (fuel - 1) x
+      VProjN inner fld ->
+        -- §13.2.10: a projection re-fires through seal layers unless
+        -- the member is opaque (always computes at runtime)
+        let unseal x = case x of
+              VSealV ls r | ecRuntime ctx || fld `notElem` ls -> unseal (go (fuel - 1) r)
+              _ -> x
+         in case unseal (go (fuel - 1) inner) of
+              VRecordV fs | Just x <- lookup fld fs -> go (fuel - 1) x
+              _ -> v
       VIfN c t f -> case go (fuel - 1) c of
         VCtor (GName _ "True") [] -> go (fuel - 1) (closRun t)
         VCtor (GName _ "False") [] -> go (fuel - 1) (closRun f)
@@ -396,6 +407,8 @@ quote ctx lvl v = case forceQ ctx v of
     -- only when env is empty; otherwise approximate via fresh rigids.
     CMatch (quote ctx lvl scrut) (map (quoteAlt env) alts)
   VProjN e f -> CProj (quote ctx lvl e) f
+  VSealV ls x -> CSealE ls (quote ctx lvl x)
+  VSigT ls x -> CSigT ls (quote ctx lvl x)
   VDoV items _ -> CDo items
   VThunkV (Closure env body) -> CThunkE (quoteUnder env body)
   VLazyV (Closure env body) -> CLazyE (quoteUnder env body)
@@ -462,6 +475,11 @@ convertible ctx = go (200 :: Int)
         length m1 == length m2 && and (zipWith (go (fuel - 1) lvl) m1 m2)
       (VInject t1 x1, VInject t2 x2) -> t1 == t2 && go (fuel - 1) lvl x1 x2
       (VProjN e1 f1, VProjN e2 f2) -> f1 == f2 && go (fuel - 1) lvl e1 e2
+      -- §13.2.10: seal is pure and non-generative; sealed packages are
+      -- equal iff the underlying records are (seal e as S ≡ e)
+      (VSealV _ x1, y1) -> go (fuel - 1) lvl x1 y1
+      (x1, VSealV _ y1) -> go (fuel - 1) lvl x1 y1
+      (VSigT l1 x1, VSigT l2 x2) -> l1 == l2 && go (fuel - 1) lvl x1 x2
       (VIfN c1 t1 f1, VIfN c2 t2 f2) ->
         -- if-branch closures bind nothing
         go (fuel - 1) lvl c1 c2

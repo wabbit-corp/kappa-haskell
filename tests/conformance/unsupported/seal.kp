@@ -1,4 +1,0 @@
---! assertDiagnostic error E_UNSUPPORTED
-
-s : Integer
-let s = seal 5 as Integer

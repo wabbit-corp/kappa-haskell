@@ -354,6 +354,8 @@ mentionsThis = \case
   CLetRec _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
   CMeta _ -> False
   CDo _ -> False
+  CSealE _ e -> mentionsThis e
+  CSigT _ e -> mentionsThis e
   CThunkE e -> mentionsThis e
   CLazyE e -> mentionsThis e
   CForceE e -> mentionsThis e
@@ -384,6 +386,8 @@ thisDepsOf = nub . go
       CLetRec _ _ a b c -> go a ++ go b ++ go c
       CMeta _ -> []
       CDo _ -> []
+      CSealE _ e -> go e
+      CSigT _ e -> go e
       CThunkE e -> go e
       CLazyE e -> go e
       CForceE e -> go e
@@ -416,6 +420,8 @@ substThisTm recv = go 0
       CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta _ -> t
       CDo _ -> t
+      CSealE ls e -> CSealE ls (go d e)
+      CSigT ls e -> CSigT ls (go d e)
       CThunkE e -> CThunkE (go d e)
       CLazyE e -> CLazyE (go d e)
       CForceE e -> CForceE (go d e)
@@ -539,6 +545,12 @@ unify ctx = goTop True
             go qok (lvl + 1) b1' b2'
       (VRecordT f1, VRecordT f2) | map fst f1 == map fst f2 ->
         andM [goTop False x y | ((_, x), (_, y)) <- zip f1 f2]
+      -- §13.2.10: signature types are equal iff the opaque label sets
+      -- and the underlying record types agree
+      (VSigT l1 v1, VSigT l2 v2) | l1 == l2 -> goTop False v1 v2
+      -- §13.2.10: seal is pure and non-generative (seal e as S ≡ e)
+      (VSealV _ x, t) -> goTop qok x t
+      (t, VSealV _ x) -> goTop qok t x
       (VVariantT m1, VVariantT m2) | length m1 == length m2 ->
         andM (zipWith (goTop False) m1 m2)
       (VCtor g1 a1, VCtor g2 a2) | g1 == g2 && length a1 == length a2 ->
@@ -640,11 +652,38 @@ expectType ctx sp actual expected = do
   unless ok $ do
     aT <- quoteIn ctx actual
     eT <- quoteIn ctx expected
-    report $
-      withNote ("expected: " <> renderTerm eT) $
-        withNote ("actual:   " <> renderTerm aT) $
-          diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
-            "type mismatch"
+    -- §13.2.10: a mismatch whose head is an opaque sealed-package
+    -- member is an attempt to unfold a hidden defining equation
+    aOp <- opaqueSealHead actual
+    eOp <- opaqueSealHead expected
+    if aOp || eOp
+      then
+        report $
+          withNote ("expected: " <> renderTerm eT) $
+            withNote ("actual:   " <> renderTerm aT) $
+              diag SevError StageElaborate "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa.seal.opaque-unfolding") sp
+                "an opaque member of a sealed package does not unfold to its hidden definition (§13.2.10)"
+      else
+        report $
+          withNote ("expected: " <> renderTerm eT) $
+            withNote ("actual:   " <> renderTerm aT) $
+              diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
+                "type mismatch"
+
+-- | Is the value (in whnf) headed by a projection of an opaque member
+-- of a sealed package (§13.2.10)?
+opaqueSealHead :: Value -> CheckM Bool
+opaqueSealHead v = do
+  v' <- forceM v
+  case v' of
+    VProjN r f -> do
+      r' <- forceM r
+      case r' of
+        VSealV ls _ -> pure (f `elem` ls)
+        _ -> pure False
+    VPrim p (h : _)
+      | p == "__stuck_app" || p == "__stuck_appI" -> opaqueSealHead h
+    _ -> pure False
 
 -- ── Names ────────────────────────────────────────────────────────────
 
@@ -1056,6 +1095,8 @@ zonkTermM depth0 t0 = do
         CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
         CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
         CDo items -> CDo (goI d items)
+        CSealE ls e -> CSealE ls (go d e)
+        CSigT ls e -> CSigT ls (go d e)
         CThunkE e -> CThunkE (go d e)
         CLazyE e -> CLazyE (go d e)
         CForceE e -> CForceE (go d e)
@@ -1307,6 +1348,10 @@ infer ctx expr = case expr of
         tV <- evalIn ctx t
         ((f, t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
       finish fields = case mtail of
+        -- §13.2.10: opaque members make the closed record a signature
+        Nothing
+          | opaqs@(_ : _) <- sort [nameText (rtfName f) | f <- fs, rtfOpaque f] ->
+              pure (CSigT opaqs (CRecordT (sortOn fst fields)), VSort 0)
         Nothing -> pure (CRecordT (sortOn fst fields), VSort 0)
         -- §11.3.1A: open record with a contextual row tail
         Just tailE -> do
@@ -1473,7 +1518,7 @@ infer ctx expr = case expr of
     elabTry ctx inner excepts mfin sp
   EHandle deep lblE scrutE cases sp -> elabHandle ctx deep lblE scrutE cases sp
   EEffRow entries mtail sp -> elabEffRow ctx entries mtail sp
-  ESeal _ _ sp -> unsupported ctx sp "sealed packages"
+  ESeal e tyE sp -> elabSeal ctx e tyE sp
   ESealExists _ _ _ sp -> unsupported ctx sp "existential packages"
   EOpenExists _ _ _ _ sp -> unsupported ctx sp "existential packages"
   EQuote _ sp -> unsupported ctx sp "syntax quotation"
@@ -1638,6 +1683,12 @@ check ctx expr expected0 = do
     -- §13.2.1 dependent record literals: sibling references through
     -- 'this' (in field types or initializers) need telescope-ordered
     -- elaboration
+    -- §13.2.10: a signature type with opaque members is introduced
+    -- only through 'seal ... as ...', never by a direct record literal
+    (ERecordLit _ lsp, VSigT _ _) -> do
+      errAt lsp "E_SEAL_DIRECT_LITERAL_FOR_SIGNATURE" (Just "kappa.seal.direct-literal")
+        "a record literal cannot introduce a signature type with opaque members; use 'seal ... as ...' (§13.2.10)"
+      fst <$> anyHole ctx
     (ERecordLit items lsp, VRecordT fs) -> do
       depTy <- recordTypeIsDependent ctx fs
       let depVal =
@@ -2666,7 +2717,14 @@ manifestValue ctx tm = case tm of
       else pure Nothing
   CProj t f -> do
     mv <- manifestValue ctx t
-    case mv of
+    -- §13.2.10: transparent members of a sealed package stay manifest;
+    -- opaque members forget static-object identity
+    let unwrap v =
+          forceM v >>= \case
+            VSealV ls r | f `notElem` ls -> unwrap r
+            v' -> pure v'
+    mv' <- traverse unwrap mv
+    case mv' of
       Just (VRecordV fs) | Just v <- lookup f fs -> Just <$> forceM v
       _ -> pure Nothing
   CVar i -> case drop i (ctxEnv ctx) of
@@ -2796,7 +2854,12 @@ elabDotUnqualified ctx e member mname = do
         _ -> ordinaryAt mn0 tm1 ty1
 
     ordinaryAt mn0 tm1 ty1 = do
-      t <- forceM ty1
+      t0 <- forceM ty1
+      -- §13.2.10: package-member selection sees the signature's
+      -- underlying record type (opacity is enforced by the value)
+      t <- case t0 of
+        VSigT _ inner -> forceM inner
+        _ -> pure t0
       case t of
         VRecordT fs
           | Just fty <- lookup (nameText mn0) fs -> do
@@ -3299,6 +3362,98 @@ elabSectionUpdate ctx baseE recv rhs sp = case recv of
       errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
         "the projection-section update target must resolve to a stable place, a selector projection, or an accessor bundle providing 'set' (§13.2.5, §30.2.2.4)"
       pure (baseTm, baseTy)
+
+-- | §13.2.10 sealed packages: @seal e as S@. The ascribed type must be
+-- a closed record type; opaque members of S keep their defining
+-- equations hidden behind the resulting package value.
+elabSeal :: Ctx -> Expr -> Expr -> Span -> CheckM (Term, Value)
+elabSeal ctx e tyE sp = do
+  (sTm, _) <- inferType ctx tyE
+  sV <- forceM =<< evalIn ctx sTm
+  case sV of
+    VGlobN (GName pm "__openRec") _
+      | pm == preludeModule -> do
+          errAt sp "E_SEAL_OPEN_RECORD_ASCRIPTION" (Just "kappa.seal.open-record")
+            "the ascribed type of 'seal ... as ...' must be a closed record type; an open record with a residual row is not a sealing signature (§13.2.10)"
+          anyHole ctx
+    VSigT ls inner ->
+      forceM inner >>= \case
+        VRecordT fs -> doSeal ls fs sV
+        _ -> notRecord
+    VRecordT fs -> doSeal [] fs sV
+    _ -> notRecord
+  where
+    notRecord = do
+      errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+        "the ascribed type of 'seal ... as ...' must elaborate to a closed record type (§13.2.10)"
+      anyHole ctx
+    -- record-literal payload: elaborate the retained fields in
+    -- dependency order against the signature's field types (§13.2.10
+    -- signature matching), inferring the hidden extras
+    doSeal ls fs sV
+      | ERecordLit items lsp <- e = do
+          let supplied = [(nameText n, fromMaybe (EVar n) me) | RecItem _ n me <- items]
+          forM_ (duplicatesOf (map fst supplied)) $ \n ->
+            errAt lsp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+              ("record literal has duplicate field '" <> n <> "'")
+          let missing = [nm | (nm, _) <- fs, nm `notElem` map fst supplied]
+          if not (null missing)
+            then do
+              errAt lsp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                ( "the sealed expression does not provide the signature field(s) "
+                    <> T.intercalate ", " (map (\n -> "'" <> n <> "'") missing)
+                    <> " (§13.2.10)"
+                )
+              anyHole ctx
+            else do
+              annotated <- forM fs $ \(nm, fty) -> do
+                ftyTm <- quoteIn ctx fty
+                let fe = fromMaybe (EVar (Name nm lsp)) (lookup nm supplied)
+                    deps =
+                      nub (thisDepsOf ftyTm ++ [l | l <- surfaceThisRefs fe, l `elem` map fst fs])
+                pure (nm, deps, (nm, fty, fe))
+              case topoFields annotated of
+                Nothing -> do
+                  errAt lsp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+                    "the sibling references of this record literal form a cycle (§13.2.1)"
+                  anyHole ctx
+                Just ordered -> do
+                  retained <- goLit [] [] ordered
+                  -- hidden extras are discarded by the seal (§13.2.10);
+                  -- they still elaborate
+                  forM_ [fe | (nm, fe) <- supplied, nm `notElem` map fst fs] $ \fe ->
+                    void (withThis Nothing (infer ctx fe))
+                  pure (CSealE ls (CRecordV (sortOn fst retained)), sV)
+      | otherwise = do
+          (eTm0, eTy0) <- infer ctx e
+          (eTm, eTy1) <- insertAllImplicits ctx (exprSpan e) eTm0 eTy0
+          eTy <- forceM eTy1
+          mefs <- case eTy of
+            VRecordT efs -> pure (Just efs)
+            VSigT _ inner ->
+              forceM inner >>= \case
+                VRecordT efs -> pure (Just efs)
+                _ -> pure Nothing
+            _ -> pure Nothing
+          case mefs of
+            Nothing -> do
+              expectType ctx (exprSpan e) eTy sV
+              pure (CSealE ls eTm, sV)
+            Just efs -> do
+              forM_ fs $ \(nm, fty) -> case lookup nm efs of
+                Nothing ->
+                  errAt (exprSpan e) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                    ("the sealed expression does not provide the signature field '" <> nm <> "' (§13.2.10)")
+                Just aty -> do
+                  aty' <- substThisInto ctx eTm aty
+                  fty' <- substThisInto ctx eTm fty
+                  expectType ctx (exprSpan e) aty' fty'
+              pure (CSealE ls eTm, sV)
+    goLit _ _ [] = pure []
+    goLit doneV doneT ((nm, fty, fe) : rest) = do
+      fty' <- substThisInto ctx (CRecordV (sortOn fst doneV)) fty
+      tm <- withThis (Just (ThisValue doneV doneT)) (check ctx fe fty')
+      ((nm, tm) :) <$> goLit ((nm, tm) : doneV) ((nm, fty') : doneT) rest
 
 -- | A record literal against a §13.2.1 dependent record type (or one
 -- whose initializers use sibling references): fields elaborate in
@@ -6249,6 +6404,8 @@ shiftTerm by = go
       CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta m -> CMeta m
       CDo items -> CDo items
+      CSealE ls e -> CSealE ls (go d e)
+      CSigT ls e -> CSigT ls (go d e)
       CThunkE e -> CThunkE (go d e)
       CLazyE e -> CLazyE (go d e)
       CForceE e -> CForceE (go d e)
@@ -6604,6 +6761,8 @@ placesToThis n = go 0
       CLetRec q nm a b c -> CLetRec q nm (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta _ -> t
       CDo _ -> t
+      CSealE ls e -> CSealE ls (go d e)
+      CSigT ls e -> CSigT ls (go d e)
       CThunkE e -> CThunkE (go d e)
       CLazyE e -> CLazyE (go d e)
       CForceE e -> CForceE (go d e)
@@ -6650,6 +6809,18 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
     _ ->
       -- no governing signature: the binding is manifest (§2.8.4)
       modify' $ \stM -> stM {csManifest = Map.insert g () (csManifest stM)}
+  -- §13.2.10/§2.8: a signature-governed binding whose definiens is an
+  -- identity-preserving form (record/seal/projection chain, not a
+  -- function result) still preserves static-object identity
+  let markManifestIfShaped tm =
+        when (manifestShaped tm) $
+          modify' $ \stM -> stM {csManifest = Map.insert g () (csManifest stM)}
+      manifestShaped = \case
+        CGlob _ -> True
+        CRecordV _ -> True
+        CSealE _ x -> manifestShaped x
+        CProj x _ -> manifestShaped x
+        _ -> False
   case msig of
     Just gd | Nothing <- gdValue gd -> do
       -- Pending goals raised inside the signature may have been solved
@@ -6687,6 +6858,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
                       ("could not verify structural termination of '" <> nameText n <> "' (§15.3)")
               pure okStructural
             else pure True
+      markManifestIfShaped tm
       addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
     _ -> do
       -- a previous definition with a value: duplicate declaration (§9.2)

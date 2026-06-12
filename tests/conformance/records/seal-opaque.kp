@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.10 sealed packages: opaque member projection at abstract type,
+-- transparent member unfolding, hidden-field discard, alias identity.
+
+type OpaqueBox : Type = (opaque T : Type, value : this.T)
+
+box : OpaqueBox
+let box : OpaqueBox = seal (T = Int, value = 1) as OpaqueBox
+
+value : box.T
+let value : box.T = box.value
+
+alias : OpaqueBox
+let alias : OpaqueBox = box
+
+coerceSameMember : alias.T -> box.T
+let coerceSameMember (x : alias.T) : box.T = x
+
+type BoxSig : Type = (T : Type, value : this.T)
+
+tbox : BoxSig
+let tbox : BoxSig = seal (T = Int, value = 2, hidden = True) as BoxSig
+
+transparent : Int
+let transparent : Int = tbox.value

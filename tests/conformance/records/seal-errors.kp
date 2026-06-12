@@ -1,0 +1,26 @@
+--! mode check
+--! assertDiagnostic error E_SEAL_OPAQUE_UNFOLDING
+--! assertDiagnostic error E_SEAL_DIRECT_LITERAL_FOR_SIGNATURE
+--! assertDiagnostic error E_RECORD_PROJECTION_MISSING_FIELD
+
+-- §13.2.10: opaque defining equations are hidden; signature types are
+-- introduced only via seal; hidden extra fields are not projectable.
+
+type OpaqueBox : Type = (opaque T : Type, value : this.T)
+
+box : OpaqueBox
+let box : OpaqueBox = seal (T = Int, value = 1) as OpaqueBox
+
+bad : Int
+let bad : Int = box.value
+
+direct : OpaqueBox
+let direct : OpaqueBox = (T = Int, value = 1)
+
+type Public : Type = (x : Int,)
+
+p : Public
+let p : Public = seal (x = 1, secret = "nope") as Public
+
+hidden : String
+let hidden : String = p.secret

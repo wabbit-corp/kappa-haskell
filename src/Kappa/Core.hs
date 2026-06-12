@@ -90,6 +90,8 @@ data Term
   | CLetRec !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
   | CMeta !MetaId
   | CDo ![KItem] -- ^ §18.8 do kernel; executed natively
+  | CSealE ![Text] !Term -- ^ §13.2.10 sealed package: opaque labels + record
+  | CSigT ![Text] !Term -- ^ §13.2.10 signature type: opaque labels + record type
   | CThunkE !Term -- ^ Delay
   | CLazyE !Term -- ^ Memo
   | CForceE !Term
@@ -164,6 +166,8 @@ data Value
   | VInject !Text !Value
   | VMatchN !Value ![CaseAlt] !Env -- ^ stuck match
   | VProjN !Value !Text -- ^ stuck projection
+  | VSealV ![Text] !Value -- ^ §13.2.10 sealed package (opaque member projections stick)
+  | VSigT ![Text] !Value -- ^ §13.2.10 signature type (opaque labels + record type)
   | VDoV ![KItem] !Env -- ^ suspended do block (runtime object)
   | VThunkV !Closure
   | VLazyV !Closure
