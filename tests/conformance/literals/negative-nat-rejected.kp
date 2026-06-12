@@ -1,0 +1,11 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_UNSOLVED_IMPLICIT
+
+module main
+
+-- §6.1.4/§6.1.5: `-` is a unary operator, not part of the literal —
+-- `-123` is `negate 123`, so `-123 : Nat` is rejected unless a
+-- nonportable `Negatable Nat` instance is in scope (the portable
+-- prelude MUST NOT provide one).
+neg : Nat
+let neg = -123

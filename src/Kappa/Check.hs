@@ -2466,6 +2466,15 @@ withArgFlatFor f act = do
   modify' $ \st -> st {csArgFlatOk = old}
   pure r
 
+-- | One planned argument slot of a checked application spine
+-- ('elabAppChecked'): a kind-like implicit placeholder, an evidence
+-- implicit resolved after result-type pre-unification, or an explicit
+-- argument expression checked against its (pre-solved) domain.
+data AppSlot
+  = SlotKind Term
+  | SlotEvid Q Value Value
+  | SlotExpl Q Expr Value Value
+
 elabAppChecked :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM Term
 elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
   st0 <- get
@@ -2489,30 +2498,56 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       expectType ctx sp ty1 expected
       pure tm1
   where
-    peel ty [] acc = pure (Just (reverse acc, ty))
-    peel ty as0@(a : as) acc = do
+    peel ty as0 acc = do
       tyF <- forceM ty
       case tyF of
+        -- kind-like implicits become bare placeholders; evidence
+        -- implicits keep the ordinary resolution ladder, run after
+        -- the result type has been unified with the expectation so
+        -- the goal sees solved metas (§16.1.7.1, §6.1.5). Trailing
+        -- implicits (e.g. §28.2.1 proof obligations) are saturated
+        -- like 'insertAllImplicits' does on the inference path.
         VPi Impl q _ dom clo -> do
-          -- only kind-like implicits become bare placeholders; evidence
-          -- implicits keep the ordinary resolution ladder
           kindLike <- isKindLike (ctxLen ctx) dom
-          if not kindLike
-            then pure Nothing
-            else do
-              m <- freshMeta
-              mV <- evalIn ctx m
-              ty' <- clApp clo mV
-              peel ty' as0 ((Impl, q, Nothing, dom, m, mV) : acc)
+          m <- freshMeta
+          mV <- evalIn ctx m
+          ty' <- clApp clo mV
+          let slot =
+                if kindLike
+                  then SlotKind m
+                  else SlotEvid q dom mV
+          peel ty' as0 (slot : acc)
         VPi Expl q _ dom clo
-          | ArgExplicit e <- a -> do
+          | (ArgExplicit e : as) <- as0 -> do
               m <- freshMeta
               mV <- evalIn ctx m
               ty' <- clApp clo mV
-              peel ty' as ((Expl, q, Just e, dom, m, mV) : acc)
-        _ -> pure Nothing
-    step tm (Impl, _, _, _, m, _) = pure (CApp Impl tm m)
-    step tm (Expl, q, Just e, dom, _, mV) = do
+              peel ty' as ((SlotExpl q e dom mV) : acc)
+        _
+          | [] <- as0 -> pure (Just (reverse acc, tyF))
+          | otherwise -> pure Nothing
+    step tm (SlotKind m) = pure (CApp Impl tm m)
+    step tm (SlotEvid q dom mV) = do
+      -- §3.2.3 proof obligations are postponed to the pending queue
+      -- even when fully solved: the boolean branch facts they reduce
+      -- under may themselves be stuck on evidence metas that only the
+      -- end-of-declaration flush solves
+      isEq <- isEqGoal dom
+      ev <-
+        if isEq
+          then do
+            m <- freshMeta
+            let mid = case m of
+                  CMeta i -> i
+                  _ -> error "freshMeta"
+            bfs <- gets csBoolFacts
+            modify' $ \st -> st {csPending = (mid, dom, sp, ctx, bfs) : csPending st}
+            pure m
+          else resolveImplicitQ ctx sp q dom
+      evV <- evalIn ctx ev
+      _ <- unify ctx mV evV
+      pure (CApp Impl tm ev)
+    step tm (SlotExpl q e dom mV) = do
       oldRetag <- gets csArgIndexRetag
       modify' $ \st -> st {csArgIndexRetag = True}
       aTm <- withDemand (demandOfQ q) (check ctx e dom)
@@ -2520,7 +2555,6 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       aV <- evalIn ctx aTm
       _ <- unify ctx mV aV
       pure (CApp Expl tm aTm)
-    step tm _ = pure tm
 
 -- | Is the value a (possibly parameterized) type former — i.e. is its
 -- final codomain a universe?

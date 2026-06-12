@@ -1,0 +1,34 @@
+--! assertNoErrors
+--! assertEval a -123
+--! assertEval b -7
+--! assertEval pay 7
+
+module main
+
+-- §6.1.4/§6.1.5: `-123 : Integer` elaborates as `negate (fromInteger
+-- 123)`; the payload passed to `fromInteger` is the nonnegative `Nat`,
+-- even through a user `FromInteger`/`Negatable` pair.
+a : Integer
+let a = -123
+
+b : Int
+let b = -7
+
+data Pos : Type =
+    MkPos Nat
+
+instance FromInteger Pos =
+    let fromInteger n = MkPos n
+
+-- a (nonportable) Negatable lets `-7 : Pos` elaborate; the payload
+-- observed by fromInteger stays 7
+instance Negatable Pos =
+    let negate x = x
+
+p : Pos
+let p = -7
+
+pay : Int
+let pay =
+    match p
+      case MkPos n -> natToInt n

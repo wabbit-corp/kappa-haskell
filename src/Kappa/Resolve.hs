@@ -132,14 +132,10 @@ opApply op l r = EApp (EVar op) [ArgExplicit l, ArgExplicit r]
 
 opApply1 :: Name -> Expr -> Expr
 opApply1 op x
-  -- prefix minus on a numeric literal is a signed literal (§6.1.4)
-  | nameText op == "-"
-  , EIntLit v Nothing sp <- x =
-      EIntLit (negate v) Nothing sp
-  | nameText op == "-"
-  , EFloatLit v Nothing sp <- x =
-      EFloatLit (negate v) Nothing sp
-  -- prefix minus otherwise resolves to negation (§6.1.4)
+  -- `-` is a unary operator, not part of the literal: `-123` is
+  -- `negate 123`, even for literal operands (§6.1.4, §6.1.5). The
+  -- literal payload stays nonnegative; `-123 : Nat` is rejected
+  -- because the portable prelude provides no `Negatable Nat`.
   | nameText op == "-" = EApp (EVar op {nameText = "negate"}) [ArgExplicit x]
   | otherwise = EApp (EVar op) [ArgExplicit x]
 
