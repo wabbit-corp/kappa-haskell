@@ -27,7 +27,18 @@ import Kappa.Check
 import Kappa.Core (GName (..), gnameText)
 import Kappa.Diagnostic
 import Kappa.Parser (parseModule)
-import Kappa.Prelude (builtinState, preludeSource, stdHashSource, stdUnicodeSource)
+import Kappa.Prelude
+  ( builtinState
+  , preludeSource
+  , stdAtomicSource
+  , stdBridgeSource
+  , stdFfiCSource
+  , stdFfiSource
+  , stdGradualSource
+  , stdHashSource
+  , stdSupervisorSource
+  , stdUnicodeSource
+  )
 import Kappa.Resolve (defaultFixities, resolveModule)
 import Kappa.Source
 import Kappa.Syntax
@@ -55,9 +66,24 @@ preludeState =
     Right (m, recovered) ->
       let (m', rdiags) = resolveModule defaultFixities m
           (st, diags) = checkModule builtinState m'
-          (st', hdiags) = stdModule (ModuleName ["std", "hash"]) "<std.hash>" stdHashSource st
-          (st'', udiags) = stdModule (ModuleName ["std", "unicode"]) "<std.unicode>" stdUnicodeSource st'
-       in (st'', recovered ++ rdiags ++ diags ++ hdiags ++ udiags)
+          stdSources =
+            [ (ModuleName ["std", "hash"], "<std.hash>", stdHashSource)
+            , (ModuleName ["std", "unicode"], "<std.unicode>", stdUnicodeSource)
+            , (ModuleName ["std", "ffi"], "<std.ffi>", stdFfiSource)
+            , (ModuleName ["std", "ffi", "c"], "<std.ffi.c>", stdFfiCSource)
+            , (ModuleName ["std", "atomic"], "<std.atomic>", stdAtomicSource)
+            , (ModuleName ["std", "gradual"], "<std.gradual>", stdGradualSource)
+            , (ModuleName ["std", "bridge"], "<std.bridge>", stdBridgeSource) -- after std.gradual
+            , (ModuleName ["std", "supervisor"], "<std.supervisor>", stdSupervisorSource)
+            ]
+          (st', sdiags) =
+            foldl
+              (\(stAcc, dsAcc) (mn, path, src) ->
+                 let (stNext, ds) = stdModule mn path src stAcc
+                  in (stNext, dsAcc ++ ds))
+              (st, [])
+              stdSources
+       in (st', recovered ++ rdiags ++ diags ++ sdiags)
 
 -- | Compile one embedded standard-library module on top of the
 -- prelude state and register its exports.
@@ -67,10 +93,18 @@ stdModule mn path src st0 =
     Left ds -> (st0, ds)
     Right (m, recovered) ->
       let (m', rdiags) = resolveModule defaultFixities m
-          stIn = st0 {csModule = mn, csScope = preludeScope st0, csDiags = []}
+          ie = buildImports st0 m'
+          stIn =
+            st0
+              { csModule = mn
+              , csScope = ieScope ie
+              , csScopeAmbig = ieAmbig ie
+              , csModuleAliases = ieAliases ie
+              , csDiags = []
+              }
           (st1, diags) = checkModule stIn m'
           st2 = st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
-       in (st2, recovered ++ rdiags ++ diags)
+       in (st2, recovered ++ rdiags ++ ieDiags ie ++ diags)
 
 -- | Scope with every prelude global visible unqualified (§28.1).
 preludeScope :: CheckState -> Map.Map Text GName

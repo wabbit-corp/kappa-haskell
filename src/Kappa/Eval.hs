@@ -24,7 +24,7 @@ module Kappa.Eval
   , lookupEnv
   ) where
 
-import Data.Bits (xor)
+import Data.Bits (xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Char (chr, ord)
 import Data.Map.Strict (Map)
@@ -571,6 +571,10 @@ evalPurePrim p args = case (p, args) of
     Just (listV [VLit (LitStr w) | w <- sentenceChunks s])
   ("__byteToNat", [VLit (LitByte w)]) -> int (fromIntegral w)
   -- §29.3 hash mixing: FNV-1a over a 64-bit lane, deterministic per run
+  -- §29.1 std.atomic bitwise internals (two's-complement over Integer)
+  ("__intAnd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a .&. b)
+  ("__intOr", [VLit (LitInt a), VLit (LitInt b)]) -> int (a .|. b)
+  ("__intXor", [VLit (LitInt a), VLit (LitInt b)]) -> int (a `xor` b)
   ("__hashMixInt", [VLit (LitInt s), VLit (LitInt v)]) -> int (fnvMixInteger s v)
   ("__hashMixDouble", [VLit (LitInt s), VLit (LitDouble d)]) ->
     int (fnvMixInteger s (toInteger (castDoubleToWord64 d)))
@@ -638,6 +642,22 @@ evalPrimCtx ctx p args = case evalPurePrim p args of
 -- multi-shot resumption per §32.2.14 is supported).
 evalEffPrim :: EvalCtx -> Text -> [Value] -> Maybe Value
 evalEffPrim ctx p args = case (p, args) of
+  -- §29.1 representation equality for atomicCompareExchange (the
+  -- interpreter's canonical value representation IS the atomic rep)
+  ("__atomicRepEq", [x, y])
+    | isCanonicalRt x && isCanonicalRt y ->
+        Just
+          ( VCtor
+              (GName (ModuleName ["std", "prelude"]) (if convertible ctx 0 x y then "True" else "False"))
+              []
+          )
+    where
+      isCanonicalRt v = case force ctx v of
+        VLit _ -> True
+        VCtor _ _ -> True
+        VRecordV _ -> True
+        VInject _ _ -> True
+        _ -> False
   -- runPure : Eff <[ ]> a -> a (§18.1.14)
   ("runPure", [comp]) -> case force ctx comp of
     VCtor (GName _ "__EffPure") [v] -> Just v

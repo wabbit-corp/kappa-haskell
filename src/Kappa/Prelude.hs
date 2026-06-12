@@ -7,6 +7,12 @@ module Kappa.Prelude
   , preludeSource
   , stdHashSource
   , stdUnicodeSource
+  , stdFfiSource
+  , stdFfiCSource
+  , stdAtomicSource
+  , stdGradualSource
+  , stdBridgeSource
+  , stdSupervisorSource
   , evalPurePrim
   ) where
 
@@ -229,6 +235,12 @@ builtinState =
       , prim "__stringWords" (tyV (tStr ~> listT tStr))
       , prim "__stringSentences" (tyV (tStr ~> listT tStr))
       , prim "__byteToNat" (tyV (tByte ~> tNat))
+      , -- §29.1 std.atomic bitwise read-modify-write internals
+        prim "__intAnd" (tyV (tInt ~> tInt ~> tInt))
+      , prim "__intOr" (tyV (tInt ~> tInt ~> tInt))
+      , prim "__intXor" (tyV (tInt ~> tInt ~> tInt))
+      , -- §29.1 representation equality for atomicCompareExchange
+        prim "__atomicRepEq" (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tcon "Bool")))
       , -- §29.3 std.hash mixing internals (deterministic within a run)
         prim "__hashMixInt" (tyV (tInt ~> tInt ~> tInt))
       , prim "__hashMixDouble" (tyV (tInt ~> tDouble ~> tInt))
@@ -702,6 +714,29 @@ preludeSource =
     , -- §18.11: structured-concurrency handles (check-mode support)
       "data Fiber (e : Type) (a : Type) : Type ="
     , "    MkFiberHandle"
+    , ""
+    , -- §18.8.2 terminal results and causes (vocabulary subset)
+      "data InterruptCause : Type ="
+    , "    MkInterruptCause"
+    , ""
+    , "data DefectInfo : Type ="
+    , "    MkDefectInfo (message : String)"
+    , ""
+    , "data Cause (e : Type) : Type ="
+    , "    Fail e"
+    , "    Interrupt InterruptCause"
+    , "    Defect DefectInfo"
+    , "    Both (Cause e) (Cause e)"
+    , "    Then (Cause e) (Cause e)"
+    , ""
+    , "data Exit (e : Type) (a : Type) : Type ="
+    , "    Success a"
+    , "    Failure (Cause e)"
+    , ""
+    , -- §11.6 decidability witness
+      "data Dec (p : Type) : Type ="
+    , "    Yes p"
+    , "    No (p -> Void)"
     , ""
     , "fork : forall (e : Type) (a : Type) (r : Type). IO e a -> IO r (Fiber e a)"
     , "let fork action = ioPure MkFiberHandle"
@@ -1256,4 +1291,320 @@ stdUnicodeSource =
     , ""
     , "sentences : String -> Query String" -- terminator approximation
     , "let sentences s = __queryFromList (__stringSentences s)"
+    ]
+
+-- | Embedded @std.ffi@ source (§26.1.1 portable foreign-ABI scalar and
+-- pointer vocabulary): nominal exact-width/pointer-width wrappers over
+-- the portable numeric representations. No host bindings are provided;
+-- this is the type vocabulary only.
+stdFfiSource :: Text
+stdFfiSource =
+  T.unlines
+    [ "module std.ffi"
+    , ""
+    , "data I8 : Type =    MkI8 (rep : Integer)"
+    , "data I16 : Type =   MkI16 (rep : Integer)"
+    , "data I32 : Type =   MkI32 (rep : Integer)"
+    , "data I64 : Type =   MkI64 (rep : Integer)"
+    , "data U8 : Type =    MkU8 (rep : Integer)"
+    , "data U16 : Type =   MkU16 (rep : Integer)"
+    , "data U32 : Type =   MkU32 (rep : Integer)"
+    , "data U64 : Type =   MkU64 (rep : Integer)"
+    , "data Isize : Type = MkIsize (rep : Integer)"
+    , "data Usize : Type = MkUsize (rep : Integer)"
+    , "data F32 : Type =   MkF32 (rep : Double)"
+    , "data F64 : Type =   MkF64 (rep : Double)"
+    , ""
+    , "data RawPtr : Type ="
+    , "    MkRawPtr (addr : Integer)"
+    , ""
+    , "data OpaqueHandle : Type ="
+    , "    MkOpaqueHandle (token : Integer)"
+    ]
+
+-- | Embedded @std.ffi.c@ source (§26.1.1): C/native ABI spelling types.
+stdFfiCSource :: Text
+stdFfiCSource =
+  T.unlines
+    [ "module std.ffi.c"
+    , ""
+    , "data CChar : Type =      MkCChar (rep : Integer)"
+    , "data CSChar : Type =     MkCSChar (rep : Integer)"
+    , "data CUChar : Type =     MkCUChar (rep : Integer)"
+    , "data CShort : Type =     MkCShort (rep : Integer)"
+    , "data CUShort : Type =    MkCUShort (rep : Integer)"
+    , "data CInt : Type =       MkCInt (rep : Integer)"
+    , "data CUInt : Type =      MkCUInt (rep : Integer)"
+    , "data CLong : Type =      MkCLong (rep : Integer)"
+    , "data CULong : Type =     MkCULong (rep : Integer)"
+    , "data CLongLong : Type =  MkCLongLong (rep : Integer)"
+    , "data CULongLong : Type = MkCULongLong (rep : Integer)"
+    , "data CSize : Type =      MkCSize (rep : Integer)"
+    , "data CPtrdiff : Type =   MkCPtrdiff (rep : Integer)"
+    , "data CBool : Type =      MkCBool (rep : Bool)"
+    , "data CFloat : Type =     MkCFloat (rep : Double)"
+    , "data CDouble : Type =    MkCDouble (rep : Double)"
+    ]
+
+-- | Embedded @std.atomic@ source (§29.1): the canonical surface over
+-- 'Ref' cells. The interpreter runs fibers cooperatively on one
+-- thread, so every memory order is trivially sequentially consistent.
+stdAtomicSource :: Text
+stdAtomicSource =
+  T.unlines
+    [ "module std.atomic"
+    , ""
+    , "data AtomicRef (a : Type) : Type ="
+    , "    MkAtomicRef (cell : Ref a)"
+    , ""
+    , "data LoadOrder : Type ="
+    , "    LoadRelaxed"
+    , "    LoadAcquire"
+    , "    LoadSeqCst"
+    , ""
+    , "data StoreOrder : Type ="
+    , "    StoreRelaxed"
+    , "    StoreRelease"
+    , "    StoreSeqCst"
+    , ""
+    , "data RmwOrder : Type ="
+    , "    RmwRelaxed"
+    , "    RmwAcquire"
+    , "    RmwRelease"
+    , "    RmwAcqRel"
+    , "    RmwSeqCst"
+    , ""
+    , "data CasFailureOrder : Type ="
+    , "    CasFailRelaxed"
+    , "    CasFailAcquire"
+    , "    CasFailSeqCst"
+    , ""
+    , "data CompareExchangeResult (a : Type) : Type ="
+    , "    Exchanged (old : a)"
+    , "    NotExchanged (current : a)"
+    , ""
+    , "trait AtomicValue (a : Type)"
+    , ""
+    , "trait AtomicInteger (a : Type)"
+    , ""
+    , "instance AtomicValue Bool"
+    , "instance AtomicValue Integer"
+    , "instance AtomicInteger Integer"
+    , ""
+    , "newAtomicRef : forall (a : Type). (@_ : AtomicValue a) -> a -> UIO (AtomicRef a)"
+    , "let newAtomicRef initial = do"
+    , "    cell <- newRef initial"
+    , "    pure (MkAtomicRef cell)"
+    , ""
+    , "atomicLoad : forall (a : Type). (@_ : AtomicValue a) -> LoadOrder -> AtomicRef a -> UIO a"
+    , "let atomicLoad order ref ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> readRef cell"
+    , ""
+    , "atomicStore : forall (a : Type). (@_ : AtomicValue a) -> StoreOrder -> AtomicRef a -> a -> UIO Unit"
+    , "let atomicStore order ref value ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> writeRef cell value"
+    , ""
+    , "atomicExchange : forall (a : Type). (@_ : AtomicValue a) -> RmwOrder -> AtomicRef a -> a -> UIO a"
+    , "let atomicExchange order ref value ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> do"
+    , "        old <- readRef cell"
+    , "        writeRef cell value"
+    , "        pure old"
+    , ""
+    , "atomicCompareExchange : forall (a : Type). (@_ : AtomicValue a) -> RmwOrder -> CasFailureOrder -> AtomicRef a -> a -> a -> UIO (CompareExchangeResult a)"
+    , "let atomicCompareExchange success failure ref expected desired ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> ioBind (readRef cell) (\\current -> if __atomicRepEq current expected then ioBind (writeRef cell desired) (\\ignored -> ioPure (Exchanged current)) else ioPure (NotExchanged current))"
+    , ""
+    , "__atomicRmw : forall (a : Type). (a -> a -> a) -> RmwOrder -> AtomicRef a -> a -> UIO a"
+    , "let __atomicRmw op order ref operand ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> do"
+    , "        old <- readRef cell"
+    , "        writeRef cell (op old operand)"
+    , "        pure old"
+    , ""
+    , "atomicFetchAdd : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
+    , "let atomicFetchAdd order ref operand = __atomicRmw addInt order ref operand"
+    , ""
+    , "atomicFetchSub : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
+    , "let atomicFetchSub order ref operand = __atomicRmw subInt order ref operand"
+    , ""
+    , "atomicFetchAnd : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
+    , "let atomicFetchAnd order ref operand = __atomicRmw __intAnd order ref operand"
+    , ""
+    , "atomicFetchOr : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
+    , "let atomicFetchOr order ref operand = __atomicRmw __intOr order ref operand"
+    , ""
+    , "atomicFetchXor : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
+    , "let atomicFetchXor order ref operand = __atomicRmw __intXor order ref operand"
+    ]
+
+-- | Embedded @std.gradual@ source (§24.9): explicit dynamic values.
+-- 'DynRep' is a nominal token; representation checking compares tokens.
+stdGradualSource :: Text
+stdGradualSource =
+  T.unlines
+    [ "module std.gradual"
+    , ""
+    , "data CastBlame : Type ="
+    , "    MkCastBlame (message : String)"
+    , ""
+    , "data DynRep (a : Type) : Type ="
+    , "    MkDynRep (tag : String)"
+    , ""
+    , "data Dyn : Type ="
+    , "    MkDyn (tag : String)"
+    , ""
+    , "trait DynamicType (a : Type) ="
+    , "    dynRep : DynRep a"
+    , ""
+    , "toDynWith : forall (a : Type). DynRep a -> a -> Dyn"
+    , "let toDynWith rep value ="
+    , "    match rep"
+    , "    case MkDynRep tag -> MkDyn tag"
+    , ""
+    , "checkedCastWith : forall (a : Type). DynRep a -> Dyn -> Result CastBlame a"
+    , "let checkedCastWith rep value ="
+    , "    Err (MkCastBlame \"std.gradual: dynamic payloads are not carried by this implementation\")"
+    , ""
+    , "sameDynRep : forall (a : Type) (b : Type). DynRep a -> DynRep b -> Option (Dec ((=) a b))"
+    , "let sameDynRep x y = None"
+    , ""
+    , "toDyn : forall (a : Type). (@_ : DynamicType a) -> a -> Dyn"
+    , "let toDyn value = toDynWith dynRep value"
+    , ""
+    , "checkedCast : forall (a : Type). (@_ : DynamicType a) -> Dyn -> Result CastBlame a"
+    , "let checkedCast value = checkedCastWith dynRep value"
+    ]
+
+-- | Embedded @std.bridge@ source (§25.1): the boundary/bridge type
+-- vocabulary. Surfaces are region-indexed; no live bridge runtime is
+-- provided, so the binding operations are typed stubs that fail with a
+-- bridge-lifecycle failure.
+stdBridgeSource :: Text
+stdBridgeSource =
+  T.unlines
+    [ "module std.bridge"
+    , ""
+    , "import std.gradual.(type CastBlame, ctor MkCastBlame)"
+    , ""
+    , "data BridgeOrigin : Type ="
+    , "    MkBridgeOrigin (description : String)"
+    , ""
+    , "data BridgeFailure : Type ="
+    , "    MkBridgeFailure (message : String)"
+    , ""
+    , "data BoundaryDirection : Type ="
+    , "    IntoKappa"
+    , "    OutOfKappa"
+    , "    LaterUse"
+    , ""
+    , "data BoundaryPrecision : Type ="
+    , "    Exact"
+    , "    Conservative"
+    , "    Lossy"
+    , ""
+    , "data BridgeContract (surface : Region -> Type) : Type ="
+    , "    MkBridgeContract (description : String)"
+    , ""
+    , "data BridgePackage (surface : Region -> Type) : Type ="
+    , "    MkBridgePackage (origin : BridgeOrigin)"
+    , ""
+    , "trait BridgeBindable (surface : Region -> Type) ="
+    , "    bridgeContract : BridgeContract surface"
+    , ""
+    , "trait BridgeHandle (h : Type) ="
+    , "    bridgeOrigin : h -> UIO BridgeOrigin"
+    , "    bridgeFailure : BridgeFailure -> String"
+    , ""
+    , "bindModule :"
+    , "    forall (surface : Region -> Type) (h : Type) (r : Region)."
+    , "    (@_ : BridgeBindable surface) ->"
+    , "    (@_ : BridgeHandle h) ->"
+    , "    h ->"
+    , "    String ->"
+    , "    IO BridgeFailure (surface r)"
+    , "let bindModule handle name ="
+    , "    throwIO (MkBridgeFailure \"std.bridge: no live bridge runtime is provided by this implementation\")"
+    , ""
+    , "bindModuleOwned :"
+    , "    forall (surface : Region -> Type) (h : Type)."
+    , "    (@_ : BridgeBindable surface) ->"
+    , "    (@_ : BridgeHandle h) ->"
+    , "    h ->"
+    , "    String ->"
+    , "    IO BridgeFailure (BridgePackage surface)"
+    , "let bindModuleOwned handle name ="
+    , "    throwIO (MkBridgeFailure \"std.bridge: no live bridge runtime is provided by this implementation\")"
+    , ""
+    , "bridgePackageValue :"
+    , "    forall (surface : Region -> Type) (r : Region)."
+    , "    BridgePackage surface ->"
+    , "    IO BridgeFailure (surface r)"
+    , "let bridgePackageValue package ="
+    , "    throwIO (MkBridgeFailure \"std.bridge: no live bridge runtime is provided by this implementation\")"
+    , ""
+    , "bridgePackageOrigin :"
+    , "    forall (surface : Region -> Type)."
+    , "    BridgePackage surface -> UIO BridgeOrigin"
+    , "let bridgePackageOrigin package ="
+    , "    match package"
+    , "    case MkBridgePackage origin -> pure origin"
+    , ""
+    , "bridgeFailureToCastBlame : BridgeFailure -> CastBlame"
+    , "let bridgeFailureToCastBlame failure ="
+    , "    match failure"
+    , "    case MkBridgeFailure message -> MkCastBlame message"
+    ]
+
+-- | Embedded @std.supervisor@ source (§29.2): the OTP-style supervision
+-- surface. The interpreter has no preemptive fiber runtime; children
+-- run to completion in list order at start (check-mode fidelity).
+stdSupervisorSource :: Text
+stdSupervisorSource =
+  T.unlines
+    [ "module std.supervisor"
+    , ""
+    , "data SupervisorStrategy : Type ="
+    , "    OneForOne"
+    , "    OneForAll"
+    , "    RestForOne"
+    , ""
+    , "data RestartPolicy : Type ="
+    , "    Permanent"
+    , "    Transient"
+    , "    Temporary"
+    , ""
+    , "data RestartIntensity : Type ="
+    , "    RestartIntensity (maxRestarts : Nat) (within : Duration)"
+    , ""
+    , "data ChildSpec (e : Type) : Type ="
+    , "    ChildSpec (label : String) (restart : RestartPolicy) (run : IO e Unit)"
+    , ""
+    , "data Supervisor (e : Type) : Type ="
+    , "    MkSupervisor (children : List (ChildSpec e))"
+    , ""
+    , "childSpec : forall (e : Type). String -> RestartPolicy -> IO e Unit -> ChildSpec e"
+    , "let childSpec label restart run = ChildSpec label restart run"
+    , ""
+    , "startSupervisor :"
+    , "    forall (e : Type)."
+    , "    SupervisorStrategy ->"
+    , "    RestartIntensity ->"
+    , "    List (ChildSpec e) ->"
+    , "    UIO (Supervisor e)"
+    , "let startSupervisor strategy intensity children = pure (MkSupervisor children)"
+    , ""
+    , "shutdownSupervisor : forall (e : Type). Supervisor e -> UIO Unit"
+    , "let shutdownSupervisor supervisor = pure ()"
+    , ""
+    , "awaitSupervisor : forall (e : Type). Supervisor e -> UIO (Exit e Unit)"
+    , "let awaitSupervisor supervisor = pure (Success ())"
+    , ""
+    , "withSupervisor : forall (e : Type) (a : Type). SupervisorStrategy -> RestartIntensity -> List (ChildSpec e) -> (Supervisor e -> IO e a) -> IO e a"
+    , "let withSupervisor strategy intensity children use = use (MkSupervisor children)"
     ]

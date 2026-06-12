@@ -109,6 +109,10 @@ data CheckState = CheckState
   , csThis :: !(Maybe ThisMode)
   -- ^ §13.2.1 sibling-reference scope: what @this@ denotes inside a
   -- dependent record type, literal, or update being elaborated
+  , csArgIndexRetag :: !Bool
+  -- ^ §16.1.8: inside explicit-argument checking, a same-head indexed
+  -- type mismatch reports E_APPLICATION_ARGUMENT_MISMATCH (a failed
+  -- transport at an application boundary)
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -142,7 +146,7 @@ initCheckState :: CheckState
 initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty Map.empty Map.empty Map.empty DemandRead Nothing
+    Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -6110,11 +6114,18 @@ headerPassIn siglessLets = \case
   DSig _ n tyE sp -> do
     -- §11.3.3 (approximation): free ASCII-lowercase heads in the
     -- signature that resolve to no global are implicitly universalized
-    -- as erased implicit Type binders.
+    -- as erased implicit binders; the kind is inferred from use (a
+    -- fresh meta, defaulted to Type when unconstrained).
     fvs <- filterM (fmap isNothing . lookupGlobalName) (nub (freeLower tyE))
-    let ctx0 = foldl (\c v -> bindCtx v False (VSort 0) c) emptyCtx fvs
+    kvs <- mapM (const (freshMetaV emptyCtx)) fvs
+    let ctx0 = foldl (\c (v, k) -> bindCtx v False k c) emptyCtx (zip fvs kvs)
     (tyTm0, _) <- inferType ctx0 tyE
-    let tyTm = foldr (\v acc -> CPi Impl Q0 v (CSort 0) acc) tyTm0 fvs
+    kTms <- forM kvs $ \kv -> do
+      kv' <- forceM kv
+      case kv' of
+        VFlex m [] -> solveMeta m (VSort 0) >> pure (CSort 0)
+        _ -> quoteIn emptyCtx kv'
+    let tyTm = foldr (\(v, kT) acc -> CPi Impl Q0 v kT acc) tyTm0 (zip fvs kTms)
     tyV <- evalIn emptyCtx tyTm
     g <- ownName n
     exists <- gets (Map.member g . csGlobals)
@@ -7065,30 +7076,54 @@ checkAgainstSig sigTy binders body sp = do
       case ty of
         VPi Impl q nm dom clo
           | not (bImplicit b)
-          , (nameText <$> bName b) /= Just nm -> do
+          , (nameText <$> bName b) /= Just nm ->
               -- skip implicit binder: bind it for the body (an explicit
               -- definition binder with the SAME name instead claims the
               -- implicit parameter, e.g. `let f r = …` against
               -- `f : forall (r : T). …`)
-              let ctx' = bindCtx nm True dom ctx
-              cod <- clApp clo (VRigid (ctxLen ctx) [])
-              CLam Impl q nm <$> go ctx' cod (b : rest)
-        VPi ic q nm dom clo -> do
-          let bn = fromMaybe nm (nameText <$> bName b)
-          forM_ (binderTypeExpr b) $ \tyE -> do
-            (tyTm, _) <- inferType ctx tyE
-            tyV <- evalIn ctx tyTm
-            expectType ctx (bSpan b) dom tyV
-          unless (ic == (if bImplicit b then Impl else Expl) || ic == Impl) $
-            errAt (bSpan b) "E_BINDER_MISMATCH" (Just "kappa.type.binder")
-              "binder implicitness does not match the signature"
-          let ctx' = bindCtx bn (bImplicit b) dom ctx
-          cod <- clApp clo (VRigid (ctxLen ctx) [])
-          CLam ic q bn <$> go ctx' cod rest
+              skipImplicit ctx q nm dom clo (b : rest)
+        VPi Impl q nm dom clo
+          | bImplicit b
+          , nm /= "_"
+          , (nameText <$> bName b) /= Just nm
+          , Just tyE <- binderTypeExpr b -> do
+              -- an annotated implicit definition binder claims this Pi
+              -- only when its annotation matches the domain; otherwise
+              -- it claims a later implicit (e.g. a `(@d : Trait a)`
+              -- evidence binder against `forall a. (@_ : Trait a) -> …`
+              -- where the §11.3.3 synthesized `a` stays auto-bound)
+              st0 <- get
+              nBefore <- gets (length . csDiags)
+              ok <- do
+                (tyTm, _) <- inferType ctx tyE
+                tyV <- evalIn ctx tyTm
+                unify ctx dom tyV
+              nAfter <- gets (length . csDiags)
+              put st0
+              if ok && nAfter == nBefore
+                then claim ctx Impl q nm dom clo b rest
+                else skipImplicit ctx q nm dom clo (b : rest)
+        VPi ic q nm dom clo -> claim ctx ic q nm dom clo b rest
         _ -> do
           errAt sp "E_SIGNATURE_ARITY" (Just "kappa.type.signature-arity")
             "definition has more parameters than its signature type"
           check ctx body ty
+    skipImplicit ctx q nm dom clo bs = do
+      let ctx' = bindCtx nm True dom ctx
+      cod <- clApp clo (VRigid (ctxLen ctx) [])
+      CLam Impl q nm <$> go ctx' cod bs
+    claim ctx ic q nm dom clo b rest = do
+      let bn = fromMaybe nm (nameText <$> bName b)
+      forM_ (binderTypeExpr b) $ \tyE -> do
+        (tyTm, _) <- inferType ctx tyE
+        tyV <- evalIn ctx tyTm
+        expectType ctx (bSpan b) dom tyV
+      unless (ic == (if bImplicit b then Impl else Expl) || ic == Impl) $
+        errAt (bSpan b) "E_BINDER_MISMATCH" (Just "kappa.type.binder")
+          "binder implicitness does not match the signature"
+      let ctx' = bindCtx bn (bImplicit b) dom ctx
+      cod <- clApp clo (VRigid (ctxLen ctx) [])
+      CLam ic q bn <$> go ctx' cod rest
 
 elabFunction :: [Binder] -> Maybe Expr -> Expr -> Span -> CheckM (Term, Value)
 elabFunction [] mResTy body _ = case mResTy of
