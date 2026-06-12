@@ -44,10 +44,11 @@ data PInfo = PInfo
   { pQuantity :: !(Maybe Quantity)
   , pBorrow :: !Bool
   , pInout :: !Bool
+  , pKnown :: !Bool -- ^ from a same-module signature (vs. assumed)
   }
 
 defaultP :: PInfo
-defaultP = PInfo Nothing False False
+defaultP = PInfo Nothing False False False
 
 -- | One tracked binding in scope.
 data VInfo = VInfo
@@ -154,7 +155,7 @@ usageDiagnostics m = concatMap analyzeDecl lets
 builtinFns :: Map Text [PInfo]
 builtinFns =
   Map.fromList
-    [ ("unsafeConsume", [PInfo (Just QOne) False False])
+    [ ("unsafeConsume", [PInfo (Just QOne) False False True])
     ]
 
 -- ── Signature alignment ──────────────────────────────────────────────
@@ -214,9 +215,9 @@ fnParams msig ld =
   where
     binderP b =
       let BinderPrefix mq mb = bPrefix b
-       in PInfo mq (isJust mb) (bInout b)
-    mergeP (PInfo q1 b1 i1) (PInfo q2 b2 i2) =
-      PInfo (q1 `orElse` q2) (b1 || b2) (i1 || i2)
+       in PInfo mq (isJust mb) (bInout b) True
+    mergeP (PInfo q1 b1 i1 k1) (PInfo q2 b2 i2 k2) =
+      PInfo (q1 `orElse` q2) (b1 || b2) (i1 || i2) (k1 || k2)
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
@@ -491,7 +492,19 @@ walkArg env@(vars, _) arg p = case arg of
         emit "E_QTT_BORROW_CONSUME" "kappa.qtt.borrow-consume" (nameSpan n)
           ("borrowed binding '" <> nameText n <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
         pure (Map.singleton (vKey vi) touchC, Nothing)
-    | otherwise -> walkE env e
+    | otherwise -> do
+        (u, t) <- walkE env e
+        -- a borrow-capturing closure may flow only into an
+        -- at-most-once consuming position (§12.3.2); an unrestricted
+        -- parameter may retain it beyond the borrow's scope
+        case t of
+          Just tsp
+            | pKnown p
+            , pQuantity p `notElem` [Just QOne, Just QAtMostOne] -> do
+                emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" tsp
+                  "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
+                pure (u, Nothing)
+          _ -> pure (u, t)
   where
     hasDemand = isJust (pQuantity p) || pBorrow p
     consuming = pQuantity p `elem` [Just QOne, Just QAtLeastOne]
