@@ -277,7 +277,7 @@ expectType ctx sp actual expected = do
     report $
       withNote ("expected: " <> renderTerm eT) $
         withNote ("actual:   " <> renderTerm aT) $
-          diag SevError StageElaborate "E_TYPE_MISMATCH" (Just "kappa.type.mismatch") sp
+          diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
             "type mismatch"
 
 -- ── Names ────────────────────────────────────────────────────────────
@@ -345,9 +345,19 @@ resolveName ctx (Name n sp) =
         Nothing -> failUnresolved
   where
     failUnresolved = do
-      errAt sp "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "'")
+      errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "'")
       anyHole emptyCtxDummy
     emptyCtxDummy = ctx
+
+-- | Does a name resolve at all (locals or globals)? Used for §6.3.4
+-- literal-prefix resolution, which is ordinary term name resolution.
+prefixResolves :: Ctx -> Text -> CheckM Bool
+prefixResolves ctx n =
+  case lookupCtx n ctx of
+    Just _ -> pure True
+    Nothing -> do
+      mg <- lookupGlobalName n
+      pure (maybe False (const True) mg)
 
 -- | A read of a @var@-bound name (§18.6.1): elaborate to a splice that
 -- reads the cell, @__runIO (readRef x)@, typed at the element type.
@@ -806,7 +816,7 @@ infer ctx expr = case expr of
       VGlobN (GName _ "Thunk") [(_, a)] -> pure (CForceE tm, a)
       VGlobN (GName _ "Need") [(_, a)] -> pure (CForceE tm, a)
       _ -> do
-        errAt sp "E_TYPE_MISMATCH" (Just "kappa.type.mismatch") "force expects a Thunk or Need value"
+        errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "force expects a Thunk or Need value"
         anyHole ctx
   EListLit es _ -> do
     elemT <- freshMetaV ctx
@@ -1151,7 +1161,7 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
           fT <- quoteIn ctx fTy
           report $
             withNote ("callee type: " <> renderTerm fT) $
-              diag SevError StageElaborate "E_APPLICATION_NON_CALLABLE" (Just "kappa.application.non-callable")
+              diag SevError StageElaborate "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
                 (exprSpan e)
                 "this expression is not callable"
           anyHole ctx
@@ -1326,8 +1336,18 @@ elabString ctx sl parts sp = case (slPrefix sl, parts) of
           pure (CApp Expl (CProj showDict "show") tm1)
         _ -> pure (CLit (LitStr ""))
   (Just p, _) -> do
-    _ <- unsupported ctx sp ("the '" <> p <> "' string-literal handler")
-    pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
+    -- §6.3.4: the prefix is resolved by ordinary term name resolution;
+    -- an unknown prefix is an unresolved name, a known one names a
+    -- literal handler this implementation does not provide.
+    resolvable <- prefixResolves ctx p
+    if resolvable
+      then do
+        _ <- unsupported ctx sp ("the '" <> p <> "' string-literal handler")
+        pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
+      else do
+        errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+          ("unresolved name '" <> p <> "' used as a string-literal prefix (Spec §6.3.4)")
+        pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
 
 -- ── Records, projections, patches ────────────────────────────────────
 
@@ -1391,7 +1411,7 @@ elabDotUnqualified ctx e member mname = do
               case mt of
                 Just r -> pure r
                 Nothing -> do
-                  errAt (nameSpan mname) "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved")
+                  errAt (nameSpan mname) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
                     ("module '" <> base <> "' has no member '" <> nameText mname <> "'")
                   anyHole ctx
             Nothing -> do
@@ -1485,7 +1505,7 @@ elabDotUnqualified ctx e member mname = do
           ty' <- clApp clo rV
           pure (CApp Expl fTm recvTm, ty')
         _ -> do
-          errAt (nameSpanOf member) "E_APPLICATION_NON_CALLABLE" (Just "kappa.application.non-callable")
+          errAt (nameSpanOf member) "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
             "member is not callable with a receiver"
           anyHole ctx
 
@@ -1558,7 +1578,7 @@ elabSafeNav ctx e member = do
             ]
       pure (CMatch pTm1 alts, VGlobN (gPrel "Option") [(Expl, resTy)])
     _ -> do
-      errAt (exprSpan e) "E_TYPE_MISMATCH" (Just "kappa.type.mismatch")
+      errAt (exprSpan e) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
         "the receiver of '?.' must have type Option T (§16.1.1.2)"
       anyHole ctx
   where
@@ -1601,7 +1621,7 @@ resolveCtor _ (CtorRef mqual n) = do
     (g : _) -> do
       pure ((,) g <$> Map.lookup g (csCtors st))
     [] -> do
-      errAt (nameSpan n) "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved")
+      errAt (nameSpan n) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
         ("unresolved constructor '" <> nameText n <> "'")
       pure Nothing
   where
@@ -1644,7 +1664,7 @@ elabPatch ctx e items sp = do
           fields = [(n, fromMaybe (CProj tm1 n) (lookup n ups)) | (n, _) <- fs]
       pure (CRecordV fields, t)
     _ -> do
-      errAt sp "E_TYPE_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
+      errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
       anyHole ctx
 
 -- ── Variants ─────────────────────────────────────────────────────────
@@ -1887,7 +1907,7 @@ checkExhaustive ctx sp ty alts = do
             unless (null missing) $
               report $
                 withNote ("missing cases: " <> T.intercalate ", " (map gnameText missing)) $
-                  diag SevError StageElaborate "E_MATCH_NOT_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
+                  diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
                     "match is not exhaustive"
           Nothing -> requireCatchAll
       VVariantT members -> do
@@ -1898,14 +1918,14 @@ checkExhaustive ctx sp ty alts = do
         unless (null missing || hasRest) $
           report $
             withNote ("missing member types: " <> T.intercalate ", " missing) $
-              diag SevError StageElaborate "E_MATCH_NOT_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
+              diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
                 "variant match is not exhaustive"
       VRecordT _ -> unless (any isRecordIrrefutable [p | (p, Nothing) <- alts]) requireCatchAll
       _ -> requireCatchAll
   where
     requireCatchAll =
       report $
-        diag SevError StageElaborate "E_MATCH_NOT_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
+        diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
           "match requires a catch-all case for this scrutinee type (§17.1)"
     isCatchAll = \case
       CPWild -> True
@@ -2075,7 +2095,7 @@ elabPattern ctx0 pat0 ty0 = do
               errAt (patternSpan pat) "E_VARIANT_PATTERN" Nothing "malformed variant pattern"
               pure (CPWild, ctx)
           _ -> do
-            errAt (patternSpan pat) "E_TYPE_MISMATCH" (Just "kappa.type.mismatch")
+            errAt (patternSpan pat) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
               "variant pattern requires a union scrutinee"
             pure (CPWild, ctx)
         PCtorNamed cref fields sp -> do
@@ -2107,7 +2127,10 @@ elabPattern ctx0 pat0 ty0 = do
                      <> T.pack (show (length fieldTys))
                      <> ", got "
                      <> T.pack (show (length ps)))
-              (ps', ctx') <- goList ctx (zip ps (fieldTys ++ repeat (VSort 0)))
+              -- Surplus binders get fresh metas, not Type: after the
+              -- arity diagnostic the bodies must not cascade (§3.1).
+              padTys <- mapM (const (freshMetaV ctx)) (drop (length fieldTys) ps)
+              (ps', ctx') <- goList ctx (zip ps (fieldTys ++ padTys))
               pure (CPCtor g ps', ctx')
         PActive _ _ _ sp -> do
           errAt sp "E_UNSUPPORTED" Nothing "active patterns are not supported by this implementation"
@@ -2294,7 +2317,7 @@ elabDo ctx items _sp mexpected = do
                     ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
                   goItems loops c errT resT rest
             Nothing -> do
-              errAt asp "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved")
+              errAt asp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
                 ("unresolved name '" <> nameText n <> "'")
               goItems loops c errT resT rest
         DoReturn ml me rsp -> do
@@ -2776,7 +2799,7 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
       flushPending
       tm <- zonkTermM 0 tm0
       when (occursGlobal g tm) $
-        errAt sp "E_RECURSION_NO_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
+        errAt sp "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
           "recursive definitions require a preceding signature declaration (§15, §9.2)"
       tmV <- evalIn emptyCtx tm
       addGlobal g (GlobalDef ty (Just tmV) True)

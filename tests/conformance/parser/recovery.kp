@@ -1,4 +1,4 @@
---! assertDiagnostic error E_PARSE
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
 --! assertType ok Integer
 
 let = 5

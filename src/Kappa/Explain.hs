@@ -12,6 +12,8 @@ module Kappa.Explain
   , lookupCode
   , explainExists
   , renderEntry
+  , portableAlias
+  , codeNames
   ) where
 
 import Data.Text (Text)
@@ -35,6 +37,25 @@ explainExists s
   | "kappa." `T.isPrefixOf` s = any ((== Just s) . eeFamily) registry
   | otherwise = any ((== s) . eeCode) registry
 
+-- | Required portable diagnostic-code alias (§3.1.2A) for a rendered
+-- code, where one is defined. A diagnostic "code" in the sense of §3.1
+-- is recoverable either as the rendered code or as its portable alias
+-- (§3.1.2A allows an implementation to expose either spelling), so the
+-- harness accepts both when matching @assertDiagnostic*@ directives.
+portableAlias :: Text -> Maybe Text
+portableAlias c = lookup c table
+  where
+    table =
+      [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
+      , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
+      , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
+      ]
+
+-- | All acceptable spellings of a diagnostic's code: the rendered code
+-- plus its §3.1.2A portable alias, when defined.
+codeNames :: Text -> [Text]
+codeNames c = c : maybe [] (: []) (portableAlias c)
+
 renderEntry :: ExplainEntry -> Text
 renderEntry e =
   eeCode e
@@ -47,7 +68,7 @@ registry :: [ExplainEntry]
 registry =
   [ ent "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
       "An argument in a function application does not fit the corresponding parameter (wrong plicity, label, or form)."
-  , ent "E_APPLICATION_NON_CALLABLE" (Just "kappa.application.non-callable")
+  , ent "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
       "The head of an application has a type that is not a function or callable value, so it cannot be applied to arguments."
   , ent "E_ASSIGN_NOT_VAR" (Just "kappa.do.assign-non-var")
       "The left-hand side of a do-block assignment is not a mutable 'var' binding introduced in the same do scope."
@@ -65,7 +86,7 @@ registry =
       "The same variable is bound more than once within a single pattern."
   , ent "E_EMPTY_BACKTICK_IDENT" Nothing
       "A backtick-quoted identifier is empty; backtick identifiers must contain at least one character."
-  , ent "E_FEATURE_GATED_UNICODE_NAME" (Just "kappa.feature.gated")
+  , ent "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
       "An identifier uses Unicode characters outside the active name profile without the corresponding feature gate enabled."
   , ent "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved")
       "A typed hole '?' or '_' in expression position was not solved by elaboration; the expected type or value remains unknown."
@@ -89,7 +110,7 @@ registry =
       "A labeled 'break' or 'continue' names a loop label that is not in scope."
   , ent "E_LAYOUT_BAD_DEDENT" Nothing
       "A line dedents to an indentation column that does not match any enclosing layout context."
-  , ent "E_MATCH_NOT_EXHAUSTIVE" (Just "kappa.match.nonexhaustive")
+  , ent "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive")
       "A match expression does not cover every possible constructor or literal of the scrutinee type."
   , ent "E_MULTILINE_STRING_BAD_INDENT" Nothing
       "A line inside a multiline string literal is indented less than the closing delimiter's indentation baseline."
@@ -107,7 +128,7 @@ registry =
       "An infix operator is used without any fixity declaration in scope, so the expression cannot be grouped."
   , ent "E_OR_PATTERN_BINDINGS" (Just "kappa.pattern.or-bindings")
       "The alternatives of an or-pattern do not bind exactly the same variables at the same types."
-  , ent "E_PARSE" (Just "kappa.parse.error")
+  , ent "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error")
       "The source text does not conform to the Kappa grammar at this position."
   , ent "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.arity")
       "A constructor pattern has the wrong number of argument subpatterns for the constructor's declaration."
@@ -119,7 +140,7 @@ registry =
       "A record patch updates the same field path more than once."
   , ent "E_RECORD_PROJECTION_MISSING_FIELD" (Just "kappa.record.unknown-field")
       "A field projection names a field that the record type does not contain."
-  , ent "E_RECURSION_NO_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
+  , ent "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
       "A recursive definition lacks a type signature; recursion requires a declared signature for checking."
   , ent "E_REFUTABLE_LET_PATTERN" (Just "kappa.pattern.refutable-binding")
       "A 'let' binding uses a refutable pattern; only irrefutable patterns may appear in plain let bindings."
@@ -137,7 +158,7 @@ registry =
       "A horizontal tab appears in the indentation of a line; Kappa layout indentation must use spaces only."
   , ent "E_TAB_IN_SOURCE" Nothing
       "A horizontal tab appears in source text where the active source profile forbids it."
-  , ent "E_TYPE_MISMATCH" (Just "kappa.type.mismatch")
+  , ent "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
       "The inferred type of an expression is not definitionally equal to (or coercible to) the expected type."
   , ent "E_UNEXPECTED_CHARACTER" Nothing
       "The lexer encountered a character that cannot begin any token."
@@ -145,19 +166,19 @@ registry =
       "A record expression mentions a field that the expected record type does not declare."
   , ent "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
       "A member access names a member that the receiver's type, trait, or module does not provide."
-  , ent "E_UNRESOLVED_NAME" (Just "kappa.name.unresolved")
+  , ent "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
       "A name is not in scope: no declaration, import, or prelude binding provides it."
   , ent "E_UNSUPPORTED" Nothing
       "The construct is recognized but not supported by this implementation (outside the implemented portable profile)."
-  , ent "E_UNTERMINATED_BACKTICK_IDENT" Nothing
+  , ent "E_UNTERMINATED_BACKTICK_IDENTIFIER" Nothing
       "A backtick-quoted identifier is missing its closing backtick on the same line."
   , ent "E_UNTERMINATED_BLOCK_COMMENT" Nothing
       "A block comment is not closed before the end of the file."
-  , ent "E_UNTERMINATED_CHAR_LITERAL" Nothing
+  , ent "E_UNTERMINATED_CHARACTER_LITERAL" Nothing
       "A single-quoted scalar literal is missing its closing quote."
   , ent "E_UNTERMINATED_INTERPOLATION" Nothing
       "A string interpolation '${' is not closed before the end of the literal."
-  , ent "E_UNTERMINATED_STRING" Nothing
+  , ent "E_UNTERMINATED_STRING_LITERAL" Nothing
       "A string literal is missing its closing delimiter."
   , ent "E_VARIANT_AMBIGUOUS" (Just "kappa.variant.ambiguous")
       "A bare variant constructor could match more than one variant member in the expected type; disambiguate with an annotation."

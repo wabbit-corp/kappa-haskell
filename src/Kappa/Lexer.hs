@@ -16,8 +16,12 @@
 --     dedent (§6.3.3) and prefixed-string interpolation fragments
 --     (§6.3.4); interpolation payloads are re-parsed by the parser.
 --
--- The lexer stops at the first lexical error; lexical recovery is not
--- attempted (parse-level recovery is the recovery boundary, §3.1.14A).
+-- Lexical recovery (§3.1, §2.1A "parser recognition is not acceptance"):
+-- gated Unicode names, unterminated string\/quoted\/backtick literals and
+-- invalid scalar literals are recorded as diagnostics while lexing
+-- continues with a recovered token, so one source file can report several
+-- independent lexical errors. Structural errors (bad dedent, tabs,
+-- malformed escapes) remain fatal.
 module Kappa.Lexer
   ( lexSource
   , lexSourceTokens
@@ -43,11 +47,13 @@ import Kappa.Diagnostic
 import Kappa.Source
 import Kappa.Token
 
--- | Lexer state: remaining input plus position and layout bookkeeping.
+-- | Lexer state: remaining input plus position and layout bookkeeping,
+-- and diagnostics recovered so far (in reverse order).
 data St = St
   { stIn :: !Text
   , stLine :: !Int
   , stCol :: !Int
+  , stDiags :: ![Diagnostic]
   }
 
 data LexError = LexError !Span !DiagnosticCode !(Maybe DiagnosticFamily) !Text ![Text]
@@ -57,21 +63,24 @@ type LexM a = Either LexError a
 lexErr :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> LexM a
 lexErr sp code fam msg = Left (LexError sp code fam msg [])
 
-lexErrNote :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> [Text] -> LexM a
-lexErrNote sp code fam msg notes = Left (LexError sp code fam msg notes)
-
--- | Lex a whole file. Returns tokens or a single fatal diagnostic.
-lexSource :: FilePath -> Text -> Either Diagnostic [Located]
+-- | Lex a whole file. Returns recovered diagnostics plus tokens, or a
+-- single fatal diagnostic.
+lexSource :: FilePath -> Text -> Either Diagnostic ([Diagnostic], [Located])
 lexSource path src =
   case lexSourceTokens path src of
-    Right toks -> Right toks
+    Right r -> Right r
     Left (LexError sp code fam msg notes) ->
       Left (foldl' (flip withNote) (diag SevError StageLex code fam sp msg) notes)
 
-lexSourceTokens :: FilePath -> Text -> LexM [Located]
+lexSourceTokens :: FilePath -> Text -> LexM ([Diagnostic], [Located])
 lexSourceTokens path src = goLineStart st0 (1 :| []) []
   where
-    st0 = St src 1 1
+    st0 = St src 1 1 []
+
+    -- Record a recovered (non-fatal) lexical diagnostic.
+    record :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> [Text] -> St -> St
+    record sp code fam msg notes s =
+      s {stDiags = foldl' (flip withNote) (diag SevError StageLex code fam sp msg) notes : stDiags s}
 
     pos :: St -> Pos
     pos s = Pos (stLine s) (stCol s)
@@ -111,14 +120,14 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
     -- token of the next logical line, then apply the indent rule. The
     -- indent stack is non-empty by construction (the base level 1 is
     -- never popped).
-    goLineStart :: St -> NonEmpty Int -> [Located] -> LexM [Located]
+    goLineStart :: St -> NonEmpty Int -> [Located] -> LexM ([Diagnostic], [Located])
     goLineStart s indents acc = do
       s' <- skipBlank s
       case peek s' of
         Nothing -> do
           let nl = [Located (TokNewline False) (here s') | needsNewline acc]
               dedents = map (const (Located TokDedent (here s'))) (NE.tail indents)
-          pure (reverse (Located TokEOF (here s') : dedents ++ nl ++ acc))
+          pure (reverse (stDiags s'), reverse (Located TokEOF (here s') : dedents ++ nl ++ acc))
         Just _ -> do
           let col = stCol s'
               top = NE.head indents
@@ -182,7 +191,7 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
     -- The bracket stack tracks open delimiters: depth > 0 disables
     -- layout and softens newlines.
 
-    goLine :: St -> NonEmpty Int -> [Located] -> [Token] -> LexM [Located]
+    goLine :: St -> NonEmpty Int -> [Located] -> [Token] -> LexM ([Diagnostic], [Located])
     goLine s indents acc brackets = case peek s of
       Nothing
         | null brackets -> goLineStart s indents acc
@@ -234,9 +243,21 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
       | isDigit c = scanNumber s
       | isIdentStart c = scanIdentish s
       | not (isAscii c) && (isAlpha c || c == '_') =
-          lexErrNote (here s) "E_FEATURE_GATED_UNICODE_NAME" (Just "kappa.feature.gated")
-            "unquoted Unicode identifiers require the 'unicode-names' feature gate (Spec §2.1A)"
-            ["this implementation does not enable 'unicode-names'; use a backtick identifier instead"]
+          -- Recovery (§2.1A): scan the whole Unicode identifier, record
+          -- the gating diagnostic, and hand the parser an ordinary
+          -- identifier token. A lone @ω@ is the §12.1.1 quantity token of
+          -- the base grammar, not a gated Unicode name.
+          let (name, s') = takeUniIdent s
+           in if name == "ω"
+                then pure (TokIdent name, s')
+                else
+                  pure
+                    ( TokIdent name
+                    , record (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
+                        "unquoted Unicode identifiers require the 'unicode-names' feature gate (Spec §2.1A)"
+                        ["this implementation does not enable 'unicode-names'; use a backtick identifier instead"]
+                        s'
+                    )
       | c == '`' = scanBacktick s
       | c == '"' = scanStringFrom Nothing 0 s
       | c == '#' = scanHashes s
@@ -304,6 +325,12 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
       let txt = T.takeWhile isIdentCont (stIn s)
        in (txt, advN (T.length txt) s)
 
+    -- A Unicode identifier (recovery only; §2.1A).
+    takeUniIdent :: St -> (Text, St)
+    takeUniIdent s =
+      let txt = T.takeWhile (\ch -> isAlphaNum ch || ch == '_') (stIn s)
+       in (txt, advN (T.length txt) s)
+
     hashThenQuote :: St -> Bool
     hashThenQuote s =
       let rest = T.dropWhile (== '#') (stIn s)
@@ -318,13 +345,17 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
                 lexErr (spanAt s0 (adv '`' s)) "E_EMPTY_BACKTICK_IDENT" Nothing
                   "empty backtick identifier"
             | otherwise -> pure (TokBacktick (T.pack (reverse chs)), adv '`' s)
-          Just '\n' ->
-            lexErr (spanAt s0 s) "E_UNTERMINATED_BACKTICK_IDENT" Nothing
-              "unterminated backtick identifier"
+          Just '\n' -> unterminated s
           Just ch -> go (adv ch s) (ch : chs)
-          Nothing ->
-            lexErr (spanAt s0 s) "E_UNTERMINATED_BACKTICK_IDENT" Nothing
-              "unterminated backtick identifier"
+          Nothing -> unterminated s
+        -- Recovery: an error token; the parser reports the resulting
+        -- syntax error at the use site (one lexical + one parse error).
+        unterminated s =
+          pure
+            ( TokError
+            , record (spanAt s0 s) "E_UNTERMINATED_BACKTICK_IDENTIFIER" Nothing
+                "unterminated backtick identifier" [] s
+            )
 
     -- ── Operators and reserved punctuation ────────────────────────────
 
@@ -353,9 +384,13 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
           | otherwise -> pure (TokOperator "?", s')
         _
           | T.any (not . isAscii) run ->
-              lexErrNote (spanAt s s') "E_FEATURE_GATED_UNICODE_NAME" (Just "kappa.feature.gated")
-                "Unicode operator tokens require the 'unicode-names' feature gate (Spec §2.1A)"
-                ["this implementation does not enable 'unicode-names'"]
+              pure
+                ( TokOperator run
+                , record (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
+                    "Unicode operator tokens require the 'unicode-names' feature gate (Spec §2.1A)"
+                    ["this implementation does not enable 'unicode-names'"]
+                    s'
+                )
           | otherwise -> pure (TokOperator run, s')
 
     -- ── Numbers (§6.1) ────────────────────────────────────────────────
@@ -457,9 +492,13 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
                 let (name, s') = takeIdent s
                 pure (Just name, s')
             | not (isAscii ch) && isAlpha ch ->
-                lexErrNote (here s) "E_FEATURE_GATED_UNICODE_NAME" (Just "kappa.feature.gated")
-                  "Unicode numeric-literal suffixes require the 'unicode-names' feature gate (Spec §6.1.6)"
-                  []
+                let (name, s') = takeUniIdent s
+                 in pure
+                      ( Just name
+                      , record (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
+                          "Unicode numeric-literal suffixes require the 'unicode-names' feature gate (Spec §6.1.6)"
+                          [] s'
+                      )
           _ -> pure (Nothing, s)
 
     -- ── Strings (§6.3) ────────────────────────────────────────────────
@@ -503,12 +542,19 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
                   pure (T.pack (reverse chs), advN (T.length closer) cur)
               | otherwise = case peek cur of
                   Nothing ->
-                    lexErr (spanAt s0 cur) "E_UNTERMINATED_STRING" Nothing
-                      "unterminated string literal"
+                    -- Recovery: take the body so far as the literal.
+                    pure
+                      ( T.pack (reverse chs)
+                      , record (spanAt s0 cur) "E_UNTERMINATED_STRING_LITERAL" Nothing
+                          "unterminated string literal" [] cur
+                      )
                   Just '\n'
                     | not multi ->
-                        lexErr (spanAt s0 cur) "E_UNTERMINATED_STRING" Nothing
-                          "unterminated single-line string literal"
+                        pure
+                          ( T.pack (reverse chs)
+                          , record (spanAt s0 cur) "E_UNTERMINATED_STRING_LITERAL" Nothing
+                              "unterminated single-line string literal" [] cur
+                          )
                   Just '\\'
                     -- In an ordinary (non-raw) string a backslash escapes
                     -- the next char, so an escaped '"' never closes.
@@ -678,33 +724,49 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
           pure (TokQuoteBrace, advN 2 s0)
       | otherwise = do
           let s1 = adv '\'' s0
-          (body, s2) <- takeBody s1 []
+          (body, s2, terminated) <- takeBody s1 []
           let sp = spanAt s0 s2
           mtext <- decodeTextView sp body
           let mbytes = decodeByteView body
+              -- Recovery placeholder: a well-formed single-scalar view so
+              -- later stages do not cascade after a reported lex error.
+              placeholder st =
+                pure (TokQuoted (QuotedLit mprefix body (Just "?") mbytes), st)
           case mprefix of
-            Nothing -> do
-              txt <- maybe (lexErr sp "E_UNICODE_INVALID_SCALAR_LITERAL" Nothing "invalid Unicode scalar literal") pure mtext
-              case T.unpack txt of
-                [_] -> pure (TokQuoted (QuotedLit Nothing body mtext mbytes), s2)
-                _ ->
-                  lexErrNote sp "E_UNICODE_INVALID_SCALAR_LITERAL" Nothing
-                    "a Unicode scalar literal must contain exactly one Unicode scalar value (Spec §6.4)"
-                    ["for one user-perceived character with several scalars, use a prefixed literal such as g'...'"]
+            Nothing
+              | not terminated ->
+                  -- The literal's scalar content is indeterminate.
+                  placeholder
+                    ( record sp "E_UNICODE_INVALID_SCALAR_LITERAL" Nothing
+                        "invalid Unicode scalar literal" [] s2
+                    )
+              | otherwise ->
+                  case fmap T.unpack mtext of
+                    Just [_] -> pure (TokQuoted (QuotedLit Nothing body mtext mbytes), s2)
+                    _ ->
+                      placeholder
+                        ( record sp "E_UNICODE_INVALID_SCALAR_LITERAL" Nothing
+                            "a Unicode scalar literal must contain exactly one Unicode scalar value (Spec §6.4)"
+                            ["for one user-perceived character with several scalars, use a prefixed literal such as g'...'"]
+                            s2
+                        )
             Just _ -> pure (TokQuoted (QuotedLit mprefix body mtext mbytes), s2)
       where
         takeBody cur chs = case peek cur of
-          Just '\'' -> pure (T.pack (reverse chs), adv '\'' cur)
-          Just '\n' ->
-            lexErr (spanAt s0 cur) "E_UNTERMINATED_CHAR_LITERAL" Nothing
-              "unterminated quoted literal"
+          Just '\'' -> pure (T.pack (reverse chs), adv '\'' cur, True)
+          Just '\n' -> unterminated cur chs
           Just '\\'
             | Just nxt <- peekAt 1 cur ->
                 takeBody (adv nxt (adv '\\' cur)) (nxt : '\\' : chs)
           Just ch -> takeBody (adv ch cur) (ch : chs)
-          Nothing ->
-            lexErr (spanAt s0 cur) "E_UNTERMINATED_CHAR_LITERAL" Nothing
-              "unterminated quoted literal"
+          Nothing -> unterminated cur chs
+        unterminated cur chs =
+          pure
+            ( T.pack (reverse chs)
+            , record (spanAt s0 cur) "E_UNTERMINATED_CHARACTER_LITERAL" Nothing
+                "unterminated quoted literal" [] cur
+            , False
+            )
 
         decodeTextView sp body = Just <$> decodeEscapes sp body
 

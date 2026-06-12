@@ -1,0 +1,10 @@
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_FEATURE_INACTIVE, E_FEATURE_INACTIVE, E_UNICODE_INVALID_SCALAR_LITERAL
+@PrivateByDefault module main
+
+λ : Int --!! E_FEATURE_INACTIVE
+let λ = 1 --!! E_FEATURE_INACTIVE
+
+bad : Char
+let bad = '23' --!! E_UNICODE_INVALID_SCALAR_LITERAL

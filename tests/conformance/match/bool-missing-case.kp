@@ -1,4 +1,4 @@
---! assertDiagnostic error E_MATCH_NOT_EXHAUSTIVE
+--! assertDiagnostic error E_PATTERN_NON_EXHAUSTIVE
 
 answer : Bool -> String
 let answer b =

@@ -39,7 +39,7 @@ data Stage
   | StageRuntime
   deriving stock (Eq, Ord, Show)
 
--- | Stable symbolic code, e.g. @E_TYPE_MISMATCH@ (§3.1.2).
+-- | Stable symbolic code, e.g. @E_TYPE_EQUALITY_MISMATCH@ (§3.1.2).
 type DiagnosticCode = Text
 
 -- | Standardized dotted family, e.g. @kappa.type.mismatch@ (§3.1.2).

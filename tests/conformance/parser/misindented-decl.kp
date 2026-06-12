@@ -1,0 +1,7 @@
+--! mode check
+--! assertDiagnosticCodes E_UNEXPECTED_INDENTATION
+@PrivateByDefault module main
+
+  import std.prelude.(not)
+
+let ok = not False

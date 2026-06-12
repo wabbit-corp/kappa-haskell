@@ -43,7 +43,7 @@ import Kappa.Check (CheckState (..), checkModule)
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
-import Kappa.Explain (explainExists)
+import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Parser (parseModule)
 import Kappa.Pipeline (CompiledUnit (..), compileFilesIn, importScopeFor)
@@ -677,14 +677,14 @@ checkAssertion root path src files cu diags mRun = \case
     countIs "warnings" n (length warnings)
   ADiag sev code ->
     require
-      (any (\d -> dSeverity d == toSeverity sev && dCode d == code) diags)
+      (any (\d -> dSeverity d == toSeverity sev && diagHasCode code d) diags)
       ("no diagnostic " <> describe sev code <> " was produced" <> sawCodes)
   ADiagNext sev code line ->
     require
       ( any
           ( \d ->
               dSeverity d == toSeverity sev
-                && dCode d == code
+                && diagHasCode code d
                 && spanFile (dPrimary d) == path
                 && posLine (spanStart (dPrimary d)) == line
           )
@@ -696,7 +696,7 @@ checkAssertion root path src files cu diags mRun = \case
       ( any
           ( \d ->
               dSeverity d == toSeverity sev
-                && dCode d == code
+                && diagHasCode code d
                 && T.pack (spanFile (dPrimary d)) `endsWithPath` p
                 && posLine (spanStart (dPrimary d)) == line
                 && maybe True (== posCol (spanStart (dPrimary d))) mcol
@@ -709,7 +709,7 @@ checkAssertion root path src files cu diags mRun = \case
       ( any
           ( \d ->
               dSeverity d == toSeverity sev
-                && dCode d == code
+                && diagHasCode code d
                 && T.pack (spanFile (dPrimary d)) `endsWithPath` p
                 && spanStart (dPrimary d) == Pos sl sc
                 && spanEnd (dPrimary d) == Pos el ec
@@ -732,12 +732,11 @@ checkAssertion root path src files cu diags mRun = \case
       (explainExists cf)
       ("no registered explanation for diagnostic code or family '" <> cf <> "' (§3.1.2A)")
   AErrorCodes codes ->
-    let actual = sort (map dCode errors)
-     in require
-          (actual == sort codes)
-          ( "error codes are [" <> T.intercalate ", " (map dCode errors)
-              <> "], expected [" <> T.intercalate ", " codes <> "]"
-          )
+    require
+      (codesMatchUpTo codes errors)
+      ( "error codes are [" <> T.intercalate ", " (map dCode errors)
+          <> "], expected [" <> T.intercalate ", " codes <> "]"
+      )
   AEval nm expected -> do
     -- evaluation may legitimately be deep; guard with the run timeout
     mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEval cu nm expected)))
@@ -849,6 +848,30 @@ checkAssertion root path src files cu diags mRun = \case
                     )
                 )
     endsWithPath actual rel = actual == rel || ("/" <> rel) `T.isSuffixOf` actual
+
+-- | §3.1/§3.1.2A code matching: a directive's @<code>@ matches a
+-- diagnostic when it equals the rendered code or the diagnostic's
+-- required portable alias (an implementation may expose either).
+diagHasCode :: Text -> Diagnostic -> Bool
+diagHasCode code d = code `elem` codeNames (dCode d)
+
+-- | Exact multiset comparison of expected codes against emitted errors,
+-- where each expected spelling may match either the rendered code or
+-- its portable alias. Small lists; simple backtracking matching.
+codesMatchUpTo :: [Text] -> [Diagnostic] -> Bool
+codesMatchUpTo codes diags0
+  | length codes /= length diags0 = False
+  | otherwise = go codes diags0
+  where
+    go [] [] = True
+    go [] _ = False
+    go (c : cs) ds =
+      or
+        [ go cs (before ++ after)
+        | (before, d : after) <- splits ds
+        , diagHasCode c d
+        ]
+    splits ds = [(take i ds, drop i ds) | i <- [0 .. length ds - 1]]
 
 normalizeLF :: Text -> Text
 normalizeLF = T.replace "\r" "\n" . T.replace "\r\n" "\n"

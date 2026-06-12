@@ -32,16 +32,19 @@ import Kappa.Token
 
 parseModule :: FilePath -> Text -> Either Diagnostics (Module, Diagnostics)
 parseModule path src = do
-  toks <- either (Left . pure) Right (lexSource path src)
+  (lexDiags, toks) <- either (Left . pure) Right (lexSource path src)
   case runP pModule toks of
-    Left e -> Left [errToDiag e]
-    Right (m, recovered) -> Right (m, recovered)
+    Left e -> Left (lexDiags ++ [errToDiag e])
+    Right (m, recovered) -> Right (m, lexDiags ++ recovered)
 
 -- | Parse a standalone expression (used for interpolation payloads and
 -- the Appendix T @assertType@ directive).
 parseExprText :: FilePath -> Text -> Either Diagnostic Expr
 parseExprText path src = do
-  toks <- lexSource path src
+  (lexDiags, toks) <- lexSource path src
+  case lexDiags of
+    (d : _) -> Left d
+    [] -> pure ()
   case runP (pTopExpr <* pSkipLayout <* eof) toks of
     Left e -> Left (errToDiag e)
     Right (e, _) -> Right e
@@ -50,7 +53,7 @@ parseExprText path src = do
 
 errToDiag :: PErr -> Diagnostic
 errToDiag (PErr sp msg expected) =
-  let d = diag SevError StageParse "E_PARSE" (Just "kappa.parse.error") sp msg
+  let d = diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp msg
    in case expected of
         [] -> d
         es -> withNote ("expected one of: " <> T.intercalate ", " (dedup es)) d
@@ -178,7 +181,8 @@ pModuleHeader = try $ do
   pKeyword "module"
   path <- pModPath
   pHardNewline <|> eof
-  pSkipLayout
+  -- Layout after the header is handled by 'pTopDecls' (so a misindented
+  -- first declaration is reported, §5.4).
   pure (attrs, Just path)
 
 pModPath :: P ModPath
@@ -186,27 +190,63 @@ pModPath = ModPath <$> sepBy1 pIdent (token TokDot)
 
 pTopDecls :: P [Decl]
 pTopDecls = do
-  pSkipLayout
+  pSkipLayoutTop
   done <- lookAheadIs eof
   if done
     then pure []
     else do
       mdecl <- (Just <$> pDecl) <|> (recoverDecl >> pure Nothing)
-      pSkipLayout
+      pSkipLayoutTop
       rest <- pTopDecls
       pure (maybe rest (: rest) mdecl)
 
+-- Between top-level declarations an INDENT is a layout error (§5.4: a
+-- top-level declaration begins at the module indentation level); report
+-- it once and continue parsing the indented declaration.
+pSkipLayoutTop :: P ()
+pSkipLayoutTop = void (many (pNewline <|> token TokDedent <|> flaggedIndent))
+  where
+    flaggedIndent = do
+      sp <- currentSpan
+      token TokIndent
+      recordRecovered $
+        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa.parse.error") sp
+          "unexpected indentation: a top-level declaration must start at the module indentation level (Spec §5.4)"
+
 -- Declaration-level recovery (§3.1.14A): report and skip to the next
--- hard newline at depth zero.
+-- hard newline at depth zero, together with any indented continuation
+-- block that belongs to the failed declaration.
 recoverDecl :: P ()
 recoverDecl = do
   sp <- currentSpan
   t <- peekToken
   recordRecovered $
-    diag SevError StageParse "E_PARSE" (Just "kappa.parse.error") sp
+    diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp
       ("unexpected " <> tokenDescr t <> " at start of declaration")
   skipPast (\case TokNewline False -> True; TokEOF -> True; _ -> False)
   void (optional pHardNewline)
+  skipIndentedBlocks
+  where
+    -- The body of the failed declaration: any whole indented blocks
+    -- that follow it are part of it, not new declarations.
+    skipIndentedBlocks = do
+      t <- peekToken
+      case t of
+        TokIndent -> do
+          _ <- anyToken
+          skipToDedent (0 :: Int)
+          void (optional pHardNewline)
+          skipIndentedBlocks
+        _ -> pure ()
+    skipToDedent depth = do
+      t <- peekToken
+      case t of
+        TokEOF -> pure ()
+        TokIndent -> anyToken >> skipToDedent (depth + 1)
+        TokDedent
+          | depth == 0 -> void anyToken
+          | otherwise -> anyToken >> skipToDedent (depth - 1)
+        _ -> anyToken >> skipToDedent depth
 
 -- ── Declarations ─────────────────────────────────────────────────────
 

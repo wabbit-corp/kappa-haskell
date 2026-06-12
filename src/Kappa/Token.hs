@@ -85,6 +85,9 @@ data Token
   | TokQuoteBrace -- ^ syntax quote opener @'{@ (§21.1)
   | TokSplice     -- ^ splice opener @$(@ (§21.2)
   | TokBang       -- ^ monadic splice @!@ (§18.3) when prefix-adjacent
+  | TokError
+  -- ^ Recovered lexical error (e.g. unterminated backtick identifier):
+  -- the diagnostic is already recorded; the parser never accepts this.
   | TokNewline !Bool
   -- ^ End of a logical line. The flag is 'True' when the newline occurred
   -- inside brackets ("soft"): no INDENT\/DEDENT accompanies it (§5.4).
@@ -137,6 +140,7 @@ tokenDescr = \case
   TokQuoteBrace -> "quote '{"
   TokSplice -> "'$('"
   TokBang -> "'!'"
+  TokError -> "invalid token"
   TokNewline _ -> "end of line"
   TokIndent -> "indent"
   TokDedent -> "dedent"

@@ -1,4 +1,4 @@
---! assertDiagnostic error E_UNTERMINATED_STRING
+--! assertDiagnostic error E_UNTERMINATED_STRING_LITERAL
 
 bad : String
 let bad = "never closed
