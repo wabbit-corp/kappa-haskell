@@ -283,9 +283,10 @@ rExpect env = \case
   ExpectTrait n bs k -> ExpectTrait n <$> mapM (rBinder env) bs <*> mapM (rExpr env) k
 
 rLetDef :: FixityEnv -> LetDef -> RW LetDef
-rLetDef env (LetDef n p bs ty dec body) =
+rLetDef env (LetDef n p brw bs ty dec body) =
   LetDef n
     <$> mapM (rPattern env) p
+    <*> pure brw
     <*> mapM (rBinder env) bs
     <*> mapM (rExpr env) ty
     <*> mapM (rDecreases env) dec

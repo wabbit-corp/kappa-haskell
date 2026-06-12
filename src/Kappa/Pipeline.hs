@@ -27,6 +27,7 @@ import Kappa.Prelude (builtinState, preludeSource)
 import Kappa.Resolve (defaultFixities, resolveModule)
 import Kappa.Source
 import Kappa.Syntax
+import Kappa.Usage (usageDiagnostics)
 
 -- | One §T.5.5 portable pipeline-trace step: @(event, subject)@.
 -- The prelude bootstrap is implementation machinery and contributes no
@@ -164,10 +165,15 @@ compileFilesWith packageMode nameOf files =
                   }
               (st1, cdiags) = checkModule st0 m'
               recovered = concatMap frDiags frs
+              preDiags = recovered ++ rdiags ++ ieDiags ie ++ cdiags
+              -- §12.2–§12.4 usage analysis runs only over cleanly
+              -- elaborated modules (its judgements presume well-typed
+              -- bodies)
+              udiags = if hasErrors preDiags then [] else usageDiagnostics m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
            in ( st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
-              , (recovered ++ rdiags ++ ieDiags ie ++ cdiags) : chunks
+              , (preDiags ++ udiags) : chunks
               , ftrace : trc
               )
       (finalSt, diagChunks, traceChunks) = foldl' step (pst, [pdiags], []) order
@@ -267,7 +273,7 @@ moduleExportNames m = nub (concatMap go (modDecls m))
       VisDefault -> not pbd
     go = \case
       DSig mods n _ _ -> [nameText n | vis mods]
-      DLet mods (LetDef (Just n) _ _ _ _ _) _ -> [nameText n | vis mods]
+      DLet mods (LetDef (Just n) _ _ _ _ _ _) _ -> [nameText n | vis mods]
       DData mods (DataDecl n _ _ ctors) _
         | vis mods -> nameText n : [nameText cn | CtorDecl cn _ _ _ <- ctors]
       DTypeAlias mods n _ _ _ _ -> [nameText n | vis mods]

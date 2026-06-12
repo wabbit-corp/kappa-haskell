@@ -52,6 +52,7 @@ library
         Kappa.Syntax
         Kappa.TestHarness
         Kappa.Token
+        Kappa.Usage
 
     hs-source-dirs:   src
     default-language: GHC2021

@@ -410,6 +410,7 @@ data ProjBody
 data LetDef = LetDef
   { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
   , ldPattern :: !(Maybe Pattern) -- ^ 'Just' for pattern bindings
+  , ldBorrow :: !Bool -- ^ @let & pat = e@ borrow binding (§12.3.1)
   , ldBinders :: ![Binder]
   , ldResultType :: !(Maybe Expr)
   , ldDecreases :: !(Maybe Decreases)

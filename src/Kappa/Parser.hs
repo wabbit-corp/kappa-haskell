@@ -394,16 +394,15 @@ pLetDef = do
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
-      pure (LetDef (Just n) Nothing binders resTy dec body)
+      pure (LetDef (Just n) Nothing False binders resTy dec body)
     patBinding = do
-      -- `let &b = e` borrow bindings: the borrow mark is accepted and
-      -- approximated as an ordinary binding (QTT approximation)
-      _ <- optionMaybe pBorrowMark
+      -- `let &b = e` borrow bindings (§12.3.1)
+      mark <- optionMaybe pBorrowMark
       pat <- pPattern
       ty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
       body <- pDefBody
-      pure (LetDef Nothing (Just pat) [] ty Nothing body)
+      pure (LetDef Nothing (Just pat) (isJust mark) [] ty Nothing body)
 
 pDecreases :: P Decreases
 pDecreases = do

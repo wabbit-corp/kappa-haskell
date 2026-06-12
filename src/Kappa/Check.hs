@@ -1291,7 +1291,9 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
       solveMeta m piV
       elabSpine ctx sp fTm piV (ArgExplicit e : rest)
     (ArgNamedBlock items bsp, _) -> elabNamedBlock ctx fTm fTy items bsp rest
-    (ArgInout _ isp, _) -> unsupported ctx isp "inout call-site arguments (~)"
+    -- a '~place' call-site marker elaborates as the place expression;
+    -- marker/parameter agreement is judged by the §18.9.3 usage analysis
+    (ArgInout e _, _) -> elabSpine ctx sp fTm fTy (ArgExplicit e : rest)
     (ArgImplicit e, _) -> do
       errAt (exprSpan e) "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
         "an explicit implicit argument was supplied, but the callee has no implicit parameter here (§16.1.7.1)"
@@ -2244,14 +2246,14 @@ elabBlock ctx ds mfin sp = do
     goDecls sigs (d : rest) = case d of
       -- a local signature annotates the following definition (§9.3.1)
       DSig _ n tyE _ -> goDecls ((nameText n, tyE) : sigs) rest
-      DLet _ (LetDef (Just n) Nothing [] mty Nothing rhs) _ ->
+      DLet _ (LetDef (Just n) Nothing _ [] mty Nothing rhs) _ ->
         (LetBind False emptyPrefix (PVar n) (annOf n mty sigs) rhs sp :) <$> goDecls sigs rest
-      DLet _ (LetDef (Just n) Nothing bs mty _ rhs) dsp -> do
+      DLet _ (LetDef (Just n) Nothing _ bs mty _ rhs) dsp -> do
         -- local named function: elaborate as lambda
         let lam = ELambda Nothing bs (maybe rhs (\t -> EAscription rhs t dsp) mty) dsp
         (LetBind False emptyPrefix (PVar n) (lookup (nameText n) sigs) lam sp :) <$> goDecls sigs rest
-      DLet _ (LetDef Nothing (Just p) [] mty Nothing rhs) _ ->
-        (LetBind False emptyPrefix p mty rhs sp :) <$> goDecls sigs rest
+      DLet _ (LetDef Nothing (Just p) brw [] mty Nothing rhs) _ ->
+        (LetBind False (BinderPrefix Nothing (if brw then Just (BorrowMark Nothing) else Nothing)) p mty rhs sp :) <$> goDecls sigs rest
       -- a local type alias is a type-level let binding (§9.3.1, §10.2)
       DTypeAlias _ n params _ (Just rhs) dsp ->
         let (body, ann) = case params of
@@ -2848,7 +2850,23 @@ elabDo ctx items _sp mexpected = do
                     then pure tm1
                     else do
                       okPure <- unify c ty1 aT
-                      unless okPure $ expectType c (exprSpan eD) ty1 ioT
+                      okDiscard <-
+                        if okPure
+                          then pure True
+                          else do
+                            -- a final action of unit-result do-scopes
+                            -- may have a non-unit result; it is
+                            -- discarded (corpus accommodation)
+                            isUnit <-
+                              forceM aT >>= \case
+                                VGlobN (GName _ "Unit") [] -> pure True
+                                _ -> pure False
+                            if isUnit
+                              then do
+                                b <- freshMetaV c
+                                unify c ty1 (ioType errT b)
+                              else pure False
+                      unless okDiscard $ expectType c (exprSpan eD) ty1 ioT
                       pure tm1
             _ -> check c eD ioT
           (KExpr tm :) <$> goItems loops c errT resT rest
@@ -2983,7 +3001,7 @@ elabDo ctx items _sp mexpected = do
             (DoBind (LetBind False emptyPrefix pat Nothing rhs usp) : rest)
         DoDecl d -> do
           case d of
-            DLet _ (LetDef (Just n) Nothing [] mty Nothing rhs) dsp ->
+            DLet _ (LetDef (Just n) Nothing _ [] mty Nothing rhs) dsp ->
               goItems loops c errT resT (DoLet (LetBind False emptyPrefix (PVar n) mty rhs dsp) : rest)
             _ -> do
               errAt (declSpan d) "E_UNSUPPORTED" Nothing
@@ -3021,6 +3039,11 @@ statementInferable = \case
   EOpChain {} -> True
   EIf {} -> True
   EMatch {} -> True
+  EUnit {} -> True
+  ETuple {} -> True
+  EIntLit {} -> True
+  EFloatLit {} -> True
+  EStringLit {} -> True
   _ -> False
 
 -- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
@@ -3098,7 +3121,7 @@ checkModule st0 m =
   let sigNames = [nameText n | DSig _ n _ _ <- modDecls m]
       siglessLets =
         [ nameText n
-        | DLet _ (LetDef (Just n) _ _ _ _ _) _ <- modDecls m
+        | DLet _ (LetDef (Just n) _ _ _ _ _ _) _ <- modDecls m
         , nameText n `notElem` sigNames
         ]
       passes = do
@@ -3350,7 +3373,7 @@ headerTrait (TraitDecl supers n params members) sp = do
     TraitSig mn mtyE _ -> do
       (mtyTm, _) <- inferType pctx mtyE
       pure (Just (nameText mn, mtyTm, Nothing))
-    TraitDefault (LetDef (Just mn) _ _ mty _ body) _ -> do
+    TraitDefault (LetDef (Just mn) _ _ _ mty _ body) _ -> do
       mtyTm <- case mty of
         Just t -> fst <$> inferType pctx t
         Nothing -> freshMeta
@@ -3363,7 +3386,7 @@ headerTrait (TraitDecl supers n params members) sp = do
   dictV <- evalIn emptyCtx dictTm
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
   addGlobal g (GlobalDef tyV (Just dictV) False)
-  let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _) _ <- members]
+  let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _ _) _ <- members]
   -- supertrait premises (§14.1.4), stored as functions of the params
   supTms <- forM supers $ \s -> do
     (sTm, _) <- inferType pctx s
@@ -3549,7 +3572,7 @@ bodyPass = \case
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 -- the parsed decreases clause is not consulted: termination is verified
 -- by the structural analysis below (see IMPLEMENTATION_NOTES.md)
-elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
+elabLetDecl _ (LetDef (Just n) Nothing _ binders mResTy _mdec body) sp = do
   -- resolve any goals postponed from signature elaboration first, so the
   -- signature's value is canonical while checking the body
   flushPending
@@ -3619,7 +3642,7 @@ elabLetDecl _ (LetDef (Just n) Nothing binders mResTy _mdec body) sp = do
           "recursive definitions require a preceding signature declaration (§15, §9.2)"
       tmV <- evalIn emptyCtx tm
       addGlobal g (GlobalDef ty (Just tmV) True)
-elabLetDecl _ (LetDef Nothing (Just pat) [] mty Nothing body) sp = do
+elabLetDecl _ (LetDef Nothing (Just pat) _ [] mty Nothing body) sp = do
   -- top-level pattern binding: bind each variable to a projection
   (bodyTm, bodyTy) <- case mty of
     Just tyE -> do
@@ -3804,8 +3827,12 @@ checkAgainstSig sigTy binders body sp = do
       ty <- forceM ty0
       case ty of
         VPi Impl q nm dom clo
-          | not (bImplicit b) -> do
-              -- skip implicit binder: bind it for the body
+          | not (bImplicit b)
+          , (nameText <$> bName b) /= Just nm -> do
+              -- skip implicit binder: bind it for the body (an explicit
+              -- definition binder with the SAME name instead claims the
+              -- implicit parameter, e.g. `let f r = …` against
+              -- `f : forall (r : T). …`)
               let ctx' = bindCtx nm True dom ctx
               cod <- clApp clo (VRigid (ctxLen ctx) [])
               CLam Impl q nm <$> go ctx' cod (b : rest)
@@ -3815,7 +3842,7 @@ checkAgainstSig sigTy binders body sp = do
             (tyTm, _) <- inferType ctx tyE
             tyV <- evalIn ctx tyTm
             expectType ctx (bSpan b) dom tyV
-          unless (ic == (if bImplicit b then Impl else Expl)) $
+          unless (ic == (if bImplicit b then Impl else Expl) || ic == Impl) $
             errAt (bSpan b) "E_BINDER_MISMATCH" (Just "kappa.type.binder")
               "binder implicitness does not match the signature"
           let ctx' = bindCtx bn (bImplicit b) dom ctx
@@ -3911,7 +3938,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
       -- member definitions checked against member types
       dictFields <- forM (tiMembers ti) $ \mn -> do
         case findMember mn members of
-          Just (LetDef _ _ mbinders mResTy _ mbody, msp) -> do
+          Just (LetDef _ _ _ mbinders mResTy _ mbody, msp) -> do
             memberTyV <- memberSigInstance g mn argTms ctxP'
             tm <- checkMemberAgainst ctxP' memberTyV mbinders mResTy mbody msp
             pure (Just (mn, tm))
@@ -3919,7 +3946,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
             -- the trait's default definition fills the member (§14.2.3)
             -- the default's own annotation mentions trait parameters
             -- and is superseded by the instantiated member type
-            Just (LetDef _ _ dbinders _ _ dbody) -> do
+            Just (LetDef _ _ _ dbinders _ _ dbody) -> do
               memberTyV <- memberSigInstance g mn argTms ctxP'
               tm <- checkMemberAgainst ctxP' memberTyV dbinders Nothing dbody sp
               pure (Just (mn, tm))
@@ -3946,7 +3973,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
         pure (mg, [])
       _ -> pure (Nothing, [])
     findMember mn ms =
-      case [ (ld, dsp) | DLet _ ld@(LetDef (Just dn) _ _ _ _ _) dsp <- ms, nameText dn == mn
+      case [ (ld, dsp) | DLet _ ld@(LetDef (Just dn) _ _ _ _ _ _) dsp <- ms, nameText dn == mn
            ] of
         (x : _) -> Just x
         [] -> Nothing
