@@ -6,6 +6,7 @@ module Kappa.Prelude
   ( builtinState
   , preludeSource
   , stdHashSource
+  , stdUnicodeSource
   , evalPurePrim
   ) where
 
@@ -63,6 +64,8 @@ builtinState =
       , (prel "Double", opaqueTy (tyV tType))
       , (prel "String", opaqueTy (tyV tType))
       , (prel "UnicodeScalar", opaqueTy (tyV tType))
+      , (prel "Grapheme", opaqueTy (tyV tType)) -- §28.2 user-perceived text atom
+      , (prel "Byte", opaqueTy (tyV tType)) -- §28.2 single byte (§6.5 'b' handler)
       , (prel "Bytes", opaqueTy (tyV tType))
       , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
       , (prel "Duration", opaqueTy (tyV tType)) -- §18.1 monotonic time difference
@@ -149,6 +152,9 @@ builtinState =
     tStr = tcon "String"
     tBool = tcon "Bool" -- defined by prelude source; fine as neutral
     tScalar = tcon "UnicodeScalar"
+    tGrapheme = tcon "Grapheme"
+    tByte = tcon "Byte"
+    tBytes = tcon "Bytes"
     tUnit = tcon "Unit"
     io e a = CApp Expl (CApp Expl (tcon "IO") e) a
     refT a = CApp Expl (tcon "Ref") a
@@ -183,6 +189,42 @@ builtinState =
       , prim "ltStr" (tyV (tStr ~> tStr ~> tBool))
       , prim "eqScalar" (tyV (tScalar ~> tScalar ~> tBool))
       , prim "ltScalar" (tyV (tScalar ~> tScalar ~> tBool))
+      , -- §6.5/§29.5 text-atom comparison and rendering primitives
+        prim "eqByte" (tyV (tByte ~> tByte ~> tBool))
+      , prim "ltByte" (tyV (tByte ~> tByte ~> tBool))
+      , prim "showByte" (tyV (tByte ~> tStr))
+      , prim "eqBytes" (tyV (tBytes ~> tBytes ~> tBool))
+      , prim "ltBytes" (tyV (tBytes ~> tBytes ~> tBool))
+      , prim "showBytes" (tyV (tBytes ~> tStr))
+      , prim "eqGrapheme" (tyV (tGrapheme ~> tGrapheme ~> tBool)) -- exact scalar sequence (§6.5)
+      , prim "showGrapheme" (tyV (tGrapheme ~> tStr))
+      , -- §29.4 std.unicode internals (wrapped by the embedded module
+        -- source; double-underscore prims are implementation-internal)
+        prim "__utf8Bytes" (tyV (tStr ~> tBytes))
+      , prim "__utf8Valid" (tyV (tBytes ~> tBool))
+      , prim "__decodeUtf8Lossy" (tyV (tBytes ~> tStr))
+      , prim "__byteLength" (tyV (tStr ~> tNat))
+      , prim "__uniScalarValue" (tyV (tScalar ~> tNat))
+      , prim "__scalarInRange" (tyV (tNat ~> tBool))
+      , prim "__scalarOfValue" (tyV (tNat ~> tScalar))
+      , prim "__scalarToString" (tyV (tScalar ~> tStr))
+      , prim "__stringScalars" (tyV (tStr ~> listT tScalar))
+      , prim "__scalarCount" (tyV (tStr ~> tNat))
+      , prim "__graphemeToString" (tyV (tGrapheme ~> tStr))
+      , prim "__graphemeValid" (tyV (tStr ~> tBool))
+      , prim "__graphemeOfString" (tyV (tStr ~> tGrapheme))
+      , prim "__stringGraphemes" (tyV (tStr ~> listT tGrapheme))
+      , prim "__graphemeCount" (tyV (tStr ~> tNat))
+      , prim "__normalize" (tyV (tInt ~> tStr ~> tStr)) -- 0=NFC 1=NFD 2=NFKC 3=NFKD
+      , prim "__caseFold" (tyV (tStr ~> tStr))
+      , prim "__stringWords" (tyV (tStr ~> listT tStr))
+      , prim "__stringSentences" (tyV (tStr ~> listT tStr))
+      , prim "__byteToNat" (tyV (tByte ~> tNat))
+      , -- §29.3 std.hash mixing internals (deterministic within a run)
+        prim "__hashMixInt" (tyV (tInt ~> tInt ~> tInt))
+      , prim "__hashMixDouble" (tyV (tInt ~> tDouble ~> tInt))
+      , prim "__hashMixString" (tyV (tInt ~> tStr ~> tInt))
+      , prim "__hashMixBytes" (tyV (tInt ~> tBytes ~> tInt))
       , prim "stringAppend" (tyV (tStr ~> tStr ~> tStr))
       , prim "showInt" (tyV (tInt ~> tStr))
       , prim "primitiveIntToString" (tyV (tInt ~> tStr))
@@ -508,6 +550,56 @@ preludeSource =
     , ""
     , "instance Show UnicodeScalar ="
     , "    let show c = showScalar c"
+    , ""
+    , -- §28.2 text atoms: Byte and Bytes have Eq/Ord/Show; Grapheme has
+      -- Eq (exact scalar sequence, §6.5) and Show but deliberately NO
+      -- Ord (§29.x: no portable grapheme ordering)
+      "instance Eq Byte ="
+    , "    let (==) x y = eqByte x y"
+    , ""
+    , "instance Ord Byte ="
+    , "    let compare x y = if ltByte x y then LT elif eqByte x y then EQ else GT"
+    , ""
+    , "instance Show Byte ="
+    , "    let show b = showByte b"
+    , ""
+    , "instance Eq Bytes ="
+    , "    let (==) x y = eqBytes x y"
+    , ""
+    , "instance Ord Bytes ="
+    , "    let compare x y = if ltBytes x y then LT elif eqBytes x y then EQ else GT"
+    , ""
+    , "instance Show Bytes ="
+    , "    let show bs = showBytes bs"
+    , ""
+    , "instance Eq Grapheme ="
+    , "    let (==) x y = eqGrapheme x y"
+    , ""
+    , "instance Show Grapheme ="
+    , "    let show g = showGrapheme g"
+    , ""
+    , -- §20.2 range operators over the prelude Rangeable trait (the
+      -- associated Range type is modelled as a concrete carrier)
+      "data Range (v : Type) : Type ="
+    , "    MkRange (rangeFrom : v) (rangeTo : v) (rangeExclusive : Bool)"
+    , ""
+    , "trait Rangeable (v : Type) ="
+    , "    range : v -> v -> Bool -> Range v"
+    , ""
+    , "(..) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> Range v"
+    , "let (..) lo hi = range lo hi False"
+    , ""
+    , "(..<) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> Range v"
+    , "let (..<) lo hi = range lo hi True"
+    , ""
+    , "instance Rangeable Integer ="
+    , "    let range lo hi excl = MkRange lo hi excl"
+    , ""
+    , "instance Rangeable Nat ="
+    , "    let range lo hi excl = MkRange lo hi excl"
+    , ""
+    , "instance Rangeable UnicodeScalar =" -- §6.4
+    , "    let range lo hi excl = MkRange lo hi excl"
     , ""
     , "orderingCode : Ordering -> Integer"
     , "let orderingCode o ="
@@ -887,8 +979,12 @@ preludeSource =
     , "let __mapResolve es eq comb = __mapResolveAcc eq comb Nil es" -- first-occurrence key order (§20.5.1)
     ]
 
--- | Embedded @std.hash@ source: hash codes are opaque tokens with
--- Eq/Ord comparison only — neither numeric nor showable.
+-- | Embedded @std.hash@ source (§29.3): a linear 'HashState'
+-- accumulator with primitive mixing steps; hash codes are opaque
+-- same-execution tokens with Eq/Ord comparison only — neither numeric
+-- nor showable. The §29.3 @Eq a =>@ superclass on 'Hashable' and the
+-- container instances (Option\/Result\/List\/Array) are not modelled;
+-- see SPEC_COVERAGE.md.
 stdHashSource :: Text
 stdHashSource =
   T.unlines
@@ -900,24 +996,104 @@ stdHashSource =
     , "defaultHashSeed : HashSeed"
     , "let defaultHashSeed = MkHashSeed 0"
     , ""
+    , "data HashState : Type ="
+    , "    MkHashState (stateValue : Integer)"
+    , ""
     , "data HashCode : Type ="
     , "    MkHashCode (codeValue : Integer)"
     , ""
-    , "trait Hashable (a : Type) ="
-    , "    hashWithSeed : HashSeed -> a -> HashCode"
+    , "newHashState : HashSeed -> HashState"
+    , "let newHashState seed ="
+    , "    match seed"
+    , "    case MkHashSeed s -> MkHashState (__hashMixInt 14695981039346656037 s)"
     , ""
-    , "hashWith : forall (a : Type). (@_ : Hashable a) -> HashSeed -> a -> HashCode"
-    , "let hashWith seed value = hashWithSeed seed value"
+    , "finishHashState : (1 state : HashState) -> HashCode"
+    , "let finishHashState state ="
+    , "    match state"
+    , "    case MkHashState s -> MkHashCode s"
+    , ""
+    , "__mix : forall (a : Type). (Integer -> a -> Integer) -> a -> (1 state : HashState) -> HashState"
+    , "let __mix step value state ="
+    , "    match state"
+    , "    case MkHashState s -> MkHashState (step s value)"
+    , ""
+    , "hashUnit : (1 state : HashState) -> HashState"
+    , "let hashUnit state = __mix __hashMixInt 0 state"
+    , ""
+    , "hashBool : Bool -> (1 state : HashState) -> HashState"
+    , "let hashBool value state = __mix __hashMixInt (if value then 1 else 0) state"
+    , ""
+    , "hashUnicodeScalar : UnicodeScalar -> (1 state : HashState) -> HashState"
+    , "let hashUnicodeScalar value state = __mix __hashMixInt (natToInt (__uniScalarValue value)) state"
+    , ""
+    , "hashGrapheme : Grapheme -> (1 state : HashState) -> HashState" -- exact scalars (§29.3)
+    , "let hashGrapheme value state = __mix __hashMixString (__graphemeToString value) state"
+    , ""
+    , "hashString : String -> (1 state : HashState) -> HashState" -- exact UTF-8 (§29.3)
+    , "let hashString value state = __mix __hashMixString value state"
+    , ""
+    , "hashBytes : Bytes -> (1 state : HashState) -> HashState"
+    , "let hashBytes value state = __mix __hashMixBytes value state"
+    , ""
+    , "hashByte : Byte -> (1 state : HashState) -> HashState"
+    , "let hashByte value state = __mix __hashMixInt (natToInt (__byteToNat value)) state"
+    , ""
+    , "hashInt : Int -> (1 state : HashState) -> HashState"
+    , "let hashInt value state = __mix __hashMixInt value state"
+    , ""
+    , "hashInteger : Integer -> (1 state : HashState) -> HashState"
+    , "let hashInteger value state = __mix __hashMixInt value state"
+    , ""
+    , "hashFloatRaw : Float -> (1 state : HashState) -> HashState" -- raw IEEE bits
+    , "let hashFloatRaw value state = __mix __hashMixDouble value state"
+    , ""
+    , "hashDoubleRaw : Double -> (1 state : HashState) -> HashState"
+    , "let hashDoubleRaw value state = __mix __hashMixDouble value state"
+    , ""
+    , "hashNatTag : Nat -> (1 state : HashState) -> HashState"
+    , "let hashNatTag value state = __mix __hashMixInt (natToInt value) state"
+    , ""
+    , "trait Hashable (a : Type) ="
+    , "    hashInto : (& value : a) -> (1 state : HashState) -> HashState"
+    , ""
+    , "hashField : forall (a : Type). (@_ : Hashable a) -> (& value : a) -> (1 state : HashState) -> HashState"
+    , "let hashField value state = hashInto value state"
+    , ""
+    , "hashWith : forall (a : Type). (@_ : Hashable a) -> HashSeed -> (& value : a) -> HashCode"
+    , "let hashWith seed value = finishHashState (hashInto value (newHashState seed))"
+    , ""
+    , "instance Hashable Unit ="
+    , "    let hashInto value state = hashUnit state"
+    , ""
+    , "instance Hashable Bool ="
+    , "    let hashInto value state = hashBool value state"
     , ""
     , "instance Hashable Integer ="
-    , "    let hashWithSeed seed x ="
-    , "        match seed"
-    , "        case MkHashSeed s -> MkHashCode (addInt (mulInt 31 s) x)"
+    , "    let hashInto value state = hashInteger value state"
+    , ""
+    , "instance Hashable Nat ="
+    , "    let hashInto value state = hashNatTag value state"
+    , ""
+    , "instance Hashable Double ="
+    , "    let hashInto value state = hashDoubleRaw value state"
     , ""
     , "instance Hashable String ="
-    , "    let hashWithSeed seed x ="
-    , "        match seed"
-    , "        case MkHashSeed s -> MkHashCode s"
+    , "    let hashInto value state = hashString value state"
+    , ""
+    , "instance Hashable Bytes ="
+    , "    let hashInto value state = hashBytes value state"
+    , ""
+    , "instance Hashable Byte ="
+    , "    let hashInto value state = hashByte value state"
+    , ""
+    , "instance Hashable UnicodeScalar ="
+    , "    let hashInto value state = hashUnicodeScalar value state"
+    , ""
+    , "instance Hashable Grapheme ="
+    , "    let hashInto value state = hashGrapheme value state"
+    , ""
+    , "instance Hashable Ordering ="
+    , "    let hashInto value state = hashInt (orderingCode value) state"
     , ""
     , "instance Eq HashCode ="
     , "    let (==) a b ="
@@ -932,4 +1108,108 @@ stdHashSource =
     , "        case MkHashCode x ->"
     , "            match b"
     , "            case MkHashCode y -> if ltInt x y then LT elif eqInt x y then EQ else GT"
+    ]
+
+-- | Embedded @std.unicode@ source (§29.4 subset; see SPEC_COVERAGE.md).
+-- Unicode data version: UCD 15.0.0 (Kappa.UnicodeData); normalization,
+-- canonical equivalence and grapheme segmentation are full-fidelity for
+-- that version, word\/sentence segmentation are documented
+-- approximations, and the incremental decoder\/builders\/cursors of
+-- §29.4 are not provided.
+stdUnicodeSource :: Text
+stdUnicodeSource =
+  T.unlines
+    [ "module std.unicode"
+    , ""
+    , "data UnicodeVersion : Type ="
+    , "    MkUnicodeVersion (major : Integer) (minor : Integer) (patch : Integer)"
+    , ""
+    , "unicodeVersion : UnicodeVersion"
+    , "let unicodeVersion = MkUnicodeVersion 15 0 0"
+    , ""
+    , "data UnicodeDecodeError : Type ="
+    , "    MkUnicodeDecodeError"
+    , ""
+    , "data UnicodeTextError : Type ="
+    , "    MkUnicodeTextError"
+    , ""
+    , "data NormalizationForm : Type ="
+    , "    NFC"
+    , "    NFD"
+    , "    NFKC"
+    , "    NFKD"
+    , ""
+    , "data CaseFoldMode : Type =" -- full case folding (Data-driven)
+    , "    FullCaseFold"
+    , ""
+    , "data DisplayWidthMode : Type =" -- documented coarse policy below
+    , "    GraphemeCellWidth"
+    , ""
+    , "utf8Bytes : String -> Bytes"
+    , "let utf8Bytes s = __utf8Bytes s"
+    , ""
+    , "decodeUtf8 : Bytes -> Result UnicodeDecodeError String"
+    , "let decodeUtf8 bs = if __utf8Valid bs then Ok (__decodeUtf8Lossy bs) else Err MkUnicodeDecodeError"
+    , ""
+    , "decodeUtf8Lossy : Bytes -> String" -- U+FFFD replacement policy
+    , "let decodeUtf8Lossy bs = __decodeUtf8Lossy bs"
+    , ""
+    , "byteLength : String -> Nat"
+    , "let byteLength s = __byteLength s"
+    , ""
+    , "scalarValue : UnicodeScalar -> Nat"
+    , "let scalarValue c = __uniScalarValue c"
+    , ""
+    , "unicodeScalarFromValue : Nat -> Option UnicodeScalar"
+    , "let unicodeScalarFromValue n = if __scalarInRange n then Some (__scalarOfValue n) else None"
+    , ""
+    , "scalarToString : UnicodeScalar -> String"
+    , "let scalarToString c = __scalarToString c"
+    , ""
+    , "scalars : String -> Query UnicodeScalar"
+    , "let scalars s = __queryFromList (__stringScalars s)"
+    , ""
+    , "scalarCount : String -> Nat"
+    , "let scalarCount s = __scalarCount s"
+    , ""
+    , "graphemeToString : Grapheme -> String"
+    , "let graphemeToString g = __graphemeToString g"
+    , ""
+    , "graphemeFromString : String -> Option Grapheme"
+    , "let graphemeFromString s = if __graphemeValid s then Some (__graphemeOfString s) else None"
+    , ""
+    , "graphemes : String -> Query Grapheme"
+    , "let graphemes s = __queryFromList (__stringGraphemes s)"
+    , ""
+    , "graphemeCount : String -> Nat"
+    , "let graphemeCount s = __graphemeCount s"
+    , ""
+    , "normalize : NormalizationForm -> String -> String"
+    , "let normalize form s ="
+    , "    match form"
+    , "    case NFC -> __normalize 0 s"
+    , "    case NFD -> __normalize 1 s"
+    , "    case NFKC -> __normalize 2 s"
+    , "    case NFKD -> __normalize 3 s"
+    , ""
+    , "isNormalized : NormalizationForm -> String -> Bool"
+    , "let isNormalized form s = eqStr (normalize form s) s"
+    , ""
+    , "canonicalEquivalent : String -> String -> Bool" -- NFC-compare (§29.4)
+    , "let canonicalEquivalent x y = eqStr (__normalize 0 x) (__normalize 0 y)"
+    , ""
+    , "caseFold : CaseFoldMode -> String -> String"
+    , "let caseFold mode s = __caseFold s"
+    , ""
+    , -- documented policy: counts extended grapheme clusters as one
+      -- display cell each (combining marks zero extra; no wide/ambiguous
+      -- distinction)
+      "displayWidth : DisplayWidthMode -> String -> Nat"
+    , "let displayWidth mode s = __graphemeCount s"
+    , ""
+    , "words : String -> Query String" -- whitespace approximation
+    , "let words s = __queryFromList (__stringWords s)"
+    , ""
+    , "sentences : String -> Query String" -- terminator approximation
+    , "let sentences s = __queryFromList (__stringSentences s)"
     ]

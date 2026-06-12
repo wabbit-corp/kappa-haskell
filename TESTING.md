@@ -57,6 +57,7 @@ Implemented:
 | `packageMode`, `dumpFormat json\|sexpr`, `requires mode package` | accepted no-ops (defaults) |
 | `backend interpreter`, `requires backend interpreter` | accepted (the in-process interpreter) |
 | `requires capability runTask\|pipelineTrace` | met; other capabilities classify unsupported |
+| `requires capability legacyCharAlias\|unicodeSourceWarnings` | met (documented §T.1 compatibility extensions: the §28.5 `Char` alias; the §3.1.3 source-hygiene warnings) |
 | `assertNoErrors`, `assertNoWarnings` | |
 | `assertErrorCount N`, `assertWarningCount N` | |
 | `assertDiagnostic SEV CODE` | portable alias matching (§3.1.4) |

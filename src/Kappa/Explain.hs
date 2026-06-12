@@ -48,7 +48,7 @@ portableAlias c = lookup c table
     table =
       [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
       , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
-      , ("E_IMPLICIT_UNSOLVED", "E_TYPE_MISMATCH")
+      , ("E_UNSOLVED_IMPLICIT", "E_TYPE_MISMATCH")
       , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
       , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
       ]
@@ -94,7 +94,7 @@ registry =
       "A typed hole '?' or '_' in expression position was not solved by elaboration; the expected type or value remains unknown."
   , ent "E_IF_MISSING_ELSE" (Just "kappa.control.if-missing-else")
       "An 'if' expression used for its value lacks an 'else' branch, so not all paths produce a result."
-  , ent "E_IMPLICIT_UNSOLVED" (Just "kappa.implicit.unsolved")
+  , ent "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
       "An implicit argument (instance or value) could not be solved from the context at this application."
   , ent "E_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
       "A match arm marked 'impossible' is actually reachable: the scrutinee type does not rule the pattern out."

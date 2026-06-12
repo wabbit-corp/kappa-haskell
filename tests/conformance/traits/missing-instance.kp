@@ -1,7 +1,7 @@
---! assertDiagnostic error E_IMPLICIT_UNSOLVED
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
 trait Pretty (a : Type) =
     pretty : a -> String
 
 bad : String
-let bad = pretty "hello" --!! E_IMPLICIT_UNSOLVED
+let bad = pretty "hello" --!! E_UNSOLVED_IMPLICIT

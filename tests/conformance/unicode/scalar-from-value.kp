@@ -1,0 +1,22 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "65\nTrue\nFalse\nFalse\nTrue\n"
+
+-- §29.4 scalar operations: unicodeScalarFromValue rejects surrogates
+-- and out-of-range values; scalarValue/scalarToString round-trip.
+
+import std.unicode.*
+
+isSomeScalar : Option UnicodeScalar -> Bool
+let isSomeScalar o =
+    match o
+    case Some _ -> True
+    case None -> False
+
+main : UIO Unit
+let main = do
+    println (natToInt (scalarValue 'A'))
+    println (isSomeScalar (unicodeScalarFromValue 65))
+    println (isSomeScalar (unicodeScalarFromValue 0xD800))
+    println (isSomeScalar (unicodeScalarFromValue 0x110000))
+    println (decodeUtf8Lossy (utf8Bytes "abc") == "abc")

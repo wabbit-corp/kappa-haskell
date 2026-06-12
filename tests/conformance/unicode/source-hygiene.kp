@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_UNICODE_NON_NORMALIZED_SOURCE_TEXT
+
+-- §3.1.3 optional source-hygiene warning: raw non-NFC source text
+-- (decomposed e + COMBINING ACUTE below) warns once per file; the
+-- escaped spelling in 'fine' does not.
+
+let decomposed : String = "é"
+let fine : String = "e\u{301}"

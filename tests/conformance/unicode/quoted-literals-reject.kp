@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 6
+
+-- §6.5/§3.1.3 conventional-handler rejections and §6.4 scalar rules.
+
+--! assertDiagnostic error E_UNICODE_INVALID_GRAPHEME_LITERAL
+let twoClusters = g'ab'
+--! assertDiagnostic error E_UNICODE_INVALID_GRAPHEME_LITERAL
+let emptyGrapheme = g''
+--! assertDiagnostic error E_UNICODE_INVALID_BYTE_LITERAL
+let wideByte = b'λ'
+--! assertDiagnostic error E_UNICODE_INVALID_BYTE_LITERAL
+let twoByteEscape = b'\u{80}'
+--! assertDiagnostic error E_UNICODE_INVALID_SCALAR_LITERAL
+let surrogate = '\u{D800}'
+--! assertDiagnostic error E_UNICODE_INVALID_SCALAR_LITERAL
+let combining = 'e\u{301}'

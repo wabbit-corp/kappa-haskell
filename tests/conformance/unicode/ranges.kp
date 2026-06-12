@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §20.2 range operators via the prelude Rangeable trait: instances for
+-- Nat/Int/Integer/UnicodeScalar; deliberately none for Grapheme.
+
+let scalarRange = 'a' .. 'z'
+let halfOpen = 'a' ..< '{'
+let intRange = 1 .. 10
+--! assertDiagnosticNext error E_UNSOLVED_IMPLICIT
+let bad = g'a' .. g'b'

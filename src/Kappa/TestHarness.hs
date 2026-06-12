@@ -46,7 +46,7 @@ import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, forc
 import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor, moduleNameRelTo)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor, loadSourceFile, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
@@ -177,8 +177,15 @@ structuredUnsupported =
 -- parse\/buildKFrontIR\/lowerKCore. Not provided: @stageDumps@ (no
 -- Chapter 34 checkpoint serialization) and @incremental@ (no session
 -- state survives between suite roots).
+--
+-- The corpus's nonstandard capability names are provided as documented
+-- compatibility extensions (§T.1): @legacyCharAlias@ — the prelude
+-- defines the §28.5 sanctioned @type Char = UnicodeScalar@ alias — and
+-- @unicodeSourceWarnings@ — the §3.1.3 optional source-hygiene
+-- warnings (W_UNICODE_BIDI_CONTROL, W_UNICODE_CONFUSABLE_IDENTIFIER,
+-- W_UNICODE_NON_NORMALIZED_SOURCE_TEXT) are emitted by the pipeline.
 supportedCapabilities :: [Text]
-supportedCapabilities = ["runTask", "pipelineTrace"]
+supportedCapabilities = ["runTask", "pipelineTrace", "legacyCharAlias", "unicodeSourceWarnings"]
 
 -- §T.5.5 portable trace vocabulary.
 traceEventNames :: [Text]
@@ -509,22 +516,24 @@ readSourceFile path = do
 -- root for relative paths is the containing directory (§T.2).
 runTestFile :: FilePath -> IO TestReport
 runTestFile path = guardExceptions path $ do
-  src <- readSourceFile path
-  runSuiteWith False path (takeDirectory path) [(path, src)] Nothing
+  (src, preDiags) <- loadSourceFile path
+  runSuiteWith False path (takeDirectory path) [(path, src)] Nothing preDiags
 
 -- | Run a §T.2 directory suite: all @.kp@ files under the root compiled
 -- together, directives gathered from @suite.ktest@ plus every file.
 runSuiteDir :: FilePath -> IO TestReport
 runSuiteDir dir = guardExceptions dir $ do
   files <- collectKp dir
-  srcs <- mapM readSourceFile files
-  let ktestPath = dir </> "suite.ktest"
+  loaded <- mapM loadSourceFile files
+  let srcs = map fst loaded
+      preDiags = concatMap snd loaded
+      ktestPath = dir </> "suite.ktest"
   hasKtest <- doesFileExist ktestPath
   mktest <-
     if hasKtest
       then Just . (,) ktestPath <$> readSourceFile ktestPath
       else pure Nothing
-  runSuite dir dir (orderByImports (zip files srcs)) mktest
+  runSuite dir dir (orderByImports (zip files srcs)) mktest preDiags
 
 -- | Order suite files so that imported modules compile first (light
 -- textual scan of @module@ headers and @import@ lines; cycles keep the
@@ -571,12 +580,12 @@ guardExceptions label act = do
 
 -- | Shared suite driver. @files@ are the compilation roots; directives
 -- come from the optional @suite.ktest@ and from each file (§T.6).
-runSuite :: FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
+runSuite :: FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> Diagnostics -> IO TestReport
 runSuite = runSuiteWith True
 
 -- single-file tests are script-mode (§8.1 package path rules off)
-runSuiteWith :: Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> IO TestReport
-runSuiteWith packageMode label root files mktest = do
+runSuiteWith :: Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Maybe (FilePath, Text) -> Diagnostics -> IO TestReport
+runSuiteWith packageMode label root files mktest preDiags = do
   let sources = maybe [] (: []) mktest ++ files
       scans = [(p, src, scanDirectives src) | (p, src) <- sources]
       scanErrs = concat [es | (_, _, (_, es)) <- scans]
@@ -600,7 +609,7 @@ runSuiteWith packageMode label root files mktest = do
                   let mode = case modes of m : _ -> m; [] -> "check"
                   if not (null entries) && mode /= "run"
                     then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                    else executeSuite packageMode label root files mode entries asserts
+                    else executeSuite packageMode label root files mode entries asserts preDiags
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 
@@ -612,15 +621,15 @@ data RunInfo = RunInfo
 
 executeSuite ::
   Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
-  [(FilePath, Text, Assertion)] -> IO TestReport
-executeSuite packageMode label root files mode entries asserts = do
+  [(FilePath, Text, Assertion)] -> Diagnostics -> IO TestReport
+executeSuite packageMode label root files mode entries asserts preDiags = do
   -- the suite root is the §8.1 source root for module-path derivation
   let cu =
         if packageMode
           then compileFilesIn root files
           else compileFiles files
       filePaths = map fst files
-      allDiags = cuDiags cu
+      allDiags = preDiags ++ cuDiags cu
       preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) `notElem` filePaths]
       diags = [d | d <- allDiags, spanFile (dPrimary d) `elem` filePaths]
   if not (null preludeErrs)

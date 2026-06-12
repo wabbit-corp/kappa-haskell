@@ -1,0 +1,18 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nFalse\nTrue\nTrue\n"
+
+-- §29.3 std.hash: hashWith is deterministic per seed within one run,
+-- follows exact Eq String (no implicit normalization), and HashCode
+-- supports Eq/Ord only.
+
+import std.hash.*
+import std.unicode.*
+
+main : UIO Unit
+let main = do
+    println (hashWith defaultHashSeed "abc" == hashWith defaultHashSeed "abc")
+    println (compare (hashWith defaultHashSeed "abc") (hashWith defaultHashSeed "abc") == EQ)
+    println (hashWith defaultHashSeed "\u{00E9}" == hashWith defaultHashSeed "e\u{301}")
+    println (hashWith defaultHashSeed (normalize NFC "e\u{301}") == hashWith defaultHashSeed "\u{00E9}")
+    println (hashWith defaultHashSeed g'e\u{301}' == hashWith defaultHashSeed g'e\u{301}')

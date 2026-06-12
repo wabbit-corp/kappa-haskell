@@ -11,22 +11,27 @@ module Kappa.Pipeline
   , moduleNameRelTo
   , compileSourceWithPrelude
   , importScopeFor
+  , loadSourceFile
   ) where
 
+import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
 import Data.List (foldl', nub)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
 import Kappa.Check
 import Kappa.Core (GName (..), gnameText)
 import Kappa.Diagnostic
 import Kappa.Parser (parseModule)
-import Kappa.Prelude (builtinState, preludeSource, stdHashSource)
+import Kappa.Prelude (builtinState, preludeSource, stdHashSource, stdUnicodeSource)
 import Kappa.Resolve (defaultFixities, resolveModule)
 import Kappa.Source
 import Kappa.Syntax
+import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
 import Kappa.Usage (usageDiagnostics)
 
 -- | One §T.5.5 portable pipeline-trace step: @(event, subject)@.
@@ -51,7 +56,8 @@ preludeState =
       let (m', rdiags) = resolveModule defaultFixities m
           (st, diags) = checkModule builtinState m'
           (st', hdiags) = stdModule (ModuleName ["std", "hash"]) "<std.hash>" stdHashSource st
-       in (st', recovered ++ rdiags ++ diags ++ hdiags)
+          (st'', udiags) = stdModule (ModuleName ["std", "unicode"]) "<std.unicode>" stdUnicodeSource st'
+       in (st'', recovered ++ rdiags ++ diags ++ hdiags ++ udiags)
 
 -- | Compile one embedded standard-library module on top of the
 -- prelude state and register its exports.
@@ -178,8 +184,17 @@ compileFilesWith packageMode nameOf files =
                   , csModuleAliases = ieAliases ie
                   , csDiags = []
                   }
-              (st1, cdiags) = checkModule st0 m'
+              (st1, cdiags0) = checkModule st0 m'
               recovered = concatMap frDiags frs
+              -- recovery hygiene (§3.1.14): when part of the module
+              -- failed to parse, a signature's "missing" definition may
+              -- simply be in the unparsed region — do not pile a
+              -- §9.1 satisfaction error on top of the parse error
+              parseErrored = any isError recovered
+              cdiags =
+                if parseErrored
+                  then [d | d <- cdiags0, dCode d /= "E_SIGNATURE_UNSATISFIED"]
+                  else cdiags0
               preDiags = recovered ++ rdiags ++ ieDiags ie ++ cdiags
               -- §12.2–§12.4 usage analysis runs only over cleanly
               -- elaborated modules (its judgements presume well-typed
@@ -495,3 +510,72 @@ moduleNameRelTo root path =
   where
     stripPrefixStr pre s =
       if take (length pre) s == pre then Just (drop (length pre) s) else Nothing
+
+-- ── Source loading and hygiene (§3.1.3) ──────────────────────────────
+
+-- | Read one source file. The raw bytes are validated as UTF-8
+-- (invalid bytes are an 'E_UNICODE_INVALID_UTF8' error at the top of
+-- the file, and the text is recovered by U+FFFD replacement); valid
+-- files receive the optional §3.1.3 source-hygiene warnings.
+loadSourceFile :: FilePath -> IO (Text, Diagnostics)
+loadSourceFile path = do
+  bytes <- BS.readFile path
+  case TE.decodeUtf8' bytes of
+    Left _ ->
+      pure
+        ( TE.decodeUtf8With TEE.lenientDecode bytes
+        , [ diag SevError StageLex "E_UNICODE_INVALID_UTF8"
+              (Just "kappa.unicode.invalid-utf8") (lineSpan 1)
+              "source file is not valid UTF-8 (Spec §3.1.3)"
+          ]
+        )
+    Right txt -> pure (txt, sourceHygieneWarnings path txt)
+  where
+    lineSpan n = Span path (Pos n 1) (Pos n 2)
+
+-- | Optional §3.1.3 source-text warnings (at most one per class per
+-- file, at the first offending line):
+--
+--   * 'W_UNICODE_BIDI_CONTROL' — raw bidirectional control characters
+--     outside string literals (comments and identifiers included);
+--   * 'W_UNICODE_CONFUSABLE_IDENTIFIER' — identifier-position
+--     characters visually identical to an ASCII letter under the
+--     documented skeleton table (strings and comments excluded);
+--   * 'W_UNICODE_NON_NORMALIZED_SOURCE_TEXT' — source text that is not
+--     in Unicode Normalization Form C.
+sourceHygieneWarnings :: FilePath -> Text -> Diagnostics
+sourceHygieneWarnings path txt =
+  take 1 bidi ++ take 1 confusable ++ take 1 nonNfc
+  where
+    lns = zip [1 :: Int ..] (T.lines txt)
+    warn n code fam msg =
+      diag SevWarning StageLex code (Just fam) (Span path (Pos n 1) (Pos n 2)) msg
+    bidi =
+      [ warn n "W_UNICODE_BIDI_CONTROL" "kappa.unicode.bidi-control"
+          "source text contains a bidirectional control character outside a string literal (§3.1.3)"
+      | (n, l) <- lns
+      , T.any isBidiControl (stripStrings l)
+      ]
+    confusable =
+      [ warn n "W_UNICODE_CONFUSABLE_IDENTIFIER" "kappa.unicode.confusable"
+          "an identifier contains characters visually confusable with ASCII letters (§3.1.3)"
+      | (n, l) <- lns
+      , T.any (isJust . confusableWithAscii) (stripComment (stripStrings l))
+      ]
+    nonNfc =
+      [ warn n "W_UNICODE_NON_NORMALIZED_SOURCE_TEXT" "kappa.unicode.non-normalized-text"
+          "source text is not in Unicode Normalization Form C (§3.1.3)"
+      | (n, l) <- lns
+      , not (isNfcQuick l)
+      ]
+    -- blank out double-quoted string contents (escape-aware, one line)
+    stripStrings l = T.pack (outside (T.unpack l))
+      where
+        outside [] = []
+        outside ('"' : cs) = '"' : inside cs
+        outside (c : cs) = c : outside cs
+        inside [] = []
+        inside ('\\' : _ : cs) = ' ' : ' ' : inside cs
+        inside ('"' : cs) = '"' : outside cs
+        inside (_ : cs) = ' ' : inside cs
+    stripComment l = fst (T.breakOn "--" l)

@@ -1,0 +1,14 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\n"
+
+-- §6.3.3 fixed dedent: the spaces-only closing-delimiter line dedents
+-- to an empty final line, so the literal keeps its trailing newline.
+
+sample : String
+let sample = """
+    ab
+    """
+
+main : UIO Unit
+let main = println (sample == "ab\n")

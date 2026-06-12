@@ -5,6 +5,7 @@ module Kappa.Pretty
   , renderValueShallow
   ) where
 
+import qualified Data.ByteString as BS
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Core
@@ -64,6 +65,9 @@ renderLit = \case
   LitDouble d -> T.pack (show d)
   LitStr s -> T.pack (show s)
   LitScalar c -> T.pack (show c)
+  LitByte w -> "b'\\x" <> T.pack (show w) <> "'"
+  LitBytes bs -> "<" <> T.pack (show (BS.length bs)) <> " bytes>"
+  LitGrapheme g -> "g'" <> g <> "'"
 
 -- | Shallow value rendering for runtime messages.
 renderValueShallow :: Value -> Text

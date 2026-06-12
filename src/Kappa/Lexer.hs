@@ -572,11 +572,14 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
             Just ('\n', rest) -> rest
             _ -> body0
           ls = T.splitOn "\n" body
-          (indent, contentLines) = case reverse ls of
+          -- the spaces-only line holding the closing delimiter defines
+          -- I; it stays a content line and dedents to "" so the literal
+          -- keeps its trailing newline (§6.3.3)
+          indent = case reverse ls of
             (lastL : restRev)
-              | T.all (== ' ') lastL && not (null restRev) ->
-                  (lastL, reverse restRev)
-            _ -> ("", ls)
+              | T.all (== ' ') lastL && not (null restRev) -> lastL
+            _ -> ""
+          contentLines = ls
           strip ln
             | T.null ln = Right ln
             | T.all (== ' ') ln = Right (T.drop (T.length indent) ln)
@@ -728,7 +731,12 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
           let s1 = adv '\'' s0
           (body, s2, terminated) <- takeBody s1 []
           let sp = spanAt s0 s2
-          mtext <- decodeTextView sp body
+              -- §6.5: the text view is present only when the payload
+              -- decodes to valid Unicode scalar text; a bad escape means
+              -- "no text view", reported per literal family below.
+              mtext = case decodeEscapes sp body of
+                Right txt -> Just txt
+                Left _ -> Nothing
           let mbytes = decodeByteView body
               -- Recovery placeholder: a well-formed single-scalar view so
               -- later stages do not cascade after a reported lex error.
@@ -770,9 +778,9 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
             , False
             )
 
-        decodeTextView sp body = Just <$> decodeEscapes sp body
-
-        -- §6.5: byte view exists when every unit has a one-byte reading.
+        -- §6.5: byte view exists when every unit has a one-byte reading
+        -- (a Unicode escape contributes a byte only when its scalar's
+        -- UTF-8 encoding is exactly one byte, i.e. <= U+007F).
         decodeByteView :: Text -> Maybe [Word8]
         decodeByteView = goBytes . T.unpack
           where
@@ -780,6 +788,18 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
             goBytes ('\\' : 'x' : h1 : h2 : rest)
               | isHexDigit h1 && isHexDigit h2 =
                   (fromIntegral (hexVal h1 * 16 + hexVal h2) :) <$> goBytes rest
+            goBytes ('\\' : 'u' : '{' : rest)
+              | (hs, '}' : rest') <- span isHexDigit rest
+              , not (null hs)
+              , length hs <= 6
+              , v <- foldl' (\a d -> a * 16 + hexVal d) 0 hs
+              , v <= 0x7F =
+                  (fromIntegral v :) <$> goBytes rest'
+            goBytes ('\\' : 'u' : h1 : h2 : h3 : h4 : rest)
+              | all isHexDigit [h1, h2, h3, h4]
+              , v <- foldl' (\a d -> a * 16 + hexVal d) 0 [h1, h2, h3, h4]
+              , v <= 0x7F =
+                  (fromIntegral v :) <$> goBytes rest
             goBytes ('\\' : e : rest) = do
               b <- simpleEscByte e
               (b :) <$> goBytes rest

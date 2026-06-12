@@ -52,6 +52,8 @@ library
         Kappa.Syntax
         Kappa.TestHarness
         Kappa.Token
+        Kappa.Unicode
+        Kappa.UnicodeData
         Kappa.Usage
 
     hs-source-dirs:   src

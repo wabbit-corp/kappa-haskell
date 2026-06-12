@@ -1,4 +1,4 @@
---! assertDiagnostic error E_IMPLICIT_UNSOLVED
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
 
 -- A CheckedSub instance whose definedness predicate does not reduce on
 -- symbolic arguments: the (@_ : subDefined x y = True) obligation stays
@@ -8,7 +8,7 @@ instance CheckedSub Nat =
     let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
 
 f : Nat -> Nat -> Nat
-let f x y = x - y --!! E_IMPLICIT_UNSOLVED
+let f x y = x - y --!! E_UNSOLVED_IMPLICIT
 
 -- Concrete arguments reduce and discharge the proof by conversion.
 ok : Nat

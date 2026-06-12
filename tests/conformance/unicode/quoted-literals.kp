@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §6.5 prefixed single-quoted literals: the conventional 'g' handler
+-- accepts exactly one extended grapheme cluster (exact scalars), the
+-- conventional 'b' handler exactly one byte (\u escapes contribute a
+-- byte only when the scalar's UTF-8 encoding is one byte).
+
+let ascii : Grapheme = g'a'
+let decomposed : Grapheme = g'e\u{301}'
+let flag : Grapheme = g'\u{1F1E8}\u{1F1E6}'
+let family : Grapheme = g'\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'
+let keycap : Grapheme = g'#\u{FE0F}\u{20E3}'
+
+let asciiByte : Byte = b'a'
+let maxByte : Byte = b'\xFF'
+let escByte : Byte = b'\u{61}'
+let graphemeEq : Bool = g'e\u{301}' == g'e\u{301}'
+let byteOrd : Ordering = compare b'a' b'b'
+
+--! assertType ascii Grapheme
+--! assertType family Grapheme
+--! assertType asciiByte Byte
+--! assertType graphemeEq Bool
+--! assertType byteOrd Ordering

@@ -38,6 +38,7 @@ import Kappa.Source
 import Kappa.Syntax hiding (CompClause (..), Quantity (..))
 import qualified Kappa.Syntax as S
 import Kappa.Token (QuotedLit (..), StrFragment (..), StringLit (..))
+import Kappa.Unicode (isSingleGrapheme)
 
 -- ── State ────────────────────────────────────────────────────────────
 
@@ -747,6 +748,31 @@ reportUnsupported sp what =
 unsupported :: Ctx -> Span -> Text -> CheckM (Term, Value)
 unsupported ctx sp what = reportUnsupported sp what >> anyHole ctx
 
+-- §6.5 conventional-handler rejections (§3.1.3 diagnostic codes). The
+-- recovery values are well-typed placeholders so later stages do not
+-- cascade.
+badGrapheme :: Span -> Text -> CheckM (Term, Value)
+badGrapheme sp why = do
+  errAt sp "E_UNICODE_INVALID_GRAPHEME_LITERAL" (Just "kappa.unicode.invalid-grapheme-literal")
+    ("invalid grapheme literal: " <> why <> " (Spec §6.5)")
+  pure (CLit (LitGrapheme "?"), VGlobN (gPrel "Grapheme") [])
+
+badByte :: Span -> Text -> CheckM (Term, Value)
+badByte sp why = do
+  errAt sp "E_UNICODE_INVALID_BYTE_LITERAL" (Just "kappa.unicode.invalid-byte-literal")
+    ("invalid byte literal: " <> why <> " (Spec §6.5)")
+  pure (CLit (LitByte 0x3F), VGlobN (gPrel "Byte") [])
+
+-- §6.1.6: an out-of-scope numeric-literal suffix is a compile-time
+-- error identifying the missing suffix name. The literal cannot be
+-- typed without its suffix, so the diagnostic uses the type-mismatch
+-- family (portable alias E_TYPE_MISMATCH).
+badLiteralSuffix :: Ctx -> Name -> CheckM (Term, Value)
+badLiteralSuffix ctx (Name n sp) = do
+  errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+    ("the numeric-literal suffix '" <> n <> "' does not resolve to a term in scope (Spec §6.1.6)")
+  anyHole ctx
+
 -- ── Implicit resolution (§16.3.3) ────────────────────────────────────
 
 resolveImplicit :: Ctx -> Span -> Value -> CheckM Term
@@ -807,7 +833,7 @@ resolveImplicitQ ctx sp q goal = do
                       if isTrait || isEq || q /= Q0
                         then do
                           gT <- quoteIn ctx g
-                          errAt sp "E_IMPLICIT_UNSOLVED" (Just "kappa.implicit.unsolved")
+                          errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
                             ("could not resolve implicit argument of type " <> renderTerm gT
                                <> (if isTrait || isEq then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
                           freshMeta
@@ -899,9 +925,19 @@ goalHasFlex v = do
           CProj e _ -> goT e
           _ -> False
 
--- flush postponed trait goals after a body has been elaborated.
+-- | Flush postponed trait goals after a body has been elaborated. A
+-- goal whose head is still an unsolved metavariable is kept pending
+-- (a later declaration's use site may determine the head, e.g. an
+-- unannotated @let f x y = x + y@ used at @Int@); 'flushPendingFinal'
+-- commits the survivors at the end of the module.
 flushPending :: CheckM ()
-flushPending = do
+flushPending = flushPendingWith False
+
+flushPendingFinal :: CheckM ()
+flushPendingFinal = flushPendingWith True
+
+flushPendingWith :: Bool -> CheckM ()
+flushPendingWith final = do
   st <- get
   let pend = reverse (csPending st)
   put st {csPending = []}
@@ -911,22 +947,32 @@ flushPending = do
       Just (Just _) -> pure ()
       _ -> do
         g <- forceM goal
-        mLoc <- localCandidate ctx sp Q0 g
-        r <- case mLoc of
-          Just tm -> pure (Just tm)
-          Nothing -> do
-            mi <- instanceSearch ctx sp g
-            case mi of
+        stillFlex <- goalHasFlex g
+        -- deferral across declarations is safe only when no local
+        -- implicit candidate could ever apply: the declaration's body
+        -- is zonked and stored before the goal is finally committed,
+        -- so a late local-candidate solution would leak local rigids
+        -- into the stored term (see zonkTermM)
+        let noLocalCandidates = not (any ceImplicitLocal (ctxEntries ctx))
+        if stillFlex && not final && noLocalCandidates
+          then modify' $ \s -> s {csPending = (mid, goal, sp, ctx) : csPending s}
+          else do
+            mLoc <- localCandidate ctx sp Q0 g
+            r <- case mLoc of
               Just tm -> pure (Just tm)
-              Nothing -> propProof g
-        case r of
-          Just tm -> do
-            v <- evalIn ctx tm
-            solveMeta mid v
-          Nothing -> do
-            ec <- ec_
-            errAt sp "E_IMPLICIT_UNSOLVED" (Just "kappa.implicit.unsolved")
-              ("could not resolve implicit argument of type " <> renderTerm (quote ec (ctxLen ctx) g))
+              Nothing -> do
+                mi <- instanceSearch ctx sp g
+                case mi of
+                  Just tm -> pure (Just tm)
+                  Nothing -> propProof g
+            case r of
+              Just tm -> do
+                v <- evalIn ctx tm
+                solveMeta mid v
+              Nothing -> do
+                ec <- ec_
+                errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
+                  ("could not resolve implicit argument of type " <> renderTerm (quote ec (ctxLen ctx) g))
 
 -- | Replace solved metavariables by their solutions, quoted at the
 -- correct binder depth. Run after 'flushPending' so terms stored as
@@ -1165,6 +1211,26 @@ infer ctx expr = case expr of
     , Just txt <- qlText ql
     , [c] <- T.unpack txt ->
         pure (CLit (LitScalar c), VGlobN (gPrel "UnicodeScalar") [])
+    -- §6.5 conventional 'g' handler: requires a text view containing
+    -- exactly one extended grapheme cluster (UAX #29, pinned UCD).
+    | Just "g" <- qlPrefix ql ->
+        case qlText ql of
+          Just txt
+            | isSingleGrapheme txt ->
+                pure (CLit (LitGrapheme txt), VGlobN (gPrel "Grapheme") [])
+            | T.null txt -> badGrapheme sp "the payload is empty"
+            | otherwise ->
+                badGrapheme sp
+                  "the payload does not contain exactly one extended grapheme cluster"
+          Nothing -> badGrapheme sp "the payload has no valid text view"
+    -- §6.5 conventional 'b' handler: requires a byte view containing
+    -- exactly one byte.
+    | Just "b" <- qlPrefix ql ->
+        case qlBytes ql of
+          Just [w] -> pure (CLit (LitByte w), VGlobN (gPrel "Byte") [])
+          Just [] -> badByte sp "the payload is empty"
+          Just _ -> badByte sp "the payload contains more than one byte"
+          Nothing -> badByte sp "the payload has no single-byte view"
     | otherwise -> snd <$> ((,) () <$> unsupported ctx sp "this quoted-literal form")
   EUnit _ -> pure (CCtor (gPrel "Unit") [], VGlobN (gPrel "Unit") [])
   ETuple es _ -> do
@@ -1240,8 +1306,19 @@ infer ctx expr = case expr of
     case mproj of
       Just (g, pj) -> elabProjApp ctx (exprSpan f) g pj args
       Nothing -> do
+        n0 <- gets (length . csDiags)
         (fTm, fTy) <- infer ctx f
-        elabSpine ctx (exprSpan f) fTm fTy args
+        headUnresolved <- case f of
+          EVar {} -> do
+            ds <- gets csDiags
+            pure (any ((== "E_NAME_UNRESOLVED") . dCode) (take (length ds - n0) ds))
+          _ -> pure False
+        if headUnresolved
+          -- recovery (§3.1.14): an application whose head does not
+          -- resolve reports the head once; the arguments cannot be
+          -- meaningfully typed against an unknown callee
+          then anyHole ctx
+          else elabSpine ctx (exprSpan f) fTm fTy args
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
   EElvis l r sp -> elabElvis ctx l r sp
@@ -2290,8 +2367,12 @@ elabNamedBlock ctx fTm fTy items sp rest = do
 elabIntLit :: Ctx -> Integer -> Maybe Name -> Span -> Maybe Value -> CheckM (Term, Value)
 elabIntLit ctx v msuf sp mexp = case msuf of
   Just suf -> do
-    (fTm, fTy) <- resolveName ctx suf
-    elabSpine ctx sp fTm fTy [ArgExplicit (EIntLit v Nothing sp)] -- payload : Nat
+    known <- prefixResolves ctx (nameText suf)
+    if not known
+      then badLiteralSuffix ctx suf
+      else do
+        (fTm, fTy) <- resolveName ctx suf
+        elabSpine ctx sp fTm fTy [ArgExplicit (EIntLit v Nothing sp)] -- payload : Nat
   Nothing -> do
     expected <- maybe (pure Nothing) (fmap Just . forceM) mexp
     case expected of
@@ -2316,8 +2397,12 @@ elabIntLit ctx v msuf sp mexp = case msuf of
 elabFloatLit :: Ctx -> Double -> Maybe Name -> Span -> Maybe Value -> CheckM (Term, Value)
 elabFloatLit ctx v msuf sp mexp = case msuf of
   Just suf -> do
-    (fTm, fTy) <- resolveName ctx suf
-    elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
+    known <- prefixResolves ctx (nameText suf)
+    if not known
+      then badLiteralSuffix ctx suf
+      else do
+        (fTm, fTy) <- resolveName ctx suf
+        elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
   Nothing -> do
     expected <- maybe (pure Nothing) (fmap Just . forceM) mexp
     case expected of
@@ -5341,6 +5426,7 @@ checkModule st0 m =
         mapM_ predeclarePass (modDecls m)
         mapM_ (headerPassIn siglessLets) (modDecls m)
         mapM_ (bodyPassIn siglessLets) (modDecls m)
+        flushPendingFinal
         sigSatisfactionPass
       (_, st1) = runState passes (st0 {csSigPending = Map.empty})
    in -- 'report' prepends; restore emission (source) order here

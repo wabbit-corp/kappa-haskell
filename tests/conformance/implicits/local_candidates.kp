@@ -1,5 +1,5 @@
 --! mode check
---! assertDiagnostic error E_IMPLICIT_UNSOLVED
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
 --! assertDiagnostic error E_IMPLICIT_AMBIGUOUS
 --! assertDiagnostic error E_QTT_ERASED_RUNTIME_USE
 --! assertType ok Integer

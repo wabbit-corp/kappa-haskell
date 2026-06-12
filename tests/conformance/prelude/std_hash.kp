@@ -1,5 +1,5 @@
 --! mode check
---! assertDiagnostic error E_IMPLICIT_UNSOLVED
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
 --! assertType order HashCode -> HashCode -> Ordering
 
 import std.hash.*

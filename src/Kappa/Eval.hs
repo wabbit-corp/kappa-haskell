@@ -23,12 +23,28 @@ module Kappa.Eval
   , lookupEnv
   ) where
 
+import Data.Bits (xor)
+import qualified Data.ByteString as BS
+import Data.Char (chr, ord)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TEE
+import Data.Word (Word64, Word8)
+import GHC.Float (castDoubleToWord64)
 import Kappa.Core
 import Kappa.Source (ModuleName (..))
+import Kappa.Unicode
+  ( NormForm (..)
+  , graphemeClusters
+  , isSingleGrapheme
+  , normalizeText
+  , sentenceChunks
+  , wordChunks
+  )
+import Numeric (showHex)
 
 -- | One global definition.
 data GlobalDef = GlobalDef
@@ -486,6 +502,63 @@ evalPurePrim p args = case (p, args) of
   ("ltStr", [VLit (LitStr a), VLit (LitStr b)]) -> bool (a < b)
   ("eqScalar", [VLit (LitScalar a), VLit (LitScalar b)]) -> bool (a == b)
   ("ltScalar", [VLit (LitScalar a), VLit (LitScalar b)]) -> bool (a < b)
+  -- §6.5/§29.5 text atoms: Byte/Bytes/Grapheme comparison + rendering
+  ("eqByte", [VLit (LitByte a), VLit (LitByte b)]) -> bool (a == b)
+  ("ltByte", [VLit (LitByte a), VLit (LitByte b)]) -> bool (a < b)
+  ("showByte", [VLit (LitByte a)]) ->
+    str (T.pack ("b'\\x" <> pad2 (showHex a "") <> "'"))
+  ("eqBytes", [VLit (LitBytes a), VLit (LitBytes b)]) -> bool (a == b)
+  ("ltBytes", [VLit (LitBytes a), VLit (LitBytes b)]) -> bool (a < b) -- lexicographic by byte
+  ("showBytes", [VLit (LitBytes a)]) ->
+    str (T.pack ("0x" <> concatMap (\w -> pad2 (showHex w "")) (BS.unpack a)))
+  ("eqGrapheme", [VLit (LitGrapheme a), VLit (LitGrapheme b)]) -> bool (a == b) -- exact scalars
+  ("showGrapheme", [VLit (LitGrapheme a)]) -> str ("g'" <> a <> "'")
+  -- §29.4 std.unicode internals
+  ("__utf8Bytes", [VLit (LitStr s)]) -> bytes (TE.encodeUtf8 s)
+  ("__utf8Valid", [VLit (LitBytes bs)]) ->
+    bool (either (const False) (const True) (TE.decodeUtf8' bs))
+  ("__decodeUtf8Lossy", [VLit (LitBytes bs)]) ->
+    str (TE.decodeUtf8With TEE.lenientDecode bs)
+  ("__byteLength", [VLit (LitStr s)]) -> int (fromIntegral (BS.length (TE.encodeUtf8 s)))
+  ("__uniScalarValue", [VLit (LitScalar c)]) -> int (fromIntegral (ord c))
+  ("__scalarInRange", [VLit (LitInt n)]) ->
+    bool (n >= 0 && n <= 0x10FFFF && not (n >= 0xD800 && n <= 0xDFFF))
+  ("__scalarOfValue", [VLit (LitInt n)])
+    | n >= 0 && n <= 0x10FFFF && not (n >= 0xD800 && n <= 0xDFFF) ->
+        Just (VLit (LitScalar (chr (fromIntegral n))))
+  ("__scalarToString", [VLit (LitScalar c)]) -> str (T.singleton c)
+  ("__stringScalars", [VLit (LitStr s)]) ->
+    Just (listV [VLit (LitScalar c) | c <- T.unpack s])
+  ("__scalarCount", [VLit (LitStr s)]) -> int (fromIntegral (T.length s))
+  ("__graphemeToString", [VLit (LitGrapheme g)]) -> str g
+  ("__graphemeValid", [VLit (LitStr s)]) -> bool (isSingleGrapheme s)
+  ("__graphemeOfString", [VLit (LitStr s)])
+    | isSingleGrapheme s -> Just (VLit (LitGrapheme s))
+  ("__stringGraphemes", [VLit (LitStr s)]) ->
+    Just (listV [VLit (LitGrapheme g) | g <- graphemeClusters s])
+  ("__graphemeCount", [VLit (LitStr s)]) ->
+    int (fromIntegral (length (graphemeClusters s)))
+  ("__normalize", [VLit (LitInt form), VLit (LitStr s)]) ->
+    let f = case form of
+          0 -> NFC
+          1 -> NFD
+          2 -> NFKC
+          _ -> NFKD
+     in str (normalizeText f s)
+  ("__caseFold", [VLit (LitStr s)]) -> str (T.toCaseFold s)
+  ("__stringWords", [VLit (LitStr s)]) ->
+    Just (listV [VLit (LitStr w) | w <- wordChunks s])
+  ("__stringSentences", [VLit (LitStr s)]) ->
+    Just (listV [VLit (LitStr w) | w <- sentenceChunks s])
+  ("__byteToNat", [VLit (LitByte w)]) -> int (fromIntegral w)
+  -- §29.3 hash mixing: FNV-1a over a 64-bit lane, deterministic per run
+  ("__hashMixInt", [VLit (LitInt s), VLit (LitInt v)]) -> int (fnvMixInteger s v)
+  ("__hashMixDouble", [VLit (LitInt s), VLit (LitDouble d)]) ->
+    int (fnvMixInteger s (fromIntegral (castDoubleToWord64 d)))
+  ("__hashMixString", [VLit (LitInt s), VLit (LitStr t)]) ->
+    int (fnvMixBytes s (TE.encodeUtf8 t))
+  ("__hashMixBytes", [VLit (LitInt s), VLit (LitBytes bs)]) ->
+    int (fnvMixBytes s bs)
   ("stringAppend", [VLit (LitStr a), VLit (LitStr b)]) -> Just (VLit (LitStr (a <> b)))
   ("showInt", [VLit (LitInt a)]) -> str (T.pack (show a))
   ("primitiveIntToString", [VLit (LitInt a)]) -> str (T.pack (show a))
@@ -513,5 +586,17 @@ evalPurePrim p args = case (p, args) of
     int = Just . VLit . LitInt
     dbl = Just . VLit . LitDouble
     str = Just . VLit . LitStr
-    bool b = Just (VCtor (GName (ModuleName ["std", "prelude"]) (if b then "True" else "False")) [])
+    bytes = Just . VLit . LitBytes
+    bool b = Just (VCtor (prelG (if b then "True" else "False")) [])
+    prelG = GName (ModuleName ["std", "prelude"])
+    listV = foldr (\x acc -> VCtor (prelG "::") [x, acc]) (VCtor (prelG "Nil") [])
+    pad2 s = if length s < 2 then replicate (2 - length s) '0' ++ s else s
+    -- FNV-1a over one 64-bit lane; integers mix their 8 low-endian bytes
+    fnvMixByte :: Integer -> Word8 -> Integer
+    fnvMixByte s w =
+      let s64 = fromIntegral s :: Word64
+       in fromIntegral ((s64 `xor` fromIntegral w) * 1099511628211)
+    fnvMixBytes = BS.foldl' fnvMixByte
+    fnvMixInteger s v =
+      foldl fnvMixByte s [fromIntegral ((v `div` (256 ^ i)) `mod` 256) :: Word8 | i <- [0 .. 7 :: Int]]
     identicalIEEE a b = (a == b && (1 / a == 1 / b)) || (a /= a && b /= b)

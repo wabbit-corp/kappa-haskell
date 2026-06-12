@@ -41,15 +41,17 @@ cmdExplain code = case lookupCode code of
 
 cmdCheck :: FilePath -> IO ()
 cmdCheck path = do
-  src <- TIO.readFile path
-  let cu = compileSourceWithPrelude path src
+  (src, preDiags) <- loadSourceFile path
+  let cu0 = compileSourceWithPrelude path src
+      cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
   forM_ (cuDiags cu) (TIO.hPutStrLn stderr . renderDiagnostic)
   if hasErrors (cuDiags cu) then exitFailure else exitSuccess
 
 cmdRun :: FilePath -> IO ()
 cmdRun path = do
-  src <- TIO.readFile path
-  let cu = compileSourceWithPrelude path src
+  (src, preDiags) <- loadSourceFile path
+  let cu0 = compileSourceWithPrelude path src
+      cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
   forM_ (cuDiags cu) (TIO.hPutStrLn stderr . renderDiagnostic)
   when (hasErrors (cuDiags cu)) exitFailure
   let st = cuState cu

@@ -34,8 +34,10 @@ module Kappa.Core
   , MetaId
   ) where
 
+import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.Text (Text)
+import Data.Word (Word8)
 import Kappa.Source (ModuleName (..))
 
 -- | Module owning interpreter primitives.
@@ -63,6 +65,9 @@ data Literal
   | LitDouble !Double
   | LitStr !Text
   | LitScalar !Char
+  | LitByte !Word8 -- §6.5 conventional 'b' handler payload
+  | LitBytes !ByteString -- §29.5 byte sequences (exact byte content)
+  | LitGrapheme !Text -- §6.5 conventional 'g' handler payload (exact scalar sequence)
   deriving stock (Eq, Ord, Show)
 
 -- | Core terms, de Bruijn indexed.
