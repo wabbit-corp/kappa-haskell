@@ -2311,8 +2311,8 @@ elabBlock ctx ds mfin sp = do
         -- local named function: elaborate as lambda
         let lam = ELambda Nothing bs (maybe rhs (\t -> EAscription rhs t dsp) mty) dsp
         (LetBind False emptyPrefix (PVar n) (lookup (nameText n) sigs) lam sp :) <$> goDecls sigs rest
-      DLet _ (LetDef Nothing (Just p) brw [] mty Nothing rhs) _ ->
-        (LetBind False (BinderPrefix Nothing (if brw then Just (BorrowMark Nothing) else Nothing)) p mty rhs sp :) <$> goDecls sigs rest
+      DLet _ (LetDef Nothing (Just p) prefix [] mty Nothing rhs) _ ->
+        (LetBind False prefix p mty rhs sp :) <$> goDecls sigs rest
       -- a local type alias is a type-level let binding (§9.3.1, §10.2)
       DTypeAlias _ n params _ (Just rhs) dsp ->
         let (body, ann) = case params of

@@ -575,10 +575,10 @@ patVars = \case
 declsToBinds :: [Decl] -> M [LetBind]
 declsToBinds [] = pure []
 declsToBinds (d : ds) = case d of
-  DLet _ (LetDef (Just n) Nothing _ [] _ Nothing body) sp ->
-    (LetBind False emptyPrefix (PVar n) Nothing body sp :) <$> declsToBinds ds
-  DLet _ (LetDef Nothing (Just pat) brw [] _ Nothing body) sp ->
-    (LetBind False (BinderPrefix Nothing (if brw then Just (BorrowMark Nothing) else Nothing)) pat Nothing body sp :) <$> declsToBinds ds
+  DLet _ (LetDef (Just n) Nothing prefix [] _ Nothing body) sp ->
+    (LetBind False prefix (PVar n) Nothing body sp :) <$> declsToBinds ds
+  DLet _ (LetDef Nothing (Just pat) prefix [] _ Nothing body) sp ->
+    (LetBind False prefix pat Nothing body sp :) <$> declsToBinds ds
   DSig {} -> declsToBinds ds
   _ -> bailOut >> pure []
 

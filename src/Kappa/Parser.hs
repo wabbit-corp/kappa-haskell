@@ -394,15 +394,15 @@ pLetDef = do
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
-      pure (LetDef (Just n) Nothing False binders resTy dec body)
+      pure (LetDef (Just n) Nothing emptyPrefix binders resTy dec body)
     patBinding = do
-      -- `let &b = e` borrow bindings (§12.3.1)
-      mark <- optionMaybe pBorrowMark
+      -- `let 1 x = e` / `let &b = e` prefixed bindings (§12.2, §12.3.1)
+      prefix <- pBinderPrefix
       pat <- pPattern
       ty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
       body <- pDefBody
-      pure (LetDef Nothing (Just pat) (isJust mark) [] ty Nothing body)
+      pure (LetDef Nothing (Just pat) prefix [] ty Nothing body)
 
 pDecreases :: P Decreases
 pDecreases = do
@@ -1456,9 +1456,26 @@ pAppExpr :: P Expr
 pAppExpr = do
   f <- pPostfixExpr
   args <- many pAppArg
-  pure $ case args of
+  targ <- optionMaybe pTrailingBlockArg
+  pure $ case args ++ maybe [] (: []) targ of
     [] -> f
-    _ -> EApp f args
+    allArgs -> EApp f allArgs
+
+-- A deeper-indented continuation line supplies one final (block-shaped)
+-- argument to the application: `f\n    do ...` (§16.1.7, layout §5.4).
+pTrailingBlockArg :: P Arg
+pTrailingBlockArg = try $ do
+  pNewline
+  token TokIndent
+  stop <- pAtStopKeyword
+  open <- (`elem` [Just "do", Just "match", Just "block", Just "if"]) <$> peekIdent
+  if stop && not open
+    then parseFail "stop keyword cannot begin a trailing argument"
+    else do
+      e <- pExpr
+      void (many pNewline)
+      token TokDedent
+      pure (ArgExplicit e)
 
 pAppArg :: P Arg
 pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
@@ -2337,7 +2354,7 @@ pDoItem = do
     TokIdent "defer" -> do
       pKeyword "defer"
       lbl <- optionMaybe (token TokAt *> pIdent)
-      e <- pExpr
+      e <- pSuiteOrExpr
       DoDefer lbl e <$> spanFrom start
     TokIdent "return" -> do
       pKeyword "return"
