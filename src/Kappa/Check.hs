@@ -515,11 +515,18 @@ topoFields = goT []
           ((map (\(_, _, a) -> a) ready) ++) <$> goT (doneLs ++ readyLs) rest
 
 -- | Report a diagnostic unless an identical (code, message) one was
--- already reported at the same origin — for judgements re-checked once
--- per occurrence of the same source type (e.g. a signature and its
--- definition binders).
+-- already reported — for judgements re-checked once per occurrence of
+-- the same source type (e.g. a signature and its definition binders).
 errOnce :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errOnce sp code fam msg = do
+  ds <- gets csDiags
+  unless (any (\d -> dCode d == code && dMessage d == msg) ds) $
+    errAt sp code fam msg
+
+-- | Like 'errOnce', but distinct origins each report (one diagnostic
+-- per malformed source construct, not per judgement).
+errOncePerSpan :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
+errOncePerSpan sp code fam msg = do
   ds <- gets csDiags
   unless (any (\d -> dCode d == code && dMessage d == msg && dPrimary d == sp) ds) $
     errAt sp code fam msg
@@ -2895,7 +2902,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
     -- §16.1.7.2: one diagnostic per malformed block on an ordinary
     -- callee (a telescope mismatch, not a named-argument code)
     blockMismatch =
-      errOnce sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+      errOncePerSpan sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
         "the named-argument block does not match the callee's remaining parameter telescope (§16.1.7.2)"
     ctorOf = \case
       CLam _ _ _ b -> ctorOf b

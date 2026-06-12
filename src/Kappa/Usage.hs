@@ -474,9 +474,14 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
   forM_ binds $ \(_, vi) -> closeVar vi u
-  forM_ taint $ \sp ->
-    emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" sp
-      "a closure capturing a borrowed binding escapes through the result (§12.3.2)"
+  -- §12.3.1: an explicit captures annotation on the declared result
+  -- type licenses the closure's borrow captures
+  let resCaptures = maybe False capturesAnnotated resultTy
+      resultTy = ldResultType ld `orElseE` (sigResultOf =<< msig)
+  unless resCaptures $
+    forM_ taint $ \sp ->
+      emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" sp
+        "a closure capturing a borrowed binding escapes through the result (§12.3.2)"
   where
     paramBind (b, ms) = case bName b of
       Nothing -> pure Nothing
@@ -485,12 +490,30 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
             BinderPrefix sq sb = maybe emptyPrefix bPrefix ms
             q = mq `orElse` sq
             mark = mb `orElse` sb
-            anon = mark == Just (BorrowMark Nothing)
             ty = bType b `orElse` (bType =<< ms)
+            -- §12.4.3: a BorrowView value is a reified borrow of its
+            -- region — capturing it in a result-escaping closure is the
+            -- same escape as capturing an anonymous borrowed binding
+            borrowViewed = maybe False (isBorrowViewTy . appHeadName) ty
+            anon = mark == Just (BorrowMark Nothing) || borrowViewed
             fields = maybe [] (resolveFields aliases) ty
             deps = maybe [] (resolveDeps aliasDeps) ty
         k <- freshKey (nameText n)
-        pure (Just (nameText n, VInfo k q (isJust mark) anon False Nothing Map.empty fields deps (bSpan b)))
+        pure (Just (nameText n, VInfo k q (isJust mark || borrowViewed) anon False Nothing Map.empty fields deps (bSpan b)))
+    appHeadName = \case
+      EApp f _ -> appHeadName f
+      EVar n -> Just (nameText n)
+      _ -> Nothing
+    isBorrowViewTy = (== Just "BorrowView")
+    orElseE (Just x) _ = Just x
+    orElseE Nothing y = y
+    sigResultOf e = case sigBinders e of
+      [] -> Just e
+      bs -> bType (last bs) `orElseE` Just e
+    capturesAnnotated = \case
+      ECaptures {} -> True
+      EArrow _ r -> capturesAnnotated r
+      _ -> False
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
