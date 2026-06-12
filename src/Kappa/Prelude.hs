@@ -132,6 +132,9 @@ builtinState =
       , prim "intToDouble" (tyV (tInt ~> tDouble))
       , prim "natOfInt" (tyV (tInt ~> tNat)) -- internal: Nat and Integer share representation
       , prim "natToInt" (tyV (tNat ~> tInt))
+      , -- linear sink used by the external corpus behind its
+        -- 'allow_unsafe_consume' directive: discards a linear value
+        prim "unsafeConsume" (tyV (piI Q0 "a" tType (CPi Expl Q1 "x" (CVar 0) tUnit)))
       , prim "printString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "printlnString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "ioPure" (tyV (forallEA (CVar 0 ~> io (CVar 2) (CVar 1))))
@@ -462,6 +465,10 @@ preludeSource =
     , ""
     , "println : forall (a : Type). (@_ : Show a) -> a -> UIO Unit"
     , "let println value = printlnString (show value)"
+    , ""
+    , -- external-corpus compatibility helper (decimal print of an Int)
+      "printInt : forall (e : Type). Int -> IO e Unit"
+    , "let printInt n = printlnString (showInt n)"
     , ""
     , "pure : forall (e : Type) (a : Type). a -> IO e a"
     , "let pure x = ioPure x"

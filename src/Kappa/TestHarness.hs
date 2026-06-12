@@ -122,6 +122,7 @@ data Assertion
   | AErrorCodes ![Text] -- ^ x-compatible: exact multiset of error codes
   | AEval !Text !Text -- ^ x-compatible: evaluate a global, compare rendering
   | AEvalError !Text !Text -- ^ x-compatible: evaluation fails, message contains
+  | AParamQuantities !Text ![Text] -- ^ x-compatible: binder prefixes of a let
   | ADeclDescriptors ![Text] -- ^ x-compatible: decl kind+name descriptors
   | ATraitMembers !Text ![Text] -- ^ x-compatible: trait member names in order
   | AType !Text !Text
@@ -356,6 +357,13 @@ parseDirective allLines lno body =
               then ok (SAssert (AErrorCodes codes))
               else bad "malformed 'assertDiagnosticCodes' code list"
       "assertEval" -> evalAssert
+      -- compatibility configuration: the corpus gates its 'unsafeConsume'
+      -- linear sink behind this directive; this prelude always provides
+      -- the sink (§T.1 permits nonstandard directives), so it is a no-op
+      "allow_unsafe_consume" | null args -> ok SConfigNoop
+      "assertParameterQuantities" -> case args of
+        (nm : qs) | not (null qs) -> ok (SAssert (AParamQuantities nm qs))
+        _ -> bad "malformed 'assertParameterQuantities' directive"
       -- supported x- extension directives (§T.3 allows a harness to
       -- implement extension directives; unsupported ones classify the
       -- test unsupported below)
@@ -804,6 +812,7 @@ checkAssertion root path src files cu diags mRun = \case
     mr <- timeout runTimeoutMicros (evaluate (forceResult (assertEvalError cu mmod nm sub)))
     pure (fromMaybe (AssertFail ("assertEvalErrorContains: evaluation of '" <> nm <> "' timed out")) mr)
   ADeclDescriptors entries -> pure (assertDeclDescriptors path src entries)
+  AParamQuantities nm qs -> pure (assertParamQuantities path src nm qs)
   ATraitMembers tn ms -> pure (assertTraitMembers path src tn ms)
   AType nm tyExpr -> pure (assertType path src cu nm tyExpr)
   ADeclKinds kinds -> pure (assertDeclKinds "assertDeclKinds" path src kinds)
@@ -1171,6 +1180,46 @@ assertDeclDescriptors path src expected =
                     <> T.intercalate ", " actual
                     <> "], expected [" <> T.intercalate ", " expected <> "]"
                 )
+
+-- | @assertParameterQuantities name q1 q2 ...@ (compatibility
+-- extension): the named let definition's explicit parameters carry
+-- exactly these §12.1.1 binder prefixes, rendered @0@\/@1@\/@ω@\/@<=1@\/
+-- @>=1@\/@&@\/@&[r]@ (quantity before borrow marker; bare default is ω).
+assertParamQuantities :: FilePath -> Text -> Text -> [Text] -> AssertResult
+assertParamQuantities path src nm expected =
+  case parseModule path src of
+    Left _ -> AssertFail "assertParameterQuantities: file does not parse"
+    Right (m, _) ->
+      case [ld | DLet _ ld _ <- modDecls m, (nameText <$> ldName ld) == Just nm] of
+        [] -> AssertFail ("assertParameterQuantities: no let '" <> nm <> "' in this file")
+        (ld : _) ->
+          let actual = map binderPrefixText [b | b <- ldBinders ld, not (bImplicit b)]
+           in if actual == expected
+                then AssertOk
+                else
+                  AssertFail
+                    ( "assertParameterQuantities: '" <> nm <> "' parameters are ["
+                        <> T.intercalate ", " actual
+                        <> "], expected [" <> T.intercalate ", " expected <> "]"
+                    )
+  where
+    binderPrefixText b =
+      let BinderPrefix mq mb = bPrefix b
+          qt = case mq of
+            Nothing -> ""
+            Just QZero -> "0"
+            Just QOne -> "1"
+            Just QOmega -> "ω"
+            Just QAtMostOne -> "<=1"
+            Just QAtLeastOne -> ">=1"
+            Just (QTerm n) -> nameText n
+          bt = case mb of
+            Nothing -> ""
+            Just (BorrowMark Nothing) -> "&"
+            Just (BorrowMark (Just r)) -> "&[" <> nameText r <> "]"
+       in case qt <> bt of
+            "" -> "ω"
+            t -> t
 
 -- | @x-assertTraitMembers Trait m1, m2@ (compatibility extension):
 -- the named trait declares exactly these member names, in order.

@@ -1190,6 +1190,14 @@ inferType ctx e = do
       case t of
         VSort n -> pure (tm, n)
         VFlex m [] -> solveMeta m (VSort 0) >> pure (tm, 0)
+        -- compatibility accommodation for the external corpus: `IO a`
+        -- written for `IO ?e a` (§18.1 IO : Type -> Type -> Type); the
+        -- missing error parameter becomes a fresh metavariable
+        VPi Expl _ _ _ _
+          | CApp Expl (CGlob g) argTm <- tm
+          , g == gPrel "IO" -> do
+              m <- freshMeta
+              pure (CApp Expl (CApp Expl (CGlob g) m) argTm, 0)
         other -> do
           oT <- quoteIn ctx other
           errAt (exprSpan e) "E_NOT_A_TYPE" (Just "kappa.type.expected-type")
@@ -2801,13 +2809,22 @@ elabTry ctx body excepts mfin sp = do
 -- fresh scope: targets never cross a first-class do-value boundary.
 elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
 elabDo ctx items _sp mexpected = do
-  (errT, resT) <- do
-    me <- traverse forceM mexpected
-    case me of
-      Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) -> pure (e, a)
-      _ -> (,) <$> freshMetaV ctx <*> freshMetaV ctx
+  me <- traverse forceM mexpected
+  (errT, resT, doTy) <- case me of
+    Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) ->
+      pure (e, a, Nothing)
+    -- pure-result do (corpus): a do block in a position expecting a
+    -- known non-IO type sequences pure statements; the §18.8 kernel
+    -- passes pure statement values through, so it runs unchanged
+    Just expd | not (isFlexHead expd) -> do
+      e <- freshMetaV ctx
+      pure (e, expd, Just expd)
+    _ -> do
+      e <- freshMetaV ctx
+      a <- freshMetaV ctx
+      pure (e, a, Nothing)
   kitems <- goItems [] ctx errT resT items
-  pure (CDo kitems, ioType errT resT)
+  pure (CDo kitems, fromMaybe (ioType errT resT) doTy)
   where
     goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
@@ -2815,12 +2832,25 @@ elabDo ctx items _sp mexpected = do
       let lastItem = null rest
       case item of
         DoExpr e -> do
-          tm <-
-            if lastItem
-              then check c (desugarBang e) (ioType errT resT)
-              else do
-                a <- freshMetaV c
-                check c (desugarBang e) (ioType errT a)
+          aT <- if lastItem then pure resT else freshMetaV c
+          let eD = desugarBang e
+              ioT = ioType errT aT
+          -- statements are IO actions (§18.2); the corpus also
+          -- sequences pure expressions as statements, and the §18.8
+          -- kernel passes pure statement values through unchanged, so
+          -- an inferable statement may also check at the bare type
+          tm <- case eD of
+            _ | statementInferable eD -> do
+                  (tm0, ty0) <- infer c eD
+                  (tm1, ty1) <- insertAllImplicits c (exprSpan eD) tm0 ty0
+                  okIO <- unify c ty1 ioT
+                  if okIO
+                    then pure tm1
+                    else do
+                      okPure <- unify c ty1 aT
+                      unless okPure $ expectType c (exprSpan eD) ty1 ioT
+                      pure tm1
+            _ -> check c eD ioT
           (KExpr tm :) <$> goItems loops c errT resT rest
         DoBind (LetBind implocal prefix pat mty rhs bsp) -> do
           aT <- case mty of
@@ -2944,9 +2974,13 @@ elabDo ctx items _sp mexpected = do
           eTm <- check c (desugarBang e) (ioType errT (VGlobN (gPrel "Unit") []))
           ks <- goItems loops c errT resT rest
           pure (KDefer eTm : ks)
-        DoUsing _ _ usp -> do
-          _ <- unsupported c usp "'using' resource binds"
-          goItems loops c errT resT rest
+        DoUsing pat rhs usp ->
+          -- §19.5 resource bind: typed like a monadic bind of the
+          -- acquired resource (the scope-exit release action is not
+          -- modelled by this kernel; the binding is borrowed for the
+          -- §12.3 usage analysis, which inspects the surface item)
+          goItems loops c errT resT
+            (DoBind (LetBind False emptyPrefix pat Nothing rhs usp) : rest)
         DoDecl d -> do
           case d of
             DLet _ (LetDef (Just n) Nothing [] mty Nothing rhs) dsp ->
@@ -2968,6 +3002,26 @@ elabDo ctx items _sp mexpected = do
               errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa.do.break-outside-loop")
                 ("'" <> what
                    <> "' is valid only within the body of a loop of this do-scope (§18.6)")
+
+-- | Is the (forced) value headed by an unsolved metavariable?
+isFlexHead :: Value -> Bool
+isFlexHead = \case
+  VFlex {} -> True
+  _ -> False
+
+-- | Statement shapes that elaborate soundly by inference, allowing the
+-- pure-statement accommodation in 'elabDo' (variants, literals and other
+-- expected-type-directed forms keep the plain IO checking path).
+statementInferable :: Expr -> Bool
+statementInferable = \case
+  EApp f _ -> statementInferable f
+  EVar {} -> True
+  EDot {} -> True
+  EQDot {} -> True
+  EOpChain {} -> True
+  EIf {} -> True
+  EMatch {} -> True
+  _ -> False
 
 -- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
 -- implicit context for the remaining items. @before@ is the context the

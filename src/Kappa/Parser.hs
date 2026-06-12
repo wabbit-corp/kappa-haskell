@@ -452,9 +452,21 @@ pCtorBlock = indentedCtors <|> inlineCtors
     indentedCtors = do
       pNewline
       token TokIndent
-      cs <- pCtorDecl `sepEndByNewlines` ()
+      -- optional '|' before the first and each subsequent alternative
+      -- (§10.1 writes both "C1 ‖ C2" stacked and "C1 ‖ | C2" styles)
+      void (optional (token TokBar))
+      cs <- ctorSeq
       token TokDedent
       pure cs
+    ctorSeq = do
+      x <- pCtorDecl
+      void (many pNewline)
+      done <- lookAheadIs (token TokDedent)
+      if done
+        then pure [x]
+        else do
+          void (optional (token TokBar))
+          (x :) <$> ctorSeq
     -- single-line: C1 a | C2 b  (used by spec prelude examples)
     inlineCtors = sepBy1 pCtorDecl (token TokBar)
 

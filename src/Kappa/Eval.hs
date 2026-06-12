@@ -479,6 +479,8 @@ evalPurePrim p args = case (p, args) of
   ("intToDouble", [VLit (LitInt a)]) -> dbl (fromInteger a)
   ("natOfInt", [VLit (LitInt a)]) -> int a
   ("natToInt", [VLit (LitInt a)]) -> int a
+  -- discard a (linear) value: implicit type argument + the value
+  ("unsafeConsume", [_, _]) -> Just (VCtor (GName (ModuleName ["std", "prelude"]) "Unit") [])
   _ -> Nothing
   where
     int = Just . VLit . LitInt
