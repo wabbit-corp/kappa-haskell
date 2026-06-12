@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType addOne Syntax Integer -> Elab (Syntax Integer)
+--! assertType wrap Syntax Integer -> Syntax Integer
+--! assertType viaMacro Integer
+--! assertType viaSugar Integer
+
+-- §21.1–§21.3: quotes, in-quote splices, macros as ordinary functions,
+-- and the bare-Syntax splice sugar.
+addOne : Syntax Integer -> Elab (Syntax Integer)
+let addOne e =
+    pure '{ ${e} + 1 }
+
+wrap : Syntax Integer -> Syntax Integer
+let wrap e =
+    '{ ${e} * 2 }
+
+viaMacro : Integer
+let viaMacro =
+    $(addOne '{ 41 })
+
+viaSugar : Integer
+let viaSugar =
+    $(wrap '{ 10 })

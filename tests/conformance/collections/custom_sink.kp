@@ -1,0 +1,42 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_SINK_ITEM_MISMATCH
+--! assertType report Report Integer
+
+-- §20.9: custom comprehension sinks; FromComprehensionRaw is preferred
+-- over FromComprehensionPlan, and the selected sink's 'Item' must be
+-- definitionally equal to the yielded item type.
+data Report (row : Type) : Type =
+    Report (description : String)
+
+instance FromComprehensionRaw (Report row) =
+    let Item = row
+    let fromComprehensionRaw raw =
+        pure '{ Report "raw" }
+
+instance FromComprehensionPlan (Report row) =
+    let Item = row
+    let fromComprehensionPlan plan =
+        failElabWith "KAPPA-TEST-PLAN-CHOSEN" "raw hook has priority" []
+
+report : Report Integer
+let report =
+    Report [
+        for x in [1, 2, 3]
+        yield x
+    ]
+
+data OnlyInt : Type =
+    OnlyInt (description : String)
+
+instance FromComprehensionPlan OnlyInt =
+    let Item = Integer
+    let fromComprehensionPlan plan =
+        pure '{ OnlyInt "only-int" }
+
+bad : OnlyInt
+let bad =
+    OnlyInt [
+        for s in ["a", "b"]
+        yield s
+    ]

@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_SYNTAX_SCOPE_ESCAPE
+--! assertType ok Integer
+
+-- §21.4: a Syntax value may keep referring to an earlier binder across
+-- shadowing while that binder remains in scope ('ok'), but splicing
+-- syntax whose captured local binder's scope has ended is rejected.
+ok : Integer
+let ok =
+    block
+        let x = 1
+        let s : Syntax Integer = '{ x }
+        let x = 2
+        $(pure s)
+
+bad : Integer
+let bad =
+    block
+        let s : Syntax Integer =
+            block
+                let y = 1
+                '{ y }
+        $(pure s)

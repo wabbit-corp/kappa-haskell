@@ -1,0 +1,13 @@
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+
+-- §21.2: duplicating a Syntax value duplicates only meta-level syntax
+-- data; the expanded object code is charged at the splice site, so a
+-- macro-duplicated linear variable fails ordinary QTT checking.
+dupSyntax : Syntax Integer -> Elab (Syntax Integer)
+let dupSyntax s =
+    pure '{ ${s} + ${s} }
+
+bad : (1 t : Integer) -> Integer
+let bad t =
+    $(dupSyntax '{ t })

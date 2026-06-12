@@ -165,8 +165,8 @@ Current tally over **941 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 802 |
-| fail | 129 |
+| pass | 866 |
+| fail | 65 |
 | unsupported | 10 |
 | harness error | 0 |
 

@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType greeting String -> Html
+--! assertType payload Integer -> Html
+
+-- §6.3.4.3–5: prefixed strings run their Elab (InterpolatedMacro t)
+-- handler over the fragment list at elaboration time; $name sugar and
+-- ${expr : fmt} format specifiers feed the fragment pipeline.
+data Html : Type =
+    Html (source : String)
+
+instance InterpolatedMacro Html =
+    let buildInterpolated fragments =
+        pure '{ Html "compiled-html-template" }
+
+html : Elab (InterpolatedMacro Html)
+let html =
+    pure (summon (InterpolatedMacro Html))
+
+greeting : String -> Html
+let greeting name =
+    html"<span>Hello, $name</span>"
+
+payload : Integer -> Html
+let payload userId =
+    html"<a id=${userId : attr}>x</a>"

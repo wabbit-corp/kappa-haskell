@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+--! assertType tagName Expr -> String
+--! assertType sameCtor Expr -> Expr -> Bool
+
+import std.deriving.shape.*
+
+-- §22.1/§22.5: shape inspection of a data declaration and generated
+-- matching bodies through matchAdt/matchAdt2.
+data Expr : Type =
+    Lit (value : Integer)
+    Add (left : Expr) (right : Expr)
+
+deriveTag : forall (@0 a : Type). Syntax Type -> Syntax a -> Elab (Syntax String)
+let deriveTag @a target value = do
+    shape <- inspectAdt @a target
+    matchAdt shape value \ctor fields ->
+        stringSyntax ctor.renderName
+
+deriveSame : forall (@0 a : Type). Syntax Type -> Syntax a -> Syntax a -> Elab (Syntax Bool)
+let deriveSame @a target left right = do
+    shape <- inspectAdt @a target
+    matchAdt2 shape left right
+        (\ctor fieldPairs -> boolSyntax True)
+        (\leftCtor rightCtor -> boolSyntax False)
+
+tagName : Expr -> String
+let tagName value =
+    $(deriveTag @Expr '{ type Expr } '{ value })
+
+sameCtor : Expr -> Expr -> Bool
+let sameCtor left right =
+    $(deriveSame @Expr '{ type Expr } '{ left } '{ right })
