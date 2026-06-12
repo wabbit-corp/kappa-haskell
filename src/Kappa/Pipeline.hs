@@ -35,6 +35,7 @@ import Kappa.Prelude
   , stdFfiCSource
   , stdFfiSource
   , stdGradualSource
+  , stdDerivingShapeSource
   , stdHashSource
   , stdSupervisorSource
   , stdUnicodeSource
@@ -67,7 +68,8 @@ preludeState =
       let (m', rdiags) = resolveModule defaultFixities m
           (st, diags) = checkModule builtinState m'
           stdSources =
-            [ (ModuleName ["std", "hash"], "<std.hash>", stdHashSource)
+            [ (ModuleName ["std", "deriving", "shape"], "<std.deriving.shape>", stdDerivingShapeSource)
+            , (ModuleName ["std", "hash"], "<std.hash>", stdHashSource)
             , (ModuleName ["std", "unicode"], "<std.unicode>", stdUnicodeSource)
             , (ModuleName ["std", "ffi"], "<std.ffi>", stdFfiSource)
             , (ModuleName ["std", "ffi", "c"], "<std.ffi.c>", stdFfiCSource)
@@ -250,7 +252,10 @@ compileFilesWith packageMode nameOf files =
               -- §12.2–§12.4 usage analysis runs only over cleanly
               -- elaborated modules (its judgements presume well-typed
               -- bodies)
-              udiags = if hasErrors preDiags then [] else usageDiagnostics m'
+              udiags =
+                if hasErrors preDiags
+                  then []
+                  else usageDiagnostics (csExpansions st1) m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
            in ( st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}

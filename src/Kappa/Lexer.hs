@@ -202,7 +202,10 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
         lexErr (here s) "E_TAB_IN_SOURCE" Nothing
           "tab character in source; use spaces (Spec §5.4)"
       Just '\n'
-        | null brackets ->
+        -- a splice bracket '$(' is layout-transparent (§21.2): its body
+        -- keeps ordinary §5.4 indentation so 'do' suites and argument
+        -- continuation lines work inside '$( ... )'
+        | all (== TokSplice) brackets ->
             goLineStart (adv '\n' s) indents (Located (TokNewline False) (here s) : acc)
         | otherwise ->
             goLine (adv '\n' s) indents (Located (TokNewline True) (here s) : acc) brackets
@@ -226,6 +229,7 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
       TokEffOpen -> t : bs
       TokQuoteBrace -> t : bs
       TokSplice -> t : bs
+      TokQuoteSplice -> t : bs
       TokRParen -> popB
       TokRBracket -> popB
       TokRBrace -> popB
@@ -286,6 +290,7 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
       | startsWith "|)" s = pure (TokVariantClose, advN 2 s)
       | startsWith "|}" s = pure (TokSetClose, advN 2 s)
       | startsWith "$(" s = pure (TokSplice, advN 2 s)
+      | startsWith "${" s = pure (TokQuoteSplice, advN 2 s)
       | isOpChar c = scanOperator s
       | otherwise =
           lexErr (here s) "E_UNEXPECTED_CHARACTER" Nothing
@@ -537,11 +542,22 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
       frags <- buildFragments (spanAt s0 s2) mprefix hashes s1 content
       pure (TokString (StringLit mprefix hashes multi frags), s2)
       where
+        -- §6.3.4.2: inside an interpolation of a prefixed string,
+        -- nested string literals (and brackets) are handled as in
+        -- ordinary source, so a '"' inside `${...}` / `#{...}` must
+        -- not close the literal.
+        interpOpener
+          | Nothing <- mprefix = Nothing
+          | hashes == 0 = Just "${"
+          | otherwise = Just (T.replicate hashes "#" <> "{")
         takeUntilCloser closer multi s = go s []
           where
             go cur chs
               | closer `T.isPrefixOf` stIn cur =
                   pure (T.pack (reverse chs), advN (T.length closer) cur)
+              | Just op <- interpOpener
+              , op `T.isPrefixOf` stIn cur =
+                  goInterp (advN (T.length op) cur) (0 :: Int) (reverse (T.unpack op) ++ chs)
               | otherwise = case peek cur of
                   Nothing ->
                     -- Recovery: take the body so far as the literal.
@@ -564,6 +580,28 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
                     , Just nxt <- peekAt 1 cur ->
                         go (adv nxt (adv '\\' cur)) (nxt : '\\' : chs)
                   Just ch -> go (adv ch cur) (ch : chs)
+            -- scan an interpolation payload to its matching '}'
+            goInterp cur depth chs = case peek cur of
+              Nothing -> go cur chs
+              Just '}'
+                | depth == 0 -> go (adv '}' cur) ('}' : chs)
+                | otherwise -> goInterp (adv '}' cur) (depth - 1) ('}' : chs)
+              Just ch
+                | ch `elem` ("([{" :: String) -> goInterp (adv ch cur) (depth + 1) (ch : chs)
+                | ch `elem` (")]" :: String) -> goInterp (adv ch cur) (depth - 1) (ch : chs)
+                | ch == '"' -> goNested (adv ch cur) depth (ch : chs)
+                | not multi && ch == '\n' -> go cur chs
+                | otherwise -> goInterp (adv ch cur) depth (ch : chs)
+            -- a nested ordinary string literal inside an interpolation
+            goNested cur depth chs = case peek cur of
+              Nothing -> go cur chs
+              Just '"' -> goInterp (adv '"' cur) depth ('"' : chs)
+              Just '\\'
+                | Just nxt <- peekAt 1 cur ->
+                    goNested (adv nxt (adv '\\' cur)) depth (nxt : '\\' : chs)
+              Just ch
+                | not multi && ch == '\n' -> go cur chs
+                | otherwise -> goNested (adv ch cur) depth (ch : chs)
 
     -- §6.3.3 fixed dedent.
     dedentMultiline :: Span -> Text -> LexM Text

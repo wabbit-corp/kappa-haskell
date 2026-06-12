@@ -32,13 +32,16 @@ module Kappa.Core
   , Env
   , Spine
   , MetaId
+  , QuoteCapture (..)
+  , QuotedSyntax (..)
   ) where
 
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.Text (Text)
 import Data.Word (Word8)
-import Kappa.Source (ModuleName (..))
+import Kappa.Source (ModuleName (..), Span)
+import Kappa.Syntax (Expr)
 
 -- | Module owning interpreter primitives.
 primModule :: ModuleName
@@ -96,7 +99,37 @@ data Term
   | CLazyE !Term -- ^ Memo
   | CForceE !Term
   | CIf !Term !Term !Term
+  | CQuote !QuotedSyntax ![Term] -- ^ §21.1 syntax quote: payload + in-quote splice slots
   deriving stock (Eq, Show)
+
+-- | A free object-language binder captured by a syntax quote (§21.4
+-- hidden syntax-scope metadata): the fresh hygienic spelling used in
+-- the quoted payload, the original source spelling, and the de Bruijn
+-- LEVEL of the binder in the quote site's elaboration context.
+data QuoteCapture = QuoteCapture
+  { qcHyg :: !Text
+  , qcOrig :: !Text
+  , qcLevel :: !Int
+  }
+  deriving stock (Eq, Show)
+
+-- | The meta-phase payload of an elaborated syntax quote (§21.1):
+-- surface syntax (with 'Kappa.Syntax.EQuoteHole' grafting slots for
+-- in-quote splices) plus hygiene metadata and the quote's origin.
+data QuotedSyntax = QuotedSyntax
+  { qsExpr :: !Expr
+  , qsCaptures :: ![QuoteCapture]
+  , qsSpan :: !Span
+  }
+  deriving stock (Show)
+
+-- | Quotes compare by rendered payload and captures ('Expr' has no
+-- structural equality); used only by 'Term' equality, where comparing
+-- two quotes is rare and a conservative answer is sound.
+instance Eq QuotedSyntax where
+  a == b =
+    show (qsExpr a) == show (qsExpr b)
+      && qsCaptures a == qsCaptures b
 
 -- | Match alternative over core patterns.
 data CaseAlt = CaseAlt
@@ -175,6 +208,7 @@ data Value
   | VPrim !Text ![Value] -- ^ builtin primitive, partially applied
   | VRef !(IORef Value) -- ^ runtime mutable cell (MonadRef, §18.6.1)
   | VIOAction !Text ![Value] -- ^ suspended IO primitive application
+  | VQuote !QuotedSyntax ![Value] -- ^ §21.1 syntax value: payload + slot values (grafted lazily)
 
 instance Show Value where
   show _ = "<value>"

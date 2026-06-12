@@ -234,6 +234,9 @@ data Env = Env
   , eEffOps :: !(Map Text [(Text, Quantity)])
   -- ^ scoped effect label ↦ operations with declared resumption
   -- quantities (§9.3.1.1, §18.1.16)
+  , eExpansions :: !(Map Span Expr)
+  -- ^ §21.2 splice expansions recorded by the elaborator (keyed by the
+  -- splice span): the object-level uses charged at each splice site
   }
 
 -- | §9.1.1 projection shape for the §12.4 footprint analysis.
@@ -273,9 +276,10 @@ flatR r = (rU r `seqU` rL r, rT r)
 -- ── Entry point ──────────────────────────────────────────────────────
 
 -- | Analyze a resolved module; returns the §12.2–§12.4 usage
--- diagnostics for its named definitions.
-usageDiagnostics :: Module -> [Diagnostic]
-usageDiagnostics m = concatMap analyzeDecl lets
+-- diagnostics for its named definitions. The first argument carries the
+-- elaborator's §21.2 splice expansions (splice span ↦ expanded syntax).
+usageDiagnostics :: Map Span Expr -> Module -> [Diagnostic]
+usageDiagnostics expansions m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -333,7 +337,7 @@ usageDiagnostics m = concatMap analyzeDecl lets
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet fns aliases aliasDeps ctors projs sigTy ld) (S [] False 0)
+          final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs sigTy ld) (S [] False 0)
        in if sBail final then [] else reverse (sDiags final)
 
 -- Callee demand for prelude helpers the fixtures rely on.
@@ -449,6 +453,7 @@ fnParams msig ld =
 -- ── Definition analysis ──────────────────────────────────────────────
 
 analyzeLet ::
+  Map Span Expr ->
   Map Text [PInfo] ->
   Map Text [(Text, Maybe Quantity)] ->
   Map Text [(Text, [Text])] ->
@@ -457,10 +462,10 @@ analyzeLet ::
   Maybe Expr ->
   LetDef ->
   M ()
-analyzeLet fns aliases aliasDeps ctors projs msig ld = do
+analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
   let aligned = alignParams (ldBinders ld) (maybe [] sigBinders msig)
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps Map.empty
+  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps Map.empty expansions
   checkInoutResult msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
@@ -828,8 +833,15 @@ walkE env e0 = case e0 of
   EAscription b _ _ -> walkE env b
   ECaptures b _ _ -> walkE env b
   EBang b _ -> walkE env b
-  EQuote {} -> bailOut >> pure rNone
-  ESplice {} -> bailOut >> pure rNone
+  -- §21.2: a quote's object-level uses are charged when (and where) it
+  -- is spliced, through the recorded expansion; the quote itself only
+  -- captures meta-level syntax data
+  EQuote {} -> pure rNone
+  ESpliceInQuote {} -> pure rNone
+  EQuoteHole {} -> pure rNone
+  ESplice _ sp -> case Map.lookup sp (eExpansions env) of
+    Just ex -> walkE env ex
+    Nothing -> bailOut >> pure rNone
   EImpossible {} -> pure rNone
   EKindQualified {} -> pure rNone
   EModuleSig {} -> pure rNone

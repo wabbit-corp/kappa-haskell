@@ -12,6 +12,7 @@ module Kappa.Source
   , noSpan
   ) where
 
+import Data.Data (Data)
 import Data.Text (Text)
 import qualified Data.Text as T
 
@@ -20,7 +21,7 @@ data Pos = Pos
   { posLine :: !Int
   , posCol :: !Int
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | A contiguous source range within one file. @spanEnd@ is exclusive.
 data Span = Span
@@ -28,11 +29,11 @@ data Span = Span
   , spanStart :: !Pos
   , spanEnd :: !Pos
   }
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 -- | A dotted module name such as @std.prelude@ (Spec §8.1).
 newtype ModuleName = ModuleName [Text]
-  deriving stock (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show, Data)
 
 moduleNameText :: ModuleName -> Text
 moduleNameText (ModuleName segs) = T.intercalate "." segs

@@ -50,6 +50,7 @@ library
         Kappa.Resolve
         Kappa.Source
         Kappa.Syntax
+        Kappa.SyntaxOps
         Kappa.TestHarness
         Kappa.Token
         Kappa.Unicode

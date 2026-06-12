@@ -72,6 +72,7 @@ module Kappa.Syntax
   , Module (..)
   ) where
 
+import Data.Data (Data)
 import Data.List (nub)
 import Data.Text (Text)
 import Kappa.Source (Span (..))
@@ -82,10 +83,10 @@ data Name = Name
   { nameText :: !Text
   , nameSpan :: !Span
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 newtype ModPath = ModPath [Name]
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 modPathName :: ModPath -> [Text]
 modPathName (ModPath ns) = map nameText ns
@@ -99,30 +100,30 @@ data Quantity
   | QAtMostOne -- ^ @<=1@
   | QAtLeastOne -- ^ @>=1@
   | QTerm !Name
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | @&@ or @&[region]@.
 newtype BorrowMark = BorrowMark (Maybe Name)
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data BinderPrefix = BinderPrefix
   { bpQuantity :: !(Maybe Quantity)
   , bpBorrow :: !(Maybe BorrowMark)
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 emptyPrefix :: BinderPrefix
 emptyPrefix = BinderPrefix Nothing Nothing
 
 data Suspension = SuspThunk | SuspLazy
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | Receiver marking on binders: @(this : T)@ / @(this x : T)@ (§12.1.1).
 data Receiver
   = NoReceiver
   | ReceiverSelf
   | ReceiverNamed !Name
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | A unified binder, used by lambdas, named-function parameters,
 -- constructor parameters, Pi types, and trait\/data headers.
@@ -140,7 +141,7 @@ data Binder = Binder
   -- ^ Constructor parameter default (§10.1).
   , bSpan :: !Span
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 simpleBinder :: Name -> Binder
 simpleBinder n =
@@ -152,19 +153,19 @@ data Arg
   | ArgImplicit !Expr -- ^ @\@e@
   | ArgNamedBlock ![(Name, Maybe Expr)] !Span -- ^ @f { x = 1, y }@
   | ArgInout !Expr !Span -- ^ @~place@ (§18.9.3)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Flat operator-chain element; re-associated by the resolver.
 data OpElem
   = ChainOperand !Expr
   | ChainOp !Name
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | The member position of a dotted chain step.
 data DotMember
   = DotName !Name
   | DotOperator !Name -- ^ @d.(==)@
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Record-literal item: @x = e@, punning @x@, or implicit @\@ok = e@.
 data RecItem = RecItem
@@ -172,7 +173,7 @@ data RecItem = RecItem
   , riName :: !Name
   , riValue :: !(Maybe Expr)
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Record-type field (§13.2.1).
 data RecTypeField = RecTypeField
@@ -183,7 +184,7 @@ data RecTypeField = RecTypeField
   , rtfName :: !Name
   , rtfType :: !Expr
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Record-patch item (§13.2.5–§13.2.6).
 data PatchItem
@@ -191,10 +192,10 @@ data PatchItem
   | PatchExtend !Name !Expr -- ^ @l := e@
   | PatchSection !Expr !Expr -- ^ @(.proj args) = e@
   | PatchPun !Name -- ^ bare @x@ (invalid, §13.2.5)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 newtype PatchValue = PatchValue Expr
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | One arm of a variant form @(| ... |)@: payload with optional
 -- ascription. Interpretation (type vs injection) is position-dependent.
@@ -202,7 +203,7 @@ data VariantArm = VariantArm
   { vaExpr :: !Expr
   , vaType :: !(Maybe Expr)
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data Expr
   = EVar !Name
@@ -258,10 +259,12 @@ data Expr
   | EBang !Expr !Span -- ^ @!e@ monadic splice
   | EQuote !Expr !Span -- ^ @'{ e }@
   | ESplice !Expr !Span -- ^ @$( e )@
+  | ESpliceInQuote !Expr !Span -- ^ @${ e }@ inside a quote (§21.1)
+  | EQuoteHole !Int !Span -- ^ internal: grafting slot of an elaborated quote
   | EImpossible !Span
   | EKindQualified !KindSelector !Name !Span -- ^ @type T@, @trait C@, ... (§7.1.1)
   | EModuleSig !Name !Span -- ^ @moduleSig M@ (§7.5)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | A parsed interpolation: index into the string fragments and the
 -- parsed payload expression.
@@ -269,10 +272,10 @@ data InterpPart = InterpPart
   { ipIndex :: !Int
   , ipExpr :: !Expr
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data CompKind = CompList | CompSet | CompMap !(Maybe OnConflict) | CompCarrier !Expr
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data CompClause
   = CFor !Bool !Bool !Pattern !Expr !Span
@@ -285,19 +288,19 @@ data CompClause
   | CDistinct !(Maybe Expr) !Span
   | CGroupBy !Expr ![(Name, Expr, Maybe Expr)] !Name !Span -- ^ key, aggregates (name, expr, using), into
   | CJoin !Bool !Pattern !Expr !Expr !(Maybe Name) !Span -- ^ left? pat source on into
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data CompYield
   = YieldExpr !Expr
   | YieldPair !Expr !Expr -- ^ map comprehension @yield k : v@
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data OnConflict
   = KeepLast
   | KeepFirst
   | CombineUsing !Expr
   | CombineWith !Expr
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data LetBind = LetBind
   { lbImplicit :: !Bool -- ^ @(\@q x : T) = e@ implicit local (§9.3)
@@ -307,7 +310,7 @@ data LetBind = LetBind
   , lbExpr :: !Expr
   , lbSpan :: !Span
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data DoItem
   = DoBind !LetBind -- ^ @let pat <- e@ (lbExpr is the action)
@@ -327,20 +330,20 @@ data DoItem
   | DoFor !(Maybe Name) !Pattern !Expr ![DoItem] !(Maybe [DoItem]) !Span
   | DoIf ![(Expr, [DoItem])] !(Maybe [DoItem]) !Span -- ^ statement-if with suites
   | DoDecl !Decl -- ^ block-scope declaration (§18.2, §9.3.1)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data MatchCase
   = MatchCase !Pattern !(Maybe Expr) !Expr !Span -- ^ pat guard body
   | MatchImpossible !Span -- ^ @case impossible@
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data HandlerCase
   = HandlerReturn !Pattern !Expr !Span
   | HandlerOp !Name ![Pattern] !Name !Expr !Span -- ^ op, arg pats, k, body
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data ExceptCase = ExceptCase !Pattern !(Maybe Expr) !Expr !Span
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data Pattern
   = PWild !Span
@@ -359,34 +362,34 @@ data Pattern
   | PVariant !(Maybe Name) !(Maybe Expr) !Bool !(Maybe Name) !Span
   -- ^ @(| x : T |)@ \/ @(| x |)@ \/ @(| _ : T |)@ \/ @(| ..rest |)@:
   -- binder, type, isWild, restBinder
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data PatRest = PatRestDiscard | PatRestBind !Name
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data Lit
   = LInt !Integer !(Maybe Text)
   | LFloat !Double !(Maybe Text)
   | LString !Text
   | LScalar !Char
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | A constructor reference: bare @C@ or type-scoped @T.C@.
 data CtorRef = CtorRef
   { crQualifier :: !(Maybe Name)
   , crName :: !Name
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data Visibility = VisDefault | VisPublic | VisPrivate
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data DeclMods = DeclMods
   { dmVisibility :: !Visibility
   , dmOpaque :: !Bool
   , dmScoped :: !Bool
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 noMods :: DeclMods
 noMods = DeclMods VisDefault False False
@@ -408,12 +411,12 @@ data Decl
   | DPattern !DeclMods !LetDef !Span -- ^ active-pattern definition (§17.3.1)
   | DProjection !DeclMods !Name ![Binder] !Expr !ProjBody !Span
   | DTopSplice !Expr !Span -- ^ top-level @$( ... )@ (§21.2)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data ProjBody
   = ProjSelector !Expr -- ^ selector body (yield\/if\/match expression form)
   | ProjAccessors ![(Text, Maybe Binder, Expr)] -- ^ get\/set\/inout\/sink clauses
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | Recover the §9.1.1 binder structure of a projection declaration:
 -- a @(place x : T)@ group parses as two same-span binders, the first
@@ -560,12 +563,12 @@ data LetDef = LetDef
   , ldDecreases :: !(Maybe Decreases)
   , ldBody :: !Expr
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data Decreases
   = DecMeasure !Expr !(Maybe Expr) !(Maybe Expr) -- ^ measure [by R] [using proof]
   | DecStructural ![Name]
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data DataDecl = DataDecl
   { ddName :: !Name
@@ -573,7 +576,7 @@ data DataDecl = DataDecl
   , ddKind :: !(Maybe Expr)
   , ddCtors :: ![CtorDecl]
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data CtorDecl = CtorDecl
   { cdName :: !Name
@@ -581,7 +584,7 @@ data CtorDecl = CtorDecl
   , cdGadtType :: !(Maybe Expr) -- ^ GADT-style result signature (§10.2)
   , cdSpan :: !Span
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data TraitDecl = TraitDecl
   { trSupers :: ![Expr] -- ^ supertrait context @C1, ..., Cn =>@
@@ -589,19 +592,19 @@ data TraitDecl = TraitDecl
   , trParams :: ![Binder]
   , trMembers :: ![TraitMember]
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data TraitMember
   = TraitSig !Name !Expr !Span
   | TraitDefault !LetDef !Span
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data InstanceDecl = InstanceDecl
   { inPremises :: ![Expr] -- ^ @Eq a =>@ premises
   , inHead :: !Expr
   , inMembers :: ![Decl] -- ^ member signatures and definitions
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data EffectDecl = EffectDecl
   { effName :: !Name
@@ -610,7 +613,7 @@ data EffectDecl = EffectDecl
   , effIsLabelDecl :: !Bool -- ^ @effect label l : E@ form
   , effLabelType :: !(Maybe Expr)
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data EffectOp = EffectOp
   { eoQuantity :: !(Maybe Quantity)
@@ -618,14 +621,14 @@ data EffectOp = EffectOp
   , eoType :: !Expr
   , eoSpan :: !Span
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data FixityDecl = FixityDecl
   { fxKind :: !FixityKind
   , fxPrec :: !Int
   , fxOp :: !Name
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data FixityKind
   = InfixN
@@ -633,19 +636,19 @@ data FixityKind
   | InfixR
   | Prefix
   | Postfix
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data ModuleRef
   = RefPath !ModPath
   | RefUrl !Text !Span
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data ImportSpec
   = ImportModule !ModuleRef !(Maybe Name) -- ^ @import M [as A]@
   | ImportItems !ModuleRef ![ImportItem]
   | ImportAll !ModuleRef ![ExceptItem]
   | ImportSingleton !ModuleRef !Name -- ^ @import M.x@ sugar (disambiguated semantically, §8.3)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data ImportItem = ImportItem
   { iiUnhide :: !Bool
@@ -655,20 +658,20 @@ data ImportItem = ImportItem
   , iiCtorAll :: !Bool -- ^ @T(..)@
   , iiAlias :: !(Maybe Name)
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data KindSelector = SelTerm | SelType | SelTrait | SelCtor | SelEffectLabel | SelModule
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data ExceptItem = ExceptItem !(Maybe KindSelector) !Name
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 data ExpectForm
   = ExpectTerm !Name !Expr
   | ExpectType !Name ![Binder] !(Maybe Expr)
   | ExpectData !Name ![Binder] !(Maybe Expr)
   | ExpectTrait !Name ![Binder] !(Maybe Expr)
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 -- | A parsed source file.
 data Module = Module
@@ -676,7 +679,7 @@ data Module = Module
   , modHeader :: !(Maybe ModPath)
   , modDecls :: ![Decl]
   }
-  deriving stock (Show)
+  deriving stock (Show, Data)
 
 exprSpan :: Expr -> Span
 exprSpan = \case
@@ -737,6 +740,8 @@ exprSpan = \case
   EBang _ sp -> sp
   EQuote _ sp -> sp
   ESplice _ sp -> sp
+  ESpliceInQuote _ sp -> sp
+  EQuoteHole _ sp -> sp
   EImpossible sp -> sp
   EKindQualified _ _ sp -> sp
   EModuleSig _ sp -> sp

@@ -133,6 +133,7 @@ eval ctx env = \case
       VCtor (GName _ "True") [] -> eval ctx env t
       VCtor (GName _ "False") [] -> eval ctx env f
       v -> VIfN v (Closure env t) (Closure env f)
+  CQuote qs slots -> VQuote qs (map (eval ctx env) slots)
 
 closApply :: EvalCtx -> Closure -> Value -> Value
 closApply ctx (Closure env body) v = eval ctx (v : env) body
@@ -422,6 +423,7 @@ quote ctx lvl v = case forceQ ctx v of
   -- runtime-only values; never legitimately quoted, render opaquely
   VRef _ -> CGlob (GName primModule "__ref")
   VIOAction p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
+  VQuote qs slots -> CQuote qs (map (quote ctx lvl) slots)
   where
     quoteSpine = foldl (\f (ic, a) -> CApp ic f (quote ctx lvl a))
     quoteAlt _ alt = alt
@@ -491,6 +493,9 @@ convertible ctx = go (200 :: Int)
           && go (fuel - 1) lvl (closRun f1) (closRun f2)
       (VPrim p1 a1, VPrim p2 a2) ->
         p1 == p2 && length a1 == length a2 && and (zipWith (go (fuel - 1) lvl) a1 a2)
+      -- §21.1 syntax values: conservative payload comparison
+      (VQuote q1 s1, VQuote q2 s2) ->
+        q1 == q2 && length s1 == length s2 && and (zipWith (go (fuel - 1) lvl) s1 s2)
       _ -> False
       where
         closRun (Closure env body) = eval ctx env body

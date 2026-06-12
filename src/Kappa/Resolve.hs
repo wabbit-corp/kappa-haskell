@@ -425,6 +425,8 @@ rExpr env = go
       EBang e sp -> EBang <$> go e <*> pure sp
       EQuote e sp -> EQuote <$> go e <*> pure sp
       ESplice e sp -> ESplice <$> go e <*> pure sp
+      ESpliceInQuote e sp -> ESpliceInQuote <$> go e <*> pure sp
+      e@EQuoteHole {} -> pure e
       e@EImpossible {} -> pure e
       e@EKindQualified {} -> pure e
       e@EModuleSig {} -> pure e

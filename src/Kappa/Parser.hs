@@ -504,10 +504,31 @@ sepEndByNewlines :: P a -> () -> P [a]
 sepEndByNewlines p () = do
   x <- p
   void (many pNewline)
-  done <- lookAheadIs (token TokDedent)
+  done <- suiteEnds
   if done
     then pure [x]
     else (x :) <$> sepEndByNewlines p ()
+
+-- | Does the suite end here? Either a dedent, or — inside a
+-- layout-transparent '$( ... )' splice (§21.2) — the closing bracket
+-- arrives before the dedent.
+suiteEnds :: P Bool
+suiteEnds = do
+  t <- peekToken
+  pure $ case t of
+    TokDedent -> True
+    TokRParen -> True
+    TokRBracket -> True
+    TokRBrace -> True
+    TokVariantClose -> True
+    TokSetClose -> True
+    TokEOF -> True
+    _ -> False
+
+-- | Close an indented suite: consume the dedent when present; a suite
+-- cut short by a splice's closing bracket leaves no dedent here.
+suiteDedent :: P ()
+suiteDedent = token TokDedent <|> pure ()
 
 pCtorDecl :: P CtorDecl
 pCtorDecl = do
@@ -1515,31 +1536,47 @@ pPrefixOp = try $ do
   -- the chain (resolution validates fixity).
   pure op
 
--- Application spines (§16.1.7): postfixExpr applicationArg*.
+-- Application spines (§16.1.7): postfixExpr applicationArg*, with an
+-- optional trailing same-line lambda argument (`f x \a b -> ...`).
 pAppExpr :: P Expr
 pAppExpr = do
   f <- pPostfixExpr
   args <- many pAppArg
-  targ <- optionMaybe pTrailingBlockArg
-  pure $ case args ++ maybe [] (: []) targ of
+  mlam <- trailingLambda
+  targs <- pTrailingBlockArgs
+  pure $ case args ++ maybe [] (: []) mlam ++ targs of
     [] -> f
     allArgs -> EApp f allArgs
+  where
+    -- a bare lambda operand is taken by 'pOpenExpr' before application
+    -- parsing ever runs, so a '\' here is a final argument
+    trailingLambda = do
+      t <- peekToken
+      case t of
+        TokBackslash -> Just . ArgExplicit <$> pLambda Nothing
+        _ -> pure Nothing
 
--- A deeper-indented continuation line supplies one final (block-shaped)
--- argument to the application: `f\n    do ...` (§16.1.7, layout §5.4).
-pTrailingBlockArg :: P Arg
-pTrailingBlockArg = try $ do
+-- Deeper-indented continuation lines supply the final (block-shaped)
+-- arguments of the application: `f\n    do ...`, or one argument per
+-- continuation line, e.g. `f x\n    (\a -> ...)\n    (\b -> ...)`
+-- (§16.1.7, layout §5.4).
+pTrailingBlockArgs :: P [Arg]
+pTrailingBlockArgs = fmap (fromMaybe []) $ optionMaybe $ try $ do
   pNewline
   token TokIndent
   stop <- pAtStopKeyword
   open <- (`elem` [Just "do", Just "match", Just "block", Just "if"]) <$> peekIdent
   if stop && not open
     then parseFail "stop keyword cannot begin a trailing argument"
-    else do
+    else argLines
+  where
+    argLines = do
       e <- pExpr
       void (many pNewline)
-      token TokDedent
-      pure (ArgExplicit e)
+      done <- suiteEnds
+      if done
+        then suiteDedent >> pure [ArgExplicit e]
+        else (ArgExplicit e :) <$> argLines
 
 pAppArg :: P Arg
 pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
@@ -1741,6 +1778,11 @@ pAtom = do
       e <- inBrackets pExpr
       token TokRParen
       ESplice e <$> spanFrom start
+    TokQuoteSplice -> do
+      void anyToken
+      e <- inBrackets pExpr
+      token TokRBrace
+      ESpliceInQuote e <$> spanFrom start
     TokBang -> do
       void anyToken
       e <- pPostfixExpr
@@ -2368,7 +2410,7 @@ pDoSuite = do
   pNewline
   token TokIndent
   items <- pDoItem `sepEndByNewlines` ()
-  token TokDedent
+  suiteDedent
   pure items
 
 pBlockExpr :: P Expr

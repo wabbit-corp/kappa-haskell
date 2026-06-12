@@ -21,6 +21,7 @@ module Kappa.Check
   , checkModule
   , expectUnsatisfiedDiags
   , preludeModule
+  , shapeModule
   ) where
 
 import Control.Monad.State.Strict
@@ -37,6 +38,15 @@ import Kappa.Pretty (renderTerm)
 import Kappa.Source
 import Kappa.Syntax hiding (CompClause (..), Quantity (..))
 import qualified Kappa.Syntax as S
+import Kappa.SyntaxOps
+  ( boundNamesIn
+  , collectSplices
+  , freeVarOccurrences
+  , renameVarOccurrences
+  , renderExprSrc
+  , replaceSplices
+  , substQuoteHoles
+  )
 import Kappa.Token (QuotedLit (..), StrFragment (..), StringLit (..))
 import Kappa.Unicode (isSingleGrapheme)
 
@@ -116,6 +126,16 @@ data CheckState = CheckState
   , csReceivers :: !(Map GName [Int])
   -- ^ §7.4 receiver-marked explicit binder positions (indices among
   -- the explicit binders) per global, for method-call sugar
+  , csExpansions :: !(Map Span Expr)
+  -- ^ §21.2 splice expansions (splice span ↦ grafted surface syntax,
+  -- with captured occurrences under their original spellings) for the
+  -- usage analysis to charge object-level uses at splice sites
+  , csOpaqueDatas :: !(Map GName ())
+  -- ^ §10 'opaque data' declarations: representation visible only in
+  -- the defining module (consulted by §22.1 shape inspection)
+  , csRecordOrders :: !(Map GName [Text])
+  -- ^ Written field order of record type aliases (§22.2 shape order;
+  -- core record types are canonicalized to lexicographic order)
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -150,9 +170,14 @@ initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
+    Map.empty Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
+
+-- | The §22 derivation-shape reflection module.
+shapeModule :: ModuleName
+shapeModule = ModuleName ["std", "deriving", "shape"]
 
 gPrel :: Text -> GName
 gPrel = GName preludeModule
@@ -186,6 +211,12 @@ data Ctx = Ctx
   -- ^ Lexically scoped effect labels (§9.3.1.1 @scoped effect@).
   , ctxInDo :: !Bool
   -- ^ Inside a @do@ elaboration: gates the §18.9.3 @~@ marker.
+  , ctxHyg :: !(Map Text (Int, Value))
+  -- ^ §21.4 hygienic capture references in spliced syntax: fresh
+  -- spelling ↦ (binding LEVEL in this context, binder type).
+  , ctxQuoteSlots :: !(Map Int Value)
+  -- ^ Types of the enclosing quote's grafting slots ('EQuoteHole'),
+  -- while the quote payload is being checked (§21.1).
   }
 
 -- | A scoped effect's elaborated interface (§9.3.1.1, §18.1.15): label
@@ -204,7 +235,7 @@ data EffOpInfo = EffOpInfo
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False
+emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False Map.empty Map.empty
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
@@ -367,6 +398,7 @@ mentionsThis = \case
   CLazyE e -> mentionsThis e
   CForceE e -> mentionsThis e
   CIf a b c -> mentionsThis a || mentionsThis b || mentionsThis c
+  CQuote _ slots -> any mentionsThis slots
 
 -- | The sibling field labels a §13.2.1 field type depends on.
 thisDepsOf :: Term -> [Text]
@@ -399,6 +431,7 @@ thisDepsOf = nub . go
       CLazyE e -> go e
       CForceE e -> go e
       CIf a b c -> go a ++ go b ++ go c
+      CQuote _ slots -> concatMap go slots
 
 -- | Substitute a receiver term (well-scoped at the substitution site)
 -- for the §13.2.1 @this@ neutral, shifting under binders.
@@ -433,6 +466,7 @@ substThisTm recv = go 0
       CLazyE e -> CLazyE (go d e)
       CForceE e -> CForceE (go d e)
       CIf a b c -> CIf (go d a) (go d b) (go d c)
+      CQuote qs slots -> CQuote qs (map (go d) slots)
 
 -- | Substitute a receiver term for @this@ inside a field-type value
 -- (§13.2.1 dependent projection).
@@ -687,12 +721,22 @@ expectType ctx sp actual expected = do
             withNote ("actual:   " <> renderTerm aT) $
               diag SevError StageElaborate "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa.seal.opaque-unfolding") sp
                 "an opaque member of a sealed package does not unfold to its hidden definition (§13.2.10)"
-      else
+      else do
+        -- §21: phase-boundary mismatches (a meta-phase 'Elab'/'Syntax'
+        -- type against an object-phase one) carry the rendered types in
+        -- the message itself, since the phase is the point
+        let aR = renderTerm aT
+            eR = renderTerm eT
+            metaish r = "Elab" `T.isInfixOf` r || "Syntax" `T.isInfixOf` r
+            msg =
+              if (metaish aR || metaish eR) && aR /= eR
+                then "type mismatch: expected '" <> eR <> "', actual '" <> aR <> "'"
+                else "type mismatch"
         report $
-          withNote ("expected: " <> renderTerm eT) $
-            withNote ("actual:   " <> renderTerm aT) $
+          withNote ("expected: " <> eR) $
+            withNote ("actual:   " <> aR) $
               diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
-                "type mismatch"
+                msg
 
 -- | Is the value a §16.1.7.1 suspension type (Thunk/Need)?
 isSuspV :: Value -> Bool
@@ -930,28 +974,49 @@ resolveImplicitQ ctx sp q goal = do
             else resolveLadder g isTrait isEq
   where
     resolveLadder g isTrait isEq = do
-      do
-          -- §16.3.3 step 1: the local implicit context goes first.
-          mLoc <- localCandidate ctx sp q g
-          case mLoc of
+      -- §16.3.3 step 1: the local implicit context goes first.
+      mLoc <- localCandidate ctx sp q g
+      case mLoc of
+        Just tm -> pure tm
+        Nothing -> do
+          mInst <- instanceSearch ctx sp g
+          case mInst of
             Just tm -> pure tm
             Nothing -> do
-              mInst <- instanceSearch ctx sp g
-              case mInst of
+              mProp <- propProof g
+              case mProp of
                 Just tm -> pure tm
                 Nothing -> do
-                  mProp <- propProof g
-                  case mProp of
+                  mWitness <- isTraitWitness ctx g
+                  case mWitness of
                     Just tm -> pure tm
-                    Nothing ->
-                      if isTrait || isEq || q /= Q0
-                        then do
-                          gT <- quoteIn ctx g
-                          errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
-                            ("could not resolve implicit argument of type " <> renderTerm gT
-                               <> (if isTrait || isEq then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
-                          freshMeta
-                        else freshMeta
+                    Nothing -> unresolved g isTrait isEq
+    unresolved g isTrait isEq =
+      if isTrait || isEq || q /= Q0
+        then do
+          gT <- quoteIn ctx g
+          errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
+            ("could not resolve implicit argument of type " <> renderTerm gT
+               <> (if isTrait || isEq then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
+          freshMeta
+        else freshMeta
+
+-- | §22.4: a goal of shape @forall xs. IsTrait (tc x)@ is satisfied by
+-- a synthesized witness whenever its head is the builtin 'IsTrait'
+-- classifier; the witness carries no information.
+isTraitWitness :: Ctx -> Value -> CheckM (Maybe Term)
+isTraitWitness ctx goal = go (ctxLen ctx) goal
+  where
+    go lvl v = do
+      vF <- forceM v
+      case vF of
+        VPi ic q nm _ clo -> do
+          cod <- clApp clo (VRigid lvl [])
+          fmap (CLam ic q nm) <$> go (lvl + 1) cod
+        VGlobN (GName pm "IsTrait") _
+          | pm == preludeModule ->
+              pure (Just (CGlob (gPrel "__isTraitWitness")))
+        _ -> pure Nothing
 
 -- | Kind-like goals — @Type@, @Type -> Type@, … — are inferred from
 -- use sites (metavariables), never searched as evidence (§16.3.3).
@@ -1147,6 +1212,7 @@ zonkTermM depth0 t0 = do
         CLazyE e -> CLazyE (go d e)
         CForceE e -> CForceE (go d e)
         CIf a b c -> CIf (go d a) (go d b) (go d c)
+        CQuote qs slots -> CQuote qs (map (go d) slots)
   pure (go depth0 t0)
 
 isTraitGoal :: Value -> CheckM Bool
@@ -1287,6 +1353,11 @@ insertAllImplicits ctx sp tm ty = do
 
 infer :: Ctx -> Expr -> CheckM (Term, Value)
 infer ctx expr = case expr of
+  -- §21.4: a hygienic capture occurrence in spliced syntax refers to
+  -- its recorded binder by level, immune to later shadowing
+  EVar n
+    | Just (lvl, ty) <- Map.lookup (nameText n) (ctxHyg ctx) ->
+        pure (CVar (ctxLen ctx - 1 - lvl), ty)
   -- §13.2.1 sibling references: inside a dependent record type,
   -- literal, or update, an unshadowed 'this' denotes the record
   EVar n
@@ -1601,8 +1672,17 @@ infer ctx expr = case expr of
   ESeal e tyE sp -> elabSeal ctx e tyE sp
   ESealExists _ _ _ sp -> unsupported ctx sp "existential packages"
   EOpenExists _ _ _ _ sp -> unsupported ctx sp "existential packages"
-  EQuote _ sp -> unsupported ctx sp "syntax quotation"
-  ESplice _ sp -> unsupported ctx sp "elaboration-time splices"
+  EQuote e sp -> elabQuote ctx e sp Nothing
+  ESplice e sp -> elabSplice ctx e sp Nothing
+  ESpliceInQuote _ sp -> do
+    errAt sp "E_QUOTE_SPLICE_OUTSIDE_QUOTE" (Just "kappa.syntax.quotation")
+      "the in-quote splice form '${...}' is meaningful only inside a syntax quote '{ ... } (§21.1)"
+    anyHole ctx
+  EQuoteHole i sp -> case Map.lookup i (ctxQuoteSlots ctx) of
+    Just ty -> pure (CGlob (GName primModule "__quoteHole"), ty)
+    Nothing -> do
+      errAt sp "E_INTERNAL" Nothing "quote grafting slot escaped its quote"
+      anyHole ctx
   EBang _ sp -> do
     errAt sp "E_SPLICE_OUTSIDE_DO" Nothing "monadic splice '!' is only valid inside a do block"
     anyHole ctx
@@ -1677,6 +1757,27 @@ check ctx expr expected0 = do
       , Nothing <- lookupCtx "pure" ctx -> do
           tm <- check ctx pa aT
           pure (CCtor (gPrel "__EffPure") [tm])
+    -- §21.9: 'pure' in an Elab-typed position lifts a meta-phase value
+    -- through the elaboration-time Applicative (the prelude 'pure' is
+    -- the IO instance; carrier-polymorphic 'pure' is not modelled)
+    (EApp (EVar pn) [ArgExplicit pa], VGlobN (GName pm "Elab") [(_, aT)])
+      | nameText pn == "pure"
+      , pm == preludeModule
+      , Nothing <- lookupCtx "pure" ctx -> do
+          tm <- check ctx pa aT
+          pure (CApp Expl (CGlob (GName primModule "__elabPure")) tm)
+    -- §21.1: a quote checked against its Syntax index elaborates the
+    -- payload at the index's object type
+    (EQuote qe sp, VGlobN (GName pm "Syntax") [(_, tT)])
+      | pm == preludeModule -> do
+          (tm, _) <- elabQuote ctx qe sp (Just tT)
+          pure tm
+    -- §21.2: a splice's expected type directs both the admissible
+    -- argument types and the elaboration of the produced syntax
+    (ESplice se sp, _) -> do
+      (tm, ty) <- elabSplice ctx se sp (Just expected)
+      expectType ctx sp ty expected
+      pure tm
     -- §18.9 threading pun (corpus): a bare variable checked against a
     -- single-field record type whose field has the same spelling is the
     -- record literal `(n = n)` (e.g. `pure file : IO (1 file : File)`)
@@ -5162,6 +5263,11 @@ elabDo ctx0 items _sp mexpected = do
     -- (§18.1.14); it elaborates to __effBind chains, not the IO kernel
     Just (VGlobN (GName _ "Eff") [(_, row), (_, a)]) ->
       elabEffDo ctx row a items _sp
+    -- an Elab-typed do sequences elaboration-time actions (§21.9); it
+    -- elaborates to __elabBind chains run by the Elab evaluator
+    Just (VGlobN (GName pm "Elab") [(_, a)])
+      | pm == preludeModule ->
+          elabElabDo ctx a items _sp
     _ -> elabDoIO ctx me items
   where
     elabDoIO = elabDoIOItems _sp
@@ -5524,6 +5630,729 @@ desugarBang = \case
       ArgExplicit e -> ArgExplicit (desugarBang e)
       ArgImplicit e -> ArgImplicit (desugarBang e)
       a -> a
+
+-- ── §21 Syntax, macros, and Elab ─────────────────────────────────────
+--
+-- Design (Spec §21, §22, §6.3.4.3–5, §20.9):
+--
+--   * 'Syntax t' is compile-time-only. A quote @'{ e }@ elaborates to
+--     'CQuote': the SURFACE payload (with @${...}@ sub-splices replaced
+--     by numbered 'EQuoteHole' grafting slots), §21.4 hygiene metadata,
+--     and one elaborated term of type @Syntax _@ per slot. Quotation
+--     type-checks the payload to assign the Syntax index (and to
+--     surface malformed-payload diagnostics) but discharges no final
+--     object-level obligations; the payload TERM is discarded and the
+--     surface syntax kept (§21.1).
+--   * Hygiene (§21.4): every payload occurrence of a quote-site LOCAL
+--     binder (not rebound inside the payload) is renamed to a fresh
+--     hygienic spelling and recorded as a 'QuoteCapture' with its
+--     context LEVEL. Splicing validates each capture against the
+--     splice-site context (binder still present at that level, same
+--     spelling) — one rule covering local-binder escape and
+--     borrow-scope escape — then resolves capture occurrences by level
+--     through 'ctxHyg', immune to later shadowing.
+--   * @$(m)@ (§21.2) admits @m : Elab (Syntax t)@ or the bare-Syntax
+--     sugar @m : Syntax t@ (treated as @pure m@). The elaborated
+--     argument is EVALUATED at elaboration time (runtime-mode NbE over
+--     compile-time values) and the resulting action is run by
+--     'runElab', a CheckM interpreter over stuck @__elab*@ primitive
+--     applications: pure/bind, the §21.5 reflection queries, the
+--     §21.9 diagnostics, and §22 shape reflection. The produced
+--     Syntax is grafted ('substQuoteHoles') and re-elaborated at the
+--     splice site exactly as if written there (§30.1); the grafted
+--     expansion is recorded in 'csExpansions' so the §12.2 usage
+--     analysis charges the expanded object-level uses at each splice.
+--   * Elab-typed @do@ blocks lower to @__elabBind@ chains; @pure@
+--     into an Elab position lifts via @__elabPure@ (§21.9).
+--   * Prefixed strings (§6.3.4.3–5) resolve their handler term at type
+--     @Elab (InterpolatedMacro t)@, run @buildInterpolated@ over the
+--     §6.3.4.4 fragment list at elaboration time, and splice the
+--     result; bare object-phase 'InterpolatedMacro' values are
+--     rejected. Comprehension carriers with 'FromComprehensionRaw' /
+--     'FromComprehensionPlan' instances run the sink hook the same
+--     way (§20.9), raw preferred, after checking the instance's
+--     'Item' member against the yielded item type.
+--
+-- §21.8 restrictions: package mode provides no IO capability to the
+-- evaluator by construction (no IO primitive reduces outside the
+-- §18.8 kernel). Termination of macro execution is bounded by the
+-- evaluator's fuel; see SPEC_COVERAGE.md for the provided subset.
+
+-- | The runtime-mode evaluation context for elaboration-time
+-- execution (§21.8, §30.2.4): every global unfolds.
+ecRT_ :: CheckM EvalCtx
+ecRT_ = gets (\st -> EvalCtx (Globals (csGlobals st)) (csMetas st) True (csFacts st))
+
+evalRT :: Ctx -> Term -> CheckM Value
+evalRT ctx t = do
+  ec <- ecRT_
+  pure (eval ec (ctxEnv ctx) t)
+
+forceRT :: Value -> CheckM Value
+forceRT v = do
+  ec <- ecRT_
+  pure (force ec v)
+
+vappRT :: Value -> [Value] -> CheckM Value
+vappRT f as = do
+  ec <- ecRT_
+  pure (foldl' (\g a -> vapp ec g Expl a) f as)
+
+-- | Run an elaboration speculatively: keep its result only when it
+-- reported no new diagnostics; otherwise restore the full state.
+trySpec :: CheckM a -> CheckM (Maybe a)
+trySpec act = do
+  st0 <- get
+  n0 <- gets (length . csDiags)
+  r <- act
+  n1 <- gets (length . csDiags)
+  if n1 == n0 then pure (Just r) else put st0 >> pure Nothing
+
+synTV :: Value -> Value
+synTV t = VGlobN (gPrel "Syntax") [(Expl, t)]
+
+elabTV :: Value -> Value
+elabTV t = VGlobN (gPrel "Elab") [(Expl, t)]
+
+elabPureTm :: Term -> Term
+elabPureTm = CApp Expl (CGlob (GName primModule "__elabPure"))
+
+-- | Elaborate a syntax quote @'{ payload }@ (§21.1).
+elabQuote :: Ctx -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
+elabQuote ctx payload0 sp mexp = do
+  let spliceList = collectSplices payload0
+      slotIdx = Map.fromList [(ssp, i) | (i, (ssp, _)) <- zip [0 ..] spliceList]
+      payload = replaceSplices slotIdx payload0
+  -- the sub-splice slots: each must be a meta-phase Syntax value (an
+  -- Elab action is not run implicitly inside a quote, §21.1)
+  slots <- forM spliceList $ \(ssp, se) -> do
+    (tm0, ty0) <- infer ctx se
+    (tm1, ty1) <- insertAllImplicits ctx ssp tm0 ty0
+    ty1F <- forceM ty1
+    case ty1F of
+      VGlobN (GName pm "Syntax") [(_, t)]
+        | pm == preludeModule -> pure (tm1, t)
+      VGlobN (GName pm "Elab") _
+        | pm == preludeModule -> do
+            errAt ssp "E_QUOTE_SPLICE_ELAB" (Just "kappa.syntax.quotation")
+              "an 'Elab (Syntax _)' action is not run implicitly inside a quote; bind it in the surrounding Elab computation first and splice the resulting 'Syntax' value (§21.1)"
+            (tm1,) <$> freshMetaV ctx
+      _ -> do
+        tT <- quoteIn ctx ty1F
+        errAt ssp "E_QUOTE_SPLICE_TYPE" (Just "kappa.syntax.quotation")
+          ("a '${...}' splice inside a quote requires a 'Syntax' value; this expression has type " <> renderTerm tT <> " (§21.1)")
+        (tm1,) <$> freshMetaV ctx
+  -- type-directed payload checking sufficient to assign the Syntax
+  -- index; the elaborated term is discarded (§21.1: quotation records
+  -- syntax, final obligations are discharged at splice sites)
+  let ctxQ = ctx {ctxQuoteSlots = Map.fromList (zip [0 ..] (map snd slots))}
+  tV <- case mexp of
+    Just t -> do
+      _ <- check ctxQ payload t
+      pure t
+    Nothing -> do
+      (tm0, ty0) <- infer ctxQ payload
+      (_, ty1) <- insertAllImplicits ctxQ sp tm0 ty0
+      pure ty1
+  qs <- mkQuotedSyntax ctx payload sp
+  pure (CQuote qs (map fst slots), synTV tV)
+
+-- | §21.4 hygiene metadata: rename quote-site local references to
+-- fresh hygienic spellings and record (spelling, original, level).
+mkQuotedSyntax :: Ctx -> Expr -> Span -> CheckM QuotedSyntax
+mkQuotedSyntax ctx payload sp = do
+  let bound = boundNamesIn payload
+      occ = nub [nameText n | n <- freeVarOccurrences payload]
+      capturable =
+        [ (nm, i)
+        | nm <- occ
+        , nm `notElem` bound
+        , Just (i, _) <- [lookupCtx nm ctx]
+        ]
+  caps <- forM capturable $ \(nm, i) -> do
+    h <- freshNameM (nm <> "__hyg")
+    pure (QuoteCapture h nm (ctxLen ctx - 1 - i))
+  let ren = Map.fromList [(qcOrig c, qcHyg c) | c <- caps]
+  pure (QuotedSyntax (renameVarOccurrences ren payload) caps sp)
+
+-- | Elaborate a splice @$(m)@ (§21.2): execute the elaboration-time
+-- action and elaborate the produced syntax at the splice site.
+elabSplice :: Ctx -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
+elabSplice ctx me sp mexp = do
+  tV <- maybe (freshMetaV ctx) forceM mexp
+  let bail = (\t -> (t, tV)) <$> freshMeta
+  phaseOk <- splicePhaseCheck ctx me
+  if not phaseOk
+    then bail
+    else do
+      rA <- trySpec (check ctx me (elabTV (synTV tV)))
+      mtm <- case rA of
+        Just tm -> pure (Just tm)
+        Nothing -> do
+          rB <- trySpec (check ctx me (synTV tV))
+          case rB of
+            Just tm -> pure (Just (elabPureTm tm))
+            Nothing -> do
+              r <- trySpec $ do
+                (tm0, ty0) <- infer ctx me
+                insertAllImplicits ctx sp tm0 ty0
+              tyDesc <- case r of
+                Just (_, ty) -> do
+                  tT <- quoteIn ctx ty
+                  pure ("; this expression has type " <> renderTerm tT)
+                Nothing -> pure ""
+              errAt sp "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa.syntax.splice")
+                ("a splice '$(...)' requires an 'Elab (Syntax t)' action or a meta-phase 'Syntax t' value"
+                   <> tyDesc <> " (§21.2)")
+              pure Nothing
+      case mtm of
+        Nothing -> bail
+        Just tm -> do
+          v <- evalRT ctx tm
+          res <- runElab ctx sp v
+          case res of
+            Left () -> bail
+            Right sv -> do
+              mq <- graftQuoteV ctx sp sv
+              case mq of
+                Nothing -> bail
+                Just qs -> do
+                  ok <- validateCaptures ctx sp (qsCaptures qs)
+                  if not ok
+                    then bail
+                    else do
+                      let ctx' = extendHyg ctx (qsCaptures qs)
+                          back = Map.fromList [(qcHyg c, qcOrig c) | c <- qsCaptures qs]
+                      modify' $ \st ->
+                        st {csExpansions = Map.insert sp (renameVarOccurrences back (qsExpr qs)) (csExpansions st)}
+                      tmS <- check ctx' (qsExpr qs) tV
+                      pure (tmS, tV)
+
+-- | §21.9 phase check: object-phase runtime locals cannot enter an
+-- elaboration-time splice argument (only meta-phase carriers may).
+splicePhaseCheck :: Ctx -> Expr -> CheckM Bool
+splicePhaseCheck ctx me = do
+  let bound = boundNamesIn me
+      occs =
+        [ (n, i)
+        | n <- freeVarOccurrences me
+        , nameText n `notElem` bound
+        , not (Map.member (nameText n) (ctxHyg ctx))
+        , Just (i, _) <- [lookupCtx (nameText n) ctx]
+        ]
+  bad <- filterM (\(_, i) -> not <$> metaPhaseType (ceType (ctxEntries ctx !! i))) occs
+  case bad of
+    [] -> pure True
+    ((n, _) : _) -> do
+      errAt (nameSpan n) "E_ELAB_PHASE" (Just "kappa.macro.phase")
+        ("the object-phase runtime binding '" <> nameText n
+           <> "' cannot be captured by an elaboration-time splice; object-phase terms enter 'Elab' only through meta-phase carriers such as 'Syntax' (§21.9)")
+      pure False
+
+-- | Is a local's type a meta-phase carrier admissible inside 'Elab'?
+metaPhaseType :: Value -> CheckM Bool
+metaPhaseType v = do
+  t <- forceM v
+  case t of
+    -- type, row, quantity, and region parameters are erased
+    -- classifier-level entities; mentioning them does not smuggle an
+    -- object-phase runtime value into Elab (§21.9)
+    VSort _ -> pure True
+    VGlobN (GName pm g) args
+      | pm == preludeModule
+      , g `elem`
+          [ "Syntax", "Elab", "SyntaxOrigin", "SyntaxFragment"
+          , "RawComprehension", "ComprehensionPlan"
+          , "RecRow", "EffRow", "Quantity", "Region", "EffLabel"
+          ] ->
+          pure True
+      | pm == preludeModule
+      , g `elem` ["List", "Option"]
+      , ((_, a) : _) <- args ->
+          metaPhaseType a
+    VGlobN (GName m _) _ | m == shapeModule -> pure True
+    _ -> pure False
+
+-- | Graft a syntax value: force the slot values to quotes and
+-- substitute them into the payload's grafting holes (§21.2).
+graftQuoteV :: Ctx -> Span -> Value -> CheckM (Maybe QuotedSyntax)
+graftQuoteV ctx sp v0 = do
+  v <- forceRT v0
+  case v of
+    VQuote qs slots -> do
+      subs <- mapM (graftQuoteV ctx sp) slots
+      case sequence subs of
+        Nothing -> pure Nothing
+        Just qss ->
+          pure $
+            Just
+              QuotedSyntax
+                { qsExpr = substQuoteHoles (Map.fromList (zip [0 ..] (map qsExpr qss))) (qsExpr qs)
+                , qsCaptures = qsCaptures qs ++ concatMap qsCaptures qss
+                , qsSpan = qsSpan qs
+                }
+    _ -> do
+      errAt sp "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa.syntax.splice")
+        "the elaboration-time action did not produce a 'Syntax' value this implementation can splice (§21.2)"
+      pure Nothing
+
+-- | §21.4: every free hygienic binder of spliced syntax must still be
+-- valid at the splice site.
+validateCaptures :: Ctx -> Span -> [QuoteCapture] -> CheckM Bool
+validateCaptures ctx sp caps = do
+  let n = ctxLen ctx
+      entryOk c =
+        let i = n - 1 - qcLevel c
+         in i >= 0 && i < n && ceName (ctxEntries ctx !! i) == qcOrig c
+      bad = [c | c <- caps, not (entryOk c)]
+  forM_ (take 1 bad) $ \c ->
+    errAt sp "E_SYNTAX_SCOPE_ESCAPE" (Just "kappa.syntax.scope-escape")
+      ("this Syntax value mentions the local binder '" <> qcOrig c
+         <> "' (or its borrow region) whose scope has ended; a Syntax value may escape a lexical scope only while every free hygienic binder it references remains valid, and splicing requires those binders at the splice site (§21.4)")
+  pure (null bad)
+
+extendHyg :: Ctx -> [QuoteCapture] -> Ctx
+extendHyg ctx caps = ctx {ctxHyg = foldr ins (ctxHyg ctx) caps}
+  where
+    n = ctxLen ctx
+    ins c m = case drop (n - 1 - qcLevel c) (ctxEntries ctx) of
+      e : _ -> Map.insert (qcHyg c) (qcLevel c, ceType e) m
+      [] -> m
+
+-- | Run an elaboration-time action value (§21.9, §30.2.4): interpret
+-- the stuck @__elab*@ primitive applications under CheckM.
+runElab :: Ctx -> Span -> Value -> CheckM (Either () Value)
+runElab ctx sp v0 = do
+  v <- forceRT v0
+  case v of
+    VPrim "__elabPure" [x] -> pure (Right x)
+    VPrim "__elabBind" [m, k] -> do
+      r <- runElab ctx sp m
+      case r of
+        Left e -> pure (Left e)
+        Right x -> runElab ctx sp =<< vappRT k [x]
+    VPrim "renderSyntax" [s] -> do
+      mq <- graftQuoteV ctx sp s
+      pure $ case mq of
+        Just qs -> Right (VLit (LitStr (renderExprSrc (qsExpr qs))))
+        Nothing -> Left ()
+    VPrim "syntaxOrigin" [s] -> do
+      sV <- forceRT s
+      let osp = case sV of
+            VQuote qs _ -> qsSpan qs
+            _ -> sp
+      pure (Right (VPrim "__syntaxOriginV" [VLit (LitStr (T.pack (show osp)))]))
+    VPrim "normalizeSyntax" [s] -> pure (Right s)
+    VPrim "withSyntaxOrigin" [_, s] -> pure (Right s)
+    VPrim "warnElab" [m] -> do
+      msg <- strValue m
+      report (diag SevWarning StageElaborate "W_MACRO_DIAGNOSTIC" (Just "kappa.macro.failure") sp msg)
+      pure (Right unitValue)
+    VPrim "warnElabWith" [c, m, _] -> do
+      code <- strValue c
+      msg <- strValue m
+      report (diag SevWarning StageElaborate code (Just "kappa.macro.failure") sp msg)
+      pure (Right unitValue)
+    VPrim "failElab" [m] -> do
+      msg <- strValue m
+      errAt sp "E_MACRO_FAILURE" (Just "kappa.macro.failure") msg
+      pure (Left ())
+    VPrim "failElabWith" [c, m, _] -> do
+      code <- strValue c
+      msg <- strValue m
+      errAt sp code (Just "kappa.macro.failure") msg
+      pure (Left ())
+    VPrim "__stringSyntax" [s] -> do
+      txt <- strValue s
+      pure (Right (literalQuote (EStringLit (StringLit Nothing 0 False [FragLit txt]) [] sp)))
+    VPrim "__natSyntax" [n] -> do
+      nF <- forceRT n
+      pure $ case nF of
+        VLit (LitInt i) -> Right (literalQuote (EIntLit i Nothing sp))
+        _ -> Right (literalQuote (EIntLit 0 Nothing sp))
+    VPrim "__boolSyntax" [b] -> do
+      bF <- forceRT b
+      let nm = case bF of
+            VCtor (GName _ "True") [] -> "True"
+            _ -> "False"
+      pure (Right (literalQuote (EVar (Name nm sp))))
+    VPrim "__unitSyntax" [] -> pure (Right (literalQuote (EUnit sp)))
+    VPrim "__shapeInspectAdt" [tyV, _] -> shapeInspectAdtOp ctx sp tyV
+    VPrim "__shapeInspectRecord" [tyV, target] -> shapeInspectRecordOp ctx sp tyV target
+    VPrim "__shapeRequireFieldInstances" [tcV, tyV, _] -> shapeRequireFieldsOp ctx sp tcV tyV
+    VPrim "__shapeMatchAdt" [shapeV, scrutV, cb] -> shapeMatchAdtOp ctx sp shapeV scrutV cb
+    VPrim "__shapeMatchAdt2" [shapeV, lV, rV, cbS, cbD] -> shapeMatchAdt2Op ctx sp shapeV lV rV cbS cbD
+    _ -> do
+      errAt sp "E_ELAB_STUCK" (Just "kappa.macro.failure")
+        "this elaboration-time action could not be executed by the Elab evaluator (§21.9; see SPEC_COVERAGE.md for the provided subset)"
+      pure (Left ())
+  where
+    literalQuote e = VQuote (QuotedSyntax e [] sp) []
+    unitValue = VCtor (gPrel "Unit") []
+    strValue x = do
+      xF <- forceRT x
+      pure $ case xF of
+        VLit (LitStr s) -> s
+        _ -> ""
+
+-- | Elab-typed do blocks (§21.9): lower to '__elabBind' chains.
+elabElabDo :: Ctx -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
+elabElabDo ctx0 aTy items0 sp = do
+  tm <- go ctx0 items0
+  pure (tm, elabTV aTy)
+  where
+    bindPrim m k = CApp Expl (CApp Expl (CGlob (GName primModule "__elabBind")) m) k
+    badForm ctx isp rest = do
+      errAt isp "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+        "this do item form is not available in an 'Elab' do block (§21.9)"
+      go ctx rest
+    go ctx = \case
+      [] -> do
+        errAt sp "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+          "an 'Elab' do block must end with an expression of the block's Elab type (§21.9)"
+        freshMeta
+      [DoExpr e] -> check ctx (desugarBang e) (elabTV aTy)
+      [item] -> badForm ctx (doItemSpan item) []
+      (item : rest) -> case item of
+        DoExpr e -> do
+          bTy <- freshMetaV ctx
+          mTm <- check ctx (desugarBang e) (elabTV bTy)
+          restTm <- go (bindCtx "_" False bTy ctx) rest
+          pure (bindPrim mTm (CLam Expl QW "_" restTm))
+        DoBind (LetBind _ _ pat mty rhs bsp) -> bindItem ctx pat mty rhs bsp rest
+        DoAssign n True rhs asp -> bindItem ctx (PVar n) Nothing rhs asp rest
+        DoAssign n False rhs asp -> letItem ctx (PVar n) Nothing rhs asp rest
+        DoLet (LetBind _ _ pat mty rhs bsp) -> letItem ctx pat mty rhs bsp rest
+        other -> badForm ctx (doItemSpan other) rest
+    patBinder bsp = \case
+      PVar n -> pure (nameText n)
+      PWild _ -> pure "_"
+      _ -> do
+        errAt bsp "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+          "only variable and wildcard binders are supported in 'Elab' do binds (§21.9)"
+        pure "_"
+    bindItem ctx pat mty rhs bsp rest = do
+      bTy <- case mty of
+        Just tyE -> do
+          (tyTm, _) <- inferType ctx tyE
+          evalIn ctx tyTm
+        Nothing -> freshMetaV ctx
+      rhsTm <- check ctx (desugarBang rhs) (elabTV bTy)
+      nm <- patBinder bsp pat
+      restTm <- go (bindCtx nm False bTy ctx) rest
+      pure (bindPrim rhsTm (CLam Expl QW nm restTm))
+    letItem ctx pat mty rhs bsp rest = do
+      (rhsTm, rhsTy) <- case mty of
+        Just tyE -> do
+          (tyTm, _) <- inferType ctx tyE
+          tyV <- evalIn ctx tyTm
+          tm <- check ctx rhs tyV
+          pure (tm, tyV)
+        Nothing -> do
+          (tm0, ty0) <- infer ctx rhs
+          insertAllImplicits ctx bsp tm0 ty0
+      nm <- patBinder bsp pat
+      rhsV <- evalIn ctx rhsTm
+      restTm <- go (bindCtxLet nm False rhsTy rhsV ctx) rest
+      tyTm' <- quoteIn ctx rhsTy
+      pure (CLet QW nm tyTm' rhsTm restTm)
+
+-- ── §22 Derivation-shape reflection ──────────────────────────────────
+
+gShape :: Text -> GName
+gShape = GName shapeModule
+
+shapeFamily :: Maybe DiagnosticFamily
+shapeFamily = Just "kappa.deriving.shape"
+
+listValue :: [Value] -> Value
+listValue = foldr (\x t -> VCtor (gPrel "::") [x, t]) (VCtor (gPrel "Nil") [])
+
+valueList :: Value -> CheckM [Value]
+valueList v = do
+  vF <- forceRT v
+  case vF of
+    VCtor (GName _ "::") [h, t] -> (h :) <$> valueList t
+    _ -> pure []
+
+shapeFieldValue :: Maybe Text -> Int -> Value
+shapeFieldValue mname i =
+  VCtor
+    (gShape "ShapeField")
+    [ maybe (VCtor (gPrel "None") []) (\n -> VCtor (gPrel "Some") [VLit (LitStr n)]) mname
+    , VLit (LitStr renderName)
+    ]
+  where
+    renderName = fromMaybe ("_" <> T.pack (show (i + 1))) mname
+
+-- | The §22.1 constructor summaries of a data type.
+shapeCtorValues :: GName -> CheckM [Value]
+shapeCtorValues g = do
+  st <- get
+  let ctorGs = maybe [] diCtors (Map.lookup g (csDatas st))
+  pure
+    [ VCtor
+        (gShape "ShapeConstructor")
+        [ VLit (LitStr (gnameText cg))
+        , VLit (LitStr (gnameText cg))
+        , VLit (LitInt (fromIntegral tag))
+        , listValue
+            [ shapeFieldValue mname i
+            | (i, (mname, _)) <- zip [0 ..] (maybe [] ciFields (Map.lookup cg (csCtors st)))
+            ]
+        ]
+    | (tag, cg) <- zip [0 :: Int ..] ctorGs
+    ]
+
+-- | §22.1 'inspectAdt': the inspected head must be a data type whose
+-- representation is visible at this elaboration site.
+shapeInspectAdtOp :: Ctx -> Span -> Value -> CheckM (Either () Value)
+shapeInspectAdtOp _ctx sp tyV = do
+  t <- forceRT tyV
+  st <- get
+  case t of
+    VGlobN g _
+      | Just di <- Map.lookup g (csDatas st) -> do
+          let GName declMod _ = g
+              opaque = Map.member g (csOpaqueDatas st)
+          if opaque && declMod /= csModule st
+            then do
+              errAt sp "KAPPA_DERIVING_SHAPE_OPAQUE_REPRESENTATION" shapeFamily
+                ("the representation of '" <> gnameText g
+                   <> "' is opaque outside its defining module; shape inspection requires a representation ordinary code at this site could match on (§22.1)")
+              pure (Left ())
+            else do
+              ctorVs <- shapeCtorValues g
+              st' <- get
+              let ctorGs = diCtors di
+                  fieldCounts =
+                    [maybe 0 (length . ciFields) (Map.lookup cg (csCtors st')) | cg <- ctorGs]
+                  kindName
+                    | length ctorGs == 1 = "ProductAdt"
+                    | all (== 0) fieldCounts = "EnumAdt"
+                    | otherwise = "SumAdt"
+              pure $
+                Right $
+                  VCtor
+                    (gShape "AdtShape")
+                    [ VLit (LitStr (gnameText g))
+                    , VLit (LitStr (gnameText g))
+                    , VCtor (gShape "ShapeRepresentationVisible") []
+                    , VCtor (gShape kindName) []
+                    , listValue ctorVs
+                    ]
+    _ -> do
+      tT <- quoteIn emptyCtx t
+      errAt sp "KAPPA_DERIVING_SHAPE_NOT_DATA" shapeFamily
+        ("shape inspection requires a data type; '" <> renderTerm tT <> "' is not one (§22.1)")
+      pure (Left ())
+
+-- | §22.1 'inspectRecord': closed records only; field order follows
+-- the written order of the inspected alias when known (§22.2).
+shapeInspectRecordOp :: Ctx -> Span -> Value -> Value -> CheckM (Either () Value)
+shapeInspectRecordOp _ctx sp tyV target = do
+  t <- forceRT tyV
+  case t of
+    VRecordT fs -> do
+      written <- targetFieldOrder target
+      let names = map fst fs
+          ordered = case written of
+            Just ws | sort ws == sort names -> ws
+            _ -> names
+      pure $
+        Right $
+          VCtor
+            (gShape "RecordShape")
+            [listValue [shapeFieldValue (Just nm) i | (i, nm) <- zip [0 ..] ordered]]
+    VGlobN (GName pm "__openRec") _
+      | pm == preludeModule -> do
+          errAt sp "KAPPA_DERIVING_SHAPE_NOT_CLOSED_RECORD" shapeFamily
+            "Phase 0 record shape inspection requires a closed record type; open record types are reserved for a later phase (§22.1)"
+          pure (Left ())
+    _ -> do
+      tT <- quoteIn emptyCtx t
+      errAt sp "KAPPA_DERIVING_SHAPE_NOT_CLOSED_RECORD" shapeFamily
+        ("record shape inspection requires a closed record type; '" <> renderTerm tT <> "' is not one (§22.1)")
+      pure (Left ())
+  where
+    targetFieldOrder tv = do
+      tvF <- forceRT tv
+      case tvF of
+        VQuote qs _
+          | EVar n <- qsExpr qs -> do
+              mg <- lookupGlobalName (nameText n)
+              case mg of
+                Just g -> gets (Map.lookup g . csRecordOrders)
+                Nothing -> pure Nothing
+        _ -> pure Nothing
+
+-- | §22.4 'requireRuntimeFieldInstances': probe ordinary implicit
+-- resolution for @tc F@ at every constructor field type @F@.
+shapeRequireFieldsOp :: Ctx -> Span -> Value -> Value -> CheckM (Either () Value)
+shapeRequireFieldsOp ctx sp tcV tyV = do
+  t <- forceRT tyV
+  st <- get
+  case t of
+    VGlobN g _
+      | Just di <- Map.lookup g (csDatas st) -> do
+          fieldTys <- concat <$> mapM (ctorFieldTypesOf t) (diCtors di)
+          missing <- filterM (fmap not . satisfiable) fieldTys
+          case missing of
+            [] -> pure (Right (VCtor (gPrel "Unit") []))
+            ((cg, mname, fTy) : _) -> do
+              fT <- quoteIn ctx fTy
+              errAt sp "KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE" shapeFamily
+                ("no instance satisfies the required trait obligation for field '"
+                   <> fromMaybe "_" mname <> "' of constructor '" <> gnameText cg
+                   <> "' (field type " <> renderTerm fT <> ") of data type '" <> gnameText g <> "' (§22.4)")
+              pure (Left ())
+    _ -> do
+      errAt sp "KAPPA_DERIVING_SHAPE_NOT_DATA" shapeFamily
+        "field-instance checking requires a data type shape (§22.4)"
+      pure (Left ())
+  where
+    ctorFieldTypesOf tV cg = do
+      st <- get
+      case Map.lookup cg (csCtors st) of
+        Nothing -> pure []
+        Just ci -> do
+          doms <- ctorFieldTypes ctx cg ci tV sp
+          pure [(cg, mname, fTy) | ((mname, _), fTy) <- zip (ciFields ci) doms]
+    satisfiable (_, _, fTy) = do
+      ec <- ecRT_
+      goal <- forceM (vapp ec tcV Expl fTy)
+      r <- trySpec $ do
+        mLoc <- localCandidate ctx sp Q0 goal
+        case mLoc of
+          Just _ -> pure True
+          Nothing -> isJust <$> instanceSearch ctx sp goal
+      pure (fromMaybe False r)
+
+-- | Field arity of a shape-constructor summary value.
+shapeCtorInfo :: Value -> CheckM (Text, Int, [Value])
+shapeCtorInfo cv = do
+  cvF <- forceRT cv
+  case cvF of
+    VCtor (GName _ "ShapeConstructor") [nmV, _, _, fieldsV] -> do
+      nmF <- forceRT nmV
+      let nm = case nmF of
+            VLit (LitStr s) -> s
+            _ -> "?"
+      fields <- valueList fieldsV
+      pure (nm, length fields, fields)
+    _ -> pure ("?", 0, [])
+
+-- | §22.5 'matchAdt': construct an exhaustive match over the
+-- scrutinee syntax, one branch per constructor, branch bodies
+-- produced by the elaboration-time callback.
+shapeMatchAdtOp :: Ctx -> Span -> Value -> Value -> Value -> CheckM (Either () Value)
+shapeMatchAdtOp ctx sp shapeV scrutV cb = do
+  mscrut <- graftQuoteV ctx sp scrutV
+  shapeF <- forceRT shapeV
+  case (mscrut, shapeF) of
+    (Just scrutQ, VCtor (GName _ "AdtShape") [_, _, _, _, ctorsV]) -> do
+      ctorVs <- valueList ctorsV
+      branches <- runBranches ctorVs scrutQ
+      pure $ case branches of
+        Nothing -> Left ()
+        Just (cases, caps) ->
+          Right $
+            VQuote
+              (QuotedSyntax (EMatch (qsExpr scrutQ) cases sp) (qsCaptures scrutQ ++ caps) sp)
+              []
+    _ -> do
+      errAt sp "KAPPA_DERIVING_SHAPE_NOT_DATA" shapeFamily
+        "matchAdt requires an inspected data shape (§22.5)"
+      pure (Left ())
+  where
+    runBranches [] _ = pure (Just ([], []))
+    runBranches (cv : rest) scrutQ = do
+      (nm, arity, fields) <- shapeCtorInfo cv
+      let boundFields = listValue [VCtor (gShape "BoundField") [f] | f <- fields]
+      r <- runElab ctx sp =<< vappRT cb [cv, boundFields]
+      case r of
+        Left () -> pure Nothing
+        Right bodyV -> do
+          mbody <- graftQuoteV ctx sp bodyV
+          case mbody of
+            Nothing -> pure Nothing
+            Just bodyQ -> do
+              more <- runBranches rest scrutQ
+              pure $ do
+                (cases, caps) <- more
+                let pat = PCtor (CtorRef Nothing (Name nm sp)) (replicate arity (PWild sp)) sp
+                pure
+                  ( MatchCase pat Nothing (qsExpr bodyQ) sp : cases
+                  , qsCaptures bodyQ ++ caps
+                  )
+
+-- | §22.5 'matchAdt2': a tupled match comparing two values of the
+-- same data type, same-constructor and different-constructor branches.
+shapeMatchAdt2Op :: Ctx -> Span -> Value -> Value -> Value -> Value -> Value -> CheckM (Either () Value)
+shapeMatchAdt2Op ctx sp shapeV lV rV cbSame cbDiff = do
+  ml <- graftQuoteV ctx sp lV
+  mr <- graftQuoteV ctx sp rV
+  shapeF <- forceRT shapeV
+  case (ml, mr, shapeF) of
+    (Just lQ, Just rQ, VCtor (GName _ "AdtShape") [_, _, _, _, ctorsV]) -> do
+      ctorVs <- valueList ctorsV
+      let pairs = [(c1, c2) | c1 <- ctorVs, c2 <- ctorVs]
+      branches <- runPairs pairs
+      pure $ case branches of
+        Nothing -> Left ()
+        Just (cases, caps) ->
+          -- close the tupled match with a catch-all duplicating the
+          -- last different-constructor body, so exhaustiveness over
+          -- the tuple scrutinee is syntactically evident (§22.5)
+          let diffBodies =
+                [ body
+                | MatchCase (PTuple [PCtor c1 _ _, PCtor c2 _ _] _) _ body _ <- cases
+                , nameText (crName c1) /= nameText (crName c2)
+                ]
+              catchAll = [MatchCase (PWild sp) Nothing b sp | b <- take 1 (reverse diffBodies)]
+           in Right $
+                VQuote
+                  ( QuotedSyntax
+                      (EMatch (ETuple [qsExpr lQ, qsExpr rQ] sp) (cases ++ catchAll) sp)
+                      (qsCaptures lQ ++ qsCaptures rQ ++ caps)
+                      sp
+                  )
+                  []
+    _ -> do
+      errAt sp "KAPPA_DERIVING_SHAPE_NOT_DATA" shapeFamily
+        "matchAdt2 requires an inspected data shape (§22.5)"
+      pure (Left ())
+  where
+    runPairs [] = pure (Just ([], []))
+    runPairs ((c1, c2) : rest) = do
+      (nm1, ar1, fields1) <- shapeCtorInfo c1
+      (nm2, ar2, _) <- shapeCtorInfo c2
+      r <-
+        if nm1 == nm2
+          then do
+            let fieldPairs = listValue [VCtor (gShape "BoundFieldPair") [f] | f <- fields1]
+            runElab ctx sp =<< vappRT cbSame [c1, fieldPairs]
+          else runElab ctx sp =<< vappRT cbDiff [c1, c2]
+      case r of
+        Left () -> pure Nothing
+        Right bodyV -> do
+          mbody <- graftQuoteV ctx sp bodyV
+          case mbody of
+            Nothing -> pure Nothing
+            Just bodyQ -> do
+              more <- runPairs rest
+              pure $ do
+                (cases, caps) <- more
+                let pat =
+                      PTuple
+                        [ PCtor (CtorRef Nothing (Name nm1 sp)) (replicate ar1 (PWild sp)) sp
+                        , PCtor (CtorRef Nothing (Name nm2 sp)) (replicate ar2 (PWild sp)) sp
+                        ]
+                        sp
+                pure
+                  ( MatchCase pat Nothing (qsExpr bodyQ) sp : cases
+                  , qsCaptures bodyQ ++ caps
+                  )
 
 -- ── Comprehensions (§20) ─────────────────────────────────────────────
 --
@@ -6417,12 +7246,25 @@ headerPassIn siglessLets = \case
     -- name is governed by §9.4 satisfaction instead)
     unless isExpected $
       modify' $ \st -> st {csSigPending = Map.insert g sp (csSigPending st)}
-  DData _ dd sp -> headerData dd sp
+  DData mods dd sp -> do
+    -- §22.1: an 'opaque data' representation is inspectable only in
+    -- its defining module
+    when (dmOpaque mods) $ do
+      g <- ownName (ddName dd)
+      modify' $ \st -> st {csOpaqueDatas = Map.insert g () (csOpaqueDatas st)}
+    headerData dd sp
   DTypeAlias _ n params _ (Just rhs) sp -> do
     -- alias: a definition at a universe type
     (tm, ty) <- elabAliasBody params rhs
     g <- ownName n
     noteDefinition g sp
+    -- §22.2: remember the written field order of a record alias for
+    -- derivation-shape reflection (core records are canonicalized)
+    case rhs of
+      ERecordType rfs Nothing _ ->
+        modify' $ \st ->
+          st {csRecordOrders = Map.insert g [nameText (rtfName f) | f <- rfs] (csRecordOrders st)}
+      _ -> pure ()
     tmV <- evalIn emptyCtx tm
     addGlobal g (GlobalDef ty (Just tmV) True)
   DTypeAlias _ n params _ Nothing _ -> do
@@ -6703,6 +7545,7 @@ shiftTerm by = go
       CLazyE e -> CLazyE (go d e)
       CForceE e -> CForceE (go d e)
       CIf a b c -> CIf (go d a) (go d b) (go d c)
+      CQuote qs slots -> CQuote qs (map (go d) slots)
 
 patBindersC :: CorePat -> Int
 patBindersC = \case
@@ -7060,6 +7903,7 @@ placesToThis n = go 0
       CLazyE e -> CLazyE (go d e)
       CForceE e -> CForceE (go d e)
       CIf a b c -> CIf (go d a) (go d b) (go d c)
+      CQuote qs slots -> CQuote qs (map (go d) slots)
 
 -- | Elaborate the ordinary (non-place) binders of a projection in
 -- declaration order, returning the extended context and the telescope.

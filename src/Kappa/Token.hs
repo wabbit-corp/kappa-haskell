@@ -14,6 +14,7 @@ module Kappa.Token
   , tokenDescr
   ) where
 
+import Data.Data (Data)
 import Data.Text (Text)
 import Data.Word (Word8)
 import Kappa.Source (Span)
@@ -25,7 +26,7 @@ data StrFragment
   = FragLit !Text
   | FragInterp !Text !Span
   | FragInterpFmt !Text !Span !Text
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | A string literal of any family (§6.3.1–§6.3.5).
 data StringLit = StringLit
@@ -39,7 +40,7 @@ data StringLit = StringLit
   -- Adjacent 'FragLit's merged; empty lits omitted except @[FragLit ""]@
   -- for the empty literal.
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 -- | A single-quoted literal (§6.4–§6.5), carrying the decoded views of
 -- the @QuotedLiteral@ payload record.
@@ -49,7 +50,7 @@ data QuotedLit = QuotedLit
   , qlText :: !(Maybe Text)
   , qlBytes :: !(Maybe [Word8])
   }
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data Token
   = TokIdent !Text
@@ -84,6 +85,7 @@ data Token
   | TokComma
   | TokQuoteBrace -- ^ syntax quote opener @'{@ (§21.1)
   | TokSplice     -- ^ splice opener @$(@ (§21.2)
+  | TokQuoteSplice -- ^ in-quote splice opener @${@ (§21.1)
   | TokBang       -- ^ monadic splice @!@ (§18.3) when prefix-adjacent
   | TokError
   -- ^ Recovered lexical error (e.g. unterminated backtick identifier):
@@ -94,7 +96,7 @@ data Token
   | TokIndent
   | TokDedent
   | TokEOF
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Data)
 
 data Located = Located
   { locTok :: !Token
@@ -139,6 +141,7 @@ tokenDescr = \case
   TokComma -> "','"
   TokQuoteBrace -> "quote '{"
   TokSplice -> "'$('"
+  TokQuoteSplice -> "'${'"
   TokBang -> "'!'"
   TokError -> "invalid token"
   TokNewline _ -> "end of line"

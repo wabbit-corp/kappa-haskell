@@ -5,6 +5,7 @@
 module Kappa.Prelude
   ( builtinState
   , preludeSource
+  , stdDerivingShapeSource
   , stdHashSource
   , stdUnicodeSource
   , stdFfiSource
@@ -122,6 +123,19 @@ builtinState =
       , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) : a -> Type
         (prel "=", opaqueTy (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tType))))
       , (prel "refl", GlobalDef reflTy Nothing False)
+      , -- §21 metaprogramming: compile-time-only type families (the
+        -- domains live one universe up so 'Syntax Type' is well-typed
+        -- under §11.1.1 cumulativity)
+        (prel "Syntax", opaqueTy (tyV (CSort 1 ~> tType)))
+      , (prel "Elab", opaqueTy (tyV (CSort 1 ~> tType)))
+      , (prel "SyntaxOrigin", opaqueTy (tyV tType))
+      , -- §20.9 opaque carriers passed to comprehension sink hooks
+        (prel "RawComprehension", opaqueTy (tyV (tType ~> tType)))
+      , (prel "ComprehensionPlan", opaqueTy (tyV (tType ~> tType)))
+      , -- §22.4 trait-constructor classifier (witnesses synthesized by
+        -- implicit resolution when the head is a declared trait)
+        (prel "IsTrait", opaqueTy (tyV (tType ~> tType)))
+      , (prel "__isTraitWitness", opaqueTy (tyV (piI Q0 "t" tType (CApp Expl (tcon "IsTrait") (CVar 0)))))
       ]
     reflTy =
       tyV $
@@ -164,6 +178,10 @@ builtinState =
 
     tInt = tcon "Integer"
     tNat = tcon "Nat"
+    synT a = CApp Expl (tcon "Syntax") a
+    elabT a = CApp Expl (tcon "Elab") a
+    tOrigin = tcon "SyntaxOrigin"
+    tconShape = CGlob . GName shapeModule
     tDouble = tcon "Double"
     tStr = tcon "String"
     tBool = tcon "Bool" -- defined by prelude source; fine as neutral
@@ -303,6 +321,45 @@ builtinState =
       , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
+      , -- §21.5/§21.9 elaboration-time reflection and diagnostics
+        -- (interpreted by the elaborator's §21.8 Elab runner; stuck as
+        -- values everywhere else)
+        prim "renderSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT tStr)))
+      , prim "syntaxOrigin" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT tOrigin)))
+      , prim "normalizeSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+      , prim "withSyntaxOrigin" (tyV (piI Q0 "t" tType (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
+      , prim "warnElab" (tyV (tStr ~> elabT tUnit))
+      , prim "failElab" (tyV (piI Q0 "a" tType (tStr ~> elabT (CVar 1))))
+      , prim "failElabWith" (tyV (piI Q0 "a" tType (tStr ~> tStr ~> listT tOrigin ~> elabT (CVar 3))))
+      , prim "warnElabWith" (tyV (tStr ~> tStr ~> listT tOrigin ~> elabT tUnit))
+      , -- §22 derivation-shape internals (wrapped by std.deriving.shape;
+        -- the type argument is passed explicitly so the elaboration-time
+        -- evaluator can see it)
+        prim "__shapeInspectAdt"
+          (tyV (CPi Expl QW "a" tType (synT tType ~> elabT (CApp Expl (tconShape "AdtShape") (CVar 1)))))
+      , prim "__shapeInspectRecord"
+          (tyV (CPi Expl QW "a" tType (synT tType ~> elabT (CApp Expl (tconShape "RecordShape") (CVar 1)))))
+      , prim "__shapeRequireFieldInstances"
+          (tyV (CPi Expl QW "tc" (tType ~> tType) (CPi Expl QW "a" tType (CApp Expl (tconShape "AdtShape") (CVar 0) ~> elabT tUnit))))
+      , prim "__shapeMatchAdt"
+          (tyV
+             (piI Q0 "a" tType (piI Q0 "r" tType
+                (CApp Expl (tconShape "AdtShape") (CVar 1)
+                   ~> synT (CVar 2)
+                   ~> ((tconShape "ShapeConstructor" ~> listT (tconShape "BoundField") ~> elabT (synT (CVar 4))) ~> elabT (synT (CVar 3)))))))
+      , prim "__shapeMatchAdt2"
+          (tyV
+             (piI Q0 "a" tType (piI Q0 "r" tType
+                (CApp Expl (tconShape "AdtShape") (CVar 1)
+                   ~> synT (CVar 2)
+                   ~> synT (CVar 3)
+                   ~> ((tconShape "ShapeConstructor" ~> listT (tconShape "BoundFieldPair") ~> elabT (synT (CVar 5)))
+                         ~> ((tconShape "ShapeConstructor" ~> tconShape "ShapeConstructor" ~> elabT (synT (CVar 6)))
+                               ~> elabT (synT (CVar 5))))))))
+      , prim "__stringSyntax" (tyV (tStr ~> elabT (synT tStr)))
+      , prim "__natSyntax" (tyV (tNat ~> elabT (synT tNat)))
+      , prim "__boolSyntax" (tyV (tBool ~> elabT (synT tBool)))
+      , prim "__unitSyntax" (tyV (elabT (synT tUnit)))
       ]
 
 -- Evaluate a closed type term without globals (only built-in structure).
@@ -1058,6 +1115,117 @@ preludeSource =
     , ""
     , "__mapResolve : forall (k : Type) (v : Type). List (key : k, value : v) -> (k -> k -> Bool) -> (v -> v -> v) -> List (key : k, value : v)"
     , "let __mapResolve es eq comb = __mapResolveAcc eq comb Nil es" -- first-occurrence key order (§20.5.1)
+    , ""
+    , -- §6.3.4.3 prefixed-string fragments and the handler trait
+      "data SyntaxFragment : Type ="
+    , "    Lit (s : String)"
+    , "    Interp (@0 t : Type) (e : Syntax t)"
+    , "    InterpFmt (@0 t : Type) (e : Syntax t) (fmt : String)"
+    , ""
+    , "trait InterpolatedMacro (t : Type) ="
+    , "    buildInterpolated : List SyntaxFragment -> Elab (Syntax t)"
+    , ""
+    , -- §20.9 custom comprehension sinks (the associated 'Item' type is
+      -- an ordinary member of type 'Type'; the hook parameter is typed
+      -- by the opaque carrier — the §21.8 elaboration-time evaluator
+      -- passes an opaque token)
+      "trait FromComprehensionRaw (c : Type) ="
+    , "    Item : Type"
+    , "    fromComprehensionRaw : RawComprehension c -> Elab (Syntax c)"
+    , ""
+    , "trait FromComprehensionPlan (c : Type) ="
+    , "    Item : Type"
+    , "    fromComprehensionPlan : ComprehensionPlan c -> Elab (Syntax c)"
+    ]
+
+-- | Embedded @std.deriving.shape@ source (§22): the Phase 0
+-- derivation-shape reflection surface. The shape summaries carry the
+-- subset of the §22 fields the reflection queries of this
+-- implementation populate (names, tags, constructor field lists); the
+-- reflective operations are elaborator primitives executed by the
+-- §21.8 Elab runner. See SPEC_COVERAGE.md for the provided subset.
+stdDerivingShapeSource :: Text
+stdDerivingShapeSource =
+  T.unlines
+    [ "module std.deriving.shape"
+    , ""
+    , "data ShapeAdtKind : Type ="
+    , "    ProductAdt"
+    , "    SumAdt"
+    , "    EnumAdt"
+    , ""
+    , "data ShapeVisibility : Type ="
+    , "    ShapeRepresentationVisible"
+    , "    ShapeRepresentationOpaque"
+    , ""
+    , "data ShapeField : Type ="
+    , "    ShapeField (sourceName : Option String) (renderName : String)"
+    , ""
+    , "data ShapeConstructor : Type ="
+    , "    ShapeConstructor (sourceName : String) (renderName : String) (tag : Nat) (fields : List ShapeField)"
+    , ""
+    , "data AdtShape (a : Type) : Type ="
+    , "    AdtShape (sourceName : String) (renderName : String) (visibility : ShapeVisibility) (kind : ShapeAdtKind) (constructors : List ShapeConstructor)"
+    , ""
+    , "data RecordShape (a : Type) : Type ="
+    , "    RecordShape (fields : List ShapeField)"
+    , ""
+    , "data BoundField : Type ="
+    , "    BoundField (field : ShapeField)"
+    , ""
+    , "data BoundFieldPair : Type ="
+    , "    BoundFieldPair (field : ShapeField)"
+    , ""
+    , "inspectAdt : forall (@0 a : Type). Syntax Type -> Elab (AdtShape a)"
+    , "let inspectAdt @a target = __shapeInspectAdt a target"
+    , ""
+    , "inspectRecord : forall (@0 a : Type). Syntax Type -> Elab (RecordShape a)"
+    , "let inspectRecord @a target = __shapeInspectRecord a target"
+    , ""
+    , "runtimeConstructorFields : ShapeConstructor -> List ShapeField"
+    , "let runtimeConstructorFields ctor = ctor.fields"
+    , ""
+    , "runtimeRecordFields : forall (@0 a : Type). RecordShape a -> List ShapeField"
+    , "let runtimeRecordFields shape = shape.fields"
+    , ""
+    , "requireRuntimeFieldInstances :"
+    , "    forall (tc : Type -> Type) (@0 a : Type)."
+    , "    (@witness : forall (x : Type). IsTrait (tc x)) ->"
+    , "    AdtShape a -> Elab Unit"
+    , "let requireRuntimeFieldInstances @tc @a @witness shape ="
+    , "    __shapeRequireFieldInstances tc a shape"
+    , ""
+    , "matchAdt :"
+    , "    forall (@0 a : Type) (@0 r : Type)."
+    , "    AdtShape a ->"
+    , "    Syntax a ->"
+    , "    (ShapeConstructor -> List BoundField -> Elab (Syntax r)) ->"
+    , "    Elab (Syntax r)"
+    , "let matchAdt shape scrutinee onConstructor ="
+    , "    __shapeMatchAdt shape scrutinee onConstructor"
+    , ""
+    , "matchAdt2 :"
+    , "    forall (@0 a : Type) (@0 r : Type)."
+    , "    AdtShape a ->"
+    , "    Syntax a ->"
+    , "    Syntax a ->"
+    , "    (ShapeConstructor -> List BoundFieldPair -> Elab (Syntax r)) ->"
+    , "    (ShapeConstructor -> ShapeConstructor -> Elab (Syntax r)) ->"
+    , "    Elab (Syntax r)"
+    , "let matchAdt2 shape left right onSame onDifferent ="
+    , "    __shapeMatchAdt2 shape left right onSame onDifferent"
+    , ""
+    , "stringSyntax : String -> Elab (Syntax String)"
+    , "let stringSyntax s = __stringSyntax s"
+    , ""
+    , "natSyntax : Nat -> Elab (Syntax Nat)"
+    , "let natSyntax n = __natSyntax n"
+    , ""
+    , "boolSyntax : Bool -> Elab (Syntax Bool)"
+    , "let boolSyntax b = __boolSyntax b"
+    , ""
+    , "unitSyntax : Elab (Syntax Unit)"
+    , "let unitSyntax = __unitSyntax"
     ]
 
 -- | Embedded @std.hash@ source (§29.3): a linear 'HashState'
