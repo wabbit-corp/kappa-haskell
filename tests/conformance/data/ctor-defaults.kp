@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertType defaulted Rect
+--! assertEval defaultedResult 45
+--! assertEval explicitResult 29
+@PrivateByDefault module main
+
+data Rect : Type =
+    Rect {
+        width : Int,
+        height : Int = width + 1
+    }
+
+describe : Rect -> Int
+let describe rect =
+    match rect
+      case Rect width height -> width * 10 + height
+
+defaulted : Rect
+let defaulted = Rect { width = 4 }
+
+explicit : Rect
+let explicit = Rect { height = 9, width = 2 }
+
+defaultedResult : Int
+let defaultedResult = describe defaulted
+
+explicitResult : Int
+let explicitResult = describe explicit

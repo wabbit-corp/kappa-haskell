@@ -501,7 +501,8 @@ pCtorBinder =
       n <- pIdent
       token TokColon
       ty <- noEq pExprArg
-      def <- optionMaybe (token TokEquals *> pExprArg)
+      -- a field default is a full expression (operators allowed, §10.1.1)
+      def <- optionMaybe (token TokEquals *> noEq pExpr)
       pure (Binder False prefix susp NoReceiver False (Just n) False (Just ty) def sp)
     parenParam = try $ do
       sp <- currentSpan

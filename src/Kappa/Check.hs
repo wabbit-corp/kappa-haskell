@@ -1221,7 +1221,18 @@ elabNamedBlock ctx fTm fTy items sp rest = do
   forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \dn ->
     errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa.application.named")
       ("named argument '" <> dn <> "' is supplied more than once")
-  case ctorOf fTm of
+  mCtorG <- case ctorOf fTm of
+    Just g -> pure (Just g)
+    Nothing -> case fTm of
+      -- a local rebinding of a constructor (§16.1.7.2): the binding's
+      -- definiens reveals the constructor
+      CVar i -> case drop i (ctxEnv ctx) of
+        (v : _) -> do
+          v' <- forceM v
+          pure (valueCtorOf v')
+        [] -> pure Nothing
+      _ -> pure Nothing
+  case mCtorG of
     Just g | Just ci <- Map.lookup g (csCtors st) -> do
       let fieldNames = mapMaybe fst (ciFields ci)
       forM_ items $ \(n, _) ->
@@ -1231,17 +1242,18 @@ elabNamedBlock ctx fTm fTy items sp rest = do
       let supplied = [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
       args <- forM (ciFields ci) $ \(mname, mdef) ->
         case mname >>= \fn -> lookup fn supplied of
-          Just e -> pure (Just (Left e))
+          Just e -> pure (Just (mname, False, Left e))
           Nothing -> case mdef of
             -- field default (§10.1.1): elaborated here, at the
-            -- application site, against the field's type
-            Just d -> pure (Just (Left d))
+            -- application site, against the field's type, with the
+            -- earlier field arguments in scope
+            Just d -> pure (Just (mname, True, Left d))
             Nothing -> do
               errAt sp "E_NAMED_ARG_MISSING" (Just "kappa.application.named")
                 ("missing constructor argument" <> maybe "" (\n -> " '" <> n <> "'") mname)
               pure Nothing
       -- run the spine with mixed surface/core arguments
-      goSpine fTm fTy (catMaybes args)
+      goSpine ctx fTm fTy (catMaybes args)
     -- ordinary function: match named items against the remaining
     -- explicit Pi binder names (§16.1.7.2)
     _ -> goPiNamed fTm fTy [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
@@ -1250,6 +1262,11 @@ elabNamedBlock ctx fTm fTy items sp rest = do
       CLam _ _ _ b -> ctorOf b
       CCtor g _ -> Just g
       CGlob g -> Just g
+      _ -> Nothing
+    valueCtorOf = \case
+      VCtor g _ -> Just g
+      VLam _ _ _ (Closure _ body) -> ctorOf body
+      VGlobN g _ -> Just g
       _ -> Nothing
     goPiNamed tm ty0 remaining = do
       ty <- forceM ty0
@@ -1276,22 +1293,35 @@ elabNamedBlock ctx fTm fTy items sp rest = do
                 errAt sp "E_NAMED_ARG_UNKNOWN" (Just "kappa.application.named")
                   ("callee has no named parameter '" <> n <> "'")
               pure (tm, ty)
-    goSpine tm ty [] = elabSpine ctx sp tm ty rest
-    goSpine tm ty0 (a : as) = do
+    goSpine _ tm ty [] = elabSpine ctx sp tm ty rest
+    goSpine ctxAcc tm ty0 (a@(_, _, _) : as) = do
       ty <- forceM ty0
       case ty of
         VPi Impl _ _ dom clo -> do
           iTm <- resolveImplicit ctx sp dom
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
-          goSpine (CApp Impl tm iTm) ty' (a : as)
+          goSpine ctxAcc (CApp Impl tm iTm) ty' (a : as)
         VPi Expl _ _ dom clo -> do
-          aTm <- case a of
-            Left e -> check ctx e dom
-            Right coreTm -> pure coreTm
-          aV <- evalIn ctx aTm
+          let (mname, isDefault, payload) = a
+              argCtx = if isDefault then ctxAcc else ctx
+          (aTm, aV) <- case payload of
+            Left e -> do
+              aTm0 <- check argCtx e dom
+              aV <- evalIn argCtx aTm0
+              if isDefault
+                then do
+                  -- a default's term lives under the accumulated field
+                  -- bindings; re-quote its value at the outer depth
+                  aTm1 <- quoteIn ctx aV
+                  pure (aTm1, aV)
+                else pure (aTm0, aV)
+            Right coreTm -> (,) coreTm <$> evalIn argCtx coreTm
           ty' <- clApp clo aV
-          goSpine (CApp Expl tm aTm) ty' as
+          let ctxAcc' = case mname of
+                Just fn -> bindCtxLet fn False dom aV ctxAcc
+                Nothing -> ctxAcc
+          goSpine ctxAcc' (CApp Expl tm aTm) ty' as
         _ -> do
           errAt sp "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.application.arity")
             "too many constructor arguments"
@@ -2853,6 +2883,9 @@ headerData (DataDecl n params _mkind ctors) sp = do
       Nothing -> do
         -- ordinary ctor: params implicit, fields explicit, result = data applied
         fieldsTele <- elabTele' paramTele binders
+        -- §10.1.1: a field default is checked at declaration against
+        -- the field's type, with only the EARLIER fields in scope
+        checkFieldDefaults paramTele fieldsTele binders
         let resultT =
               foldl
                 (\f i -> CApp Expl f (CVar i))
@@ -2876,6 +2909,39 @@ headerData (DataDecl n params _mkind ctors) sp = do
       EForall _ rest _ -> gadtFields rest
       ETraitArrow _ rest -> gadtFields rest
       _ -> []
+
+-- §10.1.1 declaration-time validation of constructor field defaults:
+-- each default must elaborate, with the preceding fields in scope, at
+-- the field's declared type (later fields and the field itself are not
+-- in scope).
+checkFieldDefaults :: Telescope -> Telescope -> [Binder] -> CheckM ()
+checkFieldDefaults paramTele fieldsTele binders = do
+  pctx <- teleCtx paramTele
+  let explicitBs = [b | b <- binders, not (bImplicit b)]
+  _ <-
+    foldM
+      ( \(ctx, tele) b -> case tele of
+          ((_, _, nm, domTm) : rest) -> do
+            domV <- evalIn ctx domTm
+            forM_ (bDefault b) $ \d -> do
+              (dTm, dTy) <- infer ctx d
+              eq <- unify ctx dTy domV
+              unless eq $ do
+                domR <- quoteIn ctx domV
+                dTyR <- quoteIn ctx dTy
+                errAt (exprSpan d) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                  ( "constructor field default for '" <> nm
+                      <> "' has type " <> renderTerm dTyR
+                      <> ", but the field's type is " <> renderTerm domR <> " (Spec §10.1.1)"
+                  )
+              _ <- pure dTm
+              pure ()
+            pure (bindCtx nm False domV ctx, rest)
+          [] -> pure (ctx, tele)
+      )
+      (pctx, fieldsTele)
+      explicitBs
+  pure ()
 
 -- bind each telescope entry at its elaborated domain type (the domain
 -- term is closed over the preceding entries)
