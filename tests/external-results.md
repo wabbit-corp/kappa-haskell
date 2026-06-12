@@ -700,26 +700,26 @@ the raw log (`/tmp/external-raw.log`).
   not among the §T.4 configuration directives this implementation
   provides; script mode (and §4 `unhide`/`clarify`) is unimplemented.
 
-### Outside Spec.md: spec-mandated `harnessError` (41 fixtures)
+### Outside Spec.md: spec-mandated `harnessError` (11 fixtures)
 
 §T.3: *"Any unknown standard directive, malformed directive, or
-ill-typed directive argument is a harness error."* All 41 fixtures
-(each enumerated with its offending line in "Harness errors" above)
-use private, non-`x-`-prefixed directives of the corpus's own
-implementation; none appears in Appendix T (§T.3 grammar, §T.4
-configuration list, §T.5 assertion lists) nor anywhere else in
-Spec.md, so harnessError is the mandated outcome — these can only
-become passes if the corpus renames them `x-…` or Appendix T adopts
-them. Directive occurrence counts across the 41:
-`allow_unsafe_consume` (31), `assertParameterQuantities` (9),
+ill-typed directive argument is a harness error."* The remaining
+harness-error fixtures (each enumerated with its offending line in
+"Harness errors" above) use private, non-`x-`-prefixed directives of
+the corpus's own implementation; none appears in Appendix T (§T.3
+grammar, §T.4 configuration list, §T.5 assertion lists) nor anywhere
+else in Spec.md, so harnessError is the mandated outcome — these can
+only become passes if the corpus renames them `x-…` or Appendix T
+adopts them. Remaining directive occurrence counts:
 `assertRunStdout` (4), `assertExecute` (3),
 `assertEvalErrorContains` (3), `assertDoItemDescriptors` (3),
 `assertInoutParameters` (1), `assertContainsTokenTexts` (1).
-(`assertEval` and `assertDiagnosticCodes` are likewise nonstandard
-but have an evident portable meaning; this harness implements them —
-and the `x-assertEval`/`x-assertEvalErrorContains`/
-`x-assertDeclDescriptors`/`x-assertTraitMembers` extensions — as
-documented compatibility extensions, as §T.1 permits.)
+(`assertEval`, `assertDiagnosticCodes`, `allow_unsafe_consume` and
+`assertParameterQuantities` are likewise nonstandard but have an
+evident portable meaning; this harness implements them — and the
+`x-assertEval`/`x-assertEvalErrorContains`/`x-assertDeclDescriptors`/
+`x-assertTraitMembers` extensions — as documented compatibility
+extensions, as §T.1 permits; see TESTING.md.)
 
 ### Spec conflicts (fixture expectation contradicts Spec.md)
 
