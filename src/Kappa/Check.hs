@@ -24,7 +24,7 @@ module Kappa.Check
   ) where
 
 import Control.Monad.State.Strict
-import Data.List (elemIndex, foldl', intersect, nub, sort, sortOn, (\\))
+import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
@@ -175,10 +175,29 @@ data Ctx = Ctx
   , ctxBarriers :: ![Int]
   -- ^ Context lengths at which lambda bodies began (closure
   -- boundaries for §16.3.3 borrow-escape and scope grouping).
+  , ctxEffLabels :: !(Map Text EffLabelInfo)
+  -- ^ Lexically scoped effect labels (§9.3.1.1 @scoped effect@).
+  , ctxInDo :: !Bool
+  -- ^ Inside a @do@ elaboration: gates the §18.9.3 @~@ marker.
+  }
+
+-- | A scoped effect's elaborated interface (§9.3.1.1, §18.1.15): label
+-- identity, interface-type identity, and operation metadata.
+data EffLabelInfo = EffLabelInfo
+  { eliLabel :: !GName -- ^ effect-label value identity (§18.1.18)
+  , eliIface :: !GName -- ^ effect-interface type constructor
+  , eliOps :: ![EffOpInfo]
+  }
+
+data EffOpInfo = EffOpInfo
+  { eoiName :: !Text
+  , eoiQ :: !Q -- ^ declared resumption quantity (§18.1.16)
+  , eoiArg :: !Value -- ^ payload type (v1: one explicit parameter)
+  , eoiRes :: !Value -- ^ declared result type
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] [] Map.empty Map.empty []
+emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
@@ -188,22 +207,34 @@ pushCtxBarrier :: Ctx -> Ctx
 pushCtxBarrier ctx = ctx {ctxBarriers = ctxLen ctx : ctxBarriers ctx}
 
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
-bindCtx n implocal ty (Ctx es env refs als bars) =
-  Ctx (CtxEntry n ty implocal False Nothing False : es) (VRigid (length env) [] : env)
-    (Map.delete n refs) (Map.delete n als) bars
+bindCtx n implocal ty ctx =
+  ctx
+    { ctxEntries = CtxEntry n ty implocal False Nothing False : ctxEntries ctx
+    , ctxEnv = VRigid (length (ctxEnv ctx)) [] : ctxEnv ctx
+    , ctxRefines = Map.delete n (ctxRefines ctx)
+    , ctxAliases = Map.delete n (ctxAliases ctx)
+    }
 
 -- | Bind a local definition: the environment carries the definiens, so
 -- conversion sees through local lets (delta for locals, §15.1).
 bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
-bindCtxLet n implocal ty v (Ctx es env refs als bars) =
-  Ctx (CtxEntry n ty implocal False Nothing False : es) (v : env)
-    (Map.delete n refs) (Map.delete n als) bars
+bindCtxLet n implocal ty v ctx =
+  ctx
+    { ctxEntries = CtxEntry n ty implocal False Nothing False : ctxEntries ctx
+    , ctxEnv = v : ctxEnv ctx
+    , ctxRefines = Map.delete n (ctxRefines ctx)
+    , ctxAliases = Map.delete n (ctxAliases ctx)
+    }
 
 -- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
 bindCtxVar :: Text -> Value -> Ctx -> Ctx
-bindCtxVar n ty (Ctx es env refs als bars) =
-  Ctx (CtxEntry n ty False True Nothing False : es) (VRigid (length env) [] : env)
-    (Map.delete n refs) (Map.delete n als) bars
+bindCtxVar n ty ctx =
+  ctx
+    { ctxEntries = CtxEntry n ty False True Nothing False : ctxEntries ctx
+    , ctxEnv = VRigid (length (ctxEnv ctx)) [] : ctxEnv ctx
+    , ctxRefines = Map.delete n (ctxRefines ctx)
+    , ctxAliases = Map.delete n (ctxAliases ctx)
+    }
 
 -- | Record the implicit binder prefix on the most recent entry
 -- (quantity and borrow marker, §16.3.3).
@@ -764,12 +795,10 @@ badByte sp why = do
   pure (CLit (LitByte 0x3F), VGlobN (gPrel "Byte") [])
 
 -- §6.1.6: an out-of-scope numeric-literal suffix is a compile-time
--- error identifying the missing suffix name. The literal cannot be
--- typed without its suffix, so the diagnostic uses the type-mismatch
--- family (portable alias E_TYPE_MISMATCH).
+-- name-resolution error identifying the missing suffix name.
 badLiteralSuffix :: Ctx -> Name -> CheckM (Term, Value)
 badLiteralSuffix ctx (Name n sp) = do
-  errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+  errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
     ("the numeric-literal suffix '" <> n <> "' does not resolve to a term in scope (Spec §6.1.6)")
   anyHole ctx
 
@@ -1442,8 +1471,8 @@ infer ctx expr = case expr of
             ]
             sp
     elabTry ctx inner excepts mfin sp
-  EHandle _ _ _ _ sp -> unsupported ctx sp "effect handlers"
-  EEffRow _ _ sp -> unsupported ctx sp "effect rows"
+  EHandle deep lblE scrutE cases sp -> elabHandle ctx deep lblE scrutE cases sp
+  EEffRow entries mtail sp -> elabEffRow ctx entries mtail sp
   ESeal _ _ sp -> unsupported ctx sp "sealed packages"
   ESealExists _ _ _ sp -> unsupported ctx sp "existential packages"
   EOpenExists _ _ _ _ sp -> unsupported ctx sp "existential packages"
@@ -1495,6 +1524,28 @@ check ctx expr expected0 = do
           (tm, ty) <- inferT ctx (EVar n)
           expectType ctx (nameSpan n) ty expected
           pure tm
+    -- §18.1.14: Eff r is a monadic carrier, so 'pure' in an Eff-typed
+    -- position injects via the Eff kernel (the prelude 'pure' is the IO
+    -- instance; carrier-polymorphic 'pure' is not modelled)
+    (EApp (EVar pn) [ArgExplicit pa], VGlobN (GName _ "Eff") [(_, _), (_, aT)])
+      | nameText pn == "pure"
+      , Nothing <- lookupCtx "pure" ctx -> do
+          tm <- check ctx pa aT
+          pure (CCtor (gPrel "__EffPure") [tm])
+    -- §18.9 threading pun (corpus): a bare variable checked against a
+    -- single-field record type whose field has the same spelling is the
+    -- record literal `(n = n)` (e.g. `pure file : IO (1 file : File)`)
+    (EVar n, VRecordT [(f, ft)])
+      | nameText n == f
+      , Just (i, entry) <- lookupCtx (nameText n) ctx
+      , not (ceVarBind entry) -> do
+          ok <- unify ctx (ceType entry) ft
+          if ok
+            then pure (CRecordV [(f, CVar i)])
+            else do
+              (tm, ty) <- infer ctx expr
+              expectType ctx (nameSpan n) ty expected
+              pure tm
     -- (x : T) checked against a universe is a single-field record type
     -- (§13.1); the parser cannot distinguish it from an ascription
     (EAscription (EVar _) _ sp, VSort _) -> do
@@ -2121,15 +2172,23 @@ elabSpine :: Ctx -> Span -> Term -> Value -> [Arg] -> CheckM (Term, Value)
 elabSpine _ _ fTm fTy [] = pure (fTm, fTy)
 elabSpine ctx sp fTm fTy0 (arg : rest) = do
   fTy <- forceM fTy0
-  -- §16.1.5/§16.1.6: a descriptor-typed callee consumes its roots
-  -- argument in place-pack mode
-  mdesc <- case arg of
-    ArgExplicit e -> descriptorApp ctx sp fTm fTy e Nothing
-    ArgInout e _ -> descriptorApp ctx sp fTm fTy e (Just DemandOpen)
-    _ -> pure Nothing
-  case mdesc of
-    Just (tm', ty') -> elabSpine ctx sp tm' ty' rest
-    Nothing -> elabSpineArg ctx sp fTm fTy arg rest
+  case arg of
+    -- §18.9.3/§18.9.6: '~' is valid only inside a do block; recover
+    -- with a hole so the broken spine does not cascade a type mismatch
+    ArgInout _ msp | not (ctxInDo ctx) -> do
+      errAt msp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa.qtt.inout-marker")
+        "a call-site '~' marker is valid only inside a do block (§18.9.3, §18.9.6)"
+      anyHole ctx
+    _ -> do
+      -- §16.1.5/§16.1.6: a descriptor-typed callee consumes its roots
+      -- argument in place-pack mode
+      mdesc <- case arg of
+        ArgExplicit e -> descriptorApp ctx sp fTm fTy e Nothing
+        ArgInout e _ -> descriptorApp ctx sp fTm fTy e (Just DemandOpen)
+        _ -> pure Nothing
+      case mdesc of
+        Just (tm', ty') -> elabSpine ctx sp tm' ty' rest
+        Nothing -> elabSpineArg ctx sp fTm fTy arg rest
 
 elabSpineArg :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArg ctx sp fTm fTy arg rest = do
@@ -2491,6 +2550,16 @@ elabDot ctx e member = do
   let mname = case member of
         DotName n -> n
         DotOperator n -> n
+  -- effect-operation selection label.op (§18.1.15, §7.3)
+  case e of
+    EVar ln
+      | Just eli <- Map.lookup (nameText ln) (ctxEffLabels ctx)
+      , Just op <- find ((== nameText mname) . eoiName) (eliOps eli) ->
+          effOpSelection eli op
+    _ -> elabDotOrdinary ctx e member mname
+
+elabDotOrdinary :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
+elabDotOrdinary ctx e member mname = do
   -- reified module objects: (module a).b chains (§2.8.6)
   case modObjPathOf e of
     Just segs -> elabModuleMember ctx (segs ++ [nameText mname]) (nameSpan mname)
@@ -3491,7 +3560,11 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
             Nothing -> infer c body
           _ -> elabLet c rs body mexpected
 elabBlock :: Ctx -> [Decl] -> Maybe Expr -> Span -> CheckM (Term, Value)
-elabBlock ctx ds mfin sp = do
+elabBlock ctx0 ds0 mfin sp = do
+  -- §9.3.1.1 scoped effect declarations are elaborated first (their
+  -- operation signatures are closed over the block in v1), each
+  -- contributing a transparent local binding of its interface type
+  (ctx, wrap, ds) <- hoistScopedEffects ctx0 ds0
   -- v1: block-local declarations support signatures and lets; other
   -- local declaration forms are reported.
   binds <- goDecls [] ds
@@ -3499,7 +3572,9 @@ elabBlock ctx ds mfin sp = do
     Nothing -> do
       errAt sp "E_BLOCK_NO_RESULT" Nothing "a pure block must end with an expression (§9.3.1)"
       anyHole ctx
-    Just fin -> elabLet ctx binds fin Nothing
+    Just fin -> do
+      (tm, ty) <- elabLet ctx binds fin Nothing
+      pure (wrap tm, ty)
   where
     goDecls _ [] = pure []
     goDecls sigs (d : rest) = case d of
@@ -3526,6 +3601,343 @@ elabBlock ctx ds mfin sp = do
     annOf n mty sigs = case mty of
       Just t -> Just t
       Nothing -> lookup (nameText n) sigs
+
+-- ── Algebraic effects (§9.3.1.1, §18.1.14–§18.1.22) ──────────────────
+--
+-- Runtime model (realized by 'Kappa.Eval.evalEffPrim'): an @Eff r a@
+-- value is a tree — @__EffPure v@, or @__EffOp label op payload cont@
+-- with @cont@ the captured continuation from the operation site
+-- (§30.2.2.7 OpCall). Handlers elaborate to @__handleEff@ applications;
+-- the continuation is an ordinary closure, so resumption is naturally
+-- re-entrant (one-shot/multi-shot discipline is enforced statically by
+-- 'Kappa.Usage').
+
+-- | Elaborate the @scoped effect@ declarations of a block: mint the
+-- interface-type and label identities, record operation metadata in the
+-- context, and produce a wrapper that let-binds the interface name.
+hoistScopedEffects :: Ctx -> [Decl] -> CheckM (Ctx, Term -> Term, [Decl])
+hoistScopedEffects ctx0 ds0 = go ctx0 id ds0
+  where
+    go ctx wrap [] = pure (ctx, wrap, [])
+    go ctx wrap (DEffect mods eff dsp : rest)
+      | dmScoped mods && not (effIsLabelDecl eff) = do
+          (ctx', wrap') <- elabScopedEffect ctx eff dsp
+          go ctx' (wrap . wrap') rest
+    go ctx wrap (d : rest) = do
+      (ctx', wrap', rest') <- go ctx wrap rest
+      pure (ctx', wrap', d : rest')
+
+elabScopedEffect :: Ctx -> EffectDecl -> Span -> CheckM (Ctx, Term -> Term)
+elabScopedEffect ctx eff dsp = do
+  let nm = nameText (effName eff)
+  unless (null (effParams eff)) $
+    reportUnsupported dsp "scoped effect parameters"
+  st0 <- get
+  suffix <- freshNameM "#eff"
+  let ifaceG = GName (csModule st0) (nm <> suffix)
+      labelG = GName (csModule st0) (nm <> suffix <> ".label")
+  -- the interface is an opaque local type constructor; the label is an
+  -- opaque value of type EffLabel whose identity is its global name
+  -- (§18.1.18 handler matching is by label identity)
+  addGlobal ifaceG (GlobalDef (VSort 0) Nothing False)
+  addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+  ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
+    (tyTm, _) <- inferType ctx (eoType op)
+    tyV <- evalIn ctx tyTm >>= forceM
+    case tyV of
+      VPi Expl _ _ dom clo -> do
+        res <- clApp clo (VRigid (ctxLen ctx) []) >>= forceM
+        pure
+          ( Just
+              EffOpInfo
+                { eoiName = nameText (eoName op)
+                , eoiQ = maybe Q1 (qOf . Just) (eoQuantity op) -- §18.1.17 one-shot default
+                , eoiArg = dom
+                , eoiRes = res
+                }
+          )
+      _ -> do
+        errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa.effect.operation")
+          "an effect operation signature must elaborate to a function type (§18.1.15)"
+        pure Nothing
+  let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliOps = ops}
+      ctx' =
+        (bindCtxLet nm False (VSort 0) (VGlobN ifaceG []) ctx)
+          { ctxEffLabels = Map.insert nm info (ctxEffLabels ctx)
+          }
+      wrap = CLet QW nm (CSort 0) (CGlob ifaceG)
+  pure (ctx', wrap)
+
+-- | Effect-row syntax @<[l1 : E1, ... | tail]>@ (§18.1.14): rows are
+-- neutral spines of @__effRowCons label iface rest@.
+elabEffRow :: Ctx -> [(Name, Expr)] -> Maybe Expr -> Span -> CheckM (Term, Value)
+elabEffRow ctx entries mtail _sp = do
+  parts <- fmap catMaybes . forM entries $ \(ln, ifE) ->
+    case Map.lookup (nameText ln) (ctxEffLabels ctx) of
+      Just eli -> do
+        ifTm <- check ctx ifE (VSort 0)
+        pure (Just (CGlob (eliLabel eli), ifTm))
+      Nothing -> do
+        errAt (nameSpan ln) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+          ("unresolved effect label '" <> nameText ln <> "' (only §9.3.1.1 scoped effect labels are supported by this implementation)")
+        pure Nothing
+  tailTm <- case mtail of
+    Nothing -> pure (CGlob (gPrel "__effRowNil"))
+    Just te -> check ctx te (VGlobN (gPrel "EffRow") [])
+  let row =
+        foldr
+          (\(l, t) acc -> CApp Expl (CApp Expl (CApp Expl (CGlob (gPrel "__effRowCons")) l) t) acc)
+          tailTm
+          parts
+  pure (row, VGlobN (gPrel "EffRow") [])
+
+-- | A non-dependent function-type value (level-safe: the codomain is
+-- captured in the closure environment).
+nonDepPiV :: Q -> Value -> Value -> Value
+nonDepPiV q dom cod = VPi Expl q "_" dom (Closure [cod] (CVar 1))
+
+effTyV :: Value -> Value -> Value
+effTyV row a = VGlobN (gPrel "Eff") [(Expl, row), (Expl, a)]
+
+-- | The one-entry row @<[l : E]>@ of a scoped effect, as a value.
+selfRowV :: EffLabelInfo -> Value
+selfRowV eli =
+  VGlobN
+    (gPrel "__effRowCons")
+    [ (Expl, VGlobN (eliLabel eli) [])
+    , (Expl, VGlobN (eliIface eli) [])
+    , (Expl, VGlobN (gPrel "__effRowNil") [])
+    ]
+
+-- | An operation selection @label.op@ (§18.1.15): a first-class value of
+-- type @argTy -> Eff <[label : E]> resTy@ that builds the §30.2.2.7
+-- OpCall tree node with the identity continuation.
+effOpSelection :: EffLabelInfo -> EffOpInfo -> CheckM (Term, Value)
+effOpSelection eli op = do
+  let ty = nonDepPiV QW (eoiArg op) (effTyV (selfRowV eli) (eoiRes op))
+      tm =
+        CLam Expl QW "__x" $
+          CCtor
+            (gPrel "__EffOp")
+            [ CGlob (eliLabel eli)
+            , CLit (LitStr (eoiName op))
+            , CVar 0
+            , CLam Expl Q1 "__r" (CCtor (gPrel "__EffPure") [CVar 0])
+            ]
+  pure (tm, ty)
+
+-- | Split an effect-row value at a label: the matching interface and
+-- the residual row (§18.1.21 SplitEff, by §18.1.18 label identity).
+splitEffRow :: GName -> Value -> CheckM (Maybe (Value, Value))
+splitEffRow labelG row0 = do
+  row <- forceM row0
+  case row of
+    VGlobN (GName _ "__effRowCons") [(_, l), (_, e), (_, rest)] -> do
+      lF <- forceM l
+      case lF of
+        VGlobN lg []
+          | lg == labelG -> pure (Just (e, rest))
+        _ -> do
+          minner <- splitEffRow labelG rest
+          pure $ case minner of
+            Just (e', rest') ->
+              Just (e', VGlobN (gPrel "__effRowCons") [(Expl, l), (Expl, e), (Expl, rest')])
+            Nothing -> Nothing
+    _ -> pure Nothing
+
+-- | @[deep] handle label expr with case ...@ (§18.1.21–§18.1.22). The
+-- target carrier is @Eff r@ for the residual row @r@ in v1.
+elabHandle :: Ctx -> Bool -> Expr -> Expr -> [HandlerCase] -> Span -> CheckM (Term, Value)
+elabHandle ctx deep lblE scrutE cases sp = do
+  let mEli = case lblE of
+        EVar ln -> Map.lookup (nameText ln) (ctxEffLabels ctx)
+        _ -> Nothing
+  case mEli of
+    Nothing -> do
+      errAt (exprSpan lblE) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+        "'handle' requires an effect label in scope (only §9.3.1.1 scoped effect labels are supported by this implementation)"
+      anyHole ctx
+    Just eli -> do
+      (scrutTm0, scrutTy0) <- infer ctx scrutE
+      (scrutTm, scrutTy1) <- insertAllImplicits ctx (exprSpan scrutE) scrutTm0 scrutTy0
+      scrutTy <- forceM scrutTy1
+      case scrutTy of
+        VGlobN (GName _ "Eff") [(_, row), (_, aT)] -> do
+          msplit <- splitEffRow (eliLabel eli) row
+          residual <- case msplit of
+            Just (_, rest) -> pure rest
+            Nothing -> do
+              errAt (exprSpan scrutE) "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row")
+                "the handled computation's effect row does not contain the handled label (§18.1.21)"
+              pure (VGlobN (gPrel "__effRowNil") [])
+          bT <- freshMetaV ctx
+          let resultTy = effTyV residual bT
+          -- exactly one return clause (§18.1.21)
+          retLam <- case [(pat, body, csp) | HandlerReturn pat body csp <- cases] of
+            [(pat, body, _)] ->
+              handlerClauseLam ctx QW pat aT (\c' -> check c' body resultTy)
+            [] -> do
+              errAt sp "E_HANDLER_RETURN_MISSING" (Just "kappa.effect.handler")
+                "a handler requires exactly one 'case return x -> ...' clause (§18.1.21)"
+              pure (CLam Expl QW "__x" (CCtor (gPrel "__EffPure") [CVar 0]))
+            (_ : (_, _, csp2) : _) -> do
+              errAt csp2 "E_HANDLER_RETURN_DUPLICATE" (Just "kappa.effect.handler")
+                "a handler permits only one 'case return x -> ...' clause (§18.1.21)"
+              pure (CLam Expl QW "__x" (CCtor (gPrel "__EffPure") [CVar 0]))
+          -- one operation clause per declared operation (§18.1.21)
+          let opClauses =
+                [(onm, argPats, kn, body, csp) | HandlerOp onm argPats kn body csp <- cases]
+          forM_ (eliOps eli) $ \op ->
+            unless (any (\(onm, _, _, _, _) -> nameText onm == eoiName op) opClauses) $
+              errAt sp "E_HANDLER_OP_MISSING" (Just "kappa.effect.handler")
+                ("this handler has no clause for operation '" <> eoiName op <> "' (§18.1.21)")
+          clauseTms <- fmap catMaybes . forM opClauses $ \(onm, argPats, kn, body, csp) ->
+            case find ((== nameText onm) . eoiName) (eliOps eli) of
+              Nothing -> do
+                errAt (nameSpan onm) "E_HANDLER_OP_UNKNOWN" (Just "kappa.effect.handler")
+                  ("the handled effect declares no operation '" <> nameText onm <> "' (§18.1.21)")
+                pure Nothing
+              Just op -> do
+                argPat <- case argPats of
+                  [p] -> pure p
+                  _ -> do
+                    reportUnsupported csp "effect operations with other than one parameter"
+                    pure (PWild csp)
+                -- shallow k resumes in the unhandled carrier; deep k is
+                -- already re-handled (§18.1.21/§18.1.22)
+                let kTy
+                      | deep = nonDepPiV Q1 (eoiRes op) resultTy
+                      | otherwise = nonDepPiV Q1 (eoiRes op) (effTyV row aT)
+                lam <- handlerClauseLam ctx QW argPat (eoiArg op) $ \cArg -> do
+                  let cK = bindCtx (nameText kn) False kTy cArg
+                  inner <- check cK body resultTy
+                  pure (CLam Expl (eoiQ op) (nameText kn) inner)
+                pure (Just (eoiName op, lam))
+          let opsRec = CRecordV (sortOn fst clauseTms)
+              deepTm = CCtor (gPrel (if deep then "True" else "False")) []
+              tm =
+                foldl'
+                  (CApp Expl)
+                  (CGlob (gPrel "__handleEff"))
+                  [deepTm, CGlob (eliLabel eli), retLam, opsRec, scrutTm]
+          pure (tm, resultTy)
+        _ -> do
+          errAt (exprSpan scrutE) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+            "the handled computation of 'handle' must have an Eff type (§18.1.21)"
+          anyHole ctx
+
+-- | A one-argument clause lambda binding a surface pattern: simple
+-- variable patterns bind directly; other patterns go through a match.
+handlerClauseLam ::
+  Ctx -> Q -> Pattern -> Value -> (Ctx -> CheckM Term) -> CheckM Term
+handlerClauseLam ctx q pat ty mkBody = case pat of
+  PVar n -> do
+    let ctx' = bindCtx (nameText n) False ty ctx
+    CLam Expl q (nameText n) <$> mkBody ctx'
+  PWild _ -> do
+    let ctx' = bindCtx "__w" False ty ctx
+    CLam Expl q "__w" <$> mkBody ctx'
+  _ -> do
+    let ctx0 = bindCtx "__scrut" False ty ctx
+    (patC, ctx', _) <- elabPattern ctx0 pat ty
+    body <- mkBody ctx'
+    pure (CLam Expl q "__scrut" (CMatch (CVar 0) [CaseAlt patC Nothing body]))
+
+-- | A @do@ block in an @Eff row a@ position (§18.1.14: Eff is the
+-- monadic carrier): items elaborate to @__effBind@ chains.
+elabEffDo :: Ctx -> Value -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
+elabEffDo ctx0 row aT items0 sp = do
+  tm <- go ctx0 items0
+  pure (tm, effTyV row aT)
+  where
+    effT = effTyV row
+    go _ [] = do
+      errAt sp "E_DO_EMPTY" (Just "kappa.do.empty")
+        "a do block must end with an expression item (§18.2)"
+      pure (CCtor (gPrel "__EffPure") [CCtor (gPrel "Unit") []])
+    go c [DoExpr e] = do
+      -- final item: an Eff computation of the result type, or (corpus
+      -- accommodation, as in the IO kernel) a pure result value
+      let eD = desugarBang e
+      st0 <- get
+      n0 <- gets (length . csDiags)
+      tm0 <- check c eD (effT aT)
+      n1 <- gets (length . csDiags)
+      if n1 == n0
+        then pure tm0
+        else do
+          put st0
+          tm <- check c eD aT
+          pure (CCtor (gPrel "__EffPure") [tm])
+    -- a final statement-if is the result expression (§18.2)
+    go c [DoIf alts mels isp] =
+      let toExpr its = case its of
+            [DoExpr e] -> e
+            _ -> EDo Nothing its isp
+          ifE = EIf [(cnd, toExpr body) | (cnd, body) <- alts] (toExpr <$> mels) isp
+       in go c [DoExpr ifE]
+    go c (item : rest) = case item of
+      DoExpr e -> do
+        bT <- freshMetaV c
+        tm <- check c (desugarBang e) (effT bT)
+        contTm <- CLam Expl QW "__u" <$> go (bindCtx "__u" False bT c) rest
+        pure (effBindTm tm contTm)
+      DoBind (LetBind _ _ pat mty rhs bsp) -> do
+        bT <- case mty of
+          Just tyE -> do
+            (tyTm, _) <- inferType c tyE
+            evalIn c tyTm
+          Nothing -> freshMetaV c
+        rhsTm <- check c (desugarBang rhs) (effT bT)
+        checkIrrefutable c pat bT bsp
+        contTm <- handlerClauseLam c Q1 pat bT (\c' -> go c' rest)
+        pure (effBindTm rhsTm contTm)
+      DoLet (LetBind _ _ pat mty rhs bsp) -> do
+        (rhsTm, rhsTy) <- case mty of
+          Just tyE -> do
+            (tyTm, _) <- inferType c tyE
+            tyV <- evalIn c tyTm
+            tm <- check c rhs tyV
+            pure (tm, tyV)
+          Nothing -> do
+            (tm, ty) <- infer c rhs
+            insertAllImplicits c bsp tm ty
+        checkIrrefutable c pat rhsTy bsp
+        case pat of
+          PVar n -> do
+            rhsV <- evalIn c rhsTm
+            tyTm <- quoteIn c rhsTy
+            let c' = bindCtxLet (nameText n) False rhsTy rhsV c
+            CLet QW (nameText n) tyTm rhsTm <$> go c' rest
+          _ -> do
+            tyTm <- quoteIn c rhsTy
+            let c0 = bindCtx "__b" False rhsTy c
+            (patC, c', _) <- elabPattern c0 pat rhsTy
+            body <- go c' rest
+            pure (CLet QW "__b" tyTm rhsTm (CMatch (CVar 0) [CaseAlt patC Nothing body]))
+      other -> do
+        errAt (doItemSpan other) "E_UNSUPPORTED" Nothing
+          "this do-item form is not supported in an Eff-typed do block by this implementation"
+        go c rest
+    effBindTm m f = CApp Expl (CApp Expl (CGlob (gPrel "__effBind")) m) f
+
+doItemSpan :: DoItem -> Span
+doItemSpan = \case
+  DoBind lb -> lbSpan lb
+  DoLet lb -> lbSpan lb
+  DoLetQ _ _ _ s -> s
+  DoVar _ _ s -> s
+  DoAssign _ _ _ s -> s
+  DoExpr e -> exprSpan e
+  DoUsing _ _ _ s -> s
+  DoDefer _ _ s -> s
+  DoReturn _ _ s -> s
+  DoBreak _ s -> s
+  DoContinue _ s -> s
+  DoWhile _ _ _ _ s -> s
+  DoFor _ _ _ _ _ s -> s
+  DoIf _ _ s -> s
+  DoDecl d -> declSpan d
 
 declSpan :: Decl -> Span
 declSpan = \case
@@ -3573,18 +3985,20 @@ checkIf ctx alts mels sp resT = go ctx alts
         _ -> pure []
       eTm <- go (refineCtx negs c) rest
       pure (CIf cTm tTm eTm)
-    -- only a whole-condition single `x is C` test yields a usable
-    -- complement (a failed conjunction proves nothing positive), and
-    -- only a UNIQUE residual constructor is a usable fact: a wider
-    -- residual would invent a positive fact the test never proved
-    complementRefines refs = fmap concat . forM refs $ \(x, gs) -> do
-      st <- get
-      case nub [ciData ci | g <- gs, Just ci <- [Map.lookup g (csCtors st)]] of
-        [dataG]
-          | Just di <- Map.lookup dataG (csDatas st)
-          , [residual] <- [cg | cg <- diCtors di, cg `notElem` gs] ->
-              pure [(x, [residual])]
-        _ -> pure []
+
+-- | Only a whole-condition single `x is C` test yields a usable
+-- complement (a failed conjunction proves nothing positive), and
+-- only a UNIQUE residual constructor is a usable fact: a wider
+-- residual would invent a positive fact the test never proved.
+complementRefines :: [(Text, [GName])] -> CheckM [(Text, [GName])]
+complementRefines refs = fmap concat . forM refs $ \(x, gs) -> do
+  st <- get
+  case nub [ciData ci | g <- gs, Just ci <- [Map.lookup g (csCtors st)]] of
+    [dataG]
+      | Just di <- Map.lookup dataG (csDatas st)
+      , [residual] <- [cg | cg <- diCtors di, cg `notElem` gs] ->
+          pure [(x, [residual])]
+    _ -> pure []
 
 -- | §7.4.1/§7.4.2 refinements induced by an if-condition: `x is C`
 -- refines x to {C}; conjunction collects both sides; disjunction
@@ -4300,9 +4714,22 @@ elabTry ctx body excepts mfin sp = do
 -- itself is not in scope as a target there. Each do-expression starts a
 -- fresh scope: targets never cross a first-class do-value boundary.
 elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
-elabDo ctx items _sp mexpected = do
+elabDo ctx0 items _sp mexpected = do
+  -- §18.9.3: '~' inout markers are admissible within this do elaboration
+  let ctx = ctx0 {ctxInDo = True}
   me <- traverse forceM mexpected
-  (errT, resT, doTy) <- case me of
+  case me of
+    -- an Eff-typed do sequences algebraic-effect computations
+    -- (§18.1.14); it elaborates to __effBind chains, not the IO kernel
+    Just (VGlobN (GName _ "Eff") [(_, row), (_, a)]) ->
+      elabEffDo ctx row a items _sp
+    _ -> elabDoIO ctx me items
+  where
+    elabDoIO = elabDoIOItems _sp
+
+elabDoIOItems :: Span -> Ctx -> Maybe Value -> [DoItem] -> CheckM (Term, Value)
+elabDoIOItems _sp ctx mexp items = do
+  (errT, resT, doTy) <- case mexp of
     Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) ->
       pure (e, a, Nothing)
     -- an STM-typed do sequences IO-shaped items (§18.1.13); the kernel
@@ -4456,10 +4883,18 @@ elabDo ctx items _sp mexpected = do
                   errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa.do.assign-non-var")
                     ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
                   goItems loops c errT resT rest
-            Nothing -> do
-              errAt asp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-                ("unresolved name '" <> nameText n <> "'")
-              goItems loops c errT resT rest
+            Nothing
+              -- corpus accommodation: `x <- e` where `x` is not a var
+              -- binding in scope is an Idris-style monadic bind of a
+              -- fresh immutable binding (the §18.6.1 var-assign reading
+              -- requires an enclosing `var x`, which does not exist)
+              | monadic ->
+                  goItems loops c errT resT
+                    (DoBind (LetBind False emptyPrefix (PVar n) Nothing rhs asp) : rest)
+              | otherwise -> do
+                  errAt asp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+                    ("unresolved name '" <> nameText n <> "'")
+                  goItems loops c errT resT rest
         DoReturn ml me rsp -> do
           -- return@label targets named functions or labeled lambdas
           -- (§18.5.1); this implementation's kernel only returns from
@@ -4468,7 +4903,22 @@ elabDo ctx items _sp mexpected = do
           forM_ ml $ \l ->
             reportUnsupported (nameSpan l) "labeled return (return@label)"
           tm <- case me of
-            Just e -> check c (desugarBang e) resT
+            Just e -> do
+              -- a `return` payload ordinarily carries this do-scope's
+              -- result type; per the §18.8 completion kernel an abrupt
+              -- Return targets the enclosing function instead, so a
+              -- payload typed for the outer return context is also
+              -- accepted (e.g. `if c then pure () else do return 0`)
+              st0 <- get
+              n0 <- gets (length . csDiags)
+              tm0 <- check c (desugarBang e) resT
+              n1 <- gets (length . csDiags)
+              if n1 == n0
+                then pure tm0
+                else do
+                  put st0
+                  retT <- freshMetaV c
+                  check c (desugarBang e) retT
             Nothing -> do
               expectType c rsp (VGlobN (gPrel "Unit") []) resT
               pure (CCtor (gPrel "Unit") [])
@@ -4496,12 +4946,31 @@ elabDo ctx items _sp mexpected = do
           ks <- goItems loops c errT resT rest
           pure (KFor (nameText <$> ml) patC srcTm bodyKs elsKs : ks)
         DoIf alts mels _ -> do
+          -- §7.4.1: `x is C` conditions refine their subject inside the
+          -- guarded suite
           alts' <- forM alts $ \(cond, body) -> do
-            condTm <- check c (desugarBang cond) (VGlobN (gPrel "Bool") [])
-            bodyKs <- goItems loops c errT (VGlobN (gPrel "Unit") []) body
+            refs <- condRefines c cond
+            let cR = refineCtx refs c
+            condTm <- check cR (desugarBang cond) (VGlobN (gPrel "Bool") [])
+            bodyKs <- goItems loops cR errT (VGlobN (gPrel "Unit") []) body
             pure (condTm, bodyKs)
           elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
-          ks <- goItems loops c errT resT rest
+          -- §8.2.2A postdominating refinement: when every branch except
+          -- one completes abruptly, the surviving branch's facts hold
+          -- for the rest of this do-scope
+          cAfter <- case (alts, mels) of
+            ([(cond, thenB)], Just elseB)
+              | abruptSuite elseB -> do
+                  refs <- condRefines c cond
+                  pure (refineCtx refs c)
+              | abruptSuite thenB -> do
+                  refs <- condRefines c cond
+                  negs <- case cond of
+                    EIs (EVar _) _ -> complementRefines refs
+                    _ -> pure []
+                  pure (refineCtx negs c)
+            _ -> pure c
+          ks <- goItems loops cAfter errT resT rest
           pure (KIf alts' elsKs : ks)
         DoDefer ml e _ -> do
           -- defer@label schedules onto a labeled outer do-scope
@@ -4512,7 +4981,12 @@ elabDo ctx items _sp mexpected = do
           eTm <- check c (desugarBang e) (ioType errT (VGlobN (gPrel "Unit") []))
           ks <- goItems loops c errT resT rest
           pure (KDefer eTm : ks)
-        DoUsing pat rhs usp ->
+        DoUsing mq pat rhs usp -> do
+          -- §9.3: using always binds its pattern with borrowed access at
+          -- the default quantity ω; an explicit prefix is rejected
+          forM_ mq $ \qsp ->
+            errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa.qtt.using-quantity")
+              "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
           -- §19.5 resource bind: typed like a monadic bind of the
           -- acquired resource (the scope-exit release action is not
           -- modelled by this kernel; the binding is borrowed for the
@@ -4540,6 +5014,16 @@ elabDo ctx items _sp mexpected = do
               errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa.do.break-outside-loop")
                 ("'" <> what
                    <> "' is valid only within the body of a loop of this do-scope (§18.6)")
+
+-- | Does this do-suite always complete abruptly (its final item is a
+-- return\/break\/continue)? Used for §8.2.2A postdominating refinement.
+abruptSuite :: [DoItem] -> Bool
+abruptSuite items = case reverse items of
+  (DoReturn {} : _) -> True
+  (DoBreak {} : _) -> True
+  (DoContinue {} : _) -> True
+  (DoExpr (EDo _ inner _) : _) -> abruptSuite inner
+  _ -> False
 
 -- | Is the (forced) value headed by an unsolved metavariable?
 isFlexHead :: Value -> Bool

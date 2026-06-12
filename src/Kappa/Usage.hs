@@ -49,7 +49,7 @@ module Kappa.Usage
 
 import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.State.Strict (State, execState, gets, modify')
-import Data.List (find, isPrefixOf)
+import Data.List (find, isPrefixOf, tails)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe, maybeToList)
@@ -230,6 +230,9 @@ data Env = Env
   -- ^ borrowed place-alias bindings: binder key ↦ root key + path (§12.4)
   , eFieldDeps :: !(Map Text [(Text, [Text])])
   -- ^ record type alias ↦ §13.2.1 field dependencies
+  , eEffOps :: !(Map Text [(Text, Quantity)])
+  -- ^ scoped effect label ↦ operations with declared resumption
+  -- quantities (§9.3.1.1, §18.1.16)
   }
 
 -- | §9.1.1 projection shape for the §12.4 footprint analysis.
@@ -456,7 +459,7 @@ analyzeLet ::
 analyzeLet fns aliases aliasDeps ctors projs msig ld = do
   let aligned = alignParams (ldBinders ld) (maybe [] sigBinders msig)
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps
+  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps Map.empty
   checkInoutResult msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
@@ -755,8 +758,11 @@ walkE env e0 = case e0 of
         u1 = foldr (\(u, _, _) acc -> u `seqU` acc) Map.empty segs
     pure (R (u1 `seqU` del u2) t (del l2))
   EBlock decls mres _ -> do
-    binds <- declsToBinds decls
-    walkE env (ELet binds (fromMaybe (EUnit (exprSpan e0)) mres) (exprSpan e0))
+    -- §9.3.1.1: collect scoped effect declarations (label ↦ op
+    -- quantities) for the handler checks before walking the lets
+    let env' = addEffDecls env decls
+    binds <- declsToBinds [d | d <- decls, not (isEffDecl d)]
+    walkE env' (ELet binds (fromMaybe (EUnit (exprSpan e0)) mres) (exprSpan e0))
   EDo _ items _ -> do
     fl <- walkItems env items
     let paths = maybeToList (fU fl) ++ fRet fl ++ fBC fl
@@ -771,7 +777,31 @@ walkE env e0 = case e0 of
   EMatch scrut cases _ -> walkMatch env scrut cases
   ETry {} -> bailOut >> pure rNone
   ETryMatch {} -> bailOut >> pure rNone
-  EHandle {} -> bailOut >> pure rNone
+  -- §18.1.21/.22 handler: the scrutinee is used once; each clause is an
+  -- alternative path. The clause's resumption binder `k` is counted at
+  -- the operation's declared resumption quantity (§18.1.16).
+  EHandle _ lblE scrut cases _ -> do
+    r0 <- walkE env scrut
+    let mops = case lblE of
+          EVar n
+            | not (Map.member (nameText n) (eVars env)) ->
+                Map.lookup (nameText n) (eEffOps env)
+          _ -> Nothing
+        bindPats sp nms = mapM (\nm -> (\k -> (nm, plainV k sp)) <$> freshKey nm) nms
+    crs <- forM cases $ \case
+      HandlerReturn pat body sp -> do
+        shadow <- bindPats sp (patVars pat)
+        fst . flatR <$> walkE (bindVars shadow env) body
+      HandlerOp opN argPats kN body sp -> do
+        shadow <- bindPats sp (concatMap patVars argPats)
+        kKey <- freshKey (nameText kN)
+        let q = maybe QOne (fromMaybe QOne . lookup (nameText opN)) mops
+            kvi = (plainV kKey (nameSpan kN)) {vQ = countedQ q}
+            env' = bindVars (shadow ++ [(nameText kN, kvi)]) env
+        u <- fst . flatR <$> walkE env' body
+        closeVar kvi u
+        pure u
+    pure (rPlain (fst (flatR r0) `seqU` altUs crs))
   EIs b _ -> walkE env b
   EThunk b sp -> suspend env b sp
   ELazy b sp -> suspend env b sp
@@ -1032,6 +1062,8 @@ walkPatch env base items sp = do
 data Fact
   = FBorrow !Text ![Text]
   | FMove !Text ![Text] !Span
+  | FInout !Text ![Text] !Span
+  -- ^ a '~'-marked inout argument's place footprint (§18.9.3)
 
 argSpan :: Arg -> Span
 argSpan = \case
@@ -1061,13 +1093,30 @@ walkApp env f args = do
   rs <- sequence (zipWith (walkArg env params) args ps)
   -- §12.4: places borrowed and consumed by the same call must be disjoint
   let facts = concatMap snd rs
-      borrows = [(k, p) | FBorrow k p <- facts]
+      borrows =
+        [(k, p) | FBorrow k p <- facts] ++ [(k, p) | FInout k p _ <- facts]
   forM_ facts $ \case
     FMove k p msp
       | any (\(bk, bp) -> bk == k && pathsOverlap bp p) borrows ->
           emit "E_QTT_BORROW_OVERLAP" "kappa.qtt.borrow-overlap" msp
             "a place is consumed by the same call that borrows an overlapping place (§12.4)"
     _ -> pure ()
+  -- §18.9.3: the place footprints of the '~' arguments of one call must
+  -- be pairwise disjoint ("a given stable place, or a given projection
+  -- call occurrence, may appear in at most one '~' argument")
+  let inouts = [(k, p, isp) | FInout k p isp <- facts]
+      overlapPairs =
+        [ isp2
+        | ((k1, p1, _), rest') <- zip inouts (drop 1 (tails inouts))
+        , (k2, p2, isp2) <- rest'
+        , k1 == k2
+        , pathsOverlap p1 p2
+        ]
+  case overlapPairs of
+    (osp : _) ->
+      emit "E_QTT_BORROW_OVERLAP" "kappa.qtt.borrow-overlap" osp
+        "two '~' inout arguments of the same call have overlapping place footprints (§18.9.3, §12.4)"
+    [] -> pure ()
   -- §18.11: a forked computation outlives the current scope, so its
   -- action may not touch an anonymous borrow
   let headName = case f of
@@ -1099,12 +1148,12 @@ walkArg env params arg p = case arg of
     let r = (rPlain (foldr (seqU . rU . fst) Map.empty rs)) {rT = firstJust (mapMaybe (rT . fst) rs)}
     pure (r, concatMap snd rs)
   ArgInout e sp
-    | pInout p -> borrowish e
+    | pInout p -> inoutish e sp
     | hasDemand -> do
         emit "E_QTT_INOUT_MARKER_UNEXPECTED" "kappa.qtt.inout-marker" sp
           "call-site '~' marker on an argument whose parameter is not declared inout (§18.9.3)"
         (,[]) <$> walkE env e
-    | otherwise -> borrowish e
+    | otherwise -> inoutish e sp
   ArgExplicit e
     | pInout p -> do
         emit "E_QTT_INOUT_MARKER_REQUIRED" "kappa.qtt.inout-marker" (exprSpan e)
@@ -1204,6 +1253,11 @@ walkArg env params arg p = case arg of
                 touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
             pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
         | otherwise -> (,[]) <$> walkE env e
+    -- like 'borrowish', but the facts carry the marker span for the
+    -- §18.9.3 pairwise-disjointness check of one call's '~' arguments
+    inoutish e isp = do
+      (r, fs) <- borrowish e
+      pure (r, [FInout k path isp | FBorrow k path <- fs])
 
 -- ── Bindings and do items ────────────────────────────────────────────
 
@@ -1306,6 +1360,52 @@ walkBinds env binds = go env binds
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
+-- | Record a block's scoped effect declarations: label spelling ↦
+-- operation names with declared resumption quantities (default 1,
+-- §18.1.17).
+addEffDecls :: Env -> [Decl] -> Env
+addEffDecls env decls =
+  env {eEffOps = foldr (uncurry Map.insert) (eEffOps env) effs}
+  where
+    effs =
+      [ ( nameText (effName ed)
+        , [(nameText (eoName o), fromMaybe QOne (eoQuantity o)) | o <- effOps ed]
+        )
+      | DEffect _ ed _ <- decls
+      , not (effIsLabelDecl ed)
+      ]
+
+isEffDecl :: Decl -> Bool
+isEffDecl = \case
+  DEffect {} -> True
+  _ -> False
+
+-- | The counted quantity of a resumption binder: ω resumption values
+-- are unrestricted (their soundness is the §18.1.20 capture rule), and
+-- a one-shot resumption may be abandoned without use — the clause then
+-- abandons the captured segment (§18.1.21, §32.2.20) — so the declared
+-- quantity 1 counts as at-most-once.
+countedQ :: Quantity -> Maybe Quantity
+countedQ = \case
+  QOmega -> Nothing
+  QTerm {} -> Nothing
+  QOne -> Just QAtMostOne
+  q -> Just q
+
+-- | Is this right-hand side an invocation of a scoped effect's
+-- multi-shot operation (declared quantity permitting more than one
+-- resumption, §18.1.17)? Returns the operation's span and name.
+multishotOpCall :: Env -> Expr -> Maybe (Span, Text)
+multishotOpCall env = \case
+  EApp f _ -> multishotOpCall env f
+  EDot (EVar l) (DotName op)
+    | not (Map.member (nameText l) (eVars env))
+    , Just ops <- Map.lookup (nameText l) (eEffOps env)
+    , Just q <- lookup (nameText op) ops
+    , q `elem` [QOmega, QAtLeastOne] ->
+        Just (nameSpan op, nameText op)
+  _ -> Nothing
+
 declsToBinds :: [Decl] -> M [LetBind]
 declsToBinds [] = pure []
 declsToBinds (d : ds) = case d of
@@ -1356,8 +1456,16 @@ walkItems env0 items0 = go env0 items0
         -- escape at that statement, not at the closure formation
         pure fl' {fT = if null rest then (exprSpan e <$ t) else fT fl'}
       DoLet lb -> bindLike env lb rest
-      DoBind lb -> bindLike env lb rest
-      DoUsing pat rhs sp -> do
+      DoBind lb -> do
+        (fl, suffixFl) <- bindLike' env lb rest
+        -- §18.1.20 call-site capture rule: the suffix from a multi-shot
+        -- operation site to the handler boundary is captured by a
+        -- reusable resumption, so every runtime-relevant captured value
+        -- must be duplicable and free of borrow obligations
+        forM_ (multishotOpCall env (lbExpr lb)) $ \(osp, opn) ->
+          checkMultishotCapture env osp opn (flowPaths suffixFl)
+        pure fl
+      DoUsing _ pat rhs sp -> do
         -- §19.5: the bound resource is borrowed for the rest of scope
         -- and may not itself escape the do-scope
         (segs, env') <- walkBinds env [LetBind False (BinderPrefix Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp]
@@ -1445,6 +1553,7 @@ walkItems env0 items0 = go env0 items0
           emit "E_DEFER_ABRUPT_CONTROL" "kappa.do.defer" sp
             "a deferred action must not return, break, or continue out of itself (§18.7)"
         prefixFlow u <$> go env rest
+      DoDecl d | isEffDecl d -> go (addEffDecls env [d]) rest
       DoDecl d -> do
         lbs <- declsToBinds [d]
         case lbs of
@@ -1453,14 +1562,40 @@ walkItems env0 items0 = go env0 items0
       where
         shadowVars nms sp =
           mapM (\nm -> (\k -> (nm, plainV k sp)) <$> freshKey nm) nms
-        bindLike envc lb@(LetBind {}) restItems = do
+        bindLike envc lb restItems = fst <$> bindLike' envc lb restItems
+        bindLike' envc lb@(LetBind {}) restItems = do
           (segs, env') <- walkBinds envc [lb]
           let u = foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
               bound = concat [b | (_, b, _) <- segs]
           fl <- go env' restItems
           -- every path leaving the binding's scope must satisfy it
           forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
-          pure (prefixFlow u fl)
+          pure (prefixFlow u fl, fl)
+        -- a use of any outer non-duplicable binding in the captured
+        -- suffix of a multi-shot operation (§18.1.20.2)
+        checkMultishotCapture envc osp opn paths = do
+          let usesVar vi u =
+                any
+                  (\(k, c) -> cTouch c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k))
+                  (Map.toList u)
+              offenders =
+                [ (vi, kind)
+                | vi <- Map.elems (eVars envc)
+                , Just kind <- [captureKind vi]
+                , any (usesVar vi) paths
+                ]
+          case offenders of
+            ((vi, kind) : _) ->
+              emit "E_QTT_CONTINUATION_CAPTURE" "kappa.qtt.continuation-capture" osp
+                ( "the multi-shot operation '" <> opn <> "' would capture '"
+                    <> T.takeWhile (/= '#') (vKey vi) <> "' (" <> kind
+                    <> ") in its resumption; every value captured by a multi-shot resumption must be duplicable and free of borrow obligations (§18.1.20)"
+                )
+            [] -> pure ()
+        captureKind vi
+          | vBorrowed vi = Just "a borrowed binding"
+          | vQ vi `elem` [Just QOne, Just QAtMostOne] = Just "a quantity-1 binding"
+          | otherwise = Nothing
 
 -- | Residual constructors of a plain @let?@ pattern that carry a
 -- positive-lower-bound (quantity @1@\/@>=1@) field (§12.2.5).

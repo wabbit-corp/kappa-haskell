@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (110/110)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (140/140)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -76,7 +76,11 @@ Implemented:
 | `assertDiagnosticCodes c1, c2, …`, `assertEval NAME EXPR` | compatibility extensions for the external corpus (§T.1 allows nonstandard directives) |
 | `x-assertEval`, `x-assertEvalErrorContains`, `x-assertDeclDescriptors`, `x-assertTraitMembers` | supported `x-` extensions (§T.3/§T.1); `assertEval` subjects resolve in the directive file's own module (§T.6); unsupported `x-` directives still classify the test unsupported per §T.3 |
 | `allow_unsafe_consume` | compatibility config (no-op): the corpus gates its `unsafeConsume` linear sink behind it; this prelude always provides `unsafeConsume : (@0 a : Type) -> (1 x : a) -> Unit` (and `printInt`) as documented extras beyond the §28.2 minimum |
-| `assertParameterQuantities NAME q1 q2 …` | compatibility extension: the named let's explicit parameters carry exactly these §12.1.1 binder prefixes (`0`/`1`/`ω`/`<=1`/`>=1`/`&`/`&[r]`; bare default renders `ω`) |
+| `assertParameterQuantities NAME q1 q2 …` | compatibility extension: the named let's explicit parameters carry exactly these §12.1.1 binder prefixes (`0`/`1`/`ω`/`<=1`/`>=1`/`&`/`&[r]`; bare default renders `ω`, an `inout` parameter renders `1` per §18.9.3) |
+| `assertExecute NAME EXPECTED`, `assertRunStdout NAME EXPECTED` | compatibility extensions: run the named IO global regardless of `mode` (compile errors fail the assertion) and compare the final value rendering / the trimmed captured stdout |
+| `assertInoutParameters NAME p1 [p2 …]` | compatibility extension: the named let's `inout`-marked explicit parameter names, in order |
+| `assertDoItemDescriptors NAME d1, d2, …` | compatibility extension: shape descriptors of the named let's do-block items (`let [prefix] x`, `let? x`, `using x`, `var x`, `assign x`, `expression`, `defer`, `return`, …) |
+| `assertContainsTokenTexts t1, t2, …` | compatibility extension: each text occurs as the source text of some lexed token of the directive's file |
 
 A `mode run` entry whose final value is not `Unit` is rendered to
 stdout followed by a newline (matching the reference run task, e.g.
@@ -94,16 +98,15 @@ mandates unsupported).
 
 **Harness errors** (§T.3: "any unknown standard directive, malformed
 directive, or ill-typed directive argument"): malformed directives and
-all unknown non-`x-` directives — including the external corpus's
-private `allow_unsafe_consume`, `assertRunStdout`, `assertExecute`,
-`assertEvalErrorContains`, `assertParameterQuantities`,
-`assertDoItemDescriptors`, `assertInoutParameters`, and
-`assertContainsTokenTexts`, none of which appear anywhere in Spec.md
-(checked against the §T.4/§T.5 directive lists).
+all unknown non-`x-` directives. The external corpus's private
+directives do not appear anywhere in Spec.md (checked against the
+§T.4/§T.5 directive lists); those with an evident portable meaning are
+implemented as the documented compatibility extensions above (§T.1
+permits nonstandard directives), and the rest remain harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **110/110 passing**, zero unsupported, zero
+`tests/conformance/` — **140/140 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |

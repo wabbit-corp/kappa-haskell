@@ -1,0 +1,19 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §18.9.3 / §12.4: the place footprints of one call's '~' inout
+-- arguments must be pairwise disjoint — the same stable place may
+-- appear in at most one '~' argument of a single application.
+module main
+
+type Pair = (left : Int, right : Int)
+
+step2 : (inout a : Int) -> (inout b : Int) -> UIO (1 a : Int, 1 b : Int)
+let step2 (inout a : Int) (inout b : Int) : UIO (1 a : Int, 1 b : Int) =
+    pure (a = b, b = a)
+
+bad : (1 pair : Pair) -> UIO Unit
+let bad (1 pair : Pair) : UIO Unit =
+    do
+        step2 ~pair.left ~pair.left
+        pure ()

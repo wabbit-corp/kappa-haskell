@@ -466,7 +466,7 @@ rExpr env = go
       DoVar n e sp -> DoVar n <$> go e <*> pure sp
       DoAssign n m e sp -> DoAssign n m <$> go e <*> pure sp
       DoExpr e -> DoExpr <$> go e
-      DoUsing p e sp -> DoUsing <$> rPattern env p <*> go e <*> pure sp
+      DoUsing mq p e sp -> DoUsing mq <$> rPattern env p <*> go e <*> pure sp
       DoDefer l e sp -> DoDefer l <$> go e <*> pure sp
       DoReturn l e sp -> DoReturn l <$> mapM go e <*> pure sp
       d@DoBreak {} -> pure d

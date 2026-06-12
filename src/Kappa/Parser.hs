@@ -2442,10 +2442,18 @@ pDoItem = do
       DoVar n e <$> spanFrom start
     TokIdent "using" -> do
       pKeyword "using"
+      pstart <- currentSpan
+      prefix <- pBinderPrefix
+      psp <- spanFrom pstart
+      -- §9.3: using always binds borrowed at the default quantity ω; an
+      -- explicit prefix parses but is flagged for elaboration to reject
+      let mPref = case prefix of
+            BinderPrefix Nothing Nothing -> Nothing
+            _ -> Just psp
       pat <- pPattern
       token TokBackArrow
       e <- pExpr
-      DoUsing pat e <$> spanFrom start
+      DoUsing mPref pat e <$> spanFrom start
     TokIdent "defer" -> do
       pKeyword "defer"
       lbl <- optionMaybe (token TokAt *> pIdent)

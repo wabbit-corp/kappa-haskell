@@ -1,0 +1,48 @@
+--! assertNoErrors
+--! assertEval shallow 42
+--! assertEval abandoned 99
+
+-- §18.1.21: a shallow handler does not reinstall itself around k — the
+-- clause re-handles the resumed computation explicitly; a clause may
+-- also return without resuming, abandoning the captured segment
+-- (§32.2.20).
+module main
+
+shallow : Int
+let shallow : Int =
+    block
+        scoped effect Ask =
+            ask : Unit -> Int
+
+        let comp : Eff <[Ask : Ask]> Int =
+            do
+                let a <- Ask.ask ()
+                pure (a + 1)
+
+        let handled =
+            handle Ask comp with
+                case return x -> pure x
+                case ask _ k ->
+                    handle Ask (k 41) with
+                        case return y -> pure y
+                        case ask _ k2 -> pure 0
+
+        runPure handled
+
+abandoned : Int
+let abandoned : Int =
+    block
+        scoped effect Quit =
+            quit : Unit -> Unit
+
+        let comp : Eff <[Quit : Quit]> Int =
+            do
+                let _ <- Quit.quit ()
+                pure 1
+
+        let handled =
+            handle Quit comp with
+                case return x -> pure x
+                case quit _ k -> pure 99
+
+        runPure handled

@@ -45,6 +45,7 @@ import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
 import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
+import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor, loadSourceFile, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
@@ -52,6 +53,7 @@ import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import Kappa.Syntax
+import Kappa.Token (Located (..))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (takeDirectory, (</>))
 import System.Timeout (timeout)
@@ -125,6 +127,11 @@ data Assertion
   | AParamQuantities !Text ![Text] -- ^ x-compatible: binder prefixes of a let
   | ADeclDescriptors ![Text] -- ^ x-compatible: decl kind+name descriptors
   | ATraitMembers !Text ![Text] -- ^ x-compatible: trait member names in order
+  | AExecute !Text !Text -- ^ x-compatible: run an IO global, compare result rendering
+  | ARunStdout !Text !Text -- ^ x-compatible: run an IO global, compare trimmed stdout
+  | AInoutParams !Text ![Text] -- ^ x-compatible: inout parameter names of a let
+  | ADoItemDescriptors !Text ![Text] -- ^ x-compatible: do-item shapes of a let body
+  | ATokenTexts ![Text] -- ^ x-compatible: token source texts occur in this file
   | AType !Text !Text
   | ADeclKinds ![Text]
   | AFileDeclKinds !Text ![Text] -- ^ path is suite-root relative
@@ -371,13 +378,34 @@ parseDirective allLines lno body =
       "assertParameterQuantities" -> case args of
         (nm : qs) | not (null qs) -> ok (SAssert (AParamQuantities nm qs))
         _ -> bad "malformed 'assertParameterQuantities' directive"
+      -- compatibility extensions: run a named IO entrypoint regardless
+      -- of mode and compare the final value / captured stdout
+      "assertExecute" -> case T.words rest of
+        (nm : more) | not (null more) -> ok (SAssert (AExecute nm (T.unwords more)))
+        _ -> bad "malformed 'assertExecute' directive"
+      "assertRunStdout" -> case T.words rest of
+        (nm : more) | not (null more) -> ok (SAssert (ARunStdout nm (T.unwords more)))
+        _ -> bad "malformed 'assertRunStdout' directive"
+      "assertInoutParameters" -> case map (T.filter (/= ',')) (T.words rest) of
+        (nm : ps) | not (null ps), all (not . T.null) ps ->
+          ok (SAssert (AInoutParams nm ps))
+        _ -> bad "malformed 'assertInoutParameters' directive"
+      "assertDoItemDescriptors" -> case T.words rest of
+        (nm : _ : _) ->
+          let descPart = T.strip (T.drop (T.length nm) (T.stripStart rest))
+              descs = map (T.unwords . T.words) (T.splitOn "," descPart)
+           in if not (null descs) && all (not . T.null) descs
+                then ok (SAssert (ADoItemDescriptors nm descs))
+                else bad "malformed 'assertDoItemDescriptors' descriptor list"
+        _ -> bad "malformed 'assertDoItemDescriptors' directive"
+      "assertContainsTokenTexts" -> tokenTextsAssert
+      "x-assertContainsTokenTexts" -> tokenTextsAssert
       -- supported x- extension directives (§T.3 allows a harness to
       -- implement extension directives; unsupported ones classify the
       -- test unsupported below)
       "x-assertEval" -> evalAssert
-      "x-assertEvalErrorContains" -> case T.words rest of
-        (nm : more) | not (null more) -> ok (SAssert (AEvalError nm (T.unwords more)))
-        _ -> bad "malformed 'x-assertEvalErrorContains' directive"
+      "assertEvalErrorContains" -> evalErrAssert
+      "x-assertEvalErrorContains" -> evalErrAssert
       "x-assertDeclDescriptors" ->
         let entries = map (T.unwords . T.words) (T.splitOn "," rest)
          in if not (null entries) && all (not . T.null) entries
@@ -405,6 +433,14 @@ parseDirective allLines lno body =
         evalAssert = case T.words rest of
           (nm : more) | not (null more) -> ok (SAssert (AEval nm (T.unwords more)))
           _ -> bad ("malformed '" <> name <> "' directive")
+        evalErrAssert = case T.words rest of
+          (nm : more) | not (null more) -> ok (SAssert (AEvalError nm (T.unwords more)))
+          _ -> bad ("malformed '" <> name <> "' directive")
+        tokenTextsAssert =
+          let toks = map T.strip (T.splitOn "," rest)
+           in if not (null toks) && all (not . T.null) toks
+                then ok (SAssert (ATokenTexts toks))
+                else bad ("malformed '" <> name <> "' token list")
         noArgs a
           | null args = ok (SAssert a)
           | otherwise = bad ("directive '" <> name <> "' takes no arguments")
@@ -823,6 +859,26 @@ checkAssertion root path src files cu diags mRun = \case
   ADeclDescriptors entries -> pure (assertDeclDescriptors path src entries)
   AParamQuantities nm qs -> pure (assertParamQuantities path src nm qs)
   ATraitMembers tn ms -> pure (assertTraitMembers path src tn ms)
+  AExecute nm expected -> execEntry "assertExecute" nm $ \st mv _out ->
+    case mv of
+      Just v ->
+        let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) True mempty
+            rendered = renderEvalValue ec v
+         in require
+              (rendered == T.strip expected)
+              ( "assertExecute: '" <> nm <> "' executed to " <> rendered
+                  <> ", expected " <> T.strip expected
+              )
+      Nothing -> pure (AssertFail ("assertExecute: '" <> nm <> "' produced no value"))
+  ARunStdout nm expected -> execEntry "assertRunStdout" nm $ \_st _mv out ->
+    require
+      (T.strip (normalizeLF out) == T.strip (normalizeLF expected))
+      ( "assertRunStdout: '" <> nm <> "' wrote " <> tshow (normalizeLF out)
+          <> ", expected " <> tshow (T.strip (normalizeLF expected))
+      )
+  AInoutParams nm ps -> pure (assertInoutParams path src nm ps)
+  ADoItemDescriptors nm descs -> pure (assertDoItemDescriptors path src nm descs)
+  ATokenTexts toks -> pure (assertTokenTexts path src toks)
   AType nm tyExpr -> pure (assertType path src cu nm tyExpr)
   ADeclKinds kinds -> pure (assertDeclKinds "assertDeclKinds" path src kinds)
   AFileDeclKinds p kinds ->
@@ -911,6 +967,23 @@ checkAssertion root path src files cu diags mRun = \case
     withRun k = case mRun of
       Just ri -> k ri
       Nothing -> pure (AssertHarnessError "run assertion outside mode run (§T.5.4)")
+    -- compatibility executions (assertExecute / assertRunStdout) run a
+    -- named IO global directly, independent of @mode run@
+    execEntry what nm k
+      | not (null errors) =
+          pure (AssertFail (what <> ": the suite has compile errors"))
+      | otherwise = case entryGlobal cu (snd (splitQualified nm)) of
+          Nothing -> pure (AssertFail (what <> ": '" <> nm <> "' is not a defined global"))
+          Just g -> do
+            let st = cuState cu
+            mres <-
+              timeout runTimeoutMicros $
+                runMainCapturedValue (Globals (csGlobals st)) (csMetas st) g
+            case mres of
+              Nothing -> pure (AssertFail (what <> ": execution of '" <> nm <> "' timed out"))
+              Just (RunOk, mv, out) -> k st mv out
+              Just (RunFail msg, _, _) ->
+                pure (AssertFail (what <> ": runtime failure: " <> msg))
     goldenCompare p what sel = withRun $ \ri -> do
       let fp = root </> T.unpack p
       exists <- doesFileExist fp
@@ -1014,6 +1087,10 @@ assertEvalError cu mmod nm sub =
             | p == "divInt" || p == "modInt"
             , VLit (LitInt 0) <- force ec b ->
                 Just "Division by zero"
+          VPrim "intToNat" [a]
+            | VLit (LitInt n) <- force ec a
+            , n < 0 ->
+                Just ("intToNat: " <> T.pack (show n) <> " has no Nat image")
           VPrim _ args -> firstJust (map (go (fuel - 1)) args)
           VCtor _ args -> firstJust (map (go (fuel - 1)) args)
           VRecordV fs -> firstJust (map (go (fuel - 1) . snd) fs)
@@ -1088,15 +1165,17 @@ assertType path src cu nm tyExpr =
         Left err -> AssertFail err
         Right (st', probeTy) ->
           let ec = EvalCtx (Globals (csGlobals st')) (csMetas st') False mempty
+              actualR = renderTerm (quote ec 0 (gdType gd))
+              probeR = renderTerm (quote ec 0 probeTy)
            in if convertible ec 0 (gdType gd) probeTy
+                -- distinct unsolved metas in equal positions (e.g. the
+                -- inferred error parameter of a one-argument 'IO a'
+                -- assertion) still count as the same expected type
+                || stripMetaIds actualR == stripMetaIds probeR
                 then AssertOk
                 else
                   AssertFail
-                    ( "type of '" <> nm <> "' is "
-                        <> renderTerm (quote ec 0 (gdType gd))
-                        <> ", expected "
-                        <> renderTerm (quote ec 0 probeTy)
-                    )
+                    ("type of '" <> nm <> "' is " <> actualR <> ", expected " <> probeR)
   where
     st = cuState cu
     originParse = parseModule path src
@@ -1212,9 +1291,102 @@ assertParamQuantities path src nm expected =
                         <> "], expected [" <> T.intercalate ", " expected <> "]"
                     )
   where
-    binderPrefixText b =
-      let BinderPrefix mq mb = bPrefix b
-          qt = case mq of
+    binderPrefixText b
+      -- an inout parameter elaborates at quantity 1 (§18.9.3)
+      | bInout b = "1"
+      | otherwise =
+          let BinderPrefix mq mb = bPrefix b
+              qt = case mq of
+                Nothing -> ""
+                Just QZero -> "0"
+                Just QOne -> "1"
+                Just QOmega -> "ω"
+                Just QAtMostOne -> "<=1"
+                Just QAtLeastOne -> ">=1"
+                Just (QTerm n) -> nameText n
+              bt = case mb of
+                Nothing -> ""
+                Just (BorrowMark Nothing) -> "&"
+                Just (BorrowMark (Just r)) -> "&[" <> nameText r <> "]"
+           in case qt <> bt of
+                "" -> "ω"
+                t -> t
+
+-- | @assertInoutParameters name p1[, p2 ...]@ (compatibility extension):
+-- the named let's @inout@-marked explicit parameter names, in order
+-- (§18.9.2).
+assertInoutParams :: FilePath -> Text -> Text -> [Text] -> AssertResult
+assertInoutParams path src nm expected =
+  case parseModule path src of
+    Left _ -> AssertFail "assertInoutParameters: file does not parse"
+    Right (m, _) ->
+      case [ld | DLet _ ld _ <- modDecls m, (nameText <$> ldName ld) == Just nm] of
+        [] -> AssertFail ("assertInoutParameters: no let '" <> nm <> "' in this file")
+        (ld : _) ->
+          let actual = [nameText n | b <- ldBinders ld, bInout b, Just n <- [bName b]]
+           in if actual == expected
+                then AssertOk
+                else
+                  AssertFail
+                    ( "assertInoutParameters: '" <> nm <> "' inout parameters are ["
+                        <> T.intercalate ", " actual
+                        <> "], expected [" <> T.intercalate ", " expected <> "]"
+                    )
+
+-- | @assertDoItemDescriptors name d1, d2, ...@ (compatibility
+-- extension): shape descriptors of the named let's do-block items, in
+-- order (§18.2 do-item forms: @let x@, @using x@, @var x@,
+-- @expression@, ...).
+assertDoItemDescriptors :: FilePath -> Text -> Text -> [Text] -> AssertResult
+assertDoItemDescriptors path src nm expected =
+  case parseModule path src of
+    Left _ -> AssertFail "assertDoItemDescriptors: file does not parse"
+    Right (m, _) ->
+      case [ld | DLet _ ld _ <- modDecls m, (nameText <$> ldName ld) == Just nm] of
+        [] -> AssertFail ("assertDoItemDescriptors: no let '" <> nm <> "' in this file")
+        (ld : _) -> case doItemsOf (ldBody ld) of
+          Nothing ->
+            AssertFail ("assertDoItemDescriptors: the body of '" <> nm <> "' is not a do block")
+          Just items ->
+            let actual = map doItemDescriptor items
+             in if actual == expected
+                  then AssertOk
+                  else
+                    AssertFail
+                      ( "assertDoItemDescriptors: '" <> nm <> "' items are ["
+                          <> T.intercalate ", " actual
+                          <> "], expected [" <> T.intercalate ", " expected <> "]"
+                      )
+  where
+    doItemsOf = \case
+      EDo _ items _ -> Just items
+      EAscription e _ _ -> doItemsOf e
+      _ -> Nothing
+    doItemDescriptor = \case
+      DoBind lb -> "let " <> prefixedHead (lbPrefix lb) (lbPattern lb)
+      DoLet lb -> "let " <> prefixedHead (lbPrefix lb) (lbPattern lb)
+      DoLetQ p _ _ _ -> "let? " <> patHeadText p
+      DoVar n _ _ -> "var " <> nameText n
+      DoAssign n _ _ _ -> "assign " <> nameText n
+      DoExpr _ -> "expression"
+      DoUsing _ p _ _ -> "using " <> patHeadText p
+      DoDefer {} -> "defer"
+      DoReturn {} -> "return"
+      DoBreak {} -> "break"
+      DoContinue {} -> "continue"
+      DoWhile {} -> "while"
+      DoFor {} -> "for"
+      DoIf {} -> "if"
+      DoDecl {} -> "declaration"
+    patHeadText = \case
+      PVar n -> nameText n
+      PTyped p _ _ -> patHeadText p
+      PAs n _ -> nameText n
+      _ -> "_"
+    -- an explicit quantity/borrow prefix is part of the descriptor
+    -- (e.g. "let 1 file", "let & borrowed")
+    prefixedHead (BinderPrefix mq mb) p =
+      let qt = case mq of
             Nothing -> ""
             Just QZero -> "0"
             Just QOne -> "1"
@@ -1226,9 +1398,49 @@ assertParamQuantities path src nm expected =
             Nothing -> ""
             Just (BorrowMark Nothing) -> "&"
             Just (BorrowMark (Just r)) -> "&[" <> nameText r <> "]"
-       in case qt <> bt of
-            "" -> "ω"
-            t -> t
+          pre = qt <> bt
+       in if T.null pre then patHeadText p else pre <> " " <> patHeadText p
+
+-- | @assertContainsTokenTexts t1, t2, ...@ (compatibility extension):
+-- each text occurs as the source text of some lexed token of this file.
+assertTokenTexts :: FilePath -> Text -> [Text] -> AssertResult
+assertTokenTexts path src wanted =
+  case lexSource path src of
+    Left _ -> AssertFail "assertContainsTokenTexts: file does not lex"
+    Right (_, toks) ->
+      let texts = [sliceSpan src (locSpan t) | t <- toks]
+          missing = [w | w <- wanted, w `notElem` texts]
+       in if null missing
+            then AssertOk
+            else
+              AssertFail
+                ( "assertContainsTokenTexts: no token has source text "
+                    <> T.intercalate ", " (map tshow missing)
+                )
+
+-- | Erase metavariable ids from a rendered type (@?m123@ → @?m@), so
+-- that distinct-but-unconstrained metas compare equal in 'assertType'.
+stripMetaIds :: Text -> Text
+stripMetaIds t = case T.breakOn "?m" t of
+  (pre, rest)
+    | T.null rest -> pre
+    | otherwise ->
+        pre <> "?m" <> stripMetaIds (T.dropWhile isDigit (T.drop 2 rest))
+
+-- | The source slice covered by a span (1-based line\/column positions).
+sliceSpan :: Text -> Span -> Text
+sliceSpan src sp =
+  let ls = T.splitOn "\n" src
+      Pos sl sc = spanStart sp
+      Pos el ec = spanEnd sp
+      lineAt i = if i >= 1 && i <= length ls then ls !! (i - 1) else ""
+   in if sl == el
+        then T.take (ec - sc) (T.drop (sc - 1) (lineAt sl))
+        else
+          T.intercalate "\n" $
+            [T.drop (sc - 1) (lineAt sl)]
+              ++ [lineAt i | i <- [sl + 1 .. el - 1]]
+              ++ [T.take (ec - 1) (lineAt el)]
 
 -- | @x-assertTraitMembers Trait m1, m2@ (compatibility extension):
 -- the named trait declares exactly these member names, in order.

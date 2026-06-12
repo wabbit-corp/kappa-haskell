@@ -76,6 +76,14 @@ builtinState =
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
       , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
+      , -- §18.1.14 algebraic effects: the Eff carrier, effect rows and
+        -- labels; rows are encoded as neutral spines
+        -- '__effRowCons label iface rest' ending in '__effRowNil'
+        (prel "EffRow", opaqueTy (tyV tType))
+      , (prel "EffLabel", opaqueTy (tyV tType))
+      , (prel "Eff", opaqueTy (tyV (tcon "EffRow" ~> tType ~> tType)))
+      , (prel "__effRowNil", opaqueTy (tyV (tcon "EffRow")))
+      , (prel "__effRowCons", opaqueTy (tyV (tcon "EffLabel" ~> tType ~> tcon "EffRow" ~> tcon "EffRow")))
       , -- §20 collection carriers and the §20.10 query core
         (prel "Set", opaqueTy (tyV (tType ~> tType)))
       , (prel "Map", opaqueTy (tyV (tType ~> tType ~> tType)))
@@ -157,6 +165,7 @@ builtinState =
     tBytes = tcon "Bytes"
     tUnit = tcon "Unit"
     io e a = CApp Expl (CApp Expl (tcon "IO") e) a
+    effT r a = CApp Expl (CApp Expl (tcon "Eff") r) a
     refT a = CApp Expl (tcon "Ref") a
     listT a = CApp Expl (tcon "List") a
     setT a = CApp Expl (tcon "Set") a
@@ -234,6 +243,8 @@ builtinState =
       , prim "intToDouble" (tyV (tInt ~> tDouble))
       , prim "natOfInt" (tyV (tInt ~> tNat)) -- internal: Nat and Integer share representation
       , prim "natToInt" (tyV (tNat ~> tInt))
+      , -- partial Int -> Nat conversion: negative values trap at runtime
+        prim "intToNat" (tyV (tInt ~> tNat))
       , -- linear sink used by the external corpus behind its
         -- 'allow_unsafe_consume' directive: discards a linear value
         prim "unsafeConsume" (tyV (piI Q0 "a" tType (CPi Expl Q1 "x" (CVar 0) tUnit)))
@@ -244,6 +255,21 @@ builtinState =
       , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
       , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
+      , -- §28 IO carrier instances delegate to this bind primitive
+        prim "ioBind"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "b" tType
+            (io (CVar 2) (CVar 1) ~> (CVar 2 ~> io (CVar 4) (CVar 2)) ~> io (CVar 4) (CVar 2))))))
+      , -- §18.1.14 'runPure' eliminates a fully handled Eff computation
+        prim "runPure" (tyV (piI Q0 "a" tType (effT (CGlob (prel "__effRowNil")) (CVar 0) ~> CVar 1)))
+      , -- internal Eff plumbing: monadic bind over the §30.2.2.7 OpCall
+        -- tree and the shallow-handler driver (deep reinstalls itself);
+        -- their reductions live in 'Kappa.Eval.evalEffPrim'
+        prim "__effBind"
+          (tyV (piI Q0 "r" (tcon "EffRow") (piI Q0 "a" tType (piI Q0 "b" tType
+            (effT (CVar 2) (CVar 1) ~> (CVar 2 ~> effT (CVar 4) (CVar 2)) ~> effT (CVar 4) (CVar 2))))))
+      , -- internal: not source-typeable (its applications are built and
+        -- typed directly by the elaborator, like a KCore form)
+        prim "__handleEff" (tyV (piI Q0 "a" tType (CVar 0)))
       , -- §18.1.13: aborted STM alternative (the `empty` action)
         prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
       , -- §20 collection/query plumbing (the §20.10.11 as-if list model)
@@ -579,27 +605,28 @@ preludeSource =
     , "    let show g = showGrapheme g"
     , ""
     , -- §20.2 range operators over the prelude Rangeable trait (the
-      -- associated Range type is modelled as a concrete carrier)
-      "data Range (v : Type) : Type ="
-    , "    MkRange (rangeFrom : v) (rangeTo : v) (rangeExclusive : Bool)"
+      -- associated Range type is modelled as a concrete carrier; the
+      -- reference prelude spells it NumericRange)
+      "data NumericRange (v : Type) : Type ="
+    , "    NumericRange (rangeFrom : v) (rangeTo : v) (rangeExclusive : Bool)"
     , ""
     , "trait Rangeable (v : Type) ="
-    , "    range : v -> v -> Bool -> Range v"
+    , "    range : v -> v -> Bool -> NumericRange v"
     , ""
-    , "(..) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> Range v"
+    , "(..) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> NumericRange v"
     , "let (..) lo hi = range lo hi False"
     , ""
-    , "(..<) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> Range v"
+    , "(..<) : forall (v : Type). (@_ : Rangeable v) -> v -> v -> NumericRange v"
     , "let (..<) lo hi = range lo hi True"
     , ""
     , "instance Rangeable Integer ="
-    , "    let range lo hi excl = MkRange lo hi excl"
+    , "    let range lo hi excl = NumericRange lo hi excl"
     , ""
     , "instance Rangeable Nat ="
-    , "    let range lo hi excl = MkRange lo hi excl"
+    , "    let range lo hi excl = NumericRange lo hi excl"
     , ""
     , "instance Rangeable UnicodeScalar =" -- §6.4
-    , "    let range lo hi excl = MkRange lo hi excl"
+    , "    let range lo hi excl = NumericRange lo hi excl"
     , ""
     , "orderingCode : Ordering -> Integer"
     , "let orderingCode o ="
@@ -648,6 +675,23 @@ preludeSource =
     , ""
     , "pure : forall (e : Type) (a : Type). a -> IO e a"
     , "let pure x = ioPure x"
+    , ""
+    , -- §28.2.2 computation-carrier helpers and the IO e instances
+      "pureIO : forall (e : Type) (a : Type). a -> IO e a"
+    , "let pureIO x = ioPure x"
+    , ""
+    , "bindIO : forall (e : Type) (a : Type) (b : Type). IO e a -> (a -> IO e b) -> IO e b"
+    , "let bindIO m f = ioBind m f"
+    , ""
+    , "instance Functor (IO e) ="
+    , "    let map f m = ioBind m (\\x -> ioPure (f x))"
+    , ""
+    , "instance Applicative (IO e) ="
+    , "    let pureA x = ioPure x"
+    , "    let liftA2 f a b = ioBind a (\\x -> ioBind b (\\y -> ioPure (f x y)))"
+    , ""
+    , "instance Monad (IO e) ="
+    , "    let (>>=) m f = ioBind m f"
     , ""
     , -- §18.1.13: `empty` (the aborted alternative) resolves through
       -- Monoid, so STM-shaped do-scopes can sequence it as an action

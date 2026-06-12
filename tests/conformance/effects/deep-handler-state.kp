@@ -1,0 +1,30 @@
+--! assertNoErrors
+--! assertEval result 20
+
+-- §9.3.1.1 / §18.1.15 / §18.1.22: a scoped effect declares operations
+-- with one-shot (default) resumption quantities; a deep handler
+-- reinstalls itself around each resumption, and runPure eliminates the
+-- fully handled computation (§18.1.14).
+module main
+
+result : Int
+let result : Int =
+    block
+        scoped effect State =
+            1 get : Unit -> Int
+            1 put : Int -> Unit
+
+        let comp : Eff <[State : State]> Int =
+            do
+                let a <- State.get ()
+                let _ <- State.put 5
+                let b <- State.get ()
+                pure (a + b)
+
+        let handled =
+            deep handle State comp with
+                case return x -> pure x
+                case get _ k -> k 10
+                case put _ k -> k ()
+
+        runPure handled

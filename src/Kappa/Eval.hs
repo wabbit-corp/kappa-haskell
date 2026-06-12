@@ -20,6 +20,7 @@ module Kappa.Eval
   , matchPat
   , vapp
   , evalPurePrim
+  , evalPrimCtx
   , lookupEnv
   ) where
 
@@ -152,7 +153,7 @@ vapp ctx fv ic av = case fv of
     | ic == Impl -> VPrim p args
     | otherwise ->
         let args' = args ++ [av]
-         in case evalPurePrim p (map (force ctx) args') of
+         in case evalPrimCtx ctx p (map (force ctx) args') of
               Just v -> v
               Nothing -> VPrim p args'
   -- stuck application: keep the icit so 'force' can re-apply once the
@@ -218,7 +219,7 @@ force ctx = go (if ecRuntime ctx then 200000000 else 1000 :: Int)
         , reapplicable f' ->
             go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' ic a) rest)
       VPrim p sp
-        | Just v' <- evalPurePrim p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
+        | Just v' <- evalPrimCtx ctx p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
       VProjN inner fld
         | VRecordV fs <- go (fuel - 1) inner
         , Just x <- lookup fld fs ->
@@ -361,7 +362,7 @@ forceQ ctx = go (1000 :: Int)
         , progressed f' ->
             go (fuel - 1) (foldl (\acc x -> vapp ctx acc Expl x) (vapp ctx f' (markerIcit p) a) rest)
       VPrim p sp
-        | Just v' <- evalPurePrim p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
+        | Just v' <- evalPrimCtx ctx p (map (go (fuel - 1)) sp) -> go (fuel - 1) v'
       _ -> v
       where
         markerIcit p = if p == "__stuck_appI" then Impl else Expl
@@ -554,7 +555,7 @@ evalPurePrim p args = case (p, args) of
   -- §29.3 hash mixing: FNV-1a over a 64-bit lane, deterministic per run
   ("__hashMixInt", [VLit (LitInt s), VLit (LitInt v)]) -> int (fnvMixInteger s v)
   ("__hashMixDouble", [VLit (LitInt s), VLit (LitDouble d)]) ->
-    int (fnvMixInteger s (fromIntegral (castDoubleToWord64 d)))
+    int (fnvMixInteger s (toInteger (castDoubleToWord64 d)))
   ("__hashMixString", [VLit (LitInt s), VLit (LitStr t)]) ->
     int (fnvMixBytes s (TE.encodeUtf8 t))
   ("__hashMixBytes", [VLit (LitInt s), VLit (LitBytes bs)]) ->
@@ -568,6 +569,9 @@ evalPurePrim p args = case (p, args) of
   ("intToDouble", [VLit (LitInt a)]) -> dbl (fromInteger a)
   ("natOfInt", [VLit (LitInt a)]) -> int a
   ("natToInt", [VLit (LitInt a)]) -> int a
+  -- partial: a negative Int has no Nat image; the application stays
+  -- stuck and is reported as a runtime error
+  ("intToNat", [VLit (LitInt a)]) | a >= 0 -> int a
   -- discard a (linear) value: implicit type argument + the value
   ("unsafeConsume", [_, _]) -> Just (VCtor (GName (ModuleName ["std", "prelude"]) "Unit") [])
   -- §20 collection carriers are list-backed at runtime (§20.10.11
@@ -600,3 +604,73 @@ evalPurePrim p args = case (p, args) of
     fnvMixInteger s v =
       foldl fnvMixByte s [fromIntegral ((v `div` (256 ^ i)) `mod` 256) :: Word8 | i <- [0 .. 7 :: Int]]
     identicalIEEE a b = (a == b && (1 / a == 1 / b)) || (a /= a && b /= b)
+
+-- | Context-aware primitive reduction: the pure table first, then the
+-- §18.1 algebraic-effect kernel (whose continuations are ordinary
+-- closure values, so the driver needs application).
+evalPrimCtx :: EvalCtx -> Text -> [Value] -> Maybe Value
+evalPrimCtx ctx p args = case evalPurePrim p args of
+  Just v -> Just v
+  Nothing -> evalEffPrim ctx p args
+
+-- | The §30.2.2.7 effect kernel over the runtime 'Eff' tree
+-- representation: @__EffPure v@ for a finished computation and
+-- @__EffOp label op payload cont@ for a suspended operation, where
+-- @cont@ is the captured continuation (a closure — re-entrant, so
+-- multi-shot resumption per §32.2.14 is supported).
+evalEffPrim :: EvalCtx -> Text -> [Value] -> Maybe Value
+evalEffPrim ctx p args = case (p, args) of
+  -- runPure : Eff <[ ]> a -> a (§18.1.14)
+  ("runPure", [comp]) -> case force ctx comp of
+    VCtor (GName _ "__EffPure") [v] -> Just v
+    _ -> Nothing
+  -- monadic bind over the tree (Eff is a Monad, §18.1.14)
+  ("__effBind", [m, f]) -> case force ctx m of
+    VCtor (GName _ "__EffPure") [v] -> Just (vapp ctx f Expl v)
+    VCtor g@(GName _ "__EffOp") [l, op, a, cont] ->
+      -- Op l op a (\x -> __effBind (cont x) f)
+      Just (VCtor g [l, op, a, VLam Expl QW "x" (Closure [f, cont] bindBody)])
+    _ -> Nothing
+  -- __handleEff deep label ret ops comp (HandleShallow plus the
+  -- §18.1.22 deep recursive driver)
+  ("__handleEff", [deepV, label, ret, ops, comp]) -> case force ctx comp of
+    VCtor (GName _ "__EffPure") [v] -> Just (vapp ctx ret Expl v)
+    VCtor g@(GName _ "__EffOp") [l, opName, a, cont]
+      | sameLabel (force ctx l) (force ctx label) ->
+          -- nearest matching handler intercepts (§18.1.18); a deep
+          -- handler's k reinstalls itself around the resumption
+          case (force ctx opName, force ctx ops) of
+            (VLit (LitStr opn), VRecordV fs)
+              | Just clause <- lookup opn fs ->
+                  let k
+                        | isTrueV (force ctx deepV) = reinstall cont
+                        | otherwise = cont
+                   in Just (vapp ctx (vapp ctx clause Expl a) Expl k)
+            _ -> Nothing
+      | otherwise ->
+          -- operations at other labels propagate outward unchanged,
+          -- with this handler still installed inside the resumption
+          Just (VCtor g [l, opName, a, reinstall cont])
+    _ -> Nothing
+    where
+      reinstall cont = VLam Expl QW "x" (Closure [cont, ops, ret, label, deepV] handleBody)
+  _ -> Nothing
+  where
+    effBindG = CGlob (GName (ModuleName ["std", "prelude"]) "__effBind")
+    handleEffG = CGlob (GName (ModuleName ["std", "prelude"]) "__handleEff")
+    appE = CApp Expl
+    -- env [f, cont], binder x: __effBind (cont x) f
+    bindBody = appE (appE effBindG (appE (CVar 2) (CVar 0))) (CVar 1)
+    -- env [cont, ops, ret, label, deepV], binder x:
+    -- __handleEff deepV label ret ops (cont x)
+    handleBody =
+      appE
+        (appE (appE (appE (appE handleEffG (CVar 5)) (CVar 4)) (CVar 3)) (CVar 2))
+        (appE (CVar 1) (CVar 0))
+    sameLabel a b = case (a, b) of
+      (VGlobN g1 [], VGlobN g2 []) -> g1 == g2
+      (VCtor g1 [], VCtor g2 []) -> g1 == g2
+      _ -> False
+    isTrueV = \case
+      VCtor (GName _ "True") [] -> True
+      _ -> False

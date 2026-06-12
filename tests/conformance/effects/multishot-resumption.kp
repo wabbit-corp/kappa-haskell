@@ -1,0 +1,29 @@
+--! assertNoErrors
+--! assertEval multi 21
+
+-- §18.1.17 / §18.1.20.1 / §32.2.14: an explicitly declared multi-shot
+-- (ω) operation may resume the same captured continuation twice; each
+-- application is a fresh re-entry of the captured suffix.
+module main
+
+multi : Int
+let multi : Int =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                let b <- Choice.choose ()
+                if b then 1 else 20
+
+        let handled =
+            deep handle Choice comp with
+                case return x -> pure x
+                case choose _ k ->
+                    do
+                        let l <- k True
+                        let r <- k False
+                        pure (l + r)
+
+        runPure handled

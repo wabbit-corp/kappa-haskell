@@ -1,0 +1,16 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_USING_EXPLICIT_QUANTITY
+
+-- §9.3 / §18.2: a `using` item always binds its pattern with borrowed
+-- access at the default quantity ω; explicit quantity or borrow
+-- markers are not permitted in a usingBind.
+module main
+
+data File : Type =
+    Handle Int
+
+let openFile name = pure (Handle 1)
+
+let main : IO Unit = do
+    using & file <- openFile "data.txt"
+    printInt 0

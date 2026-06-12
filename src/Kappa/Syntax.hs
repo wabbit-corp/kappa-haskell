@@ -315,7 +315,9 @@ data DoItem
   | DoVar !Name !Expr !Span -- ^ @var x = e@
   | DoAssign !Name !Bool !Expr !Span -- ^ @x = e@ \/ @x <- e@ (monadic?)
   | DoExpr !Expr
-  | DoUsing !Pattern !Expr !Span
+  | DoUsing !(Maybe Span) !Pattern !Expr !Span
+  -- ^ @using pat <- e@; the span flags an explicit quantity\/borrow
+  -- prefix, which §9.3 forbids (using always binds borrowed at ω)
   | DoDefer !(Maybe Name) !Expr !Span -- ^ @defer[\@label] e@
   | DoReturn !(Maybe Name) !(Maybe Expr) !Span
   | DoBreak !(Maybe Name) !Span

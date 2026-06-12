@@ -1,0 +1,29 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §18.1.16 / §18.1.21: the handler-bound resumption k carries the
+-- operation's declared resumption quantity; resuming a one-shot
+-- (default quantity 1) resumption twice is a quantity error.
+module main
+
+bad : Int
+let bad : Int =
+    block
+        scoped effect Ask =
+            ask : Unit -> Bool
+
+        let comp : Eff <[Ask : Ask]> Int =
+            do
+                let _ <- Ask.ask ()
+                pure 1
+
+        let handled =
+            deep handle Ask comp with
+                case return y -> pure y
+                case ask _ k ->
+                    do
+                        let a <- k True
+                        let _ <- k False
+                        pure a
+
+        runPure handled

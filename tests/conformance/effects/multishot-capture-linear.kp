@@ -1,0 +1,30 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_CONTINUATION_CAPTURE
+
+-- §18.1.20 call-site capture rule: invoking a multi-shot operation
+-- captures the suffix up to the handler boundary as a reusable
+-- resumption, so a quantity-1 binding live in that suffix would be
+-- duplicated; compilation fails at the operation site.
+module main
+
+bad : (1 x : Int) -> Int
+let bad (1 x : Int) : Int =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                let b <- Choice.choose ()
+                if b then x else x
+
+        let handled =
+            deep handle Choice comp with
+                case return y -> pure y
+                case choose _ k ->
+                    do
+                        let a <- k True
+                        let _ <- k False
+                        pure a
+
+        runPure handled
