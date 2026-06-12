@@ -1,0 +1,69 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n7\n5\n4\nTrue\n5\nFalse\nhi\n"
+
+-- §7.2: type positions select the type facet of a same-spelling data
+-- family — including heads of nested parenthesized type arguments such
+-- as 'Wrap (Wrap Integer)', 'List (Wrap Integer)', and
+-- 'Pair (Wrap Integer) Bool'.
+
+data Wrap (a : Type) : Type =
+    Wrap a
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+unwrap : forall (a : Type). Wrap a -> a
+let unwrap w =
+    match w
+    case Wrap x -> x
+
+pairFst : forall (a : Type) (b : Type). Pair a b -> a
+let pairFst p =
+    match p
+    case Pair x _ -> x
+
+pairSnd : forall (a : Type) (b : Type). Pair a b -> b
+let pairSnd p =
+    match p
+    case Pair _ y -> y
+
+-- same-spelling head applied in nested argument position (the round-2
+-- MAJOR repro): the inner 'Wrap Integer' must elaborate in the type
+-- facet, not as the data constructor applied to 'Integer : Type'.
+ww : Wrap (Wrap Integer)
+let ww = Wrap (Wrap 1)
+
+www : Wrap (Wrap (Wrap Integer))
+let www = Wrap (Wrap (Wrap 7))
+
+lw : List (Wrap Integer)
+let lw = [Wrap 2, Wrap 3]
+
+sumUnwrapped : List (Wrap Integer) -> Integer
+let sumUnwrapped xs =
+    match xs
+    case Nil -> 0
+    case w :: rest -> unwrap w + sumUnwrapped rest
+
+pw : Pair (Wrap Integer) Bool
+let pw = Pair (Wrap 4) True
+
+pp : Pair (Pair Integer Bool) (Wrap String)
+let pp = Pair (Pair 5 False) (Wrap "hi")
+
+-- a term-level binding of type 'Type' is also a type position for
+-- facet selection (checked against a universe)
+t : Type
+let t = Wrap Integer
+
+main : UIO Unit
+let main = do
+    println (unwrap (unwrap ww))
+    println (unwrap (unwrap (unwrap www)))
+    println (sumUnwrapped lw)
+    println (unwrap (pairFst pw))
+    println (pairSnd pw)
+    println (pairFst (pairFst pp))
+    println (pairSnd (pairFst pp))
+    println (unwrap (pairSnd pp))

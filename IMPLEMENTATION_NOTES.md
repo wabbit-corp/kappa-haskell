@@ -48,7 +48,10 @@ parser (~2.6k) dominate.
 typed enough (propositional `(=)`, universes, records in type position)
 that a separate type grammar would duplicate the expression parser. Type
 positions run the same elaborator with a "prefer the type facet" name
-rule (§7.2).
+rule (§7.2). The rule is recursive: in `check`, a name or application
+checked against a universe re-enters the type-facet path, so heads of
+nested parenthesized type arguments (`Wrap (Wrap Integer)`,
+`List (Wrap Integer)`) also resolve in the type facet.
 
 **Flat operator chains, re-associated after parsing.** Fixity is
 block-scoped and declarable mid-module (§5.5.2), so the parser cannot

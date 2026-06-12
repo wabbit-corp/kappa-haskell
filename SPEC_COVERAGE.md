@@ -14,7 +14,7 @@ Appendix T. Statuses:
 * **Not implemented** — no meaningful support.
 
 Test references are paths under `tests/conformance/` (the in-tree
-suite, 68/68 passing) or `examples/`. The external black-box corpus
+suite, 69/69 passing) or `examples/`. The external black-box corpus
 tally is in `tests/external-results.md` and TESTING.md.
 
 ## Part I. Language Contract and Conformance
@@ -50,7 +50,7 @@ tally is in `tests/external-results.md` and TESTING.md.
 | §6.5 Prefixed quoted literals | Parsed-only | Plain scalar literals work; `g`/`b` handler forms → `E_UNSUPPORTED`. |
 | §6.6 Unit and tuples | Implemented | `Unit`; tuples as positional records, tuple patterns (`match/tuple-record-patterns.kp`), punned tuples. |
 | §7.1 Ordinary lexical lookup | Implemented | Scope-stack lookup during elaboration; `names/unresolved.kp`, `names/duplicate.kp`. §7.1.1 kind-qualified name expressions: not implemented. |
-| §7.2 Same-spelling families, type facet | Partial | Type positions prefer the type facet of a head name (`Check.hs` "type-facet lookup"); the full data-family/static-member story is absent. |
+| §7.2 Same-spelling families, type facet | Partial | Type positions prefer the type facet of a head name (`Check.hs` "type-facet lookup"), recursively: any application checked against a universe re-enters the type-facet path, so nested parenthesized type arguments like `Wrap (Wrap Integer)`, `List (Wrap Integer)`, `Pair (Wrap Integer) Bool` elaborate correctly (`types/nested-same-spelling.kp`). Residual: a same-spelling name in a *non-sort* type argument position (e.g. an argument checked against `Type -> Type`) still resolves in the term facet; unreachable in practice since higher-kinded data parameters are themselves unsupported. The full data-family/static-member story is absent. |
 | §7.3 Dotted name resolution | Partial | Projection, method-style member access, safe navigation; module-qualified dotted paths only within the loaded-suite module graph. |
 | §8 Modules, imports, exports, visibility, opacity | Partial | Multi-file directory suites compile in import order with cycle detection (§8.2; `Kappa.Pipeline`). Import statements select scope; export lists, visibility/opacity enforcement, URL imports, and import hashes are not implemented. |
 
@@ -59,7 +59,7 @@ tally is in `tests/external-results.md` and TESTING.md.
 | Section | Status | Notes / tests |
 | --- | --- | --- |
 | §9 Declarations and definitions | Partial | Signature + `let` pairs, `data`, `type` aliases, `trait`, `instance`, `fixity`, `import`; two passes (headers then bodies) per the preceding-signature recursion rule (§9.2, §15.16). `derive`, `pattern` (active patterns), projection declarations, top-level splices: Parsed-only → `E_UNSUPPORTED` (`tests/conformance/shape/decl-kinds.kp` counts declaration kinds). |
-| §10 ADTs and type aliases | Implemented | Parameterized `data` with named constructor fields, constructor-arity checking (`application/ctor-arity.kp`), named constructor application with field defaults (§10.1.1: a missing label is permitted iff the parameter has a default, which is elaborated at the application site — `records/ctor-field-defaults.kp`, `records/ctor-field-default-missing.kp`; defaults referring to earlier fields of the same constructor are not supported), transparent aliases (`Int`, `UIO`, …). GADT-style indexed results: "GADT-lite" — the constructor result is unified with the scrutinee type at match (§17.1.2 approximation). |
+| §10 ADTs and type aliases | Implemented | Parameterized `data` with named constructor fields, constructor-arity checking (`application/ctor-arity.kp`), named constructor application with field defaults (§10.1.1: a missing label is permitted iff the parameter has a default, which is elaborated at the application site — `records/ctor-field-defaults.kp`, `records/ctor-field-default-missing.kp`; defaults referring to earlier fields of the same constructor are not supported), transparent aliases (`Int`, `UIO`, …). Same-spelling constructor/type families work in nested type positions (`types/nested-same-spelling.kp`; see §7.2 row for the residual non-sort-position limitation). Data parameters must have kind `Type`: a higher-kinded parameter such as `(f : Type -> Type)` is accepted syntactically but its application in a field type fails (`E_APPLICATION_NON_CALLABLE`). GADT-style indexed results: "GADT-lite" — the constructor result is unified with the scrutinee type at match (§17.1.2 approximation). |
 | §11.1 Universes | Partial | `Type`, `Type0..n`, `*` spellings; cumulativity `Type m ≤ Type n` for `m ≤ n` (§11.1.1). No universe polymorphism; records/Pi types currently land in `Type 0`. |
 | §11.2 Classifiers | Not implemented | No `Row`/`Label`/intrinsic classifier names. |
 | §11.3 Implicit binders, universalization | Partial | §11.3.3 approximated: free ASCII-lowercase heads in top-level signatures, instance heads, and instance premises that resolve to no global are implicitly universalized as erased implicit `Type` binders (`application/lambda-hof.kp` uses `apply2 : (b -> a -> b) -> b -> a -> b`). Block-local signatures are not universalized. |

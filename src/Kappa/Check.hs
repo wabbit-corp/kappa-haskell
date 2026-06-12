@@ -887,6 +887,15 @@ check ctx expr expected0 = do
           (tm, ty) <- inferT ctx (EVar n)
           expectType ctx (nameSpan n) ty expected
           pure tm
+    -- §7.2: an application checked against a universe is a type
+    -- position, so its head prefers the type facet of a same-spelling
+    -- data family; arguments of sort 'Type' recurse through this same
+    -- case, covering nested parenthesized type applications such as
+    -- 'Wrap (Wrap Integer)' or 'List (Wrap Integer)'.
+    (EApp _ _, VSort _) -> do
+      (tm, ty) <- inferT ctx expr
+      expectType ctx (exprSpan expr) ty expected
+      pure tm
     (EIf alts mels sp, _) -> checkIf ctx alts mels sp expected
     (EMatch scrut cases sp, _) -> checkMatch ctx scrut cases sp expected
     (EDo _ items sp, _) -> do

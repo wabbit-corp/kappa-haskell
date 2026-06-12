@@ -4,7 +4,7 @@
 
 ```
 cabal build                                   # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance # in-tree suite (68/68)
+cabal run -v0 kappa -- test tests/conformance # in-tree suite (69/69)
 cabal run -v0 kappa -- test examples          # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp   # one fixture
 tools/run-external-fixtures.sh                # external corpus (see below)
@@ -64,7 +64,7 @@ directives are harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **68/68 passing**, zero unsupported, zero
+`tests/conformance/` — **69/69 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
@@ -100,10 +100,10 @@ Current tally over **925 fixture suites**:
 
 | outcome | count |
 | --- | --- |
-| pass | 162 |
+| pass | 163 |
 | fail | 509 |
 | unsupported | 219 |
-| harness error | 35 |
+| harness error | 34 |
 
 (Two `traits.members.*` fixtures that passed in earlier tallies did so
 only through a since-fixed unification bug that let ill-typed terms
