@@ -152,6 +152,7 @@ data Scanned
   = SMode !Text
   | SEntry !Text
   | SScriptMode -- ^ §T.4 scriptMode: no §8.1 path-derived module names
+  | SBackend !Text -- ^ §T.4 backend profile selection (compile\/run only)
   | SConfigNoop -- ^ accepted configuration with no harness effect
   | SUnsupported !Text -- ^ §T.8 unsupported (requires unmet, x- extension, …)
   | SAssert !Assertion
@@ -280,7 +281,10 @@ parseDirective allLines lno body =
       "scriptMode" -> ok SScriptMode
       "backend" -> case args of
         ["interpreter"] -> ok SConfigNoop -- the only provided profile
-        [p] -> unsup ("backend " <> p <> " is not provided")
+        -- §T.4: 'backend <profile>' selects the profile for 'compile'
+        -- and 'run' tests only; whether it makes the test unsupported
+        -- is decided once the effective mode is known
+        [p] -> ok (SBackend p)
         _ -> bad "malformed 'backend' directive"
       "entry" -> case args of
         [q] -> ok (SEntry q)
@@ -664,6 +668,7 @@ runSuiteWith packageMode label root files mktest preDiags = do
           let modes = [m | (_, _, SMode m) <- scanned]
               entries = [e | (_, _, SEntry e) <- scanned]
               unsups = [u | (_, _, SUnsupported u) <- scanned]
+              backends = [b | (_, _, SBackend b) <- scanned]
               asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
               scripted = not (null [() | (_, _, SScriptMode) <- scanned])
           case () of
@@ -673,9 +678,16 @@ runSuiteWith packageMode label root files mktest preDiags = do
                   pure (TestReport label Unsupported (head unsups))
               | otherwise -> do
                   let mode = case modes of m : _ -> m; [] -> "check"
-                  if not (null entries) && mode /= "run"
-                    then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                    else executeSuite (packageMode && not scripted) label root files mode entries asserts preDiags
+                  -- §T.4: 'backend <profile>' selects the backend for
+                  -- 'compile' and 'run' tests; a foreign profile makes
+                  -- those tests unsupported, while a default-mode
+                  -- 'check' test is unaffected by backend selection
+                  if not (null backends) && mode `elem` ["compile", "run"]
+                    then pure (TestReport label Unsupported ("backend " <> head backends <> " is not provided"))
+                    else
+                      if not (null entries) && mode /= "run"
+                        then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
+                        else executeSuite (packageMode && not scripted) label root files mode entries asserts preDiags
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 

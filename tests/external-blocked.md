@@ -13,7 +13,7 @@ fixture falls in exactly one class:
    spec-compatible but not implemented here; the failure is honest,
    retained as `fail`, and queued (cited to the governing section).
 
-### Outside Spec.md: spec-mandated `unsupported` (10 fixtures)
+### Outside Spec.md: spec-mandated `unsupported` (2 fixtures)
 
 Evidence for each fixture is the quoted directive reason in the
 "Unsupported, by reason" breakdown above and the per-fixture line in
@@ -22,10 +22,16 @@ directives are preconditions. If any required condition is not met,
 the test result is **unsupported**, not failed."* §T.8 defines the
 `unsupported` outcome accordingly.
 
-- **`requires backend dotnet`** (8): `fuzz.pending.kbackendir.*`.
-  §T.4 `requires backend <profile>` is a precondition; no `dotnet`
-  backend exists here (no §27 backend profiles are implemented; the
-  only provided profile is `backend interpreter`).
+(The 8 `fuzz.pending.kbackendir.*` fixtures were previously listed
+here as `requires backend dotnet` preconditions. That was wrong on
+the evidence: they carry the plain configuration directive
+`--! backend dotnet`, not `requires backend dotnet`, and §T.4 says
+`backend <profile>` "selects the backend profile for **compile and
+run** tests" — these are default-mode `check` suites with pure
+diagnostic assertions, so backend selection does not apply. The
+harness now runs them as check suites: 6 pass; the 2 diagnostic-shape
+differences are tracked in the gaps table below.)
+
 - **`requires capability incremental`** (2:
   `patch.import_stability.reload_same_identity`,
   `static_objects.incremental_static_object_identity_body_change`):
@@ -54,7 +60,7 @@ documented compatibility extensions, as §T.1 permits (see TESTING.md):
 future private directive without an evident portable meaning remains
 a harness error.
 
-### Spec conflicts (fixture expectation contradicts Spec.md; 9 fixtures)
+### Spec conflicts (fixture expectation contradicts Spec.md; 8 fixtures)
 
 - `core_semantics.evaluation.positive`
   (`runtime_error_division_by_zero.kp`) asserts `let result = 1 / 0`
@@ -137,20 +143,7 @@ a harness error.
   `E_TYPE_MISMATCH` matches the expected spelling — the residual
   disagreement is the mandated rejection of the well-typed first
   probe, which contradicts §14.3.1.
-- `traits.members.negative_value_position_member_reference` asserts
-  exactly two errors. Both member references are rejected here
-  (unsatisfiable `Monoid (f a)` / `Releasable m a` goals,
-  §3.2.4 `kappa.implicit.unsolved` ↔ portable `E_TYPE_MISMATCH`), but
-  `anyRelease x = release x` is *one* ill-typed expression that this
-  implementation reports twice (the unsolved carrier `?m Unit` also
-  fails against the declared `Unit` result). The fixture's exact-count
-  expectation encodes the other implementation's one-diagnostic
-  lowering of the same condition; the conditions themselves are
-  rejected consistently with §3.2.4. Kept here because the *count*
-  pin, like the two entries above, is implementation-shaped rather
-  than spec-derived (§3.1.11 sets quality goals, not exact counts).
-
-### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 13 fixtures)
+### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 17 fixtures)
 
 Diagnostic-spelling notes below use §3.1.4: only the listed portable
 aliases are normative comparison keys; both implementations' other
@@ -170,6 +163,10 @@ both directions (TESTING.md).
 | `fuzz.pending.reject_constructor_runtime_type_field` | an unclosed bracket inside a constructor alternative swallows the rest of the file (newlines are soft inside brackets, §5.2), producing one syntax error where the corpus recovers at the next declaration and reports two; in-bracket recovery is queued (§3.1.14A). | §5.2, §3.1.14A |
 | `fuzz.pending.reject_malformed_constructor_keyword` | same unclosed-bracket recovery gap (one error vs two). | §5.2, §3.1.14A |
 | `fuzz.pending.reject_dotted_value_root` | `let i0 = i0.right` is rejected here as a member access on an undetermined receiver (the own name resolves to the §9.2 pre-registration so sig-less recursion can be reported); the corpus's resolution model leaves the own name unresolved (`E_NAME_UNRESOLVED`, twice — the failed declaration also binds nothing). Spec fixes neither model's diagnostic spelling (§9.2/§15 only require rejection of sig-less recursion). | §9.2, §15, §7.1 |
+| `fuzz.pending.kbackendir.reject_invalid_application_erased_type_argument` | the malformed `type I3 = (1 i0 : I3) : Int = i1` line yields a syntax error here in addition to the expected `E_APPLICATION_NONCALLABLE` (2 errors vs the corpus's 1); the corpus's recovery silently absorbs the malformed alias tail. Same §3.1.14A recovery-shape family as the entries above. | §3.1.14A, §5.2 |
+| `fuzz.pending.kbackendir.reject_invalid_application_later_zero_arity` | `let i1 = i1 "s"` inside a do block, with sig-less top-level `let i1 = 1` declared *later* in the file: the non-recursive do-let RHS (§9.3.1) resolves the own name to the outer scope, where this implementation's in-order elaboration of sig-less top-level lets has not yet registered `i1` → `E_NAME_UNRESOLVED`; the corpus resolves the forward reference and reports `E_APPLICATION_NONCALLABLE` (`1 "s"`). Forward references to *sig-less* later top-level lets are the gap (signature-carrying forward references resolve fine here). | §7.1, §9.2, §15 |
+| `traits.instances.negative_unresolved_name_in_instance_body` | an unresolved name inside an instance member body is rejected here with `E_NAME_UNRESOLVED` (§3.2.2 `kappa.name.unresolved`); the corpus expects the spelling `E_TYPE_MISMATCH`, pinning its own lowering (the fixture's own comment says the name previously "lowered as bare names and crashed at runtime" there). §3.1.4's portable aliases do not map an unresolved-name rejection to `E_TYPE_MISMATCH`; the static rejection itself is common ground. | §3.2.2, §3.1.4 |
+| `traits.members.negative_value_position_member_reference` | asserts exactly two errors; both member references are rejected here (unsatisfiable `Monoid (f a)` / `Releasable m a` goals, §3.2.4 `kappa.implicit.unsolved` ↔ portable `E_TYPE_MISMATCH`), but `anyRelease x = release x` is *one* ill-typed expression this implementation reports twice (the unsolved carrier `?m Unit` also fails against the declared `Unit` result). Same single-cause cascade-suppression gap as `fuzz.pending.reject_builtin_arithmetic_non_numeric_operand` (§3.1.11 quality invariants). | §3.1.11, §16.3.3 |
 | `fuzz.pending.reject_invalid_do_bind_indented_continuation` | a more-indented line after a complete do-bind RHS parses as a §5.2 continuation (application) here and fails as `E_APPLICATION_NONCALLABLE`; the corpus's layout rejects it as a syntax error. The §5.4 layout text does not decide do-item continuation lines explicitly. | §5.4, §18.4 |
 | `fuzz.pending.reject_invalid_indented_expression_continuation` | same layout-continuation difference (our parse yields one downstream type error, the corpus's two). | §5.4 |
 | `parser.recovery.negative_malformed_tuple_parameter_no_crash` | `let i1 (1 i1 :)3` — declaration-level recovery reports once here; the corpus's recovery yields two diagnostics. No crash either way (the §3.1.14A minimum contract is met); cascade-shape parity is queued. | §3.1.14A |

@@ -56,7 +56,7 @@ Implemented:
 | `entry NAME` | alternate entry point |
 | `scriptMode` | compiles the suite without §8.1 path-derived module names (§T.4; module headers stand alone); `requires mode script` still classifies unsupported |
 | `packageMode`, `dumpFormat json\|sexpr`, `requires mode package` | accepted no-ops (defaults); in package mode a module header that disagrees with the §8.1 path-derived name is `E_MODULE_PATH_MISMATCH` |
-| `backend interpreter`, `requires backend interpreter` | accepted (the in-process interpreter) |
+| `backend interpreter`, `requires backend interpreter` | accepted (the in-process interpreter); a foreign `backend <profile>` selection classifies `compile`/`run` tests unsupported but leaves default-mode `check` tests unaffected (§T.4: it "selects the backend profile for compile and run tests") |
 | `requires capability runTask\|pipelineTrace` | met; other capabilities classify unsupported |
 | `requires capability legacyCharAlias\|unicodeSourceWarnings` | met (documented §T.1 compatibility extensions: the §28.2 `Char` compatibility alias; the §3.1.3 source-hygiene warnings) |
 | `assertNoErrors`, `assertNoWarnings` | |
@@ -164,13 +164,13 @@ raw per-fixture log at `/tmp/external-raw.log`.
 first error message) and `/tmp/triage-summary.txt` (per-category
 outcome counts and top error codes).
 
-Current tally over **945 fixture suites** (one result per fixture):
+Current tally over **948 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 913 |
-| fail | 22 |
-| unsupported | 10 |
+| pass | 921 |
+| fail | 25 |
+| unsupported | 2 |
 | harness error | 0 |
 
 There are no harness errors: every private, non-`x-` directive the
@@ -181,11 +181,9 @@ implemented as a documented compatibility extension, as §T.1 permits
 `assertEvalErrorContains`, `assertDoItemDescriptors`,
 `assertInoutParameters`, `assertContainsTokenTexts` — see the
 directive table above); per §T.3 any future unknown non-extension
-directive remains a harness error. The 10 unsupported are all
-spec-mandated: `requires backend dotnet` (8 fixtures; §T.4 — no
-backend profiles exist here) and `requires capability incremental`
-(2; §T.7 presumes Chapter 34 session reuse, which this implementation
-does not claim). `tests/external-results.md` carries the full
+directive remains a harness error. The 2 unsupported are
+spec-mandated: `requires capability incremental` (§T.7 presumes
+Chapter 34 session reuse, which this implementation does not claim). `tests/external-results.md` carries the full
 breakdown: a per-category table, the §T.8 classification rationale
 with spec citations, and a "Blocked classifications" section
 (maintained in `tests/external-blocked.md`, appended on regeneration;
@@ -197,8 +195,8 @@ metaprogramming lane (macros, deriving-shape, query sinks, the
 §21.6 convenience reflection queries, §23 staged code), the
 §14.2.1 associated-static-member/supertrait lane, static-object
 kind selectors, import kind selectors/re-exports, and the
-checked-arithmetic branch-refinement lane are fully clear; the 22
-remaining failures are 9 cited spec conflicts and 13 tracked gaps
+checked-arithmetic branch-refinement lane are fully clear; the 25
+remaining failures are 8 cited spec conflicts and 17 tracked gaps
 (recovery-cascade parity, §13.2.11 existentials, layout-continuation
 and diagnostic-code selection deltas at application boundaries) —
 see the per-fixture tables at the end of
