@@ -1,0 +1,36 @@
+--! assertNoErrors
+--! assertEval n1 "x"
+--! assertEval grownCity "Lyon"
+--! assertEval grownAge 36
+
+module main
+
+-- §11.3.1A elimination: a row-polymorphic function applies to closed
+-- records — the row tail solves to the closed residual fields, the
+-- LacksRec obligation is discharged by the compiler-owned
+-- introduction rule (solvable iff the tail lacks the label), and the
+-- §13.2.6 row extension computes at runtime.
+
+readName : forall (r : RecRow). (name : String | r) -> String
+let readName (@0 r : RecRow) (rec : (name : String | r)) : String = rec.name
+
+addAge :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (name : String | r) -> (name : String, age : Int | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }
+
+-- exact closed record: the residual row is empty
+n1 : String
+let n1 = readName (name = "x")
+
+-- closed record with extra fields: they become the residual row
+grown : (city : String, name : String, age : Int)
+let grown = addAge (name = "y", city = "Lyon")
+
+grownCity : String
+let grownCity = grown.city
+
+grownAge : Int
+let grownAge = grown.age

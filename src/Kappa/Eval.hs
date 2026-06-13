@@ -524,6 +524,11 @@ evalPurePrim p args = case (p, args) of
   ("divInt", [VLit (LitInt a), VLit (LitInt b)]) | b /= 0 -> int (a `quot` b)
   ("modInt", [VLit (LitInt a), VLit (LitInt b)]) | b /= 0 -> int (a `rem` b)
   ("negInt", [VLit (LitInt a)]) -> int (negate a)
+  -- §13.2.6/§11.3.1A row extension: append the field to the record
+  -- value, keeping canonical lexicographic field order (§31.4)
+  ("__rowExtend", [VRecordV fs, VLit (LitStr l), v])
+    | l `notElem` map fst fs ->
+        Just (VRecordV (insertField (l, v) fs))
   ("eqInt", [VLit (LitInt a), VLit (LitInt b)]) -> bool (a == b)
   ("ltInt", [VLit (LitInt a), VLit (LitInt b)]) -> bool (a < b)
   ("leInt", [VLit (LitInt a), VLit (LitInt b)]) -> bool (a <= b)
@@ -637,6 +642,10 @@ evalPurePrim p args = case (p, args) of
   ("genlet", [c@(VPrim "__codeQuote" _)]) -> Just c
   _ -> Nothing
   where
+    insertField f [] = [f]
+    insertField f@(l, _) (g@(l', _) : rest)
+      | l <= l' = f : g : rest
+      | otherwise = g : insertField f rest
     int = Just . VLit . LitInt
     dbl = Just . VLit . LitDouble
     str = Just . VLit . LitStr

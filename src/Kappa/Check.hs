@@ -618,6 +618,14 @@ unify ctx = goTop True
             go qok (lvl + 1) b1' b2'
       (VRecordT f1, VRecordT f2) | map fst f1 == map fst f2 ->
         andM [goTop False x y | ((_, x), (_, y)) <- zip f1 f2]
+      -- §11.3.1A: an open record type meets a closed record type by
+      -- matching the explicit prefix against the closed fields and
+      -- instantiating the row tail with the leftover fields as a
+      -- closed residual row
+      (VGlobN (GName pm "__openRec") [(_, rowV), (_, prefixV)], VRecordT fs)
+        | pm == preludeModule -> goOpenClosed lvl rowV prefixV fs
+      (VRecordT fs, VGlobN (GName pm "__openRec") [(_, rowV), (_, prefixV)])
+        | pm == preludeModule -> goOpenClosed lvl rowV prefixV fs
       -- §13.2.10: signature types are equal iff the opaque label sets
       -- and the underlying record types agree
       (VSigT l1 v1, VSigT l2 v2) | l1 == l2 -> goTop False v1 v2
@@ -643,6 +651,23 @@ unify ctx = goTop True
       where
         andM [] = pure True
         andM (m : ms) = m >>= \ok -> if ok then andM ms else pure False
+    -- split closed fields fs into the open record's explicit prefix
+    -- and a '__closedRow' residual solving the row tail (§11.3.1A)
+    goOpenClosed lvl rowV prefixV fs = do
+      pf <- forceM prefixV
+      case pf of
+        VRecordT pfs
+          | all ((`elem` map fst fs) . fst) pfs -> do
+              okTys <- andAll [goTop False pv fv | (pl, pv) <- pfs, Just fv <- [lookup pl fs]]
+              if not okTys
+                then pure False
+                else do
+                  let rest = [f | f@(l, _) <- fs, l `notElem` map fst pfs]
+                  goTop False rowV (VGlobN (gPrel "__closedRow") [(Expl, VRecordT rest)])
+        _ -> fallback lvl (VGlobN (gPrel "__openRec") [(Expl, rowV), (Expl, prefixV)]) (VRecordT fs)
+      where
+        andAll [] = pure True
+        andAll (m : ms) = m >>= \ok -> if ok then andAll ms else pure False
     fallback lvl a b = do
       ec <- ec_
       pure (convertible ec lvl a b)
@@ -1011,8 +1036,9 @@ resolveImplicitQ ctx sp q goal = do
     _ -> do
       isTrait <- isTraitGoal g
       isEq <- isEqGoal g
+      isRow <- isRowGoal g
       flexed <- goalHasFlex g
-      if (isTrait || isEq) && flexed
+      if (isTrait || isEq || isRow) && flexed
         then do
           -- postpone resolution until explicit arguments solve the head
           -- metavariables (§16.1.7.1 spine order); committing to a local
@@ -1056,17 +1082,24 @@ resolveImplicitQ ctx sp q goal = do
                   case mProp of
                     Just tm -> pure tm
                     Nothing -> do
-                      mWitness <- isTraitWitness ctx g
-                      case mWitness of
+                      -- §11.3.1A compiler-owned introduction rules for
+                      -- the intrinsic row traits
+                      mRow <- rowProof g
+                      case mRow of
                         Just tm -> pure tm
-                        Nothing -> unresolved g isTrait isEq
-    unresolved g isTrait isEq =
+                        Nothing -> do
+                          mWitness <- isTraitWitness ctx g
+                          case mWitness of
+                            Just tm -> pure tm
+                            Nothing -> unresolved g isTrait isEq
+    unresolved g isTrait isEq = do
+      isRow <- isRowGoal g
       if isTrait || isEq || q /= Q0
         then do
           gT <- quoteIn ctx g
           errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
             ("could not resolve implicit argument of type " <> renderTerm gT
-               <> (if isTrait || isEq then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
+               <> (if isTrait || isEq || isRow then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
           freshMeta
         else freshMeta
 
@@ -1224,7 +1257,10 @@ flushPendingWith final = do
                         modify' $ \s -> s {csBoolFacts = bfs ++ oldBfs}
                         r0 <- propProof g
                         modify' $ \s -> s {csBoolFacts = oldBfs}
-                        pure r0
+                        case r0 of
+                          Just tm -> pure (Just tm)
+                          -- §11.3.1A intrinsic row-trait introduction
+                          Nothing -> rowProof g
             case r of
               Just tm -> do
                 v <- evalIn ctx tm
@@ -1308,6 +1344,37 @@ isEqGoal v =
     VGlobN (GName _ "=") _ -> pure True
     VCtor (GName _ "=") _ -> pure True
     _ -> pure False
+
+-- | Is the goal one of the §11.3.1A intrinsic row traits (solved by
+-- compiler-owned introduction rules, postponed while its row is flex)?
+isRowGoal :: Value -> CheckM Bool
+isRowGoal v =
+  forceM v >>= \case
+    VGlobN (GName pm "LacksRec") _ | pm == preludeModule -> pure True
+    _ -> pure False
+
+-- | §11.3.1A compiler-owned introduction rules: @LacksRec r l@ is
+-- solvable iff the normalized row tail @r@ contains no label @l@ —
+-- for a closed residual row, decided structurally on its fields.
+rowProof :: Value -> CheckM (Maybe Term)
+rowProof goal = do
+  g <- forceM goal
+  case g of
+    VGlobN (GName pm "LacksRec") [(_, rowV), (_, lblV)]
+      | pm == preludeModule -> do
+          row <- forceM rowV
+          lbl <- forceM lblV
+          case (row, lbl) of
+            (VGlobN (GName pm2 "__closedRow") [(_, fieldsV)], VLit (LitStr l))
+              | pm2 == preludeModule -> do
+                  fsF <- forceM fieldsV
+                  case fsF of
+                    VRecordT fs
+                      | l `notElem` map fst fs ->
+                          pure (Just (CGlob (gPrel "__rowEvidence")))
+                    _ -> pure Nothing
+            _ -> pure Nothing
+    _ -> pure Nothing
 
 instanceSearch :: Ctx -> Span -> Value -> CheckM (Maybe Term)
 instanceSearch ctx sp goal = searchDepth 0 ctx sp goal

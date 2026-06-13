@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_UNSOLVED_IMPLICIT
+
+module main
+
+-- §11.3.1A: 'LacksRec r l' is solvable iff the normalized row tail
+-- lacks the label — a closed residual row that already contains the
+-- label leaves the obligation unsolvable.
+
+addAge :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (name : String | r) -> (name : String, age : Int | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }
+
+bad : Int
+let bad = (addAge (name = "z", age = 1)).age

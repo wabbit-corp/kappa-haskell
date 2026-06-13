@@ -107,7 +107,14 @@ builtinState =
         (prel "RecRow", opaqueTy (tyV tType))
       , (prel "LacksRec", opaqueTy (tyV (tcon "RecRow" ~> tStr ~> tType)))
       , (prel "__openRec", opaqueTy (tyV (tcon "RecRow" ~> tType ~> tType)))
-      , (prel "__rowExtend", opaqueTy (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))))
+      , (prel "__rowExtend", GlobalDef (tyV (piI Q0 "a" tType (piI Q0 "b" tType (CVar 1 ~> tStr ~> CVar 2 ~> CVar 4)))) (Just (VPrim "__rowExtend" [])) False)
+      , -- a closed residual row tail '__closedRow (fields record type)':
+        -- solving an open record against a closed record instantiates
+        -- the row tail with the leftover closed fields (§11.3.1A)
+        (prel "__closedRow", opaqueTy (tyV (tType ~> tcon "RecRow")))
+      , -- compiler-owned introduction-rule witness for the §11.3.1A
+        -- intrinsic row traits (the evidence carries no information)
+        (prel "__rowEvidence", opaqueTy (tyV (piI Q0 "r" (tcon "RecRow") (piI Q0 "l" tStr (CApp Expl (CApp Expl (tcon "LacksRec") (CVar 1)) (CVar 0))))))
       , (prel "ω", GlobalDef (tyV (tcon "Quantity")) (Just (VPrim "__omegaQ" [])) False)
       , (prel "QueryCore", opaqueTy (tyV (tcon "QueryMode" ~> tcon "Quantity" ~> tType ~> tType)))
       , (prel "BorrowView", opaqueTy (tyV (tcon "Region" ~> tType ~> tType))) -- §20.10.2
