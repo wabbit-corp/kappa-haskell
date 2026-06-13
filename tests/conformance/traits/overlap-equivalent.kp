@@ -1,0 +1,22 @@
+--! assertNoErrors
+--! assertEval use 1
+
+module main
+
+-- §33.2.1 step 3: structurally identical evidence artifacts are
+-- harmless overlap; resolution selects the deterministic
+-- representative, at the declarations and at the use site alike.
+data C : Type =
+    MkC
+
+trait Sized (a : Type) =
+    size : a -> Int
+
+instance Sized C =
+    let size _ = 1
+
+instance Sized C =
+    let size _ = 1
+
+use : Int
+let use = size MkC

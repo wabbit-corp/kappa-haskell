@@ -1,0 +1,19 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_INSTANCE_INCOHERENT
+
+module main
+
+-- §14.3/§33.2.1: overlapping instances with non-equivalent
+-- implementations are rejected at the declarations themselves —
+-- "otherwise the program is rejected" — even with no use site.
+data C : Type =
+    MkC
+
+trait Sized (a : Type) =
+    size : a -> Int
+
+instance Sized C =
+    let size _ = 1
+
+instance Sized C =
+    let size _ = 2

@@ -1328,10 +1328,18 @@ searchDepth depth ctx sp goal
               case hits of
                 [tm] -> pure (Just tm)
                 [] -> pure Nothing
-                (tm : _) -> do
-                  report $
-                    diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent") sp
-                      "multiple instances match this trait obligation (§14.3.1 coherence)"
+                (tm : rest) -> do
+                  -- §33.2.1 step 3: equivalent evidence artifacts are
+                  -- harmless overlap — select the deterministic
+                  -- representative; only non-equivalent overlap is
+                  -- incoherent
+                  ecu <- ec_
+                  tmV <- evalIn ctx tm
+                  restVs <- mapM (evalIn ctx) rest
+                  unless (all (convertible ecu (ctxLen ctx) tmV) restVs) $
+                    report $
+                      diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent") sp
+                        "multiple instances match this trait obligation (§14.3.1 coherence)"
                   pure (Just tm)
         _ -> pure Nothing
 
@@ -1371,6 +1379,40 @@ tryInstance depth ctx goalArgs ie
               pure (Just dict)
             else put saved >> pure Nothing
         else put saved >> pure Nothing
+
+-- | §14.3/§33.2.1 program-level coherence: when two instances of one
+-- trait have unifiable heads, the overlap is harmless only if the
+-- instantiated dictionary artifacts are definitionally equivalent
+-- (structural coherence mode); otherwise the program is rejected at
+-- the later declaration, whether or not any use site resolves
+-- through the overlapping pair.
+checkInstanceOverlap :: Span -> GName -> InstanceEntry -> InstanceEntry -> CheckM ()
+checkInstanceOverlap sp g new prior
+  | length (ieHead new) /= length (ieHead prior) = pure ()
+  | otherwise = do
+      saved <- get
+      metas <- forM [1 .. ieTeleLen new] (const freshMeta)
+      metaVs <- mapM (evalIn emptyCtx) metas
+      ec <- ec_
+      let goalArgs = [eval ec (reverse metaVs) t | t <- ieHead new]
+      -- §33.2.1 step 1: the comparison set holds only candidates that
+      -- survive §14.3.1 resolution — an instance whose premises are
+      -- unsolvable at the shared instantiation is discarded before
+      -- coherence is judged
+      mOld <- tryInstance 0 emptyCtx goalArgs prior
+      mNew <- tryInstance 0 emptyCtx goalArgs new
+      equivalent <- case (mNew, mOld) of
+        (Just tmN, Just tmO) -> do
+          vN <- evalIn emptyCtx tmN
+          vO <- evalIn emptyCtx tmO
+          ecu <- ec_
+          pure (convertible ecu 0 vN vO)
+        _ -> pure True -- disjoint heads or a discarded candidate
+      put saved
+      unless equivalent $
+        errAt sp "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent")
+          ("overlapping instances of trait '" <> gnameText g
+             <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)")
 
 -- Boolean-proposition normalization (§16.3.3 step 3): goals of shape
 -- (lhs = rhs) decided by conversion yield refl.
@@ -9244,6 +9286,16 @@ elabInstance (InstanceDecl premises hd members) sp = do
       wrapped' <- zonkTermM 0 wrapped
       dictV <- evalIn emptyCtx wrapped'
       addGlobal dictG (GlobalDef dictTy (Just dictV) True)
+      -- §14.3/§33.2.1: program-level coherence — an overlapping pair of
+      -- instances is rejected at declaration unless the instantiated
+      -- evidence artifacts are equivalent (structural coherence mode),
+      -- whether or not any use site resolves through them
+      stPost <- get
+      case [ie | ie <- csInstances stPost, ieDict ie == dictG] of
+        (newIe : _) ->
+          forM_ [ie | ie <- csInstances stPost, ieTrait ie == g, ieDict ie /= dictG] $ \prior ->
+            checkInstanceOverlap sp g newIe prior
+        [] -> pure ()
   where
     splitHead e = case e of
       EApp f args -> do
