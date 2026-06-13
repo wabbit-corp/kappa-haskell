@@ -83,6 +83,19 @@ data InstanceEntry = InstanceEntry
   , ieDict :: !GName
   }
 
+-- | An instance head elaborated and registered ahead of the body pass,
+-- so instance visibility within a module does not depend on
+-- declaration order (§14.3: "Instance visibility is global over the
+-- compilation unit's module closure"). The members are checked later,
+-- in source order, by 'elabInstance'.
+data PreInstance = PreInstance
+  { piTrait :: !GName
+  , piFvs :: ![Text] -- ^ implicitly-universalized head variables (§11.3.3)
+  , piPremTms :: ![Term] -- ^ premise types, elaborated under 'piFvs'
+  , piArgTms :: ![Term] -- ^ head arguments, under 'piFvs' + premises
+  , piDictG :: !GName -- ^ the dictionary global (type already registered)
+  }
+
 data CheckState = CheckState
   { csGlobals :: !(Map GName GlobalDef)
   , csDatas :: !(Map GName DataInfo)
@@ -152,6 +165,10 @@ data CheckState = CheckState
   -- ^ the current application's head is a plain function reference
   -- (not a constructor, not an operator): a flat argument mismatch may
   -- be reported as E_APPLICATION_ARGUMENT_MISMATCH (§16.1.7.1)
+  , csPreInstances :: !(Map Span (Maybe PreInstance))
+  -- ^ instance heads registered by the §14.3 pre-pass, keyed by the
+  -- declaration span ('Nothing' records a head already rejected there,
+  -- so the body pass does not re-report it)
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -191,7 +208,7 @@ initCheckState =
   CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
-    Map.empty Map.empty Map.empty Map.empty [] False
+    Map.empty Map.empty Map.empty Map.empty [] False Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -1391,24 +1408,38 @@ searchDepth depth ctx sp goal
             then pure Nothing
             else do
               let cands = [ie | ie <- csInstances st, ieTrait ie == traitG]
-              hits <- catMaybes <$> mapM (tryInstance depth ctx (map snd spine)) cands
+              hits <- catMaybes <$> mapM (\ie -> fmap ((,) ie) <$> tryInstance depth ctx (map snd spine) ie) cands
               case hits of
-                [tm] -> pure (Just tm)
+                [(_, tm)] -> pure (Just tm)
                 [] -> pure Nothing
-                (tm : rest) -> do
+                ((ie0, tm) : rest) -> do
                   -- §33.2.1 step 3: equivalent evidence artifacts are
                   -- harmless overlap — select the deterministic
                   -- representative; only non-equivalent overlap is
                   -- incoherent
                   ecu <- ec_
                   tmV <- evalIn ctx tm
-                  restVs <- mapM (evalIn ctx) rest
-                  unless (all (convertible ecu (ctxLen ctx) tmV) restVs) $
-                    report $
-                      diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent") sp
-                        "multiple instances match this trait obligation (§14.3.1 coherence)"
+                  restVs <- mapM (evalIn ctx . snd) rest
+                  unless (all (convertible ecu (ctxLen ctx) tmV) restVs) $ do
+                    -- a candidate whose dictionary value is not yet
+                    -- defined (§14.3 pre-pass entry whose members are
+                    -- checked later in this module) cannot be compared
+                    -- for equivalence here; the declaration-level
+                    -- §14.3/§33.2.1 coherence check judges that pair
+                    -- definitively, so do not pre-judge the overlap
+                    pending <- filterM (dictValuePending . ieDict) (ie0 : map fst rest)
+                    when (null pending) $
+                      report $
+                        diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent") sp
+                          "multiple instances match this trait obligation (§14.3.1 coherence)"
                   pure (Just tm)
         _ -> pure Nothing
+
+-- | Whether an instance dictionary's value is still pending (its
+-- declaration's members have not been checked yet — the §14.3
+-- pre-pass registers heads ahead of the body pass).
+dictValuePending :: GName -> CheckM Bool
+dictValuePending g = gets (maybe True (isNothing . gdValue) . Map.lookup g . csGlobals)
 
 tryInstance :: Int -> Ctx -> [Value] -> InstanceEntry -> CheckM (Maybe Term)
 tryInstance depth ctx goalArgs ie
@@ -8091,10 +8122,14 @@ checkModule st0 m =
       passes = do
         mapM_ predeclarePass (modDecls m)
         mapM_ (headerPassIn siglessLets) (modDecls m)
+        -- §14.3: register every top-level instance head before any
+        -- body is checked, so instance visibility within the module
+        -- does not depend on declaration order
+        mapM_ instanceHeadPass (modDecls m)
         mapM_ (bodyPassIn siglessLets) (modDecls m)
         flushPendingFinal
         sigSatisfactionPass
-      (_, st1) = runState passes (st0 {csSigPending = Map.empty})
+      (_, st1) = runState passes (st0 {csSigPending = Map.empty, csPreInstances = Map.empty})
    in -- 'report' prepends; restore emission (source) order here
       (st1 {csDiags = []}, reverse (csDiags st1))
 
@@ -9310,17 +9345,36 @@ elabFunction binders mResTy body sp = do
         Nothing -> body
   elabLambda emptyCtx binders bodyE sp Nothing
 
-elabInstance :: InstanceDecl -> Span -> CheckM ()
-elabInstance (InstanceDecl premises hd members) sp = do
-  flushPending
+-- | §14.3 instance pre-pass: elaborate and register the head of every
+-- top-level instance declaration (instance-set entry plus the
+-- dictionary global's type) before any declaration body is checked,
+-- so instance visibility within the module does not depend on
+-- declaration order. Instance heads depend only on header-pass
+-- artifacts (traits, data types, aliases; lowercase head names are
+-- implicitly universalized per §11.3.3), so this is sound ahead of
+-- the body pass. Member bodies are still checked in source order by
+-- 'elabInstance'.
+instanceHeadPass :: Decl -> CheckM ()
+instanceHeadPass = \case
+  DInstance (InstanceDecl premises hd _) sp -> do
+    mpi <- registerInstanceHead premises hd sp
+    modify' $ \st -> st {csPreInstances = Map.insert sp mpi (csPreInstances st)}
+  _ -> pure ()
+
+-- | Elaborate an instance head and register the dictionary global
+-- (type only — 'elabInstance' fills the value) and the instance-set
+-- entry consulted by §14.3.1 search.
+registerInstanceHead :: [Expr] -> Expr -> Span -> CheckM (Maybe PreInstance)
+registerInstanceHead premises hd sp = do
   -- head must be Trait args...
-  (traitG, argEs) <- splitHead hd
+  (traitG, argEs) <- instSplitHead hd
   st <- get
-  case traitG >>= \g -> (,) g <$> Map.lookup g (csTraits st) of
-    Nothing ->
+  case traitG >>= \g -> g <$ Map.lookup g (csTraits st) of
+    Nothing -> do
       errAt sp "E_INSTANCE_HEAD" (Just "kappa.trait.bad-instance-head")
         "instance head must be a trait applied to type arguments"
-    Just (g, ti) -> do
+      pure Nothing
+    Just g -> do
       -- collect implicitly-universalized lowercase variables (§11.3.3)
       let fvs = nub (concatMap freeLower (hd : premises))
       -- telescope: fvs as Type params, then premise dicts
@@ -9328,20 +9382,19 @@ elabInstance (InstanceDecl premises hd members) sp = do
       -- elaborate under fvs bound
       let ctx0 = foldl (\c v -> bindCtx v False (VSort 0) c) emptyCtx fvs
       premTms <- forM premises $ \p -> fst <$> inferType ctx0 p
-      ctxP' <- bindPremises ctx0 premTms
+      ctxP' <- instBindPremises ctx0 premTms
       -- head arguments check against the trait constructor's parameter
       -- types (so type constructors are valid arguments of
       -- higher-kinded traits, §14.1.2)
       traitTy <- gets (fmap gdType . Map.lookup g . csGlobals)
       argTms <- case traitTy of
-        Just tt -> checkHeadArgs ctxP' tt argEs
+        Just tt -> instCheckHeadArgs ctxP' tt argEs
         Nothing -> mapM (\e -> fst <$> inferType ctxP' e) argEs
       -- register the instance before checking members so member bodies
       -- can use the instance being defined (recursive instances, §14.3)
       dictName <- freshNameM ("__inst_" <> gnameText g <> "_")
-      stm0 <- get
-      let dictG = GName (csModule stm0) dictName
-      dictTy <- instanceDictTy g fvs premTms argTms
+      dictG <- gets (\s -> GName (csModule s) dictName)
+      dictTy <- instDictTy g fvs premTms argTms
       addGlobal dictG (GlobalDef dictTy Nothing False)
       modify' $ \s ->
         s
@@ -9349,6 +9402,73 @@ elabInstance (InstanceDecl premises hd members) sp = do
               InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
                 : csInstances s
           }
+      pure (Just (PreInstance g fvs premTms argTms dictG))
+
+instSplitHead :: Expr -> CheckM (Maybe GName, [Expr])
+instSplitHead e = case e of
+  EApp f args -> do
+    (g, es) <- instSplitHead f
+    pure (g, es ++ [a | ArgExplicit a <- args])
+  EVar n -> do
+    mg <- lookupGlobalName (nameText n)
+    pure (mg, [])
+  _ -> pure (Nothing, [])
+
+instBindPremises :: Ctx -> [Term] -> CheckM Ctx
+instBindPremises ctx [] = pure ctx
+instBindPremises ctx (p : rest) = do
+  pv <- evalIn ctx p
+  instBindPremises (bindCtx "__prem" True pv ctx) rest
+
+instCheckHeadArgs :: Ctx -> Value -> [Expr] -> CheckM [Term]
+instCheckHeadArgs _ _ [] = pure []
+instCheckHeadArgs ctx ty (e : es) = do
+  t <- forceM ty
+  case t of
+    VPi Expl _ _ dom clo -> do
+      tm <- check ctx e dom
+      v <- evalIn ctx tm
+      rest <- clApp clo v >>= \cod -> instCheckHeadArgs ctx cod es
+      pure (tm : rest)
+    _ -> do
+      tm <- fst <$> inferType ctx e
+      rest <- instCheckHeadArgs ctx t es
+      pure (tm : rest)
+
+instDictTy :: GName -> [Text] -> [Term] -> [Term] -> CheckM Value
+instDictTy traitG fvs premTms argTms = do
+  -- premises were elaborated under the fv binders only; the k-th
+  -- premise domain sits under k earlier premise binders, so shift by
+  -- k. The head ('argTms') was elaborated under fvs + all premises
+  -- and is already correctly indexed.
+  let dictHead = foldl (\f a -> CApp Expl f a) (CGlob traitG) argTms
+      withPrems = go (0 :: Int) premTms
+      go _ [] = dictHead
+      go k (p : ps) = CPi Impl QW "__p" (shiftTerm k 0 p) (go (k + 1) ps)
+      nest [] = withPrems
+      nest (v : vs) = CPi Impl Q0 v (CSort 0) (nest vs)
+  evalIn emptyCtx (nest fvs)
+
+elabInstance :: InstanceDecl -> Span -> CheckM ()
+elabInstance (InstanceDecl premises hd members) sp = do
+  flushPending
+  stash <- gets (Map.lookup sp . csPreInstances)
+  mpi <- case stash of
+    -- head already elaborated (or already rejected) by the pre-pass
+    Just mpi -> pure mpi
+    Nothing -> registerInstanceHead premises hd sp
+  mpti <- case mpi of
+    Nothing -> pure Nothing
+    Just pinst -> gets (fmap ((,) pinst) . Map.lookup (piTrait pinst) . csTraits)
+  forM_ mpti $ \(pinst, ti) -> do
+    let g = piTrait pinst
+        fvs = piFvs pinst
+        premTms = piPremTms pinst
+        argTms = piArgTms pinst
+        dictG = piDictG pinst
+        ctx0 = foldl (\c v -> bindCtx v False (VSort 0) c) emptyCtx fvs
+    ctxP' <- instBindPremises ctx0 premTms
+    do
       -- §14.1.4/§14.3.3: every supertrait premise of the trait must be
       -- satisfiable at the instance head (from the instance's own
       -- premises — including their transitive supertrait conformance
@@ -9400,50 +9520,27 @@ elabInstance (InstanceDecl premises hd members) sp = do
             foldr (\v acc -> CLam Impl Q0 v acc) (foldr (\_ acc -> CLam Impl QW "__p" acc) dictBody premises) fvs
       wrapped' <- zonkTermM 0 wrapped
       dictV <- evalIn emptyCtx wrapped'
+      dictTy <- gets (maybe (VSort 0) gdType . Map.lookup dictG . csGlobals)
       addGlobal dictG (GlobalDef dictTy (Just dictV) True)
       -- §14.3/§33.2.1: program-level coherence — an overlapping pair of
       -- instances is rejected at declaration unless the instantiated
       -- evidence artifacts are equivalent (structural coherence mode),
-      -- whether or not any use site resolves through them
+      -- whether or not any use site resolves through them. Only
+      -- already-elaborated instances (registered before this one) are
+      -- compared here: the later member of a pair judges the overlap
+      -- when its own dictionary value is complete.
       stPost <- get
-      case [ie | ie <- csInstances stPost, ieDict ie == dictG] of
-        (newIe : _) ->
-          forM_ [ie | ie <- csInstances stPost, ieTrait ie == g, ieDict ie /= dictG] $ \prior ->
+      case dropWhile ((/= dictG) . ieDict) (csInstances stPost) of
+        (newIe : priors) ->
+          forM_ [ie | ie <- priors, ieTrait ie == g] $ \prior ->
             checkInstanceOverlap sp g newIe prior
         [] -> pure ()
   where
-    splitHead e = case e of
-      EApp f args -> do
-        (g, es) <- splitHead f
-        pure (g, es ++ [a | ArgExplicit a <- args])
-      EVar n -> do
-        mg <- lookupGlobalName (nameText n)
-        pure (mg, [])
-      _ -> pure (Nothing, [])
     findMember mn ms =
       case [ (ld, dsp) | DLet _ ld@(LetDef (Just dn) _ _ _ _ _ _ _) dsp <- ms, nameText dn == mn
            ] of
         (x : _) -> Just x
         [] -> Nothing
-
-    bindPremises ctx [] = pure ctx
-    bindPremises ctx (p : rest) = do
-      pv <- evalIn ctx p
-      bindPremises (bindCtx "__prem" True pv ctx) rest
-
-    checkHeadArgs _ _ [] = pure []
-    checkHeadArgs ctx ty (e : es) = do
-      t <- forceM ty
-      case t of
-        VPi Expl _ _ dom clo -> do
-          tm <- check ctx e dom
-          v <- evalIn ctx tm
-          rest <- clApp clo v >>= \cod -> checkHeadArgs ctx cod es
-          pure (tm : rest)
-        _ -> do
-          tm <- fst <$> inferType ctx e
-          rest <- checkHeadArgs ctx t es
-          pure (tm : rest)
 
     memberSigInstance traitG mn argTms ctx doneFields = do
       mt <- globalTerm (memberGlobal traitG mn)
@@ -9495,19 +9592,6 @@ elabInstance (InstanceDecl premises hd members) sp = do
           errAt msp "E_SIGNATURE_ARITY" (Just "kappa.type.signature-arity")
             "instance member has more parameters than the trait member type"
           check ctx body t
-
-    instanceDictTy traitG fvs premTms argTms = do
-      -- premises were elaborated under the fv binders only; the k-th
-      -- premise domain sits under k earlier premise binders, so shift by
-      -- k. The head ('argTms') was elaborated under fvs + all premises
-      -- and is already correctly indexed.
-      let dictHead = foldl (\f a -> CApp Expl f a) (CGlob traitG) argTms
-          withPrems = go (0 :: Int) premTms
-          go _ [] = dictHead
-          go k (p : ps) = CPi Impl QW "__p" (shiftTerm k 0 p) (go (k + 1) ps)
-          nest [] = withPrems
-          nest (v : vs) = CPi Impl Q0 v (CSort 0) (nest vs)
-      evalIn emptyCtx (nest fvs)
 
 -- | Evidence for a trait goal: the local implicit context first
 -- (§16.3.3), then the instance set (§14.3.1), then §14.3.3 supertrait

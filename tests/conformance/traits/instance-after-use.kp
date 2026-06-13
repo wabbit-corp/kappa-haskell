@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "12\n"
+
+-- §14.3: instance visibility is global over the module closure — a
+-- top-level instance participates in instance search even at use
+-- sites that precede its declaration in the same module.
+
+data C = MkC
+data D = MkD
+
+trait Sized (a : Type) =
+    size : a -> Integer
+
+-- both uses precede the instances they resolve through
+let n = size MkC
+
+instance Sized D =
+    let size _ = 5
+
+let m = size MkD
+
+instance Sized C =
+    let size _ = 7
+
+main : UIO Unit
+let main = printlnString (showInt (n + m))

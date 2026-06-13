@@ -1,0 +1,22 @@
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+
+-- §14.3/§33.2.1: a non-equivalent overlapping pair is rejected at the
+-- later declaration even when the use site precedes both instances
+-- (the use site itself does not pre-judge the pair while the
+-- dictionaries are still being defined).
+
+data C = MkC
+
+trait Sized (a : Type) =
+    size : a -> Integer
+
+let n = size MkC
+
+instance Sized C =
+    let size _ = 7
+
+instance Sized C =
+    let size _ = 8
+
+main : UIO Unit
+let main = printlnString (showInt n)
