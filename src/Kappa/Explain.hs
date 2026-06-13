@@ -218,6 +218,178 @@ registry =
       "A variant pattern is malformed for the matched variant type."
   , ent "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.unverified")
       "The termination checker could not verify that this recursive definition terminates; it is accepted unverified."
+  , -- Active patterns (§17.6)
+    ent "E_ACTIVE_PATTERN_LINEARITY_VIOLATION" (Just "kappa.pattern.active")
+      "An active pattern's matcher demands the scrutinee at a quantity its declared linearity does not permit (§17.6)."
+  , ent "E_ACTIVE_PATTERN_MATCH_RESULT_NOT_ALLOWED_IN_PLAIN_LET_QUESTION" (Just "kappa.pattern.active")
+      "An active pattern returning MatchResult is used in a plain 'let?' binding; MatchResult-returning matchers are only available in full match positions (§17.6)."
+  , ent "E_ACTIVE_PATTERN_MONADIC_RESULT" (Just "kappa.pattern.active")
+      "An active pattern's matcher returns a monadic/effectful result where a pure Option or MatchResult is required (§17.6)."
+  , -- Staging and macros (§21, §23)
+    ent "E_CODE_ESCAPE_OUTSIDE_QUOTE" (Just "kappa.staging.escape")
+      "A '.~' code escape appears outside any enclosing code quotation (§23.2)."
+  , ent "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+      "A do item form is not available inside an 'Elab' do block, or the block does not end with an expression of the block's Elab type (§21.9)."
+  , ent "E_ELAB_PHASE" (Just "kappa.macro.phase")
+      "An object-phase runtime binding is captured by an elaboration-time splice; object-phase terms enter 'Elab' only through meta-phase carriers such as 'Syntax' (§21.9)."
+  , ent "E_ELAB_STUCK" (Just "kappa.macro.failure")
+      "An elaboration-time action could not be executed by the Elab evaluator (§21.9)."
+  , ent "E_MACRO_FAILURE" (Just "kappa.macro.failure")
+      "A macro signalled failure during elaboration-time expansion (§21.4)."
+  , ent "W_MACRO_DIAGNOSTIC" (Just "kappa.macro.failure")
+      "A macro emitted a user-defined warning diagnostic during expansion (§21.4)."
+  , ent "E_QUOTE_SPLICE_ELAB" (Just "kappa.syntax.quotation")
+      "A splice inside a quotation failed to elaborate to a syntax value (§21.2)."
+  , ent "E_QUOTE_SPLICE_OUTSIDE_QUOTE" (Just "kappa.syntax.quotation")
+      "A '$'-splice appears outside any enclosing quotation (§21.2)."
+  , ent "E_QUOTE_SPLICE_TYPE" (Just "kappa.syntax.quotation")
+      "A splice's payload does not have the syntax type its quotation position requires (§21.2)."
+  , ent "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa.syntax.splice")
+      "A top-level or expression splice's operand is not an elaboration-time 'Syntax' value (§21.2)."
+  , ent "E_SYNTAX_SCOPE_ESCAPE" (Just "kappa.syntax.scope-escape")
+      "Spliced syntax refers to a binding that is not in scope at the splice site; hygienic expansion forbids the reference from escaping its scope (§21.3)."
+  , -- Do blocks and control (§18)
+    ent "E_DEFER_ABRUPT_CONTROL" (Just "kappa.do.defer")
+      "A deferred action returns, breaks, or continues out of itself; abrupt control flow may not escape a 'defer' (§18.7)."
+  , ent "E_DO_EMPTY" (Just "kappa.do.empty")
+      "A do block has no items or does not end with an expression item (§18.2)."
+  , -- Effects and handlers (§18.1)
+    ent "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row")
+      "The handled computation's effect row does not contain the label being handled (§18.1.21)."
+  , ent "E_EFFECT_OP_SIGNATURE" (Just "kappa.effect.operation")
+      "An effect operation's declared signature is malformed for its effect declaration (§9.3.1.1)."
+  , ent "E_HANDLER_OP_MISSING" (Just "kappa.effect.handler")
+      "A handler does not provide a clause for one of the handled effect's operations (§18.1.21)."
+  , ent "E_HANDLER_OP_UNKNOWN" (Just "kappa.effect.handler")
+      "A handler clause names an operation the handled effect does not declare (§18.1.21)."
+  , ent "E_HANDLER_RETURN_DUPLICATE" (Just "kappa.effect.handler")
+      "A handler declares more than one 'return' clause (§18.1.21)."
+  , ent "E_HANDLER_RETURN_MISSING" (Just "kappa.effect.handler")
+      "A handler that needs a 'return' clause does not declare one (§18.1.21)."
+  , -- Implicits, imports, names, modules
+    ent "E_IMPLICIT_AMBIGUOUS" (Just "kappa.implicit.ambiguous")
+      "More than one candidate solves an implicit argument and no ordering rule prefers one (§16.3.3)."
+  , ent "E_IMPORT_CYCLE" (Just "kappa.import.cycle")
+      "Module imports form a cycle; the module dependency graph must be acyclic (§8.2)."
+  , ent "E_IMPORT_ITEM_NOT_FOUND" (Just "kappa.import.item")
+      "An import list names an item the imported module does not export (§8.2)."
+  , ent "E_MODULE_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+      "A module path segment does not derive a valid module name, or a module reference does not resolve (§8.1)."
+  , ent "E_MODULE_PATH_MISMATCH" (Just "kappa.module.path-mismatch")
+      "A module's declared name does not match the file path it was loaded from (§8.1)."
+  , ent "E_NAME_AMBIGUOUS" (Just "kappa.name.ambiguous")
+      "A name resolves to more than one declaration with no disambiguating rule (§7.1)."
+  , ent "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")
+      "A kind-qualified static-object reference does not resolve to a declaration of the named facet (§22.1)."
+  , -- Prefixed literals (§6.3.4)
+    ent "E_PREFIX_HANDLER_TYPE" (Just "kappa.literal.prefixed")
+      "A literal prefix resolves to a term whose type is not a valid interpolated-literal handler (§6.3.4.3)."
+  , ent "E_PREFIX_RUNTIME_HANDLER" (Just "kappa.literal.prefixed")
+      "A literal prefix resolves to an object-phase runtime value; prefixed literals require an elaboration-time handler (§6.3.4.3)."
+  , -- Patterns
+    ent "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa.pattern.head")
+      "The head of an application pattern is neither a data constructor nor an active pattern (§17.2)."
+  , -- Projections (§9.1.1, §16.1.5, §30.2.2)
+    ent "E_PROJECTION_ACCESSOR_CLAUSE_DUPLICATE" (Just "kappa.projection.accessor")
+      "An accessor-bundle projection declares the same accessor clause more than once (§9.1.1)."
+  , ent "E_PROJECTION_CAPABILITY_REQUIRED" (Just "kappa.projection.capability")
+      "A projection use requires an accessor capability (read/write/zip) the projection does not provide (§30.2.2)."
+  , ent "E_PROJECTION_DESCRIPTOR_ROOTS_LITERAL_REQUIRED" (Just "kappa.projection.roots")
+      "A projector descriptor application requires a literal roots record at the call site (§16.1.5)."
+  , ent "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa.projection.descriptor")
+      "A value position expected a projector descriptor, but the expression does not denote one (§16.1.5)."
+  , ent "E_PROJECTION_EXPANDED_ACCESSOR_PLACE_BINDER_MISMATCH" (Just "kappa.projection.accessor")
+      "An expanded accessor clause's place binders do not match the projection's declared place binders (§9.1.1)."
+  , ent "E_PROJECTION_MISSING_PLACE_BINDER" (Just "kappa.projection.place-binder")
+      "A projection declaration has no receiver-marked 'place' binder (§9.1.1)."
+  , ent "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa.projection.roots")
+      "The roots record supplied to a projector descriptor does not match the projection's place binders (§16.1.5)."
+  , ent "E_PROJECTION_ROOT_INVALID" (Just "kappa.projection.roots")
+      "A projection root argument is not a stable place expression (§16.1.5)."
+  , ent "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
+      "A record patch updates through a projection that does not support write access at that target (§30.2.2.4)."
+  , ent "E_PROJECTION_YIELD_INVALID" (Just "kappa.projection.yield")
+      "A selector-form projection body does not yield a place rooted at one of its place binders (§9.1.1)."
+  , -- Quantities and borrows (§12.2–§12.4, §18.9.3)
+    ent "E_QTT_BORROW_CONSUME" (Just "kappa.qtt.borrow-consume")
+      "A borrowed binding is moved into a consuming (quantity 1 / >=1) parameter (§12.3.1)."
+  , ent "E_QTT_BORROW_OVERLAP" (Just "kappa.qtt.borrow-overlap")
+      "A place is consumed while a live borrow of an overlapping path exists, or one call both borrows and consumes overlapping places (§12.4)."
+  , ent "E_QTT_CONTINUATION_CAPTURE" (Just "kappa.qtt.continuation-capture")
+      "A handler's continuation is used at a quantity its declared resumption quantity does not permit (§18.1.16)."
+  , ent "E_QTT_ERASED_RUNTIME_USE" (Just "kappa.qtt.erased-runtime-use")
+      "An erased (quantity 0) binding is used at runtime (§12.2.1)."
+  , ent "E_QTT_INOUT_MARKER_REQUIRED" (Just "kappa.qtt.inout-marker")
+      "An argument flowing into an 'inout' parameter is not marked '~place' at the call site (§18.9.3)."
+  , ent "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa.qtt.inout-marker")
+      "A call-site '~' marker is applied to an argument whose parameter is not declared 'inout' (§18.9.3)."
+  , ent "E_QTT_INOUT_THREADED_FIELD_MISSING" (Just "kappa.qtt.inout-threading")
+      "An 'inout' parameter's place is not threaded back through the declared result as a field of the same name (§18.9.3)."
+  , ent "E_QTT_LINEAR_DROP" (Just "kappa.qtt.linear-drop")
+      "A linear or relevant (quantity 1 / >=1) binding may complete unused on some path (§12.2.5)."
+  , ent "E_QTT_LINEAR_OVERUSE" (Just "kappa.qtt.linear-overuse")
+      "A linear or affine (quantity 1 / <=1) binding or field path is consumed more often than its quantity permits (§12.2)."
+  , ent "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa.qtt.using-quantity")
+      "A 'using' binding declares an explicit quantity; using-scoped resources have a fixed discipline (§19.5)."
+  , -- Queries (§20)
+    ent "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa.query.cardinality")
+      "A comprehension's declared cardinality does not match what its pipeline can produce (§20.4)."
+  , ent "E_QUERY_FOR_REFUTABLE" (Just "kappa.query.refutable-for")
+      "A 'for' generator pattern is refutable; only irrefutable patterns may bind rows (§20.2)."
+  , ent "E_QUERY_GROUP_KEY_FIELD" (Just "kappa.query.group")
+      "A 'group by' key expression does not project a field usable as the group key (§20.6)."
+  , ent "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa.query.item-quantity")
+      "A comprehension clause uses a row at a quantity the row binder's discipline does not permit (§20.10.5)."
+  , ent "E_QUERY_LEFT_JOIN_LINEAR_CAPTURE" (Just "kappa.query.left-join")
+      "A left join 'into' group captures a linear row; absent rows cannot satisfy the row's quantity (§20.5)."
+  , ent "E_QUERY_METADATA_LOSS" (Just "kappa.query.sink")
+      "A comprehension sink discards collection metadata (keying or ordering) that the source guarantees (§20.9)."
+  , ent "E_QUERY_MODE_MISMATCH" (Just "kappa.query.mode")
+      "A comprehension clause is not available in this comprehension mode (§20.1)."
+  , ent "E_QUERY_ORDER_KEY_CONSUMES" (Just "kappa.query.order-key")
+      "An 'order by' key expression consumes the row; ordering keys must be non-consuming reads (§20.3.2)."
+  , ent "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.query.row-quantity")
+      "A filtering clause may drop a row whose quantity forbids dropping (§20.10.5)."
+  , ent "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.query.row-quantity")
+      "A clause duplicates a row whose quantity forbids duplication (§20.10.5)."
+  , ent "E_QUERY_UNORDERED_PAGING" (Just "kappa.query.orderedness")
+      "'skip'/'take' paging is applied to an unordered pipeline (§20.3.3)."
+  , ent "E_SINK_ITEM_MISMATCH" (Just "kappa.query.sink")
+      "A comprehension's yield item type does not match the sink collection's element shape (§20.9)."
+  , -- Records, rows, seals (§11.3.1A, §13.2)
+    ent "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+      "A dependent record type's 'this' field references form a cycle (§13.2.1)."
+  , ent "E_RECORD_DEPENDENCY_INVALID" (Just "kappa.record.dependency-invalid")
+      "A dependent record field's type mentions a sibling in a form the telescope rules do not admit (§13.2.1)."
+  , ent "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa.record.patch-invalid")
+      "A record patch item form is not admitted (e.g. punning inside '.{ }', §13.2.5)."
+  , ent "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa.record.patch-prefix-conflict")
+      "Two record patch paths overlap: one is a prefix of the other (§13.2.5)."
+  , ent "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.record.patch-unknown-path")
+      "A record patch path names a field the record type does not contain (§13.2.5)."
+  , ent "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa.row.extension-duplicate")
+      "A row extension ':=' introduces the same label more than once (§13.2.6)."
+  , ent "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.extension-existing")
+      "A row extension ':=' introduces a label the record already has; use an update '=' instead (§13.2.6)."
+  , ent "E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT" (Just "kappa.row.extension-lacks")
+      "Extending an open record row with a label requires a 'LacksRec r label' constraint in scope (§11.3.1A, §13.2.6)."
+  , ent "E_SEAL_DIRECT_LITERAL_FOR_SIGNATURE" (Just "kappa.seal.direct-literal")
+      "A record literal directly introduces a signature type with opaque members; use 'seal ... as ...' (§13.2.10)."
+  , ent "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa.seal.opaque-unfolding")
+      "An opaque member of a sealed signature is unfolded outside the seal (§13.2.10)."
+  , ent "E_SEAL_OPEN_RECORD_ASCRIPTION" (Just "kappa.seal.open-record")
+      "'seal ... as ...' ascribes an open record row; sealing requires a closed signature type (§13.2.10)."
+  , -- §3.1.2A portable alias spellings. The registry MUST include all
+    -- portable aliases required by the specification; each resolves to
+    -- the same explanation as its rendered code.
+    ent "E_TYPE_MISMATCH" (Just "kappa.type.mismatch")
+      "Portable alias (§3.1.2A) of E_TYPE_EQUALITY_MISMATCH/E_UNSOLVED_IMPLICIT: the inferred type of an expression does not fit the expected type, or required evidence could not be solved."
+  , ent "E_SAFE_NAV_GENERIC_AMBIGUOUS" (Just "kappa.type.mismatch")
+      "Portable alias (§3.1.2A) of E_SAFE_NAVIGATION_AMBIGUOUS: a safe-navigation '?.' chain has an ambiguous generic receiver."
+  , ent "E_APPLICATION_NON_CALLABLE" (Just "kappa.application.non-callable")
+      "Portable alias (§3.1.2A) of E_APPLICATION_NONCALLABLE: the head of an application is not a function or callable value."
+  , ent "E_MISSING_EXPLICIT_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
+      "Portable alias (§3.1.2A) of E_RECURSION_REQUIRES_SIGNATURE: a recursive definition requires a declared type signature."
   , -- §3.1.3 standard Unicode diagnostic codes. The specification fixes
     -- these spellings and meanings for every conforming implementation;
     -- they are registered here with their normative explanations.

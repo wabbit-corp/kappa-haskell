@@ -1,0 +1,23 @@
+--! assertNoErrors
+--! assertDiagnosticExplainExists E_TYPE_MISMATCH
+--! assertDiagnosticExplainExists E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnosticExplainExists E_QTT_LINEAR_OVERUSE
+--! assertDiagnosticExplainExists E_QTT_LINEAR_DROP
+--! assertDiagnosticExplainExists E_QTT_ERASED_RUNTIME_USE
+--! assertDiagnosticExplainExists E_QTT_BORROW_CONSUME
+--! assertDiagnosticExplainExists E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT
+--! assertDiagnosticExplainExists E_APPLICATION_NON_CALLABLE
+--! assertDiagnosticExplainExists E_MISSING_EXPLICIT_SIGNATURE
+--! assertDiagnosticExplainExists E_SAFE_NAV_GENERIC_AMBIGUOUS
+--! assertDiagnosticExplainExists kappa.implicit.unsolved
+--! assertDiagnosticExplainExists kappa.qtt.borrow-overlap
+
+-- §3.1.2A: the diagnostic code registry behind `kappa explain` covers
+-- the codes ordinary compilation emits plus the portable aliases the
+-- specification requires (the cabal test suite cross-checks the full
+-- emitted set; this fixture pins the §3.1.2A-mandated alias spellings
+-- and the registry's family lookup).
+module main
+
+main : IO Unit
+let main = println "ok"
