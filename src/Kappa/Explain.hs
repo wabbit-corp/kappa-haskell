@@ -128,6 +128,8 @@ registry =
       "A numeric literal is lexically malformed (bad digits for its radix, misplaced separators, or an invalid exponent)."
   , ent "E_OPERATOR_NO_FIXITY" (Just "kappa.fixity.unbound")
       "An infix operator is used without any fixity declaration in scope, so the expression cannot be grouped."
+  , ent "E_OPERATOR_NON_ASSOCIATIVE" (Just "kappa.fixity.non-associative")
+      "Two non-associative ('infix') operators of the same precedence are chained without parentheses, so the expression has no grouping (§5.5.2)."
   , ent "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa.pattern.or-bindings")
       "The alternatives of an or-pattern do not bind exactly the same variables at the same types."
   , ent "E_EXPECT_AMBIGUOUS" (Just "kappa.expect.ambiguous")

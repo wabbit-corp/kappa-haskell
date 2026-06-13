@@ -200,6 +200,13 @@ reassoc env sp els0 = do
         (nameSpan op)
         ("operator '" <> nameText op <> "' is used in prefix position but no prefix fixity is in scope (Spec §5.5.3)")
 
+    nonAssocErr op op2 =
+      withHelp "parenthesize one side, e.g. (a == b) == c" $
+        diag SevError StageResolve "E_OPERATOR_NON_ASSOCIATIVE" (Just "kappa.fixity.non-associative")
+          (nameSpan op2)
+          ("operators '" <> nameText op <> "' and '" <> nameText op2
+             <> "' are non-associative at the same precedence; the chain has no grouping (Spec §5.5.2)")
+
     applyPostfix e els = case els of
       (ChainOp op : rest)
         | Just _ <- postfixOf env (nameText op)
@@ -224,6 +231,17 @@ reassoc env sp els0 = do
                       InfixN -> fPrec f + 1
                       _ -> fPrec f -- right-assoc reuses same level
                 (rhs, rest') <- parseExprAt nextMin rest
+                -- §5.5.2: plain `infix` is non-associative — a chain of
+                -- same-precedence non-associative operators has no
+                -- grouping; reject it (recovering left-associatively)
+                case rest' of
+                  (ChainOp op2 : _)
+                    | fKind f == InfixN
+                    , Just f2 <- fixFor op2
+                    , fKind f2 == InfixN
+                    , fPrec f2 == fPrec f ->
+                        emit (nonAssocErr op op2)
+                  _ -> pure ()
                 loop (mkOp op lhs rhs) minPrec rest'
           Just _ -> pure (lhs, els)
           Nothing ->

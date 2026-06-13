@@ -1757,9 +1757,11 @@ infer ctx expr = case expr of
             elabSpine ctx (exprSpan f) fTm fTy args
   EApp f args -> do
     mproj <- projectionHead ctx f
-    case mproj of
-      Just (g, pj) -> elabProjApp ctx (exprSpan f) g pj args
-      Nothing -> do
+    mRecvProj <- maybe (projRecvApp ctx f args) (const (pure Nothing)) mproj
+    case (mproj, mRecvProj) of
+      (_, Just r) -> pure r
+      (Just (g, pj), _) -> elabProjApp ctx (exprSpan f) g pj args
+      _ -> do
         n0 <- gets (length . csDiags)
         (fTm, fTy) <- infer ctx f
         headUnresolved <- case f of
@@ -2153,15 +2155,19 @@ check ctx expr expected0 = do
     (EApp f args, _)
       | all isExplicitArg args, not (null args) -> do
           mproj <- projectionHead ctx f
-          case mproj of
-            Just _ -> do
+          mRecvProj <- maybe (projRecvApp ctx f args) (const (pure Nothing)) mproj
+          case (mproj, mRecvProj) of
+            (_, Just (tm, ty)) -> do
+              expectType ctx (exprSpan expr) ty expected
+              pure tm
+            (Just _, _) -> do
               (tm, ty) <- infer ctx expr
               (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
               special <- projDescriptorMismatch ctx expr ty1 expected
               unless special $
                 expectType ctx (exprSpan expr) ty1 expected
               pure tm1
-            Nothing -> elabAppChecked ctx f args expected (exprSpan expr)
+            _ -> elabAppChecked ctx f args expected (exprSpan expr)
     (EIntLit v msuf sp, _) -> do
       (tm, ty) <- elabIntLit ctx v msuf sp (Just expected)
       expectType ctx sp ty expected
@@ -2734,6 +2740,48 @@ elabProjApp ctx sp g pj args = do
           (dTm1, dTy1) <- elabSpine ctx sp dTm dTy ordArgs
           applyDescriptor ctx sp dTm1 dTy1 (RootsSeparate placePairs)
       | otherwise -> elabSpine ctx sp dTm dTy args
+
+-- | §7.4 receiver-projection sugar with trailing arguments: a
+-- selector-form projection whose declaration has exactly one
+-- receiver-marked @place@ binder is eligible for method-call sugar —
+-- the receiver fills the place slot and the call-site arguments fill
+-- the remaining binders in declaration order. A record field of the
+-- receiver with the same name keeps §7.3 precedence.
+projRecvApp :: Ctx -> Expr -> [Arg] -> CheckM (Maybe (Term, Value))
+projRecvApp ctx (EDot recv (DotName mn)) args
+  | all (\case ArgExplicit _ -> True; _ -> False) args
+  , Nothing <- lookupCtx (nameText mn) ctx = do
+      mg <- lookupGlobalName (nameText mn)
+      st <- get
+      case mg >>= \g -> (,) g <$> Map.lookup g (csProjections st) of
+        Just (g, pj)
+          | length (filter id (pjIsPlace pj)) == 1
+          , length (pjIsPlace pj) == length args + 1
+          , length (pjIsPlace pj) > 1 -> do
+              shadowed <- fieldShadows
+              if shadowed
+                then pure Nothing
+                else do
+                  let fullArgs = weave (pjIsPlace pj) args
+                  Just <$> elabProjApp ctx (exprSpan recv) g pj fullArgs
+        _ -> pure Nothing
+  where
+    weave [] _ = []
+    weave (True : rest) as = ArgExplicit recv : weave rest as
+    weave (False : rest) (a : as) = a : weave rest as
+    weave (False : rest) [] = weave rest [] -- unreachable by the length guard
+    fieldShadows = do
+      st0 <- get
+      (_, rty) <- infer ctx recv
+      rtyF <- forceM rty
+      inner <- case rtyF of
+        VSigT _ i -> forceM i
+        t -> pure t
+      put st0
+      pure $ case inner of
+        VRecordT fs -> nameText mn `elem` map fst fs
+        _ -> False
+projRecvApp _ _ _ = pure Nothing
 
 -- | How the place arguments of a descriptor application are supplied.
 data RootsSupply

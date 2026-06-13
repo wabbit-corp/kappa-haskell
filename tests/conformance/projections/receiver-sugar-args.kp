@@ -1,0 +1,27 @@
+--! assertNoErrors
+--! assertEval viaLeft 7
+--! assertEval viaRight 9
+
+module main
+
+-- §7.4 receiver-projection sugar: a selector-form projection with
+-- exactly one receiver-marked 'place' binder is eligible for
+-- method-call sugar; trailing call-site arguments fill the remaining
+-- binders in declaration order.
+
+type Pair = (left : Int, right : Int)
+
+projection pick2 (place this : Pair) (chooseLeft : Bool) : Int =
+    if chooseLeft then
+        yield this.left
+    else
+        yield this.right
+
+p : Pair
+let p = (left = 7, right = 9)
+
+viaLeft : Int
+let viaLeft = p.pick2 True
+
+viaRight : Int
+let viaRight = p.pick2 False

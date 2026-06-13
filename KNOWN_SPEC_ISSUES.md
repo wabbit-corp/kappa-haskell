@@ -228,3 +228,25 @@ accommodation is restricted to `defEqSyntax`/`headSymbolSyntax` —
 no generic meta-to-object coercion exists. Evidence:
 `Kappa.Check.elabReflQuery`,
 `tests/conformance/macros/reflection-queries.kp`.
+
+## 13. §5.4: multi-line operator continuations at constant deeper indentation are undefined
+
+§5.4 says that lines indented deeper than a logical line's first token
+"form a continuation", but it never defines how *several* continuation
+lines at the *same* deeper level relate to each other. This
+implementation's Python-style layout opens an indented block at the
+first deeper line, so each further line at that same level begins a new
+statement: `a +` / `    b +` / `    c` (one constant continuation
+level) fails to parse, while a single continuation line and
+strictly-increasing indentation (`a +` / `    b +` / `        c`) both
+work. The corpus's source implementation accepts the constant-level
+form; both behaviors are defensible under §5.4's non-exhaustive text.
+Same family as the two layout tracked gaps in
+`tests/external-blocked.md`
+(`fuzz.pending.reject_invalid_do_bind_indented_continuation`,
+`fuzz.pending.reject_invalid_indented_expression_continuation`), where
+the corpus expects the *opposite* (a syntax error on an indented
+continuation after a complete do-bind RHS, where §5.4's reading here
+makes it an application continuation). A normative continuation rule —
+one logical line extends until a line at or below its starting column —
+would settle all three.

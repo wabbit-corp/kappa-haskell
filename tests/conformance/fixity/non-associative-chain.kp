@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_OPERATOR_NON_ASSOCIATIVE
+
+module main
+
+-- §5.5.2: plain `infix` is non-associative (§28.2.3 puts the
+-- comparisons at `infix 40`); a same-precedence chain has no grouping
+-- and is rejected. Parenthesized forms group fine.
+ok : Bool
+let ok = (1 == 2) == False
+
+bad : Bool
+let bad = 1 == 2 == False
