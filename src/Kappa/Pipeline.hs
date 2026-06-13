@@ -169,7 +169,7 @@ compileFilesWith packageMode nameOf files =
       -- §2.1/§8.1: in package mode an explicit module header must agree
       -- with the source-root-relative path-derived module name
       headerMismatchDiags =
-        [ diag SevError StageImports "E_MODULE_PATH_MISMATCH" (Just "kappa.module.path-mismatch")
+        [ diag SevError StageImports "E_MODULE_PATH_MISMATCH" (Just "kappa-hs.module.path-mismatch")
             (Span path (Pos 1 1) (Pos 1 1))
             ( "module header '" <> renderModuleName (ModuleName (modPathName mp))
                 <> "' does not match the path-derived module name '"
@@ -398,7 +398,7 @@ topoOrder mods deps = (reverse outRev, reverse diagsRev)
                   fromMaybe unitSpan (lookup mn (fromMaybe [] (Map.lookup parent deps)))
                 [] -> unitSpan
               d =
-                diag SevError StageImports "E_IMPORT_CYCLE" (Just "kappa.import.cycle") sp
+                diag SevError StageImports "E_IMPORT_CYCLE" (Just "kappa-hs.import.cycle") sp
                   ( "module dependency cycle: "
                       <> T.intercalate " -> " (map renderModuleName (mn : cyc ++ [mn]))
                       <> " (module imports and re-exports must be acyclic, Spec §8.2)"
@@ -542,7 +542,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
        in if nm `elem` memberNames mn
             then case kindMismatch g (iiKind it) of
               Just why ->
-                err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.import.item"
+                err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.name.unresolved"
                   ("'" <> nm <> "' is exported by module '" <> renderModuleName mn
                      <> "', but not as a " <> why <> " (§8.3 kind selectors)")
               Nothing ->
@@ -553,7 +553,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
             else
               if hasGlobal g
                 then
-                  err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.import.item"
+                  err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.name.unresolved"
                     ("'" <> nm <> "' exists in module '" <> renderModuleName mn <> "' but is not exported (Spec §8.5)")
                 else itemNotFound ie sp mn nm
     -- §8.3 kind selectors: the selected member must have the stated
@@ -581,7 +581,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
         isData x = Map.member x (csDatas st)
         isCtor x = Map.member x (csCtors st) && not (isData x)
     itemNotFound ie sp mn nm =
-      err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.import.item"
+      err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.name.unresolved"
         ("module '" <> renderModuleName mn <> "' does not export '" <> nm <> "' (Spec §8.3)")
     addExplicit ie alias g =
       ie
@@ -613,13 +613,13 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
     urlErr ie sp url = case T.breakOn "#" url of
       (_, pin)
         | "#ref:" `T.isPrefixOf` pin ->
-            err ie sp "E_URL_IMPORT_REF_PIN_REQUIRES_LOCK" "kappa.import.url"
+            err ie sp "E_URL_IMPORT_REF_PIN_REQUIRES_LOCK" "kappa.package.reproducibility"
               "a 'ref:'-pinned URL import requires the resolved digest to be recorded in a lockfile in package mode (Spec §8.3.3); this implementation keeps no lockfile"
         | "#" `T.isPrefixOf` pin ->
-            err ie sp "E_URL_IMPORT_UNSUPPORTED" "kappa.import.url"
+            err ie sp "E_URL_IMPORT_UNSUPPORTED" "kappa-hs.import.url"
               "URL module fetching is not supported by this implementation (Spec §8.3.2)"
       _ ->
-        err ie sp "E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE" "kappa.import.url"
+        err ie sp "E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE" "kappa.package.reproducibility"
           "URL module imports must be pinned in package mode (Spec §8.3.2)"
     unknownModule ie sp mn =
       err ie sp "E_MODULE_NAME_UNRESOLVED" "kappa.name.unresolved"
@@ -672,7 +672,7 @@ loadSourceFile path = do
       pure
         ( TE.decodeUtf8With TEE.lenientDecode bytes
         , [ diag SevError StageLex "E_UNICODE_INVALID_UTF8"
-              (Just "kappa.unicode.invalid-utf8") (lineSpan 1)
+              (Just "kappa-hs.unicode.invalid-utf8") (lineSpan 1)
               "source file is not valid UTF-8 (Spec §3.1.3)"
           ]
         )
@@ -698,19 +698,19 @@ sourceHygieneWarnings path txt =
     warn n code fam msg =
       diag SevWarning StageLex code (Just fam) (Span path (Pos n 1) (Pos n 2)) msg
     bidi =
-      [ warn n "W_UNICODE_BIDI_CONTROL" "kappa.unicode.bidi-control"
+      [ warn n "W_UNICODE_BIDI_CONTROL" "kappa-hs.unicode.bidi-control"
           "source text contains a bidirectional control character outside a string literal (§3.1.3)"
       | (n, l) <- lns
       , T.any isBidiControl (stripStrings l)
       ]
     confusable =
-      [ warn n "W_UNICODE_CONFUSABLE_IDENTIFIER" "kappa.unicode.confusable"
+      [ warn n "W_UNICODE_CONFUSABLE_IDENTIFIER" "kappa.unicode.name"
           "an identifier contains characters visually confusable with ASCII letters (§3.1.3)"
       | (n, l) <- lns
       , T.any (isJust . confusableWithAscii) (stripComment (stripStrings l))
       ]
     nonNfc =
-      [ warn n "W_UNICODE_NON_NORMALIZED_SOURCE_TEXT" "kappa.unicode.non-normalized-text"
+      [ warn n "W_UNICODE_NON_NORMALIZED_SOURCE_TEXT" "kappa-hs.unicode.non-normalized-text"
           "source text is not in Unicode Normalization Form C (§3.1.3)"
       | (n, l) <- lns
       , not (isNfcQuick l)

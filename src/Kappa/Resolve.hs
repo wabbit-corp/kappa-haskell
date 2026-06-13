@@ -153,7 +153,7 @@ reassoc env sp els0 = do
   where
     gatingErr op =
       withHelp "declare a fixity, e.g. infix left 60 (...), or use the operator as a function: (op) x y" $
-        diag SevError StageResolve "E_OPERATOR_NO_FIXITY" (Just "kappa.fixity.unbound")
+        diag SevError StageResolve "E_OPERATOR_NO_FIXITY" (Just "kappa-hs.fixity.unbound")
           (nameSpan op)
           ("operator '" <> nameText op <> "' is used in infix position but no fixity is in scope (Spec §5.5.3)")
 
@@ -196,13 +196,13 @@ reassoc env sp els0 = do
       _ -> pure (lhs, els)
 
     gatingErrPrefix op =
-      diag SevError StageResolve "E_OPERATOR_NO_FIXITY" (Just "kappa.fixity.unbound")
+      diag SevError StageResolve "E_OPERATOR_NO_FIXITY" (Just "kappa-hs.fixity.unbound")
         (nameSpan op)
         ("operator '" <> nameText op <> "' is used in prefix position but no prefix fixity is in scope (Spec §5.5.3)")
 
     nonAssocErr op op2 =
       withHelp "parenthesize one side, e.g. (a == b) == c" $
-        diag SevError StageResolve "E_OPERATOR_NON_ASSOCIATIVE" (Just "kappa.fixity.non-associative")
+        diag SevError StageResolve "E_OPERATOR_NON_ASSOCIATIVE" (Just "kappa-hs.fixity.non-associative")
           (nameSpan op2)
           ("operators '" <> nameText op <> "' and '" <> nameText op2
              <> "' are non-associative at the same precedence; the chain has no grouping (Spec §5.5.2)")

@@ -53,7 +53,7 @@ parseExprText path src = do
 
 errToDiag :: PErr -> Diagnostic
 errToDiag (PErr sp msg expected) =
-  let d = diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp msg
+  let d = diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error") sp msg
    in case expected of
         [] -> d
         es -> withNote ("expected one of: " <> T.intercalate ", " (dedup es)) d
@@ -211,7 +211,7 @@ pSkipLayoutTop = void (many (pNewline <|> token TokDedent <|> flaggedIndent))
       sp <- currentSpan
       token TokIndent
       recordRecovered $
-        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa.parse.error") sp
+        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa-hs.parse.error") sp
           "unexpected indentation: a top-level declaration must start at the module indentation level (Spec §5.4)"
 
 -- Declaration-level recovery (§3.1.14A): report and skip to the next
@@ -228,10 +228,10 @@ recoverDecl = do
         -- §5.4 layout: the declaration failed because a clause body is
         -- indented less than its clause header (the body line dedents
         -- and a sibling `case` re-indents)
-        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa.parse.error") sp
+        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa-hs.parse.error") sp
           "a clause body is indented less than its clause header (Spec §5.4 layout)"
       else
-        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp
+        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error") sp
           ("unexpected " <> tokenDescr t <> " at start of declaration")
   skipPast (\case TokNewline False -> True; TokEOF -> True; _ -> False)
   void (optional pHardNewline)
@@ -530,7 +530,7 @@ pCtorBlock = indentedCtors <|> inlineCtors
       sp <- currentSpan
       t <- peekToken
       recordRecovered $
-        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error") sp
+        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error") sp
           ("unexpected " <> tokenDescr t <> " in a constructor alternative")
       skipCtorBlock (0 :: Int)
       pure []

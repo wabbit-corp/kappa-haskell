@@ -809,21 +809,21 @@ expectType ctx sp actual expected = do
         report $
           withNote ("expected: " <> renderTerm eT) $
             withNote ("actual:   " <> renderTerm aT) $
-              diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument") sp
+              diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch") sp
                 "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)"
       else if not (aOp || eOp) && flatArgMismatch
         then
         report $
           withNote ("expected: " <> renderTerm eT) $
             withNote ("actual:   " <> renderTerm aT) $
-              diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument") sp
+              diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch") sp
                 "the supplied argument's type does not match the parameter type (§16.1.7.1)"
       else if aOp || eOp
         then
         report $
           withNote ("expected: " <> renderTerm eT) $
             withNote ("actual:   " <> renderTerm aT) $
-              diag SevError StageElaborate "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa.seal.opaque-unfolding") sp
+              diag SevError StageElaborate "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa-hs.seal.opaque-unfolding") sp
                 "an opaque member of a sealed package does not unfold to its hidden definition (§13.2.10)"
       else do
         -- §21: phase-boundary mismatches (a meta-phase 'Elab'/'Syntax'
@@ -1017,13 +1017,13 @@ unsupported ctx sp what = reportUnsupported sp what >> anyHole ctx
 -- cascade.
 badGrapheme :: Span -> Text -> CheckM (Term, Value)
 badGrapheme sp why = do
-  errAt sp "E_UNICODE_INVALID_GRAPHEME_LITERAL" (Just "kappa.unicode.invalid-grapheme-literal")
+  errAt sp "E_UNICODE_INVALID_GRAPHEME_LITERAL" (Just "kappa-hs.unicode.invalid-grapheme-literal")
     ("invalid grapheme literal: " <> why <> " (Spec §6.5)")
   pure (CLit (LitGrapheme "?"), VGlobN (gPrel "Grapheme") [])
 
 badByte :: Span -> Text -> CheckM (Term, Value)
 badByte sp why = do
-  errAt sp "E_UNICODE_INVALID_BYTE_LITERAL" (Just "kappa.unicode.invalid-byte-literal")
+  errAt sp "E_UNICODE_INVALID_BYTE_LITERAL" (Just "kappa-hs.unicode.invalid-byte-literal")
     ("invalid byte literal: " <> why <> " (Spec §6.5)")
   pure (CLit (LitByte 0x3F), VGlobN (gPrel "Byte") [])
 
@@ -1191,13 +1191,13 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
     checkCandidate i e = do
       -- an erased candidate cannot satisfy a runtime implicit (§12.2)
       when (q /= Q0 && ceQ e == Just S.QZero) $
-        errAt sp "E_QTT_ERASED_RUNTIME_USE" (Just "kappa.qtt.erased-runtime-use")
+        errAt sp "E_QTT_ERASED_RUNTIME_USE" (Just "kappa.quantity.unsatisfied")
           ("the implicit candidate '" <> ceName e <> "' is erased (@0) and cannot satisfy a runtime implicit binder (§12.2)")
       -- a borrowed candidate may not be captured across a closure
       -- boundary (§16.3.3, §12.3.2)
       let lvl = ctxLen ctx - 1 - i
       when (ceBorrow e && any (> lvl) (ctxBarriers ctx)) $
-        errAt sp "E_QTT_BORROW_ESCAPE" (Just "kappa.qtt.borrow-escape")
+        errAt sp "E_QTT_BORROW_ESCAPE" (Just "kappa.borrow.escape")
           ("the borrowed implicit candidate '" <> ceName e <> "' may not be captured by a closure (§12.3.2)")
 
 goalHasFlex :: Value -> CheckM Bool
@@ -1430,7 +1430,7 @@ searchDepth depth ctx sp goal
                     pending <- filterM (dictValuePending . ieDict) (ie0 : map fst rest)
                     when (null pending) $
                       report $
-                        diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent") sp
+                        diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent") sp
                           "multiple instances match this trait obligation (§14.3.1 coherence)"
                   pure (Just tm)
         _ -> pure Nothing
@@ -1508,7 +1508,7 @@ checkInstanceOverlap sp g new prior
         _ -> pure True -- disjoint heads or a discarded candidate
       put saved
       unless equivalent $
-        errAt sp "E_INSTANCE_INCOHERENT" (Just "kappa.trait.incoherent")
+        errAt sp "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent")
           ("overlapping instances of trait '" <> gnameText g
              <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)")
 
@@ -1713,7 +1713,7 @@ infer ctx expr = case expr of
             )
         ordered = topoFields [(nameText (rtfName f), deps f, f) | f <- fs]
     forM_ (duplicatesOf names) $ \n ->
-      errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+      errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
         ("record type has duplicate field '" <> n <> "'")
     -- §13.2.1: an explicit field type of an open record may not refer
     -- to a field that would come only from the residual row
@@ -1722,7 +1722,7 @@ infer ctx expr = case expr of
             then nub [(nameText (rtfName f), l) | f <- fs, l <- surfaceThisRefs (rtfType f), l `notElem` names]
             else []
     forM_ residualRefs $ \(fn, l) ->
-      errOnce sp "E_RECORD_DEPENDENCY_INVALID" (Just "kappa.record.dependency-invalid")
+      errOnce sp "E_RECORD_DEPENDENCY_INVALID" (Just "kappa-hs.record.dependency-invalid")
         ( "the explicit field '" <> fn <> "' refers to '" <> l
             <> "', which is not an explicitly listed field of this open record (§13.2.1)"
         )
@@ -1731,7 +1731,7 @@ infer ctx expr = case expr of
     phantoms <- forM (nub (map snd residualRefs)) $ \l -> (,) l <$> freshMetaV ctx
     case ordered of
       Nothing -> do
-        errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+        errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
           "the field-dependency graph of this record type contains a cycle (§13.2.1)"
         fields <- forM names $ \n -> (,) n <$> freshMeta
         finish fields
@@ -1970,7 +1970,7 @@ infer ctx expr = case expr of
   EKindQualified sel n sp -> elabKindQualified ctx sel n sp
   EModuleSig _ sp -> unsupported ctx sp "moduleSig"
   EImpossible sp -> do
-    errAt sp "E_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
+    errAt sp "E_IMPOSSIBLE_REACHABLE" (Just "kappa.pattern.unreachable")
       "'impossible' is not provably unreachable here"
     anyHole ctx
   EOpChain {} -> do
@@ -2217,7 +2217,7 @@ check ctx expr expected0 = do
     -- §13.2.10: a signature type with opaque members is introduced
     -- only through 'seal ... as ...', never by a direct record literal
     (ERecordLit _ lsp, VSigT _ _) -> do
-      errAt lsp "E_SEAL_DIRECT_LITERAL_FOR_SIGNATURE" (Just "kappa.seal.direct-literal")
+      errAt lsp "E_SEAL_DIRECT_LITERAL_FOR_SIGNATURE" (Just "kappa-hs.seal.direct-literal")
         "a record literal cannot introduce a signature type with opaque members; use 'seal ... as ...' (§13.2.10)"
       fst <$> anyHole ctx
     (ERecordLit items lsp, VRecordT fs) -> do
@@ -2356,7 +2356,7 @@ check ctx expr expected0 = do
                   then pure False
                   else do
                     errAt (exprSpan ex) "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED"
-                      (Just "kappa.projection.descriptor")
+                      (Just "kappa-hs.projection.descriptor")
                       "a fully applied projection denotes its focus value, not a first-class descriptor; use the unapplied projection name (§16.1.5)"
                     pure True
               _ -> pure False
@@ -2458,7 +2458,7 @@ inferType ctx e = do
               pure (CApp Expl (CApp Expl (CGlob g) m) argTm, 0)
         other -> do
           oT <- quoteIn ctx other
-          errAt (exprSpan e) "E_NOT_A_TYPE" (Just "kappa.type.expected-type")
+          errAt (exprSpan e) "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
             ("expected a type; this expression has type " <> renderTerm oT)
           pure (tm, 0)
 
@@ -2723,7 +2723,7 @@ retagNewMismatches nBefore = modify' $ \st ->
       (new, old) = splitAt (length ds - nBefore) ds
       retag d
         | dCode d == "E_TYPE_EQUALITY_MISMATCH" =
-            d {dCode = "E_APPLICATION_ARGUMENT_MISMATCH", dFamily = Just "kappa.application.argument"}
+            d {dCode = "E_APPLICATION_ARGUMENT_MISMATCH", dFamily = Just "kappa.application.argument-mismatch"}
         | otherwise = d
    in st {csDiags = map retag new ++ old}
 
@@ -2879,7 +2879,7 @@ applyDescriptor ctx sp dTm dTy0 supply = do
               capNames = [nm | (nm, _, _) <- caps]
           placeTms <- elabRootsSupply ctx sp rootsV supply
           unless (want `elem` capNames) $
-            errAt sp "E_PROJECTION_CAPABILITY_REQUIRED" (Just "kappa.projection.capability")
+            errAt sp "E_PROJECTION_CAPABILITY_REQUIRED" (Just "kappa-hs.projection.capability")
               ( "this use requires the '" <> capabilityWord demand
                   <> "' capability, but the accessor bundle provides only: "
                   <> T.intercalate ", " capNames <> " (§16.1.6)"
@@ -2900,11 +2900,11 @@ applyDescriptor ctx sp dTm dTy0 supply = do
             _ -> pure focusV
           pure (tm, focusV')
         _ -> do
-          errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa.projection.descriptor")
+          errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa-hs.projection.descriptor")
             "expected a projector or accessor-bundle descriptor value here (§16.1.5)"
           anyHole ctx
     _ -> do
-      errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa.projection.descriptor")
+      errAt sp "E_PROJECTION_DESCRIPTOR_VALUE_EXPECTED" (Just "kappa-hs.projection.descriptor")
         "expected a projector or accessor-bundle descriptor value here (§16.1.5)"
       anyHole ctx
   where
@@ -2937,7 +2937,7 @@ elabRootsSupply ctx _sp rootsV supply = do
             [(fn, fe)]
               | fn == nm, length items == 1 -> (: []) <$> elabPlaceArg ctx fe fty
             _ -> do
-              errAt isp "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa.projection.roots")
+              errAt isp "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa-hs.projection.roots")
                 ("the roots record literal must supply exactly the field '" <> nm <> "' (§16.1.5)")
               (: []) . fst <$> anyHole ctx
         _ -> (: []) <$> elabPlaceArg ctx e fty
@@ -2946,7 +2946,7 @@ elabRootsSupply ctx _sp rootsV supply = do
           let fields = [(nameText fn, fe) | RecItem _ fn (Just fe) <- items]
           if sort (map fst fields) /= map fst rfs || length items /= length fields
             then do
-              errAt isp "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa.projection.roots")
+              errAt isp "E_PROJECTION_ROOTS_PACK_MISMATCH" (Just "kappa-hs.projection.roots")
                 ( "the roots record literal must supply exactly the fields: "
                     <> T.intercalate ", " (map fst rfs) <> " (§16.1.5)"
                 )
@@ -2956,7 +2956,7 @@ elabRootsSupply ctx _sp rootsV supply = do
                 Just fe -> elabPlaceArg ctx fe fty
                 Nothing -> fst <$> anyHole ctx
         _ -> do
-          errAt (exprSpan e) "E_PROJECTION_DESCRIPTOR_ROOTS_LITERAL_REQUIRED" (Just "kappa.projection.roots")
+          errAt (exprSpan e) "E_PROJECTION_DESCRIPTOR_ROOTS_LITERAL_REQUIRED" (Just "kappa-hs.projection.roots")
             "the roots argument of a multi-root projector descriptor application must be a closed record literal (§16.1.5)"
           _ <- infer ctx e
           mapM (const (fst <$> anyHole ctx)) rfs
@@ -2967,7 +2967,7 @@ elabPlaceArg :: Ctx -> Expr -> Value -> CheckM Term
 elabPlaceArg ctx e fty
   | stablePlaceExpr e = withDemand DemandRead (check ctx e fty)
   | otherwise = do
-      errAt (exprSpan e) "E_PROJECTION_ROOT_INVALID" (Just "kappa.projection.roots")
+      errAt (exprSpan e) "E_PROJECTION_ROOT_INVALID" (Just "kappa-hs.projection.roots")
         "a projection place argument must be a stable place expression (§12.4.1, §16.1.5)"
       _ <- withDemand DemandRead (infer ctx e)
       fst <$> anyHole ctx
@@ -2990,7 +2990,7 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
     -- §18.9.3/§18.9.6: '~' is valid only inside a do block; recover
     -- with a hole so the broken spine does not cascade a type mismatch
     ArgInout _ msp | not (ctxInDo ctx) -> do
-      errAt msp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa.qtt.inout-marker")
+      errAt msp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa-hs.qtt.inout-marker")
         "a call-site '~' marker is valid only inside a do block (§18.9.3, §18.9.6)"
       anyHole ctx
     _ -> do
@@ -3085,14 +3085,14 @@ elabSpineArg ctx sp fTm fTy arg rest = do
     -- marker/parameter agreement is judged by the §18.9.3 usage analysis
     (ArgInout e _, _) -> elabSpine ctx sp fTm fTy (ArgExplicit e : rest)
     (ArgImplicit e, _) -> do
-      errAt (exprSpan e) "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
+      errAt (exprSpan e) "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch")
         "an explicit implicit argument was supplied, but the callee has no implicit parameter here (§16.1.7.1)"
       -- recovery: do not cascade a type mismatch from the broken spine
       anyHole ctx
     (ArgExplicit e, _)
       -- a saturated constructor given extra arguments (§10.1.1)
       | Just _ <- termHeadCtor fTm -> do
-          errAt (exprSpan e) "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.application.arity")
+          errAt (exprSpan e) "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.constructor.arity")
             "too many arguments in constructor application"
           anyHole ctx
       -- a data-type head applied in term position selects its
@@ -3113,7 +3113,7 @@ elabSpineArg ctx sp fTm fTy arg rest = do
           fT <- quoteIn ctx fTy
           report $
             withNote ("callee type: " <> renderTerm fT) $
-              diag SevError StageElaborate "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
+              diag SevError StageElaborate "E_APPLICATION_NONCALLABLE" (Just "kappa-hs.application.non-callable")
                 (exprSpan e')
                 "this expression is not callable"
           anyHole ctx
@@ -3143,7 +3143,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
   forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \dn ->
     case mCtorG of
       Just g | Map.member g (csCtors st) ->
-        errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa.application.named")
+        errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa-hs.application.named")
           ("named argument '" <> dn <> "' is supplied more than once")
       -- §16.1.7.2: on an ordinary callee a malformed block is a
       -- telescope mismatch
@@ -3153,7 +3153,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
       let fieldNames = mapMaybe fst (ciFields ci)
       forM_ items $ \(n, _) ->
         unless (nameText n `elem` fieldNames) $
-          errAt (nameSpan n) "E_NAMED_ARG_UNKNOWN" (Just "kappa.application.named")
+          errAt (nameSpan n) "E_NAMED_ARG_UNKNOWN" (Just "kappa-hs.application.named")
             ("constructor has no named parameter '" <> nameText n <> "'")
       let supplied = [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
       args <- forM (ciFields ci) $ \(mname, mdef) ->
@@ -3165,7 +3165,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
             -- earlier field arguments in scope
             Just d -> pure (Just (mname, True, Left d))
             Nothing -> do
-              errAt sp "E_NAMED_ARG_MISSING" (Just "kappa.application.named")
+              errAt sp "E_NAMED_ARG_MISSING" (Just "kappa-hs.application.named")
                 ("missing constructor argument" <> maybe "" (\n -> " '" <> n <> "'") mname)
               pure Nothing
       -- run the spine with mixed surface/core arguments
@@ -3249,7 +3249,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
                 Nothing -> ctxAcc
           goSpine ctxAcc' (CApp Expl tm aTm) ty' as
         _ -> do
-          errAt sp "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.application.arity")
+          errAt sp "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.constructor.arity")
             "too many constructor arguments"
           pure (tm, ty)
 
@@ -3270,7 +3270,7 @@ elabIntLit ctx v msuf sp mexp = case msuf of
             -- §6.1.6: the literal payload is the suffix application's
             -- argument; a parameter type admitting no integer literal
             -- is an application-argument mismatch
-            errAt sp "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
+            errAt sp "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch")
               ("the suffix function's parameter type admits no integer literal payload (§6.1.6)")
             anyHole ctx
   Nothing -> do
@@ -3306,7 +3306,7 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
         if admits
           then elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
           else do
-            errAt sp "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument")
+            errAt sp "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch")
               ("the suffix function's parameter type admits no float literal payload (§6.1.6)")
             anyHole ctx
   Nothing -> do
@@ -3422,14 +3422,14 @@ elabPrefixHandler ctx sl parts sp p = do
             _ -> badHandler hTyF >> bail
     VGlobN (GName pm "InterpolatedMacro") _
       | pm == preludeModule -> do
-          errAt sp "E_PREFIX_RUNTIME_HANDLER" (Just "kappa.literal.prefixed")
+          errAt sp "E_PREFIX_RUNTIME_HANDLER" (Just "kappa.macro.failure")
             "a runtime 'InterpolatedMacro' value is not a valid prefixed-string handler; handler evidence must be meta-phase, an 'Elab (InterpolatedMacro _)' term (§6.3.4.3)"
           bail
     _ -> badHandler hTyF >> bail
   where
     badHandler ty = do
       tT <- quoteIn ctx ty
-      errAt sp "E_PREFIX_HANDLER_TYPE" (Just "kappa.literal.prefixed")
+      errAt sp "E_PREFIX_HANDLER_TYPE" (Just "kappa.macro.failure")
         ("the prefixed-string handler '" <> p
            <> "' must elaborate to 'Elab (InterpolatedMacro _)'; this term has type "
            <> renderTerm tT <> " (§6.3.4.3)")
@@ -3465,7 +3465,7 @@ elabRecordLit ctx items sp = do
     (tm1, ty1) <- insertAllImplicits ctx (nameSpan n) tm ty
     pure (nameText n, tm1, ty1)
   forM_ (duplicatesOf [n | (n, _, _) <- rs]) $ \n ->
-    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
       ("record literal has duplicate field '" <> n <> "'")
   -- evaluate fields in source order via lets, assemble canonically
   let sorted = sortOn (\(n, _, _) -> n) rs
@@ -3575,7 +3575,7 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
         case t of
           VSort _ -> pure (CVar i, ceType e)
           _ -> do
-            errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+            errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa-hs.static-object.kind")
               ("'" <> n <> "' is not a type in this scope; the 'type' selector does not apply (Spec §7.1.1)")
             anyHole ctx
   _ -> do
@@ -3598,17 +3598,17 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
       Nothing -> pure False
     if sel == SelType && isTrait
       then do
-        errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+        errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa-hs.static-object.kind")
           ("'" <> n <> "' names a trait; the 'type' selector does not apply (Spec §2.8.3)")
         anyHole ctx
       else if sel == SelTrait && isJust mg && not isTrait
         then do
-          errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+          errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa-hs.static-object.kind")
             ("'" <> n <> "' does not name a trait; the 'trait' selector requires a trait declaration (Spec §7.1.1)")
           anyHole ctx
       else if sel == SelEffectLabel && isJust mg && not isLabelG
         then do
-          errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa.static-object.kind")
+          errAt nsp "E_STATIC_OBJECT_KIND_MISMATCH" (Just "kappa-hs.static-object.kind")
             ("'" <> n <> "' does not name an effect label; the 'effectLabel' selector requires an effect-label declaration (Spec §7.1.1)")
           anyHole ctx
       else do
@@ -3794,7 +3794,7 @@ elabDotUnqualified ctx e member mname = do
                 Just _ -> methodSugar tm1 t mn0
                 Nothing -> do
                   errAt (nameSpanOf member) "E_RECORD_PROJECTION_MISSING_FIELD"
-                    (Just "kappa.record.unknown-field")
+                    (Just "kappa.name.unresolved")
                     ("record has no field '" <> nameText mn0
                        <> "' (fields: " <> T.intercalate ", " (map fst fs) <> ")")
                   anyHole ctx
@@ -3866,14 +3866,14 @@ elabDotUnqualified ctx e member mname = do
               -- receiver-marked binder; the receiver is inserted at it
               Just [i] -> applyRecvAt i fTm fTy recvTm recvTy
               Just _ -> do
-                errAt (nameSpanOf member) "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+                errAt (nameSpanOf member) "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved")
                   ("'" <> nameText mn0
                      <> "' does not have exactly one receiver-marked binder, so it is not eligible for method-call sugar (§7.4)")
                 anyHole ctx
               -- §7.4: a callable without a receiver-marked binder is
               -- not eligible for method-call sugar
               Nothing -> do
-                errAt (nameSpanOf member) "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+                errAt (nameSpanOf member) "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved")
                   ("'" <> nameText mn0
                      <> "' has no receiver-marked binder, so it is not eligible for method-call sugar (§7.4)")
                 anyHole ctx
@@ -3909,7 +3909,7 @@ elabDotUnqualified ctx e member mname = do
               piV <- evalIn c (CPi Expl q nm domTm bodyTyTm)
               pure (CLam Expl q nm body, piV)
             _ -> do
-              errAt (nameSpanOf member) "E_APPLICATION_NONCALLABLE" (Just "kappa.application.non-callable")
+              errAt (nameSpanOf member) "E_APPLICATION_NONCALLABLE" (Just "kappa-hs.application.non-callable")
                 "member is not callable with a receiver"
               anyHole ctx
 
@@ -3929,14 +3929,14 @@ elabDotUnqualified ctx e member mname = do
                   && spanEnd (dPrimary dd) <= spanEnd recvSp
           unless (any (\dd -> isError dd && within dd) ds) $
             report $
-              diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+              diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved")
                 (nameSpanOf member)
                 ("no member '" <> nameText mn0 <> "' is known on this receiver (its type is undetermined, §7.3)")
         _ -> do
           rT <- quoteIn ctx recvF
           report $
             withNote ("receiver type: " <> renderTerm rT) $
-              diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved-member")
+              diag SevError StageElaborate "E_UNRESOLVED_MEMBER" (Just "kappa.name.unresolved")
                 (nameSpanOf member)
                 ("no member '" <> nameText mn0 <> "' on this receiver (§7.3)")
       anyHole ctx
@@ -4144,13 +4144,13 @@ elabPatchWith nested ctx e items sp = do
             foldr (\n acc -> if nameText n `elem` map nameText acc then acc else n : acc) []
               [h | PatchUpdate ((False, h) : _ : _) _ <- items]
       forM_ (duplicatesOf updateNames) $ \n ->
-        errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa.record.patch-duplicate")
+        errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
           ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
       forM_ (duplicatesOf extendNames) $ \n ->
-        errAt sp "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa.row.extension-duplicate")
+        errAt sp "E_ROW_EXTENSION_DUPLICATE_LABEL" (Just "kappa-hs.row.extension-duplicate")
           ("row extension introduces label '" <> n <> "' more than once (§13.2.6)")
       forM_ [h | h <- nestedHeads, nameText h `elem` updateNames] $ \h ->
-        errAt (nameSpan h) "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa.record.patch-prefix-conflict")
+        errAt (nameSpan h) "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa-hs.record.patch-prefix-conflict")
           ("record patch both replaces '" <> nameText h <> "' and updates a path beneath it (§13.2.5)")
       groupUps <- forM nestedHeads $ \h -> do
         let subItems =
@@ -4163,7 +4163,7 @@ elabPatchWith nested ctx e items sp = do
             (htm, _) <- elabPatchWith True ctx (EDot e (DotName h)) subItems sp
             pure (Just (nameText h, htm, Nothing))
           else do
-            errAt (nameSpan h) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.record.patch-unknown-path")
+            errAt (nameSpan h) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.name.unresolved")
               ("record patch path starts at unknown field '" <> nameText h <> "' (§13.2.5)")
             pure Nothing
       results0 <- forM items $ \case
@@ -4175,10 +4175,10 @@ elabPatchWith nested ctx e items sp = do
             Nothing -> do
               if nested
                 then
-                  errAt (nameSpan n) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.record.patch-unknown-path")
+                  errAt (nameSpan n) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.name.unresolved")
                     ("record patch path names unknown field '" <> nameText n <> "' (§13.2.5)")
                 else
-                  errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.record.unknown-field")
+                  errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.name.unresolved")
                     ("record has no field '" <> nameText n <> "'")
               pure Nothing
         PatchUpdate ((False, _) : _ : _) _ -> pure Nothing -- grouped above
@@ -4190,7 +4190,7 @@ elabPatchWith nested ctx e items sp = do
         PatchExtend n v ->
           case lookup (nameText n) fs of
             Just fty -> do
-              errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.extension-existing")
+              errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.lacks-failed")
                 ("row extension ':=' introduces '" <> nameText n <> "', but the record already has that field (§13.2.6)")
               vt <- check ctx v fty
               pure (Just (nameText n, vt, Nothing))
@@ -4200,12 +4200,12 @@ elabPatchWith nested ctx e items sp = do
               pure (Just (nameText n, vt, Just vty))
         PatchSection _ _ -> do
           -- a projection-section item mixed with other patch items
-          errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
+          errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa-hs.projection.update")
             "a projection-section update must be the only item of its update (§13.2.5, §30.2.2.4)"
           pure Nothing
         -- §13.2.5: record updates do not admit field punning
         PatchPun n -> do
-          errAt (nameSpan n) "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa.record.patch-invalid")
+          errAt (nameSpan n) "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
             ("a record update item must be written 'field = value'; punning '" <> nameText n <> "' is not admitted (§13.2.5)")
           pure Nothing
       let entries = catMaybes (results0 ++ groupUps)
@@ -4247,7 +4247,7 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
   results <- forM items $ \case
     PatchExtend n v
       | Just fty <- lookup (nameText n) fs -> do
-          errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.extension-existing")
+          errAt (nameSpan n) "E_ROW_EXTENSION_EXISTING_FIELD" (Just "kappa.row.lacks-failed")
             ("row extension ':=' introduces '" <> nameText n <> "', but the record already has that field (§13.2.6)")
           vt <- check ctx v fty
           pure (Just (nameText n, vt, Nothing))
@@ -4262,7 +4262,7 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
           after <- get
           when (length (csDiags after) /= length (csDiags saved)) $ do
             put saved
-            errAt (nameSpan n) "E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT" (Just "kappa.row.extension-lacks")
+            errAt (nameSpan n) "E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT" (Just "kappa.row.lacks-failed")
               ( "extending the open row with '" <> nameText n
                   <> "' requires a 'LacksRec r " <> nameText n <> "' constraint in scope (§13.2.1, §13.2.6)"
               )
@@ -4274,7 +4274,7 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
           vt <- check ctx v fty
           pure (Just (nameText n, vt, Nothing))
     _ -> do
-      errAt sp "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa.record.patch-invalid")
+      errAt sp "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
         "this update item is not supported on an open record (§13.2.5)"
       pure Nothing
   let entries = catMaybes results
@@ -4350,7 +4350,7 @@ elabSectionUpdate ctx baseE recv rhs sp = case recv of
     unsupportedTarget (baseTm, baseTy)
   where
     unsupportedTarget (baseTm, baseTy) = do
-      errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa.projection.update")
+      errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa-hs.projection.update")
         "the projection-section update target must resolve to a stable place, a selector projection, or an accessor bundle providing 'set' (§13.2.5, §30.2.2.4)"
       pure (baseTm, baseTy)
 
@@ -4364,7 +4364,7 @@ elabSeal ctx e tyE sp = do
   case sV of
     VGlobN (GName pm "__openRec") _
       | pm == preludeModule -> do
-          errAt sp "E_SEAL_OPEN_RECORD_ASCRIPTION" (Just "kappa.seal.open-record")
+          errAt sp "E_SEAL_OPEN_RECORD_ASCRIPTION" (Just "kappa-hs.seal.open-record")
             "the ascribed type of 'seal ... as ...' must be a closed record type; an open record with a residual row is not a sealing signature (§13.2.10)"
           anyHole ctx
     VSigT ls inner ->
@@ -4385,7 +4385,7 @@ elabSeal ctx e tyE sp = do
       | ERecordLit items lsp <- e = do
           let supplied = [(nameText n, fromMaybe (EVar n) me) | RecItem _ n me <- items]
           forM_ (duplicatesOf (map fst supplied)) $ \n ->
-            errAt lsp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+            errAt lsp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
               ("record literal has duplicate field '" <> n <> "'")
           let missing = [nm | (nm, _) <- fs, nm `notElem` map fst supplied]
           if not (null missing)
@@ -4405,7 +4405,7 @@ elabSeal ctx e tyE sp = do
                 pure (nm, deps, (nm, fty, fe))
               case topoFields annotated of
                 Nothing -> do
-                  errAt lsp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+                  errAt lsp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
                     "the sibling references of this record literal form a cycle (§13.2.1)"
                   anyHole ctx
                 Just ordered -> do
@@ -4454,7 +4454,7 @@ elabDependentRecordLit :: Ctx -> [RecItem] -> [(Text, Value)] -> Span -> CheckM 
 elabDependentRecordLit ctx items fs sp = do
   let supplied = [(nameText n, fromMaybe (EVar n) me) | RecItem _ n me <- items]
   forM_ (duplicatesOf (map fst supplied)) $ \n ->
-    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa.record.duplicate-field")
+    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
       ("record literal has duplicate field '" <> n <> "'")
   if sort (map fst supplied) /= map fst fs
     then do
@@ -4472,7 +4472,7 @@ elabDependentRecordLit ctx items fs sp = do
         pure (nm, deps, (nm, fty, e))
       case topoFields annotated of
         Nothing -> do
-          errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+          errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
             "the sibling references of this record literal form a cycle (§13.2.1)"
           anyHole ctx
         Just ordered -> do
@@ -4495,7 +4495,7 @@ elabDependentPatch ctx baseTm fs items sp = do
     PatchUpdate [(_, n)] (PatchValue v)
       | nameText n `elem` map fst fs -> pure (Just (nameText n, v))
       | otherwise -> do
-          errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.record.unknown-field")
+          errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.name.unresolved")
             ("record has no field '" <> nameText n <> "'")
           pure Nothing
     it -> do
@@ -4503,14 +4503,14 @@ elabDependentPatch ctx baseTm fs items sp = do
         "this update form is not supported on a dependent record"
       pure Nothing
   forM_ (duplicatesOf (map fst ups)) $ \n ->
-    errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa.record.patch-duplicate")
+    errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
       ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
   annotated <- forM fs $ \(nm, fty) -> do
     ftyTm <- quoteIn ctx fty
     pure (nm, thisDepsOf ftyTm, (nm, fty, thisDepsOf ftyTm))
   case topoFields annotated of
     Nothing -> do
-      errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa.record.dependency-cycle")
+      errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
         "the field-dependency graph of this record type contains a cycle (§13.2.1)"
       anyHole ctx
     Just ordered -> do
@@ -4570,7 +4570,7 @@ elabVariant ctx arms mtail sp mexpected = do
         then pure (CVariantT [fst r], VSort 0)
         else do
           put st0
-          errAt sp "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa.parse.error")
+          errAt sp "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error")
             "a union injection (| e |) is admitted only against an expected union type (§13.1.3)"
           anyHole ctx
     _ -> do
@@ -4583,7 +4583,7 @@ elabVariant ctx arms mtail sp mexpected = do
       tags <- mapM (tagOf ctx) memberVs
       let canon = map snd (sortOn fst (zip tags memberTms))
       when (length (nub tags) /= length tags) $
-        errAt sp "E_VARIANT_DUPLICATE" (Just "kappa.variant.duplicate-member")
+        errAt sp "E_VARIANT_DUPLICATE" (Just "kappa-hs.variant.duplicate-member")
           "duplicate variant member types"
       pure (CVariantT canon, VSort 0)
 
@@ -4873,7 +4873,7 @@ elabScopedEffect ctx eff dsp = do
                 }
           )
       _ -> do
-        errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa.effect.operation")
+        errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa-hs.effect.operation")
           "an effect operation signature must elaborate to a function type (§18.1.15)"
         pure Nothing
   let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliOps = ops}
@@ -4983,7 +4983,7 @@ elabHandle ctx deep lblE scrutE cases sp = do
           residual <- case msplit of
             Just (_, rest) -> pure rest
             Nothing -> do
-              errAt (exprSpan scrutE) "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row")
+              errAt (exprSpan scrutE) "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row-mismatch")
                 "the handled computation's effect row does not contain the handled label (§18.1.21)"
               pure (VGlobN (gPrel "__effRowNil") [])
           bT <- freshMetaV ctx
@@ -4993,11 +4993,11 @@ elabHandle ctx deep lblE scrutE cases sp = do
             [(pat, body, _)] ->
               handlerClauseLam ctx QW pat aT (\c' -> check c' body resultTy)
             [] -> do
-              errAt sp "E_HANDLER_RETURN_MISSING" (Just "kappa.effect.handler")
+              errAt sp "E_HANDLER_RETURN_MISSING" (Just "kappa-hs.effect.handler")
                 "a handler requires exactly one 'case return x -> ...' clause (§18.1.21)"
               pure (CLam Expl QW "__x" (CCtor (gPrel "__EffPure") [CVar 0]))
             (_ : (_, _, csp2) : _) -> do
-              errAt csp2 "E_HANDLER_RETURN_DUPLICATE" (Just "kappa.effect.handler")
+              errAt csp2 "E_HANDLER_RETURN_DUPLICATE" (Just "kappa-hs.effect.handler")
                 "a handler permits only one 'case return x -> ...' clause (§18.1.21)"
               pure (CLam Expl QW "__x" (CCtor (gPrel "__EffPure") [CVar 0]))
           -- one operation clause per declared operation (§18.1.21)
@@ -5005,12 +5005,12 @@ elabHandle ctx deep lblE scrutE cases sp = do
                 [(onm, argPats, kn, body, csp) | HandlerOp onm argPats kn body csp <- cases]
           forM_ (eliOps eli) $ \op ->
             unless (any (\(onm, _, _, _, _) -> nameText onm == eoiName op) opClauses) $
-              errAt sp "E_HANDLER_OP_MISSING" (Just "kappa.effect.handler")
+              errAt sp "E_HANDLER_OP_MISSING" (Just "kappa-hs.effect.handler")
                 ("this handler has no clause for operation '" <> eoiName op <> "' (§18.1.21)")
           clauseTms <- fmap catMaybes . forM opClauses $ \(onm, argPats, kn, body, csp) ->
             case find ((== nameText onm) . eoiName) (eliOps eli) of
               Nothing -> do
-                errAt (nameSpan onm) "E_HANDLER_OP_UNKNOWN" (Just "kappa.effect.handler")
+                errAt (nameSpan onm) "E_HANDLER_OP_UNKNOWN" (Just "kappa-hs.effect.handler")
                   ("the handled effect declares no operation '" <> nameText onm <> "' (§18.1.21)")
                 pure Nothing
               Just op -> do
@@ -5068,7 +5068,7 @@ elabEffDo ctx0 row aT items0 sp = do
   where
     effT = effTyV row
     go _ [] = do
-      errAt sp "E_DO_EMPTY" (Just "kappa.do.empty")
+      errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
         "a do block must end with an expression item (§18.2)"
       pure (CCtor (gPrel "__EffPure") [CCtor (gPrel "Unit") []])
     go c [DoExpr e] = do
@@ -5182,7 +5182,7 @@ checkIf ctx alts mels sp resT = go ctx alts
     go c [] = case mels of
       Just e -> check c e resT
       Nothing -> do
-        errAt sp "E_IF_MISSING_ELSE" (Just "kappa.control.if-missing-else")
+        errAt sp "E_IF_MISSING_ELSE" (Just "kappa-hs.control.if-missing-else")
           "if without else is only permitted as a do-block statement (§16.4, §18.4)"
         pure (CCtor (gPrel "Unit") [])
     go c ((cnd, t) : rest) = do
@@ -5364,7 +5364,7 @@ lowerActiveMatch ctx scrut cases sp = case scrut of
                 mg <- lookupGlobalName (nameText (crName cref))
                 case mg of
                   Just _ -> do
-                    errAt csp "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa.pattern.head")
+                    errAt csp "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa-hs.pattern.head")
                       ("'" <> nameText (crName cref)
                          <> "' is neither a constructor nor an active pattern, so it cannot head a pattern (§17.3.2)")
                     pure (CBad csp)
@@ -5374,7 +5374,7 @@ lowerActiveMatch ctx scrut cases sp = case scrut of
         case mAp of
           Just info -> pure (CActive (crName cref) info args vp mguard body psp)
           Nothing -> do
-            errAt psp "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa.pattern.head")
+            errAt psp "E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN" (Just "kappa-hs.pattern.head")
               ("'" <> nameText (crName cref) <> "' is not an active pattern (§17.3.2)")
             pure (CBad psp)
       _ -> pure (CPlain c)
@@ -5459,7 +5459,7 @@ rewriteActiveLetQ ctx pat rhs dsp = case pat of
                 APOption -> pure (PCtor (CtorRef Nothing (Name "Some" psp)) [vp] psp, app)
                 APMatch -> do
                   errAt dsp "E_ACTIVE_PATTERN_MATCH_RESULT_NOT_ALLOWED_IN_PLAIN_LET_QUESTION"
-                    (Just "kappa.pattern.active")
+                    (Just "kappa-hs.pattern.active")
                     "a Match-result active pattern threads a residue on a miss and may not be used in a plain 'let?'; use a match with a residue case instead (§17.3.2)"
                   pure (PCtor (CtorRef Nothing (Name "Hit" psp)) [vp] psp, app)
                 APTotal -> pure (vp, app)
@@ -5492,7 +5492,7 @@ checkMatchPlain ctx scrut cases sp resT = do
         MatchImpossible isp -> do
           empty <- scrutineeEmpty sTy1
           unless empty $
-            errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.match.impossible-reachable")
+            errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.proof.impossible-reachable")
               "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
           pure (accAlts, prior)
         MatchCase pat mguard body _ -> do
@@ -5552,7 +5552,7 @@ checkExhaustive ctx sp ty alts = do
             unless (null missing) $
               report $
                 withNote ("missing cases: " <> T.intercalate ", " (map gnameText missing)) $
-                  diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
+                  diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.pattern.non-exhaustive") sp
                     "match is not exhaustive"
           Nothing -> requireCatchAll
       VVariantT members -> do
@@ -5563,14 +5563,14 @@ checkExhaustive ctx sp ty alts = do
         unless (null missing || hasRest) $
           report $
             withNote ("missing member types: " <> T.intercalate ", " missing) $
-              diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
+              diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.pattern.non-exhaustive") sp
                 "variant match is not exhaustive"
       VRecordT _ -> unless (any isRecordIrrefutable [p | (p, Nothing) <- alts]) requireCatchAll
       _ -> requireCatchAll
   where
     requireCatchAll =
       report $
-        diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.match.nonexhaustive") sp
+        diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.pattern.non-exhaustive") sp
           "match requires a catch-all case for this scrutinee type (§17.1)"
     isCatchAll = \case
       CPWild -> True
@@ -5691,7 +5691,7 @@ checkIrrefutable :: Ctx -> Pattern -> Value -> Span -> CheckM ()
 checkIrrefutable ctx pat ty sp = do
   ok <- irrefutableFor ctx pat ty
   unless ok $
-    errAt sp "E_REFUTABLE_LET_PATTERN" (Just "kappa.pattern.refutable-binding")
+    errAt sp "E_REFUTABLE_LET_PATTERN" (Just "kappa-hs.pattern.refutable-binding")
       "let bindings require an irrefutable pattern (§9.1.2); use match or let? instead"
 
 irrefutableFor :: Ctx -> Pattern -> Value -> CheckM Bool
@@ -5728,7 +5728,7 @@ elabPattern :: Ctx -> Pattern -> Value -> CheckM (CorePat, Ctx, Bool)
 elabPattern ctx0 pat0 ty0 = do
   (p, ctx) <- go ctx0 pat0 ty0
   forM_ (duplicatesOf (corePatNames p)) $ \n ->
-    errAt (patternSpan pat0) "E_DUPLICATE_PATTERN_BINDER" (Just "kappa.pattern.duplicate-binder")
+    errAt (patternSpan pat0) "E_DUPLICATE_PATTERN_BINDER" (Just "kappa-hs.pattern.duplicate-binder")
       ("pattern binds '" <> n <> "' more than once (§17.2)")
   pure (p, ctx, True)
   where
@@ -5804,7 +5804,7 @@ elabPattern ctx0 pat0 ty0 = do
               -- approximate by requiring the same binder count.
               let count1 = patBindersCount p1
               unless (all (\(p, _) -> patBindersCount p == count1) rs) $
-                errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa.pattern.or-bindings")
+                errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa-hs.pattern.or-bindings")
                   "all alternatives of an or-pattern must bind the same names (§17.2.3)"
               pure (CPOr pats, ctx1)
             [] -> pure (CPWild, ctx)
@@ -5816,7 +5816,7 @@ elabPattern ctx0 pat0 ty0 = do
               tag <- tagOf ctx tyV
               tags <- mapM (tagOf ctx) members
               unless (tag `elem` tags) $
-                errAt (patternSpan pat) "E_VARIANT_MEMBER" (Just "kappa.variant.unknown-member")
+                errAt (patternSpan pat) "E_VARIANT_MEMBER" (Just "kappa-hs.variant.unknown-member")
                   "variant pattern type is not a member of the scrutinee union"
               if isWild
                 then pure (CPInject tag CPWild, ctx)
@@ -5828,7 +5828,7 @@ elabPattern ctx0 pat0 ty0 = do
                   tag <- tagOf ctx single
                   pure (CPInject tag (CPVar (nameText n)), bindCtx (nameText n) False single ctx)
               | otherwise -> do
-                  errAt (nameSpan n) "E_VARIANT_AMBIGUOUS" (Just "kappa.variant.ambiguous")
+                  errAt (nameSpan n) "E_VARIANT_AMBIGUOUS" (Just "kappa-hs.variant.ambiguous")
                     "untyped variant pattern requires a singleton union (§13.1.7)"
                   pure (CPWild, ctx)
             (Nothing, Nothing, Just restN) -> do
@@ -5848,7 +5848,7 @@ elabPattern ctx0 pat0 ty0 = do
               let fieldNames = mapMaybe fst (ciFields ci)
               forM_ fields $ \(n, _) ->
                 unless (nameText n `elem` fieldNames) $
-                  errAt (nameSpan n) "E_PATTERN_FIELD_UNKNOWN" (Just "kappa.pattern.field")
+                  errAt (nameSpan n) "E_PATTERN_FIELD_UNKNOWN" (Just "kappa.pattern.constructor-arity")
                     ("constructor has no named field '" <> nameText n <> "'")
               let posPats =
                     [ case lookup fn [(nameText n, fromMaybe (PVar n) mp) | (n, mp) <- fields] of
@@ -5873,7 +5873,7 @@ elabPattern ctx0 pat0 ty0 = do
                 _ -> pure ()
               fieldTys <- ctorFieldTypes ctx g ci ty sp
               when (length ps /= length fieldTys) $
-                errAt sp "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.arity")
+                errAt sp "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.constructor-arity")
                   ("constructor pattern arity mismatch: expected "
                      <> T.pack (show (length fieldTys))
                      <> ", got "
@@ -6168,7 +6168,7 @@ elabDoIOItems _sp ctx mexp items = do
                   ks <- goItems loops c errT resT rest
                   pure (KAssign (CVar i) monadic rhsTm : ks)
                 _ -> do
-                  errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa.do.assign-non-var")
+                  errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
                     ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
                   goItems loops c errT resT rest
             Nothing
@@ -6273,7 +6273,7 @@ elabDoIOItems _sp ctx mexp items = do
           -- §9.3: using always binds its pattern with borrowed access at
           -- the default quantity ω; an explicit prefix is rejected
           forM_ mq $ \qsp ->
-            errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa.qtt.using-quantity")
+            errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
               "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
           -- §19.5 resource bind: typed like a monadic bind of the
           -- acquired resource (the scope-exit release action is not
@@ -6294,12 +6294,12 @@ elabDoIOItems _sp ctx mexp items = do
         checkLoopTarget what ml sp = case ml of
           Just l ->
             unless (Just (nameText l) `elem` loops) $
-              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa.do.label-unresolved")
+              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
                 (what <> "@" <> nameText l
                    <> " does not target an enclosing labeled loop of this do-scope (§18.2.5)")
           Nothing ->
             when (null loops) $
-              errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa.do.break-outside-loop")
+              errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa-hs.do.break-outside-loop")
                 ("'" <> what
                    <> "' is valid only within the body of a loop of this do-scope (§18.6)")
 
@@ -6518,7 +6518,7 @@ elabCodeQuote ctx e _sp mexp = do
 elabCodeEscape :: Ctx -> Expr -> Span -> CheckM (Term, Value)
 elabCodeEscape ctx e sp = do
   when (ctxCodeDepth ctx == 0) $
-    errAt sp "E_CODE_ESCAPE_OUTSIDE_QUOTE" (Just "kappa.staging.escape")
+    errAt sp "E_CODE_ESCAPE_OUTSIDE_QUOTE" (Just "kappa-hs.staging.escape")
       "the escape '.~c' splices a staged subterm and is only meaningful inside a '.< ... >.' code quote (§23.2)"
   tV <- freshMetaV ctx
   tm <- check ctx {ctxCodeDepth = max 0 (ctxCodeDepth ctx - 1)} e (codeTV tV)
@@ -6571,7 +6571,7 @@ elabSplice ctx me sp mexp = do
                   tT <- quoteIn ctx ty
                   pure ("; this expression has type " <> renderTerm tT)
                 Nothing -> pure ""
-              errAt sp "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa.syntax.splice")
+              errAt sp "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa-hs.syntax.splice")
                 ("a splice '$(...)' requires an 'Elab (Syntax t)' action or a meta-phase 'Syntax t' value"
                    <> tyDesc <> " (§21.2)")
               pure Nothing
@@ -6703,7 +6703,7 @@ splicePhaseCheck ctx me = do
   case bad of
     [] -> pure True
     ((n, _) : _) -> do
-      errAt (nameSpan n) "E_ELAB_PHASE" (Just "kappa.macro.phase")
+      errAt (nameSpan n) "E_ELAB_PHASE" (Just "kappa-hs.macro.phase")
         ("the object-phase runtime binding '" <> nameText n
            <> "' cannot be captured by an elaboration-time splice; object-phase terms enter 'Elab' only through meta-phase carriers such as 'Syntax' (§21.9)")
       pure False
@@ -6751,7 +6751,7 @@ graftQuoteV ctx sp v0 = do
                 , qsSpan = qsSpan qs
                 }
     _ -> do
-      errAt sp "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa.syntax.splice")
+      errAt sp "E_SPLICE_REQUIRES_SYNTAX" (Just "kappa-hs.syntax.splice")
         "the elaboration-time action did not produce a 'Syntax' value this implementation can splice (§21.2)"
       pure Nothing
 
@@ -6765,7 +6765,7 @@ validateCaptures ctx sp caps = do
          in i >= 0 && i < n && ceName (ctxEntries ctx !! i) == qcOrig c
       bad = [c | c <- caps, not (entryOk c)]
   forM_ (take 1 bad) $ \c ->
-    errAt sp "E_SYNTAX_SCOPE_ESCAPE" (Just "kappa.syntax.scope-escape")
+    errAt sp "E_SYNTAX_SCOPE_ESCAPE" (Just "kappa-hs.syntax.scope-escape")
       ("this Syntax value mentions the local binder '" <> qcOrig c
          <> "' (or its borrow region) whose scope has ended; a Syntax value may escape a lexical scope only while every free hygienic binder it references remains valid, and splicing requires those binders at the splice site (§21.4)")
   pure (null bad)
@@ -6889,12 +6889,12 @@ elabElabDo ctx0 aTy items0 sp = do
   where
     bindPrim m k = CApp Expl (CApp Expl (CGlob (GName primModule "__elabBind")) m) k
     badForm ctx isp rest = do
-      errAt isp "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+      errAt isp "E_ELAB_DO_FORM" (Just "kappa-hs.do.elab")
         "this do item form is not available in an 'Elab' do block (§21.9)"
       go ctx rest
     go ctx = \case
       [] -> do
-        errAt sp "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+        errAt sp "E_ELAB_DO_FORM" (Just "kappa-hs.do.elab")
           "an 'Elab' do block must end with an expression of the block's Elab type (§21.9)"
         freshMeta
       [DoExpr e] -> check ctx (desugarBang e) (elabTV aTy)
@@ -6914,7 +6914,7 @@ elabElabDo ctx0 aTy items0 sp = do
       PVar n -> pure (nameText n)
       PWild _ -> pure "_"
       _ -> do
-        errAt bsp "E_ELAB_DO_FORM" (Just "kappa.do.elab")
+        errAt bsp "E_ELAB_DO_FORM" (Just "kappa-hs.do.elab")
           "only variable and wildcard binders are supported in 'Elab' do binds (§21.9)"
         pure "_"
     bindItem ctx pat mty rhs bsp rest = do
@@ -7499,7 +7499,7 @@ planComp ctx0 clauses yld _sp = do
           _ -> False
     pend csp code fam msg = (csp, code, fam, msg)
     dropMsg what vs csp =
-      pend csp "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.query.row-quantity")
+      pend csp "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.quantity.unsatisfied")
         (what <> " may discard the current row, but linear row entry '"
            <> T.intercalate "', '" vs <> "' is not droppable (§20.10.4)")
     go _ctx row _ordered oneShot card anns diags [] = do
@@ -7516,13 +7516,13 @@ planComp ctx0 clauses yld _sp = do
         irr <- irrefutableFor ctx pat (siItem si)
         let lins = linsOf row
             refutD =
-              [ pend csp "E_QUERY_FOR_REFUTABLE" (Just "kappa.query.refutable-for")
+              [ pend csp "E_QUERY_FOR_REFUTABLE" (Just "kappa-hs.query.refutable-for")
                   "the pattern of a 'for' clause must be irrefutable for the element type; use the refutable form 'for?' instead (§20.4)"
               | not refut && not irr
               ]
             dropD = [dropMsg "the refutable generator 'for?'" lins csp | refut, not (null lins)]
             dupD =
-              [ pend csp "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.query.row-quantity")
+              [ pend csp "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.quantity.unsatisfied")
                   ("a nested 'for' over a zero-or-many source may drop or duplicate the current row, but linear row entry '"
                      <> T.intercalate "', '" lins <> "' is neither droppable nor duplicable (§20.10.4)")
               | not refut
@@ -7547,7 +7547,7 @@ planComp ctx0 clauses yld _sp = do
         irr <- irrefutableFor ctx pat rhsTy
         let lins = linsOf row
             refutD =
-              [ pend csp "E_REFUTABLE_LET_PATTERN" (Just "kappa.pattern.refutable-binding")
+              [ pend csp "E_REFUTABLE_LET_PATTERN" (Just "kappa-hs.pattern.refutable-binding")
                   "a 'let' comprehension clause requires an irrefutable pattern; use 'let?' instead (§20.4.1)"
               | not refut && not irr
               ]
@@ -7561,7 +7561,7 @@ planComp ctx0 clauses yld _sp = do
       S.CIf cond -> do
         let lins = linsOf row
             dropD =
-              [ pend (exprSpan cond) "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.query.row-quantity")
+              [ pend (exprSpan cond) "E_QUERY_ROW_NOT_DROPPABLE" (Just "kappa.quantity.unsatisfied")
                   ("an 'if' filter may drop the current row, but linear row entry '"
                      <> T.intercalate "', '" lins <> "' is not droppable (§20.10.4)")
               | not (null lins)
@@ -7571,7 +7571,7 @@ planComp ctx0 clauses yld _sp = do
         let lins = linsOf row
         consumed <- concat <$> mapM (consumesLin ctx lins . snd) keys
         let consD =
-              [ pend csp "E_QUERY_ORDER_KEY_CONSUMES" (Just "kappa.query.order-key")
+              [ pend csp "E_QUERY_ORDER_KEY_CONSUMES" (Just "kappa-hs.query.order-key")
                   ("an 'order by' key is checked in a non-consuming context, but this key consumes linear row entry '"
                      <> T.intercalate "', '" (nub consumed) <> "' (§20.6.1)")
               | not (null consumed)
@@ -7589,7 +7589,7 @@ planComp ctx0 clauses yld _sp = do
           (_, aTy) <- infer ctx ae
           pure (nameText an, aTy)
         let keyD =
-              [ pend csp "E_QUERY_GROUP_KEY_FIELD" (Just "kappa.query.group")
+              [ pend csp "E_QUERY_GROUP_KEY_FIELD" (Just "kappa-hs.query.group")
                   "the group record always contains the field 'key'; an aggregate may not be named 'key' (§20.7)"
               | any ((== "key") . fst) aggTys
               ]
@@ -7604,7 +7604,7 @@ planComp ctx0 clauses yld _sp = do
           (True, Just into) -> do
             let captured = [v | v <- lins, occursVar v src || occursVar v cond]
                 capD =
-                  [ pend csp "E_QUERY_LEFT_JOIN_LINEAR_CAPTURE" (Just "kappa.query.left-join")
+                  [ pend csp "E_QUERY_LEFT_JOIN_LINEAR_CAPTURE" (Just "kappa-hs.query.left-join")
                       ("the delayed inner query of a 'left join ... into' may not capture linear row entry '"
                          <> T.intercalate "', '" captured <> "' (§20.8)")
                   | not (null captured)
@@ -7621,7 +7621,7 @@ planComp ctx0 clauses yld _sp = do
               (CAnn (siKind si) False : anns) (capD ++ diags) cs
           _ -> do
             let dupD =
-                  [ pend csp "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.query.row-quantity")
+                  [ pend csp "E_QUERY_ROW_NOT_DUPLICABLE" (Just "kappa.quantity.unsatisfied")
                       ("a 'join' may drop or duplicate the current row, but linear row entry '"
                          <> T.intercalate "', '" lins <> "' is neither droppable nor duplicable (§20.10.4)")
                   | not (null lins)
@@ -7825,7 +7825,7 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
             then do
               iT <- quoteIn ctx =<< forceM itemMember
               yT <- quoteIn ctx =<< forceM itemV
-              errAt sp "E_SINK_ITEM_MISMATCH" (Just "kappa.query.sink")
+              errAt sp "E_SINK_ITEM_MISMATCH" (Just "kappa-hs.query.sink")
                 ("the selected sink's associated 'Item' type '" <> renderTerm iT
                    <> "' is not definitionally equal to the yielded item type '" <> renderTerm yT <> "' (§20.9)")
               Just <$> anyHole ctx
@@ -7845,24 +7845,24 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
         -- collection metadata
         case kind of
           CompMap _ -> do
-            errAt sp "E_QUERY_METADATA_LOSS" (Just "kappa.query.sink")
+            errAt sp "E_QUERY_METADATA_LOSS" (Just "kappa-hs.query.sink")
               "a 'Query { ... }' map comprehension is ill-formed: the Query carrier would silently discard the map metadata (§20.9)"
           CompSet -> do
-            errAt sp "E_QUERY_METADATA_LOSS" (Just "kappa.query.sink")
+            errAt sp "E_QUERY_METADATA_LOSS" (Just "kappa-hs.query.sink")
               "a 'Query {| ... |}' set comprehension is ill-formed: the Query carrier would silently discard the set metadata (§20.9)"
           _ -> pure ()
         (expOneShot, expCard) <- decodeQueryMode m
         expLinear <- decodeLinearQuantity q
         when (cpOneShot plan && not expOneShot) $
-          errAt sp "E_QUERY_MODE_MISMATCH" (Just "kappa.query.mode")
+          errAt sp "E_QUERY_MODE_MISMATCH" (Just "kappa-hs.query.mode")
             "this comprehension's plan is one-shot, but the carrier requires a reusable query; use 'OnceQuery [ ... ]' or an explicitly indexed 'QueryCore' carrier (§20.9)"
         unless (cardSub (cpCard plan) expCard) $
-          errAt sp "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa.query.cardinality")
+          errAt sp "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa-hs.query.cardinality")
             ("the inferred plan cardinality " <> cardName (cpCard plan)
                <> " cannot be checked against the demanded cardinality " <> cardName expCard
                <> "; cardinality may only be widened (§20.10.1)")
         when (cpItemLinear plan && not expLinear) $
-          errAt sp "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa.query.item-quantity")
+          errAt sp "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa-hs.query.item-quantity")
             "the yielded item is available only at linear quantity 1, but the carrier demands unrestricted (ω) items (§20.9)"
         listTm <- checkAsList listTm0 listTy a
         pure (CApp Expl (CGlob (gPrel "__queryFromList")) listTm, candidate)
@@ -8140,7 +8140,7 @@ sigSatisfactionPass = do
   st <- get
   unless (csModule st == preludeModule) $
     forM_ (Map.toList (csSigPending st)) $ \(g, sp) ->
-      errAt sp "E_SIGNATURE_UNSATISFIED" (Just "kappa.signature.unsatisfied")
+      errAt sp "E_SIGNATURE_UNSATISFIED" (Just "kappa-hs.signature.unsatisfied")
         ("top-level signature '" <> gnameText g
            <> "' has no definition in this source file (Spec §9.1); use 'expect term' for external requirements (§9.4)")
 
@@ -8189,7 +8189,7 @@ headerPassIn siglessLets = \case
     exists <- gets (Map.member g . csGlobals)
     isExpected <- gets (Map.member g . csExpects)
     when (exists && not isExpected) $
-      errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate") ("duplicate declaration of '" <> nameText n <> "'")
+      errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate") ("duplicate declaration of '" <> nameText n <> "'")
     addGlobal g (GlobalDef tyV Nothing False)
     -- §9.1: the signature awaits its same-file definition (an expected
     -- name is governed by §9.4 satisfaction instead)
@@ -8209,7 +8209,7 @@ headerPassIn siglessLets = \case
         -- are transparent definitions, §11.3) — recursion needs a data
         -- declaration. The alias is salvaged as a fresh metavariable
         -- so downstream uses do not cascade.
-        errAt sp "E_RECURSIVE_TYPE_ALIAS" (Just "kappa.type.recursive-alias")
+        errAt sp "E_RECURSIVE_TYPE_ALIAS" (Just "kappa-hs.type.recursive-alias")
           ("type alias '" <> nameText n
              <> "' refers to itself; recursive type aliases are not admitted (§15.16) — use a data declaration")
         g <- ownName n
@@ -8319,7 +8319,7 @@ elabAliasBody params rhs = do
           pure (tm0, kTm)
         other -> do
           oT <- quoteIn ctx other
-          errAt (exprSpan rhs) "E_NOT_A_TYPE" (Just "kappa.type.expected-type")
+          errAt (exprSpan rhs) "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
             ("expected a type; this expression has type " <> renderTerm oT)
           pure (tm0, CSort 0)
     go ctx (b : rest) = do
@@ -8340,7 +8340,7 @@ headerData (DataDecl n params _mkind ctors) sp = do
   g <- ownName n
   noteDefinition g sp
   forM_ (duplicatesOf [nameText cn | CtorDecl cn _ _ _ <- ctors]) $ \dn ->
-    errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate")
+    errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
       ("duplicate constructor '" <> dn <> "' in data declaration")
   -- data type constructor type: params -> Type
   paramTele <- elabTele emptyCtx params
@@ -8655,13 +8655,13 @@ noteDefinition g sp = do
     Just (esp, cnt) -> do
       modify' $ \st' -> st' {csExpects = Map.insert g (esp, cnt + 1) (csExpects st')}
       when (cnt + 1 == 2) $
-        errAt sp "E_EXPECT_AMBIGUOUS" (Just "kappa.expect.ambiguous")
+        errAt sp "E_EXPECT_AMBIGUOUS" (Just "kappa-hs.expect.ambiguous")
           ("more than one definition satisfies expected declaration '" <> gnameText g <> "' (Spec §9.4)")
 
 -- | §9.4: expects with no satisfier at the end of the compilation unit.
 expectUnsatisfiedDiags :: CheckState -> Diagnostics
 expectUnsatisfiedDiags st =
-  [ diag SevError StageElaborate "E_EXPECT_UNSATISFIED" (Just "kappa.expect.unsatisfied") sp
+  [ diag SevError StageElaborate "E_EXPECT_UNSATISFIED" (Just "kappa-hs.expect.unsatisfied") sp
       ("expected declaration '" <> gnameText g
          <> "' is not satisfied by any definition, backend intrinsic, or imported artifact in this compilation unit (Spec §9.4)")
   | (g, (sp, n)) <- Map.toList (csExpects st)
@@ -8733,7 +8733,7 @@ elabActivePatternDecl mods ld sp = do
               _ -> Right APTotal
         case kind of
           Left h ->
-            errAt sp "E_ACTIVE_PATTERN_MONADIC_RESULT" (Just "kappa.pattern.active")
+            errAt sp "E_ACTIVE_PATTERN_MONADIC_RESULT" (Just "kappa-hs.pattern.active")
               ("an active pattern's result type may not be the monadic type '" <> h
                  <> "'; return Option, Match, or a total view type (§17.3.1)")
           Right k -> do
@@ -8746,7 +8746,7 @@ elabActivePatternDecl mods ld sp = do
                       && isNothing (bpBorrow (bPrefix b))
                   [] -> False
             when (scrutLinear && k /= APMatch) $
-              errAt sp "E_ACTIVE_PATTERN_LINEARITY_VIOLATION" (Just "kappa.pattern.active")
+              errAt sp "E_ACTIVE_PATTERN_LINEARITY_VIOLATION" (Just "kappa-hs.pattern.active")
                 "this active pattern consumes a linear scrutinee but cannot thread a residue back on a miss; return 'Match item residue' instead (§17.3)"
             modify' $ \st -> st {csActive = Map.insert g (APInfo k) (csActive st)}
   where
@@ -8782,7 +8782,7 @@ elabProjectionDecl _mods n binders resTyE body sp = do
       placeBs = [b | (True, b) <- groups]
       ordBs = [b | (False, b) <- groups]
   when (null placeBs) $
-    errAt sp "E_PROJECTION_MISSING_PLACE_BINDER" (Just "kappa.projection.place-binder")
+    errAt sp "E_PROJECTION_MISSING_PLACE_BINDER" (Just "kappa-hs.projection.place-binder")
       "a projection definition must contain at least one 'place' binder (§9.1.1)"
   -- Δ context: ordinary binders, declaration order
   (ctxD, ordTele) <- elabOrdBinders emptyCtx ordBs
@@ -8816,11 +8816,11 @@ elabProjectionDecl _mods n binders resTyE body sp = do
           -- diagnostic already covers every yield
           | root `elem` placeNames || null placeNames -> pure (Just (root, path))
         Right (_, _) -> do
-          errAt sp "E_PROJECTION_YIELD_INVALID" (Just "kappa.projection.yield")
+          errAt sp "E_PROJECTION_YIELD_INVALID" (Just "kappa-hs.projection.yield")
             "each 'yield' operand must be a stable place rooted in a 'place' binder of this projection (§9.1.1)"
           pure Nothing
         Left ysp -> do
-          errAt ysp "E_PROJECTION_YIELD_INVALID" (Just "kappa.projection.yield")
+          errAt ysp "E_PROJECTION_YIELD_INVALID" (Just "kappa-hs.projection.yield")
             "each 'yield' operand must be a stable place rooted in a 'place' binder of this projection (§9.1.1)"
           pure Nothing
       let bodyE = stripYields bodyE0
@@ -8831,10 +8831,10 @@ elabProjectionDecl _mods n binders resTyE body sp = do
         ProjInfo [isP | (isP, _) <- groups] placeNames True yields
     ProjAccessors clauses -> do
       forM_ (duplicatesOf [k | (k, _, _) <- clauses]) $ \k ->
-        errAt sp "E_PROJECTION_ACCESSOR_CLAUSE_DUPLICATE" (Just "kappa.projection.accessor")
+        errAt sp "E_PROJECTION_ACCESSOR_CLAUSE_DUPLICATE" (Just "kappa-hs.projection.accessor")
           ("the accessor clause '" <> k <> "' appears more than once (§9.1.1)")
       when (length placeBs /= 1) $
-        errAt sp "E_PROJECTION_EXPANDED_ACCESSOR_PLACE_BINDER_MISMATCH" (Just "kappa.projection.accessor")
+        errAt sp "E_PROJECTION_EXPANDED_ACCESSOR_PLACE_BINDER_MISMATCH" (Just "kappa-hs.projection.accessor")
           "an expanded-form projection must have exactly one 'place' binder (§9.1.1)"
       case places0 of
         [] -> pure ()
@@ -9059,7 +9059,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
           then do
             -- a self-referential value (no intervening function
             -- abstraction) is a definitional cycle (§15.3, §16.4)
-            errAt sp "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.cycle")
+            errAt sp "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.failure")
               ("recursive value cycle: '" <> nameText n
                  <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15.3)")
             pure False
@@ -9069,7 +9069,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
               unless okStructural $
                 report $
                   withNote "the definition is accepted but not conversion-reducible (§15.1)" $
-                    diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.unverified") sp
+                    diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.failure") sp
                       ("could not verify structural termination of '" <> nameText n <> "' (§15.3)")
               pure okStructural
             else pure True
@@ -9079,7 +9079,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
       -- a previous definition with a value: duplicate declaration (§9.2)
       case msig of
         Just gd' | isJust (gdValue gd') ->
-          errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa.name.duplicate")
+          errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
             ("duplicate declaration of '" <> nameText n <> "'")
         _ -> pure ()
       -- no preceding signature: pre-register the name so self-references
@@ -9090,7 +9090,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
       flushPending
       tm <- zonkTermM 0 tm0
       when (occursGlobal g tm) $
-        errAt sp "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.termination.recursion-needs-signature")
+        errAt sp "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.type.missing-signature")
           "recursive definitions require a preceding signature declaration (§15, §9.2)"
       tmV <- evalIn emptyCtx tm
       addGlobal g (GlobalDef ty (Just tmV) True)
@@ -9309,7 +9309,7 @@ checkAgainstSig sigTy binders body sp = do
                 else skipImplicit ctx q nm dom clo (b : rest)
         VPi ic q nm dom clo -> claim ctx ic q nm dom clo b rest
         _ -> do
-          errAt sp "E_SIGNATURE_ARITY" (Just "kappa.type.signature-arity")
+          errAt sp "E_SIGNATURE_ARITY" (Just "kappa-hs.type.signature-arity")
             "definition has more parameters than its signature type"
           check ctx body ty
     skipImplicit ctx q nm dom clo bs = do
@@ -9323,7 +9323,7 @@ checkAgainstSig sigTy binders body sp = do
         tyV <- evalIn ctx tyTm
         expectType ctx (bSpan b) dom tyV
       unless (ic == (if bImplicit b then Impl else Expl) || ic == Impl) $
-        errAt (bSpan b) "E_BINDER_MISMATCH" (Just "kappa.type.binder")
+        errAt (bSpan b) "E_BINDER_MISMATCH" (Just "kappa-hs.type.binder")
           "binder implicitness does not match the signature"
       let ctx' = bindCtx bn (bImplicit b) dom ctx
       cod <- clApp clo (VRigid (ctxLen ctx) [])
@@ -9371,7 +9371,7 @@ registerInstanceHead premises hd sp = do
   st <- get
   case traitG >>= \g -> g <$ Map.lookup g (csTraits st) of
     Nothing -> do
-      errAt sp "E_INSTANCE_HEAD" (Just "kappa.trait.bad-instance-head")
+      errAt sp "E_INSTANCE_HEAD" (Just "kappa-hs.trait.bad-instance-head")
         "instance head must be a trait applied to type arguments"
       pure Nothing
     Just g -> do
@@ -9484,7 +9484,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
           Just tm -> pure (Just (fn, tm))
           Nothing -> do
             gT <- quoteIn ctxP' supGoal
-            errAt sp "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa.trait.supertrait-unsatisfied")
+            errAt sp "E_TRAIT_SUPERTRAIT_UNSATISFIED" (Just "kappa-hs.trait.supertrait-unsatisfied")
               ("instance does not satisfy the supertrait premise '" <> renderTerm gT <> "' of trait '" <> gnameText g <> "' (§14.1.4)")
             pure Nothing
       -- member definitions checked against member types, in declaration
@@ -9507,7 +9507,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
                   tm <- checkMemberAgainst ctxP' memberTyV dbinders Nothing dbody sp
                   pure (Just (mn, tm))
                 Nothing -> do
-                  errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa.trait.member-missing")
+                  errAt sp "E_INSTANCE_MEMBER_MISSING" (Just "kappa-hs.trait.member-missing")
                     ("instance does not define member '" <> mn <> "'")
                   pure Nothing
             goFields (maybe done (: done) mfield) rest
@@ -9589,7 +9589,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
           cod <- clApp clo (VRigid (ctxLen ctx) [])
           CLam ic q bn <$> checkLambdaAgainst ctx' cod rest body msp
         (_ : _, _) -> do
-          errAt msp "E_SIGNATURE_ARITY" (Just "kappa.type.signature-arity")
+          errAt msp "E_SIGNATURE_ARITY" (Just "kappa-hs.type.signature-arity")
             "instance member has more parameters than the trait member type"
           check ctx body t
 

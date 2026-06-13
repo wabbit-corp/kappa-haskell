@@ -503,7 +503,7 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
       resultTy = ldResultType ld `orElseE` (sigResultOf =<< msig)
   unless resCaptures $
     forM_ taint $ \sp ->
-      emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" sp
+      emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" sp
         "a closure capturing a borrowed binding escapes through the result (§12.3.2)"
   where
     paramBind (b, ms) = case bName b of
@@ -548,7 +548,7 @@ checkInoutResult msig ld =
     let resTy = ldResultType ld `orElse` (sigResult <$> msig)
     forM_ resTy $ \ty ->
       unless (threadsField nm (unwrapIO ty)) $
-        emit "E_QTT_INOUT_THREADED_FIELD_MISSING" "kappa.qtt.inout-threading" bsp
+        emit "E_QTT_INOUT_THREADED_FIELD_MISSING" "kappa.inout.restoration" bsp
           ("the result type does not thread the inout place '" <> nm <> "' back as a field (§18.9.3)")
   where
     -- a definition binder claims its signature binder's inout marker
@@ -621,7 +621,7 @@ closeVar vi u = do
   where
     nm = T.takeWhile (/= '#') (vKey vi)
     overuse what occs =
-      emit "E_QTT_LINEAR_OVERUSE" "kappa.qtt.linear-overuse"
+      emit "E_QTT_LINEAR_OVERUSE" "kappa.quantity.unsatisfied"
         (occAt occs)
         ("'" <> what <> "' is consumed more often than its "
            <> (if vQ vi == Just QOne then "linear" else "affine")
@@ -630,7 +630,7 @@ closeVar vi u = do
       (sp : _) -> sp
       [] -> vSpan vi
     dropErr kind =
-      emit "E_QTT_LINEAR_DROP" "kappa.qtt.linear-drop" (vSpan vi)
+      emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
         ("'" <> nm <> "' (" <> kind <> ") may be dropped without being consumed (§12.2.5)")
     dedupViols = foldr (\v vs -> if v `elem` vs then vs else v : vs) []
 
@@ -741,7 +741,7 @@ pathsOverlap a b = a `isPrefixOf` b || b `isPrefixOf` a
 checkBorrowOverlap :: Env -> VInfo -> [Text] -> Span -> M ()
 checkBorrowOverlap env vi path sp =
   when (any conflict (eBorrows env)) $
-    emit "E_QTT_BORROW_OVERLAP" "kappa.qtt.borrow-overlap" sp
+    emit "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" sp
       ("'" <> T.takeWhile (/= '#') (vKey vi)
          <> T.concat (map ("." <>) path)
          <> "' is consumed while a live borrow of an overlapping path exists (§12.4)")
@@ -753,7 +753,7 @@ checkBorrowOverlap env vi path sp =
 movePlace :: Env -> VInfo -> [Text] -> Span -> M Usage
 movePlace env vi path sp = do
   when (vQ vi == Just QZero) $
-    emit "E_QTT_ERASED_RUNTIME_USE" "kappa.qtt.erased-use" sp
+    emit "E_QTT_ERASED_RUNTIME_USE" "kappa.quantity.unsatisfied" sp
       ("erased (quantity 0) binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' is used at runtime (§12.2.1)")
   checkBorrowOverlap env vi path sp
   pure $ case path of
@@ -1090,7 +1090,7 @@ checkRecordRest (Just vi) (PRecord fs (Just PatRestDiscard) _) csp = do
   let named = [nameText f | (_, f, _) <- fs]
       missing = [f | f <- linFields vi, f `notElem` named]
   forM_ missing $ \f ->
-    emit "E_QTT_LINEAR_DROP" "kappa.qtt.linear-drop" csp
+    emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" csp
       ("the '..' rest pattern drops the quantity-1 field '" <> f <> "' (§12.2.6)")
 checkRecordRest _ _ _ = pure ()
 
@@ -1181,7 +1181,7 @@ walkApp env f args = do
   forM_ facts $ \case
     FMove k p msp
       | any (\(bk, bp) -> bk == k && pathsOverlap bp p) borrows ->
-          emit "E_QTT_BORROW_OVERLAP" "kappa.qtt.borrow-overlap" msp
+          emit "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" msp
             "a place is consumed by the same call that borrows an overlapping place (§12.4)"
     _ -> pure ()
   -- §18.9.3: the place footprints of the '~' arguments of one call must
@@ -1197,7 +1197,7 @@ walkApp env f args = do
         ]
   case overlapPairs of
     (osp : _) ->
-      emit "E_QTT_BORROW_OVERLAP" "kappa.qtt.borrow-overlap" osp
+      emit "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" osp
         "two '~' inout arguments of the same call have overlapping place footprints (§18.9.3, §12.4)"
     [] -> pure ()
   -- §18.11: a forked computation outlives the current scope, so its
@@ -1209,7 +1209,7 @@ walkApp env f args = do
   when (headName == Just "fork") $
     forM_ (zip args (map fst rs)) $ \(a, r) ->
       when (any (`elem` anonKeys) (Map.keys (Map.filter cTouch (rU r `seqU` rL r)))) $
-        emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" (argSpan a)
+        emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" (argSpan a)
           "a forked computation may not capture an anonymous borrow (§12.3.2, §18.11)"
   -- a callee neither stores nor returns its tainted callees/arguments
   -- in general; only result-carrying lifts propagate the taint
@@ -1233,13 +1233,13 @@ walkArg env params arg p = case arg of
   ArgInout e sp
     | pInout p -> inoutish e sp
     | hasDemand -> do
-        emit "E_QTT_INOUT_MARKER_UNEXPECTED" "kappa.qtt.inout-marker" sp
+        emit "E_QTT_INOUT_MARKER_UNEXPECTED" "kappa-hs.qtt.inout-marker" sp
           "call-site '~' marker on an argument whose parameter is not declared inout (§18.9.3)"
         (,[]) <$> walkE env e
     | otherwise -> inoutish e sp
   ArgExplicit e
     | pInout p -> do
-        emit "E_QTT_INOUT_MARKER_REQUIRED" "kappa.qtt.inout-marker" (exprSpan e)
+        emit "E_QTT_INOUT_MARKER_REQUIRED" "kappa-hs.qtt.inout-marker" (exprSpan e)
           "this argument flows into an inout parameter and must be marked '~place' (§18.9.3)"
         (,[]) <$> walkE env e
     | pQuantity p == Just QZero -> pure (rNone, []) -- erased argument
@@ -1261,7 +1261,7 @@ walkArg env params arg p = case arg of
     | consuming
     , Just (vi, [], sp) <- placeOf env e
     , vBorrowed vi -> do
-        emit "E_QTT_BORROW_CONSUME" "kappa.qtt.borrow-consume" sp
+        emit "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
           ("borrowed binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
         pure (rPlain (Map.singleton (vKey vi) touchC), [])
     -- a direct place argument is counted at the parameter's demand
@@ -1280,7 +1280,7 @@ walkArg env params arg p = case arg of
           Just tsp
             | pKnown p
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] ->
-                emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" tsp
+                emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
           _ -> pure ()
         pure
@@ -1306,7 +1306,7 @@ walkArg env params arg p = case arg of
           Just tsp
             | pKnown p
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] -> do
-                emit "E_QTT_BORROW_ESCAPE" "kappa.qtt.borrow-escape" tsp
+                emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
                 pure (rPlain (u `seqU` scaleU d l), [])
           _ -> pure (R (u `seqU` scaleU d l) t Map.empty, [])
@@ -1575,7 +1575,7 @@ walkItems env0 items0 = go env0 items0
             -- a residue carrying a positive-lower-bound field may not be
             -- dropped that way (§12.2.5, §18.2)
             forM_ (residueLinear env pat) $ \cn ->
-              emit "E_QTT_LINEAR_DROP" "kappa.qtt.linear-drop" sp
+              emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" sp
                 ("the residual constructor '" <> cn <> "' carries a quantity-1 or relevant field; a plain let? may not discard it (§12.2.5)")
             pure Nothing
         shadow <- shadowVars (patVars pat) sp
@@ -1638,7 +1638,7 @@ walkItems env0 items0 = go env0 items0
       DoDefer _ e sp -> do
         u <- fst . flatR <$> walkE env e
         when (deferAbrupt e) $
-          emit "E_DEFER_ABRUPT_CONTROL" "kappa.do.defer" sp
+          emit "E_DEFER_ABRUPT_CONTROL" "kappa-hs.do.defer" sp
             "a deferred action must not return, break, or continue out of itself (§18.7)"
         prefixFlow u <$> go env rest
       DoDecl d | isEffDecl d -> go (addEffDecls env [d]) rest
@@ -1674,7 +1674,7 @@ walkItems env0 items0 = go env0 items0
                 ]
           case offenders of
             ((vi, kind) : _) ->
-              emit "E_QTT_CONTINUATION_CAPTURE" "kappa.qtt.continuation-capture" osp
+              emit "E_QTT_CONTINUATION_CAPTURE" "kappa-hs.qtt.continuation-capture" osp
                 ( "the multi-shot operation '" <> opn <> "' would capture '"
                     <> T.takeWhile (/= '#') (vKey vi) <> "' (" <> kind
                     <> ") in its resumption; every value captured by a multi-shot resumption must be duplicable and free of borrow obligations (§18.1.20)"

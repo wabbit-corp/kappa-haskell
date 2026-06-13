@@ -10,7 +10,10 @@
 --! assertDiagnosticExplainExists E_MISSING_EXPLICIT_SIGNATURE
 --! assertDiagnosticExplainExists E_SAFE_NAV_GENERIC_AMBIGUOUS
 --! assertDiagnosticExplainExists kappa.implicit.unsolved
---! assertDiagnosticExplainExists kappa.qtt.borrow-overlap
+--! assertDiagnosticExplainExists kappa.borrow.overlap
+--! assertDiagnosticExplainExists kappa.pattern.non-exhaustive
+--! assertDiagnosticExplainExists kappa.unicode.name
+--! assertDiagnosticExplainExists kappa-hs.parse.error
 
 -- §3.1.2A: the diagnostic code registry behind `kappa explain` covers
 -- the codes ordinary compilation emits plus the portable aliases the
