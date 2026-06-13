@@ -427,7 +427,17 @@ moduleExportNames m = nub (concatMap go (modDecls m))
       DData mods (DataDecl n _ _ ctors) _
         | vis mods -> nameText n : [nameText cn | CtorDecl cn _ _ _ <- ctors]
       DTypeAlias mods n _ _ _ _ -> [nameText n | vis mods]
-      DTrait mods td _ -> [nameText (trName td) | vis mods]
+      -- §8.5: a trait declaration also binds each member name at module
+      -- scope (the §14.2.1 overloaded-member projection), and those are
+      -- ordinary top-level named items — exported by default with the
+      -- trait
+      DTrait mods td _
+        | vis mods ->
+            nameText (trName td)
+              : nub
+                  ( [nameText mn | TraitSig mn _ _ <- trMembers td]
+                      ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _) _ <- trMembers td]
+                  )
       DExpect mods form _ -> [nameText (expectName form) | vis mods]
       -- §8.4 re-exports: `export M.(x [as y], ...)` exports the items
       -- under their (aliased) spellings

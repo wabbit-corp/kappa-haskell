@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n14\n"
+module main
+
+-- §8.5 default exports: a trait declaration binds each member name at
+-- module scope (the §14.2.1 overloaded-member projection), and those
+-- bindings are ordinary top-level named items — exported by default,
+-- so both the wildcard and the explicit `term` item import them.
+-- §14.3: tlib's instance participates in instance search here.
+import tlib.*
+import tlib.(term sizedDoubled)
+
+n : Integer
+let n = size MkC
+
+m : Integer
+let m = sizedDoubled MkC
+
+main : UIO Unit
+let main = do
+    printlnString (showInt n)
+    printlnString (showInt m)

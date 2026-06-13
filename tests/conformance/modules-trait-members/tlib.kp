@@ -1,0 +1,11 @@
+module tlib
+
+data C = MkC
+
+trait Sized (a : Type) =
+    size : a -> Integer
+    sizedDoubled : a -> Integer
+    let sizedDoubled x = size x * 2
+
+instance Sized C =
+    let size _ = 7
