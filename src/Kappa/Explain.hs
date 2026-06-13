@@ -329,6 +329,8 @@ registry =
       "A linear or relevant (quantity 1 / >=1) binding may complete unused on some path (§12.2.5)."
   , ent "E_QTT_LINEAR_OVERUSE" (Just "kappa.qtt.linear-overuse")
       "A linear or affine (quantity 1 / <=1) binding or field path is consumed more often than its quantity permits (§12.2)."
+  , ent "E_QTT_PATH_CONSUMED" (Just "kappa.path.consumed")
+      "A place is borrowed or re-projected after the path was already consumed at quantity 1, without an intervening restoring record update (§12.4, §3.2.6)."
   , ent "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa.qtt.using-quantity")
       "A 'using' binding declares an explicit quantity; using-scoped resources have a fixed discipline (§19.5)."
   , -- Queries (§20)

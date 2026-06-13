@@ -127,32 +127,53 @@ vEscape vi sp
 linFields :: VInfo -> [Text]
 linFields vi = [f | (f, Just QOne) <- vFields vi]
 
+-- | One chronological place event on a tracked root binding: a
+-- definite consume of a path, or a borrow\/re-projection read of a
+-- path (§12.4 path-sensitive consumption).
+data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
+
 -- | Usage interval of one binding plus reporting metadata: move lo\/hi,
 -- chronological move occurrences, touch lower bound (touches include
--- borrow-uses; a binding is dropped iff some path never touches it).
-data Cnt = Cnt !Int !Int ![Span] !Int
+-- borrow-uses; a binding is dropped iff some path never touches it),
+-- chronological place events on the root, and detected §12.4
+-- borrow-after-consume violations (path, borrow site).
+data Cnt = Cnt !Int !Int ![Span] !Int ![PEv] ![([Text], Span)]
 
 cHi :: Cnt -> Int
-cHi (Cnt _ b _ _) = b
+cHi (Cnt _ b _ _ _ _) = b
 
 cTouch :: Cnt -> Bool
-cTouch (Cnt _ _ _ t) = t > 0
+cTouch (Cnt _ _ _ t _ _) = t > 0
 
 zeroC :: Cnt
-zeroC = Cnt 0 0 [] 0
+zeroC = Cnt 0 0 [] 0 [] []
 
 oneC :: Span -> Cnt
-oneC sp = Cnt 1 1 [sp] 1
+oneC sp = Cnt 1 1 [sp] 1 [] []
 
 touchC :: Cnt
-touchC = Cnt 0 0 [] 1
+touchC = Cnt 0 0 [] 1 [] []
 
+-- | A root-key occurrence carrying a §12.4 place event.
+evC :: PEv -> Cnt -> Cnt
+evC ev (Cnt a b o t evs vi) = Cnt a b o t (evs ++ [ev]) vi
+
+-- | Sequential composition; a borrow of a path after an overlapping
+-- definite consume (with no restoring update in between — a patch
+-- rebinds through a fresh root) is a §12.4 violation.
 seqC :: Cnt -> Cnt -> Cnt
-seqC (Cnt a b o t) (Cnt c d o' t') = Cnt (a + c) (b + d) (o ++ o') (t + t')
+seqC (Cnt a b o t evs vi) (Cnt c d o' t' evs' vi') =
+  Cnt (a + c) (b + d) (o ++ o') (t + t') (evs ++ evs') (vi ++ vi' ++ new)
+  where
+    new =
+      [ (bp, sp)
+      | PBorrow bp sp <- evs'
+      , any (\case PMove mp _ -> pathsOverlap mp bp; _ -> False) evs
+      ]
 
 altC :: Cnt -> Cnt -> Cnt
-altC (Cnt a b o t) (Cnt c d o' t') =
-  Cnt (min a c) (max b d) (if d > b then o' else o) (min t t')
+altC (Cnt a b o t evs vi) (Cnt c d o' t' evs' vi') =
+  Cnt (min a c) (max b d) (if d > b then o' else o) (min t t') (evs ++ evs') (vi ++ vi')
 
 -- | Upper bound standing in for ω in scaled intervals.
 wInf :: Int
@@ -160,12 +181,14 @@ wInf = 1000000
 
 -- | Multiply a usage interval by a demand interval (§12.2.2, §16.2.1).
 scaleC :: (Int, Maybe Int) -> Cnt -> Cnt
-scaleC (lo, hi) (Cnt a b o t) =
+scaleC (lo, hi) (Cnt a b o t evs vi) =
   Cnt
     (min wInf (lo * a))
     b'
     (if b' > b then o ++ o else o)
     (if lo == 0 then 0 else t)
+    (if lo == 0 then [] else evs)
+    (if b' == 0 then [] else vi)
   where
     b' = case hi of
       Nothing -> if b > 0 then wInf else 0
@@ -189,7 +212,7 @@ altUs us = foldr1 altU us
 
 -- mark every binding as possibly-unused (loops may run zero times)
 loopU :: Usage -> Usage
-loopU = Map.map (\(Cnt _ hi occs _) -> Cnt 0 hi occs 0)
+loopU = Map.map (\(Cnt _ hi occs _ evs vi) -> Cnt 0 hi occs 0 evs vi)
 
 -- ── Analysis monad ───────────────────────────────────────────────────
 
@@ -569,13 +592,20 @@ checkInoutResult msig ld =
 -- per-path consumption of its quantity-1 record fields (§12.4).
 closeVar :: VInfo -> Usage -> M ()
 closeVar vi u = do
-  let Cnt _ rHi rOccs rTlo = Map.findWithDefault zeroC (vKey vi) u
+  let Cnt _ rHi rOccs rTlo _ viols = Map.findWithDefault zeroC (vKey vi) u
       res = Map.findWithDefault zeroC (vKey vi <> ".~") u
       rootHi = rHi + cHi res
+  -- §12.4: borrowing or re-projecting a path after an overlapping
+  -- definite consume (no intervening restore — a restoring patch
+  -- rebinds through a fresh root) is a compile-time error
+  forM_ (dedupViols viols) $ \(bp, bsp) ->
+    emit "E_QTT_PATH_CONSUMED" "kappa.path.consumed" bsp
+      ("'" <> nm <> T.concat (map ("." <>) bp)
+         <> "' is borrowed after the path was consumed (§12.4); restore it by record update first")
   -- per-path overuse: a whole-record use re-consumes every moved path
   -- (a patch consumes the residue only, not the paths it replaces)
   pathOver <- fmap or . forM (linFields vi) $ \f -> do
-    let pc@(Cnt _ pHi pOccs _) = Map.findWithDefault zeroC (vKey vi <> "." <> f) u
+    let pc@(Cnt _ pHi pOccs _ _ _) = Map.findWithDefault zeroC (vKey vi <> "." <> f) u
     if vQ vi `elem` [Just QOne, Just QAtMostOne] && cHi pc > 0 && rHi + pHi > 1
       then do
         overuse (nm <> "." <> f) (pOccs ++ rOccs)
@@ -602,6 +632,7 @@ closeVar vi u = do
     dropErr kind =
       emit "E_QTT_LINEAR_DROP" "kappa.qtt.linear-drop" (vSpan vi)
         ("'" <> nm <> "' (" <> kind <> ") may be dropped without being consumed (§12.2.5)")
+    dedupViols = foldr (\v vs -> if v `elem` vs then vs else v : vs) []
 
 -- ── Place helpers (§12.4) ────────────────────────────────────────────
 
@@ -726,11 +757,11 @@ movePlace env vi path sp = do
       ("erased (quantity 0) binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' is used at runtime (§12.2.1)")
   checkBorrowOverlap env vi path sp
   pure $ case path of
-    [] -> Map.singleton (vKey vi) (oneC sp)
+    [] -> Map.singleton (vKey vi) (evC (PMove [] sp) (oneC sp))
     fs ->
       Map.fromList
         [ (vKey vi <> "." <> T.intercalate "." fs, oneC sp)
-        , (vKey vi, touchC)
+        , (vKey vi, evC (PMove fs sp) touchC)
         ]
 
 -- | Is the one-segment path a quantity-1 field of the binding?
@@ -1291,9 +1322,9 @@ walkArg env params arg p = case arg of
             , (vKey vi, touchC)
             ]
     borrowish e = case placeOf env e of
-      Just (vi, path, _) ->
+      Just (vi, path, sp) ->
         pure
-          ( rPlain (Map.singleton (vKey vi) touchC)
+          ( rPlain (Map.singleton (vKey vi) (evC (PBorrow path sp) touchC))
           , [FBorrow (vKey vi) path]
           )
       Nothing
@@ -1333,8 +1364,13 @@ walkBinds env binds = go env binds
             -- §13.2.1: plus the fields a dependent field's type
             -- mentions); borrowing through a borrowed alias locks the
             -- original
-            Just pl@(vi, _, _) ->
-              pure (Map.singleton (vKey vi) touchC, Nothing, Map.empty, borrowLocks envc pl)
+            Just pl@(vi, plPath, plSp) ->
+              pure
+                ( Map.singleton (vKey vi) (evC (PBorrow plPath plSp) touchC)
+                , Nothing
+                , Map.empty
+                , borrowLocks envc pl
+                )
             -- `let & v = proj places` locks every yield leaf for the
             -- binder's scope (§30.2.2.3 BorrowProjector)
             Nothing

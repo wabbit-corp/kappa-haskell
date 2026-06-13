@@ -1,0 +1,40 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+-- §12.4: borrowing before the consume, consuming a sibling path after
+-- another path was consumed, and restoring through a record update
+-- all stay accepted.
+
+data Token : Type =
+    MkToken Int
+
+type Pair = (1 left : Token, 1 right : Token)
+
+takeTok : (1 t : Token) -> Int
+let takeTok t =
+    match t
+      case MkToken n -> n
+
+peekTok : (& t : Token) -> Int
+let peekTok t =
+    match t
+      case MkToken n -> n
+
+goodOrder : (1 t : Token) -> Int
+let goodOrder t =
+    let y = peekTok t
+    let x = takeTok t
+    x + y
+
+-- restore the consumed path by record update, then read the restored
+-- record through the fresh binding (§12.4 path restoration)
+restored : (1 p : Pair) -> Int
+let restored p =
+    let a = takeTok p.left
+    let p2 = p.{ left = MkToken 9 }
+    let b = peekTok p2.left
+    let c = takeTok p2.left
+    let d = takeTok p2.right
+    a + b + c + d

@@ -1,0 +1,39 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_PATH_CONSUMED, E_QTT_PATH_CONSUMED
+
+module main
+
+-- §12.4: re-projecting/borrowing a path (or whole binder) already
+-- consumed at quantity 1 is a compile-time error unless the path has
+-- first been restored by record update (kappa.path.consumed, §3.2.6).
+
+data Token : Type =
+    MkToken Int
+
+type Pair = (1 left : Token, 1 right : Token)
+
+takeTok : (1 t : Token) -> Int
+let takeTok t =
+    match t
+      case MkToken n -> n
+
+peekTok : (& t : Token) -> Int
+let peekTok t =
+    match t
+      case MkToken n -> n
+
+-- whole-binder: consume then borrow
+badWhole : (1 t : Token) -> Int
+let badWhole t =
+    let x = takeTok t
+    let y = peekTok t
+    x + y
+
+-- field path: consume p.left, then borrow p.left (p.right stays fine)
+badPath : (1 p : Pair) -> Int
+let badPath p =
+    let a = takeTok p.left
+    let b = peekTok p.left
+    let c = takeTok p.right
+    a + b + c
