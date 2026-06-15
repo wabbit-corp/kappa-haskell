@@ -410,6 +410,29 @@ withThis tm act = do
 thisG :: GName
 thisG = gPrel "__this"
 
+-- | §13.2.11 internal existential member labels. The angle-bracket
+-- sigil cannot occur in a source identifier (the lexer admits only
+-- @[A-Za-z0-9_]@ and non-ASCII letters), so these labels are never
+-- source-addressable through @EProj@/@elabDot@ — exactly the spec's
+-- requirement that witness members and a non-record payload "are not
+-- source-addressable and not rendered as a public field" (Spec.md
+-- 13314, 13316-13317). The labels are position-based so that
+-- alpha-equivalent existential types elaborate to the same internal
+-- shape and remain convertible (Spec.md 13322).
+existsWitLabel :: Int -> Text
+existsWitLabel i = "⟨wit" <> T.pack (show i) <> "⟩"
+
+-- | The single anonymous non-record payload label of an existential
+-- (Spec.md 13316-13317: @⟨payload⟩ : T@, not a field named @value@).
+existsPayloadLabel :: Text
+existsPayloadLabel = "⟨payload⟩"
+
+-- | Whether a member label is a §13.2.11 internal existential label
+-- (witness or anonymous payload). Such labels are not source-visible
+-- projection fields.
+isExistsInternalLabel :: Text -> Bool
+isExistsInternalLabel l = "⟨" `T.isPrefixOf` l
+
 -- | Does a term mention the §13.2.1 @this@ neutral?
 mentionsThis :: Term -> Bool
 mentionsThis = \case
@@ -2030,8 +2053,8 @@ infer ctx expr = case expr of
   EHandle deep lblE scrutE cases sp -> elabHandle ctx deep lblE scrutE cases sp
   EEffRow entries mtail sp -> elabEffRow ctx entries mtail sp
   ESeal e tyE sp -> elabSeal ctx e tyE sp
-  ESealExists _ _ _ sp -> unsupported ctx sp "existential packages"
-  EOpenExists _ _ _ _ sp -> unsupported ctx sp "existential packages"
+  ESealExists ws e tyE sp -> elabSealExistsExplicit ctx ws e tyE sp
+  EOpenExists e ns pat body sp -> elabOpenExists ctx e ns pat body sp
   EQuote e sp -> elabQuote ctx e sp Nothing
   ECodeQuote e sp -> elabCodeQuote ctx e sp Nothing
   ECodeEscape e sp -> elabCodeEscape ctx e sp
@@ -2694,15 +2717,21 @@ elabForall ctx0 bs0 body = go ctx0 bs0
 -- are the hidden witnesses (each an @opaque 0@ member) and whose
 -- remaining member(s) are the payload view of @T@:
 --
---   * a record/signature payload contributes its fields directly;
---   * any other payload becomes one anonymous payload member.
+--   * a record/signature payload contributes its fields directly,
+--     under their source labels (these are source-addressable);
+--   * any other payload becomes one anonymous payload member under the
+--     internal label '⟨payload⟩' (not source-addressable).
 --
--- The witness binder names are used only while checking this surface
--- view; sealing against the result reuses 'elabSeal', so the ordinary
--- §13.2.10 (and thereby §12.4.3 borrow-escape) sealing-side checks apply
--- unchanged. Witnesses being @opaque 0@ are erased static metadata
--- (§31.2); they participate in the signature's field telescope as
--- 'this'-dependencies so the payload may mention them.
+-- Witness binder names are binders only (Spec.md 13321): each elaborates
+-- to an internal member label '⟨wit_i⟩' that source code cannot spell,
+-- so witnesses are never projectable and never rendered as public
+-- fields (Spec.md 13314, 13316-13317). The binder name resolves to its
+-- witness during elaboration through the §13.2.1 'this'-sibling
+-- machinery; we then rename those @this.<binder>@ projections to the
+-- internal label so the field telescope refers to the witness by its
+-- canonical internal name. Witnesses being @opaque 0@ are erased static
+-- metadata (§31.2). Internal labels are position-based so alpha-equivalent
+-- existential types elaborate to the same shape (Spec.md 13322).
 elabExists :: Ctx -> [Binder] -> Expr -> Span -> CheckM (Term, Value)
 elabExists ctx bs body sp = do
   -- distinct witness names (§13.2.11 surface-name restriction)
@@ -2710,31 +2739,47 @@ elabExists ctx bs body sp = do
   forM_ (duplicatesOf (filter (/= "_") witNames)) $ \n ->
     errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
       ("an 'exists' type binds the witness name '" <> n <> "' more than once (§13.2.11)")
+  -- binder name -> internal witness label (positional). Anonymous '_'
+  -- binders still occupy a witness slot but carry no source name.
+  let labelOf = zip witNames (map existsWitLabel [0 ..])
   -- elaborate the witness telescope, each field seeing earlier witnesses
   -- through 'this' (the package), then the payload view
-  witFields <- goWits [] (zip witNames bs)
-  let witDone = [(n, v) | (n, _, v) <- witFields] -- (name, type) oldest-first
-  payloadFields <- withThis (Just (ThisType witDone)) payloadView
-  let allFields = [(n, t) | (n, t, _) <- witFields] ++ payloadFields
+  witFields <- goWits labelOf [] (zip3 [0 ..] witNames bs)
+  -- (internal label, type) oldest-first, with binder names exposed under
+  -- 'this' for resolving later witness/body references
+  let witDone = [(n, v) | (n, _, _, v) <- witFields]
+  payloadFields0 <- withThis (Just (ThisType witDone)) payloadView
+  -- rename binder-name 'this' projections in the payload to the internal
+  -- witness labels, mirroring the witness telescope
+  let payloadFields = [(fn, renameThisLabels labelOf t) | (fn, t) <- payloadFields0]
+      allFields = [(lbl, t) | (_, lbl, t, _) <- witFields] ++ payloadFields
       fields = sortOn fst allFields
-      opaqs = sort (filter (/= "_") witNames)
+      opaqs = sort [lbl | (_, lbl, _, _) <- witFields]
   pure (CSigT opaqs (CRecordT fields), VSort 0)
   where
-    -- each witness field, elaborated with prior witnesses in 'this'
-    goWits _ [] = pure []
-    goWits done ((nm, b) : rest) = do
+    -- each witness field, elaborated with prior witnesses in 'this'.
+    -- The accumulator threads (binderName, type) so the binder name
+    -- resolves to its witness; the produced field type is rewritten so
+    -- its 'this' projections name the internal labels instead.
+    goWits _ _ [] = pure []
+    goWits labelOf done ((i, nm, b) : rest) = do
       (t0, _) <- withThis (Just (ThisType (reverse done))) $ case bType b of
         Just t -> inferType ctx t
         Nothing -> pure (CSort 0, 0) -- `exists a.` binds a : Type (§13.2.11)
-      tV <- evalIn ctx t0
-      let ent = (nm, t0, tV)
-      (ent :) <$> goWits ((nm, tV) : done) rest
+      let t0' = renameThisLabels labelOf t0
+      tV <- evalIn ctx t0'
+      -- expose the witness under its binder name for later references,
+      -- but record the field under its internal label
+      let lbl = existsWitLabel i
+          ent = (nm, lbl, t0', tV)
+      (ent :) <$> goWits labelOf ((nm, tV) : done) rest
     -- the payload view of the existential body (§13.2.11)
     payloadView = do
       (tTm, _) <- inferType ctx body
       tV <- forceM =<< evalIn ctx tTm
       case tV of
-        -- record/signature payload: contribute its fields directly
+        -- record/signature payload: contribute its fields directly,
+        -- under their source labels (source-addressable, Spec.md 13324)
         VRecordT fs -> recFields fs
         VSigT _ inner ->
           forceM inner >>= \case
@@ -2743,10 +2788,46 @@ elabExists ctx bs body sp = do
         _ -> anonPayload tTm
       where
         recFields fs = forM fs $ \(fn, fty) -> (,) fn <$> quoteIn ctx fty
-        -- one anonymous payload slot (§13.2.11: quantity ω); named
-        -- 'value' as the conventional payload field for the surface
-        -- package spelling
-        anonPayload tTm = pure [("value", tTm)]
+        -- one anonymous payload slot at quantity ω under the internal
+        -- '⟨payload⟩' label (Spec.md 13316-13317, 13279-13280: not
+        -- 'value', not source-addressable)
+        anonPayload tTm = pure [(existsPayloadLabel, tTm)]
+
+-- | Rewrite @this.<binderName>@ projections to @this.<internalLabel>@
+-- inside an elaborated existential member type, per the binder->label
+-- map. Only projections rooted at the §13.2.1 'this' neutral are
+-- renamed (other projections keep their labels).
+renameThisLabels :: [(Text, Text)] -> Term -> Term
+renameThisLabels labelOf = go
+  where
+    go t = case t of
+      CProj e f
+        | CGlob g <- e, g == thisG, Just lbl <- lookup f labelOf -> CProj e lbl
+        | otherwise -> CProj (go e) f
+      CLam ic q n b -> CLam ic q n (go b)
+      CPi ic q n a b -> CPi ic q n (go a) (go b)
+      CApp ic f a -> CApp ic (go f) (go a)
+      CCtor g as -> CCtor g (map go as)
+      CMatch s alts -> CMatch (go s) [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
+      CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
+      CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
+      CVariantT ms -> CVariantT (map go ms)
+      CInject tag e -> CInject tag (go e)
+      CLet q n a b c -> CLet q n (go a) (go b) (go c)
+      CLetRec q n a b c -> CLetRec q n (go a) (go b) (go c)
+      CSealE ls e -> CSealE ls (go e)
+      CSigT ls e -> CSigT ls (go e)
+      CThunkE e -> CThunkE (go e)
+      CLazyE e -> CLazyE (go e)
+      CForceE e -> CForceE (go e)
+      CIf a b c -> CIf (go a) (go b) (go c)
+      CQuote qs slots -> CQuote qs (map go slots)
+      CGlob _ -> t
+      CVar _ -> t
+      CSort _ -> t
+      CLit _ -> t
+      CMeta _ -> t
+      CDo _ -> t
 -- | Check an all-explicit application against an expected function
 -- type by peeling the callee's Pi spine with placeholder metas,
 -- unifying the result type with the expectation FIRST, and only then
@@ -4528,6 +4609,15 @@ elabSeal ctx e tyE sp = do
           errAt sp "E_SEAL_OPEN_RECORD_ASCRIPTION" (Just "kappa-hs.seal.open-record")
             "the ascribed type of 'seal ... as ...' must be a closed record type; an open record with a residual row is not a sealing signature (§13.2.10)"
           anyHole ctx
+    -- §13.2.11 existential introduction: an existential signature is a
+    -- §13.2.10 signature whose opaque members are the internal witness
+    -- labels. Sealing an ordinary expression against it uses the
+    -- existential-specific payload-checking mode (Spec.md 13347-13364).
+    VSigT ls inner
+      | any isExistsInternalLabel ls ->
+          forceM inner >>= \case
+            VRecordT fs -> elabSeal'Exists ctx e sV ls fs witBinderNames sp
+            _ -> notRecord
     VSigT ls inner ->
       forceM inner >>= \case
         VRecordT fs -> doSeal ls fs sV
@@ -4535,6 +4625,12 @@ elabSeal ctx e tyE sp = do
     VRecordT fs -> doSeal [] fs sV
     _ -> notRecord
   where
+    -- the surface witness binder names, recoverable only when the
+    -- ascription is written directly as 'exists ...' (used to support the
+    -- §13.2.11 compatibility full-surface-package spelling, 13417-13428)
+    witBinderNames = case tyE of
+      EExists bs _ _ -> [maybe "_" nameText (bName b) | b <- bs]
+      _ -> []
     notRecord = do
       errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
         "the ascribed type of 'seal ... as ...' must elaborate to a closed record type (§13.2.10)"
@@ -4606,6 +4702,302 @@ elabSeal ctx e tyE sp = do
       fty' <- substThisInto ctx (CRecordV (sortOn fst doneV)) fty
       tm <- withThis (Just (ThisValue doneV doneT)) (check ctx fe fty')
       ((nm, tm) :) <$> goLit ((nm, tm) : doneV) ((nm, fty') : doneT) rest
+
+-- | §13.2.11 existential introduction (Spec.md 13347-13364).
+--
+-- @seal e as exists (a1:S1)...(an:Sn). T@ where the operand is an
+-- ordinary expression: create fresh witness metavariables for the
+-- hidden witnesses, check the payload against @T@ with those metas
+-- substituted for the witness 'this'-references, and solve the witnesses
+-- from that checking problem. All witnesses must be solved before the
+-- seal is accepted (Spec.md 13363-13364).
+--
+-- The signature fields are the internal witness labels (opaque) followed
+-- by the payload view; a non-record payload is the single internal
+-- @⟨payload⟩@ field, while a record-shaped payload exposes its source
+-- labels. @witTerms@ supplies the witness terms positionally — fresh
+-- metas for the direct form, or the explicitly supplied witnesses for
+-- 'ESealExists' (Spec.md 13378-13391).
+elabSeal'Exists :: Ctx -> Expr -> Value -> [Text] -> [(Text, Value)] -> [Text] -> Span -> CheckM (Term, Value)
+elabSeal'Exists ctx e sV witLabels fs witBinderNames sp = do
+  -- Witness fields are exactly the opaque members 'witLabels'; the
+  -- payload label '⟨payload⟩' is internal but NOT opaque.
+  let anonPayload = case payFs of
+        [(payLbl, _)] -> payLbl == existsPayloadLabel
+        _ -> False
+  -- §13.2.11 compatibility full-surface-package spelling (13417-13428):
+  -- when the ascription is a literal 'exists' and the operand is a record
+  -- literal mentioning witness binder names, the witness-named fields
+  -- supply the witnesses and the rest is the payload. Available only for
+  -- record-shaped payloads (13431-13432).
+  case e of
+    ERecordLit items _
+      | not (null witBinderNames)
+      , let suppliedNames = [nameText n | RecItem _ n _ <- items]
+      , any (`elem` witBinderNames) suppliedNames ->
+          if anonPayload
+            then do
+              errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                "the compatibility record-package spelling of 'seal' is not available for a non-record existential payload; use direct payload introduction or 'seal exists (...) . e as ...' (§13.2.11)"
+              anyHole ctx
+            else sealCompat items
+    _ -> do
+      -- direct payload introduction: fresh witness metas, solved by
+      -- checking the payload (Spec.md 13352, 13359-13361)
+      witTerms <- forM witFs $ \(lbl, _) -> (,) lbl <$> freshMeta
+      elabSealExistsCore ctx e sV witLabels fs sp witTerms
+  where
+    witFs = filter ((`elem` witLabels) . fst) fs
+    payFs = filter ((`notElem` witLabels) . fst) fs
+    -- the record-literal compatibility spelling: bind witness-named
+    -- fields as explicit witnesses (positionally, by binder order), then
+    -- check the remaining payload fields
+    sealCompat items = do
+      let supplied = [(nameText n, fromMaybe (EVar n) me) | RecItem _ n me <- items]
+          -- explicit witness assignments in binder order
+          witWs =
+            [ (Name bn sp, we)
+            | (bn, _) <- zip witBinderNames witFs
+            , Just we <- [lookup bn supplied]
+            ]
+          -- the payload sub-record (witness fields removed)
+          payItems = [it | it@(RecItem _ n _) <- items, nameText n `notElem` witBinderNames]
+      witTerms <- goCompatWits [] (zip witFs witWs)
+      elabSealExistsCore ctx (ERecordLit payItems (exprSpan e)) sV witLabels fs sp witTerms
+    goCompatWits _ [] = pure []
+    goCompatWits done (((lbl, wty), (_, we)) : rest) = do
+      let thisRecv = CRecordV (sortOn fst done)
+      wty' <- substThisInto ctx thisRecv wty
+      wt <- check ctx we wty'
+      ((lbl, wt) :) <$> goCompatWits ((lbl, wt) : done) rest
+
+-- | The shared core: with the witness terms already chosen (metas for
+-- the direct form, supplied terms for the explicit-witness form), check
+-- the payload, enforce that all witnesses are solved, and build the
+-- sealed package value.
+elabSealExistsCore ::
+  Ctx -> Expr -> Value -> [Text] -> [(Text, Value)] -> Span -> [(Text, Term)] -> CheckM (Term, Value)
+elabSealExistsCore ctx e sV witLabels fs sp witTerms = do
+  let payFs = filter ((`notElem` witLabels) . fst) fs
+      thisRecv = CRecordV (sortOn fst witTerms)
+  payVals <- case payFs of
+    -- one anonymous non-record payload: check e against its type with
+    -- the witnesses substituted (Spec.md 13316-13317, 13360)
+    [(payLbl, payTy)]
+      | payLbl == existsPayloadLabel -> do
+          payTy' <- substThisInto ctx thisRecv payTy
+          eTm <- check ctx e payTy'
+          pure [(payLbl, eTm)]
+    -- record-shaped payload: e must provide each source-labeled field
+    _ -> do
+      (eTm0, eTy0) <- infer ctx e
+      (eTm, eTy1) <- insertAllImplicits ctx (exprSpan e) eTm0 eTy0
+      eTy <- forceM eTy1
+      mefs <- case eTy of
+        VRecordT efs -> pure (Just efs)
+        VSigT _ inner ->
+          forceM inner >>= \case
+            VRecordT efs -> pure (Just efs)
+            _ -> pure Nothing
+        _ -> pure Nothing
+      case mefs of
+        Nothing -> do
+          errAt (exprSpan e) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+            "the sealed expression does not have a record type matching the existential payload view (§13.2.11)"
+          pure [(lbl, eTm) | (lbl, _) <- payFs]
+        Just efs -> do
+          forM_ payFs $ \(nm, fty) -> case lookup nm efs of
+            Nothing ->
+              errAt (exprSpan e) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                ("the sealed expression does not provide the payload field '" <> nm <> "' (§13.2.11)")
+            Just aty -> do
+              aty' <- substThisInto ctx eTm aty
+              fty' <- substThisInto ctx thisRecv fty
+              expectType ctx (exprSpan e) aty' fty'
+          pure [(nm, CProj eTm nm) | (nm, _) <- payFs]
+  -- §13.2.11 13363-13364: every witness must be solved
+  forM_ witTerms $ \(lbl, wt) -> case wt of
+    CMeta m ->
+      gets (Map.lookup m . csMetas) >>= \case
+        Just (Just _) -> pure ()
+        _ ->
+          errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
+            ( "the existential witness "
+                <> lbl
+                <> " could not be inferred; use the explicit-witness 'seal exists (...) . e as ...' form or annotate the payload (§13.2.11)"
+            )
+    _ -> pure ()
+  pure (CSealE witLabels (CRecordV (sortOn fst (witTerms ++ payVals))), sV)
+
+-- | §13.2.11 explicit-witness introduction (Spec.md 13376-13415):
+-- @seal exists (a1 = w1, ..., an = wn). e as exists (b1:S1)...(bn:Sn). T@.
+-- The witness assignments are checked sequentially against the binder
+-- telescope (positionally — witness labels are canonical and internal),
+-- then the payload is checked with those witnesses supplied.
+elabSealExistsExplicit :: Ctx -> [(Name, Expr)] -> Expr -> Expr -> Span -> CheckM (Term, Value)
+elabSealExistsExplicit ctx ws e tyE sp = do
+  (sTm, _) <- inferType ctx tyE
+  sV <- forceM =<< evalIn ctx sTm
+  case sV of
+    VSigT ls inner
+      | any isExistsInternalLabel ls ->
+          forceM inner >>= \case
+            VRecordT fs -> do
+              let witFs = filter ((`elem` ls) . fst) fs
+              when (length ws /= length witFs) $
+                errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+                  ( "this explicit-witness 'seal' supplies "
+                      <> T.pack (show (length ws))
+                      <> " witness(es) but the existential type has "
+                      <> T.pack (show (length witFs))
+                      <> " (§13.2.11)"
+                  )
+              -- check each witness assignment against its (dependent)
+              -- type, threading earlier witnesses through 'this'
+              witTerms <- goWits [] (zip witFs ws)
+              elabSealExistsCore ctx e sV ls fs sp witTerms
+            _ -> notExists sV
+    _ -> notExists sV
+  where
+    notExists sV = do
+      _ <- pure sV
+      errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+        "the ascribed type of 'seal exists (...) . e as ...' must be an existential type (§13.2.11)"
+      anyHole ctx
+    goWits _ [] = pure []
+    goWits done (((lbl, wty), (_, we)) : rest) = do
+      let thisRecv = CRecordV (sortOn fst done)
+      wty' <- substThisInto ctx thisRecv wty
+      wt <- check ctx we wty'
+      ((lbl, wt) :) <$> goWits ((lbl, wt) : done) rest
+
+-- | §13.2.11 existential elimination (Spec.md 13469-13540):
+-- @open e as exists (a1, ..., an). pat in body@. The witnesses are
+-- introduced as rigid quantity-0 locals bound to the (opaque) witness
+-- selections of the package; the payload view is bound by @pat@; @body@
+-- is elaborated in that extended scope; the opened witnesses must not
+-- escape the inferred result type.
+--
+-- Following the normative schematic elaboration (Spec.md 13528-13536),
+-- we emit @let 0 a_i = pkg.⟨wit_i⟩@ for each witness and a single
+-- irrefutable @match@ binding the payload pattern.
+elabOpenExists :: Ctx -> Expr -> [Name] -> Pattern -> Expr -> Span -> CheckM (Term, Value)
+elabOpenExists ctx e ns pat body sp = do
+  (eTm, eTy) <- infer ctx e
+  eTyF <- forceM eTy
+  case eTyF of
+    VSigT ls inner
+      | any isExistsInternalLabel ls ->
+          forceM inner >>= \case
+            VRecordT fs -> openWith eTm eTyF ls fs
+            _ -> notExists
+    _ -> notExists
+  where
+    notExists = do
+      errAt (exprSpan e) "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+        "the operand of 'open ... as exists ...' must have an existential type (§13.2.11)"
+      anyHole ctx
+    openWith eTm pkgTy ls fs = do
+      let witFs = filter ((`elem` ls) . fst) fs
+          payFs = filter ((`notElem` ls) . fst) fs
+          names = map nameText ns
+          nWit = length witFs
+      when (length ns /= nWit) $
+        errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
+          ( "this 'open' binds "
+              <> T.pack (show (length ns))
+              <> " witness(es) but the existential type has "
+              <> T.pack (show nWit)
+              <> " (§13.2.11)"
+          )
+      forM_ (duplicatesOf (filter (/= "_") names)) $ \n ->
+        errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
+          ("'open ... as exists' binds the witness name '" <> n <> "' more than once (§13.2.11)")
+      -- Schematic elaboration (Spec.md 13528-13536): bind the package as
+      -- an outer let so all witness/payload selections refer to it by a
+      -- properly-shifting de Bruijn variable, then bind each opened
+      -- witness as a quantity-0 local and the payload via 'pat'.
+      let ctxP = bindCtx "__pkg" False pkgTy ctx
+          pkgLvl = ctxLen ctx -- de Bruijn LEVEL of __pkg
+          pkgAt c = CVar (ctxLen c - 1 - pkgLvl)
+      -- bind each opened witness as a rigid quantity-0 local; record its
+      -- de Bruijn level so we can later detect escape in the result type
+      (ctxW, witAccRev) <- foldM (bindWit pkgAt) (ctxP, []) (zip names witFs)
+      let witAcc = reverse witAccRev -- (level, typeTerm) per witness, oldest-first
+          witLvls = map fst witAcc
+      -- the payload view (Spec.md 13535)
+      (payTm, payTy) <- case payFs of
+        [(payLbl, payTy)]
+          | payLbl == existsPayloadLabel -> do
+              payTy' <- substThisInto ctxW (pkgAt ctxW) payTy
+              pure (CProj (pkgAt ctxW) payLbl, payTy')
+        _ -> do
+          payT' <- substThisInto ctxW (pkgAt ctxW) (VRecordT (sortOn fst payFs))
+          pure (CRecordV (sortOn fst [(nm, CProj (pkgAt ctxW) nm) | (nm, _) <- payFs]), payT')
+      (patC, ctx2, _) <- elabPattern ctxW pat payTy
+      checkIrrefutable ctxW pat payTy sp
+      (bodyTm, bodyTy) <- infer ctx2 body
+      -- §13.2.11 13517-13524: opened witnesses must not escape the result
+      bodyTyTm <- quoteIn ctx2 bodyTy
+      let n2 = ctxLen ctx2
+          escaping = [nm | (nm, lvl) <- zip names witLvls, nm /= "_", varUsedAt (n2 - 1 - lvl) bodyTyTm]
+      forM_ escaping $ \nm ->
+        errAt sp "E_EXISTENTIAL_WITNESS_ESCAPE" (Just "kappa-hs.exists.escape")
+          ("the opened existential witness '" <> nm <> "' escapes in the result type of 'open' (§13.2.11)")
+      -- assemble: let __pkg = e in (let 0 a_i = __pkg.<wit_i>)* in
+      --           (match payload case pat -> body). At witness-let i's
+      --           rhs position, __pkg is i binders up (index i).
+      pkgTyTm <- quoteIn ctx pkgTy
+      let payMatch = CMatch payTm [CaseAlt patC Nothing bodyTm]
+          witLets =
+            foldr
+              (\(i, (nm, (lbl, _)), wtyTm) b -> CLet Q0 nm wtyTm (CProj (CVar i) lbl) b)
+              payMatch
+              (zip3 [0 ..] (zip names witFs) (map snd witAcc))
+          whole = CLet QW "__pkg" pkgTyTm eTm witLets
+      pure (whole, bodyTy)
+    -- bind one opened witness as a quantity-0 local; returns the extended
+    -- context and the witness's (de Bruijn LEVEL, quoted type term)
+    bindWit pkgAt (c, acc) (nm, (_lbl, wty)) = do
+      wty' <- substThisInto c (pkgAt c) wty
+      wtyTm <- quoteIn c wty'
+      let lvl = ctxLen c
+          c' = bindCtx nm False wty' c
+      pure (c', (lvl, wtyTm) : acc)
+
+-- | Whether the de Bruijn /index/ @ix@ (relative to the term's top
+-- scope) is referenced by any @CVar@ in the term, incrementing the
+-- target under each binder. Used by 'elabOpenExists' to detect witness
+-- escape in the inferred result type.
+varUsedAt :: Int -> Term -> Bool
+varUsedAt = go
+  where
+    go ix = \case
+      CVar i -> i == ix
+      CLam _ _ _ b -> go (ix + 1) b
+      CPi _ _ _ a b -> go ix a || go (ix + 1) b
+      CApp _ f a -> go ix f || go ix a
+      CCtor _ as -> any (go ix) as
+      CMatch s alts -> go ix s || or [maybe False (go (ix + patBindersC p)) g || go (ix + patBindersC p) b | CaseAlt p g b <- alts]
+      CRecordT fs -> any (go ix . snd) fs
+      CRecordV fs -> any (go ix . snd) fs
+      CProj x _ -> go ix x
+      CVariantT ms -> any (go ix) ms
+      CInject _ x -> go ix x
+      CLet _ _ a b c -> go ix a || go ix b || go (ix + 1) c
+      CLetRec _ _ a b c -> go ix a || go (ix + 1) b || go (ix + 1) c
+      CSealE _ x -> go ix x
+      CSigT _ x -> go ix x
+      CThunkE x -> go ix x
+      CLazyE x -> go ix x
+      CForceE x -> go ix x
+      CIf a b c -> go ix a || go ix b || go ix c
+      CQuote _ slots -> any (go ix) slots
+      CGlob _ -> False
+      CSort _ -> False
+      CLit _ -> False
+      CMeta _ -> False
+      CDo _ -> False
 
 -- | A record literal against a §13.2.1 dependent record type (or one
 -- whose initializers use sibling references): fields elaborate in

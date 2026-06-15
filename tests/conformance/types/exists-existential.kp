@@ -1,5 +1,7 @@
 --! mode check
 --! assertNoErrors
+--! assertEval optSize 1
+--! assertEval recordSize 2
 
 -- §13.2.11: `exists` is anonymous sealed-package sugar. It elaborates to
 -- the §13.2.10 sealed-package machinery: a closed signature type whose
@@ -20,3 +22,37 @@ let sugarBinder = exists a. a
 
 recordBody : Type
 let recordBody = exists (a : Type). (value : a)
+
+-- direct payload introduction (Spec.md 13352): the witness is solved by
+-- checking the payload
+anonPkg : exists (a : Type). a
+let anonPkg = seal 5 as exists (a : Type). a
+
+-- explicit-witness introduction (Spec.md 13376-13396)
+explicitPkg : exists (a : Type). a
+let explicitPkg = seal exists (a = Int). 7 as exists (a : Type). a
+
+-- the canonical 'open + match' elimination (Spec.md 13486-13491): the
+-- opened witness `a` is in scope as a rigid quantity-0 local; the result
+-- (a count) does not mention it, so it does not escape
+optPkg : exists (a : Type). Option a
+let optPkg = seal (Some 1) as exists (a : Type). Option a
+
+optSize : Int
+let optSize =
+    open optPkg as exists (a). x in
+        match x
+        case Option.None -> 0
+        case Option.Some _ -> 1
+
+-- record-shaped payload: the source label `value` is part of the payload
+-- view; here it carries an Option so the opened witness does not escape
+recordPkg : exists (a : Type). (value : Option a)
+let recordPkg = seal (value = Some 7) as exists (a : Type). (value : Option a)
+
+recordSize : Int
+let recordSize =
+    open recordPkg as exists (a). (value = v) in
+        match v
+        case Option.None -> 0
+        case Option.Some _ -> 2

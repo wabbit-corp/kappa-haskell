@@ -1,0 +1,22 @@
+--! mode check
+--! assertDiagnostic error E_RECORD_PROJECTION_MISSING_FIELD
+
+-- §13.2.11 (Spec.md 13314, 13316-13317, 13321, 13324):
+-- source binder names in `exists` are BINDERS ONLY — they are not public
+-- field labels. A non-record payload is represented by a fresh internal
+-- label that is not source-addressable and is not a field named `value`.
+-- Therefore neither the witness binder `a` nor a `value` field of an
+-- anonymous (non-record) payload is projectable. This pins down the
+-- non-addressability invariant.
+module main
+
+anonPkg : exists (a : Type). a
+let anonPkg = seal 5 as exists (a : Type). a
+
+-- the witness binder `a` is NOT a public field
+witnessLeak : Type
+let witnessLeak = anonPkg.a --!! E_RECORD_PROJECTION_MISSING_FIELD
+
+-- a non-record payload has NO `value` field (it is not named `value`)
+payloadLeak : Int
+let payloadLeak = anonPkg.value
