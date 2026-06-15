@@ -55,7 +55,7 @@ else
   for d in "$FIXTURES"/*/; do
     # kappa exits nonzero when a fixture fails, which is a normal result;
     # only synthesize a result line when none was produced (hang/crash)
-    if ! timeout 60 "$BIN" test --suite "${d%/}" >>"$RAW_LOG" 2>&1; then
+    if ! timeout 60 "$BIN" +RTS -M768m -RTS test --suite "${d%/}" >>"$RAW_LOG" 2>&1; then
       if ! tail -3 "$RAW_LOG" | grep -qF "${d%/}"; then
         echo "HARNESS-ERROR ${d%/} (timeout or crash)" >>"$RAW_LOG"
       fi
