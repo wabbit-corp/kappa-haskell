@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §12.3 escape rule (Spec.md:11401) / §12.3.2: "passing the value as an
+-- argument to a function whose parameter does not itself mention rho" is
+-- an escape point. A constructor-wrapped borrow-capturing closure flowing
+-- into an unrestricted parameter carries the same anonymous-borrow taint
+-- as the bare closure, so it is rejected there too.
+module main
+
+data R : Type = R Int
+
+data W : Type = W (Unit -> Int)
+
+look : (& r : R) -> Int
+let look (& r : R) : Int = 0
+
+sink : W -> Int
+let sink (w : W) : Int = 0
+
+escape : (& r : R) -> Int
+let escape (& r : R) : Int = sink (W (\u -> look r))

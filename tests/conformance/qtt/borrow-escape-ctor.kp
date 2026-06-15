@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+-- §3.1.1A (line 602-603): the borrow/ownership diagnostic MUST cite the
+-- borrow-capturing closure formation site (borrow-start) and the failing
+-- escape site (borrow-escape-site).
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §12.3 escape rule (Spec.md:11402): "storing the value inside another
+-- data structure ... that would outlive rho" is an escape point that
+-- MUST be rejected. §12.3.1 (Spec.md:11464-11470): a non-function value
+-- "may hide closures ... inside records, packages, or abstract data",
+-- and a value that would require an anonymous rigid region to appear in
+-- a capture annotation is rejected by skolem escape. Wrapping a
+-- borrow-capturing closure in a data constructor whose result type is
+-- region-free does not launder the escape: the captured anonymous borrow
+-- region of `& r` is local to `escape` and cannot appear in W's type, so
+-- the constructor-wrapped form is rejected exactly like the bare and
+-- tuple-wrapped forms.
+module main
+
+data R : Type = R Int
+
+data W : Type = W (Unit -> Int)
+
+look : (& r : R) -> Int
+let look (& r : R) : Int = 0
+
+escape : (& r : R) -> W
+let escape (& r : R) : W = W (\u -> look r)

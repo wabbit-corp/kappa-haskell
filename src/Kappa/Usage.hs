@@ -1195,6 +1195,15 @@ firstJust :: [Span] -> Maybe Span
 firstJust (s : _) = Just s
 firstJust [] = Nothing
 
+-- | The leftmost head variable of a (possibly nested/curried)
+-- application head, used to classify application heads (e.g. a
+-- data-constructor application). Skips intermediate application spines.
+appHeadVar :: Expr -> Maybe Text
+appHeadVar = \case
+  EVar n -> Just (nameText n)
+  EApp g _ -> appHeadVar g
+  _ -> Nothing
+
 -- | Comprehension usage (§20.10.5): each generator/join source is
 -- evaluated exactly once for the pipeline, so a one-shot source place
 -- is consumed once per comprehension. All other clause expressions run
@@ -1499,13 +1508,31 @@ walkApp env f args = do
             , related RoleBorrowEscapeSite (argSpan a) "captured by a forked computation here"
             ]
             "a forked computation may not capture an anonymous borrow (§12.3.2, §18.11)"
-  -- a callee neither stores nor returns its tainted callees/arguments
-  -- in general; only result-carrying lifts propagate the taint
-  let liftLike = case f of
-        EVar n -> nameText n `elem` ["pure", "ioPure", "return"]
-        _ -> False
+  -- A general callee neither stores nor returns its tainted
+  -- callees/arguments, so the taint does not flow to its result.
+  -- Two head families do carry an argument's taint into the result and
+  -- so are taint-preserving:
+  --   * result-carrying lifts (pure/ioPure/return), and
+  --   * data-constructor application — the §12.3 escape rule lists
+  --     "storing the value inside another data structure ... that would
+  --     outlive rho" (Spec.md:11402) and §12.3.1 (Spec.md:11464-11470)
+  --     notes a non-function value "may hide closures ... inside records,
+  --     packages, or abstract data", with the anonymous-borrow region
+  --     rejected by skolem escape. A constructor wraps its arguments into
+  --     a value, so a borrow-capturing closure argument keeps its taint,
+  --     exactly like the tuple/record-literal construction handled by
+  --     'walks'. (Tuples and records already propagate via 'walks'.)
+  let liftLike = case appHeadVar f of
+        Just n -> n `elem` ["pure", "ioPure", "return"]
+        Nothing -> False
+      -- the head names a data constructor (looked up by ctor name, not a
+      -- locally-bound variable shadowing it) — its application builds a
+      -- value that holds the argument
+      ctorLike = case appHeadVar f of
+        Just n -> not (Map.member n (eVars env)) && Map.member n (eCtors env)
+        Nothing -> False
       taint
-        | liftLike = firstJust (mapMaybe (rT . fst) rs)
+        | liftLike || ctorLike = firstJust (mapMaybe (rT . fst) rs)
         | otherwise = Nothing
   pure ((rPlain (foldr (seqU . rU . fst) hu rs)) {rT = taint})
 

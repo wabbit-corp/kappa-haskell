@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.3: making a constructor application taint-preserving must not
+-- over-reject. A data constructor wrapping a closure that captures no
+-- borrowed binding is well-formed: there is no anonymous borrow region
+-- to escape, so no skolem-escape error fires.
+module main
+
+data W : Type = W (Unit -> Int)
+
+mk : Int -> W
+let mk (n : Int) : W = W (\u -> n)

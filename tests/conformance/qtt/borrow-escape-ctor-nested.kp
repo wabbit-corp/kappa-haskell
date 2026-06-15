@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §12.3 escape rule (Spec.md:11402) / §12.3.1 (Spec.md:11464-11470):
+-- nesting the borrow-capturing closure under two data constructors does
+-- not launder the escape — the taint flows through every constructor
+-- application up to the region-free result type, where skolem escape
+-- rejects it.
+module main
+
+data R : Type = R Int
+
+data W : Type = W (Unit -> Int)
+
+data Holder : Type = Holder W
+
+look : (& r : R) -> Int
+let look (& r : R) : Int = 0
+
+escape : (& r : R) -> Holder
+let escape (& r : R) : Holder = Holder (W (\u -> look r))
