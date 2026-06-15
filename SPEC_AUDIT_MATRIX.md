@@ -173,7 +173,7 @@ here by re-probe.
 | **18.3.1** | **`!e` splice in `let x = !e` position** | **MISSING** | RUN,V | `let x = !(getN 1)` → `E_SPLICE_OUTSIDE_DO` though inside `do`; re-verified. Spec's own canonical example. **MAJOR** |
 | **18.3.1** | **immediate-application splice `!f x` = `!(f x)` (not `(!f) x`)** | **SPEC-CONFLICT(§18.3.1)** | RUN | `!doit 8` parsed as `(!doit) 8` → type mismatch. **MAJOR** |
 | 18.4 | statement-if (no else) = implicit `pure ()` | IMPLEMENTED+TESTED | RUN | todo.kp |
-| 18.5/18.6 | `return`; `while`; `for … in list`; loop `else`; labeled break/continue; outside-loop rejected | IMPLEMENTED+TESTED | RUN | `break@outer`; `E_BREAK_OUTSIDE_LOOP` |
+| 18.5/18.6 | `return`; `while` (pure `Bool` and monadic `m Bool` condition, Spec.md:20476); `for … in list`; loop `else`; labeled break/continue; outside-loop rejected | IMPLEMENTED+TESTED | RUN | `break@outer`; `E_BREAK_OUTSIDE_LOOP`; monadic-cond `while` `run/while-monadic-cond.kp` |
 | 18.6 | `for x in <range>` (range as loop source) | MISSING | RUN | `for x in 1..3 do` → type mismatch `NumericRange` vs `List`; no `IntoQuery` |
 | 18.6.1/18.7 | `var` mutable (read/assign); `defer` LIFO once on every exit | IMPLEMENTED+TESTED | RUN | IORef; `defer` order body,b,a |
 | 18.8.3 | exit actions once on abrupt exit | IMPLEMENTED-WEAKLY-TESTED | RUN | finally path verified; unwind-on-return not re-probed |

@@ -7353,7 +7353,35 @@ elabDoIOItems _sp ctx mexp items = do
           checkLoopTarget "continue" ml csp
           (KContinue (nameText <$> ml) :) <$> goItems loops c errT resT rest
         DoWhile ml cond body mels _ -> do
-          condTm <- check c (desugarBang cond) (VGlobN (gPrel "Bool") [])
+          -- §18.6: a `while` condition may have type `Bool` or type
+          -- `m Bool` where `m` is the enclosing do-block's monad (here
+          -- `IO errT`). A pure `Bool` is used directly (and is a
+          -- flow-sensitive condition position per §18.6 line 20478); a
+          -- monadic `IO errT Bool` is re-run each iteration, so it is
+          -- wrapped in a `__runIO` splice whose evaluation executes the
+          -- action and yields the `Bool` the kernel loop tests. The pure
+          -- form is attempted first; only if it produces a type error is
+          -- the monadic form tried, which keeps the common pure path and
+          -- its refinement facts unchanged.
+          let condD = desugarBang cond
+          st0 <- get
+          n0 <- gets (length . csDiags)
+          pureTm <- check c condD (VGlobN (gPrel "Bool") [])
+          n1 <- gets (length . csDiags)
+          condTm <-
+            if n1 == n0
+              then pure pureTm
+              else do
+                put st0
+                actTm <- check c condD (ioType errT (VGlobN (gPrel "Bool") []))
+                errTm <- quoteIn c errT
+                boolTm <- quoteIn c (VGlobN (gPrel "Bool") [])
+                pure
+                  ( CApp
+                      Expl
+                      (CApp Impl (CApp Impl (CGlob (gPrel "__runIO")) errTm) boolTm)
+                      actTm
+                  )
           bodyKs <- goItems (withLoop ml) c errT (VGlobN (gPrel "Unit") []) body
           elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
           ks <- goItems loops c errT resT rest

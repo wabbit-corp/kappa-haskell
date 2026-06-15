@@ -1,0 +1,22 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "check\n0\ncheck\n1\ncheck\ndone\n"
+
+-- §18.6: a `while` condition may have type `m Bool` (the enclosing
+-- do-block's monad), not only a pure `Bool`. Here `check i : UIO Bool`
+-- is monadic; it is re-run each iteration (one "check" per test), the
+-- loop body runs while it yields True, and it observes the mutated `i`
+-- each time. (Spec.md:20476-20479.)
+
+check : (i : Int) -> UIO Bool
+let check i = do
+    printlnString "check"
+    pureIO (ltInt i 2)
+
+main : UIO Unit
+let main = do
+    var i = 0
+    while check i do
+        printlnString (showInt i)
+        i = addInt i 1
+    printlnString "done"

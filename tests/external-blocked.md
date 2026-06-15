@@ -60,7 +60,7 @@ documented compatibility extensions, as §T.1 permits (see TESTING.md):
 future private directive without an evident portable meaning remains
 a harness error.
 
-### Spec conflicts (fixture expectation contradicts Spec.md; 11 fixtures)
+### Spec conflicts (fixture expectation contradicts Spec.md; 12 fixtures)
 
 - `core_semantics.evaluation.positive`
   (`runtime_error_division_by_zero.kp`) asserts `let result = 1 / 0`
@@ -175,6 +175,31 @@ a harness error.
   for that exact condition (§3.2.3/§6.1.5). The fixture pins
   `E_TYPE_MISMATCH` for the literal-domain probe too, contradicting
   §3.1.4's reuse rule.
+- `expressions.conditionals.negative_if_condition_not_bool` asserts
+  five `E_TYPE_MISMATCH` for five confidently-inferred non-`Bool`
+  `if`/`while` conditions (§16.4: a condition MUST have type `Bool`).
+  All five are correctly rejected statically (count matches exactly,
+  the spec-mandated outcome — none traps only at runtime). Four
+  (`if "yes"`, `if someOpt`, `if predicate`, `if n` where `n : Int`)
+  are reported with `E_TYPE_EQUALITY_MISMATCH`, which §3.1.4 aliases to
+  the pinned `E_TYPE_MISMATCH` (matches). The fifth, `if 5`, is a bare
+  integer literal at the `Bool` domain, and `Bool` has no `FromInteger`
+  witness (§6.1.5); this implementation reports it with
+  `E_NUMERIC_LITERAL_DOMAIN_MISMATCH` (family
+  `kappa.type.literal-domain-mismatch`, §3.2.3), which §3.1.4
+  (Spec.md:928-929) *mandates* "when literal elaboration fails because
+  the surrounding expected type … is not compatible with the literal
+  domain" and which §3.1.4 (Spec.md:823) forbids folding back onto
+  `E_TYPE_MISMATCH`. The fixture pins `E_TYPE_MISMATCH` for the
+  literal-domain probe, the same §3.1.4 reuse contradiction as
+  `short_circuit_reject_rhs_wrong_unsuspended_type` and the
+  `types.literals.negative_*` entries above. (The companion positive
+  fixture `expressions.conditionals.positive_bool_conditions`, which
+  exercises a monadic `while readFlag do` condition with
+  `readFlag : UIO Bool`, previously failed on a §18.6 defect — a
+  monadic `m Bool` `while` condition was rejected — and now PASSES; see
+  the §18.6 fix and its `tests/conformance/run/while-monadic-cond.kp`
+  mirror.)
 ### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 17 fixtures)
 
 Diagnostic-spelling notes below: only the §3.1.4-listed portable
