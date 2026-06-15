@@ -7232,24 +7232,25 @@ elabDoIOItems _sp ctx mexp items = do
           pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
         DoFor ml pat src body mels fsp -> do
           -- §18.6/§20.2: a 'for' generator iterates any source the
-          -- comprehension as-if list model understands (List/Array/Set/
-          -- Map/Option/Query/range). Infer the source to classify it,
-          -- then materialize it to the element list the loop kernel
-          -- walks via the matching prelude conversion (the identity on a
-          -- List source).
+          -- comprehension as-if list model understands. The common case
+          -- is a List source, which is checked directly against
+          -- 'List elemT' exactly as before (no double elaboration, so
+          -- the §12 usage analysis on 'src' is unaffected). Non-List
+          -- sources (Array/Set/Map/Option/Query/range) are detected by a
+          -- side-effect-free probe of the inferred source type and
+          -- materialized to the element list via the matching prelude
+          -- conversion.
           let src' = desugarBang src
-          (_, srcTy) <- infer c src'
-          si <- sourceInfo c srcTy
-          let elemT = siItem si
-              listSrc = case siKind si of
-                SKList -> src'
+          elemT <- freshMetaV c
+          srcKind <- probeForSrcKind c src'
+          let listSrc = case srcKind of
                 SKArray -> prelApp1 fsp "__arrayToList" [src']
                 SKSet -> prelApp1 fsp "__setToList" [src']
                 SKMap -> prelApp1 fsp "__mapToList" [src']
                 SKOption -> prelApp1 fsp "__optionToList" [src']
                 SKQuery -> prelApp1 fsp "__queryToList" [src']
                 SKRange -> prelApp1 fsp "rangeToList" [src']
-                SKUnknown -> src'
+                _ -> src'
           srcTm <- check c listSrc (VGlobN (gPrel "List") [(Expl, elemT)])
           checkIrrefutable c pat elemT fsp
           (patC, c', _) <- elabPattern c pat elemT
@@ -8347,6 +8348,26 @@ data SrcInfo = SrcInfo
   , siCard :: !QCard
   , siItemLinear :: !Bool
   }
+
+-- | Classify a do-block 'for' generator source by its inferred type,
+-- rolling back ALL elaboration side effects (diagnostics, metavariables,
+-- usage). The real elaboration of the source happens once afterwards, so
+-- this probe must leave no trace (§12 usage analysis in particular must
+-- see the source exactly once). A source whose type does not resolve to
+-- a known collection carrier is reported as 'SKUnknown' and handled by
+-- the ordinary 'List elemT' check, preserving the prior behaviour.
+probeForSrcKind :: Ctx -> Expr -> CheckM SrcKind
+probeForSrcKind ctx src = do
+  st0 <- get
+  n0 <- gets (length . csDiags)
+  (_, srcTy) <- infer ctx src
+  n1 <- gets (length . csDiags)
+  k <-
+    if n1 /= n0
+      then pure SKUnknown -- inference failed; let the real check report it
+      else siKind <$> sourceInfo ctx srcTy
+  put st0 -- discard every side effect of the probe
+  pure k
 
 sourceInfo :: Ctx -> Value -> CheckM SrcInfo
 sourceInfo ctx ty = do
