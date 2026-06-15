@@ -472,8 +472,11 @@ duplication reviewers):
     nonsensical negative bound.
 
 27. **O(n²) on left-nested operator/application chains (MAJOR, quality
-    reviewer)** — investigated, root cause corrected, retained as a documented
-    bound. The reviewer attributed a measured quadratic on long operator
+    reviewer)** — investigated; the "retained bound" conclusion below was
+    **superseded in round 3 by the actual fix in #29** (a non-dependent-
+    arrow check that skips the per-slot evaluate-and-unify), which makes the
+    operator chains below scale linearly. The round-2 analysis is kept for
+    the historical record. The reviewer attributed a measured quadratic on long operator
     chains to `exprSpan` recomputing the uncached `EApp` head span down the
     left spine, and proposed caching a `!Span` on `EApp`. Direct measurement
     disproves that attribution: a depth-2000 *head-nested* application chain
@@ -522,3 +525,114 @@ duplication reviewers):
     is not a current defect: the proximity constraint already bounds the match
     to a single source site, and no corpus or conformance fixture exhibits the
     spurious-infix collision. Left as-is per the reviewer's "non-blocking."
+
+Responses to the round-3 independent adversarial review (spec, quality,
+duplication reviewers):
+
+29. **O(n²) elaboration of nested applications / operator chains
+    (MAJOR, quality reviewer; supersedes the round-2 #27 bound)** —
+    fixed. The round-3 reviewer re-attributed the quadratic to a
+    concrete, well-scoped site that round-2 #27 had folded into the
+    implicit-flush hand-wave: the checked-application path's per-slot
+    `step` (`elabAppChecked`/`peel`/`step`, `src/Kappa/Check.hs`) did
+    `aV <- evalIn ctx aTm; unify ctx mV aV` against a fresh placeholder
+    meta `mV`, and `unify` against an unsolved meta runs `quote` +
+    `occursMeta` over the whole argument value — O(size) per slot,
+    compounding to O(n²) over a depth-n chain. That work is only
+    *observable* when the function's Pi codomain actually depends on the
+    argument; for a non-dependent arrow (`Integer -> Integer ->
+    Integer`, `Bool -> Bool -> Bool`, `++`, `<>`, the overwhelmingly
+    common case) the placeholder meta never reaches the result type, so
+    the `quote`/occurs work is pure waste. The fix adds a structural
+    `coreUsesVar0 :: Term -> Bool` (mirroring `shiftTerm`) that asks
+    whether a Pi/Lam closure body references its own bound variable (de
+    Bruijn 0). When it does **not**, `step` replaces the full `unify`
+    with a direct O(1) `solveMeta mid (force aV)` — which stores exactly
+    what `unify`→`solveFlex` would have stored (the forced value),
+    keeping the meta-solution state byte-identical for downstream type
+    rendering and §3.1.11 cascade suppression, but skipping the O(size)
+    `quote`/occurs. (`SlotExpl` now carries the placeholder's `MetaId`
+    so `step` can solve it directly.) `coreUsesVar0` is conservative
+    (returns `True` for `CDo`/`CQuote`, whose binder structure it does
+    not traverse), so a body that *might* reference index 0 is never
+    mis-reported as independent. The inference-path twin (`elabSpine`)
+    is deliberately left unchanged: its non-dependent slot does only
+    `evalIn` + `clApp` (no `unify`/`quote`), so it carries no quadratic,
+    and substituting a placeholder there perturbed nothing worth the
+    risk. Measured (verified by toggling the optimization): the operator
+    chain the reviewer clocked at 10 s (depth 2000) / 45.7 s (depth
+    4000) measures **10.30 s / 52.01 s** with the optimization OFF and
+    **0.22 s / 0.42 s** with it ON — linear, a ~50–125× speedup; the
+    head-nested application and plain-user-binary-function shapes stay
+    linear. Behavior-preserving: conformance 186/186, examples 1/1,
+    `cabal test` PASS, and the external corpus PASS set and FAIL detail
+    lines are **byte-identical** to the committed baseline binary run on
+    the same 950-fixture corpus (929 pass / 19 fail / 2 unsupported / 0
+    harness-error; zero pass→fail — verified by per-fixture diff of both
+    raw logs). (The 19th fail,
+    `types.literals.negative_literal_in_nested_result_positions`, is a
+    new corpus fixture added externally during this round; it fails
+    identically on the unmodified committed HEAD and is a tracked-gap,
+    not a regression — see `tests/external-blocked.md`.) Regression
+    guard: `tests/conformance/fixity/deep-operator-chain-elaboration.kp`
+    (a 1200-term `+` chain with `assertEval`, instant when linear,
+    blows past the bounded conformance run under a quadratic
+    regression). The round-2 #27 "retained bound" conclusion is
+    superseded by this fix.
+
+30. **`vforce` evaluates the thunk body in an off-by-one environment
+    (MINOR, quality reviewer)** — fixed. `Eval.vforce`'s `VThunkV` arm
+    was `closApply ctx clo (VRecordV []) \`seq\` runSusp clo`. A thunk is
+    `VThunkV (Closure env body)` with no extra binder, so the correct
+    evaluation is `eval ctx env body` (`runSusp clo`); `closApply ctx clo
+    (VRecordV [])` ran the body under `VRecordV [] : env`, shifting every
+    de Bruijn index by one. The result of that mis-evaluation was
+    discarded (only `seq`'d for WHNF), so the bug was benign — but it was
+    wrong and wasteful, and would surface if a future primitive threw on
+    malformed args. Now `let v' = runSusp clo in v' \`seq\` v'`: it forces
+    WHNF of the *correct* evaluation and returns it. No behavior change
+    on any suite (the returned value was always `runSusp clo`).
+
+31. **Fragile `freshMeta` partial deconstruction (MINOR, quality
+    reviewer)** — fixed. Two sites pattern-matched `case m of CMeta i ->
+    i; _ -> error "freshMeta"` to recover a meta id from `freshMeta`'s
+    `Term`. Added `freshMetaId :: CheckM MetaId` returning the raw id,
+    with `freshMeta = CMeta <$> freshMetaId`; both the postponed-goal
+    site (`resolveImplicitQ`) and the equality-evidence `step` site now
+    call `freshMetaId` and wrap with `CMeta`, removing the partial match.
+
+32. **`E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` over-attributed to a
+    "§3.1.4 portable alias" (MINOR, spec reviewer)** — fixed by
+    re-labeling (it is genuinely an implementation-defined tolerance,
+    not a normative alias). The §3.1.4 required-portable-alias list
+    (Spec.md:827-896) does not include `E_UNSOLVED_IMPLICIT`, and
+    `kappa.implicit.unsolved` (§3.2.4) defines no portable alias, so the
+    ledger/source describing this mapping as "the §3.1.4 portable alias"
+    over-attributed spec authority to a harness convenience. The mapping
+    is sound as a *cross-implementation spelling tolerance*: both
+    `E_UNSOLVED_IMPLICIT` and the corpus's `E_TYPE_MISMATCH` spelling
+    are implementation-defined per §3.1 (Spec.md:809 — codes are
+    "implementation-defined stable identifiers" outside §3.1.4's
+    selected set), and in every fixture that relies on it the program
+    *is* correctly rejected with the correct error count (the harness's
+    `codesMatchUpTo` compares the diagnostic count exactly), so the
+    tolerance only reconciles a non-normative spelling and cannot mask a
+    behavior difference. `Explain.portableAlias`'s single table is now
+    split into `requiredAliasTable` (the four genuine §3.1.4 aliases,
+    each RHS verified present in the spec list) and `toleranceAliasTable`
+    (the `E_UNSOLVED_IMPLICIT` tolerance, documented as non-normative);
+    `portableAlias` returns their union so matching behavior is
+    unchanged. `tests/external-blocked.md`, `TESTING.md`, and the
+    `TestHarness.diagHasCode` comment are corrected to draw the same
+    distinction.
+
+The remaining round-3 findings were INFO/non-findings: the
+`tools/run-external-fixtures.sh` mid-run-rebuild fragility (the reviewer
+reproduced a spurious harness-error run only by rebuilding the binary
+*while the loop was in flight*; the canonical tally reproduces exactly
+when the build is settled first — an operational note, not a
+correctness defect) and the "182/182 conformance" staleness in a prior
+report's prose (the gate itself is and stays green; the live count is
+186/186 after this round's perf-guard fixture). The dup reviewer's
+findings were all confirmed as general spec-rule implementations, not
+overfitting, with no action required.

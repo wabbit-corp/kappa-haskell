@@ -139,17 +139,26 @@ a harness error.
   §28.2.2 `Monad Option` instance once `apply1`'s type arguments are
   solved (§16.3.3 postponed goals). The two genuinely ill-typed probes
   (no `Ord CI`/`Eq CI` instances) are rejected here with
-  `kappa.implicit.unsolved` (§3.2.4), whose §3.1.4 portable alias
-  `E_TYPE_MISMATCH` matches the expected spelling — the residual
-  disagreement is the mandated rejection of the well-typed first
-  probe, which contradicts §14.3.1.
-### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 10 fixtures)
+  `kappa.implicit.unsolved` (§3.2.4). §3.2.4 defines no portable alias
+  and §3.1.4 does not map this condition to `E_TYPE_MISMATCH`; the
+  harness's `E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` tolerance (an
+  implementation-defined cross-implementation spelling convenience, not
+  a normative alias — see IMPLEMENTATION_NOTES "Review responses")
+  reconciles the spelling, but the residual disagreement is the
+  mandated rejection of the well-typed first probe, which contradicts
+  §14.3.1.
+### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 11 fixtures)
 
-Diagnostic-spelling notes below use §3.1.4: only the listed portable
-aliases are normative comparison keys; both implementations' other
-code spellings are implementation-defined. This harness's
-`assertDiagnosticCodes` already matches through portable aliases in
-both directions (TESTING.md).
+Diagnostic-spelling notes below: only the §3.1.4-listed portable
+aliases are normative comparison keys; every other code spelling
+(both implementations') is implementation-defined per §3.1. This
+harness's `assertDiagnosticCodes` matches through those §3.1.4 aliases
+in both directions, plus a small set of explicitly implementation-
+defined cross-implementation tolerances (e.g. `E_UNSOLVED_IMPLICIT ↔
+E_TYPE_MISMATCH`, which is NOT a §3.1.4 alias — see TESTING.md and
+IMPLEMENTATION_NOTES "Review responses"). The diagnostic count is
+always compared exactly, so a tolerance never hides a behavior
+difference.
 
 | fixture | gap | spec |
 |---|---|---|
@@ -163,6 +172,7 @@ both directions (TESTING.md).
 | `fuzz.pending.reject_invalid_do_bind_indented_continuation` | a more-indented line after a complete do-bind RHS parses as a §5.2 continuation (application) here and fails as `E_APPLICATION_NONCALLABLE`; the corpus's layout rejects it as a syntax error. The §5.4 layout text does not decide do-item continuation lines explicitly. | §5.4, §18.4 |
 | `fuzz.pending.reject_invalid_indented_expression_continuation` | same layout-continuation difference (our parse yields one downstream type error, the corpus's two). | §5.4 |
 | `parser.recovery.negative_malformed_tuple_parameter_no_crash` | `let i1 (1 i1 :)3` — declaration-level recovery reports once here; the corpus's recovery yields two diagnostics. No crash either way (the §3.1.14A minimum contract is met); cascade-shape parity is queued. | §3.1.14A |
+| `types.literals.negative_literal_in_nested_result_positions` | all three ill-typed declarations (record-field literal, do-tail, and `"a" ++ "b"` at user type `Color`) **are** correctly rejected — the spec-mandated outcome. The asserted count is 3 `E_TYPE_MISMATCH`; this implementation emits 5 because the `++` probe (`(++) : forall a. Monoid a => a -> a -> a`) surfaces both the unsatisfiable `Monoid Color` evidence goal (§6.1.5/§14.3.1, `E_UNSOLVED_IMPLICIT`) and a mismatch on each `String` operand, where the corpus collapses the binary-at-wrong-result to one mismatch. The two extra diagnostics are an honest cascade-count divergence (the §3.1.11 single-cause suppression does not fold the `Monoid` evidence failure into the operand mismatches here), not a missed rejection; cascade-shape parity for the evidence-bearing-operator case is queued. Pre-existing on committed HEAD (this fixture was added to the corpus after the prior ledger revision and fails identically on the unmodified baseline). | §6.1.5, §14.3.1, §3.1.11 |
 
 Cleared in this revision (all now PASS):
 §16.1.7.1 function-argument quantity mismatch reported as
