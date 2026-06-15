@@ -30,6 +30,7 @@ import qualified Data.ByteString as BS
 import Data.Char (chr, ord)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -556,6 +557,25 @@ evalPurePrim p args = case (p, args) of
   ("eqDouble", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (identicalIEEE a b)
   ("ltDouble", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (a < b)
   ("floatEq", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (a == b)
+  -- §28.2 Rational: an exact normalized ratio of two Integers with a
+  -- positive denominator, represented at runtime by the stuck prim spine
+  -- '__rat num den'. '__ratOfInt n' builds n/1; the arithmetic prims
+  -- re-normalize their result.
+  ("__ratOfInt", [VLit (LitInt a)]) -> rat a 1
+  ("__ratNum", [r]) | Just (n, _) <- asRat r -> int n
+  ("__ratDen", [r]) | Just (_, d) <- asRat r -> int d
+  ("addRat", [x, y]) | Just (a, b) <- asRat x, Just (c, d) <- asRat y -> rat (a * d + c * b) (b * d)
+  ("subRat", [x, y]) | Just (a, b) <- asRat x, Just (c, d) <- asRat y -> rat (a * d - c * b) (b * d)
+  ("mulRat", [x, y]) | Just (a, b) <- asRat x, Just (c, d) <- asRat y -> rat (a * c) (b * d)
+  ("divRat", [x, y]) | Just (a, b) <- asRat x, Just (c, d) <- asRat y, c /= 0 -> rat (a * d) (b * c)
+  ("negRat", [x]) | Just (a, b) <- asRat x -> rat (negate a) b
+  ("eqRat", [x, y]) | Just (a, b) <- asRat x, Just (c, d) <- asRat y -> bool (a * d == c * b)
+  ("ltRat", [x, y]) | Just (a, b) <- asRat x, Just (c, d) <- asRat y -> bool (a * d < c * b)
+  ("showRat", [x]) | Just (a, b) <- asRat x -> str (if b == 1 then T.pack (show a) else T.pack (show a) <> "/" <> T.pack (show b))
+  -- §6.1.6/§28.2.3 FromFloat Rational: a binary64 is an exact dyadic
+  -- rational; decode the IEEE significand/exponent into num/den.
+  ("ratOfDouble", [VLit (LitDouble d)]) ->
+    let (n, den) = doubleToRatio d in rat n den
   ("eqStr", [VLit (LitStr a), VLit (LitStr b)]) -> bool (a == b)
   ("ltStr", [VLit (LitStr a), VLit (LitStr b)]) -> bool (a < b)
   ("eqScalar", [VLit (LitScalar a), VLit (LitScalar b)]) -> bool (a == b)
@@ -665,6 +685,27 @@ evalPurePrim p args = case (p, args) of
     int = Just . VLit . LitInt
     dbl = Just . VLit . LitDouble
     str = Just . VLit . LitStr
+    -- a normalized rational n/d (d > 0, gcd 1) as the stuck spine
+    -- '__rat (LitInt n) (LitInt d)'
+    rat :: Integer -> Integer -> Maybe Value
+    rat n d
+      | d == 0 = Nothing
+      | otherwise =
+          let s = if d < 0 then -1 else 1
+              g = gcd n d
+              g' = if g == 0 then 1 else g
+           in Just (VPrim "__rat" [VLit (LitInt (s * n `div` g')), VLit (LitInt (s * d `div` g'))])
+    asRat :: Value -> Maybe (Integer, Integer)
+    asRat v = case v of
+      VPrim "__rat" [VLit (LitInt n), VLit (LitInt d)] -> Just (n, d)
+      _ -> Nothing
+    -- exact decode of a finite binary64 into a reduced ratio
+    doubleToRatio :: Double -> (Integer, Integer)
+    doubleToRatio d
+      | isNaN d || isInfinite d = (0, 1)
+      | otherwise =
+          let r = toRational d
+           in (numerator r, denominator r)
     bytes = Just . VLit . LitBytes
     bool b = Just (VCtor (prelG (if b then "True" else "False")) [])
     prelG = GName (ModuleName ["std", "prelude"])

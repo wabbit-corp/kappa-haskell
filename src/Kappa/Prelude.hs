@@ -69,6 +69,7 @@ builtinState =
     types =
       [ (prel "Integer", opaqueTy (tyV tType))
       , (prel "Nat", opaqueTy (tyV tType))
+      , (prel "Rational", opaqueTy (tyV tType)) -- §28.2 exact ratio type
       , (prel "Double", opaqueTy (tyV tType))
       , (prel "String", opaqueTy (tyV tType))
       , (prel "UnicodeScalar", opaqueTy (tyV tType))
@@ -215,6 +216,7 @@ builtinState =
     tOrigin = tcon "SyntaxOrigin"
     tconShape = CGlob . GName shapeModule
     tDouble = tcon "Double"
+    tRat = tcon "Rational"
     tStr = tcon "String"
     tBool = tcon "Bool" -- defined by prelude source; fine as neutral
     tScalar = tcon "UnicodeScalar"
@@ -255,6 +257,18 @@ builtinState =
       , prim "eqDouble" (tyV (tDouble ~> tDouble ~> tBool)) -- raw-bit equality (§6.1.3)
       , prim "ltDouble" (tyV (tDouble ~> tDouble ~> tBool))
       , prim "floatEq" (tyV (tDouble ~> tDouble ~> tBool)) -- IEEE numeric equality
+      , -- §28.2 Rational exact-ratio arithmetic prims (the surface
+        -- instances below delegate to these); '__ratOfInt' builds n/1
+        prim "__ratOfInt" (tyV (tInt ~> tRat))
+      , prim "addRat" (tyV (tRat ~> tRat ~> tRat))
+      , prim "subRat" (tyV (tRat ~> tRat ~> tRat))
+      , prim "mulRat" (tyV (tRat ~> tRat ~> tRat))
+      , prim "divRat" (tyV (tRat ~> tRat ~> tRat))
+      , prim "negRat" (tyV (tRat ~> tRat))
+      , prim "eqRat" (tyV (tRat ~> tRat ~> tBool))
+      , prim "ltRat" (tyV (tRat ~> tRat ~> tBool))
+      , prim "showRat" (tyV (tRat ~> tStr))
+      , prim "ratOfDouble" (tyV (tDouble ~> tRat)) -- §6.1.6 exact dyadic decode
       , prim "eqStr" (tyV (tStr ~> tStr ~> tBool))
       , prim "ltStr" (tyV (tStr ~> tStr ~> tBool))
       , prim "eqScalar" (tyV (tScalar ~> tScalar ~> tBool))
@@ -1073,6 +1087,59 @@ preludeSource =
     , "instance Ring Integer"
     , "instance OrderedAdditive Integer"
     , "instance OrderedSemiring Integer"
+    , ""
+    , -- §28.2 Rational: the exact ratio type. It gets the full operation
+      -- trait set (Eq/Ord/Show/Zero/One/Add/Mul/Negatable/CheckedSub/
+      -- CheckedDiv) and the full algebraic tower INCLUDING FieldLike
+      -- (§28.2.2: "Rational MUST receive FieldLike"). subDefined = True;
+      -- divDefined x y = (y /= zero).
+      "instance Eq Rational ="
+    , "    let (==) x y = eqRat x y"
+    , ""
+    , "instance Ord Rational ="
+    , "    let compare x y = if ltRat x y then LT elif eqRat x y then EQ else GT"
+    , ""
+    , "instance Show Rational ="
+    , "    let show x = showRat x"
+    , ""
+    , "instance Zero Rational ="
+    , "    let zero = __ratOfInt 0"
+    , ""
+    , "instance One Rational ="
+    , "    let one = __ratOfInt 1"
+    , ""
+    , "instance Add Rational ="
+    , "    let add x y = addRat x y"
+    , ""
+    , "instance Mul Rational ="
+    , "    let multiply x y = mulRat x y"
+    , ""
+    , "instance Negatable Rational ="
+    , "    let negate x = negRat x"
+    , ""
+    , "instance CheckedSub Rational ="
+    , "    let subDefined x y = True"
+    , "    let subtractUnchecked x y = subRat x y"
+    , ""
+    , "instance CheckedDiv Rational ="
+    , "    let divDefined x y = not (eqRat y (__ratOfInt 0))"
+    , "    let divideUnchecked x y = divRat x y"
+    , ""
+    , "instance FromInteger Rational ="
+    , "    let fromInteger n = __ratOfInt (natToInt n)"
+    , ""
+    , "instance FromFloat Rational ="
+    , "    let fromFloat d = ratOfDouble d"
+    , ""
+    , -- (FromFloat Float and FromFloat Double coincide: Float = Double.)
+      "instance AdditiveMonoid Rational"
+    , "instance AdditiveGroup Rational"
+    , "instance MultiplicativeMonoid Rational"
+    , "instance Semiring Rational"
+    , "instance Ring Rational"
+    , "instance OrderedAdditive Rational"
+    , "instance OrderedSemiring Rational"
+    , "instance FieldLike Rational"
     , ""
     , -- §28.2.2: Float/Double MUST NOT receive Semiring/Ring/FieldLike
       -- under raw-bit Eq. They keep only the operation traits above.
