@@ -1063,11 +1063,15 @@ checkAssertion root path src files cu diags mRun = \case
 
 -- | §3.1/§3.1.2A code matching: a directive's @<code>@ matches a
 -- diagnostic when it equals the rendered code or the diagnostic's
--- required portable alias (an implementation may expose either).
--- §3.1.4 additionally makes the portable alias the cross-
--- implementation comparison key: when the asserted spelling is another
--- implementation's nonportable code, it matches iff both spellings
--- resolve to the same required portable alias.
+-- portable alias (an implementation may expose either spelling). For a
+-- §3.1.4-listed condition the alias is the normative cross-
+-- implementation comparison key; the alias table additionally carries a
+-- small set of explicitly implementation-defined spelling tolerances
+-- that §3.1.4 does NOT mandate (see 'Explain.toleranceAliasTable').
+-- Either way, when the asserted spelling is another implementation's
+-- code it matches iff both spellings resolve to the same alias. The
+-- diagnostic count is compared exactly by 'codesMatchUpTo', so a
+-- tolerance can never mask a behavior difference.
 diagHasCode :: Text -> Diagnostic -> Bool
 diagHasCode code d =
   code `elem` ours
