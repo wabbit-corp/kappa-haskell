@@ -1,0 +1,19 @@
+--! mode check
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertDiagnosticPayload error E_EXPECTED_SYNTAX_TOKEN /payload/kind recovery-node
+--! assertDiagnosticPayload error E_EXPECTED_SYNTAX_TOKEN /payload/recoverySite declaration
+--! assertDiagnosticPayload error E_EXPECTED_SYNTAX_TOKEN /payload/expected declaration-start
+--! assertDiagnosticPayload error E_EXPECTED_SYNTAX_TOKEN /payload/confidence likely
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.1.14A minimum recovery contract: a malformed top-level declaration
+-- is recovered as a TYPED recovery node — not discarded trivia — and
+-- the diagnostic it raises identifies that node in structured payload
+-- (kind "recovery-node" with recoverySite/expected/confidence/skipped).
+-- Recovery continues to the next declaration (its unresolved name is
+-- still reported), proving cross-declaration recovery while the invalid
+-- program is never accepted.
+module main
+
+%% this operator chain is not a declaration
+
+let after : Int = missingName

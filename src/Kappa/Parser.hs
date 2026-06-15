@@ -60,6 +60,71 @@ errToDiag (PErr sp msg expected) =
   where
     dedup = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
 
+-- ── Typed recovery nodes (§3.1.14A) ──────────────────────────────────
+
+-- | A typed recovery node (§3.1.14A "minimum recovery contract"). The
+-- parser does not discard a malformed region as untyped trivia: it
+-- records a structured node describing what was being parsed, what was
+-- expected, the source region it skipped to resynchronize, and how
+-- confident the recovery is. This is the typed frontend state the
+-- specification mandates; the node is serialized into the structured
+-- payload of the diagnostic it produces so that "a diagnostic caused by
+-- a recovery node … identif[ies] that recovery node in structured
+-- payload" (§3.1.14A). Recovery never accepts an invalid program: every
+-- node carries an error-severity diagnostic.
+data RecoveryNode = RecoveryNode
+  { rnSite :: !Text -- ^ the frontend construct under recovery (declaration, constructor-alternative, layout)
+  , rnExpected :: !Text -- ^ the §3.1.14A "expected" classification
+  , rnConfidence :: !RecoveryConfidence
+  , rnCode :: !DiagnosticCode -- ^ the diagnostic code this node raises
+  , rnOrigin :: !Span -- ^ where recovery began
+  , rnSkipped :: !(Maybe Span) -- ^ the source range consumed to resynchronize, when known
+  , rnMessage :: !Text
+  }
+
+-- | §3.1.14A recovery confidence.
+data RecoveryConfidence = RecCertain | RecLikely | RecSpeculative
+
+confidenceText :: RecoveryConfidence -> Text
+confidenceText = \case
+  RecCertain -> "certain"
+  RecLikely -> "likely"
+  RecSpeculative -> "speculative"
+
+-- | Build the structured diagnostic a recovery node raises, with the
+-- node itself recorded in the diagnostic's machine-readable payload
+-- (kind @"recovery-node"@). Tools ignore unknown payload fields
+-- (§3.1.9), so this is forward-compatible.
+recoveryDiag :: RecoveryNode -> Diagnostic
+recoveryDiag rn =
+  withPayload payload $
+    diag SevError StageParse (rnCode rn) (Just "kappa-hs.parse.error") (rnOrigin rn) (rnMessage rn)
+  where
+    payload =
+      foldr
+        (\(k, v) p -> withPayloadField k v p)
+        (payloadKind "recovery-node")
+        ( [ ("recoverySite", rnSite rn)
+          , ("expected", rnExpected rn)
+          , ("confidence", confidenceText (rnConfidence rn))
+          ]
+            ++ maybe [] (\sp -> [("skipped", spanText sp)]) (rnSkipped rn)
+        )
+
+-- | Render a span as @line:col-line:col@ for the recovery payload.
+spanText :: Span -> Text
+spanText sp =
+  let Pos sl sc = spanStart sp
+      Pos el ec = spanEnd sp
+   in tshowI sl <> ":" <> tshowI sc <> "-" <> tshowI el <> ":" <> tshowI ec
+  where
+    tshowI = T.pack . show
+
+-- | The source range from the start of one span up to the start of
+-- another (the region recovery consumed), keeping the origin's file.
+spanFromTo :: Span -> Span -> Span
+spanFromTo from to = Span (spanFile from) (spanStart from) (spanStart to)
+
 -- Skip stray layout tokens (used at entry boundaries).
 pSkipLayout :: P ()
 pSkipLayout = void (many (pNewline <|> token TokIndent <|> token TokDedent))
@@ -211,31 +276,55 @@ pSkipLayoutTop = void (many (pNewline <|> token TokDedent <|> flaggedIndent))
       sp <- currentSpan
       token TokIndent
       recordRecovered $
-        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa-hs.parse.error") sp
-          "unexpected indentation: a top-level declaration must start at the module indentation level (Spec §5.4)"
+        recoveryDiag
+          RecoveryNode
+            { rnSite = "top-level-layout"
+            , rnExpected = "declaration-at-module-indentation"
+            , rnConfidence = RecCertain
+            , rnCode = "E_UNEXPECTED_INDENTATION"
+            , rnOrigin = sp
+            , rnSkipped = Just sp
+            , rnMessage = "unexpected indentation: a top-level declaration must start at the module indentation level (Spec §5.4)"
+            }
 
 -- Declaration-level recovery (§3.1.14A): report and skip to the next
 -- hard newline at depth zero, together with any indented continuation
--- block that belongs to the failed declaration.
+-- block that belongs to the failed declaration. The skipped source
+-- region is recorded in the typed recovery node's payload.
 recoverDecl :: P ()
 recoverDecl = do
   sp <- currentSpan
   t <- peekToken
   toks <- pendingTokens
-  recordRecovered $
-    if misindentSignal toks
-      then
-        -- §5.4 layout: the declaration failed because a clause body is
-        -- indented less than its clause header (the body line dedents
-        -- and a sibling `case` re-indents)
-        diag SevError StageParse "E_UNEXPECTED_INDENTATION" (Just "kappa-hs.parse.error") sp
-          "a clause body is indented less than its clause header (Spec §5.4 layout)"
-      else
-        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error") sp
-          ("unexpected " <> tokenDescr t <> " at start of declaration")
+  let (code, expected, msg)
+        | misindentSignal toks =
+            -- §5.4 layout: the declaration failed because a clause body
+            -- is indented less than its clause header (the body line
+            -- dedents and a sibling `case` re-indents)
+            ( "E_UNEXPECTED_INDENTATION"
+            , "clause-body-at-clause-indentation"
+            , "a clause body is indented less than its clause header (Spec §5.4 layout)"
+            )
+        | otherwise =
+            ( "E_EXPECTED_SYNTAX_TOKEN"
+            , "declaration-start"
+            , "unexpected " <> tokenDescr t <> " at start of declaration"
+            )
   skipPast (\case TokNewline False -> True; TokEOF -> True; _ -> False)
   void (optional pHardNewline)
   skipIndentedBlocks
+  endSp <- currentSpan
+  recordRecovered $
+    recoveryDiag
+      RecoveryNode
+        { rnSite = "declaration"
+        , rnExpected = expected
+        , rnConfidence = RecLikely
+        , rnCode = code
+        , rnOrigin = sp
+        , rnSkipped = Just (spanFromTo sp endSp)
+        , rnMessage = msg
+        }
   where
     -- The body of the failed declaration: any whole indented blocks
     -- that follow it are part of it, not new declarations.
@@ -553,10 +642,19 @@ pCtorBlock = indentedCtors <|> inlineCtors
     salvageCtors = do
       sp <- currentSpan
       t <- peekToken
-      recordRecovered $
-        diag SevError StageParse "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error") sp
-          ("unexpected " <> tokenDescr t <> " in a constructor alternative")
       skipCtorBlock (0 :: Int)
+      endSp <- currentSpan
+      recordRecovered $
+        recoveryDiag
+          RecoveryNode
+            { rnSite = "constructor-alternative"
+            , rnExpected = "constructor-declaration"
+            , rnConfidence = RecLikely
+            , rnCode = "E_EXPECTED_SYNTAX_TOKEN"
+            , rnOrigin = sp
+            , rnSkipped = Just (spanFromTo sp endSp)
+            , rnMessage = "unexpected " <> tokenDescr t <> " in a constructor alternative"
+            }
       pure []
     skipCtorBlock depth = do
       t <- peekToken
