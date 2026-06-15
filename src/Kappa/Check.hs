@@ -3521,8 +3521,13 @@ elabNamedBlock ctx fTm fTy items sp rest = do
       _ -> pure Nothing
   forM_ (duplicatesOf [nameText n | (n, _) <- items]) $ \dn ->
     case mCtorG of
+      -- §3.2: a malformed *constructor* application uses the
+      -- standardized family 'kappa.constructor.arity'; §3.1.4 then
+      -- mandates the recoverable portable alias E_CONSTRUCTOR_ARITY_MISMATCH
+      -- (wired via 'requiredAliasTable'). The implementation-specific
+      -- code carries the precise duplicate/missing/unknown distinction.
       Just g | Map.member g (csCtors st) ->
-        errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa-hs.application.named")
+        errAt sp "E_NAMED_ARG_DUPLICATE" (Just "kappa.constructor.arity")
           ("named argument '" <> dn <> "' is supplied more than once")
       -- §16.1.7.2: on an ordinary callee a malformed block is a
       -- telescope mismatch
@@ -3532,7 +3537,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
       let fieldNames = mapMaybe fst (ciFields ci)
       forM_ items $ \(n, _) ->
         unless (nameText n `elem` fieldNames) $
-          errAt (nameSpan n) "E_NAMED_ARG_UNKNOWN" (Just "kappa-hs.application.named")
+          errAt (nameSpan n) "E_NAMED_ARG_UNKNOWN" (Just "kappa.constructor.arity")
             ("constructor has no named parameter '" <> nameText n <> "'")
       let supplied = [(nameText n, fromMaybe (EVar n) me) | (n, me) <- items]
       args <- forM (ciFields ci) $ \(mname, mdef) ->
@@ -3544,7 +3549,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
             -- earlier field arguments in scope
             Just d -> pure (Just (mname, True, Left d))
             Nothing -> do
-              errAt sp "E_NAMED_ARG_MISSING" (Just "kappa-hs.application.named")
+              errAt sp "E_NAMED_ARG_MISSING" (Just "kappa.constructor.arity")
                 ("missing constructor argument" <> maybe "" (\n -> " '" <> n <> "'") mname)
               pure Nothing
       -- run the spine with mixed surface/core arguments

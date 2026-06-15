@@ -1,9 +1,13 @@
---! assertDiagnostic error E_NAMED_ARG_MISSING
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
 
 -- §10.1.1: omitting a label whose parameter has no default is an error.
+-- §3.2 classes this malformed named constructor application under family
+-- 'kappa.constructor.arity' and mandates the portable alias
+-- E_CONSTRUCTOR_ARITY_MISMATCH (recoverable from the rendered
+-- E_NAMED_ARG_MISSING via the §3.1.4 alias table).
 
 data User : Type =
     User (name : String) (active : Bool = True)
 
 bad : User
-let bad = User { active = False } --!! E_NAMED_ARG_MISSING
+let bad = User { active = False } --!! E_CONSTRUCTOR_ARITY_MISMATCH

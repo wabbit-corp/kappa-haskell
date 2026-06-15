@@ -69,9 +69,24 @@ portableAlias c = lookup c requiredAliasTable
 -- implementation to expose either spelling), so the harness accepts
 -- both. Every right-hand spelling here appears in the §3.1.4 normative
 -- list (Spec.md:827-896): @E_TYPE_MISMATCH@, @E_SAFE_NAV_GENERIC_AMBIGUOUS@,
--- @E_APPLICATION_NON_CALLABLE@, @E_MISSING_EXPLICIT_SIGNATURE@. (Codes
--- whose rendered spelling already equals the §3.1.4 portable spelling —
--- e.g. @E_NUMERIC_LITERAL_DOMAIN_MISMATCH@ — need no alias entry.)
+-- @E_APPLICATION_NON_CALLABLE@, @E_MISSING_EXPLICIT_SIGNATURE@,
+-- @E_CONSTRUCTOR_ARITY_MISMATCH@. (Codes whose rendered spelling already
+-- equals the §3.1.4 portable spelling — e.g.
+-- @E_NUMERIC_LITERAL_DOMAIN_MISMATCH@ — need no alias entry.)
+--
+-- The three @E_NAMED_ARG_*@ codes are the implementation-specific
+-- spellings of a malformed *named* constructor application (a missing,
+-- duplicated, or unexpected named field on a known constructor; emitted
+-- only on the constructor branch of 'Check.elabNamedBlock'). §3.2
+-- (Spec.md:3210-3225) classes this as a malformed constructor
+-- application: the standardized family is @kappa.constructor.arity@ and
+-- the diagnostic "MUST use portable alias @E_CONSTRUCTOR_ARITY_MISMATCH@"
+-- (also §3.1.4 Spec.md:925-926, "too few, too many, duplicated, or
+-- otherwise malformed constructor arguments after constructor identity
+-- is known"). §3.1.4 (Spec.md:819) permits also exposing an
+-- implementation-specific code, so the precise duplicate/missing/unknown
+-- distinction is preserved in the rendered code while tooling recovers
+-- the portable alias here.
 --
 -- §3.1.4 (Spec.md:823): "A portable diagnostic-code alias MUST NOT be
 -- reused for a materially different diagnostic meaning." Accordingly
@@ -85,6 +100,9 @@ requiredAliasTable =
   , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
   , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
   , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
+  , ("E_NAMED_ARG_MISSING", "E_CONSTRUCTOR_ARITY_MISMATCH")
+  , ("E_NAMED_ARG_DUPLICATE", "E_CONSTRUCTOR_ARITY_MISMATCH")
+  , ("E_NAMED_ARG_UNKNOWN", "E_CONSTRUCTOR_ARITY_MISMATCH")
   ]
 
 -- | All acceptable spellings of a diagnostic's code: the rendered code
@@ -162,12 +180,12 @@ registry =
       "A match expression does not cover every possible constructor or literal of the scrutinee type."
   , ent "E_MULTILINE_STRING_BAD_INDENT" Nothing
       "A line inside a multiline string literal is indented less than the closing delimiter's indentation baseline."
-  , ent "E_NAMED_ARG_DUPLICATE" (Just "kappa-hs.application.named")
-      "The same named argument is supplied more than once in one application."
-  , ent "E_NAMED_ARG_MISSING" (Just "kappa-hs.application.named")
-      "A named-argument application omits a required parameter of the function."
-  , ent "E_NAMED_ARG_UNKNOWN" (Just "kappa-hs.application.named")
-      "A named argument does not correspond to any parameter of the applied function."
+  , ent "E_NAMED_ARG_DUPLICATE" (Just "kappa.constructor.arity")
+      "The same named field is supplied more than once in one constructor application (§3.2; portable alias E_CONSTRUCTOR_ARITY_MISMATCH)."
+  , ent "E_NAMED_ARG_MISSING" (Just "kappa.constructor.arity")
+      "A named constructor application omits a required field that has no default (§10.1.1, §3.2; portable alias E_CONSTRUCTOR_ARITY_MISMATCH)."
+  , ent "E_NAMED_ARG_UNKNOWN" (Just "kappa.constructor.arity")
+      "A named field does not correspond to any parameter of the applied constructor (§3.2; portable alias E_CONSTRUCTOR_ARITY_MISMATCH)."
   , ent "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
       "An expression used in type position does not denote a type (its type is not 'Type')."
   , ent "E_NUMERIC_LITERAL_DOMAIN_MISMATCH" (Just "kappa.type.literal-domain-mismatch")
@@ -439,7 +457,7 @@ registry =
     -- portable aliases required by the specification; each resolves to
     -- the same explanation as its rendered code.
     ent "E_TYPE_MISMATCH" (Just "kappa.type.mismatch")
-      "Portable alias (§3.1.2A) of E_TYPE_EQUALITY_MISMATCH/E_UNSOLVED_IMPLICIT: the inferred type of an expression does not fit the expected type, or required evidence could not be solved."
+      "Portable alias (§3.1.2A) of E_TYPE_EQUALITY_MISMATCH: the inferred type of an expression does not fit the expected type."
   , ent "E_SAFE_NAV_GENERIC_AMBIGUOUS" (Just "kappa.type.mismatch")
       "Portable alias (§3.1.2A) of E_SAFE_NAVIGATION_AMBIGUOUS: a safe-navigation '?.' chain has an ambiguous generic receiver."
   , ent "E_APPLICATION_NON_CALLABLE" (Just "kappa-hs.application.non-callable")
