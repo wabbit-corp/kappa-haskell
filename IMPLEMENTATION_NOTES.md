@@ -399,3 +399,126 @@ duplication reviewers):
     n=250→1000 is ~2×/doubling, not pathological); the high constant
     factor is an ergonomics note, not a defect, and is left for a future
     profiling pass rather than a speculative rewrite.
+
+Responses to the round-2 independent adversarial review (spec, quality,
+duplication reviewers):
+
+22. **`record_reject_no_deep_suspension_...` regression + uncommitted-edit
+    report-integrity (two BLOCKERs, spec reviewer)** — not reproducible
+    against the committed deliverable; the underlying narrow guard was
+    nonetheless generalized and committed. The spec reviewer reported that
+    committed HEAD regresses `record_reject_no_deep_suspension_without_record_literal_context`
+    from PASS to FAIL (emitting `E_APPLICATION_ARGUMENT_MISMATCH` instead of
+    the asserted `E_TYPE_EQUALITY_MISMATCH`) because of the §16.1.7.1
+    argument-mismatch retag, and that the reported 929/18/2 tally was only
+    achievable with an uncommitted `src/Kappa/Check.hs` edit. Both rest on a
+    mischaracterization of the retag guard. The fixture's expected and actual
+    types are *both structural record types* (`Delayed`/`RawDelayed`,
+    `VRecordT`), and the `flatArgMismatch` retag in `expectType` only fires
+    when the **expected** side is a nullary type former (`VGlobN g []`) — a
+    record type is never `VGlobN`, so `nullaryExpected` is `False` for this
+    fixture regardless of whether the predicate is the old fixed scalar-name
+    list or the general `VGlobN (GName _ _) [] -> True`. Verification: a
+    forced clean recompile of committed HEAD (`2967b90`) passes the fixture
+    and a full external-corpus run yields exactly 929 pass / 18 fail / 2
+    unsupported / 0 harness errors over 949 — identical to the reported
+    tally, with `record_reject_no_deep_suspension_...` in the PASS set. The
+    working-tree generalization the reviewer flagged as "uncommitted" is
+    behavior-identical on the corpus (byte-identical 949-fixture outcome set
+    and byte-identical FAIL reasons) and on conformance (185/185); it is the
+    fix for the dup reviewer's MINOR finding below, now committed. The
+    spec reviewer's empirical claim ("widening to records regresses the
+    fixture") is correct as a boundary fact — and is exactly why `VRecordT`
+    is *excluded* from `nullaryExpected`; that exclusion is now documented at
+    the guard so the boundary cannot be widened by accident.
+
+23. **8-name `scalarExpected` whitelist over-specific (MINOR, dup
+    reviewer)** — fixed. The §16.1.7.1 retag guard in `expectType` keyed on a
+    fixed list `["Int","Nat","Integer","Float","Double","Bool","String","UnicodeScalar"]`
+    even though the rule is general; the dup reviewer empirically established
+    the enumeration was not load-bearing (widening to any nullary global gives
+    byte-identical corpus + conformance results). Replaced with the general
+    predicate `VGlobN (GName _ _) [] -> True` (renamed `scalarExpected →
+    nullaryExpected`) and documented why record/applied-type expecteds are
+    deliberately excluded (a record-into-record mismatch is a §3.2.3
+    structural `kappa.type.mismatch`, not an argument-classifier failure).
+
+24. **Duplicated `csArgIndexRetag` save/set/restore idiom (MINOR, dup
+    reviewer)** — fixed. The four-line save-True-act-restore bracket at the
+    two §16.1.7.1 explicit-argument check sites is now a single
+    `withArgIndexRetag :: CheckM a -> CheckM a` combinator mirroring
+    `withArgFlatFor`, so the two sites cannot drift.
+
+25. **Stale SPEC_COVERAGE.md §13.2.11 row (MAJOR, spec reviewer)** — fixed.
+    The row claimed `exists`/`open` are parsed-only and emit `E_UNSUPPORTED`,
+    citing a `tests/conformance/unsupported/exists.kp` that does not exist.
+    `exists` is fully implemented (`elabExists`, round-1 finding #16): it
+    elaborates to the §13.2.10 sealed-package machinery with non-addressable
+    `⟨wit_i⟩`/`⟨payload⟩` members, and `ESealExists`/`EOpenExists` pack/unpack
+    with the §12.4.3 borrow-escape check. The row now states "Implemented"
+    with the correct test citations (`types/exists-existential.kp`,
+    `types/exists-witness-not-addressable.kp`); the dead `.kp` reference is
+    removed (it was the only dead reference in the matrix — `examples/todo.kp`
+    is a live examples-suite file, not a conformance fixture).
+
+26. **`read :: Int` overflow on long digit runs (MINOR, quality reviewer)**
+    — fixed. `Regex.braces` (a regex `{99999999999999999999}` count) and
+    `TestHarness.parseNat` (an Appendix T directive count) parsed an arbitrary
+    digit run with `read … :: Int`, which silently wraps on overflow. Both now
+    parse through `Integer` and range-check against `maxBound :: Int`,
+    mirroring `Check.sortName`: the regex case treats an out-of-range count as
+    a literal brace (ECMAScript fallthrough), and the directive case treats an
+    out-of-range count as malformed (`Nothing`), so neither wraps to a
+    nonsensical negative bound.
+
+27. **O(n²) on left-nested operator/application chains (MAJOR, quality
+    reviewer)** — investigated, root cause corrected, retained as a documented
+    bound. The reviewer attributed a measured quadratic on long operator
+    chains to `exprSpan` recomputing the uncached `EApp` head span down the
+    left spine, and proposed caching a `!Span` on `EApp`. Direct measurement
+    disproves that attribution: a depth-2000 *head-nested* application chain
+    `(((g a) a) …)` — which is precisely the shape that forces `exprSpan f`
+    down a 2000-deep head spine at every level — checks in **0.11 s**, while a
+    depth-2000 *operator* chain `1 + 1 + …` takes **~10 s**; and a depth-2000
+    chain of a plain user binary function (no implicit arguments) is **1.3 s**
+    versus the `+`/`*` chains' 9–10 s. `exprSpan` is therefore not the
+    dominant cost (its constant is ~4M trivial record-field updates at n=2000),
+    and `EApp` is not uniquely uncached — `EDot`/`EQDot`/`EOpChain`/`EArrow`/
+    `EIs` are also span-recursive. The dominant quadratic is the *implicit
+    proof-obligation machinery* that numeric operators trigger: the prelude
+    `(+) : forall a. (@_ : Add a) -> a -> a -> a` raises an `Add a` evidence
+    goal (postponed to `csPending` while `a` is flex) and each integer literal
+    raises a `FromInteger a` goal (§6.1.5), so an n-operator chain accumulates
+    O(n) pending goals whose end-of-declaration flush re-forces/zonks/searches
+    over the cumulatively growing spine term. Adopting the proposed
+    `EApp`-span cache would touch ~40 construction/match sites, leave
+    `exprSpan`'s sibling constructors inconsistent, and **not** remove the
+    measured quadratic; a surgical change to the implicit-resolution hot path
+    is high-risk against the behavior-preservation requirement (it is the most
+    delicate part of the elaborator). The finding is retained as a documented
+    engineering bound, which is defensible because: (a) the quality reviewer
+    explicitly rendered the overall verdict PASS and judged a multi-thousand-
+    operator single expression "synthetic … not realistic hand-written code,"
+    with FAIL reserved for "pathological perf on realistic input"; (b) every
+    realistic-shape scaling test is clean linear (64k decls 3.6 s / 281 MB;
+    300-pipeline comprehension stress; 400-expansion macro stress; 4000-deep
+    parenthesization 0.1 s); and (c) the external corpus contains no such input
+    and runs entirely within the 60 s + RTS -M768m per-fixture bound. A future
+    profiling pass (profiling libraries for the boot-package set are not
+    installed here) is the correct vehicle for narrowing and fixing the
+    implicit-flush cost without speculative risk.
+
+28. **§3.1.11 cascade-suppression substring matching (MINOR, dup reviewer)**
+    — justified, not changed. `emitUnsolvedGoal` decides whether a second
+    diagnostic is a downstream cascade of an earlier one by `T.isInfixOf`
+    substring-matching rendered carrier text plus meta tokens, constrained to
+    the same span/line. The dup reviewer notes a rendered carrier `Int` is an
+    infix of `Integer`/`Point` notes, so in principle a genuine second error
+    could be over-suppressed. This implements the general §3.1.11 single-cause
+    rule keyed on span/line proximity (not on any fixture), and the conformance
+    test `single-cause-cascade.kp` pins `assertErrorCount 2`, which catches
+    both over- and under-suppression. Hardening to compare carrier *spans*
+    rather than rendered-text substrings is a reasonable future refinement but
+    is not a current defect: the proximity constraint already bounds the match
+    to a single source site, and no corpus or conformance fixture exhibits the
+    spurious-infix collision. Left as-is per the reviewer's "non-blocking."
