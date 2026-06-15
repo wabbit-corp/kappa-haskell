@@ -1,0 +1,15 @@
+-- §6.1.1: underscores between digits have no semantic effect, in every
+-- radix. Regression for a lexer bug where '_' was folded as a digit in
+-- hex/octal/binary literals (0xDEAD_BEEF mis-evaluated).
+module main
+
+main : UIO Unit
+let main = do
+    println 0xDEAD_BEEF
+    println 0xFF
+    println 0o7_5_5
+    println 0b1_0_1_0
+    println 1_000_000
+
+--! mode run
+--! assertStdout "3735928559\n255\n493\n10\n1000000\n"

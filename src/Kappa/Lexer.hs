@@ -459,7 +459,10 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
       where
         radix base ok s name = do
           (digits, s') <- takeDigits ok s name
-          let val = foldl' (\acc d -> acc * base + toInteger (digitToIntH d)) 0 (T.unpack digits)
+          -- §6.1.1: underscores are digit-group separators with no
+          -- semantic effect; strip them before accumulating (the decimal
+          -- path strips them too).
+          let val = foldl' (\acc d -> acc * base + toInteger (digitToIntH d)) 0 (filter (/= '_') (T.unpack digits))
           (suffix, s'') <- takeSuffix s'
           pure (TokInt val suffix, s'')
 
