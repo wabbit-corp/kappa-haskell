@@ -169,6 +169,14 @@ data CheckState = CheckState
   -- ^ instance heads registered by the §14.3 pre-pass, keyed by the
   -- declaration span ('Nothing' records a head already rejected there,
   -- so the body pass does not re-report it)
+  , csPositivity :: !(Map GName [Bool])
+  -- ^ §10.4 parameter-positivity signatures: for each accepted data
+  -- type (and each strictly-positive built-in/imported abstract type
+  -- carrier whose interface declares a signature), one flag per
+  -- parameter marking it positive ('True') or non-positive ('False').
+  -- Consulted by the strict-positivity check when deciding whether an
+  -- application 'F A1 .. An' keeps the defined type in a strictly
+  -- positive position.
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -209,6 +217,7 @@ initCheckState =
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
+    Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -8882,6 +8891,11 @@ checkModule st0 m =
       passes = do
         mapM_ predeclarePass (modDecls m)
         mapM_ (headerPassIn siglessLets) (modDecls m)
+        -- §10.4: once every data type's constructor types are
+        -- elaborated, check strict positivity over the whole module's
+        -- data group by fixed-point iteration and record each accepted
+        -- type's parameter-positivity signature
+        positivityPass (modDecls m)
         -- §14.3: register every top-level instance head before any
         -- body is checked, so instance visibility within the module
         -- does not depend on declaration order
@@ -9137,6 +9151,285 @@ headerData (DataDecl n params _mkind ctors) sp = do
       EForall _ rest _ -> gadtFields rest
       ETraitArrow _ rest -> gadtFields rest
       _ -> []
+
+-- ── §10.4 strict positivity ──────────────────────────────────────────
+--
+-- "Every 'data' declaration MUST satisfy strict positivity." After the
+-- header pass has elaborated every constructor type, this pass treats
+-- all 'data' declarations of the module as one mutually recursive group
+-- (declaration order within a module is immaterial, §10.1), computes a
+-- parameter-positivity signature for every group member by fixed-point
+-- iteration (§10.4), and then rejects the group if, under the converged
+-- signatures, any group type still occurs non-strictly-positively in any
+-- constructor argument type.
+
+-- | The constructor argument (field) types of a data type, as core
+-- terms, each closed over the data parameters as the OUTERMOST de Bruijn
+-- binders. 'tdParamCount' leading 'CPi' binders of the elaborated
+-- constructor type are the (implicit) parameters; every remaining 'CPi'
+-- domain up to the result head is a field type. The returned 'pfDepth'
+-- is the number of binders in scope at the field domain (parameters plus
+-- the earlier fields of the same constructor), so that parameter @j@
+-- (0-based, first parameter) sits at de Bruijn index @pfDepth - 1 - j@.
+data PosField = PosField
+  { pfDepth :: !Int
+  , pfType :: !Term
+  }
+
+-- | Per-data-type positivity input gathered from the elaborated state.
+data PosData = PosData
+  { pdName :: !GName
+  , pdParamCount :: !Int
+  , pdFields :: ![PosField] -- ^ across all constructors of this type
+  , pdSpan :: !Span
+  }
+
+positivityPass :: [Decl] -> CheckM ()
+positivityPass decls = do
+  st <- get
+  let dataDecls = [(dd, sp) | DData _ dd sp <- decls]
+  group <- catMaybes <$> mapM (gatherPosData st) dataDecls
+  unless (null group) $ do
+    let groupNames = Set.fromList (map pdName group)
+        -- prior (non-group) signatures: accepted data types and the
+        -- strictly-positive built-in/imported carriers
+        priorSig = csPositivity st
+        -- fixed-point over the group for the parameter-positivity
+        -- signatures (§10.4). The recompute operator is monotone in the
+        -- "more positive" direction (a parameter known positive lets a
+        -- recursive index recurse strictly-positively instead of
+        -- demanding the parameter be absent), so the signature we want is
+        -- its GREATEST fixed point: start every parameter positive and
+        -- iterate downward until stable. (A least fixed point from
+        -- all-non-positive degenerates — e.g. it would mark 'a' in
+        -- 'data Tree a = ... Branch (Tree a) a (Tree a)' as non-positive,
+        -- wrongly. The rejection judgement below is computed afterwards
+        -- against the converged signatures, per §10.4.)
+        sig0 = Map.fromList [(pdName d, replicate (pdParamCount d) True) | d <- group]
+        converged = fixpoint groupNames priorSig group sig0
+        fullSig = Map.union converged priorSig
+    -- record the converged group signatures for later declarations
+    modify' $ \s -> s {csPositivity = Map.union converged (csPositivity s)}
+    -- reject any group member with a non-strictly-positive occurrence
+    forM_ group $ \d ->
+      forM_ (pdFields d) $ \fld ->
+        unless (spPositive groupNames fullSig (pfType fld)) $
+          errOncePerSpan (pdSpan d) "E_DATA_NOT_STRICTLY_POSITIVE" (Just "kappa.termination.failure")
+            ( "data type '" <> gnameText (pdName d)
+                <> "' is not strictly positive: it occurs in a negative or non-admissible position"
+                <> " in a constructor argument type (Spec §10.4)"
+            )
+
+-- | Collect the field types of one data declaration from the elaborated
+-- 'CtorInfo' types. Returns 'Nothing' for a type with no recorded data
+-- info (should not happen for a 'DData' that elaborated).
+gatherPosData :: CheckState -> (DataDecl, Span) -> CheckM (Maybe PosData)
+gatherPosData st (DataDecl n _ _ _, sp) = do
+  g <- ownName n
+  case Map.lookup g (csDatas st) of
+    Nothing -> pure Nothing
+    Just di -> do
+      let pc = diParamCount di
+          ctorTys = [ciType ci | cg <- diCtors di, Just ci <- [Map.lookup cg (csCtors st)]]
+          flds = concatMap (posCtorFieldTypes pc) ctorTys
+      pure (Just (PosData g pc flds sp))
+
+-- | Peel 'pc' leading parameter binders, then collect each remaining
+-- 'CPi' domain (a constructor field type) together with the binder depth
+-- in scope at that domain.
+posCtorFieldTypes :: Int -> Term -> [PosField]
+posCtorFieldTypes pc = peelParams pc
+  where
+    peelParams 0 t = peelFields pc t
+    peelParams k (CPi _ _ _ _ b) = peelParams (k - 1) b
+    peelParams _ _ = [] -- malformed; nothing to check
+    peelFields depth = \case
+      CPi _ _ _ a b -> PosField depth a : peelFields (depth + 1) b
+      _ -> [] -- the result head 'T params' carries no fields
+
+-- | Fixed-point iteration of the group's parameter-positivity signatures
+-- (§10.4): recompute every member's signature from the current
+-- signatures until nothing changes.
+fixpoint :: Set GName -> Map GName [Bool] -> [PosData] -> Map GName [Bool] -> Map GName [Bool]
+fixpoint groupNames priorSig group = go
+  where
+    go sig =
+      let sig' = Map.fromList [(pdName d, recomputeSig groupNames (Map.union sig priorSig) d) | d <- group]
+       in if sig' == sig then sig else go sig'
+
+-- | Recompute one data type's parameter-positivity signature: parameter
+-- @j@ is positive iff every occurrence of the corresponding de Bruijn
+-- variable in every field type is in a strictly positive position
+-- (§10.4).
+recomputeSig :: Set GName -> Map GName [Bool] -> PosData -> [Bool]
+recomputeSig groupNames sig d =
+  [ all (\fld -> varPositive groupNames sig (pfDepth fld - 1 - j) (pfType fld)) (pdFields d)
+  | j <- [0 .. pdParamCount d - 1]
+  ]
+
+-- | Is the parameter-positivity signature of an applied head 'F' known
+-- and is 'F' admissible in a strictly positive position? Returns the
+-- per-argument positivity flags when admissible (§10.4 admissibility).
+admissibleSig :: Set GName -> Map GName [Bool] -> Term -> Maybe [Bool]
+admissibleSig groupNames sig = \case
+  CGlob g
+    | g `Set.member` groupNames -> Map.lookup g sig -- a group member (its evolving signature)
+    | otherwise -> Map.lookup g sig -- a prior data type / built-in carrier with a recorded signature
+  _ -> Nothing
+
+-- | Split a term into its head and argument spine.
+posSpine :: Term -> (Term, [Term])
+posSpine = go []
+  where
+    go acc (CApp _ f a) = go (a : acc) f
+    go acc t = (t, acc)
+
+-- | §10.4 strict positivity of a constructor field type with respect to
+-- a /target/ supplied as the predicate @hits@ (does this exact subterm
+-- mention the target as its head?) plus @occurs@ (does the target occur
+-- anywhere in this subterm?). The walk implements: the argument type
+-- itself; @X -> U@ / @(x : X) -> U@ with the target absent from @X@ and
+-- strictly positive in @U@; and an admissible application @F A1 .. An@
+-- in which the target occurs strictly positively only in the @Ai@ whose
+-- parameter is marked positive (and not at all in the others).
+posWalk
+  :: Set GName
+  -> Map GName [Bool]
+  -> (Int -> Term -> Bool) -- ^ @occurs shift t@: does the target occur in @t@ (shift = extra binders since the top)?
+  -> (Int -> Term -> Bool) -- ^ @isBareTarget shift t@: is @t@ exactly a bare occurrence of the target (the "argument type itself")?
+  -> Int -- ^ binders entered since the top (de Bruijn shift)
+  -> Term
+  -> Bool
+posWalk groupNames sig occurs isBareTarget = go
+  where
+    go shift t
+      -- the argument type itself (possibly with parameters/indices):
+      -- a bare occurrence of the target is a strictly positive position
+      | isBareTarget shift t = True
+      -- the target does not occur at all: trivially strictly positive
+      | not (occurs shift t) = True
+      | otherwise = case posSpine t of
+          -- function/dependent-function type 'X -> U' / '(x : X) -> U':
+          -- target absent from the domain and strictly positive in 'U'
+          (CPi _ _ _ a b, []) ->
+            not (occurs shift a) && go (shift + 1) b
+          -- application 'F A1 .. An'
+          (hd, args@(_ : _)) ->
+            case admissibleSig groupNames sig hd of
+              Just flags ->
+                -- 'F' is admissible (a prior/built-in carrier, or the
+                -- defined type applied to parameters/indices, which is
+                -- itself a strictly positive position): the target may
+                -- occur strictly positively only in those 'Ai' whose
+                -- parameter is marked positive in F's signature, and not
+                -- at all in the others
+                and
+                  [ if positiveFlag
+                      then go shift arg
+                      else not (occurs shift arg)
+                  | (arg, positiveFlag) <- zip args (flags ++ repeat False)
+                  ]
+              Nothing ->
+                -- 'F' is not admissible (a bare variable, an opaque type
+                -- without a positivity signature, …): the target must
+                -- not occur anywhere in the application
+                False
+          -- covariant suspension wrappers: the target stays strictly
+          -- positive under Thunk/Memo/Force in type position
+          (CThunkE e, []) -> go shift e
+          (CLazyE e, []) -> go shift e
+          (CForceE e, []) -> go shift e
+          -- record / variant type formers: every component is covariant
+          (CRecordT fs, []) -> all (go shift . snd) fs
+          (CVariantT ms, []) -> all (go shift) ms
+          -- any other shape carrying an occurrence is not a strictly
+          -- positive position
+          _ -> False
+
+-- | §10.4 strict positivity of a field type with respect to the group
+-- types (the reject condition target). A group type may occur, but only
+-- in strictly positive positions.
+spPositive :: Set GName -> Map GName [Bool] -> Term -> Bool
+spPositive groupNames sig =
+  posWalk groupNames sig (\_shift t -> mentionsGroup groupNames t) bareGroup 0
+  where
+    bareGroup _shift = \case
+      CGlob g -> g `Set.member` groupNames
+      _ -> False
+
+-- | §10.4 strict positivity of a field type with respect to one data
+-- parameter (the de Bruijn variable @v@ at the field-domain depth). Used
+-- to compute the parameter-positivity signature.
+varPositive :: Set GName -> Map GName [Bool] -> Int -> Term -> Bool
+varPositive groupNames sig v0 =
+  posWalk groupNames sig (\shift t -> mentionsVar (v0 + shift) t) bareVar 0
+  where
+    bareVar shift = \case
+      CVar i -> i == v0 + shift
+      _ -> False
+
+-- | Does any group type constructor occur anywhere in a term?
+mentionsGroup :: Set GName -> Term -> Bool
+mentionsGroup groupNames = go
+  where
+    go = \case
+      CGlob g -> g `Set.member` groupNames
+      CVar _ -> False
+      CLam _ _ _ b -> go b
+      CPi _ _ _ a b -> go a || go b
+      CApp _ f a -> go f || go a
+      CSort _ -> False
+      CLit _ -> False
+      CCtor _ as -> any go as
+      CMatch s alts -> go s || any (\(CaseAlt _ gd b) -> maybe False go gd || go b) alts
+      CRecordT fs -> any (go . snd) fs
+      CRecordV fs -> any (go . snd) fs
+      CProj e _ -> go e
+      CVariantT ms -> any go ms
+      CInject _ e -> go e
+      CLet _ _ a b c -> go a || go b || go c
+      CLetRec _ _ a b c -> go a || go b || go c
+      CMeta _ -> False
+      CDo _ -> False
+      CSealE _ e -> go e
+      CSigT _ e -> go e
+      CThunkE e -> go e
+      CLazyE e -> go e
+      CForceE e -> go e
+      CIf a b c -> go a || go b || go c
+      CQuote _ slots -> any go slots
+
+-- | Does the de Bruijn variable @v@ occur anywhere in a term (accounting
+-- for binders that shift it)?
+mentionsVar :: Int -> Term -> Bool
+mentionsVar = go
+  where
+    go v = \case
+      CVar i -> i == v
+      CGlob _ -> False
+      CLam _ _ _ b -> go (v + 1) b
+      CPi _ _ _ a b -> go v a || go (v + 1) b
+      CApp _ f a -> go v f || go v a
+      CSort _ -> False
+      CLit _ -> False
+      CCtor _ as -> any (go v) as
+      CMatch s alts -> go v s || any (\(CaseAlt p gd b) -> let n = patBindersC p in maybe False (go (v + n)) gd || go (v + n) b) alts
+      CRecordT fs -> any (go v . snd) fs
+      CRecordV fs -> any (go v . snd) fs
+      CProj e _ -> go v e
+      CVariantT ms -> any (go v) ms
+      CInject _ e -> go v e
+      CLet _ _ a b c -> go v a || go v b || go (v + 1) c
+      CLetRec _ _ a b c -> go v a || go (v + 1) b || go (v + 1) c
+      CMeta _ -> False
+      CDo _ -> False
+      CSealE _ e -> go v e
+      CSigT _ e -> go v e
+      CThunkE e -> go v e
+      CLazyE e -> go v e
+      CForceE e -> go v e
+      CIf a b c -> go v a || go v b || go v c
+      CQuote _ slots -> any (go v) slots
 
 -- §10.1.1 declaration-time validation of constructor field defaults:
 -- each default must elaborate, with the preceding fields in scope, at

@@ -1,0 +1,9 @@
+--! mode check
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+-- §10.4 "Examples rejected" (Spec L8690): the defined type 'Bad'
+-- appears to the left of an arrow (a negative position), so the
+-- declaration is not strictly positive and MUST be rejected.
+@PrivateByDefault module main
+
+data Bad : Type =
+    MkBad (Bad -> Bad)

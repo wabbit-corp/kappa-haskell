@@ -1,0 +1,13 @@
+--! mode check
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+-- §10.4 mutually recursive group: the group type 'B' occurs in the
+-- domain of a function type inside a constructor argument of 'A' (a
+-- negative occurrence). After the group fixed point, a group type
+-- still occurs non-strictly-positively, so the group MUST be rejected.
+@PrivateByDefault module main
+
+data A : Type =
+    MkA (B -> Int)
+
+data B : Type =
+    MkB A

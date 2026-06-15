@@ -47,6 +47,7 @@ builtinState =
     , csGlobals = Map.fromList (types ++ prims ++ testingPrims)
     , csCtors = Map.fromList ctors
     , csDatas = Map.fromList datas
+    , csPositivity = Map.fromList positivity
     , csModuleExports =
         Map.fromList [(testingModule, [nm | (GName _ nm, _) <- testingPrims])]
     }
@@ -185,6 +186,25 @@ builtinState =
       ]
     datas =
       [ (prel "=", DataInfo [prel "refl"] 3)
+      ]
+    -- §10.4 built-in parameter-positivity signatures for the opaque
+    -- carriers that are "declared as strictly positive together with a
+    -- parameter-positivity signature" (the spec names List/Option/Array
+    -- specifically; List/Option/Result are source-defined data types
+    -- whose signatures the positivity pass computes, so only the opaque
+    -- carriers are seeded here). Each carrier below is covariant in all
+    -- of its type parameters. 'refl' (propositional equality) is not a
+    -- container and never appears as an admissible positive head, so it
+    -- carries the all-non-positive signature.
+    positivity =
+      [ (prel "=", [False, False, False])
+      , (prel "Array", [True]) -- §10.4 names Array explicitly
+      , (prel "Set", [True])
+      , (prel "Map", [True, True])
+      , (prel "Ref", [True])
+      , (prel "IO", [True, True])
+      , (prel "Code", [True])
+      , (prel "ClosedCode", [True])
       ]
     quoteClosedTy _ = piI Q0 "a" tType (piI Q0 "x" (CVar 0) (CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)))
 

@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+-- §10.4 "Examples accepted" (Spec L8696-8699): a strictly positive
+-- recursive data type and a recursive type nested under the built-in
+-- 'List' carrier (whose parameter is positive) are both well-formed.
+@PrivateByDefault module main
+
+data Tree (a : Type) : Type =
+    Leaf
+    Branch (Tree a) a (Tree a)
+
+data Rose (a : Type) : Type =
+    Node a (List (Rose a))

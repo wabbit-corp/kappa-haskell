@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+-- §10.4 mutually recursive group: every occurrence of each group type
+-- is in a strictly positive position, so the whole-group fixed point
+-- converges and the group is accepted. 'Forest' nests 'Tree' under the
+-- positive 'List' carrier; 'Tree' refers back to 'Forest'.
+@PrivateByDefault module main
+
+data Tree (a : Type) : Type =
+    Node a (Forest a)
+
+data Forest (a : Type) : Type =
+    Forest (List (Tree a))

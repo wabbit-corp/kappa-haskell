@@ -204,6 +204,8 @@ registry =
       "An 'expect' declaration names a required external declaration, but no definition, backend intrinsic, or imported artifact in the compilation unit satisfies it (Spec 9.4)."
   , ent "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.failure")
       "A value-level definition refers to itself without an intervening function abstraction, so its evaluation can never terminate."
+  , ent "E_DATA_NOT_STRICTLY_POSITIVE" (Just "kappa.termination.failure")
+      "A data declaration is not strictly positive: the defined type occurs in a negative position (left of an arrow), as an argument of a non-admissible type former, or as a non-positive parameter of an admissible one (Spec 10.4)."
   , ent "E_SIGNATURE_UNSATISFIED" (Just "kappa-hs.signature.unsatisfied")
       "A non-expect top-level term signature has no matching definition in the same source file (Spec 9.1)."
   , ent "E_UNEXPECTED_INDENTATION" (Just "kappa-hs.parse.error")

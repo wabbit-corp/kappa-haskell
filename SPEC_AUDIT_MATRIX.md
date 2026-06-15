@@ -129,8 +129,8 @@ here by re-probe.
 | 10.1 | `data` decls; named/curried/record-style ctors | IMPLEMENTED+TESTED | SYN,TYP | corpus + probes |
 | 10.2 | GADT-style ctor `C : Pi -> R`; non-GADT binders-before-colon rejected | IMPLEMENTED+TESTED | SYN,TYP | `VCons : … -> Vec (n+1) a` |
 | 10.3 | type aliases; reject recursive alias | IMPLEMENTED+TESTED | SYN,TYP | `E_RECURSIVE_TYPE_ALIAS` |
-| **10.4** | **strict positivity MUST reject negative occurrence** | **MISSING** | TYP,V | `data Bad = MkBad (Bad -> Bad)` (spec's rejected example, line 8690) → exit 0; re-verified. No positivity pass. **BLOCKER (soundness)** |
-| 10.4 | record parameter-positivity signature; mutual fixed-point | MISSING | TYP | no positivity machinery |
+| **10.4** | **strict positivity MUST reject negative occurrence** | IMPLEMENTED+TESTED | TYP,V | `positivityPass` in `Check.hs`; `data Bad = MkBad (Bad -> Bad)` → `E_DATA_NOT_STRICTLY_POSITIVE`; spec's accepted Tree/Rose accepted, rejected Bad/Rose rejected. Mirrored in `tests/conformance/data_types`. (G1 fixed) |
+| 10.4 | record parameter-positivity signature; mutual fixed-point | IMPLEMENTED+TESTED | TYP | `csPositivity` per-param signatures (built-ins seeded in `Prelude.hs`; data types computed); whole-module group greatest-fixed-point in `positivityPass`; mutual accept/reject mirrored. (G8 fixed) |
 | 11.1 | stratified universes; no Type:Type | IMPLEMENTED+TESTED | TYP | `let bad:Type = Type` → mismatch `Type1` vs `Type` |
 | 11.3 | universal quantification (`forall`) | IMPLEMENTED+TESTED | TYP | probes |
 | 11.3.1A | row `Lacks` constraints for open-record extension | IMPLEMENTED-WEAKLY-TESTED | TYP | `E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT` registered |
@@ -286,14 +286,14 @@ or whole-contract) > MAJOR > MINOR.
 
 | id | § | severity | one-line failing probe | fix locus |
 |----|---|----------|------------------------|-----------|
-| G1 | 10.4 | BLOCKER (soundness) | `data Bad = MkBad (Bad -> Bad)` → exit 0 (spec's rejected example, line 8690) | `src/Kappa/Check.hs` data-decl well-formedness: add strict-positivity pass per §10.4 before admitting `data` |
+| G1 | 10.4 | RESOLVED (was BLOCKER, soundness) | `data Bad = MkBad (Bad -> Bad)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was exit 0) | DONE: `positivityPass` in `src/Kappa/Check.hs` runs the §10.4 strict-positivity check after the header pass; mirrored in `tests/conformance/data_types` |
 | G2 | 6.1.1 | BLOCKER (silent miscompile) | `0xDEAD_BEEF` → `59776745199` (≠ `3735928559`); `0b1_0_1_0`→1748; `0o1_2_3`→25027 | `src/Kappa/Lexer.hs:462` fold over `T.filter (/= '_') digits` (radix path, like the decimal path at :488) |
 | G3 | 3.1.1 | BLOCKER | `kappa check --json FILE` → usage; no JSON producer in src | `src/Kappa/Diagnostic.hs` (hand-rolled JSON over enriched record, boot pkgs only) + `app/Main.hs` (`--json` on cmdCheck/cmdRun) |
 | G4 | 3.1.1A | BLOCKER | `E_IMPLICIT_AMBIGUOUS`/`E_INSTANCE_INCOHERENT`/type-mismatch carry no related origins; `Diagnostic` has no `related` field | `src/Kappa/Diagnostic.hs` add `dRelated :: [RelatedOrigin]` (role enum); thread sites in `Check.hs`/`Resolve.hs`/`Usage.hs` |
 | G5 | 5.5.1.1, 5.5.3 | MAJOR | `(5 ?)` with `postfix 90 (?)` → `E_APPLICATION_NONCALLABLE`; `let b = 5 ?` corrupts next decl | `src/Kappa/Resolve.hs:390` add `postfixOf` branch mirroring 394-401; `src/Kappa/Parser.hs` chain path (~1540-1583) tolerate trailing postfix |
 | G6 | 18.3.1 | MAJOR | `let x = !(getN 1)` inside `do` → `E_SPLICE_OUTSIDE_DO` (spec's canonical example) | `src/Kappa/Check.hs` `elabDoIOItems` `DoLet` branch (~6884): apply `desugarBang rhs` like `DoExpr`/`DoBind` |
 | G7 | 18.3.1 | MAJOR (SPEC-CONFLICT) | `!doit 8` parsed as `(!doit) 8` → type mismatch; spec forbids this parse | `src/Kappa/Check.hs` `desugarBang (EApp …)` (~7114-7130) capture whole application spine; do not recurse into head |
-| G8 | 10.4 | MAJOR | record/mutual-group positivity signature absent (Rose negative-occ also accepted) | `src/Kappa/Check.hs` (same positivity machinery as G1, group-level + parameter-positivity signatures) |
+| G8 | 10.4 | RESOLVED (was MAJOR) | `data Rose a = Node a ((Rose a -> a) -> Rose a)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was accepted) | DONE: parameter-positivity signatures in `csPositivity` (built-ins seeded in `Prelude.hs`, data types computed); whole-module group greatest-fixed-point in `positivityPass`; mutual accept/reject mirrored in `tests/conformance/data_types` |
 | G9 | 3.1.9 + 3.2.x | MAJOR | type-mismatch/exhaustiveness payloads only in prose; harness `assertDiagnosticPayload` → unsupported | `src/Kappa/Diagnostic.hs` add `dPayload`; populate in `src/Kappa/Check.hs` producers |
 | G10 | 3.1.5A + 30.2.3 | MAJOR | `Core.hs` `Term` carries no provenance; no `ProvenanceFrame` type | `src/Kappa/Core.hs` origin/provenance on synthetic terms (or side table); populate in `src/Kappa/Check.hs` insertions |
 | G11 | 3.1.11 | MAJOR | `?m1236`, `@-1.⟨wit0⟩` leak as the sole `actual:` type rendering | `src/Kappa/Pretty.hs` metavariable/rigid rendering + zonk-before-render in `Check.hs` mismatch path |

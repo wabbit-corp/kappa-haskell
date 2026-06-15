@@ -250,3 +250,29 @@ continuation after a complete do-bind RHS, where §5.4's reading here
 makes it an application continuation). A normative continuation rule —
 one logical line extends until a line at or below its starting column —
 would settle all three.
+
+## 14. §10.4: the strict-positivity fixed-point initialization direction is degenerate as written
+
+§10.4 specifies computing parameter-positivity signatures for a mutually
+recursive `data` group by fixed-point iteration and instructs:
+"initialize every parameter of every type in the group as non-positive;
+repeatedly recompute the signatures using the current signatures of the
+whole group until a fixed point is reached." The recompute operator is
+monotone in the *more-positive* direction — a parameter already known
+positive lets a recursive index `T … pi …` recurse strictly-positively
+rather than forcing `pi` to be absent — so iterating from the
+all-non-positive bottom yields the *least* fixed point, which is
+degenerate: it marks `a` in `data Tree a = Leaf | Branch (Tree a) a
+(Tree a)` as non-positive (when checking `Branch`'s first field `Tree a`
+with `Tree`'s still-non-positive signature, the index `a` is required to
+be absent, which fails), and the iteration is already stuck at the
+bottom. The signature the spec's own accepted examples require is the
+*greatest* fixed point: start every parameter positive and refine
+downward until stable. This implementation computes the greatest fixed
+point (`positivityPass`/`fixpoint` in `Kappa.Check`, `sig0 = all True`),
+which accepts §10.4's accepted examples (Tree, `Rose a = Node a (List
+(Rose a))`) and rejects its rejected ones (`Bad`, `Rose a = Node a
+((Rose a -> a) -> Rose a)`). The *rejection judgement* itself is then
+computed against the converged signatures exactly as §10.4 describes.
+Evidence: `Kappa.Check.positivityPass`,
+`tests/conformance/data_types/positivity-*.kp`.
