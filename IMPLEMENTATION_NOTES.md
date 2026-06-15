@@ -328,3 +328,74 @@ fixed or justified here).
     (SPEC_COVERAGE.md §18.2–18.8 row; "Completion is not a first-class
     core value" above) covers it — per the reviewer, no action
     required.
+
+Responses to the round-1 independent adversarial review (spec, quality,
+duplication reviewers):
+
+16. **§13.2.11 existential witness/payload addressability (MAJOR,
+    dup reviewer)** — fixed. `elabExists` (`src/Kappa/Check.hs`) named
+    witnesses after their source binders and the anonymous payload
+    `value`, then stored them as ordinary source-addressable signature
+    fields. Witnesses now elaborate under position-based internal labels
+    `⟨wit_i⟩` and a non-record payload under `⟨payload⟩`; the
+    angle-bracket sigil cannot occur in a source identifier (the lexer
+    admits only `[A-Za-z0-9_]` + non-ASCII letters), so these members are
+    never projectable via `EProj`/`elabDot` and never source-addressable,
+    matching Spec.md 13314/13316-13317/13321 exactly, while position-based
+    labels keep alpha-equivalent existentials convertible (13322).
+    Record-shaped payload fields keep their source labels and stay
+    projectable (13324). Sealing now routes through §13.2.11 payload-view
+    checking (`elabSeal'Exists`/`elabSealExistsCore`): direct payload
+    introduction creates fresh witness metas solved by checking the
+    payload (13352, 13359-13361); `ESealExists` is implemented for the
+    explicit-witness form (13376-13396); the compatibility full-package
+    spelling is honored for record payloads and rejected with one
+    diagnostic for a non-record payload (13417-13432); `EOpenExists`
+    eliminates a package, binding witnesses as rigid quantity-0 locals and
+    rejecting witness escape in the result (13469-13540,
+    `E_EXISTENTIAL_WITNESS_ESCAPE`). Conformance pins both the positive
+    behaviour (`types/exists-existential.kp` now evaluates open+match) and
+    the non-addressability invariant
+    (`types/exists-witness-not-addressable.kp`).
+17. **Exponential-time NbE on left-nested prim spines (BLOCKER, quality
+    reviewer)** — fixed. `Eval.vapp` re-forced the entire accumulated
+    `VPrim` spine on every argument append; combined with the
+    operator-desugaring (left-associative chains are left-nested prim
+    applications) this compounded to 2^depth (`check`/`run` of a
+    length-25 `+` chain timed out at 40s). `vapp` now forces only the
+    freshly-appended argument and keeps the existing (already-forced)
+    spine, so reduction is linear (length-100 chain ≈ 0.12s). The IO-path
+    twin (`Interp.runSplices` re-forcing every rebuilt spine node) gets a
+    force-free `hasSplice` pre-scan so the splice-free common case forces
+    once. Regression guard:
+    `tests/conformance/fixity/deep-operator-chain.kp` (length-60 chain,
+    bounded by the conformance timeout).
+18. **§8.5.1 split-marker private leak (MAJOR, spec reviewer)** — fixed.
+    `Pipeline.moduleExportNames` decided exportability per declaration and
+    OR-ed; a `private` on only the `let` (or only the signature) of a
+    binding group was ignored. Visibility is now aggregated per term name
+    across the §5902 binding group: private on any declaration makes the
+    item private. Covered by `tests/conformance/modules-private-visibility/`;
+    the SPEC_COVERAGE.md §8 row was corrected.
+19. **Duplicated `Term→[MetaId]` collectors (MINOR, dup reviewer)** —
+    fixed. `unsolvedMetaIdsIn`'s local `goT` and the type-alias
+    generalization's local `metasOf` are now one `metaIdsOf`
+    (full constructor coverage) plus an `unsolvedMetasOf` filter.
+20. **Resolve writer left-nested `++` (MINOR, quality reviewer)** —
+    fixed. `Resolve.RW` accumulates diagnostics through a difference list
+    (`Diagnostics -> Diagnostics`) instead of `++`, so the writer is
+    linear under left-associated binds.
+21. **`Check.hs` single-module size (MINOR, quality reviewer) and
+    comprehension constant factor (MINOR, quality reviewer)** —
+    acknowledged, not gated. The reviewer classes both as MINOR
+    ("Recommend, do not gate on it"; "not a blocker"). The module split is
+    the same engineering tradeoff recorded in #11 above: the proposed
+    submodules are mutually recursive with the bidirectional core
+    (`inferType`/`check`), so a clean split needs `hs-boot`/callback
+    indirection that obscures more than the existing section banners, and
+    a 9.8k-line incremental split carries real regression risk against the
+    green in-tree and external suites for no correctness or performance
+    gain. Comprehension lowering scales linearly (the reviewer confirms
+    n=250→1000 is ~2×/doubling, not pathological); the high constant
+    factor is an ergonomics note, not a defect, and is left for a future
+    profiling pass rather than a speculative rewrite.
