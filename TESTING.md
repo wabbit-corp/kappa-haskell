@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (186/186)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (195/195)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -109,7 +109,7 @@ permits nonstandard directives), and the rest remain harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **186/186 passing**, zero unsupported, zero
+`tests/conformance/` — **195/195 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |

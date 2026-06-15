@@ -669,7 +669,7 @@ reproduced a spurious harness-error run only by rebuilding the binary
 *while the loop was in flight*; round 4 made the script fail fast if the
 binary is missing before iterating fixtures) and the "182/182
 conformance" staleness in a prior report's prose (the gate itself is and
-stays green; the live count is 186/186 after the perf-guard fixture).
+stays green; the live count is 195/195 after the perf-guard fixture).
 
 ## §3.1.4 required-alias compliance (three named codes)
 
