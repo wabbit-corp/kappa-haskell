@@ -1,0 +1,12 @@
+--! mode run
+--! runArgs "alpha" "beta"
+--! assertStdout "ok\n"
+-- §T.4: runArgs is a standard configuration directive. This run task has
+-- no argv surface (the prelude exposes no primitive that observes
+-- command-line arguments), so the program's observable behavior matches
+-- the §T.4 default (empty argument list). The harness therefore honors
+-- the directive rather than downgrading it to a non-§T.8 'unsupported':
+-- the program runs and its output is asserted normally.
+module main
+
+let main : UIO Unit = printlnString "ok"

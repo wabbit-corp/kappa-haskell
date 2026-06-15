@@ -31,7 +31,7 @@ module Kappa.TestHarness
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Data.Char (isDigit)
-import Data.List (foldl', isSuffixOf, sort)
+import Data.List (foldl', isSuffixOf, sort, sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -125,6 +125,7 @@ data Assertion
   | ADiagRelated !Sev !Text !Text -- ^ §T.5.1: sev code-or-family role
   | ADiagFix !Sev !Text !Text -- ^ §T.5.1: sev code-or-family applicability
   | ADiagFixCount !Sev !Text !Int -- ^ §T.5.1: sev code-or-family n
+  | AFixCompiles !Sev !Text -- ^ §T.5.1: apply first machine-applicable fix, recompile, expect no errors
   | ASuppressed !Text !Text -- ^ §T.5.1: primary-code-or-family suppressed-code-or-family
   | AExplainExists !Text -- ^ §3.1.2A registry lookup, code or family
   | AErrorCodes ![Text] -- ^ x-compatible: exact multiset of error codes
@@ -163,6 +164,9 @@ data Scanned
   | SConfigNoop -- ^ accepted configuration with no harness effect
   | SUnsafeConfig !(UnsafeConfig -> UnsafeConfig) -- ^ §4.2 build-config flag toggle
   | SUnsupported !Text -- ^ §T.8 unsupported (requires unmet, x- extension, …)
+  | SConfigKey !Text !Text -- ^ §T.6 (key, value) of a configuration directive, for duplicate-key conflict detection
+  | SStdinFile !Text -- ^ §T.4 stdinFile <path>: must be a readable suite-relative file (checked in IO)
+  | SStageDump !Text -- ^ §T.5.3 assertStageDump of an unservable checkpoint: ill-formed unless 'requires capability stageDumps' gates it
   | SAssert !Assertion
 
 -- ── Directive scanning (§T.3) ────────────────────────────────────────
@@ -173,20 +177,20 @@ declKindNames =
   , "trait", "instance", "derive", "effect", "pattern", "expect"
   ]
 
--- Standard structured-diagnostic directives this harness still does not
--- support. @assertDiagnosticFixCompiles@ would require applying a fix and
--- recompiling the rewritten source under the same configuration — the
--- diagnostic records now carry fixes (so payload/label/related/fix/count
--- assertions are implemented), but the apply-and-recheck round trip is
--- not wired. @assertStageDump@ compares Chapter 34 stage-dump checkpoints,
--- which are §34 profile-scoped (no checkpoint serialization here). Both
--- fail safe to unsupported (§T.8), never a false PASS. Documented in
--- TESTING.md.
-structuredUnsupported :: [Text]
-structuredUnsupported =
-  [ "assertDiagnosticFixCompiles"
-  , "assertStageDump"
-  ]
+-- This implementation produces no Chapter 34 stage-dump checkpoint
+-- vocabulary, so @assertStageDump <checkpoint> …@ names a checkpoint the
+-- harness cannot serve. Per §T.5.3 ("`<checkpoint>` must name a valid
+-- compiler checkpoint") read against §T.8 (which reserves @unsupported@
+-- for unmet @requires@ or unsupported @x-@ directives only), the faithful
+-- classification of an *un-gated* @assertStageDump@ is a harness error,
+-- not a silent downgrade. A suite that wants the soft outcome gates with
+-- @requires capability stageDumps@, which is reported @unsupported@
+-- earlier (§T.4). Handled explicitly in 'dispatch'.
+--
+-- @assertDiagnosticFixCompiles@ is implemented against the §3.1.6 fix
+-- records (apply the first machine-applicable fix, recompile, assert no
+-- errors) — see 'AFixCompiles'. No standard directive remains downgraded
+-- to a non-§T.8 @unsupported@.
 
 -- §T.4 portable capabilities this harness provides. @runTask@: programs
 -- are executed in-process by the tree-walking interpreter. @
@@ -236,8 +240,12 @@ scanLine allLines (lno, line)
       let body = T.strip (T.drop 3 stripped)
        in parseDirective allLines lno body
   | Just codes <- inlineMarker line =
-      -- same-line counterpart of assertDiagnosticNext (§T.5.1)
-      ([SAssert (ADiagNext (sevOfCode c) c lno) | c <- codes], [])
+      -- same-line counterpart of assertDiagnosticNext (§T.5.1); each code
+      -- must denote a real diagnostic code (§T.5.1: numeric/unregistered
+      -- spellings are ill-typed, hence a harness error, §T.3)
+      case [why | c <- codes, Just why <- [invalidCodeReason c]] of
+        [] -> ([SAssert (ADiagNext (sevOfCode c) c lno) | c <- codes], [])
+        (why : _) -> ([], ["line " <> tshow lno <> ": inline marker " <> why])
   | otherwise = ([], [])
   where
     stripped = T.stripStart line
@@ -270,34 +278,58 @@ parseDirective allLines lno body =
     bad msg = ([], ["line " <> tshow lno <> ": " <> msg])
     ok d = ([d], [])
     unsup why = ok (SUnsupported why)
+    -- §T.6: a configuration directive also contributes its (key, value)
+    -- to the suite's configuration so that a later duplicate key with a
+    -- conflicting value can make the suite ill-formed.
+    cfg key val d = ([SConfigKey key val, d], [])
 
     dispatch name args = case name of
       "mode" -> case args of
-        ["check"] -> ok (SMode "check")
-        ["run"] -> ok (SMode "run")
-        ["analyze"] -> unsup "mode analyze is not supported"
+        ["check"] -> cfg "mode" "check" (SMode "check")
+        ["run"] -> cfg "mode" "run" (SMode "run")
+        ["analyze"] -> cfg "mode" "analyze" (SUnsupported "mode analyze is not supported")
         -- mode compile: the interpreter's executable form is the
         -- evaluated KCore global environment; compiling runs the full
         -- pipeline through that lowering without executing an entry
-        ["compile"] -> ok (SMode "compile")
+        ["compile"] -> cfg "mode" "compile" (SMode "compile")
         _ -> bad "malformed 'mode' directive"
-      "packageMode" -> ok SConfigNoop -- the default (§T.4)
-      "scriptMode" -> ok SScriptMode
+      -- packageMode/scriptMode are two values of the §T.4 "module-naming
+      -- mode" configuration key; specifying both is a conflicting
+      -- duplicate (§T.6).
+      "packageMode" | null args -> cfg "moduleMode" "package" SConfigNoop
+      "scriptMode" | null args -> cfg "moduleMode" "script" SScriptMode
       "backend" -> case args of
-        ["interpreter"] -> ok SConfigNoop -- the only provided profile
+        ["interpreter"] -> cfg "backend" "interpreter" SConfigNoop -- the only provided profile
         -- §T.4: 'backend <profile>' selects the profile for 'compile'
         -- and 'run' tests only; whether it makes the test unsupported
         -- is decided once the effective mode is known
-        [p] -> ok (SBackend p)
+        [p] -> cfg "backend" p (SBackend p)
         _ -> bad "malformed 'backend' directive"
       "entry" -> case args of
-        [q] -> ok (SEntry q)
+        [q] -> cfg "entry" q (SEntry q)
         _ -> bad "malformed 'entry' directive"
-      "runArgs" -> unsup "runArgs is not supported"
-      "stdinFile" -> unsup "stdinFile is not supported"
+      -- §T.4 runArgs/stdinFile: this implementation's run task has no
+      -- argv or standard-input surface (the prelude exposes no primitive
+      -- that observes either; see Interp.runPrimIO'), so the program's
+      -- observable behavior is identical to the §T.4 defaults (empty
+      -- argument list, empty standard input). We therefore *honor* these
+      -- standard directives rather than downgrading them to the
+      -- non-§T.8 'unsupported': we validate them (a malformed runArgs
+      -- string literal or an unreadable stdinFile is a harness error,
+      -- §T.3/§T.8) and otherwise accept them as configuration. No program
+      -- can spuriously pass: one that needs argv/stdin cannot even be
+      -- written without an unresolved name (E_NAME_UNRESOLVED).
+      "runArgs"
+        | T.null rest -> cfg "runArgs" "" SConfigNoop -- default: empty list
+        | otherwise -> case parseStringLiterals rest of
+            Just lits -> cfg "runArgs" (T.intercalate "\0" lits) SConfigNoop
+            Nothing -> bad "malformed string literal in 'runArgs' directive"
+      "stdinFile" -> case args of
+        [p] -> cfg "stdinFile" p (SStdinFile p)
+        _ -> bad "malformed 'stdinFile' directive"
       "dumpFormat" -> case args of
-        ["json"] -> ok SConfigNoop
-        ["sexpr"] -> ok SConfigNoop
+        ["json"] -> cfg "dumpFormat" "json" SConfigNoop
+        ["sexpr"] -> cfg "dumpFormat" "sexpr" SConfigNoop
         _ -> bad "malformed 'dumpFormat' directive"
       "requires" -> case args of
         ["mode", "package"] -> ok SConfigNoop -- met: packageMode is the default
@@ -321,44 +353,69 @@ parseDirective allLines lno body =
       "assertDiagnosticPayload" -> case args of
         (sevT : cf : ptr : exprToks)
           | Just sev <- parseSev sevT, not (null exprToks) ->
-              ok (SAssert (ADiagPayload sev cf ptr (T.unwords exprToks)))
+              requireCode cf (ok (SAssert (ADiagPayload sev cf ptr (T.unwords exprToks))))
         _ -> bad "malformed 'assertDiagnosticPayload' directive"
       "assertDiagnosticLabel" -> case args of
-        [sevT, cf, role] | Just sev <- parseSev sevT -> ok (SAssert (ADiagLabel sev cf role))
+        [sevT, cf, role] | Just sev <- parseSev sevT ->
+          requireCode cf (ok (SAssert (ADiagLabel sev cf role)))
         _ -> bad "malformed 'assertDiagnosticLabel' directive"
       "assertDiagnosticRelated" -> case args of
-        [sevT, cf, role] | Just sev <- parseSev sevT -> ok (SAssert (ADiagRelated sev cf role))
+        [sevT, cf, role] | Just sev <- parseSev sevT ->
+          requireCode cf (ok (SAssert (ADiagRelated sev cf role)))
         _ -> bad "malformed 'assertDiagnosticRelated' directive"
       "assertDiagnosticFix" -> case args of
-        [sevT, cf, appl] | Just sev <- parseSev sevT -> ok (SAssert (ADiagFix sev cf appl))
+        [sevT, cf, appl] | Just sev <- parseSev sevT ->
+          requireCode cf (ok (SAssert (ADiagFix sev cf appl)))
         _ -> bad "malformed 'assertDiagnosticFix' directive"
       "assertDiagnosticFixCount" -> case args of
         [sevT, cf, nT] | Just sev <- parseSev sevT, Just n <- parseNat nT ->
-          ok (SAssert (ADiagFixCount sev cf n))
+          requireCode cf (ok (SAssert (ADiagFixCount sev cf n)))
         _ -> bad "malformed 'assertDiagnosticFixCount' directive"
       "assertSuppressedDiagnostic" -> case args of
-        [primary, supp] -> ok (SAssert (ASuppressed primary supp))
+        [primary, supp] ->
+          requireCode primary (requireCode supp (ok (SAssert (ASuppressed primary supp))))
         _ -> bad "malformed 'assertSuppressedDiagnostic' directive"
+      -- §T.5.1: apply the first machine-applicable fix of the first
+      -- matching diagnostic and recompile under the same configuration.
+      "assertDiagnosticFixCompiles" -> case args of
+        [sevT, cf] | Just sev <- parseSev sevT ->
+          requireCode cf (ok (SAssert (AFixCompiles sev cf)))
+        _ -> bad "malformed 'assertDiagnosticFixCompiles' directive"
+      -- §T.5.3: this implementation serializes no Chapter 34 stage-dump
+      -- checkpoints, so any <checkpoint> names one the harness cannot
+      -- serve. §T.5.3 requires <checkpoint> to "name a valid compiler
+      -- checkpoint"; an un-gated assertion of an unservable checkpoint is
+      -- ill-formed (§T.8 reserves 'unsupported' for requires/x-).
+      "assertStageDump" -> case args of
+        [chk, "equals", _path] -> ok (SStageDump chk)
+        _ -> bad "malformed 'assertStageDump' directive (expected '<checkpoint> equals <path>')"
       "assertDiagnosticMatch"
         | T.null rest -> bad "malformed 'assertDiagnosticMatch' directive (empty pattern)"
         | otherwise -> case compileRegex rest of
             Right re -> ok (SAssert (ADiagMatch rest re))
             Left err -> bad ("invalid 'assertDiagnosticMatch' pattern: " <> err)
       "assertDiagnosticExplainExists" -> case args of
-        [cf] -> ok (SAssert (AExplainExists cf))
+        -- the assertion's whole purpose is to query whether an explanation
+        -- exists, so an *unregistered* spelling legitimately FAILs rather
+        -- than being ill-typed; only a purely numeric code is malformed.
+        [cf]
+          | T.all isDigit cf && not (T.null cf) ->
+              bad ("directive 'assertDiagnosticExplainExists': '" <> cf
+                     <> "' is a purely numeric code, which is not a valid standard-harness diagnostic code (§T.5.1)")
+          | otherwise -> ok (SAssert (AExplainExists cf))
         _ -> bad "malformed 'assertDiagnosticExplainExists' directive"
       "assertDiagnosticAt" -> case args of
         [p, sevT, code, lnT]
           | Just sev <- parseSev sevT, Just n <- parseNat lnT ->
-              ok (SAssert (ADiagAt p sev code n Nothing))
+              requireCode code (ok (SAssert (ADiagAt p sev code n Nothing)))
         [p, sevT, code, lnT, colT]
           | Just sev <- parseSev sevT, Just n <- parseNat lnT, Just c <- parseNat colT ->
-              ok (SAssert (ADiagAt p sev code n (Just c)))
+              requireCode code (ok (SAssert (ADiagAt p sev code n (Just c))))
         [p, sevT, code, slT, scT, "-", elT, ecT]
           | Just sev <- parseSev sevT
           , Just sl <- parseNat slT, Just sc <- parseNat scT
           , Just el <- parseNat elT, Just ec <- parseNat ecT ->
-              ok (SAssert (ADiagAtRange p sev code sl sc el ec))
+              requireCode code (ok (SAssert (ADiagAtRange p sev code sl sc el ec)))
         _ -> bad "malformed 'assertDiagnosticAt' directive"
       "assertType" -> case args of
         (nm : tyToks) | not (null tyToks) -> ok (SAssert (AType nm (T.unwords tyToks)))
@@ -406,9 +463,11 @@ parseDirective allLines lno body =
       -- compatibility extensions for the external fixture corpus
       "assertDiagnosticCodes" ->
         let codes = map T.strip (T.splitOn "," rest)
-         in if not (null codes) && all (not . T.null) codes
-              then ok (SAssert (AErrorCodes codes))
-              else bad "malformed 'assertDiagnosticCodes' code list"
+         in if null codes || any T.null codes
+              then bad "malformed 'assertDiagnosticCodes' code list"
+              else case [why | c <- codes, Just why <- [invalidCodeReason c]] of
+                (why : _) -> bad ("directive 'assertDiagnosticCodes': " <> why)
+                [] -> ok (SAssert (AErrorCodes codes))
       "assertEval" -> evalAssert
       -- compatibility configuration: the corpus gates its 'unsafeConsume'
       -- linear sink behind this directive; this prelude always provides
@@ -493,8 +552,6 @@ parseDirective allLines lno body =
       _
         | "x-" `T.isPrefixOf` name ->
             unsup ("extension directive '" <> name <> "' is not supported")
-        | name `elem` structuredUnsupported ->
-            unsup ("directive '" <> name <> "' asserts structured-diagnostic/stage-dump data this implementation does not produce")
         | otherwise ->
             -- §T.3: any unknown non-extension directive is a harness
             -- error (this covers other implementations' private
@@ -518,15 +575,23 @@ parseDirective allLines lno body =
         withCount f = case args of
           [nT] | Just n <- parseNat nT -> ok (SAssert (f n))
           _ -> bad ("malformed '" <> name <> "' directive")
+        -- §T.5.1: the code/family argument must be a real code or family;
+        -- a numeric or unregistered spelling is an ill-typed argument and
+        -- thus a harness error (§T.3), not a satisfiable assertion.
+        requireCode code k = case invalidCodeReason code of
+          Just why -> bad ("directive '" <> name <> "': " <> why)
+          Nothing -> k
         withSevCode f = case args of
-          [sevT, code] | Just sev <- parseSev sevT -> ok (SAssert (f sev code))
+          [sevT, code] | Just sev <- parseSev sevT ->
+            requireCode code (ok (SAssert (f sev code)))
           _ -> bad ("malformed '" <> name <> "' directive")
         nextAssert = case args of
           [sevT, code]
             | Just sev <- parseSev sevT ->
-                case targetLineAfter allLines lno of
-                  Just t -> ok (SAssert (ADiagNext sev code t))
-                  Nothing -> bad "assertDiagnosticNext has no following source line"
+                requireCode code $
+                  case targetLineAfter allLines lno of
+                    Just t -> ok (SAssert (ADiagNext sev code t))
+                    Nothing -> bad "assertDiagnosticNext has no following source line"
           _ -> bad ("malformed '" <> name <> "' directive")
         withString f = case parseStringLiteral rest of
           Just s -> ok (SAssert (f s))
@@ -565,6 +630,32 @@ parseSev = \case
   "note" -> Just SNote
   "info" -> Just SInfo
   _ -> Nothing
+
+-- | §T.5.1 code validity. A directive's @<code>@ "denotes a diagnostic
+-- code as defined by §3.1"; "purely numeric codes are not valid
+-- standard-harness diagnostic codes." An assertion naming a code that is
+-- purely numeric, or that names no code or family this implementation
+-- can ever produce or recognize, is an *ill-typed directive argument*
+-- and therefore a harness error (§T.3), not a satisfiable assertion that
+-- merely fails. We accept a spelling that (a) the §3.1.2A registry knows
+-- as a code or family, or (b) is a recognized §3.1.4 portable alias of a
+-- code this implementation emits; everything else (numbers, typos,
+-- another implementation's private codes we cannot match) is malformed.
+-- Returns @Just reason@ when the spelling is *not* a valid code.
+invalidCodeReason :: Text -> Maybe Text
+invalidCodeReason c
+  | T.null c = Just "empty diagnostic code"
+  | T.all isDigit c =
+      Just ("'" <> c <> "' is a purely numeric code, which is not a valid standard-harness diagnostic code (§T.5.1)")
+  | validCodeSpelling c = Nothing
+  | otherwise =
+      Just ("'" <> c <> "' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1)")
+
+-- | A @<code-or-family>@ spelling the harness can match: a registered
+-- §3.1.2A code or family (via 'explainExists'), or a recognized §3.1.4
+-- portable-alias spelling.
+validCodeSpelling :: Text -> Bool
+validCodeSpelling c = explainExists c || portableAlias c /= Nothing
 
 parseNat :: Text -> Maybe Int
 parseNat t
@@ -612,6 +703,51 @@ parseStringLiteral t0 = do
     isHexDigit c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
     hexVal = T.foldl' (\a c -> a * 16 + digit c) 0
     digit c
+      | isDigit c = fromEnum c - fromEnum '0'
+      | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
+      | otherwise = fromEnum c - fromEnum 'A' + 10
+
+-- | A whitespace-separated sequence of §T.3 string literals (the
+-- @runArgs <stringLiteral>...@ argument list). Each literal uses the
+-- same non-interpolated grammar as 'parseStringLiteral'. Returns Nothing
+-- if any literal is malformed or non-literal junk appears between them.
+parseStringLiterals :: Text -> Maybe [Text]
+parseStringLiterals = go . T.stripStart
+  where
+    go t
+      | T.null t = Just []
+      | otherwise = do
+          (lit, rest) <- oneLiteral t
+          (lit :) <$> go (T.stripStart rest)
+    oneLiteral t0 = do
+      t1 <- T.stripPrefix "\"" t0
+      scan t1 []
+    scan t acc = case T.uncons t of
+      Nothing -> Nothing -- unterminated
+      Just ('"', restT) -> Just (T.pack (reverse acc), restT)
+      Just ('\\', restT) -> do
+        (c, restT') <- unesc restT
+        scan restT' (c : acc)
+      Just (c, restT) -> scan restT (c : acc)
+    unesc t = case T.uncons t of
+      Just ('n', r) -> Just ('\n', r)
+      Just ('t', r) -> Just ('\t', r)
+      Just ('r', r) -> Just ('\r', r)
+      Just ('0', r) -> Just ('\0', r)
+      Just ('b', r) -> Just ('\b', r)
+      Just ('f', r) -> Just ('\f', r)
+      Just ('\\', r) -> Just ('\\', r)
+      Just ('"', r) -> Just ('"', r)
+      Just ('\'', r) -> Just ('\'', r)
+      Just ('$', r) -> Just ('$', r)
+      Just ('u', r) | Just ('{', r1) <- T.uncons r -> do
+        let (hs, r2) = T.span isHex r1
+        r3 <- T.stripPrefix "}" r2
+        if T.null hs || T.length hs > 6 then Nothing else Just (toEnum (hexV hs), r3)
+      _ -> Nothing
+    isHex c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+    hexV = T.foldl' (\a c -> a * 16 + d c) 0
+    d c
       | isDigit c = fromEnum c - fromEnum '0'
       | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
       | otherwise = fromEnum c - fromEnum 'A' + 10
@@ -713,17 +849,41 @@ runSuiteWith packageMode label root files mktest preDiags = do
               backends = [b | (_, _, SBackend b) <- scanned]
               asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
               scripted = not (null [() | (_, _, SScriptMode) <- scanned])
+              stdinFiles = [p | (_, _, SStdinFile p) <- scanned]
+              stageDumps = [c | (_, _, SStageDump c) <- scanned]
+              -- §T.6: the same configuration key specified more than once
+              -- with different values makes the suite ill-formed.
+              configPairs = [(k, v) | (_, _, SConfigKey k v) <- scanned]
+              configConflict =
+                listToMaybe
+                  [ k
+                  | k <- dedup (map fst configPairs)
+                  , length (dedup [v | (k', v) <- configPairs, k' == k]) > 1
+                  ]
               -- §4.2: package mode defaults all unsafe/debug settings to
               -- false; script mode MAY default them to true (this
               -- implementation does). Explicit allow_* directives then
               -- layer on top of that base.
               unsafeBase = if scripted then scriptUnsafeConfig else defaultUnsafeConfig
               unsafeCfg = foldl' (\c f -> f c) unsafeBase [f | (_, _, SUnsafeConfig f) <- scanned]
+          -- §T.4: a stdinFile path must name a readable suite-relative
+          -- file (§T.8: an unreadable required file is a harness error).
+          missingStdin <- filterM (fmap not . doesFileExist . (root </>) . T.unpack) stdinFiles
           case () of
-            _ | length (dedup modes) > 1 ->
+            _ | Just k <- configConflict ->
+                  pure (TestReport label HarnessError ("configuration key '" <> k <> "' is specified more than once with conflicting values; the suite is ill-formed (§T.6)"))
+              | length (dedup modes) > 1 ->
                   pure (TestReport label HarnessError "conflicting 'mode' directives (§T.6)")
+              | (p : _) <- missingStdin ->
+                  pure (TestReport label HarnessError ("stdinFile '" <> p <> "' is not a readable suite file (§T.4, §T.8)"))
+              -- a 'requires capability stageDumps' gate (an SUnsupported)
+              -- is honored first, so a *gated* assertStageDump is
+              -- unsupported; an *un-gated* one names a checkpoint this
+              -- implementation cannot serve and is ill-formed (§T.5.3).
               | not (null unsups) ->
                   pure (TestReport label Unsupported (head unsups))
+              | (c : _) <- stageDumps ->
+                  pure (TestReport label HarnessError ("assertStageDump names checkpoint '" <> c <> "', which this implementation does not provide; gate with 'requires capability stageDumps' for an unsupported result (§T.5.3, §T.8)"))
               | otherwise -> do
                   let mode = case modes of m : _ -> m; [] -> "check"
                   -- §T.4: 'backend <profile>' selects the backend for
@@ -749,13 +909,16 @@ executeSuite ::
   UnsafeConfig -> Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
   [(FilePath, Text, Assertion)] -> Diagnostics -> IO TestReport
 executeSuite unsafeCfg packageMode label root files mode entries asserts preDiags = do
-  -- the suite root is the §8.1 source root for module-path derivation
-  let cu0 =
+  -- the suite root is the §8.1 source root for module-path derivation;
+  -- 'compileWith' captures this suite's exact build configuration so the
+  -- @assertDiagnosticFixCompiles@ recheck recompiles identically.
+  let compileWith srcs =
         if unsafeCfg /= defaultUnsafeConfig
-          then compileFilesWithConfig unsafeCfg packageMode root files
+          then compileFilesWithConfig unsafeCfg packageMode root srcs
           else if packageMode
-            then compileFilesIn root files
-            else compileFiles files
+            then compileFilesIn root srcs
+            else compileFiles srcs
+      cu0 = compileWith files
       -- mode compile: the per-module Term->Value lowering into the
       -- interpreter's runtime representation is this implementation's
       -- backend-IR stage; it is recorded once per module (§T.5.5)
@@ -774,7 +937,7 @@ executeSuite unsafeCfg packageMode label root files mode entries asserts preDiag
         if mode == "run"
           then Just <$> doRun cu diags
           else pure Nothing
-      results <- mapM (\(p, s, a) -> checkAssertion root p s files cu diags mRun a) asserts
+      results <- mapM (\(p, s, a) -> checkAssertion compileWith root p s files cu diags mRun a) asserts
       let fails = [d | AssertFail d <- results]
           herrs = [d | AssertHarnessError d <- results]
       pure $
@@ -873,9 +1036,10 @@ forceResult r = case r of
   AssertHarnessError t -> T.length t `seq` r
 
 checkAssertion ::
+  ([(FilePath, Text)] -> CompiledUnit) ->
   FilePath -> FilePath -> Text -> [(FilePath, Text)] -> CompiledUnit ->
   Diagnostics -> Maybe RunInfo -> Assertion -> IO AssertResult
-checkAssertion root path src files cu diags mRun = \case
+checkAssertion compileWith root path src files cu diags mRun = \case
   ANoErrors ->
     countErrorsIs 0
   ANoWarnings ->
@@ -968,6 +1132,30 @@ checkAssertion root path src files cu diags mRun = \case
      in require
           (any ((== n) . length . dFixes) cand)
           ("no " <> sevText sev <> " diagnostic matching " <> cf <> " has exactly " <> tshow n <> " fixes")
+  AFixCompiles sev cf ->
+    -- §T.5.1: take the first machine-applicable fix of the first matching
+    -- diagnostic (in the deterministic fix ordering), apply its edits to
+    -- the suite source, recompile under the same configuration, and
+    -- succeed iff the recompilation produces no error diagnostics.
+    case [ (d, f)
+         | d <- diags, dSeverity d == toSeverity sev, matchCF cf d
+         , f <- take 1 [fx | fx <- dFixes d, dfApplicability fx == FixMachineApplicable]
+         ] of
+      [] ->
+        pure (AssertFail ("no " <> sevText sev <> " diagnostic matching " <> cf
+                            <> " has a machine-applicable fix to apply"))
+      ((_, fix) : _) ->
+        case applyFixToFiles files (dfEdits fix) of
+          Left err -> pure (AssertHarnessError ("assertDiagnosticFixCompiles: " <> err))
+          Right files' ->
+            let cu' = compileWith files'
+                fps = map fst files'
+                ds' = [d | d <- cuDiags cu', spanFile (dPrimary d) `elem` fps]
+             in require
+                  (not (hasErrors ds'))
+                  ( "applying fix " <> tshow (dfTitle fix) <> " still leaves errors: "
+                      <> T.intercalate ", " [dCode d | d <- ds', isError d]
+                  )
   ASuppressed primary supp ->
     require
       (any (\d -> matchCFAny primary d && any (suppMatches supp) (dSuppressed d)) diags)
@@ -1787,6 +1975,43 @@ sliceSpan src sp =
               ++ [lineAt i | i <- [sl + 1 .. el - 1]]
               ++ [T.take (ec - 1) (lineAt el)]
 
+-- | Apply a §3.1.6 fix's source edits to the matching suite files
+-- (@assertDiagnosticFixCompiles@). Edits are grouped by file and applied
+-- within each file in descending start position so earlier edits do not
+-- shift the offsets of later ones; overlapping edits or an edit on a
+-- range we cannot resolve are reported as a harness error. An edit whose
+-- file is not among the suite sources (e.g. a generated-only synthetic
+-- origin) is rejected — §T.5.1 forbids marking such a fix
+-- machine-applicable, so encountering one means the record is malformed.
+applyFixToFiles :: [(FilePath, Text)] -> [SourceEdit] -> Either Text [(FilePath, Text)]
+applyFixToFiles files edits = foldl' step (Right files) (byFile edits)
+  where
+    byFile es = [(f, [e | e <- es, seFile e == f]) | f <- distinct (map seFile es)]
+    distinct = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
+    step (Left e) _ = Left e
+    step (Right fs) (f, es) =
+      case lookup f fs of
+        Nothing -> Left ("fix edits a file outside the suite: " <> T.pack f)
+        Just src -> do
+          src' <- applyEdits src es
+          Right [(fp, if fp == f then src' else s) | (fp, s) <- fs]
+    applyEdits src es = do
+      spans <- mapM (\e -> (,) <$> offsetsOf src (seRange e) <*> pure (seReplacement e)) es
+      -- descending by start offset, so splices keep earlier indices valid
+      let ordered = reverse (sortOn (\((s, _), _) -> s) spans)
+      pure (foldl' splice src ordered)
+    splice s ((a, b), repl) = T.take a s <> repl <> T.drop b s
+    -- 1-based (line, col) span → (startOffset, endOffset) char indices.
+    offsetsOf src sp =
+      let Pos sl sc = spanStart sp
+          Pos el ec = spanEnd sp
+       in (,) <$> offsetOf src sl sc <*> offsetOf src el ec
+    offsetOf src ln col =
+      let ls = T.splitOn "\n" src
+       in if ln >= 1 && ln <= length ls
+            then Right (sum (map ((+ 1) . T.length) (take (ln - 1) ls)) + (col - 1))
+            else Left "fix edit range falls outside the source file"
+
 -- | @x-assertTraitMembers Trait m1, m2@ (compatibility extension):
 -- the named trait declares exactly these member names, in order.
 assertTraitMembers :: FilePath -> Text -> Text -> [Text] -> AssertResult
@@ -1907,9 +2132,11 @@ declKind = \case
 
 -- | Run a path: a @.kp@ file is a single-file inline test; a directory
 -- containing @step0@ or @incremental.ktest@ is one incremental step
--- suite (§T.7); a directory containing @suite.ktest@ or @main.kp@ is
--- one directory suite (§T.2), as is a directory given directly as the
--- argument that contains @.kp@ files; any other directory recurses.
+-- suite (§T.7); a directory that declares itself a suite root with
+-- @suite.ktest@ or @main.kp@ is one directory suite (§T.2) compiled as a
+-- single unit (at any depth), as is a directory named directly that
+-- contains @.kp@ files; any other directory recurses, running each
+-- directly-contained @.kp@ file as a single-file inline test.
 -- Prints one result line per test.
 runTestPath :: FilePath -> IO [TestReport]
 runTestPath = runTestPathAt True
@@ -1987,6 +2214,21 @@ runIncrementalDir dir = guardExceptions dir $ do
           TestReport dir Unsupported
             "incremental step suites require capability 'incremental', which this harness does not provide (§T.4, §T.7)"
 
+-- | §T.2: a directory suite is "a directory containing one or more
+-- @.kp@ source files and optionally a file named @suite.ktest@". A
+-- directory is taken to be *one* directory suite — compiled as a single
+-- unit per §T.2 — when it declares itself a suite root by carrying a
+-- @suite.ktest@ or @main.kp@, at any depth of the recursive walk; or
+-- when it is the directory the user named directly (@topLevel@) and it
+-- directly contains @.kp@ files. A bare directory of @.kp@ files reached
+-- *during* the recursive descent is treated as a collection of
+-- single-file inline tests (§T.2 form 1): these files are independent
+-- inline tests with their own directives, not co-compiled modules, so
+-- co-compiling them as one unit would conflate unrelated tests and
+-- collide their top-level definitions. (Incremental roots are detected
+-- earlier and take precedence.) The @--suite@ entrypoint
+-- ('runTestSuitePath') forces the whole-directory reading when a caller
+-- really does mean one suite spanning subdirectories.
 isSuiteRoot :: Bool -> FilePath -> IO Bool
 isSuiteRoot topLevel dir = do
   hasKtest <- doesFileExist (dir </> "suite.ktest")

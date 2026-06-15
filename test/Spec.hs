@@ -5,13 +5,29 @@
 module Main (main) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (isSuffixOf, nub, sort)
+import Data.List (isInfixOf, isSuffixOf, nub, sort)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Control.Monad (unless)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
-import Kappa.TestHarness (Summary (..), runTestPath, summarize)
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import Kappa.TestHarness
+  ( Outcome (..)
+  , Summary (..)
+  , TestReport (..)
+  , runTestFile
+  , runTestPath
+  , summarize
+  )
+import System.Directory
+  ( createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , getTemporaryDirectory
+  , listDirectory
+  , removeDirectoryRecursive
+  )
 import System.Exit (exitFailure)
+import System.FilePath ((</>))
 import System.IO (BufferMode (..), hSetBuffering, stdout)
 
 main :: IO ()
@@ -19,7 +35,8 @@ main = do
   hSetBuffering stdout LineBuffering
   regOk0 <- registryComplete
   famOk <- familiesHygienic
-  let regOk = regOk0 && famOk
+  harnessOk <- harnessFaithful
+  let regOk = regOk0 && famOk && harnessOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -38,6 +55,104 @@ main = do
       if sFail s > 0 || sHarnessError s > 0 || not regOk
         then exitFailure
         else pure ()
+
+-- | Appendix-T harness-faithfulness mirrors (gaps G32–G35). Each fixed
+-- requirement is pinned here as an expected 'Outcome' over a crafted
+-- directive file or directory suite, since these are properties of the
+-- harness's §T.8 *classification* (not of any one program) and so cannot
+-- be expressed as an ordinary @--!@ assertion inside the conformance
+-- tree. Builds the fixtures in a scratch directory under the system
+-- temp dir, runs them through the in-process harness, and checks the
+-- classification.
+harnessFaithful :: IO Bool
+harnessFaithful = do
+  tmp0 <- getTemporaryDirectory
+  let root = tmp0 </> "kappa-harness-mirror"
+  removeIfExists root
+  createDirectoryIfMissing True root
+  -- §T.5.1 (G33): a purely numeric diagnostic code is ill-typed.
+  numeric <- fileCase root "g33-numeric.kp"
+    "--! assertDiagnostic error 12345\nlet x : Int = 5\n"
+  -- §T.5.1 (G33): an unregistered code is ill-typed too.
+  unreg <- fileCase root "g33-unregistered.kp"
+    "--! assertDiagnostic error E_NO_SUCH_REGISTERED_CODE\nlet x : Int = 5\n"
+  -- §T.5.1 (G33): a registered code that simply is not produced FAILs.
+  realCode <- fileCase root "g33-real.kp"
+    "--! assertDiagnostic error E_TYPE_MISMATCH\nlet x : Int = 5\n"
+  -- §T.5.1 (G33): inline @--!!@ markers are validated the same way.
+  inlineNum <- fileCase root "g33-inline.kp"
+    "let x : Int = 5 --!! 999\n"
+  -- §T.6 (G34): a duplicate config key with conflicting values is
+  -- ill-formed; with the same value it is fine.
+  conflict <- fileCase root "g34-conflict.kp"
+    "--! dumpFormat json\n--! dumpFormat sexpr\nlet x : Int = 5\n"
+  agree <- fileCase root "g34-agree.kp"
+    "--! dumpFormat json\n--! dumpFormat json\nlet x : Int = 5\n"
+  modeConflict <- fileCase root "g34-modemode.kp"
+    "--! packageMode\n--! scriptMode\nlet x : Int = 5\n"
+  -- §T.4 (G32): runArgs is honored (this run task has no argv surface,
+  -- so the program's behavior matches the empty-argument default);
+  -- stdinFile must name a readable suite file.
+  runArgsOk <- fileCase root "g32-runargs.kp"
+    "--! mode run\n--! runArgs \"a\" \"b\"\nlet main : UIO Unit = printlnString \"hi\"\n"
+  stdinMissing <- fileCase root "g32-stdin-missing.kp"
+    "--! mode run\n--! stdinFile does-not-exist.txt\nlet main : UIO Unit = printlnString \"hi\"\n"
+  -- §T.5.3 (G32): an un-gated assertStageDump names a checkpoint this
+  -- implementation cannot serve, so the suite is ill-formed; gating it
+  -- behind 'requires capability stageDumps' yields the soft outcome.
+  stageDump <- fileCase root "g32-stagedump.kp"
+    "--! assertStageDump kfront equals expected.json\nlet x : Int = 5\n"
+  stageGated <- fileCase root "g32-stagedump-gated.kp"
+    "--! requires capability stageDumps\n--! assertStageDump kfront equals expected.json\nlet x : Int = 5\n"
+  -- §T.2 (G35): walking a container directory recurses; a nested
+  -- directory that declares itself a suite (suite.ktest/main.kp)
+  -- compiles its .kp files as ONE unit (so a cross-module reference
+  -- resolves and the whole subdir is a single report); a nested bare
+  -- directory of .kp files runs each file as an independent single-file
+  -- inline test (so unrelated tests are not conflated). The conformance
+  -- tree itself relies on the latter reading.
+  let container = root </> "g35-container"
+  createDirectoryIfMissing True (container </> "declared")
+  writeFile (container </> "declared" </> "suite.ktest") "--! assertNoErrors\n"
+  writeFile (container </> "declared" </> "a.kp") "module a\npublic let helperA : Int = 5\n"
+  writeFile (container </> "declared" </> "b.kp") "module b\nimport a.*\nlet useIt : Int = helperA\n"
+  createDirectoryIfMissing True (container </> "bare")
+  writeFile (container </> "bare" </> "t1.kp") "--! assertNoErrors\nlet a : Int = 1\n"
+  writeFile (container </> "bare" </> "t2.kp") "--! assertNoErrors\nlet b : Int = 2\n"
+  walkReps <- runTestPath container
+  let declaredReps = [r | r <- walkReps, "g35-container/declared" `isInfixOf` trPath r]
+      bareReps = [r | r <- walkReps, "g35-container/bare" `isInfixOf` trPath r]
+  removeIfExists root
+  let checks =
+        [ ("G33 numeric code → harnessError", trOutcome numeric == HarnessError)
+        , ("G33 unregistered code → harnessError", trOutcome unreg == HarnessError)
+        , ("G33 registered-but-absent code → fail", trOutcome realCode == Fail)
+        , ("G33 inline numeric marker → harnessError", trOutcome inlineNum == HarnessError)
+        , ("G34 conflicting dumpFormat → harnessError", trOutcome conflict == HarnessError)
+        , ("G34 agreeing dumpFormat → pass", trOutcome agree == Pass)
+        , ("G34 packageMode+scriptMode → harnessError", trOutcome modeConflict == HarnessError)
+        , ("G32 runArgs honored → pass", trOutcome runArgsOk == Pass)
+        , ("G32 missing stdinFile → harnessError", trOutcome stdinMissing == HarnessError)
+        , ("G32 un-gated assertStageDump → harnessError", trOutcome stageDump == HarnessError)
+        , ("G32 gated assertStageDump → unsupported", trOutcome stageGated == Unsupported)
+        , ("G35 declared suite is exactly one report", length declaredReps == 1)
+        , ("G35 declared suite passes as one unit", all ((== Pass) . trOutcome) declaredReps)
+        , ("G35 bare dir → one report per file", length bareReps == 2)
+        , ("G35 bare dir files pass independently", all ((== Pass) . trOutcome) bareReps)
+        ]
+      failed = [name | (name, ok) <- checks, not ok]
+  unless (null failed) $ do
+    putStrLn "Appendix-T harness-faithfulness mirrors failed:"
+    mapM_ (putStrLn . ("  " <>)) failed
+  pure (null failed)
+  where
+    removeIfExists d = do
+      there <- doesDirectoryExist d
+      unless (not there) (removeDirectoryRecursive d)
+    fileCase root name contents = do
+      let p = root </> name
+      writeFile p contents
+      runTestFile p
 
 -- | §3.1.2A: "A diagnostic emitted in ordinary user-facing compilation
 -- MUST NOT use an unregistered code." Every @\"E_...\"@ \/ @\"W_...\"@

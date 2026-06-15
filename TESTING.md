@@ -103,25 +103,70 @@ matched against the machine-readable record (not rendered prose):
 | `assertDiagnosticFixCount SEV CODE-OR-FAMILY N` | a matching diagnostic carries exactly `N` fixes |
 | `assertSuppressedDiagnostic PRIMARY-CF SUPPRESSED-CF` | a diagnostic matching `PRIMARY-CF` carries a suppressed summary matching `SUPPRESSED-CF` |
 
-Classified **unsupported**: `assertDiagnosticFixCompiles` (§T.5.1 — the
-apply-fix-and-recompile round trip is not wired) and `assertStageDump`
-(§T.5.3 — no Chapter 34 stage-dump serialization; §34 profile-scoped);
-all unsupported `x-*` extensions (§T.3 mandates unsupported);
-`mode analyze`, non-`interpreter` backends, `runArgs`, `stdinFile`,
-`requires mode script`; `requires` of unprovided capabilities (§T.4
-mandates unsupported).
+`assertDiagnosticFixCompiles SEV CODE-OR-FAMILY` is implemented against
+the §3.1.6 fix records: it applies the first `machine-applicable` fix of
+the first matching diagnostic to the suite source, recompiles under the
+same configuration, and succeeds iff no errors remain. This
+implementation currently emits no `machine-applicable` fixes, so such an
+assertion *fails* (a real assertion failure, never a downgrade) until one
+exists.
+
+`runArgs <stringLiteral>...` and `stdinFile <path>` (§T.4) are **honored**,
+not downgraded: this run task exposes no argv or standard-input surface
+(the prelude defines no primitive that observes either), so a program's
+observable behavior is identical to the §T.4 defaults (empty argument
+list, empty standard input). `runArgs` literals are validated (a
+malformed literal is a harness error) and `stdinFile` must name a readable
+suite-relative file (an unreadable one is a harness error, §T.8). A
+program that genuinely needed argv/stdin could not be written without an
+unresolved name, so no spurious pass is possible.
+
+Classified **unsupported** (§T.4 mandates unsupported for these):
+all unsupported `x-*` extensions (§T.3); `mode analyze`,
+non-`interpreter` backends, `requires mode script`; `requires` of
+unprovided capabilities — including `requires capability stageDumps`.
 
 **Harness errors** (§T.3: "any unknown standard directive, malformed
-directive, or ill-typed directive argument"): malformed directives and
-all unknown non-`x-` directives. The external corpus's private
-directives do not appear anywhere in Spec.md (checked against the
-§T.4/§T.5 directive lists); those with an evident portable meaning are
-implemented as the documented compatibility extensions above (§T.1
-permits nonstandard directives), and the rest remain harness errors.
+directive, or ill-typed directive argument"; §T.5.1; §T.5.3; §T.6):
+
+* a `<code>`/`<code-or-family>` argument that is purely numeric (§T.5.1
+  "purely numeric codes are not valid") or names no registered §3.1.2A
+  code/family/alias — the assertion is ill-typed (`assertDiagnostic`,
+  `assertDiagnosticNext`/`Here`, `assertDiagnosticAt`, the structured
+  diagnostic assertions, `assertDiagnosticCodes`, and `--!!` markers;
+  `assertDiagnosticExplainExists` only rejects numeric, since querying an
+  unregistered spelling legitimately FAILs);
+* a duplicate configuration key with conflicting values — the suite is
+  ill-formed (§T.6): `mode`, `moduleMode` (`packageMode` vs `scriptMode`),
+  `backend`, `entry`, `runArgs`, `stdinFile`, `dumpFormat`;
+* an un-gated `assertStageDump <checkpoint> equals <path>` — this
+  implementation serializes no Chapter 34 checkpoint, so the named
+  checkpoint is not a valid one (§T.5.3); gate it behind `requires
+  capability stageDumps` for the soft `unsupported` outcome;
+* malformed directives and all unknown non-`x-` directives.
+
+The external corpus's private directives do not appear anywhere in
+Spec.md (checked against the §T.4/§T.5 directive lists); those with an
+evident portable meaning are implemented as the documented compatibility
+extensions above (§T.1 permits nonstandard directives), and the rest
+remain harness errors.
+
+### §3.1.14A typed recovery nodes
+
+The parser implements recovery as **typed frontend state**, not discarded
+trivia (§3.1.14A): a malformed top-level declaration, a misindented
+top-level layout, or a malformed constructor alternative is recorded as a
+typed recovery node (site, expected classification, confidence, skipped
+source range) and serialized into the structured `payload` of the
+diagnostic it raises (`payload.kind = "recovery-node"`), so "a diagnostic
+caused by a recovery node identif[ies] that recovery node in structured
+payload." Parsing continues to the next declaration (cross-declaration
+recovery), and the recovery node always carries an error-severity
+diagnostic, so an invalid program is never accepted (§3.1.14A soundness).
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **195/195 passing**, zero unsupported, zero
+`tests/conformance/` — **229/229 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
