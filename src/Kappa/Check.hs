@@ -580,12 +580,16 @@ errOncePerSpan sp code fam msg = do
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
 
-freshMeta :: CheckM Term
-freshMeta = do
+-- | Allocate a fresh, unsolved metavariable and return its raw id.
+freshMetaId :: CheckM MetaId
+freshMetaId = do
   st <- get
   let m = csNextMeta st
   put st {csNextMeta = m + 1, csMetas = Map.insert m Nothing (csMetas st)}
-  pure (CMeta m)
+  pure m
+
+freshMeta :: CheckM Term
+freshMeta = CMeta <$> freshMetaId
 
 freshMetaV :: Ctx -> CheckM Value
 freshMetaV ctx = freshMeta >>= evalIn ctx
@@ -1109,13 +1113,10 @@ resolveImplicitQ ctx sp q goal = do
           -- postpone resolution until explicit arguments solve the head
           -- metavariables (§16.1.7.1 spine order); committing to a local
           -- candidate now could wrongly solve the metas
-          m <- freshMeta
-          let mid = case m of
-                CMeta i -> i
-                _ -> error "freshMeta"
+          mid <- freshMetaId
           bfs <- gets csBoolFacts
           modify' $ \st -> st {csPending = (mid, g, sp, ctx, bfs) : csPending st}
-          pure m
+          pure (CMeta mid)
         else do
           -- a flex-headed goal type is not searchable evidence: its
           -- value is inferred by unification at the use site (§16.3.3)
@@ -2913,7 +2914,13 @@ withArgIndexRetag act = do
 data AppSlot
   = SlotKind Term
   | SlotEvid Q Value Value
-  | SlotExpl Q Expr Value Value
+  | -- | An explicit argument slot, carrying the placeholder meta's id
+    -- and value plus a 'Bool' that records whether the function's
+    -- codomain actually depends on this argument. When 'False' (a
+    -- non-dependent arrow), the placeholder meta is solved directly
+    -- (O(1)) instead of unified (O(size)), since it never reaches the
+    -- result type — see 'step'.
+    SlotExpl Q Expr Value MetaId Value Bool
 
 elabAppChecked :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM Term
 elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
@@ -2957,12 +2964,13 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                   then SlotKind m
                   else SlotEvid q dom mV
           peel ty' as0 (slot : acc)
-        VPi Expl q _ dom clo
+        VPi Expl q _ dom clo@(Closure _ cloBody)
           | (ArgExplicit e : as) <- as0 -> do
-              m <- freshMeta
-              mV <- evalIn ctx m
+              mid <- freshMetaId
+              mV <- evalIn ctx (CMeta mid)
               ty' <- clApp clo mV
-              peel ty' as ((SlotExpl q e dom mV) : acc)
+              let dep = coreUsesVar0 cloBody
+              peel ty' as ((SlotExpl q e dom mid mV dep) : acc)
         _
           | [] <- as0 -> pure (Just (reverse acc, tyF))
           | otherwise -> pure Nothing
@@ -2976,21 +2984,35 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       ev <-
         if isEq
           then do
-            m <- freshMeta
-            let mid = case m of
-                  CMeta i -> i
-                  _ -> error "freshMeta"
+            mid <- freshMetaId
             bfs <- gets csBoolFacts
             modify' $ \st -> st {csPending = (mid, dom, sp, ctx, bfs) : csPending st}
-            pure m
+            pure (CMeta mid)
           else resolveImplicitQ ctx sp q dom
       evV <- evalIn ctx ev
       _ <- unify ctx mV evV
       pure (CApp Impl tm ev)
-    step tm (SlotExpl q e dom mV) = do
+    step tm (SlotExpl q e dom mid mV dep) = do
       aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
       aV <- evalIn ctx aTm
-      _ <- unify ctx mV aV
+      -- The placeholder meta 'mid' was substituted into the result type
+      -- in 'peel'. When the codomain depends on this argument we must
+      -- 'unify' (it may meet an existing structure in the result). When
+      -- it does NOT (a non-dependent arrow — the common case for
+      -- operator/application chains), 'mid' appears nowhere in the
+      -- result, so a direct O(1) 'solveMeta' is equivalent to the full
+      -- 'unify' (which would otherwise 'quote' the whole argument value,
+      -- costing O(size) per slot → O(n²) over a deep chain) yet keeps
+      -- the meta-solution state byte-identical for downstream rendering
+      -- and §3.1.11 cascade suppression.
+      if dep
+        then unify ctx mV aV >> pure ()
+        else do
+          -- match what 'unify'→'solveFlex' would store (the forced
+          -- value), just without its O(size) 'quote'/occurs check, which
+          -- is sound here because 'mid' is fresh and unreferenced.
+          aVf <- forceM aV
+          solveMeta mid aVf
       pure (CApp Expl tm aTm)
 
 -- | Is the value a (possibly parameterized) type former — i.e. is its
@@ -9149,6 +9171,51 @@ headerTrait (TraitDecl supers n params members) sp = do
 -- evidence (§14.1.4/§14.3.3).
 superFieldName :: Int -> Text
 superFieldName i = "__super" <> T.pack (show i)
+
+-- | Does a Pi/Lam closure body reference its own bound variable
+-- (de Bruijn index 0, relative to the body)? Used to detect
+-- non-dependent function arrows: when the codomain does not mention the
+-- argument, elaborating an application slot need not evaluate the
+-- argument value and unify it into the result type (the fresh
+-- placeholder meta never appears in the codomain), which collapses the
+-- per-slot cost of a deep application/operator chain from O(size) to
+-- O(1) — restoring linear scaling for the (overwhelmingly common)
+-- non-dependent case while leaving dependent elaboration unchanged.
+--
+-- Conservative: returns 'True' for the few constructs whose binder
+-- structure is not traversed here ('CDo', 'CQuote'), so a body that
+-- might reference index 0 is never mis-reported as independent.
+coreUsesVar0 :: Term -> Bool
+coreUsesVar0 = go 0
+  where
+    -- @d@ counts binders crossed; the body's index 0 appears as @CVar d@.
+    go d = \case
+      CVar i -> i == d
+      CGlob _ -> False
+      CLam _ _ _ b -> go (d + 1) b
+      CPi _ _ _ a b -> go d a || go (d + 1) b
+      CApp _ f a -> go d f || go d a
+      CSort _ -> False
+      CLit _ -> False
+      CCtor _ as -> any (go d) as
+      CMatch s alts ->
+        go d s || any (\(CaseAlt p gd b) -> let d' = d + patBindersC p in maybe False (go d') gd || go d' b) alts
+      CRecordT fs -> any (go d . snd) fs
+      CRecordV fs -> any (go d . snd) fs
+      CProj e _ -> go d e
+      CVariantT ms -> any (go d) ms
+      CInject _ e -> go d e
+      CLet _ _ a b c -> go d a || go d b || go (d + 1) c
+      CLetRec _ _ a b c -> go d a || go (d + 1) b || go (d + 1) c
+      CMeta _ -> False
+      CDo _ -> True
+      CSealE _ e -> go d e
+      CSigT _ e -> go d e
+      CThunkE e -> go d e
+      CLazyE e -> go d e
+      CForceE e -> go d e
+      CIf a b c -> go d a || go d b || go d c
+      CQuote _ _ -> True
 
 shiftTerm :: Int -> Int -> Term -> Term
 shiftTerm by = go
