@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+-- §28.2.2 "MUST NOT" rules: Nat has no Ring; Float/Double have no
+-- Semiring/Ring/FieldLike under raw-bit Eq. Each demand below must be
+-- rejected because the forbidden instance does not exist.
+
+module main
+
+needRing : forall (a : Type). (@_ : Ring a) -> a -> a
+let needRing x = x
+
+natRing : Nat -> Nat
+let natRing x = needRing x
+
+needSemiring : forall (a : Type). (@_ : Semiring a) -> a -> a
+let needSemiring x = x
+
+dblSemiring : Double -> Double
+let dblSemiring x = needSemiring x
+
+needField : forall (a : Type). (@_ : FieldLike a) -> a -> a
+let needField x = x
+
+dblField : Double -> Double
+let dblField x = needField x

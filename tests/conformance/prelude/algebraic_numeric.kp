@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.2/§28.2.3: the algebraic numeric trait hierarchy is declared and
+-- the mandated instances are present. A function demanding the algebraic
+-- evidence can use the refined operations.
+
+module main
+
+sumProd : forall (a : Type). (@_ : Semiring a) -> a -> a -> a -> a
+let sumProd x y z = add (multiply x y) z
+
+-- Nat has Semiring/EuclideanSemiring/OrderedSemiring but NOT a ring group
+natSemiring : Nat -> Nat -> Nat
+let natSemiring x y = sumProd x y zero
+
+-- Integer has the full ring tower
+intRing : forall (a : Type). (@_ : Ring a) -> a -> a -> a
+let intRing x y = add x (negate y)
+
+intDriver : Integer -> Integer -> Integer
+let intDriver x y = intRing x y
+
+-- Rational and Float instances are checked in rational.kp / floating tests.
+
+-- nonZero is a prelude term over Eq + Zero.
+checkNZ : Integer -> Bool
+let checkNZ n = nonZero n

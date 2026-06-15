@@ -323,3 +323,62 @@ diagnostics in `suppressed`" is satisfied for the record-level cascades;
 the upstream-collapse cases produce a single diagnostic with nothing to
 summarize. Evidence: `Kappa.Pipeline.attachSuppressed`,
 `tests/conformance/diagnostics/suppressed-cascade.kp`.
+
+## 17. §28.2.2: algebraic numeric law members are not modelled as proofs
+
+§28.2.2 declares `AdditiveMonoid`, `AdditiveGroup`, `MultiplicativeMonoid`,
+`Semiring`, `Ring`, `EuclideanSemiring`, `FieldLike`, `OrderedAdditive`,
+and `OrderedSemiring` with *proof-producing law members* (associativity,
+left/right identities, distributivity, additive inverses, the
+divide/modulo identity, and the field/monotonicity laws). The spec note
+itself observes that "whether their values have runtime representation is
+determined by the general `RuntimeErased` and ambient-demand rules", i.e.
+they are erased proofs.
+
+This implementation has no equational-rewriting proof engine: for neutral
+terms `add (add x y) z` and `add x (add y z)` are *not* definitionally
+equal (the `add` for `Nat`/`Integer` only reduces on closed literals), so
+no closed `refl`-style proof discharges the obligations, and there is no
+`unsafeAssertProof`-backed default the elaborator can synthesise per type.
+The traits are therefore surfaced as **marker traits carrying exactly the
+§28.2.2 supertrait graph** (`(Eq a, Zero a, Add a) => AdditiveMonoid a`,
+`(Semiring a, AdditiveGroup a, CheckedSub a) => Ring a`, etc.) with the
+law members omitted. The checkable, observable content — which operation
+traits a type provides and the coherent supertrait premises — is
+preserved exactly, so:
+
+* every §28.2.3 mandated instance is present (`Semiring Nat`, the
+  `Ring`/`AdditiveGroup` tower for `Integer`/`Int`, `FieldLike Rational`);
+* every §28.2.2 "MUST NOT" exclusion holds, because the forbidden
+  instances are simply never declared (`Ring Nat`, `Semiring`/`Ring`/
+  `FieldLike` for `Float`/`Double` all fail implicit resolution).
+
+The unmodelled part is solely the ability to *project a law member and use
+its equation in a later proof*. Evidence:
+`tests/conformance/prelude/algebraic_numeric.kp`,
+`tests/conformance/prelude/algebraic_numeric_exclusions.kp`,
+`Kappa.Prelude` (the algebraic-trait block).
+
+## 18. §28.2: `Iterator.next`, the h-level proof traits, and `WellFoundedRelation.wf` reference content this implementation cannot express
+
+* `Iterator` (§28.2) declares `next : (1 this : it) -> Option (item :
+  Item, rest : it)`, referencing the associated member `Item` inside a
+  sibling member signature *in an applied type position*. This
+  implementation resolves an associated-type member only through an
+  explicit `this.Member` projection in a sibling record/value context, not
+  as a bare name inside an applied/nested type, so `Iterator` is surfaced
+  with its associated `Item : Type` member only and the `next` step is not
+  exposed. The trait name resolves.
+* `IsContr`/`IsSubsingleton`/`IsProp`/`IsSet`/`IsGroupoid` (§28.2, §11.4)
+  have proof-producing members (`center`/`contract`, `allEqual`,
+  `pathIsProp`, `pathIsSet`) over propositional equality that, as in
+  issue 17, cannot be synthesised for neutral terms. They are surfaced as
+  nameable markers preserving the `IsSubsingleton => IsProp` edge.
+  `IsEmpty` keeps its `absurdT : t -> Void` eliminator.
+* `WellFoundedRelation` (§28.2/§15.11) is surfaced with its `rel` member
+  but not the `wf : WellFounded a rel` accessibility witness, which is an
+  erased proof with no closed inhabitant this implementation can build.
+
+In every case the *name* is a resolvable prelude export, satisfying the
+§28.2 declaration MUSTs; only the proof-carrying members are omitted.
+Evidence: `Kappa.Prelude` (trait declarations near `Iterator`).

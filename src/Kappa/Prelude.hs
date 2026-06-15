@@ -525,12 +525,6 @@ preludeSource =
     , "instance FromString String ="
     , "    let fromString s = s"
     , ""
-    , "trait EuclideanSemiring (a : Type) =" -- §28.2.1 (Nat only)
-    , "    euclideanDivMod : a -> a -> (a, a)"
-    , ""
-    , "instance EuclideanSemiring Nat ="
-    , "    let euclideanDivMod x y = (natOfInt (divInt (natToInt x) (natToInt y)), natOfInt (modInt (natToInt x) (natToInt y)))"
-    , ""
     , "trait Monad (m : Type -> Type) =" -- §28.2.2 (operational subset)
     , "    (>>=) : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b"
     , ""
@@ -578,6 +572,107 @@ preludeSource =
     , ""
     , "trait Traversable (t : Type -> Type) ="
     , "    traverse : forall (f : Type -> Type) (a : Type) (b : Type). (@_ : Applicative f) -> (a -> f b) -> t a -> f (t b)"
+    , ""
+    , -- §28.2.2 algebraic numeric traits. The spec declares these with
+      -- proof-producing law members (associativity, identities,
+      -- distributivity, inverse and field laws). This implementation does
+      -- not have an equational-rewriting proof system able to discharge
+      -- those obligations for neutral variables (e.g. 'add (add x y) z ='
+      -- 'add x (add y z)' does not hold definitionally on Nat/Integer),
+      -- so the algebraic traits are modelled as their checkable
+      -- structural contract: the supertrait premises (Eq/Zero/Add/Mul/...)
+      -- plus the operations they refine. The law members carry no runtime
+      -- representation under §11.1.6/§31.2 and are not modelled here; see
+      -- KNOWN_SPEC_ISSUES.md. The supertrait graph is exactly §28.2.2, so
+      -- name resolution and instance coherence (incl. the mandated
+      -- "MUST NOT" exclusions) behave as specified.
+      "trait (Eq a, Zero a, Add a) => AdditiveMonoid (a : Type)"
+    , ""
+    , "trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (a : Type)"
+    , ""
+    , "trait (Eq a, One a, Mul a) => MultiplicativeMonoid (a : Type)"
+    , ""
+    , "trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (a : Type)"
+    , ""
+    , "trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (a : Type)"
+    , ""
+    , "trait (Semiring a, Ord a, CheckedDiv a, CheckedMod a) => EuclideanSemiring (a : Type)"
+    , ""
+    , "trait (Ring a, CheckedDiv a) => FieldLike (a : Type)"
+    , ""
+    , "trait (Ord a, AdditiveMonoid a) => OrderedAdditive (a : Type)"
+    , ""
+    , "trait (OrderedAdditive a, Semiring a) => OrderedSemiring (a : Type)"
+    , ""
+    , -- §28.2 Equiv: the equivalence trait providing (~=). §28.2.3 fixes
+      -- its precedence/associativity to match (==) (infix 40).
+      "trait Equiv (a : Type) ="
+    , "    (~=) : a -> a -> Bool"
+    , ""
+    , -- §28.2 Alternative (the empty/orElse choice structure)
+      "trait Alternative (f : Type -> Type) ="
+    , "    emptyA : forall (a : Type). f a"
+    , "    (<|>) : forall (a : Type). f a -> f a -> f a"
+    , ""
+    , -- §28.2 Iterator: the associated Item type plus a one-shot step.
+      -- The spec's 'next : (1 this : it) -> Option (item : Item, rest :'
+      -- 'it)' references the associated 'Item' in a sibling member
+      -- signature; this implementation cannot resolve an associated-type
+      -- member name in an applied type position, so only the associated
+      -- 'Item' member is surfaced (the trait name resolves). See
+      -- KNOWN_SPEC_ISSUES.md.
+      "trait Iterator (it : Type) ="
+    , "    Item : Type"
+    , ""
+    , -- §29.x runtime-effect / resource traits (§18.1.25, §18.6.1,
+      -- §19.1-19.5). Operational subset: the IO carrier instances below
+      -- and the prelude wrappers delegate to the IO primitives.
+      "trait MonadFinally (m : Type -> Type) ="
+    , "    finallyM : forall (a : Type). m a -> m Unit -> m a"
+    , ""
+    , "trait MonadError (m : Type -> Type) ="
+    , "    Error : Type"
+    , "    throwErrorM : forall (a : Type). Error -> m a"
+    , "    catchErrorM : forall (a : Type). m a -> (Error -> m a) -> m a"
+    , ""
+    , "trait MonadResource (m : Type -> Type) ="
+    , "    bracketM : forall (a : Type) (b : Type). m a -> (a -> m Unit) -> (a -> m b) -> m b"
+    , ""
+    , "trait MonadRef (m : Type -> Type) ="
+    , "    RefT : Type -> Type"
+    , "    newRefM : forall (a : Type). a -> m (RefT a)"
+    , "    readRefM : forall (a : Type). RefT a -> m a"
+    , "    writeRefM : forall (a : Type). RefT a -> a -> m Unit"
+    , ""
+    , -- §11.4/§28.2 proof-classification traits. IsEmpty provides the
+      -- 'absurdT' eliminator. IsContr/IsSubsingleton/IsProp/IsSet/
+      -- IsGroupoid are the h-level proof traits; their proof-producing
+      -- members (center/contract/allEqual/pathIsProp/pathIsSet) are
+      -- erased proofs over propositional equality that this
+      -- implementation cannot synthesize for neutral terms, so the
+      -- traits are surfaced as nameable markers (the supertrait graph
+      -- IsSubsingleton => IsProp is preserved). See KNOWN_SPEC_ISSUES.md.
+      "trait IsEmpty (t : Type) ="
+    , "    absurdT : t -> Void"
+    , ""
+    , "trait IsContr (t : Type)"
+    , ""
+    , "trait IsSubsingleton (t : Type)"
+    , ""
+    , "trait IsSubsingleton p => IsProp (p : Type)"
+    , ""
+    , "trait IsSet (a : Type)"
+    , ""
+    , "trait IsGroupoid (a : Type)"
+    , ""
+    , -- §28.2/§15.11 termination: WellFounded/Acc carriers and the
+      -- well-founded-relation trait (the well-foundedness witness is an
+      -- erased proof and is not modelled; see KNOWN_SPEC_ISSUES.md).
+      "data WellFounded (a : Type) (rel : a -> a -> Type) : Type ="
+    , "    MkWellFounded"
+    , ""
+    , "trait WellFoundedRelation (a : Type) ="
+    , "    rel : a -> a -> Type"
     , ""
     , "(+) : forall (a : Type). (@_ : Add a) -> a -> a -> a"
     , "let (+) x y = add x y"
@@ -936,6 +1031,18 @@ preludeSource =
     , "instance Negatable Double ="
     , "    let negate x = negDouble x"
     , ""
+    , -- §28.2.3 Nat partial subtraction: subDefined x y = (y <= x); the
+      -- prelude MUST NOT define Nat subtraction as saturating.
+      "instance CheckedSub Nat ="
+    , "    let subDefined x y = leInt (natToInt y) (natToInt x)"
+    , "    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))"
+    , ""
+    , -- §28.2.3 Float/Double subtraction is total (subDefined = True);
+      -- it does NOT imply the algebraic FieldLike/Ring/Semiring laws.
+      "instance CheckedSub Double ="
+    , "    let subDefined x y = True"
+    , "    let subtractUnchecked x y = subDouble x y"
+    , ""
     , "instance CheckedDiv Nat ="
     , "    let divDefined x y = not (eqInt (natToInt y) 0)"
     , "    let divideUnchecked x y = natOfInt (divInt (natToInt x) (natToInt y))"
@@ -948,7 +1055,28 @@ preludeSource =
     , "    let divDefined x y = not (eqDouble y 0.0)"
     , "    let divideUnchecked x y = divDouble x y"
     , ""
-    , "instance Monoid String ="
+    , -- §28.2.3 mandated algebraic instances (marker form; see the trait
+      -- declarations above). Nat: NO Negatable/AdditiveGroup/Ring/FieldLike.
+      "instance AdditiveMonoid Nat"
+    , "instance MultiplicativeMonoid Nat"
+    , "instance Semiring Nat"
+    , "instance OrderedAdditive Nat"
+    , "instance OrderedSemiring Nat"
+    , "instance EuclideanSemiring Nat"
+    , ""
+    , -- Integer (and therefore Int, definitionally) get the full ring
+      -- tower but NOT FieldLike (integer division is not a field op).
+      "instance AdditiveMonoid Integer"
+    , "instance AdditiveGroup Integer"
+    , "instance MultiplicativeMonoid Integer"
+    , "instance Semiring Integer"
+    , "instance Ring Integer"
+    , "instance OrderedAdditive Integer"
+    , "instance OrderedSemiring Integer"
+    , ""
+    , -- §28.2.2: Float/Double MUST NOT receive Semiring/Ring/FieldLike
+      -- under raw-bit Eq. They keep only the operation traits above.
+      "instance Monoid String ="
     , "    let empty = \"\""
     , "    let append x y = stringAppend x y"
     , ""
@@ -1038,6 +1166,19 @@ preludeSource =
     , ""
     , "sequence : forall (t : Type -> Type) (f : Type -> Type) (a : Type). (@_ : Traversable t) -> (@_ : Applicative f) -> t (f a) -> f (t a)"
     , "let sequence xs = traverse (\\v -> v) xs"
+    , ""
+    , -- §28.2: nonZero x = x /= zero
+      "nonZero : forall (a : Type). (@_ : Eq a) -> (@_ : Zero a) -> a -> Bool"
+    , "let nonZero x = not (x == zero)"
+    , ""
+    , -- §28.2 effectful traversal helpers over a Foldable source. 'for_'
+      -- runs an applicative action for each element, discarding results;
+      -- 'sequence_' runs a Foldable of actions for effect.
+      "for_ : forall (t : Type -> Type) (f : Type -> Type) (a : Type) (b : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t a -> (a -> f b) -> f Unit"
+    , "let for_ xs act = foldr (\\x -> \\acc -> liftA2 (\\u -> \\v -> Unit) (act x) acc) (pureA Unit) xs"
+    , ""
+    , "sequence_ : forall (t : Type -> Type) (f : Type -> Type) (a : Type). (@_ : Foldable t) -> (@_ : Applicative f) -> t (f a) -> f Unit"
+    , "let sequence_ xs = foldr (\\m -> \\acc -> liftA2 (\\u -> \\v -> Unit) m acc) (pureA Unit) xs"
     , ""
     , "subtract : forall (a : Type). (@_ : CheckedSub a) -> a -> a -> a"
     , "let subtract x y = subtractUnchecked x y"
