@@ -1383,8 +1383,22 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
             l2 = lvlOf j
             separated = any (\b -> l2 < b && b <= l1) (ctxBarriers ctx)
         unless separated $
-          errAt sp "E_IMPLICIT_AMBIGUOUS" (Just "kappa.implicit.ambiguous")
-            "two implicit candidates in the same scope satisfy this implicit goal; the resolution is ambiguous (§16.3.3)"
+          -- §3.1.1A: cite the goal site; the competing candidates are
+          -- local context binders without stored source spans, so the
+          -- payload records candidate names with sites unavailable.
+          report $
+            withPayload
+              ( withPayloadField "candidates"
+                  (T.intercalate ", " [candName i, candName j]) $
+                  withPayloadField "candidateSitesAvailable" "false" $
+                    payloadKind "implicit-ambiguous"
+              )
+              $ withRelated (related RoleObligationRequiredHere sp "implicit goal raised here")
+              $ diag SevError StageElaborate "E_IMPLICIT_AMBIGUOUS" (Just "kappa.implicit.ambiguous") sp
+                  "two implicit candidates in the same scope satisfy this implicit goal; the resolution is ambiguous (§16.3.3)"
+    candName ix = case drop ix (ctxEntries ctx) of
+      (e : _) -> ceName e
+      [] -> "?"
     findNext _ _ [] = pure Nothing
     findNext j seen (e : rest)
       | ceImplicitLocal e
@@ -1773,10 +1787,15 @@ searchDepth depth ctx sp goal
                     -- §14.3/§33.2.1 coherence check judges that pair
                     -- definitively, so do not pre-judge the overlap
                     pending <- filterM (dictValuePending . ieDict) (ie0 : map fst rest)
-                    when (null pending) $
+                    when (null pending) $ do
+                      -- §3.1.1A: trait-coherence diagnostics MUST include
+                      -- every surviving incoherent instance declaration
+                      -- site.
+                      rels <- instanceRelateds (ie0 : map fst rest)
                       report $
-                        diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent") sp
-                          "multiple instances match this trait obligation (§14.3.1 coherence)"
+                        withRelateds rels $
+                          diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent") sp
+                            "multiple instances match this trait obligation (§14.3.1 coherence)"
                   pure (Just tm)
         _ -> pure Nothing
 
@@ -1785,6 +1804,25 @@ searchDepth depth ctx sp goal
 -- pre-pass registers heads ahead of the body pass).
 dictValuePending :: GName -> CheckM Bool
 dictValuePending g = gets (maybe True (isNothing . gdValue) . Map.lookup g . csGlobals)
+
+-- | §3.1.1A: the declaration site of an instance, recovered from the
+-- §14.3 pre-pass table ('csPreInstances' is keyed by declaration span)
+-- by its dictionary global. Returns Nothing for instances with no
+-- pre-pass entry (built-in/imported).
+instanceDeclSite :: GName -> CheckM (Maybe Span)
+instanceDeclSite dictG = do
+  pre <- gets csPreInstances
+  pure $ listToMaybe [sp | (sp, Just pii) <- Map.toList pre, piDictG pii == dictG]
+
+-- | §3.1.1A trait-coherence related origins: every surviving incoherent
+-- instance's declaration site (those with a known pre-pass span).
+instanceRelateds :: [InstanceEntry] -> CheckM [RelatedOrigin]
+instanceRelateds ies = do
+  sites <- mapM (instanceDeclSite . ieDict) ies
+  pure
+    [ related RoleInstanceDeclarationSite s "a matching instance is declared here"
+    | Just s <- sites
+    ]
 
 tryInstance :: Int -> Ctx -> [Value] -> InstanceEntry -> CheckM (Maybe Term)
 tryInstance depth ctx goalArgs ie
@@ -1852,10 +1890,21 @@ checkInstanceOverlap sp g new prior
           pure (convertible ecu 0 vN vO)
         _ -> pure True -- disjoint heads or a discarded candidate
       put saved
-      unless equivalent $
-        errAt sp "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent")
-          ("overlapping instances of trait '" <> gnameText g
-             <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)")
+      unless equivalent $ do
+        -- §3.1.1A: a coherence diagnostic MUST include every surviving
+        -- incoherent instance declaration site — here the new instance
+        -- (primary 'sp') and the prior overlapping instance.
+        mPrior <- instanceDeclSite (ieDict prior)
+        let rels =
+              related RoleInstanceDeclarationSite sp "this overlapping instance"
+                : [ related RoleInstanceDeclarationSite psp "conflicts with this instance"
+                  | Just psp <- [mPrior]
+                  ]
+        report $
+          withRelateds rels $
+            diag SevError StageElaborate "E_INSTANCE_INCOHERENT" (Just "kappa-hs.trait.incoherent") sp
+              ("overlapping instances of trait '" <> gnameText g
+                 <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)")
 
 -- Boolean-proposition normalization (§16.3.3 step 3): goals of shape
 -- (lhs = rhs) decided by conversion yield refl.

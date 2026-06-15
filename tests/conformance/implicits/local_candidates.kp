@@ -3,6 +3,11 @@
 --! assertDiagnostic error E_IMPLICIT_AMBIGUOUS
 --! assertDiagnostic error E_QTT_ERASED_RUNTIME_USE
 --! assertType ok Integer
+-- §3.1.1A: an implicit-resolution diagnostic cites the goal site; the
+-- competing local candidates are recorded in the payload (their binder
+-- names; ctx-local binders have no stored source span).
+--! assertDiagnosticRelated error kappa.implicit.ambiguous obligation-required-here
+--! assertDiagnosticPayload error kappa.implicit.ambiguous /payload/candidates right, left
 
 data Env : Type =
     Env (bias : Int)

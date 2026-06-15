@@ -1,4 +1,7 @@
 --! assertDiagnostic error E_INSTANCE_INCOHERENT
+-- §3.1.1A: a trait-coherence diagnostic MUST include every surviving
+-- incoherent instance declaration site.
+--! assertDiagnosticRelated error E_INSTANCE_INCOHERENT instance-declaration-site
 
 trait Label (a : Type) =
     label : a -> String
