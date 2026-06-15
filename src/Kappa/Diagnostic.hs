@@ -47,6 +47,9 @@ module Kappa.Diagnostic
   , renderDiagnostic
   , renderDiagnosticJson
   , renderDiagnosticsJson
+  , jStr
+  , jArray
+  , jObject
   ) where
 
 import Data.Char (ord)

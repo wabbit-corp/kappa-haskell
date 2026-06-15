@@ -9,6 +9,7 @@ import Data.List (isInfixOf, isSuffixOf, nub, sort)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
+import Kappa.Diagnostic (jArray, jObject, jStr)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
 import Kappa.TestHarness
   ( Outcome (..)
@@ -36,7 +37,8 @@ main = do
   regOk0 <- registryComplete
   famOk <- familiesHygienic
   harnessOk <- harnessFaithful
-  let regOk = regOk0 && famOk && harnessOk
+  jsonOk <- jsonEncoderSound
+  let regOk = regOk0 && famOk && harnessOk && jsonOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -153,6 +155,50 @@ harnessFaithful = do
       let p = root </> name
       writeFile p contents
       runTestFile p
+
+-- | §3.1.1 / §4.7 JSON-encoder soundness. Both the machine-readable
+-- diagnostic producer (§3.1.1) and the audit-ledger producer (§4.7,
+-- @kappa audit@) emit through the single canonical encoder exported by
+-- 'Kappa.Diagnostic' ('jStr' \/ 'jObject' \/ 'jArray'). A producer that
+-- failed to escape control characters (tab, CR, NUL, U+001F) or the
+-- structural @"@ \/ @\\@ would emit invalid JSON, so a tool could not
+-- parse the structured output the spec requires. This pins the full
+-- escape obligation directly on the encoder so no second, weaker copy
+-- can drift back in (the audit path previously hand-rolled one that
+-- escaped only @"@, @\\@, and @\\n@).
+jsonEncoderSound :: IO Bool
+jsonEncoderSound = do
+  let probe = T.pack "tab\there\rret\NUL nul\US end \"quote\" \\back"
+      escaped = jStr probe
+      mustContain =
+        [ ("\\t", T.pack "\\t")
+        , ("\\r", T.pack "\\r")
+        , ("NUL → \\u0000", T.pack "\\u0000")
+        , ("U+001F → \\u001f", T.pack "\\u001f")
+        , ("quote → \\\"", T.pack "\\\"")
+        , ("backslash → \\\\", T.pack "\\\\")
+        ]
+      mustNotContain =
+        -- raw control bytes must never survive into the JSON text
+        [ ("raw TAB", T.pack "\t")
+        , ("raw CR", T.pack "\r")
+        , ("raw NUL", T.pack "\NUL")
+        , ("raw U+001F", T.pack "\US")
+        ]
+      structural =
+        [ ("jObject braces", jObject [(T.pack "k", jStr (T.pack "v"))] == T.pack "{\"k\":\"v\"}")
+        , ("jArray brackets", jArray [jStr (T.pack "a"), jStr (T.pack "b")] == T.pack "[\"a\",\"b\"]")
+        ]
+      checks =
+        [ (name, frag `T.isInfixOf` escaped) | (name, frag) <- mustContain ]
+          ++ [ (name, not (frag `T.isInfixOf` escaped)) | (name, frag) <- mustNotContain ]
+          ++ structural
+      failed = [name | (name, ok) <- checks, not ok]
+  unless (null failed) $ do
+    putStrLn "JSON encoder soundness checks failed (Kappa.Diagnostic jStr/jObject/jArray):"
+    mapM_ (putStrLn . ("  " <>)) failed
+    putStrLn ("  encoded: " <> T.unpack escaped)
+  pure (null failed)
 
 -- | §3.1.2A: "A diagnostic emitted in ordinary user-facing compilation
 -- MUST NOT use an unregistered code." Every @\"E_...\"@ \/ @\"W_...\"@

@@ -100,24 +100,17 @@ cmdAudit path = do
 -- the facility, module identity, origin, affected declaration, the build
 -- setting that permitted it, and any structured reason string.
 renderAuditLedgerJson :: [AuditRecord] -> T.Text
-renderAuditLedgerJson recs =
-  "[" <> T.intercalate "," (map one recs) <> "]"
+renderAuditLedgerJson recs = jArray (map one recs)
   where
     one r =
-      "{"
-        <> field "facility" (arFacility r)
-        <> "," <> field "module" (moduleNameText (arModule r))
-        <> "," <> field "origin" (renderSpanText (arOrigin r))
-        <> "," <> field "affected" (arAffected r)
-        <> "," <> field "buildSetting" (arBuildSetting r)
-        <> "," <> "\"reason\":" <> maybe "null" (jsonString) (arReason r)
-        <> "}"
-    field k v = "\"" <> k <> "\":" <> jsonString v
-    jsonString s = "\"" <> T.concatMap esc s <> "\""
-    esc '"' = "\\\""
-    esc '\\' = "\\\\"
-    esc '\n' = "\\n"
-    esc c = T.singleton c
+      jObject
+        [ ("facility", jStr (arFacility r))
+        , ("module", jStr (moduleNameText (arModule r)))
+        , ("origin", jStr (renderSpanText (arOrigin r)))
+        , ("affected", jStr (arAffected r))
+        , ("buildSetting", jStr (arBuildSetting r))
+        , ("reason", maybe "null" jStr (arReason r))
+        ]
     renderSpanText sp =
       T.pack (spanFile sp) <> ":" <> tshow (posLine (spanStart sp)) <> ":" <> tshow (posCol (spanStart sp))
     tshow = T.pack . show
