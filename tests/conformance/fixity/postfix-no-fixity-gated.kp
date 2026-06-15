@@ -1,0 +1,18 @@
+module main
+
+-- §5.5.3: a trailing operator used in postfix position requires a
+-- `postfix` fixity in scope. With no fixity declared for `?`, the bare
+-- postfix use `5 ?` is rejected by infix-gating; crucially the parser
+-- recovers cleanly so the following declaration `next` still parses
+-- (the trailing operator does not swallow it).
+(?) : Int -> Int
+let (?) x = x
+
+probe : Int
+let probe = 5 ?
+
+next : Int
+let next = 7
+
+--! assertDiagnostic error E_OPERATOR_NO_FIXITY
+--! assertType next Int

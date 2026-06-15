@@ -409,7 +409,17 @@ rExpr env = go
       EQDot e m -> EQDot <$> go e <*> pure m
       ERecordPatch e items sp -> ERecordPatch <$> go e <*> mapM goPatch items <*> pure sp
       EReceiverSection ms args sp -> EReceiverSection ms <$> mapM goArg args <*> pure sp
-      ESectionLeft e op sp -> ESectionLeft <$> go e <*> pure op <*> pure sp
+      -- §5.5.1.1: `(e op)` is unary postfix application when a matching
+      -- `postfix` fixity for `op` is in scope; only otherwise (with a
+      -- matching infix fixity) is it a left operator section.
+      ESectionLeft e op sp
+        | Just _ <- postfixOf env (nameText op) -> do
+            let els = case e of
+                  EOpChain inner -> inner ++ [ChainOp op]
+                  _ -> [ChainOperand e, ChainOp op]
+            els' <- mapM goElem els
+            reassoc env sp els'
+        | otherwise -> ESectionLeft <$> go e <*> pure op <*> pure sp
       -- §5.5.1.1: `(op e)` is unary prefix application when a matching
       -- `prefix` fixity for `op` is in scope (e.g. `(-1)` is negation);
       -- only otherwise is it a right operator section.

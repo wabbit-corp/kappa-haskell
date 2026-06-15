@@ -1530,6 +1530,11 @@ pCtorRef = do
     Just c -> CtorRef (Just n) c
     Nothing -> CtorRef Nothing n
 
+-- | What follows an already-consumed operator in a chain (§5.5.1.1):
+-- a stopping token (the operator was a trailing postfix candidate), more
+-- operators (collect them too), or an operand.
+data ChainEndKind = ChainEndStop | ChainEndMoreOps | ChainEndOperand
+
 pChainElems :: P [OpElem]
 pChainElems = do
   pre <- many (ChainOp <$> pPrefixOp)
@@ -1569,18 +1574,60 @@ pChainElems = do
       case t of
         TokRParen -> parseFail "trailing operator before ')' (left section)"
         _ -> pure ()
-      -- operator may be followed by newline+indent continuation (§5.4)
-      void (optional (try (pNewline *> token TokIndent)))
-      -- an open expression (let-in, if, match, lambda, …) may close the
-      -- chain as its final operand (§16.1.8)
-      mOpen <- optionMaybe pOpenTailOperand
-      case mOpen of
-        Just e -> pure [ChainOp opN, ChainOperand e]
-        Nothing -> do
-          pre <- many (ChainOp <$> pPrefixOp)
-          nxt <- ChainOperand <$> pAppExpr
-          rest <- pChainRest
-          pure (ChainOp opN : pre ++ nxt : rest)
+      -- §5.5.1.1/§5.5.3: an operator with no operand after it is a
+      -- /trailing postfix/ use, e.g. bare `5 ?`. The parser does not know
+      -- fixities, so it leaves a trailing `ChainOp` for the re-associator,
+      -- which applies a postfix fixity if one is in scope (and otherwise
+      -- emits the §5.5.3 gating error). Without this, the chain parser
+      -- would demand an operand and swallow the next declaration.
+      trailing <- chainEndKind
+      case trailing of
+        -- end of the expression: a lone trailing operator (postfix
+        -- candidate) — leave it for the re-associator.
+        ChainEndStop -> pure [ChainOp opN]
+        -- another operator follows: this one was postfix and the next
+        -- begins a fresh postfix/infix form; keep collecting the chain
+        -- (e.g. the double postfix `5 ? ?`).
+        ChainEndMoreOps -> (ChainOp opN :) <$> pChainRest
+        ChainEndOperand -> do
+          -- operator may be followed by newline+indent continuation (§5.4)
+          void (optional (try (pNewline *> token TokIndent)))
+          -- an open expression (let-in, if, match, lambda, …) may close the
+          -- chain as its final operand (§16.1.8)
+          mOpen <- optionMaybe pOpenTailOperand
+          case mOpen of
+            Just e -> pure [ChainOp opN, ChainOperand e]
+            Nothing -> do
+              pre <- many (ChainOp <$> pPrefixOp)
+              nxt <- ChainOperand <$> pAppExpr
+              rest <- pChainRest
+              pure (ChainOp opN : pre ++ nxt : rest)
+    -- §5.5.1.1/§5.5.3: classify what follows an operator that has already
+    -- been consumed. A trailing operator (no operand after it) is a
+    -- postfix candidate; the parser does not validate fixities, so it
+    -- leaves trailing `ChainOp`s for the re-associator. This is purely
+    -- syntactic: end of statement / closing bracket / separator stops the
+    -- chain, another operator keeps it going, anything else is an operand.
+    chainEndKind = do
+      t <- peekToken
+      pure $ case t of
+        TokNewline _ -> ChainEndStop
+        TokDedent -> ChainEndStop
+        TokRParen -> ChainEndStop
+        TokRBracket -> ChainEndStop
+        TokRBrace -> ChainEndStop
+        TokComma -> ChainEndStop
+        TokEOF -> ChainEndStop
+        -- §23.2 staging punctuation is operand syntax, not a chain
+        -- operator: '.<' and '.~' begin operands, '>.' closes a code
+        -- quote. None of them continue or end the chain as a postfix op,
+        -- so defer to the ordinary operand path (which handles them via
+        -- 'pAtom'); only genuine operator tokens collect as further
+        -- (postfix/infix) chain operators.
+        TokOperator op
+          | op `notElem` ["=>", ".<", ">.", ".~"] -> ChainEndMoreOps
+          | otherwise -> ChainEndOperand
+        _ -> ChainEndOperand
 
 -- An open expression (let-in, if, match, lambda, …) as the final
 -- operand of an operator chain (§16.1.8).

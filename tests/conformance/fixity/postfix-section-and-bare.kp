@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "6\n6\n7\n"
+
+-- §5.5.1.1/§5.5.3: with a `postfix` fixity for `?` in scope:
+--   * a bare postfix use `5 ?` is unary postfix application `(?) 5`,
+--     and must not corrupt the following declaration;
+--   * the left-section form `(5 ?)` is taken as postfix application
+--     (not a left operator section), per §5.5.1.1;
+--   * a chain of trailing postfix ops `5 ? ?` applies them outward.
+postfix 90 (?)
+(?) : Int -> Int
+let (?) x = addInt x 1
+
+bareUse : Int
+let bareUse = 5 ?
+
+sectionUse : Int
+let sectionUse = (5 ?)
+
+chained : Int
+let chained = 5 ? ?
+
+main : UIO Unit
+let main = do
+    printlnString (showInt bareUse)
+    printlnString (showInt sectionUse)
+    printlnString (showInt chained)
