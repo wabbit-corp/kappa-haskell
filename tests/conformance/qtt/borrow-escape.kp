@@ -1,5 +1,9 @@
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+-- §3.1.1A (line 602-603): a borrow/ownership diagnostic MUST include the
+-- borrow introduction site and the failing escape site.
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
 
 -- §12.3.2: a closure capturing an anonymous borrow may not escape
 -- through the result.

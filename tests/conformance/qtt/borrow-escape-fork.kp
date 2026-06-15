@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+-- §3.1.1A (line 602-603): the borrow/ownership diagnostic MUST cite the
+-- borrow introduction site (the anonymous-borrow binder) and the failing
+-- escape site (the forked computation that captures it). These are
+-- distinct source spans here, unlike the escape-through-result form.
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §18.11/§12.3.2: a forked computation outlives the current scope, so
+-- its action may not capture an anonymous borrow.
+module main
+
+read : (& x : Int) -> Int
+let read (& x : Int) : Int = x
+
+bad : (& x : Int) -> UIO (Fiber Void Int)
+let bad (& x : Int) : UIO (Fiber Void Int) =
+    fork
+        do
+            pure (read x)

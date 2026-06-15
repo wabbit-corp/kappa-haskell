@@ -632,7 +632,15 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
       resultTy = ldResultType ld `orElseE` (sigResultOf =<< msig)
   unless resCaptures $
     forM_ taint $ \sp ->
-      emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" sp
+      -- §3.1.1A (line 602-603): cite BOTH the borrow introduction site —
+      -- the borrow-capturing closure formation site carried by the taint
+      -- (RoleBorrowStart) — and the failing escape site, the definition
+      -- body's result expression the closure flows out through
+      -- (RoleBorrowEscapeSite).
+      emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" sp
+        [ related RoleBorrowStart sp "borrow-capturing closure formed here"
+        , related RoleBorrowEscapeSite (exprSpan (ldBody ld)) "escapes through the result here"
+        ]
         "a closure capturing a borrowed binding escapes through the result (§12.3.2)"
   where
     paramBind (b, ms) = case bName b of
@@ -1473,12 +1481,24 @@ walkApp env f args = do
   let headName = case f of
         EVar n | not (Map.member (nameText n) (eVars env)) -> Just (nameText n)
         _ -> Nothing
-      anonKeys = [vKey vi | vi <- Map.elems (eVars env), vAnonBorrow vi]
+      -- anonymous-borrow binders in scope, keyed for taint-touch lookup
+      -- and carrying the §3.1.1A borrow-introduction (binder) site
+      anonIntro = Map.fromList [(vKey vi, vSpan vi) | vi <- Map.elems (eVars env), vAnonBorrow vi]
   when (headName == Just "fork") $
-    forM_ (zip args (map fst rs)) $ \(a, r) ->
-      when (any (`elem` anonKeys) (Map.keys (Map.filter cTouch (rU r `seqU` rL r)))) $
-        emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" (argSpan a)
-          "a forked computation may not capture an anonymous borrow (§12.3.2, §18.11)"
+    forM_ (zip args (map fst rs)) $ \(a, r) -> do
+      let touched = Map.keys (Map.filter cTouch (rU r `seqU` rL r))
+          capturedIntros = [sp | k <- touched, Just sp <- [Map.lookup k anonIntro]]
+      case capturedIntros of
+        [] -> pure ()
+        -- §3.1.1A (line 602-603): cite the anonymous-borrow introduction
+        -- site (its binder, RoleBorrowStart) and the failing escape site
+        -- where the forked computation captures it (RoleBorrowEscapeSite).
+        (introSp : _) ->
+          emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" (argSpan a)
+            [ related RoleBorrowStart introSp "anonymous borrow introduced here"
+            , related RoleBorrowEscapeSite (argSpan a) "captured by a forked computation here"
+            ]
+            "a forked computation may not capture an anonymous borrow (§12.3.2, §18.11)"
   -- a callee neither stores nor returns its tainted callees/arguments
   -- in general; only result-carrying lifts propagate the taint
   let liftLike = case f of
@@ -1587,7 +1607,15 @@ walkArg env params arg p = case arg of
           Just tsp
             | pKnown p
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] -> do
-                emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
+                -- §3.1.1A (line 602-603): cite the borrow-capturing
+                -- closure formation site carried by the composite value's
+                -- taint (RoleBorrowStart) and the escape site where that
+                -- composite argument flows into the unrestricted parameter
+                -- (RoleBorrowEscapeSite).
+                emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
+                  [ related RoleBorrowStart tsp "borrow-capturing closure formed here"
+                  , related RoleBorrowEscapeSite (exprSpan e) "flows into an unrestricted parameter here"
+                  ]
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
                 pure (rPlain (u' `seqU` scaleU d l), [])
           _ -> pure (R (u' `seqU` scaleU d l) t Map.empty, [])
