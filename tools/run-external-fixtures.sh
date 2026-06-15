@@ -43,9 +43,18 @@ if [ "$REGEN" = 1 ]; then
   echo "regenerating $RESULTS_MD from $RAW_LOG (corpus not re-run) ..." >&2
 else
   echo "running kappa test over $FIXTURES ..." >&2
+  # Build-or-fail-fast: a missing/stale binary would otherwise turn every
+  # fixture into a spurious "No such file or directory" harness error.
+  # Building first guarantees the binary exists and is current before the
+  # corpus loop begins.
+  echo "ensuring the kappa binary is built ..." >&2
+  if ! cabal build exe:kappa >&2; then
+    echo "cabal build exe:kappa failed; cannot run the corpus" >&2
+    exit 2
+  fi
   BIN="$(cabal list-bin kappa 2>/dev/null)"
-  if [ -z "$BIN" ]; then
-    echo "kappa binary not found; run 'cabal build' first" >&2
+  if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
+    echo "kappa binary not found after build (looked for: ${BIN:-<none>})" >&2
     exit 2
   fi
   # One invocation per fixture directory: each is one §T.2 suite root
@@ -72,11 +81,11 @@ total=$((pass + fail + unsup + herr))
 {
   echo "external fixtures: $FIXTURES"
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  echo "total: $total"
   echo "pass: $pass"
   echo "fail: $fail"
   echo "unsupported: $unsup"
   echo "harness-error: $herr"
+  echo "total: $total"
 } | tee "$STATS_TXT" >&2
 
 {

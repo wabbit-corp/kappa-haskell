@@ -14,7 +14,7 @@ Appendix T. Statuses:
 * **Not implemented** — no meaningful support.
 
 Test references are paths under `tests/conformance/` (the in-tree
-suite, 176/176 passing) or `examples/`. The external black-box corpus
+suite, 186/186 passing) or `examples/`. The external black-box corpus
 tally is in `tests/external-results.md` and TESTING.md.
 
 ## Part I. Language Contract and Conformance

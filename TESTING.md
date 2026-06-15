@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (176/176)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (186/186)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -109,7 +109,7 @@ permits nonstandard directives), and the rest remain harness errors.
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **176/176 passing**, zero unsupported, zero
+`tests/conformance/` — **186/186 passing**, zero unsupported, zero
 harness errors. Layout by area:
 
 | Directory | Covers |
@@ -164,12 +164,12 @@ raw per-fixture log at `/tmp/external-raw.log`.
 first error message) and `/tmp/triage-summary.txt` (per-category
 outcome counts and top error codes).
 
-Current tally over **948 fixture suites** (one result per fixture):
+Current tally over **950 fixture suites** (one result per fixture):
 
 | outcome | count |
 | --- | --- |
-| pass | 921 |
-| fail | 25 |
+| pass | 920 |
+| fail | 28 |
 | unsupported | 2 |
 | harness error | 0 |
 
@@ -195,10 +195,12 @@ metaprogramming lane (macros, deriving-shape, query sinks, the
 §21.6 convenience reflection queries, §23 staged code), the
 §14.2.1 associated-static-member/supertrait lane, static-object
 kind selectors, import kind selectors/re-exports, and the
-checked-arithmetic branch-refinement lane are fully clear; the 25
-remaining failures are 8 cited spec conflicts and 17 tracked gaps
-(recovery-cascade parity, §13.2.11 existentials, layout-continuation
-and diagnostic-code selection deltas at application boundaries) —
+checked-arithmetic branch-refinement lane are fully clear; the 28
+remaining failures are 11 cited spec conflicts and 17 tracked gaps
+(recovery-cascade parity, §13.2.11 existentials, layout-continuation,
+and diagnostic-code selection deltas at application boundaries — every
+one is an honest spelling/cascade divergence, never a missed
+rejection, and no cross-implementation code "tolerance" is applied) —
 see the per-fixture tables at the end of
 `tests/external-results.md`.
 
