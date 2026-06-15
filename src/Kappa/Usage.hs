@@ -260,6 +260,11 @@ data Env = Env
   , eExpansions :: !(Map Span Expr)
   -- ^ §21.2 splice expansions recorded by the elaborator (keyed by the
   -- splice span): the object-level uses charged at each splice site
+  , ePendingSig :: ![Binder]
+  -- ^ §12.2.5: signature Pi binders not yet consumed by equation-head
+  -- params, to be aligned with a leading lambda chain in the body so
+  -- their quantity obligations bind the lambda binders. Cleared once a
+  -- lambda has claimed them (or on any non-lambda step).
   }
 
 -- | §9.1.1 projection shape for the §12.4 footprint analysis.
@@ -455,6 +460,22 @@ alignParams (b : bs) sbs = case sbs of
       (Just nx, Just ny) -> nameText nx == nameText ny
       _ -> False
 
+-- | The signature binders left after the definition binders consume
+-- their share, mirroring 'alignParams' consumption (§12.2.5). Used to
+-- carry the remaining quantity obligations onto a leading lambda chain.
+remainingSig :: [Binder] -> [Binder] -> [Binder]
+remainingSig [] sbs = sbs
+remainingSig (b : bs) sbs = case sbs of
+  (s : ss)
+    | bImplicit s && not (bImplicit b) && not (sameName b s) ->
+        remainingSig (b : bs) ss
+    | otherwise -> remainingSig bs ss
+  [] -> []
+  where
+    sameName x y = case (bName x, bName y) of
+      (Just nx, Just ny) -> nameText nx == nameText ny
+      _ -> False
+
 -- | Explicit-argument demand of a definition, signature preferred.
 fnParams :: Maybe Expr -> LetDef -> [PInfo]
 fnParams msig ld =
@@ -490,9 +511,19 @@ analyzeLet ::
   LetDef ->
   M ()
 analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
-  let aligned = alignParams (ldBinders ld) (maybe [] sigBinders msig)
+  let sigPs = maybe [] sigBinders msig
+      aligned = alignParams (ldBinders ld) sigPs
+      -- §12.2.5: signature binders the equation-head params did not
+      -- consume. When the body is a leading lambda chain, these carry
+      -- the quantity obligations onto the lambda binders just as
+      -- 'paramBind' does for equation-head params. Only the directly
+      -- leading lambda may claim them: a lambda nested under any other
+      -- form is a distinct closure, not this definition's binder chain.
+      pendingSig = case ldBody ld of
+        ELambda {} -> remainingSig (ldBinders ld) sigPs
+        _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps Map.empty expansions
+  let env = (Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps Map.empty expansions []) {ePendingSig = pendingSig}
   checkInoutResult msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
@@ -802,8 +833,18 @@ walkE env e0 = case e0 of
   EOpRef {} -> pure rNone
   EElvis l r _ -> walks [l, r]
   ELambda _ bs body sp -> do
-    bound <- catMaybes <$> mapM (lamBind env) bs
-    let env' = bindVars bound env
+    -- §12.2.5: a leading lambda chain in a definition body claims the
+    -- signature binders the equation head did not consume, so a binder
+    -- written as `\x ->` still inherits the Pi quantity obligation.
+    let aligned = alignParams bs (ePendingSig env)
+    bound <- catMaybes <$> mapM (lamBind env) aligned
+    -- only a directly-nested lambda (a curried `\x -> \y -> ...`)
+    -- continues this definition's binder chain; any other body form
+    -- ends it, so the remaining signature binders are dropped
+    let restSig = case body of
+          ELambda {} -> remainingSig bs (ePendingSig env)
+          _ -> []
+        env' = bindVars bound env {ePendingSig = restSig}
     r <- walkE env' body
     let (u, t) = flatR r
     forM_ bound $ \(_, vi) -> closeVar vi u
@@ -996,20 +1037,31 @@ walkComp env0 cls0 y sp = go env0 cls0 []
 
 -- ── Lambda binders and matches ───────────────────────────────────────
 
-lamBind :: Env -> Binder -> M (Maybe (Text, VInfo))
-lamBind env b = case bName b of
+-- | Bind a lambda binder, merging in the quantity, borrow mark, and
+-- type carried by an aligned signature Pi binder (§12.2.5) when the
+-- lambda binder leaves them unstated. The lambda binder's own prefix
+-- wins, exactly as 'paramBind' merges equation-head params.
+lamBind :: Env -> (Binder, Maybe Binder) -> M (Maybe (Text, VInfo))
+lamBind env (b, ms) = case bName b of
   Nothing -> pure Nothing
   Just n -> do
     let BinderPrefix mq mb = bPrefix b
-        fields = maybe [] (resolveFields (eAliases env)) (bType b)
-        deps = maybe [] (resolveDeps (eFieldDeps env)) (bType b)
+        BinderPrefix sq sb = maybe emptyPrefix bPrefix ms
+        q = mq `orElse` sq
+        mark = mb `orElse` sb
+        ty = bType b `orElse` (bType =<< ms)
+        fields = maybe [] (resolveFields (eAliases env)) ty
+        deps = maybe [] (resolveDeps (eFieldDeps env)) ty
     k <- freshKey (nameText n)
     pure
       ( Just
           ( nameText n
-          , VInfo k mq (isJust mb) (mb == Just (BorrowMark Nothing)) False Nothing Map.empty fields deps (bSpan b)
+          , VInfo k q (isJust mark) (mark == Just (BorrowMark Nothing)) False Nothing Map.empty fields deps (bSpan b)
           )
       )
+  where
+    orElse (Just x) _ = Just x
+    orElse Nothing y = y
 
 walkMatch :: Env -> Expr -> [MatchCase] -> M R
 walkMatch env scrut cases = do

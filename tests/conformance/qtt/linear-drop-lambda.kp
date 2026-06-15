@@ -1,0 +1,14 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §12.2.5: the signature's positive-lower-bound obligation binds the
+-- parameter even when it is written as a lambda RHS rather than an
+-- equation-head binder. The linear `t` is dropped on the body's only
+-- path, so the diagnostic must fire just as for `let bad t = ()`.
+module main
+
+data Token : Type =
+    Token
+
+bad : (1 t : Token) -> Unit
+let bad = \t -> ()

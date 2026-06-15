@@ -1,0 +1,17 @@
+--! assertNoErrors
+
+-- §12.2/§12.2.5: a linear parameter written as a (possibly curried)
+-- lambda RHS and consumed exactly once is accepted; the signature
+-- quantity is enforced without over-firing on a well-used binder.
+module main
+
+data Token : Type =
+    Token
+
+consume : (1 t : Token) -> Unit
+let consume t = unsafeConsume t
+
+demo : (1 x : Token) -> (1 y : Token) -> Unit
+let demo = \x -> \y ->
+    let _ = consume x
+    consume y

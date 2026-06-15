@@ -1,0 +1,18 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §12.2: a linear parameter written as a lambda RHS still inherits the
+-- signature quantity, so consuming it on two sequential paths is an
+-- overuse exactly as for the equation-head form.
+module main
+
+data Token : Type =
+    Token
+
+consume : (1 t : Token) -> Unit
+let consume t = unsafeConsume t
+
+bad : (1 t : Token) -> Unit
+let bad = \t ->
+    let _ = consume t
+    consume t
