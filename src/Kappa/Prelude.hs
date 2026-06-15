@@ -353,6 +353,11 @@ builtinState =
         prim "__handleEff" (tyV (piI Q0 "a" tType (CVar 0)))
       , -- §18.1.13: aborted STM alternative (the `empty` action)
         prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
+      , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
+        -- elements of a range in ascending order (empty when lo > hi).
+        -- Reduces for the §28.2.3 Rangeable element types whose runtime
+        -- values are Int/Nat literals or Unicode scalars.
+        prim "__rangeEnum" (tyV (piI Q0 "v" tType (CVar 0 ~> CVar 1 ~> tBool ~> listT (CVar 2))))
       , -- §20 collection/query plumbing (the §20.10.11 as-if list model)
         prim "__quantityOfNat" (tyV (tNat ~> tcon "Quantity"))
       , prim "__queryFromList"
@@ -887,6 +892,13 @@ preludeSource =
     , ""
     , "instance Rangeable UnicodeScalar =" -- §6.4
     , "    let range lo hi excl = NumericRange lo hi excl"
+    , ""
+    , -- §20.2: materialize a range into its ascending element list. Used
+      -- by the comprehension/for lowering and by 'IntoQuery NumericRange'.
+      "rangeToList : forall (v : Type). NumericRange v -> List v"
+    , "let rangeToList r ="
+    , "    match r"
+    , "    case NumericRange lo hi excl -> __rangeEnum lo hi excl"
     , ""
     , "orderingCode : Ordering -> Integer"
     , "let orderingCode o ="
@@ -1503,6 +1515,41 @@ preludeSource =
     , "    match o"
     , "    case None -> Nil"
     , "    case Some x -> x :: Nil"
+    , ""
+    , -- §18.6/§20.2/§23.7 IntoQuery: the source-introduction trait for
+      -- 'for'/comprehension generators. The spec declares associated
+      -- members Mode/ItemQuantity/Item/SourceDemand used in toQuery's
+      -- result type; this implementation cannot reference an associated
+      -- type in an applied type position (cf. Iterator), so IntoQuery is
+      -- surfaced with its associated 'IntoItem' type and a 'toQuery'
+      -- member returning a reusable 'Query IntoItem'. The mandated §23.7
+      -- instances (List/Array/Set/Option/range/QueryCore-identity) are
+      -- provided. The for/comprehension lowering iterates these sources
+      -- via the §20.10.11 as-if list model; toQuery is the first-class
+      -- surface. See KNOWN_SPEC_ISSUES.md.
+      "trait IntoQuery (src : Type) ="
+    , "    IntoItem : Type"
+    , "    toQuery : src -> Query IntoItem"
+    , ""
+    , "instance IntoQuery (List a) ="
+    , "    let IntoItem = a"
+    , "    let toQuery xs = __queryFromList xs"
+    , ""
+    , "instance IntoQuery (Array a) ="
+    , "    let IntoItem = a"
+    , "    let toQuery xs = __queryFromList (__arrayToList xs)"
+    , ""
+    , "instance IntoQuery (Set a) ="
+    , "    let IntoItem = a"
+    , "    let toQuery s = __queryFromList (__setToList s)"
+    , ""
+    , "instance IntoQuery (Option a) ="
+    , "    let IntoItem = a"
+    , "    let toQuery o = __queryFromList (__optionToList o)"
+    , ""
+    , "instance IntoQuery (NumericRange v) ="
+    , "    let IntoItem = v"
+    , "    let toQuery r = __queryFromList (rangeToList r)"
     , ""
     , "__groupInsert : forall (k : Type) (r : Type). (k -> k -> Bool) -> k -> r -> List (key : k, rows : List r) -> List (key : k, rows : List r)"
     , "let __groupInsert eq k0 row gs ="

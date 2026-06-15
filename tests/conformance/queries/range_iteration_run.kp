@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n2\n3\n5\n4\n5\nx\ny\nz\n"
+
+-- §20.2/§18.6: a range (the canonical NumericRange result of '..'/'..<')
+-- is iterable both as an imperative 'for ... do' loop and as a
+-- comprehension generator, over Integer and UnicodeScalar element types.
+
+module main
+
+import std.unicode.(term scalarToString)
+
+listLengthNat : forall (a : Type). List a -> Nat
+let listLengthNat l = natOfInt (listLength l)
+
+incl : List Integer
+let incl = [for x in 1..5, yield x]
+
+excl : List Integer
+let excl = [for x in 1..<5, yield x]
+
+chars : List UnicodeScalar
+let chars = [for c in 'a'..'e', yield c]
+
+main : UIO Unit
+let main = do
+    for x in 1..3 do
+        printlnString (showInt x)
+    printlnString (showInt (natToInt (listLengthNat incl)))  -- 5
+    printlnString (showInt (natToInt (listLengthNat excl)))  -- 4
+    printlnString (showInt (natToInt (listLengthNat chars))) -- 5
+    for c in 'x'..'z' do
+        printlnString (scalarToString c)

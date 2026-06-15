@@ -670,6 +670,18 @@ evalPurePrim p args = case (p, args) of
   -- §28.2 subst/pathInd transport is the identity on the runtime payload
   -- (the equality witness is erased and proof-irrelevant)
   ("__transport", [v]) -> Just v
+  -- §20.2 range enumeration over the §28.2.3 Rangeable element types.
+  -- Integer/Nat values share the LitInt representation; UnicodeScalar
+  -- values are LitScalar (surrogates excluded by construction).
+  ("__rangeEnum", [VLit (LitInt lo), VLit (LitInt hi), excl])
+    | Just ex <- asBoolV excl ->
+        let top = if ex then hi - 1 else hi
+         in Just (listV [VLit (LitInt n) | n <- [lo .. top]])
+  ("__rangeEnum", [VLit (LitScalar lo), VLit (LitScalar hi), excl])
+    | Just ex <- asBoolV excl ->
+        let topC = if ex then pred hi else hi
+            codes = [c | c <- [ord lo .. ord topC], not (c >= 0xD800 && c <= 0xDFFF)]
+         in Just (listV [VLit (LitScalar (chr c)) | c <- codes])
   ("__mapFromEntries", [v]) -> Just v
   ("__mapToList", [v]) -> Just v
   -- §21.6 'sameSymbol' compares resolved declaration identity
@@ -704,6 +716,11 @@ evalPurePrim p args = case (p, args) of
     asRat :: Value -> Maybe (Integer, Integer)
     asRat v = case v of
       VPrim "__rat" [VLit (LitInt n), VLit (LitInt d)] -> Just (n, d)
+      _ -> Nothing
+    asBoolV :: Value -> Maybe Bool
+    asBoolV v = case v of
+      VCtor (GName _ "True") [] -> Just True
+      VCtor (GName _ "False") [] -> Just False
       _ -> Nothing
     -- walk a cons-list value to its i-th element (0-based); Nothing when
     -- the list runs out (out of bounds) so the application stays stuck

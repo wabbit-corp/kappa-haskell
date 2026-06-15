@@ -7231,8 +7231,26 @@ elabDoIOItems _sp ctx mexp items = do
           ks <- goItems loops c errT resT rest
           pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
         DoFor ml pat src body mels fsp -> do
-          elemT <- freshMetaV c
-          srcTm <- check c (desugarBang src) (VGlobN (gPrel "List") [(Expl, elemT)])
+          -- §18.6/§20.2: a 'for' generator iterates any source the
+          -- comprehension as-if list model understands (List/Array/Set/
+          -- Map/Option/Query/range). Infer the source to classify it,
+          -- then materialize it to the element list the loop kernel
+          -- walks via the matching prelude conversion (the identity on a
+          -- List source).
+          let src' = desugarBang src
+          (_, srcTy) <- infer c src'
+          si <- sourceInfo c srcTy
+          let elemT = siItem si
+              listSrc = case siKind si of
+                SKList -> src'
+                SKArray -> prelApp1 fsp "__arrayToList" [src']
+                SKSet -> prelApp1 fsp "__setToList" [src']
+                SKMap -> prelApp1 fsp "__mapToList" [src']
+                SKOption -> prelApp1 fsp "__optionToList" [src']
+                SKQuery -> prelApp1 fsp "__queryToList" [src']
+                SKRange -> prelApp1 fsp "rangeToList" [src']
+                SKUnknown -> src'
+          srcTm <- check c listSrc (VGlobN (gPrel "List") [(Expl, elemT)])
           checkIrrefutable c pat elemT fsp
           (patC, c', _) <- elabPattern c pat elemT
           bodyKs <- goItems (withLoop ml) c' errT (VGlobN (gPrel "Unit") []) body
@@ -8255,7 +8273,7 @@ shapeMatchAdt2Op ctx sp shapeV lV rV cbSame cbDiff = do
 -- surface syntax and elaborates once.
 
 -- | How a generator source is iterated (§20.10.2 built-in obligations).
-data SrcKind = SKList | SKArray | SKSet | SKMap | SKOption | SKQuery | SKUnknown
+data SrcKind = SKList | SKArray | SKSet | SKMap | SKOption | SKQuery | SKRange | SKUnknown
   deriving stock (Eq, Show)
 
 -- | Cardinality approximation (§20.10.1).
@@ -8340,6 +8358,10 @@ sourceInfo ctx ty = do
     VGlobN (GName _ "Map") [(_, k), (_, v)] ->
       pure (SrcInfo SKMap (VRecordT [("key", k), ("value", v)]) False False CZeroOrMore False)
     VGlobN (GName _ "Option") [(_, a)] -> pure (SrcInfo SKOption a True False CZeroOrOne False)
+    -- §20.2 range generator: a NumericRange iterates its ascending
+    -- element stream (Reusable QZeroOrMore per the §23.7 IntoQuery
+    -- instance for the canonical range type)
+    VGlobN (GName _ "NumericRange") [(_, a)] -> pure (SrcInfo SKRange a True False CZeroOrMore False)
     VGlobN (GName _ "QueryCore") [(_, m), (_, q), (_, a)] -> do
       (oneShot, card) <- decodeQueryMode m
       lin <- decodeLinearQuantity q
@@ -8930,6 +8952,7 @@ desugarComp ctx clauses yld sp = do
       SKMap -> prelApp1 sp "__mapToList" [src]
       SKOption -> prelApp1 sp "__optionToList" [src]
       SKArray -> prelApp1 sp "__arrayToList" [src]
+      SKRange -> prelApp1 sp "rangeToList" [src]
       _ -> src
 
     -- element function: match one element against the pattern, emit

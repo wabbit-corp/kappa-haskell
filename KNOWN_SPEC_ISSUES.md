@@ -378,6 +378,23 @@ its equation in a later proof*. Evidence:
 * `WellFoundedRelation` (§28.2/§15.11) is surfaced with its `rel` member
   but not the `wf : WellFounded a rel` accessibility witness, which is an
   erased proof with no closed inhabitant this implementation can build.
+* `IntoQuery` (§18.6/§20.2/§23.7) declares the associated members
+  `Mode`/`ItemQuantity`/`Item`/`SourceDemand` and `toQuery`'s result
+  `QueryCore Mode ItemQuantity Item` references them. As above, this
+  implementation cannot reference an associated type in an applied
+  position, so `IntoQuery` is surfaced with a single associated
+  `IntoItem : Type` and `toQuery : src -> Query IntoItem`, with the
+  §23.7 instances for `List`/`Array`/`Set`/`Option`/`NumericRange`.
+  `toQuery` resolves, but because the result type mentions the associated
+  `IntoItem`, a use site must determine the item type independently (the
+  `_.IntoItem` projection is not reduced from the instance during
+  unification). The actual `for`/comprehension generator iteration does
+  **not** rely on `toQuery`: it lowers each source directly to its
+  element list under the §20.10.11 as-if model (`Kappa.Check`,
+  `sourceInfo`/`wrapSrc` and the `DoFor` handler), so `for x in 1..n` and
+  `[for x in 1..n, yield x]` iterate correctly for the §28.2.3 Rangeable
+  element types. Evidence: `tests/conformance/queries/`
+  `range_iteration_run.kp`.
 
 In every case the *name* is a resolvable prelude export, satisfying the
 §28.2 declaration MUSTs; only the proof-carrying members are omitted.
