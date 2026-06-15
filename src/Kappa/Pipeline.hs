@@ -414,19 +414,50 @@ topoOrder mods deps = (reverse outRev, reverse diagsRev)
 -- ── Exports (§8.5) ───────────────────────────────────────────────────
 
 moduleExportNames :: Module -> [Text]
-moduleExportNames m = nub (concatMap go (modDecls m))
+moduleExportNames m =
+  -- §5902/§8.5.1: a lexical scope maps each name to a binding group that
+  -- may carry several declaration kinds (e.g. a signature `DSig` and its
+  -- defining `DLet`). Visibility is a property of the named ITEM, not of
+  -- an individual declaration: a `private` marker on ANY declaration of
+  -- the group makes the item private and removes it from the export
+  -- interface. We therefore aggregate per name — exported iff no
+  -- declaration is `private` and at least one is exportable by default or
+  -- explicitly `public` — rather than OR-ing exportability per
+  -- declaration (which leaked a `private let` whose signature was
+  -- unmarked, and vice versa).
+  nub (groupedNames ++ otherNames)
   where
     pbd = "PrivateByDefault" `elem` map nameText (modAttrs m)
     vis mods = case dmVisibility mods of
       VisPublic -> True
       VisPrivate -> False
       VisDefault -> not pbd
+    -- visibilities of every signature/definition declaration that shares
+    -- a module-scope term name (the §5902 binding group)
+    groupVis :: Map.Map Text [Visibility]
+    groupVis =
+      Map.fromListWith (++) $
+        concatMap
+          ( \case
+              DSig mods n _ _ -> [(nameText n, [dmVisibility mods])]
+              DLet mods (LetDef (Just n) _ _ _ _ _ _ _) _ -> [(nameText n, [dmVisibility mods])]
+              DTypeAlias mods n _ _ _ _ -> [(nameText n, [dmVisibility mods])]
+              _ -> []
+          )
+          (modDecls m)
+    -- the binding group is exported iff no declaration is private and at
+    -- least one is exportable
+    groupExported viss =
+      VisPrivate `notElem` viss
+        && any (\v -> v == VisPublic || (v == VisDefault && not pbd)) viss
+    groupedNames = [nm | (nm, viss) <- Map.toList groupVis, groupExported viss]
+    -- everything that is NOT a §5902 grouped term name (data/trait/expect/
+    -- re-export), still decided per declaration since each binds its name
+    -- once
+    otherNames = concatMap go (modDecls m)
     go = \case
-      DSig mods n _ _ -> [nameText n | vis mods]
-      DLet mods (LetDef (Just n) _ _ _ _ _ _ _) _ -> [nameText n | vis mods]
       DData mods (DataDecl n _ _ ctors) _
         | vis mods -> nameText n : [nameText cn | CtorDecl cn _ _ _ <- ctors]
-      DTypeAlias mods n _ _ _ _ -> [nameText n | vis mods]
       -- §8.5: a trait declaration also binds each member name at module
       -- scope (the §14.2.1 overloaded-member projection), and those are
       -- ordinary top-level named items — exported by default with the

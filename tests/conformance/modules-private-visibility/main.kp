@@ -1,0 +1,17 @@
+module main
+
+-- §8.5.1: a private item cannot be imported by ordinary import forms.
+-- `secretLet` is private via its `let` declaration and `secretSig` via
+-- its signature; both binding groups are therefore private and these
+-- imports must be rejected (E_IMPORT_ITEM_NOT_FOUND). The fully public
+-- `publicVal` (no private marker on any declaration of its group) is
+-- importable and usable.
+import plib.(publicVal)
+import plib.(secretLet)
+import plib.(secretSig)
+
+usePublic : Int
+let usePublic = publicVal
+
+--! assertDiagnosticCodes E_IMPORT_ITEM_NOT_FOUND, E_IMPORT_ITEM_NOT_FOUND
+--! assertEval usePublic 5

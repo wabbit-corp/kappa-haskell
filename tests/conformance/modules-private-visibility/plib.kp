@@ -1,0 +1,14 @@
+module plib
+
+-- §5902/§8.5.1: a signature + its defining `let` form ONE binding group
+-- (one named item). A `private` marker on EITHER declaration makes the
+-- whole item private, so it is not part of the export interface.
+secretLet : Int
+private let secretLet = 42
+
+private secretSig : Int
+let secretSig = 7
+
+-- a fully public item (neither declaration marked private) IS exported
+publicVal : Int
+let publicVal = 5
