@@ -1065,13 +1065,14 @@ checkAssertion root path src files cu diags mRun = \case
 -- diagnostic when it equals the rendered code or the diagnostic's
 -- portable alias (an implementation may expose either spelling). For a
 -- §3.1.4-listed condition the alias is the normative cross-
--- implementation comparison key; the alias table additionally carries a
--- small set of explicitly implementation-defined spelling tolerances
--- that §3.1.4 does NOT mandate (see 'Explain.toleranceAliasTable').
--- Either way, when the asserted spelling is another implementation's
--- code it matches iff both spellings resolve to the same alias. The
--- diagnostic count is compared exactly by 'codesMatchUpTo', so a
--- tolerance can never mask a behavior difference.
+-- implementation comparison key (see 'Explain.requiredAliasTable'):
+-- when the asserted spelling is another implementation's code it matches
+-- iff both spellings resolve to the same §3.1.4 portable alias. There
+-- are no implementation-defined spelling tolerances — a code §3.1.4 does
+-- not standardize is compared verbatim — so a fixture pinning a
+-- materially different required code than this implementation emits is
+-- reported as a mismatch, never silently reconciled. The diagnostic
+-- count is also compared exactly by 'codesMatchUpTo'.
 diagHasCode :: Text -> Diagnostic -> Bool
 diagHasCode code d =
   code `elem` ours

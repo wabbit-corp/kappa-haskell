@@ -601,38 +601,72 @@ duplication reviewers):
     site (`resolveImplicitQ`) and the equality-evidence `step` site now
     call `freshMetaId` and wrap with `CMeta`, removing the partial match.
 
-32. **`E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` over-attributed to a
-    "§3.1.4 portable alias" (MINOR, spec reviewer)** — fixed by
-    re-labeling (it is genuinely an implementation-defined tolerance,
-    not a normative alias). The §3.1.4 required-portable-alias list
-    (Spec.md:827-896) does not include `E_UNSOLVED_IMPLICIT`, and
-    `kappa.implicit.unsolved` (§3.2.4) defines no portable alias, so the
-    ledger/source describing this mapping as "the §3.1.4 portable alias"
-    over-attributed spec authority to a harness convenience. The mapping
-    is sound as a *cross-implementation spelling tolerance*: both
-    `E_UNSOLVED_IMPLICIT` and the corpus's `E_TYPE_MISMATCH` spelling
-    are implementation-defined per §3.1 (Spec.md:809 — codes are
-    "implementation-defined stable identifiers" outside §3.1.4's
-    selected set), and in every fixture that relies on it the program
-    *is* correctly rejected with the correct error count (the harness's
-    `codesMatchUpTo` compares the diagnostic count exactly), so the
-    tolerance only reconciles a non-normative spelling and cannot mask a
-    behavior difference. `Explain.portableAlias`'s single table is now
-    split into `requiredAliasTable` (the four genuine §3.1.4 aliases,
-    each RHS verified present in the spec list) and `toleranceAliasTable`
-    (the `E_UNSOLVED_IMPLICIT` tolerance, documented as non-normative);
-    `portableAlias` returns their union so matching behavior is
-    unchanged. `tests/external-blocked.md`, `TESTING.md`, and the
-    `TestHarness.diagHasCode` comment are corrected to draw the same
-    distinction.
+32. **`E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` harness "tolerance"
+    (BLOCKER, round-3 dup reviewer escalated by round-4)** — removed
+    entirely (not relabeled). Round-3 split the alias table into a
+    §3.1.4 `requiredAliasTable` and a non-normative `toleranceAliasTable`
+    holding `E_UNSOLVED_IMPLICIT ↔ E_TYPE_MISMATCH`, arguing it was a
+    harmless cross-implementation spelling convenience because the
+    diagnostic *count* is still exact. The round-4 dup reviewer correctly
+    rejected that: the entry is a relaxation of the *test oracle*, not a
+    spec rule. `E_TYPE_MISMATCH` is a **required** §3.1.4 portable alias
+    (Spec.md:838), and §3.1.4 (Spec.md:823) states "A portable
+    diagnostic-code alias MUST NOT be reused for a materially different
+    diagnostic meaning." A stuck `kappa.implicit.unsolved` goal (§3.2.4,
+    "an implicit argument cannot be synthesized") is materially different
+    from a type mismatch, so satisfying a fixture that pins
+    `E_TYPE_MISMATCH` while emitting `E_UNSOLVED_IMPLICIT` is exactly the
+    forbidden reuse. The "count is still exact" defense does not save it:
+    what is wrong is the emitted *code*, which is what these negative
+    fixtures exist to pin.
+
+    Fix (the reviewer's path (a) where the spec reclassifies the
+    condition, else (b) honest reclassification):
+    - `toleranceAliasTable` is deleted; `portableAlias` now folds only
+      `requiredAliasTable`, so any §3.1.4-unstandardized code is compared
+      verbatim.
+    - **Path (a) for the literal-domain cases (general, not a fixture
+      hack):** a numeric literal at an expected type with no
+      `FromInteger`/`FromFloat` witness was reporting the generic
+      `E_UNSOLVED_IMPLICIT`. §3.1.4 (Spec.md:928-929) *mandates* the
+      portable alias `E_NUMERIC_LITERAL_DOMAIN_MISMATCH` for precisely
+      this condition ("literal elaboration fails because the surrounding
+      expected type … is not compatible with the literal domain"), backed
+      by the §3.2.3 `kappa.type.literal-domain-mismatch` family. The new
+      `Check.resolveLiteralWitness` runs the ordinary §16.3.3 resolution
+      ladder for the `FromInteger`/`FromFloat` goal and, on failure,
+      emits that literal-domain alias. This is a genuine correctness
+      improvement applying to every numeric literal at an incompatible
+      domain, citing only the spec; it does not reference any fixture.
+    - **Path (b) for the trait/evidence cases:** the five `==`/`<`/
+      member/`Filterable`-style fixtures and the missing-runtime-implicit
+      `app_reject_missing_implicit_argument` are genuine
+      `kappa.implicit.unsolved` rejections (§3.2.4) for which §3.1.4
+      defines no portable alias. They are reclassified as honest
+      tracked-gaps in `tests/external-blocked.md` (the rejection and
+      error count are correct; only the non-normative spelling differs).
+    - The three literal-domain fixtures
+      (`short_circuit_reject_rhs_wrong_unsuspended_type`,
+      `types.literals.negative_numeric_literal_at_user_type`,
+      `types.literals.negative_literal_in_parameterized_positions`) pin
+      `E_TYPE_MISMATCH` for a condition §3.1.4 reserves the literal-domain
+      alias for; their expectation contradicts §3.1.4, so they are
+      reclassified as spec-conflicts.
+    - `traits.members.negative_value_position_member_reference` was
+      previously credited as "cleared" by the §3.1.11 cascade-suppression
+      work; that clear depended only on this tolerance (emitted code never
+      changed), so it returns to its honest tracked-gap classification.
+    Net corpus effect: 929→920 pass; the nine flips are all the
+    reviewer-identified tolerance dependents (verified by per-fixture
+    diff against the pre-change baseline; zero other pass→fail). All are
+    now classified honestly. `TESTING.md`, `tests/external-blocked.md`,
+    `tests/external-results.md`, and the `TestHarness.diagHasCode`
+    comment are updated to state there are no spelling tolerances.
 
 The remaining round-3 findings were INFO/non-findings: the
 `tools/run-external-fixtures.sh` mid-run-rebuild fragility (the reviewer
 reproduced a spurious harness-error run only by rebuilding the binary
-*while the loop was in flight*; the canonical tally reproduces exactly
-when the build is settled first — an operational note, not a
-correctness defect) and the "182/182 conformance" staleness in a prior
-report's prose (the gate itself is and stays green; the live count is
-186/186 after this round's perf-guard fixture). The dup reviewer's
-findings were all confirmed as general spec-rule implementations, not
-overfitting, with no action required.
+*while the loop was in flight*; round 4 made the script fail fast if the
+binary is missing before iterating fixtures) and the "182/182
+conformance" staleness in a prior report's prose (the gate itself is and
+stays green; the live count is 186/186 after the perf-guard fixture).

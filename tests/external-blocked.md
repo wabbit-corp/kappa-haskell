@@ -60,7 +60,7 @@ documented compatibility extensions, as §T.1 permits (see TESTING.md):
 future private directive without an evident portable meaning remains
 a harness error.
 
-### Spec conflicts (fixture expectation contradicts Spec.md; 8 fixtures)
+### Spec conflicts (fixture expectation contradicts Spec.md; 11 fixtures)
 
 - `core_semantics.evaluation.positive`
   (`runtime_error_division_by_zero.kp`) asserts `let result = 1 / 0`
@@ -139,26 +139,55 @@ a harness error.
   §28.2.2 `Monad Option` instance once `apply1`'s type arguments are
   solved (§16.3.3 postponed goals). The two genuinely ill-typed probes
   (no `Ord CI`/`Eq CI` instances) are rejected here with
-  `kappa.implicit.unsolved` (§3.2.4). §3.2.4 defines no portable alias
-  and §3.1.4 does not map this condition to `E_TYPE_MISMATCH`; the
-  harness's `E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` tolerance (an
-  implementation-defined cross-implementation spelling convenience, not
-  a normative alias — see IMPLEMENTATION_NOTES "Review responses")
-  reconciles the spelling, but the residual disagreement is the
-  mandated rejection of the well-typed first probe, which contradicts
-  §14.3.1.
-### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 11 fixtures)
+  `kappa.implicit.unsolved` (§3.2.4). The fixture therefore fails on
+  *count* alone (2 emitted vs 3 asserted): the well-typed first probe is
+  correctly accepted, which contradicts the fixture's expectation of a
+  third rejection — a §14.3.1 conflict that no diagnostic-code spelling
+  rule can reconcile.
+- `short_circuit_reject_rhs_wrong_unsuspended_type` asserts one
+  `E_TYPE_EQUALITY_MISMATCH` for `True && 1` (prelude
+  `(&&) : Bool -> Thunk Bool -> Bool`, §16.1.3, so the literal `1`
+  appears where `Thunk Bool` is expected). This implementation rejects
+  it once (the spec-mandated outcome) but with
+  `E_NUMERIC_LITERAL_DOMAIN_MISMATCH` (family
+  `kappa.type.literal-domain-mismatch`, §3.2.3). §3.1.4 (Spec.md:928)
+  *mandates* this portable alias precisely "when literal elaboration
+  fails because the surrounding expected type … is not compatible with
+  the literal domain", and §3.1.4 (Spec.md:823) forbids reusing the
+  `E_TYPE_MISMATCH` alias "for a materially different diagnostic
+  meaning". The fixture pins `E_TYPE_MISMATCH` for a condition the spec
+  reserves the literal-domain alias for, so its expectation contradicts
+  §3.1.4.
+- `types.literals.negative_numeric_literal_at_user_type` asserts two
+  `E_TYPE_MISMATCH` for `MkB 5` / `MkB 3.14` where `MkB : W -> Box` and
+  the user type `W` has no `FromInteger`/`FromFloat` instance. Both are
+  correctly rejected (the spec-mandated outcome, §6.1.5) with
+  `E_NUMERIC_LITERAL_DOMAIN_MISMATCH` — the §3.1.4-mandated portable
+  alias for "no suitable literal witness is available" (§3.2.3). Same
+  §3.1.4 reuse contradiction as above.
+- `types.literals.negative_literal_in_parameterized_positions` asserts
+  four `E_TYPE_MISMATCH`; all four ill-typed declarations are correctly
+  rejected (count matches exactly). Three are string/None-at-`Color`
+  mismatches reported with `E_TYPE_EQUALITY_MISMATCH` (→ portable
+  `E_TYPE_MISMATCH`, matches). The fourth, `Some 5 : Option Color`, is a
+  numeric literal at a `FromInteger`-less domain and is reported with
+  `E_NUMERIC_LITERAL_DOMAIN_MISMATCH` — again the §3.1.4-mandated alias
+  for that exact condition (§3.2.3/§6.1.5). The fixture pins
+  `E_TYPE_MISMATCH` for the literal-domain probe too, contradicting
+  §3.1.4's reuse rule.
+### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 17 fixtures)
 
 Diagnostic-spelling notes below: only the §3.1.4-listed portable
 aliases are normative comparison keys; every other code spelling
 (both implementations') is implementation-defined per §3.1. This
 harness's `assertDiagnosticCodes` matches through those §3.1.4 aliases
-in both directions, plus a small set of explicitly implementation-
-defined cross-implementation tolerances (e.g. `E_UNSOLVED_IMPLICIT ↔
-E_TYPE_MISMATCH`, which is NOT a §3.1.4 alias — see TESTING.md and
-IMPLEMENTATION_NOTES "Review responses"). The diagnostic count is
-always compared exactly, so a tolerance never hides a behavior
-difference.
+in both directions and through nothing else: a code §3.1.4 does not
+standardize (e.g. `kappa.implicit.unsolved` / `E_UNSOLVED_IMPLICIT`,
+§3.2.4, for which §3.1.4 defines no portable alias) is compared
+verbatim. The diagnostic count is always compared exactly, and there
+are no implementation-defined spelling "tolerances", so a fixture that
+pins a different *required* code than this implementation emits is
+reported as an honest `fail` rather than reconciled.
 
 | fixture | gap | spec |
 |---|---|---|
@@ -173,16 +202,34 @@ difference.
 | `fuzz.pending.reject_invalid_indented_expression_continuation` | same layout-continuation difference (our parse yields one downstream type error, the corpus's two). | §5.4 |
 | `parser.recovery.negative_malformed_tuple_parameter_no_crash` | `let i1 (1 i1 :)3` — declaration-level recovery reports once here; the corpus's recovery yields two diagnostics. No crash either way (the §3.1.14A minimum contract is met); cascade-shape parity is queued. | §3.1.14A |
 | `types.literals.negative_literal_in_nested_result_positions` | all three ill-typed declarations (record-field literal, do-tail, and `"a" ++ "b"` at user type `Color`) **are** correctly rejected — the spec-mandated outcome. The asserted count is 3 `E_TYPE_MISMATCH`; this implementation emits 5 because the `++` probe (`(++) : forall a. Monoid a => a -> a -> a`) surfaces both the unsatisfiable `Monoid Color` evidence goal (§6.1.5/§14.3.1, `E_UNSOLVED_IMPLICIT`) and a mismatch on each `String` operand, where the corpus collapses the binary-at-wrong-result to one mismatch. The two extra diagnostics are an honest cascade-count divergence (the §3.1.11 single-cause suppression does not fold the `Monoid` evidence failure into the operand mismatches here), not a missed rejection; cascade-shape parity for the evidence-bearing-operator case is queued. Pre-existing on committed HEAD (this fixture was added to the corpus after the prior ledger revision and fails identically on the unmodified baseline). | §6.1.5, §14.3.1, §3.1.11 |
+| `app_reject_missing_implicit_argument` | `readEnv 7`, where `readEnv : (@ω env : Env) -> Int -> Int`: the explicit `7` fills the `Int` parameter and the runtime implicit `Env` binder is left with no candidate. This implementation rejects it once (the spec-mandated outcome) with `E_UNSOLVED_IMPLICIT` (`kappa.implicit.unsolved`, §3.2.4 — "an implicit argument cannot be synthesized", which is exactly a missing runtime implicit, as the fixture's own name says). The corpus pins `E_TYPE_EQUALITY_MISMATCH`. §3.1.4 defines no portable alias for `kappa.implicit.unsolved` and forbids reusing `E_TYPE_MISMATCH` for it, so neither spelling is normative; the rejection itself is common ground. | §16.3.3, §3.2.4, §3.1.4 |
+| `traits.members.negative_container_wrapped_user_nominal_equality` | `o == Some Red` / `o == (Red :: Nil)` through an opaque lambda: `==` demands `Eq` evidence for a container of the user nominal `Color`, which has no `Eq Color` instance. Both uses are correctly rejected (count matches) with `E_UNSOLVED_IMPLICIT` (`kappa.implicit.unsolved`, §3.2.4 trait-evidence goal). The corpus pins `E_TYPE_MISMATCH`; §3.1.4 maps this missing-instance condition to no portable alias and forbids reusing `E_TYPE_MISMATCH`. Honest spelling divergence; no missed rejection. | §3.2.4, §3.1.4, §14.3.1 |
+| `traits.members.negative_opaque_ordering_constructed_operands` | `x < (2 :: Nil)` / `x < Some 2`: `<` demands `Ord` evidence for a constructed (non-scalar) operand with no `Ord` instance. Both correctly rejected (count matches) with `E_UNSOLVED_IMPLICIT` (§3.2.4). Same §3.1.4 spelling divergence as the row above. | §3.2.4, §3.1.4, §14.3.1 |
+| `traits.members.negative_tuple_arrow_operand_equality` | `p == (Red, 1)` (tuple wrapping a user nominal) / `f == inc` (arrow operand): `==` demands `Eq` evidence neither tuple-of-`Color` nor a function type provides. Both correctly rejected (count matches) with `E_UNSOLVED_IMPLICIT` (§3.2.4). Same §3.1.4 spelling divergence. | §3.2.4, §3.1.4, §14.3.1 |
+| `traits.members.negative_value_position_member_reference` | bare value-position references to member names `empty` / `release` with no determinable owning instance: the residual member goal is an unsolved implicit. Both correctly rejected (count matches) with `E_UNSOLVED_IMPLICIT` (§3.2.4). The corpus pins `E_TYPE_MISMATCH`; §3.1.4 defines no alias for `kappa.implicit.unsolved`. Honest spelling divergence. (Earlier ledger revisions wrongly credited this fixture as cleared — that "clear" depended only on the removed `E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` harness tolerance, not on any behavior change; it is reclassified here as the honest tracked-gap it always was.) | §3.2.4, §3.1.4, §14.2.1 |
+| `traits.resolution.negative_unsolved_goal_no_defaulting` | four drivers (`Filterable (Box _)`, `EuclideanSemiring Int` at the wrong shape, `FromString Duration`, `Applicative (STM _)`) each demand evidence at a type that provably has no instance; all four must be rejected statically (the fixture's purpose: an unsolved goal must NOT default to a unique ground instance head). All four correctly rejected (count matches) with `E_UNSOLVED_IMPLICIT` — the precise `kappa.implicit.unsolved` condition (§3.2.4). The corpus pins `E_TYPE_MISMATCH`; §3.1.4 defines no alias for this family. Honest spelling divergence; the spec-critical no-defaulting behavior is satisfied. | §3.2.4, §3.1.4, §16.3.3 |
 
-Cleared in this revision (all now PASS):
+Reclassified in this revision: the
+`E_UNSOLVED_IMPLICIT → E_TYPE_MISMATCH` harness "tolerance" has been
+removed (it relaxed the test oracle without changing emitted codes,
+contradicting §3.1.4's rule that a portable alias must not be reused
+for a materially different meaning). Nine fixtures that previously
+matched only through it are reclassified honestly above (three as
+literal-domain spec-conflicts now reporting the §3.1.4-mandated
+`E_NUMERIC_LITERAL_DOMAIN_MISMATCH`, six as `kappa.implicit.unsolved`
+tracked-gaps). In particular `traits.members.negative_value_position_member_reference`,
+previously credited as "cleared" by the §3.1.11 cascade-suppression
+work, never changed emitted code: that clear was the tolerance, not a
+behavior fix, so it returns to its honest tracked-gap classification.
+
+Cleared in prior revisions (all PASS):
 §16.1.7.1 function-argument quantity mismatch reported as
 `E_APPLICATION_ARGUMENT_MISMATCH`
 (`arrow_reject_unrestricted_argument_function_to_linear_expected`);
 §3.1.11 single-cause cascade suppression at implicit-goal flush
 (`fuzz.pending.reject_builtin_arithmetic_non_numeric_operand`,
-`fuzz.pending.reject_compile_time_parameter_runtime_arithmetic`,
-`traits.members.negative_value_position_member_reference`) — the
-last two also rely on §6.6 `()` elaborating to the type `Unit` in
+`fuzz.pending.reject_compile_time_parameter_runtime_arithmetic`) — the
+latter also relies on §6.6 `()` elaborating to the type `Unit` in
 type position; §5.2/§3.1.14A in-bracket recovery surfacing the
 unbalanced-bracket cause when an unclosed bracket swallows following
 declarations (`fuzz.pending.reject_constructor_runtime_type_field`,

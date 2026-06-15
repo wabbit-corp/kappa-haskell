@@ -51,11 +51,15 @@ explainExists s
   | otherwise = any ((== s) . eeCode) registry
 
 -- | A rendered code's standardized comparison spelling, where one
--- applies. This combines two distinct classes (see 'requiredAliasTable'
--- and 'toleranceAliasTable'); the harness treats both as acceptable
--- spellings when matching @assertDiagnostic*@ directives.
+-- applies. Every mapping here is a §3.1.4 *required* portable alias (see
+-- 'requiredAliasTable'); the harness treats either spelling as
+-- acceptable when matching @assertDiagnostic*@ directives. There are no
+-- implementation-defined "tolerances": a code that §3.1.4 does not
+-- standardize is compared verbatim, so a diagnostic that emits a
+-- materially different code than a fixture pins is reported as a
+-- mismatch rather than silently reconciled.
 portableAlias :: Text -> Maybe Text
-portableAlias c = lookup c (requiredAliasTable ++ toleranceAliasTable)
+portableAlias c = lookup c requiredAliasTable
 
 -- | Required portable diagnostic-code aliases (§3.1.4). Each entry maps
 -- this implementation's rendered code for a §3.1.4-listed condition to
@@ -65,34 +69,22 @@ portableAlias c = lookup c (requiredAliasTable ++ toleranceAliasTable)
 -- implementation to expose either spelling), so the harness accepts
 -- both. Every right-hand spelling here appears in the §3.1.4 normative
 -- list (Spec.md:827-896): @E_TYPE_MISMATCH@, @E_SAFE_NAV_GENERIC_AMBIGUOUS@,
--- @E_APPLICATION_NON_CALLABLE@, @E_MISSING_EXPLICIT_SIGNATURE@.
+-- @E_APPLICATION_NON_CALLABLE@, @E_MISSING_EXPLICIT_SIGNATURE@. (Codes
+-- whose rendered spelling already equals the §3.1.4 portable spelling —
+-- e.g. @E_NUMERIC_LITERAL_DOMAIN_MISMATCH@ — need no alias entry.)
+--
+-- §3.1.4 (Spec.md:823): "A portable diagnostic-code alias MUST NOT be
+-- reused for a materially different diagnostic meaning." Accordingly
+-- this table maps only codes whose condition is the *same* condition the
+-- target alias standardizes; conditions §3.1.4 does not standardize
+-- (e.g. a stuck @kappa.implicit.unsolved@ trait/evidence goal, §3.2.4)
+-- are NOT folded onto an unrelated alias.
 requiredAliasTable :: [(Text, Text)]
 requiredAliasTable =
   [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
   , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
   , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
   , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
-  ]
-
--- | Implementation-defined cross-implementation code tolerances. These
--- are NOT §3.1.4 required portable aliases (the listed condition is not
--- in that subsection's table). They are a deliberate, documented
--- harness convenience: both the rendered spelling and the listed
--- standardized spelling are implementation-defined per §3.1 (Spec.md:809
--- — diagnostic codes are "implementation-defined stable identifiers"
--- outside §3.1.4's selected set), and an external fixture that pins the
--- other spelling is still verifying the same spec-mandated rejection.
--- Matching tolerates the spelling difference; the diagnostic *count* is
--- still compared exactly (see 'TestHarness.codesMatchUpTo'), so no
--- mismatched behavior can be hidden by this table.
---
--- @E_UNSOLVED_IMPLICIT@: a stuck §3.2.4 @kappa.implicit.unsolved@ goal
--- (e.g. a defaulting/instance goal left unsolved by an ill-typed
--- argument) is, from another implementation's vantage, an ordinary
--- expected-vs-actual mismatch; §3.2.4 defines no portable alias.
-toleranceAliasTable :: [(Text, Text)]
-toleranceAliasTable =
-  [ ("E_UNSOLVED_IMPLICIT", "E_TYPE_MISMATCH")
   ]
 
 -- | All acceptable spellings of a diagnostic's code: the rendered code
@@ -176,6 +168,8 @@ registry =
       "A named argument does not correspond to any parameter of the applied function."
   , ent "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
       "An expression used in type position does not denote a type (its type is not 'Type')."
+  , ent "E_NUMERIC_LITERAL_DOMAIN_MISMATCH" (Just "kappa.type.literal-domain-mismatch")
+      "A numeric literal cannot elaborate at the surrounding expected type because that type admits no integer/float literal domain (no FromInteger/FromFloat witness is available) (§3.2.3, §6.1.5)."
   , ent "E_NUMERIC_LITERAL_MALFORMED" Nothing
       "A numeric literal is lexically malformed (bad digits for its radix, misplaced separators, or an invalid exponent)."
   , ent "E_OPERATOR_NO_FIXITY" (Just "kappa-hs.fixity.unbound")

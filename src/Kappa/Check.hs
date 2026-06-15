@@ -3590,7 +3590,7 @@ elabIntLit ctx v msuf sp mexp = case msuf of
         | isNumHead t -> pure (CLit (LitInt v), t)
         | Just other <- nonDefault t -> do
             -- FromInteger elaboration (§6.1.5)
-            dict <- resolveImplicit ctx sp (VGlobN (gPrel "FromInteger") [(Expl, other)])
+            dict <- resolveLiteralWitness ctx sp "FromInteger" "integer" other
             pure (CApp Expl (CProj dict "fromInteger") (CLit (LitInt v)), other)
       _ -> pure (CLit (LitInt v), VGlobN (gPrel "Int") []) -- defaulting (§6.1.5)
   where
@@ -3626,7 +3626,7 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
         | isFloatHead t -> pure (CLit (LitDouble v), t)
         | Just other <- nonDefault t -> do
             -- FromFloat elaboration (§6.1.5)
-            dict <- resolveImplicit ctx sp (VGlobN (gPrel "FromFloat") [(Expl, other)])
+            dict <- resolveLiteralWitness ctx sp "FromFloat" "float" other
             pure (CApp Expl (CProj dict "fromFloat") (CLit (LitDouble v)), other)
       _ -> pure (CLit (LitDouble v), VGlobN (gPrel "Double") []) -- defaulting (§6.1.5)
   where
@@ -3637,6 +3637,47 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
       VFlex {} -> Nothing
       t@VGlobN {} -> Just t
       _ -> Nothing
+
+-- | Resolve a numeric-literal witness (@FromInteger T@ / @FromFloat T@)
+-- at a concrete expected type @T@ (§6.1.5). When @T@ admits no such
+-- witness, the failure is a literal-domain mismatch, not a generic
+-- unsolved implicit: §3.1.4 (Spec.md:928-929) mandates the portable
+-- alias @E_NUMERIC_LITERAL_DOMAIN_MISMATCH@ — "emitted when literal
+-- elaboration fails because the surrounding expected type or selected
+-- literal witness is not compatible with the literal domain" — backed by
+-- the §3.2.3 @kappa.type.literal-domain-mismatch@ family ("integer,
+-- floating, … literal elaboration fails because the surrounding context
+-- expects an incompatible domain or because no suitable literal witness
+-- is available"). The primary message foregrounds the user-visible
+-- mismatch and notes the missing witness, per §3.2.3's rendering rule.
+--
+-- The goal carrier @T@ here is always concrete (the caller's
+-- @nonDefault@ guard rejects flex/defaultable types), so the witness
+-- goal is never postponed; we run the ordinary §16.3.3 resolution ladder
+-- (local implicits, then instance search, then supertrait projection)
+-- and only divert the *failure* diagnostic.
+resolveLiteralWitness :: Ctx -> Span -> Text -> Text -> Value -> CheckM Term
+resolveLiteralWitness ctx sp traitName litKind other = do
+  let goal = VGlobN (gPrel traitName) [(Expl, other)]
+  mLoc <- localCandidate ctx sp Q0 goal
+  mTm <- case mLoc of
+    Just tm -> pure (Just tm)
+    Nothing -> do
+      mInst <- instanceSearch ctx sp goal
+      case mInst of
+        Just tm -> pure (Just tm)
+        Nothing -> superCandidate ctx goal
+  case mTm of
+    Just tm -> pure tm
+    Nothing -> do
+      tT <- quoteIn ctx other
+      let article = if litKind == "integer" then "an " else "a "
+      errAt sp "E_NUMERIC_LITERAL_DOMAIN_MISMATCH" (Just "kappa.type.literal-domain-mismatch")
+        ( "expected " <> renderTerm tT <> " but found " <> article <> litKind
+            <> " literal; " <> renderTerm tT <> " has no " <> traitName
+            <> " witness, so it admits no " <> litKind <> " literal domain (§6.1.5)"
+        )
+      freshMeta
 
 -- | Does the suffix function's first explicit parameter admit the
 -- literal payload (§6.1.6)? Either a literal-typed parameter or one
