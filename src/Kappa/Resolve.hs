@@ -442,7 +442,7 @@ rExpr env = go
       EOptionSugar e sp -> EOptionSugar <$> go e <*> pure sp
       EAscription e t sp -> EAscription <$> go e <*> go t <*> pure sp
       ECaptures e rs sp -> ECaptures <$> go e <*> pure rs <*> pure sp
-      EBang e sp -> EBang <$> go e <*> pure sp
+      EBang closed e sp -> EBang closed <$> go e <*> pure sp
       EQuote e sp -> EQuote <$> go e <*> pure sp
       ECodeQuote e sp -> ECodeQuote <$> go e <*> pure sp
       ECodeEscape e sp -> ECodeEscape <$> go e <*> pure sp

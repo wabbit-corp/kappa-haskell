@@ -2352,7 +2352,7 @@ infer ctx expr = case expr of
     Nothing -> do
       errAt sp "E_INTERNAL" Nothing "quote grafting slot escaped its quote"
       anyHole ctx
-  EBang _ sp -> do
+  EBang _ _ sp -> do
     -- §3.1.5A: a splice is a desugaring construct; the diagnostic blames
     -- the user-written splice site as primary and records the desugaring
     -- provenance as a desugared-from related origin.
@@ -6115,14 +6115,18 @@ elabEffDo ctx0 row aT items0 sp = do
         contTm <- handlerClauseLam c Q1 pat bT (\c' -> go c' rest)
         pure (effBindTm rhsTm contTm)
       DoLet (LetBind _ _ pat mty rhs bsp) -> do
+        -- §18.3.1: a `let` RHS inside a do block may contain `!`; desugar
+        -- it like the DoBind branch above so it is not rejected as a bare
+        -- splice (E_SPLICE_OUTSIDE_DO).
+        let rhsD = desugarBang rhs
         (rhsTm, rhsTy) <- case mty of
           Just tyE -> do
             (tyTm, _) <- inferType c tyE
             tyV <- evalIn c tyTm
-            tm <- check c rhs tyV
+            tm <- check c rhsD tyV
             pure (tm, tyV)
           Nothing -> do
-            (tm, ty) <- infer c rhs
+            (tm, ty) <- infer c rhsD
             insertAllImplicits c bsp tm ty
         checkIrrefutable c pat rhsTy bsp
         case pat of
@@ -7123,14 +7127,20 @@ elabDoIOItems _sp ctx mexp items = do
           ks <- goItems loops c' errT resT rest
           pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
         DoLet (LetBind implocal prefix pat mty rhs bsp) -> do
+          -- §18.3.1: `let pat = expr` inside `do` may contain `!`. The
+          -- spliced computation is sequenced first and `pat` is then bound
+          -- to its value; desugar `!` here exactly as the bind/expr items
+          -- do, so it does not reach `infer`/`check` as a bare splice
+          -- (E_SPLICE_OUTSIDE_DO). The KLet runtime runs splices via evalK.
+          let rhsD = desugarBang rhs
           (rhsTm, rhsTy) <- case mty of
             Just tyE -> do
               (tyTm, _) <- inferType c tyE
               tyV <- evalIn c tyTm
-              tm <- check c rhs tyV
+              tm <- check c rhsD tyV
               pure (tm, tyV)
             Nothing -> do
-              (tm, ty) <- infer c rhs
+              (tm, ty) <- infer c rhsD
               insertAllImplicits c bsp tm ty
           checkIrrefutable c pat rhsTy bsp
           (patC, cBound, _) <- elabPattern c pat rhsTy
@@ -7378,7 +7388,17 @@ markImplicitLocal True (BinderPrefix mq mb) before after =
 -- interpreter understands; typing treats !e : a where e : IO err a.
 desugarBang :: Expr -> Expr
 desugarBang = \case
-  EBang e sp -> EApp (EVar (Name "__runIO" sp)) [ArgExplicit (desugarBang e)]
+  EBang _ e sp -> EApp (EVar (Name "__runIO" sp)) [ArgExplicit (desugarBang e)]
+  -- §18.3.1 immediate-application splice: an /open/ `!f x y` is sugar for
+  -- `!(f x y)`, i.e. the entire maximal application spine is the splice
+  -- operand. The parser produces `EApp (EBang False f) [x, y]`, so when
+  -- the head of an application is an open bang, the whole application is
+  -- the spliced computation rather than `(!f) x y`. A /closed/ bang
+  -- `(!f) x` (explicitly parenthesised) splices `f` first and then applies
+  -- the result to `x`, so it falls through to the ordinary EApp rule.
+  EApp (EBang False f bsp) args ->
+    EApp (EVar (Name "__runIO" bsp))
+      [ArgExplicit (EApp (desugarBang f) (map mapArg args))]
   EApp f args -> EApp (desugarBang f) (map mapArg args)
   EIf alts mels sp ->
     EIf [(desugarBang c, desugarBang t) | (c, t) <- alts] (fmap desugarBang mels) sp
@@ -7953,14 +7973,17 @@ elabElabDo ctx0 aTy items0 sp = do
       restTm <- go (bindCtx nm False bTy ctx) rest
       pure (bindPrim rhsTm (CLam Expl QW nm restTm))
     letItem ctx pat mty rhs bsp rest = do
+      -- §18.3.1: a `let` RHS inside a do block may contain `!`; desugar it
+      -- like bindItem so it is not rejected as a bare splice.
+      let rhsD = desugarBang rhs
       (rhsTm, rhsTy) <- case mty of
         Just tyE -> do
           (tyTm, _) <- inferType ctx tyE
           tyV <- evalIn ctx tyTm
-          tm <- check ctx rhs tyV
+          tm <- check ctx rhsD tyV
           pure (tm, tyV)
         Nothing -> do
-          (tm0, ty0) <- infer ctx rhs
+          (tm0, ty0) <- infer ctx rhsD
           insertAllImplicits ctx bsp tm0 ty0
       nm <- patBinder bsp pat
       rhsV <- evalIn ctx rhsTm
@@ -8455,7 +8478,7 @@ occursVar v = go
       EThunk e _ -> go e
       ELazy e _ -> go e
       EForce e _ -> go e
-      EBang e _ -> go e
+      EBang _ e _ -> go e
       EStringLit _ parts _ -> any (go . ipExpr) parts
       EDo _ items _ -> any goItem items
       EComprehension _ cls yy _ ->

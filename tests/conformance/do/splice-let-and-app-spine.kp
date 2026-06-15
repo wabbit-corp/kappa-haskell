@@ -1,0 +1,19 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n12\n"
+
+-- §18.3.1:
+--   * G6: a `!` splice inside a `let` RHS in a do block runs the
+--     computation and binds `pat` to its value (it must NOT be rejected
+--     as E_SPLICE_OUTSIDE_DO).
+--   * G7: the immediate-application form `!writeRef r 12` is sugar for
+--     `!(writeRef r 12)`; the whole application spine `writeRef r 12` is
+--     the spliced computation, never `(!writeRef) r 12`.
+main : UIO Unit
+let main = do
+    r <- newRef 7
+    let x = !readRef r
+    printlnString (showInt x)
+    !writeRef r 12
+    let y = !readRef r
+    printlnString (showInt y)

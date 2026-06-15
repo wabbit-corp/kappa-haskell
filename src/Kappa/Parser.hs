@@ -1672,7 +1672,7 @@ pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
       token TokBang
       e <- pPostfixExpr
       sp' <- spanFrom sp
-      pure (ArgExplicit (EBang e sp'))
+      pure (ArgExplicit (EBang False e sp'))
     plainArg = ArgExplicit <$> pArgOperand
 
 -- An argument operand must not begin with a stop keyword.
@@ -1861,7 +1861,7 @@ pAtom = do
     TokBang -> do
       void anyToken
       e <- pPostfixExpr
-      EBang e <$> spanFrom start
+      EBang False e <$> spanFrom start
     _ -> parseFail ("expected expression, found " <> tokenDescr t)
   where
     -- kind-qualified expressions: `type T`, `trait C`, etc. (§7.1.1).
@@ -2053,7 +2053,13 @@ pParenExpr start = do
           void anyToken
           -- left section (e op)? Only when e ends with trailing operator —
           -- handled in pChainExpr; plain grouping here.
-          pure e
+          -- §18.3.1: an explicitly parenthesised splice `(!e)` is a closed
+          -- splice: it does not absorb application arguments written after
+          -- the parens, so `(!f) x` splices `f` then applies the result to
+          -- `x` (as opposed to the open `!f x` which splices `f x`).
+          pure $ case e of
+            EBang _ inner bsp -> EBang True inner bsp
+            _ -> e
         TokOperator op -> do
           -- left section: (e op)
           opSp <- currentSpan

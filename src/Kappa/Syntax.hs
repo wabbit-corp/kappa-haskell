@@ -256,7 +256,12 @@ data Expr
   | EOptionSugar !Expr !Span -- ^ @T?@
   | EAscription !Expr !Expr !Span -- ^ @(e : T)@
   | ECaptures !Expr ![Name] !Span
-  | EBang !Expr !Span -- ^ @!e@ monadic splice
+  | EBang !Bool !Expr !Span
+  -- ^ @!e@ monadic splice (§18.3.1). The 'Bool' records whether the
+  -- splice was written /explicitly parenthesised/ as @(!e)@. A closed
+  -- splice does not absorb following application arguments: @(!f) x@
+  -- splices @f@ and then applies the result to @x@, whereas an open
+  -- @!f x@ splices the whole application spine @f x@.
   | EQuote !Expr !Span -- ^ @'{ e }@
   | ECodeQuote !Expr !Span -- ^ @.< e >.@ staged code quotation (§23.2)
   | ECodeEscape !Expr !Span -- ^ @.~c@ escape inside a code quote (§23.2)
@@ -739,7 +744,7 @@ exprSpan = \case
   EOptionSugar _ sp -> sp
   EAscription _ _ sp -> sp
   ECaptures _ _ sp -> sp
-  EBang _ sp -> sp
+  EBang _ _ sp -> sp
   EQuote _ sp -> sp
   ECodeQuote _ sp -> sp
   ECodeEscape _ sp -> sp

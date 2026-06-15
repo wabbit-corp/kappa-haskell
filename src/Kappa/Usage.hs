@@ -1138,7 +1138,7 @@ walkE env e0 = case e0 of
   EOptionSugar {} -> pure rNone
   EAscription b _ _ -> walkE env b
   ECaptures b _ _ -> walkE env b
-  EBang b _ -> walkE env b
+  EBang _ b _ -> walkE env b
   -- §21.2: a quote's object-level uses are charged when (and where) it
   -- is spliced, through the recorded expansion; the quote itself only
   -- captures meta-level syntax data
