@@ -20,6 +20,7 @@ module Kappa.Check
   , GlobalDef (..)
   , UnsafeConfig (..)
   , defaultUnsafeConfig
+  , scriptUnsafeConfig
   , AuditRecord (..)
   , checkModule
   , expectUnsatisfiedDiags
@@ -213,6 +214,12 @@ data UnsafeConfig = UnsafeConfig
 -- disabled (§4.2 package-mode defaults).
 defaultUnsafeConfig :: UnsafeConfig
 defaultUnsafeConfig = UnsafeConfig False False False False False False
+
+-- | §4.2: in script mode implementations MAY default the unsafe/debug
+-- settings to @true@ for experimentation. This implementation does so,
+-- so scripts can use the escapes without per-build flags.
+scriptUnsafeConfig :: UnsafeConfig
+scriptUnsafeConfig = UnsafeConfig True True True True True True
 
 -- | §4.7 one audit-ledger entry: the facility used, the module and origin
 -- it occurred in, the build setting that permitted it, and an optional

@@ -1634,8 +1634,14 @@ pChainElems = do
     -- chain, another operator keeps it going, anything else is an operand.
     chainEndKind = do
       t <- peekToken
+      -- §5.4: an operator at end of line whose operand is on a
+      -- deeper-indented continuation line (newline + indent) is NOT a
+      -- trailing postfix — the operand follows on the next line.
+      nxt <- peekTokenAt 1
       pure $ case t of
-        TokNewline _ -> ChainEndStop
+        TokNewline _
+          | nxt == TokIndent -> ChainEndOperand
+          | otherwise -> ChainEndStop
         TokDedent -> ChainEndStop
         TokRParen -> ChainEndStop
         TokRBracket -> ChainEndStop

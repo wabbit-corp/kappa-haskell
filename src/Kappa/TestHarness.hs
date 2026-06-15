@@ -39,7 +39,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
-import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), checkModule, defaultUnsafeConfig)
+import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), checkModule, defaultUnsafeConfig, scriptUnsafeConfig)
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
@@ -713,8 +713,12 @@ runSuiteWith packageMode label root files mktest preDiags = do
               backends = [b | (_, _, SBackend b) <- scanned]
               asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
               scripted = not (null [() | (_, _, SScriptMode) <- scanned])
-              -- §4.2: fold the build-config toggles supplied by directives
-              unsafeCfg = foldl' (\c f -> f c) defaultUnsafeConfig [f | (_, _, SUnsafeConfig f) <- scanned]
+              -- §4.2: package mode defaults all unsafe/debug settings to
+              -- false; script mode MAY default them to true (this
+              -- implementation does). Explicit allow_* directives then
+              -- layer on top of that base.
+              unsafeBase = if scripted then scriptUnsafeConfig else defaultUnsafeConfig
+              unsafeCfg = foldl' (\c f -> f c) unsafeBase [f | (_, _, SUnsafeConfig f) <- scanned]
           case () of
             _ | length (dedup modes) > 1 ->
                   pure (TestReport label HarnessError "conflicting 'mode' directives (§T.6)")
