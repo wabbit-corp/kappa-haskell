@@ -3067,17 +3067,25 @@ finalIsSort ctx v0 = go (ctxLen ctx) (8 :: Int) v0
         VPi _ _ _ _ clo -> clApp clo (VRigid lvl []) >>= go (lvl + 1) (fuel - 1)
         _ -> pure False
 
+-- | Apply a rewrite to every diagnostic reported since a marker.
+-- @nBefore@ is the @length csDiags@ captured before the elaboration
+-- step whose newly-added diagnostics are to be re-tagged; @retag@ is
+-- the per-diagnostic rewrite (applied only to the new prefix, leaving
+-- the older diagnostics untouched). Shared skeleton for the
+-- count-and-rollback re-tag idiom (§3.1.4).
+retagNew :: Int -> (Diagnostic -> Diagnostic) -> CheckM ()
+retagNew nBefore retag = modify' $ \st ->
+  let ds = csDiags st
+      (new, old) = splitAt (length ds - nBefore) ds
+   in st {csDiags = map retag new ++ old}
+
 -- | Re-tag type mismatches reported since the marker as
 -- application-argument errors (a literal in a Type parameter slot).
 retagNewMismatches :: Int -> CheckM ()
-retagNewMismatches nBefore = modify' $ \st ->
-  let ds = csDiags st
-      (new, old) = splitAt (length ds - nBefore) ds
-      retag d
-        | dCode d == "E_TYPE_EQUALITY_MISMATCH" =
-            d {dCode = "E_APPLICATION_ARGUMENT_MISMATCH", dFamily = Just "kappa.application.argument-mismatch"}
-        | otherwise = d
-   in st {csDiags = map retag new ++ old}
+retagNewMismatches nBefore = retagNew nBefore $ \d ->
+  if dCode d == "E_TYPE_EQUALITY_MISMATCH"
+    then d {dCode = "E_APPLICATION_ARGUMENT_MISMATCH", dFamily = Just "kappa.application.argument-mismatch"}
+    else d
 
 -- | §3.1.4/§16.1.7.2: re-tag any error diagnostics reported since the
 -- marker with the portable @E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH@
@@ -3091,17 +3099,14 @@ retagNewMismatches nBefore = modify' $ \st ->
 -- payload-failure kinds — so the payload-internal code (whatever it
 -- happens to be) is replaced rather than special-cased on its spelling.
 retagExplicitImplicitFailure :: Int -> CheckM ()
-retagExplicitImplicitFailure nBefore = modify' $ \st ->
-  let ds = csDiags st
-      (new, old) = splitAt (length ds - nBefore) ds
-      retag d
-        | isError d =
-            d
-              { dCode = "E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH"
-              , dFamily = Just "kappa.application.explicit-implicit-classifier"
-              }
-        | otherwise = d
-   in st {csDiags = map retag new ++ old}
+retagExplicitImplicitFailure nBefore = retagNew nBefore $ \d ->
+  if isError d
+    then
+      d
+        { dCode = "E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH"
+        , dFamily = Just "kappa.application.explicit-implicit-classifier"
+        }
+    else d
 
 -- ── Projection applications (§16.1.5, §16.1.6) ───────────────────────
 
