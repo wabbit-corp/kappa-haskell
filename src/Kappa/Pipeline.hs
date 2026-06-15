@@ -41,7 +41,7 @@ import Kappa.Prelude
   , stdSupervisorSource
   , stdUnicodeSource
   )
-import Kappa.Resolve (defaultFixities, fixitiesOf, resolveModule)
+import Kappa.Resolve (defaultFixities, fixitiesOf, multiFixityOps, resolveModule)
 import Kappa.Source
 import Kappa.Syntax
 import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
@@ -232,7 +232,9 @@ compileFilesWith packageMode nameOf files =
           let -- §5.5: exported fixity declarations are imported together
               -- with the corresponding operator name
               importedFix = importedFixities m
-              (m', rdiags) = resolveModule (Map.unionWith (++) importedFix defaultFixities) m
+              effFixities = Map.unionWith (++) importedFix defaultFixities
+              fullFixities = Map.unionWith (++) (fixitiesOf (modDecls m)) effFixities
+              (m', rdiags) = resolveModule effFixities m
               ie = buildImportsIn unitModules st m'
               st0 =
                 st
@@ -241,6 +243,9 @@ compileFilesWith packageMode nameOf files =
                   , csScopeAmbig = ieAmbig ie
                   , csModuleAliases = ieAliases ie
                   , csDiags = []
+                  , -- §5.5.1: bare `(op)` is ambiguous when more than one
+                    -- callable fixity for `op` is in scope (e.g. `-`)
+                    csMultiFixOps = multiFixityOps fullFixities
                   }
               (st1, cdiags0) = checkModule st0 m'
               recovered = concatMap frDiags frs

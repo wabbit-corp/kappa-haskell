@@ -1,0 +1,12 @@
+module main
+
+-- §5.5.1: `(-)` is ambiguous when both the prefix and infix `-`
+-- fixities are in scope (they are, by the §28.2.3 prelude table) and no
+-- expected type disambiguates it. With no signature on `h`, the bare
+-- reference cannot pick the prefix (negate) or infix (subtraction)
+-- reading, so it is rejected with E_OPERATOR_FIXITY_AMBIGUOUS. A bare
+-- `(-)` whose expected type's explicit arity selects one reading (as in
+-- `bare-operator-references.kp`) is NOT ambiguous.
+let h = (-)
+
+--! assertDiagnosticCodes E_OPERATOR_FIXITY_AMBIGUOUS

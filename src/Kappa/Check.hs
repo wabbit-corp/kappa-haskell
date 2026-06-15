@@ -181,6 +181,11 @@ data CheckState = CheckState
   -- ^ §3.1.1A: the source span where each module-scope name was first
   -- declared, so a duplicate-declaration diagnostic can cite both sites
   -- as related origins (declaration-site of the original).
+  , csMultiFixOps :: !(Set Text)
+  -- ^ §5.5.1: operator spellings that have more than one callable fixity
+  -- in scope for this module (e.g. the prelude `-`, which is both
+  -- `infix left 60` and `prefix 80`). A bare `(op)` reference whose
+  -- expected type does not select exactly one fixity is ambiguous.
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -221,7 +226,7 @@ initCheckState =
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
-    Map.empty Map.empty
+    Map.empty Map.empty Set.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -2316,6 +2321,27 @@ infer ctx expr = case expr of
     infer ctx (lam1 sp "__x" (\x -> EApp (EVar op) [ArgExplicit e, ArgExplicit x]))
   ESectionRight op e sp ->
     infer ctx (lam1 sp "__x" (\x -> EApp (EVar op) [ArgExplicit x, ArgExplicit e]))
+  -- §5.5.1: a bare `(op)` with more than one callable fixity in scope is
+  -- ambiguous unless an expected type selects exactly one fixity. The
+  -- type-directed disambiguation lives in `check` (a function-typed
+  -- position picks the prefix or infix reading by arity); reaching `infer`
+  -- means there is no such expected type, so a multi-fixity bare operator
+  -- here is the ambiguous case. `(infix op)`/`(prefix op)`/`(postfix op)`
+  -- carry an explicit fixity tag and are never ambiguous.
+  EOpRef Nothing op sp -> do
+    multi <- gets csMultiFixOps
+    if nameText op `Set.member` multi
+      then do
+        report $
+          diag SevError StageElaborate "E_OPERATOR_FIXITY_AMBIGUOUS" (Just "kappa.name.ambiguous") sp
+            ( "bare operator '(" <> nameText op <> ")' is ambiguous: more than one "
+                <> "callable fixity for '" <> nameText op <> "' is in scope and no expected "
+                <> "type selects one; write '(infix " <> nameText op <> ")', '(prefix "
+                <> nameText op <> ")', or '(postfix " <> nameText op
+                <> ")', or supply a type annotation (Spec §5.5.1)"
+            )
+        anyHole ctx
+      else resolveName ctx op
   EOpRef _ op _ -> resolveName ctx op
   EReceiverSection ms args sp ->
     infer ctx . lam1 sp "__x" $ \x ->

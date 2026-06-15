@@ -16,11 +16,14 @@ module Kappa.Resolve
   , Fixity (..)
   , defaultFixities
   , fixitiesOf
+  , multiFixityOps
   , resolveModule
   ) where
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import Kappa.Diagnostic
 import Kappa.Source (Span)
@@ -62,6 +65,25 @@ defaultFixities =
          , (">>=", [Fixity InfixL 10])
          , (">>", [Fixity InfixL 10])
          ]
+
+-- | §5.5.1: the set of operator spellings that have more than one
+-- /callable/ fixity class in scope. The three callable classes are
+-- infix (any associativity), prefix, and postfix; a bare @(op)@ for such
+-- an operator is ambiguous unless an expected type selects one fixity.
+-- The prelude @-@ is the canonical case (infix subtraction + prefix
+-- negation).
+multiFixityOps :: FixityEnv -> Set Text
+multiFixityOps env =
+  Set.fromList [op | (op, fs) <- Map.toList env, length (callableClasses fs) > 1]
+  where
+    callableClasses fs =
+      foldr (\k acc -> if k `elem` acc then acc else k : acc) [] (map classOf fs)
+    classOf f = case fKind f of
+      InfixN -> InfixN
+      InfixL -> InfixN
+      InfixR -> InfixN
+      Prefix -> Prefix
+      Postfix -> Postfix
 
 -- | Collect the module's own top-level fixity declarations.
 fixitiesOf :: [Decl] -> FixityEnv
