@@ -354,35 +354,33 @@ ctxLen = length . ctxEntries
 pushCtxBarrier :: Ctx -> Ctx
 pushCtxBarrier ctx = ctx {ctxBarriers = ctxLen ctx : ctxBarriers ctx}
 
+-- | Shared binder scaffold: prepend @entry@, push @v@ onto the
+-- environment, and drop any prior flow-refinement/alias facts about the
+-- binder's name (a fresh binder shadows them). All three @bindCtx*@
+-- helpers differ only in the entry's flags and the environment value.
+bindEntry :: CtxEntry -> Value -> Ctx -> Ctx
+bindEntry entry v ctx =
+  ctx
+    { ctxEntries = entry : ctxEntries ctx
+    , ctxEnv = v : ctxEnv ctx
+    , ctxRefines = Map.delete (ceName entry) (ctxRefines ctx)
+    , ctxAliases = Map.delete (ceName entry) (ctxAliases ctx)
+    }
+
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
 bindCtx n implocal ty ctx =
-  ctx
-    { ctxEntries = CtxEntry n ty implocal False Nothing False noSpan : ctxEntries ctx
-    , ctxEnv = VRigid (length (ctxEnv ctx)) [] : ctxEnv ctx
-    , ctxRefines = Map.delete n (ctxRefines ctx)
-    , ctxAliases = Map.delete n (ctxAliases ctx)
-    }
+  bindEntry (CtxEntry n ty implocal False Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
 
 -- | Bind a local definition: the environment carries the definiens, so
 -- conversion sees through local lets (delta for locals, §15.1).
 bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
 bindCtxLet n implocal ty v ctx =
-  ctx
-    { ctxEntries = CtxEntry n ty implocal False Nothing False noSpan : ctxEntries ctx
-    , ctxEnv = v : ctxEnv ctx
-    , ctxRefines = Map.delete n (ctxRefines ctx)
-    , ctxAliases = Map.delete n (ctxAliases ctx)
-    }
+  bindEntry (CtxEntry n ty implocal False Nothing False noSpan) v ctx
 
 -- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
 bindCtxVar :: Text -> Value -> Ctx -> Ctx
 bindCtxVar n ty ctx =
-  ctx
-    { ctxEntries = CtxEntry n ty False True Nothing False noSpan : ctxEntries ctx
-    , ctxEnv = VRigid (length (ctxEnv ctx)) [] : ctxEnv ctx
-    , ctxRefines = Map.delete n (ctxRefines ctx)
-    , ctxAliases = Map.delete n (ctxAliases ctx)
-    }
+  bindEntry (CtxEntry n ty False True Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
 
 -- | Record the implicit binder prefix on the most recent entry
 -- (quantity and borrow marker, §16.3.3). @binderSp@ is the binder's
@@ -4657,12 +4655,13 @@ elabDotUnqualified ctx e member mname = do
                             Just (ctorG, ci, idx)
                         | ctorG <- ctors
                         ] -> do
-                      fty <- do
-                        let (ctorG, ci, idx) = head alts0
-                        fieldTys <- ctorFieldTypes ctx ctorG ci t (nameSpanOf member)
-                        case drop idx fieldTys of
-                          (x : _) -> pure x
-                          [] -> freshMetaV ctx
+                      fty <- case alts0 of
+                        ((ctorG, ci, idx) : _) -> do
+                          fieldTys <- ctorFieldTypes ctx ctorG ci t (nameSpanOf member)
+                          case drop idx fieldTys of
+                            (x : _) -> pure x
+                            [] -> freshMetaV ctx
+                        [] -> freshMetaV ctx
                       let altOf (ctorG, ci, idx) =
                             let arity = length (ciFields ci)
                                 pats = [if i == idx then CPVar "__field" else CPWild | i <- [0 .. arity - 1]]

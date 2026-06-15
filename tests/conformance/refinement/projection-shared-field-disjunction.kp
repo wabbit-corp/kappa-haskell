@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+--! assertEval fromCircle 7
+--! assertEval fromSquare 9
+--! assertEval fromHidden 0
+
+-- §7.4.1: a named-field projection on a flow-refined receiver whose
+-- static type is a *disjunction* of several surviving constructors that
+-- all carry the projected field. Here `s is Circle || s is Square`
+-- refines `s` to the two-constructor subset, and both `Circle` and
+-- `Square` declare a `label` field, so `s.label` elaborates to a
+-- multi-alternative match over the surviving constructors (the
+-- `projectableCtors`/`alts0` path: `alts0` has length 2). The field
+-- type and the selected offset agree across the surviving alternatives,
+-- so the projection is well-typed and reads the right field from
+-- whichever constructor is present at runtime.
+
+data Shape : Type =
+    Circle (label : Integer) (radius : Integer)
+    Square (label : Integer) (side : Integer)
+    Hidden
+
+readLabel : Shape -> Integer
+let readLabel s =
+    if s is Circle || s is Square then s.label else 0
+
+fromCircle : Integer
+let fromCircle = readLabel (Circle 7 3)
+
+fromSquare : Integer
+let fromSquare = readLabel (Square 9 4)
+
+fromHidden : Integer
+let fromHidden = readLabel Hidden
