@@ -79,21 +79,27 @@ resolveModule env0 m =
       (ds, diags) = runRW (mapM (rDecl env) (modDecls m))
    in (m {modDecls = ds}, diags)
 
--- A tiny writer for diagnostics.
-newtype RW a = RW {runRW :: (a, Diagnostics)}
+-- A tiny writer for diagnostics. The accumulator is a difference list
+-- (@[Diagnostic] -> [Diagnostic]@) so '<*>'/'>>=' compose diagnostics by
+-- function composition rather than left-nested '++', keeping the writer
+-- linear even under deeply left-associated binds.
+newtype RW a = RW {unRW :: (a, Diagnostics -> Diagnostics)}
+
+runRW :: RW a -> (a, Diagnostics)
+runRW (RW (a, w)) = (a, w [])
 
 instance Functor RW where
   fmap f (RW (a, w)) = RW (f a, w)
 
 instance Applicative RW where
-  pure a = RW (a, [])
-  RW (f, w1) <*> RW (a, w2) = RW (f a, w1 ++ w2)
+  pure a = RW (a, id)
+  RW (f, w1) <*> RW (a, w2) = RW (f a, w1 . w2)
 
 instance Monad RW where
-  RW (a, w1) >>= k = let RW (b, w2) = k a in RW (b, w1 ++ w2)
+  RW (a, w1) >>= k = let (b, w2) = unRW (k a) in RW (b, w1 . w2)
 
 emit :: Diagnostic -> RW ()
-emit d = RW ((), [d])
+emit d = RW ((), (d :))
 
 -- ── Operator chain re-association ────────────────────────────────────
 --
