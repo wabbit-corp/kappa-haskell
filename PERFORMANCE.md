@@ -44,10 +44,10 @@ tools/gen-stress.sh 1000 /tmp/stress.kp     # 2000 declarations
 | file | wall time | max RSS |
 | --- | --- | --- |
 | 2,000 decls (1,000 pairs) | **0.19 s** | ~32 MB |
-| 10,000 decls (5,000 pairs) | 0.59 s | ~68 MB |
+| 10,000 decls (5,000 pairs) | 0.70 s | ~70 MB |
 
 Subtracting the ~0.09 s floor, checking throughput is roughly
-**18k–20k simple declarations/s**, scaling near-linearly in both time
+**16k–18k simple declarations/s**, scaling near-linearly in both time
 and memory over this range (slower constants than the previous round's
 25k–30k/s: every definition now also runs the §12.2 usage analysis and
 the larger goal/zonk machinery).

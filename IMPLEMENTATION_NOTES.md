@@ -374,7 +374,7 @@ duplication reviewers):
     `Pipeline.moduleExportNames` decided exportability per declaration and
     OR-ed; a `private` on only the `let` (or only the signature) of a
     binding group was ignored. Visibility is now aggregated per term name
-    across the §5902 binding group: private on any declaration makes the
+    across the §8.5.1 binding group: private on any declaration makes the
     item private. Covered by `tests/conformance/modules-private-visibility/`;
     the SPEC_COVERAGE.md §8 row was corrected.
 19. **Duplicated `Term→[MetaId]` collectors (MINOR, dup reviewer)** —
