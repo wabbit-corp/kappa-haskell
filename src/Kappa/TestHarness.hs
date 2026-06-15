@@ -1628,7 +1628,9 @@ assertType path src cu nm tyExpr =
         Right (m, _) ->
           let fixities = fileFixities path src
               (m', _) = resolveModule fixities m
-              st0 = st {csModule = originMod, csScope = probeScope, csDiags = []}
+              -- Resetting csScope/csModule invalidates the §3.2.2 in-scope
+              -- name cache, which is keyed on the import scope and module.
+              st0 = st {csModule = originMod, csScope = probeScope, csDiags = [], csScopeNameCache = Nothing}
               (st1, ds0) = checkModule st0 m'
               -- the probe is deliberately definitionless; §9.1
               -- satisfaction does not apply to it

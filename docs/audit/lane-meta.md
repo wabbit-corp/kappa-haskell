@@ -171,6 +171,18 @@ Macro-expansion stress (`tools/gen-macro-stress.sh`):
 All three workloads scale **linearly** in time and memory; no superlinear blowup and
 nothing approaching 1 GB. No perf gap.
 
+The tables above are *valid-input* workloads (the success path). The
+`E_NAME_UNRESOLVED` typo-suggestion **diagnostic** path — exercised when a
+dropped/renamed import leaves many references unresolved at once — was a
+separate quadratic the success-path scaling did not cover: the in-scope
+candidate set was rebuilt and rescanned per diagnostic, O(N_errors ×
+N_scope) (~2.6 / 7.3 / 18.8 s for 1,000 / 2,000 / 4,000 distinct
+unresolved names). It is now linear (~2.08 / 4.02 / 8.14 s, ~2.0× per
+doubling) via a once-built, incrementally-extended length-bucketed
+candidate index in `Check.hs` (`csScopeNameCache`); each diagnostic
+consults only the length-compatible buckets. See PERFORMANCE.md §2b and
+the `tests/conformance/diagnostics/unresolved-typo-*` fixtures.
+
 ---
 
 ## Legitimate gaps (ranked)

@@ -90,33 +90,48 @@ literal-kind asymmetry remains gone. Memory is linear at roughly
 A file of `N` definitions, each referencing a distinct out-of-scope name
 (the shape of a dropped or renamed import that breaks many references at
 once), exercises the `E_NAME_UNRESOLVED` typo-suggestion path
-(`closeSpellings`/`editDistance` in `Check.hs`). Best of 3,
-`kappa check`:
+(`closeSpellings`/`editDistance` and the candidate-set construction in
+`Check.hs`). Best of 3, `kappa check --json`:
 
 | defs (each one unresolved name) | wall time |
 | --- | --- |
-| 250 | 0.76 s |
-| 500 | 1.61 s |
-| 1,000 | 3.14 s |
+| 1,000 | 2.08 s |
+| 2,000 | 4.02 s |
+| 4,000 | 8.14 s |
 
-**Fixed quadratic.** Each unresolved name built the full in-scope set and
-ran Levenshtein `editDistance` against *every* candidate, so the cost was
-O(N_names × N_scope × len²) — measured at ~29 s for 1,000 unresolved
-names with a super-linear per-doubling factor. Two changes restore the
-linear curve above:
+The per-doubling factor is ~2.0×: linear in the number of unresolved
+names, tracking the inherent O(N) cost of elaborating N declarations and
+emitting N structured diagnostics (a valid N-definition module checks at
+roughly the same per-declaration rate).
 
-* `closeSpellings` now bounds the candidate set *before* the edit-distance
-  loop. Levenshtein distance is at least the length difference, so any
-  candidate whose length differs from the target by more than the
-  suggestion threshold can never be within it; those are filtered by a
-  cheap `abs (len c − len target) <= threshold` test, leaving only the
-  small set of length-compatible candidates for the O(len²) computation.
-* `inScopeNames` deduplicates with `Set.fromList` (O(n log n)) instead of
-  the previous `nub` (O(n²) in scope size).
+**Two quadratics found and fixed.**
+
+* *Edit-distance scan.* Each unresolved name ran Levenshtein
+  `editDistance` against *every* candidate — O(N_names × N_scope × len²).
+  `closeSpellings` now bounds the candidates by length difference before
+  the edit-distance loop: Levenshtein distance is at least the length
+  difference, so any candidate whose length differs from the target by
+  more than the suggestion threshold can never be within it.
+* *Candidate-set construction.* The deeper cost the length pre-filter did
+  not remove: each unresolved name rebuilt the whole in-scope candidate
+  set from scratch (`Map.keys csScope`, a scan of all globals for the
+  module's own names, and an O(N_scope log N_scope) dedup). With the scope
+  growing as the module is checked, that is O(N_errors × N_scope) — still
+  super-linear (measured ~2.6× per doubling: 1,000/2,000/4,000 unresolved
+  names at ~2.6 / 7.3 / 18.8 s before this fix). The module-level
+  candidate set is now built **once** into a length-bucketed index
+  (`csScopeNameCache`, a `Map Int (Set Text)`), extended incrementally in
+  `addGlobal` as the module's own globals appear, and cleared when a new
+  module is entered. Each diagnostic then consults only the buckets within
+  the suggestion threshold of the target's length — never the whole scope.
 
 The suggestion output is unchanged — the boundary cases are covered by
-`tests/conformance/diagnostics/unresolved-typo-fix.kp` and
-`unresolved-typo-lenfilter.kp`.
+`tests/conformance/diagnostics/unresolved-typo-fix.kp`,
+`unresolved-typo-lenfilter.kp` (a cross-bucket deletion typo still
+suggests), and `unresolved-typo-bucketed.kp` (the deterministic nearest
+spelling is chosen with off-length distractors present, confirming the
+length-bucket query neither misses the right bucket nor admits a
+wrong-length false match).
 
 ### 3. Runtime loop: summing 0..99,999
 

@@ -196,6 +196,20 @@ data CheckState = CheckState
   , csAuditLedger :: ![AuditRecord]
   -- ^ §4.7 unsafe/debug audit ledger: one record per accepted use of an
   -- unsafe/debug facility, in source order.
+  , csScopeNameCache :: !(Maybe (Map Int (Set Text)))
+  -- ^ §3.2.2 typo-suggestion candidate index: the module-level in-scope
+  -- names (import scope + this module's own globals) bucketed by spelling
+  -- length. A single dropped import can leave thousands of references
+  -- unresolved, each raising a suggestion diagnostic; rebuilding and
+  -- rescanning the whole scope per diagnostic is O(Nerrors * Nscope).
+  -- The index is built once (lazily, on the first unresolved name) and
+  -- then extended in 'addGlobal' as new module globals appear, so the
+  -- build is paid once. Because Levenshtein distance is at least the
+  -- length difference, an unresolved name of length L need only consult
+  -- the buckets within the suggestion threshold of L, bounding the
+  -- per-error scan to the length-compatible names rather than all of
+  -- scope. 'Nothing' means "not yet built"; entering a new module clears
+  -- it (Pipeline / TestHarness), since the import scope and module change.
   }
 
 -- | §4.2 build-level gating record. Each flag enables exactly one
@@ -272,7 +286,7 @@ initCheckState =
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
-    Map.empty Map.empty Set.empty defaultUnsafeConfig []
+    Map.empty Map.empty Set.empty defaultUnsafeConfig [] Nothing
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -683,7 +697,22 @@ freshNameM base = do
   pure (base <> T.pack (show (csFresh st)))
 
 addGlobal :: GName -> GlobalDef -> CheckM ()
-addGlobal g gd = modify' $ \st -> st {csGlobals = Map.insert g gd (csGlobals st)}
+addGlobal g@(GName m nm) gd = modify' $ \st ->
+  st
+    { csGlobals = Map.insert g gd (csGlobals st)
+    , -- Keep the §3.2.2 typo-suggestion index (if already built) in step
+      -- with the module's own globals, so it never needs a full rebuild
+      -- (see 'moduleScopeNameIndex'). Names from other modules are not
+      -- unqualified-in-scope here, so only this module's globals extend it.
+      csScopeNameCache =
+        if m == csModule st
+          then fmap (insertScopeName nm) (csScopeNameCache st)
+          else csScopeNameCache st
+    }
+
+-- | Add one spelling to the length-bucketed §3.2.2 candidate index.
+insertScopeName :: Text -> Map Int (Set Text) -> Map Int (Set Text)
+insertScopeName nm = Map.insertWith Set.union (T.length nm) (Set.singleton nm)
 
 -- | §3.1.1A: record the first declaration site of a module-scope name
 -- (later occurrences keep the earliest span). Consulted by the
@@ -1122,10 +1151,20 @@ etaCtor ec g cty = build 0 [] (eval ec [] cty)
     runtimeField Impl q = q /= Q0
     evalClosure (Closure env body) v = eval ec (v : env) body
 
+-- | §3.2.2 suggestion edit-distance threshold for a spelling of this
+-- length. Scales with the length so a one-character name does not match
+-- every other one-character name. Used both to bound the candidate
+-- buckets ('scopeNamesNear') and to filter by edit distance below.
+suggestionThreshold :: Int -> Int
+suggestionThreshold tlen = max 1 (min 2 (tlen `div` 3))
+
 -- | §3.2.2 typo suggestions: in-scope names within a small edit distance
 -- of the unresolved spelling, nearest first (ties broken alphabetically
 -- for determinism, §3.1.10). The threshold scales with the length so a
 -- one-character name does not match every other one-character name.
+-- @cands@ is expected to already be length-compatible (see
+-- 'scopeNamesNear'); the length pre-filter is kept so the function is
+-- correct on any candidate list.
 closeSpellings :: Text -> [Text] -> [Text]
 closeSpellings target cands =
   map snd $
@@ -1147,7 +1186,7 @@ closeSpellings target cands =
   where
     tchars = T.unpack target
     tlen = T.length target
-    threshold = max 1 (min 2 (tlen `div` 3))
+    threshold = suggestionThreshold tlen
 
 -- | Standard Levenshtein edit distance.
 editDistance :: String -> String -> Int
@@ -1209,7 +1248,7 @@ resolveName ctx (Name n sp) =
   where
     renderMod (ModuleName segs) = "module " <> T.intercalate "." segs
     failUnresolved = do
-      cands <- inScopeNames
+      cands <- nearScopeNames
       -- §3.2.2: if a close spelling exists, suggest it. The fix is
       -- 'maybe-applicable' — the renamed reference type-checks only if
       -- the candidate happens to fit, so it is not 'machine-applicable'.
@@ -1237,16 +1276,58 @@ resolveName ctx (Name n sp) =
             [] -> d
       report (withFixIt base)
       anyHole emptyCtxDummy
-    inScopeNames = do
-      st <- get
+    -- §3.2.2 candidate spellings for this unresolved name: only the
+    -- length-compatible module-level names (from the cached length-bucket
+    -- index, so unbounded scope does not make each diagnostic O(Nscope)),
+    -- plus the call-site-local binders, which vary per error and so are
+    -- not part of the cached index. There are only a handful of locals,
+    -- so merging them in stays cheap per diagnostic.
+    nearScopeNames = do
+      let threshold = suggestionThreshold (T.length n)
+      modLevel <- scopeNamesNear n threshold
+      let locals = [ceName e | e <- ctxEntries ctx]
+      pure $
+        if null locals
+          then modLevel
+          else Set.toList (Set.fromList (locals ++ modLevel))
+    emptyCtxDummy = ctx
+
+-- | §3.2.2 typo-suggestion candidate index, bucketed by spelling length:
+-- the import scope plus this module's own globals. A single dropped
+-- import can leave thousands of references unresolved, each raising a
+-- suggestion diagnostic; rebuilding and rescanning the whole scope per
+-- diagnostic is O(Nerrors * Nscope). The index is built once here (on the
+-- first unresolved name) and thereafter extended incrementally in
+-- 'addGlobal' as the module's own globals appear, so the build is paid
+-- once. Bucketing by length lets each diagnostic consult only the
+-- length-compatible candidates (Levenshtein distance is at least the
+-- length difference), bounding the per-error scan. Entering a new module
+-- clears the index (Pipeline / TestHarness), since scope and module change.
+moduleScopeNameIndex :: CheckM (Map Int (Set Text))
+moduleScopeNameIndex = do
+  st <- get
+  case csScopeNameCache st of
+    Just idx -> pure idx
+    Nothing -> do
       let scope = Map.keys (csScope st)
           own = [nm | GName m nm <- Map.keys (csGlobals st), m == csModule st]
-          locals = [ceName e | e <- ctxEntries ctx]
-      -- Set-based dedup is O(n log n); the previous 'nub' was O(n^2) in
-      -- scope size, compounding the per-error suggestion cost when many
-      -- references go unresolved at once.
-      pure (Set.toList (Set.fromList (scope ++ own ++ locals)))
-    emptyCtxDummy = ctx
+          idx = foldr insertScopeName Map.empty (scope ++ own)
+      modify' $ \s -> s {csScopeNameCache = Just idx}
+      pure idx
+
+-- | The length-compatible §3.2.2 candidates for a target spelling: only
+-- names whose length is within @threshold@ of the target can be within
+-- edit distance @threshold@, so only those buckets are gathered.
+scopeNamesNear :: Text -> Int -> CheckM [Text]
+scopeNamesNear target threshold = do
+  idx <- moduleScopeNameIndex
+  let tlen = T.length target
+      buckets =
+        [ s
+        | len <- [tlen - threshold .. tlen + threshold]
+        , Just s <- [Map.lookup len idx]
+        ]
+  pure (Set.toList (Set.unions buckets))
 
 -- | Does a name resolve at all (locals or globals)? Used for §6.3.4
 -- literal-prefix resolution, which is ordinary term name resolution.

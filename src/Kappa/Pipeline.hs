@@ -106,6 +106,9 @@ stdModule mn path src st0 =
               , csScopeAmbig = ieAmbig ie
               , csModuleAliases = ieAliases ie
               , csDiags = []
+              , -- entering a new module resets the §3.2.2 in-scope name
+                -- cache, which is keyed on the import scope and module
+                csScopeNameCache = Nothing
               }
           (st1, diags) = checkModule stIn m'
           st2 = st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
@@ -264,6 +267,9 @@ compileFilesWithCfg unsafeCfg packageMode nameOf files =
                   , -- §4.7: carry accepted unhide/clarify uses into the
                     -- module's audit ledger (the body pass appends more)
                     csAuditLedger = csAuditLedger st ++ ieAudit ie
+                  , -- entering a new module resets the §3.2.2 in-scope name
+                    -- cache, which is keyed on the import scope and module
+                    csScopeNameCache = Nothing
                   }
               (st1, cdiags0) = checkModule st0 m'
               recovered = concatMap frDiags frs

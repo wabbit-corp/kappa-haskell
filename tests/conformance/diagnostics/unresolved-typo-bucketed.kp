@@ -1,0 +1,24 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.2.2 / §3.1.10: the typo-suggestion candidate set is the module-level
+-- in-scope names indexed by spelling length and extended as each global is
+-- declared. The suggestion must still be the deterministic nearest spelling
+-- even when the module defines many other globals whose lengths fall in
+-- *different* length buckets (they can never be within the edit-distance
+-- threshold, so they must not be consulted) and when the matching candidate
+-- and the target sit in adjacent buckets. Here the target 'paylod' (len 6,
+-- threshold = max 1 (min 2 (6/3)) = 2) must resolve to 'payload' (len 7,
+-- edit distance 1) and not to any of the same-or-near-length distractors
+-- ('parser', 'kernel') which are farther in edit distance, nor to the
+-- far-length globals ('x', 'configurationValue') which the length-bucket
+-- query never even reaches.
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion payload
+module main
+
+let x = 0
+let parser = 1
+let kernel = 2
+let configurationValue = 3
+let payload = 4
+let oops = paylod
