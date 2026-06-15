@@ -102,7 +102,14 @@ parseQuant n s = case s of
         _ -> Nothing
     digits r = case span isDigit r of
       ("", _) -> Nothing
-      (ds, r') -> Just (read ds :: Int, r')
+      (ds, r') ->
+        -- parse through Integer and range-check: a count that overflows
+        -- Int is not a well-formed quantifier bound, so (per ECMAScript)
+        -- the brace run is treated as a literal, not silently wrapped.
+        let v = read ds :: Integer
+         in if v > toInteger (maxBound :: Int)
+              then Nothing
+              else Just (fromInteger v :: Int, r')
 
 parseAtom :: String -> P Node
 parseAtom s = case s of

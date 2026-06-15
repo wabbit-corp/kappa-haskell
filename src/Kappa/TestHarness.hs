@@ -530,7 +530,11 @@ parseSev = \case
 
 parseNat :: Text -> Maybe Int
 parseNat t
-  | not (T.null t) && T.all isDigit t = Just (read (T.unpack t))
+  | not (T.null t) && T.all isDigit t =
+      -- parse through Integer and range-check: a directive count that
+      -- overflows Int is malformed, not silently wrapped to a negative.
+      let v = read (T.unpack t) :: Integer
+       in if v > toInteger (maxBound :: Int) then Nothing else Just (fromInteger v)
   | otherwise = Nothing
 
 -- | Non-interpolated Kappa string literal (§T.3): @"..."@ with §6.3.1
