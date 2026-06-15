@@ -242,6 +242,18 @@ emit code fam sp msg =
   modify' $ \s ->
     s {sDiags = diag SevError StageElaborate code (Just fam) sp msg : sDiags s}
 
+-- | Like 'emit' but attaches §3.1.1A related origins — used by the
+-- borrow/path/ownership diagnostics, which MUST include the borrow or
+-- consume introduction site and the failing later use or escape site.
+emitRel :: DiagnosticCode -> DiagnosticFamily -> Span -> [RelatedOrigin] -> Text -> M ()
+emitRel code fam sp rels msg =
+  modify' $ \s ->
+    s
+      { sDiags =
+          withRelateds rels (diag SevError StageElaborate code (Just fam) sp msg)
+            : sDiags s
+      }
+
 bailOut :: M ()
 bailOut = modify' $ \s -> s {sBail = True}
 
@@ -727,7 +739,12 @@ closeVar vi u = do
   -- definite consume (no intervening restore — a restoring patch
   -- rebinds through a fresh root) is a compile-time error
   forM_ (dedupViols viols) $ \(bp, bsp) ->
-    emit "E_QTT_PATH_CONSUMED" "kappa.path.consumed" bsp
+    -- §3.1.1A: cite the consume/borrow introduction site (the binding's
+    -- declaration) and the failing later use site.
+    emitRel "E_QTT_PATH_CONSUMED" "kappa.path.consumed" bsp
+      [ related RoleConsumedHere (vSpan vi) ("'" <> nm <> "' introduced here")
+      , related RoleUsedAfterConsume bsp "borrowed here after the path was consumed"
+      ]
       ("'" <> nm <> T.concat (map ("." <>) bp)
          <> "' is borrowed after the path was consumed (§12.4); restore it by record update first")
   -- per-path overuse: a whole-record use re-consumes every moved path
@@ -1531,7 +1548,12 @@ walkArg env params arg p = case arg of
           Just tsp
             | pKnown p
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] ->
-                emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
+                -- §3.1.1A: cite the borrow-capturing closure formation
+                -- site (primary) and the escape site where it flows out.
+                emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
+                  [ related RoleBorrowStart tsp "borrow-capturing closure formed here"
+                  , related RoleBorrowEscapeSite sp "escapes into an unrestricted parameter here"
+                  ]
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
           _ -> pure ()
         pure

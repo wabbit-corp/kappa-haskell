@@ -177,6 +177,10 @@ data CheckState = CheckState
   -- Consulted by the strict-positivity check when deciding whether an
   -- application 'F A1 .. An' keeps the defined type in a strictly
   -- positive position.
+  , csDeclSites :: !(Map GName Span)
+  -- ^ §3.1.1A: the source span where each module-scope name was first
+  -- declared, so a duplicate-declaration diagnostic can cite both sites
+  -- as related origins (declaration-site of the original).
   }
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
@@ -217,7 +221,7 @@ initCheckState =
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
-    Map.empty
+    Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -614,6 +618,30 @@ freshNameM base = do
 
 addGlobal :: GName -> GlobalDef -> CheckM ()
 addGlobal g gd = modify' $ \st -> st {csGlobals = Map.insert g gd (csGlobals st)}
+
+-- | §3.1.1A: record the first declaration site of a module-scope name
+-- (later occurrences keep the earliest span). Consulted by the
+-- duplicate-declaration diagnostic to cite the original site.
+recordDeclSite :: GName -> Span -> CheckM ()
+recordDeclSite g sp =
+  modify' $ \st -> st {csDeclSites = Map.insertWith (\_ old -> old) g sp (csDeclSites st)}
+
+-- | §3.1.1A duplicate-declaration related origins: the new (rejected)
+-- declaration site as @declaration-site@, plus the original declaration
+-- site (when recorded) as a second @declaration-site@. Both sites MUST
+-- appear (§3.1.1A: "duplicate-declaration diagnostics MUST include both
+-- sites"). Also attaches the §3.2.2 name payload.
+duplicateRelated :: Text -> GName -> Span -> CheckM (Diagnostic -> Diagnostic)
+duplicateRelated nm g sp = do
+  mPrior <- gets (Map.lookup g . csDeclSites)
+  let payload =
+        withPayloadField "name" nm $
+          payloadKind "name-duplicate"
+      newSite = related RoleDeclarationSite sp ("redeclaration of '" <> nm <> "'")
+      priorSite = case mPrior of
+        Just psp | psp /= sp -> [related RoleDeclarationSite psp ("'" <> nm <> "' first declared here")]
+        _ -> []
+  pure (withPayload payload . withRelateds (newSite : priorSite))
 
 -- ── Unification ──────────────────────────────────────────────────────
 
@@ -1038,11 +1066,31 @@ resolveName ctx (Name n sp) =
       st <- get
       case Map.lookup n (csScopeAmbig st) of
         Just gs -> do
-          errAt sp "E_NAME_AMBIGUOUS" (Just "kappa.name.ambiguous")
-            ( "name '" <> n <> "' is ambiguous; it is provided by "
-                <> T.intercalate " and " [renderMod mg | GName mg _ <- gs]
-                <> " (qualify the name or import it explicitly, Spec §7.1)"
-            )
+          -- §3.2.2 kappa.name.ambiguous payload + §3.1.1A: every
+          -- candidate MUST appear. The candidates are cross-module
+          -- imports without stored declaration spans, so each is a
+          -- related origin anchored at the use site naming its providing
+          -- module, with candidateSitesAvailable=false recorded in the
+          -- payload (§3.1.1A unavailable-origin clause).
+          let cands = T.intercalate ", " [renderMod mg | GName mg _ <- gs]
+              payload =
+                withPayloadField "name" n $
+                  withPayloadField "candidates" cands $
+                    withPayloadField "candidateSitesAvailable" "false" $
+                      payloadKind "name-ambiguous"
+              candRels =
+                [ related RoleRejectedCandidateSite sp
+                    ("candidate from " <> renderMod mg)
+                | GName mg _ <- gs
+                ]
+          report $
+            withPayload payload $
+              withRelateds (related RoleUseSite sp ("'" <> n <> "' used here") : candRels) $
+                diag SevError StageElaborate "E_NAME_AMBIGUOUS" (Just "kappa.name.ambiguous") sp
+                  ( "name '" <> n <> "' is ambiguous; it is provided by "
+                      <> T.intercalate " and " [renderMod mg | GName mg _ <- gs]
+                      <> " (qualify the name or import it explicitly, Spec §7.1)"
+                  )
           anyHole ctx
         Nothing -> do
           mg <- lookupGlobalName n
@@ -1056,7 +1104,16 @@ resolveName ctx (Name n sp) =
   where
     renderMod (ModuleName segs) = "module " <> T.intercalate "." segs
     failUnresolved = do
-      errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") ("unresolved name '" <> n <> "' (not in scope)")
+      -- §3.2.2 kappa.name.unresolved payload + §3.1.1A use-site origin.
+      report $
+        withPayload
+          ( withPayloadField "name" n $
+              withPayloadField "inGeneratedSyntax" "false" $
+                payloadKind "name-unresolved"
+          )
+          $ withRelated (related RoleUseSite sp ("'" <> n <> "' used here"))
+          $ diag SevError StageElaborate "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") sp
+              ("unresolved name '" <> n <> "' (not in scope)")
       anyHole emptyCtxDummy
     emptyCtxDummy = ctx
 
@@ -3530,11 +3587,22 @@ elabSpineArg ctx sp fTm fTy arg rest = do
       where
         noncallable e' = do
           fT <- quoteIn ctx fTy
+          fTz <- zonkTermM (ctxLen ctx) fT
+          let calleeR = renderTerm fTz
+          -- §3.1.1A: an application diagnostic MUST include the call site
+          -- and the callee type site. The call site is the application
+          -- span 'sp'; the callee type is exposed both as a related
+          -- origin (call-site) and in the §3.2 payload.
           report $
-            withNote ("callee type: " <> renderTerm fT) $
-              diag SevError StageElaborate "E_APPLICATION_NONCALLABLE" (Just "kappa-hs.application.non-callable")
-                (exprSpan e')
-                "this expression is not callable"
+            withPayload
+              ( withPayloadField "calleeType" calleeR $
+                  payloadKind "application-non-callable"
+              )
+              $ withRelated (related RoleCallSite sp ("callee type: " <> calleeR))
+              $ withNote ("callee type: " <> calleeR)
+              $ diag SevError StageElaborate "E_APPLICATION_NONCALLABLE" (Just "kappa-hs.application.non-callable")
+                  (exprSpan e')
+                  "this expression is not callable"
           anyHole ctx
   where
     termHeadCtor = \case
@@ -8998,8 +9066,12 @@ headerPassIn siglessLets = \case
     g <- ownName n
     exists <- gets (Map.member g . csGlobals)
     isExpected <- gets (Map.member g . csExpects)
-    when (exists && not isExpected) $
-      errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate") ("duplicate declaration of '" <> nameText n <> "'")
+    when (exists && not isExpected) $ do
+      enrich <- duplicateRelated (nameText n) g sp
+      report $ enrich $
+        diag SevError StageElaborate "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate") sp
+          ("duplicate declaration of '" <> nameText n <> "'")
+    recordDeclSite g sp
     addGlobal g (GlobalDef tyV Nothing False)
     -- §9.1: the signature awaits its same-file definition (an expected
     -- name is governed by §9.4 satisfaction instead)
@@ -9775,6 +9847,7 @@ headerExpect form sp = case form of
 -- satisfier is ambiguous).
 noteDefinition :: GName -> Span -> CheckM ()
 noteDefinition g sp = do
+  recordDeclSite g sp
   st <- get
   put st {csSigPending = Map.delete g (csSigPending st)}
   case Map.lookup g (csExpects st) of
@@ -10205,9 +10278,11 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
     _ -> do
       -- a previous definition with a value: duplicate declaration (§9.2)
       case msig of
-        Just gd' | isJust (gdValue gd') ->
-          errAt sp "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
-            ("duplicate declaration of '" <> nameText n <> "'")
+        Just gd' | isJust (gdValue gd') -> do
+          enrich <- duplicateRelated (nameText n) g sp
+          report $ enrich $
+            diag SevError StageElaborate "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate") sp
+              ("duplicate declaration of '" <> nameText n <> "'")
         _ -> pure ()
       -- no preceding signature: pre-register the name so self-references
       -- resolve and are reported as recursion-without-signature (§9.2)

@@ -1,4 +1,10 @@
 --! assertDiagnostic error E_DUPLICATE_DECLARATION
+-- §3.1.1A: a duplicate-declaration diagnostic MUST include both sites.
+-- The redeclaration site and the original site both appear as
+-- declaration-site related origins; the §3.2.2 name payload is attached.
+--! assertDiagnosticRelated error E_DUPLICATE_DECLARATION declaration-site
+--! assertDiagnosticPayload error E_DUPLICATE_DECLARATION /payload/kind name-duplicate
+--! assertDiagnosticPayload error E_DUPLICATE_DECLARATION /payload/name x
 
 x : Integer
 let x = 1

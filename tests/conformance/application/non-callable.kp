@@ -1,4 +1,9 @@
 --! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+-- §3.1.1A: an application diagnostic MUST include the call site and the
+-- callee type site. The callee type is carried as a call-site related
+-- origin and in the payload (the callee is a non-function Integer here).
+--! assertDiagnosticRelated error E_APPLICATION_NON_CALLABLE call-site
+--! assertDiagnosticPayload error E_APPLICATION_NON_CALLABLE /payload/calleeType Integer
 
 y : Integer
 let y = 5 1 --!! E_APPLICATION_NON_CALLABLE

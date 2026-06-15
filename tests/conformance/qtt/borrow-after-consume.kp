@@ -1,6 +1,10 @@
 --! mode check
 --! assertErrorCount 2
 --! assertDiagnosticCodes E_QTT_PATH_CONSUMED, E_QTT_PATH_CONSUMED
+-- §3.1.1A: a path/ownership diagnostic MUST include the consume
+-- introduction site and the failing later-use site.
+--! assertDiagnosticRelated error kappa.path.consumed consumed-here
+--! assertDiagnosticRelated error kappa.path.consumed used-after-consume
 
 module main
 

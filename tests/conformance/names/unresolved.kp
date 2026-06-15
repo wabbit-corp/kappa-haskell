@@ -1,4 +1,10 @@
 --! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.1.1A: an unresolved-name diagnostic includes the use site.
+-- §3.2.2 kappa.name.unresolved payload: the unresolved spelling, and
+-- whether the failure was inside generated syntax.
+--! assertDiagnosticRelated error kappa.name.unresolved use-site
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name nowhere
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/inGeneratedSyntax false
 
 x : Integer
 let x = nowhere --!! E_NAME_UNRESOLVED
