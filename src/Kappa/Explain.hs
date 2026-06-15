@@ -16,27 +16,73 @@
 -- with the reserved @kappa.@ namespace.
 module Kappa.Explain
   ( ExplainEntry (..)
+  , Stability (..)
   , registry
   , lookupCode
+  , lookupFamily
+  , familyMembers
   , explainExists
   , renderEntry
+  , renderFamily
   , portableAlias
   , codeNames
   ) where
 
+import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Kappa.Diagnostic (Severity (..))
 
+-- | §3.1.2A registry-entry stability classification.
+data Stability = Stable | Experimental | Deprecated | Internal
+  deriving stock (Eq, Show)
+
+stabilityText :: Stability -> Text
+stabilityText = \case
+  Stable -> "stable"
+  Experimental -> "experimental"
+  Deprecated -> "deprecated"
+  Internal -> "internal"
+
+severityText :: Severity -> Text
+severityText = \case
+  SevError -> "error"
+  SevWarning -> "warning"
+  SevNote -> "note"
+  SevInfo -> "info"
+
+-- | A §3.1.2A machine-readable diagnostic code registry entry. The
+-- conceptual shape (Spec.md:689-701) is modelled by the fields below;
+-- @defaultSeverity@, @stability@, @portableAliases@, @owner@ and
+-- @introducedIn@ are required registry metadata.
 data ExplainEntry = ExplainEntry
   { eeCode :: !Text
   , eeFamily :: !(Maybe Text)
   , eeExplanation :: !Text
+  , eeDefaultSeverity :: !Severity
+  , eeStability :: !Stability
+  , eePortableAliases :: ![Text]
+  , eeOwner :: !Text
+  , eeIntroducedIn :: !Text
   }
 
 lookupCode :: Text -> Maybe ExplainEntry
 lookupCode c = case [e | e <- registry, eeCode e == c] of
   (e : _) -> Just e
   [] -> Nothing
+
+-- | §3.1.13: the codes registered under a standardized family, for
+-- @kappa explain <family>@. The argument is a family spelling such as
+-- @kappa.type.mismatch@.
+familyMembers :: Text -> [ExplainEntry]
+familyMembers fam = [e | e <- registry, eeFamily e == Just fam]
+
+-- | §3.1.13: does any registry entry carry this family? Returns the
+-- (non-empty) member list when so.
+lookupFamily :: Text -> Maybe [ExplainEntry]
+lookupFamily fam = case familyMembers fam of
+  [] -> Nothing
+  es -> Just es
 
 -- | §T.5.1 @code-or-family@ matching: a spelling beginning with
 -- @kappa.@ (a §3.2 standardized family) or with @kappa-hs.@ (this
@@ -116,7 +162,32 @@ renderEntry e =
     <> maybe "" (\f -> " (" <> f <> ")") (eeFamily e)
     <> "\n\n"
     <> eeExplanation e
-    <> "\n"
+    <> "\n\n"
+    <> "  default severity: " <> severityText (eeDefaultSeverity e) <> "\n"
+    <> "  stability:        " <> stabilityText (eeStability e) <> "\n"
+    <> "  owner:            " <> eeOwner e <> "\n"
+    <> "  introduced in:    " <> eeIntroducedIn e <> "\n"
+    <> ( if null (eePortableAliases e)
+           then ""
+           else "  portable aliases: " <> T.intercalate ", " (eePortableAliases e) <> "\n"
+       )
+
+-- | §3.1.13 @kappa explain <family>@: a short explanation of the family
+-- plus the registered member codes. The family text is the shared
+-- prefix of its members' explanations is not assumed; instead the
+-- family lists its members so a reader can drill into a specific code.
+renderFamily :: [ExplainEntry] -> Text
+renderFamily es =
+  fam <> "\n\n"
+    <> "A standardized Kappa diagnostic family (§3.2). Diagnostics in this\n"
+    <> "family share the family identifier above; tooling and portable tests\n"
+    <> "match on the family rather than on a specific implementation code\n"
+    <> "(§3.1.2, §3.1.2A).\n\n"
+    <> "  member codes: " <> T.intercalate ", " (nub (map eeCode es)) <> "\n"
+  where
+    fam = case es of
+      (e : _) -> maybe "(unknown family)" id (eeFamily e)
+      [] -> "(unknown family)"
 
 registry :: [ExplainEntry]
 registry =
@@ -500,4 +571,36 @@ registry =
       "The module given to 'kappa run' does not define a 'main' entrypoint."
   ]
   where
-    ent c f x = ExplainEntry c f x
+    -- §3.1.2A registry metadata is derived uniformly from the code and
+    -- family rather than restated per entry:
+    --   * defaultSeverity follows the code prefix (E_→error, W_→warning,
+    --     I_→info), the §3.1.2 readable-symbolic-form convention;
+    --   * stability is 'stable' for the public diagnostic surface
+    --     (every code here is emitted in ordinary compilation, §3.1.2A);
+    --   * owner is the family-namespace owner — the specification for a
+    --     reserved @kappa.@ family, otherwise this implementation;
+    --   * portableAliases are read from 'requiredAliasTable' so the
+    --     registry and the alias table cannot drift (§3.1.4);
+    --   * introducedIn is the implementation version (single release).
+    ent c f x =
+      ExplainEntry
+        { eeCode = c
+        , eeFamily = f
+        , eeExplanation = x
+        , eeDefaultSeverity = sevOf c
+        , eeStability = Stable
+        , eePortableAliases = aliasesOf c
+        , eeOwner = ownerOf f
+        , eeIntroducedIn = "kappa-haskell 0.1.0.0"
+        }
+    sevOf c
+      | "W_" `T.isPrefixOf` c = SevWarning
+      | "I_" `T.isPrefixOf` c = SevInfo
+      | otherwise = SevError
+    ownerOf = \case
+      Just fam
+        | "kappa." `T.isPrefixOf` fam -> "kappa-specification"
+      _ -> "kappa-haskell"
+    -- the rendered codes for which this code is the §3.1.4 portable
+    -- alias target (the inverse of 'portableAlias')
+    aliasesOf c = nub [rendered | (rendered, target) <- requiredAliasTable, target == c]

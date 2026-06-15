@@ -9,7 +9,7 @@ import Kappa.Check (CheckState (..))
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
 import Kappa.Eval (Globals (..))
-import Kappa.Explain (lookupCode, renderEntry)
+import Kappa.Explain (lookupCode, lookupFamily, renderEntry, renderFamily)
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
@@ -21,38 +21,55 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["check", path] -> cmdCheck path
-    ["run", path] -> cmdRun path
+    ["check", path] -> cmdCheck Human path
+    ["check", "--json", path] -> cmdCheck Json path
+    ["run", path] -> cmdRun Human path
+    ["run", "--json", path] -> cmdRun Json path
     ["test", path] -> cmdTest runTestPath path
     ["test", "--suite", path] -> cmdTest runTestSuitePath path
     ["explain", code] -> cmdExplain (T.pack code)
     _ -> do
-      hPutStrLn stderr "usage: kappa (check|run|test [--suite]) PATH | kappa explain CODE"
+      hPutStrLn stderr "usage: kappa (check|run [--json]|test [--suite]) PATH | kappa explain CODE-OR-FAMILY"
       exitFailure
 
--- | §3.1.2A: print the registry explanation for a diagnostic code;
--- unknown codes are rejected deterministically.
-cmdExplain :: T.Text -> IO ()
-cmdExplain code = case lookupCode code of
-  Just e -> TIO.putStr (renderEntry e) >> exitSuccess
-  Nothing -> do
-    TIO.hPutStrLn stderr ("error: unknown diagnostic code '" <> code <> "'")
-    exitFailure
+-- | Diagnostic output format (§3.1): the human-readable renderer is the
+-- default surface (§3.1.8); @--json@ selects the machine-readable
+-- producer (§3.1.1).
+data DiagFormat = Human | Json
 
-cmdCheck :: FilePath -> IO ()
-cmdCheck path = do
+-- | Emit one compilation unit's diagnostics in the selected format.
+-- §3.1.1: in JSON mode the whole batch is one JSON array (one object per
+-- diagnostic) on stdout, so tools never parse interleaved prose.
+emitDiags :: DiagFormat -> Diagnostics -> IO ()
+emitDiags Human ds = forM_ ds (TIO.hPutStrLn stderr . renderDiagnostic)
+emitDiags Json ds = TIO.putStrLn (renderDiagnosticsJson ds)
+
+-- | §3.1.2A / §3.1.13: print the registry explanation for a diagnostic
+-- code or (§3.1.13) a diagnostic family; unknown codes/families are
+-- rejected deterministically rather than falling back to prose search.
+cmdExplain :: T.Text -> IO ()
+cmdExplain cf = case lookupCode cf of
+  Just e -> TIO.putStr (renderEntry e) >> exitSuccess
+  Nothing -> case lookupFamily cf of
+    Just fam -> TIO.putStr (renderFamily fam) >> exitSuccess
+    Nothing -> do
+      TIO.hPutStrLn stderr ("error: unknown diagnostic code or family '" <> cf <> "'")
+      exitFailure
+
+cmdCheck :: DiagFormat -> FilePath -> IO ()
+cmdCheck fmt path = do
   (src, preDiags) <- loadSourceFile path
   let cu0 = compileSourceWithPrelude path src
       cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
-  forM_ (cuDiags cu) (TIO.hPutStrLn stderr . renderDiagnostic)
+  emitDiags fmt (cuDiags cu)
   if hasErrors (cuDiags cu) then exitFailure else exitSuccess
 
-cmdRun :: FilePath -> IO ()
-cmdRun path = do
+cmdRun :: DiagFormat -> FilePath -> IO ()
+cmdRun fmt path = do
   (src, preDiags) <- loadSourceFile path
   let cu0 = compileSourceWithPrelude path src
       cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
-  forM_ (cuDiags cu) (TIO.hPutStrLn stderr . renderDiagnostic)
+  emitDiags fmt (cuDiags cu)
   when (hasErrors (cuDiags cu)) exitFailure
   let st = cuState cu
       mainG = GName (cuModule cu) "main"
