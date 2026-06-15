@@ -1,0 +1,22 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11: `exists` is anonymous sealed-package sugar. It elaborates to
+-- the §13.2.10 sealed-package machinery: a closed signature type whose
+-- first members are hidden `opaque 0` witnesses and whose remaining
+-- members are the payload view of the body.
+--
+--   * a non-record body is one anonymous payload slot of type T (ω);
+--   * a record body contributes its fields directly to the payload view;
+--   * later witnesses and the payload may depend on earlier witnesses.
+module main
+
+anonBody : Type
+let anonBody = exists (a : Type). a
+
+-- `exists a. T` is sugar for `exists (a : Type). T`
+sugarBinder : Type
+let sugarBinder = exists a. a
+
+recordBody : Type
+let recordBody = exists (a : Type). (value : a)

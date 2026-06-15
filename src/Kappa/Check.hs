@@ -1926,7 +1926,7 @@ infer ctx expr = case expr of
     (codTm, _) <- inferType ctx' body
     pure (CPi ic (binderQ b) nm domTm codTm, VSort 0)
   EForall bs body _ -> elabForall ctx bs body
-  EExists _ _ sp -> unsupported ctx sp "exists types"
+  EExists bs body sp -> elabExists ctx bs body sp
   ETraitArrow c rest -> do
     (cTm, _) <- inferType ctx c
     cV <- evalIn ctx cTm
@@ -2688,7 +2688,65 @@ elabForall ctx0 bs0 body = go ctx0 bs0
       (restTm, _) <- go ctx' rest
       pure (CPi Impl q nm domTm restTm, VSort 0)
 
--- application spine (§16.1.7.1)
+-- | §13.2.11 anonymous existential package types. @exists (a1:S1)
+-- ... (an:Sn). T@ is surface sugar that elaborates to the §13.2.10
+-- sealed-package machinery: a closed signature type whose first members
+-- are the hidden witnesses (each an @opaque 0@ member) and whose
+-- remaining member(s) are the payload view of @T@:
+--
+--   * a record/signature payload contributes its fields directly;
+--   * any other payload becomes one anonymous payload member.
+--
+-- The witness binder names are used only while checking this surface
+-- view; sealing against the result reuses 'elabSeal', so the ordinary
+-- §13.2.10 (and thereby §12.4.3 borrow-escape) sealing-side checks apply
+-- unchanged. Witnesses being @opaque 0@ are erased static metadata
+-- (§31.2); they participate in the signature's field telescope as
+-- 'this'-dependencies so the payload may mention them.
+elabExists :: Ctx -> [Binder] -> Expr -> Span -> CheckM (Term, Value)
+elabExists ctx bs body sp = do
+  -- distinct witness names (§13.2.11 surface-name restriction)
+  let witNames = [maybe "_" nameText (bName b) | b <- bs]
+  forM_ (duplicatesOf (filter (/= "_") witNames)) $ \n ->
+    errAt sp "E_RECORD_DUPLICATE_FIELD" (Just "kappa-hs.record.duplicate-field")
+      ("an 'exists' type binds the witness name '" <> n <> "' more than once (§13.2.11)")
+  -- elaborate the witness telescope, each field seeing earlier witnesses
+  -- through 'this' (the package), then the payload view
+  witFields <- goWits [] (zip witNames bs)
+  let witDone = [(n, v) | (n, _, v) <- witFields] -- (name, type) oldest-first
+  payloadFields <- withThis (Just (ThisType witDone)) payloadView
+  let allFields = [(n, t) | (n, t, _) <- witFields] ++ payloadFields
+      fields = sortOn fst allFields
+      opaqs = sort (filter (/= "_") witNames)
+  pure (CSigT opaqs (CRecordT fields), VSort 0)
+  where
+    -- each witness field, elaborated with prior witnesses in 'this'
+    goWits _ [] = pure []
+    goWits done ((nm, b) : rest) = do
+      (t0, _) <- withThis (Just (ThisType (reverse done))) $ case bType b of
+        Just t -> inferType ctx t
+        Nothing -> pure (CSort 0, 0) -- `exists a.` binds a : Type (§13.2.11)
+      tV <- evalIn ctx t0
+      let ent = (nm, t0, tV)
+      (ent :) <$> goWits ((nm, tV) : done) rest
+    -- the payload view of the existential body (§13.2.11)
+    payloadView = do
+      (tTm, _) <- inferType ctx body
+      tV <- forceM =<< evalIn ctx tTm
+      case tV of
+        -- record/signature payload: contribute its fields directly
+        VRecordT fs -> recFields fs
+        VSigT _ inner ->
+          forceM inner >>= \case
+            VRecordT fs -> recFields fs
+            _ -> anonPayload tTm
+        _ -> anonPayload tTm
+      where
+        recFields fs = forM fs $ \(fn, fty) -> (,) fn <$> quoteIn ctx fty
+        -- one anonymous payload slot (§13.2.11: quantity ω); named
+        -- 'value' as the conventional payload field for the surface
+        -- package spelling
+        anonPayload tTm = pure [("value", tTm)]
 -- | Check an all-explicit application against an expected function
 -- type by peeling the callee's Pi spine with placeholder metas,
 -- unifying the result type with the expectation FIRST, and only then

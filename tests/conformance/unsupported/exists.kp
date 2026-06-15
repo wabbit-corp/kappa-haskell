@@ -1,4 +1,0 @@
---! assertDiagnostic error E_UNSUPPORTED
-
-package : Type
-let package = exists (a : Type). a
