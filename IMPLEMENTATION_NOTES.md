@@ -731,43 +731,66 @@ condition requires an unimplemented feature and is vacuously satisfied.
    family `kappa.row.tail-quantity` with obligation `RecTailSatisfies r
    q`, Spec.md:3097-3128; §13.2.7 `forgetExtras` needing
    `RecTailSatisfies r 0`, Spec.md:12870-12923; §11.3.1A home-prefix
-   obligations, Spec.md:9607-9608). Two interlocking gating features are
-   absent, so the condition cannot arise:
-   - **`RecTailSatisfies` does not exist.** `grep -rn RecTailSatisfies
-     src/ tests/` → zero hits. The prelude defines `RecRow`, `LacksRec`,
-     `__openRec`, `__rowExtend`, `__closedRow`, `__rowEvidence`
-     (`src/Kappa/Prelude.hs`) but not `RecTailSatisfies`. A probe of
-     `forall (r : RecRow). RecTailSatisfies r 0 => Int` reports
-     `E_NAME_UNRESOLVED: unresolved name 'RecTailSatisfies'`. The very
-     obligation this diagnostic reports as "unavailable" cannot be
-     written or generated.
-   - **No quantity discipline on abstract residual tails.** A probe of
-     the spec's own `forgetExtras`
-     (`forall (r : RecRow). (1 rec : (name : String | r)) -> (name :
-     String)`, dropping the linear receiver's abstract residual tail `r`)
-     compiles with **zero diagnostics**. `src/Kappa/Usage.hs` tracks
-     field-level linearity only over known/concrete fields; an abstract
-     row variable `r` is never assigned a trackable quantity, so a
-     dropped/copied abstract tail produces no quantity demand. (For
-     contrast, a concrete linear value dropped fires `E_QTT_LINEAR_DROP`,
-     so the linear-drop machinery exists but does not reach abstract
-     tails.) Open records solve their tail to a *closed* `__closedRow`
-     when met against a concrete record (`Check.hs`); the residual is
-     never an abstract linear-bearing tail demanded at a structural
-     quantity.
+   obligations, Spec.md:9607-9608). `RecTailSatisfies` evidence cannot be
+   written or generated: `grep -rn RecTailSatisfies src/ tests/` → zero
+   hits; the prelude defines `RecRow`, `LacksRec`, `__openRec`,
+   `__rowExtend`, `__closedRow`, `__rowEvidence` (`src/Kappa/Prelude.hs`)
+   but not `RecTailSatisfies`; a probe of `forall (r : RecRow).
+   RecTailSatisfies r 0 => Int` reports `E_NAME_UNRESOLVED`. So the
+   *opt-out premise* the §3.1.4 alias names ("the required evidence is
+   unavailable") cannot be supplied, and the alias's own emission
+   condition — which fires only when the evidence is *unavailable but the
+   tail is forced at a non-trivial quantity through a dedicated
+   row-solver obligation* — is never generated as a `RecTailSatisfies`
+   goal. The §3.1.4 MUST ("expose the alias *if* the obligation is
+   emitted") is therefore vacuously satisfied. The code is deliberately
+   **not** added to the `Explain.hs` registry: the §3.1.2A
+   `registryComplete` check is one-directional (every code *emitted in
+   the sources* must be registered), and the established convention is
+   that codes for unimplemented features with no emission site stay out
+   of the registry (e.g. `E_RECORD_OPEN_TAIL_INVALIDATED`,
+   `E_REPRO_BYTEWISE_MISMATCH`, `E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE`
+   are likewise unregistered).
 
-   Because neither `RecTailSatisfies` evidence nor an abstract-tail
-   quantity demand can be expressed or generated, `E_ROW_TAIL_QUANTITY_-
-   UNSATISFIED`'s emission condition is unreachable and the MUST is
-   vacuously satisfied. The code is deliberately **not** added to the
-   `Explain.hs` registry: the §3.1.2A `registryComplete` check is
-   one-directional (every code *emitted in the sources* must be
-   registered), and the established convention is that codes for
-   unimplemented features with no emission site stay out of the registry
-   (e.g. `E_RECORD_OPEN_TAIL_INVALIDATED`, `E_REPRO_BYTEWISE_MISMATCH`,
-   `E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE` are likewise unregistered),
-   so `kappa explain` does not advertise a code this implementation never
-   produces. Registering it becomes mandatory only once the gating
-   feature is implemented and the code acquires an emission site.
-   Implementing the gating feature is tracked separately in
-   `SPEC_COVERAGE.md`.
+   **Soundness remediation (round 2, spec reviewer Finding 1).** The
+   round-2 spec review correctly observed that the *previous* state was
+   not merely "alias unreachable" but an active §12.2.5/§13.2.7 QTT
+   soundness hole: a linear value placed in a record field, or carried by
+   an abstract residual tail of a consuming open-record receiver, was
+   silently dropped when only a sibling/prefix field was read. That hole
+   is now closed in `src/Kappa/Usage.hs` (general spec rules, no
+   fixture-name matching):
+   - **§13.2.1 (a record holding a linear field is a linear resource).**
+     A binding whose record value carries a quantity-1 field path — known
+     from a type annotation *or inferred* from a record literal that
+     places a linear value into a field (`litLinearFields`/
+     `mergeFieldQuantities`) — must consume each linear field path on
+     every completion path, or transfer the whole record (root move) or
+     restore/replace it through a patch (residue consume). Otherwise the
+     untransferred field fires `E_QTT_LINEAR_DROP`
+     ("the quantity-1 field 'r.f' may be dropped …", §13.2.1, §12.2.5),
+     enforced in `closeVar`. A borrowed receiver carries no consumption
+     obligation, and a non-consuming read/borrow of a linear field
+     discharges its obligation for the borrow's scope (`placeTouch`/
+     `placeBorrow` now touch the field path, not only the root).
+   - **§13.2.7 (a consuming open-record receiver owns its residual
+     tail).** A `1`/`>=1` receiver of an open record type `(... | r)`
+     with an abstract row-variable tail (`hasAbstractTail`, tracked via
+     `vOpenTail`) must transfer the tail by returning the whole record or
+     by a tail-preserving patch/extension; forgetting it (reading only a
+     prefix field) fires `E_QTT_LINEAR_DROP` naming the residual tail and
+     the missing `RecTailSatisfies r 0` evidence. Because that evidence
+     is not expressible (above), the rejection is total — which is the
+     spec-safe direction: v1 has no way to opt out of forgetting a tail
+     that may hold a linear resource. The spec's own `addAge`/`identityRec`
+     tail-preserving forms remain accepted (`open-record-tail-ok`); the
+     unrestricted `readName` receiver carries no per-tail obligation but
+     its *call site* now scales a linear-carrying record argument at the
+     receiver's ω demand and fires `E_QTT_LINEAR_OVERUSE` (§16.2.1).
+   This re-classifies the §13.2.7/§14.1.2 discipline from "tracked gap"
+   to *implemented by rejection*; only the `RecTailSatisfies`-evidenced
+   *acceptance* path (and the dedicated `E_ROW_TAIL_QUANTITY_UNSATISFIED`
+   alias keyed to it) remains future work, tracked in `SPEC_COVERAGE.md`.
+   Regression coverage: `tests/conformance/qtt/record-linear-field-drop`,
+   `record-linear-field-ok`, `record-linear-arg-overuse`,
+   `open-record-tail-drop`, `open-record-tail-ok`.

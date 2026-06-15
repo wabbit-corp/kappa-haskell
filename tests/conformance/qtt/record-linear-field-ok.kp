@@ -1,0 +1,36 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.1/§12.2.5: a record carrying a linear field is accepted once
+-- that field is consumed or the whole record is transferred. Consuming
+-- the linear field, or returning the whole record, discharges the
+-- obligation; a borrowed receiver carries no consumption obligation.
+module main
+
+data Buffer : Type =
+    Buffer
+
+type WithBuf : Type = (1 buf : Buffer, name : String)
+
+free : (1 b : Buffer) -> Unit
+let free (1 b : Buffer) : Unit =
+    match b
+    case Buffer -> ()
+
+-- the linear field is explicitly consumed
+consumeField : (1 b : Buffer) -> Unit
+let consumeField (1 b : Buffer) : Unit =
+    block
+        let r : WithBuf = (buf = b, name = "x")
+        free r.buf
+
+-- the whole record is transferred out (root move): all fields move with it
+transferWhole : (1 b : Buffer) -> WithBuf
+let transferWhole (1 b : Buffer) : WithBuf =
+    block
+        let r : WithBuf = (buf = b, name = "x")
+        r
+
+-- a borrowed receiver reads a sibling without any consumption obligation
+borrowRead : (& r : WithBuf) -> String
+let borrowRead (& r : WithBuf) : String = r.name

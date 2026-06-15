@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP, E_QTT_LINEAR_DROP
+
+-- §13.2.1/§12.2.5: a record value carrying a quantity-1 field is a
+-- linear resource for whole-record use until those linear paths are
+-- consumed or restored. Reading only a sibling field — whether the
+-- record is built by a literal or annotated — silently leaks the linear
+-- field unless it is consumed or the whole record is transferred.
+module main
+
+data Buffer : Type =
+    Buffer
+
+type WithBuf : Type = (1 buf : Buffer, name : String)
+
+-- inferred linear field from the record literal: 'secret' holds a linear
+-- value, only the sibling 'name' is read, so 'r.secret' leaks
+inferredDrop : (1 tok : Buffer) -> String
+let inferredDrop (1 tok : Buffer) : String =
+    block
+        let r = (name = "x", secret = tok)
+        r.name
+
+-- annotated linear field: same leak through the type's quantity-1 field
+annotatedDrop : (1 b : Buffer) -> String
+let annotatedDrop (1 b : Buffer) : String =
+    block
+        let r : WithBuf = (buf = b, name = "x")
+        r.name

@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.7: a consuming open-record receiver is accepted when it
+-- transfers its residual tail — by returning the whole record, or by a
+-- patch/extension that carries the tail into the result. A borrowed or
+-- unrestricted receiver carries no per-tail consumption obligation.
+module main
+
+-- transfer the whole record (and its tail) unchanged
+identityRec :
+    forall (r : RecRow).
+    (1 rec : (name : String | r)) ->
+    (name : String | r)
+let identityRec (@0 r : RecRow) (rec : (name : String | r)) : (name : String | r) =
+    rec
+
+-- tail-preserving extension: the patch carries the residual tail forward
+addAge :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (1 rec : (name : String | r)) ->
+    (name : String, age : Int | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }
+
+-- a borrowed receiver reads a prefix field with no tail obligation
+readName :
+    forall (r : RecRow).
+    (& rec : (name : String | r)) ->
+    String
+let readName (@0 r : RecRow) (& rec : (name : String | r)) : String =
+    rec.name

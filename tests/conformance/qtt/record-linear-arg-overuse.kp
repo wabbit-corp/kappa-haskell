@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §16.2.1/§13.2.7: a composite argument value is demanded at the callee
+-- parameter's interval, so a linear value embedded in a record literal
+-- passed to an unrestricted (ω) receiver is counted ω times and fails
+-- its linear upper bound — an unrestricted binder does not make a linear
+-- field reusable.
+module main
+
+readName : forall (r : RecRow). (name : String | r) -> String
+let readName (@0 r : RecRow) (rec : (name : String | r)) : String = rec.name
+
+useIt : (1 tok : Int) -> String
+let useIt (tok : Int) : String =
+    readName (name = "x", secret = tok)

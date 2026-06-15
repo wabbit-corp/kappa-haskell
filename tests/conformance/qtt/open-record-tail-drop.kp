@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §13.2.7: a consuming (quantity-1) receiver of an open record type owns
+-- its abstract residual tail. Forgetting that tail — reading only an
+-- explicit prefix field and returning a value that does not carry the
+-- tail — is unsound without a 'RecTailSatisfies r 0' premise (which v1
+-- cannot express), because the tail may hold a linear resource.
+module main
+
+forgetExtras :
+    forall (r : RecRow).
+    (1 rec : (name : String | r)) ->
+    String
+let forgetExtras (@0 r : RecRow) (rec : (name : String | r)) : String =
+    rec.name

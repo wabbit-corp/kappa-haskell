@@ -52,7 +52,7 @@ import Control.Monad.State.Strict (State, execState, gets, modify')
 import Data.List (find, isPrefixOf, tails)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe, maybeToList)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Diagnostic
@@ -100,11 +100,18 @@ data VInfo = VInfo
   , vLatent :: !Usage -- ^ per-call captured usage (closure-valued bindings)
   , vFields :: ![(Text, Maybe Quantity)] -- ^ record fields, when known
   , vDeps :: ![(Text, [Text])] -- ^ §13.2.1 field dependencies (field ↦ siblings its type mentions)
+  , vOpenTail :: !(Maybe Span)
+  -- ^ §13.2.7: a linear (1\/>=1) receiver of an open record type
+  -- @(... | r)@ owns the abstract residual tail @r@. Without a
+  -- @RecTailSatisfies r 0@ premise (not expressible in v1), forgetting
+  -- the tail is unsound, so the tail must be transferred whole (root
+  -- move) or restored\/extended through a patch (residue consume). The
+  -- span is the binding site for the drop report.
   , vSpan :: !Span -- ^ binding site (drop reports)
   }
 
 plainV :: Text -> Span -> VInfo
-plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] sp
+plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] Nothing sp
 
 -- | Expand a borrow lock over a field path with the §12.4 dependency
 -- rule: borrowing a dependent field also locks the fields its type
@@ -138,6 +145,9 @@ data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
 -- chronological place events on the root, and detected §12.4
 -- borrow-after-consume violations (path, borrow site).
 data Cnt = Cnt !Int !Int ![Span] !Int ![PEv] ![([Text], Span)]
+
+cLo :: Cnt -> Int
+cLo (Cnt a _ _ _ _ _) = a
 
 cHi :: Cnt -> Int
 cHi (Cnt _ b _ _ _ _) = b
@@ -396,6 +406,72 @@ resolveFields aliases = go
       ECaptures e _ _ -> go e
       _ -> []
 
+-- | Combine field-quantity lists, preferring the more demanding
+-- (quantity-1) entry. A field is linear in the result if either source
+-- records it as quantity 1, so an annotation never weakens an inferred
+-- linear field and vice versa.
+mergeFieldQuantities ::
+  [(Text, Maybe Quantity)] -> [(Text, Maybe Quantity)] -> [(Text, Maybe Quantity)]
+mergeFieldQuantities annotated inferred =
+  [ (f, if f `elem` infLin then Just QOne else q)
+  | (f, q) <- annotated
+  ]
+    ++ [(f, Just QOne) | f <- infLin, f `notElem` map fst annotated]
+  where
+    infLin = [f | (f, Just QOne) <- inferred]
+
+-- | §13.2.1: the fields a record literal makes linear because their
+-- initializer transfers a quantity-1 value (a linear binding or a
+-- quantity-1 field path of a tracked record). The resulting record value
+-- owns those resources, so the whole record is linear for whole-record
+-- use until they are consumed.
+litLinearFields :: Env -> Expr -> [(Text, Maybe Quantity)]
+litLinearFields env = \case
+  ERecordLit items _ ->
+    [ (nameText (riName it), Just QOne)
+    | it <- items
+    , Just v <- [riValue it]
+    , transfersLinear env v
+    ]
+  EAscription e _ _ -> litLinearFields env e
+  ECaptures e _ _ -> litLinearFields env e
+  _ -> []
+
+-- | Does this expression transfer ownership of a quantity-1 value? True
+-- for a place that is a linear binding or a quantity-1 field path of a
+-- tracked record (§12.4).
+transfersLinear :: Env -> Expr -> Bool
+transfersLinear env e = case placeOf env e of
+  Just (vi, [], _) -> vQ vi == Just QOne
+  Just (vi, path, _) -> isLinearPath vi path
+  Nothing -> False
+
+-- | Does this record type carry an abstract residual row tail @(... |
+-- r)@ where @r@ is a row variable (§11.3.1A, §13.2.7)? A tail that is a
+-- row variable (any non-record expression) is abstract; an explicit
+-- closed extension @(... | (more fields))@ is followed structurally. A
+-- bare type-alias spelling whose row tail is not visible here is treated
+-- conservatively as having no abstract tail (no false positive).
+hasAbstractTail :: Map Text [(Text, Maybe Quantity)] -> Expr -> Bool
+hasAbstractTail aliases = go (0 :: Int)
+  where
+    go n e
+      | n > 32 = False -- guard against accidental deep nesting
+      | otherwise = case e of
+          ERecordType _ (Just tailE) _ -> tailAbstract n tailE
+          ERecordType _ Nothing _ -> False
+          EAscription e' _ _ -> go n e'
+          ECaptures e' _ _ -> go n e'
+          _ -> False
+    tailAbstract n tailE = case tailE of
+      -- a row-variable spelling that is not a known record alias is an
+      -- abstract residual tail; a record alias is conservatively closed
+      EVar v -> not (Map.member (nameText v) aliases)
+      ERecordType {} -> go (n + 1) tailE
+      EAscription e' _ _ -> tailAbstract n e'
+      ECaptures e' _ _ -> tailAbstract n e'
+      _ -> True
+
 -- | Resolve a (possibly aliased) record type to its §13.2.1 field
 -- dependencies: field ↦ sibling labels its type mentions via 'this'.
 resolveDeps :: Map Text [(Text, [Text])] -> Expr -> [(Text, [Text])]
@@ -552,8 +628,18 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
             anon = mark == Just (BorrowMark Nothing) || borrowViewed
             fields = maybe [] (resolveFields aliases) ty
             deps = maybe [] (resolveDeps aliasDeps) ty
+            -- §13.2.7: a linear (consuming) receiver of an open record
+            -- type owns its abstract residual tail; track it so a body
+            -- that forgets the tail without transferring or restoring it
+            -- is rejected
+            openTail
+              | isNothing mark
+              , q `elem` [Just QOne, Just QAtLeastOne]
+              , maybe False (hasAbstractTail aliases) ty =
+                  Just (bSpan b)
+              | otherwise = Nothing
         k <- freshKey (nameText n)
-        pure (Just (nameText n, VInfo k q (isJust mark || borrowViewed) anon False Nothing Map.empty fields deps (bSpan b)))
+        pure (Just (nameText n, (VInfo k q (isJust mark || borrowViewed) anon False Nothing Map.empty fields deps Nothing (bSpan b)) {vOpenTail = openTail}))
     appHeadName = \case
       EApp f _ -> appHeadName f
       EVar n -> Just (nameText n)
@@ -623,9 +709,10 @@ checkInoutResult msig ld =
 -- per-path consumption of its quantity-1 record fields (§12.4).
 closeVar :: VInfo -> Usage -> M ()
 closeVar vi u = do
-  let Cnt _ rHi rOccs rTlo _ viols = Map.findWithDefault zeroC (vKey vi) u
+  let Cnt rLo rHi rOccs rTlo _ viols = Map.findWithDefault zeroC (vKey vi) u
       res = Map.findWithDefault zeroC (vKey vi <> ".~") u
       rootHi = rHi + cHi res
+      rootLo = rLo + cLo res
   -- §12.4: borrowing or re-projecting a path after an overlapping
   -- definite consume (no intervening restore — a restoring patch
   -- rebinds through a fresh root) is a compile-time error
@@ -642,11 +729,60 @@ closeVar vi u = do
         overuse (nm <> "." <> f) (pOccs ++ rOccs)
         pure True
       else pure False
+  -- §13.2.1: a record value carrying a quantity-1 field is a linear
+  -- resource for whole-record use until those linear paths are consumed
+  -- or restored. Consuming the whole record (or transferring it as a
+  -- result/argument) moves every field; otherwise each linear field path
+  -- must itself be consumed on every completion path, or its owned
+  -- resource is silently dropped (§12.2.5). A whole-record consume sets
+  -- the root move lower bound; a patch re-consumes unpatched linear paths
+  -- (walkPatch), so this check sees restored records as consumed.
+  let droppedFields
+        -- a borrowed receiver carries no consumption obligation, and a
+        -- whole-record transfer (root move/patch residue) moves every
+        -- field with it
+        | vBorrowed vi || rootLo >= 1 = []
+        | otherwise =
+            [ f
+            | f <- linFields vi
+            , let fc = Map.findWithDefault zeroC (vKey vi <> "." <> f) u
+              -- a linear field is dropped when neither consumed (moved)
+              -- nor borrowed (touched) on this completion path; a borrow
+              -- discharges the obligation for its scope under §12.2.5
+            , cLo fc < 1 && not (cTouch fc)
+            ]
+  forM_ droppedFields $ \f ->
+    emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
+      ("the quantity-1 field '" <> nm <> "." <> f
+         <> "' may be dropped without being consumed (§13.2.1, §12.2.5)")
+  -- §13.2.7: a consuming open-record receiver must transfer (root move)
+  -- or restore/extend (patch, which consumes the residue) its abstract
+  -- residual tail; otherwise the tail — which may carry a linear
+  -- resource — is forgotten without the required RecTailSatisfies r 0
+  -- evidence. The whole-record drop below covers the case where the
+  -- receiver is wholly unused, so the tail report is gated on the root
+  -- being touched (the receiver was used, just not tail-transferred).
+  let tailDropped =
+        isJust (vOpenTail vi)
+          && rootLo < 1
+          && rTlo >= 1
+          && null droppedFields
+  when tailDropped $
+    emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
+      ("the abstract residual row tail of '" <> nm
+         <> "' is forgotten without transferring or restoring it; a "
+         <> "consuming open-record receiver requires 'RecTailSatisfies r 0' "
+         <> "to forget a tail that may hold a linear resource (§13.2.7)")
   case vQ vi of
     Just QOne -> do
       when (rootHi > 1) (overuse nm rOccs)
-      when (rTlo < 1 && rootHi <= 1 && not pathOver) (dropErr "linear")
-    Just QAtLeastOne -> when (rTlo < 1) (dropErr "relevant")
+      -- the whole-record drop is reported only when no linear field or
+      -- residual tail already carried the leak (otherwise those reports
+      -- are the precise diagnostics for the same untransferred resource)
+      when
+        (rTlo < 1 && rootHi <= 1 && not pathOver && null droppedFields && not tailDropped)
+        (dropErr "linear")
+    Just QAtLeastOne -> when (rTlo < 1 && not tailDropped) (dropErr "relevant")
     Just QAtMostOne -> when (rootHi > 1) (overuse nm rOccs)
     _ -> pure ()
   where
@@ -799,6 +935,34 @@ movePlace env vi path sp = do
 isLinearPath :: VInfo -> [Text] -> Bool
 isLinearPath vi [f] = f `elem` linFields vi
 isLinearPath _ _ = False
+
+-- | Non-consuming touch usage for a borrowed/read place: the root is
+-- touched and, for a field path, that field path too. Touching a linear
+-- field path discharges its §13.2.1 consumption obligation for the
+-- borrow's scope (a borrow is non-consuming but does demand the field).
+placeTouch :: VInfo -> [Text] -> Usage
+placeTouch vi path =
+  Map.fromListWith seqC $
+    (vKey vi, touchC)
+      : [ (vKey vi <> "." <> T.intercalate "." path, touchC)
+        | not (null path)
+        ]
+
+-- | 'placeTouch' over a list of resolved places (e.g. a projection's
+-- yield leaves).
+placesTouch :: [(VInfo, [Text], Span)] -> Usage
+placesTouch places =
+  Map.unionsWith seqC [placeTouch vi path | (vi, path, _) <- places]
+
+-- | Like 'placeTouch', but the root touch carries a §12.4 'PBorrow'
+-- place event (for borrow-after-consume tracking) at the borrow span.
+placeBorrow :: VInfo -> [Text] -> Span -> Usage
+placeBorrow vi path sp =
+  Map.fromListWith seqC $
+    (vKey vi, evC (PBorrow path sp) touchC)
+      : [ (vKey vi <> "." <> T.intercalate "." path, touchC)
+        | not (null path)
+        ]
 
 -- ── Expression walk ──────────────────────────────────────────────────
 
@@ -1052,11 +1216,20 @@ lamBind env (b, ms) = case bName b of
         ty = bType b `orElse` (bType =<< ms)
         fields = maybe [] (resolveFields (eAliases env)) ty
         deps = maybe [] (resolveDeps (eFieldDeps env)) ty
+        -- §13.2.7: a consuming open-record lambda receiver owns its
+        -- abstract residual tail, exactly as an equation-head receiver
+        openTail
+          | isNothing mark
+          , q `elem` [Just QOne, Just QAtLeastOne]
+          , maybe False (hasAbstractTail (eAliases env)) ty =
+              Just (bSpan b)
+          | otherwise = Nothing
     k <- freshKey (nameText n)
     pure
       ( Just
           ( nameText n
-          , VInfo k q (isJust mark) (mark == Just (BorrowMark Nothing)) False Nothing Map.empty fields deps (bSpan b)
+          , (VInfo k q (isJust mark) (mark == Just (BorrowMark Nothing)) False Nothing Map.empty fields deps Nothing (bSpan b))
+              {vOpenTail = openTail}
           )
       )
   where
@@ -1214,7 +1387,7 @@ walkApp env f args
   | Just (places, aux) <- projPlacesOf env (EApp f args) = do
       rs <- mapM (walkE env) aux
       let u = foldr (seqU . fst . flatR) Map.empty rs
-          touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
+          touch = placesTouch places
       pure (rPlain (u `seqU` touch))
 walkApp env f args = do
   hr <- walkE env f
@@ -1308,7 +1481,7 @@ walkArg env params arg p = case arg of
     | Just (places, aux) <- projPlacesOf env e -> do
         rs <- mapM (walkE env) aux
         let u = foldr (seqU . fst . flatR) Map.empty rs
-            touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
+            touch = placesTouch places
         pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
     | consuming
     , Just (vi, [], sp) <- placeOf env e
@@ -1351,6 +1524,14 @@ walkArg env params arg p = case arg of
     | otherwise -> do
         R u t l <- walkE env e
         let d = pDemand p
+            -- §16.2.1/§13.2.7: a composite argument value (e.g. a record
+            -- literal carrying a linear field) is demanded at the
+            -- parameter's interval, so any linear value embedded in its
+            -- construction is counted that many times — passing a record
+            -- holding a linear field to an unrestricted receiver then
+            -- fails the linear upper bound, exactly as a direct place
+            -- argument already does.
+            u' = scaleU d u
         -- a borrow-capturing closure may flow only into an
         -- at-most-once consuming position (§12.3.2); an unrestricted
         -- parameter may retain it beyond the borrow's scope
@@ -1360,8 +1541,8 @@ walkArg env params arg p = case arg of
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] -> do
                 emit "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" tsp
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
-                pure (rPlain (u `seqU` scaleU d l), [])
-          _ -> pure (R (u `seqU` scaleU d l) t Map.empty, [])
+                pure (rPlain (u' `seqU` scaleU d l), [])
+          _ -> pure (R (u' `seqU` scaleU d l) t Map.empty, [])
   where
     hasDemand = isJust (pQuantity p) || pBorrow p
     consuming = pQuantity p `elem` [Just QOne, Just QAtLeastOne]
@@ -1376,7 +1557,7 @@ walkArg env params arg p = case arg of
     borrowish e = case placeOf env e of
       Just (vi, path, sp) ->
         pure
-          ( rPlain (Map.singleton (vKey vi) (evC (PBorrow path sp) touchC))
+          ( rPlain (placeBorrow vi path sp)
           , [FBorrow (vKey vi) path]
           )
       Nothing
@@ -1385,7 +1566,7 @@ walkArg env params arg p = case arg of
         | Just (places, aux) <- projPlacesOf env e -> do
             rs <- mapM (walkE env) aux
             let u = foldr (seqU . fst . flatR) Map.empty rs
-                touch = Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places]
+                touch = placesTouch places
             pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
         | otherwise -> (,[]) <$> walkE env e
     -- like 'borrowish', but the facts carry the marker span for the
@@ -1418,7 +1599,7 @@ walkBinds env binds = go env binds
             -- original
             Just pl@(vi, plPath, plSp) ->
               pure
-                ( Map.singleton (vKey vi) (evC (PBorrow plPath plSp) touchC)
+                ( placeBorrow vi plPath plSp
                 , Nothing
                 , Map.empty
                 , borrowLocks envc pl
@@ -1428,10 +1609,10 @@ walkBinds env binds = go env binds
             Nothing
               | Just (places, aux) <- projPlacesOf envc rhs -> do
                   rs <- mapM (walkE envc) aux
-                  let u' =
-                        foldr (seqU . fst . flatR)
-                          (Map.fromList [(vKey vi, touchC) | (vi, _, _) <- places])
-                          rs
+                  -- borrowing a place touches the root and, for a linear
+                  -- field path, that field path too, so the §13.2.1
+                  -- field obligation is discharged for the borrow's scope
+                  let u' = foldr (seqU . fst . flatR) (placesTouch places) rs
                   pure (u', Nothing, Map.empty, concatMap (borrowLocks envc) places)
             Nothing -> do
               r <- walkE envc rhs
@@ -1454,7 +1635,18 @@ walkBinds env binds = go env binds
               | not borrowed, isLinearPath vi path -> Just QOne
             _ -> Nothing
           q = if single then mq `orElse` inherited else Nothing
-          fields = maybe [] (resolveFields (eAliases envc)) mty
+          -- §13.2.1: a record literal that places a linear value into a
+          -- field makes that field a linear path of the resulting record,
+          -- whether or not the binding is annotated. The whole record is
+          -- then a linear resource until those paths are consumed
+          -- (enforced in 'closeVar').
+          litFields
+            | borrowed = []
+            | otherwise = litLinearFields envc rhs
+          fields =
+            mergeFieldQuantities
+              (maybe [] (resolveFields (eAliases envc)) mty)
+              litFields
           fdeps = maybe [] (resolveDeps (eFieldDeps envc)) mty
           mk nm = do
             k <- freshKey nm
@@ -1469,6 +1661,7 @@ walkBinds env binds = go env binds
                   (if single then latent else Map.empty)
                   fields
                   fdeps
+                  Nothing
                   bsp
               )
       -- every pattern name is bound (untracked entries still shadow
