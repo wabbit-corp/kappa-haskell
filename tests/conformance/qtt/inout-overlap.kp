@@ -1,5 +1,9 @@
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+-- §3.1.1A line 602: both overlapping '~' footprints are
+-- borrow-introduction sites; the diagnostic MUST relate them.
+--! assertDiagnosticRelated error kappa.borrow.overlap borrow-start
+--! assertDiagnosticRelated error kappa.borrow.overlap borrow-conflict
 
 -- §18.9.3 / §12.4: the place footprints of one call's '~' inout
 -- arguments must be pairwise disjoint — the same stable place may

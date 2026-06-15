@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME
+-- §3.1.1A line 602: a borrow/ownership diagnostic MUST include the
+-- borrow-introduction site and the failing later consuming use. A
+-- borrowed binding consumed by a quantity-1 parameter (§12.3.1) relates
+-- the borrow's binder site (borrow-start) and the consuming use
+-- (consumed-here).
+--! assertDiagnosticRelated error kappa.quantity.unsatisfied borrow-start
+--! assertDiagnosticRelated error kappa.quantity.unsatisfied consumed-here
+
+module main
+
+data Token : Type =
+    MkToken Int
+
+takeTok : (1 t : Token) -> Int
+let takeTok t =
+    match t
+      case MkToken n -> n
+
+bad : (1 t : Token) -> Int
+let bad (1 t : Token) : Int =
+    let & v = t
+    in takeTok v

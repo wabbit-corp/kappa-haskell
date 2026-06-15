@@ -267,7 +267,10 @@ freshKey nm = do
 data Env = Env
   { eVars :: !(Map Text VInfo)
   , eFns :: !(Map Text [PInfo])
-  , eBorrows :: ![(Text, [Text])] -- ^ live lexical borrows: root key, path
+  , eBorrows :: ![(Text, [Text], Span)]
+  -- ^ live lexical borrows: root key, path, and the §3.1.1A
+  -- borrow-introduction site (the @let &@ binding span) so the
+  -- borrow/path/ownership diagnostics can relate the introduction site.
   , eAliases :: !(Map Text [(Text, Maybe Quantity)])
   , eCtors :: !(Map Text [(Text, [Maybe Quantity])])
   -- ^ ctor name → all sibling ctors of its data type with field quantities
@@ -306,7 +309,7 @@ bindVars bs env =
     , eDescs = foldr (Map.delete . fst) (eDescs env) bs
     }
 
-addBorrows :: [(Text, [Text])] -> Env -> Env
+addBorrows :: [(Text, [Text], Span)] -> Env -> Env
 addBorrows bs env = env {eBorrows = bs ++ eBorrows env}
 
 -- | Walk result: immediate usage, escape taint, latent per-call usage.
@@ -877,13 +880,15 @@ resolveBorrowAlias env (vi, path, sp) =
 -- | The lock set a lexical borrow of a place opens: the path itself
 -- (rebased through borrow aliases) plus, for a §13.2.1 dependent
 -- record, the sibling fields the borrowed field's type mentions.
-borrowLocks :: Env -> (VInfo, [Text], Span) -> [(Text, [Text])]
-borrowLocks env pl@(vi, path, _) =
+-- The borrow-introduction span @bsp@ (the @let &@ binding site, §3.1.1A)
+-- is carried on every lock entry so 'checkBorrowOverlap' can relate it.
+borrowLocks :: Env -> (VInfo, [Text], Span) -> [(Text, [Text], Span)]
+borrowLocks env pl@(vi, path, bsp) =
   let (rootK, fullPath, _) = resolveBorrowAlias env pl
       depLocks
         | rootK == vKey vi = drop 1 (lockWithDeps vi path)
         | otherwise = []
-   in (rootK, fullPath) : [(rootK, p) | p <- depLocks]
+   in (rootK, fullPath, bsp) : [(rootK, p, bsp) | p <- depLocks]
 
 -- | A fully applied §9.1.1 projection (or local descriptor binding)
 -- call: the stable places its yield leaves touch, plus the auxiliary
@@ -958,13 +963,22 @@ pathsOverlap a b = a `isPrefixOf` b || b `isPrefixOf` a
 -- borrow is live (§12.4).
 checkBorrowOverlap :: Env -> VInfo -> [Text] -> Span -> M ()
 checkBorrowOverlap env vi path sp =
-  when (any conflict (eBorrows env)) $
-    emit "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" sp
-      ("'" <> T.takeWhile (/= '#') (vKey vi)
-         <> T.concat (map ("." <>) path)
-         <> "' is consumed while a live borrow of an overlapping path exists (§12.4)")
+  case filter conflict (eBorrows env) of
+    [] -> pure ()
+    -- §3.1.1A line 602: a borrow/path/ownership diagnostic MUST include
+    -- the borrow-introduction site and the failing later use. The live
+    -- borrow that this consume conflicts with carries its @let &@
+    -- introduction span; the consuming occurrence is @sp@.
+    ((_, _, bsp) : _) ->
+      emitRel "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" sp
+        [ related RoleBorrowStart bsp "overlapping borrow introduced here"
+        , related RoleConsumedHere sp "consumed here while the borrow is live"
+        ]
+        ("'" <> T.takeWhile (/= '#') (vKey vi)
+           <> T.concat (map ("." <>) path)
+           <> "' is consumed while a live borrow of an overlapping path exists (§12.4)")
   where
-    conflict (root, bpath) = root == vKey vi && pathsOverlap bpath path
+    conflict (root, bpath, _) = root == vKey vi && pathsOverlap bpath path
 
 -- | Usage of a consuming occurrence of a place (whole binding or a
 -- quantity-1 field path), checked against live borrows.
@@ -1421,7 +1435,9 @@ walkPatch env base items sp = do
 
 -- | Same-call facts for §12.4 disjointness: borrowed and consumed places.
 data Fact
-  = FBorrow !Text ![Text]
+  = FBorrow !Text ![Text] !Span
+  -- ^ a borrowed place footprint; the span is the §3.1.1A
+  -- borrow-introduction site (the borrowing argument occurrence)
   | FMove !Text ![Text] !Span
   | FInout !Text ![Text] !Span
   -- ^ a '~'-marked inout argument's place footprint (§18.9.3)
@@ -1462,11 +1478,18 @@ walkApp env f args = do
   -- §12.4: places borrowed and consumed by the same call must be disjoint
   let facts = concatMap snd rs
       borrows =
-        [(k, p) | FBorrow k p <- facts] ++ [(k, p) | FInout k p _ <- facts]
+        [(k, p, bsp) | FBorrow k p bsp <- facts]
+          ++ [(k, p, isp) | FInout k p isp <- facts]
   forM_ facts $ \case
     FMove k p msp
-      | any (\(bk, bp) -> bk == k && pathsOverlap bp p) borrows ->
-          emit "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" msp
+      | ((_, _, bsp) : _) <-
+          [b | b@(bk, bp, _) <- borrows, bk == k, pathsOverlap bp p] ->
+          -- §3.1.1A line 602: relate the same-call borrow-introduction
+          -- site and the consuming occurrence.
+          emitRel "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" msp
+            [ related RoleBorrowStart bsp "overlapping place borrowed by the same call here"
+            , related RoleConsumedHere msp "consumed by the same call here"
+            ]
             "a place is consumed by the same call that borrows an overlapping place (§12.4)"
     _ -> pure ()
   -- §18.9.3: the place footprints of the '~' arguments of one call must
@@ -1474,15 +1497,20 @@ walkApp env f args = do
   -- call occurrence, may appear in at most one '~' argument")
   let inouts = [(k, p, isp) | FInout k p isp <- facts]
       overlapPairs =
-        [ isp2
-        | ((k1, p1, _), rest') <- zip inouts (drop 1 (tails inouts))
+        [ (isp1, isp2)
+        | ((k1, p1, isp1), rest') <- zip inouts (drop 1 (tails inouts))
         , (k2, p2, isp2) <- rest'
         , k1 == k2
         , pathsOverlap p1 p2
         ]
   case overlapPairs of
-    (osp : _) ->
-      emit "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" osp
+    ((isp1, osp) : _) ->
+      -- §3.1.1A line 602: both overlapping '~' footprints are
+      -- borrow-introduction sites; relate the earlier one and the later.
+      emitRel "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" osp
+        [ related RoleBorrowStart isp1 "place first borrowed by an inout argument here"
+        , related RoleBorrowConflict osp "overlapping inout argument here"
+        ]
         "two '~' inout arguments of the same call have overlapping place footprints (§18.9.3, §12.4)"
     [] -> pure ()
   -- §18.11: a forked computation outlives the current scope, so its
@@ -1572,11 +1600,16 @@ walkArg env params arg p = case arg of
         rs <- mapM (walkE env) aux
         let u = foldr (seqU . fst . flatR) Map.empty rs
             touch = placesTouch places
-        pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
+        pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path psp | (vi, path, psp) <- places])
     | consuming
     , Just (vi, [], sp) <- placeOf env e
     , vBorrowed vi -> do
-        emit "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
+        -- §3.1.1A line 602: relate the borrow-introduction site (the
+        -- borrowed binding's binder) and the failing consuming use.
+        emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
+          [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
+          , related RoleConsumedHere sp "consumed by a quantity-1 parameter here"
+          ]
           ("borrowed binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
         pure (rPlain (Map.singleton (vKey vi) touchC), [])
     -- a direct place argument is counted at the parameter's demand
@@ -1661,7 +1694,7 @@ walkArg env params arg p = case arg of
       Just (vi, path, sp) ->
         pure
           ( rPlain (placeBorrow vi path sp)
-          , [FBorrow (vKey vi) path]
+          , [FBorrow (vKey vi) path sp]
           )
       Nothing
         -- a projection call in borrow demand borrows every yield leaf
@@ -1670,20 +1703,20 @@ walkArg env params arg p = case arg of
             rs <- mapM (walkE env) aux
             let u = foldr (seqU . fst . flatR) Map.empty rs
                 touch = placesTouch places
-            pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path | (vi, path, _) <- places])
+            pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path psp | (vi, path, psp) <- places])
         | otherwise -> (,[]) <$> walkE env e
     -- like 'borrowish', but the facts carry the marker span for the
     -- §18.9.3 pairwise-disjointness check of one call's '~' arguments
     inoutish e isp = do
       (r, fs) <- borrowish e
-      pure (r, [FInout k path isp | FBorrow k path <- fs])
+      pure (r, [FInout k path isp | FBorrow k path _ <- fs])
 
 -- ── Bindings and do items ────────────────────────────────────────────
 
 -- | Walk a let-group's right-hand sides; returns one segment per
 -- binding (its RHS usage, the tracked bindings it introduces, and the
 -- borrows it opens) plus the fully-extended environment.
-walkBinds :: Env -> [LetBind] -> M ([(Usage, [(Text, VInfo)], [(Text, [Text])])], Env)
+walkBinds :: Env -> [LetBind] -> M ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
 walkBinds env binds = go env binds
   where
     go envc [] = pure ([], envc)
@@ -1705,7 +1738,9 @@ walkBinds env binds = go env binds
                 ( placeBorrow vi plPath plSp
                 , Nothing
                 , Map.empty
-                , borrowLocks envc pl
+                , -- §3.1.1A: the borrow-introduction site is the @let &@
+                  -- binding span; carry it on every lock this borrow opens
+                  [(rk, fp, bsp) | (rk, fp, _) <- borrowLocks envc pl]
                 )
             -- `let & v = proj places` locks every yield leaf for the
             -- binder's scope (§30.2.2.3 BorrowProjector)
@@ -1716,7 +1751,15 @@ walkBinds env binds = go env binds
                   -- field path, that field path too, so the §13.2.1
                   -- field obligation is discharged for the borrow's scope
                   let u' = foldr (seqU . fst . flatR) (placesTouch places) rs
-                  pure (u', Nothing, Map.empty, concatMap (borrowLocks envc) places)
+                  pure
+                    ( u'
+                    , Nothing
+                    , Map.empty
+                    , -- §3.1.1A: introduction site is this @let &@ binding
+                      [ (rk, fp, bsp)
+                      | (rk, fp, _) <- concatMap (borrowLocks envc) places
+                      ]
+                    )
             Nothing -> do
               r <- walkE envc rhs
               let (u', t') = flatR r

@@ -39,7 +39,7 @@ here by re-probe.
 | 3.1 | tools MUST NOT parse prose to recover code/sev/ranges/related/fixes/family | IMPLEMENTED+TESTED | TYP | all recoverable from the JSON record |
 | 3.1.1 | error severity fails compilation | IMPLEMENTED+TESTED | TYP | every error probe → exit 1 |
 | 3.1.1 | JSON exposes ≡ {schemaVersion,code,family,severity,stage,phase,primary,message,labels,notes,helps,fixes,related,payload,explain,suppressed} | IMPLEMENTED+TESTED | TYP,V | all 16 fields emitted. (G3 fixed) |
-| 3.1.1A | multi-span related origins with stable roles (type-mismatch, ambiguous, coherence, borrow) MUST | IMPLEMENTED+TESTED (borrow partial) | TYP,V | `related :: [RelatedOrigin]` populated for type-mismatch/ambiguous/coherence/name/application/path-consumed/implicit-ambiguous (re-probed via `--json`); borrow-escape-through-result form still emits empty `related` (G4 residual) |
+| 3.1.1A | multi-span related origins with stable roles (type-mismatch, ambiguous, coherence, borrow) MUST | IMPLEMENTED+TESTED | TYP,V | `related :: [RelatedOrigin]` populated for type-mismatch/ambiguous/coherence/name/application/path-consumed/implicit-ambiguous AND every borrow family (`_ESCAPE`/`_OVERLAP`/`_CONSUME`) — all emit sites in `Usage.hs`/`Check.hs` use `emitRel`/`withRelated` carrying `borrow-start` + the failing use/escape origin (re-probed via `--json`); G4 fully resolved |
 | 3.1.2 | stable symbolic codes; not all-digits; §3.2 family on the diagnostic | IMPLEMENTED+TESTED | TYP,SYN | `E_*`/`W_*`/`I_*`; `kappa.*` for standardized, reserved `kappa-hs.*` otherwise |
 | 3.1.2A | machine-readable code registry available without compiling invalid source | IMPLEMENTED+TESTED | TYP,SYN,V | `kappa explain CODE` static table; works with no source |
 | 3.1.2A | `kappa explain <code>` rejects unknown codes deterministically | IMPLEMENTED+TESTED | TYP,SYN | `explain E_NOPE` → stderr "unknown diagnostic code", exit 1 |
@@ -64,7 +64,7 @@ here by re-probe.
 | 3.1.14 | recovery MUST NOT accept invalid program | IMPLEMENTED+TESTED | TYP,SYN | every invalid probe → exit 1 |
 | 3.1.14A | typed `RecoveryNode`s for listed conditions MUST | MISSING | TYP,SYN | parser skips to next decl; soundness clause (no false accept) IS honored |
 | 3.2.x | each family's "Payload MUST include …" | IMPLEMENTED-WEAKLY-TESTED | TYP | the central families (type.mismatch, name.unresolved/ambiguous, hole, application, implicit.ambiguous) carry payloads; not every §3.2 family field is populated (§3.1.9 permits absent fields). (G9) |
-| 3.3 | path/dep/borrow diagnostic codes/families | IMPLEMENTED+TESTED (related origins partial) | TYP,V | codes+families correct; path-consumed carries related origins; ONE borrow-escape form (place-arg escape, `Usage.hs:1553`) carries them, but escape-through-result / fork-capture / composite-arg forms emit empty `related` (§3.1.1A MUST gap, see G4 residual) |
+| 3.3 | path/dep/borrow diagnostic codes/families | IMPLEMENTED+TESTED | TYP,V | codes+families correct; every borrow/path family (`_ESCAPE`/`_OVERLAP`/`_CONSUME`/`_PATH_CONSUMED`) carries §3.1.1A related origins (`borrow-start`/`consumed-here`/`borrow-escape-site`/`used-after-consume`); G4 fully resolved |
 | 4.1 | safe portable subset excludes the unsafe/debug forms; they remain part of the spec | MISSING(no clause makes §4 optional) | META | `unhide`/`clarify` parsed but never build-gated; `assertTerminates`/`assertReducible`/`unsafeAssertProof` unrecognized (re-verified parse error). **MAJOR** |
 | 4.2 | build-level gating; violation = compile-time error naming form + `allow_*` setting MUST | MISSING | META | no `allow_*` config anywhere; §4.2 diagnostic does not exist |
 | 4.3 | `unhide`/`clarify` semantics + gating error | MISSING | META | parsed into flags, no semantic effect/gating |
@@ -289,7 +289,7 @@ or whole-contract) > MAJOR > MINOR.
 | G1 | 10.4 | RESOLVED (was BLOCKER, soundness) | `data Bad = MkBad (Bad -> Bad)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was exit 0) | DONE: `positivityPass` in `src/Kappa/Check.hs` runs the §10.4 strict-positivity check after the header pass; mirrored in `tests/conformance/data_types` |
 | G2 | 6.1.1 | BLOCKER (silent miscompile) | `0xDEAD_BEEF` → `59776745199` (≠ `3735928559`); `0b1_0_1_0`→1748; `0o1_2_3`→25027 | `src/Kappa/Lexer.hs:462` fold over `T.filter (/= '_') digits` (radix path, like the decimal path at :488) |
 | G3 | 3.1.1 | RESOLVED (was BLOCKER) | `kappa check --json FILE`/`run --json` now emit one JSON object per diagnostic with the §3.1.1 16-field surface | DONE: `Diagnostic.hs` enriched record + hand-rolled JSON encoder (boot `text` only); `--json` wired in `app/Main.hs` |
-| G4 | 3.1.1A | RESOLVED-WITH-MINOR-RESIDUAL (was BLOCKER) | related origins populated for unresolved/ambiguous name (use-site), type-mismatch (use-site), application (call-site), duplicate-declaration (declaration-site ×2), path-consumed (consumed-here + used-after-consume), trait-coherence (instance-declaration-site), implicit-ambiguous (obligation-required-here) — all re-probed via `--json`. RE-AUDIT RESIDUAL: of the four `E_QTT_BORROW_ESCAPE` emission sites in `Usage.hs`, the place-argument-escape site (1553) uses `emitRel` with `borrow-start`+`borrow-escape-site`, but the escape-through-definition-result site (635), the fork-capture site (1480), and the composite-arg fallthrough (1590) emit with EMPTY `related`. §3.1.1A line 602-603 makes the borrow-introduction + escape site a MUST for borrow diagnostics, so the canonical `qtt/borrow-escape.kp` form (escape through result) does not carry the required related origins | DONE (partial): `dRelated`+role enum, threaded in `Check.hs`/`Usage.hs`. REMAINING: thread `emitRel` at `Usage.hs` 635/1480/1590 |
+| G4 | 3.1.1A | RESOLVED (was BLOCKER) | related origins populated for unresolved/ambiguous name (use-site), type-mismatch (use-site), application (call-site), duplicate-declaration (declaration-site ×2), path-consumed (consumed-here + used-after-consume), trait-coherence (instance-declaration-site), implicit-ambiguous (obligation-required-here). All borrow families now also carry them: `E_QTT_BORROW_ESCAPE` (escape-through-result, place-arg, closure-escape, and the `Check.hs` implicit-candidate form — the last with a §3.1.1A line-610-611 payload fallback recording why an origin is unavailable), `E_QTT_BORROW_OVERLAP` (lexical, same-call FMove, §18.9.3 inout), and `E_QTT_BORROW_CONSUME` — all `emitRel` with `borrow-start` + the failing use/escape origin. Final fix: gave `eBorrows`/`FBorrow`/`borrowLocks` a borrow-introduction `Span` so `checkBorrowOverlap` and the consume path can attach `borrow-start` | DONE: `dRelated`+role enum threaded across `Check.hs`/`Usage.hs`; regressions in `qtt/record-paths.kp`, `qtt/inout-overlap.kp`, `qtt/borrow-consume-related.kp`, `projections/selector-footprint.kp` |
 | G5 | 5.5.1.1, 5.5.3 | MAJOR | `(5 ?)` with `postfix 90 (?)` → `E_APPLICATION_NONCALLABLE`; `let b = 5 ?` corrupts next decl | `src/Kappa/Resolve.hs:390` add `postfixOf` branch mirroring 394-401; `src/Kappa/Parser.hs` chain path (~1540-1583) tolerate trailing postfix |
 | G6 | 18.3.1 | MAJOR | `let x = !(getN 1)` inside `do` → `E_SPLICE_OUTSIDE_DO` (spec's canonical example) | `src/Kappa/Check.hs` `elabDoIOItems` `DoLet` branch (~6884): apply `desugarBang rhs` like `DoExpr`/`DoBind` |
 | G7 | 18.3.1 | MAJOR (SPEC-CONFLICT) | `!doit 8` parsed as `(!doit) 8` → type mismatch; spec forbids this parse | `src/Kappa/Check.hs` `desugarBang (EApp …)` (~7114-7130) capture whole application spine; do not recurse into head |
@@ -347,12 +347,8 @@ raw log: **927 pass / 30 fail / 2 unsupported / 0 harness-error (959 total)**,
   reproduces and the cited § is satisfied. (C3 EuclideanSemiring superclass
   shape corrected; law members omitted as the documented operational subset,
   KNOWN_SPEC_ISSUES §17.)
-- **RESOLVED-WITH-RESIDUAL (3) — original probe fixed, a narrower cited MUST
+- **RESOLVED-WITH-RESIDUAL (2) — original probe fixed, a narrower cited MUST
   still unmet:**
-  - **G4** — borrow-escape-through-result / fork-capture / composite-arg
-    `E_QTT_BORROW_ESCAPE` forms emit empty `related`; §3.1.1A (line 602-603)
-    makes the borrow-intro + escape origin a MUST. Place-arg-escape form and
-    all other §3.1.1A MUST classes DO carry them. (MINOR)
   - **G18** — `~=`/`Equiv`/fixity present (original `E_NAME_UNRESOLVED` gone),
     but the §28.2/§14113 prelude bridge `instance Eq a => Equiv a` is absent, so
     `1 ~= 1` → `E_UNSOLVED_IMPLICIT`. (MINOR; machinery sound, MUST instance
@@ -361,12 +357,13 @@ raw log: **927 pass / 30 fail / 2 unsupported / 0 harness-error (959 total)**,
     (§28.2/§29854 erased well-founded vocabulary) still `E_NAME_UNRESOLVED`,
     undocumented. (MINOR; compile-time-only terms)
 
-Net: 32 fully resolved, 3 resolved-with-residual (the residual in each is a
-MINOR, narrow, cited-MUST sub-case — never a soundness break, never a false
-accept, never a regression), 1 (G36) upgraded RESOLVED. No BLOCKER or MAJOR
-remains open. The blanket "all 36 resolved" claim is **overstated for G4/G18/G20**
-on the precise residuals above; all four prior BLOCKERs (G1, G2, G3, G4-core)
-and the soundness-critical items are genuinely closed.
+Net: 33 fully resolved (G4 now fully closed — every borrow/path family carries
+the §3.1.1A line-602 related origins), 2 resolved-with-residual (the residual in
+each is a MINOR, narrow, cited-MUST sub-case — never a soundness break, never a
+false accept, never a regression), 1 (G36) upgraded RESOLVED. No BLOCKER or MAJOR
+remains open. The blanket "all 36 resolved" claim is now **overstated only for
+G18/G20** on the precise residuals above; all four prior BLOCKERs (G1, G2, G3,
+G4) and the soundness-critical items are genuinely closed.
 
 ---
 

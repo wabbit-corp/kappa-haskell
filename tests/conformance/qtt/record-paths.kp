@@ -1,5 +1,9 @@
 --! assertErrorCount 3
 --! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE, E_QTT_LINEAR_DROP, E_QTT_BORROW_OVERLAP
+-- §3.1.1A line 602: a borrow/ownership diagnostic MUST include the
+-- borrow-introduction site and the failing later-use site.
+--! assertDiagnosticRelated error kappa.borrow.overlap borrow-start
+--! assertDiagnosticRelated error kappa.borrow.overlap consumed-here
 
 -- §12.4: projecting a quantity-1 field consumes that path (and the
 -- receiving binding inherits its linearity); a record patch restores

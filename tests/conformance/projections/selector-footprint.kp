@@ -1,6 +1,10 @@
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+-- §3.1.1A line 602: relate the borrow-introduction site and the
+-- consuming occurrence.
+--! assertDiagnosticRelated error kappa.borrow.overlap borrow-start
+--! assertDiagnosticRelated error kappa.borrow.overlap consumed-here
 
 -- §12.4/§30.2.2.3: a borrowed selector locks every yield leaf, so
 -- consuming an overlapping root while the borrow is live is an error

@@ -35,7 +35,7 @@ own harness (`src/Kappa/TestHarness.hs:168-185`) classifies
 | 3.1.1A | type-mismatch MUST include actual-expr site + expected-type origin | MISSING | `/tmp/probe/tm.kp` → only prose notes `actual/expected`; no structured related origins | §3.1.1A line 597-599 MUST |
 | 3.1.1A | ambiguous-name/implicit MUST include all candidate sites | MISSING | `implicits/local_candidates.kp:32` `E_IMPLICIT_AMBIGUOUS` says "two implicit candidates" in prose; the two binder sites (`left`,`right`) are not exposed as related origins | §3.1.1A line 596,600 MUST |
 | 3.1.1A | trait-coherence MUST include every surviving incoherent instance site | MISSING | `/tmp/probe/coh.kp` `E_INSTANCE_INCOHERENT` blames one line; other instance site not a related origin | §3.1.1A line 601 MUST |
-| 3.1.1A | borrow/path MUST include intro site + failing use/escape site | MISSING | `qtt/borrow-escape.kp` reports escape site only; borrow-start not related | §3.1.1A line 602 MUST |
+| 3.1.1A | borrow/path MUST include intro site + failing use/escape site | IMPLEMENTED+TESTED | every `E_QTT_BORROW_ESCAPE`/`_OVERLAP`/`_CONSUME`/`_PATH_CONSUMED` emit site uses `emitRel` carrying `borrow-start`/`consumed-here` + the failing use/escape origin (re-probed `/tmp/probes/overlap_probe.kp` → `borrow-start`+`consumed-here`; `consume_probe.kp` likewise); regression in `qtt/record-paths.kp`, `qtt/inout-overlap.kp`, `qtt/borrow-consume-related.kp`, `projections/selector-footprint.kp` | §3.1.1A line 602 MUST — satisfied |
 | 3.1.1A | machine renderer MUST preserve all related origins | MISSING | no machine renderer | §3.1.1A line 616 |
 | 3.1.1A | unavailable required related origin → payload records why | MISSING | no payload | §3.1.1A line 610-611 |
 | 3.1.2 | stable symbolic codes; not all-digits; symbolic form | IMPLEMENTED+TESTED | all observed codes `E_*`/`W_*`/`I_*` symbolic | `Explain.hs` registry |
@@ -67,7 +67,7 @@ own harness (`src/Kappa/TestHarness.hs:168-185`) classifies
 | 3.1.14A | recovery as typed frontend state with `RecoveryNode`s for the listed conditions | MISSING | no `RecoveryNode`/recovery-metadata type; parser recovers by skipping to next decl, not by inserting typed recovery nodes | §3.1.14A line 1789-1832 MUST; partially mitigated — invalid programs are still rejected, so the soundness clause holds |
 | 3.2.x | each standardized family's "Payload MUST include …" | MISSING | no payloads at all (see 3.1.9) | §3.2.1–§3.2.19 |
 | 3.2 | family identifiers correct (`kappa.*` for standardized, reserved prefix otherwise) | IMPLEMENTED-WEAK | spot-checked: coherence/non-callable have no standardized §3.2 family → `kappa-hs.*` is permitted; standardized ones use `kappa.*` | only recoverable from prose |
-| 3.3 | path/dep/borrow diagnostics (codes/families) | IMPLEMENTED-WEAK | `E_QTT_BORROW_ESCAPE`/`_OVERLAP`/`_PATH_CONSUMED` emitted with `kappa.borrow.*`/`kappa.path.consumed`; structured payload/related missing | code+family correct; structure missing |
+| 3.3 | path/dep/borrow diagnostics (codes/families) | IMPLEMENTED+TESTED (related) | `E_QTT_BORROW_ESCAPE`/`_OVERLAP`/`_CONSUME`/`_PATH_CONSUMED` emitted with `kappa.borrow.*`/`kappa.path.consumed`/`kappa.quantity.unsatisfied`; all now carry §3.1.1A related origins (`borrow-start`/`consumed-here`/`borrow-escape-site`/`used-after-consume`) | code+family correct; related origins present for every borrow/path family; family-specific payloads (§3.2.x) still prose-only |
 
 ## §9 Declarations & §9.4 expect
 
