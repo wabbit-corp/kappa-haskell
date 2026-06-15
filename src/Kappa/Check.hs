@@ -3060,6 +3060,30 @@ retagNewMismatches nBefore = modify' $ \st ->
         | otherwise = d
    in st {csDiags = map retag new ++ old}
 
+-- | §3.1.4/§16.1.7.2: re-tag any error diagnostics reported since the
+-- marker with the portable @E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH@
+-- code (family @kappa.application.explicit-implicit-classifier@). This
+-- is the general rewrite for a failed elaboration of an explicit
+-- implicit argument's @\@payload@ against the selected implicit
+-- binder's demanded type or classifier: §16.1.7.2 step 6 says the
+-- explicit implicit argument fails for that binder when the selected
+-- elaboration mode fails, and §3.2 lists typing, classifier mismatch,
+-- quantity mismatch, unresolved name, and ambiguous name as in-scope
+-- payload-failure kinds — so the payload-internal code (whatever it
+-- happens to be) is replaced rather than special-cased on its spelling.
+retagExplicitImplicitFailure :: Int -> CheckM ()
+retagExplicitImplicitFailure nBefore = modify' $ \st ->
+  let ds = csDiags st
+      (new, old) = splitAt (length ds - nBefore) ds
+      retag d
+        | isError d =
+            d
+              { dCode = "E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH"
+              , dFamily = Just "kappa.application.explicit-implicit-classifier"
+              }
+        | otherwise = d
+   in st {csDiags = map retag new ++ old}
+
 -- ── Projection applications (§16.1.5, §16.1.6) ───────────────────────
 
 -- | Resolve an application head to a projection facet, if any.
@@ -3341,7 +3365,15 @@ elabSpineArg :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Va
 elabSpineArg ctx sp fTm fTy arg rest = do
   case (arg, fTy) of
     (ArgImplicit e, VPi Impl _ _ dom clo) -> do
+      -- §16.1.7.2: the explicit implicit argument's payload is elaborated
+      -- against the selected implicit binder's demanded type 'dom'. If
+      -- that elaboration fails, §3.1.4 mandates the portable
+      -- E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH code in place of whatever
+      -- payload-internal diagnostic 'check' raised (a general rewrite,
+      -- not a per-kind special case).
+      n0 <- gets (length . csDiags)
       aTm <- check ctx e dom
+      retagExplicitImplicitFailure n0
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Impl fTm aTm) ty' rest

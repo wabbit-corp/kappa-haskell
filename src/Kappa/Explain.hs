@@ -124,6 +124,8 @@ registry =
       "A backtick-quoted identifier is empty; backtick identifiers must contain at least one character."
   , ent "E_EXISTENTIAL_WITNESS_ESCAPE" (Just "kappa-hs.exists.escape")
       "An existential witness opened by 'open ... as exists ...' escapes in the result type of the open body (§13.2.11)."
+  , ent "E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH" (Just "kappa.application.explicit-implicit-classifier")
+      "An explicit implicit argument '@payload' cannot be elaborated against the selected implicit binder's demanded type or classifier (§16.1.7.2)."
   , ent "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
       "An identifier uses Unicode characters outside the active name profile without the corresponding feature gate enabled."
   , ent "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved")
