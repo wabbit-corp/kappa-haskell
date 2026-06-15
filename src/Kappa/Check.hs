@@ -804,6 +804,21 @@ expectType ctx sp actual expected = do
                   n `elem` ["Int", "Nat", "Integer", "Float", "Double", "Bool", "String", "UnicodeScalar"]
                 _ -> False
           pure (canonical aF && scalarExpected)
+    -- §16.1.7.1: a function value supplied at an explicit argument slot
+    -- whose expected parameter type is itself a function type, where the
+    -- two function types differ in the outermost explicit binder
+    -- (quantity is part of function-type identity, §31.1/§12.2.1) — the
+    -- argument simply does not fit the parameter, an
+    -- application-argument error rather than a bare type equality.
+    funcArgMismatch <- do
+      if not retag || not flatOk
+        then pure False
+        else do
+          aF <- forceM actual
+          eF <- forceM expected
+          pure $ case (aF, eF) of
+            (VPi i1 _ _ _ _, VPi i2 _ _ _ _) -> i1 == i2
+            _ -> False
     if not (aOp || eOp) && retag && sameHead
       then
         report $
@@ -811,7 +826,7 @@ expectType ctx sp actual expected = do
             withNote ("actual:   " <> renderTerm aT) $
               diag SevError StageElaborate "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch") sp
                 "the supplied argument's type differs from the parameter type only in type indices, and no equality evidence licenses the transport (§16.1.8)"
-      else if not (aOp || eOp) && flatArgMismatch
+      else if not (aOp || eOp) && (flatArgMismatch || funcArgMismatch)
         then
         report $
           withNote ("expected: " <> renderTerm eT) $

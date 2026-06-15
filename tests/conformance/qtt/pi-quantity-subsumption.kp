@@ -1,10 +1,15 @@
 --! assertErrorCount 1
---! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnosticCodes E_APPLICATION_ARGUMENT_MISMATCH
 
 -- §12.2.1: a function whose binder demand is contained in the expected
 -- binder's demand may stand at that type (1 ⊑ ω), but not the reverse
 -- (an ω-demand function may ignore the linear argument). Subsumption
 -- applies only along the outer Pi spine, never under records.
+--
+-- §16.1.7.1/§3.1.4 (line 836): the rejection occurs at an explicit
+-- application-argument slot (the function value `omegaIgnore` does not
+-- fit the parameter type `(1 x : Int) -> Int`), so the mandated portable
+-- code is E_APPLICATION_ARGUMENT_MISMATCH, not a bare type equality.
 module main
 
 linearId : (1 x : Int) -> Int
