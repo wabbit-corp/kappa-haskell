@@ -37,6 +37,7 @@ import Kappa.Prelude
   , stdGradualSource
   , stdDerivingShapeSource
   , stdHashSource
+  , stdBytesSource
   , stdSupervisorSource
   , stdUnicodeSource
   )
@@ -70,6 +71,7 @@ preludeState =
           stdSources =
             [ (ModuleName ["std", "deriving", "shape"], "<std.deriving.shape>", stdDerivingShapeSource)
             , (ModuleName ["std", "hash"], "<std.hash>", stdHashSource)
+            , (ModuleName ["std", "bytes"], "<std.bytes>", stdBytesSource)
             , (ModuleName ["std", "unicode"], "<std.unicode>", stdUnicodeSource)
             , (ModuleName ["std", "ffi"], "<std.ffi>", stdFfiSource)
             , (ModuleName ["std", "ffi", "c"], "<std.ffi.c>", stdFfiCSource)

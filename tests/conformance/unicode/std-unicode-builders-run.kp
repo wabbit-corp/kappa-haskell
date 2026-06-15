@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "abc\nh\nhi\n6\nTrue\n"
+
+-- §29.4 std.unicode (MUST surface): StringBuilder, string cursors, and
+-- the incremental UTF-8 decoder.
+
+module main
+
+import std.unicode.*
+
+built : String
+let built = finishStringBuilder (stringBuilderScalar 'c' (stringBuilderString "ab" newStringBuilder))
+
+firstScalar : String
+let firstScalar =
+    match stringNextScalar "hello" (stringStart "hello")
+    case None -> "empty"
+    case Some r -> scalarToString r.scalar
+
+decoded : String
+let decoded =
+    match decodeUtf8Chunk (utf8Bytes "hi") newUtf8Decoder
+    case Err e -> "err"
+    case Ok r -> r.text
+
+main : UIO Unit
+let main = do
+    printlnString built                                                       -- abc
+    printlnString firstScalar                                                 -- h
+    printlnString decoded                                                     -- hi
+    printlnString (showInt (natToInt (stringCursorOffset "héllo" (stringEnd "héllo")))) -- 6
+    println (isNone (stringSpan "abc" (stringEnd "abc") (stringStart "abc")))  -- True (end > start)
+
+isNone : forall (a : Type). Option a -> Bool
+let isNone o =
+    match o
+    case None -> True
+    case Some _ -> False

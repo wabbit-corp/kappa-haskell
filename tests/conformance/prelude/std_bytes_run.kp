@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\nTrue\nTrue\n0x686921\n3\nTrue\nTrue\n0x69\n"
+
+-- §29.5 std.bytes (MUST): operations over the exact byte sequence plus
+-- the linear BytesBuilder accumulator.
+
+module main
+
+import std.bytes.*
+
+bs : Bytes
+let bs = bytesFromList (b'\x68' :: b'\x69' :: Nil)
+
+built : Bytes
+let built = finishBytesBuilder (bytesBuilderByte b'\x21' (bytesBuilderBytes bs newBytesBuilder))
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (natToInt (bytesLength bs)))     -- 2
+    println (bytesIsEmpty emptyBytes)                        -- True
+    println (bytesStartsWith (singletonByte b'\x68') bs)     -- True
+    printlnString (showBytes built)                          -- 0x686921
+    printlnString (showInt (natToInt (bytesLength built)))   -- 3
+    println (bytesContains (singletonByte b'\x69') bs)       -- True
+    println (bytesEndsWith (singletonByte b'\x69') bs)       -- True
+    printlnString (showBytes (bytesDrop (natOfInt 1) bs))    -- 0x69

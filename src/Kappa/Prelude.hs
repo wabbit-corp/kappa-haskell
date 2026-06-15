@@ -7,6 +7,7 @@ module Kappa.Prelude
   , preludeSource
   , stdDerivingShapeSource
   , stdHashSource
+  , stdBytesSource
   , stdUnicodeSource
   , stdFfiSource
   , stdFfiCSource
@@ -76,6 +77,12 @@ builtinState =
       , (prel "Grapheme", opaqueTy (tyV tType)) -- §28.2 user-perceived text atom
       , (prel "Byte", opaqueTy (tyV tType)) -- §28.2 single byte (§6.5 'b' handler)
       , (prel "Bytes", opaqueTy (tyV tType))
+      , (prel "BytesBuilder", opaqueTy (tyV tType)) -- §29.5 linear builder accumulator
+      , (prel "BytesDecodeError", opaqueTy (tyV tType)) -- §29.5
+      , (prel "StringBuilder", opaqueTy (tyV tType)) -- §29.4 linear text builder
+      , (prel "Utf8Decoder", opaqueTy (tyV tType)) -- §29.4 incremental decoder
+      , (prel "StringCursor", opaqueTy (tyV tType)) -- §29.4 string cursor
+      , (prel "StringSpan", opaqueTy (tyV tType)) -- §29.4 string span
       , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
       , -- §12.3.1 capture-annotated type former: part of type identity (§31.1)
         (prel "__captures", opaqueTy (tyV (tType ~> tcon "Region" ~> tType)))
@@ -303,7 +310,59 @@ builtinState =
       , prim "__caseFold" (tyV (tStr ~> tStr))
       , prim "__stringWords" (tyV (tStr ~> listT tStr))
       , prim "__stringSentences" (tyV (tStr ~> listT tStr))
+      , -- §29.4 StringBuilder (linear text accumulator)
+        prim "__newStringBuilder" (tyV (tcon "StringBuilder"))
+      , prim "__stringBuilderString" (tyV (tStr ~> CPi Expl Q1 "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__stringBuilderScalar" (tyV (tScalar ~> CPi Expl Q1 "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__stringBuilderGrapheme" (tyV (tGrapheme ~> CPi Expl Q1 "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__finishStringBuilder" (tyV (CPi Expl Q1 "b" (tcon "StringBuilder") tStr))
+      , -- §29.4 string cursors (StringCursor is a scalar offset; the
+        -- byte offset is reported by __stringCursorOffset)
+        prim "__stringStart" (tyV (tStr ~> tcon "StringCursor"))
+      , prim "__stringEnd" (tyV (tStr ~> tcon "StringCursor"))
+      , prim "__stringCursorOffset" (tyV (tStr ~> tcon "StringCursor" ~> tNat))
+      , prim "__stringNextScalar"
+          (tyV (tStr ~> tcon "StringCursor" ~> optionT (CRecordT [("next", tcon "StringCursor"), ("scalar", tScalar)])))
+      , prim "__stringPrevScalar"
+          (tyV (tStr ~> tcon "StringCursor" ~> optionT (CRecordT [("prev", tcon "StringCursor"), ("scalar", tScalar)])))
+      , prim "__stringNextGrapheme"
+          (tyV (tStr ~> tcon "StringCursor" ~> optionT (CRecordT [("grapheme", tGrapheme), ("next", tcon "StringCursor")])))
+      , prim "__stringSpan" (tyV (tStr ~> tcon "StringCursor" ~> tcon "StringCursor" ~> optionT tStr))
+      , prim "__stringCompact" (tyV (tStr ~> tStr))
+      , -- §29.4 incremental UTF-8 decoder. The prims report malformed
+        -- input as 'None'; the std.unicode wrappers map None to
+        -- 'Err MkUnicodeDecodeError' and Some to 'Ok'.
+        prim "__newUtf8Decoder" (tyV (tcon "Utf8Decoder"))
+      , prim "__decodeUtf8Chunk"
+          (tyV (tBytes ~> CPi Expl Q1 "d" (tcon "Utf8Decoder")
+                  (optionT (CRecordT [("decoder", tcon "Utf8Decoder"), ("text", tStr)]))))
+      , prim "__finishUtf8Decoder"
+          (tyV (CPi Expl Q1 "d" (tcon "Utf8Decoder") (optionT tStr)))
       , prim "__byteToNat" (tyV (tByte ~> tNat))
+      , prim "__natToByte" (tyV (tNat ~> tByte)) -- §29.5 builder/byte construction
+      , -- §29.5 std.bytes internals (wrapped by the std.bytes module)
+        prim "__bytesEmpty" (tyV tBytes)
+      , prim "__bytesSingleton" (tyV (tByte ~> tBytes))
+      , prim "__bytesLength" (tyV (tBytes ~> tNat))
+      , prim "__bytesIsEmpty" (tyV (tBytes ~> tBool))
+      , prim "__bytesGet" (tyV (tBytes ~> tNat ~> optionT tByte))
+      , prim "__bytesIndexUnsafe" (tyV (tBytes ~> tNat ~> tByte))
+      , prim "__bytesAppend" (tyV (tBytes ~> tBytes ~> tBytes))
+      , prim "__bytesSlice" (tyV (tBytes ~> tNat ~> tNat ~> tBytes))
+      , prim "__bytesTake" (tyV (tNat ~> tBytes ~> tBytes))
+      , prim "__bytesDrop" (tyV (tNat ~> tBytes ~> tBytes))
+      , prim "__bytesStartsWith" (tyV (tBytes ~> tBytes ~> tBool))
+      , prim "__bytesEndsWith" (tyV (tBytes ~> tBytes ~> tBool))
+      , prim "__bytesContains" (tyV (tBytes ~> tBytes ~> tBool))
+      , prim "__bytesFind" (tyV (tByte ~> tBytes ~> optionT tNat))
+      , prim "__bytesBreakIndex" (tyV (tBytes ~> tBytes ~> optionT tNat))
+      , prim "__bytesToList" (tyV (tBytes ~> listT tByte))
+      , prim "__bytesFromList" (tyV (listT tByte ~> tBytes))
+      , prim "__bytesCompact" (tyV (tBytes ~> tBytes))
+      , prim "__newBytesBuilder" (tyV (tcon "BytesBuilder"))
+      , prim "__bytesBuilderByte" (tyV (tByte ~> CPi Expl Q1 "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
+      , prim "__bytesBuilderBytes" (tyV (tBytes ~> CPi Expl Q1 "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
+      , prim "__finishBytesBuilder" (tyV (CPi Expl Q1 "b" (tcon "BytesBuilder") tBytes))
       , -- §29.1 std.atomic bitwise read-modify-write internals
         prim "__intAnd" (tyV (tInt ~> tInt ~> tInt))
       , prim "__intOr" (tyV (tInt ~> tInt ~> tInt))
@@ -1827,12 +1886,106 @@ stdHashSource =
     , "            case MkHashCode y -> if ltInt x y then LT elif eqInt x y then EQ else GT"
     ]
 
--- | Embedded @std.unicode@ source (§29.4 subset; see SPEC_COVERAGE.md).
+-- | Embedded @std.bytes@ source (§29.5, MUST). Portable operations over
+-- the exact byte sequence denoted by a 'Bytes' value, plus the linear
+-- 'BytesBuilder' accumulator. 'BytesBuilder'\/'BytesDecodeError' are
+-- builtin opaque carriers (re-exported here). The proof-carrying
+-- 'bytesIndex'\/'bytesSlice' delegate to trapping primitives (the
+-- supplied bounds proofs make the access total). The dependent
+-- 'SizedArray' views of §29.5 are not provided; see SPEC_COVERAGE.md.
+stdBytesSource :: Text
+stdBytesSource =
+  T.unlines
+    [ "module std.bytes"
+    , ""
+    , "emptyBytes : Bytes"
+    , "let emptyBytes = __bytesEmpty"
+    , ""
+    , "singletonByte : Byte -> Bytes"
+    , "let singletonByte b = __bytesSingleton b"
+    , ""
+    , "bytesLength : Bytes -> Nat"
+    , "let bytesLength bs = __bytesLength bs"
+    , ""
+    , "bytesIsEmpty : Bytes -> Bool"
+    , "let bytesIsEmpty bs = __bytesIsEmpty bs"
+    , ""
+    , "bytesGet : Bytes -> Nat -> Option Byte"
+    , "let bytesGet bs i = __bytesGet bs i"
+    , ""
+    , -- §29.5 total in-bounds index (the proof makes it total)
+      "bytesIndex : (bs : Bytes) -> (i : Nat) -> (@_ : (i < bytesLength bs) = True) -> Byte"
+    , "let bytesIndex bs i = __bytesIndexUnsafe bs i"
+    , ""
+    , "bytesAppend : Bytes -> Bytes -> Bytes"
+    , "let bytesAppend x y = __bytesAppend x y"
+    , ""
+    , "bytesConcat : List Bytes -> Bytes"
+    , "let bytesConcat xs ="
+    , "    match xs"
+    , "    case Nil -> __bytesEmpty"
+    , "    case b :: rest -> __bytesAppend b (bytesConcat rest)"
+    , ""
+    , -- §29.5 total slice (the start+len bound proof makes it total)
+      "bytesSlice : (bs : Bytes) -> (start : Nat) -> (len : Nat) -> (@_ : ((start + len) <= bytesLength bs) = True) -> Bytes"
+    , "let bytesSlice bs start len = __bytesSlice bs start len"
+    , ""
+    , "bytesTake : Nat -> Bytes -> Bytes"
+    , "let bytesTake n bs = __bytesTake n bs"
+    , ""
+    , "bytesDrop : Nat -> Bytes -> Bytes"
+    , "let bytesDrop n bs = __bytesDrop n bs"
+    , ""
+    , "bytesStartsWith : Bytes -> Bytes -> Bool"
+    , "let bytesStartsWith pre bs = __bytesStartsWith pre bs"
+    , ""
+    , "bytesEndsWith : Bytes -> Bytes -> Bool"
+    , "let bytesEndsWith suf bs = __bytesEndsWith suf bs"
+    , ""
+    , "bytesContains : Bytes -> Bytes -> Bool"
+    , "let bytesContains needle hay = __bytesContains needle hay"
+    , ""
+    , "bytesFind : Byte -> Bytes -> Option Nat"
+    , "let bytesFind b bs = __bytesFind b bs"
+    , ""
+    , "bytesBreakOn : Bytes -> Bytes -> Option (prefix : Bytes, suffix : Bytes)"
+    , "let bytesBreakOn sep bs ="
+    , "    match __bytesBreakIndex sep bs"
+    , "    case None -> None"
+    , "    case Some i -> Some (prefix = __bytesTake i bs, suffix = __bytesDrop i bs)"
+    , ""
+    , "bytesToList : Bytes -> List Byte"
+    , "let bytesToList bs = __bytesToList bs"
+    , ""
+    , "bytesFromList : List Byte -> Bytes"
+    , "let bytesFromList bs = __bytesFromList bs"
+    , ""
+    , "bytesCompact : Bytes -> Bytes"
+    , "let bytesCompact bs = __bytesCompact bs"
+    , ""
+    , -- §29.5 linear builder
+      "newBytesBuilder : BytesBuilder"
+    , "let newBytesBuilder = __newBytesBuilder"
+    , ""
+    , "bytesBuilderByte : Byte -> (1 builder : BytesBuilder) -> BytesBuilder"
+    , "let bytesBuilderByte b builder = __bytesBuilderByte b builder"
+    , ""
+    , "bytesBuilderBytes : Bytes -> (1 builder : BytesBuilder) -> BytesBuilder"
+    , "let bytesBuilderBytes more builder = __bytesBuilderBytes more builder"
+    , ""
+    , "finishBytesBuilder : (1 builder : BytesBuilder) -> Bytes"
+    , "let finishBytesBuilder builder = __finishBytesBuilder builder"
+    ]
+
+-- | Embedded @std.unicode@ source (§29.4; see SPEC_COVERAGE.md).
 -- Unicode data version: UCD 15.0.0 (Kappa.UnicodeData); normalization,
 -- canonical equivalence and grapheme segmentation are full-fidelity for
--- that version, word\/sentence segmentation are documented
--- approximations, and the incremental decoder\/builders\/cursors of
--- §29.4 are not provided.
+-- that version, while word\/sentence segmentation and display-width are
+-- documented approximations. The §29.4 MUST surface — byte\/text ops,
+-- scalar\/grapheme ops, normalization\/equivalence, case folding, the
+-- 'StringBuilder', string cursors\/spans, and the incremental
+-- 'Utf8Decoder' — is provided. The SHOULD submodules
+-- @std.unicode.collation@ and @std.unicode.security@ are not.
 stdUnicodeSource :: Text
 stdUnicodeSource =
   T.unlines
@@ -1929,6 +2082,64 @@ stdUnicodeSource =
     , ""
     , "sentences : String -> Query String" -- terminator approximation
     , "let sentences s = __queryFromList (__stringSentences s)"
+    , ""
+    , -- §29.4 StringBuilder (linear text accumulator)
+      "newStringBuilder : StringBuilder"
+    , "let newStringBuilder = __newStringBuilder"
+    , ""
+    , "stringBuilderString : String -> (1 builder : StringBuilder) -> StringBuilder"
+    , "let stringBuilderString s builder = __stringBuilderString s builder"
+    , ""
+    , "stringBuilderScalar : UnicodeScalar -> (1 builder : StringBuilder) -> StringBuilder"
+    , "let stringBuilderScalar c builder = __stringBuilderScalar c builder"
+    , ""
+    , "stringBuilderGrapheme : Grapheme -> (1 builder : StringBuilder) -> StringBuilder"
+    , "let stringBuilderGrapheme g builder = __stringBuilderGrapheme g builder"
+    , ""
+    , "finishStringBuilder : (1 builder : StringBuilder) -> String"
+    , "let finishStringBuilder builder = __finishStringBuilder builder"
+    , ""
+    , -- §29.4 string cursors and spans
+      "stringStart : String -> StringCursor"
+    , "let stringStart s = __stringStart s"
+    , ""
+    , "stringEnd : String -> StringCursor"
+    , "let stringEnd s = __stringEnd s"
+    , ""
+    , "stringCursorOffset : String -> StringCursor -> Nat"
+    , "let stringCursorOffset s c = __stringCursorOffset s c"
+    , ""
+    , "stringNextScalar : String -> StringCursor -> Option (scalar : UnicodeScalar, next : StringCursor)"
+    , "let stringNextScalar s c = __stringNextScalar s c"
+    , ""
+    , "stringPrevScalar : String -> StringCursor -> Option (prev : StringCursor, scalar : UnicodeScalar)"
+    , "let stringPrevScalar s c = __stringPrevScalar s c"
+    , ""
+    , "stringNextGrapheme : String -> StringCursor -> Option (grapheme : Grapheme, next : StringCursor)"
+    , "let stringNextGrapheme s c = __stringNextGrapheme s c"
+    , ""
+    , "stringSpan : String -> StringCursor -> StringCursor -> Option String"
+    , "let stringSpan s a b = __stringSpan s a b"
+    , ""
+    , "stringCompact : String -> String"
+    , "let stringCompact s = __stringCompact s"
+    , ""
+    , -- §29.4 incremental UTF-8 decoder. Malformed input is reported as"
+      -- Err MkUnicodeDecodeError."
+      "newUtf8Decoder : Utf8Decoder"
+    , "let newUtf8Decoder = __newUtf8Decoder"
+    , ""
+    , "decodeUtf8Chunk : Bytes -> (1 decoder : Utf8Decoder) -> Result UnicodeDecodeError (text : String, decoder : Utf8Decoder)"
+    , "let decodeUtf8Chunk chunk decoder ="
+    , "    match __decodeUtf8Chunk chunk decoder"
+    , "    case None -> Err MkUnicodeDecodeError"
+    , "    case Some r -> Ok r"
+    , ""
+    , "finishUtf8Decoder : (1 decoder : Utf8Decoder) -> Result UnicodeDecodeError String"
+    , "let finishUtf8Decoder decoder ="
+    , "    match __finishUtf8Decoder decoder"
+    , "    case None -> Err MkUnicodeDecodeError"
+    , "    case Some s -> Ok s"
     ]
 
 -- | Embedded @std.ffi@ source (§26.1.1 portable foreign-ABI scalar and

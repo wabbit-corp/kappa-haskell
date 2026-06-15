@@ -591,6 +591,102 @@ evalPurePrim p args = case (p, args) of
     str (T.pack ("0x" <> concatMap (\w -> pad2 (showHex w "")) (BS.unpack a)))
   ("eqGrapheme", [VLit (LitGrapheme a), VLit (LitGrapheme b)]) -> bool (a == b) -- exact scalars
   ("showGrapheme", [VLit (LitGrapheme a)]) -> str ("g'" <> a <> "'")
+  -- §29.5 std.bytes: portable operations over the exact byte sequence.
+  ("__bytesEmpty", []) -> bytes BS.empty
+  ("__bytesSingleton", [VLit (LitByte w)]) -> bytes (BS.singleton w)
+  ("__bytesLength", [VLit (LitBytes bs)]) -> int (fromIntegral (BS.length bs))
+  ("__bytesIsEmpty", [VLit (LitBytes bs)]) -> bool (BS.null bs)
+  ("__bytesGet", [VLit (LitBytes bs), VLit (LitInt i)]) ->
+    if i >= 0 && i < fromIntegral (BS.length bs)
+      then Just (someV (VLit (LitByte (BS.index bs (fromIntegral i)))))
+      else Just noneV
+  ("__bytesIndexUnsafe", [VLit (LitBytes bs), VLit (LitInt i)])
+    | i >= 0 && i < fromIntegral (BS.length bs) -> Just (VLit (LitByte (BS.index bs (fromIntegral i))))
+  ("__bytesAppend", [VLit (LitBytes a), VLit (LitBytes b)]) -> bytes (a <> b)
+  ("__bytesSlice", [VLit (LitBytes bs), VLit (LitInt start), VLit (LitInt len)]) ->
+    bytes (BS.take (fromIntegral len) (BS.drop (fromIntegral start) bs))
+  ("__bytesTake", [VLit (LitInt n), VLit (LitBytes bs)]) -> bytes (BS.take (clampNat n) bs)
+  ("__bytesDrop", [VLit (LitInt n), VLit (LitBytes bs)]) -> bytes (BS.drop (clampNat n) bs)
+  ("__bytesStartsWith", [VLit (LitBytes pre), VLit (LitBytes bs)]) -> bool (pre `BS.isPrefixOf` bs)
+  ("__bytesEndsWith", [VLit (LitBytes suf), VLit (LitBytes bs)]) -> bool (suf `BS.isSuffixOf` bs)
+  ("__bytesContains", [VLit (LitBytes needle), VLit (LitBytes hay)]) -> bool (needle `BS.isInfixOf` hay)
+  ("__bytesFind", [VLit (LitByte w), VLit (LitBytes bs)]) ->
+    case BS.elemIndex w bs of
+      Just i -> Just (someV (VLit (LitInt (fromIntegral i))))
+      Nothing -> Just noneV
+  ("__bytesBreakIndex", [VLit (LitBytes sep), VLit (LitBytes bs)]) ->
+    case bytesBreakIndex sep bs of
+      Just i -> Just (someV (VLit (LitInt (fromIntegral i))))
+      Nothing -> Just noneV
+  ("__bytesToList", [VLit (LitBytes bs)]) ->
+    Just (listV [VLit (LitByte w) | w <- BS.unpack bs])
+  ("__bytesFromList", [v]) | Just ws <- listOfBytes v -> bytes (BS.pack ws)
+  ("__bytesCompact", [v@(VLit (LitBytes _))]) -> Just v
+  -- §29.5 builder: the linear accumulator is modelled by the bytes built
+  -- so far (the prim spine '__bytesBuilder bs'); appends concatenate.
+  ("__newBytesBuilder", []) -> Just (VPrim "__bytesBuilder" [VLit (LitBytes BS.empty)])
+  ("__bytesBuilderByte", [VLit (LitByte w), VPrim "__bytesBuilder" [VLit (LitBytes acc)]]) ->
+    Just (VPrim "__bytesBuilder" [VLit (LitBytes (BS.snoc acc w))])
+  ("__bytesBuilderBytes", [VLit (LitBytes more), VPrim "__bytesBuilder" [VLit (LitBytes acc)]]) ->
+    Just (VPrim "__bytesBuilder" [VLit (LitBytes (acc <> more))])
+  ("__finishBytesBuilder", [VPrim "__bytesBuilder" [v]]) -> Just v
+  -- §29.4 std.unicode StringBuilder: accumulated valid-UTF-8 text.
+  ("__newStringBuilder", []) -> Just (VPrim "__stringBuilder" [VLit (LitStr "")])
+  ("__stringBuilderString", [VLit (LitStr s), VPrim "__stringBuilder" [VLit (LitStr acc)]]) ->
+    Just (VPrim "__stringBuilder" [VLit (LitStr (acc <> s))])
+  ("__stringBuilderScalar", [VLit (LitScalar c), VPrim "__stringBuilder" [VLit (LitStr acc)]]) ->
+    Just (VPrim "__stringBuilder" [VLit (LitStr (acc <> T.singleton c))])
+  ("__stringBuilderGrapheme", [VLit (LitGrapheme g), VPrim "__stringBuilder" [VLit (LitStr acc)]]) ->
+    Just (VPrim "__stringBuilder" [VLit (LitStr (acc <> g))])
+  ("__finishStringBuilder", [VPrim "__stringBuilder" [v]]) -> Just v
+  -- §29.4 string cursors: a cursor is a scalar index into the source
+  -- string; the offset is reported as the UTF-8 byte offset.
+  ("__stringStart", [_]) -> int 0
+  ("__stringEnd", [VLit (LitStr s)]) -> int (fromIntegral (T.length s))
+  ("__stringCursorOffset", [VLit (LitStr s), VLit (LitInt i)]) ->
+    int (fromIntegral (BS.length (TE.encodeUtf8 (T.take (clampNat i) s))))
+  ("__stringNextScalar", [VLit (LitStr s), VLit (LitInt i)]) ->
+    if i >= 0 && i < fromIntegral (T.length s)
+      then Just (someV (recV [("scalar", VLit (LitScalar (T.index s (fromIntegral i)))), ("next", VLit (LitInt (i + 1)))]))
+      else Just noneV
+  ("__stringPrevScalar", [VLit (LitStr s), VLit (LitInt i)]) ->
+    if i > 0 && i <= fromIntegral (T.length s)
+      then Just (someV (recV [("prev", VLit (LitInt (i - 1))), ("scalar", VLit (LitScalar (T.index s (fromIntegral (i - 1)))))]))
+      else Just noneV
+  ("__stringNextGrapheme", [VLit (LitStr s), VLit (LitInt i)]) ->
+    if i >= 0 && i < fromIntegral (T.length s)
+      then case graphemeClusters (T.drop (fromIntegral i) s) of
+        (g : _) ->
+          Just (someV (recV [("grapheme", VLit (LitGrapheme g)), ("next", VLit (LitInt (i + fromIntegral (T.length g))))]))
+        [] -> Just noneV
+      else Just noneV
+  ("__stringSpan", [VLit (LitStr s), VLit (LitInt a), VLit (LitInt b)]) ->
+    if a >= 0 && b <= fromIntegral (T.length s) && a <= b
+      then Just (someV (VLit (LitStr (T.take (fromIntegral (b - a)) (T.drop (fromIntegral a) s)))))
+      else Just noneV
+  ("__stringCompact", [v@(VLit (LitStr _))]) -> Just v
+  -- §29.4 incremental UTF-8 decoder. The decoder state buffers the
+  -- trailing incomplete bytes ('__utf8Dec pending'); each chunk decodes
+  -- the longest valid prefix of (pending <> chunk) and carries the rest.
+  ("__newUtf8Decoder", []) -> Just (VPrim "__utf8Dec" [VLit (LitBytes BS.empty)])
+  ("__decodeUtf8Chunk", [VLit (LitBytes chunk), VPrim "__utf8Dec" [VLit (LitBytes pending)]]) ->
+    let combined = pending <> chunk
+        (good, rest) = splitValidUtf8Prefix combined
+     in if utf8HasInvalid rest
+          then Just noneV
+          else
+            Just
+              ( someV
+                  ( recV
+                      [ ("text", VLit (LitStr (TE.decodeUtf8With TEE.lenientDecode good)))
+                      , ("decoder", VPrim "__utf8Dec" [VLit (LitBytes rest)])
+                      ]
+                  )
+              )
+  ("__finishUtf8Decoder", [VPrim "__utf8Dec" [VLit (LitBytes pending)]]) ->
+    if BS.null pending
+      then Just (someV (VLit (LitStr "")))
+      else Just noneV
   -- §29.4 std.unicode internals
   ("__utf8Bytes", [VLit (LitStr s)]) -> bytes (TE.encodeUtf8 s)
   ("__utf8Valid", [VLit (LitBytes bs)]) ->
@@ -629,6 +725,7 @@ evalPurePrim p args = case (p, args) of
   ("__stringSentences", [VLit (LitStr s)]) ->
     Just (listV [VLit (LitStr w) | w <- sentenceChunks s])
   ("__byteToNat", [VLit (LitByte w)]) -> int (fromIntegral w)
+  ("__natToByte", [VLit (LitInt n)]) -> Just (VLit (LitByte (fromIntegral (n `mod` 256))))
   -- §29.3 hash mixing: FNV-1a over a 64-bit lane, deterministic per run
   -- §29.1 std.atomic bitwise internals (two's-complement over Integer)
   ("__intAnd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a .&. b)
@@ -741,6 +838,50 @@ evalPurePrim p args = case (p, args) of
     bool b = Just (VCtor (prelG (if b then "True" else "False")) [])
     prelG = GName (ModuleName ["std", "prelude"])
     listV = foldr (\x acc -> VCtor (prelG "::") [x, acc]) (VCtor (prelG "Nil") [])
+    someV x = VCtor (prelG "Some") [x]
+    noneV = VCtor (prelG "None") []
+    recV = VRecordV
+    -- longest prefix of @bs@ that is valid UTF-8, plus the trailing bytes
+    -- that are either an incomplete final sequence or the first invalid run
+    splitValidUtf8Prefix :: BS.ByteString -> (BS.ByteString, BS.ByteString)
+    splitValidUtf8Prefix bs = go (BS.length bs)
+      where
+        go n
+          | n <= 0 = (BS.empty, bs)
+          | otherwise =
+              let pre = BS.take n bs
+               in case TE.decodeUtf8' pre of
+                    Right _ -> (pre, BS.drop n bs)
+                    Left _ -> go (n - 1)
+    -- does @bs@ contain a definitely-invalid byte (not merely an
+    -- incomplete trailing sequence)?
+    utf8HasInvalid :: BS.ByteString -> Bool
+    utf8HasInvalid bs = case TE.decodeUtf8' bs of
+      Right _ -> False
+      Left _ -> not (isIncompleteUtf8Tail bs)
+    -- a run is an incomplete tail when some proper extension makes it
+    -- valid (i.e. it is a strict prefix of a valid encoding)
+    isIncompleteUtf8Tail :: BS.ByteString -> Bool
+    isIncompleteUtf8Tail bs =
+      any (\sfx -> either (const False) (const True) (TE.decodeUtf8' (bs <> sfx)))
+        [BS.pack ext | ext <- [[0x80], [0x80, 0x80], [0x80, 0x80, 0x80]]]
+    clampNat n = if n < 0 then 0 else fromIntegral n
+    -- decode a (possibly partly-evaluated) cons-list of Byte literals
+    listOfBytes :: Value -> Maybe [Word8]
+    listOfBytes v = case v of
+      VCtor (GName _ "Nil") [] -> Just []
+      VCtor (GName _ "::") [VLit (LitByte w), t] -> (w :) <$> listOfBytes t
+      _ -> Nothing
+    -- offset of the first occurrence of @sep@ in @bs@ (empty sep -> 0)
+    bytesBreakIndex :: BS.ByteString -> BS.ByteString -> Maybe Int
+    bytesBreakIndex sep bs
+      | BS.null sep = Just 0
+      | otherwise = go 0 bs
+      where
+        go off rest
+          | BS.length rest < BS.length sep = Nothing
+          | sep `BS.isPrefixOf` rest = Just off
+          | otherwise = go (off + 1) (BS.drop 1 rest)
     pad2 s = if length s < 2 then replicate (2 - length s) '0' ++ s else s
     -- FNV-1a over one 64-bit lane; integers mix their 8 low-endian bytes
     fnvMixByte :: Integer -> Word8 -> Integer
