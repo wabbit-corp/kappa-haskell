@@ -724,8 +724,13 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
             Nothing -> pure [Left (T.pack (reverse litAcc))]
             Just (c, rest)
               -- \$ escapes a literal dollar in ordinary prefixed strings
+              -- (§6.3.4.1). It is a prefixed-string interpolation escape,
+              -- not a general string escape, so it is consumed here and the
+              -- bare '$' is emitted into the literal text; the surviving
+              -- backslash must NOT reach decodeEscapes (which would reject
+              -- "\$" as E_STRING_ESCAPE_INVALID).
               | hashes == 0 && c == '\\' && T.isPrefixOf "$" rest ->
-                  go (advN 2 st) ('$' : '\\' : litAcc) (T.drop 1 rest)
+                  go (advN 2 st) ('$' : litAcc) (T.drop 1 rest)
               -- $name sugar (ordinary prefixed only)
               | hashes == 0
               , c == '$'

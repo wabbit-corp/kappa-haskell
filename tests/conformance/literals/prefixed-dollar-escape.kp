@@ -1,0 +1,11 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "cost: $5 and $name stays literal\n"
+
+-- §6.3.4.1: a literal `$` in an ordinary prefixed string is written `\$`.
+-- It is a prefixed-string interpolation escape, not a general string
+-- escape, so `\$` must NOT be rejected as E_STRING_ESCAPE_INVALID; it
+-- yields a bare '$' and the following text is ordinary literal text.
+main : UIO Unit
+let main = do
+    printlnString f"cost: \$5 and \$name stays literal"
