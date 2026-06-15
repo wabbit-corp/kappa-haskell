@@ -194,7 +194,11 @@ vproj ctx v f = case force ctx v of
 
 vforce :: EvalCtx -> Value -> Value
 vforce ctx v = case force ctx v of
-  VThunkV clo -> closApply ctx clo (VRecordV []) `seq` runSusp clo
+  -- A thunk is @VThunkV (Closure env body)@ with no extra binder, so it
+  -- runs as @eval ctx env body@. Force WHNF of that very evaluation (the
+  -- previous @closApply ... (VRecordV [])@ ran the body under a binder
+  -- shifted by one — every index off by one — and discarded the result).
+  VThunkV clo -> let v' = runSusp clo in v' `seq` v'
   VLazyV clo -> runSusp clo
   v' -> VPrim "force" [v']
   where
