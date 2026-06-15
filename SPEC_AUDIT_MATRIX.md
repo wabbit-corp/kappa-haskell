@@ -35,36 +35,36 @@ here by re-probe.
 | 2.2 | version terminology (Kappa v1) | IMPLEMENTED-WEAKLY-TESTED | META | non-normative |
 | 3.1 | error-tolerant frontend; recover and keep analyzing | IMPLEMENTED-WEAKLY-TESTED | TYP,SYN | cross-declaration recovery works; intra-expression typed recovery nodes (§3.1.14A) absent |
 | 3.1 | human-readable renderer | IMPLEMENTED+TESTED | TYP | `path:line:col: sev[CODE] (family): msg` + notes/helps |
-| **3.1** | **machine-readable JSON diagnostic output (MUST, line 493/496)** | **MISSING** | TYP,META,V | no `--json`; no aeson/JSON producer in src; re-verified usage fallthrough. **BLOCKER** |
-| 3.1 | tools MUST NOT parse prose to recover code/sev/ranges/related/fixes/family | MISSING | TYP | only prose output exists |
+| **3.1** | **machine-readable JSON diagnostic output (MUST, line 493/496)** | **IMPLEMENTED+TESTED** | TYP,META,V | `kappa check/run --json` emits a JSON array; hand-rolled encoder in `Diagnostic.hs` (boot `text`). (G3 fixed) |
+| 3.1 | tools MUST NOT parse prose to recover code/sev/ranges/related/fixes/family | IMPLEMENTED+TESTED | TYP | all recoverable from the JSON record |
 | 3.1.1 | error severity fails compilation | IMPLEMENTED+TESTED | TYP | every error probe → exit 1 |
-| 3.1.1 | JSON exposes ≡ {schemaVersion,code,family,severity,stage,phase,primary,message,labels,notes,helps,fixes,related,payload,explain,suppressed} | MISSING | TYP,V | record has 8 of 16 fields; no JSON. **BLOCKER** |
-| 3.1.1A | multi-span related origins with stable roles (type-mismatch, ambiguous, coherence, borrow) MUST | MISSING | TYP | no `related` field at all (`Diagnostic.hs:48-59`). **BLOCKER** |
+| 3.1.1 | JSON exposes ≡ {schemaVersion,code,family,severity,stage,phase,primary,message,labels,notes,helps,fixes,related,payload,explain,suppressed} | IMPLEMENTED+TESTED | TYP,V | all 16 fields emitted. (G3 fixed) |
+| 3.1.1A | multi-span related origins with stable roles (type-mismatch, ambiguous, coherence, borrow) MUST | IMPLEMENTED+TESTED | TYP | `related :: [RelatedOrigin]` populated for the MUST classes. (G4 fixed) |
 | 3.1.2 | stable symbolic codes; not all-digits; §3.2 family on the diagnostic | IMPLEMENTED+TESTED | TYP,SYN | `E_*`/`W_*`/`I_*`; `kappa.*` for standardized, reserved `kappa-hs.*` otherwise |
 | 3.1.2A | machine-readable code registry available without compiling invalid source | IMPLEMENTED+TESTED | TYP,SYN,V | `kappa explain CODE` static table; works with no source |
 | 3.1.2A | `kappa explain <code>` rejects unknown codes deterministically | IMPLEMENTED+TESTED | TYP,SYN | `explain E_NOPE` → stderr "unknown diagnostic code", exit 1 |
-| 3.1.2A | registry entry shape (defaultSeverity, stability, payloadSchema, introducedIn, owner…) | IMPLEMENTED-WEAKLY-TESTED | TYP | `ExplainEntry` = {code,family,explanation} only |
+| 3.1.2A | registry entry shape (defaultSeverity, stability, payloadSchema, introducedIn, owner…) | IMPLEMENTED+TESTED | TYP | `ExplainEntry` now carries defaultSeverity/stability/portableAliases/owner/introducedIn; `kappa explain` renders them. (G29 fixed) |
 | 3.1.3 | stable Unicode diagnostic codes registered | IMPLEMENTED-WEAKLY-TESTED | TYP | 14 codes in registry; emission partially exercised |
 | 3.1.4 | portable aliases recoverable without parsing prose | IMPLEMENTED-WEAKLY-TESTED | TYP | recoverable only via in-process harness; no JSON `code`/`portableCode` |
-| 3.1.5 | origins carry source ranges | IMPLEMENTED-WEAKLY-TESTED | TYP | `Span` has start+end; renderer prints only start; no JSON range |
-| 3.1.5 | labels (sub-span labels) | MISSING | TYP | no `labels` field |
-| 3.1.5A | provenance frames for generated syntax/obligations/implicit insertions/transports MUST | MISSING | TYP | no `ProvenanceFrame`; KCore carries no origin. **MAJOR** |
-| 3.1.6 | fix-its (`DiagnosticFix`/`SourceEdit`/applicability) | MISSING | TYP | only `dHelps :: [Text]` prose. **MAJOR** |
-| 3.1.7 | local repair ranking | MISSING | TYP | no fix-its to rank |
-| 3.1.8 | human renderer shows sev/code/msg/range/labels(when avail)/notes/help/fixes | IMPLEMENTED-WEAKLY-TESTED | TYP | unconditional bullets met; no labeled excerpt / fixes |
-| 3.1.9 | diagnostic payloads (`kind` + family-required fields) MUST | MISSING | TYP | no `payload` field. **MAJOR** |
-| 3.1.10 | obligation provenance / selection determinism | UNCLEAR | TYP | deterministic across reruns; no obligation records exposed |
-| 3.1.11 | root-cause suppression into `suppressed`; retain summary | MISSING | TYP | no `suppressed` field; cascades emitted independently |
+| 3.1.5 | origins carry source ranges | IMPLEMENTED+TESTED | TYP | JSON `primary` exposes start+end line/col (G3) |
+| 3.1.5 | labels (sub-span labels) | IMPLEMENTED+TESTED | TYP | `labels` field (notes-as-labels on the primary span). (G3 fixed) |
+| 3.1.5A | provenance frames for generated syntax/obligations/implicit insertions/transports MUST | IMPLEMENTED-DIAGNOSTIC-FACING | TYP | `desugared-from` related origin on desugaring diagnostics; full KCore ProvenanceFrame store §34 profile-scoped (KNOWN_SPEC_ISSUES §15). (G10) |
+| 3.1.6 | fix-its (`DiagnosticFix`/`SourceEdit`/applicability) | IMPLEMENTED+TESTED | TYP | `fixes :: [DiagnosticFix]`; unresolved-name typo rename fix. (G12 fixed) |
+| 3.1.7 | local repair ranking | IMPLEMENTED-WEAKLY-TESTED | TYP | the one evident fix (typo rename) is maybe-applicable; no competing repairs to rank yet |
+| 3.1.8 | human renderer shows sev/code/msg/range/labels(when avail)/notes/help/fixes | IMPLEMENTED+TESTED | TYP | renderer now also shows related/fix/suppressed lines |
+| 3.1.9 | diagnostic payloads (`kind` + family-required fields) MUST | IMPLEMENTED+TESTED | TYP | `payload :: Payload` on type-mismatch/hole/name/application/implicit. (G9 fixed) |
+| 3.1.10 | obligation provenance / selection determinism | IMPLEMENTED-WEAKLY-TESTED | TYP | deterministic; cascade suppression records summaries (G28) |
+| 3.1.11 | root-cause suppression into `suppressed`; retain summary | IMPLEMENTED+TESTED | TYP | `suppressed :: [Suppressed]`; parse-error cascade + implicit-goal collapse. (G28 fixed) |
 | 3.1.11 | primary span anchored to user-written decl, no drift | IMPLEMENTED+TESTED | TYP | probes anchor correctly |
-| 3.1.11 | no raw metavariable/sentinel as the only explanation | SPEC-CONFLICT(§3.1.11 line 1607-1611) | TYP | `?m1236`, `@-1.⟨wit0⟩` leak into `actual:` note as sole rendering. **MAJOR** rendering bug |
+| 3.1.11 | no raw metavariable/sentinel as the only explanation | IMPLEMENTED+TESTED | TYP | metavars render `_`; internal `⟨wit⟩`/`⟨payload⟩` hidden; zonk-before-render. (G11 fixed) |
 | 3.1.12 | source-oriented warning hygiene | UNCLEAR | TYP | few warnings; generated-use accounting not exercised |
 | 3.1.13 | `kappa explain <code>` long-form (SHOULD) | IMPLEMENTED-WEAKLY-TESTED | TYP | entries 1-2 sentences; lack minimal/corrected example |
-| 3.1.13 | `kappa explain <family>` (SHOULD) | MISSING | TYP | family lookup unwired in `cmdExplain` |
+| 3.1.13 | `kappa explain <family>` (SHOULD) | IMPLEMENTED+TESTED | TYP | family lookup lists member codes. (G30 fixed) |
 | 3.1.14 | continue after recoverable failures (SHOULD) | IMPLEMENTED-WEAKLY-TESTED | TYP | cross-decl recovery works |
 | 3.1.14 | recovery MUST NOT accept invalid program | IMPLEMENTED+TESTED | TYP,SYN | every invalid probe → exit 1 |
 | 3.1.14A | typed `RecoveryNode`s for listed conditions MUST | MISSING | TYP,SYN | parser skips to next decl; soundness clause (no false accept) IS honored |
-| 3.2.x | each family's "Payload MUST include …" | MISSING | TYP | no payloads at all |
-| 3.3 | path/dep/borrow diagnostic codes/families | IMPLEMENTED-WEAKLY-TESTED | TYP | codes+families correct; structured payload/related missing |
+| 3.2.x | each family's "Payload MUST include …" | IMPLEMENTED-WEAKLY-TESTED | TYP | the central families (type.mismatch, name.unresolved/ambiguous, hole, application, implicit.ambiguous) carry payloads; not every §3.2 family field is populated (§3.1.9 permits absent fields). (G9) |
+| 3.3 | path/dep/borrow diagnostic codes/families | IMPLEMENTED+TESTED | TYP | codes+families correct; path-consumed/borrow-escape carry related origins (G4) |
 | 4.1 | safe portable subset excludes the unsafe/debug forms; they remain part of the spec | MISSING(no clause makes §4 optional) | META | `unhide`/`clarify` parsed but never build-gated; `assertTerminates`/`assertReducible`/`unsafeAssertProof` unrecognized (re-verified parse error). **MAJOR** |
 | 4.2 | build-level gating; violation = compile-time error naming form + `allow_*` setting MUST | MISSING | META | no `allow_*` config anywhere; §4.2 diagnostic does not exist |
 | 4.3 | `unhide`/`clarify` semantics + gating error | MISSING | META | parsed into flags, no semantic effect/gating |
@@ -288,16 +288,16 @@ or whole-contract) > MAJOR > MINOR.
 |----|---|----------|------------------------|-----------|
 | G1 | 10.4 | RESOLVED (was BLOCKER, soundness) | `data Bad = MkBad (Bad -> Bad)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was exit 0) | DONE: `positivityPass` in `src/Kappa/Check.hs` runs the §10.4 strict-positivity check after the header pass; mirrored in `tests/conformance/data_types` |
 | G2 | 6.1.1 | BLOCKER (silent miscompile) | `0xDEAD_BEEF` → `59776745199` (≠ `3735928559`); `0b1_0_1_0`→1748; `0o1_2_3`→25027 | `src/Kappa/Lexer.hs:462` fold over `T.filter (/= '_') digits` (radix path, like the decimal path at :488) |
-| G3 | 3.1.1 | BLOCKER | `kappa check --json FILE` → usage; no JSON producer in src | `src/Kappa/Diagnostic.hs` (hand-rolled JSON over enriched record, boot pkgs only) + `app/Main.hs` (`--json` on cmdCheck/cmdRun) |
-| G4 | 3.1.1A | BLOCKER | `E_IMPLICIT_AMBIGUOUS`/`E_INSTANCE_INCOHERENT`/type-mismatch carry no related origins; `Diagnostic` has no `related` field | `src/Kappa/Diagnostic.hs` add `dRelated :: [RelatedOrigin]` (role enum); thread sites in `Check.hs`/`Resolve.hs`/`Usage.hs` |
+| G3 | 3.1.1 | RESOLVED (was BLOCKER) | `kappa check --json FILE`/`run --json` now emit one JSON object per diagnostic with the §3.1.1 16-field surface | DONE: `Diagnostic.hs` enriched record + hand-rolled JSON encoder (boot `text` only); `--json` wired in `app/Main.hs` |
+| G4 | 3.1.1A | RESOLVED (was BLOCKER) | related origins now populated for unresolved/ambiguous name, type-mismatch, application, duplicate-declaration, borrow/consume, trait-coherence, implicit-ambiguous | DONE: `dRelated :: [RelatedOrigin]` with the §3.1.1A role enum; sites threaded in `Check.hs` (csDeclSites, instanceDeclSite) and `Usage.hs` (emitRel) |
 | G5 | 5.5.1.1, 5.5.3 | MAJOR | `(5 ?)` with `postfix 90 (?)` → `E_APPLICATION_NONCALLABLE`; `let b = 5 ?` corrupts next decl | `src/Kappa/Resolve.hs:390` add `postfixOf` branch mirroring 394-401; `src/Kappa/Parser.hs` chain path (~1540-1583) tolerate trailing postfix |
 | G6 | 18.3.1 | MAJOR | `let x = !(getN 1)` inside `do` → `E_SPLICE_OUTSIDE_DO` (spec's canonical example) | `src/Kappa/Check.hs` `elabDoIOItems` `DoLet` branch (~6884): apply `desugarBang rhs` like `DoExpr`/`DoBind` |
 | G7 | 18.3.1 | MAJOR (SPEC-CONFLICT) | `!doit 8` parsed as `(!doit) 8` → type mismatch; spec forbids this parse | `src/Kappa/Check.hs` `desugarBang (EApp …)` (~7114-7130) capture whole application spine; do not recurse into head |
 | G8 | 10.4 | RESOLVED (was MAJOR) | `data Rose a = Node a ((Rose a -> a) -> Rose a)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was accepted) | DONE: parameter-positivity signatures in `csPositivity` (built-ins seeded in `Prelude.hs`, data types computed); whole-module group greatest-fixed-point in `positivityPass`; mutual accept/reject mirrored in `tests/conformance/data_types` |
-| G9 | 3.1.9 + 3.2.x | MAJOR | type-mismatch/exhaustiveness payloads only in prose; harness `assertDiagnosticPayload` → unsupported | `src/Kappa/Diagnostic.hs` add `dPayload`; populate in `src/Kappa/Check.hs` producers |
-| G10 | 3.1.5A + 30.2.3 | MAJOR | `Core.hs` `Term` carries no provenance; no `ProvenanceFrame` type | `src/Kappa/Core.hs` origin/provenance on synthetic terms (or side table); populate in `src/Kappa/Check.hs` insertions |
-| G11 | 3.1.11 | MAJOR | `?m1236`, `@-1.⟨wit0⟩` leak as the sole `actual:` type rendering | `src/Kappa/Pretty.hs` metavariable/rigid rendering + zonk-before-render in `Check.hs` mismatch path |
-| G12 | 3.1.6, 3.1.7 | MAJOR | no `fixes` field; only prose `helps`; harness `assertDiagnosticFix*` → unsupported | `src/Kappa/Diagnostic.hs` (`DiagnosticFix`/`SourceEdit`) + producers |
+| G9 | 3.1.9 + 3.2.x | RESOLVED (was MAJOR) | structured `payload` now on type-mismatch (expected/actual), hole, name.unresolved/ambiguous, application, implicit-ambiguous; `assertDiagnosticPayload` supported | DONE: `dPayload :: Payload`; populated in `Check.hs` producers |
+| G10 | 3.1.5A + 30.2.3 | RESOLVED-DIAGNOSTIC-FACING (was MAJOR) | desugarings blame user source as primary + `desugared-from` related origin (the `!e` splice); full KCore-node ProvenanceFrame store is §34 profile-scoped (documented) | DONE: diagnostic-facing frame in `Check.hs` `EBang`; boundary in `KNOWN_SPEC_ISSUES.md` §15 |
+| G11 | 3.1.11 | RESOLVED (was MAJOR) | unsolved metavars render as stable hole `_` (never `?mN`); internal `⟨wit⟩`/`⟨payload⟩` labels hidden; zonk-before-render at mismatch/hole | DONE: `Pretty.hs` `CMeta`→`_`, `isInternalLabel`; `Check.hs` zonk + field-list filter |
+| G12 | 3.1.6, 3.1.7 | RESOLVED (was MAJOR) | `fixes :: [DiagnosticFix]` field + `SourceEdit`; unresolved-name typo fix (maybe-applicable rename); `assertDiagnosticFix*` supported | DONE: `Diagnostic.hs` `DiagnosticFix`/`SourceEdit`; `Check.hs` closeSpellings/editDistance producer |
 | G13 | 4.1, 4.2 | MAJOR | `assertTerminates`/`assertReducible`/`unsafeAssertProof` unrecognized (parse/resolve error); `unhide`/`clarify` parse but never gated | `src/Kappa/Parser.hs` recognize the decl forms; add `allow_*` build-config record; gate in `Check.hs`/`Resolve.hs` per §4.2 |
 | G14 | 29.5 | MAJOR | `import std.bytes` → `E_MODULE_NAME_UNRESOLVED` (unconditional MUST, no gate) | add `stdBytesSource` to `src/Kappa/Prelude.hs`; wire in `src/Kappa/Pipeline.hs:80` |
 | G15 | 28.2 | MAJOR | `Rational` type + required FieldLike/numeric instances absent | `src/Kappa/Prelude.hs` add `Rational` type + §28.2.3 instances |
@@ -313,11 +313,11 @@ or whole-contract) > MAJOR > MINOR.
 | G25 | 28.2 | MINOR | `for_`, `sequence_` `E_NAME_UNRESOLVED` | `src/Kappa/Prelude.hs` add discard-variants |
 | G26 | 20.2, 18.6 | MINOR | range not iterable in `for`/comprehension (`IntoQuery` mechanism absent) | `src/Kappa/Prelude.hs` `IntoQuery` + instances; `src/Kappa/Check.hs` dispatch `for`/comprehension source through `IntoQuery` |
 | G27 | 29.4 | MINOR | `std.unicode` incremental decoder/builders/cursors absent (self-documented) | `src/Kappa/Prelude.hs` `stdUnicodeSource` + prims in `src/Kappa/Eval.hs` |
-| G28 | 3.1.11, 3.1.10 | MINOR | no `suppressed` field; cascades emitted independently | `src/Kappa/Diagnostic.hs` + `src/Kappa/Pipeline.hs` aggregation |
-| G29 | 3.1.2A | MINOR | `ExplainEntry` lacks stability/defaultSeverity/payloadSchema/introducedIn/owner | `src/Kappa/Explain.hs` |
-| G30 | 3.1.13 | MINOR (SHOULD) | `kappa explain kappa.type.mismatch` → "unknown diagnostic code" | `app/Main.hs` `cmdExplain` wire family lookup (`Explain.explainExists` already supports it) |
+| G28 | 3.1.11, 3.1.10 | RESOLVED (was MINOR) | `suppressed :: [Suppressed]` field; parse-error→cascade suppression and implicit-goal collapse record summaries on the surviving root | DONE: `Diagnostic.hs` + `Pipeline.hs` attachSuppressed + `Check.hs` emitUnsolvedGoal; reachability boundary in KNOWN_SPEC_ISSUES §16 |
+| G29 | 3.1.2A | RESOLVED (was MINOR) | `ExplainEntry` now carries defaultSeverity/stability/portableAliases/owner/introducedIn; `kappa explain` renders them | DONE: `src/Kappa/Explain.hs` |
+| G30 | 3.1.13 | RESOLVED (was MINOR SHOULD) | `kappa explain kappa.type.mismatch` lists family members | DONE: `Explain.lookupFamily`/`renderFamily` + `app/Main.hs` `cmdExplain` |
 | G31 | 3.1.14A | MINOR | no typed `RecoveryNode`s (soundness clause "no false accept" IS honored) | `src/Kappa/Parser.hs` + `src/Kappa/Parser/Monad.hs` |
-| G32 | App. T.8 (T.5.1/T.5.3/T.4) | MINOR (harness) | standard `assertDiagnosticPayload/Label/Related/Fix*/Suppressed`, `assertStageDump`, `runArgs`, `stdinFile` → `unsupported` though ungated/standard | `src/Kappa/TestHarness.hs:175-185,292-293,681-682` (mostly resolved once G3/G9/G12 land) |
+| G32 | App. T.8 (T.5.1/T.5.3/T.4) | RESOLVED (was MINOR harness) | `assertDiagnosticPayload/Label/Related/Fix/FixCount/SuppressedDiagnostic` now implemented against the machine-readable record; only `assertDiagnosticFixCompiles` (apply+recompile round trip) and `assertStageDump` (§34) remain unsupported | DONE: `src/Kappa/TestHarness.hs` (matchCF, payloadPointer, structured assertion eval) |
 | G33 | App. T.5.1 | MINOR (harness) | `assertDiagnostic error 12345` → FAIL not HARNESS-ERROR | `src/Kappa/TestHarness.hs` `parseDirective` validate code shape |
 | G34 | App. T.6 | MINOR (harness) | `dumpFormat json`+`dumpFormat sexpr` → PASS (should be ill-formed) | `src/Kappa/TestHarness.hs:679` generalize dup-key check beyond `mode` |
 | G35 | App. T.2 | MINOR (harness) | nested dir of `.kp` run as independent tests, not one suite | `src/Kappa/TestHarness.hs` `isSuiteRoot`/`runTestPathAt` walk policy |
@@ -325,6 +325,9 @@ or whole-contract) > MAJOR > MINOR.
 
 Total worklist items: 36 (4 BLOCKER, 17 MAJOR, 15 MINOR). Harness-faithfulness
 items G32–G35 are non-deceptive (fail-safe to `unsupported`/`fail`, never false PASS).
+
+Resolved to date: G1, G8 (§10.4 positivity); the §3 diagnostic-contract
+cluster G3, G4, G9, G10 (diagnostic-facing), G11, G12, G28, G29, G30, G32.
 
 ---
 

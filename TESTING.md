@@ -89,12 +89,24 @@ A `mode run` entry whose final value is not `Unit` is rendered to
 stdout followed by a newline (matching the reference run task, e.g.
 `let main = 42` prints `42`).
 
-Classified **unsupported**: `assertDiagnosticPayload/Label/Related/Fix*`
-and `assertSuppressedDiagnostic` (§T.5.1) and `assertStageDump` (§T.5.3)
-— this implementation's diagnostic records carry no payloads, labels,
-related origins, fix-its, or suppression summaries, and there is no
-Chapter 34 stage-dump serialization, so the asserted data does not
-exist; all unsupported `x-*` extensions (§T.3 mandates unsupported);
+The §T.5.1 **structured-diagnostic assertions** are supported: the
+diagnostic records now carry the §3.1.1 fields (payload §3.1.9, labels,
+related origins §3.1.1A, fix-its §3.1.6, suppressed summaries §3.1.11),
+matched against the machine-readable record (not rendered prose):
+
+| directive | meaning |
+|---|---|
+| `assertDiagnosticPayload SEV CODE-OR-FAMILY POINTER VALUE` | a matching diagnostic's payload value at the (shallow RFC-6901) `POINTER` (`/payload/<key>`, `/family`, `/code`, …) equals `VALUE` |
+| `assertDiagnosticLabel SEV CODE-OR-FAMILY ROLE` | a matching diagnostic has a label/related origin with that role (notes are labelled `note`) |
+| `assertDiagnosticRelated SEV CODE-OR-FAMILY ROLE` | a matching diagnostic carries a §3.1.1A related origin with that stable role |
+| `assertDiagnosticFix SEV CODE-OR-FAMILY APPLICABILITY` | a matching diagnostic carries a fix with that applicability |
+| `assertDiagnosticFixCount SEV CODE-OR-FAMILY N` | a matching diagnostic carries exactly `N` fixes |
+| `assertSuppressedDiagnostic PRIMARY-CF SUPPRESSED-CF` | a diagnostic matching `PRIMARY-CF` carries a suppressed summary matching `SUPPRESSED-CF` |
+
+Classified **unsupported**: `assertDiagnosticFixCompiles` (§T.5.1 — the
+apply-fix-and-recompile round trip is not wired) and `assertStageDump`
+(§T.5.3 — no Chapter 34 stage-dump serialization; §34 profile-scoped);
+all unsupported `x-*` extensions (§T.3 mandates unsupported);
 `mode analyze`, non-`interpreter` backends, `runArgs`, `stdinFile`,
 `requires mode script`; `requires` of unprovided capabilities (§T.4
 mandates unsupported).
