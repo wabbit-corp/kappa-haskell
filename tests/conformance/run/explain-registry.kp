@@ -6,6 +6,7 @@
 --! assertDiagnosticExplainExists E_QTT_ERASED_RUNTIME_USE
 --! assertDiagnosticExplainExists E_QTT_BORROW_CONSUME
 --! assertDiagnosticExplainExists E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT
+--! assertDiagnosticExplainExists E_ROW_TAIL_QUANTITY_UNSATISFIED
 --! assertDiagnosticExplainExists E_APPLICATION_NON_CALLABLE
 --! assertDiagnosticExplainExists E_MISSING_EXPLICIT_SIGNATURE
 --! assertDiagnosticExplainExists E_SAFE_NAV_GENERIC_AMBIGUOUS

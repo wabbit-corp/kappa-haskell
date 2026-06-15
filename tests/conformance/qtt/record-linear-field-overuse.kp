@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §13.2.1/§12.2.5: a record carrying a quantity-1 field is a linear
+-- resource for that field path regardless of the record binding's own
+-- quantity. A record literal that places a linear value into a field
+-- (the binding has no binding-level quantity) is just as much a linear
+-- resource as an annotated '1 r' binding, so consuming the linear field
+-- path twice overuses the underlying linear value (§12.2). Drop tracking
+-- and overuse tracking must be symmetric: the field is consumed once
+-- legitimately in 'consumeField'/'transferWhole' (record-linear-field-ok)
+-- but consuming it twice here must fail its linear upper bound.
+module main
+
+data Buffer : Type =
+    Buffer
+
+type WithBuf : Type = (1 buf : Buffer, name : String)
+
+free : (1 b : Buffer) -> Unit
+let free (1 b : Buffer) : Unit =
+    match b
+    case Buffer -> ()
+
+doubleFree : (1 b : Buffer) -> Unit
+let doubleFree (1 b : Buffer) : Unit =
+    block
+        let r : WithBuf = (buf = b, name = "x")
+        let firstUse = free r.buf
+        free r.buf

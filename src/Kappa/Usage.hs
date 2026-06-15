@@ -7,6 +7,8 @@
 --
 --   * @1@ / @>=1@ bindings unused on some completion path
 --     (§12.2.5)                                   → E_QTT_LINEAR_DROP
+--   * a consuming open-record receiver forgetting its
+--     abstract residual tail (§13.2.7)            → E_ROW_TAIL_QUANTITY_UNSATISFIED
 --   * @1@ / @<=1@ bindings used more than once    → E_QTT_LINEAR_OVERUSE
 --   * @0@ bindings referenced at runtime          → E_QTT_ERASED_RUNTIME_USE
 --   * borrowed bindings moved into a consuming
@@ -100,13 +102,14 @@ data VInfo = VInfo
   , vLatent :: !Usage -- ^ per-call captured usage (closure-valued bindings)
   , vFields :: ![(Text, Maybe Quantity)] -- ^ record fields, when known
   , vDeps :: ![(Text, [Text])] -- ^ §13.2.1 field dependencies (field ↦ siblings its type mentions)
-  , vOpenTail :: !(Maybe Span)
+  , vOpenTail :: !(Maybe (Text, Span))
   -- ^ §13.2.7: a linear (1\/>=1) receiver of an open record type
   -- @(... | r)@ owns the abstract residual tail @r@. Without a
   -- @RecTailSatisfies r 0@ premise (not expressible in v1), forgetting
   -- the tail is unsound, so the tail must be transferred whole (root
   -- move) or restored\/extended through a patch (residue consume). The
-  -- span is the binding site for the drop report.
+  -- payload carries the residual row variable spelling (for the §3.2.4
+  -- @RecTailSatisfies r q@ obligation) and the binding site span.
   , vSpan :: !Span -- ^ binding site (drop reports)
   }
 
@@ -452,25 +455,32 @@ transfersLinear env e = case placeOf env e of
 -- closed extension @(... | (more fields))@ is followed structurally. A
 -- bare type-alias spelling whose row tail is not visible here is treated
 -- conservatively as having no abstract tail (no false positive).
-hasAbstractTail :: Map Text [(Text, Maybe Quantity)] -> Expr -> Bool
+-- | The abstract residual row variable of an open record type, if any
+-- (§13.2.7). Returns the row-variable spelling so a §3.2.4
+-- @kappa.row.tail-quantity@ diagnostic can name the residual row variable
+-- @r@ in its @RecTailSatisfies r q@ obligation. An anonymous (unnamed)
+-- abstract tail yields @"_"@.
+hasAbstractTail :: Map Text [(Text, Maybe Quantity)] -> Expr -> Maybe Text
 hasAbstractTail aliases = go (0 :: Int)
   where
     go n e
-      | n > 32 = False -- guard against accidental deep nesting
+      | n > 32 = Nothing -- guard against accidental deep nesting
       | otherwise = case e of
           ERecordType _ (Just tailE) _ -> tailAbstract n tailE
-          ERecordType _ Nothing _ -> False
+          ERecordType _ Nothing _ -> Nothing
           EAscription e' _ _ -> go n e'
           ECaptures e' _ _ -> go n e'
-          _ -> False
+          _ -> Nothing
     tailAbstract n tailE = case tailE of
       -- a row-variable spelling that is not a known record alias is an
       -- abstract residual tail; a record alias is conservatively closed
-      EVar v -> not (Map.member (nameText v) aliases)
+      EVar v
+        | Map.member (nameText v) aliases -> Nothing
+        | otherwise -> Just (nameText v)
       ERecordType {} -> go (n + 1) tailE
       EAscription e' _ _ -> tailAbstract n e'
       ECaptures e' _ _ -> tailAbstract n e'
-      _ -> True
+      _ -> Just "_"
 
 -- | Resolve a (possibly aliased) record type to its §13.2.1 field
 -- dependencies: field ↦ sibling labels its type mentions via 'this'.
@@ -635,8 +645,8 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
             openTail
               | isNothing mark
               , q `elem` [Just QOne, Just QAtLeastOne]
-              , maybe False (hasAbstractTail aliases) ty =
-                  Just (bSpan b)
+              , Just rowVar <- (hasAbstractTail aliases =<< ty) =
+                  Just (rowVar, bSpan b)
               | otherwise = Nothing
         k <- freshKey (nameText n)
         pure (Just (nameText n, (VInfo k q (isJust mark || borrowViewed) anon False Nothing Map.empty fields deps Nothing (bSpan b)) {vOpenTail = openTail}))
@@ -721,12 +731,20 @@ closeVar vi u = do
       ("'" <> nm <> T.concat (map ("." <>) bp)
          <> "' is borrowed after the path was consumed (§12.4); restore it by record update first")
   -- per-path overuse: a whole-record use re-consumes every moved path
-  -- (a patch consumes the residue only, not the paths it replaces)
+  -- (a patch consumes the residue only, not the paths it replaces).
+  -- §13.2.1: a record carrying a quantity-1 field is a linear resource
+  -- for that field path regardless of the record binding's own quantity
+  -- — a record literal that places a linear value into a field
+  -- (vQ == Nothing, fields inferred) is just as much a linear resource as
+  -- an annotated `1 r` binding. The drop check below keys on `linFields`
+  -- independent of `vQ vi`; the upper-bound check must do the same, or a
+  -- linear field consumed twice (`free r.buf; free r.buf`) escapes.
   pathOver <- fmap or . forM (linFields vi) $ \f -> do
     let pc@(Cnt _ pHi pOccs _ _ _) = Map.findWithDefault zeroC (vKey vi <> "." <> f) u
-    if vQ vi `elem` [Just QOne, Just QAtMostOne] && cHi pc > 0 && rHi + pHi > 1
+    if cHi pc > 0 && rHi + pHi > 1
       then do
-        overuse (nm <> "." <> f) (pOccs ++ rOccs)
+        -- the path is in linFields, i.e. quantity-1 (linear)
+        overuse "linear" (nm <> "." <> f) (pOccs ++ rOccs)
         pure True
       else pure False
   -- §13.2.1: a record value carrying a quantity-1 field is a linear
@@ -762,36 +780,44 @@ closeVar vi u = do
   -- evidence. The whole-record drop below covers the case where the
   -- receiver is wholly unused, so the tail report is gated on the root
   -- being touched (the receiver was used, just not tail-transferred).
-  let tailDropped =
-        isJust (vOpenTail vi)
-          && rootLo < 1
-          && rTlo >= 1
-          && null droppedFields
-  when tailDropped $
-    emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
-      ("the abstract residual row tail of '" <> nm
-         <> "' is forgotten without transferring or restoring it; a "
-         <> "consuming open-record receiver requires 'RecTailSatisfies r 0' "
-         <> "to forget a tail that may hold a linear resource (§13.2.7)")
+  -- §3.1.4/§3.2.4: this is an abstract residual row tail demanded at a
+  -- structural quantity (0, the discard demand) with the required
+  -- RecTailSatisfies evidence unavailable, so the diagnostic uses the
+  -- dedicated row family kappa.row.tail-quantity and its portable alias
+  -- E_ROW_TAIL_QUANTITY_UNSATISFIED (Spec.md:955-957, 3097-3128), naming
+  -- the residual row variable r and the generated RecTailSatisfies r 0
+  -- obligation.
+  let tailDropped = case vOpenTail vi of
+        Just (rowVar, _)
+          | rootLo < 1 && rTlo >= 1 && null droppedFields -> Just rowVar
+        _ -> Nothing
+  forM_ tailDropped $ \rowVar ->
+    emit "E_ROW_TAIL_QUANTITY_UNSATISFIED" "kappa.row.tail-quantity" (vSpan vi)
+      ("the abstract residual row tail '" <> rowVar <> "' of '" <> nm
+         <> "' is dropped without transferring or restoring it; a "
+         <> "consuming open-record receiver requires 'RecTailSatisfies "
+         <> rowVar <> " 0' to forget a tail that may hold a linear resource "
+         <> "(§13.2.7)")
+  let tailWasDropped = isJust tailDropped
   case vQ vi of
     Just QOne -> do
-      when (rootHi > 1) (overuse nm rOccs)
+      when (rootHi > 1) (overuse "linear" nm rOccs)
       -- the whole-record drop is reported only when no linear field or
       -- residual tail already carried the leak (otherwise those reports
       -- are the precise diagnostics for the same untransferred resource)
       when
-        (rTlo < 1 && rootHi <= 1 && not pathOver && null droppedFields && not tailDropped)
+        (rTlo < 1 && rootHi <= 1 && not pathOver && null droppedFields && not tailWasDropped)
         (dropErr "linear")
-    Just QAtLeastOne -> when (rTlo < 1 && not tailDropped) (dropErr "relevant")
-    Just QAtMostOne -> when (rootHi > 1) (overuse nm rOccs)
+    Just QAtLeastOne -> when (rTlo < 1 && not tailWasDropped) (dropErr "relevant")
+    Just QAtMostOne -> when (rootHi > 1) (overuse "affine" nm rOccs)
     _ -> pure ()
   where
     nm = T.takeWhile (/= '#') (vKey vi)
-    overuse what occs =
+    overuse kind what occs =
       emit "E_QTT_LINEAR_OVERUSE" "kappa.quantity.unsatisfied"
         (occAt occs)
         ("'" <> what <> "' is consumed more often than its "
-           <> (if vQ vi == Just QOne then "linear" else "affine")
+           <> kind
            <> " quantity permits (§12.2)")
     occAt occs = case drop 1 occs of
       (sp : _) -> sp
@@ -1221,8 +1247,8 @@ lamBind env (b, ms) = case bName b of
         openTail
           | isNothing mark
           , q `elem` [Just QOne, Just QAtLeastOne]
-          , maybe False (hasAbstractTail (eAliases env)) ty =
-              Just (bSpan b)
+          , Just rowVar <- (hasAbstractTail (eAliases env) =<< ty) =
+              Just (rowVar, bSpan b)
           | otherwise = Nothing
     k <- freshKey (nameText n)
     pure

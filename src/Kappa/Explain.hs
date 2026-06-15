@@ -427,6 +427,8 @@ registry =
       "A row extension ':=' introduces a label the record already has; use an update '=' instead (§13.2.6)."
   , ent "E_ROW_EXTENSION_MISSING_LACKS_CONSTRAINT" (Just "kappa.row.lacks-failed")
       "Extending an open record row with a label requires a 'LacksRec r label' constraint in scope (§11.3.1A, §13.2.6)."
+  , ent "E_ROW_TAIL_QUANTITY_UNSATISFIED" (Just "kappa.row.tail-quantity")
+      "An abstract residual row tail must satisfy a structural quantity demand (e.g. it is dropped by a consuming open-record receiver) but the required 'RecTailSatisfies r q' evidence is unavailable (§3.2.4, §13.2.7)."
   , ent "E_SEAL_DIRECT_LITERAL_FOR_SIGNATURE" (Just "kappa-hs.seal.direct-literal")
       "A record literal directly introduces a signature type with opaque members; use 'seal ... as ...' (§13.2.10)."
   , ent "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa-hs.seal.opaque-unfolding")
