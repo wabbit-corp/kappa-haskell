@@ -310,6 +310,9 @@ rDecl env = \case
   DProjection m n bs ty body sp ->
     DProjection m n <$> mapM (rBinder env) bs <*> rExpr env ty <*> rProjBody env body <*> pure sp
   DTopSplice e sp -> DTopSplice <$> rExpr env e <*> pure sp
+  -- §4.4: resolve through the wrapped definition; the assertion prefix
+  -- itself carries no names.
+  DUnsafeAssert k d sp -> DUnsafeAssert k <$> rDecl env d <*> pure sp
 
 rProjBody :: FixityEnv -> ProjBody -> RW ProjBody
 rProjBody env = \case

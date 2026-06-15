@@ -1,0 +1,10 @@
+module main
+
+-- §4.4: `assertReducible` admits a definition as conversion-reducible
+-- without a checked termination certificate. It is gated by the distinct
+-- build setting `allow_assert_reducible`, disabled by default, so the
+-- form is a compile-time error here (kappa.feature.gated).
+spin : Integer -> Integer
+assertReducible let spin n = spin n
+
+--! assertDiagnostic error E_FEATURE_INACTIVE

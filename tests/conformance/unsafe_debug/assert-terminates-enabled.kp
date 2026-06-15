@@ -1,0 +1,16 @@
+module main
+
+-- §4.2/§4.4: when the build enables `allow_assert_terminates`, the
+-- `assertTerminates` escape is accepted (it suppresses termination
+-- checking for acceptance only and never changes runtime semantics) and
+-- recorded in the §4.7 unsafe/debug audit ledger.
+slow : Integer -> Integer
+assertTerminates let slow n = if eqInt n 0 then 0 else slow (subInt n 1)
+
+useSlow : Integer
+let useSlow = slow 3
+
+--! allow_assert_terminates
+--! assertNoErrors
+--! assertEval useSlow 0
+--! assertAuditLedger assertTerminates

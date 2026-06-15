@@ -1,0 +1,11 @@
+module main
+
+-- §4.1/§4.2: `assertTerminates` is an unsafe/debug facility outside the
+-- safe portable subset. In package mode (the default) every unsafe/debug
+-- build setting defaults to false, so the form is a compile-time error
+-- (kappa.feature.gated) naming both the offending form and the build
+-- setting `allow_assert_terminates` that disallows it.
+loopForever : Integer -> Integer
+assertTerminates let loopForever n = loopForever n
+
+--! assertDiagnostic error E_FEATURE_INACTIVE

@@ -331,6 +331,14 @@ pDecl = do
       form <- pExpectForm
       pEndDecl
       withSpan (DExpect mods form)
+    Just k
+      | Just akind <- unsafeAssertKindOf k -> do
+          -- §4.4 termination-assertion escape: `assertTerminates`,
+          -- `assertReducible`, or legacy `assertTotal` prefixing a `let`.
+          requireUnmodified mods "termination assertion"
+          pKeyword k
+          inner <- pUnsafeAssertInner start
+          withSpan (DUnsafeAssert akind inner)
     Just "let" -> do
       pKeyword "let"
       d <- pLetDef
@@ -368,6 +376,22 @@ requireUnmodified :: DeclMods -> Text -> P ()
 requireUnmodified mods what =
   unless (mods == noMods) $
     parseFail (what <> " does not accept visibility or opacity modifiers")
+
+-- §4.4: the termination-assertion escape spellings.
+unsafeAssertKindOf :: Text -> Maybe UnsafeAssertKind
+unsafeAssertKindOf = \case
+  "assertTerminates" -> Just AssertTerminates
+  "assertReducible" -> Just AssertReducible
+  "assertTotal" -> Just AssertTotal
+  _ -> Nothing
+
+-- §4.4: the assertion prefix wraps a `let` definition.
+pUnsafeAssertInner :: Span -> P Decl
+pUnsafeAssertInner start = do
+  pKeyword "let"
+  d <- pLetDef
+  pEndDecl
+  DLet noMods d <$> spanFrom start
 
 pSigName :: P Name
 pSigName =

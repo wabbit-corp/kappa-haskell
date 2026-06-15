@@ -18,6 +18,9 @@ module Kappa.Check
   , TraitInfo (..)
   , InstanceEntry (..)
   , GlobalDef (..)
+  , UnsafeConfig (..)
+  , defaultUnsafeConfig
+  , AuditRecord (..)
   , checkModule
   , expectUnsatisfiedDiags
   , preludeModule
@@ -186,7 +189,43 @@ data CheckState = CheckState
   -- in scope for this module (e.g. the prelude `-`, which is both
   -- `infix left 60` and `prefix 80`). A bare `(op)` reference whose
   -- expected type does not select exactly one fixity is ambiguous.
+  , csUnsafe :: !UnsafeConfig
+  -- ^ §4.2 build-level gating: which unsafe/debug facilities the build
+  -- configuration permits. Defaults to all-disabled (package mode).
+  , csAuditLedger :: ![AuditRecord]
+  -- ^ §4.7 unsafe/debug audit ledger: one record per accepted use of an
+  -- unsafe/debug facility, in source order.
   }
+
+-- | §4.2 build-level gating record. Each flag enables exactly one
+-- unsafe/debug facility; all default to 'False' (package mode, §4.2).
+data UnsafeConfig = UnsafeConfig
+  { allowUnhiding :: !Bool
+  , allowClarify :: !Bool
+  , allowAssertTerminates :: !Bool
+  , allowAssertReducible :: !Bool
+  , allowUnsafeAssertProof :: !Bool
+  , allowDebugIntrospection :: !Bool
+  }
+  deriving stock (Eq, Show)
+
+-- | The default build configuration: every unsafe/debug facility is
+-- disabled (§4.2 package-mode defaults).
+defaultUnsafeConfig :: UnsafeConfig
+defaultUnsafeConfig = UnsafeConfig False False False False False False
+
+-- | §4.7 one audit-ledger entry: the facility used, the module and origin
+-- it occurred in, the build setting that permitted it, and an optional
+-- reason string supplied by the source form.
+data AuditRecord = AuditRecord
+  { arFacility :: !Text -- ^ e.g. "unhide", "assertReducible", "unsafeAssertProof"
+  , arModule :: !ModuleName
+  , arOrigin :: !Span
+  , arAffected :: !Text -- ^ declaration / import item identity affected
+  , arBuildSetting :: !Text -- ^ the §4.2 allow_* setting that permitted it
+  , arReason :: !(Maybe Text) -- ^ structured reason string, when supplied
+  }
+  deriving stock (Eq, Show)
 
 -- | What @this.label@ resolves to (§13.2.1): inside a record type,
 -- the telescope prefix elaborated so far; inside a record literal or
@@ -226,7 +265,7 @@ initCheckState =
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
-    Map.empty Map.empty Set.empty
+    Map.empty Map.empty Set.empty defaultUnsafeConfig []
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -1129,6 +1168,7 @@ resolveName ctx (Name n sp) =
           mg <- lookupGlobalName n
           case mg of
             Just g -> do
+              gateUnsafeAssertProof g sp
               mt <- globalTerm g
               case mt of
                 Just r -> pure r
@@ -6208,6 +6248,7 @@ declSpan = \case
   DPattern _ _ sp -> sp
   DProjection _ _ _ _ _ sp -> sp
   DTopSplice _ sp -> sp
+  DUnsafeAssert _ _ sp -> sp
 
 -- ── if / match ───────────────────────────────────────────────────────
 
@@ -9347,6 +9388,10 @@ headerPassIn siglessLets = \case
   DEffect _ _ sp ->
     errAt sp "E_UNSUPPORTED" Nothing "effect declarations are accepted syntactically but not elaborated by this implementation"
   DExpect _ form sp -> headerExpect form sp
+  -- §4.4: register the wrapped definition's header like any other; the
+  -- assertion prefix only affects termination checking and gating, which
+  -- happen in the body pass.
+  DUnsafeAssert _ inner _ -> headerPassIn siglessLets inner
   _ -> pure ()
 
 ownName :: Name -> CheckM GName
@@ -10135,7 +10180,72 @@ bodyPass = \case
     errAt sp "E_UNSUPPORTED" Nothing "derive declarations are not supported by this implementation"
   DTopSplice _ sp ->
     errAt sp "E_UNSUPPORTED" Nothing "top-level splices are not supported by this implementation"
+  DUnsafeAssert akind inner sp -> elabUnsafeAssert akind inner sp
   _ -> pure ()
+
+-- | §4.4 termination-assertion escape. The assertion is gated by the
+-- §4.2 build configuration: rejected by default (kappa.feature.gated)
+-- with a diagnostic naming both the offending form and the build setting
+-- that disallows it. When permitted, the use is recorded in the §4.7
+-- audit ledger and the wrapped definition is elaborated normally — these
+-- forms never change runtime semantics (§4.4), and this implementation
+-- does not run a termination checker, so suppression is accept-only.
+elabUnsafeAssert :: UnsafeAssertKind -> Decl -> Span -> CheckM ()
+elabUnsafeAssert akind inner sp = do
+  cfg <- gets csUnsafe
+  let (facility, setting, allowed) = case akind of
+        AssertTerminates -> ("assertTerminates", "allow_assert_terminates", allowAssertTerminates cfg)
+        AssertTotal -> ("assertTotal", "allow_assert_terminates", allowAssertTerminates cfg)
+        AssertReducible -> ("assertReducible", "allow_assert_reducible", allowAssertReducible cfg)
+      affected = case inner of
+        DLet _ ld _ -> maybe "<anonymous>" nameText (ldName ld)
+        _ -> "<definition>"
+  if allowed
+    then recordAudit facility affected setting sp Nothing
+    else gateUnsafe facility setting sp affected
+  -- Elaborate the wrapped definition regardless of gating: these forms
+  -- never change runtime semantics (§4.4) and registering the binding
+  -- avoids a spurious §9.1 signature-unsatisfied cascade on top of the
+  -- gate error. This implementation runs no termination checker, so the
+  -- assertion's only effect here is gating + the §4.7 audit record.
+  bodyPass inner
+
+-- | §4.2: reject an unsafe/debug facility that the build configuration
+-- disallows, citing both the offending form and the disabling setting.
+gateUnsafe :: Text -> Text -> Span -> Text -> CheckM ()
+gateUnsafe facility setting sp affected =
+  report $
+    withRelated (related RoleFeatureGateSite sp ("build setting '" <> setting <> "' is disabled")) $
+      diag SevError StageElaborate "E_FEATURE_INACTIVE" (Just "kappa.feature.gated") sp
+        ( "use of unsafe/debug facility '" <> facility <> "'"
+            <> (if T.null affected || affected == "<definition>" then "" else " (on '" <> affected <> "')")
+            <> " requires the build setting '" <> setting
+            <> "', which is disabled (Spec §4.2)"
+        )
+
+-- | §4.7: append one audit-ledger entry for an accepted unsafe/debug use.
+recordAudit :: Text -> Text -> Text -> Span -> Maybe Text -> CheckM ()
+recordAudit facility affected setting sp reason = do
+  mn <- gets csModule
+  let rec' = AuditRecord facility mn sp affected setting reason
+  modify' $ \st -> st {csAuditLedger = csAuditLedger st ++ [rec']}
+
+-- | §4.5: gate a reference to the unchecked-proof escape
+-- @unsafeAssertProof@ (and its primitive @__unsafeAssertProof@). It is a
+-- compile-time error unless the build enables @allow_unsafe_assert_proof@.
+-- The prelude itself defines these names, so a reference from inside the
+-- prelude module is not gated. Each accepted use is recorded in the §4.7
+-- ledger.
+gateUnsafeAssertProof :: GName -> Span -> CheckM ()
+gateUnsafeAssertProof (GName gm nm) sp
+  | nm `elem` ["unsafeAssertProof", "__unsafeAssertProof"] = do
+      cur <- gets csModule
+      when (gm == preludeModule && cur /= preludeModule) $ do
+        cfg <- gets csUnsafe
+        if allowUnsafeAssertProof cfg
+          then recordAudit "unsafeAssertProof" nm "allow_unsafe_assert_proof" sp Nothing
+          else gateUnsafe "unsafeAssertProof" "allow_unsafe_assert_proof" sp ""
+  | otherwise = pure ()
 
 -- | An active-pattern declaration (§17.3.1) elaborates as an ordinary
 -- function definition (the pattern name is also a first-class value)

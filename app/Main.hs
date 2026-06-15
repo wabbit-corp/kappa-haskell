@@ -5,13 +5,14 @@ import Control.Monad (forM_, unless, when)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Kappa.Check (CheckState (..))
+import Kappa.Check (AuditRecord (..), CheckState (..))
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
 import Kappa.Eval (Globals (..))
 import Kappa.Explain (lookupCode, lookupFamily, renderEntry, renderFamily)
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
+import Kappa.Source (Pos (..), Span (..), moduleNameText)
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
@@ -28,8 +29,9 @@ main = do
     ["test", path] -> cmdTest runTestPath path
     ["test", "--suite", path] -> cmdTest runTestSuitePath path
     ["explain", code] -> cmdExplain (T.pack code)
+    ["audit", path] -> cmdAudit path
     _ -> do
-      hPutStrLn stderr "usage: kappa (check|run [--json]|test [--suite]) PATH | kappa explain CODE-OR-FAMILY"
+      hPutStrLn stderr "usage: kappa (check|run [--json]|test [--suite]|audit) PATH | kappa explain CODE-OR-FAMILY"
       exitFailure
 
 -- | Diagnostic output format (§3.1): the human-readable renderer is the
@@ -82,6 +84,43 @@ cmdRun fmt path = do
     RunFail msg -> do
       hPutStrLn stderr ("runtime failure: " <> T.unpack msg)
       exitWith (ExitFailure 1)
+
+-- | §4.7 unsafe/debug audit query (the @auditModule@ surface). Emits the
+-- compilation unit's audit ledger as machine-readable JSON, never as
+-- diagnostic prose. One object per ledger entry.
+cmdAudit :: FilePath -> IO ()
+cmdAudit path = do
+  (src, _preDiags) <- loadSourceFile path
+  let cu = compileSourceWithPrelude path src
+      ledger = csAuditLedger (cuState cu)
+  TIO.putStrLn (renderAuditLedgerJson ledger)
+  exitSuccess
+
+-- | §4.7: render the audit ledger as a JSON array. Each record carries
+-- the facility, module identity, origin, affected declaration, the build
+-- setting that permitted it, and any structured reason string.
+renderAuditLedgerJson :: [AuditRecord] -> T.Text
+renderAuditLedgerJson recs =
+  "[" <> T.intercalate "," (map one recs) <> "]"
+  where
+    one r =
+      "{"
+        <> field "facility" (arFacility r)
+        <> "," <> field "module" (moduleNameText (arModule r))
+        <> "," <> field "origin" (renderSpanText (arOrigin r))
+        <> "," <> field "affected" (arAffected r)
+        <> "," <> field "buildSetting" (arBuildSetting r)
+        <> "," <> "\"reason\":" <> maybe "null" (jsonString) (arReason r)
+        <> "}"
+    field k v = "\"" <> k <> "\":" <> jsonString v
+    jsonString s = "\"" <> T.concatMap esc s <> "\""
+    esc '"' = "\\\""
+    esc '\\' = "\\\\"
+    esc '\n' = "\\n"
+    esc c = T.singleton c
+    renderSpanText sp =
+      T.pack (spanFile sp) <> ":" <> tshow (posLine (spanStart sp)) <> ":" <> tshow (posCol (spanStart sp))
+    tshow = T.pack . show
 
 -- | Appendix T harness over a file or directory tree (§T.2, §T.8).
 -- @--suite@ treats the directory as exactly one suite root.

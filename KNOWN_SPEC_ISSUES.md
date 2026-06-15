@@ -427,3 +427,46 @@ equality endpoints (and motive, for transport) are concretely determined;
 the names and signatures are nonetheless present per §28.2. Evidence:
 `Kappa.Prelude` (proof-helper block), `tests/conformance/prelude/`
 `proof_helpers_resolve.kp`.
+
+## 20. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
+
+The §4 unsafe/debug facilities are now recognized and gated by the §4.2
+build configuration (`UnsafeConfig` in `Kappa.Check`, all `allow_*`
+settings default to `false` for package mode). The §4.4 escapes
+`assertTerminates`/`assertReducible`/`assertTotal` parse as a decl prefix
+(`DUnsafeAssert`), the §4.5 `unsafeAssertProof` reference is gated at name
+resolution, and the §8.3.1.1 `unhide`/`clarify` import modifiers are gated
+during import resolution. Each disabled use is a compile-time error
+(`E_FEATURE_INACTIVE` / `kappa.feature.gated`) naming both the offending
+form and the disabling setting (§4.2). Each *permitted* use is recorded in
+the §4.7 audit ledger (`csAuditLedger`), exposed as machine-readable JSON
+by `kappa audit PATH` and asserted in tests via `assertAuditLedger`. The
+test harness enables a facility per suite with the matching `allow_*`
+directive.
+
+Two scope limitations remain, neither weakening the gating MUST:
+
+* **`unhide`/`clarify` semantics (§4.3) are gating + audit only.** The
+  modifiers are recognized, gated, and audited, but `unhide` does not yet
+  grant access to a `private` imported name and `clarify` does not change
+  definitional-equality transparency of an `opaque` item. This
+  implementation has no separate-compilation artifacts (§31.x is
+  interpreter-scoped), so the §4.3 "compiler does not have access to the
+  requested private/opaque content" condition is moot; the modifiers are
+  therefore exercised on ordinary public names. Full visibility-escape
+  semantics are out of scope for the interpreter.
+
+* **Assertion effect is accept-only.** This implementation runs no
+  termination checker beyond the §15.3 structural heuristic, so
+  `assertTerminates`/`assertReducible` only gate + audit + (for the latter)
+  would mark conversion-reducibility in an artifact were one produced;
+  they never change runtime semantics (§4.4), and the wrapped definition
+  is elaborated normally so no spurious §9.1 cascade piles onto the gate
+  error. The §4.7 ledger records the core fields §4.7 enumerates
+  (facility, module, origin, affected declaration, permitting build
+  setting, reason); the hash/ABI/coherence-identity fields are
+  separate-compilation-scoped and not modelled. Evidence:
+  `Kappa.Check` (`elabUnsafeAssert`, `gateUnsafe`, `recordAudit`,
+  `gateUnsafeAssertProof`), `Kappa.Pipeline` (`gateImportModifiers`),
+  `tests/conformance/unsafe_debug/`,
+  `tests/conformance/unsafe-debug-unhide-{gated,enabled}/`.

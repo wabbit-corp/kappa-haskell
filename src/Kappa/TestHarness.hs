@@ -31,7 +31,7 @@ module Kappa.TestHarness
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Data.Char (isDigit)
-import Data.List (isSuffixOf, sort)
+import Data.List (foldl', isSuffixOf, sort)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -39,7 +39,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as Map
-import Kappa.Check (CheckState (..), checkModule)
+import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), checkModule, defaultUnsafeConfig)
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
@@ -47,7 +47,7 @@ import Kappa.Explain (codeNames, explainExists, portableAlias)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, importScopeFor, loadSourceFile, moduleNameRelTo)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, compileFilesWithConfig, importScopeFor, loadSourceFile, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
@@ -152,6 +152,7 @@ data Assertion
   | AStderrFile !Text
   | AExitCode !Int
   | ATraceCount !Text !Text !Text !Int -- ^ event subject relop n
+  | AAuditLedger ![Text] -- ^ §4.7: facility names present in the audit ledger, in order
 
 -- One scanned directive, already classified.
 data Scanned
@@ -160,6 +161,7 @@ data Scanned
   | SScriptMode -- ^ §T.4 scriptMode: no §8.1 path-derived module names
   | SBackend !Text -- ^ §T.4 backend profile selection (compile\/run only)
   | SConfigNoop -- ^ accepted configuration with no harness effect
+  | SUnsafeConfig !(UnsafeConfig -> UnsafeConfig) -- ^ §4.2 build-config flag toggle
   | SUnsupported !Text -- ^ §T.8 unsupported (requires unmet, x- extension, …)
   | SAssert !Assertion
 
@@ -412,6 +414,17 @@ parseDirective allLines lno body =
       -- linear sink behind this directive; this prelude always provides
       -- the sink (§T.1 permits nonstandard directives), so it is a no-op
       "allow_unsafe_consume" | null args -> ok SConfigNoop
+      -- §4.2 build-level gating: enable an unsafe/debug facility for this
+      -- suite (defaults are all-disabled, package mode).
+      "allow_unhiding" | null args -> ok (SUnsafeConfig (\c -> c {allowUnhiding = True}))
+      "allow_clarify" | null args -> ok (SUnsafeConfig (\c -> c {allowClarify = True}))
+      "allow_assert_terminates" | null args -> ok (SUnsafeConfig (\c -> c {allowAssertTerminates = True}))
+      "allow_assert_reducible" | null args -> ok (SUnsafeConfig (\c -> c {allowAssertReducible = True}))
+      "allow_unsafe_assert_proof" | null args -> ok (SUnsafeConfig (\c -> c {allowUnsafeAssertProof = True}))
+      "allow_debug_introspection" | null args -> ok (SUnsafeConfig (\c -> c {allowDebugIntrospection = True}))
+      -- §4.7: assert the unsafe/debug audit ledger lists exactly these
+      -- facility names (in order). With no args, the ledger must be empty.
+      "assertAuditLedger" -> ok (SAssert (AAuditLedger args))
       "assertParameterQuantities" -> case args of
         (nm : qs) | not (null qs) -> ok (SAssert (AParamQuantities nm qs))
         _ -> bad "malformed 'assertParameterQuantities' directive"
@@ -700,6 +713,8 @@ runSuiteWith packageMode label root files mktest preDiags = do
               backends = [b | (_, _, SBackend b) <- scanned]
               asserts = [(p, src, a) | (p, src, SAssert a) <- scanned]
               scripted = not (null [() | (_, _, SScriptMode) <- scanned])
+              -- §4.2: fold the build-config toggles supplied by directives
+              unsafeCfg = foldl' (\c f -> f c) defaultUnsafeConfig [f | (_, _, SUnsafeConfig f) <- scanned]
           case () of
             _ | length (dedup modes) > 1 ->
                   pure (TestReport label HarnessError "conflicting 'mode' directives (§T.6)")
@@ -716,7 +731,7 @@ runSuiteWith packageMode label root files mktest preDiags = do
                     else
                       if not (null entries) && mode /= "run"
                         then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
-                        else executeSuite (packageMode && not scripted) label root files mode entries asserts preDiags
+                        else executeSuite unsafeCfg (packageMode && not scripted) label root files mode entries asserts preDiags
   where
     dedup = foldr (\x xs -> if x `elem` xs then xs else x : xs) []
 
@@ -727,14 +742,16 @@ data RunInfo = RunInfo
   }
 
 executeSuite ::
-  Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
+  UnsafeConfig -> Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
   [(FilePath, Text, Assertion)] -> Diagnostics -> IO TestReport
-executeSuite packageMode label root files mode entries asserts preDiags = do
+executeSuite unsafeCfg packageMode label root files mode entries asserts preDiags = do
   -- the suite root is the §8.1 source root for module-path derivation
   let cu0 =
-        if packageMode
-          then compileFilesIn root files
-          else compileFiles files
+        if unsafeCfg /= defaultUnsafeConfig
+          then compileFilesWithConfig unsafeCfg packageMode root files
+          else if packageMode
+            then compileFilesIn root files
+            else compileFiles files
       -- mode compile: the per-module Term->Value lowering into the
       -- interpreter's runtime representation is this implementation's
       -- backend-IR stage; it is recorded once per module (§T.5.5)
@@ -998,6 +1015,16 @@ checkAssertion root path src files cu diags mRun = \case
   ADoItemDescriptors nm descs -> pure (assertDoItemDescriptors path src nm descs)
   ATokenTexts toks -> pure (assertTokenTexts path src toks)
   AType nm tyExpr -> pure (assertType path src cu nm tyExpr)
+  AAuditLedger expected ->
+    -- §4.7: structured audit query — the ledger MUST be machine-readable
+    -- structured data, not parsed diagnostic prose. We read it directly
+    -- off the compiled unit's state.
+    let actual = map arFacility (csAuditLedger (cuState cu))
+     in require
+          (actual == expected)
+          ( "audit ledger facilities are [" <> T.intercalate ", " actual
+              <> "], expected [" <> T.intercalate ", " expected <> "] (§4.7)"
+          )
   ADeclKinds kinds -> pure (assertDeclKinds "assertDeclKinds" path src kinds)
   AFileDeclKinds p kinds ->
     case [(fp, fsrc) | (fp, fsrc) <- files, T.pack fp `endsWithPath` p] of
@@ -1801,8 +1828,13 @@ declDescriptor d = case d of
   DPattern mods ld _ -> modsPrefix mods <> "pattern" <> nameSuffix (ldName ld)
   DProjection mods n _ _ _ _ -> modsPrefix mods <> "projection " <> nameText n
   DTopSplice {} -> "splice"
+  DUnsafeAssert k inner _ -> unsafeAssertWord k <> " " <> declDescriptor inner
   where
     nameSuffix = maybe "" (\n -> " " <> nameText n)
+    unsafeAssertWord = \case
+      AssertTerminates -> "assertTerminates"
+      AssertReducible -> "assertReducible"
+      AssertTotal -> "assertTotal"
     modsPrefix mods = vis <> opq
       where
         vis = case dmVisibility mods of
@@ -1865,6 +1897,7 @@ declKind = \case
   DPattern {} -> "pattern"
   DProjection {} -> "projection"
   DTopSplice {} -> "splice"
+  DUnsafeAssert _ inner _ -> declKind inner
 
 -- ── Tree walking ─────────────────────────────────────────────────────
 

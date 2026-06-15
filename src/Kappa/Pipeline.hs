@@ -8,6 +8,7 @@ module Kappa.Pipeline
   , TraceEvent
   , compileFiles
   , compileFilesIn
+  , compileFilesWithConfig
   , moduleNameRelTo
   , compileSourceWithPrelude
   , importScopeFor
@@ -141,6 +142,13 @@ compileFiles = compileFilesWith False moduleNameOf
 compileFilesIn :: FilePath -> [(FilePath, Text)] -> CompiledUnit
 compileFilesIn root = compileFilesWith True (moduleNameRelTo root)
 
+-- | Like 'compileFilesIn', but with an explicit §4.2 build configuration
+-- (which unsafe/debug facilities the build permits). 'compileFiles' and
+-- 'compileFilesIn' use 'defaultUnsafeConfig' (everything disabled).
+compileFilesWithConfig :: UnsafeConfig -> Bool -> FilePath -> [(FilePath, Text)] -> CompiledUnit
+compileFilesWithConfig cfg packageMode root =
+  compileFilesWithCfg cfg packageMode (if packageMode then moduleNameRelTo root else moduleNameOf)
+
 -- One parsed source fragment.
 data Fragment = Fragment
   { frPath :: !FilePath
@@ -149,8 +157,15 @@ data Fragment = Fragment
   }
 
 compileFilesWith :: Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
-compileFilesWith packageMode nameOf files =
-  let (pst, pdiags) = preludeState
+compileFilesWith = compileFilesWithCfg defaultUnsafeConfig
+
+compileFilesWithCfg :: UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
+compileFilesWithCfg unsafeCfg packageMode nameOf files =
+  let (pst0, pdiags) = preludeState
+      -- §4.2: seed the build configuration into the state the user
+      -- modules are checked against; the prelude itself is always checked
+      -- with the default (disabled) configuration.
+      pst = pst0 {csUnsafe = unsafeCfg}
       parsed = [(path, parseModule path src) | (path, src) <- files]
       parseFails = [ds | (_, Left ds) <- parsed]
       frags0 =
@@ -246,6 +261,9 @@ compileFilesWith packageMode nameOf files =
                   , -- §5.5.1: bare `(op)` is ambiguous when more than one
                     -- callable fixity for `op` is in scope (e.g. `-`)
                     csMultiFixOps = multiFixityOps fullFixities
+                  , -- §4.7: carry accepted unhide/clarify uses into the
+                    -- module's audit ledger (the body pass appends more)
+                    csAuditLedger = csAuditLedger st ++ ieAudit ie
                   }
               (st1, cdiags0) = checkModule st0 m'
               recovered = concatMap frDiags frs
@@ -538,6 +556,7 @@ data ImportEnv = ImportEnv
   , ieExplicit :: ![Text] -- ^ names selected by explicit items
   , ieWild :: ![Text] -- ^ names provided by wildcard imports
   , ieDiags :: !Diagnostics
+  , ieAudit :: ![AuditRecord] -- ^ §4.7 accepted unhide/clarify uses
   }
 
 -- | Unqualified scope induced by a module's imports over the
@@ -551,7 +570,7 @@ buildImports = buildImportsIn []
 buildImportsIn :: [ModuleName] -> CheckState -> Module -> ImportEnv
 buildImportsIn unitMods st m = foldl' addSpec ie0 specs
   where
-    ie0 = ImportEnv (preludeScope st) Map.empty Map.empty [] [] []
+    ie0 = ImportEnv (preludeScope st) Map.empty Map.empty [] [] [] []
     -- URL pinning applies to re-exports as well (§8.3.2/§8.4)
     specs =
       [(spec, sp) | DImport ss sp <- modDecls m, spec <- ss]
@@ -579,6 +598,37 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
       [c | (c, ci) <- Map.toList (csCtors st), ciData ci == tyG]
     err ie sp code fam msg =
       ie {ieDiags = ieDiags ie ++ [diag SevError StageImports code (Just fam) sp msg]}
+    cfg = csUnsafe st
+    -- §4.2/§4.3: gate the `unhide` / `clarify` import modifiers. Each is a
+    -- compile-time error unless its build setting is enabled; an accepted
+    -- modifier is recorded in the §4.7 audit ledger.
+    gateImportModifiers mn sp it ie =
+      let nm = nameText (iiName it)
+          step (modPresent, allowed, facility, setting) acc
+            | not modPresent = acc
+            | allowed =
+                acc {ieAudit = ieAudit acc ++ [AuditRecord facility mn sp nm setting Nothing]}
+            | otherwise = gateErr acc sp facility setting nm
+       in foldr
+            step
+            ie
+            [ (iiUnhide it, allowUnhiding cfg, "unhide", "allow_unhiding")
+            , (iiClarify it, allowClarify cfg, "clarify", "allow_clarify")
+            ]
+    gateErr ie sp facility setting nm =
+      ie
+        { ieDiags =
+            ieDiags ie
+              ++ [ withRelated
+                     (related RoleFeatureGateSite sp ("build setting '" <> setting <> "' is disabled"))
+                     ( diag SevError StageImports "E_FEATURE_INACTIVE" (Just "kappa.feature.gated") sp
+                         ( "use of unsafe/debug import modifier '" <> facility <> "' (on '" <> nm
+                             <> "') requires the build setting '" <> setting
+                             <> "', which is disabled (Spec §4.2, §4.3)"
+                         )
+                     )
+                 ]
+        }
     addSpec ie (spec, sp) = case spec of
       ImportModule (RefUrl u _) _ -> urlErr ie sp u
       ImportItems (RefUrl u _) _ -> urlErr ie sp u
@@ -629,10 +679,15 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
                       else unknownModule ie sp mn
     pathModule mp = ModuleName (modPathName mp)
     wildMembers = memberNames
-    addItem mn sp ie it =
+    addItem mn sp ie0' it =
       let nm = nameText (iiName it)
           alias = maybe nm nameText (iiAlias it)
           g = exportTarget mn nm
+          -- §4.2/§4.3: `unhide` and `clarify` are unsafe/debug import
+          -- modifiers, gated by the build configuration. Gate before any
+          -- name processing so the modifier is reported even when the
+          -- target name is absent.
+          ie = gateImportModifiers mn sp it ie0'
        in if nm `elem` memberNames mn
             then case kindMismatch g (iiKind it) of
               Just why ->

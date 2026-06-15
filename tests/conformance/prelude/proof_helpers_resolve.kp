@@ -1,6 +1,10 @@
 --! mode check
+--! allow_unsafe_assert_proof
 --! assertNoErrors
 
+-- §4.5: `unsafeAssertProof` is an unsafe/debug escape, gated by the §4.2
+-- build configuration; referencing it (the eta-alias below is a use)
+-- requires `allow_unsafe_assert_proof`.
 -- §28.2: the proof/equality helper names resolve as prelude exports.
 -- 'absurd' and 'witness' are exercised at concrete types here; the
 -- equality helpers subst/sym/trans/cong/pathInd resolve but are usable

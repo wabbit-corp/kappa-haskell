@@ -49,6 +49,7 @@ module Kappa.Syntax
   , Lit (..)
   , CtorRef (..)
   , Decl (..)
+  , UnsafeAssertKind (..)
   , Visibility (..)
   , DeclMods (..)
   , noMods
@@ -418,7 +419,18 @@ data Decl
   | DPattern !DeclMods !LetDef !Span -- ^ active-pattern definition (§17.3.1)
   | DProjection !DeclMods !Name ![Binder] !Expr !ProjBody !Span
   | DTopSplice !Expr !Span -- ^ top-level @$( ... )@ (§21.2)
+  | DUnsafeAssert !UnsafeAssertKind !Decl !Span
+  -- ^ §4.4 termination-assertion escape: an @assertTerminates@,
+  -- @assertReducible@, or legacy @assertTotal@ prefix wrapping a @let@
+  -- definition. Gated by the §4.2 build configuration.
   deriving stock (Show, Data)
+
+-- | §4.4 termination-assertion escape kinds.
+data UnsafeAssertKind
+  = AssertTerminates -- ^ @assertTerminates@: suppress termination checking
+  | AssertReducible -- ^ @assertReducible@: admit as conversion-reducible
+  | AssertTotal -- ^ legacy @assertTotal@ (= @assertTerminates@ semantics)
+  deriving stock (Eq, Show, Data)
 
 data ProjBody
   = ProjSelector !Expr -- ^ selector body (yield\/if\/match expression form)

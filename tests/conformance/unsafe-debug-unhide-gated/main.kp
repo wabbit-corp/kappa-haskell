@@ -1,0 +1,9 @@
+module main
+
+-- §4.2/§4.3: `unhide` is an unsafe/debug import modifier. With
+-- `allow_unhiding` disabled (the package-mode default), using the
+-- modifier is a compile-time error (kappa.feature.gated) naming the
+-- disabling build setting, independently of the target name.
+import ulib.(unhide publicVal)
+
+--! assertDiagnostic error E_FEATURE_INACTIVE

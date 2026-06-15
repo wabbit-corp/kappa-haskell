@@ -1,0 +1,4 @@
+module ulib
+
+publicVal : Int
+let publicVal = 5

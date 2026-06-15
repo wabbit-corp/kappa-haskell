@@ -1,0 +1,10 @@
+module main
+
+-- §4.5: `unsafeAssertProof` constructs proof evidence without checking.
+-- It is an unsafe/debug escape; with `allow_unsafe_assert_proof`
+-- disabled (the package-mode default), any use is a compile-time error
+-- (kappa.feature.gated) naming the disabling build setting.
+myUnsafe : forall (@0 p : Type). (@_ : IsProp p) -> (@0 reason : String) -> p
+let myUnsafe = unsafeAssertProof
+
+--! assertDiagnostic error E_FEATURE_INACTIVE

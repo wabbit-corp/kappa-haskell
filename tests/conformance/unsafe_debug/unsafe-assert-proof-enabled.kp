@@ -1,0 +1,10 @@
+module main
+
+-- §4.5/§4.7: with `allow_unsafe_assert_proof` enabled, a reference to
+-- `unsafeAssertProof` is accepted and recorded in the audit ledger.
+myUnsafe : forall (@0 p : Type). (@_ : IsProp p) -> (@0 reason : String) -> p
+let myUnsafe = unsafeAssertProof
+
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertAuditLedger unsafeAssertProof

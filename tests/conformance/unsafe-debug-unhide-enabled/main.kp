@@ -1,0 +1,13 @@
+module main
+
+-- §4.2/§4.3/§4.7: with `allow_unhiding` enabled the `unhide` modifier is
+-- accepted and recorded in the unsafe/debug audit ledger.
+import ulib.(unhide publicVal)
+
+usePublic : Int
+let usePublic = publicVal
+
+--! allow_unhiding
+--! assertNoErrors
+--! assertEval usePublic 5
+--! assertAuditLedger unhide
