@@ -25,6 +25,7 @@ module Kappa.Diagnostic
   , noPayload
   , payloadKind
   , withPayloadField
+  , featureGatedPayload
   , FixApplicability (..)
   , fixApplicabilityText
   , SourceEdit (..)
@@ -203,6 +204,26 @@ payloadKind k = Payload k []
 -- | Append one key/value to a payload.
 withPayloadField :: Text -> Text -> Payload -> Payload
 withPayloadField k v p = p {pFields = pFields p ++ [(k, v)]}
+
+-- | The §3.2.1 structured payload for a @kappa.feature.gated@ diagnostic:
+-- the rejected construct kind, the owning feature gate, the active
+-- language profile and gate set, the per-gate provenance, and whether the
+-- gate is merely inactive or a stronger gate is required. This
+-- implementation runs the portable @kappa-v1@ profile, under which the
+-- optional gates (e.g. @unicode-names@) and unsafe/debug facilities are
+-- inactive by implementation default (§2.1, §2.1A).
+featureGatedPayload :: Text -> Text -> Payload
+featureGatedPayload constructKind owningGate =
+  Payload
+    "feature-gated"
+    [ ("constructKind", constructKind)
+    , ("owningGate", owningGate)
+    , ("activeProfile", "kappa-v1")
+    , ("activeGates", "kappa-v1")
+    , ("gateActive", "false")
+    , ("gateProvenance", "implementation-default")
+    , ("strongerGateRequired", owningGate)
+    ]
 
 -- ── Fix-its (§3.1.6) ─────────────────────────────────────────────────
 

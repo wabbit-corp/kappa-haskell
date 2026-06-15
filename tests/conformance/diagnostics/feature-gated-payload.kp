@@ -1,0 +1,10 @@
+-- §3.2.1/§3.1.9: a kappa.feature.gated diagnostic MUST carry the
+-- structured payload (owning gate, active profile, gate state).
+module main
+
+let λ = 1
+
+--! mode check
+--! assertDiagnosticFamily error kappa.feature.gated
+--! assertDiagnosticPayload error kappa.feature.gated /owningGate "unicode-names"
+--! assertDiagnosticPayload error kappa.feature.gated /activeProfile "kappa-v1"

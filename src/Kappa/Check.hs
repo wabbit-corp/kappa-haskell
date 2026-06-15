@@ -10276,6 +10276,7 @@ elabUnsafeAssert akind inner sp = do
 gateUnsafe :: Text -> Text -> Span -> Text -> CheckM ()
 gateUnsafe facility setting sp affected =
   report $
+    withPayload (featureGatedPayload ("unsafe-debug-facility:" <> facility) setting) $
     withRelated (related RoleFeatureGateSite sp ("build setting '" <> setting <> "' is disabled")) $
       diag SevError StageElaborate "E_FEATURE_INACTIVE" (Just "kappa.feature.gated") sp
         ( "use of unsafe/debug facility '" <> facility <> "'"

@@ -619,7 +619,8 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
       ie
         { ieDiags =
             ieDiags ie
-              ++ [ withRelated
+              ++ [ withPayload (featureGatedPayload ("unsafe-import-modifier:" <> facility) setting)
+                     $ withRelated
                      (related RoleFeatureGateSite sp ("build setting '" <> setting <> "' is disabled"))
                      ( diag SevError StageImports "E_FEATURE_INACTIVE" (Just "kappa.feature.gated") sp
                          ( "use of unsafe/debug import modifier '" <> facility <> "' (on '" <> nm

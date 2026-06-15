@@ -82,6 +82,13 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
     record sp code fam msg notes s =
       s {stDiags = foldl' (flip withNote) (diag SevError StageLex code fam sp msg) notes : stDiags s}
 
+    -- As 'record' but attaches a §3.1.9 structured payload (used for the
+    -- §3.2.1 feature-gated diagnostics, which MUST carry the gate/profile
+    -- payload).
+    recordP :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> [Text] -> Payload -> St -> St
+    recordP sp code fam msg notes pl s =
+      s {stDiags = withPayload pl (foldl' (flip withNote) (diag SevError StageLex code fam sp msg) notes) : stDiags s}
+
     pos :: St -> Pos
     pos s = Pos (stLine s) (stCol s)
 
@@ -307,9 +314,10 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
                 else
                   pure
                     ( TokIdent name
-                    , record (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
+                    , recordP (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
                         "unquoted Unicode identifiers require the 'unicode-names' feature gate (Spec §2.1A)"
                         ["this implementation does not enable 'unicode-names'; use a backtick identifier instead"]
+                        (featureGatedPayload "unicode-identifier" "unicode-names")
                         s'
                     )
       | c == '`' = scanBacktick s
@@ -441,9 +449,10 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
           | T.any (not . isAscii) run ->
               pure
                 ( TokOperator run
-                , record (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
+                , recordP (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
                     "Unicode operator tokens require the 'unicode-names' feature gate (Spec §2.1A)"
                     ["this implementation does not enable 'unicode-names'"]
+                    (featureGatedPayload "unicode-operator" "unicode-names")
                     s'
                 )
           | otherwise -> pure (TokOperator run, s')
@@ -553,9 +562,9 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
                 let (name, s') = takeUniIdent s
                  in pure
                       ( Just name
-                      , record (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
+                      , recordP (spanAt s s') "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
                           "Unicode numeric-literal suffixes require the 'unicode-names' feature gate (Spec §6.1.6)"
-                          [] s'
+                          [] (featureGatedPayload "unicode-numeric-suffix" "unicode-names") s'
                       )
           _ -> pure (Nothing, s)
 
