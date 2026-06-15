@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+-- §28.2 (export item at Spec.md line 28648; normative signatures at the
+-- §15 `expect term` block, Spec.md line 29108-29119): the prelude MUST
+-- export the well-founded-relation combinators `measureRelation` and
+-- `lexRelation`, so both resolve in term position at the right kind.
+module main
+
+data Tree : Type =
+    Leaf
+    Node Tree Tree
+
+instance WellFoundedRelation Tree =
+    let rel x y = Unit
+
+size : Tree -> Tree
+let size t = t
+
+-- measureRelation lifts a WellFoundedRelation on the codomain to a
+-- relation on the domain via a measure function.
+measured : Tree -> Tree -> Type
+let measured x y = measureRelation size x y
+
+-- lexRelation is the lexicographic product of two WellFoundedRelations.
+lexPair : WellFoundedRelation (Tree, Tree)
+let lexPair = lexRelation

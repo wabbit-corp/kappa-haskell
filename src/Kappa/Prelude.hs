@@ -770,6 +770,23 @@ preludeSource =
     , "trait WellFoundedRelation (a : Type) ="
     , "    rel : a -> a -> Type"
     , ""
+    , -- §28.2 (export item, Spec.md line 28648; normative signatures at
+      -- the §15 `expect term` block, Spec.md line 29108-29119)
+      -- well-founded-relation combinators. 'measureRelation' lifts a
+      -- WellFoundedRelation on the codomain 'b' to a relation on 'a' via a
+      -- measure function; its body is the natural pullback of 'rel'.
+      -- 'lexRelation' is the lexicographic product of two
+      -- WellFoundedRelations; its witness is an erased proof-irrelevant
+      -- value, so it is realized opaquely through the universal erased
+      -- inhabitant '__eqProof' (the same mechanism as sym/trans/cong), as
+      -- this implementation does not synthesize the well-foundedness
+      -- proof. The exported signatures are exactly as in §28.2.
+      "measureRelation : forall (a b : Type). (@_ : WellFoundedRelation b) -> (a -> b) -> a -> a -> Type"
+    , "let measureRelation f x y = rel (f x) (f y)"
+    , ""
+    , "lexRelation : forall (a b : Type). (@_ : WellFoundedRelation a) -> (@_ : WellFoundedRelation b) -> WellFoundedRelation (a, b)"
+    , "let lexRelation = __eqProof"
+    , ""
     , "(+) : forall (a : Type). (@_ : Add a) -> a -> a -> a"
     , "let (+) x y = add x y"
     , ""

@@ -378,6 +378,19 @@ its equation in a later proof*. Evidence:
 * `WellFoundedRelation` (§28.2/§15.11) is surfaced with its `rel` member
   but not the `wf : WellFounded a rel` accessibility witness, which is an
   erased proof with no closed inhabitant this implementation can build.
+  The §28.2 well-founded-relation combinators `measureRelation` and
+  `lexRelation` (export item Spec.md line 28648; normative signatures at
+  the §15 `expect term` block, Spec.md line 29108-29119) are declared as
+  prelude terms with their **exact** §28.2 signatures and resolve in term
+  position. `measureRelation` has its natural body (the pullback `rel (f
+  x) (f y)`). `lexRelation` must produce a `WellFoundedRelation (a, b)`
+  evidence value whose lexicographic-product well-foundedness witness is
+  the omitted `wf` proof above; as that proof has no closed inhabitant,
+  its body is realized opaquely through the universal erased inhabitant
+  `__eqProof` (the same erased-proof mechanism as `sym`/`trans`/`cong`,
+  issue 19). This is not a signature deviation — both names resolve at
+  the kind §28.2 mandates; only `lexRelation`'s proof content is opaque.
+  Evidence: `tests/conformance/prelude/wf-relation-combinators.kp`.
 * `IntoQuery` (§18.6/§20.2/§23.7) declares the associated members
   `Mode`/`ItemQuantity`/`Item`/`SourceDemand` and `toQuery`'s result
   `QueryCore Mode ItemQuantity Item` references them. As above, this
