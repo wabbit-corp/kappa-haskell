@@ -670,3 +670,104 @@ reproduced a spurious harness-error run only by rebuilding the binary
 binary is missing before iterating fixtures) and the "182/182
 conformance" staleness in a prior report's prose (the gate itself is and
 stays green; the live count is 186/186 after the perf-guard fixture).
+
+## §3.1.4 required-alias compliance (three named codes)
+
+§3.1.4 names `E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`,
+`E_MODULE_ALIAS_TYPE_COLLISION`, and `E_ROW_TAIL_QUANTITY_UNSATISFIED` as
+portable codes that an implementation MUST emit at their listed
+condition (and MUST pair with the corresponding §3.2 standardized
+family). These are *rendered-code* spellings the spec mandates directly,
+not cross-implementation aliases of an existing code, so each is added
+to the `Explain.hs` registry under its §3.2 family and is emitted (where
+reachable) by a general structural rule — never by fixture-name
+matching. The first two are reachable and now emitted; the third's
+condition requires an unimplemented feature and is vacuously satisfied.
+
+1. **`E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`
+   (`kappa.application.explicit-implicit-classifier`) — REACHABLE,
+   emitted.** §3.1.4 (Spec.md:995-996): emitted when an explicit
+   implicit argument `@payload` cannot be elaborated against the
+   selected implicit binder's demanded type or classifier; §16.1.7.2
+   step 6 says the explicit implicit argument fails for that binder when
+   the selected elaboration mode fails, and §3.2 (Spec.md:3584-3602)
+   lists typing, classifier mismatch, quantity mismatch, unresolved
+   name, and ambiguous name as in-scope payload-failure kinds. Site:
+   `Check.elabSpineArg`, the `(ArgImplicit e, VPi Impl …)` spine case —
+   the count of diagnostics is captured before `check ctx e dom`
+   elaborates the payload against the demanded binder type `dom`, and
+   `retagExplicitImplicitFailure` rewrites any error diagnostics that
+   elaboration newly added to the mandated code/family. The rewrite is
+   general over the payload-internal failure (it does not match the
+   literal payload code, e.g. the prior `E_NUMERIC_LITERAL_DOMAIN_MISMATCH`
+   from a literal payload against a `FromInteger`-less type), modelled on
+   the existing `retagNewMismatches`/count-and-rollback idiom.
+
+2. **`E_MODULE_ALIAS_TYPE_COLLISION`
+   (`kappa.name.module-alias-collision`) — REACHABLE in multi-module
+   units, emitted.** §3.1.4 (Spec.md:946-947): emitted when a qualified
+   name resolves through a module alias that shadows an unrelated type,
+   constructor, or other declaration spelling and the alias collision is
+   the primary repairable cause; cross-ref §8.3.1A (same-spelling
+   collisions are use-site ambiguities resolvable by alias/qualification)
+   and §3.2 (Spec.md:2131-2149). Reachable only through a multi-module
+   compilation unit (the single-file `kappa check PATH` CLI cannot import
+   a sibling module). Site: `Check.elabDotUnqualified`, the
+   `Map.lookup base (csModuleAliases st)` branch — when the alias
+   resolves but the member is absent, a general `shadowedDeclKind base`
+   probe (reusing `lookupGlobalName` + the `csDatas`/`csCtors`/`csGlobals`
+   maps) tests whether the alias spelling *also* names a live
+   type/constructor/declaration. If so the alias collision is the primary
+   repairable cause and the mandated code is emitted, naming the alias,
+   the denoted module, and the shadowed declaration kind; when the alias
+   has no colliding declaration the prior `E_NAME_UNRESOLVED` is
+   preserved. Keyed on the structural collision, not on any name.
+
+3. **`E_ROW_TAIL_QUANTITY_UNSATISFIED` (`kappa.row.tail-quantity`) —
+   UNREACHABLE; vacuously compliant.** §3.1.4 (Spec.md:955-957): emitted
+   when an abstract residual row tail must be dropped, copied, reused,
+   duplicated, or otherwise demanded at a structural quantity, and the
+   required `RecTailSatisfies` evidence is unavailable (cross-ref §3.2
+   family `kappa.row.tail-quantity` with obligation `RecTailSatisfies r
+   q`, Spec.md:3097-3128; §13.2.7 `forgetExtras` needing
+   `RecTailSatisfies r 0`, Spec.md:12870-12923; §11.3.1A home-prefix
+   obligations, Spec.md:9607-9608). Two interlocking gating features are
+   absent, so the condition cannot arise:
+   - **`RecTailSatisfies` does not exist.** `grep -rn RecTailSatisfies
+     src/ tests/` → zero hits. The prelude defines `RecRow`, `LacksRec`,
+     `__openRec`, `__rowExtend`, `__closedRow`, `__rowEvidence`
+     (`src/Kappa/Prelude.hs`) but not `RecTailSatisfies`. A probe of
+     `forall (r : RecRow). RecTailSatisfies r 0 => Int` reports
+     `E_NAME_UNRESOLVED: unresolved name 'RecTailSatisfies'`. The very
+     obligation this diagnostic reports as "unavailable" cannot be
+     written or generated.
+   - **No quantity discipline on abstract residual tails.** A probe of
+     the spec's own `forgetExtras`
+     (`forall (r : RecRow). (1 rec : (name : String | r)) -> (name :
+     String)`, dropping the linear receiver's abstract residual tail `r`)
+     compiles with **zero diagnostics**. `src/Kappa/Usage.hs` tracks
+     field-level linearity only over known/concrete fields; an abstract
+     row variable `r` is never assigned a trackable quantity, so a
+     dropped/copied abstract tail produces no quantity demand. (For
+     contrast, a concrete linear value dropped fires `E_QTT_LINEAR_DROP`,
+     so the linear-drop machinery exists but does not reach abstract
+     tails.) Open records solve their tail to a *closed* `__closedRow`
+     when met against a concrete record (`Check.hs`); the residual is
+     never an abstract linear-bearing tail demanded at a structural
+     quantity.
+
+   Because neither `RecTailSatisfies` evidence nor an abstract-tail
+   quantity demand can be expressed or generated, `E_ROW_TAIL_QUANTITY_-
+   UNSATISFIED`'s emission condition is unreachable and the MUST is
+   vacuously satisfied. The code is deliberately **not** added to the
+   `Explain.hs` registry: the §3.1.2A `registryComplete` check is
+   one-directional (every code *emitted in the sources* must be
+   registered), and the established convention is that codes for
+   unimplemented features with no emission site stay out of the registry
+   (e.g. `E_RECORD_OPEN_TAIL_INVALIDATED`, `E_REPRO_BYTEWISE_MISMATCH`,
+   `E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE` are likewise unregistered),
+   so `kappa explain` does not advertise a code this implementation never
+   produces. Registering it becomes mandatory only once the gating
+   feature is implemented and the code acquires an emission site.
+   Implementing the gating feature is tracked separately in
+   `SPEC_COVERAGE.md`.
