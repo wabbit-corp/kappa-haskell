@@ -143,7 +143,7 @@ a harness error.
   `E_TYPE_MISMATCH` matches the expected spelling — the residual
   disagreement is the mandated rejection of the well-typed first
   probe, which contradicts §14.3.1.
-### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 17 fixtures)
+### Tracked gaps (spec-compatible behavior not implemented; honest `fail`s, 10 fixtures)
 
 Diagnostic-spelling notes below use §3.1.4: only the listed portable
 aliases are normative comparison keys; both implementations' other
@@ -156,22 +156,33 @@ both directions (TESTING.md).
 | `app_reject_at_argument_to_explicit_binder` | `idInt @1` (an `@`-payload supplied to an *explicit* binder) reports `kappa.application.argument-mismatch` here; the corpus expects its `kappa.type.mismatch` spelling. Neither code is the §3.2 `kappa.application.explicit-implicit-classifier` family (portable `E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`) that is closest to this condition; aligning to it is queued. | §3.2, §3.1.4, §16.1.7 |
 | `app_reject_explicit_implicit_wrong_type` | `readEnv @1 7`: the literal `@`-payload at type `Env` raises an unsolved `FromInteger Env` goal here (§6.1.5) and reports `kappa.implicit.unsolved`; the corpus expects an application-argument code. The §3.2 family for a mistyped explicit-implicit payload mandates portable `E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`, which neither implementation emits yet; alignment queued. | §3.2, §6.1.5, §16.3.3 |
 | `app_reject_too_many_arguments` | `idInt 1 2` reports `kappa-hs.application.non-callable` here (an implementation-defined family — §3.2 defines none for non-callable application: "the head of an application has a type that is not a function or callable value" — `idInt 1 : Int`), portable `E_APPLICATION_NON_CALLABLE` (§3.1.4); the corpus expects its generic type-mismatch spelling for over-application. | §3.1.4, §3.2 |
-| `arrow_reject_unrestricted_argument_function_to_linear_expected` | passing an `ω`-binder function where a `1`-binder function is expected reports `kappa.type.mismatch` here (quantities are part of function-type identity, §31.1/§12.2.1); the corpus expects an application-argument code for the same rejection. | §12.2.1, §31.1, §3.1.4 |
-| `borrow_qtt.030_borrow.reject_borrow_view_escape_anonymous` | §13.2.11 anonymous existential packages (`exists (s : Region). BorrowView s Int` and explicit-witness sealing) are not implemented (`E_UNSUPPORTED`); the §12.4.3 escape rejection behind them is therefore not reached. | §13.2.11, §13.2.10, §12.4.3 |
-| `fuzz.pending.reject_builtin_arithmetic_non_numeric_operand` | one ill-typed operand (`i0 * 2` over a function-typed `i0`) yields the expected mismatch *plus* the postponed `Mul`-goal failure (two diagnostics for one cause); single-cause cascade suppression at goal flush is queued (§3.1.11 quality invariants). | §3.1.11, §16.3.3 |
-| `fuzz.pending.reject_compile_time_parameter_runtime_arithmetic` | arithmetic over a `Type`-typed binder cascades into four diagnostics here vs the corpus's one; same single-cause suppression gap. | §3.1.11 |
-| `fuzz.pending.reject_constructor_runtime_type_field` | an unclosed bracket inside a constructor alternative swallows the rest of the file (newlines are soft inside brackets, §5.2), producing one syntax error where the corpus recovers at the next declaration and reports two; in-bracket recovery is queued (§3.1.14A). | §5.2, §3.1.14A |
-| `fuzz.pending.reject_malformed_constructor_keyword` | same unclosed-bracket recovery gap (one error vs two). | §5.2, §3.1.14A |
 | `fuzz.pending.reject_dotted_value_root` | `let i0 = i0.right` is rejected here as a member access on an undetermined receiver (the own name resolves to the §9.2 pre-registration so sig-less recursion can be reported); the corpus's resolution model leaves the own name unresolved (`E_NAME_UNRESOLVED`, twice — the failed declaration also binds nothing). Spec fixes neither model's diagnostic spelling (§9.2/§15 only require rejection of sig-less recursion). | §9.2, §15, §7.1 |
 | `fuzz.pending.kbackendir.reject_invalid_application_erased_type_argument` | the malformed `type I3 = (1 i0 : I3) : Int = i1` line yields a syntax error here in addition to the expected `E_APPLICATION_NONCALLABLE` (2 errors vs the corpus's 1); the corpus's recovery silently absorbs the malformed alias tail. Same §3.1.14A recovery-shape family as the entries above. | §3.1.14A, §5.2 |
 | `fuzz.pending.kbackendir.reject_invalid_application_later_zero_arity` | `let i1 = i1 "s"` inside a do block, with sig-less top-level `let i1 = 1` declared *later* in the file: the non-recursive do-let RHS (§9.3.1) resolves the own name to the outer scope, where this implementation's in-order elaboration of sig-less top-level lets has not yet registered `i1` → `E_NAME_UNRESOLVED`; the corpus resolves the forward reference and reports `E_APPLICATION_NONCALLABLE` (`1 "s"`). Forward references to *sig-less* later top-level lets are the gap (signature-carrying forward references resolve fine here). | §7.1, §9.2, §15 |
 | `traits.instances.negative_unresolved_name_in_instance_body` | an unresolved name inside an instance member body is rejected here with `E_NAME_UNRESOLVED` (§3.2.2 `kappa.name.unresolved`); the corpus expects the spelling `E_TYPE_MISMATCH`, pinning its own lowering (the fixture's own comment says the name previously "lowered as bare names and crashed at runtime" there). §3.1.4's portable aliases do not map an unresolved-name rejection to `E_TYPE_MISMATCH`; the static rejection itself is common ground. | §3.2.2, §3.1.4 |
-| `traits.members.negative_value_position_member_reference` | asserts exactly two errors; both member references are rejected here (unsatisfiable `Monoid (f a)` / `Releasable m a` goals, §3.2.4 `kappa.implicit.unsolved` ↔ portable `E_TYPE_MISMATCH`), but `anyRelease x = release x` is *one* ill-typed expression this implementation reports twice (the unsolved carrier `?m Unit` also fails against the declared `Unit` result). Same single-cause cascade-suppression gap as `fuzz.pending.reject_builtin_arithmetic_non_numeric_operand` (§3.1.11 quality invariants). | §3.1.11, §16.3.3 |
 | `fuzz.pending.reject_invalid_do_bind_indented_continuation` | a more-indented line after a complete do-bind RHS parses as a §5.2 continuation (application) here and fails as `E_APPLICATION_NONCALLABLE`; the corpus's layout rejects it as a syntax error. The §5.4 layout text does not decide do-item continuation lines explicitly. | §5.4, §18.4 |
 | `fuzz.pending.reject_invalid_indented_expression_continuation` | same layout-continuation difference (our parse yields one downstream type error, the corpus's two). | §5.4 |
 | `parser.recovery.negative_malformed_tuple_parameter_no_crash` | `let i1 (1 i1 :)3` — declaration-level recovery reports once here; the corpus's recovery yields two diagnostics. No crash either way (the §3.1.14A minimum contract is met); cascade-shape parity is queued. | §3.1.14A |
 
-Cleared since the previous revision of this ledger (all now PASS):
+Cleared in this revision (all now PASS):
+§16.1.7.1 function-argument quantity mismatch reported as
+`E_APPLICATION_ARGUMENT_MISMATCH`
+(`arrow_reject_unrestricted_argument_function_to_linear_expected`);
+§3.1.11 single-cause cascade suppression at implicit-goal flush
+(`fuzz.pending.reject_builtin_arithmetic_non_numeric_operand`,
+`fuzz.pending.reject_compile_time_parameter_runtime_arithmetic`,
+`traits.members.negative_value_position_member_reference`) — the
+last two also rely on §6.6 `()` elaborating to the type `Unit` in
+type position; §5.2/§3.1.14A in-bracket recovery surfacing the
+unbalanced-bracket cause when an unclosed bracket swallows following
+declarations (`fuzz.pending.reject_constructor_runtime_type_field`,
+`fuzz.pending.reject_malformed_constructor_keyword`); §13.2.11
+anonymous existential (`exists`) type sugar elaborating to the
+§13.2.10 sealed-package machinery, so the §12.4.3 borrow-escape
+rejection is reached
+(`borrow_qtt.030_borrow.reject_borrow_view_escape_anonymous`).
+
+Cleared in earlier revisions of this ledger (all now PASS):
 the §14.2.1 associated-static-member lane (`traits.instances.*` 4),
 trait defaults with parameters (2), §14.3.3 supertrait projection,
 static-object kind selectors and rebound-identity (6 + export facade),
