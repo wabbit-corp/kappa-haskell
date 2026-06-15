@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+--! assertEval probe 0
+
+-- §6.6: `()` is position-sensitive surface sugar. In term position it is
+-- the unique `Unit` value; in TYPE position it is the type `Unit`. A `()`
+-- supplied where a `Type` is expected therefore elaborates to the type
+-- `Unit` (which inhabits `Type`), not to the unit value — so applying a
+-- `Type -> a` function to `()` is well-typed.
+module main
+
+useType : (t : Type) -> Int
+let useType (t : Type) : Int = 0
+
+probe : Int
+let probe = useType ()

@@ -1297,10 +1297,93 @@ flushPendingWith final = do
               Just tm -> do
                 v <- evalIn ctx tm
                 solveMeta mid v
-              Nothing -> do
-                ec <- ec_
-                errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
-                  ("could not resolve implicit argument of type " <> renderTerm (quote ec (ctxLen ctx) g))
+              Nothing -> emitUnsolvedGoal ctx sp g
+
+-- | Emit an unsolved-implicit goal failure, applying §3.1.11 single-cause
+-- cascade suppression so one ill-typed expression yields one diagnostic.
+--
+-- Two cascade shapes collapse to a single root cause:
+--
+--   * The goal's carrier still mentions an unsolved metavariable that an
+--     earlier same-span type-equality mismatch reported against (the
+--     mismatch could not be decided precisely because this carrier was
+--     never solved). The mismatch is the downstream consequence: drop it
+--     and keep the more informative unsolved-goal diagnostic. (e.g. an
+--     overloaded value-position member whose result carrier `?m a` fails
+--     against the declared result type while its trait goal is unsolved.)
+--
+--   * The goal's carrier is fully concrete and is exactly the type that an
+--     earlier mismatch already rejected at the same site (e.g. a numeric
+--     trait goal `Mul T` raised for an operand whose type `T` already
+--     failed to unify with the numeric domain). Here the goal is the
+--     downstream consequence: suppress it and keep the mismatch.
+emitUnsolvedGoal :: Ctx -> Span -> Value -> CheckM ()
+emitUnsolvedGoal ctx sp g = do
+  ec <- ec_
+  let gT = quote ec (ctxLen ctx) g
+      gRendered = renderTerm gT
+  ms <- unsolvedMetaIdsIn g
+  let metaTokens = ["?m" <> T.pack (show m) | m <- ms]
+      mentionsMeta d =
+        any (\tok -> any (tok `T.isInfixOf`) (dMessage d : dNotes d)) metaTokens
+      isMismatch d = dCode d == "E_TYPE_EQUALITY_MISMATCH"
+      -- the goal's trait arguments, rendered (e.g. the carrier `T` of
+      -- `Mul T`): a concrete carrier already named in a mismatch note
+      carrierTexts = case gT of
+        CApp _ _ _ -> [renderTerm a | a <- spineArgs gT]
+        _ -> []
+      spineArgs = reverse . go
+        where
+          go (CApp _ f a) = a : go f
+          go _ = []
+  ds <- gets csDiags
+  let sameStart d = spanStart (dPrimary d) == spanStart sp
+      isDownstreamMismatch d = isMismatch d && sameStart d && mentionsMeta d
+      hasDownstreamMismatch = not (null ms) && any isDownstreamMismatch ds
+      concreteCarrierAlreadyRejected =
+        null ms
+          && not (null carrierTexts)
+          && any
+            ( \d ->
+                isMismatch d
+                  && posLine (spanStart (dPrimary d)) == posLine (spanStart sp)
+                  && any (\ct -> any (ct `T.isInfixOf`) (dNotes d)) carrierTexts
+            )
+            ds
+      emit =
+        errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
+          ("could not resolve implicit argument of type " <> gRendered)
+  if hasDownstreamMismatch
+    then do
+      -- drop the downstream same-span mismatch, keep the unsolved goal
+      modify' $ \st -> st {csDiags = filter (not . isDownstreamMismatch) (csDiags st)}
+      emit
+    else
+      if concreteCarrierAlreadyRejected
+        then pure () -- the goal is the cascade of an already-reported mismatch
+        else emit
+
+-- | Unsolved metavariable identifiers occurring in a value's quotation.
+unsolvedMetaIdsIn :: Value -> CheckM [MetaId]
+unsolvedMetaIdsIn v = do
+  ec <- ec_
+  let t = quote ec 0 v
+  st <- get
+  let unsolved m = case Map.lookup m (csMetas st) of
+        Just (Just _) -> False
+        _ -> True
+  pure (filter unsolved (nub (goT t)))
+  where
+    goT = \case
+      CMeta m -> [m]
+      CApp _ a b -> goT a ++ goT b
+      CPi _ _ _ a b -> goT a ++ goT b
+      CLam _ _ _ b -> goT b
+      CCtor _ as -> concatMap goT as
+      CRecordT fs -> concatMap (goT . snd) fs
+      CVariantT ms -> concatMap goT ms
+      CProj e _ -> goT e
+      _ -> []
 
 -- | Replace solved metavariables by their solutions, quoted at the
 -- correct binder depth. Run after 'flushPending' so terms stored as
@@ -2028,6 +2111,11 @@ check ctx expr expected0 = do
           (tm, ty) <- inferT ctx (EVar n)
           expectType ctx (nameSpan n) ty expected
           pure tm
+    -- §6.6: in type position `()` is surface syntax for the type `Unit`
+    -- (the would-be empty record), distinct from the unique `Unit` value
+    -- it denotes in term position. A `()` checked against a universe is
+    -- therefore the type `Unit`, which inhabits that universe.
+    (EUnit _, VSort _) -> pure (CGlob (gPrel "Unit"))
     -- §5.5.1: a bare parenthesized operator at a function-typed
     -- position selects the fixity the expected explicit arity calls
     -- for — unary `(-)` is the prefix reading (negate); otherwise the
