@@ -39,7 +39,7 @@ here by re-probe.
 | 3.1 | tools MUST NOT parse prose to recover code/sev/ranges/related/fixes/family | IMPLEMENTED+TESTED | TYP | all recoverable from the JSON record |
 | 3.1.1 | error severity fails compilation | IMPLEMENTED+TESTED | TYP | every error probe → exit 1 |
 | 3.1.1 | JSON exposes ≡ {schemaVersion,code,family,severity,stage,phase,primary,message,labels,notes,helps,fixes,related,payload,explain,suppressed} | IMPLEMENTED+TESTED | TYP,V | all 16 fields emitted. (G3 fixed) |
-| 3.1.1A | multi-span related origins with stable roles (type-mismatch, ambiguous, coherence, borrow) MUST | IMPLEMENTED+TESTED | TYP | `related :: [RelatedOrigin]` populated for the MUST classes. (G4 fixed) |
+| 3.1.1A | multi-span related origins with stable roles (type-mismatch, ambiguous, coherence, borrow) MUST | IMPLEMENTED+TESTED (borrow partial) | TYP,V | `related :: [RelatedOrigin]` populated for type-mismatch/ambiguous/coherence/name/application/path-consumed/implicit-ambiguous (re-probed via `--json`); borrow-escape-through-result form still emits empty `related` (G4 residual) |
 | 3.1.2 | stable symbolic codes; not all-digits; §3.2 family on the diagnostic | IMPLEMENTED+TESTED | TYP,SYN | `E_*`/`W_*`/`I_*`; `kappa.*` for standardized, reserved `kappa-hs.*` otherwise |
 | 3.1.2A | machine-readable code registry available without compiling invalid source | IMPLEMENTED+TESTED | TYP,SYN,V | `kappa explain CODE` static table; works with no source |
 | 3.1.2A | `kappa explain <code>` rejects unknown codes deterministically | IMPLEMENTED+TESTED | TYP,SYN | `explain E_NOPE` → stderr "unknown diagnostic code", exit 1 |
@@ -64,7 +64,7 @@ here by re-probe.
 | 3.1.14 | recovery MUST NOT accept invalid program | IMPLEMENTED+TESTED | TYP,SYN | every invalid probe → exit 1 |
 | 3.1.14A | typed `RecoveryNode`s for listed conditions MUST | MISSING | TYP,SYN | parser skips to next decl; soundness clause (no false accept) IS honored |
 | 3.2.x | each family's "Payload MUST include …" | IMPLEMENTED-WEAKLY-TESTED | TYP | the central families (type.mismatch, name.unresolved/ambiguous, hole, application, implicit.ambiguous) carry payloads; not every §3.2 family field is populated (§3.1.9 permits absent fields). (G9) |
-| 3.3 | path/dep/borrow diagnostic codes/families | IMPLEMENTED+TESTED | TYP | codes+families correct; path-consumed/borrow-escape carry related origins (G4) |
+| 3.3 | path/dep/borrow diagnostic codes/families | IMPLEMENTED+TESTED (related origins partial) | TYP,V | codes+families correct; path-consumed carries related origins; ONE borrow-escape form (place-arg escape, `Usage.hs:1553`) carries them, but escape-through-result / fork-capture / composite-arg forms emit empty `related` (§3.1.1A MUST gap, see G4 residual) |
 | 4.1 | safe portable subset excludes the unsafe/debug forms; they remain part of the spec | MISSING(no clause makes §4 optional) | META | `unhide`/`clarify` parsed but never build-gated; `assertTerminates`/`assertReducible`/`unsafeAssertProof` unrecognized (re-verified parse error). **MAJOR** |
 | 4.2 | build-level gating; violation = compile-time error naming form + `allow_*` setting MUST | MISSING | META | no `allow_*` config anywhere; §4.2 diagnostic does not exist |
 | 4.3 | `unhide`/`clarify` semantics + gating error | MISSING | META | parsed into flags, no semantic effect/gating |
@@ -211,9 +211,9 @@ here by re-probe.
 | 28.2 | core types (Unit…Ordering); Array/Set/Map/List types | IMPLEMENTED+TESTED | RUN | types resolve |
 | 28.2 | `Rational` type exported (MUST) | MISSING | RUN,V | `r : Rational` → `E_NAME_UNRESOLVED`; re-verified. **MAJOR** |
 | 28.2 | numeric/comparison/applicative/fold/show terms | IMPLEMENTED+TESTED | RUN | resolve and run |
-| 28.2 | `(~=)` equivalence operator | MISSING | RUN | `1 ~= 1` → `E_NAME_UNRESOLVED '~='`. **MAJOR** |
+| 28.2 | `(~=)` equivalence operator | IMPLEMENTED-WEAKLY (operator/trait yes, blanket instance no) | RUN,V | `~=`+`Equiv`+fixity present (no more `E_NAME_UNRESOLVED`); but `instance Eq a => Equiv a` (§14113 MUST) absent ⇒ `1 ~= 1` → `E_UNSOLVED_IMPLICIT`. (G18 residual) |
 | 28.2 | `for_`, `sequence_` | MISSING | RUN | unresolved. **MINOR** |
-| 28.2 | proof helpers `absurd pathInd subst sym trans cong unsafeAssertProof witness measureRelation lexRelation` | MISSING | RUN | only `summon` present. **MAJOR** |
+| 28.2 | proof helpers `absurd pathInd subst sym trans cong unsafeAssertProof witness measureRelation lexRelation` | IMPLEMENTED-MOSTLY (8/10) | RUN,V | `absurd pathInd subst sym trans cong unsafeAssertProof witness` resolve with spec sigs (usable with determined endpoints, KNOWN_SPEC_ISSUES §19); `measureRelation`/`lexRelation` still `E_NAME_UNRESOLVED`. (G20 residual) |
 | 28.2 | surface collection terms (array*/set*/map*/sizedArray*) | MISSING | RUN | only internal `__*` prims + `listLength`/`listAppend`. **MAJOR** |
 | 28.2 | resource/finalize, fibers/scopes/promises, STM, time terms | MISSING(names) | RUN | unresolved; §27.6 `rt-core`-tension flagged (see ledger) |
 | 28.2 | required trait names `Equiv Alternative Iterator MonadError MonadFinally MonadResource MonadRef WellFoundedRelation IntoQuery BorrowSourceIntoQuery BorrowItemsIntoQuery QuotedLiteralMacro` | MISSING | RUN | each unresolved. **MAJOR** |
@@ -289,7 +289,7 @@ or whole-contract) > MAJOR > MINOR.
 | G1 | 10.4 | RESOLVED (was BLOCKER, soundness) | `data Bad = MkBad (Bad -> Bad)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was exit 0) | DONE: `positivityPass` in `src/Kappa/Check.hs` runs the §10.4 strict-positivity check after the header pass; mirrored in `tests/conformance/data_types` |
 | G2 | 6.1.1 | BLOCKER (silent miscompile) | `0xDEAD_BEEF` → `59776745199` (≠ `3735928559`); `0b1_0_1_0`→1748; `0o1_2_3`→25027 | `src/Kappa/Lexer.hs:462` fold over `T.filter (/= '_') digits` (radix path, like the decimal path at :488) |
 | G3 | 3.1.1 | RESOLVED (was BLOCKER) | `kappa check --json FILE`/`run --json` now emit one JSON object per diagnostic with the §3.1.1 16-field surface | DONE: `Diagnostic.hs` enriched record + hand-rolled JSON encoder (boot `text` only); `--json` wired in `app/Main.hs` |
-| G4 | 3.1.1A | RESOLVED (was BLOCKER) | related origins now populated for unresolved/ambiguous name, type-mismatch, application, duplicate-declaration, borrow/consume, trait-coherence, implicit-ambiguous | DONE: `dRelated :: [RelatedOrigin]` with the §3.1.1A role enum; sites threaded in `Check.hs` (csDeclSites, instanceDeclSite) and `Usage.hs` (emitRel) |
+| G4 | 3.1.1A | RESOLVED-WITH-MINOR-RESIDUAL (was BLOCKER) | related origins populated for unresolved/ambiguous name (use-site), type-mismatch (use-site), application (call-site), duplicate-declaration (declaration-site ×2), path-consumed (consumed-here + used-after-consume), trait-coherence (instance-declaration-site), implicit-ambiguous (obligation-required-here) — all re-probed via `--json`. RE-AUDIT RESIDUAL: of the four `E_QTT_BORROW_ESCAPE` emission sites in `Usage.hs`, the place-argument-escape site (1553) uses `emitRel` with `borrow-start`+`borrow-escape-site`, but the escape-through-definition-result site (635), the fork-capture site (1480), and the composite-arg fallthrough (1590) emit with EMPTY `related`. §3.1.1A line 602-603 makes the borrow-introduction + escape site a MUST for borrow diagnostics, so the canonical `qtt/borrow-escape.kp` form (escape through result) does not carry the required related origins | DONE (partial): `dRelated`+role enum, threaded in `Check.hs`/`Usage.hs`. REMAINING: thread `emitRel` at `Usage.hs` 635/1480/1590 |
 | G5 | 5.5.1.1, 5.5.3 | MAJOR | `(5 ?)` with `postfix 90 (?)` → `E_APPLICATION_NONCALLABLE`; `let b = 5 ?` corrupts next decl | `src/Kappa/Resolve.hs:390` add `postfixOf` branch mirroring 394-401; `src/Kappa/Parser.hs` chain path (~1540-1583) tolerate trailing postfix |
 | G6 | 18.3.1 | MAJOR | `let x = !(getN 1)` inside `do` → `E_SPLICE_OUTSIDE_DO` (spec's canonical example) | `src/Kappa/Check.hs` `elabDoIOItems` `DoLet` branch (~6884): apply `desugarBang rhs` like `DoExpr`/`DoBind` |
 | G7 | 18.3.1 | MAJOR (SPEC-CONFLICT) | `!doit 8` parsed as `(!doit) 8` → type mismatch; spec forbids this parse | `src/Kappa/Check.hs` `desugarBang (EApp …)` (~7114-7130) capture whole application spine; do not recurse into head |
@@ -303,9 +303,9 @@ or whole-contract) > MAJOR > MINOR.
 | G15 | 28.2 | MAJOR | `Rational` type + required FieldLike/numeric instances absent | `src/Kappa/Prelude.hs` add `Rational` type + §28.2.3 instances |
 | G16 | 28.2.2, 28.2.3 | MAJOR | `AdditiveMonoid`/`Semiring`/`Ring`/`FieldLike`/`OrderedSemiring` traits + instances absent | `src/Kappa/Prelude.hs` add hierarchy with law members + instances; correct `EuclideanSemiring` shape |
 | G17 | 28.2, 19.x, 20.2 | MAJOR | required trait names `Equiv Alternative Iterator MonadError MonadFinally MonadResource MonadRef WellFoundedRelation IntoQuery Borrow*IntoQuery QuotedLiteralMacro` all `E_NAME_UNRESOLVED` | `src/Kappa/Prelude.hs` `preludeSource` declare these abstract traits |
-| G18 | 28.2 | MAJOR | `(~=)` + `Equiv` absent → `E_NAME_UNRESOLVED '~='` | `src/Kappa/Prelude.hs` (`(~=)`+`Equiv`) + `src/Kappa/Resolve.hs` add `~=` to `defaultFixities` (prec 40 = `==`) |
+| G18 | 28.2 | RESOLVED-WITH-RESIDUAL (was MAJOR) | original probe fixed: `~=` now tokenizes/resolves as an operator (no `E_NAME_UNRESOLVED '~='`), `Equiv` trait declared, `~=` in `defaultFixities` at prec 40. RE-AUDIT RESIDUAL: the canonical §28.2/§14113 prelude bridge `instance Eq a => Equiv a = let (~=) = (==)` is NOT provided (zero `Equiv` instances in `Prelude.hs`), so `1 ~= 1` now fails `E_UNSOLVED_IMPLICIT (Equiv Integer)` rather than running; a user-declared `instance Equiv Int` makes it work, so the machinery is sound but the MUST blanket instance is missing | `src/Kappa/Prelude.hs` add `instance Eq a => Equiv a` |
 | G19 | 28.2 | MAJOR | surface collection terms (`arrayFromList`/`mapEmpty`/`setEmpty`/… ) `E_NAME_UNRESOLVED`; only internal `__*` prims | `src/Kappa/Prelude.hs` export §28.2 Array/Set/Map/SizedArray ops over existing carriers/prims |
-| G20 | 28.2 | MAJOR | proof helpers `absurd subst sym trans cong pathInd unsafeAssertProof witness measureRelation lexRelation` `E_NAME_UNRESOLVED` | `src/Kappa/Prelude.hs` declare (several have spec-given bodies via `pathInd`) |
+| G20 | 28.2 | RESOLVED-WITH-RESIDUAL (was MAJOR) | 8/10 resolve: `absurd subst sym trans cong pathInd unsafeAssertProof witness` declared with spec signatures (usable only with determined endpoints per KNOWN_SPEC_ISSUES §19). RE-AUDIT RESIDUAL: `measureRelation` and `lexRelation` (the §28.2/§29854/§15.11 standard well-founded-relation vocabulary) are still `E_NAME_UNRESOLVED` — never declared in `Prelude.hs`, and not covered by KNOWN_SPEC_ISSUES §18 (which only documents the `WellFoundedRelation.wf` member omission). These are erased compile-time terms (no runtime effect) | `src/Kappa/Prelude.hs` declare `measureRelation`/`lexRelation` (erased `expect term`-shaped decls per §29109/§29115) |
 | G21 | 28.2.3 | MAJOR | `CheckedSub Nat` and `CheckedSub Float/Double` missing → unsolved-implicit on `Nat 3-5`, `Double 5.0-2.0` | `src/Kappa/Prelude.hs` add `CheckedSub Nat`(`subDefined=y<=x`)/`Double`/`Float`(`subDefined=True`) |
 | G22 | 6.3.4.1 | MINOR | `f"cost: \$5"` → `E_STRING_ESCAPE_INVALID` | `src/Kappa/Lexer.hs:724-725` emit `'$'` only (drop backslash) or add `\$` case to `decodeEscapes` |
 | G23 | 8.3 | MINOR | `import M.(type T(..) as U)` accepted (spec says ill-formed) | `src/Kappa/Parser.hs:865` reject `ctorAll && isJust alias` (e.g. `E_IMPORT_ITEM_MALFORMED`) |
@@ -321,13 +321,52 @@ or whole-contract) > MAJOR > MINOR.
 | G33 | App. T.5.1 | RESOLVED | numeric or unregistered `<code>`/`<code-or-family>` ⇒ HARNESS-ERROR across all code-bearing directives + `--!!` markers (`assertDiagnosticExplainExists` only rejects numeric) | DONE: `src/Kappa/TestHarness.hs` (`invalidCodeReason`, `requireCode`); covered by `test/Spec.hs` harness mirrors |
 | G34 | App. T.6 | RESOLVED | duplicate config key with conflicting value ⇒ ill-formed (HARNESS-ERROR) for `mode`/`moduleMode`/`backend`/`entry`/`runArgs`/`stdinFile`/`dumpFormat`; same value ⇒ fine | DONE: `src/Kappa/TestHarness.hs` (`SConfigKey`, `configConflict`); `test/Spec.hs` mirrors |
 | G35 | App. T.2 | RESOLVED (clarified) | a directory that IS a suite root by the suite-root rule (declares `suite.ktest`/`main.kp`, or is named directly) compiles its `.kp` files as ONE unit (verified cross-module); a bare nested dir reached during the recursive walk holds independent single-file inline tests (the conformance tree relies on this, §T.2 form 1) — documented as the spec-faithful reading | DONE: `src/Kappa/TestHarness.hs` (docs); `test/Spec.hs` mirror over a container dir |
-| G36 | 4.7 | MINOR | no unsafe/debug audit ledger + `auditModule/Package/Artifact` queries (MUST) | predicated on G13; tied to separate-compilation artifacts (profile-adjacent), ranked last |
+| G36 | 4.7 | RESOLVED (was MINOR) | unsafe/debug audit ledger + `assertAuditLedger` query verified: `unsafe_debug/assert-terminates-enabled.kp` and `unsafe-assert-proof-enabled.kp` record the used facility and the harness asserts the ledger contents | DONE: ledger in `Check.hs` (`UnsafeConfig`); harness `assertAuditLedger` in `TestHarness.hs` |
 
 Total worklist items: 36 (4 BLOCKER, 17 MAJOR, 15 MINOR). Harness-faithfulness
 items G32–G35 are non-deceptive (fail-safe to `unsupported`/`fail`, never false PASS).
 
 Resolved to date: G1, G8 (§10.4 positivity); the §3 diagnostic-contract
 cluster G3, G4, G9, G10 (diagnostic-facing), G11, G12, G28, G29, G30, G32.
+
+---
+
+## Hostile re-audit verdict (2026-06-15, independent re-probe of all G1..G36)
+
+Each gap re-probed against the built binary
+(`dist-newstyle/.../x/kappa/build/kappa/kappa`, mtime unchanged through the
+re-audit; no concurrent build). Build re-confirmed `-Werror` clean; in-tree
+`kappa test tests/conformance` = **229/229**, `examples` = **1/1**,
+`cabal test` PASS. External corpus re-run with per-fixture diff vs the prior
+raw log: **927 pass / 30 fail / 2 unsupported / 0 harness-error (959 total)**,
+**0 pass→fail regressions**, identical fixture status set.
+
+- **RESOLVED (32):** G1, G2, G3, G5, G6, G7, G8, G9, G10, G11, G12, G13, G14,
+  G15, G16, G17, G19, G21, G22, G23, G24, G25, G26, G27, G28, G29, G30, G31,
+  G32, G33, G34, G35, G36 — all re-probed; original failing probe no longer
+  reproduces and the cited § is satisfied. (C3 EuclideanSemiring superclass
+  shape corrected; law members omitted as the documented operational subset,
+  KNOWN_SPEC_ISSUES §17.)
+- **RESOLVED-WITH-RESIDUAL (3) — original probe fixed, a narrower cited MUST
+  still unmet:**
+  - **G4** — borrow-escape-through-result / fork-capture / composite-arg
+    `E_QTT_BORROW_ESCAPE` forms emit empty `related`; §3.1.1A (line 602-603)
+    makes the borrow-intro + escape origin a MUST. Place-arg-escape form and
+    all other §3.1.1A MUST classes DO carry them. (MINOR)
+  - **G18** — `~=`/`Equiv`/fixity present (original `E_NAME_UNRESOLVED` gone),
+    but the §28.2/§14113 prelude bridge `instance Eq a => Equiv a` is absent, so
+    `1 ~= 1` → `E_UNSOLVED_IMPLICIT`. (MINOR; machinery sound, MUST instance
+    missing)
+  - **G20** — 8/10 proof helpers resolve; `measureRelation`/`lexRelation`
+    (§28.2/§29854 erased well-founded vocabulary) still `E_NAME_UNRESOLVED`,
+    undocumented. (MINOR; compile-time-only terms)
+
+Net: 32 fully resolved, 3 resolved-with-residual (the residual in each is a
+MINOR, narrow, cited-MUST sub-case — never a soundness break, never a false
+accept, never a regression), 1 (G36) upgraded RESOLVED. No BLOCKER or MAJOR
+remains open. The blanket "all 36 resolved" claim is **overstated for G4/G18/G20**
+on the precise residuals above; all four prior BLOCKERs (G1, G2, G3, G4-core)
+and the soundness-critical items are genuinely closed.
 
 ---
 

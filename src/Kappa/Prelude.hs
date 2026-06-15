@@ -700,6 +700,11 @@ preludeSource =
       "trait Equiv (a : Type) ="
     , "    (~=) : a -> a -> Bool"
     , ""
+    , -- §14.1.1.3 / §28.2: every Eq is an Equiv (the prelude bridge
+      -- instance), so (~=) resolves for any type with an Eq instance.
+      "instance Eq a => Equiv a ="
+    , "    let (~=) x y = x == y"
+    , ""
     , -- §28.2 Alternative (the empty/orElse choice structure)
       "trait Alternative (f : Type -> Type) ="
     , "    emptyA : forall (a : Type). f a"
@@ -1651,6 +1656,28 @@ preludeSource =
     , ""
     , "trait InterpolatedMacro (t : Type) ="
     , "    buildInterpolated : List SyntaxFragment -> Elab (Syntax t)"
+    , ""
+    , -- §6.5 prefixed single-quoted literals: the decoded payload record
+      -- and its handler trait (the conventional g/b handlers elaborate
+      -- through this surface).
+      "data QuotedLiteral : Type ="
+    , "    QuotedLiteral (sourceBody : String) (text : Option String) (bytes : Option Bytes)"
+    , ""
+    , "trait QuotedLiteralMacro (t : Type) ="
+    , "    buildQuotedLiteral : QuotedLiteral -> Elab (Syntax t)"
+    , ""
+    , -- §20.9/§20.10: borrowed comprehension sources. The associated
+      -- result members reference Region/BorrowView in the spec; like
+      -- IntoQuery (see above and KNOWN_SPEC_ISSUES.md) the names are
+      -- surfaced with their associated item type plus a query-producing
+      -- member, so 'for &'/'for? &' sources resolve.
+      "trait BorrowSourceIntoQuery (src : Type) ="
+    , "    BorrowSrcItem : Type"
+    , "    toBorrowSourceQuery : src -> Query BorrowSrcItem"
+    , ""
+    , "trait BorrowItemsIntoQuery (src : Type) ="
+    , "    BorrowItem : Type"
+    , "    toBorrowItemsQuery : src -> Query BorrowItem"
     , ""
     , -- §20.9 custom comprehension sinks (the associated 'Item' type is
       -- an ordinary member of type 'Type'; the hook parameter is typed
