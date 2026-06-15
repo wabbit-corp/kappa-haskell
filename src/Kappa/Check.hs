@@ -1386,27 +1386,56 @@ emitUnsolvedGoal ctx sp g = do
         then pure () -- the goal is the cascade of an already-reported mismatch
         else emit
 
+-- | All metavariable identifiers occurring in a term, with full
+-- constructor coverage (de-duplicated). Shared by the meta-collection
+-- sites so they cannot drift in which constructors they descend into.
+metaIdsOf :: Term -> [MetaId]
+metaIdsOf = nub . go
+  where
+    go = \case
+      CMeta m -> [m]
+      CApp _ a b -> go a ++ go b
+      CPi _ _ _ a b -> go a ++ go b
+      CLam _ _ _ b -> go b
+      CCtor _ as -> concatMap go as
+      CRecordT fs -> concatMap (go . snd) fs
+      CRecordV fs -> concatMap (go . snd) fs
+      CVariantT ms -> concatMap go ms
+      CInject _ e -> go e
+      CProj e _ -> go e
+      CMatch s alts -> go s ++ concat [maybe [] go g ++ go b | CaseAlt _ g b <- alts]
+      CLet _ _ a b c -> go a ++ go b ++ go c
+      CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CSealE _ e -> go e
+      CSigT _ e -> go e
+      CThunkE e -> go e
+      CLazyE e -> go e
+      CForceE e -> go e
+      CIf a b c -> go a ++ go b ++ go c
+      CQuote _ slots -> concatMap go slots
+      CVar _ -> []
+      CGlob _ -> []
+      CSort _ -> []
+      CLit _ -> []
+      CDo _ -> []
+
+-- | The unsolved subset of 'metaIdsOf' under the current solution map.
+unsolvedMetasOf :: CheckState -> Term -> [MetaId]
+unsolvedMetasOf st t =
+  [ m
+  | m <- metaIdsOf t
+  , case Map.lookup m (csMetas st) of
+      Just (Just _) -> False
+      _ -> True
+  ]
+
 -- | Unsolved metavariable identifiers occurring in a value's quotation.
 unsolvedMetaIdsIn :: Value -> CheckM [MetaId]
 unsolvedMetaIdsIn v = do
   ec <- ec_
   let t = quote ec 0 v
   st <- get
-  let unsolved m = case Map.lookup m (csMetas st) of
-        Just (Just _) -> False
-        _ -> True
-  pure (filter unsolved (nub (goT t)))
-  where
-    goT = \case
-      CMeta m -> [m]
-      CApp _ a b -> goT a ++ goT b
-      CPi _ _ _ a b -> goT a ++ goT b
-      CLam _ _ _ b -> goT b
-      CCtor _ as -> concatMap goT as
-      CRecordT fs -> concatMap (goT . snd) fs
-      CVariantT ms -> concatMap goT ms
-      CProj e _ -> goT e
-      _ -> []
+  pure (unsolvedMetasOf st t)
 
 -- | Replace solved metavariables by their solutions, quoted at the
 -- correct binder depth. Run after 'flushPending' so terms stored as
@@ -8826,14 +8855,7 @@ elabAliasBody params rhs = do
   tm1 <- zonkTermM 0 tm0
   kindTm1 <- zonkTermM 0 kindTm0
   st <- get
-  let unsolvedIn t = nub [m | m <- metasOf t, maybe True isNothing (Map.lookup m (csMetas st))]
-      metasOf = \case
-        CMeta m -> [m]
-        CPi _ _ _ a b -> metasOf a ++ metasOf b
-        CLam _ _ _ b -> metasOf b
-        CApp _ f a -> metasOf f ++ metasOf a
-        _ -> []
-      unsolved = unsolvedIn kindTm1
+  let unsolved = unsolvedMetasOf st kindTm1
       k = length unsolved
       offsets = Map.fromList (zip unsolved [0 :: Int ..])
       replaceMetas d t = case t of
