@@ -664,6 +664,12 @@ evalPurePrim p args = case (p, args) of
   ("__setToList", [v]) -> Just v
   ("__arrayFromList", [v]) -> Just v
   ("__arrayToList", [v]) -> Just v
+  -- §28.2 total in-bounds index over the list-backed array; the in-bounds
+  -- proof guarantees the element exists, so out-of-bounds traps (stuck).
+  ("__arrayIndexUnsafe", [xs, VLit (LitInt i)]) -> indexList xs i
+  -- §28.2 subst/pathInd transport is the identity on the runtime payload
+  -- (the equality witness is erased and proof-irrelevant)
+  ("__transport", [v]) -> Just v
   ("__mapFromEntries", [v]) -> Just v
   ("__mapToList", [v]) -> Just v
   -- §21.6 'sameSymbol' compares resolved declaration identity
@@ -698,6 +704,14 @@ evalPurePrim p args = case (p, args) of
     asRat :: Value -> Maybe (Integer, Integer)
     asRat v = case v of
       VPrim "__rat" [VLit (LitInt n), VLit (LitInt d)] -> Just (n, d)
+      _ -> Nothing
+    -- walk a cons-list value to its i-th element (0-based); Nothing when
+    -- the list runs out (out of bounds) so the application stays stuck
+    indexList :: Value -> Integer -> Maybe Value
+    indexList v i = case v of
+      VCtor (GName _ "::") [h, t]
+        | i <= 0 -> Just h
+        | otherwise -> indexList t (i - 1)
       _ -> Nothing
     -- exact decode of a finite binary64 into a reduced ratio
     doubleToRatio :: Double -> (Integer, Integer)

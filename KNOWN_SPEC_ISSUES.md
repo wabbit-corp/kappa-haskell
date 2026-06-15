@@ -382,3 +382,31 @@ its equation in a later proof*. Evidence:
 In every case the *name* is a resolvable prelude export, satisfying the
 §28.2 declaration MUSTs; only the proof-carrying members are omitted.
 Evidence: `Kappa.Prelude` (trait declarations near `Iterator`).
+
+## 19. §28.2: `sym`/`trans`/`cong`/`subst`/`pathInd` resolve but are usable only with determined endpoints
+
+The §28.2 proof/equality helpers `absurd`, `subst`, `sym`, `trans`,
+`cong`, `pathInd`, `unsafeAssertProof`, and `witness` are all declared as
+prelude terms with their spec signatures and resolve by name. Their
+*bodies*, however, cannot be written by `match eq case refl -> ...`,
+because this implementation does not refine an equality's index `y := x`
+when matching `refl` — a direct consequence of the unpropagated `(=)`
+parameter/index split documented in issue 2. They are therefore realized
+through erased-proof primitives (`__transport`, identity on the runtime
+payload since the witness is erased; `__eqProof`, an inhabitant of the
+erased equality goal; `__absurd`).
+
+A second, more general consequence of issue 2 surfaces at *use* sites: a
+call like `sym eq` for `eq : x = y` cannot determine the helper's `@0 x`
+and `@0 y` implicits by unification, because the equality index is not
+propagated. The undetermined erased implicits then fall to scope search,
+which finds the two same-typed `@0` binders and reports
+`E_IMPLICIT_AMBIGUOUS` (§16.3.3) — note this is *general* behaviour for
+any function with two unconstrained same-typed `@0` binders, not specific
+to the proof helpers. Likewise `subst`/`pathInd` require an explicit
+motive annotation because the motive `p` is not inferable from the
+payload alone. Consequently these helpers are usable only when the
+equality endpoints (and motive, for transport) are concretely determined;
+the names and signatures are nonetheless present per §28.2. Evidence:
+`Kappa.Prelude` (proof-helper block), `tests/conformance/prelude/`
+`proof_helpers_resolve.kp`.

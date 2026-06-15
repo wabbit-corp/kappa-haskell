@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\nTrue\nFalse\na\n2\n20\n3\nTrue\n"
+
+-- §28.2 collection-basics surface: Array/Set/Map are list-backed under
+-- the §20.10.11 as-if model; Set/Map identify by Eq and deduplicate.
+
+module main
+
+s : Set Integer
+let s = setInsert 3 (setInsert 1 (setInsert 3 setEmpty))
+
+m : Map Integer String
+let m = mapInsert 1 "a" (mapInsert 2 "b" (mapInsert 1 "c" mapEmpty))
+
+arr : Array Integer
+let arr = arrayFromList (10 :: 20 :: 30 :: Nil)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (natToInt (setSize s)))     -- 2 (deduped)
+    println (setMember 1 s)                              -- True
+    println (setMember 9 s)                              -- False
+    printlnString (orElse (mapLookup 1 m) "none")        -- a (latest insert)
+    printlnString (showInt (natToInt (mapSize m)))       -- 2
+    printlnString (showInt (orElse (arrayGet arr 1) 0))  -- 20
+    printlnString (showInt (natToInt (arrayLength arr))) -- 3
+    println (mapMember 2 (mapDelete 9 m))                -- True

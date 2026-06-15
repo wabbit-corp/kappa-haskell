@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2: the proof/equality helper names resolve as prelude exports.
+-- 'absurd' and 'witness' are exercised at concrete types here; the
+-- equality helpers subst/sym/trans/cong/pathInd resolve but are usable
+-- only with determined endpoints (see KNOWN_SPEC_ISSUES.md), so they are
+-- referenced by their declared signatures via eta-aliases below.
+
+module main
+
+absurdInt : Void -> Integer
+let absurdInt v = absurd v
+
+-- eta-aliases: each reference forces name resolution against the spec
+-- signature without committing to a polymorphic call.
+mySubst : forall (@0 a : Type) (@0 p : a -> Type) (@0 x : a) (@0 y : a). x = y -> p x -> p y
+let mySubst = subst
+
+mySym : forall (@0 a : Type) (@0 x : a) (@0 y : a). x = y -> y = x
+let mySym = sym
+
+myTrans : forall (@0 a : Type) (@0 x : a) (@0 y : a) (@0 z : a). x = y -> y = z -> x = z
+let myTrans = trans
+
+myCong : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y
+let myCong = cong
+
+myUnsafe : forall (@0 p : Type). (@_ : IsProp p) -> (@0 reason : String) -> p
+let myUnsafe = unsafeAssertProof

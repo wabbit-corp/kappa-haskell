@@ -363,6 +363,19 @@ builtinState =
       , prim "__setToList" (tyV (piI Q0 "a" tType (setT (CVar 0) ~> listT (CVar 1))))
       , prim "__arrayFromList" (tyV (piI Q0 "a" tType (listT (CVar 0) ~> arrayT (CVar 1))))
       , prim "__arrayToList" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> listT (CVar 1))))
+      , -- §28.2 total in-bounds index: traps at runtime if out of bounds
+        prim "__arrayIndexUnsafe" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> tInt ~> CVar 1)))
+      , -- §28.2 unsafeAssertProof escape hatch: an opaque inhabitant of
+        -- the asserted proposition (erased; never inspected at runtime)
+        prim "__unsafeAssertProof" (tyV (piI Q0 "p" tType (CVar 0)))
+      , -- §28.2 proof-helper internals. '__absurd' eliminates Void (it is
+        -- never applied to a real value). '__transport' is the identity
+        -- on a proof-irrelevantly equal value: 'subst'/'pathInd' carry
+        -- the runtime payload through unchanged. '__eqProof' inhabits an
+        -- erased equality proposition.
+        prim "__absurd" (tyV (piI Q0 "a" tType (tcon "Void" ~> CVar 0)))
+      , prim "__transport" (tyV (piI Q0 "from" tType (piI Q0 "to" tType (CVar 1 ~> CVar 0))))
+      , prim "__eqProof" (tyV (piI Q0 "t" tType (CVar 0)))
       , prim "__mapFromEntries"
           (tyV (piI Q0 "k" tType (piI Q0 "v" tType (listT (entryT (CVar 1) (CVar 0)) ~> mapT (CVar 2) (CVar 1)))))
       , prim "__mapToList"
@@ -1012,6 +1025,102 @@ preludeSource =
     , "    case Nil -> 0"
     , "    case _ :: rest -> addInt 1 (listLength rest)"
     , ""
+    , -- §28.2 collection-basics surface (§20.10.11 as-if list model). The
+      -- Array/Set/Map carriers are list-backed at runtime; the '__*'
+      -- conversion prims are the identity on the element stream, so these
+      -- terms are defined over List operations. Set/Map identify elements
+      -- and keys by Eq, deduplicating on the list model.
+      "__listIndex : forall (a : Type). List a -> Integer -> Option a"
+    , "let __listIndex xs i ="
+    , "    match xs"
+    , "    case Nil -> None"
+    , "    case x :: rest -> if leInt i 0 then Some x else __listIndex rest (subInt i 1)"
+    , ""
+    , "arrayEmpty : forall (a : Type). Array a"
+    , "let arrayEmpty = __arrayFromList Nil"
+    , ""
+    , "arraySingleton : forall (a : Type). a -> Array a"
+    , "let arraySingleton x = __arrayFromList (x :: Nil)"
+    , ""
+    , "arrayFromList : forall (a : Type). List a -> Array a"
+    , "let arrayFromList xs = __arrayFromList xs"
+    , ""
+    , "arrayToList : forall (a : Type). Array a -> List a"
+    , "let arrayToList xs = __arrayToList xs"
+    , ""
+    , "arrayLength : forall (a : Type). Array a -> Nat"
+    , "let arrayLength xs = natOfInt (listLength (__arrayToList xs))"
+    , ""
+    , "arrayGet : forall (a : Type). Array a -> Nat -> Option a"
+    , "let arrayGet xs i = __listIndex (__arrayToList xs) (natToInt i)"
+    , ""
+    , -- the proof-carrying §28.2 'arrayIndex' (in-bounds total indexing);
+      -- the in-bounds proof makes the lookup total, so it delegates to
+      -- the trapping primitive '__arrayIndexUnsafe' (out-of-bounds is
+      -- unreachable under the supplied proof).
+      "arrayIndex : forall (a : Type). (xs : Array a) -> (i : Nat) -> (@_ : (i < arrayLength xs) = True) -> a"
+    , "let arrayIndex xs i = __arrayIndexUnsafe xs (natToInt i)"
+    , ""
+    , "setEmpty : forall (a : Type). (@_ : Eq a) -> Set a"
+    , "let setEmpty = __setFromList Nil"
+    , ""
+    , "setSingleton : forall (a : Type). (@_ : Eq a) -> a -> Set a"
+    , "let setSingleton x = __setFromList (x :: Nil)"
+    , ""
+    , "setMember : forall (a : Type). (@_ : Eq a) -> a -> Set a -> Bool"
+    , "let setMember x s = __anyEq (\\p -> \\q -> p == q) x (__setToList s)"
+    , ""
+    , "setInsert : forall (a : Type). (@_ : Eq a) -> a -> Set a -> Set a"
+    , "let setInsert x s = if setMember x s then s else __setFromList (x :: __setToList s)"
+    , ""
+    , "__deleteEq : forall (a : Type). (a -> a -> Bool) -> a -> List a -> List a"
+    , "let __deleteEq eq x xs ="
+    , "    match xs"
+    , "    case Nil -> Nil"
+    , "    case y :: rest -> if eq x y then __deleteEq eq x rest else y :: __deleteEq eq x rest"
+    , ""
+    , "setDelete : forall (a : Type). (@_ : Eq a) -> a -> Set a -> Set a"
+    , "let setDelete x s = __setFromList (__deleteEq (\\p -> \\q -> p == q) x (__setToList s))"
+    , ""
+    , "setSize : forall (a : Type). Set a -> Nat"
+    , "let setSize s = natOfInt (listLength (__setToList s))"
+    , ""
+    , "mapEmpty : forall (k : Type) (v : Type). (@_ : Eq k) -> Map k v"
+    , "let mapEmpty = __mapFromEntries Nil"
+    , ""
+    , "mapSingleton : forall (k : Type) (v : Type). (@_ : Eq k) -> k -> v -> Map k v"
+    , "let mapSingleton kx vx = __mapFromEntries ((key = kx, value = vx) :: Nil)"
+    , ""
+    , "__mapDeleteKey : forall (k : Type) (v : Type). (k -> k -> Bool) -> k -> List (key : k, value : v) -> List (key : k, value : v)"
+    , "let __mapDeleteKey eq k0 es ="
+    , "    match es"
+    , "    case Nil -> Nil"
+    , "    case e :: rest -> if eq k0 e.key then __mapDeleteKey eq k0 rest else e :: __mapDeleteKey eq k0 rest"
+    , ""
+    , "mapInsert : forall (k : Type) (v : Type). (@_ : Eq k) -> k -> v -> Map k v -> Map k v"
+    , "let mapInsert kx vx m = __mapFromEntries ((key = kx, value = vx) :: __mapDeleteKey (\\p -> \\q -> p == q) kx (__mapToList m))"
+    , ""
+    , "mapDelete : forall (k : Type) (v : Type). (@_ : Eq k) -> k -> Map k v -> Map k v"
+    , "let mapDelete kx m = __mapFromEntries (__mapDeleteKey (\\p -> \\q -> p == q) kx (__mapToList m))"
+    , ""
+    , "__mapLookupKey : forall (k : Type) (v : Type). (k -> k -> Bool) -> k -> List (key : k, value : v) -> Option v"
+    , "let __mapLookupKey eq k0 es ="
+    , "    match es"
+    , "    case Nil -> None"
+    , "    case e :: rest -> if eq k0 e.key then Some e.value else __mapLookupKey eq k0 rest"
+    , ""
+    , "mapLookup : forall (k : Type) (v : Type). (@_ : Eq k) -> k -> Map k v -> Option v"
+    , "let mapLookup kx m = __mapLookupKey (\\p -> \\q -> p == q) kx (__mapToList m)"
+    , ""
+    , "mapMember : forall (k : Type) (v : Type). (@_ : Eq k) -> k -> Map k v -> Bool"
+    , "let mapMember kx m ="
+    , "    match mapLookup kx m"
+    , "    case Some _ -> True"
+    , "    case None -> False"
+    , ""
+    , "mapSize : forall (k : Type) (v : Type). Map k v -> Nat"
+    , "let mapSize m = natOfInt (listLength (__mapToList m))"
+    , ""
     , "orElse : forall (a : Type). Option a -> a -> a"
     , "let orElse o d ="
     , "    match o"
@@ -1258,6 +1367,43 @@ preludeSource =
     , ""
     , "summon : (goal : Type) -> (@ev : goal) -> goal" -- §14.3.2
     , "let summon goal @ev = ev"
+    , ""
+    , -- §28.2 proof and equality helpers over propositional equality.
+      -- This implementation does not refine an equality's index when it
+      -- matches 'refl' (the (=) parameter/index split of §11.4.1 is not
+      -- propagated through 'match'; see KNOWN_SPEC_ISSUES.md), so these
+      -- helpers cannot be defined by 'match eq case refl -> ...'. They
+      -- are realized through primitives that respect the operational
+      -- meaning of erased, proof-irrelevant equality: 'subst'/'pathInd'
+      -- transport by the identity (the equality witness is erased), and
+      -- sym/trans/cong produce the relevant erased proof. The spec
+      -- signatures are exactly as in §28.2.
+      "absurd : forall (@0 a : Type). Void -> a"
+    , "let absurd v = __absurd v"
+    , ""
+    , "subst : forall (@0 a : Type) (@0 p : a -> Type) (@0 x : a) (@0 y : a). x = y -> p x -> p y"
+    , "let subst eq px = __transport px"
+    , ""
+    , "sym : forall (@0 a : Type) (@0 x : a) (@0 y : a). x = y -> y = x"
+    , "let sym eq = __eqProof"
+    , ""
+    , "trans : forall (@0 a : Type) (@0 x : a) (@0 y : a) (@0 z : a). x = y -> y = z -> x = z"
+    , "let trans p q = __eqProof"
+    , ""
+    , "cong : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y"
+    , "let cong f eq = __eqProof"
+    , ""
+    , -- §11.4: dependent path induction over the motive 'c'. The base
+      -- case is transported to the (proof-irrelevantly identical) goal.
+      "pathInd : forall (@0 a : Type) (@0 x : a) (@0 c : forall (@0 y : a). (@0 pp : x = y) -> Type). c x refl -> forall (@0 y : a). (p : x = y) -> c y p"
+    , "let pathInd base y p = __transport base"
+    , ""
+    , -- §28.2 escape hatch: an unchecked proof of a proposition.
+      "unsafeAssertProof : forall (@0 p : Type). (@_ : IsProp p) -> (@0 reason : String) -> p"
+    , "let unsafeAssertProof reason = __unsafeAssertProof"
+    , ""
+    , "witness : forall (a : Type). (@value : a) -> a"
+    , "let witness @value = value"
     , ""
     , -- §17.3: partial active patterns that thread a residue on a miss
       "data Match (a : Type) (r : Type) : Type ="
