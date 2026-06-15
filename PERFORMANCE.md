@@ -5,8 +5,8 @@ GHC 9.4.7, `-O` defaults from the cabal file, binary invoked directly
 via `cabal list-bin kappa`, `/usr/bin/time`, best/typical of 3 runs).
 Re-measured after the macro/effects/projections/unicode feature phase
 (the implementation roughly doubled to ~23.7k lines; constants grew
-accordingly and one quadratic was found and fixed — see §2 and "Known
-costs"). Reproduce with the commands shown.
+accordingly and quadratics were found and fixed — see §2, §2b, and
+"Known costs"). Reproduce with the commands shown.
 
 ## Workloads and results
 
@@ -84,6 +84,39 @@ Per-doubling factor is ~1.9–2.2x for every literal family, and
 float/char files are no slower than int files of the same shape — the
 literal-kind asymmetry remains gone. Memory is linear at roughly
 4 KB/declaration.
+
+### 2b. Unresolved-name typo suggestions (§3.2.2)
+
+A file of `N` definitions, each referencing a distinct out-of-scope name
+(the shape of a dropped or renamed import that breaks many references at
+once), exercises the `E_NAME_UNRESOLVED` typo-suggestion path
+(`closeSpellings`/`editDistance` in `Check.hs`). Best of 3,
+`kappa check`:
+
+| defs (each one unresolved name) | wall time |
+| --- | --- |
+| 250 | 0.76 s |
+| 500 | 1.61 s |
+| 1,000 | 3.14 s |
+
+**Fixed quadratic.** Each unresolved name built the full in-scope set and
+ran Levenshtein `editDistance` against *every* candidate, so the cost was
+O(N_names × N_scope × len²) — measured at ~29 s for 1,000 unresolved
+names with a super-linear per-doubling factor. Two changes restore the
+linear curve above:
+
+* `closeSpellings` now bounds the candidate set *before* the edit-distance
+  loop. Levenshtein distance is at least the length difference, so any
+  candidate whose length differs from the target by more than the
+  suggestion threshold can never be within it; those are filtered by a
+  cheap `abs (len c − len target) <= threshold` test, leaving only the
+  small set of length-compatible candidates for the O(len²) computation.
+* `inScopeNames` deduplicates with `Set.fromList` (O(n log n)) instead of
+  the previous `nub` (O(n²) in scope size).
+
+The suggestion output is unchanged — the boundary cases are covered by
+`tests/conformance/diagnostics/unresolved-typo-fix.kp` and
+`unresolved-typo-lenfilter.kp`.
 
 ### 3. Runtime loop: summing 0..99,999
 

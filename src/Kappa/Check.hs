@@ -1135,11 +1135,21 @@ closeSpellings target cands =
       [ (d, c)
       | c <- cands
       , c /= target
-      , let d = editDistance (T.unpack target) (T.unpack c)
+      -- Levenshtein distance is at least the length difference, so a
+      -- candidate whose length differs from the target by more than the
+      -- threshold can never be within threshold. Skipping it before the
+      -- O(len^2) edit-distance keeps the per-error cost proportional to
+      -- the (small) set of length-compatible candidates rather than the
+      -- whole scope (avoids an O(Nnames * Nscope * len^2) blowup when a
+      -- dropped import breaks many references in a large module).
+      , abs (T.length c - tlen) <= threshold
+      , let d = editDistance tchars (T.unpack c)
       , d <= threshold
       ]
   where
-    threshold = max 1 (min 2 (T.length target `div` 3))
+    tchars = T.unpack target
+    tlen = T.length target
+    threshold = max 1 (min 2 (tlen `div` 3))
 
 -- | Standard Levenshtein edit distance.
 editDistance :: String -> String -> Int
@@ -1234,7 +1244,10 @@ resolveName ctx (Name n sp) =
       let scope = Map.keys (csScope st)
           own = [nm | GName m nm <- Map.keys (csGlobals st), m == csModule st]
           locals = [ceName e | e <- ctxEntries ctx]
-      pure (nub (scope ++ own ++ locals))
+      -- Set-based dedup is O(n log n); the previous 'nub' was O(n^2) in
+      -- scope size, compounding the per-error suggestion cost when many
+      -- references go unresolved at once.
+      pure (Set.toList (Set.fromList (scope ++ own ++ locals)))
     emptyCtxDummy = ctx
 
 -- | Does a name resolve at all (locals or globals)? Used for §6.3.4

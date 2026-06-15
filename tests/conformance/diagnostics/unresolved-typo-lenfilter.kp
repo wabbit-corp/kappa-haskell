@@ -1,0 +1,16 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.2.2: the typo-suggestion search bounds candidates by length
+-- difference before computing Levenshtein distance (Levenshtein >=
+-- length difference, so a candidate further than the threshold in length
+-- can never be within the threshold). This must NOT drop legitimate
+-- suggestions at the boundary: here the target 'configuratio' (len 12,
+-- threshold = min 2 (12/3) = 2) differs from 'configuration' (len 13) by
+-- one deletion (edit distance 1, length diff 1), so the suggestion still
+-- fires.
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion configuration
+module main
+
+let configuration = 5
+let oops = configuratio
