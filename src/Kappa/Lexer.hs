@@ -133,14 +133,14 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
               top = NE.head indents
           if
             | col > top ->
-                goLine s' (NE.cons col indents) (Located TokIndent (here s') : acc) []
-            | col == top -> goLine s' indents acc []
+                goLine s' (NE.cons col indents) (Located TokIndent (here s') : acc) [] False
+            | col == top -> goLine s' indents acc [] False
             | otherwise -> do
                 let (popped, rest) = NE.span (> col) indents
                 case rest of
                   (r : more)
                     | r == col ->
-                        goLine s' (r :| more) (map (const (Located TokDedent (here s'))) popped ++ acc) []
+                        goLine s' (r :| more) (map (const (Located TokDedent (here s'))) popped ++ acc) [] False
                   _ ->
                     lexErr (here s') "E_LAYOUT_BAD_DEDENT" Nothing
                       "dedent does not match any enclosing indentation level"
@@ -191,13 +191,33 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
     -- The bracket stack tracks open delimiters: depth > 0 disables
     -- layout and softens newlines.
 
-    goLine :: St -> NonEmpty Int -> [Located] -> [Token] -> LexM ([Diagnostic], [Located])
-    goLine s indents acc brackets = case peek s of
+    -- The final 'Bool' records whether an unclosed bracket has already
+    -- swallowed a line break that was followed by further real content
+    -- (a soft, in-bracket newline followed by another token). At EOF this
+    -- distinguishes a bracket left dangling at the very end of the file
+    -- (one structural error; the parser reports it) from a bracket that
+    -- absorbed one or more following declarations (§5.2 soft newlines):
+    -- only the latter needs the lexer to surface the unbalanced-bracket
+    -- diagnostic so the swallowed declarations are not dropped silently
+    -- (§3.1.14A in-bracket recovery).
+    goLine :: St -> NonEmpty Int -> [Located] -> [Token] -> Bool -> LexM ([Diagnostic], [Located])
+    goLine s indents acc brackets swallowed = case peek s of
       Nothing
         | null brackets -> goLineStart s indents acc
-        | otherwise -> goLineStart s indents acc -- EOF inside brackets: let the parser report it
-      Just ' ' -> goLine (adv ' ' s) indents acc brackets
-      Just '\r' -> goLine (adv '\r' s) indents acc brackets
+        | not swallowed -> goLineStart s indents acc -- dangling bracket at EOF: the parser reports it
+        | otherwise ->
+            -- an unclosed bracket absorbed following declarations; record
+            -- the §5.2 unbalanced-bracket cause so declaration-level
+            -- recovery does not silently lose them
+            let unclosed = openDelimName (last brackets)
+                s' =
+                  record (here s) "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error")
+                    ("unclosed " <> unclosed <> " at end of input (Spec §5.2)")
+                    ["a " <> unclosed <> " opened earlier has no matching closing delimiter"]
+                    s
+             in goLineStart s' indents acc
+      Just ' ' -> goLine (adv ' ' s) indents acc brackets swallowed
+      Just '\r' -> goLine (adv '\r' s) indents acc brackets swallowed
       Just '\t' ->
         lexErr (here s) "E_TAB_IN_SOURCE" Nothing
           "tab character in source; use spaces (Spec §5.4)"
@@ -208,16 +228,44 @@ lexSourceTokens path src = goLineStart st0 (1 :| []) []
         | all (== TokSplice) brackets ->
             goLineStart (adv '\n' s) indents (Located (TokNewline False) (here s) : acc)
         | otherwise ->
-            goLine (adv '\n' s) indents (Located (TokNewline True) (here s) : acc) brackets
-      Just '-' | startsWith "--" s -> goLine (skipLineComment s) indents acc brackets
+            goLine (adv '\n' s) indents (Located (TokNewline True) (here s) : acc) brackets swallowed
+      Just '-' | startsWith "--" s -> goLine (skipLineComment s) indents acc brackets swallowed
       Just '{' | startsWith "{-" s -> do
         s' <- skipBlock s
-        goLine s' indents acc brackets
+        goLine s' indents acc brackets swallowed
       Just c -> do
         (tok, s') <- scanToken s c
         let sp = spanAt s s'
             brackets' = updateBrackets tok brackets
-        goLine s' indents (Located tok sp : acc) brackets'
+            -- a real token landing on a fresh in-bracket line means the
+            -- currently open bracket has absorbed following content; once
+            -- every bracket has closed the slate is wiped, so content
+            -- swallowed by a since-balanced group does not implicate a
+            -- later, genuinely unclosed delimiter
+            swallowed'
+              | null brackets' = False
+              | swallowed = True
+              | not (null brackets) =
+                  case acc of
+                    (Located (TokNewline _) _ : _) -> True
+                    _ -> False
+              | otherwise = False
+        goLine s' indents (Located tok sp : acc) brackets' swallowed'
+
+    -- A human-readable name for an open-delimiter token (for the
+    -- §5.2 unbalanced-bracket diagnostic).
+    openDelimName :: Token -> Text
+    openDelimName = \case
+      TokLParen -> "'('"
+      TokLBracket -> "'['"
+      TokLBrace -> "'{'"
+      TokVariantOpen -> "'(|'"
+      TokSetOpen -> "set literal"
+      TokEffOpen -> "'<['"
+      TokQuoteBrace -> "quote brace"
+      TokSplice -> "'$('"
+      TokQuoteSplice -> "splice"
+      _ -> "bracket"
 
     updateBrackets :: Token -> [Token] -> [Token]
     updateBrackets t bs = case t of

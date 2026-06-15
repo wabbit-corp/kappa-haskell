@@ -1,0 +1,18 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_EXPECTED_SYNTAX_TOKEN, E_EXPECTED_SYNTAX_TOKEN
+
+-- §5.2/§3.1.14A: inside an open bracket newlines are soft, so an
+-- unclosed delimiter absorbs the declarations that follow it. When such a
+-- bracket has swallowed following content, the lexer surfaces the
+-- unbalanced-bracket cause (one E_EXPECTED_SYNTAX_TOKEN) and the parser's
+-- declaration-level recovery reports the malformed constructor block
+-- (the other), rather than silently dropping the rest of the file.
+--
+-- (A bracket left dangling at the very end of the file, with nothing
+-- after it, is a single structural error — not exercised here.)
+module main
+
+data Box : Type =
+    Mk (field : Int
+let after : Int = 0
