@@ -12,7 +12,7 @@ module Kappa.Interp
   , RunResult (..)
   ) where
 
-import Control.Exception (Exception, throwIO, try)
+import Control.Exception (AsyncException (..), Exception, fromException, throwIO, try)
 import Data.IORef
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -84,7 +84,23 @@ runMainRT rt mainG =
       r <- try (runIOValue rt v)
       case r of
         Right x -> pure (RunOk, Just x)
-        Left (KappaError e) -> pure (RunFail (renderValueShallow e), Nothing)
+        Left e
+          | Just (KappaError ev) <- fromException e ->
+              pure (RunFail (renderValueShallow ev), Nothing)
+          -- §18.8 resource exhaustion: GHC raises 'StackOverflow' /
+          -- 'HeapOverflow' as recoverable async exceptions (the
+          -- executable's '-K64m' guard bounds the host stack, so control
+          -- DOES return to us here). Classify them as the spec's
+          -- 'StackOverflow' / 'OutOfMemory' defects and surface a clean
+          -- Kappa runtime diagnostic instead of letting the raw RTS
+          -- message escape — this covers strict-accumulating divergence
+          -- that outruns the §32.1 force-fuel guard before it can
+          -- materialize a '__recursionDepth' marker.
+          | Just StackOverflow <- fromException e ->
+              pure (RunFail "evaluation exceeded the available stack (StackOverflow)", Nothing)
+          | Just HeapOverflow <- fromException e ->
+              pure (RunFail "evaluation exhausted the available heap (OutOfMemory)", Nothing)
+          | otherwise -> throwIO e
     _ -> pure (RunFail "main is not defined", Nothing)
 
 -- | Execute a value of IO type to completion.

@@ -212,8 +212,12 @@ force :: EvalCtx -> Value -> Value
 force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
   where
     -- runtime evaluation is depth-guarded (§32.1): a divergent
-    -- reduction chain becomes a clean runtime error instead of an
-    -- unbounded host-stack blowup
+    -- *reduction* chain becomes a clean runtime error (the
+    -- '__recursionDepth' marker) instead of an unbounded host-stack
+    -- blowup. The complementary case — strict-accumulating recursion
+    -- that grows the host call stack directly, outrunning this fuel —
+    -- is caught as a recoverable 'StackOverflow' in 'Interp.runMainRT'
+    -- (§18.8), so both forms of divergence surface a Kappa diagnostic.
     go 0 v
       | ecRuntime ctx = VPrim "__recursionDepth" []
       | otherwise = v

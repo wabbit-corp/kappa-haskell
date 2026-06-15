@@ -187,7 +187,13 @@ into ordinary code are unaffected.
   recursion in the elaborator/interpreter fails predictably instead of
   overflowing), and no heap cap (GHC default unbounded heap). Observed
   RSS stays under ~90 MB for every workload above except the synthetic
-  32k+-declaration files (linear at ~4 KB/decl, ~270 MB at 64k).
+  32k+-declaration files (linear at ~4 KB/decl, ~270 MB at 64k). When a
+  *running* program diverges, the `-K64m` ceiling raises a recoverable
+  GHC `StackOverflow`; `Interp.runMainRT` catches it (and `HeapOverflow`)
+  and emits a clean Kappa runtime diagnostic per §18.8, rather than
+  letting the raw RTS message escape — so both fuel-bounded reduction
+  divergence (the `__recursionDepth` marker, §32.1) and strict-stack
+  accumulation surface as a Kappa-level failure.
 
 ## Non-goals
 
