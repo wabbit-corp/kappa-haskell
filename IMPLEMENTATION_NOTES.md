@@ -681,8 +681,9 @@ family). These are *rendered-code* spellings the spec mandates directly,
 not cross-implementation aliases of an existing code, so each is added
 to the `Explain.hs` registry under its §3.2 family and is emitted (where
 reachable) by a general structural rule — never by fixture-name
-matching. The first two are reachable and now emitted; the third's
-condition requires an unimplemented feature and is vacuously satisfied.
+matching. All three are reachable and now emitted (the third,
+`E_ROW_TAIL_QUANTITY_UNSATISFIED`, at the open-record tail-drop site; see
+entry #3 below).
 
 1. **`E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH`
    (`kappa.application.explicit-implicit-classifier`) — REACHABLE,
