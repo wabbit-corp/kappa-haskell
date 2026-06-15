@@ -808,7 +808,19 @@ expectType ctx sp actual expected = do
     -- application-argument error when both sides are canonical
     -- non-function types (the argument simply does not fit the
     -- parameter); same-head indexed mismatches additionally cite the
-    -- failed transport (§16.1.8)
+    -- failed transport (§16.1.8).
+    --
+    -- The expected side must be a *nullary type former* (`VGlobN g []`):
+    -- a saturated atomic type with no remaining indices. This is the
+    -- §16.1.7.1 "argument does not satisfy the binder" shape. Structural
+    -- record types (`VRecordT`) are deliberately excluded on the expected
+    -- side: a record-into-record mismatch (e.g. passing a `RawDelayed`
+    -- where a `Delayed` record is expected) is a §3.2.3 `kappa.type.mismatch`
+    -- on structural type identity, not an argument-classifier failure — so
+    -- it must keep its `E_TYPE_EQUALITY_MISMATCH` spelling. Widening this
+    -- guard to admit records regresses that diagnostic, which is why the
+    -- expected side is restricted to nullary `VGlobN` (any name, since the
+    -- old fixed scalar-name list was not load-bearing).
     flatOk <- gets csArgFlatOk
     flatArgMismatch <- do
       if not retag || sameHead || not flatOk
@@ -822,11 +834,10 @@ expectType ctx sp actual expected = do
                 VRecordT _ -> True
                 VSort _ -> True
                 _ -> False
-              scalarExpected = case eF of
-                VGlobN (GName _ n) [] ->
-                  n `elem` ["Int", "Nat", "Integer", "Float", "Double", "Bool", "String", "UnicodeScalar"]
+              nullaryExpected = case eF of
+                VGlobN (GName _ _) [] -> True
                 _ -> False
-          pure (canonical aF && scalarExpected)
+          pure (canonical aF && nullaryExpected)
     -- §16.1.7.1: a function value supplied at an explicit argument slot
     -- whose expected parameter type is itself a function type, where the
     -- two function types differ in the outermost explicit binder
@@ -2883,6 +2894,18 @@ withArgFlatFor f act = do
   modify' $ \st -> st {csArgFlatOk = old}
   pure r
 
+-- | Run an explicit-argument check with §16.1.7.1/§16.1.8 argument-index
+-- retagging enabled, restoring the prior flag afterward. A mismatch
+-- raised while checking an explicit argument against its parameter type
+-- is reclassified as an application-argument error (see 'expectType').
+withArgIndexRetag :: CheckM a -> CheckM a
+withArgIndexRetag act = do
+  old <- gets csArgIndexRetag
+  modify' $ \st -> st {csArgIndexRetag = True}
+  r <- act
+  modify' $ \st -> st {csArgIndexRetag = old}
+  pure r
+
 -- | One planned argument slot of a checked application spine
 -- ('elabAppChecked'): a kind-like implicit placeholder, an evidence
 -- implicit resolved after result-type pre-unification, or an explicit
@@ -2965,10 +2988,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       _ <- unify ctx mV evV
       pure (CApp Impl tm ev)
     step tm (SlotExpl q e dom mV) = do
-      oldRetag <- gets csArgIndexRetag
-      modify' $ \st -> st {csArgIndexRetag = True}
-      aTm <- withDemand (demandOfQ q) (check ctx e dom)
-      modify' $ \st -> st {csArgIndexRetag = oldRetag}
+      aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
       aV <- evalIn ctx aTm
       _ <- unify ctx mV aV
       pure (CApp Expl tm aTm)
@@ -3325,10 +3345,7 @@ elabSpineArg ctx sp fTm fTy arg rest = do
     (ArgExplicit e, VPi Expl q _ dom clo) -> do
       domF <- forceM dom
       nBefore <- gets (length . csDiags)
-      oldRetag <- gets csArgIndexRetag
-      modify' $ \st -> st {csArgIndexRetag = True}
-      aTm <- withDemand (demandOfQ q) (check ctx e dom)
-      modify' $ \st -> st {csArgIndexRetag = oldRetag}
+      aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
       -- a non-type argument in a type-former's Type slot is an
       -- application-argument error, not a plain mismatch (§16.1)
       case domF of
