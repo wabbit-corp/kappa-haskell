@@ -797,6 +797,19 @@ occursMeta m = go
       CForceE e -> go e
       _ -> False
 
+-- | §3.1.9 expected/actual mismatch payload (the @kappa.type.mismatch@
+-- family MUST expose it when both sides are available). The compact
+-- rendered fragments are the user-facing renderings (already zonked and
+-- metavar-hygienic, §3.1.11). The mismatch kind defaults to
+-- @expression-type@ — the bare type-equality check shape (§3.1.9
+-- ExpectedActualMismatchKind).
+mismatchPayload :: Text -> Text -> Payload
+mismatchPayload expectedR actualR =
+  withPayloadField "expected" expectedR $
+    withPayloadField "actual" actualR $
+      withPayloadField "mismatchKind" "expression-type" $
+        payloadKind "expected-actual"
+
 expectType :: Ctx -> Span -> Value -> Value -> CheckM ()
 expectType ctx sp actual expected = do
   ok <- unify ctx actual expected
@@ -888,21 +901,28 @@ expectType ctx sp actual expected = do
               diag SevError StageElaborate "E_SEAL_OPAQUE_UNFOLDING" (Just "kappa-hs.seal.opaque-unfolding") sp
                 "an opaque member of a sealed package does not unfold to its hidden definition (§13.2.10)"
       else do
+        -- §3.1.11: zonk before rendering so solved metavariables are
+        -- substituted and only genuinely-unknown ones remain (those
+        -- render as the stable hole `_`, never as a raw `?mN` solver id).
+        aTz <- zonkTermM (ctxLen ctx) aT
+        eTz <- zonkTermM (ctxLen ctx) eT
         -- §21: phase-boundary mismatches (a meta-phase 'Elab'/'Syntax'
         -- type against an object-phase one) carry the rendered types in
         -- the message itself, since the phase is the point
-        let aR = renderTerm aT
-            eR = renderTerm eT
+        let aR = renderTerm aTz
+            eR = renderTerm eTz
             metaish r = "Elab" `T.isInfixOf` r || "Syntax" `T.isInfixOf` r
             msg =
               if (metaish aR || metaish eR) && aR /= eR
                 then "type mismatch: expected '" <> eR <> "', actual '" <> aR <> "'"
                 else "type mismatch"
         report $
-          withNote ("expected: " <> eR) $
-            withNote ("actual:   " <> aR) $
-              diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
-                msg
+          withPayload (mismatchPayload eR aR) $
+            withRelated (related RoleUseSite sp ("this expression has type " <> aR)) $
+              withNote ("expected: " <> eR) $
+                withNote ("actual:   " <> aR) $
+                  diag SevError StageElaborate "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") sp
+                    msg
 
 -- | Is the value a §16.1.7.1 suspension type (Thunk/Need)?
 isSuspV :: Value -> Bool
@@ -1846,9 +1866,20 @@ infer ctx expr = case expr of
   EHole mn sp -> do
     (tm, ty) <- anyHole ctx
     tyT <- quoteIn ctx ty
+    -- §3.1.11: zonk so a solved expected type is shown concretely; a
+    -- still-unsolved expected type renders as the stable hole `_`.
+    tyTz <- zonkTermM (ctxLen ctx) tyT
+    let holeName = maybe "_" (("?" <>) . nameText) mn
+        expectedR = renderTerm tyTz
     report $
-      diag SevError StageElaborate "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved") sp
-        (("hole " <> maybe "_" (("?" <>) . nameText) mn) <> " : " <> renderTerm tyT)
+      -- §3.2.4 kappa.hole.unsolved payload: hole identifier + expected type.
+      withPayload
+        ( withPayloadField "hole" holeName $
+            withPayloadField "expected" expectedR $
+              payloadKind "hole-unsolved"
+        )
+        $ diag SevError StageElaborate "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved") sp
+            ("hole " <> holeName <> " : " <> expectedR)
     pure (tm, ty)
   EIntLit v msuf sp -> elabIntLit ctx v msuf sp Nothing
   EFloatLit v msuf sp -> elabFloatLit ctx v msuf sp Nothing
@@ -4251,10 +4282,15 @@ elabDotUnqualified ctx e member mname = do
               case mg of
                 Just _ -> methodSugar tm1 t mn0
                 Nothing -> do
+                  -- §3.1.11 / §13.2.11: internal existential labels are
+                  -- not source-addressable fields, so they are excluded
+                  -- from the user-facing field list (a package that
+                  -- exposes only such labels lists no fields).
+                  let visibleFields = [n | (n, _) <- fs, not (isExistsInternalLabel n)]
                   errAt (nameSpanOf member) "E_RECORD_PROJECTION_MISSING_FIELD"
                     (Just "kappa.name.unresolved")
                     ("record has no field '" <> nameText mn0
-                       <> "' (fields: " <> T.intercalate ", " (map fst fs) <> ")")
+                       <> "' (fields: " <> T.intercalate ", " visibleFields <> ")")
                   anyHole ctx
         -- §11.3.1A: explicit-prefix projection on an open record
         VGlobN (GName pm "__openRec") [_, (_, prefixV)]

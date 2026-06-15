@@ -1,0 +1,17 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+-- §3.1.9: the kappa.type.mismatch family exposes an expected/actual
+-- payload (expected, actual, mismatchKind).
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/kind expected-actual
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/mismatchKind expression-type
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Integer
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Bool
+-- §3.1.1A: a type-mismatch diagnostic carries the actual-expression site
+-- as a related origin (use-site).
+--! assertDiagnosticRelated error kappa.type.mismatch use-site
+-- §3.1.5: the diagnostic carries source-range labels (its notes).
+--! assertDiagnosticLabel error kappa.type.mismatch note
+module main
+
+bad : Int
+let bad = True

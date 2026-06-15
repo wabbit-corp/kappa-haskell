@@ -120,6 +120,12 @@ data Assertion
   | ADiagAtRange !Text !Sev !Text !Int !Int !Int !Int
   | ADiagMatch !Text !Regex -- ^ original pattern text + compiled form
   | ADiagFamily !Sev !Text
+  | ADiagPayload !Sev !Text !Text !Text -- ^ §T.5.1: sev code-or-family json-pointer expected-json
+  | ADiagLabel !Sev !Text !Text -- ^ §T.5.1: sev code-or-family role
+  | ADiagRelated !Sev !Text !Text -- ^ §T.5.1: sev code-or-family role
+  | ADiagFix !Sev !Text !Text -- ^ §T.5.1: sev code-or-family applicability
+  | ADiagFixCount !Sev !Text !Int -- ^ §T.5.1: sev code-or-family n
+  | ASuppressed !Text !Text -- ^ §T.5.1: primary-code-or-family suppressed-code-or-family
   | AExplainExists !Text -- ^ §3.1.2A registry lookup, code or family
   | AErrorCodes ![Text] -- ^ x-compatible: exact multiset of error codes
   | AEval !Text !Text -- ^ x-compatible: evaluate a global, compare rendering
@@ -165,22 +171,18 @@ declKindNames =
   , "trait", "instance", "derive", "effect", "pattern", "expect"
   ]
 
--- Standard directives whose subject matter this implementation does not
--- produce at all: structured-diagnostic payloads, labels, related
--- origins, fix-its, suppression summaries, and Chapter 34 stage dumps.
--- Diagnostic records here carry none of those fields, so the assertions
--- could never be satisfied; the test exercises an unsupported feature
--- and is classified unsupported (§T.8) rather than failed. Documented
--- in TESTING.md.
+-- Standard structured-diagnostic directives this harness still does not
+-- support. @assertDiagnosticFixCompiles@ would require applying a fix and
+-- recompiling the rewritten source under the same configuration — the
+-- diagnostic records now carry fixes (so payload/label/related/fix/count
+-- assertions are implemented), but the apply-and-recheck round trip is
+-- not wired. @assertStageDump@ compares Chapter 34 stage-dump checkpoints,
+-- which are §34 profile-scoped (no checkpoint serialization here). Both
+-- fail safe to unsupported (§T.8), never a false PASS. Documented in
+-- TESTING.md.
 structuredUnsupported :: [Text]
 structuredUnsupported =
-  [ "assertDiagnosticPayload"
-  , "assertDiagnosticLabel"
-  , "assertDiagnosticRelated"
-  , "assertDiagnosticFix"
-  , "assertDiagnosticFixCount"
-  , "assertDiagnosticFixCompiles"
-  , "assertSuppressedDiagnostic"
+  [ "assertDiagnosticFixCompiles"
   , "assertStageDump"
   ]
 
@@ -312,6 +314,29 @@ parseDirective allLines lno body =
       "assertDiagnosticNext" -> nextAssert
       "assertDiagnosticHere" -> nextAssert -- deprecated alias (§T.5.1)
       "assertDiagnosticFamily" -> withSevCode ADiagFamily
+      -- §T.5.1 structured-diagnostic assertions over the machine-readable
+      -- record (not the rendered prose).
+      "assertDiagnosticPayload" -> case args of
+        (sevT : cf : ptr : exprToks)
+          | Just sev <- parseSev sevT, not (null exprToks) ->
+              ok (SAssert (ADiagPayload sev cf ptr (T.unwords exprToks)))
+        _ -> bad "malformed 'assertDiagnosticPayload' directive"
+      "assertDiagnosticLabel" -> case args of
+        [sevT, cf, role] | Just sev <- parseSev sevT -> ok (SAssert (ADiagLabel sev cf role))
+        _ -> bad "malformed 'assertDiagnosticLabel' directive"
+      "assertDiagnosticRelated" -> case args of
+        [sevT, cf, role] | Just sev <- parseSev sevT -> ok (SAssert (ADiagRelated sev cf role))
+        _ -> bad "malformed 'assertDiagnosticRelated' directive"
+      "assertDiagnosticFix" -> case args of
+        [sevT, cf, appl] | Just sev <- parseSev sevT -> ok (SAssert (ADiagFix sev cf appl))
+        _ -> bad "malformed 'assertDiagnosticFix' directive"
+      "assertDiagnosticFixCount" -> case args of
+        [sevT, cf, nT] | Just sev <- parseSev sevT, Just n <- parseNat nT ->
+          ok (SAssert (ADiagFixCount sev cf n))
+        _ -> bad "malformed 'assertDiagnosticFixCount' directive"
+      "assertSuppressedDiagnostic" -> case args of
+        [primary, supp] -> ok (SAssert (ASuppressed primary supp))
+        _ -> bad "malformed 'assertSuppressedDiagnostic' directive"
       "assertDiagnosticMatch"
         | T.null rest -> bad "malformed 'assertDiagnosticMatch' directive (empty pattern)"
         | otherwise -> case compileRegex rest of
@@ -890,6 +915,42 @@ checkAssertion root path src files cu diags mRun = \case
     require
       (any (\d -> dSeverity d == toSeverity sev && dFamily d == Just fam) diags)
       ("no diagnostic with family " <> fam <> " was produced")
+  ADiagPayload sev cf ptr expected ->
+    let cand = [d | d <- diags, dSeverity d == toSeverity sev, matchCF cf d]
+     in require
+          (any (\d -> payloadPointer ptr d == Just (jsonScalarText expected)) cand)
+          ( "no " <> sevText sev <> " diagnostic matching " <> cf
+              <> " has payload " <> ptr <> " = " <> expected
+              <> " (saw: " <> T.intercalate "; " [ptr <> "=" <> maybe "<absent>" id (payloadPointer ptr d) | d <- cand] <> ")"
+          )
+  ADiagLabel sev cf role ->
+    require
+      (any (\d -> dSeverity d == toSeverity sev && matchCF cf d && labelHasRole role d) diags)
+      ("no " <> sevText sev <> " diagnostic matching " <> cf <> " has a label with role " <> role)
+  ADiagRelated sev cf role ->
+    require
+      (any (\d -> dSeverity d == toSeverity sev && matchCF cf d
+              && any ((== role) . relatedRoleText . roRole) (dRelated d)) diags)
+      ( "no " <> sevText sev <> " diagnostic matching " <> cf
+          <> " has a related origin with role " <> role
+          <> " (saw roles: " <> T.intercalate ", "
+               [relatedRoleText (roRole r) | d <- diags, dSeverity d == toSeverity sev, matchCF cf d, r <- dRelated d]
+          <> ")"
+      )
+  ADiagFix sev cf appl ->
+    require
+      (any (\d -> dSeverity d == toSeverity sev && matchCF cf d
+              && any ((== appl) . fixApplicabilityText . dfApplicability) (dFixes d)) diags)
+      ("no " <> sevText sev <> " diagnostic matching " <> cf <> " has a fix with applicability " <> appl)
+  ADiagFixCount sev cf n ->
+    let cand = [d | d <- diags, dSeverity d == toSeverity sev, matchCF cf d]
+     in require
+          (any ((== n) . length . dFixes) cand)
+          ("no " <> sevText sev <> " diagnostic matching " <> cf <> " has exactly " <> tshow n <> " fixes")
+  ASuppressed primary supp ->
+    require
+      (any (\d -> matchCFAny primary d && any (suppMatches supp) (dSuppressed d)) diags)
+      ("no diagnostic matching " <> primary <> " suppresses a diagnostic matching " <> supp)
   AExplainExists cf ->
     require
       (explainExists cf)
@@ -1079,6 +1140,70 @@ diagHasCode code d =
     || maybe False (`elem` ours) (portableAlias code)
   where
     ours = codeNames (dCode d)
+
+-- | §T.5.1 @code-or-family@ matching for the structured assertions: a
+-- spelling beginning with @kappa.@ is a standardized family; otherwise
+-- it is a diagnostic code (code matching takes priority on ties).
+matchCF :: Text -> Diagnostic -> Bool
+matchCF cf d
+  | "kappa." `T.isPrefixOf` cf = dFamily d == Just cf
+  | otherwise = diagHasCode cf d
+
+-- | Like 'matchCF' but also accepts a §3.2 family even when not spelled
+-- with the @kappa.@ prefix — used for the suppressed-summary code, where
+-- a fixture may name the family directly.
+matchCFAny :: Text -> Diagnostic -> Bool
+matchCFAny cf d = matchCF cf d || dFamily d == Just cf
+
+-- | §3.1.5: this implementation's labels are the diagnostic's notes
+-- anchored on the primary span. The only standardized label "role" they
+-- carry is presentational ("note"), so a label-role assertion matches
+-- when the requested role is @note@ and the diagnostic has at least one
+-- note, or when a related origin carries the requested role.
+labelHasRole :: Text -> Diagnostic -> Bool
+labelHasRole role d =
+  (role == "note" && not (null (dNotes d)))
+    || any ((== role) . relatedRoleText . roRole) (dRelated d)
+
+-- | Does a suppressed summary match a @code-or-family@ spelling?
+suppMatches :: Text -> Suppressed -> Bool
+suppMatches cf s
+  | "kappa." `T.isPrefixOf` cf = suFamily s == Just cf
+  | otherwise = cf `elem` codeNames (suCode s) || maybe False (`elem` codeNames (suCode s)) (portableAlias cf)
+
+-- | §T.5.1 RFC-6901-style payload lookup, restricted to the shallow
+-- pointers this implementation's payloads use: @/payload/<key>@ (or the
+-- shorthand @/<key>@), plus the top-level @/family@, @/code@,
+-- @/severity@, and @/message@. Returns the field's text value, or
+-- Nothing when the pointer does not resolve.
+payloadPointer :: Text -> Diagnostic -> Maybe Text
+payloadPointer ptr d =
+  case T.splitOn "/" (T.dropWhile (== '/') ptr) of
+    ["payload", "kind"] -> Just (pKind (dPayload d))
+    ["payload", k] -> lookup k (pFields (dPayload d))
+    ["kind"] -> Just (pKind (dPayload d))
+    ["family"] -> dFamily d
+    ["code"] -> Just (dCode d)
+    ["severity"] -> Just (severityToText (dSeverity d))
+    ["message"] -> Just (dMessage d)
+    [k] -> lookup k (pFields (dPayload d)) -- shorthand: bare payload key
+    _ -> Nothing
+  where
+    severityToText = \case
+      SevError -> "error"
+      SevWarning -> "warning"
+      SevNote -> "note"
+      SevInfo -> "info"
+
+-- | Parse an @expected-json@ scalar from a directive into its text value:
+-- a JSON string @"x"@ yields @x@; a bare token yields itself. (Objects
+-- and arrays are not used by the payloads this harness asserts.)
+jsonScalarText :: Text -> Text
+jsonScalarText t0 =
+  let t = T.strip t0
+   in case T.stripPrefix "\"" t >>= \r -> T.stripSuffix "\"" r of
+        Just inner -> inner
+        Nothing -> t
 
 -- | Exact multiset comparison of expected codes against emitted errors,
 -- where each expected spelling may match either the rendered code or

@@ -41,14 +41,30 @@ renderTerm = go 0
         | null args -> gnameText g
         | otherwise -> paren (p > 1) (T.unwords (gnameText g : map (go 2) args))
       CMatch s _ -> paren (p > 0) ("match " <> go 0 s <> " ...")
-      CRecordT fs -> "(" <> T.intercalate ", " [n <> " : " <> go 0 t | (n, t) <- fs] <> ")"
-      CRecordV fs -> "(" <> T.intercalate ", " [n <> " = " <> go 0 t | (n, t) <- fs] <> ")"
-      CProj e f -> go 2 e <> "." <> f
+      -- §3.1.11 / §13.2.11: internal existential labels (`⟨wit_i⟩`,
+      -- `⟨payload⟩`) are not source-addressable fields. They are hidden
+      -- from user-facing renderings — a record carrying only such labels
+      -- renders as the stable phrase `(an existential package)`.
+      CRecordT fs ->
+        case [(n, t) | (n, t) <- fs, not (isInternalLabel n)] of
+          [] | not (null fs) -> "(an existential package)"
+          fs' -> "(" <> T.intercalate ", " [n <> " : " <> go 0 t | (n, t) <- fs'] <> ")"
+      CRecordV fs ->
+        case [(n, t) | (n, t) <- fs, not (isInternalLabel n)] of
+          [] | not (null fs) -> "(an existential package)"
+          fs' -> "(" <> T.intercalate ", " [n <> " = " <> go 0 t | (n, t) <- fs'] <> ")"
+      CProj e f
+        | isInternalLabel f -> "(an opened existential witness)"
+        | otherwise -> go 2 e <> "." <> f
       CVariantT ms -> "(| " <> T.intercalate " | " (map (go 0) ms) <> " |)"
       CInject t e -> paren (p > 0) ("(| " <> go 0 e <> " : " <> t <> " |)")
       CLet _ n _ rhs body -> paren (p > 0) ("let " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
       CLetRec _ n _ rhs body -> paren (p > 0) ("let rec " <> n <> " = " <> go 0 rhs <> " in " <> go 0 body)
-      CMeta m -> "?m" <> tshow m
+      -- §3.1.11 internal-placeholder hygiene: an unsolved unification
+      -- metavariable MUST NOT be shown as a raw solver id (`?m1238`).
+      -- After zonking, any metavariable that survives is genuinely
+      -- unknown, so it renders as the stable hole spelling `_`.
+      CMeta _ -> "_"
       CDo _ -> "do ..."
       CSealE _ e -> paren (p > 1) ("seal " <> go 2 e)
       CSigT ls e ->
@@ -67,6 +83,12 @@ renderTerm = go 0
     paren False t = t
     tshow :: Show a => a -> Text
     tshow = T.pack . show
+
+-- | A §13.2.11 internal existential label (witness `⟨wit_i⟩` or the
+-- anonymous payload `⟨payload⟩`): not a source-addressable field, so it
+-- is suppressed in user-facing diagnostics (§3.1.11).
+isInternalLabel :: Text -> Bool
+isInternalLabel l = "⟨" `T.isPrefixOf` l
 
 renderLit :: Literal -> Text
 renderLit = \case

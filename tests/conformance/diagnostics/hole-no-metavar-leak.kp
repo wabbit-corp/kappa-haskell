@@ -1,0 +1,11 @@
+--! mode check
+--! assertDiagnostic error E_HOLE_UNSOLVED
+-- §3.1.11 internal-placeholder hygiene: an unsolved metavariable in the
+-- hole's expected type MUST NOT leak as a raw solver id (`?mN`). It
+-- renders as the stable hole spelling `_` in both prose and payload.
+--! assertDiagnosticMatch hole _ : _
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/kind hole-unsolved
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected _
+module main
+
+let h : List _ = []
