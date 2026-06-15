@@ -16,7 +16,7 @@ module Kappa.Pipeline
 
 import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
-import Data.List (foldl', nub)
+import Data.List (foldl', nub, partition)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
@@ -598,9 +598,18 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
                   [nm | nm <- wildMembers mn, nm `notElem` exceptNames]
       ImportItems (RefPath mp) items ->
         let mn = pathModule mp
+            -- §8.3.1: the `(..)` constructor wildcard imports the type
+            -- together with all its (own-spelling) constructors, while
+            -- `as y` renames a single spelling. Combining them is
+            -- ill-formed: there is no coherent target spelling for the
+            -- constructors brought in by `(..)`. Reject `T(..) as y`
+            -- independently of whether the module is known.
+            (malformed, wellFormed) =
+              partition (\it -> iiCtorAll it && isJust (iiAlias it)) items
+            ieM = foldl' (\acc it -> malformedItem acc sp mn (nameText (iiName it))) ie malformed
          in if not (knownModule mn)
-              then unknownModule ie sp mn
-              else foldl' (addItem mn sp) ie items
+              then unknownModule ieM sp mn
+              else foldl' (addItem mn sp) ieM wellFormed
       ImportSingleton (RefPath mp) n ->
         let mn = pathModule mp
             asModule = ModuleName (modPathName mp ++ [nameText n])
@@ -663,6 +672,12 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
     itemNotFound ie sp mn nm =
       err ie sp "E_IMPORT_ITEM_NOT_FOUND" "kappa.name.unresolved"
         ("module '" <> renderModuleName mn <> "' does not export '" <> nm <> "' (Spec §8.3)")
+    malformedItem ie sp mn nm =
+      err ie sp "E_IMPORT_ITEM_MALFORMED" "kappa-hs.parse.error"
+        ("import item '" <> nm <> "(..) as ...' from module '" <> renderModuleName mn
+           <> "' combines the constructor wildcard '(..)' with an alias 'as'; "
+           <> "these may not be combined because the alias has no coherent "
+           <> "target for the wildcard constructors (Spec §8.3.1)")
     addExplicit ie alias g =
       ie
         { ieScope = Map.insert alias g (ieScope ie)

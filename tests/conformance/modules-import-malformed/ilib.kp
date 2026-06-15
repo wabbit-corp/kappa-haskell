@@ -1,0 +1,4 @@
+module ilib
+
+data Pair (a : Type) : Type =
+    MkPair (fst : a) (snd : a)

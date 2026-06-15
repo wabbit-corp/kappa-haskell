@@ -1,0 +1,16 @@
+module main
+
+-- §8.3.1: `T(..)` imports the type together with all its own-spelling
+-- constructors, while `as y` renames a single spelling. Combining the
+-- constructor wildcard `(..)` with an alias `as` is ill-formed because
+-- the alias has no coherent target for the wildcard constructors. This
+-- item must be rejected with E_IMPORT_ITEM_MALFORMED. The well-formed
+-- import on the next line still goes through.
+import ilib.(type Pair(..) as Couple)
+import ilib.(type Pair(..))
+
+origin : Pair Int
+let origin = MkPair 0 0
+
+--! assertDiagnosticCodes E_IMPORT_ITEM_MALFORMED
+--! assertType origin Pair Int
