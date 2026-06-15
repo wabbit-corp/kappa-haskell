@@ -942,6 +942,25 @@ lookupGlobalName n = do
     then pure (Just own)
     else pure (Map.lookup n (csScope st))
 
+-- | §3.1.4/§8.3.1A: if the spelling @n@ names a live type, constructor,
+-- or other top-level declaration (the kind of declaration a module alias
+-- with the same spelling shadows), return a short human label for that
+-- kind. Returns 'Nothing' when @n@ denotes no such declaration, so the
+-- caller falls back to the ordinary unresolved-member diagnostic. The
+-- test is keyed on "the alias spelling also has a declaration", not on
+-- any particular name.
+shadowedDeclKind :: Text -> CheckM (Maybe Text)
+shadowedDeclKind n = do
+  mg <- lookupGlobalName n
+  st <- get
+  pure $ do
+    g <- mg
+    if
+      | Map.member g (csDatas st) -> Just "type"
+      | Map.member g (csCtors st) -> Just "constructor"
+      | Map.member g (csGlobals st) -> Just "declaration"
+      | otherwise -> Nothing
+
 globalTerm :: GName -> CheckM (Maybe (Term, Value))
 globalTerm g = do
   st <- get
@@ -4112,8 +4131,32 @@ elabDotUnqualified ctx e member mname = do
               case mt of
                 Just r -> pure r
                 Nothing -> do
-                  errAt (nameSpan mname) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-                    ("module '" <> base <> "' has no exported member '" <> nameText mname <> "' (Spec §8.5)")
+                  -- §3.1.4/§8.3.1A: when the alias spelling 'base' also
+                  -- names a same-spelling type/constructor/declaration,
+                  -- the qualified name resolved through the alias rather
+                  -- than that declaration, and the alias collision is the
+                  -- primary repairable cause (repair: rename the alias or
+                  -- qualify the type). Report the §3.1.4-mandated portable
+                  -- code; otherwise the alias is unambiguous and the
+                  -- member is simply absent.
+                  mShadow <- shadowedDeclKind base
+                  case mShadow of
+                    Just kind ->
+                      errAt (nameSpan mname) "E_MODULE_ALIAS_TYPE_COLLISION"
+                        (Just "kappa.name.module-alias-collision")
+                        ( "qualified name '" <> base <> "." <> nameText mname
+                            <> "' resolves through module alias '" <> base
+                            <> "' (denoting " <> moduleNameText modName
+                            <> "), which shadows the same-spelling " <> kind
+                            <> " '" <> base
+                            <> "'; the alias has no exported member '"
+                            <> nameText mname
+                            <> "'. Rename the alias or qualify the "
+                            <> kind <> " (Spec §8.3.1A, §3.1.4)"
+                        )
+                    Nothing ->
+                      errAt (nameSpan mname) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+                        ("module '" <> base <> "' has no exported member '" <> nameText mname <> "' (Spec §8.5)")
                   anyHole ctx
             Nothing -> do
               -- static member of a type: T.C selects constructor (§7.3)

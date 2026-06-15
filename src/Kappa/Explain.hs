@@ -323,6 +323,8 @@ registry =
       "Module imports form a cycle; the module dependency graph must be acyclic (§8.2)."
   , ent "E_IMPORT_ITEM_NOT_FOUND" (Just "kappa.name.unresolved")
       "An import list names an item the imported module does not export (§8.2)."
+  , ent "E_MODULE_ALIAS_TYPE_COLLISION" (Just "kappa.name.module-alias-collision")
+      "A qualified name resolves through a module alias that shadows an unrelated type, constructor, or other declaration of the same spelling, and the alias collision is the primary repairable cause (§8.3.1A, §3.1.4)."
   , ent "E_MODULE_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
       "A module path segment does not derive a valid module name, or a module reference does not resolve (§8.1)."
   , ent "E_MODULE_PATH_MISMATCH" (Just "kappa-hs.module.path-mismatch")
