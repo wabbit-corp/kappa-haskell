@@ -2907,6 +2907,26 @@ withArgIndexRetag act = do
   modify' $ \st -> st {csArgIndexRetag = old}
   pure r
 
+-- | Check one explicit argument @e@ of quantity @q@ against the binder
+-- domain @dom@, shared by the two application-spine algorithms (the
+-- 'Slot'-folding 'step' and the recursive 'elabSpine'). The argument is
+-- checked under the binder's demand ('demandOfQ') with argument-index
+-- retagging enabled (§16.1.7.1) so any equality mismatch is attributed
+-- to this argument slot. A non-type argument supplied to a type-former's
+-- @Type@ slot is an application-argument error rather than a plain
+-- mismatch (§16.1), so when @dom@ is a universe the freshly emitted
+-- mismatches are retagged via 'retagNewMismatches'; for the ordinary
+-- (non-sort) domain this branch is a no-op.
+checkExplicitArg :: Ctx -> Q -> Expr -> Value -> CheckM Term
+checkExplicitArg ctx q e dom = do
+  domF <- forceM dom
+  nBefore <- gets (length . csDiags)
+  aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
+  case domF of
+    VSort _ -> retagNewMismatches nBefore
+    _ -> pure ()
+  pure aTm
+
 -- | One planned argument slot of a checked application spine
 -- ('elabAppChecked'): a kind-like implicit placeholder, an evidence
 -- implicit resolved after result-type pre-unification, or an explicit
@@ -2993,7 +3013,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       _ <- unify ctx mV evV
       pure (CApp Impl tm ev)
     step tm (SlotExpl q e dom mid mV dep) = do
-      aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
+      aTm <- checkExplicitArg ctx q e dom
       aV <- evalIn ctx aTm
       -- The placeholder meta 'mid' was substituted into the result type
       -- in 'peel'. When the codomain depends on this argument we must
@@ -3365,14 +3385,7 @@ elabSpineArg ctx sp fTm fTy arg rest = do
       ty' <- clApp clo iV
       elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
     (ArgExplicit e, VPi Expl q _ dom clo) -> do
-      domF <- forceM dom
-      nBefore <- gets (length . csDiags)
-      aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
-      -- a non-type argument in a type-former's Type slot is an
-      -- application-argument error, not a plain mismatch (§16.1)
-      case domF of
-        VSort _ -> retagNewMismatches nBefore
-        _ -> pure ()
+      aTm <- checkExplicitArg ctx q e dom
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
