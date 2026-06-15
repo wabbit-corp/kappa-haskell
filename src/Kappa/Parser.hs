@@ -594,11 +594,12 @@ pCtorDecl = do
   case gadt of
     Just ty -> CtorDecl n [] (Just ty) <$> spanFrom start
     Nothing -> do
+      -- Parse exactly one constructor; the '|' separator between inline
+      -- alternatives (§10.1 "data Tree a = Leaf | Branch ...", L8697) is
+      -- consumed by the block-level splitter (inlineCtors / ctorSeq), not
+      -- here, so a non-first constructor is registered correctly.
       binders <- concat <$> many pCtorBinder
-      alts <- many (token TokBar *> pCtorDecl)
-      case alts of
-        [] -> CtorDecl n binders Nothing <$> spanFrom start
-        _ -> parseFail "inline '|' constructor alternatives must be parsed at block level"
+      CtorDecl n binders Nothing <$> spanFrom start
 
 -- Constructor binders (§10.1): bare field, parenthesized param/type,
 -- record-style {...} block.
