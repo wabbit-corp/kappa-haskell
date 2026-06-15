@@ -156,8 +156,16 @@ vapp ctx fv ic av = case fv of
     | isStuckMarker p, ic == Impl -> VPrim (stuckAppMarker Impl) [fv, av]
     | ic == Impl -> VPrim p args
     | otherwise ->
-        let args' = args ++ [av]
-         in case evalPrimCtx ctx p (map (force ctx) args') of
+        -- Force ONLY the freshly-appended argument and keep the existing
+        -- spine as-is. The existing args were each forced as they were
+        -- appended, so 'evalPrimCtx' sees forced arguments without the
+        -- previous @map (force) args'@ that re-forced the entire prefix on
+        -- every append — a per-append re-descent that compounded to
+        -- exponential time on deep neutral spines (e.g. left-nested
+        -- @addInt (… ) 1@ / left-associative operator chains).
+        let av' = force ctx av
+            args' = args ++ [av']
+         in case evalPrimCtx ctx p args' of
               Just v -> v
               Nothing -> VPrim p args'
   -- stuck application: keep the icit so 'force' can re-apply once the

@@ -106,11 +106,40 @@ runIOValue rt v = case force (rtEC rt) v of
   VPrim p args -> runPrimIO rt p args
   other -> pure other
 
+-- | Does the RAW value tree contain an embedded @__runIO@ splice
+-- marker? The recursive splice walk re-forces every spine node it
+-- rebuilds, so for the overwhelmingly common splice-free value it would
+-- re-force each subtree once per ancestor — quadratic to exponential on
+-- deep neutral spines (left-nested operator chains in particular). This
+-- cheap, force-free structural pre-scan lets 'runSplices' fall straight
+-- through to a single 'force' when there is nothing to splice. It mirrors
+-- the structural shape of the 'runSplices' walk (same node kinds, same
+-- "do not enter lambda/suspension bodies" boundary).
+hasSplice :: Value -> Bool
+hasSplice = \case
+  VPrim "__runIO" (_ : _) -> True
+  VGlobN g sp
+    | gnameText g == "__runIO"
+    , any ((== Expl) . fst) sp -> True
+    | otherwise -> any (hasSplice . snd) sp
+  VFlex _ sp -> any (hasSplice . snd) sp
+  VPrim _ args -> any hasSplice args
+  VCtor _ args -> any hasSplice args
+  VRecordV fs -> any (hasSplice . snd) fs
+  VInject _ a -> hasSplice a
+  _ -> False
+
 -- | Run embedded monadic splices (§18.3): the elaborator marks them as
 -- applications of the internal @__runIO@ primitive. The walk is
 -- left-to-right, executes each splice exactly once, and does not enter
 -- lambda or suspension bodies (splices do not cross those boundaries).
 runSplices :: RT -> Value -> IO Value
+runSplices rt v0
+  -- fast path: no embedded splice in the raw tree, so the walk would only
+  -- rebuild-and-re-force an unchanged spine. Force once and return.
+  | not (hasSplice v0) = pure (force ec v0)
+  where
+    ec = rtEC rt
 runSplices rt v0 = case v0 of
   -- scan the RAW value: forcing first would β-reduce past unrun splices
   VPrim "__runIO" (a : restArgs) -> do

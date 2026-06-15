@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+--! assertEval deepChain 60
+
+-- §31.1 normalization-by-evaluation must be linear in the depth of a
+-- left-nested application spine (a left-associative operator chain).
+-- A length-60 chain elaborates and evaluates instantly when force does
+-- not re-descend already-forced prim spines; a regression to the
+-- per-append re-force makes this exponential and the bounded
+-- conformance run times out, so this doubles as a perf guard.
+module main
+
+deepChain : Int
+let deepChain = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1
