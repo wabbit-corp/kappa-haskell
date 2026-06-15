@@ -276,3 +276,50 @@ which accepts §10.4's accepted examples (Tree, `Rose a = Node a (List
 computed against the converged signatures exactly as §10.4 describes.
 Evidence: `Kappa.Check.positivityPass`,
 `tests/conformance/data_types/positivity-*.kp`.
+
+## 15. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
+
+§3.1.5A defines a full `ProvenanceFrame` record (id, kind, step, query,
+inputs, inputObjects, output, generatedObject, explanation) and requires
+that "every synthetic origin MUST either carry or reference a provenance
+frame" and that a verbose diagnostic mode SHOULD render the whole chain.
+§30.2.3 separately requires that "every synthetic KCore node MUST carry
+provenance (origins + introduction kind)" and §30.2.3A requires per-erased
+-occurrence erasure justifications. Read literally these demand a
+provenance side-table threaded through KCore (`Term`), plus a query/stage
+-dump surface to reconstruct chains.
+
+The full KCore-node provenance store and its dump surface are §34 tooling
+(stage dumps, query traces, conformance-verification mode) — explicitly
+profile-scoped by §37.3 tiers and the §34 scope rule, and excluded from
+the CORE remediation set (see `SPEC_AUDIT_MATRIX.md` profile-scoped
+ledger). This implementation therefore implements only the
+*diagnostic-facing* slice of §3.1.5A: a desugaring/generated construct
+that produces a diagnostic blames the user-written source as `primary`
+(spans are preserved through desugaring) and records the desugaring
+provenance as a `desugared-from`/`generated-site` related origin (e.g.
+the `!e` splice desugaring in `Kappa.Check`, `EBang`). It does **not**
+attach a `ProvenanceFrame` to every synthetic `Term` node, nor expose a
+chain-reconstruction query — `Kappa.Core.Term` carries no origin field.
+Evidence: `Kappa.Check` `EBang` (`desugared-from` related origin);
+`tests/conformance/diagnostics`.
+
+## 16. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
+
+The `suppressed` field (§3.1.1, §3.1.10, §3.1.11) is implemented and is
+populated wherever this implementation drops a downstream diagnostic that
+a *surviving* root diagnostic explains: the §3.1.14 parse-error →
+`E_SIGNATURE_UNSATISFIED` suppression in `Kappa.Pipeline`
+(`attachSuppressed`) records the dropped signature/elaboration diagnostics
+as `Suppressed` summaries on the owning parse-error diagnostic, and the
+implicit-goal cascade collapse in `Kappa.Check` (`emitUnsolvedGoal`)
+records the dropped same-span mismatch on the surviving unsolved-goal
+diagnostic. Where suppression happens *before any diagnostic is created*
+— e.g. an operator-overload goal that is never raised as a pending goal
+because the operand mismatch short-circuits resolution — there is, by
+construction, no suppressed diagnostic record to summarize. §3.1.11's
+"SHOULD emit one primary diagnostic and place the explained downstream
+diagnostics in `suppressed`" is satisfied for the record-level cascades;
+the upstream-collapse cases produce a single diagnostic with nothing to
+summarize. Evidence: `Kappa.Pipeline.attachSuppressed`,
+`tests/conformance/diagnostics/suppressed-cascade.kp`.

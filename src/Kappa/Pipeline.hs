@@ -262,15 +262,23 @@ compileFilesWith packageMode nameOf files =
                 , posLine (spanStart (dPrimary d))
                 )
                   `elem` parseErrLines
-              cdiags =
+              isSuppressedHere d =
+                dCode d == "E_SIGNATURE_UNSATISFIED" || onParseErrLine d
+              -- §3.1.10/§3.1.11: the surviving (kept) elaboration diags,
+              -- and the cascade ones suppressed by the parse error
+              (cdiags, suppressedByParse) =
                 if parseErrored
-                  then
-                    [ d | d <- cdiags0
-                    , dCode d /= "E_SIGNATURE_UNSATISFIED"
-                    , not (onParseErrLine d)
-                    ]
-                  else cdiags0
-              preDiags = recovered ++ rdiags ++ ieDiags ie ++ cdiags
+                  then (filter (not . isSuppressedHere) cdiags0, filter isSuppressedHere cdiags0)
+                  else (cdiags0, [])
+              -- §3.1.11: attach each suppressed cascade summary to the
+              -- parse-error diagnostic that explains it (the nearest one
+              -- on the same line, else the first parse error), so tooling
+              -- can still surface the dropped diagnostics on request.
+              recovered' =
+                if null suppressedByParse
+                  then recovered
+                  else attachSuppressed recovered suppressedByParse
+              preDiags = recovered' ++ rdiags ++ ieDiags ie ++ cdiags
               -- §12.2–§12.4 usage analysis runs only over cleanly
               -- elaborated modules (its judgements presume well-typed
               -- bodies)
@@ -348,6 +356,35 @@ compileFilesWith packageMode nameOf files =
 
 renderModuleName :: ModuleName -> Text
 renderModuleName (ModuleName segs) = T.intercalate "." segs
+
+-- | §3.1.11: attach cascade-suppressed diagnostic summaries to the
+-- parse-error diagnostic that explains them. Each suppressed diagnostic
+-- is summarized onto the first error in @roots@ on the same source line
+-- (preferred), otherwise onto the first error overall. Non-error roots
+-- and the no-root case leave the suppressed list empty (nothing to
+-- attach to), which is acceptable: the cascade is still dropped.
+attachSuppressed :: Diagnostics -> Diagnostics -> Diagnostics
+attachSuppressed roots supp
+  | not (any isError roots) = roots -- no error root to own the summaries
+  | otherwise = goAttach True roots
+  where
+    summarize s = Suppressed (dCode s) (dFamily s) (dPrimary s) (dMessage s)
+    sameLine a b =
+      spanFile (dPrimary a) == spanFile (dPrimary b)
+        && posLine (spanStart (dPrimary a)) == posLine (spanStart (dPrimary b))
+    -- the suppressed diagnostics that match no error root's line: they
+    -- are owned by the first error root
+    unlined = [s | s <- supp, not (any (\d -> isError d && sameLine d s) roots)]
+    -- walk roots once; @firstErr@ flags whether this is the first error
+    -- root (it additionally owns the unlined suppressed diagnostics)
+    goAttach _ [] = []
+    goAttach firstErr (d : rest)
+      | not (isError d) = d : goAttach firstErr rest
+      | otherwise =
+          let lined = [summarize s | s <- supp, sameLine d s]
+              mine = lined ++ (if firstErr then map summarize unlined else [])
+              d' = if null mine then d else withSuppressed mine d
+           in d' : goAttach False rest
 
 -- ── Dependency graph (§8.2) ──────────────────────────────────────────
 

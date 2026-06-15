@@ -1,0 +1,15 @@
+--! mode check
+-- §3.1.10/§3.1.11 root-cause suppression: when a signature's definition
+-- lies in a region a parse error swallowed, the resulting
+-- E_SIGNATURE_UNSATISFIED is not emitted as an independent error — it is
+-- recorded as a suppressed-diagnostic summary on the parse error that
+-- explains it, so tooling can still surface it on request.
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertSuppressedDiagnostic E_EXPECTED_SYNTAX_TOKEN E_SIGNATURE_UNSATISFIED
+module main
+
+foo : Int
+let foo = (1
+
+bar : Int
+let bar = 2

@@ -29,7 +29,7 @@ import Data.Data (Data, cast, gmapQ)
 import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -1056,6 +1056,34 @@ etaCtor ec g cty = build 0 [] (eval ec [] cty)
     runtimeField Impl q = q /= Q0
     evalClosure (Closure env body) v = eval ec (v : env) body
 
+-- | §3.2.2 typo suggestions: in-scope names within a small edit distance
+-- of the unresolved spelling, nearest first (ties broken alphabetically
+-- for determinism, §3.1.10). The threshold scales with the length so a
+-- one-character name does not match every other one-character name.
+closeSpellings :: Text -> [Text] -> [Text]
+closeSpellings target cands =
+  map snd $
+    sort
+      [ (d, c)
+      | c <- cands
+      , c /= target
+      , let d = editDistance (T.unpack target) (T.unpack c)
+      , d <= threshold
+      ]
+  where
+    threshold = max 1 (min 2 (T.length target `div` 3))
+
+-- | Standard Levenshtein edit distance.
+editDistance :: String -> String -> Int
+editDistance a b = last (foldl transform [0 .. length a] b)
+  where
+    transform prevRow@(p0 : _) c =
+      scanl compute (p0 + 1) (zip3 a prevRow (tail prevRow))
+      where
+        compute z (ca, dDiag, dLeft) =
+          minimum [dLeft + 1, z + 1, dDiag + if ca == c then 0 else 1]
+    transform [] _ = []
+
 resolveName :: Ctx -> Name -> CheckM (Term, Value)
 resolveName ctx (Name n sp) =
   case lookupCtx n ctx of
@@ -1104,17 +1132,40 @@ resolveName ctx (Name n sp) =
   where
     renderMod (ModuleName segs) = "module " <> T.intercalate "." segs
     failUnresolved = do
-      -- §3.2.2 kappa.name.unresolved payload + §3.1.1A use-site origin.
-      report $
-        withPayload
-          ( withPayloadField "name" n $
-              withPayloadField "inGeneratedSyntax" "false" $
-                payloadKind "name-unresolved"
-          )
-          $ withRelated (related RoleUseSite sp ("'" <> n <> "' used here"))
-          $ diag SevError StageElaborate "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") sp
-              ("unresolved name '" <> n <> "' (not in scope)")
+      cands <- inScopeNames
+      -- §3.2.2: if a close spelling exists, suggest it. The fix is
+      -- 'maybe-applicable' — the renamed reference type-checks only if
+      -- the candidate happens to fit, so it is not 'machine-applicable'.
+      let near = take 1 (closeSpellings n cands)
+          base =
+            withPayload
+              ( withPayloadField "name" n $
+                  withPayloadField "inGeneratedSyntax" "false" $
+                    maybe id (withPayloadField "suggestion") (listToMaybe near) $
+                      payloadKind "name-unresolved"
+              )
+              $ withRelated (related RoleUseSite sp ("'" <> n <> "' used here"))
+              $ diag SevError StageElaborate "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") sp
+                  ("unresolved name '" <> n <> "' (not in scope)")
+          withFixIt d = case near of
+            (cand : _) ->
+              withHelp ("did you mean '" <> cand <> "'?") $
+                withFix
+                  ( DiagnosticFix
+                      ("replace '" <> n <> "' with '" <> cand <> "'")
+                      FixMaybeApplicable
+                      [SourceEdit (spanFile sp) sp cand]
+                  )
+                  d
+            [] -> d
+      report (withFixIt base)
       anyHole emptyCtxDummy
+    inScopeNames = do
+      st <- get
+      let scope = Map.keys (csScope st)
+          own = [nm | GName m nm <- Map.keys (csGlobals st), m == csModule st]
+          locals = [ceName e | e <- ctxEntries ctx]
+      pure (nub (scope ++ own ++ locals))
     emptyCtxDummy = ctx
 
 -- | Does a name resolve at all (locals or globals)? Used for §6.3.4
@@ -1463,9 +1514,19 @@ emitUnsolvedGoal ctx sp g = do
   let gT = quote ec (ctxLen ctx) g
       gRendered = renderTerm gT
   ms <- unsolvedMetaIdsIn g
-  let metaTokens = ["?m" <> T.pack (show m) | m <- ms]
-      mentionsMeta d =
-        any (\tok -> any (tok `T.isInfixOf`) (dMessage d : dNotes d)) metaTokens
+  let -- §3.1.11: unsolved metavariables now render as the stable hole
+      -- `_` (never a raw `?mN` solver id). A same-span type-equality
+      -- mismatch whose rendered expected/actual carries that hole is the
+      -- downstream consequence of this goal's unsolved carrier (the
+      -- unification was blocked precisely because a metavariable here was
+      -- never solved). The structural condition is the goal still has
+      -- unsolved metas ('not (null ms)') and the mismatch shows a hole.
+      mentionsMeta d = any noteHasHole (dNotes d)
+      -- a standalone `_` token (the rendered unsolved hole) inside an
+      -- expected:/actual: note, as opposed to `_` embedded in an
+      -- identifier or a `(x : _)`-style binder
+      noteHasHole note = "_" `elem` T.words (T.map spaceP note)
+      spaceP c = if c `elem` ("():," :: String) then ' ' else c
       isMismatch d = dCode d == "E_TYPE_EQUALITY_MISMATCH"
       -- the goal's trait arguments, rendered (e.g. the carrier `T` of
       -- `Mul T`): a concrete carrier already named in a mismatch note
@@ -1490,17 +1551,34 @@ emitUnsolvedGoal ctx sp g = do
                   && any (\ct -> any (ct `T.isInfixOf`) (dNotes d)) carrierTexts
             )
             ds
-      emit =
-        errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
-          ("could not resolve implicit argument of type " <> gRendered)
+      goalMsg = "could not resolve implicit argument of type " <> gRendered
+      emit = errAt sp "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved") goalMsg
+      summarize d =
+        Suppressed (dCode d) (dFamily d) (dPrimary d) (dMessage d)
   if hasDownstreamMismatch
     then do
-      -- drop the downstream same-span mismatch, keep the unsolved goal
+      -- §3.1.10/§3.1.11: drop the downstream same-span mismatch and keep
+      -- the unsolved goal, recording the dropped mismatch in the survivor's
+      -- 'suppressed' summary so tooling can still show it.
+      let dropped = [summarize d | d <- ds, isDownstreamMismatch d]
       modify' $ \st -> st {csDiags = filter (not . isDownstreamMismatch) (csDiags st)}
-      emit
+      report $
+        withSuppressed dropped $
+          diag SevError StageElaborate "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved") sp goalMsg
     else
       if concreteCarrierAlreadyRejected
-        then pure () -- the goal is the cascade of an already-reported mismatch
+        then
+          -- the goal is the cascade of an already-reported mismatch:
+          -- record its summary on that surviving root mismatch (§3.1.11).
+          modify' $ \st ->
+            let supp = Suppressed "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved") sp goalMsg
+                onLine d = isMismatch d && posLine (spanStart (dPrimary d)) == posLine (spanStart sp)
+                -- attach to the first matching root mismatch only
+                attachOnce [] = []
+                attachOnce (d : rest)
+                  | onLine d = withSuppressed [supp] d : rest
+                  | otherwise = d : attachOnce rest
+             in st {csDiags = attachOnce (csDiags st)}
         else emit
 
 -- | All metavariable identifiers occurring in a term, with full
@@ -2226,7 +2304,13 @@ infer ctx expr = case expr of
       errAt sp "E_INTERNAL" Nothing "quote grafting slot escaped its quote"
       anyHole ctx
   EBang _ sp -> do
-    errAt sp "E_SPLICE_OUTSIDE_DO" Nothing "monadic splice '!' is only valid inside a do block"
+    -- §3.1.5A: a splice is a desugaring construct; the diagnostic blames
+    -- the user-written splice site as primary and records the desugaring
+    -- provenance as a desugared-from related origin.
+    report $
+      withRelated (related RoleDesugaredFrom sp "monadic splice '!e' desugars to a do-block bind") $
+        diag SevError StageElaborate "E_SPLICE_OUTSIDE_DO" Nothing sp
+          "monadic splice '!' is only valid inside a do block"
     anyHole ctx
   ERecordPatch e items sp -> elabPatch ctx e items sp
   EComprehension k cs y sp -> elabComprehension ctx k cs y sp

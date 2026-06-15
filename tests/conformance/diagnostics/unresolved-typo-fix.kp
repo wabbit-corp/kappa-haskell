@@ -1,0 +1,12 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.1.6 / §3.2.2: when a close spelling is in scope, the unresolved-name
+-- diagnostic carries a maybe-applicable fix-it (a rename SourceEdit) and
+-- records the suggestion in the payload.
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+--! assertDiagnosticFixCount error kappa.name.unresolved 1
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion theValue
+module main
+
+let theValue = 5
+let oops = theValu
