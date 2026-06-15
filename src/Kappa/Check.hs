@@ -297,6 +297,11 @@ data CtxEntry = CtxEntry
   -- ^ Quantity prefix of an implicit local binder (§16.3.3).
   , ceBorrow :: !Bool
   -- ^ @\@&@-marked implicit local: may not escape into closures.
+  , ceOrigin :: !Span
+  -- ^ §3.1.1A binder origin: the source span where this entry was
+  -- introduced, so a borrow/ownership diagnostic about it can cite its
+  -- introduction site. 'noSpan' when the introduction is untracked for
+  -- this binder kind.
   }
 
 data Ctx = Ctx
@@ -352,7 +357,7 @@ pushCtxBarrier ctx = ctx {ctxBarriers = ctxLen ctx : ctxBarriers ctx}
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
 bindCtx n implocal ty ctx =
   ctx
-    { ctxEntries = CtxEntry n ty implocal False Nothing False : ctxEntries ctx
+    { ctxEntries = CtxEntry n ty implocal False Nothing False noSpan : ctxEntries ctx
     , ctxEnv = VRigid (length (ctxEnv ctx)) [] : ctxEnv ctx
     , ctxRefines = Map.delete n (ctxRefines ctx)
     , ctxAliases = Map.delete n (ctxAliases ctx)
@@ -363,7 +368,7 @@ bindCtx n implocal ty ctx =
 bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
 bindCtxLet n implocal ty v ctx =
   ctx
-    { ctxEntries = CtxEntry n ty implocal False Nothing False : ctxEntries ctx
+    { ctxEntries = CtxEntry n ty implocal False Nothing False noSpan : ctxEntries ctx
     , ctxEnv = v : ctxEnv ctx
     , ctxRefines = Map.delete n (ctxRefines ctx)
     , ctxAliases = Map.delete n (ctxAliases ctx)
@@ -373,17 +378,29 @@ bindCtxLet n implocal ty v ctx =
 bindCtxVar :: Text -> Value -> Ctx -> Ctx
 bindCtxVar n ty ctx =
   ctx
-    { ctxEntries = CtxEntry n ty False True Nothing False : ctxEntries ctx
+    { ctxEntries = CtxEntry n ty False True Nothing False noSpan : ctxEntries ctx
     , ctxEnv = VRigid (length (ctxEnv ctx)) [] : ctxEnv ctx
     , ctxRefines = Map.delete n (ctxRefines ctx)
     , ctxAliases = Map.delete n (ctxAliases ctx)
     }
 
 -- | Record the implicit binder prefix on the most recent entry
--- (quantity and borrow marker, §16.3.3).
-setTopPrefix :: BinderPrefix -> Ctx -> Ctx
-setTopPrefix (BinderPrefix mq mb) ctx = case ctxEntries ctx of
-  (e : rest) -> ctx {ctxEntries = e {ceQ = mq, ceBorrow = isJust mb} : rest}
+-- (quantity and borrow marker, §16.3.3). @binderSp@ is the binder's
+-- source span; when the prefix marks a borrow (@\@&@) it is recorded as
+-- the entry's §3.1.1A introduction origin so a later borrow-escape
+-- diagnostic about this candidate can cite where it was borrowed.
+setTopPrefix :: Span -> BinderPrefix -> Ctx -> Ctx
+setTopPrefix binderSp (BinderPrefix mq mb) ctx = case ctxEntries ctx of
+  (e : rest) ->
+    ctx
+      { ctxEntries =
+          e
+            { ceQ = mq
+            , ceBorrow = isJust mb
+            , ceOrigin = if isJust mb then binderSp else ceOrigin e
+            }
+            : rest
+      }
   [] -> ctx
 
 -- | The §7.4.3 stable-alias root of a variable.
@@ -1466,11 +1483,38 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
         errAt sp "E_QTT_ERASED_RUNTIME_USE" (Just "kappa.quantity.unsatisfied")
           ("the implicit candidate '" <> ceName e <> "' is erased (@0) and cannot satisfy a runtime implicit binder (§12.2)")
       -- a borrowed candidate may not be captured across a closure
-      -- boundary (§16.3.3, §12.3.2)
+      -- boundary (§16.3.3, §12.3.2). §3.1.1A requires the borrow
+      -- introduction site AND the failing escape site as related
+      -- origins: cite the candidate's recorded binder origin
+      -- (RoleBorrowStart) and the capturing use site (RoleBorrowEscapeSite).
       let lvl = ctxLen ctx - 1 - i
-      when (ceBorrow e && any (> lvl) (ctxBarriers ctx)) $
-        errAt sp "E_QTT_BORROW_ESCAPE" (Just "kappa.borrow.escape")
-          ("the borrowed implicit candidate '" <> ceName e <> "' may not be captured by a closure (§12.3.2)")
+      when (ceBorrow e && any (> lvl) (ctxBarriers ctx)) $ do
+        let originKnown = ceOrigin e /= noSpan
+            -- §3.1.1A line 610-611: when a required origin is
+            -- unavailable, the payload records why.
+            payload =
+              withPayloadField "candidate" (ceName e) $
+                if originKnown
+                  then payloadKind "borrow-escape"
+                  else
+                    withPayloadField "introOriginAvailable" "false" $
+                      withPayloadField "introOriginUnavailableReason"
+                        "borrow introduction site untracked for this candidate kind" $
+                        payloadKind "borrow-escape"
+            withIntro =
+              if originKnown
+                then withRelated (related RoleBorrowStart (ceOrigin e)
+                       ("'" <> ceName e <> "' borrowed here"))
+                else id
+        report $
+          withPayload payload $
+            withIntro $
+              withRelated (related RoleBorrowEscapeSite sp
+                "captured across this closure boundary here") $
+                diag SevError StageElaborate "E_QTT_BORROW_ESCAPE"
+                  (Just "kappa.borrow.escape") sp
+                  ("the borrowed implicit candidate '" <> ceName e
+                    <> "' may not be captured by a closure (§12.3.2)")
 
 goalHasFlex :: Value -> CheckM Bool
 goalHasFlex v = do
@@ -5777,7 +5821,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           rhsV <- evalIn ctx rhsTm
           let q = qOf (bpQuantity prefix)
               ctx0' = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
-              ctx1 = if implocal then setTopPrefix prefix ctx0' else ctx0'
+              ctx1 = if implocal then setTopPrefix sp prefix ctx0' else ctx0'
               -- §7.4.3 stable alias: `let q = p` transports refinement
               ctx' = case rhs of
                 EVar pn | Just _ <- lookupCtx (nameText pn) ctx ->
@@ -7197,7 +7241,7 @@ elabDoIOItems _sp ctx mexp items = do
                     check c rhsD (ioType errT aT)
           checkIrrefutable c pat aT bsp
           (patC, cBound, _) <- elabPattern c pat aT
-          let c' = markImplicitLocal implocal prefix c cBound
+          let c' = markImplicitLocal bsp implocal prefix c cBound
           ks <- goItems loops c' errT resT rest
           pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
         DoLet (LetBind implocal prefix pat mty rhs bsp) -> do
@@ -7224,7 +7268,7 @@ elabDoIOItems _sp ctx mexp items = do
                   | Just _ <- lookupCtx (nameText pn) c ->
                       addCtxAlias (nameText qn) (nameText pn) cBound
                 _ -> cBound
-          let c' = markImplicitLocal implocal prefix c cBound'
+          let c' = markImplicitLocal bsp implocal prefix c cBound'
           ks <- goItems loops c' errT resT rest
           pure (KLet (qOf (bpQuantity prefix)) patC rhsTm : ks)
         DoLetQ pat0 rhs0 mElse dsp -> do
@@ -7450,12 +7494,22 @@ statementInferable = \case
 -- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
 -- implicit context for the remaining items. @before@ is the context the
 -- pattern was elaborated in; the entries added on top of it are marked.
-markImplicitLocal :: Bool -> BinderPrefix -> Ctx -> Ctx -> Ctx
-markImplicitLocal False _ _ after = after
-markImplicitLocal True (BinderPrefix mq mb) before after =
+-- @binderSp@ is the do-binding's source span; for a @\@&@-borrowed
+-- implicit local it is recorded as the §3.1.1A introduction origin so a
+-- later borrow-escape diagnostic can cite where the candidate was
+-- borrowed.
+markImplicitLocal :: Span -> Bool -> BinderPrefix -> Ctx -> Ctx -> Ctx
+markImplicitLocal _ False _ _ after = after
+markImplicitLocal binderSp True (BinderPrefix mq mb) before after =
   let es = ctxEntries after
       (new, old) = splitAt (length es - ctxLen before) es
-      mark e = e {ceImplicitLocal = True, ceQ = mq, ceBorrow = isJust mb}
+      mark e =
+        e
+          { ceImplicitLocal = True
+          , ceQ = mq
+          , ceBorrow = isJust mb
+          , ceOrigin = if isJust mb then binderSp else ceOrigin e
+          }
    in after {ctxEntries = map mark new ++ old}
 
 -- `!e` splicing inside do items (§18.3): rewritten to runIO marker the

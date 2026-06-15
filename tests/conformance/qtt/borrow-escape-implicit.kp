@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+-- §3.1.1A (line 602-603): a borrow/ownership diagnostic MUST include the
+-- borrow introduction site and the failing escape site. For a borrowed
+-- (@&) implicit-local candidate captured across a closure boundary, the
+-- introduction origin is the local binder and the escape site is the
+-- implicit goal raised inside the closure. Both roles are present, and
+-- the payload carries the structured kind plus the offending candidate.
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+--! assertDiagnosticPayload error kappa.borrow.escape /payload/kind borrow-escape
+--! assertDiagnosticPayload error kappa.borrow.escape /payload/candidate env
+
+-- §16.3.3/§12.3.2: a borrowed implicit-local binding is an implicit
+-- candidate for the remaining scope, but it may not be selected to
+-- satisfy a goal raised inside a closure that would capture the borrow.
+module main
+
+data Env : Type =
+    Env Int
+
+useEnv : (@& env : Env) -> Int
+let useEnv (@& env : Env) : Int = 0
+
+bad : Env -> (Unit -> Int)
+let bad e =
+    block
+        let (@& env : Env) = e
+        \_ -> useEnv
