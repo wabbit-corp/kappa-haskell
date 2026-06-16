@@ -219,7 +219,8 @@ basePrims =
     , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
     , "eqDouble", "ltDouble", "floatEq"
       -- string / scalar
-    , "stringAppend", "eqStr", "ltStr", "eqScalar", "ltScalar", "showInt"
+    , "stringAppend", "eqStr", "ltStr", "eqScalar", "ltScalar"
+    , "showInt", "showDouble", "showScalar", "showStringLit"
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen"
     , "newRef", "readRef", "writeRef"

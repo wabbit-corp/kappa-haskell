@@ -473,6 +473,111 @@ static KValue *str_append(KValue *a, KValue *b) {
   return r;
 }
 
+/* ── show helpers (match the interpreter's Haskell `show`) ─────────── */
+
+#include <math.h>
+
+typedef struct { char *p; size_t len, cap; } sbuf;
+static void sb_init(sbuf *b) { b->cap = 32; b->p = (char *)kgc_alloc_atomic(b->cap); b->len = 0; }
+static void sb_putc(sbuf *b, char c) {
+  if (b->len + 1 > b->cap) {
+    size_t nc = b->cap * 2; char *np = (char *)kgc_alloc_atomic(nc);
+    memcpy(np, b->p, b->len); b->p = np; b->cap = nc;
+  }
+  b->p[b->len++] = c;
+}
+static void sb_puts(sbuf *b, const char *s) { while (*s) sb_putc(b, *s++); }
+static KValue *sb_to_str(sbuf *b) { return kstr(b->p, b->len); }
+
+/* decode the next UTF-8 scalar from p (< end); returns bytes consumed. */
+static int utf8_next(const unsigned char *p, const unsigned char *end, uint32_t *cp) {
+  unsigned c = p[0];
+  if (c < 0x80) { *cp = c; return 1; }
+  if ((c >> 5) == 0x6 && p + 1 < end + 1 && p + 1 <= end) { *cp = ((c & 0x1f) << 6) | (p[1] & 0x3f); return 2; }
+  if ((c >> 4) == 0xe) { *cp = ((c & 0x0f) << 12) | ((p[1] & 0x3f) << 6) | (p[2] & 0x3f); return 3; }
+  if ((c >> 3) == 0x1e) { *cp = ((c & 0x07) << 18) | ((p[1] & 0x3f) << 12) | ((p[2] & 0x3f) << 6) | (p[3] & 0x3f); return 4; }
+  *cp = c; return 1;
+}
+
+static const char *const ascii_tab[32] = {
+  "NUL","SOH","STX","ETX","EOT","ENQ","ACK","a","b","t","n","v","f","r","SO","SI",
+  "DLE","DC1","DC2","DC3","DC4","NAK","SYN","ETB","CAN","EM","SUB","ESC","FS","GS","RS","US"};
+
+/* Append showLitChar cp; *numeric set when the escape is a \DDD decimal,
+ * *so set when it is \SO — both may need a "\&" before the next char. */
+static void show_lit_char(sbuf *b, uint32_t cp, int *numeric, int *so) {
+  *numeric = 0; *so = 0;
+  if (cp == '\\') sb_puts(b, "\\\\");
+  else if (cp >= 0x20 && cp <= 0x7e) sb_putc(b, (char)cp);
+  else if (cp == 0x7f) sb_puts(b, "\\DEL");
+  else if (cp < 0x20) { sb_putc(b, '\\'); sb_puts(b, ascii_tab[cp]); if (cp == 14) *so = 1; }
+  else { char tmp[16]; snprintf(tmp, sizeof tmp, "\\%u", cp); sb_puts(b, tmp); *numeric = 1; }
+}
+
+static KValue *show_scalar(KValue *v) {
+  if (v->tag != K_CHR) krt_fail("showScalar: not a scalar");
+  sbuf b; sb_init(&b); sb_putc(&b, '\'');
+  if (v->as.chr == '\'') sb_puts(&b, "\\'");
+  else { int n, s; show_lit_char(&b, v->as.chr, &n, &s); }
+  sb_putc(&b, '\''); return sb_to_str(&b);
+}
+
+static KValue *show_string_lit(KValue *v) {
+  if (v->tag != K_STR) krt_fail("showStringLit: not a String");
+  sbuf b; sb_init(&b); sb_putc(&b, '"');
+  const unsigned char *p = (const unsigned char *)v->as.str.p;
+  const unsigned char *end = p + v->as.str.len;
+  int pn = 0, pso = 0; /* previous char's numeric / SO escape flags */
+  while (p < end) {
+    uint32_t cp; p += utf8_next(p, end, &cp);
+    /* §Haskell \& protection: a decimal escape then a digit, or \SO then H */
+    if ((pn && cp >= '0' && cp <= '9') || (pso && cp == 'H')) sb_puts(&b, "\\&");
+    if (cp == '"') { sb_puts(&b, "\\\""); pn = 0; pso = 0; }
+    else show_lit_char(&b, cp, &pn, &pso);
+  }
+  sb_putc(&b, '"'); return sb_to_str(&b);
+}
+
+/* show :: Double, matching Haskell's shortest round-trip + format rules. */
+static KValue *show_double(double x) {
+  if (isnan(x)) return kstr0("NaN");
+  if (isinf(x)) return kstr0(x < 0 ? "-Infinity" : "Infinity");
+  if (x == 0.0) return kstr0(signbit(x) ? "-0.0" : "0.0");
+  int neg = x < 0; double ax = neg ? -x : x;
+  /* shortest digit string that round-trips, via %.*e */
+  char ebuf[40]; int prec;
+  for (prec = 0; prec <= 17; prec++) {
+    snprintf(ebuf, sizeof ebuf, "%.*e", prec, ax);
+    if (strtod(ebuf, NULL) == ax) break;
+  }
+  /* ebuf = "D.FFFe±XX" (or "De±XX" when prec==0) */
+  char digits[32]; int nd = 0; int exp10 = 0;
+  const char *q = ebuf;
+  digits[nd++] = *q++;            /* leading digit D */
+  if (*q == '.') { q++; while (*q != 'e' && *q != 'E') digits[nd++] = *q++; }
+  q++;                            /* skip 'e' */
+  exp10 = (int)strtol(q, NULL, 10);
+  /* drop trailing zeros (keep at least one digit) */
+  while (nd > 1 && digits[nd - 1] == '0') nd--;
+  /* Haskell e = position of the decimal point: value = 0.d1.. * 10^e */
+  int e = exp10 + 1;
+  sbuf b; sb_init(&b); if (neg) sb_putc(&b, '-');
+  if (e < 0 || e > 7) { /* scientific: d1 . (rest|0) e (e-1) */
+    sb_putc(&b, digits[0]); sb_putc(&b, '.');
+    if (nd == 1) sb_putc(&b, '0'); else for (int i = 1; i < nd; i++) sb_putc(&b, digits[i]);
+    char tmp[16]; snprintf(tmp, sizeof tmp, "e%d", e - 1); sb_puts(&b, tmp);
+  } else if (e <= 0) { /* 0.00ddd */
+    sb_puts(&b, "0.");
+    for (int i = 0; i < -e; i++) sb_putc(&b, '0');
+    for (int i = 0; i < nd; i++) sb_putc(&b, digits[i]);
+  } else { /* fixed: place point after e digits */
+    for (int i = 0; i < e; i++) sb_putc(&b, i < nd ? digits[i] : '0');
+    sb_putc(&b, '.');
+    if (e >= nd) sb_putc(&b, '0'); else for (int i = e; i < nd; i++) sb_putc(&b, digits[i]);
+  }
+  return sb_to_str(&b);
+}
+
 #define PRIM(n) (strcmp(p, n) == 0)
 
 /* Bignum fallback for a binary integer op (used when either operand is a
@@ -583,6 +688,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
   }
   /* show */
   if (PRIM("showInt")) return show_int_val(a[0]);
+  if (PRIM("showDouble")) return show_double(kas_dbl(a[0]));
+  if (PRIM("showScalar")) return show_scalar(a[0]);
+  if (PRIM("showStringLit")) return show_string_lit(a[0]);
   krt_fail("internal: unknown pure primitive");
 }
 
@@ -638,6 +746,7 @@ static int prim_is_io(const char *p) {
 static int prim_arity(const char *p) {
   /* unary */
   if (PRIM("negInt") || PRIM("negDouble") || PRIM("showInt") ||
+      PRIM("showDouble") || PRIM("showScalar") || PRIM("showStringLit") ||
       PRIM("ioPure") || PRIM("newRef") || PRIM("readRef") ||
       PRIM("printString") || PRIM("printlnString"))
     return 1;

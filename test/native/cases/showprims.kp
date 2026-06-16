@@ -1,0 +1,23 @@
+-- Native backend conformance: Show for Double/Char/String matches the
+-- interpreter's Haskell-faithful formatting — shortest round-trip Double
+-- with the e-notation thresholds, and Char/String literal escaping
+-- (named control escapes, \\, quotes, non-ASCII as decimal). Identical
+-- output under interpreter + native.
+module main
+
+main : UIO Unit
+let main = do
+    println (3.14 : Double)
+    println (1.0 : Double)
+    println (0.1 : Double)
+    println (1.0e20 : Double)
+    println (0.001 : Double)
+    println (negate 2.5 : Double)
+    println (123.456 : Double)
+    println (10000000.0 : Double)
+    printlnString (showScalar 'a')
+    printlnString (showScalar '\n')
+    printlnString (showScalar '\\')
+    printlnString (showStringLit "hi\tthere")
+    printlnString (showStringLit "a\"b\\c")
+    printlnString (showStringLit "café ★")
