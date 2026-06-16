@@ -1,0 +1,11 @@
+-- Native backend conformance: UTF-8 string literals containing non-ASCII
+-- bytes, including a non-ASCII character immediately followed by an ASCII
+-- hex digit ("café2") — the generated C must escape these unambiguously
+-- (octal, not greedy \xNN).  Identical output under interpreter and native.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "café2 — naïve ★ 日本語1"
+    printlnString (stringAppend "α=" (stringAppend "β" "γ7"))
+    printlnString (if eqStr "café" "café" then "eq" else "ne")

@@ -107,7 +107,7 @@ struct KValue {
     KCtor     ctor;       // K_CTOR (tag-name + boxed args)
     KRecord   rec;        // K_REC  (sorted field-name + boxed value array)
     KClosure  clo;        // K_CLO  (fn pointer + captured-env array)
-    KForeign  fgn;        // K_FGN  (opaque host pointer, e.g. uv_*/sqlite3*)
+    KForeign  fgn;        // K_FGN  (opaque host pointer, e.g. socket fd / sqlite3*)
     KRef      ref;        // K_REF  (mutable cell: one boxed slot)
   } as;
 };
@@ -127,8 +127,8 @@ struct KValue {
   functions are curried to arity-1 closures; multi-argument application
   is a chain of `kapp` calls. This keeps codegen uniform and makes
   partial application free.
-* `K_FGN` wraps an opaque host pointer for FFI (a `uv_tcp_t*`, a
-  `sqlite3*`, …). The GC scans it conservatively but never frees the
+* `K_FGN` wraps an opaque host pointer for FFI (a socket file descriptor,
+  a `sqlite3*`, …). The GC scans it conservatively but never frees the
   underlying resource; explicit close/free primitives do that.
 * `K_REF` is the runtime cell behind `var`/`MonadRef` (§18.6.1).
 

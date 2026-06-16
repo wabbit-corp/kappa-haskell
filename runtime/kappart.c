@@ -393,8 +393,14 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     int c = memcmp(a[0]->as.str.p, a[1]->as.str.p, m);
     return kbool(c < 0 || (c == 0 && la < lb));
   }
-  if (PRIM("eqScalar")) return kbool(a[0]->as.chr == a[1]->as.chr);
-  if (PRIM("ltScalar")) return kbool(a[0]->as.chr < a[1]->as.chr);
+  if (PRIM("eqScalar")) {
+    if (a[0]->tag != K_CHR || a[1]->tag != K_CHR) krt_fail("eqScalar: argument is not a scalar");
+    return kbool(a[0]->as.chr == a[1]->as.chr);
+  }
+  if (PRIM("ltScalar")) {
+    if (a[0]->tag != K_CHR || a[1]->tag != K_CHR) krt_fail("ltScalar: argument is not a scalar");
+    return kbool(a[0]->as.chr < a[1]->as.chr);
+  }
   /* show */
   if (PRIM("showInt")) return show_int(kas_int(a[0]));
   krt_fail("internal: unknown pure primitive");

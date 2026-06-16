@@ -39,7 +39,7 @@ import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (GlobalDef (..))
 import Kappa.Source (ModuleName (..), Span, noSpan)
-import Numeric (showHex)
+import Numeric (showHex, showOct)
 
 -- | One reason the native backend cannot compile a definition: the global
 -- it occurred in, the unsupported construct, and a human detail.
@@ -85,7 +85,7 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
-  , gsLoops :: ![Text] -- ^ break-flag C variable of each enclosing loop
+  , gsLoops :: ![Maybe Text] -- ^ break-flag C variable of each enclosing loop (Nothing if it has no else)
   }
 
 type Gen = State GenState
@@ -159,10 +159,13 @@ cStr t = "\"" <> T.concatMap esc t <> "\""
       '\r' -> "\\r"
       _
         | isAscii c && c >= ' ' -> T.singleton c
-        -- emit non-ASCII / control bytes via their UTF-8 octets as \xNN
+        -- Emit non-ASCII / control bytes via their UTF-8 octets in OCTAL.
+        -- A C octal escape consumes at most three digits, so \NNN cannot be
+        -- extended by a following ASCII digit (unlike \xNN, which greedily
+        -- absorbs subsequent hex digits — e.g. "café2" would mis-escape).
         | otherwise -> T.concat [octet b | b <- utf8Bytes c]
-    octet b = "\\x" <> pad (T.pack (showHex b ""))
-    pad s = if T.length s == 1 then "0" <> s else s
+    octet b = "\\" <> T.pack (pad3 (showOct b ""))
+    pad3 s = replicate (3 - length s) '0' ++ s
 
 -- | UTF-8 encode a single character to bytes.
 utf8Bytes :: Char -> [Int]
@@ -882,13 +885,16 @@ compileItems mode = go
           env' <- bindPatScrut sv env pat
           withEnv env' (go rest)
 
--- | Emit a @break@, marking the enclosing loop's break flag so its @else@
--- block is skipped (§18.8: a loop's else runs only on normal completion).
+-- | Emit a @break@.  If the enclosing loop has an @else@ block, mark its
+-- break flag so the @else@ is skipped (§18.8: a loop's else runs only on
+-- normal completion); a loop with no @else@ needs no flag (so generated C
+-- has no unused variable).
 emitBreak :: Gen ()
 emitBreak = do
   loops <- gets gsLoops
   case loops of
-    (flag : _) -> emit (flag <> " = 1; break;")
+    (Just flag : _) -> emit (flag <> " = 1; break;")
+    (Nothing : _) -> emit "break;"
     [] -> emit "break;" -- defensive: break outside a loop is rejected upstream
 
 -- | Like 'bindPat' but threads the concrete scrutinee C-expression
@@ -935,12 +941,18 @@ data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
 compileLoop :: LoopKind -> [KItem] -> Maybe [KItem] -> Gen ()
 compileLoop kind body mels = do
   env <- gets gsEnv
-  flag <- freshN "brk_"
-  emit ("int " <> flag <> " = 0;")
+  -- A break flag is only needed when the loop has an `else` to suppress; an
+  -- else-less loop pushes Nothing so generated C carries no unused variable.
+  mflag <- case mels of
+    Just _ -> do
+      f <- freshN "brk_"
+      emit ("int " <> f <> " = 0;")
+      pure (Just f)
+    Nothing -> pure Nothing
   case kind of
     LoopWhile cond -> do
       (condBlk, ce) <- captured env (compile cond)
-      (bodyBlk, ()) <- withLoop flag (captured env (compileItems Nested body))
+      (bodyBlk, ()) <- withLoop mflag (captured env (compileItems Nested body))
       emit "while (1) {"
       forM_ condBlk (emit . ("  " <>))
       emit ("  if (!kas_bool(" <> ce <> ")) break;")
@@ -950,7 +962,7 @@ compileLoop kind body mels = do
       se <- compile src
       it <- freshN "it_"
       emit ("KValue *" <> it <> " = " <> se <> ";")
-      (bodyBlk, ()) <- withLoop flag $ captured env $ do
+      (bodyBlk, ()) <- withLoop mflag $ captured env $ do
         elemV <- freshN "elem_"
         emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
         e' <- bindPatScrut elemV env pat
@@ -959,19 +971,21 @@ compileLoop kind body mels = do
       forM_ bodyBlk (emit . ("  " <>))
       emit "}"
   -- §18.8: the loop's else runs iff the loop completed without a break.
-  case mels of
-    Just els -> do
+  case (mels, mflag) of
+    (Just els, Just flag) -> do
       (elsBlk, ()) <- captured env (compileItems Nested els)
       emit ("if (!" <> flag <> ") {")
       forM_ elsBlk (emit . ("  " <>))
       emit "}"
-    Nothing -> pure ()
+    _ -> pure ()
 
--- | Run an action with @flag@ pushed as the current loop's break flag.
-withLoop :: Text -> Gen a -> Gen a
-withLoop flag act = do
+-- | Run an action with the current loop's break flag pushed (Nothing when
+-- the loop has no else, so a nested break in an else-less loop emits a
+-- plain @break@ without touching an enclosing loop's flag).
+withLoop :: Maybe Text -> Gen a -> Gen a
+withLoop mflag act = do
   saved <- gets gsLoops
-  modify' $ \g -> g {gsLoops = flag : saved}
+  modify' $ \g -> g {gsLoops = mflag : saved}
   r <- act
   modify' $ \g -> g {gsLoops = saved}
   pure r
