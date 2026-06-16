@@ -1,0 +1,28 @@
+-- Native backend conformance: trait-method dispatch through dictionaries
+-- and member projections (§14) — show/println, a user trait + instance,
+-- and prelude numeric/equality methods.  Previously the dictionary and
+-- projection bodies were not captured, so this whole idiomatic path failed
+-- with E_BACKEND_UNSUPPORTED.  Identical output under interpreter + native.
+module main
+
+data Color : Type = Red | Green | Blue
+
+trait Named (a : Type) =
+    name : a -> String
+
+instance Named Color =
+    let name c =
+        match c
+        case Red -> "red"
+        case Green -> "green"
+        case Blue -> "blue"
+
+main : UIO Unit
+let main = do
+    println 5
+    println "hi"
+    printlnString (name Red)
+    printlnString (name Green)
+    printlnString (name Blue)
+    printlnString (if eqInt 3 3 then "eq-yes" else "eq-no")
+    println (addInt 2 40)

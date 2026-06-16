@@ -10182,9 +10182,13 @@ headerTrait (TraitDecl supers n params members) sp = do
     projTyV <- evalIn emptyCtx projTy
     projV <- evalIn emptyCtx projTm
     mg <- ownName (Name mn sp)
-    -- both the bare member name and the qualified projection global
+    -- both the bare member name and the qualified projection global.
+    -- Capture the KCore body for the native backend (§14.2.1 member
+    -- projection): a CLam chain projecting the member field from the dict.
     addGlobal mg (GlobalDef projTyV (Just projV) True)
+    recordCoreBody mg projTm
     addGlobal (memberGlobal g mn) (GlobalDef projTyV (Just projV) True)
+    recordCoreBody (memberGlobal g mn) projTm
 
 -- | The dictionary field carrying the i-th supertrait premise's
 -- evidence (§14.1.4/§14.3.3).
@@ -10901,6 +10905,7 @@ elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
         g <- ownName (Name (ceName entry) sp)
         projV <- evalIn emptyCtx proj
         addGlobal g (GlobalDef (ceType entry) (Just projV) True)
+        recordCoreBody g proj
 elabLetDecl _ _ sp =
   errAt sp "E_UNSUPPORTED" Nothing "this let-definition form is not supported at top level"
 
@@ -11306,6 +11311,9 @@ elabInstance (InstanceDecl premises hd members) sp = do
       dictV <- evalIn emptyCtx wrapped'
       dictTy <- gets (maybe (VSort 0) gdType . Map.lookup dictG . csGlobals)
       addGlobal dictG (GlobalDef dictTy (Just dictV) True)
+      -- §14.1.1: trait evidence lowers to a runtime record of the member
+      -- implementations; capture its KCore body for the native backend.
+      recordCoreBody dictG wrapped'
       -- §14.3/§33.2.1: program-level coherence — an overlapping pair of
       -- instances is rejected at declaration unless the instantiated
       -- evidence artifacts are equivalent (structural coherence mode),
