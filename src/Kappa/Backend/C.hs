@@ -36,6 +36,7 @@ import qualified Data.Text as T
 import Control.Monad.State.Strict
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
+import Kappa.Backend.Intrinsics (intrinsicPrim)
 import Kappa.Diagnostic
 import Kappa.Eval (GlobalDef (..))
 import Kappa.Source (ModuleName (..), Span, noSpan)
@@ -471,6 +472,13 @@ compileGlob g@(GName m nm)
         -- maps directly to the runtime primitive of the same name.
         Just gd | Just (VPrim pname _) <- gdValue gd ->
           emitPrim pname
+        -- §34.5.3: a host-binding intrinsic that satisfied a §9.4 `expect`
+        -- (an abstract global with no body) lowers to its runtime FFI
+        -- primitive (Kappa.Backend.Intrinsics is the single source of truth).
+        Just gd
+          | Nothing <- gdValue gd
+          , Just prim <- intrinsicPrim nm ->
+              emitPrim prim
         _ -> case Map.lookup g ctors of
           Just ci ->
             -- A constructor used as a value: nullary builds directly;

@@ -202,6 +202,16 @@ data CheckState = CheckState
   -- length. A single dropped import can leave thousands of references
   -- unresolved, each raising a suggestion diagnostic; rebuilding and
   -- rescanning the whole scope per diagnostic is O(Nerrors * Nscope).
+  , csBackendIntrinsics :: !(Map Text Term)
+  -- ^ §34.5/§34.5.3 host-binding intrinsics the selected backend profile
+  -- supplies (intrinsic spelling ↦ expected Core type), seeded only when a
+  -- native FFI capability is selected. A §9.4 'expect term' whose name is a
+  -- key here is satisfied by that backend intrinsic, provided the declared
+  -- type matches the intrinsic type up to definitional equality. Empty
+  -- under the interpreter, so foreign 'expect's are then unsatisfied and
+  -- compilation fails honestly (E_EXPECT_UNSATISFIED). Populated by the
+  -- pipeline/driver from "Kappa.Backend.Intrinsics"; this module stays
+  -- backend-agnostic and only consults the map by name + type.
   , csCoreBodies :: !(Map GName Term)
   -- ^ Elaborated KCore body of each top-level term definition, captured
   -- before evaluation to a value. The native backend (Kappa.Backend.C)
@@ -295,7 +305,7 @@ initCheckState =
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
     Map.empty Map.empty Set.empty defaultUnsafeConfig [] Nothing
-    Map.empty
+    Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -10280,11 +10290,21 @@ headerExpect :: ExpectForm -> Span -> CheckM ()
 headerExpect form sp = case form of
   ExpectTerm n tyE -> do
     g <- ownName n
-    fresh <- registerExpect g
-    when fresh $ do
-      (tyTm, _) <- inferType emptyCtx tyE
-      tyV <- evalIn emptyCtx tyTm
-      addGlobal g (GlobalDef tyV Nothing False)
+    st0 <- get
+    let alreadyDef = case Map.lookup g (csGlobals st0) of
+          Just gd -> isJust (gdValue gd)
+          Nothing -> False
+    -- Elaborate the declared signature up front: it is needed both to
+    -- register the abstract global (name resolution) and to check a
+    -- backend-intrinsic satisfier against it up to definitional equality.
+    (tyTm, _) <- inferType emptyCtx tyE
+    tyV <- evalIn emptyCtx tyTm
+    unless alreadyDef $ addGlobal g (GlobalDef tyV Nothing False)
+    -- §34.5/§9.4: a matching backend intrinsic of the selected profile
+    -- satisfies this expectation when its signature matches.
+    byIntrinsic <- backendIntrinsicSatisfies g tyV sp
+    let count = if alreadyDef || byIntrinsic then 1 else 0
+    modify' $ \st -> st {csExpects = Map.insert g (sp, count) (csExpects st)}
   ExpectType n params _ -> abstractType n params
   ExpectData n params _ -> do
     abstractType n params
@@ -10310,6 +10330,31 @@ headerExpect form sp = case form of
           count = if satisfied then 1 else 0
       put st {csExpects = Map.insert g (sp, count) (csExpects st)}
       pure (not satisfied)
+
+-- | §34.5/§9.4: decide whether a backend intrinsic of the selected profile
+-- satisfies the expectation @g@ with declared type @tyV@. An intrinsic is
+-- keyed by its Kappa spelling ('csBackendIntrinsics', empty unless a native
+-- profile is selected); its expected signature MUST match @tyV@ up to
+-- definitional equality. A name match with a type mismatch is reported as
+-- 'E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH' and still counts as "claimed by
+-- the backend" so the precise mismatch is the sole diagnostic (not also a
+-- spurious unsatisfied-expectation error).
+backendIntrinsicSatisfies :: GName -> Value -> Span -> CheckM Bool
+backendIntrinsicSatisfies g tyV sp = do
+  st <- get
+  case Map.lookup (gnameText g) (csBackendIntrinsics st) of
+    Nothing -> pure False
+    Just expectedTm -> do
+      expectedV <- evalIn emptyCtx expectedTm
+      ec <- ec_
+      if convertible ec 0 tyV expectedV
+        then pure True
+        else do
+          errAt sp "E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH" (Just "kappa-hs.backend.intrinsic")
+            ( "the declared type of '" <> gnameText g
+                <> "' does not match the signature of the backend intrinsic that satisfies it (Spec §9.4, §34.5)"
+            )
+          pure True
 
 -- | Note a top-level definition of @g@: it satisfies a pending same-file
 -- signature (§9.1) and counts toward §9.4 expect satisfaction (a second

@@ -249,28 +249,33 @@ are obvious future work.
 
 ## 6. FFI and the HTTP + SQLite demo
 
-The runtime exposes a small set of C primitives (registered as ordinary
-prelude `prim` globals with native-only IO semantics; see
-"Kappa.Backend.Ffi" and `runtime/kappart_ffi.c`) that wrap POSIX sockets
-and `sqlite3`:
+The foreign boundary is spec-conformant: a source program **explicitly
+declares** each foreign operation it needs as a §9.4 `expect term` (typed
+with `std.ffi` types — §26.2), and those expectations are satisfied **only**
+by the native (`zig`) profile's host-binding intrinsics (§34.5.3) when the
+FFI capability is selected. The foreign operations are *never* ordinary
+prelude globals; ordinary source cannot see or call them. The full
+capability→intrinsic→runtime mapping and rationale are in
+[`NATIVE_FFI_DESIGN.md`](NATIVE_FFI_DESIGN.md). `Kappa.Backend.Intrinsics`
+is the single source of truth (Kappa spelling → expected type → runtime
+primitive); the runtime realizations (POSIX sockets + `sqlite3`) live in
+`runtime/kappart_ffi.c`.
 
-* TCP sockets: `__tcpListen` (bind+listen), `__tcpAccept`, `__connRead`,
-  `__connWrite`, `__connClose`, `__listenClose`;
-* sqlite3: `__sqliteOpen`, `__sqliteExec`, `__sqliteQueryInt`,
-  `__sqliteQueryText`, `__sqliteClose`.
+Honest failure modes (no silent fallback): under the interpreter
+(`run`/`check`) or a native build without `--ffi-full`, the foreign
+`expect`s are unsatisfied → `E_EXPECT_UNSATISFIED` (§9.4); a foreign
+`expect` whose declared type disagrees with the intrinsic →
+`E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH`.
 
-These are real IO actions run by the FFI runtime under `krun_io`; the
-interpreter does not provide them, and a non-`--ffi-full` native build
-rejects them at compile time (the FFI primitive set is excluded), so
-nothing silently degrades.
-
-`examples/native/http_sqlite/` contains the demo: `server.kp` is a native
-HTTP server that, for each request, performs a SQLite write (increment a
-persistent hit counter) and a SQLite read (the new count), then returns an
-HTTP/1.1 response reporting the count. `run.sh` builds it, drives three
-requests, and verifies both the responses (`hits=1/2/3`) and the persisted
-database state (`counter.hits = 3`) — proving the request → SQLite →
-response path runs in a real native process.
+`examples/native/http_sqlite/` contains the demo: `server.kp` declares its
+foreign boundary (`expect term tcpListen : Int -> UIO OpaqueHandle`, …) and,
+for each request, performs a SQLite write (increment a persistent hit
+counter) and a SQLite read (the new count), then returns an HTTP/1.1
+response reporting the count. `run.sh` builds it with `--ffi-full`, drives
+three requests, and verifies both the responses (`hits=1/2/3`) and the
+persisted database state (`counter.hits = 3`) — proving the
+request → SQLite → response path runs in a real native process through the
+compliant boundary.
 
 ## 7. Building and testing
 

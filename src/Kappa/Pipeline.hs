@@ -9,6 +9,7 @@ module Kappa.Pipeline
   , compileFiles
   , compileFilesIn
   , compileFilesWithConfig
+  , compileSourceWithIntrinsics
   , moduleNameRelTo
   , compileSourceWithPrelude
   , importScopeFor
@@ -25,7 +26,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import Kappa.Check
-import Kappa.Core (GName (..), gnameText)
+import Kappa.Core (GName (..), Term, gnameText)
 import Kappa.Diagnostic
 import Kappa.Parser (parseModule)
 import Kappa.Prelude
@@ -134,6 +135,16 @@ fileTrace parsedOk =
 compileSourceWithPrelude :: FilePath -> Text -> CompiledUnit
 compileSourceWithPrelude path src = compileFiles [(path, src)]
 
+-- | Compile one source file with a set of backend host-binding intrinsics
+-- (§34.5) available to satisfy its §9.4 @expect@ declarations. Used by the
+-- native backend driver when a native FFI capability is selected; the
+-- intrinsic spelling ↦ expected-type map comes from
+-- "Kappa.Backend.Intrinsics". With an empty map this is exactly
+-- 'compileSourceWithPrelude'.
+compileSourceWithIntrinsics :: Map.Map Text Term -> FilePath -> Text -> CompiledUnit
+compileSourceWithIntrinsics intrinsics =
+  \path src -> compileFilesWithCfg intrinsics defaultUnsafeConfig False moduleNameOf [(path, src)]
+
 -- | Multi-file compilation with basename-derived module names
 -- (standalone files: §8.1 path-name derivation is not in force).
 compileFiles :: [(FilePath, Text)] -> CompiledUnit
@@ -150,7 +161,7 @@ compileFilesIn root = compileFilesWith True (moduleNameRelTo root)
 -- 'compileFilesIn' use 'defaultUnsafeConfig' (everything disabled).
 compileFilesWithConfig :: UnsafeConfig -> Bool -> FilePath -> [(FilePath, Text)] -> CompiledUnit
 compileFilesWithConfig cfg packageMode root =
-  compileFilesWithCfg cfg packageMode (if packageMode then moduleNameRelTo root else moduleNameOf)
+  compileFilesWithCfg Map.empty cfg packageMode (if packageMode then moduleNameRelTo root else moduleNameOf)
 
 -- One parsed source fragment.
 data Fragment = Fragment
@@ -160,15 +171,17 @@ data Fragment = Fragment
   }
 
 compileFilesWith :: Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
-compileFilesWith = compileFilesWithCfg defaultUnsafeConfig
+compileFilesWith = compileFilesWithCfg Map.empty defaultUnsafeConfig
 
-compileFilesWithCfg :: UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
-compileFilesWithCfg unsafeCfg packageMode nameOf files =
+compileFilesWithCfg :: Map.Map Text Term -> UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
+compileFilesWithCfg intrinsics unsafeCfg packageMode nameOf files =
   let (pst0, pdiags) = preludeState
       -- §4.2: seed the build configuration into the state the user
       -- modules are checked against; the prelude itself is always checked
-      -- with the default (disabled) configuration.
-      pst = pst0 {csUnsafe = unsafeCfg}
+      -- with the default (disabled) configuration. §34.5: backend
+      -- host-binding intrinsics (empty unless a native profile is selected)
+      -- are likewise seeded only for the user modules.
+      pst = pst0 {csUnsafe = unsafeCfg, csBackendIntrinsics = intrinsics}
       parsed = [(path, parseModule path src) | (path, src) <- files]
       parseFails = [ds | (_, Left ds) <- parsed]
       frags0 =

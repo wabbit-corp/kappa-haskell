@@ -11,6 +11,7 @@ import Kappa.Backend.Driver
   , buildNative
   , defaultBuildOptions
   )
+import Kappa.Backend.Intrinsics (intrinsicTypes)
 import Kappa.Check (AuditRecord (..), CheckState (..))
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
@@ -106,7 +107,14 @@ cmdBuild rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
   Left msg -> hPutStrLn stderr ("error: " <> msg) >> exitFailure
   Right (opts, path) -> do
     (src, preDiags) <- loadSourceFile path
-    let cu0 = compileSourceWithPrelude path src
+    -- §34.5: when the native FFI capability is selected (--ffi-full), the
+    -- profile's host-binding intrinsics are available to satisfy the
+    -- program's §9.4 `expect` declarations; otherwise none are, so a
+    -- foreign `expect` is unsatisfied and fails honestly.
+    let intrinsics = case boFfiUnit opts of
+          FfiFull -> intrinsicTypes
+          FfiStub -> Map.empty
+        cu0 = compileSourceWithIntrinsics intrinsics path src
         cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
     emitDiags Human (cuDiags cu)
     when (hasErrors (cuDiags cu)) exitFailure

@@ -1,23 +1,40 @@
--- A real native HTTP server backed by sqlite3 (§27.7 native backend FFI).
+-- A real native HTTP server backed by sqlite3, written through the
+-- spec-conformant foreign boundary (§9.4 `expect` + §34.5 backend
+-- intrinsics; §26.2 std.ffi types).  See docs/NATIVE_FFI_DESIGN.md.
 --
--- For each incoming TCP request it performs a sqlite WRITE (increment a
--- persistent hit counter) and a sqlite READ (the new count), then sends an
--- HTTP/1.1 response whose body reports the count.  It serves a fixed
--- number of requests and then exits cleanly, so the demo is deterministic
--- under a test harness.
+-- The foreign operations are NOT hidden prelude globals: this module
+-- EXPLICITLY declares each one it requires as an `expect term` external
+-- requirement, typed with std.ffi.OpaqueHandle.  Those expectations are
+-- satisfied only by the native (`zig`) backend's host-binding intrinsics
+-- when the FFI capability is selected (`kappa build --ffi-full`).  Under
+-- the interpreter (`kappa run`/`check`) no backend supplies them, so the
+-- expectations are unsatisfied and compilation fails honestly
+-- (E_EXPECT_UNSATISFIED) — there is no hidden symbol and no fallback.
 --
 -- Build + run:
---   kappa build --ffi-full --lib -lsqlite3 examples/native/http_sqlite/server.kp -o /tmp/kserver
+--   kappa build --ffi-full --lib -lsqlite3 \
+--       examples/native/http_sqlite/server.kp -o /tmp/kserver
 --   /tmp/kserver        # listens on :8088, serves 3 requests, exits
---
--- This compiles to a native executable; the request -> sqlite -> response
--- path runs entirely in native code (no interpreter).
 
 module main
 
--- A minimal HTTP/1.1 response.  We use `Connection: close` (and close the
--- socket after writing) so the client reads the body up to EOF without a
--- Content-Length header.
+import std.ffi.(type OpaqueHandle)
+
+-- ── foreign boundary contract (satisfied by native host-binding
+-- intrinsics; OpaqueHandle is the raw §26.2 foreign-handle vocabulary) ──
+expect term tcpListen       : Int -> UIO OpaqueHandle
+expect term tcpAccept       : OpaqueHandle -> UIO OpaqueHandle
+expect term connRead        : OpaqueHandle -> UIO String
+expect term connWrite       : OpaqueHandle -> String -> UIO Unit
+expect term connClose       : OpaqueHandle -> UIO Unit
+expect term listenClose     : OpaqueHandle -> UIO Unit
+expect term sqliteOpen      : String -> UIO OpaqueHandle
+expect term sqliteExec      : OpaqueHandle -> String -> UIO Unit
+expect term sqliteQueryInt  : OpaqueHandle -> String -> UIO Int
+expect term sqliteClose     : OpaqueHandle -> UIO Unit
+
+-- A minimal HTTP/1.1 response.  `Connection: close` (and closing the
+-- socket after writing) lets the client read the body up to EOF.
 httpResponse : String -> String
 let httpResponse body =
     stringAppend
@@ -29,21 +46,21 @@ let dbPath = "/tmp/kappa_http_demo.db"
 
 main : UIO Unit
 let main = do
-    db <- __sqliteOpen dbPath
-    __sqliteExec db "CREATE TABLE IF NOT EXISTS counter (hits INTEGER)"
-    __sqliteExec db "DELETE FROM counter"
-    __sqliteExec db "INSERT INTO counter (hits) VALUES (0)"
-    listener <- __tcpListen 8088
+    db <- sqliteOpen dbPath
+    sqliteExec db "CREATE TABLE IF NOT EXISTS counter (hits INTEGER)"
+    sqliteExec db "DELETE FROM counter"
+    sqliteExec db "INSERT INTO counter (hits) VALUES (0)"
+    listener <- tcpListen 8088
     printlnString "listening on :8088"
     var served = 0
     while ltInt served 3 do
-        conn <- __tcpAccept listener
-        __connRead conn
-        __sqliteExec db "UPDATE counter SET hits = hits + 1"
-        count <- __sqliteQueryInt db "SELECT hits FROM counter"
-        __connWrite conn (httpResponse (stringAppend "hits=" (showInt count)))
-        __connClose conn
+        conn <- tcpAccept listener
+        connRead conn
+        sqliteExec db "UPDATE counter SET hits = hits + 1"
+        count <- sqliteQueryInt db "SELECT hits FROM counter"
+        connWrite conn (httpResponse (stringAppend "hits=" (showInt count)))
+        connClose conn
         served = addInt served 1
-    __listenClose listener
-    __sqliteClose db
+    listenClose listener
+    sqliteClose db
     printlnString "served 3 requests; exiting"

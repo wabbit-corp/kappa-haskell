@@ -37,6 +37,7 @@ library
         Kappa.Backend.C
         Kappa.Backend.Driver
         Kappa.Backend.Ffi
+        Kappa.Backend.Intrinsics
         Kappa.Check
         Kappa.Core
         Kappa.Diagnostic
