@@ -85,6 +85,27 @@ else
   echo "   FAIL: tailrec build failed"; fails=$((fails+1))
 fi
 
+echo "== namespace hygiene: hidden runtime symbols are not source-visible =="
+exe="$WORK/hidden"
+if timeout 120 $KAPPA build --ffi-full "$CASES/hidden-symbol.kp" -o "$exe" >"$WORK/hidden.log" 2>&1; then
+  echo "   FAIL: a program calling __tcpListen built (hidden symbol leaked)"; fails=$((fails+1))
+elif grep -q "E_NAME_UNRESOLVED" "$WORK/hidden.log" && [ ! -f "$exe" ]; then
+  echo "   ok (__tcpListen is E_NAME_UNRESOLVED, no executable; FFI prims are not prelude globals)"
+else
+  echo "   FAIL: __tcpListen not rejected as unresolved / left an executable"
+  cat "$WORK/hidden.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== foreign expects fail honestly under the interpreter (no fallback) =="
+if timeout 120 $KAPPA run "$ROOT/examples/native/http_sqlite/server.kp" >"$WORK/server-run.log" 2>&1; then
+  echo "   FAIL: the FFI demo ran under the interpreter (expects should be unsatisfied)"; fails=$((fails+1))
+elif grep -q "E_EXPECT_UNSATISFIED" "$WORK/server-run.log"; then
+  echo "   ok (foreign expects unsatisfied -> E_EXPECT_UNSATISFIED, §9.4)"
+else
+  echo "   FAIL: interpreter did not report E_EXPECT_UNSATISFIED for the foreign demo"
+  head -3 "$WORK/server-run.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
 echo "== performance smoke (sum 1..1_000_000, bounded) =="
 exe="$WORK/perf"
 if timeout 240 $KAPPA build "$CASES/perf.kp" -o "$exe" >"$WORK/perf.build.log" 2>&1; then

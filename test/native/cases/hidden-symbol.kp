@@ -1,0 +1,11 @@
+-- Namespace-hygiene regression: the native runtime's FFI primitives are
+-- NOT ordinary prelude globals.  Ordinary source must not be able to name
+-- or call them directly — this program references the (internal) runtime
+-- symbol `__tcpListen` and MUST be rejected with E_NAME_UNRESOLVED, with no
+-- executable produced, even under a native `--ffi-full` build.  The only
+-- spec-compliant path to a foreign operation is an explicit `expect term`
+-- satisfied by a backend intrinsic (see examples/native/http_sqlite).
+module main
+
+main : UIO Unit
+let main = __tcpListen 8088
