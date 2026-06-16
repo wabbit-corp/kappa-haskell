@@ -1,0 +1,31 @@
+-- Native backend conformance: recursion, if, match over constructors and
+-- tuples, currying, integer primitives.  Runs identically under the
+-- interpreter (`kappa run`) and the native backend (`kappa build`).
+module main
+
+fact : Int -> Int
+let fact n = if leInt n 1 then 1 else mulInt n (fact (subInt n 1))
+
+sumTo : Int -> Int
+let sumTo n = if leInt n 0 then 0 else addInt n (sumTo (subInt n 1))
+
+len : forall (a : Type). List a -> Int
+let len xs =
+    match xs
+    case Nil -> 0
+    case y :: rest -> addInt 1 (len rest)
+
+mkPair : Int -> Int -> (Int, Int)
+let mkPair a b = (a, b)
+
+addPair : (Int, Int) -> Int
+let addPair p =
+    match p
+    case (x, y) -> addInt x y
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (fact 5))
+    printlnString (showInt (sumTo 100))
+    printlnString (showInt (len (1 :: 2 :: 3 :: 4 :: Nil)))
+    printlnString (showInt (addPair (mkPair 7 8)))

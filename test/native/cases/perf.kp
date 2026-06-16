@@ -1,0 +1,14 @@
+-- Native backend performance smoke: a bounded loop doing real work
+-- (sum of 1..1_000_000 via a mutable accumulator).  Built natively and
+-- run under a timeout to confirm the backend produces reasonably bounded
+-- code; the printed result (500000500000) is checked for correctness.
+module main
+
+main : UIO Unit
+let main = do
+    var total = 0
+    var i = 1
+    while leInt i 1000000 do
+        total = addInt total i
+        i = addInt i 1
+    printlnString (showInt total)

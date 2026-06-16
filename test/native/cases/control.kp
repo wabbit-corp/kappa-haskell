@@ -1,0 +1,22 @@
+-- Native backend conformance: the do-kernel control surface — mutable
+-- `var` cells, `while`, `for` over a list, in-place assignment, and
+-- statement-`if`.  Identical output under the interpreter and native.
+module main
+
+main : UIO Unit
+let main = do
+    var total = 0
+    var i = 1
+    while leInt i 10 do
+        total = addInt total i
+        i = addInt i 1
+    printlnString (showInt total)
+    var acc = 0
+    for x in (10 :: 20 :: 30 :: Nil) do
+        acc = addInt acc x
+    printlnString (showInt acc)
+    let n = 6
+    if leInt n 5 then
+        printlnString "small"
+    else
+        printlnString "big"

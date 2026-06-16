@@ -1,0 +1,19 @@
+-- Native backend conformance: string primitives (append, equality,
+-- ordering) and boolean control.  Identical output under the interpreter
+-- and the native backend.
+module main
+
+yn : Bool -> String
+let yn b = if b then "yes" else "no"
+
+greet : String -> String
+let greet name = stringAppend "hello, " (stringAppend name "!")
+
+main : UIO Unit
+let main = do
+    printlnString (greet "kappa")
+    printlnString (yn (eqStr "ab" "ab"))
+    printlnString (yn (eqStr "ab" "ac"))
+    printlnString (yn (ltStr "abc" "abd"))
+    printlnString (yn (ltStr "b" "a"))
+    printlnString (stringAppend (showInt 42) (stringAppend " / " (showInt (negInt 7))))

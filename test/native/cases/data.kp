@@ -1,0 +1,42 @@
+-- Native backend conformance: a user data type, constructor matching,
+-- literal patterns, non-binding or-patterns, wildcard, and nested list
+-- patterns.  Identical output under the interpreter and the native backend.
+module main
+
+data Shape : Type =
+    Circle (r : Int)
+    Rect (w : Int) (h : Int)
+    Dot
+
+area : Shape -> Int
+let area s =
+    match s
+    case Circle r -> mulInt 3 (mulInt r r)
+    case Rect w h -> mulInt w h
+    case Dot -> 0
+
+classify : Int -> String
+let classify n =
+    match n
+    case 0 -> "zero"
+    case 1 | 2 -> "small"
+    case _ -> "many"
+
+describe : List Int -> String
+let describe xs =
+    match xs
+    case Nil -> "empty"
+    case x :: Nil -> stringAppend "one:" (showInt x)
+    case x :: y :: _ -> stringAppend (showInt x) (stringAppend "," (showInt y))
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (area (Circle 5)))
+    printlnString (showInt (area (Rect 4 6)))
+    printlnString (showInt (area Dot))
+    printlnString (classify 0)
+    printlnString (classify 2)
+    printlnString (classify 99)
+    printlnString (describe Nil)
+    printlnString (describe (7 :: Nil))
+    printlnString (describe (1 :: 2 :: 3 :: Nil))

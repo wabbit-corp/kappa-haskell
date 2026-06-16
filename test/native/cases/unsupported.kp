@@ -1,0 +1,9 @@
+-- Native backend honesty check: this program type-checks and runs under
+-- the interpreter, but uses a primitive (showDouble) the native runtime
+-- does not implement.  `kappa build` MUST reject it at compile time with
+-- E_BACKEND_UNSUPPORTED and produce no executable — never a silent
+-- divergence from interpreter behaviour.
+module main
+
+main : UIO Unit
+let main = printlnString (showDouble 3.5)
