@@ -223,12 +223,22 @@ These are honest, documented bounds — not silent divergences:
   `__builtin_*_overflow`), never a silent wraparound. Programs that stay
   within 64 bits agree with the interpreter exactly; programs that exceed
   it run unbounded under the interpreter but trap natively.
-* **Deep non-tail recursion is bounded by the C stack.** Generated calls
-  use the native C stack, so a deeply self-recursive function (e.g. a
-  non-tail `sumTo 1_000_000`) can overflow it (a clean OS fault), whereas
-  the interpreter is bounded by its own `-K64m` guard. This is a
-  representation limit, not a miscompilation: at a sufficient stack size
-  the result is identical to the interpreter.
+* **Tail calls.** A top-level function is compiled to a *worker* whose
+  body is a `while(1)` loop plus a curried closure for first-class/partial
+  use. A **tail-position self-call** rebinds the parameters and loops
+  instead of recursing in C, so a tail-recursive function runs in
+  **constant C stack** (e.g. `sumTo 5_000_000 0`, `countDown 10_000_000` —
+  depths the interpreter cannot even reach, as it trips the §32.1
+  recursion-depth guard). The spec does not mandate general proper tail
+  calls (only tail *position* for handler resumptions), so this is a
+  backend quality property; see `NATIVE_FFI_DESIGN.md`.
+* **Non-self tail calls remain ordinary C calls.** Mutual tail recursion,
+  tail calls through a function value, and local (`let rec`) tail
+  recursion are *not* loop-converted — only direct top-level self-calls
+  are. They run correctly but are bounded by the C stack, exactly like
+  deep non-tail recursion. This is a documented, honest limitation, not a
+  miscompilation: the result is always correct; only a very deep
+  mutual-tail chain can exhaust the stack.
 * **Floating-point and string `show` are not supported.** `showDouble`,
   `showStringLit`, `showScalar` (whose interpreter output is Haskell's
   `show`) are rejected at compile time rather than risk a formatting

@@ -67,6 +67,24 @@ else
   cat "$WORK/unsupported.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+echo "== tail-call stress (deep tail recursion, default ~8MB C stack) =="
+exe="$WORK/tailrec"
+if timeout 240 $KAPPA build "$CASES/tailrec.kp" -o "$exe" >"$WORK/tailrec.build.log" 2>&1; then
+  # run with the default stack: without tail-call elimination this depth
+  # (millions) overflows the C stack and crashes.
+  out="$( (ulimit -s 8192; timeout 60 "$exe" 2>/dev/null) | tr '\n' '|')"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "   FAIL: tail-recursive run crashed/timed out (rc=$rc) — stack not bounded"; fails=$((fails+1))
+  elif [ "$out" = "2000001000000|7|" ]; then
+    echo "   ok (2,000,000- and 3,000,000-deep tail recursion in constant stack)"
+  else
+    echo "   FAIL: wrong result: $out"; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: tailrec build failed"; fails=$((fails+1))
+fi
+
 echo "== performance smoke (sum 1..1_000_000, bounded) =="
 exe="$WORK/perf"
 if timeout 240 $KAPPA build "$CASES/perf.kp" -o "$exe" >"$WORK/perf.build.log" 2>&1; then

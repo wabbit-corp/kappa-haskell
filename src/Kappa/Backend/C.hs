@@ -268,9 +268,83 @@ emitGlobal g = do
          \trait dictionary, or derived projection)")
       (stmts, _) <- captured "0" (pure ())
       finishGlobal ident stmts "kunit()"
-    Just tm -> do
-      (stmts, e) <- captured "0" (compile tm)
-      finishGlobal ident stmts e
+    Just tm -> case funcArity tm of
+      -- A function global is lowered to a worker (a loop, so a tail
+      -- self-call runs in constant C stack) plus a curried closure for
+      -- partial application and first-class use.
+      (n, inner) | n >= 1 -> compileFunctionGlobal g n inner
+      _ -> do
+        (stmts, e) <- captured "0" (compile tm)
+        finishGlobal ident stmts e
+
+-- | The leading-lambda arity of a term and the body beneath those binders.
+funcArity :: Term -> (Int, Term)
+funcArity = go 0
+  where
+    go !n (CLam _ _ _ b) = go (n + 1) b
+    go !n t = (n, t)
+
+-- | Lower a function global to: a worker @kw_…(p0,…,p{n-1})@ whose body is
+-- a @while(1)@ loop (so a tail self-call rebinds the parameters and
+-- @continue@s instead of recursing in C — bounded C stack for tail
+-- recursion), plus a curried arity-1 closure chain that collects the
+-- arguments and calls the worker, returned by the accessor @kg_…()@.
+compileFunctionGlobal :: GName -> Int -> Term -> Gen ()
+compileFunctionGlobal g n inner = do
+  let ident = cGlobIdent g
+      worker = "kw_" <> mangle (gKey g)
+      ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
+      ti = TailInfo g n ps
+      -- de Bruijn env at the loop top: index 0 = innermost binder = the
+      -- LAST parameter, so cons p0 deepest … p{n-1} at the head.
+      envExpr = foldl (\acc p -> "kpush(" <> p <> ", " <> acc <> ")") "0" ps
+      paramDecls = T.intercalate ", " ["KValue *" <> p | p <- ps]
+  (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
+  let workerFn =
+        T.unlines $
+          [ "static KValue *" <> worker <> "(" <> paramDecls <> ") {"
+          , "  while (1) {"
+          , "    KEnv *kw_env = " <> envExpr <> "; (void)kw_env;"
+          ]
+            ++ map ("    " <>) bodyStmts
+            ++ [ "  }"
+               , "}"
+               ]
+  emitTop ("static KValue *" <> worker <> "(" <> paramDecls <> ");") workerFn
+  -- curried closure chain clo_0 … clo_{n-1}; clo_{n-1} calls the worker.
+  cloNames <- mapM (\i -> freshN ("kclo" <> T.pack (show i) <> "_")) [0 .. n - 1]
+  forM_ (zip [0 ..] cloNames) $ \(i, nm) -> do
+    let body
+          | i < n - 1 =
+              "  return kclo(" <> (cloNames !! (i + 1)) <> ", kpush(arg, cenv));"
+          | otherwise =
+              -- saturating call: p{n-1} = arg; p_j = kvar(cenv, n-2-j)
+              let collected = [ "kvar(cenv, " <> T.pack (show (n - 2 - j)) <> ")" | j <- [0 .. n - 2] ]
+                  callArgs = T.intercalate ", " (collected ++ ["arg"])
+               in "  return " <> worker <> "(" <> callArgs <> ");"
+        fn =
+          T.unlines
+            [ "static KValue *" <> nm <> "(KEnv *cenv, KValue *arg) {"
+            , "  (void)cenv; (void)arg;"
+            , body
+            , "}"
+            ]
+    emitTop ("static KValue *" <> nm <> "(KEnv *, KValue *);") fn
+  -- accessor: the memoised curried closure value (its forward declaration
+  -- was already emitted by 'emitGlobal').
+  let accessor =
+        T.unlines
+          [ "static KValue *" <> ident <> "(void) {"
+          , "  static KValue *cache = 0; if (cache) return cache;"
+          , "  cache = kclo(" <> head cloNames <> ", 0);"
+          , "  return cache;"
+          , "}"
+          ]
+  modify' $ \st -> st {gsTop = accessor : gsTop st}
+
+-- | Append a forward declaration + a completed top-level C function.
+emitTop :: Text -> Text -> Gen ()
+emitTop proto fn = modify' $ \st -> st {gsTop = fn : gsTop st, gsProtos = proto : gsProtos st}
 
 finishGlobal :: Text -> [Text] -> Text -> Gen ()
 finishGlobal ident stmts e =
@@ -344,10 +418,10 @@ compile term = case term of
         pure ("kappi(" <> fe <> ", " <> ae <> ")")
   CLam _ _ _ body -> compileLam body
   CCtor g args -> compileCtor g args
-  CIf c t e -> compileIf c t e
-  CMatch scrut alts -> compileMatch scrut alts
-  CLet _ _ _ rhs body -> compileLet rhs body
-  CLetRec _ _ _ rhs body -> compileLetRec rhs body
+  CIf {} -> sinkToExpr term
+  CMatch {} -> sinkToExpr term
+  CLet {} -> sinkToExpr term
+  CLetRec {} -> sinkToExpr term
   CRecordV fs -> compileRecord fs
   CProj e f -> do
     ee <- compile e
@@ -382,6 +456,31 @@ spineOf = go []
   where
     go acc (CApp ic f a) = go ((ic, a) : acc) f
     go acc t = (t, acc)
+
+-- | If @term@ is a saturated call to the worker's own global (a tail
+-- self-call), return its arguments (with icities); the worker then loops
+-- instead of recursing in C.
+selfTailArgs :: TailInfo -> Term -> Maybe [(Icit, Term)]
+selfTailArgs ti term = case spineOf term of
+  (CGlob g, args) | g == tiName ti && length args == tiArity ti -> Just args
+  _ -> Nothing
+
+-- | Lower a self-tail-call to a loop step: recompute the arguments into
+-- fresh temporaries (they may read the current parameters), rebind the
+-- worker's parameter variables, and @continue@.
+emitTailLoop :: TailInfo -> [(Icit, Term)] -> Gen ()
+emitTailLoop ti args = do
+  temps <- forM args $ \(ic, a) -> do
+    e <- case ic of
+      Expl -> compile a
+      Impl -> do
+        er <- isErasableArg a
+        if er then pure "kunit()" else compile a
+    t <- freshN "tc_"
+    emit ("KValue *" <> t <> " = " <> e <> ";")
+    pure t
+  forM_ (zip (tiArgs ti) temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
+  emit "continue;"
 
 -- | Recognise a @__runIO e@ monadic-splice application (§18.3); returns
 -- the single explicit IO-action argument.  Implicit type arguments are
@@ -567,27 +666,6 @@ compileRecord fs = do
   emit ("KValue *" <> valsArr <> "[] = {" <> T.intercalate ", " valEs <> "};")
   pure ("krec(" <> T.pack (show (length fs)) <> ", " <> namesArr <> ", " <> valsArr <> ")")
 
-compileLet :: Term -> Term -> Gen Text
-compileLet rhs body = do
-  re <- compile rhs
-  env <- gets gsEnv
-  e2 <- freshN "env_"
-  emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
-  withEnv e2 (compile body)
-
--- | A local recursive let: allocate the binder cell first, evaluate the
--- rhs with the binder in scope, then back-patch the cell (the rhs is a
--- function whose closure captures the cell but does not read it until
--- applied — see docs/NATIVE_BACKEND.md §5).
-compileLetRec :: Term -> Term -> Gen Text
-compileLetRec rhs body = do
-  env <- gets gsEnv
-  e2 <- freshN "env_"
-  emit ("KEnv *" <> e2 <> " = kpush(kunit(), " <> env <> ");")
-  re <- withEnv e2 (compile rhs)
-  emit (e2 <> "->val = " <> re <> ";")
-  withEnv e2 (compile body)
-
 withEnv :: Text -> Gen a -> Gen a
 withEnv e act = do
   saved <- gets gsEnv
@@ -596,71 +674,122 @@ withEnv e act = do
   modify' $ \g -> g {gsEnv = saved}
   pure r
 
-compileIf :: Term -> Term -> Term -> Gen Text
-compileIf c t e = do
+-- ── Result sinks (shared by if/match/let in both expression and
+-- function-body-tail position) ──────────────────────────────────────
+
+-- | The self-recursion context of the function currently being compiled
+-- as a worker: a saturated tail call to it becomes a loop instead of a C
+-- call (see 'compileFunctionGlobal').
+data TailInfo = TailInfo
+  { tiName :: !GName -- ^ the worker's own global
+  , tiArity :: !Int -- ^ number of leading binders
+  , tiArgs :: ![Text] -- ^ the worker's mutable C parameter variables, in binder order
+  }
+
+-- | Where a computed value flows: into a C variable (expression context),
+-- or out of a worker as its tail result (function-body tail position).
+data Sink = SinkVar !Text | SinkTail !TailInfo
+
+sinkResult :: Sink -> Text -> Gen ()
+sinkResult (SinkVar r) e = emit (r <> " = " <> e <> ";")
+sinkResult (SinkTail _) e = emit ("return " <> e <> ";")
+
+-- | Compile @term@ so its value flows to @sink@, recursing through the
+-- control forms (if/match/let) so that a self-tail-call deep inside a
+-- branch is lowered to a loop rather than a recursive C call.  This single
+-- traversal serves both expression context ('SinkVar') and the worker's
+-- tail position ('SinkTail'), so the two can never drift.
+consume :: Sink -> Term -> Gen ()
+consume sink term = case term of
+  CIf c t e -> consumeIf sink c t e
+  CMatch scrut alts -> consumeMatch sink scrut alts
+  CLet _ _ _ rhs body -> do
+    re <- compile rhs
+    env <- gets gsEnv
+    e2 <- freshN "env_"
+    emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
+    withEnv e2 (consume sink body)
+  -- A local recursive let: allocate the binder cell, evaluate the rhs
+  -- (a function whose closure captures the cell but does not read it until
+  -- applied), then back-patch (docs/NATIVE_BACKEND.md §5).
+  CLetRec _ _ _ rhs body -> do
+    env <- gets gsEnv
+    e2 <- freshN "env_"
+    emit ("KEnv *" <> e2 <> " = kpush(kunit(), " <> env <> ");")
+    re <- withEnv e2 (compile rhs)
+    emit (e2 <> "->val = " <> re <> ";")
+    withEnv e2 (consume sink body)
+  _ -> case sink of
+    SinkTail ti | Just args <- selfTailArgs ti term -> emitTailLoop ti args
+    _ -> do
+      e <- compile term
+      sinkResult sink e
+
+-- | Compile an if/match/let in expression context: declare a fresh result
+-- variable and consume into it.
+sinkToExpr :: Term -> Gen Text
+sinkToExpr term = do
+  r <- freshN "r_"
+  emit ("KValue *" <> r <> " = 0;")
+  consume (SinkVar r) term
+  pure r
+
+consumeIf :: Sink -> Term -> Term -> Term -> Gen ()
+consumeIf sink c t e = do
   ce <- compile c
   env <- gets gsEnv
-  r <- freshN "if_"
-  emit ("KValue *" <> r <> ";")
-  (tStmts, te) <- captured env (compile t)
-  (eStmts, ee) <- captured env (compile e)
+  (tStmts, ()) <- captured env (consume sink t)
+  (eStmts, ()) <- captured env (consume sink e)
   emit ("if (kas_bool(" <> ce <> ")) {")
   forM_ tStmts (emit . ("  " <>))
-  emit ("  " <> r <> " = " <> te <> ";")
   emit "} else {"
   forM_ eStmts (emit . ("  " <>))
-  emit ("  " <> r <> " = " <> ee <> ";")
   emit "}"
-  pure r
 
 -- ── Pattern matching ─────────────────────────────────────────────────
 
-compileMatch :: Term -> [CaseAlt] -> Gen Text
-compileMatch scrut alts = do
+consumeMatch :: Sink -> Term -> [CaseAlt] -> Gen ()
+consumeMatch sink scrut alts = do
   se <- compile scrut
   sv <- freshN "scrut_"
   emit ("KValue *" <> sv <> " = " <> se <> ";")
   env <- gets gsEnv
-  r <- freshN "match_"
-  emit ("KValue *" <> r <> " = 0;")
   done <- freshN "matched_"
   emit ("int " <> done <> " = 0;")
-  forM_ alts $ \alt -> compileAlt sv env r done alt
+  forM_ alts $ \alt -> consumeAlt sink sv env done alt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
-  pure r
 
-compileAlt :: Text -> Text -> Text -> Text -> CaseAlt -> Gen ()
-compileAlt sv env r done (CaseAlt pat mguard body) = do
+consumeAlt :: Sink -> Text -> Text -> Text -> CaseAlt -> Gen ()
+consumeAlt sink sv env done (CaseAlt pat mguard body) = do
   emit ("if (!" <> done <> ") {")
   -- pattern test + bindings produced as a nested block
   (blk, ()) <- captured env $ do
     mtest <- patTest sv pat
     case mtest of
-      Nothing -> compileAltBody sv env r done pat mguard body
+      Nothing -> consumeAltBody sink sv env done pat mguard body
       Just test -> do
         emit ("if (" <> test <> ") {")
-        compileAltBody sv env r done pat mguard body
+        consumeAltBody sink sv env done pat mguard body
         emit "}"
   forM_ blk (emit . ("  " <>))
   emit "}"
 
 -- | Bind the pattern variables, evaluate the optional guard, and on a full
--- match compute the body and mark @done@.
-compileAltBody :: Text -> Text -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
-compileAltBody sv env r done pat mguard body = do
-  -- Bind variables (extends the env) by projecting the scrutinee `sv`.
+-- match consume the body into the sink (and mark @done@; for a 'SinkTail'
+-- body the @done@ store is dead — the body has returned/looped — but
+-- harmless).
+consumeAltBody :: Sink -> Text -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
+consumeAltBody sink sv env done pat mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   env' <- bindPatScrut sv env pat
   case mguard of
     Nothing -> do
-      be <- withEnv env' (compile body)
-      emit (r <> " = " <> be <> ";")
+      withEnv env' (consume sink body)
       emit (done <> " = 1;")
     Just gd -> do
       ge <- withEnv env' (compile gd)
       emit ("if (kas_bool(" <> ge <> ")) {")
-      be <- withEnv env' (compile body)
-      emit ("  " <> r <> " = " <> be <> ";")
+      withEnv env' (consume sink body)
       emit ("  " <> done <> " = 1;")
       emit "}"
 
