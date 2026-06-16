@@ -313,6 +313,7 @@ static KValue *show_int(int64_t v) {
 }
 
 static KValue *str_append(KValue *a, KValue *b) {
+  if (a->tag != K_STR || b->tag != K_STR) krt_fail("stringAppend: argument is not a String");
   size_t la = a->as.str.len, lb = b->as.str.len;
   char *buf = (char *)kgc_alloc_atomic(la + lb + 1);
   memcpy(buf, a->as.str.p, la);
@@ -387,6 +388,7 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
   if (PRIM("stringAppend")) return str_append(a[0], a[1]);
   if (PRIM("eqStr")) return kbool(klit_eq(a[0], a[1]));
   if (PRIM("ltStr")) {
+    if (a[0]->tag != K_STR || a[1]->tag != K_STR) krt_fail("ltStr: argument is not a String");
     size_t la = a[0]->as.str.len, lb = a[1]->as.str.len, m = la < lb ? la : lb;
     int c = memcmp(a[0]->as.str.p, a[1]->as.str.p, m);
     return kbool(c < 0 || (c == 0 && la < lb));

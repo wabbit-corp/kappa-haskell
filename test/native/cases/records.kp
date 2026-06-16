@@ -1,0 +1,33 @@
+-- Native backend conformance: record values that outlive the C stack
+-- frame that built them.  A top-level record CAF and a record stored in a
+-- ref are projected after their building accessor/closure has returned, so
+-- the generated field-name array must have static storage (it is shared by
+-- the runtime record without being copied).  Identical output under the
+-- interpreter and the native backend.
+module main
+
+-- a top-level record CAF: built once in a memoised accessor, projected later
+person : (name : String, age : Integer)
+let person = (name = "ada", age = 36)
+
+-- a functional update of that CAF (another record outliving its frame)
+older : (name : String, age : Integer)
+let older = person.{ age = 37 }
+
+-- record pattern + projection through a function boundary
+diff : (x : Int, y : Int) -> Int
+let diff r =
+    match r
+    case (x = a, y = b) -> subInt a b
+
+main : UIO Unit
+let main = do
+    printlnString person.name
+    printlnString (showInt person.age)
+    printlnString (showInt older.age)
+    printlnString older.name
+    printlnString (showInt (diff (x = 10, y = 3)))
+    -- a record round-tripped through a mutable ref
+    r <- newRef (a = 1, b = 2)
+    rec <- readRef r
+    printlnString (showInt (addInt rec.a rec.b))

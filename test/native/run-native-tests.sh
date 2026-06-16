@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops; do run_diff_case "$c"; done
+for c in arith data control strings loops records; do run_diff_case "$c"; done
 
 echo "== honest-unsupported case =="
 exe="$WORK/unsupported"

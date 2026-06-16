@@ -548,7 +548,11 @@ compileRecord fs = do
   namesArr <- freshN "rnames_"
   valsArr <- freshN "rvals_"
   let names = T.intercalate ", " [cStr n | (n, _) <- fs]
-  emit ("const char *" <> namesArr <> "[] = {" <> names <> "};")
+  -- The names array must outlive this C stack frame: krec stores the
+  -- pointer without copying (the field labels are compile-time string
+  -- literals), so a record built in a CAF accessor / closure and projected
+  -- later would otherwise read a dangling stack array.  Emit it as static.
+  emit ("static const char *" <> namesArr <> "[] = {" <> names <> "};")
   emit ("KValue *" <> valsArr <> "[] = {" <> T.intercalate ", " valEs <> "};")
   pure ("krec(" <> T.pack (show (length fs)) <> ", " <> namesArr <> ", " <> valsArr <> ")")
 
@@ -822,12 +826,12 @@ compileItems mode = go
         te <- compile t
         sv <- freshN "let_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
-        bindAndContinue sv pat rest
+        bindAndContinue sv pat
       KBind _ pat t -> do
         te <- compile t
         sv <- freshN "bind_"
         emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
-        bindAndContinue sv pat rest
+        bindAndContinue sv pat
       KReturn t -> do
         te <- compile t
         emit ("return " <> te <> ";")
@@ -866,8 +870,9 @@ compileItems mode = go
           _ <- unsupported tag (what <> " is not supported by the native backend")
           go rest
         -- bind an irrefutable do-pattern (with a runtime check for any
-        -- refutable shape) and continue with the rest of this scope
-        bindAndContinue sv pat _rest = do
+        -- refutable shape) and continue with the rest of this scope (the
+        -- `rest` closed over from the enclosing `go (item : rest)` clause)
+        bindAndContinue sv pat = do
           env <- gets gsEnv
           mtest <- patTest sv pat
           case mtest of

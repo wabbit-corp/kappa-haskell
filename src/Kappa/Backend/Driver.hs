@@ -42,7 +42,7 @@ data BuildOptions = BuildOptions
   { boOutput :: !(Maybe FilePath) -- ^ output path (default: input basename)
   , boEmitCOnly :: !Bool -- ^ write the generated C and stop
   , boCC :: !(Maybe String) -- ^ explicit C driver override
-  , boExtraLibs :: ![String] -- ^ extra linker flags, e.g. ["-luv","-lsqlite3"]
+  , boExtraLibs :: ![String] -- ^ extra linker flags, e.g. ["-lsqlite3"]
   , boFfiUnit :: !FfiUnit
   , boWorkDir :: !(Maybe FilePath) -- ^ directory for generated artifacts
   }
