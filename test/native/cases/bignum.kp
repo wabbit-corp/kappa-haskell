@@ -1,0 +1,22 @@
+-- Native backend conformance: Integer is unbounded (§6). The native
+-- runtime keeps an int64 fast path and promotes to a GMP bignum on
+-- overflow or a bignum operand, so results never wrap or trap — matching
+-- the interpreter's Haskell Integer. Identical output under both.
+module main
+
+fact : Int -> Int
+let fact n = if leInt n 1 then 1 else mulInt n (fact (subInt n 1))
+
+powTwo : Int -> Int -> Int
+let powTwo acc n = if leInt n 0 then acc else powTwo (mulInt acc 2) (subInt n 1)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (fact 50))
+    printlnString (showInt (powTwo 1 128))
+    printlnString (showInt (mulInt 3037000500 3037000500))   -- overflows int64
+    printlnString (showInt (addInt (mulInt 9223372036854775807 2) 5))
+    printlnString (showInt (subInt 0 (powTwo 1 70)))          -- big negative
+    printlnString (showInt (divInt (fact 30) (fact 28)))      -- bignum quot = 870
+    printlnString (showInt (modInt (fact 20) 1000000007))
+    printlnString (if ltInt (fact 20) (fact 21) then "ord-ok" else "no")

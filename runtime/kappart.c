@@ -7,6 +7,7 @@
 #include "kappart.h"
 
 #include <gc.h>
+#include <gmp.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,19 @@
 
 /* ── lifecycle / allocation ────────────────────────────────────────── */
 
-void krt_init(void) { GC_INIT(); }
+/* Route GMP allocation through the Boehm collector so bignum limbs are
+ * GC-managed (free is a no-op; the collector reclaims). */
+static void *gmp_gc_alloc(size_t n) { return GC_MALLOC(n); }
+static void *gmp_gc_realloc(void *p, size_t old, size_t n) {
+  (void)old;
+  return GC_REALLOC(p, n);
+}
+static void gmp_gc_free(void *p, size_t n) { (void)p; (void)n; }
+
+void krt_init(void) {
+  GC_INIT();
+  mp_set_memory_functions(gmp_gc_alloc, gmp_gc_realloc, gmp_gc_free);
+}
 
 void *kgc_alloc(size_t n) {
   void *p = GC_MALLOC(n);
@@ -46,6 +59,39 @@ KValue *kint(int64_t v) {
   KValue *r = alloc_val(K_INT);
   r->as.i = v;
   return r;
+}
+
+/* ── arbitrary-precision integers (GMP, §6) ────────────────────────── */
+/* Representation: small values stay inline in K_INT (int64); a value that
+ * does not fit int64 is a K_BIGINT pointing at a GC-allocated mpz.  Assumes
+ * an LP64 target (long == int64), which the zig profile pins. */
+
+static KValue *kbig_from_mpz(const mpz_t z) {
+  KValue *r = alloc_val(K_BIGINT);
+  __mpz_struct *p = (__mpz_struct *)kgc_alloc(sizeof(__mpz_struct));
+  mpz_init_set(p, z);
+  r->as.big.mpz = p;
+  return r;
+}
+
+/* Demote to K_INT when the result fits int64, else keep a K_BIGINT. */
+static KValue *kfrom_mpz(const mpz_t z) {
+  if (mpz_fits_slong_p(z)) return kint((int64_t)mpz_get_si(z));
+  return kbig_from_mpz(z);
+}
+
+/* Load a K_INT/K_BIGINT into an mpz for a bignum operation. */
+static void kload_mpz(KValue *v, mpz_t out) {
+  if (v->tag == K_INT) mpz_set_si(out, (long)v->as.i);
+  else if (v->tag == K_BIGINT) mpz_set(out, (const __mpz_struct *)v->as.big.mpz);
+  else krt_fail("integer operation on a non-integer value");
+}
+
+KValue *kbigint_str(const char *decimal) {
+  mpz_t z;
+  mpz_init(z);
+  if (mpz_set_str(z, decimal, 10) != 0) krt_fail("kbigint_str: invalid decimal literal");
+  return kfrom_mpz(z);
 }
 
 KValue *kdbl(double v) {
@@ -328,6 +374,9 @@ int klit_eq(KValue *a, KValue *b) {
   if (a->tag != b->tag) return 0;
   switch (a->tag) {
     case K_INT: return a->as.i == b->as.i;
+    case K_BIGINT:
+      return mpz_cmp((const __mpz_struct *)a->as.big.mpz,
+                     (const __mpz_struct *)b->as.big.mpz) == 0;
     case K_DBL: return a->as.d == b->as.d; /* raw bit-pattern compare in eq prims */
     case K_CHR: return a->as.chr == b->as.chr;
     case K_STR:
@@ -340,8 +389,13 @@ int klit_eq(KValue *a, KValue *b) {
 /* ── unboxing ──────────────────────────────────────────────────────── */
 
 int64_t kas_int(KValue *v) {
-  if (v->tag != K_INT) krt_fail("kas_int: not an Int");
-  return v->as.i;
+  if (v->tag == K_INT) return v->as.i;
+  if (v->tag == K_BIGINT) {
+    const __mpz_struct *z = (const __mpz_struct *)v->as.big.mpz;
+    if (!mpz_fits_slong_p(z)) krt_fail("kas_int: Integer too large for a machine word");
+    return (int64_t)mpz_get_si(z);
+  }
+  krt_fail("kas_int: not an Int");
 }
 double kas_dbl(KValue *v) {
   if (v->tag != K_DBL) krt_fail("kas_dbl: not a Double");
@@ -368,10 +422,17 @@ KValue *kref_set(KValue *r, KValue *v) {
 
 /* ── pure primitives (mirror Kappa.Eval.evalPurePrim for the subset) ── */
 
-static KValue *show_int(int64_t v) {
-  char buf[32];
-  int n = snprintf(buf, sizeof buf, "%" PRId64, v);
-  return kstr(buf, (size_t)n);
+static KValue *show_int_val(KValue *v) {
+  if (v->tag == K_INT) {
+    char buf[32];
+    int n = snprintf(buf, sizeof buf, "%" PRId64, v->as.i);
+    return kstr(buf, (size_t)n);
+  }
+  if (v->tag == K_BIGINT) {
+    char *s = mpz_get_str(NULL, 10, (const __mpz_struct *)v->as.big.mpz);
+    return kstr0(s); /* s is GC-allocated by the GMP allocator */
+  }
+  krt_fail("showInt: not an Int");
 }
 
 static KValue *str_append(KValue *a, KValue *b) {
@@ -389,49 +450,81 @@ static KValue *str_append(KValue *a, KValue *b) {
 
 #define PRIM(n) (strcmp(p, n) == 0)
 
+/* Bignum fallback for a binary integer op (used when either operand is a
+ * K_BIGINT or the int64 fast path overflowed). */
+typedef void (*kmpz_binop)(mpz_t, const mpz_t, const mpz_t);
+static KValue *kint_binop_mpz(KValue *a, KValue *b, kmpz_binop op) {
+  mpz_t za, zb, zr;
+  mpz_init(za); mpz_init(zb); mpz_init(zr);
+  kload_mpz(a, za); kload_mpz(b, zb);
+  op(zr, za, zb);
+  return kfrom_mpz(zr);
+}
+
+/* Total ordering across small/big integers. */
+static int kint_cmp(KValue *a, KValue *b) {
+  if (a->tag == K_INT && b->tag == K_INT)
+    return a->as.i < b->as.i ? -1 : (a->as.i > b->as.i ? 1 : 0);
+  mpz_t za, zb;
+  mpz_init(za); mpz_init(zb);
+  kload_mpz(a, za); kload_mpz(b, zb);
+  return mpz_cmp(za, zb);
+}
+
+static int kint_is_zero(KValue *v) {
+  if (v->tag == K_INT) return v->as.i == 0;
+  return mpz_sgn((const __mpz_struct *)v->as.big.mpz) == 0;
+}
+
 static KValue *prim_fire_pure(const char *p, KValue **a) {
-  /* integer.  The native Int is 64-bit (documented in NATIVE_BACKEND.md);
-   * the spec's Int/Integer are unbounded, so an operation whose exact
-   * result exceeds 64 bits is a clean runtime trap here rather than a
-   * silent wraparound (which would diverge from the interpreter). */
+  /* integer.  Int/Integer are unbounded (§6): the int64 inline form is a
+   * fast path; on overflow or a bignum operand the operation promotes to a
+   * GMP bignum, so results never wrap or trap (matching the interpreter). */
   if (PRIM("addInt")) {
     int64_t r;
-    if (__builtin_add_overflow(kas_int(a[0]), kas_int(a[1]), &r))
-      krt_fail("addInt: 64-bit integer overflow (native Int is 64-bit)");
-    return kint(r);
+    if (a[0]->tag == K_INT && a[1]->tag == K_INT
+        && !__builtin_add_overflow(a[0]->as.i, a[1]->as.i, &r))
+      return kint(r);
+    return kint_binop_mpz(a[0], a[1], mpz_add);
   }
   if (PRIM("subInt")) {
     int64_t r;
-    if (__builtin_sub_overflow(kas_int(a[0]), kas_int(a[1]), &r))
-      krt_fail("subInt: 64-bit integer overflow (native Int is 64-bit)");
-    return kint(r);
+    if (a[0]->tag == K_INT && a[1]->tag == K_INT
+        && !__builtin_sub_overflow(a[0]->as.i, a[1]->as.i, &r))
+      return kint(r);
+    return kint_binop_mpz(a[0], a[1], mpz_sub);
   }
   if (PRIM("mulInt")) {
     int64_t r;
-    if (__builtin_mul_overflow(kas_int(a[0]), kas_int(a[1]), &r))
-      krt_fail("mulInt: 64-bit integer overflow (native Int is 64-bit)");
-    return kint(r);
+    if (a[0]->tag == K_INT && a[1]->tag == K_INT
+        && !__builtin_mul_overflow(a[0]->as.i, a[1]->as.i, &r))
+      return kint(r);
+    return kint_binop_mpz(a[0], a[1], mpz_mul);
   }
   if (PRIM("divInt")) {
-    int64_t x = kas_int(a[0]), d = kas_int(a[1]);
-    if (d == 0) krt_fail("divInt: division by zero");
-    if (x == INT64_MIN && d == -1) krt_fail("divInt: 64-bit integer overflow");
-    return kint(x / d); /* C99 trunc toward zero == quot */
+    if (kint_is_zero(a[1])) krt_fail("divInt: division by zero");
+    if (a[0]->tag == K_INT && a[1]->tag == K_INT && !(a[0]->as.i == INT64_MIN && a[1]->as.i == -1))
+      return kint(a[0]->as.i / a[1]->as.i); /* C99 trunc toward zero == quot */
+    return kint_binop_mpz(a[0], a[1], mpz_tdiv_q); /* truncated quotient */
   }
   if (PRIM("modInt")) {
-    int64_t x = kas_int(a[0]), d = kas_int(a[1]);
-    if (d == 0) krt_fail("modInt: division by zero");
-    if (x == INT64_MIN && d == -1) return kint(0);
-    return kint(x % d); /* C99 % == rem */
+    if (kint_is_zero(a[1])) krt_fail("modInt: division by zero");
+    if (a[0]->tag == K_INT && a[1]->tag == K_INT) {
+      if (a[0]->as.i == INT64_MIN && a[1]->as.i == -1) return kint(0);
+      return kint(a[0]->as.i % a[1]->as.i); /* C99 % == rem */
+    }
+    return kint_binop_mpz(a[0], a[1], mpz_tdiv_r); /* remainder, sign of dividend */
   }
   if (PRIM("negInt")) {
-    int64_t x = kas_int(a[0]);
-    if (x == INT64_MIN) krt_fail("negInt: 64-bit integer overflow");
-    return kint(-x);
+    if (a[0]->tag == K_INT && a[0]->as.i != INT64_MIN) return kint(-a[0]->as.i);
+    mpz_t z, zr;
+    mpz_init(z); mpz_init(zr);
+    kload_mpz(a[0], z); mpz_neg(zr, z);
+    return kfrom_mpz(zr);
   }
-  if (PRIM("eqInt")) return kbool(kas_int(a[0]) == kas_int(a[1]));
-  if (PRIM("ltInt")) return kbool(kas_int(a[0]) < kas_int(a[1]));
-  if (PRIM("leInt")) return kbool(kas_int(a[0]) <= kas_int(a[1]));
+  if (PRIM("eqInt")) return kbool(kint_cmp(a[0], a[1]) == 0);
+  if (PRIM("ltInt")) return kbool(kint_cmp(a[0], a[1]) < 0);
+  if (PRIM("leInt")) return kbool(kint_cmp(a[0], a[1]) <= 0);
   /* double */
   if (PRIM("addDouble")) return kdbl(kas_dbl(a[0]) + kas_dbl(a[1]));
   if (PRIM("subDouble")) return kdbl(kas_dbl(a[0]) - kas_dbl(a[1]));
@@ -464,7 +557,7 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     return kbool(a[0]->as.chr < a[1]->as.chr);
   }
   /* show */
-  if (PRIM("showInt")) return show_int(kas_int(a[0]));
+  if (PRIM("showInt")) return show_int_val(a[0]);
   krt_fail("internal: unknown pure primitive");
 }
 

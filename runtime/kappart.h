@@ -37,7 +37,8 @@ typedef enum {
   K_REF,   /* mutable cell (var / MonadRef, §18.6.1)                     */
   K_FGN,   /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
   K_VARIANT, /* variant injection: member-identity tag + payload (§13)   */
-  K_THUNK  /* suspended pure computation (Delay/Memo, §19)               */
+  K_THUNK,  /* suspended pure computation (Delay/Memo, §19)              */
+  K_BIGINT  /* arbitrary-precision Integer beyond int64 (GMP mpz, §6)    */
 } KTag;
 
 typedef struct KValue KValue;
@@ -64,6 +65,7 @@ struct KValue {
     struct { void *p; const char *kind; } fgn;
     struct { const char *tag; KValue *payload; } var;
     struct { KIOFn fn; KEnv *env; int memo; KValue **cache; } thunk;
+    struct { void *mpz; } big;   /* points to a GC-allocated __mpz_struct */
   } as;
 };
 
@@ -82,6 +84,7 @@ void *kgc_alloc_atomic(size_t n);    /* pointer-free (string/byte blobs) */
 
 /* ── value constructors ────────────────────────────────────────────── */
 KValue *kint(int64_t v);
+KValue *kbigint_str(const char *decimal);       /* §6 Integer literal > int64 */
 KValue *kdbl(double v);
 KValue *kstr(const char *bytes, size_t len);   /* copies `len` bytes      */
 KValue *kstr0(const char *cstr);               /* from a C string literal */

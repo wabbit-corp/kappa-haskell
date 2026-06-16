@@ -102,6 +102,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                  , runtimeDir </> "kappart.c"
                  , ffiSrc
                  , "-lgc"
+                 , "-lgmp" -- unbounded Integer (§6); see docs/NATIVE_BACKEND.md
                  ]
               ++ boExtraLibs opts
               ++ ["-o", outPath]

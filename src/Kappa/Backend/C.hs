@@ -625,10 +625,8 @@ compileLit = \case
   LitInt n
     | n >= toInteger (minBound :: Int) && n <= toInteger (maxBound :: Int) ->
         pure ("kint(" <> intLit n <> ")")
-    | otherwise ->
-        unsupported "LitInt-range"
-          ("the integer literal " <> T.pack (show n)
-             <> " does not fit in the native backend's 64-bit Int")
+    -- §6: Integer is unbounded; a literal beyond int64 is a runtime bignum.
+    | otherwise -> pure ("kbigint_str(" <> cStr (T.pack (show n)) <> ")")
   LitDouble d -> pure ("kdbl(" <> T.pack (show d) <> ")")
   LitStr s -> pure ("kstr0(" <> cStr s <> ")")
   LitScalar c -> pure ("kchr(" <> T.pack (show (ord c)) <> ")")
@@ -958,9 +956,9 @@ litValue = \case
   LitInt n
     | n >= toInteger (minBound :: Int) && n <= toInteger (maxBound :: Int) ->
         pure (Just ("kint(" <> cIntLit n <> ")"))
-    | otherwise -> do
-        _ <- unsupported "CPLit-range" "an integer literal pattern does not fit the 64-bit Int"
-        pure Nothing
+    -- §6: an out-of-int64 integer literal pattern is a bignum (klit_eq
+    -- compares K_BIGINT via mpz).
+    | otherwise -> pure (Just ("kbigint_str(" <> cStr (T.pack (show n)) <> ")"))
   LitStr s -> pure (Just ("kstr0(" <> cStr s <> ")"))
   LitScalar c -> pure (Just ("kchr(" <> T.pack (show (ord c)) <> ")"))
   LitDouble d -> pure (Just ("kdbl(" <> T.pack (show d) <> ")"))
