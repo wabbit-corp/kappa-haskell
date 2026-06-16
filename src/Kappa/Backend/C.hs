@@ -85,6 +85,7 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
+  , gsLoops :: ![Text] -- ^ break-flag C variable of each enclosing loop
   }
 
 type Gen = State GenState
@@ -227,6 +228,7 @@ generateC cs mainG ffiPrims =
           , gsTraits = Map.keysSet (csTraits cs)
           , gsDeclSites = csDeclSites cs
           , gsPrims = Set.union basePrims ffiPrims
+          , gsLoops = []
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -495,10 +497,16 @@ compileLit = \case
   LitBytes _ -> unsupported "LitBytes" "byte-sequence literals are not supported by the native backend"
   LitGrapheme _ -> unsupported "LitGrapheme" "grapheme literals are not supported by the native backend"
   where
-    -- C int64 literal; INT64_MIN needs care (no negative literal in C).
-    intLit n
-      | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
-      | otherwise = T.pack (show n) <> "LL"
+    intLit = cIntLit
+
+-- | A C @int64_t@ literal for an in-range integer.  @INT64_MIN@ has no
+-- positive counterpart in C (its magnitude overflows @long long@), so it
+-- is emitted via the @<stdint.h>@ macro rather than @(-9223372036854775808LL)@.
+cIntLit :: Integer -> Text
+cIntLit n
+  | n == toInteger (minBound :: Int) = "INT64_MIN"
+  | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
+  | otherwise = T.pack (show n) <> "LL"
 
 -- | A lambda: lift its body into a fresh top-level closure function and
 -- return a @kclo@ capturing the current environment.
@@ -748,16 +756,18 @@ patBindings = go
 
 litValue :: Literal -> Gen (Maybe Text)
 litValue = \case
-  LitInt n -> pure (Just ("kint(" <> sgn n <> ")"))
+  LitInt n
+    | n >= toInteger (minBound :: Int) && n <= toInteger (maxBound :: Int) ->
+        pure (Just ("kint(" <> cIntLit n <> ")"))
+    | otherwise -> do
+        _ <- unsupported "CPLit-range" "an integer literal pattern does not fit the 64-bit Int"
+        pure Nothing
   LitStr s -> pure (Just ("kstr0(" <> cStr s <> ")"))
   LitScalar c -> pure (Just ("kchr(" <> T.pack (show (ord c)) <> ")"))
   LitDouble d -> pure (Just ("kdbl(" <> T.pack (show d) <> ")"))
   l -> do
     _ <- unsupported "CPLit" ("literal pattern of unsupported kind: " <> T.pack (show l))
     pure Nothing
-  where
-    sgn n | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
-          | otherwise = T.pack (show n) <> "LL"
 
 -- ── do-kernel ────────────────────────────────────────────────────────
 
@@ -767,7 +777,7 @@ compileDo :: [KItem] -> Gen Text
 compileDo items = do
   fnName <- freshN "kdo_"
   env <- gets gsEnv
-  (stmts, ()) <- captured "cenv" (compileItems items)
+  (stmts, ()) <- captured "cenv" (compileItems Tail items)
   let fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
@@ -782,93 +792,99 @@ compileDo items = do
       }
   pure ("kio(" <> fnName <> ", " <> env <> ")")
 
--- | Compile a sequence of do-kernel items.  Emits a @return@ for the
--- scope's result on every exit path (mirrors runScope's completion: the
--- last KExpr's value, an explicit return's value, or Unit).
-compileItems :: [KItem] -> Gen ()
-compileItems [] = emit "return kunit();"
-compileItems (item : rest) = case item of
-  KExpr t -> do
-    te <- compile t
-    if null rest
-      then emit ("return krun_io(" <> te <> ");")
-      else do
-        emit ("krun_io(" <> te <> ");")
-        compileItems rest
-  KLet _ pat t -> do
-    te <- compile t
-    sv <- freshN "let_"
-    emit ("KValue *" <> sv <> " = " <> te <> ";")
-    bindItemPat sv pat rest
-  KBind _ pat t -> do
-    te <- compile t
-    sv <- freshN "bind_"
-    emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
-    bindItemPat sv pat rest
-  KReturn t -> do
-    te <- compile t
-    emit ("return " <> te <> ";")
-  KVarItem _ t -> do
-    te <- compile t
-    ref <- freshN "var_"
-    emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
-    env <- gets gsEnv
-    e2 <- freshN "env_"
-    emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
-    withEnv e2 (compileItems rest)
-  KAssign refT monadic rhsT -> do
-    rhs <- compile rhsT
-    rhsv <-
-      if monadic
-        then do
-          v <- freshN "rhs_"
-          emit ("KValue *" <> v <> " = krun_io(" <> rhs <> ");")
-          pure v
-        else pure rhs
-    re <- compile refT
-    emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
-    compileItems rest
-  KIf alts mels -> do
-    compileKIf alts mels
-    compileItems rest
-  KWhile ml cond body mels -> do
-    compileWhile ml cond body mels
-    compileItems rest
-  KFor ml pat src body mels -> do
-    compileFor ml pat src body mels
-    compileItems rest
-  KBreak Nothing -> emit "break;"
-  KContinue Nothing -> emit "continue;"
-  KBreak (Just _) -> do
-    _ <- unsupported "KBreak-labelled" "labelled break is not supported by the native backend"
-    pure ()
-  KContinue (Just _) -> do
-    _ <- unsupported "KContinue-labelled" "labelled continue is not supported by the native backend"
-    pure ()
-  KLetQ {} -> do
-    _ <- unsupported "KLetQ" "let? bindings are not supported by the native backend"
-    compileItems rest
-  KDefer _ -> do
-    _ <- unsupported "KDefer" "defer is not supported by the native backend"
-    compileItems rest
-  KUsing {} -> do
-    _ <- unsupported "KUsing" "using is not supported by the native backend"
-    compileItems rest
+-- | Whether a scope is in tail position (the do-block body, whose final
+-- value is the block's result) or nested (a loop\/if body, run for effect
+-- with control flow propagating via C statements).  Both share the same
+-- item handling and environment threading — the only differences are the
+-- result of a trailing 'KExpr' and the empty-scope fall-through.
+data ScopeMode = Tail | Nested
+  deriving stock (Eq)
 
--- | Bind a do-item pattern (an irrefutable binding at runtime) and
--- continue with the rest of the scope.
-bindItemPat :: Text -> CorePat -> [KItem] -> Gen ()
-bindItemPat sv pat rest = do
-  env <- gets gsEnv
-  mtest <- patTest sv pat
-  case mtest of
-    Nothing -> do
-      env' <- bindPatScrut sv env pat
-      withEnv env' (compileItems rest)
-    Just test -> do
-      emit ("if (!(" <> test <> ")) krt_fail(\"irrefutable binding failed at runtime\");")
-      env' <- bindPatScrut sv env pat
-      withEnv env' (compileItems rest)
+-- | Compile a sequence of do-kernel items, threading the environment
+-- through bindings.  Mirrors 'Kappa.Interp.runScope' completion: in 'Tail'
+-- position the scope @return@s the last 'KExpr' value (or Unit); in
+-- 'Nested' position items run for effect and break\/continue\/return
+-- propagate via C statements.  A single traversal serves both modes so the
+-- two can never drift (the previous split caused real divergences).
+compileItems :: ScopeMode -> [KItem] -> Gen ()
+compileItems mode = go
+  where
+    go [] = case mode of
+      Tail -> emit "return kunit();"
+      Nested -> pure ()
+    go (item : rest) = case item of
+      KExpr t -> do
+        te <- compile t
+        if null rest && mode == Tail
+          then emit ("return krun_io(" <> te <> ");")
+          else emit ("krun_io(" <> te <> ");") >> go rest
+      KLet _ pat t -> do
+        te <- compile t
+        sv <- freshN "let_"
+        emit ("KValue *" <> sv <> " = " <> te <> ";")
+        bindAndContinue sv pat rest
+      KBind _ pat t -> do
+        te <- compile t
+        sv <- freshN "bind_"
+        emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
+        bindAndContinue sv pat rest
+      KReturn t -> do
+        te <- compile t
+        emit ("return " <> te <> ";")
+      KVarItem _ t -> do
+        te <- compile t
+        ref <- freshN "var_"
+        emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
+        env <- gets gsEnv
+        e2 <- freshN "env_"
+        emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
+        withEnv e2 (go rest)
+      KAssign refT monadic rhsT -> do
+        rhs <- compile rhsT
+        rhsv <-
+          if monadic
+            then do
+              v <- freshN "rhs_"
+              emit ("KValue *" <> v <> " = krun_io(" <> rhs <> ");")
+              pure v
+            else pure rhs
+        re <- compile refT
+        emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
+        go rest
+      KIf alts mels -> compileKIf alts mels >> go rest
+      KWhile _ml cond bdy mels -> compileLoop (LoopWhile cond) bdy mels >> go rest
+      KFor _ml pat src bdy mels -> compileLoop (LoopFor pat src) bdy mels >> go rest
+      KBreak Nothing -> emitBreak
+      KContinue Nothing -> emit "continue;"
+      KBreak (Just _) -> skip "KBreak-labelled" "labelled break"
+      KContinue (Just _) -> skip "KContinue-labelled" "labelled continue"
+      KLetQ {} -> skip "KLetQ" "let? bindings"
+      KDefer _ -> skip "KDefer" "defer"
+      KUsing {} -> skip "KUsing" "using"
+      where
+        skip tag what = do
+          _ <- unsupported tag (what <> " is not supported by the native backend")
+          go rest
+        -- bind an irrefutable do-pattern (with a runtime check for any
+        -- refutable shape) and continue with the rest of this scope
+        bindAndContinue sv pat _rest = do
+          env <- gets gsEnv
+          mtest <- patTest sv pat
+          case mtest of
+            Just test ->
+              emit ("if (!(" <> test <> ")) krt_fail(\"irrefutable binding failed at runtime\");")
+            Nothing -> pure ()
+          env' <- bindPatScrut sv env pat
+          withEnv env' (go rest)
+
+-- | Emit a @break@, marking the enclosing loop's break flag so its @else@
+-- block is skipped (§18.8: a loop's else runs only on normal completion).
+emitBreak :: Gen ()
+emitBreak = do
+  loops <- gets gsLoops
+  case loops of
+    (flag : _) -> emit (flag <> " = 1; break;")
+    [] -> emit "break;" -- defensive: break outside a loop is rejected upstream
 
 -- | Like 'bindPat' but threads the concrete scrutinee C-expression
 -- through the binding projections.
@@ -884,144 +900,74 @@ compileKIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
 compileKIf alts mels = go alts
   where
     go [] = case mels of
-      Just els -> do
-        env <- gets gsEnv
-        (blk, ()) <- captured env (compileScope els)
-        emit "{"
-        forM_ blk (emit . ("  " <>))
-        emit "}"
+      Just els -> emitBlock els
       Nothing -> pure ()
     go ((c, body) : more) = do
       ce <- compile c
-      env <- gets gsEnv
-      (blk, ()) <- captured env (compileScope body)
       emit ("if (kas_bool(" <> ce <> ")) {")
+      env <- gets gsEnv
+      (blk, ()) <- captured env (compileItems Nested body)
       forM_ blk (emit . ("  " <>))
       emit "}"
       unless (null more && mels == Nothing) $ do
         emit "else {"
         go more
         emit "}"
+    emitBlock items = do
+      env <- gets gsEnv
+      (blk, ()) <- captured env (compileItems Nested items)
+      emit "{"
+      forM_ blk (emit . ("  " <>))
+      emit "}"
 
--- | Compile a nested do-scope (loop/if body): its items run for effect and
--- control flow (break/continue/return) propagates via C statements.  A
--- nested scope does not itself yield the do-block's value.
-compileScope :: [KItem] -> Gen ()
-compileScope = mapM_ compileScopeItem
+-- | The two loop shapes, sharing the body / break-flag / else machinery.
+data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
 
-compileScopeItem :: KItem -> Gen ()
-compileScopeItem item = case item of
-  KExpr t -> do
-    te <- compile t
-    emit ("krun_io(" <> te <> ");")
-  KReturn t -> do
-    te <- compile t
-    emit ("return " <> te <> ";")
-  KBreak Nothing -> emit "break;"
-  KContinue Nothing -> emit "continue;"
-  -- bindings inside a nested scope extend the env for the remainder of
-  -- that scope; handled by re-dispatching through compileItems-style logic
-  _ -> compileItemsScoped [item]
-
--- | A scope body that may contain bindings: compile as a statement
--- sequence where bindings extend the env for subsequent items, but the
--- final fall-through does NOT return the do-block value (unlike
--- 'compileItems').  Used for loop/if bodies.
-compileItemsScoped :: [KItem] -> Gen ()
-compileItemsScoped [] = pure ()
-compileItemsScoped (item : rest) = case item of
-  KExpr t -> do
-    te <- compile t
-    emit ("krun_io(" <> te <> ");")
-    compileItemsScoped rest
-  KLet _ pat t -> do
-    te <- compile t
-    sv <- freshN "let_"
-    emit ("KValue *" <> sv <> " = " <> te <> ";")
-    env <- gets gsEnv
-    env' <- bindPatScrut sv env pat
-    withEnv env' (compileItemsScoped rest)
-  KBind _ pat t -> do
-    te <- compile t
-    sv <- freshN "bind_"
-    emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
-    env <- gets gsEnv
-    env' <- bindPatScrut sv env pat
-    withEnv env' (compileItemsScoped rest)
-  KReturn t -> do
-    te <- compile t
-    emit ("return " <> te <> ";")
-  KAssign refT monadic rhsT -> do
-    rhs <- compile rhsT
-    rhsv <-
-      if monadic
-        then do
-          v <- freshN "rhs_"
-          emit ("KValue *" <> v <> " = krun_io(" <> rhs <> ");")
-          pure v
-        else pure rhs
-    re <- compile refT
-    emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
-    compileItemsScoped rest
-  KVarItem _ t -> do
-    te <- compile t
-    ref <- freshN "var_"
-    emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
-    env <- gets gsEnv
-    e2 <- freshN "env_"
-    emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
-    withEnv e2 (compileItemsScoped rest)
-  KIf alts mels -> compileKIf alts mels >> compileItemsScoped rest
-  KWhile ml cond body mels -> compileWhile ml cond body mels >> compileItemsScoped rest
-  KFor ml pat src body mels -> compileFor ml pat src body mels >> compileItemsScoped rest
-  KBreak Nothing -> emit "break;"
-  KContinue Nothing -> emit "continue;"
-  _ -> compileScopeItem item >> compileItemsScoped rest
-
-compileWhile :: Maybe Text -> Term -> [KItem] -> Maybe [KItem] -> Gen ()
-compileWhile _ml cond body mels = do
+-- | Compile a @while@\/@for@ loop with correct §18.8 completion: a @break@
+-- sets the loop's flag (so the @else@ is skipped); a @continue@ advances
+-- (the @for@ increment lives in the loop header, so C @continue@ still
+-- advances the cursor); normal exhaustion runs the optional @else@.
+compileLoop :: LoopKind -> [KItem] -> Maybe [KItem] -> Gen ()
+compileLoop kind body mels = do
   env <- gets gsEnv
-  -- the condition is re-evaluated each iteration, so it must be inside the
-  -- loop; emit `while (1) { if (!cond) break; body }`
-  (condBlk, ce) <- captured env (compile cond)
-  (bodyBlk, ()) <- captured env (compileScopeFresh body)
-  emit "while (1) {"
-  forM_ condBlk (emit . ("  " <>))
-  emit ("  if (!kas_bool(" <> ce <> ")) break;")
-  forM_ bodyBlk (emit . ("  " <>))
-  emit "}"
+  flag <- freshN "brk_"
+  emit ("int " <> flag <> " = 0;")
+  case kind of
+    LoopWhile cond -> do
+      (condBlk, ce) <- captured env (compile cond)
+      (bodyBlk, ()) <- withLoop flag (captured env (compileItems Nested body))
+      emit "while (1) {"
+      forM_ condBlk (emit . ("  " <>))
+      emit ("  if (!kas_bool(" <> ce <> ")) break;")
+      forM_ bodyBlk (emit . ("  " <>))
+      emit "}"
+    LoopFor pat src -> do
+      se <- compile src
+      it <- freshN "it_"
+      emit ("KValue *" <> it <> " = " <> se <> ";")
+      (bodyBlk, ()) <- withLoop flag $ captured env $ do
+        elemV <- freshN "elem_"
+        emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
+        e' <- bindPatScrut elemV env pat
+        withEnv e' (compileItems Nested body)
+      emit ("for (; kis_cons(" <> it <> "); " <> it <> " = kctor_arg(" <> it <> ", 1)) {")
+      forM_ bodyBlk (emit . ("  " <>))
+      emit "}"
+  -- §18.8: the loop's else runs iff the loop completed without a break.
   case mels of
     Just els -> do
-      (elsBlk, ()) <- captured env (compileScopeFresh els)
-      emit "{"
+      (elsBlk, ()) <- captured env (compileItems Nested els)
+      emit ("if (!" <> flag <> ") {")
       forM_ elsBlk (emit . ("  " <>))
       emit "}"
     Nothing -> pure ()
 
-compileFor :: Maybe Text -> CorePat -> Term -> [KItem] -> Maybe [KItem] -> Gen ()
-compileFor _ml pat src body mels = do
-  env <- gets gsEnv
-  se <- compile src
-  it <- freshN "it_"
-  emit ("KValue *" <> it <> " = " <> se <> ";")
-  (bodyBlk, ()) <- captured env $ do
-    elemV <- freshN "elem_"
-    emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
-    e' <- bindPatScrut elemV env pat
-    withEnv e' (compileScopeFresh body)
-  emit ("for (; kis_cons(" <> it <> "); " <> it <> " = kctor_arg(" <> it <> ", 1)) {")
-  forM_ bodyBlk (emit . ("  " <>))
-  emit "}"
-  case mels of
-    Just els -> do
-      (elsBlk, ()) <- captured env (compileScopeFresh els)
-      emit "{"
-      forM_ elsBlk (emit . ("  " <>))
-      emit "}"
-    Nothing -> pure ()
-
--- | A fresh nested scope (its own do-scope in the interpreter): compiled
--- as a statement sequence with bindings extending the env locally.
-compileScopeFresh :: [KItem] -> Gen ()
-compileScopeFresh = compileItemsScoped
+-- | Run an action with @flag@ pushed as the current loop's break flag.
+withLoop :: Text -> Gen a -> Gen a
+withLoop flag act = do
+  saved <- gets gsLoops
+  modify' $ \g -> g {gsLoops = flag : saved}
+  r <- act
+  modify' $ \g -> g {gsLoops = saved}
+  pure r
 

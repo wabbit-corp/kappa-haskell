@@ -35,7 +35,7 @@ typedef enum {
   K_PRIM,  /* primitive, possibly partially applied                      */
   K_IO,    /* suspended IO action (do-block / sequencing)                */
   K_REF,   /* mutable cell (var / MonadRef, §18.6.1)                     */
-  K_FGN    /* opaque foreign/host pointer (FFI: uv_*, sqlite3*, …)        */
+  K_FGN    /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
 } KTag;
 
 typedef struct KValue KValue;
@@ -134,7 +134,7 @@ void     krt_fail(const char *msg) __attribute__((noreturn));
 /* ── FFI hooks ─────────────────────────────────────────────────────── */
 /* The core runtime dispatches any primitive it does not implement itself
  * to the FFI runtime (kappart_ffi.c).  The stub build provides a unit
- * that knows no FFI primitives; the demo build links the libuv/sqlite
+ * that knows no FFI primitives; the demo build links the sockets+sqlite3
  * implementation instead.  The code generator only emits a primitive
  * after confirming the linked runtime implements it, so these are never
  * reached for an unknown name. */

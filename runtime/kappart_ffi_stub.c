@@ -1,9 +1,9 @@
 /* kappart_ffi_stub.c — the no-FFI runtime unit.
  *
- * Links into native executables that use no foreign (libuv/sqlite)
+ * Links into native executables that use no foreign (sockets/sqlite3)
  * primitives.  It knows no FFI primitives; the code generator never emits
  * an FFI primitive against this unit because the build's supported-prim
- * set excludes them.  The demo build links kappart_ffi.c (libuv+sqlite)
+ * set excludes them.  The demo build links kappart_ffi.c (sockets+sqlite3)
  * in place of this file.  See docs/NATIVE_BACKEND.md §6. */
 #include "kappart.h"
 

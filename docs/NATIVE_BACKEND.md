@@ -211,6 +211,42 @@ offending construct where one is recoverable, and always names the
 construct. The backend produces **no** executable when any reachable
 definition is unsupported.
 
+### Known limitations of the supported subset
+
+These are honest, documented bounds — not silent divergences:
+
+* **`Int`/`Integer` are 64-bit.** The spec's integers are unbounded; the
+  native backend represents them as `int64_t`. A literal outside the
+  64-bit range is rejected at compile time, and an arithmetic operation
+  whose exact result overflows 64 bits is a **clean runtime trap**
+  (`addInt`/`subInt`/`mulInt`/`negInt`/`divInt` check via
+  `__builtin_*_overflow`), never a silent wraparound. Programs that stay
+  within 64 bits agree with the interpreter exactly; programs that exceed
+  it run unbounded under the interpreter but trap natively.
+* **Deep non-tail recursion is bounded by the C stack.** Generated calls
+  use the native C stack, so a deeply self-recursive function (e.g. a
+  non-tail `sumTo 1_000_000`) can overflow it (a clean OS fault), whereas
+  the interpreter is bounded by its own `-K64m` guard. This is a
+  representation limit, not a miscompilation: at a sufficient stack size
+  the result is identical to the interpreter.
+* **Floating-point and string `show` are not supported.** `showDouble`,
+  `showStringLit`, `showScalar` (whose interpreter output is Haskell's
+  `show`) are rejected at compile time rather than risk a formatting
+  divergence; double *arithmetic* and comparison are supported.
+
+### Performance characteristics
+
+The backend favours a simple, uniformly-boxed representation over raw
+speed. Every value is a heap `KValue`; primitive application allocates a
+`K_PRIM` box and dispatches by name through the runtime's primitive
+tables; variable lookup walks the linked `KEnv`. A trivial integer loop
+therefore costs several allocations and a handful of `strcmp`s per
+iteration (≈4 µs/iteration on the reference machine; a 1,000,000-step
+loop completes in ~4 s with **flat** ~3 MB RSS). This is "reasonably
+bounded" — linear in the work, constant in memory thanks to the GC — but
+it is not optimised native code; unboxing and primitive specialisation
+are obvious future work.
+
 ## 6. FFI and the HTTP + SQLite demo
 
 The runtime exposes a small set of C primitives (registered as ordinary

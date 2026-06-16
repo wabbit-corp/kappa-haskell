@@ -34,7 +34,7 @@ import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
 
 -- | Which FFI runtime unit to link: the no-FFI stub, or the full
--- libuv+sqlite unit needed by the HTTP demo.
+-- POSIX-sockets + sqlite3 unit needed by the HTTP demo.
 data FfiUnit = FfiStub | FfiFull
   deriving stock (Eq, Show)
 

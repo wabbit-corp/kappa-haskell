@@ -327,21 +327,45 @@ static KValue *str_append(KValue *a, KValue *b) {
 #define PRIM(n) (strcmp(p, n) == 0)
 
 static KValue *prim_fire_pure(const char *p, KValue **a) {
-  /* integer */
-  if (PRIM("addInt")) return kint(kas_int(a[0]) + kas_int(a[1]));
-  if (PRIM("subInt")) return kint(kas_int(a[0]) - kas_int(a[1]));
-  if (PRIM("mulInt")) return kint(kas_int(a[0]) * kas_int(a[1]));
+  /* integer.  The native Int is 64-bit (documented in NATIVE_BACKEND.md);
+   * the spec's Int/Integer are unbounded, so an operation whose exact
+   * result exceeds 64 bits is a clean runtime trap here rather than a
+   * silent wraparound (which would diverge from the interpreter). */
+  if (PRIM("addInt")) {
+    int64_t r;
+    if (__builtin_add_overflow(kas_int(a[0]), kas_int(a[1]), &r))
+      krt_fail("addInt: 64-bit integer overflow (native Int is 64-bit)");
+    return kint(r);
+  }
+  if (PRIM("subInt")) {
+    int64_t r;
+    if (__builtin_sub_overflow(kas_int(a[0]), kas_int(a[1]), &r))
+      krt_fail("subInt: 64-bit integer overflow (native Int is 64-bit)");
+    return kint(r);
+  }
+  if (PRIM("mulInt")) {
+    int64_t r;
+    if (__builtin_mul_overflow(kas_int(a[0]), kas_int(a[1]), &r))
+      krt_fail("mulInt: 64-bit integer overflow (native Int is 64-bit)");
+    return kint(r);
+  }
   if (PRIM("divInt")) {
-    int64_t d = kas_int(a[1]);
+    int64_t x = kas_int(a[0]), d = kas_int(a[1]);
     if (d == 0) krt_fail("divInt: division by zero");
-    return kint(kas_int(a[0]) / d); /* C99 trunc toward zero == quot */
+    if (x == INT64_MIN && d == -1) krt_fail("divInt: 64-bit integer overflow");
+    return kint(x / d); /* C99 trunc toward zero == quot */
   }
   if (PRIM("modInt")) {
-    int64_t d = kas_int(a[1]);
+    int64_t x = kas_int(a[0]), d = kas_int(a[1]);
     if (d == 0) krt_fail("modInt: division by zero");
-    return kint(kas_int(a[0]) % d); /* C99 % == rem */
+    if (x == INT64_MIN && d == -1) return kint(0);
+    return kint(x % d); /* C99 % == rem */
   }
-  if (PRIM("negInt")) return kint(-kas_int(a[0]));
+  if (PRIM("negInt")) {
+    int64_t x = kas_int(a[0]);
+    if (x == INT64_MIN) krt_fail("negInt: 64-bit integer overflow");
+    return kint(-x);
+  }
   if (PRIM("eqInt")) return kbool(kas_int(a[0]) == kas_int(a[1]));
   if (PRIM("ltInt")) return kbool(kas_int(a[0]) < kas_int(a[1]));
   if (PRIM("leInt")) return kbool(kas_int(a[0]) <= kas_int(a[1]));
@@ -384,10 +408,12 @@ KValue *krun_io(KValue *action) {
       const char *p = action->as.prim.name;
       KValue **a = action->as.prim.args;
       if (PRIM("printString")) {
+        if (a[0]->tag != K_STR) krt_fail("printString: argument is not a String");
         fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
         return kunit();
       }
       if (PRIM("printlnString")) {
+        if (a[0]->tag != K_STR) krt_fail("printlnString: argument is not a String");
         fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
         fputc('\n', stdout);
         return kunit();

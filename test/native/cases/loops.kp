@@ -1,0 +1,50 @@
+-- Native backend conformance regression (§18.8 loop completion): a loop's
+-- `else` runs only on normal exhaustion, NOT after `break`; `continue`
+-- advances a `for` cursor; and multi-statement statement-`if` branches with
+-- local bindings thread their environment correctly.  These exercise the
+-- do-kernel control paths that earlier diverged from the interpreter.
+module main
+
+findEven : List Int -> UIO String
+let findEven xs = do
+    var r = "none"
+    for x in xs do
+        if eqInt (modInt x 2) 0 then
+            r = stringAppend "found " (showInt x)
+            break
+    else do
+        r = "exhausted"
+    return r
+
+sumOdds : List Int -> UIO Int
+let sumOdds xs = do
+    var s = 0
+    for x in xs do
+        if eqInt (modInt x 2) 0 then
+            continue
+        s = addInt s x
+    return s
+
+branchBind : Int -> UIO String
+let branchBind n = do
+    var out = "?"
+    if leInt n 5 then
+        let lo = stringAppend "lo:" (showInt n)
+        out = lo
+    else
+        let hi = stringAppend "hi:" (showInt n)
+        out = hi
+    return out
+
+main : UIO Unit
+let main = do
+    a <- findEven (1 :: 3 :: 4 :: 5 :: Nil)
+    printlnString a
+    b <- findEven (1 :: 3 :: 5 :: Nil)
+    printlnString b
+    s <- sumOdds (1 :: 2 :: 3 :: 4 :: 5 :: Nil)
+    printlnString (showInt s)
+    p <- branchBind 3
+    printlnString p
+    q <- branchBind 9
+    printlnString q

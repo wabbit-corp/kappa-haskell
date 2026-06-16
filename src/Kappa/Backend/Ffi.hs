@@ -1,5 +1,5 @@
 -- | Names of the foreign primitives implemented by the full FFI runtime
--- unit (@runtime/kappart_ffi.c@: libuv sockets + sqlite3).  Kept in
+-- unit (@runtime/kappart_ffi.c@: POSIX sockets + sqlite3).  Kept in
 -- lock-step with that file so the code generator only emits an FFI
 -- primitive the linked runtime actually implements; anything else is a
 -- compile-time @E_BACKEND_UNSUPPORTED@.  The no-FFI build links
@@ -19,7 +19,7 @@ import Data.Text (Text)
 ffiPrimNames :: Set Text
 ffiPrimNames =
   Set.fromList
-    [ -- libuv TCP sockets (a minimal blocking HTTP-server surface)
+    [ -- POSIX TCP sockets (a minimal blocking HTTP-server surface)
       "__tcpListen" --  Int -> IO Listener       (bind+listen on a port)
     , "__tcpAccept" --  Listener -> IO Conn       (accept one connection)
     , "__connRead" --   Conn -> IO String         (read the request bytes)
