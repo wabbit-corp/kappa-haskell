@@ -35,7 +35,9 @@ typedef enum {
   K_PRIM,  /* primitive, possibly partially applied                      */
   K_IO,    /* suspended IO action (do-block / sequencing)                */
   K_REF,   /* mutable cell (var / MonadRef, §18.6.1)                     */
-  K_FGN    /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
+  K_FGN,   /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
+  K_VARIANT, /* variant injection: member-identity tag + payload (§13)   */
+  K_THUNK  /* suspended pure computation (Delay/Memo, §19)               */
 } KTag;
 
 typedef struct KValue KValue;
@@ -60,6 +62,8 @@ struct KValue {
     struct { KIOFn fn; KEnv *env; } io;
     struct { KValue **cell; } ref;             /* cell[0] is the contents */
     struct { void *p; const char *kind; } fgn;
+    struct { const char *tag; KValue *payload; } var;
+    struct { KIOFn fn; KEnv *env; int memo; KValue **cache; } thunk;
   } as;
 };
 
@@ -92,6 +96,8 @@ KValue *kprim(const char *name);                /* 0-ary; saturates via kapp */
 KValue *kio(KIOFn fn, KEnv *env);
 KValue *kref_new(KValue *init);
 KValue *kfgn(void *p, const char *kind);
+KValue *kinject(const char *tag, KValue *payload);   /* §13 variant injection */
+KValue *kthunk(KIOFn fn, KEnv *env, int memo);       /* §19 Delay(0)/Memo(1)  */
 
 /* ── environment ───────────────────────────────────────────────────── */
 KEnv   *kpush(KValue *v, KEnv *e);
@@ -107,8 +113,13 @@ const char *kctor_name(KValue *v);
 int      kctor_argc(KValue *v);
 KValue  *kctor_arg(KValue *v, int i);
 KValue  *kproj(KValue *rec, const char *name);
+int      kvariant_is(KValue *v, const char *tag);    /* §13 CPInject test     */
+int      kis_variant(KValue *v);                     /* §13 CPInjectRest guard */
+KValue  *kvariant_payload(KValue *v);
+KValue  *kforce(KValue *v);                          /* §19 force a thunk      */
 int      krec_size(KValue *rec);                 /* field count (tuple match) */
 KValue  *krec_at(KValue *rec, int i);            /* positional field (tuples) */
+KValue  *krec_without(KValue *rec, int nexcl, const char **excl); /* §17.2.5 rest */
 int      klit_eq(KValue *a, KValue *b);          /* literal equality for CPLit */
 
 /* ── unboxing helpers ──────────────────────────────────────────────── */

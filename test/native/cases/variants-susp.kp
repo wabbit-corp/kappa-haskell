@@ -1,0 +1,35 @@
+-- Native backend conformance: closed variants (§13 injection + match +
+-- residual-row pattern), binding or-patterns (§17.2.3), record rest
+-- binders (§17.2.5), and §19 suspensions via short-circuit &&/|| (Thunk +
+-- force).  Identical output under interpreter + native.
+module main
+
+describe : (| Integer | String |) -> String
+let describe v =
+    match v
+    case (| n : Integer |) -> stringAppend "int " (showInt n)
+    case (| s : String |) -> stringAppend "str " s
+
+data T : Type = A (n : Int) | B (n : Int) | C
+
+val : T -> Int
+let val t =
+    match t
+    case A x | B x -> x
+    case C -> 0
+
+diverge : Int -> Bool
+let diverge n = diverge (addInt n 1)
+
+main : UIO Unit
+let main = do
+    printlnString (describe 7)
+    printlnString (describe "hi")
+    printlnString (showInt (val (A 4)))
+    printlnString (showInt (val (B 5)))
+    printlnString (showInt (val C))
+    let r = (x = 1, y = 2, z = 3)
+    let rest = match r case (x = a, ..others) -> others
+    printlnString (showInt (addInt rest.y rest.z))
+    printlnString (if (eqInt 1 0) && (diverge 0) then "no" else "short-and")
+    printlnString (if (eqInt 1 1) || (diverge 0) then "short-or" else "no")

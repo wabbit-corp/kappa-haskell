@@ -149,6 +149,22 @@ KValue *kfgn(void *p, const char *kind) {
   return r;
 }
 
+KValue *kinject(const char *tag, KValue *payload) {
+  KValue *r = alloc_val(K_VARIANT);
+  r->as.var.tag = tag;          /* a generated static string literal */
+  r->as.var.payload = payload;
+  return r;
+}
+
+KValue *kthunk(KIOFn fn, KEnv *env, int memo) {
+  KValue *r = alloc_val(K_THUNK);
+  r->as.thunk.fn = fn;
+  r->as.thunk.env = env;
+  r->as.thunk.memo = memo;
+  r->as.thunk.cache = NULL;
+  return r;
+}
+
 /* lists */
 KValue *knil(void) { return kctor0("std.prelude.Nil"); }
 KValue *kcons(KValue *h, KValue *t) {
@@ -251,9 +267,55 @@ KValue *kproj(KValue *rec, const char *name) {
   krt_fail("kproj: no such field");
 }
 
+int kvariant_is(KValue *v, const char *tag) {
+  return v->tag == K_VARIANT && strcmp(v->as.var.tag, tag) == 0;
+}
+int kis_variant(KValue *v) { return v->tag == K_VARIANT; }
+KValue *kvariant_payload(KValue *v) {
+  if (v->tag != K_VARIANT) krt_fail("kvariant_payload: not a variant");
+  return v->as.var.payload;
+}
+
+/* §19: force a suspended computation. Delay re-evaluates; Memo caches.
+ * A non-thunk value forces to itself (matches the interpreter, which
+ * forces through already-evaluated values). */
+KValue *kforce(KValue *v) {
+  if (v->tag != K_THUNK) return v;
+  if (v->as.thunk.memo && v->as.thunk.cache) return v->as.thunk.cache[0];
+  KValue *r = v->as.thunk.fn(v->as.thunk.env);
+  if (v->as.thunk.memo) {
+    KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
+    cell[0] = r;
+    v->as.thunk.cache = cell;
+  }
+  return r;
+}
+
 int krec_size(KValue *rec) {
   if (rec->tag != K_REC) krt_fail("krec_size: not a record");
   return rec->as.rec.n;
+}
+
+/* §17.2.5 record rest binder: a new record of `rec`'s fields whose names
+ * are NOT among excl[0..nexcl). Kept field names alias the original
+ * record's (static) name pointers, so no copying of label strings. */
+KValue *krec_without(KValue *rec, int nexcl, const char **excl) {
+  if (rec->tag != K_REC) krt_fail("krec_without: not a record");
+  int n = rec->as.rec.n;
+  const char **names = (const char **)kgc_alloc(sizeof(char *) * (size_t)(n ? n : 1));
+  KValue **vals = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n ? n : 1));
+  int k = 0;
+  for (int i = 0; i < n; i++) {
+    int excluded = 0;
+    for (int j = 0; j < nexcl; j++)
+      if (strcmp(rec->as.rec.names[i], excl[j]) == 0) { excluded = 1; break; }
+    if (!excluded) { names[k] = rec->as.rec.names[i]; vals[k] = rec->as.rec.vals[i]; k++; }
+  }
+  KValue *r = alloc_val(K_REC);
+  r->as.rec.n = k;
+  r->as.rec.names = names;
+  r->as.rec.vals = vals;
+  return r;
 }
 
 KValue *krec_at(KValue *rec, int i) {

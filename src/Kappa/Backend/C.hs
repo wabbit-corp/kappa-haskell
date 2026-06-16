@@ -123,6 +123,15 @@ unsupported construct detail = do
   modify' $ \st -> st {gsErrs = BackendError g sp construct detail : gsErrs st}
   pure "kunit()"
 
+-- | A construct that is provably NOT a runtime value of an accepted,
+-- erased program (a type-level term, an elaboration invariant, or an
+-- elaboration-time/staging value). Reaching it in value position is an
+-- internal-invariant violation reported (never silently miscompiled) per
+-- §27.7; see docs/NATIVE_ESCALATIONS.md. Same diagnostic channel as
+-- 'unsupported' — the detail carries the spec citation.
+escalated :: Text -> Text -> Gen Text
+escalated = unsupported
+
 -- | Enqueue a global for emission (idempotent).
 enqueue :: GName -> Gen ()
 enqueue g = do
@@ -427,20 +436,37 @@ compile term = case term of
     ee <- compile e
     pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
   CDo items -> compileDo items
-  -- type-level forms have no runtime value; reaching one in value position
-  -- means the supported subset was exceeded.
-  CSort _ -> unsupported "CSort" "a sort (Type) appears in value position"
-  CPi {} -> unsupported "CPi" "a function type appears in value position"
-  CRecordT _ -> unsupported "CRecordT" "a record type appears in value position"
-  CVariantT _ -> unsupported "CVariantT" "a variant type appears in value position"
-  CInject {} -> unsupported "CInject" "variant injection is not supported by the native backend"
-  CMeta _ -> unsupported "CMeta" "an unsolved metavariable reached code generation"
-  CSealE {} -> unsupported "CSealE" "sealed packages are not supported by the native backend"
-  CSigT {} -> unsupported "CSigT" "signature types are not supported by the native backend"
-  CThunkE _ -> unsupported "CThunkE" "thunk suspensions are not supported by the native backend"
-  CLazyE _ -> unsupported "CLazyE" "memoised suspensions are not supported by the native backend"
-  CForceE _ -> unsupported "CForceE" "force is not supported by the native backend"
-  CQuote {} -> unsupported "CQuote" "syntax quotations are not supported by the native backend"
+  -- §13 closed/open variants: injection is a tagged payload.
+  CInject tag e -> do
+    ee <- compile e
+    pure ("kinject(" <> cStr tag <> ", " <> ee <> ")")
+  -- §13.2.10: `seal` is pure and non-generative (seal e as S ≡ e), so a
+  -- sealed package's runtime value is exactly its underlying record/value.
+  CSealE _ e -> compile e
+  -- §19 suspensions: Delay re-evaluates on force; Memo caches.
+  CThunkE e -> compileSuspension 0 e
+  CLazyE e -> compileSuspension 1 e
+  CForceE t -> do
+    te <- compile t
+    pure ("kforce(" <> te <> ")")
+  -- ── Escalated: NOT runtime values in an accepted, erased program ──
+  -- A sort/function-type/record-type/variant-type/signature-type is a
+  -- type-level term, erased before runtime (§12.2 quantity-0 erasure,
+  -- §31.2). It cannot be the runtime value of an accepted program; reaching
+  -- one in value position is an internal invariant violation, reported (not
+  -- silently miscompiled) per §27.7. See docs/NATIVE_ESCALATIONS.md.
+  CSort _ -> escalated "CSort" "a sort (Type) is a type-level term, erased before runtime (§12.2, §31.2)"
+  CPi {} -> escalated "CPi" "a function type is a type-level term, erased before runtime (§12.2, §31.2)"
+  CRecordT _ -> escalated "CRecordT" "a record type is a type-level term, erased before runtime (§12.2, §31.2)"
+  CVariantT _ -> escalated "CVariantT" "a variant type is a type-level term, erased before runtime (§12.2, §31.2)"
+  CSigT {} -> escalated "CSigT" "a signature type (§13.2.10) is a type-level term, erased before runtime (§12.2, §31.2)"
+  -- A fully-elaborated accepted program has every metavariable solved
+  -- (§16.3); an unsolved meta in codegen is an elaboration invariant
+  -- violation, not a language feature.
+  CMeta _ -> escalated "CMeta" "an unsolved metavariable cannot occur in a fully-elaborated accepted program (§16.3)"
+  -- §21 syntax quotes / §23 staging quoted values: handled at the
+  -- elaboration-time evaluator (§30.2.4), not the runtime value layer.
+  CQuote {} -> escalated "CQuote" "a syntax quote is an elaboration-time/staging value (§21, §23, §30.2.4), not a native runtime value"
 
 -- | Head global of an application spine, if any.
 headGlob :: Term -> Maybe GName
@@ -580,13 +606,16 @@ compileGlob g@(GName m nm)
               emitPrim prim
         _ -> case Map.lookup g ctors of
           Just ci ->
-            -- A constructor used as a value: nullary builds directly;
-            -- positive-arity bare references are not yet supported (they
-            -- need eta-expansion into a curried builder).
+            -- A nullary constructor used as a value builds directly. A
+            -- positive-arity constructor reference is eta-expanded to a
+            -- saturated CCtor under lambdas by elaboration (§10.1 etaCtor),
+            -- so a bare positive-arity ctor never reaches codegen for an
+            -- accepted program; treat it as an internal invariant.
             if null (ciFields ci)
               then pure ("kctor0(" <> cStr (gKey g) <> ")")
-              else unsupported "bare-ctor"
-                ("the constructor '" <> nm <> "' is used as a value (not fully applied)")
+              else escalated "bare-ctor"
+                ("constructor '" <> nm <> "' is referenced un-eta-expanded; \
+                 \accepted programs eta-expand constructor values (§10.1)")
           Nothing -> do
             enqueue g
             pure (cGlobIdent g <> "()")
@@ -756,8 +785,17 @@ consumeMatch sink scrut alts = do
   env <- gets gsEnv
   done <- freshN "matched_"
   emit ("int " <> done <> " = 0;")
-  forM_ alts $ \alt -> consumeAlt sink sv env done alt
+  forM_ (concatMap expandTopOr alts) $ \alt -> consumeAlt sink sv env done alt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
+
+-- | §17.2.3: a top-level or-pattern alternative is equivalent to one
+-- alternative per branch (matchPat's firstJust, in order), with the same
+-- guard and body. Splitting here lets each branch's variable bindings be
+-- handled by the ordinary single-pattern path, so or-patterns that bind
+-- variables work without decision-tree compilation.
+expandTopOr :: CaseAlt -> [CaseAlt]
+expandTopOr (CaseAlt (CPOr ps) g body) = [CaseAlt p g body | p <- ps]
+expandTopOr alt = [alt]
 
 consumeAlt :: Sink -> Text -> Text -> Text -> CaseAlt -> Gen ()
 consumeAlt sink sv env done (CaseAlt pat mguard body) = do
@@ -818,28 +856,30 @@ patTest v = \case
       patTest (recAtExpr v i) p
     let szTest = "krec_size(" <> v <> ") == " <> T.pack (show n)
     pure (Just (conj (szTest : [t | Just t <- subs])))
-  CPRecord pfs Nothing -> recordTests v pfs
-  CPRecord pfs (Just rest)
-    | T.null rest -> recordTests v pfs
-    | otherwise -> do
-        _ <- unsupported "CPRecord-rest" "record patterns with a rest binder are not supported"
-        pure (Just "0")
+  -- §17.2.5: a record pattern's rest binder always matches; the named
+  -- fields determine the test (with or without a rest binder).
+  CPRecord pfs _ -> recordTests v pfs
   CPOr ps -> do
-    -- Only support or-patterns whose alternatives bind nothing (the common
-    -- literal/nullary case); otherwise the branch bindings would differ.
+    -- Top-level binding or-patterns are split into separate alternatives
+    -- before reaching here (see consumeMatch), so any CPOr that arrives is
+    -- nested. Non-binding nested ors disjoin their tests; a nested or that
+    -- binds variables would need decision-tree compilation.
     if all bindsNothing ps
       then do
         subs <- mapM (patTest v) ps
         pure (Just (disj [maybe "1" id t | t <- subs]))
       else do
-        _ <- unsupported "CPOr-binding" "or-patterns that bind variables are not supported"
+        _ <- unsupported "CPOr-nested-binding"
+          "a nested or-pattern that binds variables is not supported (lift it to top-level alternatives)"
         pure (Just "0")
-  CPInject {} -> do
-    _ <- unsupported "CPInject" "variant patterns are not supported by the native backend"
-    pure (Just "0")
-  CPInjectRest {} -> do
-    _ <- unsupported "CPInjectRest" "variant residual patterns are not supported by the native backend"
-    pure (Just "0")
+  -- §13 variant patterns: tag match + payload sub-test.
+  CPInject tag p -> do
+    sub <- patTest ("kvariant_payload(" <> v <> ")") p
+    let here = "kvariant_is(" <> v <> ", " <> cStr tag <> ")"
+    pure (Just (conj (here : [t | Just t <- [sub]])))
+  -- §13 residual-row pattern: a variant whose tag is none of the excluded.
+  CPInjectRest excl ->
+    pure (Just (conj ("kis_variant(" <> v <> ")" : ["!kvariant_is(" <> v <> ", " <> cStr e <> ")" | e <- excl])))
   where
     recordTests rv pfs = do
       subs <- forM pfs $ \(n, p) -> patTest ("kproj(" <> rv <> ", " <> cStr n <> ")") p
@@ -856,6 +896,15 @@ ctorArgExpr v nps i =
 
 recAtExpr :: Text -> Int -> Text
 recAtExpr v i = "krec_at(" <> v <> ", " <> T.pack (show i) <> ")"
+
+-- | C expression for a §17.2.5 record rest binder: @rec@ minus the named
+-- fields, passing the excluded names via a C99 compound literal.
+recWithoutExpr :: Text -> [Text] -> Text
+recWithoutExpr v names
+  | null names = "krec_without(" <> v <> ", 0, 0)"
+  | otherwise =
+      "krec_without(" <> v <> ", " <> T.pack (show (length names))
+        <> ", (const char*[]){" <> T.intercalate ", " (map cStr names) <> "})"
 
 conj :: [Text] -> Text
 conj [] = "1"
@@ -892,11 +941,17 @@ patBindings = go
         let nps = length ps
          in concat [go (ctorArgExpr v nps i) p | (i, p) <- zip [0 ..] ps]
       CPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
-      CPRecord pfs _ ->
+      -- §17.2.5: named-field bindings, then (if a non-discard rest binder)
+      -- the remaining fields as a narrower record — matchPat's order.
+      CPRecord pfs mrest ->
         concat [go ("kproj(" <> v <> ", " <> cStr n <> ")") p | (n, p) <- pfs]
+          ++ case mrest of
+            Just nm | not (T.null nm) -> [recWithoutExpr v (map fst pfs)]
+            _ -> []
       CPOr _ -> [] -- only non-binding or-patterns reach here
-      CPInject _ p -> go v p
-      CPInjectRest _ -> []
+      -- §13 variant payload / whole-value bindings (matchPat semantics).
+      CPInject _ p -> go ("kvariant_payload(" <> v <> ")") p
+      CPInjectRest _ -> [v]
 
 litValue :: Literal -> Gen (Maybe Text)
 litValue = \case
@@ -935,6 +990,26 @@ compileDo items = do
       , gsProtos = ("static KValue *" <> fnName <> "(KEnv *);") : gsProtos st
       }
   pure ("kio(" <> fnName <> ", " <> env <> ")")
+
+-- | A §19 suspension: lift the delayed expression into a fresh thunk
+-- function capturing the current environment; @memo@ is 1 for Memo (cache
+-- on first force) and 0 for Delay (re-evaluate each force).
+compileSuspension :: Int -> Term -> Gen Text
+compileSuspension memo e = do
+  fnName <- freshN "kth_"
+  env <- gets gsEnv
+  (stmts, ve) <- captured "cenv" (compile e)
+  let fn =
+        T.unlines $
+          [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
+          , "  (void)cenv;"
+          ]
+            ++ map ("  " <>) stmts
+            ++ [ "  return " <> ve <> ";"
+               , "}"
+               ]
+  emitTop ("static KValue *" <> fnName <> "(KEnv *);") fn
+  pure ("kthunk(" <> fnName <> ", " <> env <> ", " <> T.pack (show memo) <> ")")
 
 -- | Whether a scope is in tail position (the do-block body, whose final
 -- value is the block's result) or nested (a loop\/if body, run for effect
