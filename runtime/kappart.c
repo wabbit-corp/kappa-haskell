@@ -251,6 +251,17 @@ KValue *kproj(KValue *rec, const char *name) {
   krt_fail("kproj: no such field");
 }
 
+int krec_size(KValue *rec) {
+  if (rec->tag != K_REC) krt_fail("krec_size: not a record");
+  return rec->as.rec.n;
+}
+
+KValue *krec_at(KValue *rec, int i) {
+  if (rec->tag != K_REC || i < 0 || i >= rec->as.rec.n)
+    krt_fail("krec_at: out of range");
+  return rec->as.rec.vals[i];
+}
+
 int klit_eq(KValue *a, KValue *b) {
   if (a->tag != b->tag) return 0;
   switch (a->tag) {

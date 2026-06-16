@@ -1,0 +1,7 @@
+-- Minimal native-backend smoke test: print a string from a real
+-- native executable. Uses only printlnString (a runtime IO primitive),
+-- so it exercises CLit + CApp + implicit-argument erasure + krun_io.
+module main
+
+main : UIO Unit
+let main = printlnString "hello, native kappa"

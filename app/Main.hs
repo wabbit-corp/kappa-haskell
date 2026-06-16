@@ -5,6 +5,12 @@ import Control.Monad (forM_, unless, when)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Kappa.Backend.Driver
+  ( BuildOptions (..)
+  , FfiUnit (..)
+  , buildNative
+  , defaultBuildOptions
+  )
 import Kappa.Check (AuditRecord (..), CheckState (..))
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
@@ -30,8 +36,13 @@ main = do
     ["test", "--suite", path] -> cmdTest runTestSuitePath path
     ["explain", code] -> cmdExplain (T.pack code)
     ["audit", path] -> cmdAudit path
+    ("build" : rest) -> cmdBuild rest
     _ -> do
-      hPutStrLn stderr "usage: kappa (check|run [--json]|test [--suite]|audit) PATH | kappa explain CODE-OR-FAMILY"
+      hPutStrLn stderr $
+        "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
+          <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] [--ffi-full]"
+          <> " [--lib FLAG]... PATH"
+          <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
 -- | Diagnostic output format (§3.1): the human-readable renderer is the
@@ -84,6 +95,50 @@ cmdRun fmt path = do
     RunFail msg -> do
       hPutStrLn stderr ("runtime failure: " <> T.unpack msg)
       exitWith (ExitFailure 1)
+
+-- | Native backend (§27.7, profile-scoped): compile a Kappa program to a
+-- native executable.  Runs the ordinary front end first and refuses to
+-- proceed on any error (the backend never compiles rejected code); then
+-- lowers @main@'s reachable closure to C and invokes the C toolchain.
+-- See docs/NATIVE_BACKEND.md.
+cmdBuild :: [String] -> IO ()
+cmdBuild rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
+  Left msg -> hPutStrLn stderr ("error: " <> msg) >> exitFailure
+  Right (opts, path) -> do
+    (src, preDiags) <- loadSourceFile path
+    let cu0 = compileSourceWithPrelude path src
+        cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
+    emitDiags Human (cuDiags cu)
+    when (hasErrors (cuDiags cu)) exitFailure
+    let st = cuState cu
+        mainG = GName (cuModule cu) "main"
+    unless (Map.member mainG (csGlobals st)) $ do
+      hPutStrLn stderr "error[E_NO_MAIN]: no 'main' definition in module"
+      exitFailure
+    result <- buildNative st mainG path opts
+    case result of
+      Left ds -> do
+        emitDiags Human ds
+        exitFailure
+      Right outPath -> do
+        hPutStrLn stderr ("built " <> outPath)
+        exitSuccess
+
+-- | Parse @build@ flags.  The single positional argument is the source
+-- path; unknown flags are an error (no silent acceptance).
+parseBuildArgs :: [String] -> BuildOptions -> Either String (BuildOptions, FilePath)
+parseBuildArgs args opts0 = go args opts0 Nothing
+  where
+    go [] opts (Just p) = Right (opts, p)
+    go [] _ Nothing = Left "kappa build: missing source path"
+    go ("--emit-c" : xs) opts mp = go xs opts {boEmitCOnly = True} mp
+    go ("--ffi-full" : xs) opts mp = go xs opts {boFfiUnit = FfiFull} mp
+    go ("-o" : o : xs) opts mp = go xs opts {boOutput = Just o} mp
+    go ("--cc" : c : xs) opts mp = go xs opts {boCC = Just c} mp
+    go ("--lib" : l : xs) opts mp = go xs opts {boExtraLibs = boExtraLibs opts ++ [l]} mp
+    go (x : xs) opts Nothing
+      | take 1 x /= "-" = go xs opts (Just x)
+    go (x : _) _ _ = Left ("kappa build: unexpected argument '" <> x <> "'")
 
 -- | §4.7 unsafe/debug audit query (the @auditModule@ surface). Emits the
 -- compilation unit's audit ledger as machine-readable JSON, never as

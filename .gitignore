@@ -7,3 +7,7 @@ dist-newstyle/
 
 # Local native toolchain (zig); not committed
 .toolchain/
+
+# Native-backend generated artifacts
+*.kappa.c
+examples/native/**/build/

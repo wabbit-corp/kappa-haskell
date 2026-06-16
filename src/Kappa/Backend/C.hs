@@ -1,0 +1,961 @@
+-- | Native backend: lower elaborated KCore ('Kappa.Core.Term') to C that
+-- links against the @kappart@ runtime (see @runtime/kappart.h@ and
+-- docs/NATIVE_BACKEND.md).
+--
+-- The lowering is a structural recursion over 'Term' that mirrors
+-- 'Kappa.Eval.eval' / 'Kappa.Interp' but emits C rather than stepping an
+-- interpreter, so the two stay semantically aligned for the supported
+-- subset.  Any 'Term' or do-kernel item the backend does not support is a
+-- compile-time 'E_BACKEND_UNSUPPORTED' error naming the construct (and the
+-- definition it appears in) — never a silent fallback to interpreter
+-- behaviour.
+--
+-- Representation contract with the runtime:
+--
+--   * all functions are curried arity-1 closures; application is a chain
+--     of @kapp@ (explicit) / @kappi@ (implicit) calls;
+--   * implicit arguments are erased for primitives and constructors, and
+--     type-level implicit arguments to ordinary functions are passed as an
+--     unused @kunit()@ placeholder (types are computationally erased);
+--   * the de Bruijn environment is the runtime @KEnv@ linked list, head =
+--     index 0; entering a binder conses onto it.
+module Kappa.Backend.C
+  ( generateC
+  , BackendError (..)
+  , backendDiagnostics
+  ) where
+
+import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, ord)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
+import Data.Text (Text)
+import qualified Data.Text as T
+import Control.Monad.State.Strict
+import Kappa.Check (CheckState (..), CtorInfo (..))
+import Kappa.Core
+import Kappa.Diagnostic
+import Kappa.Eval (GlobalDef (..))
+import Kappa.Source (ModuleName (..), Span, noSpan)
+import Numeric (showHex)
+
+-- | One reason the native backend cannot compile a definition: the global
+-- it occurred in, the unsupported construct, and a human detail.
+data BackendError = BackendError
+  { beGlobal :: !GName
+  , beSpan :: !Span
+  , beConstruct :: !Text
+  , beDetail :: !Text
+  }
+  deriving stock (Eq, Show)
+
+-- | Render backend errors as structured diagnostics (§3.1): one
+-- @E_BACKEND_UNSUPPORTED@ per unsupported construct, citing the offending
+-- definition's declaration site.
+backendDiagnostics :: [BackendError] -> Diagnostics
+backendDiagnostics = map one
+  where
+    one be =
+      diag SevError StageElaborate "E_BACKEND_UNSUPPORTED" (Just "kappa-hs.backend.unsupported")
+        (beSpan be)
+        ( "the native backend cannot compile definition '"
+            <> gnameText (beGlobal be)
+            <> "': " <> beDetail be
+            <> " (" <> beConstruct be <> ")"
+        )
+
+-- ── Code-generation monad ────────────────────────────────────────────
+
+data GenState = GenState
+  { gsFresh :: !Int
+  , gsStmts :: ![Text] -- ^ current function body, reversed
+  , gsEnv :: !Text -- ^ C expression for the current KEnv*
+  , gsTop :: ![Text] -- ^ completed top-level C functions, reversed
+  , gsProtos :: ![Text] -- ^ forward declarations, reversed
+  , gsEmitted :: !(Set GName) -- ^ globals already emitted or enqueued
+  , gsQueue :: ![GName] -- ^ globals still to emit
+  , gsErrs :: ![BackendError] -- ^ unsupported-construct findings
+  , gsCur :: !GName -- ^ definition currently being compiled (for diagnostics)
+  , gsGlobals :: !(Map GName GlobalDef)
+  , gsBodies :: !(Map GName Term)
+  , gsCtors :: !(Map GName CtorInfo)
+  , gsDatas :: !(Set GName)
+  , gsTraits :: !(Set GName)
+  , gsDeclSites :: !(Map GName Span)
+  }
+
+type Gen = State GenState
+
+freshN :: Text -> Gen Text
+freshN base = do
+  n <- gets gsFresh
+  modify' $ \g -> g {gsFresh = n + 1}
+  pure (base <> T.pack (show n))
+
+emit :: Text -> Gen ()
+emit s = modify' $ \g -> g {gsStmts = s : gsStmts g}
+
+-- | Run an action with a fresh (empty) statement buffer and the given
+-- current-env expression, returning the produced statements in order plus
+-- the action's result; restores the caller's buffer and env afterwards.
+captured :: Text -> Gen a -> Gen ([Text], a)
+captured env act = do
+  saved <- gets gsStmts
+  savedEnv <- gets gsEnv
+  modify' $ \g -> g {gsStmts = [], gsEnv = env}
+  r <- act
+  produced <- gets gsStmts
+  modify' $ \g -> g {gsStmts = saved, gsEnv = savedEnv}
+  pure (reverse produced, r)
+
+-- | Record an unsupported-construct finding and return a placeholder C
+-- expression so error collection can continue.
+unsupported :: Text -> Text -> Gen Text
+unsupported construct detail = do
+  g <- gets gsCur
+  sites <- gets gsDeclSites
+  let sp = Map.findWithDefault noSpan g sites
+  modify' $ \st -> st {gsErrs = BackendError g sp construct detail : gsErrs st}
+  pure "kunit()"
+
+-- | Enqueue a global for emission (idempotent).
+enqueue :: GName -> Gen ()
+enqueue g = do
+  seen <- gets gsEmitted
+  unless (g `Set.member` seen) $
+    modify' $ \st -> st {gsEmitted = Set.insert g (gsEmitted st), gsQueue = g : gsQueue st}
+
+-- ── Names ────────────────────────────────────────────────────────────
+
+-- | Canonical dotted key of a global (used for constructor tag-name
+-- comparison and the runtime's well-known constructor spellings).
+gKey :: GName -> Text
+gKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
+
+-- | A unique, valid C identifier for a global's accessor function.
+cGlobIdent :: GName -> Text
+cGlobIdent g = "kg_" <> mangle (gKey g)
+
+mangle :: Text -> Text
+mangle = T.concatMap esc
+  where
+    esc c
+      | isAsciiLower c || isAsciiUpper c || isDigit c = T.singleton c
+      | otherwise = "_" <> T.pack (showHex (ord c) "") <> "_"
+
+-- | A C string literal (quoted, escaped) for arbitrary UTF-8 text.
+cStr :: Text -> Text
+cStr t = "\"" <> T.concatMap esc t <> "\""
+  where
+    esc c = case c of
+      '"' -> "\\\""
+      '\\' -> "\\\\"
+      '\n' -> "\\n"
+      '\t' -> "\\t"
+      '\r' -> "\\r"
+      _
+        | isAscii c && c >= ' ' -> T.singleton c
+        -- emit non-ASCII / control bytes via their UTF-8 octets as \xNN
+        | otherwise -> T.concat [octet b | b <- utf8Bytes c]
+    octet b = "\\x" <> pad (T.pack (showHex b ""))
+    pad s = if T.length s == 1 then "0" <> s else s
+
+-- | UTF-8 encode a single character to bytes.
+utf8Bytes :: Char -> [Int]
+utf8Bytes c =
+  let n = ord c
+   in if n < 0x80
+        then [n]
+        else if n < 0x800
+          then [0xC0 + (n `div` 0x40), 0x80 + (n `mod` 0x40)]
+          else if n < 0x10000
+            then [0xE0 + (n `div` 0x1000), 0x80 + ((n `div` 0x40) `mod` 0x40), 0x80 + (n `mod` 0x40)]
+            else
+              [ 0xF0 + (n `div` 0x40000)
+              , 0x80 + ((n `div` 0x1000) `mod` 0x40)
+              , 0x80 + ((n `div` 0x40) `mod` 0x40)
+              , 0x80 + (n `mod` 0x40)
+              ]
+
+-- ── Top-level driver ─────────────────────────────────────────────────
+
+-- | Compile the reachable closure of @main@ to a C translation unit.
+-- Returns @Left errs@ when any reachable definition uses an unsupported
+-- construct (the caller renders these as 'E_BACKEND_UNSUPPORTED'), or
+-- @Right csource@ on success.
+generateC :: CheckState -> GName -> Either [BackendError] Text
+generateC cs mainG =
+  let st0 =
+        GenState
+          { gsFresh = 0
+          , gsStmts = []
+          , gsEnv = "0"
+          , gsTop = []
+          , gsProtos = []
+          , gsEmitted = Set.singleton mainG
+          , gsQueue = [mainG]
+          , gsErrs = []
+          , gsCur = mainG
+          , gsGlobals = csGlobals cs
+          , gsBodies = csCoreBodies cs
+          , gsCtors = csCtors cs
+          , gsDatas = Map.keysSet (csDatas cs)
+          , gsTraits = Map.keysSet (csTraits cs)
+          , gsDeclSites = csDeclSites cs
+          }
+      final = execState (drainQueue >> emitMain mainG) st0
+   in case reverse (gsErrs final) of
+        [] -> Right (assemble final)
+        errs -> Left errs
+
+-- | Emit globals until the work queue is empty.
+drainQueue :: Gen ()
+drainQueue = do
+  q <- gets gsQueue
+  case q of
+    [] -> pure ()
+    (g : rest) -> do
+      modify' $ \st -> st {gsQueue = rest}
+      emitGlobal g
+      drainQueue
+
+-- | Emit one global's accessor function (memoised so recursion and CAF
+-- sharing terminate and are evaluated once).
+emitGlobal :: GName -> Gen ()
+emitGlobal g = do
+  modify' $ \st -> st {gsCur = g}
+  bodies <- gets gsBodies
+  let ident = cGlobIdent g
+  modify' $ \st -> st {gsProtos = ("static KValue *" <> ident <> "(void);") : gsProtos st}
+  -- A reachable global with no recorded core body (a built-in primitive,
+  -- trait dictionary, or derived projection) is honestly unsupported for
+  -- now rather than silently approximated by re-quoting its NbE value.
+  case Map.lookup g bodies of
+    Nothing -> do
+      _ <- unsupported "no-core-body"
+        ("its body is not available to the native backend (built-in primitive, \
+         \trait dictionary, or derived projection)")
+      (stmts, _) <- captured "0" (pure ())
+      finishGlobal ident stmts "kunit()"
+    Just tm -> do
+      (stmts, e) <- captured "0" (compile tm)
+      finishGlobal ident stmts e
+
+finishGlobal :: Text -> [Text] -> Text -> Gen ()
+finishGlobal ident stmts e =
+  let fn =
+        T.unlines $
+          [ "static KValue *" <> ident <> "(void) {"
+          , "  static KValue *cache = 0; if (cache) return cache;"
+          , "  KEnv *env = 0; (void)env;"
+          ]
+            ++ map ("  " <>) stmts
+            ++ [ "  cache = " <> e <> ";"
+               , "  return cache;"
+               , "}"
+               ]
+   in modify' $ \st -> st {gsTop = fn : gsTop st}
+
+-- | The C @main@: initialise the GC and run @main@'s IO action.
+emitMain :: GName -> Gen ()
+emitMain g =
+  let ident = cGlobIdent g
+      fn =
+        T.unlines
+          [ "int main(void) {"
+          , "  krt_init();"
+          , "  krun_io(" <> ident <> "());"
+          , "  return 0;" -- stdio buffers are flushed by the C runtime at exit
+          , "}"
+          ]
+   in modify' $ \st -> st {gsTop = fn : gsTop st}
+
+assemble :: GenState -> Text
+assemble st =
+  T.unlines $
+    [ "/* Generated by the Kappa native backend (Kappa.Backend.C). */"
+    , "#include \"kappart.h\""
+    , ""
+    ]
+      ++ reverse (gsProtos st)
+      ++ [""]
+      ++ reverse (gsTop st)
+
+-- ── Term lowering ────────────────────────────────────────────────────
+
+-- | Compile a term: emit any needed statements into the current buffer and
+-- return a C expression (of type @KValue *@) for its value.
+compile :: Term -> Gen Text
+compile term = case term of
+  CVar i -> do
+    env <- gets gsEnv
+    pure ("kvar(" <> env <> ", " <> T.pack (show i) <> ")")
+  CGlob g -> compileGlob g
+  CLit l -> compileLit l
+  CApp Expl f a -> do
+    fe <- compile f
+    ae <- compile a
+    pure ("kapp(" <> fe <> ", " <> ae <> ")")
+  CApp Impl f a -> do
+    erased <- isErasedHead f
+    if erased
+      then compile f -- implicit arg to a prim/constructor: erased (§31.2)
+      else do
+        fe <- compile f
+        ae <- if isTypeLevel a then pure "kunit()" else compile a
+        pure ("kappi(" <> fe <> ", " <> ae <> ")")
+  CLam _ _ _ body -> compileLam body
+  CCtor g args -> compileCtor g args
+  CIf c t e -> compileIf c t e
+  CMatch scrut alts -> compileMatch scrut alts
+  CLet _ _ _ rhs body -> compileLet rhs body
+  CLetRec _ _ _ rhs body -> compileLetRec rhs body
+  CRecordV fs -> compileRecord fs
+  CProj e f -> do
+    ee <- compile e
+    pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
+  CDo items -> compileDo items
+  -- type-level forms have no runtime value; reaching one in value position
+  -- means the supported subset was exceeded.
+  CSort _ -> unsupported "CSort" "a sort (Type) appears in value position"
+  CPi {} -> unsupported "CPi" "a function type appears in value position"
+  CRecordT _ -> unsupported "CRecordT" "a record type appears in value position"
+  CVariantT _ -> unsupported "CVariantT" "a variant type appears in value position"
+  CInject {} -> unsupported "CInject" "variant injection is not supported by the native backend"
+  CMeta _ -> unsupported "CMeta" "an unsolved metavariable reached code generation"
+  CSealE {} -> unsupported "CSealE" "sealed packages are not supported by the native backend"
+  CSigT {} -> unsupported "CSigT" "signature types are not supported by the native backend"
+  CThunkE _ -> unsupported "CThunkE" "thunk suspensions are not supported by the native backend"
+  CLazyE _ -> unsupported "CLazyE" "memoised suspensions are not supported by the native backend"
+  CForceE _ -> unsupported "CForceE" "force is not supported by the native backend"
+  CQuote {} -> unsupported "CQuote" "syntax quotations are not supported by the native backend"
+
+-- | Head global of an application spine, if any.
+headGlob :: Term -> Maybe GName
+headGlob = \case
+  CApp _ f _ -> headGlob f
+  CGlob g -> Just g
+  CCtor g _ -> Just g
+  _ -> Nothing
+
+-- | Is the implicit argument to this head erased at runtime? Primitive
+-- and constructor heads erase implicit arguments (§31.2).  Primitives are
+-- the @__prim@ module globals and the prelude globals whose value is a
+-- bare 'VPrim' (the @prim@ registrations in "Kappa.Prelude").
+isErasedHead :: Term -> Gen Bool
+isErasedHead t = case headGlob t of
+  Just g@(GName m _)
+    | m == primModule -> pure True
+    | otherwise -> do
+        globals <- gets gsGlobals
+        ctors <- gets gsCtors
+        case Map.lookup g globals of
+          Just gd | isVPrimValue (gdValue gd) -> pure True
+          _ -> pure (Map.member g ctors)
+  Nothing -> pure False
+
+isVPrimValue :: Maybe Value -> Bool
+isVPrimValue (Just (VPrim _ _)) = True
+isVPrimValue _ = False
+
+-- | A purely type-level term: it has no runtime value, so an erased
+-- implicit binder receiving it is passed an unused placeholder.
+isTypeLevel :: Term -> Bool
+isTypeLevel = \case
+  CSort _ -> True
+  CPi {} -> True
+  CVariantT _ -> True
+  CRecordT _ -> True
+  CMeta _ -> True
+  CApp _ f _ -> isTypeLevel f
+  _ -> False
+
+compileGlob :: GName -> Gen Text
+compileGlob g@(GName m nm)
+  | m == primModule = pure ("kprim(" <> cStr nm <> ")")
+  | otherwise = do
+      globals <- gets gsGlobals
+      ctors <- gets gsCtors
+      case Map.lookup g globals of
+        -- A prelude `prim` registration: its value is a bare VPrim, so it
+        -- maps directly to the runtime primitive of the same name.
+        Just gd | Just (VPrim pname _) <- gdValue gd ->
+          pure ("kprim(" <> cStr pname <> ")")
+        _ -> case Map.lookup g ctors of
+          Just ci ->
+            -- A constructor used as a value: nullary builds directly;
+            -- positive-arity bare references are not yet supported (they
+            -- need eta-expansion into a curried builder).
+            if null (ciFields ci)
+              then pure ("kctor0(" <> cStr (gKey g) <> ")")
+              else unsupported "bare-ctor"
+                ("the constructor '" <> nm <> "' is used as a value (not fully applied)")
+          Nothing -> do
+            enqueue g
+            pure (cGlobIdent g <> "()")
+
+compileLit :: Literal -> Gen Text
+compileLit = \case
+  LitInt n
+    | n >= toInteger (minBound :: Int) && n <= toInteger (maxBound :: Int) ->
+        pure ("kint(" <> intLit n <> ")")
+    | otherwise ->
+        unsupported "LitInt-range"
+          ("the integer literal " <> T.pack (show n)
+             <> " does not fit in the native backend's 64-bit Int")
+  LitDouble d -> pure ("kdbl(" <> T.pack (show d) <> ")")
+  LitStr s -> pure ("kstr0(" <> cStr s <> ")")
+  LitScalar c -> pure ("kchr(" <> T.pack (show (ord c)) <> ")")
+  LitByte _ -> unsupported "LitByte" "byte literals are not supported by the native backend"
+  LitBytes _ -> unsupported "LitBytes" "byte-sequence literals are not supported by the native backend"
+  LitGrapheme _ -> unsupported "LitGrapheme" "grapheme literals are not supported by the native backend"
+  where
+    -- C int64 literal; INT64_MIN needs care (no negative literal in C).
+    intLit n
+      | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
+      | otherwise = T.pack (show n) <> "LL"
+
+-- | A lambda: lift its body into a fresh top-level closure function and
+-- return a @kclo@ capturing the current environment.
+compileLam :: Term -> Gen Text
+compileLam body = do
+  fnName <- freshN "kfn_"
+  env <- gets gsEnv
+  -- inside the closure, the runtime env is `kpush(arg, captured)`
+  (stmts, e) <- captured "kpush(arg, cenv)" (compile body)
+  let fn =
+        T.unlines $
+          [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *arg) {"
+          , "  (void)cenv; (void)arg;"
+          ]
+            ++ map ("  " <>) stmts
+            ++ [ "  return " <> e <> ";"
+               , "}"
+               ]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure ("kclo(" <> fnName <> ", " <> env <> ")")
+
+compileCtor :: GName -> [Term] -> Gen Text
+compileCtor g args = do
+  argEs <- mapM compile args
+  if null argEs
+    then pure ("kctor0(" <> cStr (gKey g) <> ")")
+    else do
+      arr <- freshN "args_"
+      emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " argEs <> "};")
+      pure ("kctor(" <> cStr (gKey g) <> ", " <> T.pack (show (length argEs)) <> ", " <> arr <> ")")
+
+compileRecord :: [(Text, Term)] -> Gen Text
+compileRecord fs = do
+  valEs <- mapM (compile . snd) fs
+  namesArr <- freshN "rnames_"
+  valsArr <- freshN "rvals_"
+  let names = T.intercalate ", " [cStr n | (n, _) <- fs]
+  emit ("const char *" <> namesArr <> "[] = {" <> names <> "};")
+  emit ("KValue *" <> valsArr <> "[] = {" <> T.intercalate ", " valEs <> "};")
+  pure ("krec(" <> T.pack (show (length fs)) <> ", " <> namesArr <> ", " <> valsArr <> ")")
+
+compileLet :: Term -> Term -> Gen Text
+compileLet rhs body = do
+  re <- compile rhs
+  env <- gets gsEnv
+  e2 <- freshN "env_"
+  emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
+  withEnv e2 (compile body)
+
+-- | A local recursive let: allocate the binder cell first, evaluate the
+-- rhs with the binder in scope, then back-patch the cell (the rhs is a
+-- function whose closure captures the cell but does not read it until
+-- applied — see docs/NATIVE_BACKEND.md §5).
+compileLetRec :: Term -> Term -> Gen Text
+compileLetRec rhs body = do
+  env <- gets gsEnv
+  e2 <- freshN "env_"
+  emit ("KEnv *" <> e2 <> " = kpush(kunit(), " <> env <> ");")
+  re <- withEnv e2 (compile rhs)
+  emit (e2 <> "->val = " <> re <> ";")
+  withEnv e2 (compile body)
+
+withEnv :: Text -> Gen a -> Gen a
+withEnv e act = do
+  saved <- gets gsEnv
+  modify' $ \g -> g {gsEnv = e}
+  r <- act
+  modify' $ \g -> g {gsEnv = saved}
+  pure r
+
+compileIf :: Term -> Term -> Term -> Gen Text
+compileIf c t e = do
+  ce <- compile c
+  env <- gets gsEnv
+  r <- freshN "if_"
+  emit ("KValue *" <> r <> ";")
+  (tStmts, te) <- captured env (compile t)
+  (eStmts, ee) <- captured env (compile e)
+  emit ("if (kas_bool(" <> ce <> ")) {")
+  forM_ tStmts (emit . ("  " <>))
+  emit ("  " <> r <> " = " <> te <> ";")
+  emit "} else {"
+  forM_ eStmts (emit . ("  " <>))
+  emit ("  " <> r <> " = " <> ee <> ";")
+  emit "}"
+  pure r
+
+-- ── Pattern matching ─────────────────────────────────────────────────
+
+compileMatch :: Term -> [CaseAlt] -> Gen Text
+compileMatch scrut alts = do
+  se <- compile scrut
+  sv <- freshN "scrut_"
+  emit ("KValue *" <> sv <> " = " <> se <> ";")
+  env <- gets gsEnv
+  r <- freshN "match_"
+  emit ("KValue *" <> r <> " = 0;")
+  done <- freshN "matched_"
+  emit ("int " <> done <> " = 0;")
+  forM_ alts $ \alt -> compileAlt sv env r done alt
+  emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
+  pure r
+
+compileAlt :: Text -> Text -> Text -> Text -> CaseAlt -> Gen ()
+compileAlt sv env r done (CaseAlt pat mguard body) = do
+  emit ("if (!" <> done <> ") {")
+  -- pattern test + bindings produced as a nested block
+  (blk, ()) <- captured env $ do
+    mtest <- patTest sv pat
+    case mtest of
+      Nothing -> compileAltBody env r done pat mguard body
+      Just test -> do
+        emit ("if (" <> test <> ") {")
+        compileAltBody env r done pat mguard body
+        emit "}"
+  forM_ blk (emit . ("  " <>))
+  emit "}"
+
+-- | Bind the pattern variables, evaluate the optional guard, and on a full
+-- match compute the body and mark @done@.
+compileAltBody :: Text -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
+compileAltBody env r done pat mguard body = do
+  -- Bind variables (extends the env), referencing the scrutinee `_pv`.
+  -- patTest already verified the constructor/shape; bindings just project.
+  env' <- bindPat env pat
+  case mguard of
+    Nothing -> do
+      be <- withEnv env' (compile body)
+      emit (r <> " = " <> be <> ";")
+      emit (done <> " = 1;")
+    Just gd -> do
+      ge <- withEnv env' (compile gd)
+      emit ("if (kas_bool(" <> ge <> ")) {")
+      be <- withEnv env' (compile body)
+      emit ("  " <> r <> " = " <> be <> ";")
+      emit ("  " <> done <> " = 1;")
+      emit "}"
+
+-- | A C boolean expression that is true iff @pat@ matches the value @v@
+-- (a pure expression; no side effects, no bindings).  'Nothing' means the
+-- pattern always matches (e.g. a variable or wildcard).
+patTest :: Text -> CorePat -> Gen (Maybe Text)
+patTest v = \case
+  CPWild -> pure Nothing
+  CPVar _ -> pure Nothing
+  CPAs _ p -> patTest v p
+  CPLit l -> do
+    le <- litValue l
+    case le of
+      Just lv -> pure (Just ("klit_eq(" <> v <> ", " <> lv <> ")"))
+      Nothing -> pure (Just "0") -- unsupported literal: never matches (error already recorded)
+  CPCtor g ps -> do
+    let nps = length ps
+    subs <- forM (zip [0 ..] ps) $ \(i, p) ->
+      patTest (ctorArgExpr v nps i) p
+    let here = "kctor_is(" <> v <> ", " <> cStr (gKey g) <> ")"
+    pure (Just (conj (here : [t | Just t <- subs])))
+  CPTuple ps -> do
+    let n = length ps
+    subs <- forM (zip [0 ..] ps) $ \(i, p) ->
+      patTest (recAtExpr v i) p
+    let szTest = "krec_size(" <> v <> ") == " <> T.pack (show n)
+    pure (Just (conj (szTest : [t | Just t <- subs])))
+  CPRecord pfs Nothing -> recordTests v pfs
+  CPRecord pfs (Just rest)
+    | T.null rest -> recordTests v pfs
+    | otherwise -> do
+        _ <- unsupported "CPRecord-rest" "record patterns with a rest binder are not supported"
+        pure (Just "0")
+  CPOr ps -> do
+    -- Only support or-patterns whose alternatives bind nothing (the common
+    -- literal/nullary case); otherwise the branch bindings would differ.
+    if all bindsNothing ps
+      then do
+        subs <- mapM (patTest v) ps
+        pure (Just (disj [maybe "1" id t | t <- subs]))
+      else do
+        _ <- unsupported "CPOr-binding" "or-patterns that bind variables are not supported"
+        pure (Just "0")
+  CPInject {} -> do
+    _ <- unsupported "CPInject" "variant patterns are not supported by the native backend"
+    pure (Just "0")
+  CPInjectRest {} -> do
+    _ <- unsupported "CPInjectRest" "variant residual patterns are not supported by the native backend"
+    pure (Just "0")
+  where
+    recordTests rv pfs = do
+      subs <- forM pfs $ \(n, p) -> patTest ("kproj(" <> rv <> ", " <> cStr n <> ")") p
+      case [t | Just t <- subs] of
+        [] -> pure Nothing
+        ts -> pure (Just (conj ts))
+
+-- | The C expression for the i-th bound argument of a constructor value
+-- @v@ whose pattern binds @nps@ trailing arguments (matchPat drops the
+-- leading non-bound arguments).
+ctorArgExpr :: Text -> Int -> Int -> Text
+ctorArgExpr v nps i =
+  "kctor_arg(" <> v <> ", kctor_argc(" <> v <> ") - " <> T.pack (show nps) <> " + " <> T.pack (show i) <> ")"
+
+recAtExpr :: Text -> Int -> Text
+recAtExpr v i = "krec_at(" <> v <> ", " <> T.pack (show i) <> ")"
+
+conj :: [Text] -> Text
+conj [] = "1"
+conj [x] = x
+conj xs = "(" <> T.intercalate " && " xs <> ")"
+
+disj :: [Text] -> Text
+disj [] = "0"
+disj [x] = x
+disj xs = "(" <> T.intercalate " || " xs <> ")"
+
+bindsNothing :: CorePat -> Bool
+bindsNothing = \case
+  CPWild -> True
+  CPLit _ -> True
+  CPCtor _ ps -> all bindsNothing ps
+  CPTuple ps -> all bindsNothing ps
+  CPOr ps -> all bindsNothing ps
+  CPInjectRest _ -> True
+  _ -> False
+
+-- | Emit @kpush@es that bind a pattern's variables, returning the extended
+-- env C-variable.  The variables are pushed in matchPat's left-to-right
+-- order so the de Bruijn indices line up (rightmost binder = index 0).
+bindPat :: Text -> CorePat -> Gen Text
+bindPat env pat = do
+  -- collect (cValueExpr) for each bound variable against the scrutinee, in
+  -- order; but the scrutinee expression depends on position, so thread it.
+  -- We re-derive the scrutinee expr from the structure since patTest used
+  -- the same projections.
+  foldM push env (patBindings "(*scrut*)" pat)
+  where
+    push e (_, valExpr) = do
+      n <- freshN "env_"
+      emit ("KEnv *" <> n <> " = kpush(" <> valExpr <> ", " <> e <> ");")
+      pure n
+
+-- | The values a pattern binds, as C expressions over the scrutinee
+-- expression @sv@, in matchPat's left-to-right binding order.
+patBindings :: Text -> CorePat -> [((), Text)]
+patBindings sv = go sv
+  where
+    go v = \case
+      CPWild -> []
+      CPLit _ -> []
+      CPVar _ -> [((), v)]
+      CPAs _ p -> ((), v) : go v p
+      CPCtor _ ps ->
+        let nps = length ps
+         in concat [go (ctorArgExpr v nps i) p | (i, p) <- zip [0 ..] ps]
+      CPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
+      CPRecord pfs mrest ->
+        concat [go ("kproj(" <> v <> ", " <> cStr n <> ")") p | (n, p) <- pfs]
+          ++ case mrest of
+            Just r | not (T.null r) -> [] -- rest binder unsupported (rejected in patTest)
+            _ -> []
+      CPOr _ -> [] -- only non-binding or-patterns reach here
+      CPInject _ p -> go v p
+      CPInjectRest _ -> []
+
+litValue :: Literal -> Gen (Maybe Text)
+litValue = \case
+  LitInt n -> pure (Just ("kint(" <> sgn n <> ")"))
+  LitStr s -> pure (Just ("kstr0(" <> cStr s <> ")"))
+  LitScalar c -> pure (Just ("kchr(" <> T.pack (show (ord c)) <> ")"))
+  LitDouble d -> pure (Just ("kdbl(" <> T.pack (show d) <> ")"))
+  l -> do
+    _ <- unsupported "CPLit" ("literal pattern of unsupported kind: " <> T.pack (show l))
+    pure Nothing
+  where
+    sgn n | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
+          | otherwise = T.pack (show n) <> "LL"
+
+-- ── do-kernel ────────────────────────────────────────────────────────
+
+-- | Compile a do-block to a suspended IO action (@kio@) whose body runs
+-- the scope.  The captured environment is the current one.
+compileDo :: [KItem] -> Gen Text
+compileDo items = do
+  fnName <- freshN "kdo_"
+  env <- gets gsEnv
+  (stmts, ()) <- captured "cenv" (compileItems items)
+  let fn =
+        T.unlines $
+          [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
+          , "  (void)cenv;"
+          ]
+            ++ map ("  " <>) stmts
+            ++ ["}"]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *);") : gsProtos st
+      }
+  pure ("kio(" <> fnName <> ", " <> env <> ")")
+
+-- | Compile a sequence of do-kernel items.  Emits a @return@ for the
+-- scope's result on every exit path (mirrors runScope's completion: the
+-- last KExpr's value, an explicit return's value, or Unit).
+compileItems :: [KItem] -> Gen ()
+compileItems [] = emit "return kunit();"
+compileItems (item : rest) = case item of
+  KExpr t -> do
+    te <- compile t
+    if null rest
+      then emit ("return krun_io(" <> te <> ");")
+      else do
+        emit ("krun_io(" <> te <> ");")
+        compileItems rest
+  KLet _ pat t -> do
+    te <- compile t
+    sv <- freshN "let_"
+    emit ("KValue *" <> sv <> " = " <> te <> ";")
+    bindItemPat sv pat rest
+  KBind _ pat t -> do
+    te <- compile t
+    sv <- freshN "bind_"
+    emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
+    bindItemPat sv pat rest
+  KReturn t -> do
+    te <- compile t
+    emit ("return " <> te <> ";")
+  KVarItem _ t -> do
+    te <- compile t
+    ref <- freshN "var_"
+    emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
+    env <- gets gsEnv
+    e2 <- freshN "env_"
+    emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
+    withEnv e2 (compileItems rest)
+  KAssign refT monadic rhsT -> do
+    rhs <- compile rhsT
+    rhsv <-
+      if monadic
+        then do
+          v <- freshN "rhs_"
+          emit ("KValue *" <> v <> " = krun_io(" <> rhs <> ");")
+          pure v
+        else pure rhs
+    re <- compile refT
+    emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
+    compileItems rest
+  KIf alts mels -> do
+    compileKIf alts mels
+    compileItems rest
+  KWhile ml cond body mels -> do
+    compileWhile ml cond body mels
+    compileItems rest
+  KFor ml pat src body mels -> do
+    compileFor ml pat src body mels
+    compileItems rest
+  KBreak Nothing -> emit "break;"
+  KContinue Nothing -> emit "continue;"
+  KBreak (Just _) -> do
+    _ <- unsupported "KBreak-labelled" "labelled break is not supported by the native backend"
+    pure ()
+  KContinue (Just _) -> do
+    _ <- unsupported "KContinue-labelled" "labelled continue is not supported by the native backend"
+    pure ()
+  KLetQ {} -> do
+    _ <- unsupported "KLetQ" "let? bindings are not supported by the native backend"
+    compileItems rest
+  KDefer _ -> do
+    _ <- unsupported "KDefer" "defer is not supported by the native backend"
+    compileItems rest
+  KUsing {} -> do
+    _ <- unsupported "KUsing" "using is not supported by the native backend"
+    compileItems rest
+
+-- | Bind a do-item pattern (an irrefutable binding at runtime) and
+-- continue with the rest of the scope.
+bindItemPat :: Text -> CorePat -> [KItem] -> Gen ()
+bindItemPat sv pat rest = do
+  env <- gets gsEnv
+  mtest <- patTest sv pat
+  case mtest of
+    Nothing -> do
+      env' <- bindPatScrut sv env pat
+      withEnv env' (compileItems rest)
+    Just test -> do
+      emit ("if (!(" <> test <> ")) krt_fail(\"irrefutable binding failed at runtime\");")
+      env' <- bindPatScrut sv env pat
+      withEnv env' (compileItems rest)
+
+-- | Like 'bindPat' but threads the concrete scrutinee C-expression
+-- through the binding projections.
+bindPatScrut :: Text -> Text -> CorePat -> Gen Text
+bindPatScrut sv env pat = foldM push env (patBindings sv pat)
+  where
+    push e (_, valExpr) = do
+      n <- freshN "env_"
+      emit ("KEnv *" <> n <> " = kpush(" <> valExpr <> ", " <> e <> ");")
+      pure n
+
+compileKIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
+compileKIf alts mels = go alts
+  where
+    go [] = case mels of
+      Just els -> do
+        env <- gets gsEnv
+        (blk, ()) <- captured env (compileScope els)
+        emit "{"
+        forM_ blk (emit . ("  " <>))
+        emit "}"
+      Nothing -> pure ()
+    go ((c, body) : more) = do
+      ce <- compile c
+      env <- gets gsEnv
+      (blk, ()) <- captured env (compileScope body)
+      emit ("if (kas_bool(" <> ce <> ")) {")
+      forM_ blk (emit . ("  " <>))
+      emit "}"
+      unless (null more && mels == Nothing) $ do
+        emit "else {"
+        go more
+        emit "}"
+
+-- | Compile a nested do-scope (loop/if body): its items run for effect and
+-- control flow (break/continue/return) propagates via C statements.  A
+-- nested scope does not itself yield the do-block's value.
+compileScope :: [KItem] -> Gen ()
+compileScope = mapM_ compileScopeItem
+
+compileScopeItem :: KItem -> Gen ()
+compileScopeItem item = case item of
+  KExpr t -> do
+    te <- compile t
+    emit ("krun_io(" <> te <> ");")
+  KReturn t -> do
+    te <- compile t
+    emit ("return " <> te <> ";")
+  KBreak Nothing -> emit "break;"
+  KContinue Nothing -> emit "continue;"
+  -- bindings inside a nested scope extend the env for the remainder of
+  -- that scope; handled by re-dispatching through compileItems-style logic
+  _ -> compileItemsScoped [item]
+
+-- | A scope body that may contain bindings: compile as a statement
+-- sequence where bindings extend the env for subsequent items, but the
+-- final fall-through does NOT return the do-block value (unlike
+-- 'compileItems').  Used for loop/if bodies.
+compileItemsScoped :: [KItem] -> Gen ()
+compileItemsScoped [] = pure ()
+compileItemsScoped (item : rest) = case item of
+  KExpr t -> do
+    te <- compile t
+    emit ("krun_io(" <> te <> ");")
+    compileItemsScoped rest
+  KLet _ pat t -> do
+    te <- compile t
+    sv <- freshN "let_"
+    emit ("KValue *" <> sv <> " = " <> te <> ";")
+    env <- gets gsEnv
+    env' <- bindPatScrut sv env pat
+    withEnv env' (compileItemsScoped rest)
+  KBind _ pat t -> do
+    te <- compile t
+    sv <- freshN "bind_"
+    emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
+    env <- gets gsEnv
+    env' <- bindPatScrut sv env pat
+    withEnv env' (compileItemsScoped rest)
+  KReturn t -> do
+    te <- compile t
+    emit ("return " <> te <> ";")
+  KAssign refT monadic rhsT -> do
+    rhs <- compile rhsT
+    rhsv <-
+      if monadic
+        then do
+          v <- freshN "rhs_"
+          emit ("KValue *" <> v <> " = krun_io(" <> rhs <> ");")
+          pure v
+        else pure rhs
+    re <- compile refT
+    emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
+    compileItemsScoped rest
+  KVarItem _ t -> do
+    te <- compile t
+    ref <- freshN "var_"
+    emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
+    env <- gets gsEnv
+    e2 <- freshN "env_"
+    emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
+    withEnv e2 (compileItemsScoped rest)
+  KIf alts mels -> compileKIf alts mels >> compileItemsScoped rest
+  KWhile ml cond body mels -> compileWhile ml cond body mels >> compileItemsScoped rest
+  KFor ml pat src body mels -> compileFor ml pat src body mels >> compileItemsScoped rest
+  KBreak Nothing -> emit "break;"
+  KContinue Nothing -> emit "continue;"
+  _ -> compileScopeItem item >> compileItemsScoped rest
+
+compileWhile :: Maybe Text -> Term -> [KItem] -> Maybe [KItem] -> Gen ()
+compileWhile _ml cond body mels = do
+  env <- gets gsEnv
+  -- the condition is re-evaluated each iteration, so it must be inside the
+  -- loop; emit `while (1) { if (!cond) break; body }`
+  (condBlk, ce) <- captured env (compile cond)
+  (bodyBlk, ()) <- captured env (compileScopeFresh body)
+  emit "while (1) {"
+  forM_ condBlk (emit . ("  " <>))
+  emit ("  if (!kas_bool(" <> ce <> ")) break;")
+  forM_ bodyBlk (emit . ("  " <>))
+  emit "}"
+  case mels of
+    Just els -> do
+      (elsBlk, ()) <- captured env (compileScopeFresh els)
+      emit "{"
+      forM_ elsBlk (emit . ("  " <>))
+      emit "}"
+    Nothing -> pure ()
+
+compileFor :: Maybe Text -> CorePat -> Term -> [KItem] -> Maybe [KItem] -> Gen ()
+compileFor _ml pat src body mels = do
+  env <- gets gsEnv
+  se <- compile src
+  it <- freshN "it_"
+  emit ("KValue *" <> it <> " = " <> se <> ";")
+  (bodyBlk, ()) <- captured env $ do
+    elemV <- freshN "elem_"
+    emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
+    e' <- bindPatScrut elemV env pat
+    withEnv e' (compileScopeFresh body)
+  emit ("for (; kis_cons(" <> it <> "); " <> it <> " = kctor_arg(" <> it <> ", 1)) {")
+  forM_ bodyBlk (emit . ("  " <>))
+  emit "}"
+  case mels of
+    Just els -> do
+      (elsBlk, ()) <- captured env (compileScopeFresh els)
+      emit "{"
+      forM_ elsBlk (emit . ("  " <>))
+      emit "}"
+    Nothing -> pure ()
+
+-- | A fresh nested scope (its own do-scope in the interpreter): compiled
+-- as a statement sequence with bindings extending the env locally.
+compileScopeFresh :: [KItem] -> Gen ()
+compileScopeFresh = compileItemsScoped
+

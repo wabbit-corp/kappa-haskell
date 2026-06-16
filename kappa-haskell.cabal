@@ -34,6 +34,8 @@ common deps
 library
     import:           warnings, deps
     exposed-modules:
+        Kappa.Backend.C
+        Kappa.Backend.Driver
         Kappa.Check
         Kappa.Core
         Kappa.Diagnostic

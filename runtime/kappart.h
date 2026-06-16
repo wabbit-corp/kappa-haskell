@@ -107,6 +107,8 @@ const char *kctor_name(KValue *v);
 int      kctor_argc(KValue *v);
 KValue  *kctor_arg(KValue *v, int i);
 KValue  *kproj(KValue *rec, const char *name);
+int      krec_size(KValue *rec);                 /* field count (tuple match) */
+KValue  *krec_at(KValue *rec, int i);            /* positional field (tuples) */
 int      klit_eq(KValue *a, KValue *b);          /* literal equality for CPLit */
 
 /* ── unboxing helpers ──────────────────────────────────────────────── */

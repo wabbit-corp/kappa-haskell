@@ -202,6 +202,14 @@ data CheckState = CheckState
   -- length. A single dropped import can leave thousands of references
   -- unresolved, each raising a suggestion diagnostic; rebuilding and
   -- rescanning the whole scope per diagnostic is O(Nerrors * Nscope).
+  , csCoreBodies :: !(Map GName Term)
+  -- ^ Elaborated KCore body of each top-level term definition, captured
+  -- before evaluation to a value. The native backend (Kappa.Backend.C)
+  -- lowers these to C: re-deriving a body by 'quote'-ing the stored NbE
+  -- 'gdValue' is unsound for do-blocks and suspensions that close over
+  -- 'let'/argument bindings (quote drops the captured environment), so we
+  -- keep the real elaborator output. Used only by the native backend; the
+  -- interpreter path ignores it.
   -- The index is built once (lazily, on the first unresolved name) and
   -- then extended in 'addGlobal' as new module globals appear, so the
   -- build is paid once. Because Levenshtein distance is at least the
@@ -287,6 +295,7 @@ initCheckState =
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
     Map.empty Map.empty Set.empty defaultUnsafeConfig [] Nothing
+    Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -713,6 +722,13 @@ addGlobal g@(GName m nm) gd = modify' $ \st ->
 -- | Add one spelling to the length-bucketed §3.2.2 candidate index.
 insertScopeName :: Text -> Map Int (Set Text) -> Map Int (Set Text)
 insertScopeName nm = Map.insertWith Set.union (T.length nm) (Set.singleton nm)
+
+-- | Record the elaborated KCore body of a top-level term definition for
+-- the native backend (see 'csCoreBodies'). Called from 'elabLetDecl'
+-- after zonking, with the body the interpreter would evaluate.
+recordCoreBody :: GName -> Term -> CheckM ()
+recordCoreBody g tm =
+  modify' $ \st -> st {csCoreBodies = Map.insert g tm (csCoreBodies st)}
 
 -- | §3.1.1A: record the first declaration site of a module-scope name
 -- (later occurrences keep the earliest span). Consulted by the
@@ -10793,6 +10809,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
               pure okStructural
             else pure True
       markManifestIfShaped tm
+      recordCoreBody g tm
       addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
     _ -> do
       -- a previous definition with a value: duplicate declaration (§9.2)
@@ -10814,6 +10831,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
         errAt sp "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.type.missing-signature")
           "recursive definitions require a preceding signature declaration (§15, §9.2)"
       tmV <- evalIn emptyCtx tm
+      recordCoreBody g tm
       addGlobal g (GlobalDef ty (Just tmV) True)
 elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
   -- top-level pattern binding: bind each variable to a projection
