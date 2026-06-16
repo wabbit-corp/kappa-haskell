@@ -1,9 +1,12 @@
 -- Native backend honesty check: this program type-checks and runs under
--- the interpreter, but uses a primitive (showDouble) the native runtime
--- does not implement.  `kappa build` MUST reject it at compile time with
+-- the interpreter, but uses Unicode normalization (`normalize`, backed by
+-- the table-driven __normalize primitive — UAX#15, not implemented by the
+-- native runtime).  `kappa build` MUST reject it at compile time with
 -- E_BACKEND_UNSUPPORTED and produce no executable — never a silent
--- divergence from interpreter behaviour.
+-- divergence from interpreter behaviour, never a runtime miscomputation.
 module main
 
+import std.unicode.*
+
 main : UIO Unit
-let main = printlnString (showDouble 3.5)
+let main = printlnString (normalize NFC "abc")
