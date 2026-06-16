@@ -23,6 +23,7 @@ module Kappa.Backend.C
   ( generateC
   , BackendError (..)
   , backendDiagnostics
+  , basePrims
   ) where
 
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, ord)
@@ -83,6 +84,7 @@ data GenState = GenState
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
+  , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   }
 
 type Gen = State GenState
@@ -180,12 +182,33 @@ utf8Bytes c =
 
 -- ── Top-level driver ─────────────────────────────────────────────────
 
+-- | The primitive names implemented by the base @kappart@ runtime
+-- (kappart.c).  Kept in lock-step with that file: emitting a primitive
+-- outside this set (plus any FFI extension) is a compile-time
+-- 'E_BACKEND_UNSUPPORTED'.
+basePrims :: Set Text
+basePrims =
+  Set.fromList
+    [ -- integer
+      "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
+    , "eqInt", "ltInt", "leInt"
+      -- double
+    , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
+    , "eqDouble", "ltDouble", "floatEq"
+      -- string / scalar
+    , "stringAppend", "eqStr", "ltStr", "eqScalar", "ltScalar", "showInt"
+      -- IO
+    , "printString", "printlnString", "ioPure", "ioBind", "ioThen"
+    , "newRef", "readRef", "writeRef"
+    ]
+
 -- | Compile the reachable closure of @main@ to a C translation unit.
--- Returns @Left errs@ when any reachable definition uses an unsupported
--- construct (the caller renders these as 'E_BACKEND_UNSUPPORTED'), or
--- @Right csource@ on success.
-generateC :: CheckState -> GName -> Either [BackendError] Text
-generateC cs mainG =
+-- @ffiPrims@ are the additional primitive names the linked FFI runtime
+-- implements (empty for the no-FFI build).  Returns @Left errs@ when any
+-- reachable definition uses an unsupported construct (the caller renders
+-- these as 'E_BACKEND_UNSUPPORTED'), or @Right csource@ on success.
+generateC :: CheckState -> GName -> Set Text -> Either [BackendError] Text
+generateC cs mainG ffiPrims =
   let st0 =
         GenState
           { gsFresh = 0
@@ -203,6 +226,7 @@ generateC cs mainG =
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)
           , gsDeclSites = csDeclSites cs
+          , gsPrims = Set.union basePrims ffiPrims
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -287,6 +311,12 @@ assemble st =
 -- | Compile a term: emit any needed statements into the current buffer and
 -- return a C expression (of type @KValue *@) for its value.
 compile :: Term -> Gen Text
+compile term
+  -- §18.3 monadic splice: `__runIO e` runs the embedded IO action inline
+  -- and yields its result as an ordinary value (matches runSplices).
+  | Just action <- runIOSplice term = do
+      ae <- compile action
+      pure ("krun_io(" <> ae <> ")")
 compile term = case term of
   CVar i -> do
     env <- gets gsEnv
@@ -303,7 +333,8 @@ compile term = case term of
       then compile f -- implicit arg to a prim/constructor: erased (§31.2)
       else do
         fe <- compile f
-        ae <- if isTypeLevel a then pure "kunit()" else compile a
+        typeArg <- isErasableArg a
+        ae <- if typeArg then pure "kunit()" else compile a
         pure ("kappi(" <> fe <> ", " <> ae <> ")")
   CLam _ _ _ body -> compileLam body
   CCtor g args -> compileCtor g args
@@ -339,6 +370,28 @@ headGlob = \case
   CCtor g _ -> Just g
   _ -> Nothing
 
+-- | An application spine: head term plus its arguments with icities.
+spineOf :: Term -> (Term, [(Icit, Term)])
+spineOf = go []
+  where
+    go acc (CApp ic f a) = go ((ic, a) : acc) f
+    go acc t = (t, acc)
+
+-- | Recognise a @__runIO e@ monadic-splice application (§18.3); returns
+-- the single explicit IO-action argument.  Implicit type arguments are
+-- ignored (erased).
+runIOSplice :: Term -> Maybe Term
+runIOSplice t = case spineOf t of
+  (hd, args)
+    | Just g <- headOf hd
+    , gnameText g == "__runIO"
+    , [a] <- [x | (Expl, x) <- args] ->
+        Just a
+  _ -> Nothing
+  where
+    headOf (CGlob g) = Just g
+    headOf _ = Nothing
+
 -- | Is the implicit argument to this head erased at runtime? Primitive
 -- and constructor heads erase implicit arguments (§31.2).  Primitives are
 -- the @__prim@ module globals and the prelude globals whose value is a
@@ -359,21 +412,52 @@ isVPrimValue :: Maybe Value -> Bool
 isVPrimValue (Just (VPrim _ _)) = True
 isVPrimValue _ = False
 
--- | A purely type-level term: it has no runtime value, so an erased
--- implicit binder receiving it is passed an unused placeholder.
-isTypeLevel :: Term -> Bool
-isTypeLevel = \case
-  CSort _ -> True
-  CPi {} -> True
-  CVariantT _ -> True
-  CRecordT _ -> True
-  CMeta _ -> True
-  CApp _ f _ -> isTypeLevel f
-  _ -> False
+-- | Is this implicit argument purely type-level (computationally erased),
+-- so an erased binder receiving it can be passed an unused placeholder?
+-- Type-level forms and references to type/trait globals are erasable;
+-- everything else (dictionaries, runtime values) is compiled for real.
+isErasableArg :: Term -> Gen Bool
+isErasableArg = \case
+  CSort _ -> pure True
+  CPi {} -> pure True
+  CVariantT _ -> pure True
+  CRecordT _ -> pure True
+  CMeta _ -> pure True
+  CApp _ f _ -> isErasableArg f -- the spine head decides (e.g. @(List a))
+  CGlob g -> isTypeGlob g
+  _ -> pure False
+
+-- | A global that denotes a type or trait (so a reference to it in
+-- argument position is computationally erased): a declared data type or
+-- trait, or a global whose kind is a sort (e.g. the builtin @Integer@).
+isTypeGlob :: GName -> Gen Bool
+isTypeGlob g = do
+  datas <- gets gsDatas
+  traits <- gets gsTraits
+  globals <- gets gsGlobals
+  let sortish = case Map.lookup g globals of
+        Just gd -> isSortValue (gdType gd)
+        Nothing -> False
+  pure (g `Set.member` datas || g `Set.member` traits || sortish)
+
+isSortValue :: Value -> Bool
+isSortValue (VSort _) = True
+isSortValue _ = False
+
+-- | Emit a reference to a runtime primitive, after confirming the linked
+-- runtime implements it; an unimplemented primitive is a compile-time
+-- 'E_BACKEND_UNSUPPORTED' (never a silent runtime failure).
+emitPrim :: Text -> Gen Text
+emitPrim name = do
+  prims <- gets gsPrims
+  if name `Set.member` prims
+    then pure ("kprim(" <> cStr name <> ")")
+    else unsupported "primitive"
+      ("the primitive '" <> name <> "' is not implemented by the native runtime")
 
 compileGlob :: GName -> Gen Text
 compileGlob g@(GName m nm)
-  | m == primModule = pure ("kprim(" <> cStr nm <> ")")
+  | m == primModule = emitPrim nm
   | otherwise = do
       globals <- gets gsGlobals
       ctors <- gets gsCtors
@@ -381,7 +465,7 @@ compileGlob g@(GName m nm)
         -- A prelude `prim` registration: its value is a bare VPrim, so it
         -- maps directly to the runtime primitive of the same name.
         Just gd | Just (VPrim pname _) <- gdValue gd ->
-          pure ("kprim(" <> cStr pname <> ")")
+          emitPrim pname
         _ -> case Map.lookup g ctors of
           Just ci ->
             -- A constructor used as a value: nullary builds directly;
@@ -529,21 +613,21 @@ compileAlt sv env r done (CaseAlt pat mguard body) = do
   (blk, ()) <- captured env $ do
     mtest <- patTest sv pat
     case mtest of
-      Nothing -> compileAltBody env r done pat mguard body
+      Nothing -> compileAltBody sv env r done pat mguard body
       Just test -> do
         emit ("if (" <> test <> ") {")
-        compileAltBody env r done pat mguard body
+        compileAltBody sv env r done pat mguard body
         emit "}"
   forM_ blk (emit . ("  " <>))
   emit "}"
 
 -- | Bind the pattern variables, evaluate the optional guard, and on a full
 -- match compute the body and mark @done@.
-compileAltBody :: Text -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
-compileAltBody env r done pat mguard body = do
-  -- Bind variables (extends the env), referencing the scrutinee `_pv`.
+compileAltBody :: Text -> Text -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
+compileAltBody sv env r done pat mguard body = do
+  -- Bind variables (extends the env) by projecting the scrutinee `sv`.
   -- patTest already verified the constructor/shape; bindings just project.
-  env' <- bindPat env pat
+  env' <- bindPatScrut sv env pat
   case mguard of
     Nothing -> do
       be <- withEnv env' (compile body)
@@ -641,41 +725,23 @@ bindsNothing = \case
   CPInjectRest _ -> True
   _ -> False
 
--- | Emit @kpush@es that bind a pattern's variables, returning the extended
--- env C-variable.  The variables are pushed in matchPat's left-to-right
--- order so the de Bruijn indices line up (rightmost binder = index 0).
-bindPat :: Text -> CorePat -> Gen Text
-bindPat env pat = do
-  -- collect (cValueExpr) for each bound variable against the scrutinee, in
-  -- order; but the scrutinee expression depends on position, so thread it.
-  -- We re-derive the scrutinee expr from the structure since patTest used
-  -- the same projections.
-  foldM push env (patBindings "(*scrut*)" pat)
-  where
-    push e (_, valExpr) = do
-      n <- freshN "env_"
-      emit ("KEnv *" <> n <> " = kpush(" <> valExpr <> ", " <> e <> ");")
-      pure n
-
 -- | The values a pattern binds, as C expressions over the scrutinee
--- expression @sv@, in matchPat's left-to-right binding order.
-patBindings :: Text -> CorePat -> [((), Text)]
-patBindings sv = go sv
+-- expression @sv@, in matchPat's left-to-right binding order (rightmost
+-- binder ends up at de Bruijn index 0).
+patBindings :: Text -> CorePat -> [Text]
+patBindings = go
   where
     go v = \case
       CPWild -> []
       CPLit _ -> []
-      CPVar _ -> [((), v)]
-      CPAs _ p -> ((), v) : go v p
+      CPVar _ -> [v]
+      CPAs _ p -> v : go v p
       CPCtor _ ps ->
         let nps = length ps
          in concat [go (ctorArgExpr v nps i) p | (i, p) <- zip [0 ..] ps]
       CPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
-      CPRecord pfs mrest ->
+      CPRecord pfs _ ->
         concat [go ("kproj(" <> v <> ", " <> cStr n <> ")") p | (n, p) <- pfs]
-          ++ case mrest of
-            Just r | not (T.null r) -> [] -- rest binder unsupported (rejected in patTest)
-            _ -> []
       CPOr _ -> [] -- only non-binding or-patterns reach here
       CPInject _ p -> go v p
       CPInjectRest _ -> []
@@ -809,7 +875,7 @@ bindItemPat sv pat rest = do
 bindPatScrut :: Text -> Text -> CorePat -> Gen Text
 bindPatScrut sv env pat = foldM push env (patBindings sv pat)
   where
-    push e (_, valExpr) = do
+    push e valExpr = do
       n <- freshN "env_"
       emit ("KEnv *" <> n <> " = kpush(" <> valExpr <> ", " <> e <> ");")
       pure n

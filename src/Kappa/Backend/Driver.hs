@@ -13,8 +13,10 @@ module Kappa.Backend.Driver
   ) where
 
 import qualified Data.Text as T
+import qualified Data.Set as Set
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
+import Kappa.Backend.Ffi (ffiPrimNames)
 import Kappa.Check (CheckState)
 import Kappa.Core (GName)
 import Kappa.Diagnostic
@@ -61,7 +63,10 @@ defaultBuildOptions =
 -- @--emit-c@).  On failure returns structured diagnostics.
 buildNative :: CheckState -> GName -> FilePath -> BuildOptions -> IO (Either Diagnostics FilePath)
 buildNative cs mainG inputPath opts =
-  case generateC cs mainG of
+  let ffiPrims = case boFfiUnit opts of
+        FfiStub -> Set.empty
+        FfiFull -> ffiPrimNames
+   in case generateC cs mainG ffiPrims of
     Left errs -> pure (Left (backendDiagnostics errs))
     Right csource -> do
       mruntime <- findRuntimeDir
