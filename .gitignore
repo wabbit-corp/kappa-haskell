@@ -4,3 +4,6 @@ dist-newstyle/
 *.dyn_hi
 *.dyn_o
 .ghc.environment.*
+
+# Local native toolchain (zig); not committed
+.toolchain/
