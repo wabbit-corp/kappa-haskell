@@ -94,6 +94,36 @@ KValue *kbigint_str(const char *decimal) {
   return kfrom_mpz(z);
 }
 
+/* ── Rational (§28.2): an exact normalized ratio, carried at runtime as a
+ * 2-field "__rat" constructor of bignum-capable num/den (positive den, gcd
+ * 1). Opaque to source — only the Rational prims read it. ─────────────── */
+
+static KValue *krat(mpz_t num, mpz_t den) {
+  if (mpz_sgn(den) == 0) krt_fail("Rational: zero denominator");
+  if (mpz_sgn(den) < 0) { mpz_neg(num, num); mpz_neg(den, den); }
+  mpz_t g; mpz_init(g); mpz_gcd(g, num, den);
+  if (mpz_sgn(g) != 0) { mpz_divexact(num, num, g); mpz_divexact(den, den, g); }
+  KValue *args[2]; args[0] = kfrom_mpz(num); args[1] = kfrom_mpz(den);
+  return kctor("__rat", 2, args);
+}
+
+static void as_rat(KValue *r, mpz_t num, mpz_t den) {
+  if (r->tag != K_CTOR || strcmp(r->as.ctor.name, "__rat") != 0)
+    krt_fail("Rational operation on a non-Rational value");
+  kload_mpz(r->as.ctor.args[0], num);
+  kload_mpz(r->as.ctor.args[1], den);
+}
+
+/* a*d (+|-) c*b over b*d, then krat normalizes. */
+static KValue *rat_addsub(KValue *x, KValue *y, int sub) {
+  mpz_t a, b, c, d, n, t, den; mpz_inits(a, b, c, d, n, t, den, NULL);
+  as_rat(x, a, b); as_rat(y, c, d);
+  mpz_mul(n, a, d); mpz_mul(t, c, b);
+  if (sub) mpz_sub(n, n, t); else mpz_add(n, n, t);
+  mpz_mul(den, b, d);
+  return krat(n, den);
+}
+
 KValue *kdbl(double v) {
   KValue *r = alloc_val(K_DBL);
   r->as.d = v;
@@ -332,10 +362,18 @@ KValue *kctor_arg(KValue *v, int i) {
 }
 
 KValue *kproj(KValue *rec, const char *name) {
-  if (rec->tag != K_REC) krt_fail("kproj: not a record");
+  if (rec->tag != K_REC) {
+    char msg[128];
+    snprintf(msg, sizeof msg, "kproj: field '%s' on non-record (tag %d)", name, (int)rec->tag);
+    krt_fail(msg);
+  }
   for (int i = 0; i < rec->as.rec.n; i++)
     if (strcmp(rec->as.rec.names[i], name) == 0) return rec->as.rec.vals[i];
-  krt_fail("kproj: no such field");
+  {
+    char msg[128];
+    snprintf(msg, sizeof msg, "kproj: no such field '%s'", name);
+    krt_fail(msg);
+  }
 }
 
 int kvariant_is(KValue *v, const char *tag) {
@@ -686,11 +724,70 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     if (a[0]->tag != K_CHR || a[1]->tag != K_CHR) krt_fail("ltScalar: argument is not a scalar");
     return kbool(a[0]->as.chr < a[1]->as.chr);
   }
+  /* numeric conversions (§6.1) — Nat/Int share a representation */
+  if (PRIM("natToInt") || PRIM("natOfInt")) return a[0];
+  if (PRIM("intToNat")) {
+    if (a[0]->tag == K_INT ? a[0]->as.i < 0
+                           : mpz_sgn((const __mpz_struct *)a[0]->as.big.mpz) < 0)
+      krt_fail("intToNat: negative Int has no Nat image");
+    return a[0];
+  }
+  if (PRIM("intToDouble")) {
+    if (a[0]->tag == K_BIGINT) return kdbl(mpz_get_d((const __mpz_struct *)a[0]->as.big.mpz));
+    return kdbl((double)a[0]->as.i);
+  }
+  if (PRIM("primitiveIntToString")) return show_int_val(a[0]);
   /* show */
   if (PRIM("showInt")) return show_int_val(a[0]);
   if (PRIM("showDouble")) return show_double(kas_dbl(a[0]));
   if (PRIM("showScalar")) return show_scalar(a[0]);
   if (PRIM("showStringLit")) return show_string_lit(a[0]);
+  /* §28.2 Rational */
+  if (PRIM("__ratOfInt")) {
+    mpz_t n, d; mpz_init(d); mpz_set_ui(d, 1); mpz_init(n); kload_mpz(a[0], n);
+    return krat(n, d);
+  }
+  if (PRIM("__ratNum")) { mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); return kfrom_mpz(n); }
+  if (PRIM("__ratDen")) { mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); return kfrom_mpz(d); }
+  if (PRIM("addRat")) return rat_addsub(a[0], a[1], 0);
+  if (PRIM("subRat")) return rat_addsub(a[0], a[1], 1);
+  if (PRIM("mulRat")) {
+    mpz_t a1, b1, c1, d1, n, den; mpz_inits(a1, b1, c1, d1, n, den, NULL);
+    as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
+    mpz_mul(n, a1, c1); mpz_mul(den, b1, d1); return krat(n, den);
+  }
+  if (PRIM("divRat")) {
+    mpz_t a1, b1, c1, d1, n, den; mpz_inits(a1, b1, c1, d1, n, den, NULL);
+    as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
+    if (mpz_sgn(c1) == 0) krt_fail("divRat: division by zero");
+    mpz_mul(n, a1, d1); mpz_mul(den, b1, c1); return krat(n, den);
+  }
+  if (PRIM("negRat")) {
+    mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); mpz_neg(n, n); return krat(n, d);
+  }
+  if (PRIM("eqRat") || PRIM("ltRat")) {
+    mpz_t a1, b1, c1, d1, l, r; mpz_inits(a1, b1, c1, d1, l, r, NULL);
+    as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
+    mpz_mul(l, a1, d1); mpz_mul(r, c1, b1); /* dens positive, so cross-mul preserves order */
+    int c = mpz_cmp(l, r);
+    return kbool(PRIM("eqRat") ? c == 0 : c < 0);
+  }
+  if (PRIM("showRat")) {
+    mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d);
+    KValue *ns = show_int_val(a[0]->as.ctor.args[0]);
+    if (mpz_cmp_ui(d, 1) == 0) return ns;
+    return str_append(str_append(ns, kstr0("/")), show_int_val(a[0]->as.ctor.args[1]));
+  }
+  if (PRIM("ratOfDouble")) {
+    double x = kas_dbl(a[0]);
+    if (isnan(x) || isinf(x)) { mpz_t n, d; mpz_init(n); mpz_init_set_ui(d, 1); return krat(n, d); }
+    int e2; double frac = frexp(x, &e2);            /* x = frac * 2^e2, 0.5<=|frac|<1 */
+    long long mant = (long long)ldexp(frac, 53);    /* exact integer significand */
+    int sh = e2 - 53;
+    mpz_t n, d; mpz_init_set_si(n, (long)mant); mpz_init_set_ui(d, 1);
+    if (sh >= 0) mpz_mul_2exp(n, n, (unsigned)sh); else mpz_mul_2exp(d, d, (unsigned)(-sh));
+    return krat(n, d);
+  }
   krt_fail("internal: unknown pure primitive");
 }
 
@@ -747,6 +844,10 @@ static int prim_arity(const char *p) {
   /* unary */
   if (PRIM("negInt") || PRIM("negDouble") || PRIM("showInt") ||
       PRIM("showDouble") || PRIM("showScalar") || PRIM("showStringLit") ||
+      PRIM("__ratOfInt") || PRIM("__ratNum") || PRIM("__ratDen") ||
+      PRIM("negRat") || PRIM("showRat") || PRIM("ratOfDouble") ||
+      PRIM("natToInt") || PRIM("natOfInt") || PRIM("intToNat") ||
+      PRIM("intToDouble") || PRIM("primitiveIntToString") ||
       PRIM("ioPure") || PRIM("newRef") || PRIM("readRef") ||
       PRIM("printString") || PRIM("printlnString"))
     return 1;
@@ -757,6 +858,8 @@ static int prim_arity(const char *p) {
       PRIM("divDouble") || PRIM("eqDouble") || PRIM("ltDouble") ||
       PRIM("floatEq") || PRIM("stringAppend") || PRIM("eqStr") ||
       PRIM("ltStr") || PRIM("eqScalar") || PRIM("ltScalar") ||
+      PRIM("addRat") || PRIM("subRat") || PRIM("mulRat") || PRIM("divRat") ||
+      PRIM("eqRat") || PRIM("ltRat") ||
       PRIM("ioBind") || PRIM("ioThen") || PRIM("writeRef"))
     return 2;
   return prim_arity_ffi(p);

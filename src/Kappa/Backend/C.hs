@@ -221,6 +221,11 @@ basePrims =
       -- string / scalar
     , "stringAppend", "eqStr", "ltStr", "eqScalar", "ltScalar"
     , "showInt", "showDouble", "showScalar", "showStringLit"
+      -- §28.2 Rational
+    , "__ratOfInt", "__ratNum", "__ratDen", "addRat", "subRat", "mulRat"
+    , "divRat", "negRat", "eqRat", "ltRat", "showRat", "ratOfDouble"
+      -- §6.1 numeric conversions
+    , "natToInt", "natOfInt", "intToNat", "intToDouble", "primitiveIntToString"
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen"
     , "newRef", "readRef", "writeRef"

@@ -24,6 +24,7 @@ module Kappa.Check
   , AuditRecord (..)
   , checkModule
   , expectUnsatisfiedDiags
+  , zonkTermM
   , preludeModule
   , shapeModule
   ) where

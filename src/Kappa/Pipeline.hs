@@ -16,6 +16,7 @@ module Kappa.Pipeline
   , loadSourceFile
   ) where
 
+import Control.Monad.State.Strict (evalState)
 import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
 import Data.List (foldl', nub, partition)
@@ -396,7 +397,20 @@ compileFilesWithCfg intrinsics unsafeCfg packageMode nameOf files =
             (mn : _) -> mn
             [] -> nameOf p
         [] -> ModuleName ["main"]
-   in CompiledUnit finalSt allDiags lastName allTrace
+      -- §34.5/§16.3: a captured core body (csCoreBodies) was zonked when
+      -- its definition was checked, but some evidence/type metavariables
+      -- are only solved later in the unit (e.g. an instance dictionary for
+      -- a polymorphic call resolved by a postponed goal). Re-zonk every
+      -- captured body against the FINAL meta state so the native backend
+      -- never sees an unsolved CMeta where a solved dictionary belongs.
+      finalSt' =
+        finalSt
+          { csCoreBodies =
+              Map.map
+                (\tm -> evalState (zonkTermM 0 tm) finalSt)
+                (csCoreBodies finalSt)
+          }
+   in CompiledUnit finalSt' allDiags lastName allTrace
 
 renderModuleName :: ModuleName -> Text
 renderModuleName (ModuleName segs) = T.intercalate "." segs
