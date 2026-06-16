@@ -573,6 +573,13 @@ registry =
   , -- CLI-level code (kappa run without a main definition)
     ent "E_NO_MAIN" Nothing
       "The module given to 'kappa run' does not define a 'main' entrypoint."
+  , -- §27.7 native backend (profile-scoped) diagnostics
+    ent "E_BACKEND_UNSUPPORTED" (Just "kappa-hs.backend.unsupported")
+      "A reachable definition uses a construct or primitive the native backend does not support; it is rejected at build time rather than silently diverging from the interpreter (§27.7)."
+  , ent "E_BACKEND_TOOLCHAIN" (Just "kappa-hs.backend.toolchain")
+      "The native backend could not locate its runtime or a C toolchain, or the C toolchain failed while compiling or linking the generated program (§27.1)."
+  , ent "E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH" (Just "kappa-hs.backend.intrinsic")
+      "An 'expect term' whose name matches a native backend host-binding intrinsic declares a type that does not match the intrinsic's signature up to definitional equality (Spec §9.4, §34.5)."
   ]
   where
     -- §3.1.2A registry metadata is derived uniformly from the code and
