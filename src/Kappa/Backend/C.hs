@@ -86,7 +86,16 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
-  , gsLoops :: ![Maybe Text] -- ^ break-flag C variable of each enclosing loop (Nothing if it has no else)
+  , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
+  , gsDefer :: !(Maybe (Text, Text)) -- ^ current do-block's (defer-array, count) vars (§18.7)
+  }
+
+-- | A loop's labelled control targets: its source label (if any), the C
+-- goto label a @continue@ jumps to, and the one a @break@ jumps to.
+data LoopCtx = LoopCtx
+  { lcLabel :: !(Maybe Text)
+  , lcContinue :: !Text
+  , lcBreak :: !Text
   }
 
 type Gen = State GenState
@@ -242,6 +251,7 @@ generateC cs mainG ffiPrims =
           , gsDeclSites = csDeclSites cs
           , gsPrims = Set.union basePrims ffiPrims
           , gsLoops = []
+          , gsDefer = Nothing
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -983,12 +993,33 @@ compileDo :: [KItem] -> Gen Text
 compileDo items = do
   fnName <- freshN "kdo_"
   env <- gets gsEnv
+  -- §18.7: a do-block whose top level registers defers gets a per-block
+  -- defer stack, run LIFO at every exit (see emitTailReturn). The count is
+  -- the static number of top-level `defer` items (loops do not multiply it;
+  -- a defer nested in a loop/if body is a distinct scope, handled there).
+  let ndefer = length [() | KDefer _ <- items]
+  savedDefer <- gets gsDefer
+  (arrDecl, mdef) <-
+    if ndefer == 0
+      then pure ([], Nothing)
+      else do
+        arr <- freshN "kdef_"
+        cnt <- freshN "kdc_"
+        pure
+          ( [ "KValue *" <> arr <> "[" <> T.pack (show ndefer) <> "]; (void)" <> arr <> ";"
+            , "int " <> cnt <> " = 0; (void)" <> cnt <> ";"
+            ]
+          , Just (arr, cnt)
+          )
+  modify' $ \g -> g {gsDefer = mdef}
   (stmts, ()) <- captured "cenv" (compileItems Tail items)
+  modify' $ \g -> g {gsDefer = savedDefer}
   let fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
           , "  (void)cenv;"
           ]
+            ++ map ("  " <>) arrDecl
             ++ map ("  " <>) stmts
             ++ ["}"]
   modify' $ \st ->
@@ -1036,13 +1067,13 @@ compileItems :: ScopeMode -> [KItem] -> Gen ()
 compileItems mode = go
   where
     go [] = case mode of
-      Tail -> emit "return kunit();"
+      Tail -> emitTailReturn "kunit()"
       Nested -> pure ()
     go (item : rest) = case item of
       KExpr t -> do
         te <- compile t
         if null rest && mode == Tail
-          then emit ("return krun_io(" <> te <> ");")
+          then emitTailReturn ("krun_io(" <> te <> ")")
           else emit ("krun_io(" <> te <> ");") >> go rest
       KLet _ pat t -> do
         te <- compile t
@@ -1056,7 +1087,7 @@ compileItems mode = go
         bindAndContinue sv pat
       KReturn t -> do
         te <- compile t
-        emit ("return " <> te <> ";")
+        emitTailReturn te
       KVarItem _ t -> do
         te <- compile t
         ref <- freshN "var_"
@@ -1078,19 +1109,49 @@ compileItems mode = go
         emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
         go rest
       KIf alts mels -> compileKIf alts mels >> go rest
-      KWhile _ml cond bdy mels -> compileLoop (LoopWhile cond) bdy mels >> go rest
-      KFor _ml pat src bdy mels -> compileLoop (LoopFor pat src) bdy mels >> go rest
-      KBreak Nothing -> emitBreak
-      KContinue Nothing -> emit "continue;"
-      KBreak (Just _) -> skip "KBreak-labelled" "labelled break"
-      KContinue (Just _) -> skip "KContinue-labelled" "labelled continue"
-      KLetQ {} -> skip "KLetQ" "let? bindings"
-      KDefer _ -> skip "KDefer" "defer"
-      KUsing {} -> skip "KUsing" "using"
-      where
-        skip tag what = do
-          _ <- unsupported tag (what <> " is not supported by the native backend")
+      KWhile ml cond bdy mels -> compileLoop ml (LoopWhile cond) bdy mels >> go rest
+      KFor ml pat src bdy mels -> compileLoop ml (LoopFor pat src) bdy mels >> go rest
+      KBreak ml -> gotoLoop ml lcBreak
+      KContinue ml -> gotoLoop ml lcContinue
+      -- §18 let? : bind the pattern and continue, or run the else block
+      -- (which replaces the rest of this scope).
+      KLetQ pat t mElse -> do
+        te <- compile t
+        sv <- freshN "letq_"
+        emit ("KValue *" <> sv <> " = " <> te <> ";")
+        env <- gets gsEnv
+        mtest <- patTest sv pat
+        let onMatch = do env' <- bindPatScrut sv env pat; withEnv env' (go rest)
+            onElse = compileLetQElse mode sv mElse
+        case mtest of
+          Nothing -> onMatch -- irrefutable: always binds
+          Just test -> do
+            (mblk, ()) <- captured env onMatch
+            (eblk, ()) <- captured env onElse
+            emit ("if (" <> test <> ") {")
+            forM_ mblk (emit . ("  " <>))
+            emit "} else {"
+            forM_ eblk (emit . ("  " <>))
+            emit "}"
+      -- §18.7: register a do-block-scope exit action (run LIFO at exit).
+      -- A defer nested in a loop/if body is a distinct per-iteration scope
+      -- whose timing this do-block-level model would change, so it is
+      -- rejected rather than run at the wrong time.
+      KDefer t -> case mode of
+        Tail -> do
+          te <- compile t
+          registerDefer te
           go rest
+        Nested -> do
+          _ <- unsupported "KDefer-nested"
+            "defer inside a loop or if body (a per-iteration scope) is not supported; place it at the do-block top level"
+          go rest
+      -- §18 `using` desugars to a plain bind in elaboration (Check.hs); a
+      -- KUsing never reaches codegen for an accepted program.
+      KUsing {} -> do
+        _ <- escalated "KUsing" "`using` is desugared to a bind in elaboration (§18); a KUsing kernel item is unreachable"
+        go rest
+      where
         -- bind an irrefutable do-pattern (with a runtime check for any
         -- refutable shape) and continue with the rest of this scope (the
         -- `rest` closed over from the enclosing `go (item : rest)` clause)
@@ -1104,17 +1165,45 @@ compileItems mode = go
           env' <- bindPatScrut sv env pat
           withEnv env' (go rest)
 
--- | Emit a @break@.  If the enclosing loop has an @else@ block, mark its
--- break flag so the @else@ is skipped (§18.8: a loop's else runs only on
--- normal completion); a loop with no @else@ needs no flag (so generated C
--- has no unused variable).
-emitBreak :: Gen ()
-emitBreak = do
+-- | §18.2.5: jump to a loop's continue\/break target. @ml@ selects the
+-- loop: 'Nothing' is the innermost; @Just l@ the enclosing loop labelled
+-- @l@ (the elaborator already verified the label resolves).
+gotoLoop :: Maybe Text -> (LoopCtx -> Text) -> Gen ()
+gotoLoop ml proj = do
   loops <- gets gsLoops
-  case loops of
-    (Just flag : _) -> emit (flag <> " = 1; break;")
-    (Nothing : _) -> emit "break;"
-    [] -> emit "break;" -- defensive: break outside a loop is rejected upstream
+  let target = case ml of
+        Nothing -> case loops of (lc : _) -> Just lc; [] -> Nothing
+        Just l -> lookupLoop l loops
+  case target of
+    Just lc -> emit ("goto " <> proj lc <> ";")
+    Nothing -> emit "break;" -- defensive: rejected upstream (§18.2.5)
+  where
+    lookupLoop l = foldr (\lc acc -> if lcLabel lc == Just l then Just lc else acc) Nothing
+
+-- | Return from the do-block, first running its registered §18.7 defers
+-- LIFO (a no-op when the block has none).
+emitTailReturn :: Text -> Gen ()
+emitTailReturn e = do
+  md <- gets gsDefer
+  case md of
+    -- Evaluate the scope result FIRST, then run defers LIFO, then return:
+    -- the deferred actions run on scope exit, after the body completes.
+    Just (arr, cnt) -> do
+      r <- freshN "ret_"
+      emit ("KValue *" <> r <> " = " <> e <> ";")
+      emit ("while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
+      emit ("return " <> r <> ";")
+    Nothing -> emit ("return " <> e <> ";")
+
+-- | Push a §18.7 deferred action onto the current do-block's defer stack.
+registerDefer :: Text -> Gen ()
+registerDefer te = do
+  md <- gets gsDefer
+  case md of
+    Just (arr, cnt) -> emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
+    Nothing -> krtFailDefer
+  where
+    krtFailDefer = error "registerDefer: no defer scope (internal)"
 
 -- | Like 'bindPat' but threads the concrete scrutinee C-expression
 -- through the binding projections.
@@ -1150,62 +1239,77 @@ compileKIf alts mels = go alts
       forM_ blk (emit . ("  " <>))
       emit "}"
 
--- | The two loop shapes, sharing the body / break-flag / else machinery.
 data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
 
--- | Compile a @while@\/@for@ loop with correct §18.8 completion: a @break@
--- sets the loop's flag (so the @else@ is skipped); a @continue@ advances
--- (the @for@ increment lives in the loop header, so C @continue@ still
--- advances the cursor); normal exhaustion runs the optional @else@.
-compileLoop :: LoopKind -> [KItem] -> Maybe [KItem] -> Gen ()
-compileLoop kind body mels = do
+-- | Compile a @while@\/@for@ loop using explicit @goto@ labels, so §18.2.5
+-- labelled @break@\/@continue@ targeting an outer loop work uniformly and
+-- the §18.8 @else@ (run only on normal completion, not after a @break@) is
+-- placed past the body and before the break label.
+compileLoop :: Maybe Text -> LoopKind -> [KItem] -> Maybe [KItem] -> Gen ()
+compileLoop mlabel kind body mels = do
   env <- gets gsEnv
-  -- A break flag is only needed when the loop has an `else` to suppress; an
-  -- else-less loop pushes Nothing so generated C carries no unused variable.
-  mflag <- case mels of
-    Just _ -> do
-      f <- freshN "brk_"
-      emit ("int " <> f <> " = 0;")
-      pure (Just f)
-    Nothing -> pure Nothing
+  n <- freshN "lp_"
+  let contL = "kcont_" <> n -- continue target (re-test)
+      advL = "kadv_" <> n -- for-loop advance (continue lands here)
+      normL = "knorm_" <> n -- normal completion (run else)
+      endL = "kend_" <> n -- break target (skip else)
+      -- continue re-tests; for a `for` it must advance the cursor first.
+      contTarget = case kind of LoopWhile _ -> contL; LoopFor _ _ -> advL
+      ctx = LoopCtx mlabel contTarget endL
   case kind of
     LoopWhile cond -> do
       (condBlk, ce) <- captured env (compile cond)
-      (bodyBlk, ()) <- withLoop mflag (captured env (compileItems Nested body))
-      emit "while (1) {"
+      (bodyBlk, ()) <- withLoop ctx (captured env (compileItems Nested body))
+      emit (contL <> ": ;")
       forM_ condBlk (emit . ("  " <>))
-      emit ("  if (!kas_bool(" <> ce <> ")) break;")
-      forM_ bodyBlk (emit . ("  " <>))
-      emit "}"
+      emit ("if (!kas_bool(" <> ce <> ")) goto " <> normL <> ";")
+      forM_ bodyBlk emit
+      emit ("goto " <> contL <> ";")
     LoopFor pat src -> do
       se <- compile src
       it <- freshN "it_"
       emit ("KValue *" <> it <> " = " <> se <> ";")
-      (bodyBlk, ()) <- withLoop mflag $ captured env $ do
+      (bodyBlk, ()) <- withLoop ctx $ captured env $ do
         elemV <- freshN "elem_"
         emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
         e' <- bindPatScrut elemV env pat
         withEnv e' (compileItems Nested body)
-      emit ("for (; kis_cons(" <> it <> "); " <> it <> " = kctor_arg(" <> it <> ", 1)) {")
-      forM_ bodyBlk (emit . ("  " <>))
-      emit "}"
-  -- §18.8: the loop's else runs iff the loop completed without a break.
-  case (mels, mflag) of
-    (Just els, Just flag) -> do
+      emit (contL <> ": ;")
+      emit ("if (!kis_cons(" <> it <> ")) goto " <> normL <> ";")
+      forM_ bodyBlk emit
+      emit (advL <> ": ;")
+      emit (it <> " = kctor_arg(" <> it <> ", 1);")
+      emit ("goto " <> contL <> ";")
+  emit (normL <> ": ;")
+  case mels of
+    Just els -> do
       (elsBlk, ()) <- captured env (compileItems Nested els)
-      emit ("if (!" <> flag <> ") {")
+      emit "{"
       forM_ elsBlk (emit . ("  " <>))
       emit "}"
-    _ -> pure ()
+    Nothing -> pure ()
+  emit (endL <> ": ;")
 
--- | Run an action with the current loop's break flag pushed (Nothing when
--- the loop has no else, so a nested break in an else-less loop emits a
--- plain @break@ without touching an enclosing loop's flag).
-withLoop :: Maybe Text -> Gen a -> Gen a
-withLoop mflag act = do
+-- | Run an action with @ctx@ pushed as the innermost enclosing loop.
+withLoop :: LoopCtx -> Gen a -> Gen a
+withLoop ctx act = do
   saved <- gets gsLoops
-  modify' $ \g -> g {gsLoops = mflag : saved}
+  modify' $ \g -> g {gsLoops = ctx : saved}
   r <- act
   modify' $ \g -> g {gsLoops = saved}
   pure r
+
+-- | §18 let? else branch: bind the residue pattern and run the else action
+-- as the scope's result (it replaces the rest of the scope).  With no
+-- @else@, a failed let? is a runtime defect (no Alternative available).
+compileLetQElse :: ScopeMode -> Text -> Maybe (CorePat, Term) -> Gen ()
+compileLetQElse mode sv mElse = case mElse of
+  Nothing -> emit "krt_fail(\"let? pattern failed and no Alternative is available\");"
+  Just (rp, fe) -> do
+    env <- gets gsEnv
+    env' <- bindPatScrut sv env rp
+    fee <- withEnv env' (compile fe)
+    case mode of
+      Tail -> emitTailReturn ("krun_io(" <> fee <> ")")
+      Nested -> emit ("krun_io(" <> fee <> ");")
 

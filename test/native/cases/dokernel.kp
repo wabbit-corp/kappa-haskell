@@ -1,0 +1,31 @@
+-- Native backend conformance: do-kernel items — §18.7 defer (LIFO at
+-- do-block exit, incl. on a return path), §18 let? with an else that
+-- replaces the rest of the scope, and §18.2.5 labelled break/continue
+-- targeting an outer loop.  Identical output under interpreter + native.
+module main
+
+describe : List Integer -> UIO Unit
+let describe xs = do
+    let? x :: _ = xs
+    else _ ->
+        printlnString "empty"
+    printlnString (stringAppend "head " (showInt x))
+
+firstHit : UIO Unit
+let firstHit = do
+    outer@for i in 1 :: 2 :: 3 :: Nil do
+        for j in 10 :: 20 :: Nil do
+            if eqInt (addInt i j) 22 then
+                printlnString "hit 2+20"
+                break@outer
+        printlnString "after-inner"
+    printlnString "after-outer"
+
+main : UIO Unit
+let main = do
+    defer printlnString "bye"
+    defer printlnString "cleanup"
+    printlnString "start"
+    describe (7 :: 8 :: Nil)
+    describe Nil
+    firstHit
