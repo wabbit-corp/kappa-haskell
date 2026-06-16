@@ -38,7 +38,8 @@ typedef enum {
   K_FGN,   /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
   K_VARIANT, /* variant injection: member-identity tag + payload (§13)   */
   K_THUNK,  /* suspended pure computation (Delay/Memo, §19)              */
-  K_BIGINT  /* arbitrary-precision Integer beyond int64 (GMP mpz, §6)    */
+  K_BIGINT, /* arbitrary-precision Integer beyond int64 (GMP mpz, §6)    */
+  K_BOUNCE  /* deferred tail call (trampoline; never user-observable)    */
 } KTag;
 
 typedef struct KValue KValue;
@@ -66,6 +67,7 @@ struct KValue {
     struct { const char *tag; KValue *payload; } var;
     struct { KIOFn fn; KEnv *env; int memo; KValue **cache; } thunk;
     struct { void *mpz; } big;   /* points to a GC-allocated __mpz_struct */
+    struct { KValue *fn; KValue *arg; } bounce;
   } as;
 };
 
@@ -107,8 +109,10 @@ KEnv   *kpush(KValue *v, KEnv *e);
 KValue *kvar(KEnv *e, int ix);
 
 /* ── application ───────────────────────────────────────────────────── */
-KValue *kapp(KValue *f, KValue *x);   /* explicit application             */
+KValue *kapp(KValue *f, KValue *x);   /* explicit application (drains tail bounces) */
 KValue *kappi(KValue *f, KValue *x);  /* implicit (erased for ctor/prim)  */
+KValue *kbounce(KValue *fn, KValue *arg);  /* defer a tail-position application */
+KValue *ktrampoline(KValue *r);            /* drive bounces to a value     */
 
 /* ── deconstruction (codegen for CMatch / CProj) ───────────────────── */
 int      kctor_is(KValue *v, const char *name);  /* tag-name equality     */

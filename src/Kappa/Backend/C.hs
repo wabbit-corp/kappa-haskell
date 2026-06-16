@@ -747,7 +747,16 @@ consume sink term = case term of
     emit (e2 <> "->val = " <> re <> ";")
     withEnv e2 (consume sink body)
   _ -> case sink of
+    -- Direct saturated self-call: loop in the worker (no allocation).
     SinkTail ti | Just args <- selfTailArgs ti term -> emitTailLoop ti args
+    -- Any other tail-position explicit application: return a trampoline
+    -- bounce so the chain (mutual recursion, calls through a value, local
+    -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
+    -- is the kapp/kappi at the non-tail site that demanded the value.
+    SinkTail _ | CApp Expl f a <- term -> do
+      fe <- compile f
+      ae <- compile a
+      emit ("return kbounce(" <> fe <> ", " <> ae <> ");")
     _ -> do
       e <- compile term
       sinkResult sink e

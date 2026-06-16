@@ -1,21 +1,32 @@
--- Native backend tail-call stress: a value-level tail-recursive function
--- driven to a depth (2,000,000) that would overflow the default ~8 MB C
--- stack if compiled as ordinary recursive C calls.  The native backend
--- compiles a tail-position self-call to a loop, so this runs in constant C
--- stack.  (The interpreter cannot reach this depth — it trips the §32.1
--- recursion-depth guard — so this case is native-only and checked by
--- result, not by interpreter equivalence.)
+-- Native backend tail-call stress (§27.5A.3 stack-safe lowering): tail
+-- recursion driven to depths (millions) that would overflow the default
+-- ~8 MB C stack as ordinary recursive C calls.  Direct self-calls loop in
+-- the worker; mutual recursion and calls through a function value run via
+-- the trampoline.  Native-only (the interpreter trips its §32.1 depth
+-- guard at these depths), checked by result.
 module main
 
--- sum 1..n with an accumulator; the else-branch call is in tail position.
 sumTo : Int -> Int -> Int
 let sumTo n acc = if leInt n 0 then acc else sumTo (subInt n 1) (addInt acc n)
 
--- a second tail-recursive shape (no accumulator arithmetic in the result).
 countDown : Int -> Int
 let countDown n = if leInt n 0 then 7 else countDown (subInt n 1)
 
+-- mutual tail recursion (trampoline)
+isEven : Int -> Bool
+let isEven n = if eqInt n 0 then True else isOdd (subInt n 1)
+isOdd : Int -> Bool
+let isOdd n = if eqInt n 0 then False else isEven (subInt n 1)
+
+-- tail call through a function value (trampoline)
+applyTail : (Int -> Int) -> Int -> Int
+let applyTail f n = if leInt n 0 then 0 else applyTail f (f n)
+dec : Int -> Int
+let dec n = subInt n 1
+
 main : UIO Unit
 let main = do
-    printlnString (showInt (sumTo 2000000 0))    -- 2000001000000
-    printlnString (showInt (countDown 3000000))  -- 7
+    printlnString (showInt (sumTo 2000000 0))      -- 2000001000000 (self-loop)
+    printlnString (showInt (countDown 3000000))    -- 7 (self-loop)
+    printlnString (if isEven 4000000 then "even" else "odd")  -- mutual
+    printlnString (showInt (applyTail dec 3000000))           -- 0 (indirect)

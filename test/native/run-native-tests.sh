@@ -76,8 +76,8 @@ if timeout 240 $KAPPA build "$CASES/tailrec.kp" -o "$exe" >"$WORK/tailrec.build.
   rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "   FAIL: tail-recursive run crashed/timed out (rc=$rc) — stack not bounded"; fails=$((fails+1))
-  elif [ "$out" = "2000001000000|7|" ]; then
-    echo "   ok (2,000,000- and 3,000,000-deep tail recursion in constant stack)"
+  elif [ "$out" = "2000001000000|7|even|0|" ]; then
+    echo "   ok (self-loop + mutual + value-indirect tail recursion in constant stack)"
   else
     echo "   FAIL: wrong result: $out"; fails=$((fails+1))
   fi

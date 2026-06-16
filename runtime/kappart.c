@@ -255,7 +255,10 @@ static KValue *prim_append_arg(KValue *f, KValue *x) {
   return r;
 }
 
-KValue *kapp(KValue *f, KValue *x) {
+/* Apply once, without draining tail-call bounces. A closure body may
+ * return a K_BOUNCE describing a tail call it deferred (§27.5A.3 stack-safe
+ * lowering); the caller drives it via ktrampoline. */
+static KValue *kapply_once(KValue *f, KValue *x) {
   switch (f->tag) {
     case K_CLO:
       return f->as.clo.fn(f->as.clo.env, x);
@@ -273,6 +276,28 @@ KValue *kapp(KValue *f, KValue *x) {
   }
 }
 
+/* Drive a tail-call trampoline: repeatedly perform a deferred application
+ * in a single C frame until a non-bounce value results.  This bounds the C
+ * stack for mutual recursion, calls through a function value, and local
+ * let-rec tail recursion (direct self-recursion already loops in-worker). */
+KValue *ktrampoline(KValue *r) {
+  while (r->tag == K_BOUNCE) {
+    KValue *fn = r->as.bounce.fn;
+    KValue *arg = r->as.bounce.arg;
+    r = kapply_once(fn, arg);
+  }
+  return r;
+}
+
+KValue *kbounce(KValue *fn, KValue *arg) {
+  KValue *r = alloc_val(K_BOUNCE);
+  r->as.bounce.fn = fn;
+  r->as.bounce.arg = arg;
+  return r;
+}
+
+KValue *kapp(KValue *f, KValue *x) { return ktrampoline(kapply_once(f, x)); }
+
 KValue *kappi(KValue *f, KValue *x) {
   switch (f->tag) {
     /* implicit args are erased at runtime for constructors and primitives
@@ -281,7 +306,7 @@ KValue *kappi(KValue *f, KValue *x) {
     case K_PRIM:
       return f;
     case K_CLO:
-      return f->as.clo.fn(f->as.clo.env, x);
+      return ktrampoline(f->as.clo.fn(f->as.clo.env, x));
     default:
       krt_fail("kappi: applying a non-function value");
   }
