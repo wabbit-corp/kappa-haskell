@@ -1,0 +1,143 @@
+/* kappart.h — Kappa native runtime (boxed values, Boehm GC, primitives).
+ *
+ * This is the runtime the native backend (Kappa.Backend.C) links against.
+ * Every Kappa value is a uniformly boxed, heap-allocated `KValue` reached
+ * through ordinary C pointers, so the Boehm conservative collector traces
+ * the whole graph precisely without per-type metadata. See
+ * docs/NATIVE_BACKEND.md for the GC model, value layout, and the
+ * supported-subset / honest-unsupported contract.
+ *
+ * Representation invariants the code generator relies on:
+ *   - All functions are curried arity-1 closures (KFn).  Multi-argument
+ *     application is a chain of `kapp` calls; partial application is free.
+ *   - Implicit arguments are erased at runtime for constructors and
+ *     primitives, matching Kappa.Eval.vapp (§31.2).  The generator emits
+ *     `kappi` for implicit applications and `kapp` for explicit ones.
+ *   - Pure primitives fold eagerly when saturated; IO primitives stay
+ *     suspended as KValue and run only under `krun_io` (the do-kernel and
+ *     the `main` driver), matching the interpreter's runIOValue.
+ */
+#ifndef KAPPART_H
+#define KAPPART_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+typedef enum {
+  K_INT,   /* Nat/Int/Integer (signed 64-bit; see docs §3) */
+  K_DBL,   /* binary64 */
+  K_STR,   /* UTF-8 text: bytes + length (not NUL-terminated)            */
+  K_CHR,   /* Unicode scalar value                                       */
+  K_UNIT,  /* the canonical Unit value                                   */
+  K_CTOR,  /* data constructor: interned name + boxed args               */
+  K_REC,   /* record value: lexicographically-sorted fields              */
+  K_CLO,   /* closure: arity-1 function pointer + captured environment   */
+  K_PRIM,  /* primitive, possibly partially applied                      */
+  K_IO,    /* suspended IO action (do-block / sequencing)                */
+  K_REF,   /* mutable cell (var / MonadRef, §18.6.1)                     */
+  K_FGN    /* opaque foreign/host pointer (FFI: uv_*, sqlite3*, …)        */
+} KTag;
+
+typedef struct KValue KValue;
+typedef struct KEnv KEnv;
+
+/* arity-1 closure body: receives the captured env and one argument */
+typedef KValue *(*KFn)(KEnv *env, KValue *arg);
+/* suspended IO body: receives the captured env, returns the result value */
+typedef KValue *(*KIOFn)(KEnv *env);
+
+struct KValue {
+  KTag tag;
+  union {
+    int64_t  i;
+    double   d;
+    uint32_t chr;
+    struct { const char *p; size_t len; } str;
+    struct { const char *name; int argc; KValue **args; } ctor;
+    struct { int n; const char **names; KValue **vals; } rec;
+    struct { KFn fn; KEnv *env; } clo;
+    struct { const char *name; int argc; KValue **args; } prim;
+    struct { KIOFn fn; KEnv *env; } io;
+    struct { KValue **cell; } ref;             /* cell[0] is the contents */
+    struct { void *p; const char *kind; } fgn;
+  } as;
+};
+
+/* de Bruijn environment: head is index 0 (the innermost binder). */
+struct KEnv {
+  KValue *val;
+  KEnv   *next;
+};
+
+/* ── lifecycle ─────────────────────────────────────────────────────── */
+void krt_init(void);                 /* GC_INIT once, at the top of main */
+
+/* ── allocation (Boehm GC) ─────────────────────────────────────────── */
+void *kgc_alloc(size_t n);           /* scanned: may contain pointers    */
+void *kgc_alloc_atomic(size_t n);    /* pointer-free (string/byte blobs) */
+
+/* ── value constructors ────────────────────────────────────────────── */
+KValue *kint(int64_t v);
+KValue *kdbl(double v);
+KValue *kstr(const char *bytes, size_t len);   /* copies `len` bytes      */
+KValue *kstr0(const char *cstr);               /* from a C string literal */
+KValue *kchr(uint32_t scalar);
+KValue *kunit(void);
+KValue *kbool(int b);                           /* True/False constructors */
+KValue *kctor(const char *name, int argc, KValue **args);
+KValue *kctor0(const char *name);               /* nullary constructor     */
+KValue *krec(int n, const char **names, KValue **vals);
+KValue *kclo(KFn fn, KEnv *env);
+KValue *kprim(const char *name);                /* 0-ary; saturates via kapp */
+KValue *kio(KIOFn fn, KEnv *env);
+KValue *kref_new(KValue *init);
+KValue *kfgn(void *p, const char *kind);
+
+/* ── environment ───────────────────────────────────────────────────── */
+KEnv   *kpush(KValue *v, KEnv *e);
+KValue *kvar(KEnv *e, int ix);
+
+/* ── application ───────────────────────────────────────────────────── */
+KValue *kapp(KValue *f, KValue *x);   /* explicit application             */
+KValue *kappi(KValue *f, KValue *x);  /* implicit (erased for ctor/prim)  */
+
+/* ── deconstruction (codegen for CMatch / CProj) ───────────────────── */
+int      kctor_is(KValue *v, const char *name);  /* tag-name equality     */
+const char *kctor_name(KValue *v);
+int      kctor_argc(KValue *v);
+KValue  *kctor_arg(KValue *v, int i);
+KValue  *kproj(KValue *rec, const char *name);
+int      klit_eq(KValue *a, KValue *b);          /* literal equality for CPLit */
+
+/* ── unboxing helpers ──────────────────────────────────────────────── */
+int64_t  kas_int(KValue *v);
+double   kas_dbl(KValue *v);
+int      kas_bool(KValue *v);
+
+/* ── references ────────────────────────────────────────────────────── */
+KValue  *kref_get(KValue *r);
+KValue  *kref_set(KValue *r, KValue *v);         /* returns Unit          */
+
+/* ── IO execution ──────────────────────────────────────────────────── */
+KValue  *krun_io(KValue *action);    /* run an IO action to a result      */
+
+/* list helpers for `for` loops and FFI glue (Cons "::" / Nil) */
+KValue  *knil(void);
+KValue  *kcons(KValue *h, KValue *t);
+int      kis_cons(KValue *v);
+
+/* abort with a runtime error message (mirrors a Kappa runtime defect). */
+void     krt_fail(const char *msg) __attribute__((noreturn));
+
+/* ── FFI hooks ─────────────────────────────────────────────────────── */
+/* The core runtime dispatches any primitive it does not implement itself
+ * to the FFI runtime (kappart_ffi.c).  The stub build provides a unit
+ * that knows no FFI primitives; the demo build links the libuv/sqlite
+ * implementation instead.  The code generator only emits a primitive
+ * after confirming the linked runtime implements it, so these are never
+ * reached for an unknown name. */
+int      prim_is_io_ffi(const char *p);   /* is `p` an FFI IO primitive?  */
+int      prim_arity_ffi(const char *p);   /* arity of FFI primitive `p`   */
+KValue  *krun_io_ffi(KValue *action);     /* run an FFI IO action         */
+
+#endif /* KAPPART_H */
