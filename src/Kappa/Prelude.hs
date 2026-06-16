@@ -94,6 +94,13 @@ builtinState =
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
       , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
+      , -- §27.7 native backend FFI: opaque foreign-handle carriers for the
+        -- libc-sockets + sqlite3 surface (see Kappa.Backend.Ffi). These are
+        -- inhabited only by the native runtime's foreign handles; the
+        -- interpreter never produces values of these types.
+        (prel "NetListener", opaqueTy (tyV tType))
+      , (prel "NetConn", opaqueTy (tyV tType))
+      , (prel "SqliteDb", opaqueTy (tyV tType))
       , -- §18.1.14 algebraic effects: the Eff carrier, effect rows and
         -- labels; rows are encoded as neutral spines
         -- '__effRowCons label iface rest' ending in '__effRowNil'
@@ -412,6 +419,21 @@ builtinState =
         prim "__handleEff" (tyV (piI Q0 "a" tType (CVar 0)))
       , -- §18.1.13: aborted STM alternative (the `empty` action)
         prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
+      , -- §27.7 native backend FFI: libc TCP sockets + sqlite3. These are
+        -- IO actions implemented by the native runtime (runtime/kappart_ffi.c)
+        -- and are only executable from a native build (`kappa build
+        -- --ffi-full`); the interpreter does not provide them.
+        prim "__tcpListen" (tyV (forallE (tInt ~> io (CVar 1) (tcon "NetListener"))))
+      , prim "__tcpAccept" (tyV (forallE (tcon "NetListener" ~> io (CVar 1) (tcon "NetConn"))))
+      , prim "__connRead" (tyV (forallE (tcon "NetConn" ~> io (CVar 1) tStr)))
+      , prim "__connWrite" (tyV (forallE (tcon "NetConn" ~> tStr ~> io (CVar 2) tUnit)))
+      , prim "__connClose" (tyV (forallE (tcon "NetConn" ~> io (CVar 1) tUnit)))
+      , prim "__listenClose" (tyV (forallE (tcon "NetListener" ~> io (CVar 1) tUnit)))
+      , prim "__sqliteOpen" (tyV (forallE (tStr ~> io (CVar 1) (tcon "SqliteDb"))))
+      , prim "__sqliteExec" (tyV (forallE (tcon "SqliteDb" ~> tStr ~> io (CVar 2) tUnit)))
+      , prim "__sqliteQueryInt" (tyV (forallE (tcon "SqliteDb" ~> tStr ~> io (CVar 2) tInt)))
+      , prim "__sqliteQueryText" (tyV (forallE (tcon "SqliteDb" ~> tStr ~> io (CVar 2) tStr)))
+      , prim "__sqliteClose" (tyV (forallE (tcon "SqliteDb" ~> io (CVar 1) tUnit)))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime

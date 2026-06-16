@@ -1,0 +1,49 @@
+-- A real native HTTP server backed by sqlite3 (§27.7 native backend FFI).
+--
+-- For each incoming TCP request it performs a sqlite WRITE (increment a
+-- persistent hit counter) and a sqlite READ (the new count), then sends an
+-- HTTP/1.1 response whose body reports the count.  It serves a fixed
+-- number of requests and then exits cleanly, so the demo is deterministic
+-- under a test harness.
+--
+-- Build + run:
+--   kappa build --ffi-full --lib -lsqlite3 examples/native/http_sqlite/server.kp -o /tmp/kserver
+--   /tmp/kserver        # listens on :8088, serves 3 requests, exits
+--
+-- This compiles to a native executable; the request -> sqlite -> response
+-- path runs entirely in native code (no interpreter).
+
+module main
+
+-- A minimal HTTP/1.1 response.  We use `Connection: close` (and close the
+-- socket after writing) so the client reads the body up to EOF without a
+-- Content-Length header.
+httpResponse : String -> String
+let httpResponse body =
+    stringAppend
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
+        body
+
+dbPath : String
+let dbPath = "/tmp/kappa_http_demo.db"
+
+main : UIO Unit
+let main = do
+    db <- __sqliteOpen dbPath
+    __sqliteExec db "CREATE TABLE IF NOT EXISTS counter (hits INTEGER)"
+    __sqliteExec db "DELETE FROM counter"
+    __sqliteExec db "INSERT INTO counter (hits) VALUES (0)"
+    listener <- __tcpListen 8088
+    printlnString "listening on :8088"
+    var served = 0
+    while ltInt served 3 do
+        conn <- __tcpAccept listener
+        __connRead conn
+        __sqliteExec db "UPDATE counter SET hits = hits + 1"
+        count <- __sqliteQueryInt db "SELECT hits FROM counter"
+        __connWrite conn (httpResponse (stringAppend "hits=" (showInt count)))
+        __connClose conn
+        served = addInt served 1
+    __listenClose listener
+    __sqliteClose db
+    printlnString "served 3 requests; exiting"

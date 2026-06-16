@@ -28,7 +28,13 @@ semantic model: the backend is a code generator over the existing IR.
 | -------------- | ------------------------------------------------------------------------ |
 | Native driver  | `zig cc` (bundles clang 21.x) when present; system `cc`/`gcc` otherwise. |
 | GC             | Boehm–Demers–Weiser conservative collector (`-lgc`, `gc.h`).             |
-| FFI demo deps  | `libuv` (event loop / sockets) and `sqlite3`, via `pkg-config`/`-l`.     |
+| FFI demo deps  | POSIX TCP sockets (libc, no extra dep) and `sqlite3` (`-lsqlite3`).      |
+
+> The demo uses blocking POSIX sockets (`sys/socket.h`) rather than
+> libuv: the requirement permits "libuv or sockets", and a blocking
+> accept loop keeps the demo a straightforward, unquestionably-real
+> native server with one fewer external dependency. The only FFI library
+> linked is sqlite3.
 
 `zig cc` is preferred because it is hermetic and trivially installable
 without root (a single tarball). The implementation auto-detects a
@@ -207,21 +213,28 @@ definition is unsupported.
 
 ## 6. FFI and the HTTP + SQLite demo
 
-The runtime exposes a small set of C primitives (declared as ordinary
-Kappa `__prim` globals, gated to the native backend) that wrap `libuv`
+The runtime exposes a small set of C primitives (registered as ordinary
+prelude `prim` globals with native-only IO semantics; see
+"Kappa.Backend.Ffi" and `runtime/kappart_ffi.c`) that wrap POSIX sockets
 and `sqlite3`:
 
-* sockets / event loop: create a TCP listener, accept, read a request,
-  write a response, run the loop;
-* sqlite: open a database, exec a statement, run a query and read a
-  scalar/row.
+* TCP sockets: `__tcpListen` (bind+listen), `__tcpAccept`, `__connRead`,
+  `__connWrite`, `__connClose`, `__listenClose`;
+* sqlite3: `__sqliteOpen`, `__sqliteExec`, `__sqliteQueryInt`,
+  `__sqliteQueryText`, `__sqliteClose`.
 
-`examples/native/http_sqlite/` contains the demo: a native executable
-that starts an HTTP listener, and for each request performs at least one
-SQLite read/write and returns an HTTP response containing the result.
-The build/run is scripted and produces artifacts (the built binary, a
-captured request/response transcript, and the SQLite file) that prove
-the request → SQLite → response path runs in a real native process.
+These are real IO actions run by the FFI runtime under `krun_io`; the
+interpreter does not provide them, and a non-`--ffi-full` native build
+rejects them at compile time (the FFI primitive set is excluded), so
+nothing silently degrades.
+
+`examples/native/http_sqlite/` contains the demo: `server.kp` is a native
+HTTP server that, for each request, performs a SQLite write (increment a
+persistent hit counter) and a SQLite read (the new count), then returns an
+HTTP/1.1 response reporting the count. `run.sh` builds it, drives three
+requests, and verifies both the responses (`hits=1/2/3`) and the persisted
+database state (`counter.hits = 3`) — proving the request → SQLite →
+response path runs in a real native process.
 
 ## 7. Building and testing
 
@@ -237,7 +250,17 @@ cabal run -v0 kappa -- build examples/native/hello.kp -o /tmp/hello
 
 # inspect generated C without invoking the driver
 cabal run -v0 kappa -- build examples/native/hello.kp --emit-c
+
+# build + drive the HTTP + sqlite demo (needs -lsqlite3)
+cabal run -v0 kappa -- build --ffi-full --lib -lsqlite3 \
+  examples/native/http_sqlite/server.kp -o /tmp/kserver
+bash examples/native/http_sqlite/run.sh   # end-to-end smoke test
 ```
+
+`kappa build` flags: `--emit-c` (stop after writing the `.c`), `-o OUT`,
+`--cc DRIVER` (override the C driver), `--ffi-full` (link the
+libc-sockets + sqlite3 FFI runtime instead of the no-FFI stub), and
+`--lib FLAG` (extra linker flags, repeatable).
 
 Native backend tests live under `test/` (driven by the Haskell test
 suite) and `examples/native/` (end-to-end build+run smoke tests with
