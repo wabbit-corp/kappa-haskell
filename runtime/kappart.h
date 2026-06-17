@@ -39,7 +39,17 @@ typedef enum {
   K_VARIANT, /* variant injection: member-identity tag + payload (§13)   */
   K_THUNK,  /* suspended pure computation (Delay/Memo, §19)              */
   K_BIGINT, /* arbitrary-precision Integer beyond int64 (GMP mpz, §6)    */
-  K_BOUNCE  /* deferred tail call (trampoline; never user-observable)    */
+  K_BOUNCE, /* deferred tail call (trampoline; never user-observable)    */
+  K_BYTE,   /* a single octet (§6.5 b-handler)                           */
+  K_BYTES,  /* a byte sequence: pointer + length (§29.5)                 */
+  K_IOTAIL, /* a do-block's tail IO action, deferred to the krun_io loop  */
+            /* (§27.5A.3 stack-safe IO sequencing; never user-observable) */
+  K_IOEFFECT, /* like K_IOTAIL but the scope discards the result (a tail  */
+             /* statement-`if` branch, §18.8): krun_io runs it then       */
+             /* yields Unit.  Never user-observable.                       */
+  K_IOFINALLY /* a do-block tail IO action carrying §18.7 deferred actions */
+             /* to run (LIFO) once it completes; krun_io accumulates them  */
+             /* on a heap stack so the recursion stays C-stack-bounded.    */
 } KTag;
 
 typedef struct KValue KValue;
@@ -68,6 +78,9 @@ struct KValue {
     struct { KIOFn fn; KEnv *env; int memo; KValue **cache; } thunk;
     struct { void *mpz; } big;   /* points to a GC-allocated __mpz_struct */
     struct { KValue *fn; KValue *arg; } bounce;
+    struct { KValue *action; KValue **defers; int n; } iofin; /* K_IOFINALLY */
+    unsigned char byte;
+    struct { const unsigned char *p; size_t len; } bytes;
   } as;
 };
 
@@ -103,6 +116,8 @@ KValue *kref_new(KValue *init);
 KValue *kfgn(void *p, const char *kind);
 KValue *kinject(const char *tag, KValue *payload);   /* §13 variant injection */
 KValue *kthunk(KIOFn fn, KEnv *env, int memo);       /* §19 Delay(0)/Memo(1)  */
+KValue *kbyte(unsigned char w);                      /* §6.5 byte             */
+KValue *kbytes(const unsigned char *p, size_t len);  /* §29.5 byte sequence   */
 
 /* ── environment ───────────────────────────────────────────────────── */
 KEnv   *kpush(KValue *v, KEnv *e);
@@ -111,8 +126,12 @@ KValue *kvar(KEnv *e, int ix);
 /* ── application ───────────────────────────────────────────────────── */
 KValue *kapp(KValue *f, KValue *x);   /* explicit application (drains tail bounces) */
 KValue *kappi(KValue *f, KValue *x);  /* implicit (erased for ctor/prim)  */
+KValue *kprim_call(const char *name, int argc, KValue **args); /* saturated-prim fast path */
 KValue *kbounce(KValue *fn, KValue *arg);  /* defer a tail-position application */
 KValue *ktrampoline(KValue *r);            /* drive bounces to a value     */
+KValue *kio_tail(KValue *action);          /* mark a do-block tail IO action for krun_io */
+KValue *kio_effect(KValue *action);        /* like kio_tail, but krun_io yields Unit (discards the result) */
+KValue *kio_finally(KValue *action, KValue **defers, int n); /* tail action + §18.7 defers to run after */
 
 /* ── deconstruction (codegen for CMatch / CProj) ───────────────────── */
 int      kctor_is(KValue *v, const char *name);  /* tag-name equality     */

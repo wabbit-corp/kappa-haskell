@@ -1,0 +1,19 @@
+-- A top-level binding with a §12.2/§12.3.1 prefix (`let 1 x = e` linear,
+-- `let & x = e` borrow) parses as a PVar pattern binding.  Its elaborated
+-- core body must be lowered as a REAL value; a backend that erases an
+-- unrecorded body to the unit placeholder would miscompile it (showInt /
+-- printlnString on unit fails at runtime).  Native output must match the
+-- interpreter.
+module main
+
+let 1 secret = 4242
+let 1 greeting = "hello world"
+let & shared = 777
+let 1 computed : Integer = mulInt 6 7
+
+main : UIO Unit
+let main = do
+    printlnString (showInt secret)
+    printlnString greeting
+    printlnString (showInt shared)
+    printlnString (showInt computed)

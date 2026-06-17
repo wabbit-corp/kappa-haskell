@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "11\n2\n7\n1\nTrue\nFalse\nTrue\nTrue\nTrue\n1\n1\n"
+
+-- §29.4 std.unicode: name-the-unit counts (§6.3.6), normalization and
+-- canonical equivalence (exact Eq String stays exact), UTF-8 round-trip,
+-- and UAX #29 grapheme segmentation (flag + skin-tone clusters).
+
+import std.unicode.*
+
+main : UIO Unit
+let main = do
+    println (natToInt (byteLength "λ\n书\ne\u{301}\n"))
+    println (natToInt (scalarCount "e\u{301}"))
+    println (natToInt (scalarCount "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}"))
+    println (natToInt (graphemeCount "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}"))
+    println (canonicalEquivalent "\u{00E9}" "e\u{301}")
+    println ("\u{00E9}" == "e\u{301}")
+    println (normalize NFC "e\u{301}" == "\u{00E9}")
+    println (normalize NFD "\u{00E9}" == "e\u{301}")
+    println (isNormalized NFC (normalize NFC "e\u{301}"))
+    println (natToInt (graphemeCount "\u{1F1FA}\u{1F1F8}"))
+    println (natToInt (graphemeCount "\u{1F44B}\u{1F3FD}"))

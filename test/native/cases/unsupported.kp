@@ -1,12 +1,25 @@
--- Native backend honesty check: this program type-checks and runs under
--- the interpreter, but uses Unicode normalization (`normalize`, backed by
--- the table-driven __normalize primitive — UAX#15, not implemented by the
--- native runtime).  `kappa build` MUST reject it at compile time with
--- E_BACKEND_UNSUPPORTED and produce no executable — never a silent
--- divergence from interpreter behaviour, never a runtime miscomputation.
+-- Native backend build-side honesty (no silent FFI fabrication).  This
+-- module explicitly declares a §9.4 `expect term` foreign requirement, typed
+-- with the §26.2 std.ffi.OpaqueHandle raw foreign vocabulary.  Under a PLAIN
+-- `kappa build` the §34.5 host-binding intrinsics are NOT seeded (only the
+-- explicit `--ffi-full` capability gate seeds them), so the expectation is
+-- UNSATISFIED and the backend MUST fail honestly with E_EXPECT_UNSATISFIED
+-- and produce no executable — never a silent fabrication, never an
+-- interpreter fallback.  (With `--ffi-full` the same shape builds; that path
+-- is exercised by the HTTP + sqlite demo.)
+--
+-- (Earlier this case asserted that Unicode `normalize`/UAX-15 was rejected by
+-- the backend; that primitive is now implemented in the native runtime and is
+-- covered positively by the `unidata` equivalence case, so this honesty check
+-- was repointed at the foreign-capability gate, which remains a genuine
+-- build-side rejection path.)
 module main
 
-import std.unicode.*
+import std.ffi.(type OpaqueHandle)
+
+expect term tcpListen : Int -> UIO OpaqueHandle
 
 main : UIO Unit
-let main = printlnString (normalize NFC "abc")
+let main = do
+    _ <- tcpListen 8080
+    printlnString "unreachable"

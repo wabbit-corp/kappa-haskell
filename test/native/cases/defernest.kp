@@ -1,0 +1,27 @@
+-- Native backend conformance for two §18/§17 runtime constructs that were
+-- previously rejected and are now supported: a `defer` nested in a loop
+-- body (a per-iteration scope, run LIFO at each iteration's exit, including
+-- before a break) and a binding or-pattern nested inside a larger pattern
+-- (distributed into or-free alternatives).  Native output must match the
+-- interpreter exactly.
+module main
+
+data Wrap : Type = MkA (n : Int) | MkB (n : Int)
+
+-- nested binding or-pattern: (MkA y | MkB y) inside MkPair (..)
+data Pair : Type = MkPair (l : Wrap) (r : Wrap)
+sumPair : Pair -> Int
+let sumPair p = match p case MkPair (MkA a | MkB a) (MkA b | MkB b) -> addInt a b
+
+main : UIO Unit
+let main = do
+    -- defer in a for-loop body + break: each iteration's defer runs at its
+    -- exit; the break iteration runs its defer before leaving.
+    var total = 0
+    for i in 1 :: 2 :: 3 :: 4 :: Nil do
+        defer printlnString (stringAppend "tick" (showInt i))
+        if eqInt i 3 then break
+        total = addInt total i
+    printlnString (stringAppend "total=" (showInt total))
+    printlnString (showInt (sumPair (MkPair (MkA 10) (MkB 7))))
+    printlnString (showInt (sumPair (MkPair (MkB 1) (MkA 2))))

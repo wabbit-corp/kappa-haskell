@@ -54,18 +54,17 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection; do run_diff_case "$c"; done
 
-echo "== honest-unsupported case =="
-exe="$WORK/unsupported"
-if timeout 120 $KAPPA build "$CASES/unsupported.kp" -o "$exe" >"$WORK/unsupported.log" 2>&1; then
-  echo "   FAIL: build of unsupported.kp succeeded (should have been rejected)"; fails=$((fails+1))
-elif grep -q "E_BACKEND_UNSUPPORTED" "$WORK/unsupported.log" && [ ! -f "$exe" ]; then
-  echo "   ok (rejected with E_BACKEND_UNSUPPORTED, no executable emitted)"
-else
-  echo "   FAIL: did not reject with E_BACKEND_UNSUPPORTED / left an executable"
-  cat "$WORK/unsupported.log" | sed 's/^/     /'; fails=$((fails+1))
-fi
+# Honest no-fallback property: the native backend never silently falls back
+# to interpreter behaviour.  The full accepted run-mode (UIO) surface now
+# compiles (there is no spec-mandated runtime construct left to reject — the
+# E_BACKEND_UNSUPPORTED guards remain only for genuinely non-runtime terms,
+# §31.2-erased / §30.2.4 elaboration-time, which accepted programs do not
+# reach), so the no-fallback property is exercised by the namespace-hygiene
+# and foreign-`expect` sections below (a hidden runtime symbol / an
+# unsatisfied foreign expectation each yield a precise diagnostic and NO
+# executable, never an interpreter fallback).
 
 echo "== tail-call stress (deep tail recursion, default ~8MB C stack) =="
 exe="$WORK/tailrec"
@@ -94,6 +93,17 @@ elif grep -q "E_NAME_UNRESOLVED" "$WORK/hidden.log" && [ ! -f "$exe" ]; then
 else
   echo "   FAIL: __tcpListen not rejected as unresolved / left an executable"
   cat "$WORK/hidden.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== native build refuses an unsatisfied foreign expect without --ffi-full (no silent FFI) =="
+exe="$WORK/unsupported"
+if timeout 120 $KAPPA build "$CASES/unsupported.kp" -o "$exe" >"$WORK/unsupported.log" 2>&1; then
+  echo "   FAIL: a foreign-expect program built without --ffi-full (FFI fabricated)"; fails=$((fails+1))
+elif grep -q "E_EXPECT_UNSATISFIED" "$WORK/unsupported.log" && [ ! -f "$exe" ]; then
+  echo "   ok (unsatisfied foreign expect -> E_EXPECT_UNSATISFIED, no executable, §9.4)"
+else
+  echo "   FAIL: foreign expect not rejected as E_EXPECT_UNSATISFIED / left an executable"
+  cat "$WORK/unsupported.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 echo "== foreign expects fail honestly under the interpreter (no fallback) =="

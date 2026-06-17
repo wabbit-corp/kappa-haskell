@@ -26,6 +26,8 @@ module Kappa.Backend.C
   , basePrims
   ) where
 
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -87,15 +89,19 @@ data GenState = GenState
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
-  , gsDefer :: !(Maybe (Text, Text)) -- ^ current do-block's (defer-array, count) vars (§18.7)
+  , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
+  , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
   }
 
 -- | A loop's labelled control targets: its source label (if any), the C
--- goto label a @continue@ jumps to, and the one a @break@ jumps to.
+-- goto label a @continue@ jumps to, the one a @break@ jumps to, and the
+-- 'gsScopeDefers' depth at loop-body entry (so a @break@/@continue@ flushes
+-- exactly the defer frames it unwinds, §18.7).
 data LoopCtx = LoopCtx
   { lcLabel :: !(Maybe Text)
   , lcContinue :: !Text
   , lcBreak :: !Text
+  , lcScopeDepth :: !Int
   }
 
 type Gen = State GenState
@@ -186,6 +192,18 @@ cStr t = "\"" <> T.concatMap esc t <> "\""
     octet b = "\\" <> T.pack (pad3 (showOct b ""))
     pad3 s = replicate (3 - length s) '0' ++ s
 
+-- | A C @kstr@ literal carrying the exact UTF-8 byte length.  A String
+-- literal may contain an embedded NUL (@\\u{0}@), so it must NOT be built
+-- with @kstr0@ (which derives the length via @strlen@ and would truncate
+-- at the NUL — corrupting both I/O and String equality).  @cStr@ escapes
+-- the NUL as an octal byte, and this length is the UTF-8 byte count.
+cStrL :: Text -> Text
+cStrL s = "kstr(" <> cStr s <> ", " <> T.pack (show (utf8Len s)) <> ")"
+
+-- | The number of UTF-8 bytes a 'Text' encodes to (the C string length).
+utf8Len :: Text -> Int
+utf8Len = T.foldl' (\acc c -> acc + length (utf8Bytes c)) 0
+
 -- | UTF-8 encode a single character to bytes.
 utf8Bytes :: Char -> [Int]
 utf8Bytes c =
@@ -226,6 +244,40 @@ basePrims =
     , "divRat", "negRat", "eqRat", "ltRat", "showRat", "ratOfDouble"
       -- §6.1 numeric conversions
     , "natToInt", "natOfInt", "intToNat", "intToDouble", "primitiveIntToString"
+      -- §6.5/§29.5 byte / bytes / grapheme atoms
+    , "eqByte", "ltByte", "showByte", "eqBytes", "ltBytes", "showBytes"
+    , "eqGrapheme", "showGrapheme"
+      -- §29.5 std.bytes portable operations over the exact byte sequence
+    , "__bytesEmpty", "__bytesSingleton", "__bytesLength", "__bytesIsEmpty"
+    , "__bytesGet", "__bytesIndexUnsafe", "__bytesAppend", "__bytesSlice"
+    , "__bytesTake", "__bytesDrop", "__bytesStartsWith", "__bytesEndsWith"
+    , "__bytesContains", "__bytesFind", "__bytesBreakIndex", "__bytesToList"
+    , "__bytesFromList", "__bytesCompact"
+      -- §29.5 linear BytesBuilder
+    , "__newBytesBuilder", "__bytesBuilderByte", "__bytesBuilderBytes"
+    , "__finishBytesBuilder"
+      -- §29.4 std.unicode (table-free): UTF-8 codec, scalars, byte/nat
+    , "__utf8Bytes", "__utf8Valid", "__decodeUtf8Lossy", "__byteLength"
+    , "__uniScalarValue", "__scalarInRange", "__scalarOfValue", "__scalarToString"
+    , "__stringScalars", "__scalarCount", "__byteToNat", "__natToByte"
+    , "__graphemeToString"
+      -- §29.4 StringBuilder + string cursors + incremental UTF-8 decoder
+    , "__newStringBuilder", "__stringBuilderString", "__stringBuilderScalar"
+    , "__stringBuilderGrapheme", "__finishStringBuilder"
+    , "__stringStart", "__stringEnd", "__stringCursorOffset", "__stringNextScalar"
+    , "__stringPrevScalar", "__stringSpan", "__stringCompact"
+    , "__newUtf8Decoder", "__decodeUtf8Chunk", "__finishUtf8Decoder"
+      -- §29.4 table-driven Unicode (UAX#15 normalization, UAX#29 segmentation)
+    , "__normalize", "__caseFold", "__stringGraphemes", "__graphemeCount"
+    , "__graphemeValid", "__graphemeOfString", "__stringNextGrapheme"
+    , "__stringWords", "__stringSentences"
+      -- §29.1 std.atomic bitwise + repr-equality + §29.3 std.hash FNV-1a
+    , "__intAnd", "__intOr", "__intXor", "__atomicRepEq"
+    , "__hashMixInt", "__hashMixDouble", "__hashMixString", "__hashMixBytes"
+      -- §20 collection carriers / §28.2 transport / range enumeration
+    , "__queryFromList", "__queryToList", "__setFromList", "__setToList"
+    , "__arrayFromList", "__arrayToList", "__mapFromEntries", "__mapToList"
+    , "__transport", "__arrayIndexUnsafe", "__rangeEnum", "unsafeConsume"
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen"
     , "newRef", "readRef", "writeRef"
@@ -257,7 +309,8 @@ generateC cs mainG ffiPrims =
           , gsDeclSites = csDeclSites cs
           , gsPrims = Set.union basePrims ffiPrims
           , gsLoops = []
-          , gsDefer = Nothing
+          , gsDefer = []
+          , gsScopeDefers = []
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -283,24 +336,54 @@ emitGlobal g = do
   bodies <- gets gsBodies
   let ident = cGlobIdent g
   modify' $ \st -> st {gsProtos = ("static KValue *" <> ident <> "(void);") : gsProtos st}
-  -- A reachable global with no recorded core body (a built-in primitive,
-  -- trait dictionary, or derived projection) is honestly unsupported for
-  -- now rather than silently approximated by re-quoting its NbE value.
+  -- A global reaches here only after compileGlob has ruled out a primitive,
+  -- a host intrinsic, and a constructor, so a missing core body means a
+  -- type-level / opaque / type-alias reference (e.g. `type Int = Integer`,
+  -- or an opaque builtin type used as a value).  These are computationally
+  -- erased (§12.2, §31.2) — their accessor yields the unit placeholder, the
+  -- same inert value the interpreter never inspects — so an accepted program
+  -- that mentions such a name compiles rather than being refused.  (Trait
+  -- dictionaries and derived projections DO have recorded core bodies via
+  -- recordCoreBody, so they take the Just branch below.)
   case Map.lookup g bodies of
     Nothing -> do
-      _ <- unsupported "no-core-body"
-        ("its body is not available to the native backend (built-in primitive, \
-         \trait dictionary, or derived projection)")
+      -- Erase to the unit placeholder ONLY for a genuinely type-level / opaque
+      -- global (a data\/trait name or a sort-typed builtin like @Integer@).  A
+      -- real value-typed global with no recorded core body is NOT erasable —
+      -- silently substituting unit would miscompile it (e.g. a top-level
+      -- prefixed binding before recordCoreBody covered it).  Such a case is a
+      -- backend gap, surfaced honestly rather than mis-lowered.
+      typeLevel <- isTypeGlob g
+      placeholder <-
+        if typeLevel
+          then pure "kunit()"
+          else
+            unsupported "definition"
+              ( "'" <> gKey g <> "' has no recorded core body and is not a "
+                  <> "type-level global, so it cannot be lowered (no-core-body)"
+              )
       (stmts, _) <- captured "0" (pure ())
-      finishGlobal ident stmts "kunit()"
-    Just tm -> case funcArity tm of
-      -- A function global is lowered to a worker (a loop, so a tail
-      -- self-call runs in constant C stack) plus a curried closure for
-      -- partial application and first-class use.
-      (n, inner) | n >= 1 -> compileFunctionGlobal g n inner
-      _ -> do
-        (stmts, e) <- captured "0" (compile tm)
-        finishGlobal ident stmts e
+      finishGlobal ident stmts placeholder
+    Just tm -> do
+      -- A global whose body is a type-level / staging term (a `Type`-typed
+      -- or `Syntax`-typed definition) is computationally erased (§12.2,
+      -- §31.2): its accessor yields the unit placeholder, exactly as the
+      -- interpreter's value for it is never inspected at runtime.  This is
+      -- the by-name counterpart of the erasure that 'compileErasableArg'
+      -- applies to inline type-level/quote arguments.
+      erasable <- isErasableArg tm
+      if erasable
+        then do
+          (stmts, _) <- captured "0" (pure ())
+          finishGlobal ident stmts "kunit()"
+        else case funcArity tm of
+          -- A function global is lowered to a worker (a loop, so a tail
+          -- self-call runs in constant C stack) plus a curried closure for
+          -- partial application and first-class use.
+          (n, inner) | n >= 1 -> compileFunctionGlobal g n inner
+          _ -> do
+            (stmts, e) <- captured "0" (compile tm)
+            finishGlobal ident stmts e
 
 -- | The leading-lambda arity of a term and the body beneath those binders.
 funcArity :: Term -> (Int, Term)
@@ -419,28 +502,14 @@ compile :: Term -> Gen Text
 compile term
   -- §18.3 monadic splice: `__runIO e` runs the embedded IO action inline
   -- and yields its result as an ordinary value (matches runSplices).
-  | Just action <- runIOSplice term = do
-      ae <- compile action
-      pure ("krun_io(" <> ae <> ")")
+  | Just action <- runIOSplice term = compileRunIO action
 compile term = case term of
   CVar i -> do
     env <- gets gsEnv
     pure ("kvar(" <> env <> ", " <> T.pack (show i) <> ")")
   CGlob g -> compileGlob g
   CLit l -> compileLit l
-  CApp Expl f a -> do
-    fe <- compile f
-    ae <- compile a
-    pure ("kapp(" <> fe <> ", " <> ae <> ")")
-  CApp Impl f a -> do
-    erased <- isErasedHead f
-    if erased
-      then compile f -- implicit arg to a prim/constructor: erased (§31.2)
-      else do
-        fe <- compile f
-        typeArg <- isErasableArg a
-        ae <- if typeArg then pure "kunit()" else compile a
-        pure ("kappi(" <> fe <> ", " <> ae <> ")")
+  CApp {} -> compileApp term
   CLam _ _ _ body -> compileLam body
   CCtor g args -> compileCtor g args
   CIf {} -> sinkToExpr term
@@ -466,23 +535,22 @@ compile term = case term of
     te <- compile t
     pure ("kforce(" <> te <> ")")
   -- ── Escalated: NOT runtime values in an accepted, erased program ──
-  -- A sort/function-type/record-type/variant-type/signature-type is a
-  -- type-level term, erased before runtime (§12.2 quantity-0 erasure,
-  -- §31.2). It cannot be the runtime value of an accepted program; reaching
-  -- one in value position is an internal invariant violation, reported (not
-  -- silently miscompiled) per §27.7. See docs/NATIVE_ESCALATIONS.md.
-  CSort _ -> escalated "CSort" "a sort (Type) is a type-level term, erased before runtime (§12.2, §31.2)"
-  CPi {} -> escalated "CPi" "a function type is a type-level term, erased before runtime (§12.2, §31.2)"
-  CRecordT _ -> escalated "CRecordT" "a record type is a type-level term, erased before runtime (§12.2, §31.2)"
-  CVariantT _ -> escalated "CVariantT" "a variant type is a type-level term, erased before runtime (§12.2, §31.2)"
-  CSigT {} -> escalated "CSigT" "a signature type (§13.2.10) is a type-level term, erased before runtime (§12.2, §31.2)"
-  -- A fully-elaborated accepted program has every metavariable solved
-  -- (§16.3); an unsolved meta in codegen is an elaboration invariant
-  -- violation, not a language feature.
-  CMeta _ -> escalated "CMeta" "an unsolved metavariable cannot occur in a fully-elaborated accepted program (§16.3)"
-  -- §21 syntax quotes / §23 staging quoted values: handled at the
-  -- elaboration-time evaluator (§30.2.4), not the runtime value layer.
-  CQuote {} -> escalated "CQuote" "a syntax quote is an elaboration-time/staging value (§21, §23, §30.2.4), not a native runtime value"
+  -- A type-level / staging term (sort, function/record/variant/signature
+  -- type, unsolved-dictionary meta, syntax quote) is computationally erased
+  -- (§12.2 quantity-0 erasure, §31.2; §30.2.4 for staging): its runtime
+  -- value is the unit placeholder, which the interpreter likewise never
+  -- inspects.  Erasing it here (rather than rejecting) means a type/Syntax
+  -- value reached through ANY position — an argument, a field, a global
+  -- body, a local `let` binding — compiles and runs, so no accepted program
+  -- is refused over an erased term (compileErasableArg handles the common
+  -- argument/field sites directly; this is the catch-all).
+  CSort _ -> pure "kunit()"
+  CPi {} -> pure "kunit()"
+  CRecordT _ -> pure "kunit()"
+  CVariantT _ -> pure "kunit()"
+  CSigT {} -> pure "kunit()"
+  CMeta _ -> pure "kunit()"
+  CQuote {} -> pure "kunit()"
 
 -- | Head global of an application spine, if any.
 headGlob :: Term -> Maybe GName
@@ -512,17 +580,35 @@ selfTailArgs ti term = case spineOf term of
 -- worker's parameter variables, and @continue@.
 emitTailLoop :: TailInfo -> [(Icit, Term)] -> Gen ()
 emitTailLoop ti args = do
-  temps <- forM args $ \(ic, a) -> do
-    e <- case ic of
-      Expl -> compile a
-      Impl -> do
-        er <- isErasableArg a
-        if er then pure "kunit()" else compile a
+  temps <- forM args $ \(_ic, a) -> do
+    e <- compileErasableArg a -- erase type-level/staging args (§31.2), any icity
     t <- freshN "tc_"
     emit ("KValue *" <> t <> " = " <> e <> ";")
     pure t
   forM_ (zip (tiArgs ti) temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
   emit "continue;"
+
+-- | Emit a tail-position application.  A call whose spine head is a
+-- primitive cannot recurse, so it is computed directly and returned (the
+-- saturated-prim fast path, no needless partial @K_PRIM@ box or bounce).
+-- A call to anything else (a function value / closure that could recurse)
+-- becomes a trampoline @kbounce(f,a)@, returned so the driving
+-- @kapp@/@krun_io@ performs the deferred application in constant C stack.
+emitTailApp :: Term -> Gen ()
+emitTailApp term = do
+  let (hd, _) = spineOf term
+  mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
+  case (mp, term) of
+    (Just _, _) -> do
+      e <- compile term -- prim spine: kprim_call, computed here, no trampoline
+      emit ("return " <> e <> ";")
+    (Nothing, CApp Expl f a) -> do
+      fe <- compile f
+      ae <- compileErasableArg a
+      emit ("return kbounce(" <> fe <> ", " <> ae <> ");")
+    _ -> do
+      e <- compile term
+      emit ("return " <> e <> ";")
 
 -- | Recognise a @__runIO e@ monadic-splice application (§18.3); returns
 -- the single explicit IO-action argument.  Implicit type arguments are
@@ -569,10 +655,25 @@ isErasableArg = \case
   CPi {} -> pure True
   CVariantT _ -> pure True
   CRecordT _ -> pure True
+  CSigT {} -> pure True -- §13.2.10 signature type, erased (§12.2, §31.2)
   CMeta _ -> pure True
+  CQuote {} -> pure True -- §21/§23 syntax quote: elaboration-time, erased
   CApp _ f _ -> isErasableArg f -- the spine head decides (e.g. @(List a))
   CGlob g -> isTypeGlob g
   _ -> pure False
+
+-- | Compile a value-position argument, erasing it to the unit placeholder
+-- when it is a type-level / staging term (§12.2, §31.2): an explicit
+-- @(t : Type)@ / @(s : Syntax _)@ argument or constructor field is a
+-- compile-time/static-object position (§11.1.6.1, §11.1.6.2) the spec
+-- mandates be erased.  The interpreter stores the evaluated type/quote
+-- value but never inspects it at runtime; emitting @kunit()@ keeps the
+-- arity (so positional field projection stays aligned) while avoiding the
+-- type-level guards in 'compile'.
+compileErasableArg :: Term -> Gen Text
+compileErasableArg a = do
+  er <- isErasableArg a
+  if er then pure "kunit()" else compile a
 
 -- | A global that denotes a type or trait (so a reference to it in
 -- argument position is computationally erased): a declared data type or
@@ -601,6 +702,124 @@ emitPrim name = do
     then pure ("kprim(" <> cStr name <> ")")
     else unsupported "primitive"
       ("the primitive '" <> name <> "' is not implemented by the native runtime")
+
+-- | The runtime primitive name a global resolves to, if it is one (a
+-- @primModule@ name, a prelude @prim@ registration, or a §34.5 host
+-- intrinsic that satisfied an @expect@), and that name is implemented by
+-- the linked runtime.  Mirrors the prim-resolving arms of 'compileGlob'.
+globPrimName :: GName -> Gen (Maybe Text)
+globPrimName g@(GName m nm) = do
+  prims <- gets gsPrims
+  let known n = if n `Set.member` prims then Just n else Nothing
+  if m == primModule
+    then pure (known nm)
+    else do
+      globals <- gets gsGlobals
+      pure $ case Map.lookup g globals of
+        Just gd | Just (VPrim pname _) <- gdValue gd -> known pname
+        Just gd | Nothing <- gdValue gd, Just prim <- intrinsicPrim nm -> known prim
+        _ -> Nothing
+
+-- | Compile an application spine.  When the spine head is a known runtime
+-- primitive, emit a direct 'kprim_call' over a stack argument array — the
+-- saturated pure case then fires in one call with no intermediate curried
+-- @K_PRIM@ boxes or per-argument allocation (the dominant cost in hot
+-- numeric loops).  Otherwise fall back to per-argument 'kapp'/'kappi'.
+compileApp :: Term -> Gen Text
+compileApp term = do
+  let (hd, sargs) = spineOf term
+  case hd of
+    CGlob g -> do
+      mp <- globPrimName g
+      case mp of
+        Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] -> do
+          aes <- mapM compileErasableArg explArgs
+          arr <- freshN "pa_"
+          emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+          pure ("kprim_call(" <> cStr pname <> ", " <> T.pack (show (length aes)) <> ", " <> arr <> ")")
+        Just _ -> compileAppDefault term -- prim with no explicit args yet
+        Nothing -> do
+          ar <- globFuncArity g
+          case ar of
+            Just n | length sargs >= n -> compileDirectCall g n sargs
+            _ -> compileAppDefault term
+    _ -> compileAppDefault term
+
+-- | Compile @__runIO action@.  A mutable-reference action (@readRef@ /
+-- @writeRef@ / @newRef@, §18.6.1) run inline is lowered directly to the
+-- @kref_*@ operation, skipping the suspend-as-K_PRIM-then-krun_io path —
+-- a mutable @var@ read/write in a loop is then a single cell access, not a
+-- per-step primitive allocation + dispatch.  Any other action keeps the
+-- general @krun_io@ lowering.
+compileRunIO :: Term -> Gen Text
+compileRunIO action = do
+  let (hd, sargs) = spineOf action
+      expl = [a | (Expl, a) <- sargs]
+  mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
+  case (mp, expl) of
+    (Just "readRef", [r]) -> do
+      re <- compile r
+      pure ("kref_get(" <> re <> ")")
+    (Just "writeRef", [r, v]) -> do
+      re <- compile r
+      ve <- compile v
+      pure ("kref_set(" <> re <> ", " <> ve <> ")")
+    (Just "newRef", [v]) -> do
+      ve <- compile v
+      pure ("kref_new(" <> ve <> ")")
+    _ -> do
+      ae <- compile action
+      pure ("krun_io(" <> ae <> ")")
+
+-- | The worker arity of a function global @g@ — its leading-lambda count,
+-- if @g@ has a recorded core body that is lowered to a worker (≥ 1 binder
+-- via 'compileFunctionGlobal').  'Nothing' for CAFs, primitives, and
+-- constructors (which have no worker to call directly).
+globFuncArity :: GName -> Gen (Maybe Int)
+globFuncArity g = do
+  bodies <- gets gsBodies
+  pure $ case Map.lookup g bodies of
+    Just tm | (n, _) <- funcArity tm, n >= 1 -> Just n
+    _ -> Nothing
+
+-- | A saturated (or over-saturated) call to a known function global: call
+-- its worker @kw_…@ directly with the leading @n@ arguments instead of
+-- building and draining a curried arity-1 closure chain.  The worker may
+-- return a tail-call bounce (its body's tail position), so the result is
+-- driven through 'ktrampoline'; any surplus arguments are then applied
+-- normally.  Type-level/staging arguments are erased (§31.2).
+compileDirectCall :: GName -> Int -> [(Icit, Term)] -> Gen Text
+compileDirectCall g n sargs = do
+  enqueue g
+  let (callArgs, extra) = splitAt n sargs
+      worker = "kw_" <> mangle (gKey g)
+  aes <- mapM (compileErasableArg . snd) callArgs
+  let base = "ktrampoline(" <> worker <> "(" <> T.intercalate ", " aes <> "))"
+  foldM applyExtra base extra
+  where
+    applyExtra acc (Expl, a) = do
+      ae <- compileErasableArg a
+      pure ("kapp(" <> acc <> ", " <> ae <> ")")
+    applyExtra acc (Impl, a) = do
+      ae <- compileErasableArg a
+      pure ("kappi(" <> acc <> ", " <> ae <> ")")
+
+-- | The general curried application lowering (one 'kapp'/'kappi' per arg).
+compileAppDefault :: Term -> Gen Text
+compileAppDefault = \case
+  CApp Expl f a -> do
+    fe <- compile f
+    ae <- compileErasableArg a -- §31.2: an explicit type-level/staging arg is erased
+    pure ("kapp(" <> fe <> ", " <> ae <> ")")
+  CApp Impl f a -> do
+    erased <- isErasedHead f
+    if erased
+      then compile f -- implicit arg to a prim/constructor: erased (§31.2)
+      else do
+        fe <- compile f
+        ae <- compileErasableArg a
+        pure ("kappi(" <> fe <> ", " <> ae <> ")")
+  t -> compile t
 
 compileGlob :: GName -> Gen Text
 compileGlob g@(GName m nm)
@@ -644,11 +863,15 @@ compileLit = \case
     -- §6: Integer is unbounded; a literal beyond int64 is a runtime bignum.
     | otherwise -> pure ("kbigint_str(" <> cStr (T.pack (show n)) <> ")")
   LitDouble d -> pure ("kdbl(" <> T.pack (show d) <> ")")
-  LitStr s -> pure ("kstr0(" <> cStr s <> ")")
+  LitStr s -> pure (cStrL s)
   LitScalar c -> pure ("kchr(" <> T.pack (show (ord c)) <> ")")
-  LitByte _ -> unsupported "LitByte" "byte literals are not supported by the native backend"
-  LitBytes _ -> unsupported "LitBytes" "byte-sequence literals are not supported by the native backend"
-  LitGrapheme _ -> unsupported "LitGrapheme" "grapheme literals are not supported by the native backend"
+  -- §6.5 byte literal: a single octet.
+  LitByte w -> pure ("kbyte(" <> T.pack (show (fromIntegral w :: Int)) <> ")")
+  -- §29.5 byte-sequence literal: the exact byte content.  kbytes copies the
+  -- bytes into GC memory, so a block-scoped compound literal is safe.
+  LitBytes bs -> pure (cBytesLit bs)
+  -- §6.5 grapheme literal: an exact scalar sequence rendered as UTF-8 text.
+  LitGrapheme g -> pure (cStrL g)
   where
     intLit = cIntLit
 
@@ -661,22 +884,46 @@ cIntLit n
   | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
   | otherwise = T.pack (show n) <> "LL"
 
+-- | A §29.5 byte-sequence literal.  @kbytes@ copies its input into GC
+-- memory, so a block-scoped compound literal of @unsigned char@ is safe;
+-- the empty sequence avoids a zero-length array (ill-formed in ISO C).
+cBytesLit :: ByteString -> Text
+cBytesLit bs
+  | BS.null bs = "kbytes((const unsigned char *)\"\", 0)"
+  | otherwise =
+      "kbytes((const unsigned char[]){"
+        <> T.intercalate "," [T.pack (show (fromIntegral w :: Int)) | w <- BS.unpack bs]
+        <> "}, "
+        <> T.pack (show (BS.length bs))
+        <> ")"
+
 -- | A lambda: lift its body into a fresh top-level closure function and
 -- return a @kclo@ capturing the current environment.
 compileLam :: Term -> Gen Text
 compileLam body = do
   fnName <- freshN "kfn_"
+  envName <- freshN "lenv_"
   env <- gets gsEnv
-  -- inside the closure, the runtime env is `kpush(arg, captured)`
-  (stmts, e) <- captured "kpush(arg, cenv)" (compile body)
-  let fn =
+  -- inside the closure, the runtime env is `kpush(arg, cenv)`, bound to a
+  -- local once so each variable reference reuses it rather than re-consing
+  -- a fresh KEnv per occurrence.  The body is compiled in the 'SinkBounce'
+  -- tail sink so a tail-position application (e.g. the recursive call of a
+  -- local @let rec@ lambda) defers to the driving trampoline (§27.5A.3)
+  -- rather than recursing in the C stack — the loop-lowering of top-level
+  -- workers, generalised to closures with no mutable worker parameters.
+  (stmts, ()) <- captured envName (consume SinkBounce body)
+  -- only materialise the env local when the body actually reads a variable
+  -- (a constant lambda references neither — keeps the C -Wall clean).
+  let usesEnv = any (T.isInfixOf envName) stmts
+      envDecl = ["  KEnv *" <> envName <> " = kpush(arg, cenv);" | usesEnv]
+      fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *arg) {"
           , "  (void)cenv; (void)arg;"
           ]
+            ++ envDecl
             ++ map ("  " <>) stmts
-            ++ [ "  return " <> e <> ";"
-               , "}"
+            ++ [ "}"
                ]
   modify' $ \st ->
     st
@@ -687,7 +934,11 @@ compileLam body = do
 
 compileCtor :: GName -> [Term] -> Gen Text
 compileCtor g args = do
-  argEs <- mapM compile args
+  -- §31.2: erase type-level / staging fields to a unit placeholder so the
+  -- constructor's runtime arity (and positional projection) is preserved
+  -- without compiling a type/quote value (which the interpreter stores but
+  -- never inspects).
+  argEs <- mapM compileErasableArg args
   if null argEs
     then pure ("kctor0(" <> cStr (gKey g) <> ")")
     else do
@@ -697,7 +948,7 @@ compileCtor g args = do
 
 compileRecord :: [(Text, Term)] -> Gen Text
 compileRecord fs = do
-  valEs <- mapM (compile . snd) fs
+  valEs <- mapM (compileErasableArg . snd) fs
   namesArr <- freshN "rnames_"
   valsArr <- freshN "rvals_"
   let names = T.intercalate ", " [cStr n | (n, _) <- fs]
@@ -730,12 +981,17 @@ data TailInfo = TailInfo
   }
 
 -- | Where a computed value flows: into a C variable (expression context),
--- or out of a worker as its tail result (function-body tail position).
-data Sink = SinkVar !Text | SinkTail !TailInfo
+-- out of a worker as its tail result (a top-level function's tail position,
+-- where a saturated self-call becomes a loop), or out of a closure/local
+-- let-rec lambda body in tail position (where a tail application becomes a
+-- trampoline 'kbounce' so local/mutual tail recursion runs in constant C
+-- stack, §27.5A.3 — there are no worker params to loop on).
+data Sink = SinkVar !Text | SinkTail !TailInfo | SinkBounce
 
 sinkResult :: Sink -> Text -> Gen ()
 sinkResult (SinkVar r) e = emit (r <> " = " <> e <> ";")
 sinkResult (SinkTail _) e = emit ("return " <> e <> ";")
+sinkResult SinkBounce e = emit ("return " <> e <> ";")
 
 -- | Compile @term@ so its value flows to @sink@, recursing through the
 -- control forms (if/match/let) so that a self-tail-call deep inside a
@@ -747,7 +1003,9 @@ consume sink term = case term of
   CIf c t e -> consumeIf sink c t e
   CMatch scrut alts -> consumeMatch sink scrut alts
   CLet _ _ _ rhs body -> do
-    re <- compile rhs
+    -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
+    -- placeholder (§31.2) rather than compiling it as a value.
+    re <- compileErasableArg rhs
     env <- gets gsEnv
     e2 <- freshN "env_"
     emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
@@ -769,10 +1027,11 @@ consume sink term = case term of
     -- bounce so the chain (mutual recursion, calls through a value, local
     -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
     -- is the kapp/kappi at the non-tail site that demanded the value.
-    SinkTail _ | CApp Expl f a <- term -> do
-      fe <- compile f
-      ae <- compile a
-      emit ("return kbounce(" <> fe <> ", " <> ae <> ");")
+    SinkTail _ | CApp Expl _ _ <- term -> emitTailApp term
+    -- A closure / local let-rec lambda body in tail position: the same
+    -- bounce, so a tail self-call (the recursive let-rec binder, applied)
+    -- defers to the driving trampoline instead of growing the C stack.
+    SinkBounce | CApp Expl _ _ <- term -> emitTailApp term
     _ -> do
       e <- compile term
       sinkResult sink e
@@ -817,8 +1076,25 @@ consumeMatch sink scrut alts = do
 -- handled by the ordinary single-pattern path, so or-patterns that bind
 -- variables work without decision-tree compilation.
 expandTopOr :: CaseAlt -> [CaseAlt]
-expandTopOr (CaseAlt (CPOr ps) g body) = [CaseAlt p g body | p <- ps]
-expandTopOr alt = [alt]
+expandTopOr (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePat pat]
+
+-- | §17.2.3: expand a pattern into the list of or-free patterns it denotes,
+-- distributing every nested 'CPOr' as the Cartesian product over its
+-- positions (left-to-right, matching the interpreter's first-match order).
+-- Each or-branch binds the same variables, so all expansions share the
+-- alternative's guard and body; the resulting or-free patterns are then
+-- handled by the ordinary single-pattern test/binding path.
+distributePat :: CorePat -> [CorePat]
+distributePat = \case
+  CPOr ps -> concatMap distributePat ps
+  CPCtor g ps -> [CPCtor g qs | qs <- mapM distributePat ps]
+  CPTuple ps -> [CPTuple qs | qs <- mapM distributePat ps]
+  CPRecord fs rest ->
+    let (names, pats) = unzip fs
+     in [CPRecord (zip names qs) rest | qs <- mapM distributePat pats]
+  CPInject t p -> [CPInject t q | q <- distributePat p]
+  CPAs n p -> [CPAs n q | q <- distributePat p]
+  p -> [p] -- CPWild / CPVar / CPLit / CPInjectRest: no nested or
 
 consumeAlt :: Sink -> Text -> Text -> Text -> CaseAlt -> Gen ()
 consumeAlt sink sv env done (CaseAlt pat mguard body) = do
@@ -984,12 +1260,14 @@ litValue = \case
     -- §6: an out-of-int64 integer literal pattern is a bignum (klit_eq
     -- compares K_BIGINT via mpz).
     | otherwise -> pure (Just ("kbigint_str(" <> cStr (T.pack (show n)) <> ")"))
-  LitStr s -> pure (Just ("kstr0(" <> cStr s <> ")"))
+  LitStr s -> pure (Just (cStrL s))
   LitScalar c -> pure (Just ("kchr(" <> T.pack (show (ord c)) <> ")"))
   LitDouble d -> pure (Just ("kdbl(" <> T.pack (show d) <> ")"))
-  l -> do
-    _ <- unsupported "CPLit" ("literal pattern of unsupported kind: " <> T.pack (show l))
-    pure Nothing
+  -- §6.5/§29.5 byte/bytes/grapheme literal patterns (klit_eq compares
+  -- K_BYTE by octet, K_BYTES by content, grapheme as K_STR by bytes).
+  LitByte w -> pure (Just ("kbyte(" <> T.pack (show (fromIntegral w :: Int)) <> ")"))
+  LitBytes bs -> pure (Just (cBytesLit bs))
+  LitGrapheme g -> pure (Just (cStrL g))
 
 -- ── do-kernel ────────────────────────────────────────────────────────
 
@@ -999,33 +1277,19 @@ compileDo :: [KItem] -> Gen Text
 compileDo items = do
   fnName <- freshN "kdo_"
   env <- gets gsEnv
-  -- §18.7: a do-block whose top level registers defers gets a per-block
-  -- defer stack, run LIFO at every exit (see emitTailReturn). The count is
-  -- the static number of top-level `defer` items (loops do not multiply it;
-  -- a defer nested in a loop/if body is a distinct scope, handled there).
-  let ndefer = length [() | KDefer _ <- items]
-  savedDefer <- gets gsDefer
-  (arrDecl, mdef) <-
-    if ndefer == 0
-      then pure ([], Nothing)
-      else do
-        arr <- freshN "kdef_"
-        cnt <- freshN "kdc_"
-        pure
-          ( [ "KValue *" <> arr <> "[" <> T.pack (show ndefer) <> "]; (void)" <> arr <> ";"
-            , "int " <> cnt <> " = 0; (void)" <> cnt <> ";"
-            ]
-          , Just (arr, cnt)
-          )
-  modify' $ \g -> g {gsDefer = mdef}
+  -- A do-block is a fresh scope in its own C function: its defer frames and
+  -- enclosing loops do not extend into it (control cannot break out of a
+  -- do-block value to an outer loop), so reset those for the do-fn body.
+  -- compileItems sets up this scope's §18.7 defer frame.
+  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g)
+  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = []}
   (stmts, ()) <- captured "cenv" (compileItems Tail items)
-  modify' $ \g -> g {gsDefer = savedDefer}
+  modify' $ \g -> let (d, s, l) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l}
   let fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
           , "  (void)cenv;"
           ]
-            ++ map ("  " <>) arrDecl
             ++ map ("  " <>) stmts
             ++ ["}"]
   modify' $ \st ->
@@ -1033,6 +1297,34 @@ compileDo items = do
       { gsTop = fn : gsTop st
       , gsProtos = ("static KValue *" <> fnName <> "(KEnv *);") : gsProtos st
       }
+  pure ("kio(" <> fnName <> ", " <> env <> ")")
+
+-- | §18.7 @defer t@: lift the deferred IO action into a suspended @kio@
+-- thunk that is /evaluated and run lazily at scope exit/, not eagerly at the
+-- registration site.  The interpreter registers @evalK env t@ as an exit
+-- thunk and runs it from the LIFO exit list, so @t@'s sub-expressions observe
+-- any state mutated between here and the flush.  The thunk captures the
+-- current environment (the @var@ cells, not their snapshots), so the body's
+-- @kref_get@ reads — and any faulting sub-expression — happen at flush time,
+-- matching the interpreter exactly.  @krun_finish@/@flushFramesInline@ pop the
+-- registered @kio@ and @krun_io@ it; the thunk body itself drives @krun_io@ on
+-- the freshly-evaluated action so the action actually executes (a returned
+-- action value would otherwise not be run).
+compileDeferAction :: Term -> Gen Text
+compileDeferAction t = do
+  fnName <- freshN "kdefer_"
+  env <- gets gsEnv
+  (stmts, e) <- captured "cenv" (compile t)
+  let fn =
+        T.unlines $
+          [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
+          , "  (void)cenv;"
+          ]
+            ++ map ("  " <>) stmts
+            ++ [ "  return krun_io(" <> e <> ");"
+               , "}"
+               ]
+  emitTop ("static KValue *" <> fnName <> "(KEnv *);") fn
   pure ("kio(" <> fnName <> ", " <> env <> ")")
 
 -- | A §19 suspension: lift the delayed expression into a fresh thunk
@@ -1060,7 +1352,15 @@ compileSuspension memo e = do
 -- with control flow propagating via C statements).  Both share the same
 -- item handling and environment threading — the only differences are the
 -- result of a trailing 'KExpr' and the empty-scope fall-through.
-data ScopeMode = Tail | Nested
+-- | 'Tail': the do-block result is this scope's last value (a trailing
+-- 'KExpr' propagates its IO action's result).  'Nested': run for effect,
+-- control flow via C statements (a loop / non-tail @if@ body).
+-- 'TailEffect': a tail statement-@if@ branch (§18.8) — still tail position
+-- for stack-safety (the trailing IO action defers via @kio_effect@), but
+-- its normal completion is discarded so the do-block yields Unit (matching
+-- the interpreter's @KIf@ completion); a @return@ still propagates its
+-- value as a non-local early return.
+data ScopeMode = Tail | Nested | TailEffect
   deriving stock (Eq)
 
 -- | Compile a sequence of do-kernel items, threading the environment
@@ -1070,29 +1370,81 @@ data ScopeMode = Tail | Nested
 -- propagate via C statements.  A single traversal serves both modes so the
 -- two can never drift (the previous split caused real divergences).
 compileItems :: ScopeMode -> [KItem] -> Gen ()
-compileItems mode = go
+compileItems mode items0 = do
+  -- A scope that registers §18.7 defers gets a frame (a GC-heap array +
+  -- count, declared at scope entry — for a loop body that means a fresh
+  -- frame per iteration).  A Tail/TailEffect scope's frame is pushed on
+  -- gsDefer and flushed after the tail IO action (kio_finally, via
+  -- emitTailIO/emitTailReturn); a Nested scope's frame is pushed on
+  -- gsScopeDefers and flushed INLINE at normal completion here (and at any
+  -- break/continue/return that unwinds it — see gotoLoop / KReturn).
+  let ndefer = length [() | KDefer _ <- items0]
+  if ndefer == 0
+    then go items0
+    else do
+      arr <- freshN "kdef_"
+      cnt <- freshN "kdc_"
+      emit ("KValue **" <> arr <> " = (KValue **)kgc_alloc(sizeof(KValue *) * " <> T.pack (show ndefer) <> "); (void)" <> arr <> ";")
+      emit ("int " <> cnt <> " = 0; (void)" <> cnt <> ";")
+      let frame = (arr, cnt)
+      case mode of
+        Nested -> modify' $ \g -> g {gsScopeDefers = frame : gsScopeDefers g}
+        _ -> modify' $ \g -> g {gsDefer = frame : gsDefer g}
+      go items0
+      case mode of
+        Nested -> do flushFramesInline [frame]; modify' $ \g -> g {gsScopeDefers = drop 1 (gsScopeDefers g)}
+        _ -> modify' $ \g -> g {gsDefer = drop 1 (gsDefer g)}
   where
     go [] = case mode of
+      -- both Tail and a discarded tail if-branch yield Unit here; route
+      -- through emitTailReturn so any §18.7 defers are still flushed.
       Tail -> emitTailReturn "kunit()"
+      TailEffect -> emitTailReturn "kunit()"
       Nested -> pure ()
     go (item : rest) = case item of
+      KExpr t
+        | null rest -> do
+            te <- compile t
+            case mode of
+              -- The do-block's tail IO action is its result: defer it to the
+              -- driving krun_io (constant C stack, §27.5A.3), carrying any
+              -- §18.7 finalizers along (emitTailIO).
+              Tail -> emitTailIO False te
+              -- A tail statement-if branch: same, but the result is
+              -- discarded (the do-block yields Unit).
+              TailEffect -> emitTailIO True te
+              Nested -> emit ("krun_io(" <> te <> ");")
       KExpr t -> do
         te <- compile t
-        if null rest && mode == Tail
-          then emitTailReturn ("krun_io(" <> te <> ")")
-          else emit ("krun_io(" <> te <> ");") >> go rest
+        emit ("krun_io(" <> te <> ");") >> go rest
+      -- A wildcard binding introduces no name: emit the right-hand side
+      -- for its effect (a bind runs the IO action; a let just evaluates)
+      -- without an unused C variable (keeps the generated C -Wall clean).
+      KLet _ CPWild t -> do
+        te <- compile t
+        emit ("(void)(" <> te <> ");")
+        go rest
       KLet _ pat t -> do
         te <- compile t
         sv <- freshN "let_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
         bindAndContinue sv pat
+      KBind _ CPWild t -> do
+        te <- compile t
+        emit ("krun_io(" <> te <> ");")
+        go rest
       KBind _ pat t -> do
         te <- compile t
         sv <- freshN "bind_"
         emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
         bindAndContinue sv pat
+      -- §18 early non-local return: unwind every enclosing Nested scope
+      -- (loop/if bodies) running their defers first, then return the value
+      -- through emitTailReturn (which flushes the Tail-scope defer frames).
       KReturn t -> do
         te <- compile t
+        scopeFrames <- gets gsScopeDefers
+        flushFramesInline scopeFrames
         emitTailReturn te
       KVarItem _ t -> do
         te <- compile t
@@ -1114,7 +1466,18 @@ compileItems mode = go
         re <- compile refT
         emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
         go rest
-      KIf alts mels -> compileKIf alts mels >> go rest
+      -- A statement-`if` that is the do-block's tail: its branches are in
+      -- tail position, so a recursive IO call in a branch must defer (not
+      -- recurse through krun_io).  Compile the branches in 'TailEffect'
+      -- (each path returns); the if's normal completion is discarded so the
+      -- do-block yields Unit (§18.8).  A non-tail `if` runs for effect.
+      KIf alts mels
+        -- A statement-`if` that is the do-block's tail: its branches are in
+        -- tail position, so compile them in 'TailEffect' (each path returns,
+        -- deferring its tail IO action + finalizers via emitTailIO — stack
+        -- safe and defer-correct).  A non-tail `if` runs for effect.
+        | null rest && (mode == Tail || mode == TailEffect) -> compileKIfTail alts mels
+        | otherwise -> compileKIf alts mels >> go rest
       KWhile ml cond bdy mels -> compileLoop ml (LoopWhile cond) bdy mels >> go rest
       KFor ml pat src bdy mels -> compileLoop ml (LoopFor pat src) bdy mels >> go rest
       KBreak ml -> gotoLoop ml lcBreak
@@ -1126,32 +1489,69 @@ compileItems mode = go
         sv <- freshN "letq_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
         env <- gets gsEnv
-        mtest <- patTest sv pat
-        let onMatch = do env' <- bindPatScrut sv env pat; withEnv env' (go rest)
-            onElse = compileLetQElse mode sv mElse
-        case mtest of
-          Nothing -> onMatch -- irrefutable: always binds
-          Just test -> do
-            (mblk, ()) <- captured env onMatch
+        let onElse = compileLetQElse mode sv mElse
+        case distributePat pat of
+          -- Common case: a single (or-free) pattern.  Preserves the
+          -- irrefutable fast path and the simple if\/else lowering.
+          [single] -> do
+            mtest <- patTest sv single
+            let onMatch = do env' <- bindPatScrut sv env single; withEnv env' (go rest)
+            case mtest of
+              Nothing -> onMatch -- irrefutable: always binds
+              Just test -> do
+                (mblk, ()) <- captured env onMatch
+                (eblk, ()) <- captured env onElse
+                emit ("if (" <> test <> ") {")
+                forM_ mblk (emit . ("  " <>))
+                emit "} else {"
+                forM_ eblk (emit . ("  " <>))
+                emit "}"
+          -- §17.2.3 binding or-pattern in let? position: try each or-free
+          -- alternative in source order; the first whose runtime test passes
+          -- binds its variables and continues with the rest of the scope,
+          -- otherwise the else block runs (matching the interpreter, which
+          -- tries the alternatives in order before falling to the else).
+          alts -> do
+            done <- freshN "letqm_"
+            emit ("int " <> done <> " = 0;")
+            forM_ alts $ \alt -> do
+              emit ("if (!" <> done <> ") {")
+              (blk, ()) <- captured env $ do
+                mtest <- patTest sv alt
+                let bindAndGo = do
+                      env' <- bindPatScrut sv env alt
+                      withEnv env' (go rest)
+                case mtest of
+                  Nothing -> bindAndGo >> emit (done <> " = 1;")
+                  Just test -> do
+                    emit ("if (" <> test <> ") {")
+                    bindAndGo
+                    emit ("  " <> done <> " = 1;")
+                    emit "}"
+              forM_ blk (emit . ("  " <>))
+              emit "}"
             (eblk, ()) <- captured env onElse
-            emit ("if (" <> test <> ") {")
-            forM_ mblk (emit . ("  " <>))
-            emit "} else {"
+            emit ("if (!" <> done <> ") {")
             forM_ eblk (emit . ("  " <>))
             emit "}"
       -- §18.7: register a do-block-scope exit action (run LIFO at exit).
       -- A defer nested in a loop/if body is a distinct per-iteration scope
       -- whose timing this do-block-level model would change, so it is
       -- rejected rather than run at the wrong time.
-      KDefer t -> case mode of
-        Tail -> do
-          te <- compile t
-          registerDefer te
-          go rest
-        Nested -> do
-          _ <- unsupported "KDefer-nested"
-            "defer inside a loop or if body (a per-iteration scope) is not supported; place it at the do-block top level"
-          go rest
+      -- §18.7: register onto THIS scope's defer frame (the head of the
+      -- relevant stack — gsDefer for a Tail/TailEffect scope, gsScopeDefers
+      -- for a Nested loop/if body).  ndefer>0 guarantees the frame exists.
+      -- The deferred action is a SUSPENDED thunk evaluated at scope exit
+      -- (not eagerly at registration), so it observes state mutated between
+      -- here and the flush — matching the interpreter (`evalK ... t` is run
+      -- lazily from the exit list).
+      KDefer t -> do
+        de <- compileDeferAction t
+        frame <- gets $ \g -> case mode of
+          Nested -> head (gsScopeDefers g)
+          _ -> head (gsDefer g)
+        registerDefer frame de
+        go rest
       -- §18 `using` desugars to a plain bind in elaboration (Check.hs); a
       -- KUsing never reaches codegen for an accepted program.
       KUsing {} -> do
@@ -1181,35 +1581,62 @@ gotoLoop ml proj = do
         Nothing -> case loops of (lc : _) -> Just lc; [] -> Nothing
         Just l -> lookupLoop l loops
   case target of
-    Just lc -> emit ("goto " <> proj lc <> ";")
+    Just lc -> do
+      -- §18.7: a break/continue unwinds every Nested defer scope from here
+      -- down to (and including) the target loop's body, running their
+      -- defers LIFO before the jump.  lcScopeDepth is gsScopeDefers' length
+      -- at the target loop's body entry, so the crossed frames are the ones
+      -- above it.
+      depth <- gets (length . gsScopeDefers)
+      frames <- gets (take (depth - lcScopeDepth lc) . gsScopeDefers)
+      flushFramesInline frames
+      emit ("goto " <> proj lc <> ";")
     Nothing -> emit "break;" -- defensive: rejected upstream (§18.2.5)
   where
     lookupLoop l = foldr (\lc acc -> if lcLabel lc == Just l then Just lc else acc) Nothing
 
--- | Return from the do-block, first running its registered §18.7 defers
--- LIFO (a no-op when the block has none).
+-- | Return a pure value from a Tail scope, first running its §18.7 defer
+-- frames LIFO (innermost frame first) inline — the value is not a tail IO
+-- action, so there is no recursion to keep off the C stack.
 emitTailReturn :: Text -> Gen ()
 emitTailReturn e = do
-  md <- gets gsDefer
-  case md of
-    -- Evaluate the scope result FIRST, then run defers LIFO, then return:
-    -- the deferred actions run on scope exit, after the body completes.
-    Just (arr, cnt) -> do
+  frames <- gets gsDefer
+  case frames of
+    [] -> emit ("return " <> e <> ";")
+    _ -> do
       r <- freshN "ret_"
       emit ("KValue *" <> r <> " = " <> e <> ";")
-      emit ("while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
+      flushFramesInline frames
       emit ("return " <> r <> ";")
-    Nothing -> emit ("return " <> e <> ";")
 
--- | Push a §18.7 deferred action onto the current do-block's defer stack.
-registerDefer :: Text -> Gen ()
-registerDefer te = do
-  md <- gets gsDefer
-  case md of
-    Just (arr, cnt) -> emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
-    Nothing -> krtFailDefer
-  where
-    krtFailDefer = error "registerDefer: no defer scope (internal)"
+-- | Run defer frames LIFO inline (innermost frame first; within a frame,
+-- last-registered first).  Each `cnt` is drained so a later flush on a
+-- different control path is a no-op.
+flushFramesInline :: [(Text, Text)] -> Gen ()
+flushFramesInline frames =
+  forM_ frames $ \(arr, cnt) ->
+    emit ("while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
+
+-- | Return a do-block's tail IO action, deferring its execution to the
+-- driving @krun_io@ loop so a sequenced IO tail-recursion runs in constant
+-- C stack (§27.5A.3).  @discard@ marks a tail statement-@if@ branch whose
+-- result is dropped (the do-block yields Unit).  The active Tail-scope
+-- defer frames (innermost first) are handed over with the action via nested
+-- @kio_finally@ (finalizers run after the action completes, accumulated on
+-- the krun_io heap stack rather than the C stack — order: innermost first).
+emitTailIO :: Bool -> Text -> Gen ()
+emitTailIO discard action = do
+  frames <- gets gsDefer
+  case frames of
+    [] -> emit ("return " <> (if discard then "kio_effect(" else "kio_tail(") <> action <> ");")
+    _ ->
+      let core = if discard then "kio_effect(" <> action <> ")" else action
+          wrapped = foldl (\acc (arr, cnt) -> "kio_finally(" <> acc <> ", " <> arr <> ", " <> cnt <> ")") core frames
+       in emit ("return " <> wrapped <> ";")
+
+-- | Register a §18.7 deferred action into the given (arr, cnt) frame.
+registerDefer :: (Text, Text) -> Text -> Gen ()
+registerDefer (arr, cnt) te = emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
 
 -- | Like 'bindPat' but threads the concrete scrutinee C-expression
 -- through the binding projections.
@@ -1245,6 +1672,29 @@ compileKIf alts mels = go alts
       forM_ blk (emit . ("  " <>))
       emit "}"
 
+-- | Compile a do-block's TAIL statement-`if`: every branch is compiled in
+-- 'TailEffect' (so each path ends in a @return@ — a recursive IO call in a
+-- branch defers via @kio_effect@ rather than recursing through @krun_io@,
+-- §27.5A.3), and a missing/exhausted else yields Unit (§18.8 — the if's
+-- normal completion is discarded).
+compileKIfTail :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
+compileKIfTail alts mels = goAlts alts
+  where
+    goAlts [] = case mels of
+      Just els -> emitBranch els
+      Nothing -> emitTailReturn "kunit()" -- no/exhausted else: yield Unit, flush defers
+    goAlts ((c, body) : more) = do
+      ce <- compile c
+      emit ("if (kas_bool(" <> ce <> ")) {")
+      emitBranch body
+      emit "} else {"
+      goAlts more
+      emit "}"
+    emitBranch items = do
+      env <- gets gsEnv
+      (blk, ()) <- captured env (compileItems TailEffect items)
+      forM_ blk (emit . ("  " <>))
+
 data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
 
 -- | Compile a @while@\/@for@ loop using explicit @goto@ labels, so §18.2.5
@@ -1261,40 +1711,53 @@ compileLoop mlabel kind body mels = do
       endL = "kend_" <> n -- break target (skip else)
       -- continue re-tests; for a `for` it must advance the cursor first.
       contTarget = case kind of LoopWhile _ -> contL; LoopFor _ _ -> advL
-      ctx = LoopCtx mlabel contTarget endL
-  case kind of
+  -- the Nested defer-frame depth OUTSIDE this loop's body; a break/continue
+  -- to this loop unwinds the frames pushed since (§18.7, see gotoLoop).
+  scopeDepth <- gets (length . gsScopeDefers)
+  let ctx = LoopCtx mlabel contTarget endL scopeDepth
+  -- A label is emitted only when something jumps to it (continue → advL,
+  -- break → endL), so the generated loop has no unused goto labels under
+  -- -Wall; contL/normL are always part of the loop's own control flow.
+  let usesLabel l = any (T.isInfixOf ("goto " <> l))
+  bodyBlk <- case kind of
     LoopWhile cond -> do
       (condBlk, ce) <- captured env (compile cond)
-      (bodyBlk, ()) <- withLoop ctx (captured env (compileItems Nested body))
+      (bb, ()) <- withLoop ctx (captured env (compileItems Nested body))
       emit (contL <> ": ;")
       forM_ condBlk (emit . ("  " <>))
       emit ("if (!kas_bool(" <> ce <> ")) goto " <> normL <> ";")
-      forM_ bodyBlk emit
+      forM_ bb emit
       emit ("goto " <> contL <> ";")
+      pure bb
     LoopFor pat src -> do
       se <- compile src
       it <- freshN "it_"
       emit ("KValue *" <> it <> " = " <> se <> ";")
-      (bodyBlk, ()) <- withLoop ctx $ captured env $ do
-        elemV <- freshN "elem_"
-        emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
-        e' <- bindPatScrut elemV env pat
-        withEnv e' (compileItems Nested body)
+      (bb, ()) <- withLoop ctx $ captured env $ case pat of
+        -- a wildcard element binds nothing: skip the unused element var
+        CPWild -> compileItems Nested body
+        _ -> do
+          elemV <- freshN "elem_"
+          emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
+          e' <- bindPatScrut elemV env pat
+          withEnv e' (compileItems Nested body)
       emit (contL <> ": ;")
       emit ("if (!kis_cons(" <> it <> ")) goto " <> normL <> ";")
-      forM_ bodyBlk emit
-      emit (advL <> ": ;")
+      forM_ bb emit
+      when (usesLabel advL bb) $ emit (advL <> ": ;")
       emit (it <> " = kctor_arg(" <> it <> ", 1);")
       emit ("goto " <> contL <> ";")
+      pure bb
   emit (normL <> ": ;")
-  case mels of
+  elsBlk <- case mels of
     Just els -> do
-      (elsBlk, ()) <- captured env (compileItems Nested els)
+      (eb, ()) <- captured env (compileItems Nested els)
       emit "{"
-      forM_ elsBlk (emit . ("  " <>))
+      forM_ eb (emit . ("  " <>))
       emit "}"
-    Nothing -> pure ()
-  emit (endL <> ": ;")
+      pure eb
+    Nothing -> pure []
+  when (usesLabel endL bodyBlk || usesLabel endL elsBlk) $ emit (endL <> ": ;")
 
 -- | Run an action with @ctx@ pushed as the innermost enclosing loop.
 withLoop :: LoopCtx -> Gen a -> Gen a
@@ -1313,9 +1776,22 @@ compileLetQElse mode sv mElse = case mElse of
   Nothing -> emit "krt_fail(\"let? pattern failed and no Alternative is available\");"
   Just (rp, fe) -> do
     env <- gets gsEnv
+    -- §18.2.1: the else residue pattern is matched against the SCRUTINEE; a
+    -- refutable residue that does not match is a runtime error — mirroring the
+    -- interpreter (`matchPat ec rp x` -> Nothing -> "let? else: residue
+    -- pattern failed").  Without this test the backend would bind the wrong
+    -- constructor's fields and run the else body, silently diverging.
+    mtest <- patTest sv rp
+    case mtest of
+      Just test -> emit ("if (!(" <> test <> ")) krt_fail(\"let? else: residue pattern failed\");")
+      Nothing -> pure ()
     env' <- bindPatScrut sv env rp
     fee <- withEnv env' (compile fe)
+    -- the else action replaces the rest of the scope, so it is the tail:
+    -- defer it (stack-safe, §27.5A.3, with finalizers) the same way a
+    -- trailing KExpr is.
     case mode of
-      Tail -> emitTailReturn ("krun_io(" <> fee <> ")")
+      Tail -> emitTailIO False fee
+      TailEffect -> emitTailIO True fee
       Nested -> emit ("krun_io(" <> fee <> ");")
 

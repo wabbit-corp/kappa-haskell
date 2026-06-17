@@ -1,0 +1,25 @@
+-- §17.2.3 binding or-pattern in a `let?` position.  The pattern is
+-- distributed into or-free alternatives tried in source order; the first
+-- whose runtime test passes binds its variables and continues, otherwise the
+-- `else` block runs.  Previously the native backend refused this with
+-- E_BACKEND_UNSUPPORTED while the interpreter accepted it.  Native output
+-- must match the interpreter.
+module main
+
+data W : Type = P (a : Int) | Q (a : Int) | R
+data Box : Type = MkBox (w : W)
+
+main : UIO Unit
+let main = do
+    -- second alternative (Q) matches
+    let? (P n | Q n) = Q 8 else _ -> printlnString "no-1"
+    printlnString (showInt n)
+    -- first alternative (P) matches
+    let? (P m | Q m) = P 3 else _ -> printlnString "no-2"
+    printlnString (showInt m)
+    -- nested or inside an outer constructor
+    let? MkBox (P k | Q k) = MkBox (Q 11) else _ -> printlnString "no-3"
+    printlnString (showInt k)
+    -- neither alternative matches: the else block replaces the continuation
+    let? (P z | Q z) = R else _ -> printlnString "fell-through"
+    printlnString (stringAppend "unreached=" (showInt z))

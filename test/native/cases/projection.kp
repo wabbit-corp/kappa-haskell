@@ -1,0 +1,31 @@
+-- §9.1.1 `projection` globals reachable from main must lower as REAL
+-- selectors (a CLam chain).  registerProjection records gdValue but the
+-- backend lowers from the recorded core body; without that body the global
+-- was erased to the unit placeholder (silent miscompile) / refused by the
+-- no-body guard.  Native output must match the interpreter.
+module main
+
+type Pair = (left : Int, right : Int)
+
+projection pick2 (place this : Pair) (chooseLeft : Bool) : Int =
+    if chooseLeft then
+        yield this.left
+    else
+        yield this.right
+
+type Cell = (value : Int)
+
+projection cellLens (place this : Cell) : Int =
+    get -> this.value
+
+readCell : Cell -> Int
+let readCell (cell : Cell) : Int = cellLens cell
+
+p : Pair
+let p = (left = 7, right = 9)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (p.pick2 True))
+    printlnString (showInt (p.pick2 False))
+    printlnString (showInt (readCell (value = 41)))

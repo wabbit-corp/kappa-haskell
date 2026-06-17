@@ -11,3 +11,6 @@ dist-newstyle/
 # Native-backend generated artifacts
 *.kappa.c
 examples/native/**/build/
+
+# Native executables (build outputs)
+*.exe

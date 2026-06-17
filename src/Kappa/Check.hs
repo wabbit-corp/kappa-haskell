@@ -10759,6 +10759,10 @@ registerProjection g coreTy defTm pj = do
   tyV <- evalIn emptyCtx coreTy'
   tmV <- evalIn emptyCtx defTm'
   addGlobal g (GlobalDef tyV (Just tmV) False)
+  -- Record the projection's core definition so the native backend lowers the
+  -- real selector (a CLam chain); without it the global has no recorded body
+  -- and would be erased to the unit placeholder — a silent miscompile.
+  recordCoreBody g defTm'
   modify' $ \st -> st {csProjections = Map.insert g pj (csProjections st)}
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
@@ -10898,6 +10902,11 @@ elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
       g <- ownName n
       tmV <- evalIn emptyCtx bodyTm
       addGlobal g (GlobalDef bodyTy (Just tmV) True)
+      -- Record the elaborated core body so the native backend lowers the
+      -- real value (a top-level prefixed binding `let 1 x = e` / `let &x = e`
+      -- reaches here as a PVar pattern); without this it has no recorded body
+      -- and would be erased to the unit placeholder — a silent miscompile.
+      recordCoreBody g bodyTm
     _ -> do
       (patC, ctxP, _) <- elabPattern emptyCtx pat bodyTy
       let names = ctxEntries ctxP

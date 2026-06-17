@@ -5,6 +5,7 @@
  * does not implement, so an unimplemented primitive is a compile-time
  * error, never a silent runtime divergence. */
 #include "kappart.h"
+#include "kappa_ucd.h" /* §29.4 Unicode tables (generated; see tools/gen-ucd-c.py) */
 
 #include <gc.h>
 #include <gmp.h>
@@ -55,7 +56,18 @@ static KValue *alloc_val(KTag tag) {
 
 /* ── value constructors ────────────────────────────────────────────── */
 
+/* Cache boxes for small integers — the common loop counters / digits —
+ * so a hot numeric loop does not allocate a fresh box per step.  K_INT is
+ * immutable, so sharing is sound; the static array is a GC root. */
+#define KINT_CACHE_LO (-16)
+#define KINT_CACHE_HI 256
+static KValue *kint_cache[KINT_CACHE_HI - KINT_CACHE_LO + 1];
 KValue *kint(int64_t v) {
+  if (v >= KINT_CACHE_LO && v <= KINT_CACHE_HI) {
+    KValue **slot = &kint_cache[v - KINT_CACHE_LO];
+    if (!*slot) { KValue *r = alloc_val(K_INT); r->as.i = v; *slot = r; }
+    return *slot;
+  }
   KValue *r = alloc_val(K_INT);
   r->as.i = v;
   return r;
@@ -168,10 +180,20 @@ KValue *kctor(const char *name, int argc, KValue **args) {
   return r;
 }
 
-KValue *kctor0(const char *name) { return kctor(name, 0, NULL); }
+KValue *kctor0(const char *name) {
+  /* canonicalise the nullary Unit constructor to the single K_UNIT value so
+   * Unit has one runtime representation (see kctor_is). */
+  if (strcmp(name, "std.prelude.Unit") == 0) return kunit();
+  return kctor(name, 0, NULL);
+}
 
+/* The two Bool constructors are immutable nullary ctors; cache them so
+ * every comparison/boolean result does not allocate (static = GC root). */
+static KValue *the_true = NULL, *the_false = NULL;
 KValue *kbool(int b) {
-  return kctor0(b ? "std.prelude.True" : "std.prelude.False");
+  if (b) { if (!the_true) the_true = kctor0("std.prelude.True"); return the_true; }
+  if (!the_false) the_false = kctor0("std.prelude.False");
+  return the_false;
 }
 
 KValue *krec(int n, const char **names, KValue **vals) {
@@ -195,7 +217,14 @@ KValue *kclo(KFn fn, KEnv *env) {
   return r;
 }
 
+static int prim_is_io(const char *p);
+static int prim_arity(const char *p);
+static KValue *prim_fire_pure(const char *p, KValue **a);
+
 KValue *kprim(const char *name) {
+  /* A nullary pure primitive (e.g. __bytesEmpty) is a value, not a
+   * function: fire it immediately rather than leaving a stuck K_PRIM. */
+  if (prim_arity(name) == 0 && !prim_is_io(name)) return prim_fire_pure(name, NULL);
   KValue *r = alloc_val(K_PRIM);
   r->as.prim.name = name;
   r->as.prim.argc = 0;
@@ -238,6 +267,21 @@ KValue *kthunk(KIOFn fn, KEnv *env, int memo) {
   r->as.thunk.env = env;
   r->as.thunk.memo = memo;
   r->as.thunk.cache = NULL;
+  return r;
+}
+
+KValue *kbyte(unsigned char w) {
+  KValue *r = alloc_val(K_BYTE);
+  r->as.byte = w;
+  return r;
+}
+
+KValue *kbytes(const unsigned char *p, size_t len) {
+  KValue *r = alloc_val(K_BYTES);
+  unsigned char *buf = (unsigned char *)kgc_alloc_atomic(len ? len : 1);
+  if (len) memcpy(buf, p, len);
+  r->as.bytes.p = buf;
+  r->as.bytes.len = len;
   return r;
 }
 
@@ -316,7 +360,7 @@ KValue *ktrampoline(KValue *r) {
     KValue *arg = r->as.bounce.arg;
     r = kapply_once(fn, arg);
   }
-  return r;
+  return r; /* a K_IOTAIL/K_IOEFFECT passes through untouched; only krun_io drives it */
 }
 
 KValue *kbounce(KValue *fn, KValue *arg) {
@@ -326,7 +370,52 @@ KValue *kbounce(KValue *fn, KValue *arg) {
   return r;
 }
 
+/* Mark `action` as a do-block's tail IO action: krun_io runs it in its own
+ * loop rather than letting the do-block body re-enter krun_io, so IO tail
+ * recursion (the `do { …; loop n }` idiom) runs in constant C stack. */
+KValue *kio_tail(KValue *action) {
+  KValue *r = alloc_val(K_IOTAIL);
+  r->as.bounce.fn = action;
+  return r;
+}
+
+/* Like kio_tail, but the enclosing scope discards the result (the branch of
+ * a do-block statement-`if`, §18.8): krun_io runs the action in its loop and
+ * then yields Unit, matching the interpreter (KIf completes CplNormal _). */
+KValue *kio_effect(KValue *action) {
+  KValue *r = alloc_val(K_IOEFFECT);
+  r->as.bounce.fn = action;
+  return r;
+}
+
+/* A do-block tail IO action that, once it completes, must run `n` §18.7
+ * deferred actions (LIFO).  krun_io stacks these finalizers on the heap as
+ * it descends a tail recursion, so the recursion is C-stack-bounded while
+ * the finalizer obligations accumulate on the heap (as in the interpreter
+ * exit list) rather than on the C stack. */
+KValue *kio_finally(KValue *action, KValue **defers, int n) {
+  KValue *r = alloc_val(K_IOFINALLY);
+  r->as.iofin.action = action;
+  r->as.iofin.defers = defers;
+  r->as.iofin.n = n;
+  return r;
+}
+
 KValue *kapp(KValue *f, KValue *x) { return ktrampoline(kapply_once(f, x)); }
+
+/* Direct application of a named primitive to a contiguous argument array.
+ * The common case — a saturated pure primitive — fires in a single call
+ * with no intermediate curried K_PRIM boxes or per-argument allocation
+ * (the codegen emits this for any application whose spine head is a known
+ * primitive).  Partial application, IO primitives (which stay suspended
+ * for krun_io), and over-saturation fall back to the curried path. */
+KValue *kprim_call(const char *name, int argc, KValue **args) {
+  if (argc == prim_arity(name) && !prim_is_io(name))
+    return prim_fire_pure(name, args);
+  KValue *f = kprim(name);
+  for (int i = 0; i < argc; i++) f = kapp(f, args[i]);
+  return f;
+}
 
 KValue *kappi(KValue *f, KValue *x) {
   switch (f->tag) {
@@ -345,6 +434,10 @@ KValue *kappi(KValue *f, KValue *x) {
 /* ── deconstruction ────────────────────────────────────────────────── */
 
 int kctor_is(KValue *v, const char *name) {
+  /* Unit has two surface spellings — the canonical K_UNIT value (kunit(),
+   * yielded by IO/erased/discarded positions) and the nullary constructor
+   * `std.prelude.Unit` — so a `()` pattern must accept either. */
+  if (v->tag == K_UNIT) return strcmp(name, "std.prelude.Unit") == 0;
   return v->tag == K_CTOR && strcmp(v->as.ctor.name, name) == 0;
 }
 const char *kctor_name(KValue *v) {
@@ -445,6 +538,10 @@ int klit_eq(KValue *a, KValue *b) {
     case K_STR:
       return a->as.str.len == b->as.str.len &&
              memcmp(a->as.str.p, b->as.str.p, a->as.str.len) == 0;
+    case K_BYTE: return a->as.byte == b->as.byte;
+    case K_BYTES:
+      return a->as.bytes.len == b->as.bytes.len &&
+             memcmp(a->as.bytes.p, b->as.bytes.p, a->as.bytes.len) == 0;
     default: return 0;
   }
 }
@@ -527,13 +624,16 @@ static void sb_putc(sbuf *b, char c) {
 static void sb_puts(sbuf *b, const char *s) { while (*s) sb_putc(b, *s++); }
 static KValue *sb_to_str(sbuf *b) { return kstr(b->p, b->len); }
 
-/* decode the next UTF-8 scalar from p (< end); returns bytes consumed. */
+/* decode the next UTF-8 scalar from p (< end); returns bytes consumed.
+ * A multibyte sequence truncated by `end` decodes the lead byte alone
+ * (returns 1) rather than over-reading past the buffer — every branch
+ * checks that all its continuation bytes are in range. */
 static int utf8_next(const unsigned char *p, const unsigned char *end, uint32_t *cp) {
   unsigned c = p[0];
   if (c < 0x80) { *cp = c; return 1; }
-  if ((c >> 5) == 0x6 && p + 1 < end + 1 && p + 1 <= end) { *cp = ((c & 0x1f) << 6) | (p[1] & 0x3f); return 2; }
-  if ((c >> 4) == 0xe) { *cp = ((c & 0x0f) << 12) | ((p[1] & 0x3f) << 6) | (p[2] & 0x3f); return 3; }
-  if ((c >> 3) == 0x1e) { *cp = ((c & 0x07) << 18) | ((p[1] & 0x3f) << 12) | ((p[2] & 0x3f) << 6) | (p[3] & 0x3f); return 4; }
+  if ((c >> 5) == 0x6 && p + 2 <= end) { *cp = ((c & 0x1f) << 6) | (p[1] & 0x3f); return 2; }
+  if ((c >> 4) == 0xe && p + 3 <= end) { *cp = ((c & 0x0f) << 12) | ((p[1] & 0x3f) << 6) | (p[2] & 0x3f); return 3; }
+  if ((c >> 3) == 0x1e && p + 4 <= end) { *cp = ((c & 0x07) << 18) | ((p[1] & 0x3f) << 12) | ((p[2] & 0x3f) << 6) | (p[3] & 0x3f); return 4; }
   *cp = c; return 1;
 }
 
@@ -614,6 +714,398 @@ static KValue *show_double(double x) {
     if (e >= nd) sb_putc(&b, '0'); else for (int i = e; i < nd; i++) sb_putc(&b, digits[i]);
   }
   return sb_to_str(&b);
+}
+
+/* ── bytes / byte / grapheme helpers (§6.5, §29.5) ─────────────────── */
+
+static KValue *ksome(KValue *x) { KValue *a[1]; a[0] = x; return kctor("std.prelude.Some", 1, a); }
+static KValue *knone(void) { return kctor0("std.prelude.None"); }
+
+/* first index of needle in hay, or -1 (portable; no memmem dependency). */
+static long bytes_index_of(const unsigned char *hay, size_t hl, const unsigned char *ned, size_t nl) {
+  if (nl == 0) return 0;
+  if (nl > hl) return -1;
+  for (size_t i = 0; i + nl <= hl; i++)
+    if (memcmp(hay + i, ned, nl) == 0) return (long)i;
+  return -1;
+}
+
+static int bytes_cmp(KValue *a, KValue *b) { /* lexicographic by byte */
+  size_t la = a->as.bytes.len, lb = b->as.bytes.len, m = la < lb ? la : lb;
+  int c = memcmp(a->as.bytes.p, b->as.bytes.p, m);
+  if (c != 0) return c < 0 ? -1 : 1;
+  return la < lb ? -1 : (la > lb ? 1 : 0);
+}
+
+/* §29.1 representation equality (for atomicCompareExchange): structural
+ * equality over the canonical first-order runtime values, matching the
+ * interpreter's `convertible` on the atomic representation.  Integers
+ * compare by value across the inline/bignum boundary. */
+static int kvalue_rep_eq(KValue *a, KValue *b) {
+  if (a == b) return 1;
+  int ai = a->tag == K_INT || a->tag == K_BIGINT;
+  int bi = b->tag == K_INT || b->tag == K_BIGINT;
+  if (ai && bi) {
+    if (a->tag == K_INT && b->tag == K_INT) return a->as.i == b->as.i;
+    mpz_t x, y; mpz_init(x); mpz_init(y); kload_mpz(a, x); kload_mpz(b, y);
+    int eq = mpz_cmp(x, y) == 0; mpz_clear(x); mpz_clear(y); return eq;
+  }
+  if (a->tag != b->tag) return 0;
+  switch (a->tag) {
+    case K_DBL: return a->as.d == b->as.d;
+    case K_CHR: return a->as.chr == b->as.chr;
+    case K_UNIT: return 1;
+    case K_BYTE: return a->as.byte == b->as.byte;
+    case K_STR:
+      return a->as.str.len == b->as.str.len && memcmp(a->as.str.p, b->as.str.p, a->as.str.len) == 0;
+    case K_BYTES:
+      return a->as.bytes.len == b->as.bytes.len && memcmp(a->as.bytes.p, b->as.bytes.p, a->as.bytes.len) == 0;
+    case K_CTOR: {
+      if (strcmp(a->as.ctor.name, b->as.ctor.name) != 0 || a->as.ctor.argc != b->as.ctor.argc) return 0;
+      for (int i = 0; i < a->as.ctor.argc; i++)
+        if (!kvalue_rep_eq(a->as.ctor.args[i], b->as.ctor.args[i])) return 0;
+      return 1;
+    }
+    case K_REC: {
+      if (a->as.rec.n != b->as.rec.n) return 0;
+      for (int i = 0; i < a->as.rec.n; i++)
+        if (strcmp(a->as.rec.names[i], b->as.rec.names[i]) != 0 ||
+            !kvalue_rep_eq(a->as.rec.vals[i], b->as.rec.vals[i])) return 0;
+      return 1;
+    }
+    case K_VARIANT:
+      return strcmp(a->as.var.tag, b->as.var.tag) == 0 && kvalue_rep_eq(a->as.var.payload, b->as.var.payload);
+    default:
+      return 0; /* closures/thunks/etc. are not canonical atomic values */
+  }
+}
+
+/* ── §29.4 std.unicode helpers (table-free: codec, scalars, cursors) ── */
+
+/* UTF-8 encode one scalar (assumed a valid Unicode scalar) into b. */
+static void utf8_encode(uint32_t cp, sbuf *b) {
+  if (cp < 0x80) sb_putc(b, (char)cp);
+  else if (cp < 0x800) {
+    sb_putc(b, (char)(0xC0 | (cp >> 6)));
+    sb_putc(b, (char)(0x80 | (cp & 0x3F)));
+  } else if (cp < 0x10000) {
+    sb_putc(b, (char)(0xE0 | (cp >> 12)));
+    sb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+    sb_putc(b, (char)(0x80 | (cp & 0x3F)));
+  } else {
+    sb_putc(b, (char)(0xF0 | (cp >> 18)));
+    sb_putc(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
+    sb_putc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+    sb_putc(b, (char)(0x80 | (cp & 0x3F)));
+  }
+}
+
+/* Strict decode of one scalar at p (< end), matching Data.Text's UTF-8:
+ * no overlong forms, no surrogates (D800..DFFF), nothing above U+10FFFF.
+ * Returns bytes consumed (1..4) for a complete well-formed scalar, 0 when
+ * the bytes are a valid but INCOMPLETE final sequence (a strict prefix of
+ * some valid encoding), and -1 when they begin an invalid sequence. */
+static int utf8_strict(const unsigned char *p, const unsigned char *end, uint32_t *cp) {
+  size_t avail = (size_t)(end - p);
+  unsigned c = p[0];
+  if (c < 0x80) { *cp = c; return 1; }
+  if (c < 0xC2) return -1;                 /* 80..BF stray cont; C0/C1 overlong */
+  if (c < 0xE0) {                          /* 2-byte C2..DF */
+    if (avail < 2) return 0;
+    if ((p[1] & 0xC0) != 0x80) return -1;
+    *cp = ((c & 0x1F) << 6) | (p[1] & 0x3F);
+    return 2;
+  }
+  if (c < 0xF0) {                          /* 3-byte E0..EF */
+    unsigned lo = (c == 0xE0) ? 0xA0 : 0x80;       /* exclude overlong */
+    unsigned hi = (c == 0xED) ? 0x9F : 0xBF;       /* exclude surrogates */
+    if (avail < 2) return 0;
+    if (p[1] < lo || p[1] > hi) return -1;
+    if (avail < 3) return 0;
+    if ((p[2] & 0xC0) != 0x80) return -1;
+    *cp = ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    return 3;
+  }
+  if (c < 0xF5) {                          /* 4-byte F0..F4 */
+    unsigned lo = (c == 0xF0) ? 0x90 : 0x80;       /* exclude overlong */
+    unsigned hi = (c == 0xF4) ? 0x8F : 0xBF;       /* cap at U+10FFFF */
+    if (avail < 2) return 0;
+    if (p[1] < lo || p[1] > hi) return -1;
+    if (avail < 3) return 0;
+    if ((p[2] & 0xC0) != 0x80) return -1;
+    if (avail < 4) return 0;
+    if ((p[3] & 0xC0) != 0x80) return -1;
+    *cp = ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+    return 4;
+  }
+  return -1;                               /* F5..FF */
+}
+
+/* Whole-buffer strict validity (mirrors Data.Text.Encoding.decodeUtf8'). */
+static int utf8_valid_all(const unsigned char *p, size_t len) {
+  const unsigned char *end = p + len;
+  while (p < end) { uint32_t cp; int n = utf8_strict(p, end, &cp); if (n <= 0) return 0; p += n; }
+  return 1;
+}
+
+/* Length of the longest wholly-valid UTF-8 prefix (= splitValidUtf8Prefix). */
+static size_t utf8_valid_prefix_len(const unsigned char *p, size_t len) {
+  const unsigned char *q = p, *end = p + len;
+  while (q < end) { uint32_t cp; int n = utf8_strict(q, end, &cp); if (n <= 0) break; q += n; }
+  return (size_t)(q - p);
+}
+
+/* Is the run an incomplete trailing sequence — i.e. valid once one, two,
+ * or three 0x80 continuation bytes are appended (the interpreter's exact
+ * isIncompleteUtf8Tail heuristic)?  rest is short in practice. */
+static int utf8_is_incomplete_tail(const unsigned char *p, size_t len) {
+  unsigned char *buf = (unsigned char *)kgc_alloc_atomic(len + 3);
+  if (len) memcpy(buf, p, len);
+  for (int k = 1; k <= 3; k++) {
+    buf[len + k - 1] = 0x80;
+    if (utf8_valid_all(buf, len + (size_t)k)) return 1;
+  }
+  return 0;
+}
+
+/* Number of Unicode scalars in a (valid) UTF-8 string. */
+static size_t utf8_scalar_count(const unsigned char *p, size_t len) {
+  const unsigned char *end = p + len; size_t n = 0;
+  while (p < end) { uint32_t cp; int k = utf8_next(p, end, &cp); p += (k > 0 ? k : 1); n++; }
+  return n;
+}
+
+/* Byte offset of the start of scalar index `idx` (clamped to [0,count]). */
+static size_t utf8_scalar_byte_offset(const unsigned char *p, size_t len, size_t idx) {
+  const unsigned char *q = p, *end = p + len; size_t n = 0;
+  while (q < end && n < idx) { uint32_t cp; int k = utf8_next(q, end, &cp); q += (k > 0 ? k : 1); n++; }
+  return (size_t)(q - p);
+}
+
+/* The §29.3 FNV-1a lane: state mixed with 8 little-endian bytes of v. */
+static uint64_t fnv_mix_u64(uint64_t s, uint64_t v) {
+  for (int i = 0; i < 8; i++) s = (s ^ ((v >> (8 * i)) & 0xff)) * 1099511628211ULL;
+  return s;
+}
+static uint64_t fnv_mix_bytes(uint64_t s, const unsigned char *p, size_t n) {
+  for (size_t i = 0; i < n; i++) s = (s ^ p[i]) * 1099511628211ULL;
+  return s;
+}
+
+/* Low 64 bits of an integer value in Haskell floor-mod sense (matches
+ * `fromIntegral :: Integer -> Word64`).  K_INT casts directly (two's
+ * complement); K_BIGINT reduces modulo 2^64. */
+static uint64_t kint_low64(KValue *v) {
+  if (v->tag == K_INT) return (uint64_t)v->as.i;
+  if (v->tag == K_BIGINT) {
+    mpz_t r; mpz_init(r);
+    mpz_fdiv_r_2exp(r, (const __mpz_struct *)v->as.big.mpz, 64); /* 0 <= r < 2^64 */
+    uint64_t lo = 0; size_t count = 0;
+    mpz_export(&lo, &count, -1, sizeof(uint64_t), 0, 0, r);      /* little-endian limb */
+    mpz_clear(r);
+    return lo;
+  }
+  krt_fail("hash mix on a non-integer value");
+}
+
+/* Box an unsigned 64-bit result as the corresponding non-negative integer
+ * (K_INT when it fits a signed 64-bit, else a K_BIGINT). */
+static KValue *ku64(uint64_t u) {
+  if (u <= (uint64_t)INT64_MAX) return kint((int64_t)u);
+  mpz_t z; mpz_init(z); mpz_import(z, 1, -1, sizeof(uint64_t), 0, 0, &u);
+  return kbig_from_mpz(z);
+}
+
+/* ── §29.4 std.unicode table-driven algorithms (UAX #15 / UAX #29) ────
+ * These mirror Kappa.Unicode exactly, over the same Kappa.UnicodeData
+ * tables (re-emitted into kappa_ucd.h), so the native results are
+ * observationally identical to the interpreter's. */
+
+/* Growable scalar (code-point) buffer; pointer-free, so allocate atomic. */
+typedef struct { uint32_t *p; size_t len, cap; } cpbuf;
+static void cp_init(cpbuf *b) { b->cap = 16; b->p = (uint32_t *)kgc_alloc_atomic(b->cap * sizeof(uint32_t)); b->len = 0; }
+static void cp_push(cpbuf *b, uint32_t c) {
+  if (b->len + 1 > b->cap) {
+    size_t nc = b->cap * 2; uint32_t *np = (uint32_t *)kgc_alloc_atomic(nc * sizeof(uint32_t));
+    memcpy(np, b->p, b->len * sizeof(uint32_t)); b->p = np; b->cap = nc;
+  }
+  b->p[b->len++] = c;
+}
+
+/* Exact-match binary search over a sorted int32 key array. */
+static int ku_bsearch(const int32_t *arr, int n, int32_t key) {
+  int lo = 0, hi = n - 1;
+  while (lo <= hi) { int mid = (lo + hi) / 2; if (arr[mid] == key) return mid; if (arr[mid] < key) lo = mid + 1; else hi = mid - 1; }
+  return -1;
+}
+
+static int ku_ccc(uint32_t cp) { int i = ku_bsearch(ku_ccc_cp, KU_CCC_N, (int32_t)cp); return i < 0 ? 0 : ku_ccc_val[i]; }
+
+/* Canonical (or, when compat, compatibility-then-canonical) decomposition
+ * of cp; returns a pointer into the pool and its length, or NULL. */
+static const int32_t *ku_decomp(int compat, uint32_t cp, int *outlen) {
+  if (compat) { int i = ku_bsearch(ku_compat_cp, KU_COMPAT_N, (int32_t)cp); if (i >= 0) { *outlen = ku_compat_len[i]; return ku_compat_pool + ku_compat_off[i]; } }
+  int i = ku_bsearch(ku_canon_cp, KU_CANON_N, (int32_t)cp); if (i >= 0) { *outlen = ku_canon_len[i]; return ku_canon_pool + ku_canon_off[i]; }
+  return NULL;
+}
+
+/* Primary composite of (a,b), or -1.  Sorted by (a,b). */
+static int32_t ku_compose(uint32_t a, uint32_t b) {
+  int lo = 0, hi = KU_COMP_N - 1;
+  while (lo <= hi) {
+    int mid = (lo + hi) / 2; int32_t ca = ku_comp_a[mid], cb = ku_comp_b[mid];
+    if (ca == (int32_t)a && cb == (int32_t)b) return ku_comp_r[mid];
+    if (ca < (int32_t)a || (ca == (int32_t)a && cb < (int32_t)b)) lo = mid + 1; else hi = mid - 1;
+  }
+  return -1;
+}
+
+/* Hangul constants (UAX #15 §3.12). */
+enum { KU_SBASE = 0xAC00, KU_LBASE = 0x1100, KU_VBASE = 0x1161, KU_TBASE = 0x11A7,
+       KU_VCOUNT = 21, KU_TCOUNT = 28, KU_NCOUNT = 588, KU_SCOUNT = 11172 };
+
+/* Recursive full decomposition (Hangul algorithmic; tables expanded). */
+static void ku_full_decompose(int compat, uint32_t c, cpbuf *out) {
+  if (c >= KU_SBASE && c < KU_SBASE + KU_SCOUNT) {
+    int s = (int)c - KU_SBASE; uint32_t l = KU_LBASE + s / KU_NCOUNT;
+    uint32_t v = KU_VBASE + (s % KU_NCOUNT) / KU_TCOUNT; uint32_t t = KU_TBASE + s % KU_TCOUNT;
+    cp_push(out, l); cp_push(out, v); if (t != KU_TBASE) cp_push(out, t); return;
+  }
+  int len; const int32_t *d = ku_decomp(compat, c, &len);
+  if (!d) { cp_push(out, c); return; }
+  for (int i = 0; i < len; i++) ku_full_decompose(compat, (uint32_t)d[i], out);
+}
+
+/* Canonical ordering: stable insertion sort of each maximal nonzero-ccc run. */
+static void ku_canonical_order(uint32_t *a, size_t n) {
+  size_t i = 0;
+  while (i < n) {
+    if (ku_ccc(a[i]) == 0) { i++; continue; }
+    size_t j = i; while (j < n && ku_ccc(a[j]) != 0) j++;
+    for (size_t k = i + 1; k < j; k++) {
+      uint32_t v = a[k]; int cv = ku_ccc(v); size_t m = k;
+      while (m > i && ku_ccc(a[m - 1]) > cv) { a[m] = a[m - 1]; m--; }
+      a[m] = v;
+    }
+    i = j;
+  }
+}
+
+/* Primary composition (UAX #15 §3.11, D117).  Writes into out (<= n). */
+static size_t ku_compose_chars(const uint32_t *a, size_t n, uint32_t *out) {
+  if (n == 0) return 0;
+  size_t oi = 0; uint32_t starter = a[0];
+  uint32_t *pend = (uint32_t *)kgc_alloc_atomic((n ? n : 1) * sizeof(uint32_t)); size_t pn = 0;
+  for (size_t i = 1; i < n; i++) {
+    uint32_t c = a[i]; int cc = ku_ccc(c);
+    if (cc == 0 && pn == 0) {
+      int32_t comp = ku_compose(starter, c); if (comp >= 0) { starter = (uint32_t)comp; continue; }
+    } else if (cc != 0) {
+      int blocked = (pn > 0) && (ku_ccc(pend[pn - 1]) >= cc);
+      if (!blocked) { int32_t comp = ku_compose(starter, c); if (comp >= 0) { starter = (uint32_t)comp; continue; } }
+    }
+    if (cc == 0) { out[oi++] = starter; for (size_t k = 0; k < pn; k++) out[oi++] = pend[k]; starter = c; pn = 0; }
+    else pend[pn++] = c;
+  }
+  out[oi++] = starter; for (size_t k = 0; k < pn; k++) out[oi++] = pend[k];
+  return oi;
+}
+
+/* Decode a (valid) UTF-8 K_STR into a code-point buffer. */
+static void ku_decode(const unsigned char *s, size_t slen, cpbuf *out) {
+  const unsigned char *p = s, *end = s + slen;
+  while (p < end) { uint32_t cp; int k = utf8_next(p, end, &cp); p += (k > 0 ? k : 1); cp_push(out, cp); }
+}
+
+/* §29.4 normalize: form 0=NFC 1=NFD 2=NFKC 3=NFKD (Kappa.Unicode order). */
+static KValue *ku_normalize(int form, const unsigned char *s, size_t slen) {
+  int compat = (form == 2 || form == 3);
+  cpbuf in; cp_init(&in); ku_decode(s, slen, &in);
+  cpbuf dec; cp_init(&dec);
+  for (size_t i = 0; i < in.len; i++) ku_full_decompose(compat, in.p[i], &dec);
+  ku_canonical_order(dec.p, dec.len);
+  uint32_t *fp = dec.p; size_t fn = dec.len;
+  if (form == 0 || form == 2) {
+    uint32_t *out = (uint32_t *)kgc_alloc_atomic((dec.len ? dec.len : 1) * sizeof(uint32_t));
+    fn = ku_compose_chars(dec.p, dec.len, out); fp = out;
+  }
+  sbuf b; sb_init(&b); for (size_t i = 0; i < fn; i++) utf8_encode(fp[i], &b); return sb_to_str(&b);
+}
+
+/* UAX #29 Grapheme_Cluster_Break class of a scalar (Kappa.Unicode GcbClass). */
+enum { GcOther = 0, GcCR, GcLF, GcControl, GcExtend, GcZWJ, GcRI, GcPrepend,
+       GcSpacingMark, GcExtPict, GcL, GcV, GcT, GcLV, GcLVT };
+static int ku_gcb_raw(uint32_t cp) {
+  int lo = 0, hi = KU_GCB_N - 1, best = -1;
+  while (lo <= hi) { int mid = (lo + hi) / 2; if (ku_gcb_lo[mid] <= (int32_t)cp) { best = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (best >= 0 && (int32_t)cp <= ku_gcb_hi[best]) return ku_gcb_cls[best];
+  return 0;
+}
+static int ku_gcb_of(uint32_t n) {
+  if ((n >= 0x1100 && n <= 0x115F) || (n >= 0xA960 && n <= 0xA97C)) return GcL;
+  if ((n >= 0x1160 && n <= 0x11A7) || (n >= 0xD7B0 && n <= 0xD7C6)) return GcV;
+  if ((n >= 0x11A8 && n <= 0x11FF) || (n >= 0xD7CB && n <= 0xD7FB)) return GcT;
+  if (n >= KU_SBASE && n < KU_SBASE + KU_SCOUNT) return ((n - KU_SBASE) % KU_TCOUNT == 0) ? GcLV : GcLVT;
+  switch (ku_gcb_raw(n)) {
+    case 1: return GcCR; case 2: return GcLF; case 3: return GcControl; case 4: return GcExtend;
+    case 5: return GcZWJ; case 6: return GcRI; case 7: return GcPrepend; case 8: return GcSpacingMark;
+    case 9: return GcExtPict; default: return GcOther;
+  }
+}
+
+/* Number of scalars in the extended grapheme cluster at cps[start..n). */
+static size_t ku_grapheme_len(const uint32_t *cps, size_t n, size_t start) {
+  if (start >= n) return 0;
+  int prev = ku_gcb_of(cps[start]);
+  int pictExtend = (prev == GcExtPict), pictZWJ = 0, riRun = (prev == GcRI) ? 1 : 0;
+  size_t i = start + 1;
+  for (; i < n; i++) {
+    int cls = ku_gcb_of(cps[i]); int brk;
+    if (prev == GcCR && cls == GcLF) brk = 0;
+    else if (prev == GcControl || prev == GcCR || prev == GcLF) brk = 1;
+    else if (cls == GcControl || cls == GcCR || cls == GcLF) brk = 1;
+    else if (prev == GcL && (cls == GcL || cls == GcV || cls == GcLV || cls == GcLVT)) brk = 0;
+    else if ((prev == GcLV || prev == GcV) && (cls == GcV || cls == GcT)) brk = 0;
+    else if ((prev == GcLVT || prev == GcT) && cls == GcT) brk = 0;
+    else if (cls == GcExtend || cls == GcZWJ) brk = 0;
+    else if (cls == GcSpacingMark) brk = 0;
+    else if (prev == GcPrepend) brk = 0;
+    else if (prev == GcZWJ && cls == GcExtPict && pictZWJ) brk = 0;
+    else if (prev == GcRI && cls == GcRI) brk = (riRun % 2 == 0);
+    else brk = 1;
+    if (brk) break;
+    int nPictExtend = (cls == GcExtPict) ? 1 : (cls == GcExtend ? pictExtend : 0);
+    int nPictZWJ = (cls == GcZWJ && pictExtend);
+    int nRiRun = (cls == GcRI) ? riRun + 1 : 0;
+    pictExtend = nPictExtend; pictZWJ = nPictZWJ; riRun = nRiRun; prev = cls;
+  }
+  return i - start;
+}
+
+static size_t ku_grapheme_count(const uint32_t *cps, size_t n) {
+  size_t i = 0, count = 0;
+  while (i < n) { size_t l = ku_grapheme_len(cps, n, i); i += (l ? l : 1); count++; }
+  return count;
+}
+
+/* Encode cps[a..b) back to a UTF-8 K_STR. */
+static KValue *ku_encode_range(const uint32_t *cps, size_t a, size_t b) {
+  sbuf sb; sb_init(&sb); for (size_t i = a; i < b; i++) utf8_encode(cps[i], &sb); return sb_to_str(&sb);
+}
+
+/* Full case fold of one scalar: writes folded scalars into out. */
+static void ku_casefold_scalar(uint32_t c, cpbuf *out) {
+  int i = ku_bsearch(ku_fold_cp_arr, KU_FOLD_N, (int32_t)c);
+  if (i < 0) { cp_push(out, c); return; }
+  for (int k = 0; k < ku_fold_len[i]; k++) cp_push(out, (uint32_t)ku_fold_pool[ku_fold_off[i] + k]);
+}
+
+/* Haskell Data.Char.isSpace (ASCII controls + Unicode space separators). */
+static int ku_is_space(uint32_t c) {
+  if (c == ' ' || (c >= '\t' && c <= '\r')) return 1;       /* \t \n \v \f \r */
+  if (c == 0x85 || c == 0xA0 || c == 0x1680) return 1;
+  if (c >= 0x2000 && c <= 0x200A) return 1;
+  return c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
 }
 
 #define PRIM(n) (strcmp(p, n) == 0)
@@ -788,47 +1280,424 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     if (sh >= 0) mpz_mul_2exp(n, n, (unsigned)sh); else mpz_mul_2exp(d, d, (unsigned)(-sh));
     return krat(n, d);
   }
+  /* §6.5 byte + §29.5 bytes + grapheme (grapheme is K_STR text) */
+  if (PRIM("eqByte")) return kbool(a[0]->as.byte == a[1]->as.byte);
+  if (PRIM("ltByte")) return kbool(a[0]->as.byte < a[1]->as.byte);
+  if (PRIM("showByte")) {
+    char t[8]; snprintf(t, sizeof t, "b'\\x%02x'", a[0]->as.byte); return kstr0(t);
+  }
+  if (PRIM("eqBytes")) return kbool(bytes_cmp(a[0], a[1]) == 0);
+  if (PRIM("ltBytes")) return kbool(bytes_cmp(a[0], a[1]) < 0);
+  if (PRIM("showBytes")) {
+    sbuf b; sb_init(&b); sb_puts(&b, "0x");
+    for (size_t i = 0; i < a[0]->as.bytes.len; i++) { char t[3]; snprintf(t, 3, "%02x", a[0]->as.bytes.p[i]); sb_puts(&b, t); }
+    return sb_to_str(&b);
+  }
+  if (PRIM("eqGrapheme")) return kbool(klit_eq(a[0], a[1])); /* exact scalar seq */
+  if (PRIM("showGrapheme")) return str_append(str_append(kstr0("g'"), a[0]), kstr0("'"));
+  /* §29.5 std.bytes operations */
+  if (PRIM("__bytesEmpty")) return kbytes((const unsigned char *)"", 0);
+  if (PRIM("__bytesSingleton")) { unsigned char w = a[0]->as.byte; return kbytes(&w, 1); }
+  if (PRIM("__bytesLength")) return kint((int64_t)a[0]->as.bytes.len);
+  if (PRIM("__bytesIsEmpty")) return kbool(a[0]->as.bytes.len == 0);
+  if (PRIM("__bytesGet")) {
+    int64_t i = kas_int(a[1]);
+    if (i >= 0 && i < (int64_t)a[0]->as.bytes.len) return ksome(kbyte(a[0]->as.bytes.p[i]));
+    return knone();
+  }
+  if (PRIM("__bytesIndexUnsafe")) {
+    int64_t i = kas_int(a[1]);
+    if (i < 0 || i >= (int64_t)a[0]->as.bytes.len) krt_fail("__bytesIndexUnsafe: out of range");
+    return kbyte(a[0]->as.bytes.p[i]);
+  }
+  if (PRIM("__bytesAppend")) {
+    size_t la = a[0]->as.bytes.len, lb = a[1]->as.bytes.len;
+    unsigned char *buf = (unsigned char *)kgc_alloc_atomic(la + lb ? la + lb : 1);
+    memcpy(buf, a[0]->as.bytes.p, la); memcpy(buf + la, a[1]->as.bytes.p, lb);
+    return kbytes(buf, la + lb);
+  }
+  if (PRIM("__bytesSlice")) {
+    int64_t st = kas_int(a[1]), ln = kas_int(a[2]); size_t len = a[0]->as.bytes.len;
+    if (st < 0) st = 0;
+    if (st > (int64_t)len) st = (int64_t)len;
+    if (ln < 0) ln = 0;
+    if (st + ln > (int64_t)len) ln = (int64_t)len - st;
+    return kbytes(a[0]->as.bytes.p + st, (size_t)ln);
+  }
+  if (PRIM("__bytesTake")) {
+    int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
+    return kbytes(a[1]->as.bytes.p, (size_t)n);
+  }
+  if (PRIM("__bytesDrop")) {
+    int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
+    return kbytes(a[1]->as.bytes.p + n, len - (size_t)n);
+  }
+  if (PRIM("__bytesStartsWith")) {
+    size_t pl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
+    return kbool(pl <= hl && memcmp(a[1]->as.bytes.p, a[0]->as.bytes.p, pl) == 0);
+  }
+  if (PRIM("__bytesEndsWith")) {
+    size_t sl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
+    return kbool(sl <= hl && memcmp(a[1]->as.bytes.p + (hl - sl), a[0]->as.bytes.p, sl) == 0);
+  }
+  if (PRIM("__bytesContains"))
+    return kbool(bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len) >= 0);
+  if (PRIM("__bytesFind")) {
+    unsigned char w = a[0]->as.byte;
+    for (size_t i = 0; i < a[1]->as.bytes.len; i++) if (a[1]->as.bytes.p[i] == w) return ksome(kint((int64_t)i));
+    return knone();
+  }
+  if (PRIM("__bytesBreakIndex")) {
+    long ix = bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len);
+    return ix < 0 ? knone() : ksome(kint((int64_t)ix));
+  }
+  if (PRIM("__bytesToList")) {
+    KValue *acc = knil();
+    for (size_t i = a[0]->as.bytes.len; i > 0; i--) acc = kcons(kbyte(a[0]->as.bytes.p[i - 1]), acc);
+    return acc;
+  }
+  if (PRIM("__bytesFromList")) {
+    /* count then fill */
+    size_t n = 0; for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) n++;
+    unsigned char *buf = (unsigned char *)kgc_alloc_atomic(n ? n : 1); size_t i = 0;
+    for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) buf[i++] = kctor_arg(v, 0)->as.byte;
+    return kbytes(buf, n);
+  }
+  if (PRIM("__bytesCompact")) return a[0];
+  /* §29.5 linear BytesBuilder: the accumulator is modelled directly by the
+   * bytes built so far (a K_BYTES carrier).  The type system separates
+   * BytesBuilder from Bytes, so only the builder prims observe it. */
+  if (PRIM("__newBytesBuilder")) return kbytes((const unsigned char *)"", 0);
+  if (PRIM("__bytesBuilderByte")) {            /* (byte, builder) -> builder */
+    size_t n = a[1]->as.bytes.len;
+    unsigned char *buf = (unsigned char *)kgc_alloc_atomic(n + 1);
+    memcpy(buf, a[1]->as.bytes.p, n); buf[n] = a[0]->as.byte;
+    return kbytes(buf, n + 1);
+  }
+  if (PRIM("__bytesBuilderBytes")) {           /* (bytes, builder) -> builder */
+    size_t na = a[1]->as.bytes.len, nb = a[0]->as.bytes.len;
+    unsigned char *buf = (unsigned char *)kgc_alloc_atomic(na + nb ? na + nb : 1);
+    memcpy(buf, a[1]->as.bytes.p, na); memcpy(buf + na, a[0]->as.bytes.p, nb);
+    return kbytes(buf, na + nb);
+  }
+  if (PRIM("__finishBytesBuilder")) return a[0];
+  /* ── §29.4 std.unicode (table-free): codec / scalars / cursors ─────── */
+  if (PRIM("__utf8Bytes"))
+    return kbytes((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len);
+  if (PRIM("__utf8Valid"))
+    return kbool(utf8_valid_all(a[0]->as.bytes.p, a[0]->as.bytes.len));
+  if (PRIM("__decodeUtf8Lossy")) {
+    /* Lenient decode (one U+FFFD per ill-formed maximal subpart).  The
+     * std.unicode wrapper only calls this after __utf8Valid succeeds, so
+     * the reachable case is the exact identity decode of valid UTF-8. */
+    const unsigned char *p = a[0]->as.bytes.p, *end = p + a[0]->as.bytes.len;
+    sbuf b; sb_init(&b);
+    while (p < end) {
+      uint32_t cp; int n = utf8_strict(p, end, &cp);
+      if (n > 0) { for (int i = 0; i < n; i++) sb_putc(&b, (char)p[i]); p += n; }
+      else { sb_puts(&b, "\xEF\xBF\xBD"); if (n == 0) p = end; else p += 1; }
+    }
+    return sb_to_str(&b);
+  }
+  if (PRIM("__byteLength")) return kint((int64_t)a[0]->as.str.len);
+  if (PRIM("__uniScalarValue")) return kint((int64_t)a[0]->as.chr);
+  if (PRIM("__scalarInRange")) {
+    int64_t n = kas_int(a[0]);
+    return kbool(n >= 0 && n <= 0x10FFFF && !(n >= 0xD800 && n <= 0xDFFF));
+  }
+  if (PRIM("__scalarOfValue")) {
+    int64_t n = kas_int(a[0]);
+    if (n >= 0 && n <= 0x10FFFF && !(n >= 0xD800 && n <= 0xDFFF)) return kchr((uint32_t)n);
+    krt_fail("__scalarOfValue: value is not a Unicode scalar");
+  }
+  if (PRIM("__scalarToString")) { sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return sb_to_str(&b); }
+  if (PRIM("__scalarCount")) return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
+  if (PRIM("__stringScalars")) {
+    const unsigned char *p = (const unsigned char *)a[0]->as.str.p, *end = p + a[0]->as.str.len;
+    KValue *acc = knil();
+    /* collect codepoints then fold right-to-left into a cons list */
+    size_t cnt = utf8_scalar_count(p, a[0]->as.str.len);
+    KValue **tmp = (KValue **)kgc_alloc(sizeof(KValue *) * (cnt ? cnt : 1));
+    size_t i = 0; const unsigned char *q = p;
+    while (q < end) { uint32_t cp; int k = utf8_next(q, end, &cp); q += (k > 0 ? k : 1); tmp[i++] = kchr(cp); }
+    for (size_t j = cnt; j > 0; j--) acc = kcons(tmp[j - 1], acc);
+    return acc;
+  }
+  if (PRIM("__byteToNat")) return kint((int64_t)a[0]->as.byte);
+  if (PRIM("__natToByte")) return kbyte((unsigned char)(kint_low64(a[0]) & 0xff));
+  if (PRIM("__graphemeToString")) return a[0];   /* grapheme is K_STR text */
+  /* §20 collection carriers / §28.2 transport: identity on the payload */
+  if (PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") ||
+      PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") ||
+      PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") ||
+      PRIM("__stringCompact"))
+    return a[0];
+  if (PRIM("unsafeConsume")) return kunit();      /* discard a linear value */
+  if (PRIM("__arrayIndexUnsafe")) {
+    KValue *v = a[0]; int64_t i = kas_int(a[1]);
+    while (kis_cons(v)) { if (i <= 0) return kctor_arg(v, 0); v = kctor_arg(v, 1); i--; }
+    krt_fail("__arrayIndexUnsafe: index out of range");
+  }
+  if (PRIM("__rangeEnum")) {
+    int ex = kas_bool(a[2]); KValue *acc = knil();
+    if (a[0]->tag == K_CHR) {
+      int64_t lo = (int64_t)a[0]->as.chr, hi = (int64_t)a[1]->as.chr, top = ex ? hi - 1 : hi;
+      for (int64_t c = top; c >= lo; c--) { if (c >= 0xD800 && c <= 0xDFFF) continue; acc = kcons(kchr((uint32_t)c), acc); }
+    } else {
+      int64_t lo = kas_int(a[0]), hi = kas_int(a[1]), top = ex ? hi - 1 : hi;
+      for (int64_t n = top; n >= lo; n--) acc = kcons(kint(n), acc);
+    }
+    return acc;
+  }
+  /* §29.1 std.atomic bitwise (two's-complement over Integer). */
+  if (PRIM("__intAnd") || PRIM("__intOr") || PRIM("__intXor")) {
+    if (a[0]->tag == K_INT && a[1]->tag == K_INT) {
+      int64_t x = a[0]->as.i, y = a[1]->as.i;
+      return kint(PRIM("__intAnd") ? (x & y) : PRIM("__intOr") ? (x | y) : (x ^ y));
+    }
+    mpz_t x, y, r; mpz_init(x); mpz_init(y); mpz_init(r); kload_mpz(a[0], x); kload_mpz(a[1], y);
+    if (PRIM("__intAnd")) mpz_and(r, x, y); else if (PRIM("__intOr")) mpz_ior(r, x, y); else mpz_xor(r, x, y);
+    KValue *res = kfrom_mpz(r); mpz_clear(x); mpz_clear(y); mpz_clear(r); return res;
+  }
+  /* §29.3 std.hash FNV-1a lane (deterministic per run). */
+  if (PRIM("__hashMixInt")) return ku64(fnv_mix_u64(kint_low64(a[0]), kint_low64(a[1])));
+  if (PRIM("__hashMixDouble")) {
+    uint64_t bits; double d = a[1]->as.d; memcpy(&bits, &d, sizeof bits);
+    return ku64(fnv_mix_u64(kint_low64(a[0]), bits));
+  }
+  if (PRIM("__hashMixString")) return ku64(fnv_mix_bytes(kint_low64(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len));
+  if (PRIM("__hashMixBytes")) return ku64(fnv_mix_bytes(kint_low64(a[0]), a[1]->as.bytes.p, a[1]->as.bytes.len));
+  /* §29.4 StringBuilder: a K_STR accumulator (type-separated from String). */
+  if (PRIM("__newStringBuilder")) return kstr0("");
+  if (PRIM("__stringBuilderString")) return str_append(a[1], a[0]);
+  if (PRIM("__stringBuilderScalar")) { sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return str_append(a[1], sb_to_str(&b)); }
+  if (PRIM("__stringBuilderGrapheme")) return str_append(a[1], a[0]);
+  if (PRIM("__finishStringBuilder")) return a[0];
+  /* §29.4 string cursors: a StringCursor is a scalar index (K_INT). */
+  if (PRIM("__stringStart")) return kint(0);
+  if (PRIM("__stringEnd")) return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
+  if (PRIM("__stringCursorOffset")) {
+    int64_t i = kas_int(a[1]); if (i < 0) i = 0;
+    return kint((int64_t)utf8_scalar_byte_offset((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, (size_t)i));
+  }
+  if (PRIM("__stringNextScalar")) {
+    const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
+    int64_t i = kas_int(a[1]); size_t cnt = utf8_scalar_count(p, len);
+    if (i >= 0 && i < (int64_t)cnt) {
+      size_t off = utf8_scalar_byte_offset(p, len, (size_t)i);
+      uint32_t cp; utf8_next(p + off, p + len, &cp);
+      static const char *nm[2] = {"next", "scalar"};
+      KValue *vals[2]; vals[0] = kint(i + 1); vals[1] = kchr(cp);
+      return ksome(krec(2, nm, vals));
+    }
+    return knone();
+  }
+  if (PRIM("__stringPrevScalar")) {
+    const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
+    int64_t i = kas_int(a[1]); size_t cnt = utf8_scalar_count(p, len);
+    if (i > 0 && i <= (int64_t)cnt) {
+      size_t off = utf8_scalar_byte_offset(p, len, (size_t)(i - 1));
+      uint32_t cp; utf8_next(p + off, p + len, &cp);
+      static const char *nm[2] = {"prev", "scalar"};
+      KValue *vals[2]; vals[0] = kint(i - 1); vals[1] = kchr(cp);
+      return ksome(krec(2, nm, vals));
+    }
+    return knone();
+  }
+  if (PRIM("__stringSpan")) {
+    const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
+    int64_t aa = kas_int(a[1]), bb = kas_int(a[2]); size_t cnt = utf8_scalar_count(p, len);
+    if (aa >= 0 && bb <= (int64_t)cnt && aa <= bb) {
+      size_t oa = utf8_scalar_byte_offset(p, len, (size_t)aa);
+      size_t ob = utf8_scalar_byte_offset(p, len, (size_t)bb);
+      return ksome(kstr((const char *)(p + oa), ob - oa));
+    }
+    return knone();
+  }
+  /* §29.4 incremental UTF-8 decoder: pending bytes carried as K_BYTES. */
+  if (PRIM("__newUtf8Decoder")) return kbytes((const unsigned char *)"", 0);
+  if (PRIM("__decodeUtf8Chunk")) {
+    size_t pl = a[1]->as.bytes.len, cl = a[0]->as.bytes.len, total = pl + cl;
+    unsigned char *comb = (unsigned char *)kgc_alloc_atomic(total ? total : 1);
+    if (pl) memcpy(comb, a[1]->as.bytes.p, pl);
+    if (cl) memcpy(comb + pl, a[0]->as.bytes.p, cl);
+    size_t plen = utf8_valid_prefix_len(comb, total), rlen = total - plen;
+    if (rlen > 0 && !utf8_is_incomplete_tail(comb + plen, rlen)) return knone();
+    static const char *nm[2] = {"decoder", "text"};
+    KValue *vals[2]; vals[0] = kbytes(comb + plen, rlen); vals[1] = kstr((const char *)comb, plen);
+    return ksome(krec(2, nm, vals));
+  }
+  if (PRIM("__finishUtf8Decoder"))
+    return a[0]->as.bytes.len == 0 ? ksome(kstr0("")) : knone();
+  /* §29.1 atomicCompareExchange representation equality. */
+  if (PRIM("__atomicRepEq")) return kbool(kvalue_rep_eq(a[0], a[1]));
+  /* ── §29.4 std.unicode table-driven: normalization, case fold, UAX#29 ─ */
+  if (PRIM("__normalize"))
+    return ku_normalize((int)kas_int(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len);
+  if (PRIM("__caseFold")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    cpbuf out; cp_init(&out);
+    for (size_t i = 0; i < in.len; i++) ku_casefold_scalar(in.p[i], &out);
+    sbuf b; sb_init(&b); for (size_t i = 0; i < out.len; i++) utf8_encode(out.p[i], &b); return sb_to_str(&b);
+  }
+  if (PRIM("__graphemeCount")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    return kint((int64_t)ku_grapheme_count(in.p, in.len));
+  }
+  if (PRIM("__graphemeValid")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    return kbool(ku_grapheme_count(in.p, in.len) == 1);
+  }
+  if (PRIM("__graphemeOfString")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    if (ku_grapheme_count(in.p, in.len) == 1) return a[0];
+    krt_fail("__graphemeOfString: string is not a single grapheme");
+  }
+  if (PRIM("__stringGraphemes")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    cpbuf bounds; cp_init(&bounds);
+    size_t i = 0; while (i < in.len) { cp_push(&bounds, (uint32_t)i); size_t l = ku_grapheme_len(in.p, in.len, i); i += (l ? l : 1); }
+    KValue *acc = knil();
+    for (size_t b = bounds.len; b > 0; b--) {
+      size_t st = bounds.p[b - 1], en = (b < bounds.len) ? bounds.p[b] : in.len;
+      acc = kcons(ku_encode_range(in.p, st, en), acc);
+    }
+    return acc;
+  }
+  if (PRIM("__stringNextGrapheme")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    int64_t i = kas_int(a[1]);
+    if (i >= 0 && i < (int64_t)in.len) {
+      size_t l = ku_grapheme_len(in.p, in.len, (size_t)i); if (l == 0) l = 1;
+      static const char *nm[2] = {"grapheme", "next"};
+      KValue *vals[2]; vals[0] = ku_encode_range(in.p, (size_t)i, (size_t)i + l); vals[1] = kint(i + (int64_t)l);
+      return ksome(krec(2, nm, vals));
+    }
+    return knone();
+  }
+  if (PRIM("__stringWords")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    cpbuf ws, we; cp_init(&ws); cp_init(&we);
+    size_t i = 0;
+    while (i < in.len) {
+      while (i < in.len && ku_is_space(in.p[i])) i++;
+      if (i >= in.len) break;
+      size_t st = i; while (i < in.len && !ku_is_space(in.p[i])) i++;
+      cp_push(&ws, (uint32_t)st); cp_push(&we, (uint32_t)i);
+    }
+    KValue *acc = knil();
+    for (size_t b = ws.len; b > 0; b--) acc = kcons(ku_encode_range(in.p, ws.p[b - 1], we.p[b - 1]), acc);
+    return acc;
+  }
+  if (PRIM("__stringSentences")) {
+    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+    cpbuf ps, pe; cp_init(&ps); cp_init(&pe);
+    size_t start = 0, i = 0;
+    while (i < in.len) {
+      if (in.p[i] == '.' || in.p[i] == '!' || in.p[i] == '?') { cp_push(&ps, (uint32_t)start); cp_push(&pe, (uint32_t)(i + 1)); start = i + 1; }
+      i++;
+    }
+    if (start < in.len) { cp_push(&ps, (uint32_t)start); cp_push(&pe, (uint32_t)in.len); }
+    KValue *acc = knil();
+    for (size_t b = ps.len; b > 0; b--) {
+      size_t st = ps.p[b - 1], en = pe.p[b - 1];
+      while (st < en && ku_is_space(in.p[st])) st++;
+      while (en > st && ku_is_space(in.p[en - 1])) en--;
+      if (en > st) acc = kcons(ku_encode_range(in.p, st, en), acc);
+    }
+    return acc;
+  }
   krt_fail("internal: unknown pure primitive");
 }
 
 /* ── IO execution ──────────────────────────────────────────────────── */
 
+/* A heap stack of pending §18.7 finalizers (see kio_finally / krun_io). */
+struct kdefer_frame { KValue **defers; int n; struct kdefer_frame *next; };
+
+/* Run the accumulated finalizers LIFO (innermost scope first, last-
+ * registered first within a scope) once a tail recursion reaches a value,
+ * then return that value (or Unit when a K_IOEFFECT discarded it). */
+static KValue *krun_finish(KValue *v, int discard, struct kdefer_frame *fr) {
+  for (; fr; fr = fr->next)
+    for (int i = fr->n - 1; i >= 0; i--) (void)krun_io(fr->defers[i]);
+  return discard ? kunit() : v;
+}
+
 KValue *krun_io(KValue *action) {
+  /* Trampoline: a do-block's tail action (K_IOTAIL), a discarded tail
+   * statement-`if` branch action (K_IOEFFECT → final result is Unit), and
+   * the tail leg of ioBind/ioThen all continue this loop instead of
+   * re-entering krun_io, so any sequenced IO tail-recursion runs in
+   * constant C stack (§27.5A.3).  `discard` records that a K_IOEFFECT was
+   * crossed, so the loop's final value is Unit (matching the interpreter,
+   * whose KIf completion discards the branch value). */
+  int discard = 0;
+  /* heap stack of pending §18.7 finalizers, accumulated across a tail
+   * recursion and run (LIFO) once the recursion reaches a value. */
+  struct kdefer_frame *defers = NULL;
+  while (1) {
   switch (action->tag) {
-    case K_IO:
-      return action->as.io.fn(action->as.io.env);
+    case K_IOTAIL:
+      action = action->as.bounce.fn;
+      continue;
+    case K_IOEFFECT:
+      discard = 1;
+      action = action->as.bounce.fn;
+      continue;
+    case K_IOFINALLY: {
+      struct kdefer_frame *f = (struct kdefer_frame *)kgc_alloc(sizeof *f);
+      f->defers = action->as.iofin.defers; f->n = action->as.iofin.n; f->next = defers;
+      defers = f;
+      action = action->as.iofin.action;
+      continue;
+    }
+    case K_IO: {
+      KValue *r = action->as.io.fn(action->as.io.env);
+      if (r->tag == K_IOTAIL) { action = r->as.bounce.fn; continue; }
+      if (r->tag == K_IOEFFECT) { discard = 1; action = r->as.bounce.fn; continue; }
+      if (r->tag == K_IOFINALLY) {
+        struct kdefer_frame *f = (struct kdefer_frame *)kgc_alloc(sizeof *f);
+        f->defers = r->as.iofin.defers; f->n = r->as.iofin.n; f->next = defers;
+        defers = f; action = r->as.iofin.action; continue;
+      }
+      return krun_finish(r, discard, defers);
+    }
     case K_PRIM: {
       const char *p = action->as.prim.name;
       KValue **a = action->as.prim.args;
       if (PRIM("printString")) {
         if (a[0]->tag != K_STR) krt_fail("printString: argument is not a String");
         fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
-        return kunit();
+        return krun_finish(kunit(), discard, defers);
       }
       if (PRIM("printlnString")) {
         if (a[0]->tag != K_STR) krt_fail("printlnString: argument is not a String");
         fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
         fputc('\n', stdout);
-        return kunit();
+        return krun_finish(kunit(), discard, defers);
       }
-      if (PRIM("ioPure")) return a[0];
+      if (PRIM("ioPure")) return krun_finish(a[0], discard, defers);
       if (PRIM("ioBind")) {
         KValue *r = krun_io(a[0]);
-        return krun_io(kapp(a[1], r));
+        action = kapp(a[1], r);      /* tail: continue the loop */
+        continue;
       }
       if (PRIM("ioThen")) {
         (void)krun_io(a[0]);
-        return krun_io(a[1]);
+        action = a[1];               /* tail: continue the loop */
+        continue;
       }
-      if (PRIM("newRef")) return kref_new(a[0]);
-      if (PRIM("readRef")) return kref_get(a[0]);
-      if (PRIM("writeRef")) return kref_set(a[0], a[1]);
+      if (PRIM("newRef")) return krun_finish(kref_new(a[0]), discard, defers);
+      if (PRIM("readRef")) return krun_finish(kref_get(a[0]), discard, defers);
+      if (PRIM("writeRef")) return krun_finish(kref_set(a[0], a[1]), discard, defers);
       /* FFI IO primitives are registered by the FFI runtime (kappart_ffi). */
-      return krun_io_ffi(action);
+      { KValue *r = krun_io_ffi(action); return krun_finish(r, discard, defers); }
     }
     default:
       /* a pure value used in IO position (e.g. a `return`ed result) */
-      return action;
+      return krun_finish(action, discard, defers);
+  }
   }
 }
 
@@ -841,6 +1710,15 @@ static int prim_is_io(const char *p) {
 }
 
 static int prim_arity(const char *p) {
+  /* hot path: the arithmetic / comparison ops that dominate numeric loops
+   * are matched first so kprim_call's saturation check is a few strcmps,
+   * not a full scan (they also appear in the binary block below — the
+   * first match wins, so this is purely an ordering optimisation). */
+  if (PRIM("addInt") || PRIM("subInt") || PRIM("mulInt") || PRIM("divInt") ||
+      PRIM("modInt") || PRIM("eqInt") || PRIM("ltInt") || PRIM("leInt")) return 2;
+  /* nullary (a value, fired on reference) */
+  if (PRIM("__bytesEmpty") || PRIM("__newBytesBuilder") ||
+      PRIM("__newStringBuilder") || PRIM("__newUtf8Decoder")) return 0;
   /* unary */
   if (PRIM("negInt") || PRIM("negDouble") || PRIM("showInt") ||
       PRIM("showDouble") || PRIM("showScalar") || PRIM("showStringLit") ||
@@ -848,9 +1726,28 @@ static int prim_arity(const char *p) {
       PRIM("negRat") || PRIM("showRat") || PRIM("ratOfDouble") ||
       PRIM("natToInt") || PRIM("natOfInt") || PRIM("intToNat") ||
       PRIM("intToDouble") || PRIM("primitiveIntToString") ||
+      PRIM("showByte") || PRIM("showBytes") || PRIM("showGrapheme") ||
+      PRIM("__bytesSingleton") || PRIM("__bytesLength") || PRIM("__bytesIsEmpty") ||
+      PRIM("__bytesToList") || PRIM("__bytesFromList") || PRIM("__bytesCompact") ||
+      PRIM("__finishBytesBuilder") ||
+      PRIM("__utf8Bytes") || PRIM("__utf8Valid") || PRIM("__decodeUtf8Lossy") ||
+      PRIM("__byteLength") || PRIM("__uniScalarValue") || PRIM("__scalarInRange") ||
+      PRIM("__scalarOfValue") || PRIM("__scalarToString") || PRIM("__scalarCount") ||
+      PRIM("__stringScalars") || PRIM("__byteToNat") || PRIM("__natToByte") ||
+      PRIM("__graphemeToString") || PRIM("__stringCompact") ||
+      PRIM("__caseFold") || PRIM("__graphemeCount") || PRIM("__graphemeValid") ||
+      PRIM("__graphemeOfString") || PRIM("__stringGraphemes") ||
+      PRIM("__stringWords") || PRIM("__stringSentences") ||
+      PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") ||
+      PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") ||
+      PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") ||
+      PRIM("__stringStart") || PRIM("__stringEnd") || PRIM("__finishStringBuilder") ||
+      PRIM("__finishUtf8Decoder") ||
       PRIM("ioPure") || PRIM("newRef") || PRIM("readRef") ||
       PRIM("printString") || PRIM("printlnString"))
     return 1;
+  /* ternary */
+  if (PRIM("__bytesSlice") || PRIM("__rangeEnum") || PRIM("__stringSpan")) return 3;
   /* binary (all remaining pure ops + ioBind/ioThen/writeRef) */
   if (PRIM("addInt") || PRIM("subInt") || PRIM("mulInt") || PRIM("divInt") ||
       PRIM("modInt") || PRIM("eqInt") || PRIM("ltInt") || PRIM("leInt") ||
@@ -860,6 +1757,21 @@ static int prim_arity(const char *p) {
       PRIM("ltStr") || PRIM("eqScalar") || PRIM("ltScalar") ||
       PRIM("addRat") || PRIM("subRat") || PRIM("mulRat") || PRIM("divRat") ||
       PRIM("eqRat") || PRIM("ltRat") ||
+      PRIM("eqByte") || PRIM("ltByte") || PRIM("eqBytes") || PRIM("ltBytes") ||
+      PRIM("eqGrapheme") || PRIM("__bytesGet") || PRIM("__bytesIndexUnsafe") ||
+      PRIM("__bytesAppend") || PRIM("__bytesStartsWith") || PRIM("__bytesEndsWith") ||
+      PRIM("__bytesContains") || PRIM("__bytesFind") || PRIM("__bytesBreakIndex") ||
+      PRIM("__bytesTake") || PRIM("__bytesDrop") ||
+      PRIM("__bytesBuilderByte") || PRIM("__bytesBuilderBytes") ||
+      PRIM("__intAnd") || PRIM("__intOr") || PRIM("__intXor") ||
+      PRIM("__hashMixInt") || PRIM("__hashMixDouble") || PRIM("__hashMixString") ||
+      PRIM("__hashMixBytes") || PRIM("__arrayIndexUnsafe") || PRIM("unsafeConsume") ||
+      PRIM("__stringBuilderString") || PRIM("__stringBuilderScalar") ||
+      PRIM("__stringBuilderGrapheme") || PRIM("__stringCursorOffset") ||
+      PRIM("__stringNextScalar") || PRIM("__stringPrevScalar") ||
+      PRIM("__decodeUtf8Chunk") ||
+      PRIM("__normalize") || PRIM("__stringNextGrapheme") ||
+      PRIM("__atomicRepEq") ||
       PRIM("ioBind") || PRIM("ioThen") || PRIM("writeRef"))
     return 2;
   return prim_arity_ffi(p);

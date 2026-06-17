@@ -1,0 +1,14 @@
+-- Native backend conformance for §27.5A.3 stack-safe IO sequencing: a
+-- do-block whose tail is a statement-`if` recursive IO call, plus a
+-- top-level `defer` (which must run LIFO at each scope exit).  Native must
+-- run this in constant C stack and match the interpreter's output/order.
+module main
+
+countdown : Int -> UIO Unit
+let countdown n = do
+    defer printlnString (stringAppend "x" (showInt n))
+    if leInt n 0 then printlnString "liftoff"
+    else countdown (subInt n 1)
+
+main : UIO Unit
+let main = countdown 3

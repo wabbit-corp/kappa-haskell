@@ -1,0 +1,37 @@
+-- Native backend conformance for §29.4 std.unicode StringBuilder, string
+-- cursors, and the incremental UTF-8 decoder (all table-free).  Native
+-- output must match the interpreter exactly.
+module main
+
+import std.unicode.*
+
+built : String
+let built = finishStringBuilder (stringBuilderScalar 'c' (stringBuilderString "ab" newStringBuilder))
+
+firstScalar : String
+let firstScalar =
+    match stringNextScalar "hello" (stringStart "hello")
+    case None -> "empty"
+    case Some r -> scalarToString r.scalar
+
+decoded : String
+let decoded =
+    match decodeUtf8Chunk (utf8Bytes "hi") newUtf8Decoder
+    case Err e -> "err"
+    case Ok r -> r.text
+
+main : UIO Unit
+let main = do
+    printlnString built                                                       -- abc
+    printlnString firstScalar                                                 -- h
+    printlnString decoded                                                     -- hi
+    printlnString (showInt (natToInt (stringCursorOffset "héllo" (stringEnd "héllo")))) -- 6
+    println (isNone (stringSpan "abc" (stringEnd "abc") (stringStart "abc")))  -- True (end > start)
+    printlnString (showInt (natToInt (scalarCount "héllo")))                  -- 5
+    printlnString (showInt (natToInt (byteLength "héllo")))                    -- 6
+
+isNone : forall (a : Type). Option a -> Bool
+let isNone o =
+    match o
+    case None -> True
+    case Some _ -> False

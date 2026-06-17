@@ -1,0 +1,14 @@
+-- §18.2.1 `let?` else REFUTABLE residue that does NOT match the scrutinee:
+-- the interpreter raises "let? else: residue pattern failed" (no stdout).
+-- The native backend must likewise fail (krt_fail) rather than silently bind
+-- the wrong constructor's fields and print a bogus value — the original bug
+-- printed "else-bound=99" by projecting Q's field through the P residue.
+-- With the fix, native (like the interpreter) produces NO stdout here.
+module main
+
+data W : Type = P (a : Int) | Q (a : Int) | R
+
+main : UIO Unit
+let main = do
+    let? P n = Q 99 else P r -> printlnString (stringAppend "else-bound=" (showInt r))
+    printlnString (stringAppend "n=" (showInt n))

@@ -1,0 +1,29 @@
+-- §18.7 defer is evaluated LAZILY at scope exit, not eagerly at the
+-- registration site.  Each deferred action below reads a `var` that is
+-- mutated AFTER the defer is registered; the deferred body must observe the
+-- value AT FLUSH TIME (matching the interpreter, which runs `evalK env t`
+-- from the exit list).  A backend that snapshots the body eagerly would print
+-- the stale pre-mutation value (or crash on a sub-expression that only faults
+-- with the registration-time value).  Native output must match the interpreter.
+module main
+
+main : UIO Unit
+let main = do
+    -- (1) stale-value: defer reads j after it is reassigned 5 -> 100.
+    var j = 5
+    defer printlnString (stringAppend "defer-j=" (showInt j))
+    j = 100
+    printlnString (stringAppend "body-j=" (showInt j))
+    -- (2) per-iteration running total: the deferred body reports the total
+    -- AFTER that iteration's update (post-update 1/3/6), not before.
+    var total = 0
+    for i in 1 :: 2 :: 3 :: Nil do
+        defer printlnString (stringAppend "running-total=" (showInt total))
+        total = addInt total i
+    printlnString (stringAppend "final=" (showInt total))
+    -- (3) a sub-expression that would fault with the registration-time value
+    -- (divInt 100 0) but is safe at flush time (d = 5): lazy eval -> q=20.
+    var d = 0
+    defer printlnString (stringAppend "q=" (showInt (divInt 100 d)))
+    d = 5
+    printlnString "ready"

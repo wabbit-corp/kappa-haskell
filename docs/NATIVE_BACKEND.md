@@ -194,68 +194,109 @@ by construction.
   comparison, `show*`, and the IO primitives backing the demo, each a
   C runtime function.
 
-**Honestly unsupported** (compile-time `E_BACKEND_UNSUPPORTED`, with the
-precise form named — never a silent fallback to interpreter behaviour):
+**Coverage.** The backend compiles the accepted **run-mode (`UIO`) surface**
+exercised by the conformance suite and seven adversarial review rounds — no
+spec-mandated *runtime* construct it touches is rejected or silently
+miscompiled. Every do-kernel item (`defer`/`let?`/labelled `break`/`continue`,
+loops, statement-`if`, `match`), every value form (variants, suspensions,
+records, bignum, Rational, bytes/Unicode), and §9.1.1 `projection` selectors
+lower and run equivalently to the interpreter. In particular:
 
-* Type-level / sort terms in value position (`CSort`, `CPi`,
-  `CVariantT`, `CRecordT`, `CMeta`), reflection / quote machinery
-  (`CQuote`, `CThunkE`/`CLazyE` beyond the simple cases we lower),
-  sealed packages / signatures (`CSealE`/`CSigT`).
-* `do`-kernel items not in the list above (`KLetQ`, `KDefer`, `KUsing`)
-  until implemented; each names itself in the diagnostic.
-* `Integer` literals outside the signed 64-bit range.
-* Any global whose body uses an unsupported form transitively.
+* **`defer` (§18.7)** runs at **any** scope depth (do-block, loop body, `if`
+  body — per-scope frames) and is evaluated **lazily at scope exit** (a
+  suspended `kio` thunk capturing the environment, `compileDeferAction`), so a
+  deferred body observes state mutated between registration and the flush —
+  never a registration-time snapshot.
+* **Binding or-patterns (§17.2.3)** are distributed into or-free alternatives
+  (`distributePat`) in `match`, in `let?` (tried in source order, first match
+  wins), and in a `let?` else residue.
+* **`let?` (§18.2.1)** binds an else *residue* pattern only after testing it
+  against the scrutinee (`krt_fail` on a refutable mismatch, like the
+  interpreter), never binding the wrong constructor's fields.
+* **Real value globals** — a top-level *prefixed* binding (`let 1 x`/`let &x`)
+  and a `projection` — record their core body, so the backend lowers the real
+  value rather than erasing it.
 
-The diagnostic is emitted at build time with the source span of the
-offending construct where one is recoverable, and always names the
-construct. The backend produces **no** executable when any reachable
-definition is unsupported.
+Type-level / staging terms (`CSort`/`CPi`/`CVariantT`/`CRecordT`/`CSigT`/
+`CMeta`/`CQuote`, and a `Type`- or `Syntax`-typed definition referenced as
+a value) are **erased** to a unit placeholder wherever they appear — an
+argument, a field, a local `let` binding (§12.2, §31.2; §30.2.4 for staging).
+A no-body global accessor erases to the unit placeholder **only** when the
+global is genuinely type-level (a data/trait name or a sort-typed builtin); a
+real value-typed global that reaches codegen without a recorded core body is a
+fail-stop `E_BACKEND_UNSUPPORTED`, never a silent unit.
 
-### Known limitations of the supported subset
+The `E_BACKEND_UNSUPPORTED` mechanism remains as a defensive backstop for
+genuinely non-runtime forms (a bare un-eta-expanded constructor or a
+`KUsing` kernel item — both elaboration invariants that accepted programs
+do not produce, and a primitive name the linked runtime does not provide —
+the §21/§23 *elaboration-time* reflection/staging prims, which live in the
+`Elab` monad and so cannot appear in a `UIO` program). It is emitted at
+build time with the construct's source span and **no** executable — never a
+silent fallback to interpreter behaviour. See
+[`NATIVE_ESCALATIONS.md`](NATIVE_ESCALATIONS.md).
 
-These are honest, documented bounds — not silent divergences:
+### Properties of the supported subset
 
-* **`Int`/`Integer` are 64-bit.** The spec's integers are unbounded; the
-  native backend represents them as `int64_t`. A literal outside the
-  64-bit range is rejected at compile time, and an arithmetic operation
-  whose exact result overflows 64 bits is a **clean runtime trap**
-  (`addInt`/`subInt`/`mulInt`/`negInt`/`divInt` check via
-  `__builtin_*_overflow`), never a silent wraparound. Programs that stay
-  within 64 bits agree with the interpreter exactly; programs that exceed
-  it run unbounded under the interpreter but trap natively.
-* **Tail calls.** A top-level function is compiled to a *worker* whose
-  body is a `while(1)` loop plus a curried closure for first-class/partial
-  use. A **tail-position self-call** rebinds the parameters and loops
-  instead of recursing in C, so a tail-recursive function runs in
-  **constant C stack** (e.g. `sumTo 5_000_000 0`, `countDown 10_000_000` —
-  depths the interpreter cannot even reach, as it trips the §32.1
-  recursion-depth guard). The spec does not mandate general proper tail
-  calls (only tail *position* for handler resumptions), so this is a
-  backend quality property; see `NATIVE_FFI_DESIGN.md`.
-* **Non-self tail calls remain ordinary C calls.** Mutual tail recursion,
-  tail calls through a function value, and local (`let rec`) tail
-  recursion are *not* loop-converted — only direct top-level self-calls
-  are. They run correctly but are bounded by the C stack, exactly like
-  deep non-tail recursion. This is a documented, honest limitation, not a
-  miscompilation: the result is always correct; only a very deep
-  mutual-tail chain can exhaust the stack.
-* **Floating-point and string `show` are not supported.** `showDouble`,
-  `showStringLit`, `showScalar` (whose interpreter output is Haskell's
-  `show`) are rejected at compile time rather than risk a formatting
-  divergence; double *arithmetic* and comparison are supported.
+* **`Int`/`Integer` are unbounded.** Values within signed 64-bit stay
+  inline (`K_INT`); an operation whose exact result overflows promotes to
+  a GMP bignum (`K_BIGINT`) — never a wraparound or trap — matching the
+  interpreter exactly (factorials, `2^128`, the 64-bit boundary, bignum
+  div/mod/compare incl. negatives are all verified native ≡ interpreter).
+* **All tail recursion is stack-safe (§27.5A.3).** A top-level function is
+  a *worker* whose body is a `while(1)` loop: a direct tail self-call
+  rebinds the parameters and `continue`s. Every *other* tail call —
+  mutual recursion, a call through a function value, and a local `let rec`
+  lambda's self-call — returns a trampoline `K_BOUNCE` that the driving
+  `kapp`/`krun_io` drains in a single C frame (`SinkBounce`).
+  **IO sequencing is also trampolined**: a do-block's tail IO action is
+  handed to the `krun_io` loop instead of being run by a nested `krun_io`,
+  via `kio_tail` (result propagated), `kio_effect` (a tail statement-`if`
+  branch whose result is discarded, §18.8 → the do-block yields `Unit`), or
+  `kio_finally` (carrying §18.7 `defer` finalizers, accumulated on a heap
+  stack and run LIFO after the action). This covers tail IO recursion
+  through a trailing expression, a statement-`if` branch (incl. nested,
+  chained, and mutual), `let?`-else, a trailing `match`, a `while`/`for`
+  body, and any of those with a top-level `defer` present. All forms run
+  in **constant C stack** (verified to depth 5,000,000 under an 8 MB stack;
+  the interpreter itself StackOverflows well before that), flat ~2.4 MB RSS.
+  *Not* tail position, hence bounded by the C stack like any deep non-tail
+  recursion (the interpreter is also O(n) stack here, and O(n²) time): the
+  recursive call in the **bound/first leg** of `bindIO`/`ioThen`/`ioBind`
+  (left-nested `>>=`), and a deeply-recursive `!`-splice (`__runIO`). These
+  are fail-stop (never a wrong answer) and `ulimit -s` raises the bound.
+* **`show` and the §29 text/Unicode surface are supported.** `showDouble`
+  (shortest round-trip, Haskell format), `showStringLit`/`showScalar`
+  (Haskell escaping), `Rational`, byte/bytes/grapheme literals + prims,
+  the linear `BytesBuilder`, UTF-8 codec / scalar cursors / `StringBuilder`
+  / incremental decoder, and table-driven UAX-15 normalization + UAX-29
+  grapheme segmentation + case-fold (over the committed `Kappa.UnicodeData`
+  tables, generated into `runtime/kappa_ucd.h` by `tools/gen-ucd-c.py`) all
+  produce byte-identical output to the interpreter.
 
 ### Performance characteristics
 
-The backend favours a simple, uniformly-boxed representation over raw
-speed. Every value is a heap `KValue`; primitive application allocates a
-`K_PRIM` box and dispatches by name through the runtime's primitive
-tables; variable lookup walks the linked `KEnv`. A trivial integer loop
-therefore costs several allocations and a handful of `strcmp`s per
-iteration (≈4 µs/iteration on the reference machine; a 1,000,000-step
-loop completes in ~4 s with **flat** ~3 MB RSS). This is "reasonably
-bounded" — linear in the work, constant in memory thanks to the GC — but
-it is not optimised native code; unboxing and primitive specialisation
-are obvious future work.
+The representation is uniformly boxed (every value a GC'd `KValue`), but
+the hot paths avoid needless overhead:
+
+* A saturated application whose spine head is a known primitive lowers to
+  a single `kprim_call` over a stack argument array — no intermediate
+  curried `K_PRIM` boxes or per-argument allocation; the hottest
+  arithmetic/comparison ops are matched first in the arity dispatch.
+* A saturated call to a known function global calls its worker `kw_…`
+  directly (through the trampoline) instead of building a curried
+  closure chain.
+* Small integers (`-16..256`) and the two `Bool` constructors are cached;
+  a closure binds its environment once (not per variable reference); a
+  mutable-`var` read/write inside a loop lowers to a direct `kref_*` cell
+  access rather than the suspended-IO path.
+
+A tail-recursive `sum 1..10_000_000` runs in ~4.2 s and a
+`var`-mutating `while` loop of 1,000,000 steps in ~0.4 s, both at flat
+~2.4 MB RSS (≈16× / ≈10× faster than the first cut). Residual cost is the
+inherent boxing/GC of the uniform representation and the by-name primitive
+dispatch; integer unboxing and opcode dispatch remain available future
+work (they would not change observable behaviour).
 
 ## 6. FFI and the HTTP + SQLite demo
 

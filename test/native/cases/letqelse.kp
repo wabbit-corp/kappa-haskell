@@ -1,0 +1,19 @@
+-- §18.2.1 `let?` else with a refutation RESIDUE pattern.  The residue is
+-- matched against the scrutinee: a residue that matches binds its variables
+-- and runs the else body; an irrefutable residue always binds.  (A refutable
+-- residue that does NOT match is a runtime error — covered by letqmiss.kp,
+-- which must abort like the interpreter rather than bind the wrong fields.)
+-- Native output must match the interpreter.
+module main
+
+data W : Type = P (a : Int) | Q (a : Int) | R
+
+main : UIO Unit
+let main = do
+    -- residue (Q r) matches the Q scrutinee: bind r from Q's field, run else
+    let? P n = Q 99 else Q r -> printlnString (stringAppend "got-q=" (showInt r))
+    -- irrefutable residue: always binds, runs else
+    let? P m = R else other -> printlnString "irrefutable-else"
+    -- residue matches the actual constructor (R has no fields)
+    let? P k = R else R -> printlnString "matched-R"
+    printlnString "done"
