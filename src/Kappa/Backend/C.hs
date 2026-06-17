@@ -527,6 +527,261 @@ compileFunctionGlobal g n inner = do
           , "}"
           ]
   modify' $ \st -> st {gsTop = accessor : gsTop st}
+  -- LR1: if g is a monomorphic first-order Int function with an
+  -- int64-expressible body, ALSO emit the typed unboxed worker kwi_g.
+  eligible <- lr1Arity g
+  case eligible of
+    Just _ -> compileI64Worker g n inner
+    Nothing -> pure ()
+
+-- ── LR1: typed unboxed int64 Int workers ─────────────────────────────────
+-- A first-order monomorphic Int function (gdType Integer→…→Integer, here
+-- approximated by an int64-EXPRESSIBLE body over n explicit relevant binders)
+-- gets an auxiliary @int64_t kwi_g(int64_t…, int *kovf)@ worker beside the
+-- boxed @kw_g@.  A saturated direct call (compileLr1Call) unboxes its K_INT
+-- args and calls @kwi_g@; on a non-K_INT arg OR an int64 overflow it sets
+-- @kovf@ and re-runs the BOXED worker from the ORIGINAL boxed args, so the
+-- result is identical to the interpreter (the boxed/GMP path is the
+-- reference).  @kw_g@, the closure chain, and the accessor are unchanged;
+-- @kwi_g@ is reachable only from the saturated fast path.  Body grammar
+-- (conservative allowlist; anything else ⇒ ineligible ⇒ boxed-only): an Int
+-- literal in int64 range, a param/var, the int arith prims (add/sub/mul/div/
+-- mod/neg)Int, the compares (eq/lt/le)Int ONLY as an @if@ condition, @if@ in
+-- tail position, and SATURATED self-calls.  (CLet and @if@ in value position
+-- are deferred — they make a body ineligible, never miscompiled.)
+
+-- | The int arith prims supported on the unboxed path, with their arity.
+lr1ArithArity :: Text -> Maybe Int
+lr1ArithArity = \case
+  "addInt" -> Just 2
+  "subInt" -> Just 2
+  "mulInt" -> Just 2
+  "divInt" -> Just 2
+  "modInt" -> Just 2
+  "negInt" -> Just 1
+  _ -> Nothing
+
+-- | The int compares supported as an @if@ condition, mapped to their C op.
+lr1CmpOp :: Text -> Maybe Text
+lr1CmpOp = \case
+  "eqInt" -> Just "=="
+  "ltInt" -> Just "<"
+  "leInt" -> Just "<="
+  _ -> Nothing
+
+-- | A saturated self-call: spine head is the worker's own global @self@ with
+-- exactly @n@ explicit args (FULL GName equality, like 'selfTailArgs').
+lr1SelfArgs :: GName -> Int -> Term -> Maybe [Term]
+lr1SelfArgs self n term = case spineOf term of
+  (CGlob g, sargs)
+    | g == self, expl <- [a | (Expl, a) <- sargs], length expl == n -> Just expl
+  _ -> Nothing
+
+andM :: [Gen Bool] -> Gen Bool
+andM = foldr (\m acc -> do b <- m; if b then acc else pure False) (pure True)
+
+-- | Strip leading lambdas, recording each binder's (icity, quantity).
+stripLamsQ :: Term -> ([(Icit, Q)], Term)
+stripLamsQ = go []
+  where
+    go acc (CLam ic q _ b) = go ((ic, q) : acc) b
+    go acc t = (reverse acc, t)
+
+-- | LR1 eligibility: @Just n@ iff g has a recorded body that is an
+-- int64-expressible function of @n@ explicit, relevant (non-erased) binders.
+lr1Arity :: GName -> Gen (Maybe Int)
+lr1Arity g = do
+  bodies <- gets gsBodies
+  case Map.lookup g bodies of
+    Nothing -> pure Nothing
+    Just body -> do
+      let (binders, inner) = stripLamsQ body
+          n = length binders
+      -- all binders explicit + relevant: an implicit/erased binder is passed
+      -- kunit() (compileErasableArg), which an int64 worker must never read.
+      if n >= 1 && all (\(ic, q) -> ic == Expl && q /= Q0) binders
+        then do ok <- i64EligTail g n inner; pure (if ok then Just n else Nothing)
+        else pure Nothing
+
+-- | Eligibility of a tail-position term: an @if@ (compare condition, eligible
+-- branches), a saturated self-call (eligible args), or a leaf int64 expr.
+i64EligTail :: GName -> Int -> Term -> Gen Bool
+i64EligTail self n term = case term of
+  CIf c t e -> andM [i64EligCond self n c, i64EligTail self n t, i64EligTail self n e]
+  _
+    | Just args <- lr1SelfArgs self n term -> andM (map (i64EligExpr self n) args)
+    | otherwise -> i64EligExpr self n term
+
+-- | Eligibility of a value-position int64 expr: an in-range Int literal, a
+-- var, an int arith application, or a (non-tail) saturated self-call.
+i64EligExpr :: GName -> Int -> Term -> Gen Bool
+i64EligExpr self n term = case term of
+  CLit (LitInt m) -> pure (m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int))
+  CVar _ -> pure True
+  _ -> case spineOf term of
+    (CGlob g, sargs) -> do
+      let expl = [a | (Expl, a) <- sargs]
+      mp <- globPrimName g
+      case mp of
+        Just p | Just ar <- lr1ArithArity p, length expl == ar -> andM (map (i64EligExpr self n) expl)
+        _
+          | Just args <- lr1SelfArgs self n term -> andM (map (i64EligExpr self n) args)
+          | otherwise -> pure False
+    _ -> pure False
+
+-- | Eligibility of an @if@ condition: a saturated int compare.
+i64EligCond :: GName -> Int -> Term -> Gen Bool
+i64EligCond self n term = case spineOf term of
+  (CGlob g, sargs) -> do
+    let expl = [a | (Expl, a) <- sargs]
+    mp <- globPrimName g
+    case (mp >>= lr1CmpOp, expl) of
+      (Just _, [_, _]) -> andM (map (i64EligExpr self n) expl)
+      _ -> pure False
+  _ -> pure False
+
+-- | Emit the unboxed worker @int64_t kwi_g(int64_t…, int *kovf)@.
+compileI64Worker :: GName -> Int -> Term -> Gen ()
+compileI64Worker g n inner = do
+  let worker = "kwi_" <> mangle (gKey g)
+      ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
+      env = reverse ps -- de Bruijn 0 = innermost binder = the LAST param
+      paramDecls = T.intercalate ", " (["int64_t " <> p | p <- ps] ++ ["int *kovf"])
+  (bodyStmts, ()) <- captured "0" (i64Tail g n ps env inner)
+  let fn =
+        T.unlines $
+          [ "static int64_t " <> worker <> "(" <> paramDecls <> ") {"
+          , "  while (1) {"
+          ]
+            ++ map ("    " <>) bodyStmts
+            ++ [ "  }"
+               , "}"
+               ]
+  emitTop ("static int64_t " <> worker <> "(" <> paramDecls <> ");") fn
+
+-- | Compile the body in TAIL position: @if@ branches recurse in tail; a
+-- saturated self-call reassigns the int64 params and @continue@s (an in-place
+-- scalar loop — no @KEnv@, no boxing); any other (leaf) int64 expr is
+-- returned.
+i64Tail :: GName -> Int -> [Text] -> [Text] -> Term -> Gen ()
+i64Tail g n ps env term = case term of
+  CIf c t e -> do
+    cond <- i64Cond g n env c
+    (tb, ()) <- captured "0" (i64Tail g n ps env t)
+    (eb, ()) <- captured "0" (i64Tail g n ps env e)
+    emit ("if (" <> cond <> ") {")
+    forM_ tb (emit . ("  " <>))
+    emit "} else {"
+    forM_ eb (emit . ("  " <>))
+    emit "}"
+  _
+    | Just args <- lr1SelfArgs g n term -> do
+        -- tail self-call: evaluate new args into temps FIRST (they may read
+        -- current params), then reassign params and loop.
+        temps <- forM args $ \a -> do
+          ae <- i64Expr g n env a
+          t <- freshN "ti_"
+          emit ("int64_t " <> t <> " = " <> ae <> ";")
+          pure t
+        forM_ (zip ps temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
+        emit "continue;"
+    | otherwise -> do
+        e <- i64Expr g n env term
+        emit ("return " <> e <> ";")
+
+-- | Compile an int64-expressible value: a literal, a var, an
+-- overflow-checked arith op, or a (non-tail) self-call (whose @kovf@ is
+-- propagated immediately).  Each op that overflows sets @*kovf@ and returns 0
+-- at once — never continuing with a wrapped value.
+i64Expr :: GName -> Int -> [Text] -> Term -> Gen Text
+i64Expr g n env term = case term of
+  CLit (LitInt m) -> pure (cIntLit m)
+  CVar i -> pure (env !! i)
+  _ -> case spineOf term of
+    (CGlob h, sargs) -> do
+      let expl = [a | (Expl, a) <- sargs]
+      mp <- globPrimName h
+      case mp of
+        Just p | Just ar <- lr1ArithArity p, length expl == ar -> i64Arith g n env p expl
+        _
+          | Just args <- lr1SelfArgs g n term -> do
+              aes <- mapM (i64Expr g n env) args
+              t <- freshN "ti_"
+              emit ("int64_t " <> t <> " = kwi_" <> mangle (gKey g) <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
+              emit "if (*kovf) return 0;"
+              pure t
+          | otherwise -> lr1Unreachable
+    _ -> lr1Unreachable
+
+-- | Lower one overflow-checked int arith op (mirrors the @kp_*@ runtime
+-- helpers exactly: §6 unbounded Integer promotes to GMP via the boxed escape;
+-- div/mod by zero traps; INT64_MIN edges escape).
+i64Arith :: GName -> Int -> [Text] -> Text -> [Term] -> Gen Text
+i64Arith g n env p expl = do
+  aes <- mapM (i64Expr g n env) expl
+  t <- freshN "ti_"
+  case (p, aes) of
+    ("addInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_add_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { *kovf = 1; return 0; }")
+    ("subInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_sub_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { *kovf = 1; return 0; }")
+    ("mulInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_mul_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { *kovf = 1; return 0; }")
+    ("negInt", [a]) -> emit ("int64_t " <> t <> "; if (" <> a <> " == INT64_MIN) { *kovf = 1; return 0; } else " <> t <> " = -" <> a <> ";")
+    ("divInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"divInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) { *kovf = 1; return 0; } else " <> t <> " = " <> a <> " / " <> b <> ";")
+    ("modInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"modInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) " <> t <> " = 0; else " <> t <> " = " <> a <> " % " <> b <> ";")
+    _ -> lr1UnreachableStmt
+  pure t
+
+-- | Compile an @if@ condition (a saturated int compare) to a C boolean expr.
+i64Cond :: GName -> Int -> [Text] -> Term -> Gen Text
+i64Cond g n env term = case spineOf term of
+  (CGlob h, sargs) -> do
+    let expl = [a | (Expl, a) <- sargs]
+    mp <- globPrimName h
+    case (mp >>= lr1CmpOp, expl) of
+      (Just op, [a, b]) -> do
+        ae <- i64Expr g n env a
+        be <- i64Expr g n env b
+        pure ("(" <> ae <> " " <> op <> " " <> be <> ")")
+      _ -> lr1Unreachable
+  _ -> lr1Unreachable
+
+-- These are unreachable when 'lr1Arity' classified the body as eligible; they
+-- record a backend error (never a silent miscompile) if an invariant breaks.
+lr1Unreachable :: Gen Text
+lr1Unreachable = escalated "LR1-i64" "an int64-ineligible term reached the unboxed worker (LR1 eligibility invariant violated)"
+
+lr1UnreachableStmt :: Gen ()
+lr1UnreachableStmt = lr1Unreachable >> pure ()
+
+-- | The LR1 saturated fast path at a call site: unbox the K_INT args, call
+-- @kwi_g@, and escape to the boxed @kw_g@ (from the ORIGINAL boxed args) on a
+-- non-K_INT arg or an int64 overflow.
+compileLr1Call :: GName -> [(Icit, Term)] -> Gen Text
+compileLr1Call g sargs = do
+  let kwi = "kwi_" <> mangle (gKey g)
+      kw = "kw_" <> mangle (gKey g)
+  aes <- mapM (compileErasableArg . snd) sargs
+  ts <- forM aes $ \ae -> do
+    t <- freshN "la_"
+    emit ("KValue *" <> t <> " = " <> ae <> ";")
+    pure t
+  ovf <- freshN "kovf_"
+  emit ("int " <> ovf <> " = 0;")
+  avs <- forM ts $ \t -> do
+    av <- freshN "lu_"
+    emit ("int64_t " <> av <> " = kunbox_i64(" <> t <> ", &" <> ovf <> ");")
+    pure av
+  r <- freshN "lr_"
+  res <- freshN "lres_"
+  let boxed = "ktrampoline(" <> kw <> "(" <> T.intercalate ", " ts <> "))"
+  emit ("KValue *" <> res <> ";")
+  -- a non-K_INT arg short-circuits to boxed WITHOUT calling kwi_g (so the
+  -- unboxed worker never runs on garbage 0-args, e.g. a spurious /0 trap).
+  emit ("if (" <> ovf <> ") { " <> res <> " = " <> boxed <> "; }")
+  emit "else {"
+  emit ("  int64_t " <> r <> " = " <> kwi <> "(" <> T.intercalate ", " (avs ++ ["&" <> ovf]) <> ");")
+  emit ("  " <> res <> " = " <> ovf <> " ? " <> boxed <> " : kint(" <> r <> ");")
+  emit "}"
+  pure res
 
 -- | Append a forward declaration + a completed top-level C function.
 emitTop :: Text -> Text -> Gen ()
@@ -930,11 +1185,18 @@ globFuncArity g = do
 compileDirectCall :: GName -> Int -> [(Icit, Term)] -> Gen Text
 compileDirectCall g n sargs = do
   enqueue g
-  let (callArgs, extra) = splitAt n sargs
-      worker = "kw_" <> mangle (gKey g)
-  aes <- mapM (compileErasableArg . snd) callArgs
-  let base = "ktrampoline(" <> worker <> "(" <> T.intercalate ", " aes <> "))"
-  foldM applyExtra base extra
+  eligible <- lr1Arity g
+  case eligible of
+    -- LR1: an exactly-saturated call to an int64-eligible worker takes the
+    -- unboxed fast path (with a boxed escape).  Surplus args / partial calls
+    -- keep the boxed worker.
+    Just ne | ne == n, length sargs == n -> compileLr1Call g sargs
+    _ -> do
+      let (callArgs, extra) = splitAt n sargs
+          worker = "kw_" <> mangle (gKey g)
+      aes <- mapM (compileErasableArg . snd) callArgs
+      let base = "ktrampoline(" <> worker <> "(" <> T.intercalate ", " aes <> "))"
+      foldM applyExtra base extra
   where
     applyExtra acc (Expl, a) = do
       ae <- compileErasableArg a

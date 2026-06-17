@@ -41,6 +41,11 @@ rm -rf "$BWORK"; mkdir -p "$BWORK"
 echo "== building the kappa CLI =="
 timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 
+# P1.1: performance builds use optimized C (-O2).  The C driver for both the
+# generated native code and the raw-C baselines.
+BENCHCC="${KAPPA_CC:-cc} -O2"
+echo "== C driver (performance, -O2): $BENCHCC =="
+
 # The allocation gate is on TOTAL_BYTES (cumulative allocation), not
 # heap_size: Boehm's GC_get_heap_size() is the steady-state live footprint and
 # is structurally insensitive to per-iteration churn that is collected each
@@ -53,10 +58,13 @@ timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 # bench  expected-result  total_bytes-bound (0 = no allocation gate)
 BENCHES=(
   "arithloop 2000001000000 380000000"
-  "tailsum   2000001000000 260000000"
+  "tailsum   2000001000000 1000000"
   "recproj   7000000        140000000"
   "listfold  500000500000   620000000"
 )
+# tailsum's bound is now ~1MB (was 260MB): LR1 lowers it to a scalar int64
+# worker that allocates ~zero per iteration (≈hundreds of bytes total), so a
+# regression back to per-iteration kint boxing (~193MB) blows this bound.
 
 fails=0
 printf "%-10s | %-16s | %8s | %12s | %12s | %10s | %s\n" "bench" "result" "native" "total_bytes" "bound" "heap" "interp"
@@ -64,7 +72,7 @@ printf -- "-----------+------------------+----------+--------------+------------
 for entry in "${BENCHES[@]}"; do
   set -- $entry; name="$1"; expect="$2"; totalbound="$3"
   src="$BENCH/$name.kp"; exe="$BWORK/$name"
-  if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$BWORK/$name.build.log" 2>&1; then
+  if ! KAPPA_CC="$BENCHCC" timeout 240 $KAPPA build "$src" -o "$exe" >"$BWORK/$name.build.log" 2>&1; then
     echo "FAIL $name: native build failed"; sed 's/^/   /' "$BWORK/$name.build.log"; fails=$((fails+1)); continue
   fi
   ns=$(date +%s.%N)
@@ -87,4 +95,31 @@ for entry in "${BENCHES[@]}"; do
 done
 
 echo ""
-if [ "$fails" -eq 0 ]; then echo "ALL BENCHMARKS PASSED (results + allocation gates)"; else echo "$fails BENCHMARK GATE(S) FAILED"; exit 1; fi
+echo "== raw-C ratio gates (P1.2: native -O2 elapsed vs handwritten C -O2) =="
+# Large-N loops where the loop dominates startup; the raw-C baseline uses a
+# volatile accumulator + runtime N so the C compiler cannot fold it away.
+RATIO_N=100000000
+# name  kp  raw-c-src  gate(0=report-only,else max native/C ratio)  note
+ratio_bench() {
+  local name="$1" kp="$2" csrc="$3" gate="$4" note="$5"
+  local nexe="$BWORK/r_$name" rexe="$BWORK/c_$name"
+  if ! KAPPA_CC="$BENCHCC" timeout 240 $KAPPA build "$kp" -o "$nexe" >"$BWORK/r_$name.log" 2>&1; then
+    echo "   FAIL ratio $name: native build"; sed 's/^/     /' "$BWORK/r_$name.log"; fails=$((fails+1)); return; fi
+  if ! $BENCHCC "$csrc" -o "$rexe" 2>"$BWORK/c_$name.log"; then
+    echo "   FAIL ratio $name: raw-C build"; sed 's/^/     /' "$BWORK/c_$name.log"; fails=$((fails+1)); return; fi
+  local ns ne rs re nt rt ratio
+  ns=$(date +%s.%N); "$nexe" >/dev/null 2>&1; ne=$(date +%s.%N)
+  rs=$(date +%s.%N); "$rexe" "$RATIO_N" >/dev/null 2>&1; re=$(date +%s.%N)
+  nt=$(awk "BEGIN{printf \"%.4f\", $ne-$ns}"); rt=$(awk "BEGIN{printf \"%.4f\", $re-$rs}")
+  ratio=$(awk "BEGIN{printf \"%.1f\", ($rt>0)?($nt/$rt):0}")
+  printf "   %-10s native=%ss  rawC=%ss  ratio=%sx  %s\n" "$name" "$nt" "$rt" "$ratio" "$note"
+  if [ "$gate" != 0 ]; then
+    if awk "BEGIN{exit !($nt <= $gate*$rt)}"; then :; else
+      echo "      FAIL $name: native ${nt}s exceeds ${gate}x raw-C ${rt}s"; fails=$((fails+1)); fi
+  fi
+}
+ratio_bench tailsum   "$BENCH/ratio_tailsum.kp"   "$BENCH/raw/tailsum.c"   5  "(LR1 scalar int64 worker; GATED <=5x raw C)"
+ratio_bench arithloop "$BENCH/ratio_arithloop.kp" "$BENCH/raw/arithloop.c" 0  "(var-while still boxed/kref -- PENDING P0.2; reported, not gated)"
+
+echo ""
+if [ "$fails" -eq 0 ]; then echo "ALL BENCHMARKS PASSED (results + allocation gates + raw-C ratio gate)"; else echo "$fails BENCHMARK GATE(S) FAILED"; exit 1; fi

@@ -4,6 +4,8 @@ Date: 2026-06-17
 Reviewer: Codex desktop supervisor
 Scope: `runtime/kappart.c`, `runtime/kappart.h`, `src/Kappa/Backend/C.hs`, and generated native output such as `test/native/cases/arith.kappa.c`.
 
+Update: `docs/NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` tightens this review from "performance-plausible native backend" to a raw-C-like bar for ordinary monomorphic first-order code. Treat that newer report as the governing acceptance standard for performance claims.
+
 This is deliberately harsh because the native backend is being evaluated as something that should eventually run real code, not just prove that lowering is possible. The current implementation is a reasonable correctness scaffold, but it is still much closer to a boxed interpreter runtime emitted as C than to a performant native backend.
 
 ## Executive summary

@@ -23,6 +23,28 @@ benchmark evidence: the dominant remaining allocation in a tight Int loop is
 adversarial performance review (criterion #8) covers QW1–QW4's correctness and
 efficacy and grounds the LR staging.
 
+## Raw-C review (`NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md`) — status scorecard
+
+The raw-C report is the governing performance standard. Honest status (NOT a
+claim the backend is raw-C overall — only the LR1 Int-worker case meets it):
+
+| Item | Status |
+|---|---|
+| **P0.1** monomorphic numeric boxed → scalar workers | **MET for `Int`** (LR1: scalar `int64` worker, zero per-iter alloc, 1.03× `cc -O2`); `Bool`/`Double` workers not yet done |
+| **P0.2** `var` loops are heap-ref loops | **OPEN** — `arithloop` still ~145 MB / 81.5× C (reported, not claimed raw-C) |
+| **P0.3** `KEnv`/`kvar` on hot paths | **MET for LR1 Int workers** (scalar locals, no `KEnv`/`kvar`); general first-order code still uses `kvar` (QW2 only removed the per-iter *rebuild*) |
+| **P0.4** records/ADTs generic+string | **OPEN** — `recproj`/match still `kproj`/`kctor_is` strcmp (LR2) |
+| **P0.5** known calls carry trampoline/closure | **MET for LR1 Int self-calls** (loop / direct, no trampoline); general known calls still trampoline |
+| **P1.1** `-O2` perf builds | **DONE** (`bench.sh` builds native + raw-C at `-O2`) |
+| **P1.2** raw-C baseline gates + ratios | **DONE** (raw-C baselines + native/C ratio; `tailsum` gated ≤5× C — actually 0.2×; `arithloop` reported as P0.2-pending) |
+| **P1.3** QW2 doc overclaim | **FIXED** (QW2 = "env rebuild removed", not "env/kvar eliminated"; see below) |
+
+LR1 is one piece of the raw-C goal. The remaining P0.2 (`var`-loop locals),
+P0.4 (record/ADT fixed offsets + numeric tags), and the general P0.3/P0.5
+(bare locals + direct calls for non-`Int` first-order code) are the subsequent
+raw-C iterations, each to be landed behind the boxed-ABI fallback with its own
+review and raw-C gate.
+
 ## Quick wins (this iteration) — DONE
 
 ### QW1 — Kill string dispatch for statically-known saturated primitives (notes §1)
@@ -36,13 +58,17 @@ efficacy and grounds the LR staging.
 - A Haskell `primDirect :: Text -> Maybe (Text, Int)` table (helper name +
   arity) is the codegen source of truth; the native suite catches drift.
 
-### QW2 — No `KEnv` allocation in direct worker loops (notes §3, §5, criterion #4)
-- A top-level function worker currently rebinds `kw_env = kpush(p1,kpush(p0,0))`
-  every loop iteration and reads params via `kvar(kw_env,i)`. Map the leading
-  de Bruijn indices `[0..n-1]` directly to the C locals `p0..p{n-1}`
-  (`gsEnv` carries a "worker params" prefix), so the loop touches no `KEnv`.
-- Only escaping closures/lambdas still build a `KEnv`. Self-tail loop already
-  reassigns locals + `continue` (no `K_BOUNCE`); this removes the per-iter env.
+### QW2 — No per-iteration `KEnv` *allocation* in direct worker loops (notes §3, §5, criterion #4)
+- **What QW2 actually does (corrects an earlier overclaim, raw-C review P1.3):**
+  a capture-free worker builds its parameter `KEnv` cells ONCE before the
+  `while(1)` loop and a self-tail call updates `cell->val` in place, so the
+  loop performs no per-iteration `KEnv` *allocation*. It does NOT eliminate
+  `KEnv`/`kvar` from the boxed worker's code path — params are still read via
+  `kvar(kw_env,i)`. So QW2 = "env rebuild removed", NOT "env/kvar eliminated".
+- Full elimination of `KEnv`/`kvar` (params as bare C locals, raw-C review
+  P0.3) is achieved for **monomorphic Int workers by LR1** (the `kwi_*` worker
+  uses scalar `int64_t` C params/locals — no `KEnv`/`kvar` at all). For general
+  (non-Int / higher-order-adjacent) first-order code it remains open work.
 
 ### QW3 — Source-faithful generated C names + source-span comments (notes §6, criterion #6)
 - Thread an enclosing-name hint into `freshN` for closures/lambdas/match
@@ -82,15 +108,37 @@ native ≡ interpreter gate. Safe-design constraints captured now:
   higher-value piece (note that short prelude-name `strcmp`s already
   early-exit, so record fixed-offset projection may outrank ctor tags).
 
-### LR1 — Typed worker specialization for monomorphic first-order code (notes §2, criterion #3)
-- For a non-polymorphic, first-order function whose parameter/result types
-  are concrete `Int`/`Bool`/`Double` (and all call sites saturated), generate
-  an **unboxed worker** (`int64_t kwi_…(int64_t…, int *overflow)` for `Int`
-  with a GMP escape; C `int` for `Bool`; `double` for `Double`), plus a boxed
-  wrapper at generic/higher-order/partial-application/variant boundaries.
-- Start with leaf arithmetic/compare helpers operating on unboxed scalars;
-  box only at boundaries. Fall back to the boxed worker when polymorphism,
-  partial application, or existential/variant packaging needs generic values.
+### LR1 — Typed unboxed `Int` workers (notes §2, criterion #3; raw-C review P0.1) — **DONE (Int)**
+A first-order monomorphic `Int` function gets an auxiliary scalar worker
+`int64_t kwi_g(int64_t…, int *kovf)` beside the boxed `kw_g`:
+- **Eligibility** (conservative; src/Kappa/Backend/C.hs `lr1Arity` + `i64Elig*`):
+  n explicit, relevant (non-`Q0`) leading binders, and a body built ONLY from
+  in-range `Int` literals, params, the int prims `{add,sub,mul,div,mod,neg,eq,
+  lt,le}Int`, `if` with an int-compare condition, and SATURATED self-calls.
+  Anything else (CLet, if-in-value-position, calls to other globals,
+  ctor/proj/match/do/lambda, an implicit/erased binder, a user-shadowed prim)
+  ⇒ ineligible ⇒ boxed-only.
+- **Codegen**: tail self-calls become an int64 `while`-loop with direct param
+  reassignment (no `KEnv`/`kvar`); non-tail self-calls recurse `kwi_g`; arith
+  uses `__builtin_*_overflow`/`INT64_MIN` guards mirroring the `kp_*` helpers.
+- **Overflow escape (§6 unbounded `Int`)**: the call site (`compileLr1Call`)
+  unboxes `K_INT` args (`kunbox_i64`); a non-`K_INT` arg OR any int64 overflow
+  sets `kovf` and re-runs the boxed worker `kw_g` from the ORIGINAL boxed args,
+  so the result is identical to the interpreter (the boxed/GMP path is the
+  reference). The unboxed worker is auxiliary — never the closure entry.
+- **Verified**: a 20-program battery + two adversarial reviews (overflow/escape
+  parity, eligibility soundness, regression) all PASS; `tailsum 1e6`:
+  193 MB → **368 bytes**, and **1.03×** a handwritten `cc -O2` int64 loop at
+  N=1e9 (raw-C review P0.1/P0.3/P0.5 met for the Int-worker case; gated in
+  `bench.sh`). Soundness is enforced at runtime by `kunbox_i64` even if the
+  body-structural classifier over-accepts: a non-`K_INT` arg always escapes
+  before the unboxed worker runs.
+- **Not yet done**: `Bool`/`Double` unboxed workers, and cross-function int64
+  chaining (calls to OTHER eligible Int globals are currently a boxed
+  boundary). These are follow-ups; `Int` self-recursive kernels are the win.
+
+### LR2 — Numeric IDs for constructors / variants / record fields (notes §4, criterion #5)
+- Assign per-program integer IDs to constructor names, variant tags, and
 
 ### LR2 — Numeric IDs for constructors / variants / record fields (notes §4, criterion #5)
 - Assign per-program integer IDs to constructor names, variant tags, and

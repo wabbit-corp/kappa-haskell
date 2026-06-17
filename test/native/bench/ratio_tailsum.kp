@@ -1,0 +1,7 @@
+-- Large-N tail-recursive Int sum for the raw-C ratio gate (LR1): the kwi_
+-- worker is a scalar int64 while-loop, compared to a handwritten C loop.
+module main
+sumAcc : Int -> Int -> Int
+let sumAcc acc n = if leInt n 0 then acc else sumAcc (addInt acc n) (subInt n 1)
+main : UIO Unit
+let main = printlnString (showInt (sumAcc 0 100000000))

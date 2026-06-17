@@ -148,6 +148,16 @@ KValue *kp_intToDouble(KValue *);
 KValue *kp_eqByte(KValue *, KValue *); KValue *kp_ltByte(KValue *, KValue *);
 KValue *kp_intAnd(KValue *, KValue *); KValue *kp_intOr(KValue *, KValue *);
 KValue *kp_intXor(KValue *, KValue *);
+
+/* LR1: unbox a K_INT to int64 for the typed unboxed Int workers (kwi_*).  A
+ * non-K_INT value (a K_BIGINT that does not fit, or any non-Int box) sets the
+ * overflow/escape flag so the caller re-runs the boxed worker — the unboxed
+ * fast path is only taken when every argument is an inline K_INT. */
+static inline int64_t kunbox_i64(KValue *v, int *ovf) {
+  if (v->tag == K_INT) return v->as.i;
+  *ovf = 1;
+  return 0;
+}
 KValue *kbounce(KValue *fn, KValue *arg);  /* defer a tail-position application */
 KValue *ktrampoline(KValue *r);            /* drive bounces to a value     */
 KValue *kio_tail(KValue *action);          /* mark a do-block tail IO action for krun_io */

@@ -1,0 +1,10 @@
+-- Large-N var-while sum (still boxed/kref — P0.2 pending; reported, not gated).
+module main
+main : UIO Unit
+let main = do
+    var total = 0
+    var i = 1
+    while leInt i 100000000 do
+        total = addInt total i
+        i = addInt i 1
+    printlnString (showInt total)

@@ -1,0 +1,24 @@
+-- LR1: typed unboxed int64 Int workers must match the interpreter on the
+-- non-overflow path (scalar int64) AND on the GMP-overflow-escape path (a
+-- result, or an intermediate, beyond int64 re-runs the boxed worker).  All
+-- depths here are shallow enough for the interpreter oracle to run.
+module main
+
+sumAcc : Int -> Int -> Int
+let sumAcc acc n = if leInt n 0 then acc else sumAcc (addInt acc n) (subInt n 1)
+
+fact : Int -> Int
+let fact n = if leInt n 1 then 1 else mulInt n (fact (subInt n 1))
+
+sq : Int -> Int
+let sq n = mulInt n n
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (sumAcc 0 100))                     -- eligible, fits int64
+    printlnString (showInt (fact 12))                          -- eligible, fits
+    printlnString (showInt (fact 25))                          -- eligible, overflows -> bignum
+    printlnString (showInt (sq 3037000499))                    -- fits int64
+    printlnString (showInt (sq 3037000500))                    -- overflows -> bignum
+    printlnString (showInt (negInt (subInt 0 9223372036854775808)))  -- neg INT64_MIN -> 2^63
+    printlnString (showInt (divInt (subInt 0 9223372036854775808) (subInt 0 1)))  -- INT64_MIN/-1 -> 2^63
