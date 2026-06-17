@@ -114,6 +114,9 @@ eval ctx env = \case
   CRecordT fs -> VRecordT [(n, eval ctx env t) | (n, t) <- fs]
   CRecordV fs -> VRecordV [(n, eval ctx env t) | (n, t) <- fs]
   CProj e f -> vproj ctx (eval ctx env e) f
+  -- P0.4: the fixed-offset index is a backend-only hint; the interpreter
+  -- projects by NAME exactly as for CProj (so check/run/test are unchanged).
+  CProjAt e f _ -> vproj ctx (eval ctx env e) f
   CVariantT ms -> VVariantT (map (eval ctx env) ms)
   CInject tag e -> VInject tag (eval ctx env e)
   CLet _ _ _ rhs body -> eval ctx (eval ctx env rhs : env) body

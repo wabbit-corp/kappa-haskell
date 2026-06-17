@@ -1,0 +1,28 @@
+-- P0.4: projecting a field of a statically-known CLOSED record lowers to a
+-- fixed-offset krec_at (no kproj-by-name strcmp scan).  The offset is the
+-- field's index in the LEXICOGRAPHICALLY-SORTED field list (= the K_REC slot
+-- order), NOT the source order.  Native output must match the interpreter;
+-- open/sealed/dynamic records (not exercised here) stay on kproj.
+module main
+
+-- source order (c,a,b) but sorted layout (a,b,c): mk.a=offset0, mk.c=offset2
+type R = (b : Int, a : Int, c : Int)
+mk : R
+let mk = (c = 30, a = 10, b = 20)
+
+type Inner = (u : Int, v : Int)
+type Outer = (p : Inner, q : Int)
+getOuter : Int -> Outer
+let getOuter n = (q = n, p = (v = 2, u = 1))
+useOuter : Outer -> Int
+let useOuter o = addInt o.q (addInt o.p.u o.p.v)
+
+type Pair a = (fst : a, snd : a)
+firstI : Pair Int -> Int
+let firstI p = p.fst
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (addInt (addInt mk.a mk.b) mk.c))   -- 10+20+30 = 60
+    printlnString (showInt (useOuter (getOuter 100)))          -- 100 + (1+2) = 103
+    printlnString (showInt (firstI (fst = 7, snd = 9)))        -- 7 (polymorphic field type)

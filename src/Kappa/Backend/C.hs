@@ -435,6 +435,7 @@ bodyCapturesEnv = go
       CCtor _ args -> any go args
       CMatch s alts -> go s || any goAlt alts
       CProj e _ -> go e
+      CProjAt e _ _ -> go e
       CInject _ e -> go e
       CForceE e -> go e
       CSealE _ e -> go e
@@ -888,6 +889,12 @@ compile term = case term of
   CProj e f -> do
     ee <- compile e
     pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
+  -- P0.4: a projection of a statically-known CLOSED record reads the field at
+  -- its fixed lexicographic offset (krec_at, the tuple fast path) instead of a
+  -- kproj-by-name strcmp scan.  Open/sealed/dynamic records keep plain CProj.
+  CProjAt e _ i -> do
+    ee <- compile e
+    pure (recAtExpr ee i)
   CDo items -> compileDo items
   -- §13 closed/open variants: injection is a tagged payload.
   CInject tag e -> do

@@ -33,17 +33,18 @@ claim the backend is raw-C overall — only the LR1 Int-worker case meets it):
 | **P0.1** monomorphic numeric boxed → scalar workers | **MET for `Int`** (LR1: scalar `int64` worker, zero per-iter alloc, 1.03× `cc -O2`); `Bool`/`Double` workers not yet done |
 | **P0.2** `var` loops are heap-ref loops | **MET for non-escaping Int var loops** — `arithloop` 145 MB → 704 bytes, 81.5× → 0.7× `cc -O2` (scalar int64 loop, GMP-overflow escape); effectful/escaping/non-Int/else/nested/for loops stay boxed |
 | **P0.3** `KEnv`/`kvar` on hot paths | **MET for LR1 Int workers** (scalar locals, no `KEnv`/`kvar`); general first-order code still uses `kvar` (QW2 only removed the per-iter *rebuild*) |
-| **P0.4** records/ADTs generic+string | **OPEN** — `recproj`/match still `kproj`/`kctor_is` strcmp (LR2) |
+| **P0.4** records/ADTs generic+string | **MET for closed-record projection** — `r.f` on a statically-known *sorted* layout lowers to fixed-offset `krec_at` (no `kproj` strcmp): named records (always `sortOn fst`) + tuples of arity <10 optimized; tuples ≥10 (positional `_1.._n` ≠ lexicographic), open/sealed/dict stay `kproj`. **Ctor/variant pattern-match tags still `kctor_is` strcmp (LR2, #147)**; the boxing/alloc on a record-param worker is orthogonal (LR1-class) |
 | **P0.5** known calls carry trampoline/closure | **MET for LR1 Int self-calls** (loop / direct, no trampoline); general known calls still trampoline |
 | **P1.1** `-O2` perf builds | **DONE** (`bench.sh` builds native + raw-C at `-O2`) |
 | **P1.2** raw-C baseline gates + ratios | **DONE** (raw-C baselines + native/C ratio; `tailsum` gated ≤5× C — actually 0.2×; `arithloop` reported as P0.2-pending) |
 | **P1.3** QW2 doc overclaim | **FIXED** (QW2 = "env rebuild removed", not "env/kvar eliminated"; see below) |
 
-LR1 is one piece of the raw-C goal. The remaining P0.2 (`var`-loop locals),
-P0.4 (record/ADT fixed offsets + numeric tags), and the general P0.3/P0.5
-(bare locals + direct calls for non-`Int` first-order code) are the subsequent
-raw-C iterations, each to be landed behind the boxed-ABI fallback with its own
-review and raw-C gate.
+LR1 (Int workers), P0.2 (`var`-loop locals), and P0.4 (closed-record fixed-
+offset projection) are landed. The remaining raw-C iterations are LR2 (numeric
+ctor/variant pattern-match tags — `switch` instead of `kctor_is`/`strcmp`) and
+the general P0.3/P0.5 (bare locals + direct calls for non-`Int` first-order
+code), each to be landed behind the boxed-ABI fallback with its own review and
+raw-C gate.
 
 ## Quick wins (this iteration) — DONE
 
@@ -162,6 +163,42 @@ each var to an int64 C local that shadows its retained heap ref:
   `bench.sh`.
 - **Not yet done**: loops with an else clause, nested/for loops, effectful
   bodies (correctly boxed today), Bool/Double vars.
+
+### P0.4 — Fixed-offset closed-record projection (raw-C review P0.4) — **DONE (record projection)**
+A projection `r.f` where the receiver's type is a statically-known closed
+record (`VRecordT fs`) lowers to a fixed-offset `krec_at(r, i)` (the tuple
+fast path) instead of `kproj(r, "f")` (a linear `strcmp` scan over the K_REC
+field names) — the report's "no string scans / fixed-offset access".
+- **A new Core node `CProjAt e f i`** carries the offset from elaboration to
+  the backend. The elaborator (`Check.hs` `ordinaryAt`, the closed-`VRecordT`
+  branch — the ONE site with a statically-known closed layout) computes
+  `i = elemIndex f (map fst fs)`. The interpreter (`Eval.hs`) treats `CProjAt`
+  EXACTLY like `CProj` (projects by name, ignores the index), so `check`/`run`/
+  `test` are byte-identical — `CProjAt` is a backend-only refinement. Every
+  other projection site (open / row-polymorphic, sealed §13.2.10, trait-dict,
+  derived single-ctor, metavariable receiver) stays a name-based `CProj`.
+- **Soundness guard (the one subtle invariant):** the offset is the field's
+  index in the K_REC *slot* order, which is the value's `CRecordV` order. For
+  NAMED records that order is canonical `sortOn fst`, so the index = the
+  field's position in the (sorted) `fs`. TUPLES are the one closed record
+  whose value is built POSITIONALLY (`_1.._n`); at arity ≥10 the positional
+  order diverges from lexicographic (`_10` sorts before `_2`), so a
+  lexicographic index would read the WRONG slot. Therefore `CProjAt` is emitted
+  **only when `map fst fs == sort (map fst fs)`** (the layout is provably
+  sorted, so `fs` order = the krec emit order); any unsorted layout (tuples
+  ≥10) falls back to the name-based `CProj`/`kproj`. Named records and tuples
+  of arity <10 keep the fast path.
+- **Verified**: a battery + an adversarial review (which FOUND the ≥10-tuple
+  wrong-slot blocker — the guard above is the fix) + a focused re-review, both
+  PASS zero-serious; in-tree conformance 242/242, `cabal test`, the native
+  suite (incl. `recordproj` named-record + `tupleproj` arity-2..12 cases), and
+  the external fixture corpus all show native ≡ interpreter with **zero
+  regression** (per-fixture identical pre/post P0.4).
+- **Scope honesty**: this removes the `strcmp` string scan on the projection
+  path (a time win — `recproj` 0.16→0.13s). It does NOT reduce `recproj`'s
+  allocation (96.8 MB is `kint` boxing in the un-scalarized record-param
+  worker — an orthogonal LR1-class issue). Ctor/variant pattern-match tags
+  (still `kctor_is`/`strcmp`) are DEFERRED to LR2 (#147).
 
 ### LR2 — Numeric IDs for constructors / variants / record fields (notes §4, criterion #5)
 - Assign per-program integer IDs to constructor names, variant tags, and

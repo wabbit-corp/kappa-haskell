@@ -563,6 +563,7 @@ mentionsThis = \case
   CRecordT fs -> any (mentionsThis . snd) fs
   CRecordV fs -> any (mentionsThis . snd) fs
   CProj e _ -> mentionsThis e
+  CProjAt e _ _ -> mentionsThis e
   CVariantT ms -> any mentionsThis ms
   CInject _ e -> mentionsThis e
   CLet _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
@@ -583,6 +584,9 @@ thisDepsOf = nub . go
   where
     go = \case
       CProj e f
+        | CGlob g <- e, g == thisG -> [f]
+        | otherwise -> go e
+      CProjAt e f _
         | CGlob g <- e, g == thisG -> [f]
         | otherwise -> go e
       CGlob _ -> []
@@ -631,6 +635,7 @@ substThisTm recv = go 0
       CRecordT fs -> CRecordT [(n, go d x) | (n, x) <- fs]
       CRecordV fs -> CRecordV [(n, go d x) | (n, x) <- fs]
       CProj e f -> CProj (go d e) f
+      CProjAt e f i -> CProjAt (go d e) f i
       CVariantT ms -> CVariantT (map (go d) ms)
       CInject tag e -> CInject tag (go d e)
       CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
@@ -937,6 +942,7 @@ occursMeta m = go
       CRecordT fs -> any (go . snd) fs
       CRecordV fs -> any (go . snd) fs
       CProj e _ -> go e
+      CProjAt e _ _ -> go e
       CVariantT ms -> any go ms
       CInject _ e -> go e
       CLet _ _ a b c -> go a || go b || go c
@@ -1656,6 +1662,7 @@ goalHasFlex v = do
           CRecordT fs -> any (goT . snd) fs
           CVariantT ms -> any goT ms
           CProj e _ -> goT e
+          CProjAt e _ _ -> goT e
           _ -> False
 
 -- | Flush postponed trait goals after a body has been elaborated. A
@@ -1827,6 +1834,7 @@ metaIdsOf = nub . go
       CVariantT ms -> concatMap go ms
       CInject _ e -> go e
       CProj e _ -> go e
+      CProjAt e _ _ -> go e
       CMatch s alts -> go s ++ concat [maybe [] go g ++ go b | CaseAlt _ g b <- alts]
       CLet _ _ a b c -> go a ++ go b ++ go c
       CLetRec _ _ a b c -> go a ++ go b ++ go c
@@ -1909,6 +1917,7 @@ zonkTermM depth0 t0 = do
         CRecordT fs -> CRecordT [(n, go d t) | (n, t) <- fs]
         CRecordV fs -> CRecordV [(n, go d t) | (n, t) <- fs]
         CProj e f -> CProj (go d e) f
+        CProjAt e f i -> CProjAt (go d e) f i
         CVariantT ms -> CVariantT (map (go d) ms)
         CInject tg e -> CInject tg (go d e)
         CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
@@ -3330,6 +3339,11 @@ renameThisLabels labelOf = go
       CProj e f
         | CGlob g <- e, g == thisG, Just lbl <- lookup f labelOf -> CProj e lbl
         | otherwise -> CProj (go e) f
+      -- P0.4: renaming a this-label invalidates the fixed offset, so DROP to a
+      -- name-based CProj when renamed; otherwise keep the CProjAt index.
+      CProjAt e f i
+        | CGlob g <- e, g == thisG, Just lbl <- lookup f labelOf -> CProj e lbl
+        | otherwise -> CProjAt (go e) f i
       CLam ic q n b -> CLam ic q n (go b)
       CPi ic q n a b -> CPi ic q n (go a) (go b)
       CApp ic f a -> CApp ic (go f) (go a)
@@ -4549,6 +4563,18 @@ manifestValue ctx tm = case tm of
     case mv' of
       Just (VRecordV fs) | Just v <- lookup f fs -> Just <$> forceM v
       _ -> pure Nothing
+  -- P0.4: a fixed-offset projection manifests by NAME exactly like CProj (the
+  -- catch-all's eager evalIn would wrongly manifest a non-manifest projection).
+  CProjAt t f _ -> do
+    mv <- manifestValue ctx t
+    let unwrap v =
+          forceM v >>= \case
+            VSealV ls r | f `notElem` ls -> unwrap r
+            v' -> pure v'
+    mv' <- traverse unwrap mv
+    case mv' of
+      Just (VRecordV fs) | Just v <- lookup f fs -> Just <$> forceM v
+      _ -> pure Nothing
   CVar i -> case drop i (ctxEnv ctx) of
     (v : _) -> do
       v' <- forceM v
@@ -4711,7 +4737,26 @@ elabDotUnqualified ctx e member mname = do
           | Just fty <- lookup (nameText mn0) fs -> do
               -- §13.2.1: a dependent field type sees the receiver as 'this'
               fty' <- substThisInto ctx tm1 fty
-              pure (CProj tm1 (nameText mn0), fty')
+              -- P0.4: this is the ONLY statically-known CLOSED record layout,
+              -- so emit a fixed-offset projection — the field's index in the
+              -- record's slot order.  The K_REC value's slots follow `fs`
+              -- order; for NAMED records that order is `sortOn fst` (the
+              -- canonical layout), so the index is the field's position in
+              -- `fs`.  CRUCIALLY we only do this when `fs` is *already*
+              -- sorted: tuples are the one closed record whose value is built
+              -- POSITIONALLY (`_1`.._n), which diverges from lexicographic
+              -- order at arity >= 10 (`_10` < `_2`).  Emitting a fixed offset
+              -- there would read the wrong slot, so any unsorted layout falls
+              -- back to the name-based CProj (kproj).  Every other projection
+              -- site (open/sealed/dict/derived) keeps CProj too, and the
+              -- backend treats CProjAt == CProj when it cannot use an offset.
+              let f = nameText mn0
+                  names = map fst fs
+                  proj
+                    | names == sort names
+                    , Just i <- elemIndex f names = CProjAt tm1 f i
+                    | otherwise = CProj tm1 f
+              pure (proj, fty')
           | otherwise -> do
               -- a record receiver without the field: try method sugar,
               -- otherwise report the missing field (§13.1.4)
@@ -5672,6 +5717,7 @@ varUsedAt = go
       CRecordT fs -> any (go ix . snd) fs
       CRecordV fs -> any (go ix . snd) fs
       CProj x _ -> go ix x
+      CProjAt x _ _ -> go ix x
       CVariantT ms -> any (go ix) ms
       CInject _ x -> go ix x
       CLet _ _ a b c -> go ix a || go ix b || go (ix + 1) c
@@ -9973,6 +10019,7 @@ mentionsGroup groupNames = go
       CRecordT fs -> any (go . snd) fs
       CRecordV fs -> any (go . snd) fs
       CProj e _ -> go e
+      CProjAt e _ _ -> go e
       CVariantT ms -> any go ms
       CInject _ e -> go e
       CLet _ _ a b c -> go a || go b || go c
@@ -10005,6 +10052,7 @@ mentionsVar = go
       CRecordT fs -> any (go v . snd) fs
       CRecordV fs -> any (go v . snd) fs
       CProj e _ -> go v e
+      CProjAt e _ _ -> go v e
       CVariantT ms -> any (go v) ms
       CInject _ e -> go v e
       CLet _ _ a b c -> go v a || go v b || go (v + 1) c
@@ -10227,6 +10275,7 @@ coreUsesVar0 = go 0
       CRecordT fs -> any (go d . snd) fs
       CRecordV fs -> any (go d . snd) fs
       CProj e _ -> go d e
+      CProjAt e _ _ -> go d e
       CVariantT ms -> any (go d) ms
       CInject _ e -> go d e
       CLet _ _ a b c -> go d a || go d b || go (d + 1) c
@@ -10262,6 +10311,7 @@ shiftTerm by = go
       CRecordT fs -> CRecordT [(n, go d t) | (n, t) <- fs]
       CRecordV fs -> CRecordV [(n, go d t) | (n, t) <- fs]
       CProj e f -> CProj (go d e) f
+      CProjAt e f i -> CProjAt (go d e) f i
       CVariantT ms -> CVariantT (map (go d) ms)
       CInject t e -> CInject t (go d e)
       CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
@@ -10722,6 +10772,7 @@ placesToThis n = go 0
       CRecordT fs -> CRecordT [(nm, go d x) | (nm, x) <- fs]
       CRecordV fs -> CRecordV [(nm, go d x) | (nm, x) <- fs]
       CProj e f -> CProj (go d e) f
+      CProjAt e f i -> CProjAt (go d e) f i
       CVariantT ms -> CVariantT (map (go d) ms)
       CInject tag e -> CInject tag (go d e)
       CLet q nm a b c -> CLet q nm (go d a) (go d b) (go (d + 1) c)
@@ -10801,6 +10852,7 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
         CRecordV _ -> True
         CSealE _ x -> manifestShaped x
         CProj x _ -> manifestShaped x
+        CProjAt x _ _ -> manifestShaped x
         _ -> False
   case msig of
     Just gd | Nothing <- gdValue gd -> do
@@ -10932,6 +10984,7 @@ occursGlobal g = go
       CRecordT fs -> any (go . snd) fs
       CRecordV fs -> any (go . snd) fs
       CProj e _ -> go e
+      CProjAt e _ _ -> go e
       CVariantT ms -> any go ms
       CInject _ e -> go e
       CLet _ _ a b c -> go a || go b || go c
@@ -11033,6 +11086,7 @@ structuralOK g _ tm0 =
       CRecordT fs -> concat <$> mapM (collect d sub . snd) fs
       CRecordV fs -> concat <$> mapM (collect d sub . snd) fs
       CProj e _ -> collect d sub e
+      CProjAt e _ _ -> collect d sub e
       CVariantT ms -> concat <$> mapM (collect d sub) ms
       CInject _ e -> collect d sub e
       CThunkE e -> collect d sub e

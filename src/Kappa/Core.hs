@@ -87,6 +87,15 @@ data Term
   | CRecordT ![(Text, Term)] -- ^ canonical (lexicographic) field order
   | CRecordV ![(Text, Term)]
   | CProj !Term !Text
+  | -- | @CProjAt e f i@: a projection of field @f@ from a record of a
+    -- statically-known CLOSED layout, where @i@ is @f@'s index in the
+    -- lexicographically-sorted field list (= the @K_REC@ slot order).
+    -- Semantically identical to @CProj e f@ — the interpreter ignores @i@ and
+    -- looks up by name; the native backend (P0.4) reads the field at a fixed
+    -- offset (@krec_at@) instead of a name scan.  Emitted only by the closed
+    -- @VRecordT@ projection branch in elaboration; every other projection
+    -- stays a plain @CProj@.
+    CProjAt !Term !Text !Int
   | CVariantT ![Term] -- ^ canonical member order
   | CInject !Text !Term -- ^ member-identity tag + payload
   | CLet !Q !Text !Term !Term !Term -- ^ q, name, type, rhs, body

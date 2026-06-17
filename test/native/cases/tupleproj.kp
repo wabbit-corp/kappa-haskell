@@ -1,0 +1,23 @@
+-- P0.4 regression: tuple field projection (t._N).  Tuples are the one CLOSED
+-- record built in POSITIONAL slot order (_1.._n), which DIVERGES from the
+-- lexicographic field order at arity >= 10 (_10 sorts before _2).  So a fixed
+-- offset = lexicographic index would read the WRONG slot for big tuples; the
+-- backend must keep projecting unsorted layouts by NAME (kproj).  Small tuples
+-- (positional == sorted) still get the krec_at fast path.  All must match the
+-- interpreter, which always projects by name.
+module main
+
+small : (Int, Int, Int)
+let small = (11, 22, 33)
+
+big : (Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int)
+let big = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (addInt small._1 (addInt small._2 small._3)))  -- 66
+    printlnString (showInt big._1)   -- 1
+    printlnString (showInt big._2)   -- 2  (the slot the lexicographic bug mislabelled)
+    printlnString (showInt big._9)   -- 9
+    printlnString (showInt big._10)  -- 10
+    printlnString (showInt big._12)  -- 12
