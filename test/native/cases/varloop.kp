@@ -1,0 +1,31 @@
+-- P0.2: a non-escaping Int `var` loop scalarizes to int64 C locals; the
+-- result must match the interpreter on the non-overflow path AND when the
+-- scalar loop overflows and escapes to the boxed/GMP path.  An effectful or
+-- escaping var loop stays boxed (also matching).  `while` runs iteratively in
+-- the interpreter, so the oracle runs these directly.
+module main
+
+main : UIO Unit
+let main = do
+    -- scalar accumulator (no overflow)
+    var total = 0
+    var i = 1
+    while leInt i 1000 do
+        total = addInt total i
+        i = addInt i 1
+    printlnString (showInt total)
+    -- scalar accumulator that OVERFLOWS int64 mid-loop -> escapes to GMP
+    var prod = 1
+    var j = 1
+    while leInt j 25 do
+        prod = mulInt prod j
+        j = addInt j 1
+    printlnString (showInt prod)
+    -- effectful body -> stays boxed (each line printed once)
+    var s = 0
+    var k = 1
+    while leInt k 4 do
+        s = addInt s k
+        printlnString (stringAppend "s=" (showInt s))
+        k = addInt k 1
+    printlnString (showInt s)

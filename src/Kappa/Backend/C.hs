@@ -91,6 +91,9 @@ data GenState = GenState
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
+  , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
+  , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
+  , gsI64Escape :: !Text -- ^ the C statement spliced by i64Arith on overflow / INT64_MIN: @*kovf = 1; return 0;@ for an LR1 worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
   }
 
 -- | A loop's labelled control targets: its source label (if any), the C
@@ -324,6 +327,9 @@ generateC cs mainG ffiPrims =
           , gsLoops = []
           , gsDefer = []
           , gsScopeDefers = []
+          , gsScalars = Map.empty
+          , gsScalarRegion = False
+          , gsI64Escape = "*kovf = 1; return 0;"
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -689,12 +695,40 @@ i64Tail g n ps env term = case term of
         e <- i64Expr g n env term
         emit ("return " <> e <> ";")
 
--- | Compile an int64-expressible value: a literal, a var, an
--- overflow-checked arith op, or a (non-tail) self-call (whose @kovf@ is
--- propagated immediately).  Each op that overflows sets @*kovf@ and returns 0
--- at once — never continuing with a wrapped value.
+-- | P0.2: if @term@ is a read of a scalarized var (@__runIO (readRef <var>)@,
+-- the elaborator's auto-deref) while emitting the scalar loop region, the
+-- int64 C local that shadows it; else 'Nothing'.  (For an LR1 worker
+-- 'gsScalarRegion' is false, so this never fires there.)
+scalarReadOf :: Term -> Gen (Maybe Text)
+scalarReadOf term = do
+  region <- gets gsScalarRegion
+  if not region
+    then pure Nothing
+    else case runIOSplice term of
+      Just action -> case spineOf action of
+        (CGlob h, sargs) -> do
+          mp <- globPrimName h
+          case (mp, [a | (Expl, a) <- sargs]) of
+            (Just "readRef", [CVar idx]) -> do
+              sc <- gets gsScalars
+              pure (fst <$> Map.lookup idx sc)
+            _ -> pure Nothing
+        _ -> pure Nothing
+      Nothing -> pure Nothing
+
+-- | Compile an int64-expressible value: a scalarized var read (P0.2), a
+-- literal, a var, an overflow-checked arith op, or a (non-tail) self-call
+-- (whose @kovf@ is propagated immediately).  Each op that overflows sets
+-- @*kovf@ (or runs 'gsI64Escape') and bails at once — never a wrapped value.
 i64Expr :: GName -> Int -> [Text] -> Term -> Gen Text
-i64Expr g n env term = case term of
+i64Expr g n env term = do
+  msc <- scalarReadOf term
+  case msc of
+    Just sloc -> pure sloc
+    Nothing -> i64ExprBody g n env term
+
+i64ExprBody :: GName -> Int -> [Text] -> Term -> Gen Text
+i64ExprBody g n env term = case term of
   CLit (LitInt m) -> pure (cIntLit m)
   CVar i -> pure (env !! i)
   _ -> case spineOf term of
@@ -720,12 +754,13 @@ i64Arith :: GName -> Int -> [Text] -> Text -> [Term] -> Gen Text
 i64Arith g n env p expl = do
   aes <- mapM (i64Expr g n env) expl
   t <- freshN "ti_"
+  esc <- gets gsI64Escape -- LR1 worker: `*kovf=1; return 0;`; scalar loop: flush+goto boxed
   case (p, aes) of
-    ("addInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_add_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { *kovf = 1; return 0; }")
-    ("subInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_sub_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { *kovf = 1; return 0; }")
-    ("mulInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_mul_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { *kovf = 1; return 0; }")
-    ("negInt", [a]) -> emit ("int64_t " <> t <> "; if (" <> a <> " == INT64_MIN) { *kovf = 1; return 0; } else " <> t <> " = -" <> a <> ";")
-    ("divInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"divInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) { *kovf = 1; return 0; } else " <> t <> " = " <> a <> " / " <> b <> ";")
+    ("addInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_add_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
+    ("subInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_sub_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
+    ("mulInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_mul_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
+    ("negInt", [a]) -> emit ("int64_t " <> t <> "; if (" <> a <> " == INT64_MIN) { " <> esc <> " } else " <> t <> " = -" <> a <> ";")
+    ("divInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"divInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) { " <> esc <> " } else " <> t <> " = " <> a <> " / " <> b <> ";")
     ("modInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"modInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) " <> t <> " = 0; else " <> t <> " = " <> a <> " % " <> b <> ";")
     _ -> lr1UnreachableStmt
   pure t
@@ -1849,13 +1884,19 @@ compileItems mode items0 = do
         flushFramesInline scopeFrames
         emitTailReturn te
       KVarItem _ t -> do
-        te <- compile t
-        ref <- freshN "var_"
-        emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
-        env <- gets gsEnv
-        e2 <- freshN "env_"
-        emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
-        withEnv e2 (go rest)
+        -- P0.2: if this var begins an eligible scalarizable var+while pattern,
+        -- lower the whole group to int64 C locals; else the boxed `var` cell.
+        mplan <- scalarLoopPlan (item : rest)
+        case mplan of
+          Just plan -> emitScalarLoop plan
+          Nothing -> do
+            te <- compile t
+            ref <- freshN "var_"
+            emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
+            env <- gets gsEnv
+            e2 <- freshN "env_"
+            emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
+            withEnv e2 (go rest)
       KAssign refT monadic rhsT -> do
         rhs <- compile rhsT
         rhsv <-
@@ -1972,6 +2013,31 @@ compileItems mode items0 = do
             Nothing -> pure ()
           env' <- bindPatScrut sv env pat
           withEnv env' (go rest)
+        -- P0.2: emit the scalarized var group: each var keeps its retained
+        -- heap ref (boxed fallback layout) AND gets an int64 shadow local;
+        -- gsScalars maps each var's de Bruijn index (at the push-free loop
+        -- body) to (local, ref); then the scalar+boxed loop, then the
+        -- continuation (reads the flushed refs, region off).
+        emitScalarLoop plan = goVars [] (slInits plan)
+          where
+            k = length (slInits plan)
+            goVars acc [] = do
+              let declOrder = reverse acc -- [(s0,ref0), (s1,ref1), …] in decl order
+                  scs = Map.fromList [(k - 1 - j, sr) | (j, sr) <- zip [0 ..] declOrder]
+              saved <- gets gsScalars
+              modify' $ \g -> g {gsScalars = scs}
+              compileScalarWhile (slLabel plan) (slCond plan) (slBody plan)
+              modify' $ \g -> g {gsScalars = saved}
+              go (slRest plan)
+            goVars acc (initLit : more) = do
+              ref <- freshN "var_"
+              emit ("KValue *" <> ref <> " = kref_new(kint(" <> cIntLit initLit <> "));")
+              env <- gets gsEnv
+              e2 <- freshN "env_"
+              emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
+              s <- freshN "sv_"
+              emit ("int64_t " <> s <> " = " <> cIntLit initLit <> ";")
+              withEnv e2 (goVars ((s, ref) : acc) more)
 
 -- | §18.2.5: jump to a loop's continue\/break target. @ml@ selects the
 -- loop: 'Nothing' is the innermost; @Just l@ the enclosing loop labelled
@@ -2169,6 +2235,176 @@ withLoop ctx act = do
   r <- act
   modify' $ \g -> g {gsLoops = saved}
   pure r
+
+-- ── P0.2: scalarize a non-escaping Int `var` loop to int64 C locals ──────
+-- (raw-C review P0.2).  A run of @var x = <in-range Int literal>@ declarations
+-- IMMEDIATELY followed by a @while <int compare> do <flat int assignments>@,
+-- where every such var is a non-escaping Int and the loop body / continuation
+-- contain no closure-creating form, lowers to int64 C locals + a scalar while
+-- loop with NO kref/kvar/kint per iteration.  On overflow / INT64_MIN the
+-- scalar loop flushes EVERY var to its retained heap ref and jumps into the
+-- EXISTING boxed loop, which continues with GMP promotion (§6) — bit-identical
+-- to the interpreter.  Anything outside this exact shape keeps the (correct)
+-- boxed lowering, so no deferral can regress.
+
+i64InRange :: Integer -> Bool
+i64InRange m = m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int)
+
+-- | The de Bruijn index of a scalarized-var READ — @__runIO (readRef (CVar i))@
+-- with @0 <= i < k@ (the elaborator auto-derefs a surface var read).
+scalarVarReadIdx :: Int -> Term -> Gen (Maybe Int)
+scalarVarReadIdx k term = case runIOSplice term of
+  Just action -> case spineOf action of
+    (CGlob h, sargs) -> do
+      mp <- globPrimName h
+      case (mp, [a | (Expl, a) <- sargs]) of
+        (Just "readRef", [CVar i]) | i >= 0 && i < k -> pure (Just i)
+        _ -> pure Nothing
+    _ -> pure Nothing
+  Nothing -> pure Nothing
+
+-- | int64-expressible over scalar-var reads (idx<k), in-range Int literals,
+-- and the int arith prims — and NOTHING else (an outer-var read, a non-listed
+-- prim, a ctor, etc. fails, keeping the loop boxed).
+i64LoopExpr :: Int -> Term -> Gen Bool
+i64LoopExpr k term = do
+  sv <- scalarVarReadIdx k term
+  case sv of
+    Just _ -> pure True
+    Nothing -> case term of
+      CLit (LitInt m) -> pure (i64InRange m)
+      _ -> case spineOf term of
+        (CGlob h, sargs) -> do
+          let expl = [a | (Expl, a) <- sargs]
+          mp <- globPrimName h
+          case mp of
+            Just p | Just ar <- lr1ArithArity p, length expl == ar -> andM (map (i64LoopExpr k) expl)
+            _ -> pure False
+        _ -> pure False
+
+-- | A loop condition: a saturated int compare over loop-expressible operands.
+i64LoopCond :: Int -> Term -> Gen Bool
+i64LoopCond k term = case spineOf term of
+  (CGlob h, sargs) -> do
+    let expl = [a | (Expl, a) <- sargs]
+    mp <- globPrimName h
+    case (mp >>= lr1CmpOp, expl) of
+      (Just _, [_, _]) -> andM (map (i64LoopExpr k) expl)
+      _ -> pure False
+  _ -> pure False
+
+data ScalarLoop = ScalarLoop
+  { slInits :: ![Integer] -- the k var initial literals, declaration order
+  , slLabel :: !(Maybe Text)
+  , slCond :: !Term
+  , slBody :: ![KItem] -- flat non-monadic @KAssign (CVar idx<k) _ rhs@
+  , slRest :: ![KItem] -- continuation after the loop
+  }
+
+-- | Does any Term in this item (recursively) build a closure/thunk/do that
+-- could capture an enclosing var by reference? (Reuses 'bodyCapturesEnv'.)
+itemHasClosure :: KItem -> Bool
+itemHasClosure item = case item of
+  KExpr t -> bodyCapturesEnv t
+  KBind _ _ t -> bodyCapturesEnv t
+  KLet _ _ t -> bodyCapturesEnv t
+  KLetQ _ t mels -> bodyCapturesEnv t || maybe False (bodyCapturesEnv . snd) mels
+  KVarItem _ t -> bodyCapturesEnv t
+  KAssign r _ t -> bodyCapturesEnv r || bodyCapturesEnv t
+  KReturn t -> bodyCapturesEnv t
+  KWhile _ c b mels -> bodyCapturesEnv c || any itemHasClosure b || maybe False (any itemHasClosure) mels
+  KFor _ _ s b mels -> bodyCapturesEnv s || any itemHasClosure b || maybe False (any itemHasClosure) mels
+  KIf alts mels -> any (\(c, b) -> bodyCapturesEnv c || any itemHasClosure b) alts || maybe False (any itemHasClosure) mels
+  KDefer t -> bodyCapturesEnv t
+  KUsing _ a r -> bodyCapturesEnv a || bodyCapturesEnv r
+  KBreak _ -> False
+  KContinue _ -> False
+
+-- | Recognize the eligible scalarizable shape at the head of an item list.
+scalarLoopPlan :: [KItem] -> Gen (Maybe ScalarLoop)
+scalarLoopPlan items =
+  case span isKVar items of
+    (varRun@(_ : _), KWhile ml cond body Nothing : rest2)
+      | Just inits <- traverse initLit varRun ->
+          do
+            let k = length inits
+            okCond <- i64LoopCond k cond
+            okBody <- andM (map (bodyItemOk k) body)
+            -- v1: non-empty flat body, no closure anywhere in the loop or the
+            -- continuation (escape gate), no else (deferred).
+            let noClosure = not (any itemHasClosure (KWhile ml cond body Nothing : rest2))
+            pure $
+              if okCond && okBody && not (null body) && noClosure
+                then Just (ScalarLoop inits ml cond body rest2)
+                else Nothing
+    _ -> pure Nothing
+  where
+    isKVar (KVarItem _ _) = True
+    isKVar _ = False
+    initLit (KVarItem _ (CLit (LitInt m))) | i64InRange m = Just m
+    initLit _ = Nothing
+    bodyItemOk k (KAssign (CVar idx) False rhs) | idx >= 0 && idx < k = i64LoopExpr k rhs
+    bodyItemOk _ _ = pure False
+
+-- | Emit a scalarized var loop: an int64 scalar fast-path loop, then the
+-- EXISTING boxed loop as the overflow continuation.  Requires 'gsScalars' to
+-- map each var's de Bruijn index (at the loop body) to its (int64 local, ref).
+compileScalarWhile :: Maybe Text -> Term -> [KItem] -> Gen ()
+compileScalarWhile mlabel cond body = do
+  scs <- gets gsScalars
+  cur <- gets gsCur
+  n <- freshN "sl_"
+  let scontL = "kscont_" <> n
+      sflushL = "ksflush_" <> n
+      boxedL = "ksbox_" <> n
+      afterL = "ksaft_" <> n
+  -- A SNAPSHOT int64 local per scalar var holds the var's value at the TOP of
+  -- the current iteration (pre-condition, pre-body).  The body commits each
+  -- assignment in place (so a later read in the same iteration sees the new
+  -- value — sequential semantics), but on overflow we flush the SNAPSHOTS, not
+  -- the partially-mutated scalars, then re-run the iteration boxed from the
+  -- top — so an earlier-committed assignment is NOT applied twice.  The
+  -- snapshots are register copies (no per-iteration allocation).
+  snaps <- forM (Map.elems scs) $ \(s, ref) -> do
+    snap <- freshN "snap_"
+    emit ("int64_t " <> snap <> ";")
+    pure (s, ref, snap)
+  let flushScalars = ["kref_set(" <> ref <> ", kint(" <> s <> "));" | (s, ref, _) <- snaps]
+      flushSnaps = ["kref_set(" <> ref <> ", kint(" <> snap <> "));" | (_, ref, snap) <- snaps]
+  savedEsc <- gets gsI64Escape
+  -- the scalar copy: gsScalarRegion on; an overflow flushes the PRE-iteration
+  -- snapshots and jumps to the boxed loop, which re-runs this iteration with
+  -- GMP promotion (§6) — no double application of earlier assignments.
+  modify' $ \g ->
+    g
+      { gsScalarRegion = True
+      , gsI64Escape = T.concat (map (<> " ") flushSnaps) <> "goto " <> boxedL <> ";"
+      }
+  emit (scontL <> ": ;")
+  -- snapshot BEFORE the condition test (so even a condition-overflow flushes a
+  -- valid pre-iteration state, never an uninitialized snapshot).
+  forM_ snaps $ \(s, _, snap) -> emit (snap <> " = " <> s <> ";")
+  ce <- i64Cond cur 0 [] cond
+  emit ("if (!" <> ce <> ") goto " <> sflushL <> ";")
+  forM_ body $ \item -> case item of
+    KAssign (CVar idx) False rhs -> do
+      rhse <- i64Expr cur 0 [] rhs
+      case Map.lookup idx scs of
+        Just (s, _) -> emit (s <> " = " <> rhse <> ";")
+        Nothing -> lr1UnreachableStmt
+    _ -> lr1UnreachableStmt
+  emit ("goto " <> scontL <> ";")
+  -- normal scalar completion: flush every scalar var's FINAL value, skip boxed.
+  emit (sflushL <> ": ;")
+  forM_ flushScalars emit
+  emit ("goto " <> afterL <> ";")
+  -- boxed continuation (overflow target): the EXISTING boxed lowering, region
+  -- off, reading the just-flushed (snapshot) refs and promoting to GMP (§6).
+  emit (boxedL <> ": ;")
+  modify' $ \g -> g {gsScalarRegion = False}
+  compileLoop mlabel (LoopWhile cond) body Nothing
+  emit (afterL <> ": ;")
+  modify' $ \g -> g {gsI64Escape = savedEsc}
 
 -- | §18 let? else branch: bind the residue pattern and run the else action
 -- as the scope's result (it replaces the rest of the scope).  With no

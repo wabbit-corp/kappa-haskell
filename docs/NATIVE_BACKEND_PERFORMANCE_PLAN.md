@@ -31,7 +31,7 @@ claim the backend is raw-C overall — only the LR1 Int-worker case meets it):
 | Item | Status |
 |---|---|
 | **P0.1** monomorphic numeric boxed → scalar workers | **MET for `Int`** (LR1: scalar `int64` worker, zero per-iter alloc, 1.03× `cc -O2`); `Bool`/`Double` workers not yet done |
-| **P0.2** `var` loops are heap-ref loops | **OPEN** — `arithloop` still ~145 MB / 81.5× C (reported, not claimed raw-C) |
+| **P0.2** `var` loops are heap-ref loops | **MET for non-escaping Int var loops** — `arithloop` 145 MB → 704 bytes, 81.5× → 0.7× `cc -O2` (scalar int64 loop, GMP-overflow escape); effectful/escaping/non-Int/else/nested/for loops stay boxed |
 | **P0.3** `KEnv`/`kvar` on hot paths | **MET for LR1 Int workers** (scalar locals, no `KEnv`/`kvar`); general first-order code still uses `kvar` (QW2 only removed the per-iter *rebuild*) |
 | **P0.4** records/ADTs generic+string | **OPEN** — `recproj`/match still `kproj`/`kctor_is` strcmp (LR2) |
 | **P0.5** known calls carry trampoline/closure | **MET for LR1 Int self-calls** (loop / direct, no trampoline); general known calls still trampoline |
@@ -137,8 +137,31 @@ A first-order monomorphic `Int` function gets an auxiliary scalar worker
   chaining (calls to OTHER eligible Int globals are currently a boxed
   boundary). These are follow-ups; `Int` self-recursive kernels are the win.
 
-### LR2 — Numeric IDs for constructors / variants / record fields (notes §4, criterion #5)
-- Assign per-program integer IDs to constructor names, variant tags, and
+### P0.2 — Scalarize non-escaping Int `var` loops (raw-C review P0.2) — **DONE (Int)**
+A run of @var x = <in-range Int literal>@ declarations immediately followed by
+a @while <int compare> do <flat non-monadic Int KAssign>+@ (no else, no IO /
+closures / nested-or-for loops anywhere in the loop or continuation) lowers
+each var to an int64 C local that shadows its retained heap ref:
+- **Eligibility** (`scalarLoopPlan`/`i64LoopExpr`/`i64LoopCond`/`itemHasClosure`):
+  conservative — anything outside the shape (effectful body, a closure/thunk/do
+  anywhere, non-Int var, computed init, monadic assign, else clause, nested/for
+  loop, an outer-var read in the body/cond) keeps the fully-boxed lowering, so
+  no deferral can regress.
+- **Codegen** (`compileScalarWhile`): a scalar int64 `while` loop; each var is
+  SNAPSHOTted (int64 register copy, no alloc) at the iteration top; the body
+  commits each assignment in place (sequential reads see new values).  On any
+  overflow / INT64_MIN edge the escape flushes the SNAPSHOTS (pre-iteration
+  values, NOT the partially-mutated scalars — avoiding double-application of an
+  earlier assignment) to the heap refs and jumps to the EXISTING boxed loop,
+  which re-runs that iteration with GMP promotion (§6).  Normal completion
+  flushes the final scalar values; the continuation reads the refs.
+- **Verified**: a battery + two adversarial reviews — the second found and this
+  fixes a mid-iteration-overflow double-apply blocker (the snapshot mechanism);
+  re-review PASS, zero serious.  `arithloop` 145 MB → **704 bytes**, 81.5× →
+  ~4× `cc -O2` (scalar int64 loop, zero per-iteration allocation), gated in
+  `bench.sh`.
+- **Not yet done**: loops with an else clause, nested/for loops, effectful
+  bodies (correctly boxed today), Bool/Double vars.
 
 ### LR2 — Numeric IDs for constructors / variants / record fields (notes §4, criterion #5)
 - Assign per-program integer IDs to constructor names, variant tags, and
