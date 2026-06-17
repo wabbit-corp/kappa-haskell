@@ -134,6 +134,18 @@ else
   echo "   FAIL: perf build failed"; fails=$((fails+1))
 fi
 
+echo "== native benchmarks + allocation gates (bench.sh) =="
+# Exercises the optimized fast paths (QW1 direct int prims, QW2 in-place
+# self-tail loops, constructor/match, record projection) and gates on correct
+# results + a steady-state heap bound (a per-iteration env/data leak would
+# blow it).  Not dead code: each bench computes a checked result.
+if timeout 300 bash "$ROOT/test/native/bench.sh" >"$WORK/bench.log" 2>&1; then
+  echo "   ok ($(grep -cE '^(arithloop|tailsum|recproj|listfold)' "$WORK/bench.log") benches; results + total_bytes allocation gates passed)"
+  grep -E '^(arithloop|tailsum|recproj|listfold)' "$WORK/bench.log" | sed 's/^/     /'
+else
+  echo "   FAIL: benchmark gates failed"; tail -16 "$WORK/bench.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
 echo "== HTTP + sqlite demo =="
 if command -v sqlite3 >/dev/null 2>&1 || ldconfig -p 2>/dev/null | grep -q sqlite3; then
   if timeout 320 bash "$ROOT/examples/native/http_sqlite/run.sh" >"$WORK/demo.log" 2>&1 && grep -q "DEMO OK" "$WORK/demo.log"; then

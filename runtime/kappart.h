@@ -127,6 +127,27 @@ KValue *kvar(KEnv *e, int ix);
 KValue *kapp(KValue *f, KValue *x);   /* explicit application (drains tail bounces) */
 KValue *kappi(KValue *f, KValue *x);  /* implicit (erased for ctor/prim)  */
 KValue *kprim_call(const char *name, int argc, KValue **args); /* saturated-prim fast path */
+/* Direct helpers for statically known saturated primitives (QW1): the
+ * codegen emits these instead of `kprim_call` — no string dispatch, no arity
+ * check, no per-call argument array.  `prim_fire_pure` delegates to them. */
+KValue *kp_addInt(KValue *, KValue *);   KValue *kp_subInt(KValue *, KValue *);
+KValue *kp_mulInt(KValue *, KValue *);   KValue *kp_divInt(KValue *, KValue *);
+KValue *kp_modInt(KValue *, KValue *);   KValue *kp_negInt(KValue *);
+KValue *kp_eqInt(KValue *, KValue *);    KValue *kp_ltInt(KValue *, KValue *);
+KValue *kp_leInt(KValue *, KValue *);
+KValue *kp_addDouble(KValue *, KValue *); KValue *kp_subDouble(KValue *, KValue *);
+KValue *kp_mulDouble(KValue *, KValue *); KValue *kp_divDouble(KValue *, KValue *);
+KValue *kp_negDouble(KValue *);           KValue *kp_ltDouble(KValue *, KValue *);
+KValue *kp_floatEq(KValue *, KValue *);   KValue *kp_eqDouble(KValue *, KValue *);
+KValue *kp_stringAppend(KValue *, KValue *); KValue *kp_eqStr(KValue *, KValue *);
+KValue *kp_ltStr(KValue *, KValue *);
+KValue *kp_eqScalar(KValue *, KValue *);  KValue *kp_ltScalar(KValue *, KValue *);
+KValue *kp_showInt(KValue *);   KValue *kp_showDouble(KValue *);
+KValue *kp_showScalar(KValue *); KValue *kp_showStringLit(KValue *);
+KValue *kp_intToDouble(KValue *);
+KValue *kp_eqByte(KValue *, KValue *); KValue *kp_ltByte(KValue *, KValue *);
+KValue *kp_intAnd(KValue *, KValue *); KValue *kp_intOr(KValue *, KValue *);
+KValue *kp_intXor(KValue *, KValue *);
 KValue *kbounce(KValue *fn, KValue *arg);  /* defer a tail-position application */
 KValue *ktrampoline(KValue *r);            /* drive bounces to a value     */
 KValue *kio_tail(KValue *action);          /* mark a do-block tail IO action for krun_io */

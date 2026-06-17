@@ -1,0 +1,9 @@
+-- Tail-recursive accumulator sum: exercises the QW2 self-tail worker loop
+-- (param cells updated in place, no per-iteration KEnv alloc) and QW1 int
+-- prims.  Deep tail recursion -> native runs in constant stack; the
+-- interpreter may trip its §32.1 recursion-depth guard (native-only timing).
+module main
+sumAcc : Int -> Int -> Int
+let sumAcc acc n = if leInt n 0 then acc else sumAcc (addInt acc n) (subInt n 1)
+main : UIO Unit
+let main = printlnString (showInt (sumAcc 0 2000000))

@@ -25,9 +25,21 @@ static void *gmp_gc_realloc(void *p, size_t old, size_t n) {
 }
 static void gmp_gc_free(void *p, size_t n) { (void)p; (void)n; }
 
+/* QW4: optional allocation/GC report at exit, gated by $KAPPA_GC_STATS, for
+ * the native benchmark gates (test/native/bench.sh).  Off unless the env var
+ * is set, so normal runs are unaffected. */
+static void krt_at_exit(void) {
+  if (getenv("KAPPA_GC_STATS")) {
+    fprintf(stderr, "[kappa-gc] total_bytes=%zu heap_size=%zu collections=%lu\n",
+            (size_t)GC_get_total_bytes(), (size_t)GC_get_heap_size(),
+            (unsigned long)GC_get_gc_no());
+  }
+}
+
 void krt_init(void) {
   GC_INIT();
   mp_set_memory_functions(gmp_gc_alloc, gmp_gc_realloc, gmp_gc_free);
+  atexit(krt_at_exit);
 }
 
 void *kgc_alloc(size_t n) {
@@ -1136,86 +1148,141 @@ static int kint_is_zero(KValue *v) {
   return mpz_sgn((const __mpz_struct *)v->as.big.mpz) == 0;
 }
 
+/* ── Direct primitive helpers (QW1) ──────────────────────────────────────
+ * The hot pure primitives are factored into named, externally-visible
+ * helpers so the codegen can emit a DIRECT call (`kp_addInt(x, y)`) for a
+ * statically known saturated primitive — no string dispatch, no `prim_arity`
+ * / `prim_is_io` check, no per-call argument array.  `prim_fire_pure` (the
+ * reflective string-keyed path, used for partial application / dynamic
+ * firing) delegates to the same helpers, so there is one source of truth for
+ * each primitive's semantics. */
+KValue *kp_addInt(KValue *x, KValue *y) {
+  int64_t r;
+  if (x->tag == K_INT && y->tag == K_INT && !__builtin_add_overflow(x->as.i, y->as.i, &r))
+    return kint(r);
+  return kint_binop_mpz(x, y, mpz_add);
+}
+KValue *kp_subInt(KValue *x, KValue *y) {
+  int64_t r;
+  if (x->tag == K_INT && y->tag == K_INT && !__builtin_sub_overflow(x->as.i, y->as.i, &r))
+    return kint(r);
+  return kint_binop_mpz(x, y, mpz_sub);
+}
+KValue *kp_mulInt(KValue *x, KValue *y) {
+  int64_t r;
+  if (x->tag == K_INT && y->tag == K_INT && !__builtin_mul_overflow(x->as.i, y->as.i, &r))
+    return kint(r);
+  return kint_binop_mpz(x, y, mpz_mul);
+}
+KValue *kp_divInt(KValue *x, KValue *y) {
+  if (kint_is_zero(y)) krt_fail("divInt: division by zero");
+  if (x->tag == K_INT && y->tag == K_INT && !(x->as.i == INT64_MIN && y->as.i == -1))
+    return kint(x->as.i / y->as.i); /* C99 trunc toward zero == quot */
+  return kint_binop_mpz(x, y, mpz_tdiv_q); /* truncated quotient */
+}
+KValue *kp_modInt(KValue *x, KValue *y) {
+  if (kint_is_zero(y)) krt_fail("modInt: division by zero");
+  if (x->tag == K_INT && y->tag == K_INT) {
+    if (x->as.i == INT64_MIN && y->as.i == -1) return kint(0);
+    return kint(x->as.i % y->as.i); /* C99 % == rem */
+  }
+  return kint_binop_mpz(x, y, mpz_tdiv_r); /* remainder, sign of dividend */
+}
+KValue *kp_negInt(KValue *x) {
+  if (x->tag == K_INT && x->as.i != INT64_MIN) return kint(-x->as.i);
+  mpz_t z, zr;
+  mpz_init(z); mpz_init(zr);
+  kload_mpz(x, z); mpz_neg(zr, z);
+  return kfrom_mpz(zr);
+}
+KValue *kp_eqInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) == 0); }
+KValue *kp_ltInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) < 0); }
+KValue *kp_leInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) <= 0); }
+KValue *kp_addDouble(KValue *x, KValue *y) { return kdbl(kas_dbl(x) + kas_dbl(y)); }
+KValue *kp_subDouble(KValue *x, KValue *y) { return kdbl(kas_dbl(x) - kas_dbl(y)); }
+KValue *kp_mulDouble(KValue *x, KValue *y) { return kdbl(kas_dbl(x) * kas_dbl(y)); }
+KValue *kp_divDouble(KValue *x, KValue *y) { return kdbl(kas_dbl(x) / kas_dbl(y)); }
+KValue *kp_negDouble(KValue *x) { return kdbl(-kas_dbl(x)); }
+KValue *kp_ltDouble(KValue *x, KValue *y) { return kbool(kas_dbl(x) < kas_dbl(y)); }
+KValue *kp_floatEq(KValue *x, KValue *y) { return kbool(kas_dbl(x) == kas_dbl(y)); }
+KValue *kp_eqDouble(KValue *x, KValue *y) { /* §6.1.3 raw-bit equality */
+  uint64_t bx, by;
+  double da = kas_dbl(x), db = kas_dbl(y);
+  memcpy(&bx, &da, 8); memcpy(&by, &db, 8);
+  return kbool(bx == by);
+}
+KValue *kp_stringAppend(KValue *x, KValue *y) { return str_append(x, y); }
+KValue *kp_eqStr(KValue *x, KValue *y) { return kbool(klit_eq(x, y)); }
+KValue *kp_ltStr(KValue *x, KValue *y) {
+  if (x->tag != K_STR || y->tag != K_STR) krt_fail("ltStr: argument is not a String");
+  size_t la = x->as.str.len, lb = y->as.str.len, m = la < lb ? la : lb;
+  int c = memcmp(x->as.str.p, y->as.str.p, m);
+  return kbool(c < 0 || (c == 0 && la < lb));
+}
+KValue *kp_eqScalar(KValue *x, KValue *y) {
+  if (x->tag != K_CHR || y->tag != K_CHR) krt_fail("eqScalar: argument is not a scalar");
+  return kbool(x->as.chr == y->as.chr);
+}
+KValue *kp_ltScalar(KValue *x, KValue *y) {
+  if (x->tag != K_CHR || y->tag != K_CHR) krt_fail("ltScalar: argument is not a scalar");
+  return kbool(x->as.chr < y->as.chr);
+}
+/* show* (pure, 1-arg): pervasive in numeric output. */
+KValue *kp_showInt(KValue *x) { return show_int_val(x); }
+KValue *kp_showDouble(KValue *x) { return show_double(kas_dbl(x)); }
+KValue *kp_showScalar(KValue *x) { return show_scalar(x); }
+KValue *kp_showStringLit(KValue *x) { return show_string_lit(x); }
+KValue *kp_intToDouble(KValue *x) {
+  if (x->tag == K_BIGINT) return kdbl(mpz_get_d((const __mpz_struct *)x->as.big.mpz));
+  return kdbl((double)x->as.i);
+}
+/* §6.5 byte compares + §29.1 bitwise (hot in hashing / byte loops). */
+KValue *kp_eqByte(KValue *x, KValue *y) { return kbool(x->as.byte == y->as.byte); }
+KValue *kp_ltByte(KValue *x, KValue *y) { return kbool(x->as.byte < y->as.byte); }
+KValue *kp_intAnd(KValue *x, KValue *y) {
+  if (x->tag == K_INT && y->tag == K_INT) return kint(x->as.i & y->as.i);
+  mpz_t a, b, r; mpz_init(a); mpz_init(b); mpz_init(r); kload_mpz(x, a); kload_mpz(y, b);
+  mpz_and(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
+}
+KValue *kp_intOr(KValue *x, KValue *y) {
+  if (x->tag == K_INT && y->tag == K_INT) return kint(x->as.i | y->as.i);
+  mpz_t a, b, r; mpz_init(a); mpz_init(b); mpz_init(r); kload_mpz(x, a); kload_mpz(y, b);
+  mpz_ior(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
+}
+KValue *kp_intXor(KValue *x, KValue *y) {
+  if (x->tag == K_INT && y->tag == K_INT) return kint(x->as.i ^ y->as.i);
+  mpz_t a, b, r; mpz_init(a); mpz_init(b); mpz_init(r); kload_mpz(x, a); kload_mpz(y, b);
+  mpz_xor(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
+}
+
 static KValue *prim_fire_pure(const char *p, KValue **a) {
   /* integer.  Int/Integer are unbounded (§6): the int64 inline form is a
    * fast path; on overflow or a bignum operand the operation promotes to a
    * GMP bignum, so results never wrap or trap (matching the interpreter). */
-  if (PRIM("addInt")) {
-    int64_t r;
-    if (a[0]->tag == K_INT && a[1]->tag == K_INT
-        && !__builtin_add_overflow(a[0]->as.i, a[1]->as.i, &r))
-      return kint(r);
-    return kint_binop_mpz(a[0], a[1], mpz_add);
-  }
-  if (PRIM("subInt")) {
-    int64_t r;
-    if (a[0]->tag == K_INT && a[1]->tag == K_INT
-        && !__builtin_sub_overflow(a[0]->as.i, a[1]->as.i, &r))
-      return kint(r);
-    return kint_binop_mpz(a[0], a[1], mpz_sub);
-  }
-  if (PRIM("mulInt")) {
-    int64_t r;
-    if (a[0]->tag == K_INT && a[1]->tag == K_INT
-        && !__builtin_mul_overflow(a[0]->as.i, a[1]->as.i, &r))
-      return kint(r);
-    return kint_binop_mpz(a[0], a[1], mpz_mul);
-  }
-  if (PRIM("divInt")) {
-    if (kint_is_zero(a[1])) krt_fail("divInt: division by zero");
-    if (a[0]->tag == K_INT && a[1]->tag == K_INT && !(a[0]->as.i == INT64_MIN && a[1]->as.i == -1))
-      return kint(a[0]->as.i / a[1]->as.i); /* C99 trunc toward zero == quot */
-    return kint_binop_mpz(a[0], a[1], mpz_tdiv_q); /* truncated quotient */
-  }
-  if (PRIM("modInt")) {
-    if (kint_is_zero(a[1])) krt_fail("modInt: division by zero");
-    if (a[0]->tag == K_INT && a[1]->tag == K_INT) {
-      if (a[0]->as.i == INT64_MIN && a[1]->as.i == -1) return kint(0);
-      return kint(a[0]->as.i % a[1]->as.i); /* C99 % == rem */
-    }
-    return kint_binop_mpz(a[0], a[1], mpz_tdiv_r); /* remainder, sign of dividend */
-  }
-  if (PRIM("negInt")) {
-    if (a[0]->tag == K_INT && a[0]->as.i != INT64_MIN) return kint(-a[0]->as.i);
-    mpz_t z, zr;
-    mpz_init(z); mpz_init(zr);
-    kload_mpz(a[0], z); mpz_neg(zr, z);
-    return kfrom_mpz(zr);
-  }
-  if (PRIM("eqInt")) return kbool(kint_cmp(a[0], a[1]) == 0);
-  if (PRIM("ltInt")) return kbool(kint_cmp(a[0], a[1]) < 0);
-  if (PRIM("leInt")) return kbool(kint_cmp(a[0], a[1]) <= 0);
+  if (PRIM("addInt")) return kp_addInt(a[0], a[1]);
+  if (PRIM("subInt")) return kp_subInt(a[0], a[1]);
+  if (PRIM("mulInt")) return kp_mulInt(a[0], a[1]);
+  if (PRIM("divInt")) return kp_divInt(a[0], a[1]);
+  if (PRIM("modInt")) return kp_modInt(a[0], a[1]);
+  if (PRIM("negInt")) return kp_negInt(a[0]);
+  if (PRIM("eqInt")) return kp_eqInt(a[0], a[1]);
+  if (PRIM("ltInt")) return kp_ltInt(a[0], a[1]);
+  if (PRIM("leInt")) return kp_leInt(a[0], a[1]);
   /* double */
-  if (PRIM("addDouble")) return kdbl(kas_dbl(a[0]) + kas_dbl(a[1]));
-  if (PRIM("subDouble")) return kdbl(kas_dbl(a[0]) - kas_dbl(a[1]));
-  if (PRIM("mulDouble")) return kdbl(kas_dbl(a[0]) * kas_dbl(a[1]));
-  if (PRIM("divDouble")) return kdbl(kas_dbl(a[0]) / kas_dbl(a[1]));
-  if (PRIM("negDouble")) return kdbl(-kas_dbl(a[0]));
-  if (PRIM("ltDouble")) return kbool(kas_dbl(a[0]) < kas_dbl(a[1]));
-  if (PRIM("floatEq")) return kbool(kas_dbl(a[0]) == kas_dbl(a[1]));
-  if (PRIM("eqDouble")) { /* §6.1.3 raw-bit equality */
-    uint64_t x, y;
-    double da = kas_dbl(a[0]), db = kas_dbl(a[1]);
-    memcpy(&x, &da, 8); memcpy(&y, &db, 8);
-    return kbool(x == y);
-  }
+  if (PRIM("addDouble")) return kp_addDouble(a[0], a[1]);
+  if (PRIM("subDouble")) return kp_subDouble(a[0], a[1]);
+  if (PRIM("mulDouble")) return kp_mulDouble(a[0], a[1]);
+  if (PRIM("divDouble")) return kp_divDouble(a[0], a[1]);
+  if (PRIM("negDouble")) return kp_negDouble(a[0]);
+  if (PRIM("ltDouble")) return kp_ltDouble(a[0], a[1]);
+  if (PRIM("floatEq")) return kp_floatEq(a[0], a[1]);
+  if (PRIM("eqDouble")) return kp_eqDouble(a[0], a[1]);
   /* string / scalar */
-  if (PRIM("stringAppend")) return str_append(a[0], a[1]);
-  if (PRIM("eqStr")) return kbool(klit_eq(a[0], a[1]));
-  if (PRIM("ltStr")) {
-    if (a[0]->tag != K_STR || a[1]->tag != K_STR) krt_fail("ltStr: argument is not a String");
-    size_t la = a[0]->as.str.len, lb = a[1]->as.str.len, m = la < lb ? la : lb;
-    int c = memcmp(a[0]->as.str.p, a[1]->as.str.p, m);
-    return kbool(c < 0 || (c == 0 && la < lb));
-  }
-  if (PRIM("eqScalar")) {
-    if (a[0]->tag != K_CHR || a[1]->tag != K_CHR) krt_fail("eqScalar: argument is not a scalar");
-    return kbool(a[0]->as.chr == a[1]->as.chr);
-  }
-  if (PRIM("ltScalar")) {
-    if (a[0]->tag != K_CHR || a[1]->tag != K_CHR) krt_fail("ltScalar: argument is not a scalar");
-    return kbool(a[0]->as.chr < a[1]->as.chr);
-  }
+  if (PRIM("stringAppend")) return kp_stringAppend(a[0], a[1]);
+  if (PRIM("eqStr")) return kp_eqStr(a[0], a[1]);
+  if (PRIM("ltStr")) return kp_ltStr(a[0], a[1]);
+  if (PRIM("eqScalar")) return kp_eqScalar(a[0], a[1]);
+  if (PRIM("ltScalar")) return kp_ltScalar(a[0], a[1]);
   /* numeric conversions (§6.1) — Nat/Int share a representation */
   if (PRIM("natToInt") || PRIM("natOfInt")) return a[0];
   if (PRIM("intToNat")) {
@@ -1224,16 +1291,13 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       krt_fail("intToNat: negative Int has no Nat image");
     return a[0];
   }
-  if (PRIM("intToDouble")) {
-    if (a[0]->tag == K_BIGINT) return kdbl(mpz_get_d((const __mpz_struct *)a[0]->as.big.mpz));
-    return kdbl((double)a[0]->as.i);
-  }
+  if (PRIM("intToDouble")) return kp_intToDouble(a[0]);
   if (PRIM("primitiveIntToString")) return show_int_val(a[0]);
   /* show */
-  if (PRIM("showInt")) return show_int_val(a[0]);
-  if (PRIM("showDouble")) return show_double(kas_dbl(a[0]));
-  if (PRIM("showScalar")) return show_scalar(a[0]);
-  if (PRIM("showStringLit")) return show_string_lit(a[0]);
+  if (PRIM("showInt")) return kp_showInt(a[0]);
+  if (PRIM("showDouble")) return kp_showDouble(a[0]);
+  if (PRIM("showScalar")) return kp_showScalar(a[0]);
+  if (PRIM("showStringLit")) return kp_showStringLit(a[0]);
   /* §28.2 Rational */
   if (PRIM("__ratOfInt")) {
     mpz_t n, d; mpz_init(d); mpz_set_ui(d, 1); mpz_init(n); kload_mpz(a[0], n);
@@ -1281,8 +1345,8 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     return krat(n, d);
   }
   /* §6.5 byte + §29.5 bytes + grapheme (grapheme is K_STR text) */
-  if (PRIM("eqByte")) return kbool(a[0]->as.byte == a[1]->as.byte);
-  if (PRIM("ltByte")) return kbool(a[0]->as.byte < a[1]->as.byte);
+  if (PRIM("eqByte")) return kp_eqByte(a[0], a[1]);
+  if (PRIM("ltByte")) return kp_ltByte(a[0], a[1]);
   if (PRIM("showByte")) {
     char t[8]; snprintf(t, sizeof t, "b'\\x%02x'", a[0]->as.byte); return kstr0(t);
   }
@@ -1450,15 +1514,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     return acc;
   }
   /* §29.1 std.atomic bitwise (two's-complement over Integer). */
-  if (PRIM("__intAnd") || PRIM("__intOr") || PRIM("__intXor")) {
-    if (a[0]->tag == K_INT && a[1]->tag == K_INT) {
-      int64_t x = a[0]->as.i, y = a[1]->as.i;
-      return kint(PRIM("__intAnd") ? (x & y) : PRIM("__intOr") ? (x | y) : (x ^ y));
-    }
-    mpz_t x, y, r; mpz_init(x); mpz_init(y); mpz_init(r); kload_mpz(a[0], x); kload_mpz(a[1], y);
-    if (PRIM("__intAnd")) mpz_and(r, x, y); else if (PRIM("__intOr")) mpz_ior(r, x, y); else mpz_xor(r, x, y);
-    KValue *res = kfrom_mpz(r); mpz_clear(x); mpz_clear(y); mpz_clear(r); return res;
-  }
+  if (PRIM("__intAnd")) return kp_intAnd(a[0], a[1]);
+  if (PRIM("__intOr")) return kp_intOr(a[0], a[1]);
+  if (PRIM("__intXor")) return kp_intXor(a[0], a[1]);
   /* §29.3 std.hash FNV-1a lane (deterministic per run). */
   if (PRIM("__hashMixInt")) return ku64(fnv_mix_u64(kint_low64(a[0]), kint_low64(a[1])));
   if (PRIM("__hashMixDouble")) {

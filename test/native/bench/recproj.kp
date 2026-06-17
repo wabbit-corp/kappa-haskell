@@ -1,0 +1,8 @@
+-- Record projection in a tight loop: exercises field projection (kproj)
+-- alongside QW1 int prims and the QW2 self-tail loop.
+module main
+type Point = (x : Int, y : Int)
+sumField : Int -> Point -> Int -> Int
+let sumField n p acc = if leInt n 0 then acc else sumField (subInt n 1) p (addInt acc (addInt p.x p.y))
+main : UIO Unit
+let main = printlnString (showInt (sumField 1000000 (x = 3, y = 4) 0))

@@ -112,6 +112,19 @@ freshN base = do
   modify' $ \g -> g {gsFresh = n + 1}
   pure (base <> T.pack (show n))
 
+-- | A fresh name for a generated top-level helper FUNCTION (lambda, closure,
+-- do-block, thunk, defer), derived from the enclosing source global so the
+-- generated C carries source intent — e.g. @kfn_main_2e_len_9@ for a lambda
+-- inside @main.len@ — rather than an opaque @kfn_9@ (QW3, review note §6).
+-- The global counter is kept only as a uniqueness suffix.  Temporaries
+-- (@pa_@, @env_@, @scrut_@, …) keep the plain 'freshN' form.
+freshFn :: Text -> Gen Text
+freshFn base = do
+  g <- gets gsCur
+  n <- gets gsFresh
+  modify' $ \st -> st {gsFresh = n + 1}
+  pure (base <> mangle (gKey g) <> "_" <> T.pack (show n))
+
 emit :: Text -> Gen ()
 emit s = modify' $ \g -> g {gsStmts = s : gsStmts g}
 
@@ -392,35 +405,100 @@ funcArity = go 0
     go !n (CLam _ _ _ b) = go (n + 1) b
     go !n t = (n, t)
 
+-- | Does this worker body create a heap value that captures the enclosing
+-- environment BY REFERENCE (a closure\/thunk\/do-action\/recursive let)?  If
+-- so, the QW2 in-place parameter-cell update is UNSAFE: such a value can
+-- escape one loop iteration (returned, consed into a list, deferred, …) and a
+-- later @cell->val =@ mutation would overwrite the snapshot it must observe,
+-- diverging from the interpreter (which evaluates each recursive call in a
+-- fresh environment).  When this holds the worker rebuilds the parameter env
+-- each iteration instead (the pre-QW2 behaviour, correct for escaping
+-- closures).  Conservative: ANY such construct anywhere in the body disables
+-- the in-place loop, even if that particular closure does not actually escape.
+bodyCapturesEnv :: Term -> Bool
+bodyCapturesEnv = go
+  where
+    go t = case t of
+      CLam {} -> True -- kclo(fn, env)
+      CLetRec {} -> True -- recursive closure captures the binder cell
+      CDo {} -> True -- kio(fn, env)
+      CThunkE {} -> True -- kthunk(fn, env, 0)  (Delay)
+      CLazyE {} -> True -- kthunk(fn, env, 1)  (Memo)
+      CQuote {} -> True -- conservative (erased, but never in a hot worker)
+      CApp _ f a -> go f || go a
+      CCtor _ args -> any go args
+      CMatch s alts -> go s || any goAlt alts
+      CProj e _ -> go e
+      CInject _ e -> go e
+      CForceE e -> go e
+      CSealE _ e -> go e
+      CLet _ _ ty rhs body -> go ty || go rhs || go body
+      CIf c th el -> go c || go th || go el
+      CRecordV fs -> any (go . snd) fs
+      CRecordT fs -> any (go . snd) fs
+      CVariantT ts -> any go ts
+      CSigT _ e -> go e
+      CPi _ _ _ a b -> go a || go b
+      CVar {} -> False
+      CGlob {} -> False
+      CSort {} -> False
+      CLit {} -> False
+      CMeta {} -> False
+    goAlt (CaseAlt _ mg body) = maybe False go mg || go body
+
 -- | Lower a function global to: a worker @kw_…(p0,…,p{n-1})@ whose body is
--- a @while(1)@ loop (so a tail self-call rebinds the parameters and
+-- a @while(1)@ loop (so a tail self-call updates the parameter cells and
 -- @continue@s instead of recursing in C — bounded C stack for tail
 -- recursion), plus a curried arity-1 closure chain that collects the
 -- arguments and calls the worker, returned by the accessor @kg_…()@.
+--
+-- QW2: when the body is capture-free ('bodyCapturesEnv' is 'False'), the
+-- parameter @KEnv@ cells are built ONCE before the loop and a self-tail call
+-- updates @cell->val@ in place (see 'emitTailLoop'), so a tight self-recursive
+-- loop allocates no @KEnv@ for its parameters per iteration.  When the body
+-- captures the env by reference (a closure\/thunk\/do that can escape an
+-- iteration), the env is instead REBUILT at the loop top from reassigned C
+-- params — the pre-QW2 behaviour, correct because each iteration's escaping
+-- closures then capture a distinct env (matching the interpreter).
 compileFunctionGlobal :: GName -> Int -> Term -> Gen ()
 compileFunctionGlobal g n inner = do
   let ident = cGlobIdent g
       worker = "kw_" <> mangle (gKey g)
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
-      ti = TailInfo g n ps
-      -- de Bruijn env at the loop top: index 0 = innermost binder = the
-      -- LAST parameter, so cons p0 deepest … p{n-1} at the head.
+      inPlace = not (bodyCapturesEnv inner)
+      -- de Bruijn env: index 0 = innermost binder = the LAST parameter, so
+      -- cell for p0 is the deepest (next = 0) and p{n-1} is the head.
+      cells = ["kw_c" <> T.pack (show i) | i <- [0 .. n - 1]]
+      ti = TailInfo g n (if inPlace then cells else ps) inPlace
+      -- in-place mode: build the cells ONCE before the loop;
+      -- rebuild mode: rebuild kw_env at the loop top from the C params.
       envExpr = foldl (\acc p -> "kpush(" <> p <> ", " <> acc <> ")") "0" ps
+      cellDecls
+        | inPlace =
+            [ "  KEnv *" <> (cells !! j) <> " = kpush(" <> (ps !! j) <> ", "
+                <> (if j == 0 then "0" else cells !! (j - 1)) <> ");"
+            | j <- [0 .. n - 1]
+            ]
+              ++ ["  KEnv *kw_env = " <> (cells !! (n - 1)) <> "; (void)kw_env;"]
+        | otherwise = []
+      loopTopEnv
+        | inPlace = []
+        | otherwise = ["    KEnv *kw_env = " <> envExpr <> "; (void)kw_env;"]
       paramDecls = T.intercalate ", " ["KValue *" <> p | p <- ps]
   (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
   let workerFn =
         T.unlines $
-          [ "static KValue *" <> worker <> "(" <> paramDecls <> ") {"
-          , "  while (1) {"
-          , "    KEnv *kw_env = " <> envExpr <> "; (void)kw_env;"
-          ]
+          ["static KValue *" <> worker <> "(" <> paramDecls <> ") {"]
+            ++ cellDecls
+            ++ ["  while (1) {"]
+            ++ loopTopEnv
             ++ map ("    " <>) bodyStmts
             ++ [ "  }"
                , "}"
                ]
   emitTop ("static KValue *" <> worker <> "(" <> paramDecls <> ");") workerFn
   -- curried closure chain clo_0 … clo_{n-1}; clo_{n-1} calls the worker.
-  cloNames <- mapM (\i -> freshN ("kclo" <> T.pack (show i) <> "_")) [0 .. n - 1]
+  cloNames <- mapM (\i -> freshFn ("kclo" <> T.pack (show i) <> "_")) [0 .. n - 1]
   forM_ (zip [0 ..] cloNames) $ \(i, nm) -> do
     let body
           | i < n - 1 =
@@ -580,12 +658,19 @@ selfTailArgs ti term = case spineOf term of
 -- worker's parameter variables, and @continue@.
 emitTailLoop :: TailInfo -> [(Icit, Term)] -> Gen ()
 emitTailLoop ti args = do
+  -- Evaluate every new argument into a temp FIRST (an arg may read a current
+  -- parameter via @kvar@), THEN update the parameter cells in place — so the
+  -- loop reuses the cells built once in 'compileFunctionGlobal' rather than
+  -- allocating a fresh env each iteration (QW2).
   temps <- forM args $ \(_ic, a) -> do
     e <- compileErasableArg a -- erase type-level/staging args (§31.2), any icity
     t <- freshN "tc_"
     emit ("KValue *" <> t <> " = " <> e <> ";")
     pure t
-  forM_ (zip (tiArgs ti) temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
+  forM_ (zip (tiSlots ti) temps) $ \(slot, t) ->
+    if tiInPlace ti
+      then emit (slot <> "->val = " <> t <> ";") -- QW2: update the cell in place
+      else emit (slot <> " = " <> t <> ";") -- rebuild mode: reassign the C param; loop top rebuilds the env
   emit "continue;"
 
 -- | Emit a tail-position application.  A call whose spine head is a
@@ -600,7 +685,7 @@ emitTailApp term = do
   mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
   case (mp, term) of
     (Just _, _) -> do
-      e <- compile term -- prim spine: kprim_call, computed here, no trampoline
+      e <- compile term -- prim spine: direct helper / kprim_call, computed here, no trampoline
       emit ("return " <> e <> ";")
     (Nothing, CApp Expl f a) -> do
       fe <- compile f
@@ -720,11 +805,56 @@ globPrimName g@(GName m nm) = do
         Just gd | Nothing <- gdValue gd, Just prim <- intrinsicPrim nm -> known prim
         _ -> Nothing
 
+-- | QW1: the statically-known saturated pure primitives that have a direct C
+-- helper (`kp_…` in the runtime).  A saturated call to one of these is
+-- lowered to a direct helper call — no string dispatch, no `prim_arity` /
+-- `prim_is_io` check, no per-call argument array.  Maps the primitive name to
+-- (helper C name, explicit arity).  The runtime's `prim_fire_pure` delegates
+-- to the same helpers (single source of truth); the native suite catches any
+-- drift between this table and the runtime.  IO / partial / unlisted prims
+-- keep the general `kprim_call` path.
+primDirect :: Text -> Maybe (Text, Int)
+primDirect = \case
+  "addInt" -> Just ("kp_addInt", 2)
+  "subInt" -> Just ("kp_subInt", 2)
+  "mulInt" -> Just ("kp_mulInt", 2)
+  "divInt" -> Just ("kp_divInt", 2)
+  "modInt" -> Just ("kp_modInt", 2)
+  "negInt" -> Just ("kp_negInt", 1)
+  "eqInt" -> Just ("kp_eqInt", 2)
+  "ltInt" -> Just ("kp_ltInt", 2)
+  "leInt" -> Just ("kp_leInt", 2)
+  "addDouble" -> Just ("kp_addDouble", 2)
+  "subDouble" -> Just ("kp_subDouble", 2)
+  "mulDouble" -> Just ("kp_mulDouble", 2)
+  "divDouble" -> Just ("kp_divDouble", 2)
+  "negDouble" -> Just ("kp_negDouble", 1)
+  "ltDouble" -> Just ("kp_ltDouble", 2)
+  "floatEq" -> Just ("kp_floatEq", 2)
+  "eqDouble" -> Just ("kp_eqDouble", 2)
+  "stringAppend" -> Just ("kp_stringAppend", 2)
+  "eqStr" -> Just ("kp_eqStr", 2)
+  "ltStr" -> Just ("kp_ltStr", 2)
+  "eqScalar" -> Just ("kp_eqScalar", 2)
+  "ltScalar" -> Just ("kp_ltScalar", 2)
+  "showInt" -> Just ("kp_showInt", 1)
+  "showDouble" -> Just ("kp_showDouble", 1)
+  "showScalar" -> Just ("kp_showScalar", 1)
+  "showStringLit" -> Just ("kp_showStringLit", 1)
+  "intToDouble" -> Just ("kp_intToDouble", 1)
+  "eqByte" -> Just ("kp_eqByte", 2)
+  "ltByte" -> Just ("kp_ltByte", 2)
+  "__intAnd" -> Just ("kp_intAnd", 2)
+  "__intOr" -> Just ("kp_intOr", 2)
+  "__intXor" -> Just ("kp_intXor", 2)
+  _ -> Nothing
+
 -- | Compile an application spine.  When the spine head is a known runtime
--- primitive, emit a direct 'kprim_call' over a stack argument array — the
--- saturated pure case then fires in one call with no intermediate curried
--- @K_PRIM@ boxes or per-argument allocation (the dominant cost in hot
--- numeric loops).  Otherwise fall back to per-argument 'kapp'/'kappi'.
+-- primitive, emit a direct helper call ('primDirect') for a saturated pure
+-- prim, else a 'kprim_call' over a stack argument array — the saturated case
+-- fires in one call with no intermediate curried @K_PRIM@ boxes or
+-- per-argument allocation (the dominant cost in hot numeric loops).
+-- Otherwise fall back to per-argument 'kapp'/'kappi'.
 compileApp :: Term -> Gen Text
 compileApp term = do
   let (hd, sargs) = spineOf term
@@ -734,9 +864,18 @@ compileApp term = do
       case mp of
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] -> do
           aes <- mapM compileErasableArg explArgs
-          arr <- freshN "pa_"
-          emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
-          pure ("kprim_call(" <> cStr pname <> ", " <> T.pack (show (length aes)) <> ", " <> arr <> ")")
+          case primDirect pname of
+            -- QW1: a statically known saturated pure primitive is a DIRECT
+            -- helper call — no string dispatch, no arity/IO check, no
+            -- per-call argument array (the dominant cost in hot numeric
+            -- loops).  Only the exact-arity case takes this path; a partial
+            -- application falls through to the curried 'kprim_call' below.
+            Just (helper, ar) | length aes == ar ->
+              pure (helper <> "(" <> T.intercalate ", " aes <> ")")
+            _ -> do
+              arr <- freshN "pa_"
+              emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+              pure ("kprim_call(" <> cStr pname <> ", " <> T.pack (show (length aes)) <> ", " <> arr <> ")")
         Just _ -> compileAppDefault term -- prim with no explicit args yet
         Nothing -> do
           ar <- globFuncArity g
@@ -901,7 +1040,7 @@ cBytesLit bs
 -- return a @kclo@ capturing the current environment.
 compileLam :: Term -> Gen Text
 compileLam body = do
-  fnName <- freshN "kfn_"
+  fnName <- freshFn "kfn_"
   envName <- freshN "lenv_"
   env <- gets gsEnv
   -- inside the closure, the runtime env is `kpush(arg, cenv)`, bound to a
@@ -977,7 +1116,8 @@ withEnv e act = do
 data TailInfo = TailInfo
   { tiName :: !GName -- ^ the worker's own global
   , tiArity :: !Int -- ^ number of leading binders
-  , tiArgs :: ![Text] -- ^ the worker's mutable C parameter variables, in binder order
+  , tiSlots :: ![Text] -- ^ the per-parameter update targets, in binder order: the @KEnv@ cell names when 'tiInPlace' (QW2 in-place loop), else the mutable C parameter variables (the env is rebuilt each iteration)
+  , tiInPlace :: !Bool -- ^ QW2: 'True' updates @cell->val@ in place (capture-free body, no per-iteration @KEnv@ alloc); 'False' reassigns the C params and rebuilds the env at the loop top (body captures the env by reference, so escaping closures need a fresh env per iteration)
   }
 
 -- | Where a computed value flows: into a C variable (expression context),
@@ -1275,7 +1415,7 @@ litValue = \case
 -- the scope.  The captured environment is the current one.
 compileDo :: [KItem] -> Gen Text
 compileDo items = do
-  fnName <- freshN "kdo_"
+  fnName <- freshFn "kdo_"
   env <- gets gsEnv
   -- A do-block is a fresh scope in its own C function: its defer frames and
   -- enclosing loops do not extend into it (control cannot break out of a
@@ -1312,7 +1452,7 @@ compileDo items = do
 -- action value would otherwise not be run).
 compileDeferAction :: Term -> Gen Text
 compileDeferAction t = do
-  fnName <- freshN "kdefer_"
+  fnName <- freshFn "kdefer_"
   env <- gets gsEnv
   (stmts, e) <- captured "cenv" (compile t)
   let fn =
@@ -1332,7 +1472,7 @@ compileDeferAction t = do
 -- on first force) and 0 for Delay (re-evaluate each force).
 compileSuspension :: Int -> Term -> Gen Text
 compileSuspension memo e = do
-  fnName <- freshN "kth_"
+  fnName <- freshFn "kth_"
   env <- gets gsEnv
   (stmts, ve) <- captured "cenv" (compile e)
   let fn =

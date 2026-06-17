@@ -1,0 +1,9 @@
+-- Build a list then fold it: exercises constructor allocation (::), pattern
+-- matching, and tail-recursive accumulation with QW1 int prims.
+module main
+range : Int -> List Int -> List Int
+let range n acc = if leInt n 0 then acc else range (subInt n 1) (n :: acc)
+foldSum : List Int -> Int -> Int
+let foldSum xs acc = match xs case Nil -> acc case y :: rest -> foldSum rest (addInt acc y)
+main : UIO Unit
+let main = printlnString (showInt (foldSum (range 1000000 Nil) 0))

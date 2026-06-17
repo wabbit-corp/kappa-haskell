@@ -1,0 +1,12 @@
+-- Arithmetic via a mutable-var while loop: exercises QW1 direct int prims
+-- (kp_addInt / kp_leInt) and the kref var read/write peephole.  Both the
+-- interpreter and the native backend run this (no deep recursion).
+module main
+main : UIO Unit
+let main = do
+    var total = 0
+    var i = 1
+    while leInt i 2000000 do
+        total = addInt total i
+        i = addInt i 1
+    printlnString (showInt total)
