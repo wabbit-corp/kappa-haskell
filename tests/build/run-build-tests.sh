@@ -209,6 +209,34 @@ else
   echo "SKIP url dependency tests (curl/tar not on PATH)"
 fi
 
+echo "== value provenance (§35.7): buildConfig provenance graph =="
+PV="${TMPDIR:-/tmp}/kappa-prov-test"; rm -rf "$PV"; mkdir -p "$PV"
+cat > "$PV/kappa.build.kp" <<'EOF'
+let pkgVersion = semver "0.1.0"
+let buildConfig : BuildConfig = package { name = "demo"
+    , version = pkgVersion
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = []
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = [] }]
+    }
+EOF
+pvout="$(timeout 60 $KAPPA build --manifest "$PV" --provenance 2>&1)"; pvrc=$?
+# whole value is a composite (named application); a list field is a sequence;
+# a literal is a source; the `version` field references the pkgVersion
+# binding (a derived edge through to the semver call's string literal).
+if [ "$pvrc" -eq 0 ] \
+   && grep -q "^composite " <<<"$pvout" \
+   && grep -q "sequence " <<<"$pvout" \
+   && grep -q "source " <<<"$pvout" \
+   && grep -q "derived " <<<"$pvout"; then
+  echo "PASS provenance (composite/sequence/source + reference edge)"
+else
+  echo "FAIL provenance"; echo "$pvout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+rm -rf "$PV"
+
 echo "== reproducibility: semantic identity is provenance-independent (§36.2.1) =="
 a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" --check 2>&1)"
 b="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/helpers.kappa.build.kp" --check 2>&1)"

@@ -12,6 +12,7 @@ import Kappa.Backend.Driver
   )
 import Kappa.Build.Lock (LockEntry, lockWellFormed, parseLock, renderLock)
 import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable)
+import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
 import Kappa.Check (AuditRecord (..), CheckState (..), defaultUnsafeConfig)
@@ -46,7 +47,7 @@ main = do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
           <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] FILE"
-          <> " | kappa build --manifest [PATH|DIR] [--check] [--locked] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
+          <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
@@ -116,10 +117,11 @@ data ManifestArgs = ManifestArgs
   , maEmitC :: !Bool -- ^ --emit-c
   , maCC :: !(Maybe String) -- ^ --cc DRIVER
   , maLocked :: !Bool -- ^ --locked: require kappa.lock to match (no update)
+  , maProvenance :: !Bool -- ^ --provenance: print buildConfig value provenance (§35.7)
   }
 
 defaultManifestArgs :: ManifestArgs
-defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False
+defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False False
 
 -- | Dispatch a @build@ invocation to manifest mode (§35.13/§36) or the
 -- legacy single-file native build.
@@ -146,6 +148,7 @@ parseManifestArgs = go defaultManifestArgs
     go ma ("--manifest" : xs) = go ma xs
     go ma ("--check" : xs) = go ma {maCheck = True} xs
     go ma ("--locked" : xs) = go ma {maLocked = True} xs
+    go ma ("--provenance" : xs) = go ma {maProvenance = True} xs
     go ma ("--emit-c" : xs) = go ma {maEmitC = True} xs
     go ma ("--target" : t : xs) = go ma {maTarget = Just (T.pack t)} xs
     go ma ("-o" : o : xs) = go ma {maOut = Just o} xs
@@ -168,7 +171,7 @@ cmdBuildManifest ma = do
     Left d -> emitDiags Human [d] >> exitFailure
     Right file -> do
       (src, preDiags) <- loadSourceFile file
-      let (st, mn, diags) = compileManifest file src
+      let (st, mn, mmod, diags) = compileManifest file src
           allDiags = preDiags ++ diags
       emitDiags Human allDiags
       when (hasErrors allDiags) exitFailure
@@ -176,6 +179,13 @@ cmdBuildManifest ma = do
       case reifyBuildConfig sp st mn of
         Left ds -> emitDiags Human ds >> exitFailure
         Right bc
+          -- §35.7: print the buildConfig value-provenance graph (a tool
+          -- explicitly choosing to surface config provenance). Like
+          -- --check, this performs no build.
+          | maProvenance ma ->
+              case mmod >>= manifestProvenance of
+                Just prov -> TIO.putStr (renderProvenance prov) >> exitSuccess
+                Nothing -> hPutStrLn stderr "no buildConfig value provenance available" >> exitFailure
           | maCheck ma -> TIO.putStr (renderBuildConfig bc) >> exitSuccess
           | otherwise -> buildManifestTarget file bc ma
 

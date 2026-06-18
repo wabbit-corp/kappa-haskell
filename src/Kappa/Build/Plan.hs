@@ -663,7 +663,7 @@ urlErr sp url msg =
 loadDepPackage :: FilePath -> IO (Either Diagnostics BuildConfig)
 loadDepPackage manifest = do
   (src, _) <- loadSourceFile manifest
-  let (st, mn, diags) = compileManifest manifest src
+  let (st, mn, _mod, diags) = compileManifest manifest src
   if hasErrors diags
     then pure (Left diags)
     else pure (reifyBuildConfig (Span manifest (Pos 1 1) (Pos 1 1)) st mn)

@@ -170,14 +170,16 @@ manifestModuleName = ModuleName ["__manifest"]
 -- manifest module name, and all diagnostics. This performs NO build-plan
 -- resolution (§35.13): no source-root enumeration, dependency
 -- resolution, or host inspection.
-compileManifest :: FilePath -> Text -> (CheckState, ModuleName, Diagnostics)
+-- The parsed 'Module' is returned (when it parsed) so the caller can
+-- compute value provenance (§35.7) over the surface AST.
+compileManifest :: FilePath -> Text -> (CheckState, ModuleName, Maybe Module, Diagnostics)
 compileManifest path src =
   let (pst, pdiags) = preludeState
    in case parseModule path src of
-        Left ds -> (pst, manifestModuleName, pdiags ++ ds)
+        Left ds -> (pst, manifestModuleName, Nothing, pdiags ++ ds)
         Right (m, recovered) ->
           let (st, diags) = checkConfigUnit ConfigExpression pst manifestModuleName m
-           in (st, manifestModuleName, pdiags ++ recovered ++ diags)
+           in (st, manifestModuleName, Just m, pdiags ++ recovered ++ diags)
 
 -- | Multi-file compilation with basename-derived module names
 -- (standalone files: §8.1 path-name derivation is not in force).

@@ -115,13 +115,25 @@ that compute the same configuration through different helper bindings /
 edit can never change artifact/cache identity (the §36.2.1 requirement),
 because provenance is simply not part of the value.
 
-The complementary **value-provenance graph** (§35.7/§35.13: a source
-range for `buildConfig` and every reachable subvalue) is the next
-increment. The reify seam is built to accept it without reshaping
-`BuildConfig`: provenance will live in a parallel `ValuePath →
-Provenance` side-map keyed off the manifest's span-bearing AST, never in
-the semantic value. Until then `E_CONFIG_PROVENANCE_UNAVAILABLE` is
-registered with its four §35.11 sub-causes.
+The complementary **value-provenance graph** (§35.7/§35.13) is produced
+separately (`Kappa.Build.Provenance`), so it never affects the semantic
+value/identity (§35.7: provenance is metadata). It is computed from the
+manifest's span-bearing surface AST — §35.7's model is expression-oriented
+(the origin of the binding name, the origin of the computing expression,
+and an edge from a reference to the referenced value's provenance), which
+the surface tree expresses directly. A `SourceProvenance` records a span
+for a literal or schema name; `CompositeProvenance`/`SequenceProvenance`
+carry per-field/per-element provenance for named applications, records,
+and lists; `DerivedProvenance` records an operation (a call, a reference
+edge through a `let`, or a conditional) together with its input
+provenances; `UnknownProvenance` is used where the origin is not
+recoverable. Per §35.7 it never fabricates precise provenance — a value
+computed by `if`/`match` is recorded as *derived from* that operation,
+not from a guessed branch. `kappa build --manifest --provenance` prints
+the `buildConfig` provenance tree (the tool surface; `--provenance`
+performs no build). (Per-slice string-interpolation provenance, §35.8, is
+N/A while manifests use plain string literals; `E_CONFIG_PROVENANCE_UNAVAILABLE`
+remains registered with its four §35.11 sub-causes.)
 
 ## Native bindings — driven by the manifest (increment 2, DONE)
 
@@ -319,8 +331,11 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
    pinned in the lock (`E_DEPENDENCY_URL_FAILED` on failure).
 10. A networked registry server/protocol + `artifact`/target-artifact
     dependency builders (the remaining unresolvable sources).
-11. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-12. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+11. **(done)** Value-provenance graph (§35.7) over the surface AST,
+    surfaced via `kappa build --manifest --provenance`.
+12. Canonical schema serialization + semantic-identity computation (§36.2)
+    + per-slice string-interpolation provenance (§35.8).
+13. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
     and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
