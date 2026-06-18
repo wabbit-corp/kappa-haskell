@@ -66,6 +66,29 @@ static KValue *alloc_val(KTag tag) {
   return v;
 }
 
+/* A scalar box whose payload is pointer-free (K_INT / K_DBL / K_CHR / K_BYTE):
+ * allocate it on the atomic (unscanned) heap so the collector skips it during
+ * mark — its bytes hold no pointers (R2.1 / gap P1-F).  The win is reduced
+ * per-collection mark work proportional to the number of such boxes live
+ * across a collection, plus removing them as conservative-GC false-pointer
+ * sources; it shows up as cheaper collections, not a smaller heap.  It is
+ * material for Double/Char/Byte boxes and for out-of-cache integers
+ * (`kdbl`/`kchr`/`kbyte` and large `kint`s); small integers in [-16,256] are
+ * served from the shared `kint_cache` and allocate nothing per step, so they
+ * see no win.  Only types whose active union member holds NO pointer may use
+ * this: K_STR/K_BYTES carry a buffer pointer and K_BIGINT an mpz pointer, so
+ * those stay on the scanned path (alloc_val).  Scalar boxes are immutable and
+ * never re-tagged into a pointer-bearing value, so the unscanned
+ * classification is permanent and sound.  GC_MALLOC_ATOMIC does not zero the
+ * block, but every scalar constructor sets `tag` plus its one active member
+ * and all readers dispatch on `tag`, so the uninitialised inactive union
+ * bytes are never observed. */
+static KValue *alloc_val_atomic(KTag tag) {
+  KValue *v = (KValue *)kgc_alloc_atomic(sizeof(KValue));
+  v->tag = tag;
+  return v;
+}
+
 /* ── value constructors ────────────────────────────────────────────── */
 
 /* Cache boxes for small integers — the common loop counters / digits —
@@ -77,10 +100,10 @@ static KValue *kint_cache[KINT_CACHE_HI - KINT_CACHE_LO + 1];
 KValue *kint(int64_t v) {
   if (v >= KINT_CACHE_LO && v <= KINT_CACHE_HI) {
     KValue **slot = &kint_cache[v - KINT_CACHE_LO];
-    if (!*slot) { KValue *r = alloc_val(K_INT); r->as.i = v; *slot = r; }
+    if (!*slot) { KValue *r = alloc_val_atomic(K_INT); r->as.i = v; *slot = r; }
     return *slot;
   }
-  KValue *r = alloc_val(K_INT);
+  KValue *r = alloc_val_atomic(K_INT);
   r->as.i = v;
   return r;
 }
@@ -149,7 +172,7 @@ static KValue *rat_addsub(KValue *x, KValue *y, int sub) {
 }
 
 KValue *kdbl(double v) {
-  KValue *r = alloc_val(K_DBL);
+  KValue *r = alloc_val_atomic(K_DBL);
   r->as.d = v;
   return r;
 }
@@ -167,7 +190,7 @@ KValue *kstr(const char *bytes, size_t len) {
 KValue *kstr0(const char *cstr) { return kstr(cstr, strlen(cstr)); }
 
 KValue *kchr(uint32_t scalar) {
-  KValue *r = alloc_val(K_CHR);
+  KValue *r = alloc_val_atomic(K_CHR);
   r->as.chr = scalar;
   return r;
 }
@@ -293,7 +316,7 @@ KValue *kthunk(KIOFn fn, KEnv *env, int memo) {
 }
 
 KValue *kbyte(unsigned char w) {
-  KValue *r = alloc_val(K_BYTE);
+  KValue *r = alloc_val_atomic(K_BYTE);
   r->as.byte = w;
   return r;
 }

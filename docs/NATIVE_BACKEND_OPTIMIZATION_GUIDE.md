@@ -141,10 +141,19 @@ name-derived-tag / `strcmp`-confirm scheme is needed**. → **R1.2** (re-ranked 
 order boundaries; wasteful for a known first-order call whose tail position cannot produce a
 `K_BOUNCE`. → **R3.1**.
 
-**P1-F — Scalar boxes are GC-scanned, not `GC_MALLOC_ATOMIC`.** `kint`/`kdbl`/`kchr`/`kbyte` have
-pointer-free payloads but allocate on the scanned path; atomic allocation would cut mark work and
-remove them as conservative-GC false-pointer sources. (`kbool` is excluded — it's a cached
-singleton.) The runtime already uses `GC_MALLOC_ATOMIC` for string/byte payloads. → **R2.1**.
+**P1-F — Scalar boxes are GC-scanned, not `GC_MALLOC_ATOMIC`. RESOLVED (R2.1, this study).**
+`kint`/`kdbl`/`kchr`/`kbyte` have pointer-free payloads but allocated on the scanned path. **Fix:**
+a new `alloc_val_atomic` (runtime `kappart.c`) allocates these four boxes via `GC_MALLOC_ATOMIC`,
+so the collector skips them during mark and they are no longer conservative-GC false-pointer
+sources. Sound because the payloads are genuinely pointer-free, the boxes are immutable / never
+re-tagged, and all readers dispatch on `tag` (so `GC_MALLOC_ATOMIC`'s non-zeroed inactive union
+bytes are never observed). `kstr`/`kbytes` (buffer pointer) and `kbigint` (mpz pointer) stay
+scanned; `kbool`/`kunit` are one-shot singletons (left scanned). The win is cheaper collections
+(less mark work) for `Double`/`Char`/`Byte` and out-of-cache integers — small ints in `[-16,256]`
+are cache-served and allocate nothing, so they see no change. Gated by a runtime source invariant
+in the native suite (the four scalar constructors must use `alloc_val_atomic`, never scanned
+`alloc_val`) plus the full interpreter-equivalence suite (which proves the non-zeroing alloc is
+correct). → **R2.1**.
 
 **P1-G — Small-int cache is narrow (`[-16,256]`).** Any accumulator/counter outside that band
 allocates a fresh box per update on the boxed path. The principled fix is immediate-tagged small
@@ -299,7 +308,7 @@ is preserved from the roadmap below.
 |------:|------|---------|:------:|:----------:|:----:|
 | 1 | **R0.1** rigorous bench harness + broad coverage | P1-I | High | Med | Low |
 | ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
-| 2 | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes | P1-F | Med | Low | Low |
+| ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
 | 4 | **R2.2** `Bool`/`Double` unboxed workers (LR1 generalized) | P0-D | Med-High | Med | Med |
 | 5 | **R2.3** first-order worker params/locals as C locals / flat frame | P0-D/P1-H | High | High | Med |
 | 6 | **R2.4** cross-function unboxed scalar chaining | P0-D | Med | Med | Med |
@@ -311,8 +320,8 @@ is preserved from the roadmap below.
 
 Rationale: **R1.1 landed (this study)** — it attacked the verified worst path (`adtbuild`/
 `listfold`), was backend-local, and re-enabled QW2's in-place loop for free (P0-B); the next
-non-harness item is now **R2.1** (low-risk atomic scalar boxes), then the Wave-2 non-`Int`
-calling-convention work. **R1.2 is
+non-harness item, **R2.1** (atomic scalar boxes), also landed; next is the Wave-2 non-`Int`
+calling-convention work (**R2.2** `Bool`/`Double` unboxed workers, then **R2.3/R2.4**). **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk

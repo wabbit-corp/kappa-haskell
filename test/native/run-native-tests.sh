@@ -99,6 +99,31 @@ else
   echo "   FAIL: adtcons --emit-c build failed"; cat "$rtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+# R2.1 / P1-F: the pointer-free scalar boxes (K_INT/K_DBL/K_CHR/K_BYTE) must be
+# allocated on the atomic (unscanned) GC heap via alloc_val_atomic, not the
+# scanned alloc_val — this removes them as conservative-GC false-pointer sources
+# and cuts mark work.  A revert to alloc_val would silently regress GC cost; the
+# equivalence suite already proves the non-zeroing atomic alloc is correct, so
+# this is a source invariant on the four scalar constructors in the runtime.
+echo "== R2.1: pointer-free scalar boxes use the atomic (unscanned) GC heap =="
+rt="$ROOT/runtime/kappart.c"
+# The scalar tags K_INT/K_DBL/K_CHR/K_BYTE are constructed only in kint/kdbl/
+# kchr/kbyte, so keying on the tag argument is an unambiguous, format-robust
+# invariant: each must allocate via alloc_val_atomic and none via the scanned
+# alloc_val.
+r21_ok=1
+for tag in K_INT K_DBL K_CHR K_BYTE; do
+  grep -qE "alloc_val_atomic\($tag\)" "$rt" || r21_ok=0
+  # negative: the scanned alloc_val(TAG) must not appear; (^|[^_]) anchors so a
+  # line-start occurrence is still caught and alloc_val_atomic is not matched.
+  grep -qE "(^|[^_])alloc_val\($tag\)" "$rt" && r21_ok=0
+done
+if [ -f "$rt" ] && [ "$r21_ok" -eq 1 ]; then
+  echo "   ok (kint/kdbl/kchr/kbyte allocate via alloc_val_atomic; scanned alloc_val reserved for pointer-bearing boxes)"
+else
+  echo "   FAIL: a scalar box no longer uses the atomic GC heap (R2.1 regressed)"; fails=$((fails+1))
+fi
+
 # Honest no-fallback property: the native backend never silently falls back
 # to interpreter behaviour.  The full accepted run-mode (UIO) surface now
 # compiles (there is no spec-mandated runtime construct left to reject — the
