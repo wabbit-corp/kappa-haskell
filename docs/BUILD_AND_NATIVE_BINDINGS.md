@@ -224,10 +224,18 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   `E_DEPENDENCY_PATH_NOT_FOUND`; a dependent listing an undeclared
   dependency name → `E_DEPENDENCY_NOT_FOUND`; a module provided by more
   than one package in the closure → `E_DEPENDENCY_MODULE_COLLISION`.
-- **`registry`/`git`/`url`/artifact** dependencies are **not** resolved by
-  this implementation's resolver profile (§36.23.1): they require a
-  registry and lockfile it does not provide, so they fail honestly with
-  `E_DEPENDENCY_UNRESOLVED` rather than being silently ignored.
+- A **`git`** dependency is resolved via the `git` CLI: the URL is cloned
+  into a project-local content-addressed cache (`<root>/.kappa/git/…`),
+  the requested revision is checked out (detached), and its resolved
+  commit SHA is recorded in `kappa.lock` as the immutable identity
+  (§36.23). Its checkout is then treated as a transitive path dependency.
+  git-unavailable / clone / checkout / rev-parse failures are honest
+  `E_DEPENDENCY_GIT_FAILED`. Pin to a commit SHA for full reproducibility;
+  a branch/tag is resolved best-effort and the lock pins whichever SHA
+  resolved (so `--locked` detects a drifted branch).
+- **`registry`/`url`/artifact** dependencies are **not** resolved by this
+  implementation's resolver profile (§36.23.1): they require a registry it
+  does not provide, so they fail honestly with `E_DEPENDENCY_UNRESOLVED`.
 
 ### Tracked temporary residue
 
@@ -237,9 +245,10 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   dependency closure is *rejected* (`E_DEPENDENCY_MODULE_COLLISION`), not
   silently merged — there is no spec mechanism that namespaces a module by
   its package, so rejection is the correct enforcement.
-- **No real registry/git resolver** — needs a registry + network;
-  registry/git dependencies fail honestly with `E_DEPENDENCY_UNRESOLVED`.
-  (The lockfile below records only the resolvable path-dependency closure.)
+- **No registry resolver** — needs a package registry + protocol this
+  implementation does not provide; `registry`/`url`/artifact dependencies
+  fail honestly with `E_DEPENDENCY_UNRESOLVED`. (Path and git dependencies
+  ARE resolved; the lockfile records both.)
 - **Root-as-cyclic-dependency asymmetry**: when a path dependency cycles
   back to the package being built, the root contributes the modules of the
   *executable* target being built (its `modules` selector), not its
@@ -278,11 +287,14 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
    deduplicated) + proper `staticLink` `-Wl,-Bstatic` grouping.
 6. **(done)** `kappa.lock` + path-dep content identity (§36.23.2) +
    `--locked` reproducibility check (`E_DEPENDENCY_LOCK_MISMATCH`, §3.2.15).
-7. A real registry/git resolver (network/registry) + the remaining
-   `kappa.package.reproducibility` pinning diagnostics for those sources.
-8. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-9. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
-   and JVM/.NET/Python ecosystems; deployment/reproducibility status.
+7. **(done)** Git dependency resolution via the `git` CLI (clone/checkout
+   to a project-local cache, resolved SHA pinned in `kappa.lock`,
+   `E_DEPENDENCY_GIT_FAILED` on failure). Registry/url still unresolved.
+8. A registry resolver (registry protocol + network) for `registry`/`url`
+   dependencies + their pinning diagnostics.
+9. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
+10. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+    and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
 builder set as "equivalent to" a portable schema (signatures are

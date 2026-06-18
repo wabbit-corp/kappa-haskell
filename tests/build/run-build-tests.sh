@@ -108,6 +108,42 @@ else
 fi
 rm -rf "$LW"
 
+echo "== git dependency resolution (§36.23): clone + checkout + lock SHA =="
+if command -v git >/dev/null 2>&1; then
+  GW="${TMPDIR:-/tmp}/kappa-gitdep-test"; rm -rf "$GW"; mkdir -p "$GW"
+  ( cd "$GW" && mkdir -p codecrepo/src/codec && cd codecrepo && git init -q \
+      && git config user.email t@t && git config user.name t \
+      && printf 'module codec.util\ntag : String -> String\nlet tag s = stringAppend "<" s' > src/codec/util.kp \
+      && printf 'let buildConfig : BuildConfig = package { name="codec", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[], targets=[library { name="codec", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], modules=modulesUnder "codec", dependencies=[] }] }' > kappa.build.kp \
+      && git add -A && git commit -q -m v1 )
+  REV="$(cd "$GW/codecrepo" && git rev-parse HEAD)"
+  mkdir -p "$GW/app/src"
+  printf 'module app\nimport codec.util.(tag)\nlet main = printlnString (tag "hi")' > "$GW/app/src/app.kp"
+  printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[git { name="codec", url="%s/codecrepo", rev="%s" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$GW" "$REV" > "$GW/app/kappa.build.kp"
+  if timeout 120 $KAPPA build --manifest "$GW/app" --emit-c >/dev/null 2>&1 \
+     && grep -q "^git $REV " "$GW/app/kappa.lock" 2>/dev/null; then
+    echo "PASS git/resolve (cloned + checked out + lock records git SHA)"
+  else
+    echo "FAIL git/resolve"; fails=$((fails+1))
+  fi
+  if timeout 120 $KAPPA build --manifest "$GW/app" --emit-c --locked >/dev/null 2>&1; then
+    echo "PASS git/locked (--locked matches the pinned SHA)"
+  else
+    echo "FAIL git/locked"; fails=$((fails+1))
+  fi
+  printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[git { name="codec", url="%s/codecrepo", rev="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$GW" > "$GW/app/kappa.build.kp"
+  rm -rf "$GW/app/.kappa" "$GW/app/kappa.lock"
+  brout="$(timeout 120 $KAPPA build --manifest "$GW/app" --emit-c 2>&1)"
+  if grep -q "E_DEPENDENCY_GIT_FAILED" <<<"$brout"; then
+    echo "PASS git/bad-rev (unresolvable revision -> E_DEPENDENCY_GIT_FAILED)"
+  else
+    echo "FAIL git/bad-rev (expected E_DEPENDENCY_GIT_FAILED)"; echo "$brout" | sed 's/^/    /'; fails=$((fails+1))
+  fi
+  rm -rf "$GW"
+else
+  echo "SKIP git dependency tests (git not on PATH)"
+fi
+
 echo "== reproducibility: semantic identity is provenance-independent (§36.2.1) =="
 a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" --check 2>&1)"
 b="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/helpers.kappa.build.kp" --check 2>&1)"

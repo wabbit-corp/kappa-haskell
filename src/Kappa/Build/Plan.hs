@@ -21,6 +21,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (encodeUtf8)
 import Kappa.Backend.NativeCatalog
   ( CatalogMember (..)
   , CatalogModule (..)
@@ -32,8 +33,17 @@ import Kappa.Build.Types
 import Kappa.Diagnostic
 import Kappa.Pipeline (compileManifest, loadSourceFile)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
-import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath (joinPath, makeRelative, splitDirectories, takeExtension, takeFileName, (</>))
+import System.Directory
+  ( canonicalizePath
+  , createDirectoryIfMissing
+  , doesDirectoryExist
+  , doesFileExist
+  , findExecutable
+  , listDirectory
+  )
+import System.Exit (ExitCode (..))
+import System.FilePath (joinPath, makeRelative, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
+import System.Process (readProcessWithExitCode)
 
 -- | A resolved, buildable executable target.
 data ResolvedExe = ResolvedExe
@@ -408,56 +418,124 @@ resolveDepClosure rootDir rootBc rootNames = do
   where
     go _ _ acc locks [] = pure (Right (concat (reverse acc), reverse locks))
     go canonRoot visited acc locks ((depDir0, depBc0, nm) : rest) =
-      let sp = Span (depDir0 </> manifestBasename) (Pos 1 1) (Pos 1 1)
-       in case [d | d <- bcDependencies depBc0, depName d == nm] of
-            [] ->
-              pure . Left $
-                [ depErr sp "E_DEPENDENCY_NOT_FOUND" "kappa-hs.build.dependency-not-found"
-                    ( "package at '" <> T.pack depDir0 <> "' lists dependency '" <> nm
-                        <> "', which its manifest does not declare (Spec §36.3, §36.23)"
-                    )
-                ]
-            (RegistryDep _ _ : _) -> pure (Left [unresolved sp nm "registry"])
-            (GitDep {} : _) -> pure (Left [unresolved sp nm "git"])
-            (PathDep _ path : _) -> do
-              let pkgDir = depDir0 </> T.unpack path
-                  manifest = pkgDir </> manifestBasename
-              ok <- doesFileExist manifest
+      case [d | d <- bcDependencies depBc0, depName d == nm] of
+        [] ->
+          pure . Left $
+            [ depErr sp "E_DEPENDENCY_NOT_FOUND" "kappa-hs.build.dependency-not-found"
+                ( "package at '" <> T.pack depDir0 <> "' lists dependency '" <> nm
+                    <> "', which its manifest does not declare (Spec §36.3, §36.23)"
+                )
+            ]
+        (RegistryDep _ _ : _) -> pure (Left [unresolved sp nm "registry"])
+        (PathDep _ path : _) -> do
+          let pkgDir = depDir0 </> T.unpack path
+          ok <- doesFileExist (pkgDir </> manifestBasename)
+          if not ok
+            then pure (Left [pathNotFound sp nm (pkgDir </> manifestBasename)])
+            else do
+              canon <- canonicalizePath pkgDir
+              collectResolved canon pkgDir $ \depBc -> do
+                -- §36.23.2: content identity of this path-dep package,
+                -- keyed by its path relative to the root project.
+                srcBytes <- packageSourceBytes pkgDir depBc
+                pure (LockEntry "path" (T.pack (relPathTo canonRoot canon)) (contentId srcBytes))
+        (GitDep _ url rev : _) -> do
+          -- §36.23: resolve the git dependency to a checkout and pin the
+          -- resolved commit SHA as its immutable identity in the lock.
+          res <- resolveGitDep sp canonRoot url rev
+          case res of
+            Left ds -> pure (Left ds)
+            Right (repoDir, sha) -> do
+              ok <- doesFileExist (repoDir </> manifestBasename)
               if not ok
-                then
-                  pure . Left $
-                    [ depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
-                        ( "path dependency '" <> nm <> "' has no build manifest at '"
-                            <> T.pack manifest <> "' (Spec §36.23.2)"
-                        )
-                    ]
+                then pure (Left [pathNotFound sp nm (repoDir </> manifestBasename)])
                 else do
-                  canon <- canonicalizePath pkgDir
-                  if canon `Set.member` visited
-                    then go canonRoot visited acc locks rest -- already collected (dedup / cycle)
-                    else do
-                      loaded <- loadDepPackage manifest
-                      case loaded of
-                        Left ds -> pure (Left ds)
-                        Right depBc -> do
-                          mods <- depLibraryModules pkgDir depBc
-                          -- §36.23.2: content identity of this path-dep
-                          -- package, keyed by its path relative to the
-                          -- root project (a portable, deterministic key).
-                          srcBytes <- packageSourceBytes pkgDir depBc
-                          let cid = contentId srcBytes
-                              lockKey = T.pack (relPathTo canonRoot canon)
-                              lock = LockEntry lockKey cid
-                              tagged = [(p, m, T.pack canon) | (p, m) <- mods]
-                              transitive = [(pkgDir, depBc, dnm) | dnm <- dedupT (libraryDeps depBc)]
-                          go canonRoot (Set.insert canon visited) (tagged : acc) (lock : locks) (transitive ++ rest)
+                  canon <- canonicalizePath repoDir
+                  collectResolved canon repoDir (const (pure (LockEntry "git" url sha)))
+      where
+        sp = Span (depDir0 </> manifestBasename) (Pos 1 1) (Pos 1 1)
+        -- shared: with the package resolved to @pkgDir@ (canonical
+        -- @canon@), skip if already collected (dedup/cycle); else load it,
+        -- collect its library modules, record its lock entry, and enqueue
+        -- its own (transitive) library dependencies.
+        collectResolved canon pkgDir mkLock
+          | canon `Set.member` visited = go canonRoot visited acc locks rest
+          | otherwise = do
+              loaded <- loadDepPackage (pkgDir </> manifestBasename)
+              case loaded of
+                Left ds -> pure (Left ds)
+                Right depBc -> do
+                  mods <- depLibraryModules pkgDir depBc
+                  lockEntry <- mkLock depBc
+                  let tagged = [(p, m, T.pack canon) | (p, m) <- mods]
+                      transitive = [(pkgDir, depBc, dnm) | dnm <- dedupT (libraryDeps depBc)]
+                  go canonRoot (Set.insert canon visited) (tagged : acc) (lockEntry : locks) (transitive ++ rest)
+
     unresolved sp nm kind =
       depErr sp "E_DEPENDENCY_UNRESOLVED" "kappa.package.reproducibility"
         ( "dependency '" <> nm <> "' is a " <> kind
-            <> " dependency; this implementation's resolver profile resolves only path "
-            <> "dependencies (registry/git require a registry and lockfile it does not "
-            <> "provide, Spec §36.23.1)"
+            <> " dependency; this implementation's resolver profile resolves path and "
+            <> "git dependencies (a registry/lockfile-backed registry resolver is not "
+            <> "provided, Spec §36.23.1)"
         )
+    pathNotFound sp nm mf =
+      depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
+        ( "dependency '" <> nm <> "' has no build manifest at '" <> T.pack mf
+            <> "' (Spec §36.23.2)"
+        )
+
+-- | §36.23: resolve a git dependency to a local checkout and its resolved
+-- commit SHA. Clones the URL into a project-local content-addressed cache
+-- (@<root>/.kappa/git/<url-digest>@) on first use, best-effort-fetches an
+-- existing one, checks out the requested revision detached, and reports
+-- @rev-parse HEAD@. git availability and every git step are checked; any
+-- failure is an honest 'E_DEPENDENCY_GIT_FAILED'.
+resolveGitDep :: Span -> FilePath -> Text -> Text -> IO (Either Diagnostics (FilePath, Text))
+resolveGitDep sp canonRoot url rev = do
+  mgit <- findExecutable "git"
+  case mgit of
+    Nothing -> pure (Left [gitErr sp url "the 'git' executable was not found on PATH"])
+    Just git -> do
+      let cacheDir = canonRoot </> ".kappa" </> "git" </> T.unpack (contentId [("url", encodeUtf8 url)])
+      createDirectoryIfMissing True (takeDirectory cacheDir)
+      hasRepo <- doesDirectoryExist (cacheDir </> ".git")
+      ensured <-
+        if hasRepo
+          then -- best-effort refresh; an offline reuse of an existing cache is fine
+            runGit git ["-C", cacheDir, "fetch", "--quiet", "--tags", "origin"] >> pure (Right ())
+          else runGit git ["clone", "--quiet", T.unpack url, cacheDir]
+      case ensured of
+        Left e -> pure (Left [gitErr sp url ("clone failed: " <> e)])
+        Right () -> do
+          co <- runGit git ["-C", cacheDir, "checkout", "--quiet", "--detach", T.unpack rev]
+          case co of
+            Left e -> pure (Left [gitErr sp url ("checkout of revision '" <> rev <> "' failed: " <> e)])
+            Right () -> do
+              rp <- runGitOut git ["-C", cacheDir, "rev-parse", "HEAD"]
+              case rp of
+                Left e -> pure (Left [gitErr sp url ("rev-parse failed: " <> e)])
+                Right out -> pure (Right (cacheDir, T.strip (T.pack out)))
+
+-- | Run a git command, returning its stderr on failure.
+runGit :: FilePath -> [String] -> IO (Either Text ())
+runGit git args = do
+  (ec, _, err) <- readProcessWithExitCode git args ""
+  pure $ case ec of
+    ExitSuccess -> Right ()
+    ExitFailure _ -> Left (T.strip (T.pack err))
+
+-- | Run a git command, returning its stdout on success.
+runGitOut :: FilePath -> [String] -> IO (Either Text String)
+runGitOut git args = do
+  (ec, out, err) <- readProcessWithExitCode git args ""
+  pure $ case ec of
+    ExitSuccess -> Right out
+    ExitFailure _ -> Left (T.strip (T.pack err))
+
+gitErr :: Span -> Text -> Text -> Diagnostic
+gitErr sp url msg =
+  diag SevError StageImports "E_DEPENDENCY_GIT_FAILED" (Just "kappa-hs.build.dependency-git") sp
+    ("git dependency '" <> url <> "': " <> msg <> " (Spec §36.23)")
 
 -- | Load + evaluate a dependency package's manifest (§35.13).
 loadDepPackage :: FilePath -> IO (Either Diagnostics BuildConfig)

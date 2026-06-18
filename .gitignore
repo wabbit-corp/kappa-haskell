@@ -17,5 +17,8 @@ examples/native/**/build/
 tests/build/**/kappa.lock
 examples/native/**/kappa.lock
 
+# Per-project git-dependency cache (clones)
+.kappa/
+
 # Native executables (build outputs)
 *.exe

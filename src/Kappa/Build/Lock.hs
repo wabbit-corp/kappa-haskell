@@ -27,10 +27,13 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word64, Word8)
 import Numeric (showHex)
 
--- | One resolved path dependency: its path relative to the root project
--- (the lock key) and its content identity.
+-- | One resolved dependency in the lockfile. @leKind@ is @"path"@ or
+-- @"git"@; @leKey@ is the dependency's stable locator (a project-relative
+-- path, or a git URL); @leId@ is its immutable identity (a content digest
+-- for a path dependency, the resolved commit SHA for a git dependency).
 data LockEntry = LockEntry
-  { lePath :: !Text
+  { leKind :: !Text
+  , leKey :: !Text
   , leId :: !Text
   }
   deriving stock (Eq, Show)
@@ -75,18 +78,24 @@ hashBytes = BS.foldl' hashByte
 lockHeader :: Text
 lockHeader = "# kappa.lock v1 (generated; records resolved path-dependency content identities)"
 
--- | A content line is @path <id> <relpath>@. The identity comes first
--- (a fixed-width hex token with no spaces) so the path may contain
--- spaces — it is the remainder of the line verbatim.
+-- | A content line is @<kind> <id> <key>@. The kind and identity come
+-- first (tokens with no spaces) so the key (a path, which may contain
+-- spaces) is the remainder of the line verbatim.
 renderLock :: [LockEntry] -> Text
 renderLock entries =
-  T.unlines (lockHeader : ["path " <> leId e <> " " <> lePath e | e <- sortOn lePath entries])
+  T.unlines
+    ( lockHeader
+        : [ leKind e <> " " <> leId e <> " " <> leKey e
+          | e <- sortOn (\e -> (leKey e, leKind e)) entries
+          ]
+    )
 
--- | Parse a lockfile into entries (sorted by path), ignoring blank lines
--- and @#@ comments. Malformed content lines are dropped here; use
--- 'lockWellFormed' to detect them.
+-- | Parse a lockfile into entries (sorted), ignoring blank lines and @#@
+-- comments. Malformed content lines are dropped here; use 'lockWellFormed'
+-- to detect them.
 parseLock :: Text -> [LockEntry]
-parseLock txt = sortOn lePath [e | Just e <- map parseLine (contentLines txt)]
+parseLock txt =
+  sortOn (\e -> (leKey e, leKind e)) [e | Just e <- map parseLine (contentLines txt)]
 
 -- | True iff every content (non-blank, non-comment) line is a valid
 -- entry — used to distinguish an absent lock from a corrupt one.
@@ -103,8 +112,10 @@ contentLines txt =
   ]
 
 parseLine :: Text -> Maybe LockEntry
-parseLine ln = do
-  rest <- T.stripPrefix "path " ln
-  let (i, afterId) = T.breakOn " " rest
-      p = T.drop 1 afterId
-  if T.null i || T.null p then Nothing else Just (LockEntry p i)
+parseLine ln =
+  let (k, r1) = T.breakOn " " ln
+      (i, r2) = T.breakOn " " (T.drop 1 r1)
+      key = T.drop 1 r2
+   in if k `elem` ["path", "git"] && not (T.null i) && not (T.null key)
+        then Just (LockEntry k key i)
+        else Nothing

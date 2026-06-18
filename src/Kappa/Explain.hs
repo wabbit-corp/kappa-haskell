@@ -261,6 +261,8 @@ registry =
       "More than one package in the build (the target's own package and/or its dependencies) provides the same module name; cross-package module names must be distinct (Spec §8.1, §36.23)."
   , ent "E_DEPENDENCY_LOCK_MISMATCH" (Just "kappa.package.reproducibility")
       "A locked build's resolved path-dependency content identities do not match kappa.lock (a dependency changed, or the lock is missing/stale); the build is not reproducible against the lock (Spec §36.4, §36.23.2, §3.2.15)."
+  , ent "E_DEPENDENCY_GIT_FAILED" (Just "kappa-hs.build.dependency-git")
+      "A git dependency could not be resolved: git is unavailable, or a clone/checkout/rev-parse of the requested URL and revision failed (Spec §36.23)."
   , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
       "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
