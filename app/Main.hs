@@ -3,6 +3,7 @@ module Main (main) where
 
 import Control.Monad (forM_, unless, when)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.Driver
@@ -187,23 +188,53 @@ cmdBuildManifest ma = do
                 Just prov -> TIO.putStr (renderProvenance prov) >> exitSuccess
                 Nothing -> hPutStrLn stderr "no buildConfig value provenance available" >> exitFailure
           | maCheck ma -> TIO.putStr (renderBuildConfig bc) >> exitSuccess
-          -- §36.31: a --target naming a test target runs its Appendix-T
-          -- suite; otherwise the default is the native executable build.
-          | Just nm <- maTarget ma, isTestTarget bc nm -> buildManifestTest file bc nm
-          | otherwise -> buildManifestTarget file bc ma
+          -- a --target dispatches on the named target's kind (executable
+          -- build / test suite / aggregate of members); no --target builds
+          -- the default executable.
+          | Just nm <- maTarget ma -> do
+              ok <- runNamedTarget file bc ma Set.empty nm
+              if ok then exitSuccess else exitFailure
+          | otherwise -> do
+              ok <- runExecutable file bc ma Nothing
+              if ok then exitSuccess else exitFailure
 
--- | True iff the manifest declares a test target with this name.
-isTestTarget :: B.BuildConfig -> T.Text -> Bool
-isTestTarget bc nm =
-  any (\t -> case t of B.TestTarget {} -> B.tName t == nm; _ -> False) (B.bcTargets bc)
+-- | Run one manifest target by name, dispatching on its kind. Returns
+-- whether it succeeded (so an aggregate can combine its members). @visited@
+-- detects aggregate cycles.
+runNamedTarget :: FilePath -> B.BuildConfig -> ManifestArgs -> Set.Set T.Text -> T.Text -> IO Bool
+runNamedTarget file bc ma visited nm
+  | nm `Set.member` visited =
+      emitDiags Human
+        [ diag SevError StageImports "E_BUILD_TARGET_CYCLE" (Just "kappa-hs.build.target-cycle")
+            (Span file (Pos 1 1) (Pos 1 1))
+            ("aggregate target membership is cyclic through '" <> nm <> "' (Spec §36.3)")
+        ]
+        >> pure False
+  | otherwise = case [t | t <- B.bcTargets bc, B.tName t == nm] of
+      [] ->
+        emitDiags Human
+          [ diag SevError StageImports "E_BUILD_TARGET_NOT_FOUND" (Just "kappa-hs.build.target-not-found")
+              (Span file (Pos 1 1) (Pos 1 1))
+              ("no target named '" <> nm <> "' in the manifest (Spec §36.3)")
+          ]
+          >> pure False
+      (t : _) -> case t of
+        B.TestTarget {} -> runTest file bc nm
+        B.ExecutableTarget {} -> runExecutable file bc ma (Just nm)
+        B.AggregateTarget _ members ->
+          and <$> mapM (runNamedTarget file bc ma (Set.insert nm visited)) members
+        B.LibraryTarget {} -> do
+          hPutStrLn stderr
+            ("note: library target '" <> T.unpack nm <> "' is consumed as a dependency, not built directly; skipping")
+          pure True
 
 -- | Run a manifest @test@ target's Appendix-T suite (§36.31): resolve its
 -- test source files and run each through the test harness, then report.
-buildManifestTest :: FilePath -> B.BuildConfig -> T.Text -> IO ()
-buildManifestTest manifestFile bc nm = do
+runTest :: FilePath -> B.BuildConfig -> T.Text -> IO Bool
+runTest manifestFile bc nm = do
   resolved <- resolveTestTarget (takeDirectory manifestFile) bc (Just nm)
   case resolved of
-    Left ds -> emitDiags Human ds >> exitFailure
+    Left ds -> emitDiags Human ds >> pure False
     Right (_, files) -> do
       reports <- concat <$> mapM runTestPath files
       let s = summarize reports
@@ -211,15 +242,16 @@ buildManifestTest manifestFile bc nm = do
         "test target " <> T.unpack nm <> ": total " <> show (length reports)
           <> ": " <> show (sPass s) <> " passed, " <> show (sFail s) <> " failed, "
           <> show (sUnsupported s) <> " unsupported, " <> show (sHarnessError s) <> " harness errors"
-      if sFail s > 0 || sHarnessError s > 0 then exitFailure else exitSuccess
+      pure (sFail s == 0 && sHarnessError s == 0)
 
 -- | The build-plan + codegen path for a manifest executable target.
-buildManifestTarget :: FilePath -> B.BuildConfig -> ManifestArgs -> IO ()
-buildManifestTarget manifestFile bc ma = do
+-- Returns whether the build succeeded.
+runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
+runExecutable manifestFile bc ma mname = do
   let manifestDir = takeDirectory manifestFile
-  resolved <- resolveExecutable manifestDir bc (maTarget ma)
+  resolved <- resolveExecutable manifestDir bc mname
   case resolved of
-    Left ds -> emitDiags Human ds >> exitFailure
+    Left ds -> emitDiags Human ds >> pure False
     Right rx -> do
       -- §36.4/§36.23.2: under --locked, verify the resolved
       -- path-dependency closure against kappa.lock BEFORE building (fail
@@ -237,30 +269,35 @@ buildManifestTarget manifestFile bc ma = do
             compileProgramWithNative (rxProvidedModules rx) defaultUnsafeConfig True nameOf files
           cuDs = preDiags ++ cuDiags cu
       emitDiags Human cuDs
-      when (hasErrors cuDs) exitFailure
       let st = cuState cu
           mainG = GName (rxEntryModule rx) "main"
-      unless (Map.member mainG (csGlobals st)) $ do
-        hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition"
-        exitFailure
-      let entryFile = maybe "<entry>" fst (lookupEntry rx)
-          opts =
-            defaultBuildOptions
-              { boOutput = maOut ma
-              , boEmitCOnly = maEmitC ma
-              , boCC = maCC ma
-              , boRuntimeFfi = rxRuntimeFfi rx
-              , boHostPrims = hostPrims
-              , boLinkSpecs = rxLinkSpecs rx
-              }
-      result <- buildNative st mainG entryFile opts
-      case result of
-        Left ds -> emitDiags Human ds >> exitFailure
-        Right outPath -> do
-          -- default mode: record/update kappa.lock after a successful
-          -- resolution+build (clearing a now-empty closure's stale lock).
-          updateLock manifestDir ma (rxLockEntries rx)
-          hPutStrLn stderr ("built " <> outPath) >> exitSuccess
+      if hasErrors cuDs
+        then pure False
+        else
+          if not (Map.member mainG (csGlobals st))
+            then do
+              hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition"
+              pure False
+            else do
+              let entryFile = maybe "<entry>" fst (lookupEntry rx)
+                  opts =
+                    defaultBuildOptions
+                      { boOutput = maOut ma
+                      , boEmitCOnly = maEmitC ma
+                      , boCC = maCC ma
+                      , boRuntimeFfi = rxRuntimeFfi rx
+                      , boHostPrims = hostPrims
+                      , boLinkSpecs = rxLinkSpecs rx
+                      }
+              result <- buildNative st mainG entryFile opts
+              case result of
+                Left ds -> emitDiags Human ds >> pure False
+                Right outPath -> do
+                  -- record/update kappa.lock after a successful
+                  -- resolution+build (clearing a now-empty closure's stale lock).
+                  updateLock manifestDir ma (rxLockEntries rx)
+                  hPutStrLn stderr ("built " <> outPath)
+                  pure True
   where
     -- the source file whose module is the entry module (for the artifact
     -- basename / generated-C path)

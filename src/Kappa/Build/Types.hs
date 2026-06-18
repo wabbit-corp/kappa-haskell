@@ -125,4 +125,8 @@ data Target
       { tName :: !Text
       , tModules :: !ModuleSelector
       }
+  | AggregateTarget
+      { tName :: !Text
+      , tMembers :: ![Text] -- ^ names of the member targets it groups
+      }
   deriving stock (Eq, Show)

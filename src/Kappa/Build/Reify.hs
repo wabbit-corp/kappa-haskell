@@ -250,4 +250,6 @@ decTarget ctx v = do
         <*> asStrList ctx deps
     ("TestTarget", [nm, mods]) ->
       TestTarget <$> asStr ctx nm <*> decModuleSelector ctx mods
-    _ -> decFail "expected a target ('executable'/'library'/'test') (Spec §29.8)"
+    ("AggregateTarget", [nm, members]) ->
+      AggregateTarget <$> asStr ctx nm <*> asStrList ctx members
+    _ -> decFail "expected a target ('executable'/'library'/'test'/'aggregate') (Spec §29.8)"

@@ -249,6 +249,8 @@ registry =
       "A build target references a host-binding name that the manifest's hostBindings does not declare (Spec §36.3, §36.28)."
   , ent "E_BUILD_ENTRY_NOT_FOUND" (Just "kappa-hs.build.entry-not-found")
       "A build target's entry (main) module could not be located as a source file under the package's source roots (Spec §36.3, §36.4)."
+  , ent "E_BUILD_TARGET_CYCLE" (Just "kappa-hs.build.target-cycle")
+      "An aggregate build target (transitively) includes itself; aggregate target membership must be acyclic (Spec §36.3)."
   , ent "E_MODULE_NAME_CASE_COLLISION" (Just "kappa-hs.module.case-collision")
       "Two source files in a compilation unit derive module names that are equal after case-folding but differ in case (Spec §8.1)."
   , ent "E_DEPENDENCY_NOT_FOUND" (Just "kappa-hs.build.dependency-not-found")

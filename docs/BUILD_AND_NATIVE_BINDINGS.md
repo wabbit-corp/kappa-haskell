@@ -137,20 +137,26 @@ remains registered with its four §35.11 sub-causes.)
 
 ## Target kinds (§29.8, §36.30+)
 
-The schema supports three target kinds, each with a build-pipeline action:
+The schema supports four target kinds, each with a build-pipeline action:
 
 - **`executable`** — native build (lower `main`'s closure to C + link, §27.7).
 - **`library`** — its modules are compiled into a dependent that path/git/
-  registry/url-depends on the package (it is consumed, not built directly).
+  registry/url-depends on the package (it is consumed, not built directly;
+  named directly in an aggregate it is skipped with a note).
 - **`test`** (§36.31) — `kappa build --manifest --target <name>` runs the
   target's modules through the Appendix-T test harness (each test file
   standalone, like `kappa test FILE`) and reports pass/fail / exit status.
+- **`aggregate`** — groups member targets by name; building it runs each
+  member's action (build/run), succeeding iff all do. Cyclic membership is
+  rejected (`E_BUILD_TARGET_CYCLE`); an unknown member is
+  `E_BUILD_TARGET_NOT_FOUND`.
 
 `--target NAME` dispatches on the named target's kind (test → run suite;
-executable → native build). Other §29.8 kinds (`codegen`, `bridge`,
-`benchmark`, `publish`, `aggregate`, `aliasTarget`, …) are not in the
-schema subset yet (§29.8's "equivalent to" lets the implementation choose
-the subset; they are deferred-not-defective).
+executable → native build; aggregate → run each member); no `--target`
+builds the default executable. Other §29.8 kinds (`codegen`, `bridge`,
+`benchmark`, `publish`, `aliasTarget`, …) are not in the schema subset yet
+(§29.8's "equivalent to" lets the implementation choose the subset; they
+are deferred-not-defective).
 
 ## Native bindings — driven by the manifest (increment 2, DONE)
 
@@ -352,9 +358,10 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
     surfaced via `kappa build --manifest --provenance`.
 12. Canonical schema serialization + semantic-identity computation (§36.2)
     + per-slice string-interpolation provenance (§35.8).
-13. **(partly done)** Target kinds: `executable`/`library`/`test` are
-    built/run; `codegen`/`bridge`/`benchmark`/`publish`/`aggregate`/… and
-    JVM/.NET/Python ecosystems + deployment/reproducibility status remain.
+13. **(partly done)** Target kinds: `executable`/`library`/`test`/`aggregate`
+    are built/run/grouped; `codegen`/`bridge`/`benchmark`/`publish`/
+    `aliasTarget`/… and JVM/.NET/Python ecosystems + deployment/
+    reproducibility status remain.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
 builder set as "equivalent to" a portable schema (signatures are

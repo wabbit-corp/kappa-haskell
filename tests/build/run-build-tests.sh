@@ -228,6 +228,26 @@ else
 fi
 rm -rf "$TT"
 
+echo "== aggregate target (§36.3): build/run a group of member targets =="
+AG="${TMPDIR:-/tmp}/kappa-aggtest"; rm -rf "$AG"; mkdir -p "$AG/src/app" "$AG/test/spec"
+cat > "$AG/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "src", sourceRoot "test"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "cli", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = [] }, test { name = "unit", modules = modulesUnder "spec" }, aggregate { name = "all", members = ["cli", "unit"] }, aggregate { name = "cyc1", members = ["cyc2"] }, aggregate { name = "cyc2", members = ["cyc1"] }] }
+EOF
+printf 'module app.main\nlet main = printlnString "hi"' > "$AG/src/app/main.kp"
+printf -- '--! mode check\n--! assertNoErrors\nmodule spec.ok\nlet x : Int = 1' > "$AG/test/spec/ok.kp"
+if timeout 120 $KAPPA build --manifest "$AG" --target all --emit-c >/dev/null 2>&1; then
+  echo "PASS aggregate/run (builds executable member + runs test member)"
+else
+  echo "FAIL aggregate/run"; fails=$((fails+1))
+fi
+agout="$(timeout 120 $KAPPA build --manifest "$AG" --target cyc1 --emit-c 2>&1)"
+if grep -q "E_BUILD_TARGET_CYCLE" <<<"$agout"; then
+  echo "PASS aggregate/cycle (cyclic membership -> E_BUILD_TARGET_CYCLE)"
+else
+  echo "FAIL aggregate/cycle"; echo "$agout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+find "$AG" -name '*.kappa.c' -delete 2>/dev/null; rm -rf "$AG"
+
 echo "== value provenance (§35.7): buildConfig provenance graph =="
 PV="${TMPDIR:-/tmp}/kappa-prov-test"; rm -rf "$PV"; mkdir -p "$PV"
 cat > "$PV/kappa.build.kp" <<'EOF'
