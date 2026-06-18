@@ -184,6 +184,17 @@ static inline int64_t kunbox_i64(KValue *v, int *ovf) {
   *ovf = 1;
   return 0;
 }
+/* R2.2: unbox a K_DBL to double for the typed unboxed Double workers.  A
+ * non-K_DBL value sets the escape flag so the caller re-runs the boxed worker.
+ * Unlike `kas_dbl` (which aborts on a non-Double), this ESCAPES — the unboxed
+ * fast path is only taken when the argument is an inline K_DBL, exactly
+ * mirroring `kunbox_i64`'s tag-checked escape (never a crash on the wrong
+ * tag). */
+static inline double kunbox_dbl(KValue *v, int *ovf) {
+  if (v->tag == K_DBL) return v->as.d;
+  *ovf = 1;
+  return 0.0;
+}
 KValue *kbounce(KValue *fn, KValue *arg);  /* defer a tail-position application */
 KValue *ktrampoline(KValue *r);            /* drive bounces to a value     */
 KValue *kio_tail(KValue *action);          /* mark a do-block tail IO action for krun_io */

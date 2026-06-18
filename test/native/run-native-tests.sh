@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds; do run_diff_case "$c"; done
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -122,6 +122,36 @@ if [ -f "$rt" ] && [ "$r21_ok" -eq 1 ]; then
   echo "   ok (kint/kdbl/kchr/kbyte allocate via alloc_val_atomic; scanned alloc_val reserved for pointer-bearing boxes)"
 else
   echo "   FAIL: a scalar box no longer uses the atomic GC heap (R2.1 regressed)"; fails=$((fails+1))
+fi
+
+# R2.2 / P0-D: a monomorphic first-order Double (or mixed Int+Double) function
+# lowers to a typed unboxed worker with a scalar while-loop — `double
+# kwd_…(double, …, int *kovf)` reached via kunbox_dbl, with a native double add
+# (`= … + …;`) in the worker body (each op its own FMA-safe statement) rather
+# than per-iteration boxed kp_addDouble.  (The boxed kw_ worker, which DOES
+# keep kp_addDouble as the escape reference, still exists — so we assert the
+# unboxed worker's positive signals, not the absence of kp_addDouble globally.)
+echo "== R2.2: Double / mixed-kind functions get a typed unboxed scalar worker =="
+dtmp="$WORK/r22c"; mkdir -p "$dtmp"
+dbench="$ROOT/test/native/bench/proposed/scalar_doubleloop.kp"
+if timeout 120 $KAPPA build "$dbench" --emit-c -o "$dtmp/sd" >"$dtmp/build.log" 2>&1; then
+  cfile="$ROOT/test/native/bench/proposed/scalar_doubleloop.kappa.c"
+  # the body of the unboxed double worker: from its `double kwd_…(double` line
+  # to the next top-level `}` at column 0.
+  # a kwd_ worker (any double param/result) — the bench's sumD returns double,
+  # so match a double-returning kwd_ definition line (ends in `{`).
+  worker="$(awk '/^static double kwd_[A-Za-z0-9_]+\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  if printf '%s' "$worker" | grep -qE 'kwd_[A-Za-z0-9_]+\(' \
+     && grep -qE 'kunbox_dbl\(' "$cfile" \
+     && printf '%s' "$worker" | grep -qE '= [A-Za-z0-9_]+ \+ [A-Za-z0-9_]+;' \
+     && ! printf '%s' "$worker" | grep -qE 'kp_[A-Za-z]+Double\('; then
+    echo "   ok (typed double worker via kunbox_dbl with native double ops; no boxed prim in the unboxed loop)"
+  else
+    echo "   FAIL: Double loop did not lower to a typed unboxed worker (R2.2 regressed)"; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: scalar_doubleloop --emit-c build failed"; cat "$dtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # Honest no-fallback property: the native backend never silently falls back

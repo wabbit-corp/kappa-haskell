@@ -1,0 +1,32 @@
+-- R2.2 / P0-D probe: unboxed scalar workers with per-parameter kinds.
+--
+-- Each of these is a monomorphic first-order scalar function whose params are
+-- a mix of Int and Double.  They must lower to a typed unboxed worker
+-- (`double kwd_…(double, int64_t, …, int *kovf)`) with a scalar while-loop —
+-- no per-iteration KValue boxing — behind the boxed-worker escape net.  Output
+-- must match the interpreter exactly (showDouble / showInt).
+module main
+
+-- mixed kind: Double accumulator, Int counter (the scalar_doubleloop shape).
+sumD : Double -> Int -> Double
+let sumD acc n = if leInt n 0 then acc else sumD (addDouble acc (intToDouble n)) (subInt n 1)
+
+-- two Double params + an Int counter: repeated multiply.
+scaleD : Double -> Double -> Int -> Double
+let scaleD acc x n = if leInt n 0 then acc else scaleD (mulDouble acc x) x (subInt n 1)
+
+-- a Double comparison drives the loop (ltDouble), with a Double literal in the
+-- body (addDouble acc 1.0).
+clampGrow : Double -> Double -> Double
+let clampGrow acc lim = if ltDouble acc lim then clampGrow (addDouble acc 1.0) lim else acc
+
+-- all-Int worker alongside (the kwi_ path stays exactly as before).
+sumI : Int -> Int -> Int
+let sumI acc n = if leInt n 0 then acc else sumI (addInt acc n) (subInt n 1)
+
+main : UIO Unit
+let main = do
+  printlnString (showDouble (sumD 0.0 100))        -- 1+…+100 = 5050.0
+  printlnString (showDouble (scaleD 1.0 2.0 10))   -- 2^10 = 1024.0
+  printlnString (showDouble (clampGrow 0.0 5.0))   -- 5.0
+  printlnString (showInt (sumI 0 1000))            -- 500500

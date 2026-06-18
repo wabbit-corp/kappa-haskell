@@ -97,6 +97,12 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
           args =
             ccLead
               ++ [ "-std=c11"
+                 -- Disable FP contraction (no implicit FMA fusion) so the
+                 -- backend's unboxed double arithmetic rounds per-operation
+                 -- exactly like the interpreter's (and the boxed kp_*Double
+                 -- prims), making native ≡ interpreter for Double bit-for-bit
+                 -- regardless of the -O level (R2.2 / §27 semantics).
+                 , "-ffp-contract=off"
                  , "-I", runtimeDir
                  , cPath
                  , runtimeDir </> "kappart.c"

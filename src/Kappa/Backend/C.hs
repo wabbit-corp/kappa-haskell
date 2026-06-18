@@ -41,7 +41,7 @@ import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
 import Kappa.Backend.Intrinsics (intrinsicPrim)
 import Kappa.Diagnostic
-import Kappa.Eval (GlobalDef (..))
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
 
@@ -83,6 +83,7 @@ data GenState = GenState
   , gsErrs :: ![BackendError] -- ^ unsupported-construct findings
   , gsCur :: !GName -- ^ definition currently being compiled (for diagnostics)
   , gsGlobals :: !(Map GName GlobalDef)
+  , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
   , gsBodies :: !(Map GName Term)
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
@@ -94,7 +95,7 @@ data GenState = GenState
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
   , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
   , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
-  , gsI64Escape :: !Text -- ^ the C statement spliced by i64Arith on overflow / INT64_MIN: @*kovf = 1; return 0;@ for an LR1 worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
+  , gsI64Escape :: !Text -- ^ the C statement spliced by scalarArith on int overflow / INT64_MIN: @*kovf = 1; return 0;@ for an unboxed scalar worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
   , gsCollectCtors :: !(Set Text) -- ^ LR2: gKeys of USER constructors referenced (constructed or matched); builtins use the fixed @KCT_*@ ids so they are NOT collected. After codegen, @assemble@ assigns each a @KCT_USER_BASE+i@ id (sorted, deterministic) and emits a @KT_<mangle>@ enum.
   , gsCollectVars :: !(Set Text) -- ^ LR2: §13 variant member-identity tags referenced (injected or matched); @assemble@ emits a 0-based @KVT_<mangle>@ enum (variants are never runtime-built, so no fixed-id constraint).
   }
@@ -388,6 +389,7 @@ generateC cs mainG ffiPrims =
           , gsErrs = []
           , gsCur = mainG
           , gsGlobals = csGlobals cs
+          , gsEvalCtx = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
           , gsBodies = csCoreBodies cs
           , gsCtors = csCtors cs
           , gsDatas = Map.keysSet (csDatas cs)
@@ -612,46 +614,87 @@ compileFunctionGlobal g n inner = do
           , "}"
           ]
   modify' $ \st -> st {gsTop = accessor : gsTop st}
-  -- LR1: if g is a monomorphic first-order Int function with an
-  -- int64-expressible body, ALSO emit the typed unboxed worker kwi_g.
-  eligible <- lr1Arity g
-  case eligible of
-    Just _ -> compileI64Worker g n inner
+  -- LR1/R2.2: if g is a monomorphic first-order scalar function (Int and/or
+  -- Double params + scalar result) with a scalar-expressible body, ALSO emit
+  -- the typed unboxed worker beside the boxed kw_g.
+  mplan <- scalarPlan g
+  case mplan of
+    Just (pks, ret) -> compileScalarWorker g pks ret inner
     Nothing -> pure ()
 
--- ── LR1: typed unboxed int64 Int workers ─────────────────────────────────
--- A first-order monomorphic Int function (gdType Integer→…→Integer, here
--- approximated by an int64-EXPRESSIBLE body over n explicit relevant binders)
--- gets an auxiliary @int64_t kwi_g(int64_t…, int *kovf)@ worker beside the
--- boxed @kw_g@.  A saturated direct call (compileLr1Call) unboxes its K_INT
--- args and calls @kwi_g@; on a non-K_INT arg OR an int64 overflow it sets
--- @kovf@ and re-runs the BOXED worker from the ORIGINAL boxed args, so the
--- result is identical to the interpreter (the boxed/GMP path is the
--- reference).  @kw_g@, the closure chain, and the accessor are unchanged;
--- @kwi_g@ is reachable only from the saturated fast path.  Body grammar
--- (conservative allowlist; anything else ⇒ ineligible ⇒ boxed-only): an Int
--- literal in int64 range, a param/var, the int arith prims (add/sub/mul/div/
--- mod/neg)Int, the compares (eq/lt/le)Int ONLY as an @if@ condition, @if@ in
--- tail position, and SATURATED self-calls.  (CLet and @if@ in value position
--- are deferred — they make a body ineligible, never miscompiled.)
+-- ── LR1/R2.2: typed unboxed scalar workers (int64 / double) ──────────────
+-- A first-order monomorphic SCALAR function — parameters and result each
+-- Int/Nat/Integer (→ @int64_t@) or Float/Double (→ @double@), read from
+-- @gdType@ — with a scalar-EXPRESSIBLE body gets an auxiliary unboxed worker
+-- beside the boxed @kw_g@: typed scalar params + a while-loop for tail
+-- self-calls (no @KEnv@/@kvar@/box per iteration).  A saturated direct call
+-- (compileScalarCall) unboxes each arg BY ITS KIND and, on a wrong-tag arg
+-- (kunbox_i64/kunbox_dbl escape) OR an int64 overflow, sets @kovf@ and re-runs
+-- the BOXED worker from the ORIGINAL boxed args — so the boxed/GMP path is
+-- always the reference result (the unbox tag-check is the soundness net: even
+-- a mis-derived kind escapes to boxed, never miscompiles).  @kw_g@, the
+-- closure chain, and the accessor are unchanged; the unboxed worker is reached
+-- only from the saturated fast path.  Body grammar (conservative allowlist;
+-- else ⇒ boxed-only): a scalar literal, a param/var, the int arith prims
+-- (add/sub/mul/div/mod/neg)Int (overflow-escaped), the double arith prims
+-- (add/sub/mul/div/neg)Double (plain IEEE, no escape — wraps to ±inf/NaN like
+-- the boxed prim), @intToDouble@ (an int→double cast), the safe compares
+-- (eq/lt/le)Int and ltDouble/floatEq ONLY as an @if@ condition, @if@ in tail
+-- position, and SATURATED self-calls.  (CLet and @if@ in value position are
+-- deferred — they make a body ineligible, never miscompiled.  @eqDouble@ is
+-- EXCLUDED: it is §6.1.3 raw-bit equality, not C @==@; @leDouble@ has no
+-- runtime prim.)
 
--- | The int arith prims supported on the unboxed path, with their arity.
-lr1ArithArity :: Text -> Maybe Int
-lr1ArithArity = \case
-  "addInt" -> Just 2
-  "subInt" -> Just 2
-  "mulInt" -> Just 2
-  "divInt" -> Just 2
-  "modInt" -> Just 2
-  "negInt" -> Just 1
+-- | The scalar kind of a worker parameter / result: an unboxed @int64_t@ or
+-- @double@.
+data ScalarKind = KInt64 | KDouble deriving (Eq)
+
+-- | The C type for a scalar kind.
+cScalarTy :: ScalarKind -> Text
+cScalarTy KInt64 = "int64_t"
+cScalarTy KDouble = "double"
+
+-- | Box a raw scalar C value back into a @KValue@ by its kind.
+boxScalar :: ScalarKind -> Text -> Text
+boxScalar KInt64 e = "kint(" <> e <> ")"
+boxScalar KDouble e = "kdbl(" <> e <> ")"
+
+-- | Unbox a @KValue@ argument to a raw scalar by its kind, escaping (setting
+-- @ovf@) on a wrong tag — the soundness net for the typed worker.
+unboxScalar :: ScalarKind -> Text -> Text -> Text
+unboxScalar KInt64 box ovf = "kunbox_i64(" <> box <> ", &" <> ovf <> ")"
+unboxScalar KDouble box ovf = "kunbox_dbl(" <> box <> ", &" <> ovf <> ")"
+
+-- | A scalar arith prim, with its (result kind, argument kinds).  @intToDouble@
+-- is the one cross-kind coercion (int → double, emitted as a C cast).
+arithPrim :: Text -> Maybe (ScalarKind, [ScalarKind])
+arithPrim = \case
+  "addInt" -> Just (KInt64, [KInt64, KInt64])
+  "subInt" -> Just (KInt64, [KInt64, KInt64])
+  "mulInt" -> Just (KInt64, [KInt64, KInt64])
+  "divInt" -> Just (KInt64, [KInt64, KInt64])
+  "modInt" -> Just (KInt64, [KInt64, KInt64])
+  "negInt" -> Just (KInt64, [KInt64])
+  "addDouble" -> Just (KDouble, [KDouble, KDouble])
+  "subDouble" -> Just (KDouble, [KDouble, KDouble])
+  "mulDouble" -> Just (KDouble, [KDouble, KDouble])
+  "divDouble" -> Just (KDouble, [KDouble, KDouble])
+  "negDouble" -> Just (KDouble, [KDouble])
+  "intToDouble" -> Just (KDouble, [KInt64])
   _ -> Nothing
 
--- | The int compares supported as an @if@ condition, mapped to their C op.
-lr1CmpOp :: Text -> Maybe Text
-lr1CmpOp = \case
-  "eqInt" -> Just "=="
-  "ltInt" -> Just "<"
-  "leInt" -> Just "<="
+-- | A scalar comparison usable as an @if@ condition: (C operator, operand
+-- kind).  ONLY comparisons whose C operator EXACTLY matches the runtime prim:
+-- the int compares, @ltDouble@ (IEEE @<@) and @floatEq@ (IEEE @==@).
+-- @eqDouble@ is excluded — §6.1.3 raw-bit equality differs from C @==@ on NaN
+-- and signed zero; @leDouble@ has no runtime prim to mirror.
+cmpPrim :: Text -> Maybe (Text, ScalarKind)
+cmpPrim = \case
+  "eqInt" -> Just ("==", KInt64)
+  "ltInt" -> Just ("<", KInt64)
+  "leInt" -> Just ("<=", KInt64)
+  "ltDouble" -> Just ("<", KDouble)
+  "floatEq" -> Just ("==", KDouble)
   _ -> Nothing
 
 -- | A saturated self-call: spine head is the worker's own global @self@ with
@@ -672,10 +715,12 @@ stripLamsQ = go []
     go acc (CLam ic q _ b) = go ((ic, q) : acc) b
     go acc t = (reverse acc, t)
 
--- | LR1 eligibility: @Just n@ iff g has a recorded body that is an
--- int64-expressible function of @n@ explicit, relevant (non-erased) binders.
-lr1Arity :: GName -> Gen (Maybe Int)
-lr1Arity g = do
+-- | The per-parameter scalar kinds and result kind of @g@ IF it is eligible
+-- for an unboxed worker: a recorded body of @n@ explicit relevant binders, a
+-- scalar type telescope of exactly @n@ runtime params + a scalar result, and a
+-- scalar-expressible body.  @Nothing@ ⇒ boxed-only (never a miscompile).
+scalarPlan :: GName -> Gen (Maybe ([ScalarKind], ScalarKind))
+scalarPlan g = do
   bodies <- gets gsBodies
   case Map.lookup g bodies of
     Nothing -> pure Nothing
@@ -683,101 +728,174 @@ lr1Arity g = do
       let (binders, inner) = stripLamsQ body
           n = length binders
       -- all binders explicit + relevant: an implicit/erased binder is passed
-      -- kunit() (compileErasableArg), which an int64 worker must never read.
+      -- kunit() (compileErasableArg), which a scalar worker must never read.
       if n >= 1 && all (\(ic, q) -> ic == Expl && q /= Q0) binders
-        then do ok <- i64EligTail g n inner; pure (if ok then Just n else Nothing)
+        then do
+          mkinds <- typeScalarKinds g n
+          case mkinds of
+            Just (pks, ret) -> do
+              ok <- scalarEligTail g pks ret inner
+              pure (if ok then Just (pks, ret) else Nothing)
+            Nothing -> pure Nothing
         else pure Nothing
 
--- | Eligibility of a tail-position term: an @if@ (compare condition, eligible
--- branches), a saturated self-call (eligible args), or a leaf int64 expr.
-i64EligTail :: GName -> Int -> Term -> Gen Bool
-i64EligTail self n term = case term of
-  CIf c t e -> andM [i64EligCond self n c, i64EligTail self n t, i64EligTail self n e]
+-- | Read @g@'s per-parameter and result scalar kinds from its elaborated type
+-- (quoted to a Term Pi telescope).  Requires exactly @n@ runtime (explicit,
+-- non-@Q0@) params, each a scalar type, and a scalar result.  The count-match
+-- against @n@ (the body's structural binder count) is a HARD guard: a
+-- disagreement (point-free style, an unfoldable type alias, a function-typed
+-- result) yields @Nothing@, so a kind is never assigned to the wrong binder.
+typeScalarKinds :: GName -> Int -> Gen (Maybe ([ScalarKind], ScalarKind))
+typeScalarKinds g n = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure $ case Map.lookup g globals of
+    Nothing -> Nothing
+    Just gd -> do
+      (pks, ret) <- walkPi [] (quote ctx 0 (gdType gd))
+      if length pks == n then Just (pks, ret) else Nothing
+  where
+    walkPi acc (CPi ic q _ dom cod)
+      | ic == Expl && q /= Q0 = do k <- scalarHeadKind dom; walkPi (k : acc) cod
+      | otherwise = walkPi acc cod -- erased/implicit binder: no runtime param
+    walkPi acc t = do rk <- scalarHeadKind t; Just (reverse acc, rk)
+
+-- | The scalar kind of a (bare) type head, or @Nothing@ for any non-scalar
+-- type.  Mirrors the elaborator's numeric-literal type classification
+-- (Check.hs: Int/Nat/Integer are the inline-int family, Float/Double the
+-- @K_DBL@ family); an applied / aliased / user type head is non-scalar.
+scalarHeadKind :: Term -> Maybe ScalarKind
+scalarHeadKind = \case
+  CGlob (GName _ nm)
+    | nm `elem` ["Int", "Nat", "Integer"] -> Just KInt64
+    | nm `elem` ["Float", "Double"] -> Just KDouble
+  _ -> Nothing
+
+-- | Eligibility of a tail-position term against the worker's return kind: an
+-- @if@ (safe-compare condition, eligible branches), a saturated self-call
+-- (each arg checks against the corresponding PARAM kind), or a leaf value
+-- whose kind equals the return kind.
+scalarEligTail :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligTail g pks ret term = case term of
+  CIf c t e -> andM [scalarEligCond g pks ret c, scalarEligTail g pks ret t, scalarEligTail g pks ret e]
   _
-    | Just args <- lr1SelfArgs self n term -> andM (map (i64EligExpr self n) args)
-    | otherwise -> i64EligExpr self n term
+    | Just args <- lr1SelfArgs g (length pks) term -> andM (zipWith (scalarHasKind g pks ret) pks args)
+    | otherwise -> scalarHasKind g pks ret ret term
 
--- | Eligibility of a value-position int64 expr: an in-range Int literal, a
--- var, an int arith application, or a (non-tail) saturated self-call.
-i64EligExpr :: GName -> Int -> Term -> Gen Bool
-i64EligExpr self n term = case term of
-  CLit (LitInt m) -> pure (m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int))
-  CVar _ -> pure True
+-- | Does the value-position @term@ have scalar kind @k@?
+scalarHasKind :: GName -> [ScalarKind] -> ScalarKind -> ScalarKind -> Term -> Gen Bool
+scalarHasKind g pks ret k term = do
+  mk <- scalarKindOf g pks ret term
+  pure (mk == Just k)
+
+-- | The scalar kind of a value-position expression, or @Nothing@ if it is not
+-- scalar-expressible (every prim arg must match the prim's expected kind, so a
+-- mixed-kind misuse such as @addInt acc n@ with @acc:Double@ is rejected, never
+-- miscompiled).  A self-call's result is the worker's return kind.
+scalarKindOf :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen (Maybe ScalarKind)
+scalarKindOf g pks ret term = case term of
+  CLit (LitInt m)
+    | m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int) -> pure (Just KInt64)
+    | otherwise -> pure Nothing
+  CLit (LitDouble _) -> pure (Just KDouble)
+  CVar i -> pure (scalarVarKind pks i)
   _ -> case spineOf term of
-    (CGlob g, sargs) -> do
+    (CGlob h, sargs) -> do
       let expl = [a | (Expl, a) <- sargs]
-      mp <- globPrimName g
+      mp <- globPrimName h
       case mp of
-        Just p | Just ar <- lr1ArithArity p, length expl == ar -> andM (map (i64EligExpr self n) expl)
+        Just p | Just (rk, argks) <- arithPrim p, length expl == length argks -> do
+          oks <- sequence (zipWith (scalarHasKind g pks ret) argks expl)
+          pure (if and oks then Just rk else Nothing)
         _
-          | Just args <- lr1SelfArgs self n term -> andM (map (i64EligExpr self n) args)
-          | otherwise -> pure False
-    _ -> pure False
+          | Just args <- lr1SelfArgs g (length pks) term -> do
+              oks <- sequence (zipWith (scalarHasKind g pks ret) pks args)
+              pure (if and oks then Just ret else Nothing)
+          | otherwise -> pure Nothing
+    _ -> pure Nothing
 
--- | Eligibility of an @if@ condition: a saturated int compare.
-i64EligCond :: GName -> Int -> Term -> Gen Bool
-i64EligCond self n term = case spineOf term of
-  (CGlob g, sargs) -> do
+-- | The kind of de Bruijn variable @i@ (env order: 0 = innermost = LAST
+-- param), i.e. source param @n-1-i@; out of range ⇒ Nothing.
+scalarVarKind :: [ScalarKind] -> Int -> Maybe ScalarKind
+scalarVarKind pks i =
+  let n = length pks
+   in if i >= 0 && i < n then Just (pks !! (n - 1 - i)) else Nothing
+
+-- | Eligibility of an @if@ condition: a saturated SAFE scalar compare whose
+-- operands have the comparison's operand kind.
+scalarEligCond :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligCond g pks ret term = case spineOf term of
+  (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
-    mp <- globPrimName g
-    case (mp >>= lr1CmpOp, expl) of
-      (Just _, [_, _]) -> andM (map (i64EligExpr self n) expl)
+    mp <- globPrimName h
+    case (mp >>= cmpPrim, expl) of
+      (Just (_, opk), [a, b]) -> andM [scalarHasKind g pks ret opk a, scalarHasKind g pks ret opk b]
       _ -> pure False
   _ -> pure False
 
--- | Emit the unboxed worker @int64_t kwi_g(int64_t…, int *kovf)@.
-compileI64Worker :: GName -> Int -> Term -> Gen ()
-compileI64Worker g n inner = do
-  let worker = "kwi_" <> mangle (gKey g)
+-- | The unboxed worker name: keep @kwi_@ for an all-@int64@ worker (so existing
+-- golden C is byte-stable); a worker with any @double@ param/result uses
+-- @kwd_@.
+scalarWorkerName :: GName -> [ScalarKind] -> ScalarKind -> Text
+scalarWorkerName g pks ret
+  | all (== KInt64) (ret : pks) = "kwi_" <> mangle (gKey g)
+  | otherwise = "kwd_" <> mangle (gKey g)
+
+-- | Emit the unboxed worker with per-kind scalar params + return type, e.g.
+-- @double kwd_g(double, int64_t, int *kovf)@.
+compileScalarWorker :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen ()
+compileScalarWorker g pks ret inner = do
+  let n = length pks
+      worker = scalarWorkerName g pks ret
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
       env = reverse ps -- de Bruijn 0 = innermost binder = the LAST param
-      paramDecls = T.intercalate ", " (["int64_t " <> p | p <- ps] ++ ["int *kovf"])
-  (bodyStmts, ()) <- captured "0" (i64Tail g n ps env inner)
+      paramDecls = T.intercalate ", " (zipWith (\k p -> cScalarTy k <> " " <> p) pks ps ++ ["int *kovf"])
+  (bodyStmts, ()) <- captured "0" (scalarTail g pks ret ps env inner)
   let fn =
         T.unlines $
-          [ "static int64_t " <> worker <> "(" <> paramDecls <> ") {"
+          [ "static " <> cScalarTy ret <> " " <> worker <> "(" <> paramDecls <> ") {"
           , "  while (1) {"
           ]
             ++ map ("    " <>) bodyStmts
             ++ [ "  }"
                , "}"
                ]
-  emitTop ("static int64_t " <> worker <> "(" <> paramDecls <> ");") fn
+  emitTop ("static " <> cScalarTy ret <> " " <> worker <> "(" <> paramDecls <> ");") fn
 
 -- | Compile the body in TAIL position: @if@ branches recurse in tail; a
--- saturated self-call reassigns the int64 params and @continue@s (an in-place
--- scalar loop — no @KEnv@, no boxing); any other (leaf) int64 expr is
--- returned.
-i64Tail :: GName -> Int -> [Text] -> [Text] -> Term -> Gen ()
-i64Tail g n ps env term = case term of
+-- saturated self-call reassigns the scalar params (each temp typed by its
+-- param kind) and @continue@s (an in-place scalar loop — no @KEnv@, no
+-- boxing); any other (leaf) scalar expr is returned.
+scalarTail :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> [Text] -> Term -> Gen ()
+scalarTail g pks ret ps env term = case term of
   CIf c t e -> do
-    cond <- i64Cond g n env c
-    (tb, ()) <- captured "0" (i64Tail g n ps env t)
-    (eb, ()) <- captured "0" (i64Tail g n ps env e)
+    cond <- scalarCond g pks ret env c
+    (tb, ()) <- captured "0" (scalarTail g pks ret ps env t)
+    (eb, ()) <- captured "0" (scalarTail g pks ret ps env e)
     emit ("if (" <> cond <> ") {")
     forM_ tb (emit . ("  " <>))
     emit "} else {"
     forM_ eb (emit . ("  " <>))
     emit "}"
   _
-    | Just args <- lr1SelfArgs g n term -> do
-        -- tail self-call: evaluate new args into temps FIRST (they may read
-        -- current params), then reassign params and loop.
-        temps <- forM args $ \a -> do
-          ae <- i64Expr g n env a
+    | Just args <- lr1SelfArgs g (length pks) term -> do
+        -- tail self-call: evaluate new args into typed temps FIRST (they may
+        -- read current params), then reassign params and loop.
+        temps <- forM (zip pks args) $ \(k, a) -> do
+          ae <- scalarExpr g pks ret env a
           t <- freshN "ti_"
-          emit ("int64_t " <> t <> " = " <> ae <> ";")
+          emit (cScalarTy k <> " " <> t <> " = " <> ae <> ";")
           pure t
         forM_ (zip ps temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
         emit "continue;"
     | otherwise -> do
-        e <- i64Expr g n env term
+        e <- scalarExpr g pks ret env term
         emit ("return " <> e <> ";")
 
 -- | P0.2: if @term@ is a read of a scalarized var (@__runIO (readRef <var>)@,
 -- the elaborator's auto-deref) while emitting the scalar loop region, the
--- int64 C local that shadows it; else 'Nothing'.  (For an LR1 worker
--- 'gsScalarRegion' is false, so this never fires there.)
+-- int64 C local that shadows it; else 'Nothing'.  (For an unboxed scalar
+-- worker 'gsScalarRegion' is false, so this never fires there.)
 scalarReadOf :: Term -> Gen (Maybe Text)
 scalarReadOf term = do
   region <- gets gsScalarRegion
@@ -795,45 +913,53 @@ scalarReadOf term = do
         _ -> pure Nothing
       Nothing -> pure Nothing
 
--- | Compile an int64-expressible value: a scalarized var read (P0.2), a
--- literal, a var, an overflow-checked arith op, or a (non-tail) self-call
--- (whose @kovf@ is propagated immediately).  Each op that overflows sets
--- @*kovf@ (or runs 'gsI64Escape') and bails at once — never a wrapped value.
-i64Expr :: GName -> Int -> [Text] -> Term -> Gen Text
-i64Expr g n env term = do
+-- | Compile a scalar-expressible value: a scalarized var read (P0.2), a
+-- literal, a var, an arith op (int ops overflow-escaped, double ops plain
+-- IEEE, @intToDouble@ a cast), or a (non-tail) self-call (whose @kovf@ is
+-- propagated immediately).  Each int op that overflows sets @*kovf@ (or runs
+-- 'gsI64Escape') and bails at once — never a wrapped value.
+scalarExpr :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Term -> Gen Text
+scalarExpr g pks ret env term = do
   msc <- scalarReadOf term
   case msc of
     Just sloc -> pure sloc
-    Nothing -> i64ExprBody g n env term
+    Nothing -> scalarExprBody g pks ret env term
 
-i64ExprBody :: GName -> Int -> [Text] -> Term -> Gen Text
-i64ExprBody g n env term = case term of
+scalarExprBody :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Term -> Gen Text
+scalarExprBody g pks ret env term = case term of
   CLit (LitInt m) -> pure (cIntLit m)
+  CLit (LitDouble d) -> pure (cDblLit d)
   CVar i -> pure (env !! i)
   _ -> case spineOf term of
     (CGlob h, sargs) -> do
       let expl = [a | (Expl, a) <- sargs]
       mp <- globPrimName h
       case mp of
-        Just p | Just ar <- lr1ArithArity p, length expl == ar -> i64Arith g n env p expl
+        Just p | Just (_, argks) <- arithPrim p, length expl == length argks -> scalarArith g pks ret env p expl
         _
-          | Just args <- lr1SelfArgs g n term -> do
-              aes <- mapM (i64Expr g n env) args
+          | Just args <- lr1SelfArgs g (length pks) term -> do
+              aes <- mapM (scalarExpr g pks ret env) args
               t <- freshN "ti_"
-              emit ("int64_t " <> t <> " = kwi_" <> mangle (gKey g) <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
+              emit (cScalarTy ret <> " " <> t <> " = " <> scalarWorkerName g pks ret <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
               emit "if (*kovf) return 0;"
               pure t
           | otherwise -> lr1Unreachable
     _ -> lr1Unreachable
 
--- | Lower one overflow-checked int arith op (mirrors the @kp_*@ runtime
--- helpers exactly: §6 unbounded Integer promotes to GMP via the boxed escape;
--- div/mod by zero traps; INT64_MIN edges escape).
-i64Arith :: GName -> Int -> [Text] -> Text -> [Term] -> Gen Text
-i64Arith g n env p expl = do
-  aes <- mapM (i64Expr g n env) expl
+-- | Lower one scalar arith op.  Int ops mirror the @kp_*Int@ runtime helpers
+-- exactly (§6 unbounded Integer promotes to GMP via the boxed escape; div/mod
+-- by zero traps; INT64_MIN edges escape).  Double ops are plain IEEE (no
+-- overflow/zero trap — they wrap to ±inf/NaN exactly like @kp_*Double@) and
+-- match the boxed path's per-operation rounding: each op is emitted into its
+-- own statement/temp, and the driver compiles with @-ffp-contract=off@
+-- (Driver.hs), so the compiler cannot fuse a @mul@-then-@add@ into a
+-- single-rounding FMA at any @-O@ level.  @intToDouble@ is a C cast (== the
+-- prim's @(double)i@).
+scalarArith :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Text -> [Term] -> Gen Text
+scalarArith g pks ret env p expl = do
+  aes <- mapM (scalarExpr g pks ret env) expl
   t <- freshN "ti_"
-  esc <- gets gsI64Escape -- LR1 worker: `*kovf=1; return 0;`; scalar loop: flush+goto boxed
+  esc <- gets gsI64Escape -- worker: `*kovf=1; return 0;`; scalar loop: flush+goto boxed
   case (p, aes) of
     ("addInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_add_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
     ("subInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_sub_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
@@ -841,37 +967,46 @@ i64Arith g n env p expl = do
     ("negInt", [a]) -> emit ("int64_t " <> t <> "; if (" <> a <> " == INT64_MIN) { " <> esc <> " } else " <> t <> " = -" <> a <> ";")
     ("divInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"divInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) { " <> esc <> " } else " <> t <> " = " <> a <> " / " <> b <> ";")
     ("modInt", [a, b]) -> emit ("if (" <> b <> " == 0) krt_fail(\"modInt: division by zero\"); int64_t " <> t <> "; if (" <> a <> " == INT64_MIN && " <> b <> " == -1) " <> t <> " = 0; else " <> t <> " = " <> a <> " % " <> b <> ";")
+    ("addDouble", [a, b]) -> emit ("double " <> t <> " = " <> a <> " + " <> b <> ";")
+    ("subDouble", [a, b]) -> emit ("double " <> t <> " = " <> a <> " - " <> b <> ";")
+    ("mulDouble", [a, b]) -> emit ("double " <> t <> " = " <> a <> " * " <> b <> ";")
+    ("divDouble", [a, b]) -> emit ("double " <> t <> " = " <> a <> " / " <> b <> ";")
+    ("negDouble", [a]) -> emit ("double " <> t <> " = -" <> a <> ";")
+    ("intToDouble", [a]) -> emit ("double " <> t <> " = (double)" <> a <> ";")
     _ -> lr1UnreachableStmt
   pure t
 
--- | Compile an @if@ condition (a saturated int compare) to a C boolean expr.
-i64Cond :: GName -> Int -> [Text] -> Term -> Gen Text
-i64Cond g n env term = case spineOf term of
+-- | Compile an @if@ condition (a saturated safe scalar compare) to a C boolean
+-- expr.  The C operator comes from 'cmpPrim', which admits only comparisons
+-- whose C operator matches the runtime prim exactly.
+scalarCond :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Term -> Gen Text
+scalarCond g pks ret env term = case spineOf term of
   (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
     mp <- globPrimName h
-    case (mp >>= lr1CmpOp, expl) of
-      (Just op, [a, b]) -> do
-        ae <- i64Expr g n env a
-        be <- i64Expr g n env b
+    case (mp >>= cmpPrim, expl) of
+      (Just (op, _), [a, b]) -> do
+        ae <- scalarExpr g pks ret env a
+        be <- scalarExpr g pks ret env b
         pure ("(" <> ae <> " " <> op <> " " <> be <> ")")
       _ -> lr1Unreachable
   _ -> lr1Unreachable
 
--- These are unreachable when 'lr1Arity' classified the body as eligible; they
--- record a backend error (never a silent miscompile) if an invariant breaks.
+-- These are unreachable when 'scalarPlan' classified the body as eligible;
+-- they record a backend error (never a silent miscompile) if an invariant
+-- breaks.
 lr1Unreachable :: Gen Text
 lr1Unreachable = escalated "LR1-i64" "an int64-ineligible term reached the unboxed worker (LR1 eligibility invariant violated)"
 
 lr1UnreachableStmt :: Gen ()
 lr1UnreachableStmt = lr1Unreachable >> pure ()
 
--- | The LR1 saturated fast path at a call site: unbox the K_INT args, call
--- @kwi_g@, and escape to the boxed @kw_g@ (from the ORIGINAL boxed args) on a
--- non-K_INT arg or an int64 overflow.
-compileLr1Call :: GName -> [(Icit, Term)] -> Gen Text
-compileLr1Call g sargs = do
-  let kwi = "kwi_" <> mangle (gKey g)
+-- | The saturated fast path at a call site: unbox each arg by its scalar kind,
+-- call the unboxed worker, and escape to the boxed @kw_g@ (from the ORIGINAL
+-- boxed args) on a wrong-tag arg or an int64 overflow.
+compileScalarCall :: GName -> [ScalarKind] -> ScalarKind -> [(Icit, Term)] -> Gen Text
+compileScalarCall g pks ret sargs = do
+  let worker = scalarWorkerName g pks ret
       kw = "kw_" <> mangle (gKey g)
   aes <- mapM (compileErasableArg . snd) sargs
   ts <- forM aes $ \ae -> do
@@ -880,20 +1015,20 @@ compileLr1Call g sargs = do
     pure t
   ovf <- freshN "kovf_"
   emit ("int " <> ovf <> " = 0;")
-  avs <- forM ts $ \t -> do
+  avs <- forM (zip pks ts) $ \(k, t) -> do
     av <- freshN "lu_"
-    emit ("int64_t " <> av <> " = kunbox_i64(" <> t <> ", &" <> ovf <> ");")
+    emit (cScalarTy k <> " " <> av <> " = " <> unboxScalar k t ovf <> ";")
     pure av
   r <- freshN "lr_"
   res <- freshN "lres_"
   let boxed = "ktrampoline(" <> kw <> "(" <> T.intercalate ", " ts <> "))"
   emit ("KValue *" <> res <> ";")
-  -- a non-K_INT arg short-circuits to boxed WITHOUT calling kwi_g (so the
-  -- unboxed worker never runs on garbage 0-args, e.g. a spurious /0 trap).
+  -- a wrong-tag arg short-circuits to boxed WITHOUT calling the unboxed worker
+  -- (so it never runs on garbage 0-args, e.g. a spurious /0 trap).
   emit ("if (" <> ovf <> ") { " <> res <> " = " <> boxed <> "; }")
   emit "else {"
-  emit ("  int64_t " <> r <> " = " <> kwi <> "(" <> T.intercalate ", " (avs ++ ["&" <> ovf]) <> ");")
-  emit ("  " <> res <> " = " <> ovf <> " ? " <> boxed <> " : kint(" <> r <> ");")
+  emit ("  " <> cScalarTy ret <> " " <> r <> " = " <> worker <> "(" <> T.intercalate ", " (avs ++ ["&" <> ovf]) <> ");")
+  emit ("  " <> res <> " = " <> ovf <> " ? " <> boxed <> " : " <> boxScalar ret r <> ";")
   emit "}"
   pure res
 
@@ -1363,12 +1498,12 @@ globFuncArity g = do
 compileDirectCall :: GName -> Int -> [(Icit, Term)] -> Gen Text
 compileDirectCall g n sargs = do
   enqueue g
-  eligible <- lr1Arity g
-  case eligible of
-    -- LR1: an exactly-saturated call to an int64-eligible worker takes the
+  mplan <- scalarPlan g
+  case mplan of
+    -- LR1/R2.2: an exactly-saturated call to a scalar-eligible worker takes the
     -- unboxed fast path (with a boxed escape).  Surplus args / partial calls
     -- keep the boxed worker.
-    Just ne | ne == n, length sargs == n -> compileLr1Call g sargs
+    Just (pks, ret) | length pks == n, length sargs == n -> compileScalarCall g pks ret sargs
     _ -> do
       let (callArgs, extra) = splitAt n sargs
           worker = "kw_" <> mangle (gKey g)
@@ -1464,6 +1599,14 @@ cIntLit n
   | n == toInteger (minBound :: Int) = "INT64_MIN"
   | n < 0 = "(-" <> T.pack (show (abs n)) <> "LL)"
   | otherwise = T.pack (show n) <> "LL"
+
+-- | A C @double@ literal, using the SAME shortest round-trippable text as the
+-- boxed @kdbl@ path (so the unboxed and boxed paths parse to the identical
+-- double).  A source @LitDouble@ is finite, so 'show' never yields
+-- Infinity/NaN, and Haskell's @Double@ 'show' always includes a @.@ or @e@, so
+-- the text is always a valid C floating (double) literal.
+cDblLit :: Double -> Text
+cDblLit = T.pack . show
 
 -- | A §29.5 byte-sequence literal.  @kbytes@ copies its input into GC
 -- memory, so a block-scoped compound literal of @unsigned char@ is safe;
@@ -2431,18 +2574,20 @@ i64LoopExpr k term = do
           let expl = [a | (Expl, a) <- sargs]
           mp <- globPrimName h
           case mp of
-            Just p | Just ar <- lr1ArithArity p, length expl == ar -> andM (map (i64LoopExpr k) expl)
+            -- INT arith only (KInt64 result): a scalar var loop scalarizes Int
+            -- vars to int64 locals, so a double op must keep it boxed.
+            Just p | Just (KInt64, argks) <- arithPrim p, length expl == length argks -> andM (map (i64LoopExpr k) expl)
             _ -> pure False
         _ -> pure False
 
--- | A loop condition: a saturated int compare over loop-expressible operands.
+-- | A loop condition: a saturated INT compare over loop-expressible operands.
 i64LoopCond :: Int -> Term -> Gen Bool
 i64LoopCond k term = case spineOf term of
   (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
     mp <- globPrimName h
-    case (mp >>= lr1CmpOp, expl) of
-      (Just _, [_, _]) -> andM (map (i64LoopExpr k) expl)
+    case (mp >>= cmpPrim, expl) of
+      (Just (_, KInt64), [_, _]) -> andM (map (i64LoopExpr k) expl)
       _ -> pure False
   _ -> pure False
 
@@ -2537,11 +2682,11 @@ compileScalarWhile mlabel cond body = do
   -- snapshot BEFORE the condition test (so even a condition-overflow flushes a
   -- valid pre-iteration state, never an uninitialized snapshot).
   forM_ snaps $ \(s, _, snap) -> emit (snap <> " = " <> s <> ";")
-  ce <- i64Cond cur 0 [] cond
+  ce <- scalarCond cur [] KInt64 [] cond
   emit ("if (!" <> ce <> ") goto " <> sflushL <> ";")
   forM_ body $ \item -> case item of
     KAssign (CVar idx) False rhs -> do
-      rhse <- i64Expr cur 0 [] rhs
+      rhse <- scalarExpr cur [] KInt64 [] rhs
       case Map.lookup idx scs of
         Just (s, _) -> emit (s <> " = " <> rhse <> ";")
         Nothing -> lr1UnreachableStmt

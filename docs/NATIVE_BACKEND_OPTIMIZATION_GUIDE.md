@@ -88,7 +88,7 @@ Legend: **DONE** = landed and gated; **PARTIAL** = landed for a subset; **OPEN**
 ### Reconciliation with the raw-C review's P0 blockers
 The historical `NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` defined five P0 blockers; current
 state:
-- **P0.1** monomorphic numeric boxed → scalar workers: **MET for `Int`** (LR1); `Bool`/`Double` OPEN.
+- **P0.1** monomorphic numeric boxed → scalar workers: **MET for `Int`** (LR1) **and `Double`/mixed** (R2.2); `Bool` open (low value — cached singletons).
 - **P0.2** `var` loops are heap-ref loops: **MET for non-escaping `Int` var loops**; effectful/escaping/non-`Int`/else/nested/for loops still boxed.
 - **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1 `Int` workers** (scalar locals); general first-order code still uses `kvar`.
 - **P0.4** records/ADTs generic+string: **MET on the match/projection path** — projection is fixed-offset `krec_at`; ctor/variant matching is integer-tag (LR2). The `switch` shape and record-param boxing remain.
@@ -122,11 +122,19 @@ rebuilt `kw_env = kpush(p1, kpush(p0, 0))` every iteration. The R1.1 fix makes t
 lambdas to the real fields — so the body is capture-free and the no-alloc in-place loop
 (`kw_c…->val =`) is re-enabled. Confirmed in the re-emitted builder worker.
 
-**P0-D — Every non-`Int` scalar result is boxed; non-`Int` first-order workers use `KEnv`/`kvar`.**
-`Double`/`Bool`/record-param workers box a `kint`/`kdbl` per iteration (`recproj`'s 96.8 MB is
-`kint` boxing) and read params via `kvar(kw_env,i)` linked-list walks. LR1 covers only
-self-recursive `Int`. Pervasive — "the fallback ABI is still the default" for every scalar that
-isn't a self-recursive `Int`. → **R2.2 / R2.3 / R2.4**.
+**P0-D — Non-`Int` scalar workers box per iteration. PARTIALLY RESOLVED (R2.2 — `Double` + mixed
+`Int`/`Double` done).** Previously every `Double`/record-param worker boxed a `kdbl`/`kint` per
+iteration and read params via `kvar(kw_env,i)`. **R2.2** generalized the LR1 unboxed-worker
+machinery to per-parameter scalar kinds {`int64`, `double`}: a monomorphic first-order function
+whose params/result are `Int`/`Nat`/`Integer` or `Float`/`Double` (read from `gdType`), with a
+scalar-expressible body, now gets a typed unboxed worker (e.g. `double kwd_g(double, int64_t,
+int *kovf)`) — a scalar `while` loop with no per-iteration boxing — behind the same escape net
+(`kunbox_i64`/`kunbox_dbl` tag-check + boxed-worker fallback; `-ffp-contract=off` keeps `double`
+arithmetic bit-identical to the interpreter). `scalar_doubleloop` now lowers to a `double` register
+loop instead of a `kp_addDouble`+`kdbl`-per-iter loop. **Still open:** record-/tuple-param scalars,
+`Bool` workers (low value — comparisons already return cached singletons), and reading first-order
+*non-self-recursive* params via `kvar` rather than flat C frames. → **R2.3 / R2.4** (and the
+`recproj` `kint` boxing, which is a record-param worker, not yet a scalar worker).
 
 **P1-C — Pattern matching is a linear if-chain over integer tags, not a `switch`/decision tree.**
 *(Downgraded from P0 — LR2 shipped the integer tags; this is now a codegen-shape refinement, not a
@@ -309,7 +317,7 @@ is preserved from the roadmap below.
 | 1 | **R0.1** rigorous bench harness + broad coverage | P1-I | High | Med | Low |
 | ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
 | ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
-| 4 | **R2.2** `Bool`/`Double` unboxed workers (LR1 generalized) | P0-D | Med-High | Med | Med |
+| ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
 | 5 | **R2.3** first-order worker params/locals as C locals / flat frame | P0-D/P1-H | High | High | Med |
 | 6 | **R2.4** cross-function unboxed scalar chaining | P0-D | Med | Med | Med |
 | 7 | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls | P1-E | Med | Med | Med |
@@ -320,8 +328,9 @@ is preserved from the roadmap below.
 
 Rationale: **R1.1 landed (this study)** — it attacked the verified worst path (`adtbuild`/
 `listfold`), was backend-local, and re-enabled QW2's in-place loop for free (P0-B); the next
-non-harness item, **R2.1** (atomic scalar boxes), also landed; next is the Wave-2 non-`Int`
-calling-convention work (**R2.2** `Bool`/`Double` unboxed workers, then **R2.3/R2.4**). **R1.2 is
+non-harness item, **R2.1** (atomic scalar boxes), also landed, as did **R2.2** (`Double`/mixed-kind
+unboxed workers); next is **R2.3** (first-order worker params/locals as flat C frames) then
+**R2.4** (cross-function unboxed scalar chaining). **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk
@@ -387,7 +396,11 @@ string building (quadratic check), IO boundary, defer/effects, a sqlite-shaped q
   `kctor`, and the list-builder's in-place self-tail loop is re-enabled. Partial ctor applications
   still build a closure (correctly), and the small-arity `kctor` still copies a stack `argv` array
   (a separate, optional ABI refinement).
-- **LR1/P0.2 = `Int` only.** `Bool`/`Double`/record-param scalars are still boxed (P0-D).
+- **LR1/P0.2 = `Int`; R2.2 adds `Double` + mixed `Int`/`Double` scalar workers.** The unboxed
+  worker is `kwi_` when all-`int64` (golden-stable), `kwd_` when any `double`. `Bool` and
+  record-/tuple-param scalars are still boxed (P0-D). The P0.2 *var-loop* scalarizer stays
+  `Int`-only. Never describe a monomorphic `Double` arithmetic loop as `kdbl`-per-iteration — that
+  is the pre-R2.2 state.
 - **P0.4 = projection only**, and only for sorted/closed layouts (named records, tuples <10);
   ctor/record-*pattern* field access and tuples ≥10 still use name-based paths.
 - **The boxed `KValue`/`KEnv` ABI is the intended fallback**, not a defect — the objection is that
