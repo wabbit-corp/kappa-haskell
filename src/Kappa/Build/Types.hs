@@ -133,4 +133,12 @@ data Target
       { tName :: !Text
       , tAlias :: !Text -- ^ the name of the target this aliases
       }
+  | BenchmarkTarget
+      { tName :: !Text
+      , tBackend :: !BackendProfile
+      , tFragments :: ![Text]
+      , tMain :: !ModuleSelector
+      , tModules :: !ModuleSelector
+      , tDependencies :: ![Text]
+      }
   deriving stock (Eq, Show)

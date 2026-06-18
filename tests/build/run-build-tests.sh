@@ -267,6 +267,25 @@ else
 fi
 rm -rf "$AL"
 
+echo "== benchmark target (§36): build pipeline runs the benchmark program =="
+BM="${TMPDIR:-/tmp}/kappa-benchtest"; rm -rf "$BM"; mkdir -p "$BM/bench/perf"
+cat > "$BM/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "bench"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [benchmark { name = "loop", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "perf.loop", modules = modulesUnder "perf", dependencies = [] }] }
+EOF
+printf 'module perf.loop\nlet main = printlnString (showInt (addInt 2 3))' > "$BM/bench/perf/loop.kp"
+if timeout 120 $KAPPA build --manifest "$BM" --target loop >/dev/null 2>&1; then
+  echo "PASS benchmark/run (benchmark program runs under the interpreter, exit 0)"
+else
+  echo "FAIL benchmark/run"; fails=$((fails+1))
+fi
+printf 'module perf.loop\nlet main = printlnString (showInt (divInt 1 0))' > "$BM/bench/perf/loop.kp"
+if timeout 120 $KAPPA build --manifest "$BM" --target loop >/dev/null 2>&1; then
+  echo "FAIL benchmark/fail (a failing benchmark should exit non-zero)"; fails=$((fails+1))
+else
+  echo "PASS benchmark/fail (runtime failure -> non-zero exit)"
+fi
+rm -rf "$BM"
+
 echo "== value provenance (§35.7): buildConfig provenance graph =="
 PV="${TMPDIR:-/tmp}/kappa-prov-test"; rm -rf "$PV"; mkdir -p "$PV"
 cat > "$PV/kappa.build.kp" <<'EOF'

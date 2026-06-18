@@ -254,4 +254,12 @@ decTarget ctx v = do
       AggregateTarget <$> asStr ctx nm <*> asStrList ctx members
     ("AliasTarget", [nm, aliased]) ->
       AliasTarget <$> asStr ctx nm <*> asStr ctx aliased
-    _ -> decFail "expected a target ('executable'/'library'/'test'/'aggregate'/'aliasTarget') (Spec §29.8)"
+    ("BenchmarkTarget", [nm, be, fr, mn, mods, deps]) ->
+      BenchmarkTarget
+        <$> asStr ctx nm
+        <*> decBackend ctx be
+        <*> decFragments ctx fr
+        <*> decModuleSelector ctx mn
+        <*> decModuleSelector ctx mods
+        <*> asStrList ctx deps
+    _ -> decFail "expected a target ('executable'/'library'/'test'/'aggregate'/'aliasTarget'/'benchmark') (Spec §29.8)"

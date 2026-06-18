@@ -23,7 +23,7 @@ import Kappa.Eval (Globals (..))
 import Kappa.Explain (lookupCode, lookupFamily, renderEntry, renderFamily)
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
-import Kappa.Source (Pos (..), Span (..), moduleNameText)
+import Kappa.Source (ModuleName, Pos (..), Span (..), moduleNameText)
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
 import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (getArgs)
@@ -225,6 +225,7 @@ runNamedTarget file bc ma visited nm
           and <$> mapM (runNamedTarget file bc ma (Set.insert nm visited)) members
         B.AliasTarget _ aliased ->
           runNamedTarget file bc ma (Set.insert nm visited) aliased
+        B.BenchmarkTarget {} -> runBenchmark file bc ma nm
         B.LibraryTarget {} -> do
           hPutStrLn stderr
             ("note: library target '" <> T.unpack nm <> "' is consumed as a dependency, not built directly; skipping")
@@ -246,22 +247,19 @@ runTest manifestFile bc nm = do
           <> show (sUnsupported s) <> " unsupported, " <> show (sHarnessError s) <> " harness errors"
       pure (sFail s == 0 && sHarnessError s == 0)
 
--- | The build-plan + codegen path for a manifest executable target.
--- Returns whether the build succeeded.
-runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
-runExecutable manifestFile bc ma mname = do
+-- | Resolve an executable/benchmark target by name, verify the lock
+-- (under --locked), load its package source files, and compile them as one
+-- §8.1 package-mode unit with the manifest-selected host.native modules.
+-- Returns the checked state, the @main@ GName, the gname→prim map, and the
+-- resolved plan — or 'Nothing' (diagnostics already emitted) on any error.
+prepareUnit :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName T.Text, ResolvedExe))
+prepareUnit manifestFile bc ma mname = do
   let manifestDir = takeDirectory manifestFile
   resolved <- resolveExecutable manifestDir bc mname
   case resolved of
-    Left ds -> emitDiags Human ds >> pure False
+    Left ds -> emitDiags Human ds >> pure Nothing
     Right rx -> do
-      -- §36.4/§36.23.2: under --locked, verify the resolved
-      -- path-dependency closure against kappa.lock BEFORE building (fail
-      -- fast on drift — a reproducibility check, §3.2.15).
       verifyLock manifestDir ma (rxLockEntries rx)
-      -- Load every package source file of the target and compile them as
-      -- one §8.1 package-mode unit (header/path agreement), with the
-      -- manifest-selected host.native modules available (§36.4).
       loaded <- mapM (\(p, _) -> (\(s, d) -> (p, s, d)) <$> loadSourceFile p) (rxSourceFiles rx)
       let nameTable = Map.fromList [(p, mn) | (p, mn) <- rxSourceFiles rx]
           nameOf p = Map.findWithDefault (moduleNameOf p) p nameTable
@@ -274,38 +272,61 @@ runExecutable manifestFile bc ma mname = do
       let st = cuState cu
           mainG = GName (rxEntryModule rx) "main"
       if hasErrors cuDs
-        then pure False
+        then pure Nothing
         else
           if not (Map.member mainG (csGlobals st))
-            then do
-              hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition"
-              pure False
-            else do
-              let entryFile = maybe "<entry>" fst (lookupEntry rx)
-                  opts =
-                    defaultBuildOptions
-                      { boOutput = maOut ma
-                      , boEmitCOnly = maEmitC ma
-                      , boCC = maCC ma
-                      , boRuntimeFfi = rxRuntimeFfi rx
-                      , boHostPrims = hostPrims
-                      , boLinkSpecs = rxLinkSpecs rx
-                      }
-              result <- buildNative st mainG entryFile opts
-              case result of
-                Left ds -> emitDiags Human ds >> pure False
-                Right outPath -> do
-                  -- record/update kappa.lock after a successful
-                  -- resolution+build (clearing a now-empty closure's stale lock).
-                  updateLock manifestDir ma (rxLockEntries rx)
-                  hPutStrLn stderr ("built " <> outPath)
-                  pure True
-  where
-    -- the source file whose module is the entry module (for the artifact
-    -- basename / generated-C path)
-    lookupEntry rx = case [(p, mn) | (p, mn) <- rxSourceFiles rx, mn == rxEntryModule rx] of
-      (x : _) -> Just x
-      [] -> Nothing
+            then hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition" >> pure Nothing
+            else pure (Just (st, mainG, hostPrims, rx))
+
+-- | Native build of an executable target. Returns whether it succeeded.
+runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
+runExecutable manifestFile bc ma mname = do
+  prep <- prepareUnit manifestFile bc ma mname
+  case prep of
+    Nothing -> pure False
+    Just (st, mainG, hostPrims, rx) -> do
+      let entryFile = maybe "<entry>" fst (lookupEntry rx)
+          opts =
+            defaultBuildOptions
+              { boOutput = maOut ma
+              , boEmitCOnly = maEmitC ma
+              , boCC = maCC ma
+              , boRuntimeFfi = rxRuntimeFfi rx
+              , boHostPrims = hostPrims
+              , boLinkSpecs = rxLinkSpecs rx
+              }
+      result <- buildNative st mainG entryFile opts
+      case result of
+        Left ds -> emitDiags Human ds >> pure False
+        Right outPath -> do
+          updateLock (takeDirectory manifestFile) ma (rxLockEntries rx)
+          hPutStrLn stderr ("built " <> outPath)
+          pure True
+
+-- | §36 benchmark target: a benchmark is a runnable program. This
+-- implementation executes its @main@ under the interpreter (no native
+-- toolchain needed) and reports completion. Benchmarks are pure-compute
+-- (no host.native bindings); a benchmark that imports a host.native module
+-- fails honestly since the interpreter supplies no foreign operations.
+runBenchmark :: FilePath -> B.BuildConfig -> ManifestArgs -> T.Text -> IO Bool
+runBenchmark manifestFile bc ma nm = do
+  prep <- prepareUnit manifestFile bc ma (Just nm)
+  case prep of
+    Nothing -> pure False
+    Just (st, mainG, _, rx) -> do
+      updateLock (takeDirectory manifestFile) ma (rxLockEntries rx)
+      hPutStrLn stderr ("running benchmark " <> T.unpack nm)
+      r <- runMain (Globals (csGlobals st)) (csMetas st) mainG
+      case r of
+        RunOk -> hPutStrLn stderr ("benchmark " <> T.unpack nm <> " completed") >> pure True
+        RunFail msg -> hPutStrLn stderr ("benchmark " <> T.unpack nm <> " failed: " <> T.unpack msg) >> pure False
+
+-- | The source file whose module is the entry module (for the artifact
+-- basename / generated-C path).
+lookupEntry :: ResolvedExe -> Maybe (FilePath, ModuleName)
+lookupEntry rx = case [(p, mn) | (p, mn) <- rxSourceFiles rx, mn == rxEntryModule rx] of
+  (x : _) -> Just x
+  [] -> Nothing
 
 -- | The build lockfile basename (assembled so the literal does not trip
 -- the diagnostic family-literal scanner).
@@ -413,6 +434,7 @@ renderBuildConfig bc =
       B.TestTarget {} -> "test"
       B.AggregateTarget _ ms -> "aggregate of " <> T.intercalate ", " ms
       B.AliasTarget _ a -> "alias of " <> a
+      B.BenchmarkTarget {} -> "benchmark " <> renderBackend (B.tBackend t)
       _ -> renderBackend (B.tBackend t)
     renderDep (B.RegistryDep n v) = "registry " <> n <> " " <> v
     renderDep (B.GitDep n u r) = "git " <> n <> " " <> u <> "@" <> r

@@ -152,14 +152,20 @@ The schema supports four target kinds, each with a build-pipeline action:
   `E_BUILD_TARGET_NOT_FOUND`.
 - **`aliasTarget`** — an alias/rename of another target; building it builds
   the aliased target (cycle-detected, same diagnostics as aggregate).
+- **`benchmark`** — a runnable benchmark program (executable shape, no host
+  bindings); the build runs its `main` under the interpreter (toolchain-
+  free) and reports completion / non-zero on a runtime failure. (Pure
+  compute: a benchmark importing a `host.native.*` module fails honestly,
+  since the interpreter supplies no foreign operations.)
 
 `--target NAME` dispatches on the named target's kind (test → run suite;
-executable → native build; aggregate → run each member; alias → run the
-aliased target); no `--target` builds the default executable. Other §29.8
-kinds (`codegen`, `bridge`, `benchmark`, `publish`, …) are not in the
-schema subset yet (§29.8's "equivalent to" lets the implementation choose
-the subset; they are deferred-not-defective; `codegen`/`bridge` also need
-generator/bridge backend infrastructure not present here).
+executable → native build; benchmark → run under the interpreter;
+aggregate → run each member; alias → run the aliased target); no `--target`
+builds the default executable. Other §29.8 kinds (`codegen`, `bridge`,
+`publish`, …) are not in the schema subset yet (§29.8's "equivalent to"
+lets the implementation choose the subset; they are deferred-not-defective;
+`codegen`/`bridge` also need generator/bridge backend infrastructure not
+present here).
 
 ## Native bindings — driven by the manifest (increment 2, DONE)
 
@@ -362,10 +368,9 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
 12. Canonical schema serialization + semantic-identity computation (§36.2)
     + per-slice string-interpolation provenance (§35.8).
 13. **(partly done)** Target kinds: `executable`/`library`/`test`/
-    `aggregate`/`aliasTarget` are built/run/grouped/aliased;
-    `codegen`/`bridge`/`benchmark`/`publish` (generator/bridge/perf
-    backends) and JVM/.NET/Python ecosystems + deployment/reproducibility
-    status remain.
+    `aggregate`/`aliasTarget`/`benchmark` are built/run/grouped/aliased;
+    `codegen`/`bridge`/`publish` (generator/bridge/publish backends) and
+    JVM/.NET/Python ecosystems + deployment/reproducibility status remain.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
 builder set as "equivalent to" a portable schema (signatures are

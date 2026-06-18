@@ -127,15 +127,18 @@ resolveExecutable manifestDir bc mTarget =
     sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
 
     executables = [t | t@ExecutableTarget {} <- bcTargets bc]
+    -- executables and benchmarks share this resolution (both have a main +
+    -- modules + dependencies); a benchmark carries no host bindings.
+    isExeOrBench t = case t of ExecutableTarget {} -> True; BenchmarkTarget {} -> True; _ -> False
 
     selectTarget :: Either Diagnostics Target
     selectTarget = case mTarget of
-      Just nm -> case [t | t <- executables, tName t == nm] of
+      Just nm -> case [t | t <- bcTargets bc, tName t == nm, isExeOrBench t] of
         (t : _) -> Right t
         [] ->
           Left
             [ buildErr "E_BUILD_TARGET_NOT_FOUND" "kappa-hs.build.target-not-found"
-                ( "no executable target named '" <> nm <> "' in the manifest (Spec §36.3)"
+                ( "no executable or benchmark target named '" <> nm <> "' in the manifest (Spec §36.3)"
                 )
             ]
       Nothing -> case executables of
@@ -798,6 +801,7 @@ targetDependencies LibraryTarget {tDependencies = ds} = ds
 targetDependencies TestTarget {} = []
 targetDependencies AggregateTarget {} = []
 targetDependencies AliasTarget {} = []
+targetDependencies BenchmarkTarget {tDependencies = ds} = ds
 
 -- | A target's referenced host-binding names (executables only carry them).
 targetHostBindings :: Target -> [Text]
@@ -806,6 +810,7 @@ targetHostBindings LibraryTarget {} = []
 targetHostBindings TestTarget {} = []
 targetHostBindings AggregateTarget {} = []
 targetHostBindings AliasTarget {} = []
+targetHostBindings BenchmarkTarget {} = []
 
 -- | Select and resolve a @test@ target (§36.31) to the set of source
 -- files to run through the Appendix-T harness: the package modules whose
