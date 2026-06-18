@@ -2790,18 +2790,8 @@ check ctx expr expected0 = do
         expected
     (EThunk e _, VGlobN (GName _ "Thunk") [(_, a)]) -> CThunkE <$> check ctx e a
     (ELazy e _, VGlobN (GName _ "Need") [(_, a)]) -> CLazyE <$> check ctx e a
-    (_, VGlobN (GName _ "Thunk") [(_, a)]) -> do
-      -- §16.1.7.1 step 0: try the suspension type itself first
-      r <- tryInferAgainst expr expected
-      case r of
-        Just tm -> pure tm
-        Nothing -> suspInsert CThunkE a
-    (_, VGlobN (GName _ "Need") [(_, a)]) -> do
-      -- §16.1.7.1 lazy insertion: a value in Need position suspends
-      r <- tryInferAgainst expr expected
-      case r of
-        Just tm -> pure tm
-        Nothing -> suspInsert CLazyE a
+    (_, VGlobN (GName _ "Thunk") [(_, a)]) -> suspendOrInfer CThunkE expected a
+    (_, VGlobN (GName _ "Need") [(_, a)]) -> suspendOrInfer CLazyE expected a
     -- expected-type-directed injection (§13.1.3) must see literals too
     (_, VVariantT members)
       | not (isVariant expr) -> do
@@ -3036,11 +3026,37 @@ check ctx expr expected0 = do
       tm <- wrap <$> check ctx expr a
       when retag (retagNewMismatches nBefore)
       pure tm
-    tryInferAgainst e t = do
+    -- §16.1.7.1 suspension insertion in Thunk/Need position.  Elaborate the
+    -- expression ONCE (inference): if it is already a suspension (its type
+    -- unifies with the expected Thunk/Need type), use it as-is; if its type is
+    -- the content type @a@, suspend the already-elaborated term; otherwise (the
+    -- expression needs expected-type-directed checking — e.g. a bare literal or
+    -- a variant injection) fall back to checking it against @a@.  Reusing the
+    -- inferred term is essential: without it a nested chain of Thunk-argument
+    -- operators (e.g. `||`/`&&`) re-elaborated its tail at every level once for
+    -- the speculative inference and again for the checking insertion, which is
+    -- EXPONENTIAL in nesting depth (the H-4 self-hosting pathology).
+    suspendOrInfer wrap expd a = do
       saved <- get
-      (tm, ty) <- infer ctx e
-      ok <- unify ctx ty t
-      if ok then pure (Just tm) else put saved >> pure Nothing
+      retag <- gets csArgIndexRetag
+      nBefore <- gets (length . csDiags)
+      (tm, ty) <- infer ctx expr
+      afterInfer <- get
+      okT <- unify ctx ty expd -- already a Thunk/Need value?
+      if okT
+        then pure tm
+        else do
+          put afterInfer -- discard the failed unification, keep the inference
+          okA <- unify ctx ty a -- a plain value of the content type?
+          if okA
+            then do
+              -- suspend the already-elaborated term (no re-elaboration); retag
+              -- any mismatch diagnostics from the inference to the argument
+              -- index, exactly as the checking-mode 'suspInsert' would, so the
+              -- diagnostic code/family is identical to the pre-fix path.
+              when retag (retagNewMismatches nBefore)
+              pure (wrap tm)
+            else put saved >> suspInsert wrap a -- needs checking-mode against a
     firstImplicit (b : _) = bImplicit b
     firstImplicit [] = False
     isExplicitArg = \case
