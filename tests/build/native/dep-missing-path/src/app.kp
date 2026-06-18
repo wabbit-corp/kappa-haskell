@@ -1,0 +1,2 @@
+module app
+let main = pure ()

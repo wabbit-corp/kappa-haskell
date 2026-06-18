@@ -1,0 +1,9 @@
+-- expect: E_DEPENDENCY_MODULE_COLLISION
+let buildConfig : BuildConfig = package { name = "app"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = [pathDependency { name = "dep", path = "dep" }]
+    , hostBindings = []
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = ["dep"], hostBindings = [] }]
+    }

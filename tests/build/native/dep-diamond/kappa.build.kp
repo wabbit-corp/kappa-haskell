@@ -1,0 +1,11 @@
+-- expect: BUILD_OK
+-- A diamond: two dependency names resolve to the same path dependency;
+-- the shared files must dedup (not become spurious duplicate fragments).
+let buildConfig : BuildConfig = package { name = "app"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = [pathDependency { name = "codecA", path = "dep" }, pathDependency { name = "codecB", path = "dep" }]
+    , hostBindings = []
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = ["codecA", "codecB"], hostBindings = [] }]
+    }

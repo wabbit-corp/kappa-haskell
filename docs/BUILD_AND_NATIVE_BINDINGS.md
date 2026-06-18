@@ -189,13 +189,32 @@ the executable target; `--check` stops at the evaluated configuration
 (`examples/native/http_sqlite/`) builds end-to-end via its
 `kappa.build.kp` (sqlite3 + POSIX sockets).
 
+### Dependency resolution (§36.23, increment 4)
+
+A target's `dependencies` names are resolved against the manifest's
+declared dependencies (`Kappa.Build.Plan.resolveDeps`):
+
+- A **`pathDependency`** is resolved against the local filesystem: the
+  dependency package's manifest (relative to the dependent's directory)
+  is loaded + evaluated, its **library** modules (those matching its
+  `library` targets' `modules` selectors, or all its package modules when
+  it declares no library) are enumerated and compiled into the unit, so
+  the dependent can `import` them. Missing manifest →
+  `E_DEPENDENCY_PATH_NOT_FOUND`; a dependent listing an undeclared
+  dependency name → `E_DEPENDENCY_NOT_FOUND`.
+- **`registry`/`git`/`url`/artifact** dependencies are **not** resolved by
+  this implementation's resolver profile (§36.23.1): they require a
+  registry and lockfile it does not provide, so they fail honestly with
+  `E_DEPENDENCY_UNRESOLVED` rather than being silently ignored.
+
 ### Tracked temporary residue
 
-- **Multi-file resolution is single-package** (increment 3): all modules
-  under one package's source roots compile together, but cross-package
-  *dependency* resolution (§36.23 registry/git/path) is not yet wired —
-  declared dependencies are parsed/reified, not fetched/used. That is the
-  next increment.
+- **Dependency resolution is direct-only** (increment 4): a path
+  dependency's own (transitive) dependencies are not pulled in, and there
+  is no cross-package module-name namespacing — two packages defining the
+  same module name would merge as fragments (the fixtures use distinct
+  namespaces, e.g. `codec.*` vs `app.*`). Transitive resolution +
+  `kappa.lock` + a real registry/git resolver are later increments.
 - **Static linkage** is emitted as a plain `-l` (linker default search
   order), without `-Wl,-Bstatic`/`-Bdynamic` grouping; a `staticLink`
   request is honored only if a static archive is what the linker finds.
@@ -227,11 +246,14 @@ the executable target; `--check` stops at the evaluated configuration
    package's modules under its source roots, filter by the target's
    `modules` selector, compile as one package-mode unit (header/path
    agreement). `kappa.lock` and incremental caching are later.
-4. Dependency resolution (§36.23, resolver profiles §36.23.1) + the
-   `kappa.package.reproducibility` pinning diagnostics in full; remove the
-   static-link approximation.
-5. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-6. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+4. **(done)** Dependency resolution (§36.23): path dependencies resolved
+   + their library modules compiled into the unit; registry/git honestly
+   unresolved (§36.23.1). Direct-only; transitive + `kappa.lock` later.
+5. Transitive dependency resolution + `kappa.lock` + the full
+   `kappa.package.reproducibility` pinning diagnostics; a real
+   registry/git resolver; remove the static-link approximation.
+6. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
+7. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
    and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/

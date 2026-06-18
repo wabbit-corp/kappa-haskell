@@ -1,0 +1,2 @@
+-- expect: E_DEPENDENCY_PATH_NOT_FOUND
+let buildConfig : BuildConfig = package { name = "a", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [pathDependency { name = "x", path = "../nonexistent" }], hostBindings = [], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = ["x"], hostBindings = [] }] }

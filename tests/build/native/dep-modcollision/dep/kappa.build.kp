@@ -1,0 +1,1 @@
+let buildConfig : BuildConfig = package { name = "dep", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [library { name = "dep", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], modules = modulesUnder "app", dependencies = [] }] }

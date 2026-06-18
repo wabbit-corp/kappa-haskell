@@ -1,0 +1,11 @@
+-- expect: BUILD_OK
+-- §36.23: a path dependency on the sibling package 'dep'; its library
+-- module codec.util is resolved + compiled into the unit and imported.
+let buildConfig : BuildConfig = package { name = "app"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = [pathDependency { name = "codec", path = "dep" }]
+    , hostBindings = []
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = ["codec"], hostBindings = [] }]
+    }

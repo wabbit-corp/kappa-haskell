@@ -1,0 +1,2 @@
+module app.shared
+let b = 2

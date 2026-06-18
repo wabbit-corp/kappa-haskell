@@ -1,0 +1,3 @@
+module codec.util
+tag : String -> String
+let tag s = stringAppend "[" s

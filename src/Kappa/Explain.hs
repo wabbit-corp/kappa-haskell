@@ -251,6 +251,14 @@ registry =
       "A build target's entry (main) module could not be located as a source file under the package's source roots (Spec §36.3, §36.4)."
   , ent "E_MODULE_NAME_CASE_COLLISION" (Just "kappa-hs.module.case-collision")
       "Two source files in a compilation unit derive module names that are equal after case-folding but differ in case (Spec §8.1)."
+  , ent "E_DEPENDENCY_NOT_FOUND" (Just "kappa-hs.build.dependency-not-found")
+      "A build target lists a dependency name the manifest's dependencies do not declare (Spec §36.3, §36.23)."
+  , ent "E_DEPENDENCY_PATH_NOT_FOUND" (Just "kappa-hs.build.dependency-path")
+      "A path dependency points to a directory that does not contain a build manifest (Spec §36.23, §36.23.2)."
+  , ent "E_DEPENDENCY_UNRESOLVED" (Just "kappa.package.reproducibility")
+      "A dependency cannot be resolved by the selected resolver profile: this implementation resolves only path dependencies; registry/git/url/artifact dependencies require a registry and lockfile it does not provide (Spec §36.23, §36.23.1)."
+  , ent "E_DEPENDENCY_MODULE_COLLISION" (Just "kappa-hs.build.dependency-module-collision")
+      "More than one package in the build (the target's own package and/or its dependencies) provides the same module name; cross-package module names must be distinct (Spec §8.1, §36.23)."
   , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
       "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")

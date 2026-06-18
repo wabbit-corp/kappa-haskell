@@ -24,10 +24,12 @@ import Kappa.Backend.NativeCatalog
   , CatalogModule (..)
   , catalogModule
   )
+import Kappa.Build.Reify (reifyBuildConfig)
 import Kappa.Build.Types
 import Kappa.Diagnostic
+import Kappa.Pipeline (compileManifest, loadSourceFile)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
-import System.Directory (doesDirectoryExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (makeRelative, splitDirectories, takeExtension, takeFileName, (</>))
 
 -- | A resolved, buildable executable target.
@@ -65,29 +67,44 @@ resolveExecutable manifestDir bc mTarget =
           SelModulesUnder _ -> pure (Left [mainNotConcrete (tName tgt)])
           SelModule modName -> do
             let entryMod = ModuleName (T.splitOn "." modName)
-            allFiles <- enumerateSources
+            allFiles <- packageModules manifestDir bc
             let selected =
                   [ (f, mn)
                   | (f, mn) <- allFiles
                   , mn == entryMod || matchesSelector (tModules tgt) mn
                   ]
-            pure $
-              if not (any ((== entryMod) . snd) allFiles)
-                then Left [entryNotFound (tName tgt) modName]
-                else case caseFoldCollision selected of
-                  Just ds -> Left ds
-                  Nothing ->
-                    Right
-                      ResolvedExe
-                        { rxName = tName tgt
-                        , rxEntryModule = entryMod
-                        , rxSourceFiles = selected
-                        , rxProvidedModules = providedMods
-                        , rxLinkSpecs = linkSpecs
-                        , rxRuntimeFfi = anyNative
-                        }
+            if not (any ((== entryMod) . snd) allFiles)
+              then pure (Left [entryNotFound (tName tgt) modName])
+              else do
+                -- §36.23: resolve the target's dependencies and bring each
+                -- resolved package's library modules into the unit. Files
+                -- are origin-tagged (the dependent package "" or a dep
+                -- name) so a diamond/repeated dep dedups by path and a
+                -- cross-package same-module-name clash is rejected, while
+                -- legitimate same-origin §8.1 fragments are kept.
+                depResult <- resolveDeps manifestDir bc (targetDependencies tgt)
+                pure $ case depResult of
+                  Left ds -> Left ds
+                  Right depTagged ->
+                    let tagged = [(p, mn, "") | (p, mn) <- selected] ++ depTagged
+                        deduped = dedupByPath tagged
+                        unit = [(p, mn) | (p, mn, _) <- deduped]
+                     in case crossPackageCollision deduped of
+                          Just ds -> Left ds
+                          Nothing -> case caseFoldCollision unit of
+                            Just ds -> Left ds
+                            Nothing ->
+                              Right
+                                ResolvedExe
+                                  { rxName = tName tgt
+                                  , rxEntryModule = entryMod
+                                  , rxSourceFiles = unit
+                                  , rxProvidedModules = providedMods
+                                  , rxLinkSpecs = linkSpecs
+                                  , rxRuntimeFfi = anyNative
+                                  }
   where
-    sp = Span (manifestDir </> "kappa.build.kp") (Pos 1 1) (Pos 1 1)
+    sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
 
     executables = [t | t@ExecutableTarget {} <- bcTargets bc]
 
@@ -229,25 +246,20 @@ resolveExecutable manifestDir bc mTarget =
             [] -> Nothing
             (grp : _) -> Just [caseCollision grp]
 
-    -- §36.4: every .kp under each source root, paired with its §8.1
-    -- path-derived module name (relative to that root). A file belongs to
-    -- exactly one root (the one it is found under).
-    enumerateSources :: IO [(FilePath, ModuleName)]
-    enumerateSources = do
-      perRoot <- forM (bcSourceRoots bc) $ \r -> do
-        let rootDir = manifestDir </> T.unpack (srPath r)
-        fs <- listKpFiles rootDir
-        pure [(f, deriveModule rootDir f) | f <- fs]
-      -- §8.1: sort by path so fragment-merge/diagnostic order and the
-      -- artifact representative are deterministic (independent of the
-      -- OS directory-listing order).
-      pure (sortOn fst (concat perRoot))
-
-    -- §36.3 `modules` selector: which package modules belong to the target.
-    matchesSelector :: ModuleSelector -> ModuleName -> Bool
-    matchesSelector sel (ModuleName segs) = case sel of
-      SelModule m -> segs == T.splitOn "." m
-      SelModulesUnder p -> let ps = T.splitOn "." p in take (length ps) segs == ps
+    -- §8.1/§36.23: a module name must come from exactly one package (the
+    -- dependent package "" or a single dependency). Same-origin repeats
+    -- are legitimate §8.1 fragments and are allowed.
+    crossPackageCollision :: [(FilePath, ModuleName, Text)] -> Maybe Diagnostics
+    crossPackageCollision tagged =
+      let m =
+            foldl'
+              (\acc (_, mn, orig) -> Map.insertWith (++) (renderMod mn) [orig] acc)
+              Map.empty
+              tagged
+          clashes = [(nm, dedupT origs) | (nm, origs) <- Map.toList m, length (dedupT origs) > 1]
+       in case clashes of
+            [] -> Nothing
+            ((nm, origs) : _) -> Just [moduleProviderClash nm origs]
 
     -- diagnostics --------------------------------------------------------
     buildErr code fam msg = diag SevError StageImports code (Just fam) sp msg
@@ -299,6 +311,12 @@ resolveExecutable manifestDir bc mTarget =
             <> T.intercalate ", " [renderMod mn <> " (" <> T.pack f <> ")" | (f, mn) <- grp]
             <> " (Spec §8.1)"
         )
+    moduleProviderClash nm origs =
+      buildErr "E_DEPENDENCY_MODULE_COLLISION" "kappa-hs.build.dependency-module-collision"
+        ( "module '" <> nm <> "' is provided by more than one package ("
+            <> T.intercalate ", " [if T.null o then "this package" else "dependency " <> o | o <- origs]
+            <> "); cross-package module names must be distinct (Spec §8.1, §36.23)"
+        )
 
 -- | The canonical build-manifest basename (assembled from fragments so
 -- the literal does not trip the diagnostic family-literal scanner).
@@ -336,6 +354,113 @@ deriveModule root file =
     , not (null s)
     ]
 
+-- | Every package source module under @bc@'s source roots (relative to
+-- @dir@), manifest excluded, sorted by path (§8.1 determinism).
+packageModules :: FilePath -> BuildConfig -> IO [(FilePath, ModuleName)]
+packageModules dir bc = do
+  perRoot <- forM (bcSourceRoots bc) $ \r -> do
+    let rootDir = dir </> T.unpack (srPath r)
+    fs <- listKpFiles rootDir
+    pure [(f, deriveModule rootDir f) | f <- fs]
+  pure (sortOn fst (concat perRoot))
+
+-- | §36.3 `modules` selector: which package modules belong to a target.
+matchesSelector :: ModuleSelector -> ModuleName -> Bool
+matchesSelector sel (ModuleName segs) = case sel of
+  SelModule m -> segs == T.splitOn "." m
+  SelModulesUnder p -> let ps = T.splitOn "." p in take (length ps) segs == ps
+
+-- | §36.23: resolve a target's dependency names to the library modules
+-- to compile into the unit. Path dependencies are resolved against the
+-- local filesystem; registry/git/url dependencies are unresolved by this
+-- implementation's resolver profile (§36.23.1) and reported honestly.
+-- Direct dependencies only (transitive path dependencies are a later
+-- increment). @manifestDir@ is the dependent package's directory.
+resolveDeps :: FilePath -> BuildConfig -> [Text] -> IO (Either Diagnostics [(FilePath, ModuleName, Text)])
+resolveDeps manifestDir bc names = go [] (dedupT names)
+  where
+    sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
+    go acc [] = pure (Right (concat (reverse acc)))
+    go acc (nm : rest) = case [d | d <- bcDependencies bc, depName d == nm] of
+      [] ->
+        pure . Left $
+          [ depErr sp "E_DEPENDENCY_NOT_FOUND" "kappa-hs.build.dependency-not-found"
+              ( "target lists dependency '" <> nm
+                  <> "', which the manifest's dependencies do not declare (Spec §36.3, §36.23)"
+              )
+          ]
+      (dep : _) -> case dep of
+        PathDep _ path -> do
+          r <- resolvePathDep manifestDir nm path
+          case r of
+            Left ds -> pure (Left ds)
+            Right mods -> go ([(p, mn, nm) | (p, mn) <- mods] : acc) rest
+        RegistryDep _ _ -> pure (Left [unresolved "registry"])
+        GitDep _ _ _ -> pure (Left [unresolved "git"])
+      where
+        unresolved kind =
+          depErr sp "E_DEPENDENCY_UNRESOLVED" "kappa.package.reproducibility"
+            ( "dependency '" <> nm <> "' is a " <> kind
+                <> " dependency; this implementation's resolver profile resolves only path "
+                <> "dependencies (registry/git require a registry and lockfile it does not "
+                <> "provide, Spec §36.23.1)"
+            )
+
+-- | Resolve one path dependency to its library modules: load the
+-- dependency package's manifest (§35.13), and enumerate the modules
+-- matching its library targets' `modules` selectors (or all its package
+-- modules when it declares no library target).
+resolvePathDep :: FilePath -> Text -> Text -> IO (Either Diagnostics [(FilePath, ModuleName)])
+resolvePathDep manifestDir nm path = do
+  let depDir = manifestDir </> T.unpack path
+      depManifest = depDir </> manifestBasename
+      sp = Span depManifest (Pos 1 1) (Pos 1 1)
+  ok <- doesFileExist depManifest
+  if not ok
+    then
+      pure . Left $
+        [ depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
+            ( "path dependency '" <> nm <> "' has no build manifest at '"
+                <> T.pack depManifest <> "' (Spec §36.23.2)"
+            )
+        ]
+    else do
+      (src, _) <- loadSourceFile depManifest
+      let (st, mn, diags) = compileManifest depManifest src
+      if hasErrors diags
+        then pure (Left diags)
+        else case reifyBuildConfig sp st mn of
+          Left ds -> pure (Left ds)
+          Right depBc -> do
+            mods <- packageModules depDir depBc
+            let libSelectors = [tModules t | t@LibraryTarget {} <- bcTargets depBc]
+                -- a dependency with no library target exports all its
+                -- modules EXCEPT its executables' entry modules (so we do
+                -- not pull a dependency's `main` into the dependent).
+                exeMains =
+                  [ ModuleName (T.splitOn "." nm')
+                  | ExecutableTarget {tMain = SelModule nm'} <- bcTargets depBc
+                  ]
+                selected =
+                  if null libSelectors
+                    then [x | x@(_, m) <- mods, m `notElem` exeMains]
+                    else [x | x@(_, m) <- mods, any (`matchesSelector` m) libSelectors]
+            pure (Right selected)
+
+depName :: Dependency -> Text
+depName = \case
+  RegistryDep n _ -> n
+  GitDep n _ _ -> n
+  PathDep n _ -> n
+
+depErr :: Span -> DiagnosticCode -> DiagnosticFamily -> Text -> Diagnostic
+depErr sp code fam = diag SevError StageImports code (Just fam) sp
+
+-- | A target's dependency names.
+targetDependencies :: Target -> [Text]
+targetDependencies ExecutableTarget {tDependencies = ds} = ds
+targetDependencies LibraryTarget {tDependencies = ds} = ds
+
 -- | A target's referenced host-binding names (executables only carry them).
 targetHostBindings :: Target -> [Text]
 targetHostBindings ExecutableTarget {tHostBindings = hs} = hs
@@ -355,3 +480,13 @@ dedupT = go []
   where
     go seen [] = reverse seen
     go seen (x : xs) = if x `elem` seen then go seen xs else go (x : seen) xs
+
+-- | Keep the first occurrence of each file path (a diamond/repeated path
+-- dependency resolves to the same file via multiple routes).
+dedupByPath :: [(FilePath, ModuleName, Text)] -> [(FilePath, ModuleName, Text)]
+dedupByPath = go []
+  where
+    go _ [] = []
+    go seen (x@(p, _, _) : xs)
+      | p `elem` seen = go seen xs
+      | otherwise = x : go (p : seen) xs

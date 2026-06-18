@@ -55,8 +55,12 @@ for d in "$DIR"/native/*/; do
   want="$(sed -n 's/^-- expect: //p' "$d/kappa.build.kp" | head -1)"
   out="$(timeout 120 $KAPPA build --manifest "$d" --emit-c -o /tmp/kbuild-out 2>&1)"; rc=$?
   if [ "$want" = "BUILD_OK" ]; then
-    if [ "$rc" -eq 0 ] && find "$d" -name '*.kappa.c' -exec grep -ql "__sqlite" {} \; ; then
-      echo "PASS $name (built; provider prim emitted)"
+    # a fixture that selects the sqlite host binding must emit its prim;
+    # otherwise just require that codegen produced a .c
+    needprim=0; grep -q "host.native.sqlite3" "$d/kappa.build.kp" && needprim=1
+    primok=1; [ "$needprim" = 1 ] && { find "$d" -name '*.kappa.c' -exec grep -ql "__sqlite" {} \; || primok=0; }
+    if [ "$rc" -eq 0 ] && [ -n "$(find "$d" -name '*.kappa.c')" ] && [ "$primok" = 1 ]; then
+      echo "PASS $name (built$([ "$needprim" = 1 ] && echo '; provider prim emitted'))"
     else
       echo "FAIL $name (expected build + prim)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
     fi

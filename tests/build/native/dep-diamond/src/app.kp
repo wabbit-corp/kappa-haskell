@@ -1,0 +1,3 @@
+module app
+import codec.util.(tag)
+let main = printlnString (tag "x")
