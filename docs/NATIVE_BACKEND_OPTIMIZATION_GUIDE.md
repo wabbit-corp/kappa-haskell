@@ -232,6 +232,42 @@ at most once with a `switch` on an integer tag — Maranget measures *tree size*
 the runtime win is `[design]`. LR2 already shipped the integer tags; the `switch`/tree shape is the
 remainder (P1-C).
 
+**5.3.1 Zig cc / Clang-specific backend levers.** Kappa currently invokes `zig cc`, which is a
+Clang/LLVM-compatible C compiler driver. That gives the generated C backend a few practical,
+non-portable-but-checkable tools; use them behind feature probes/macros and keep a portable fallback.
+
+- **Guaranteed tail calls:** Clang's statement attribute `[[clang::musttail]]` (or GNU spelling
+  `__attribute__((musttail))`) can be placed on a `return callee(args...)` statement. If accepted,
+  Clang must emit a tail call even without optimizations; if the shape is invalid, compilation fails.
+  This is useful as a *correctness gate* for known tail-call SCCs, not as a replacement for better
+  lowering. The constraints are severe: caller/callee return and argument types must be similar,
+  argument count and calling convention must match, neither side may be variadic/K&R, and locals'
+  lifetimes end before the call. Kappa lowering ladder: (1) self-tail recursion -> loop; (2) known
+  same-signature SCC -> direct functions with `musttail`; (3) known monomorphic different-signature
+  SCC -> shared state-machine loop if profitable; (4) unknown higher-order tail call -> boxed
+  trampoline/continuation fallback.
+- **No C---style multiple returns in `zig cc`:** C has no general multi-return calling convention.
+  We can return small structs, and a target ABI may place small aggregate fields in registers, but
+  this is not a portable, explicit multi-result primitive and is awkward with `musttail` because all
+  functions in the cycle need the same return type. For hot multi-result paths, prefer caller-owned
+  out-parameters, split workers, or a generated loop/state record; keep small-struct returns as an
+  optional ABI-measured micro-optimization rather than a semantic foundation.
+- **Branch and unreachable facts:** use `[[likely]]`/`[[unlikely]]`, `__builtin_expect`,
+  `__builtin_assume`, and `__builtin_unreachable` only when the compiler has already proven the
+  fact (for example exhaustive tag switches after the failure path). These should be last-mile hints;
+  wrong assumptions are undefined behavior.
+- **Overflow and scalar facts:** keep using compiler builtins such as `__builtin_add_overflow` for
+  exact Spec.md overflow fallback. Add `restrict`, `const`/`pure`-like attributes, `hot`/`cold`,
+  `always_inline`/`noinline`, `malloc`/`alloc_size`, and alignment annotations only where Kappa's
+  runtime contract makes them true. The point is to expose already-known facts to LLVM, not to hope
+  the optimizer rediscovers facts hidden behind `KValue` and `KEnv`.
+- **Computed gotos / labels-as-values:** GNU/Clang computed goto can help interpreter dispatch, but
+  generated native code should prefer structured `switch`/direct calls first. Use computed goto only
+  if a future bytecode/interpreter tier is intentionally introduced and measured.
+- **Build-mode levers:** `zig cc` makes cross-targeting, `lld`, and libc selection easy; performance
+  gates should record exact target, optimization flags, LTO/PGO status, and whether sanitizers are
+  disabled. These are build-system levers, not substitutes for representation selection.
+
 **5.4 Allocation, GC, regions.** "Allocation is nearly free" is `[folklore]` for Kappa — true only
 with a moving generational nursery (OCaml/GHC bump-pointer), not Boehm mark-sweep, where dead
 objects are not free and integer-shaped words cause false retention. The one free win without
