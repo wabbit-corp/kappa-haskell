@@ -1,0 +1,21 @@
+-- Bench: strbuild
+-- Purpose: detect QUADRATIC string building. Repeated left-associated
+--   stringAppend rebuilds the whole prefix each step; this bench measures
+--   whether total_bytes / time scale O(N) (good — a builder/rope) or O(N^2)
+--   (bad — naive copy-on-append). A scaling check, not a single number.
+-- Expected optimized lowering: stringAppend over immutable UTF-8 blobs is
+--   inherently copying; the RIGHT answer for accumulation is a BytesBuilder/
+--   rope (std.bytes has finishBytesBuilder) with amortized O(1) append. This
+--   bench documents the cost of the naive path and motivates a String builder.
+-- Raw-C baseline idea: O(N) building into a growable buffer (the achievable
+--   linear cost) vs the O(N^2) strcat-in-a-loop antipattern, to bracket.
+-- Failure mode it detects: accidental O(N^2) accumulation — run at N and 2N and
+--   check time/alloc grow ~4x (quadratic) vs ~2x (linear). If 4x, recommend the
+--   builder.
+module main
+build : Int -> String -> String
+let build n acc = if leInt n 0 then acc else build (subInt n 1) (stringAppend acc "x")
+-- print the built string (forces full evaluation; redirect to /dev/null when
+-- timing — the cost under test is the O(N) vs O(N^2) building, not the I/O).
+main : UIO Unit
+let main = printlnString (build 20000 "")

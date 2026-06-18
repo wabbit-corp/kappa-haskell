@@ -1,0 +1,49 @@
+-- Bench: http_kernel
+-- Purpose: a tiny, realistic, end-to-end kernel — classify HTTP-method tokens
+--   and build a status line — mixing ADT/Option, record construction, pattern
+--   matching, and string building in one loop, the way a real request handler
+--   does. The closest the suite gets to a representative workload number.
+-- Expected optimized lowering: method classification is a tag switch over a
+--   small ADT (R1.2); the response record uses krec + fixed-offset projection;
+--   string assembly should use a builder (see strbuild) rather than O(N^2)
+--   append. After Wave 1+2 this should be a small constant factor over C.
+-- Raw-C baseline idea: a C function switching on a method enum and writing a
+--   status line into a fixed buffer; loop it N times over a request list.
+--   Report ratio + allocation (mixed workload, so report-only initially).
+-- Failure mode it detects: the COMPOUND cost of the gaps on realistic code —
+--   if eta-ctor construction (P0-A), linear-if-chain matching (P1-C), and scalar boxing
+--   (P0-D) are all live, this bench is where they add up and the gap to C is
+--   widest.
+module main
+data Method : Type =
+    Get
+    Post
+    Put
+    Delete
+    Unknown
+classify : String -> Method
+let classify s =
+    if eqStr s "GET" then Get
+    else if eqStr s "POST" then Post
+    else if eqStr s "PUT" then Put
+    else if eqStr s "DELETE" then Delete
+    else Unknown
+status : Method -> Int
+let status m =
+    match m
+    case Get -> 200
+    case Post -> 201
+    case Put -> 200
+    case Delete -> 204
+    case Unknown -> 405
+handle : List String -> Int -> Int
+let handle reqs acc =
+    match reqs
+    case Nil -> acc
+    case r :: rest -> handle rest (addInt acc (status (classify r)))
+mkReqs : Int -> List String -> List String
+let mkReqs n acc =
+    if leInt n 0 then acc
+    else mkReqs (subInt n 1) ("GET" :: "POST" :: "DELETE" :: "PATCH" :: acc)
+main : UIO Unit
+let main = printlnString (showInt (handle (mkReqs 250000 Nil) 0))

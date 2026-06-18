@@ -1,0 +1,22 @@
+-- Bench: adtbuild  (the single most important new bench)
+-- Purpose: ADT/list CONSTRUCTION in a loop — directly targets gap P0-A
+--   (saturated constructor applications lowering through an eta-expanded
+--   3-deep curried closure chain) and P0-B (the resulting captured-env forces
+--   per-iteration KEnv rebuild). This is what makes listfold 544 MB / 2.0 s.
+-- Expected optimized lowering: `n :: acc` is a DIRECT kcons/kctor("::",2,{n,acc})
+--   — one cons cell allocated, no kclo/kapp/kappi, no per-element KEnv; the
+--   range worker becomes capture-free so QW2's in-place no-alloc loop applies.
+-- Raw-C baseline idea (raw/adtbuild.c): build a real singly-linked list
+--   (`struct node{long v; struct node* next;}`, one malloc/node), sum it; the
+--   honest like-for-like since the Kappa version must allocate cells too.
+--   Gate (after R1.1): total_bytes/iter <= 1 cons cell + 1 int box; today it is
+--   ~3 closures + 3 env nodes + 1 cell + 1 box per element.
+-- Failure mode it detects: the eta-ctor closure storm (census: any kclo/kapp on
+--   the construction path) and the per-iteration env rebuild in the builder.
+module main
+range : Int -> List Int -> List Int
+let range n acc = if leInt n 0 then acc else range (subInt n 1) (n :: acc)
+foldSum : List Int -> Int -> Int
+let foldSum xs acc = match xs case Nil -> acc case y :: rest -> foldSum rest (addInt acc y)
+main : UIO Unit
+let main = printlnString (showInt (foldSum (range 2000000 Nil) 0))

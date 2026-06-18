@@ -1,0 +1,32 @@
+-- Bench: sqlite_shape
+-- Purpose: model a sqlite-style query loop WITHOUT real FFI (the base runtime
+--   is FFI-stub; depending on hidden non-spec sqlite primitives is exactly what
+--   review note §8 forbids). It reproduces the CODEGEN SHAPE of a
+--   prepare/step/row loop: iterate "rows" (records), project columns, and
+--   accumulate — stressing record construction, fixed-offset projection (P0.4
+--   krec_at), and per-row accumulation, the parts of a query loop that are
+--   Kappa code rather than C library calls.
+-- Expected optimized lowering: each row record built with a static field-name
+--   array + krec (compileRecord, C.hs:1392); projection via fixed-offset
+--   krec_at (P0.4, already done for closed records); accumulation unboxed once
+--   P0-D lands. No kproj strcmp scans.
+-- Raw-C baseline idea: a struct-row array summed in a loop (the in-memory
+--   model) — and, when the demo runtime IS linked, a real sqlite3
+--   prepare/step/finalize loop over a temp table, gated separately so the FFI
+--   boundary cost is isolated. Report-only here.
+-- Failure mode it detects: per-row record allocation cost and any residual
+--   kproj string scan (regression of P0.4); the record-param worker boxing
+--   (P0-D) that recproj also shows.
+module main
+type Row = (id : Int, amount : Int)
+sumRows : List Row -> Int -> Int
+let sumRows rows acc =
+    match rows
+    case Nil -> acc
+    case r :: rest -> sumRows rest (addInt acc r.amount)
+mkRows : Int -> List Row -> List Row
+let mkRows n acc =
+    if leInt n 0 then acc
+    else mkRows (subInt n 1) ((id = n, amount = mulInt n 2) :: acc)
+main : UIO Unit
+let main = printlnString (showInt (sumRows (mkRows 500000 Nil) 0))

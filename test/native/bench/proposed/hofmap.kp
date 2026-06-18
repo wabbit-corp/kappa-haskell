@@ -1,0 +1,23 @@
+-- Bench: hofmap
+-- Purpose: higher-order functions — apply a passed-in closure `f` once per
+--   iteration. Targets the arity-1 KFn currying cost (research §2.1 eval/apply)
+--   and P1-H (linked KEnv per closure): the higher-order call `f n` goes
+--   through kapp on a kclo, the worst-case push/enter path.
+-- Expected optimized lowering (after R3.2): known-target HOF calls become
+--   direct calls (eval/apply known arity); the closure captures free vars in a
+--   FLAT record (Shao/Appel), not a linked KEnv; ideally `f` inlines to a plain
+--   add so the C compiler sees a bare loop.
+-- Raw-C baseline idea: a loop with the op inlined (specialized) AND a
+--   function-pointer-callback variant (un-inlined) to bracket the achievable
+--   range. Report-only until R3.2.
+-- Failure mode it detects: per-application kapp/kclo allocation + KEnv walk for
+--   the higher-order argument — the arity-1 closure-chain tax.
+-- NOTE: written TAIL-recursively (accumulator) so it runs at N=2e6. A non-tail
+--   `map` that builds a 2e6-deep list overflows the C stack — native non-tail
+--   recursion rides the C stack (only tail calls are trampolined), a separate
+--   robustness observation, not the dimension under test here.
+module main
+applyN : (Int -> Int) -> Int -> Int -> Int
+let applyN f n acc = if leInt n 0 then acc else applyN f (subInt n 1) (addInt acc (f n))
+main : UIO Unit
+let main = printlnString (showInt (applyN (\x -> addInt x 1) 2000000 0))

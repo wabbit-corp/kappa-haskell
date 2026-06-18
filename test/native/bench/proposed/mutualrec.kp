@@ -1,0 +1,20 @@
+-- Bench: mutualrec
+-- Purpose: mutual tail recursion (isEven/isOdd) — targets gap P1-E (known
+--   first-order calls wrapped in ktrampoline even when statically known) and
+--   the raw-C review P0.5 "known mutual-tail SCCs should compile to a loop /
+--   dispatch-state machine, not allocate a K_BOUNCE per step".
+-- Expected optimized lowering: the mutual-recursive SCC becomes a dispatch
+--   loop (or direct tail jumps via musttail) with no K_BOUNCE allocation per
+--   step; known saturated calls drop the ktrampoline wrapper.
+-- Raw-C baseline idea: two functions whose tail calls -O2 turns into jumps, or
+--   a single state loop. Gate: constant C stack + bounded total_bytes (no
+--   per-step bounce allocation).
+-- Failure mode it detects: per-step K_BOUNCE allocation and/or ktrampoline
+--   overhead on a statically-known mutual-recursive group.
+module main
+isEven : Int -> Bool
+let isEven n = if eqInt n 0 then True else isOdd (subInt n 1)
+isOdd : Int -> Bool
+let isOdd n = if eqInt n 0 then False else isEven (subInt n 1)
+main : UIO Unit
+let main = printlnString (if isEven 4000000 then "even" else "odd")

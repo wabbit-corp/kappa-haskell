@@ -1,0 +1,38 @@
+-- Bench: adtmatch
+-- Purpose: pattern matching over a wider ADT — targets gap P1-C. NOTE: LR2
+--   shipped mid-study, so matches now dispatch on INTEGER tags
+--   (kctor_tagid(scrut) == KCT_x), not kctor_is/strcmp. The residual gap this
+--   probes is that the dispatch is a linear if-chain of integer == tests, not a
+--   single C `switch`/Maranget decision tree. Uses a 4-constructor type so the
+--   O(#alternatives) linear-chain length (vs a jump table) is visible.
+-- Expected optimized lowering (after R1.2): a C `switch` on the integer ctor
+--   tag (Maranget decision tree). Today: a linear chain of `kctor_tagid == KT_x`
+--   integer compares — already -O2-jump-table-able for few ctors, which is why
+--   this is now low-medium impact, not the P0 it was when it was strcmp.
+-- Raw-C baseline idea: a `switch (tag)` over an enum — the canonical fast
+--   dispatch the Kappa output should converge to. (Report-only until R1.2.)
+-- Failure mode it detects: a linear if-chain growing with #constructors where a
+--   constant-time switch/jump-table is achievable; regression to strcmp dispatch.
+module main
+data Op : Type =
+    Push (n : Int)
+    Add
+    Mul
+    Pop
+-- ops keep `acc` bounded (int64, no bignum blowup) so the bench measures the
+-- MATCH DISPATCH cost, not arbitrary-precision arithmetic: +n, +3, -1, -1.
+eval : Op -> Int -> Int
+let eval op acc =
+    match op
+    case Push n -> addInt acc n
+    case Add -> addInt acc 3
+    case Mul -> subInt acc 1
+    case Pop -> subInt acc 1
+run : List Op -> Int -> Int
+let run ops acc = match ops case Nil -> acc case o :: rest -> run rest (eval o acc)
+build : Int -> List Op -> List Op
+let build n acc =
+    if leInt n 0 then acc
+    else build (subInt n 1) (Push 1 :: Add :: Mul :: Pop :: acc)
+main : UIO Unit
+let main = printlnString (showInt (run (build 250000 Nil) 0))

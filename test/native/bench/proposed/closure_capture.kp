@@ -1,0 +1,26 @@
+-- Bench: closure_capture
+-- Purpose: escaping closures that capture a loop variable — targets P1-H
+--   (KEnv as a per-binding linked list) and the Shao/Appel safe-for-space
+--   property (research §2.2): a returned/stored closure must retain ONLY the
+--   variables it captures, not transitively pin an entire environment.
+-- Expected optimized lowering: each escaping closure is a FLAT record holding
+--   exactly its captured free vars (one allocation, offset access), not a
+--   linked KEnv cons chain; a closure capturing `k` must not keep the whole
+--   list spine or unrelated bindings alive.
+-- Raw-C baseline idea: a struct with exactly the captured fields + a function
+--   pointer (a hand-written flat closure). Report time + a SPACE-SAFETY check:
+--   peak heap should track the number of live closures × their capture size,
+--   not grow with unrelated bindings in scope.
+-- Failure mode it detects: linked-list KEnv capture (slow access) and
+--   space-unsafe retention (heap_size grows with scope depth, not capture set).
+module main
+makeAdders : Int -> List Int -> List Int
+let makeAdders n acc =
+    if leInt n 0 then acc
+    else
+        let g = \x -> addInt x n
+        makeAdders (subInt n 1) (g n :: acc)
+foldSum : List Int -> Int -> Int
+let foldSum xs acc = match xs case Nil -> acc case y :: rest -> foldSum rest (addInt acc y)
+main : UIO Unit
+let main = printlnString (showInt (foldSum (makeAdders 500000 Nil) 0))

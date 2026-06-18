@@ -1,0 +1,16 @@
+-- Bench: scalar_doubleloop
+-- Purpose: a monomorphic Double accumulation loop — the Double analogue of the
+--   Int fast path. Today there is NO Double unboxed worker (P0-D), so each
+--   addDouble boxes a fresh kdbl per iteration.
+-- Expected optimized lowering (after roadmap R2.2): a scalar `double` while
+--   loop, zero per-iteration allocation, no overflow escape needed (IEEE
+--   wraps/inf, unlike unbounded Int). Today: boxed kp_addDouble + kdbl/iter.
+-- Raw-C baseline idea (raw/scalar_doubleloop.c): `volatile double acc; for(...) acc+=x;`
+--   runtime N. Gate: report-only now; ratio <=5x raw C after R2.2 lands.
+-- Failure mode it detects: that Double scalars are still boxed — total_bytes
+--   scales with N (≈48 B/iter) where it should be zero; quantifies the R2.2 win.
+module main
+sumD : Double -> Int -> Double
+let sumD acc n = if leInt n 0 then acc else sumD (addDouble acc (intToDouble n)) (subInt n 1)
+main : UIO Unit
+let main = printlnString (showDouble (sumD 0.0 2000000))

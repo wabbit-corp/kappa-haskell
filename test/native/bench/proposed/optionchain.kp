@@ -1,0 +1,27 @@
+-- Bench: optionchain
+-- Purpose: Option/Result-heavy code — a loop that repeatedly constructs and
+--   matches Some/None (and could be extended to Ok/Err). Targets the cost of
+--   single-payload ADT boxing + matching (research §1.4: a 2-variant type like
+--   Option is the prime candidate for niche/NPO or immediate-tag layout).
+-- Expected optimized lowering: Some/None match compiled to a tag switch (R1.2);
+--   ideally Option<Int> uses a niche/immediate layout (research §1.4 NPO /
+--   unboxed sums) so None and Some carry no separate heap tag word. A safe-divide
+--   chain should not allocate a box per step on the common path.
+-- Raw-C baseline idea: a struct {int present; long val;} or a sentinel-encoded
+--   value; loop dividing with a zero-guard. Report alloc + time.
+-- Failure mode it detects: per-iteration K_CTOR/K_VARIANT boxing for Option
+--   (the small-ADT allocation tax). NOTE: match dispatch is integer-tag since
+--   LR2 shipped (not strcmp); the cost here is the per-iteration box, plus the
+--   linear if-chain shape (P1-C) and the missing niche/immediate layout (§1.4).
+module main
+safeDiv : Int -> Int -> Option Int
+let safeDiv a b = if eqInt b 0 then None else Some (divInt a b)
+loop : Int -> Int -> Int
+let loop n acc =
+    if leInt n 0 then acc
+    else
+        match safeDiv 1000000 n
+        case None -> loop (subInt n 1) acc
+        case Some q -> loop (subInt n 1) (addInt acc q)
+main : UIO Unit
+let main = printlnString (showInt (loop 1000000 0))

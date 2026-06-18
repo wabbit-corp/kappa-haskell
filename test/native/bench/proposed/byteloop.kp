@@ -1,0 +1,25 @@
+-- Bench: byteloop
+-- Purpose: a genuine PER-BYTE processing loop — build a List Byte of N bytes
+--   and fold it, summing each byte's value (byteToNat -> natToInt). Exercises
+--   the §6.5 Byte path: K_BYTE construction, per-byte byteToNat conversion, and
+--   list fold. (Byte literal PATTERNS are not in the surface grammar, so byte
+--   values are read via __byteToNat, not match — see cases/bytes.kp.)
+-- Expected optimized lowering: a tight loop reading byte values without boxing
+--   a K_BYTE per element; byteToNat/natToInt as machine-int conversions. Today
+--   natToInt is NOT in primDirect (C.hs) so it is a string-dispatched
+--   kprim_call boxing a kint per iteration — this bench surfaces that.
+-- Raw-C baseline idea (raw/byteloop.c): `for(i=0;i<len;i++) acc += buf[i];`
+--   over a real byte buffer — the flat-scan lower bound. Like-for-like: both
+--   touch every byte; the gap is Kappa's per-byte boxing + prim-call dispatch.
+-- Failure mode it detects: per-byte K_BYTE/kint boxing and string-dispatched
+--   natToInt overhead on what should be a flat buffer scan.
+module main
+buildBytes : Int -> List Byte -> List Byte
+let buildBytes n acc = if leInt n 0 then acc else buildBytes (subInt n 1) (b'\x01' :: acc)
+sumBytes : List Byte -> Int -> Int
+let sumBytes xs acc =
+    match xs
+    case Nil -> acc
+    case y :: rest -> sumBytes rest (addInt acc (natToInt (__byteToNat y)))
+main : UIO Unit
+let main = printlnString (showInt (sumBytes (buildBytes 1000000 Nil) 0))

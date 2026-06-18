@@ -1,0 +1,24 @@
+-- Bench: deferloop
+-- Purpose: the defer/effects path — a `for` loop that registers a `defer`
+--   each iteration (§18.7, evaluated LAZILY at scope exit). Targets the cost of
+--   defer registration + the LIFO flush, and whether per-iteration defer frames
+--   allocate. Models the "ownership/effects" dimension (defer/using are the
+--   scope-exit effect surface).
+-- Expected optimized lowering: defer registration should be a cheap push onto a
+--   scope frame stack; the deferred body captures only what it reads (the
+--   running total, observed at flush time — see cases/deferlazy.kp). A loop
+--   registering N defers necessarily retains N frames until scope exit, so the
+--   honest expectation is O(N) frames, not O(N) extra per-frame overhead.
+-- Raw-C baseline idea: an array/stack of N closures (fn ptr + captured slot)
+--   run in reverse — the like-for-like, since N defers must be retained.
+-- Failure mode it detects: defer frames that capture more than they read
+--   (space-unsafe, like P1-H) or that allocate redundant boxes per registration;
+--   and that the lazy-at-flush semantics are preserved under native codegen.
+module main
+main : UIO Unit
+let main = do
+    var total = 0
+    for i in 1 :: 2 :: 3 :: 4 :: 5 :: Nil do
+        defer printlnString (stringAppend "running=" (showInt total))
+        total = addInt total i
+    printlnString (stringAppend "final=" (showInt total))

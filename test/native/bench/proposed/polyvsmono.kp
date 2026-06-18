@@ -1,0 +1,29 @@
+-- Bench: polyvsmono
+-- Purpose: isolate the cost of polymorphism — the SAME accumulation done
+--   through a polymorphic higher-order combinator (applyTwice) vs a direct
+--   monomorphic expression. Targets gap P0-D (specialization) and research §1.1
+--   (Leroy): a polymorphic/HO boundary forces the uniform boxed representation
+--   and a closure application even when the caller is monomorphic.
+-- Expected optimized lowering: with specialization (research §1.3) or worker/
+--   wrapper (§1.2), the polymorphic path specializes to the monomorphic one and
+--   the poly/mono ratio approaches 1.0. Today the poly path pays the closure
+--   application + boxing the mono path avoids.
+-- Raw-C baseline idea: none needed — the GATE IS THE poly/mono ratio within
+--   Kappa itself. A ratio >> 1 quantifies the specialization headroom.
+-- Failure mode it detects: statically-monomorphic uses of polymorphic/HO
+--   functions are not specialized — the central "insufficient specialization"
+--   concern, measured as a self-relative ratio.
+-- NOTE: both loops are TAIL-recursive (accumulator) so they run at N=1e6
+--   without deep non-tail C-stack recursion; the poly/mono difference is the
+--   per-iteration applyTwice closure application, which is the point.
+module main
+applyTwice : (Int -> Int) -> Int -> Int
+let applyTwice f x = f (f x)
+poly : Int -> Int -> Int
+let poly n acc = if leInt n 0 then acc else poly (subInt n 1) (addInt acc (applyTwice (\x -> addInt x 1) n))
+mono : Int -> Int -> Int
+let mono n acc = if leInt n 0 then acc else mono (subInt n 1) (addInt acc (addInt (addInt n 1) 1))
+main : UIO Unit
+let main = do
+    printlnString (showInt (poly 1000000 0))
+    printlnString (showInt (mono 1000000 0))

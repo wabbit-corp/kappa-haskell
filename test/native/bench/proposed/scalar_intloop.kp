@@ -1,0 +1,17 @@
+-- Bench: scalar_intloop
+-- Purpose: the alloc-free baseline — a first-order monomorphic Int self-tail
+--   loop, the one case the backend already lowers near raw C (LR1). Anchors
+--   the suite: if THIS regresses, the unboxed-worker path broke.
+-- Expected optimized lowering: a `static int64_t kwi_*(int64_t, int *kovf)`
+--   scalar while-loop with __builtin_add_overflow guards, zero KValue/KEnv,
+--   zero per-iteration allocation; boxed kw_* worker only on overflow escape.
+-- Raw-C baseline idea (raw/scalar_intloop.c): `volatile int64_t acc; while(n>0){acc+=n;n--;}`
+--   with runtime N so the loop cannot be folded. Gate: native time <= 5x raw C.
+-- Failure mode it detects: a regression that reboxes the loop (per-iteration
+--   kint), reintroduces KEnv rebuild, or loses the unboxed worker — visible as
+--   total_bytes jumping from ~hundreds of bytes to hundreds of MB.
+module main
+sumAcc : Int -> Int -> Int
+let sumAcc acc n = if leInt n 0 then acc else sumAcc (addInt acc n) (subInt n 1)
+main : UIO Unit
+let main = printlnString (showInt (sumAcc 0 10000000))

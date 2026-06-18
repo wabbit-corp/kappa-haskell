@@ -1,0 +1,23 @@
+-- Bench: ioloop
+-- Purpose: the IO-boundary per-step cost — a do-block loop doing mutable-ref
+--   updates and a tail-recursive IO call. Exercises krun_io / kio_tail / the
+--   do-kernel sequencing and the readRef/writeRef peephole (compileRunIO,
+--   C.hs:1190 lowers inline readRef/writeRef to kref_get/kref_set).
+-- Expected optimized lowering: the inline ref ops become direct kref_get/
+--   kref_set (no suspend-as-K_PRIM-then-krun_io); the tail IO recursion runs in
+--   constant C stack via kio_tail without allocating a boxed action per step on
+--   the common path. (Non-escaping Int vars additionally scalarize via P0.2.)
+-- Raw-C baseline idea: a plain C loop with a local accumulator and a single
+--   final write — the IO boundary should add a small constant, not per-step
+--   allocation. Gate: total_bytes/iter bounded (no per-step K_IO/K_PRIM box).
+-- Failure mode it detects: per-iteration IO-action allocation / krun_io
+--   re-entry overhead in a do-loop — the "IO loop is an interpreter loop" risk.
+module main
+loop : Int -> Int -> UIO Int
+let loop n acc =
+    if leInt n 0 then ioPure acc
+    else loop (subInt n 1) (addInt acc n)
+main : UIO Unit
+let main = do
+    r <- loop 2000000 0
+    printlnString (showInt r)
