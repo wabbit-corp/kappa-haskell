@@ -184,18 +184,26 @@ buildManifestTarget manifestFile bc ma = do
   case resolved of
     Left ds -> emitDiags Human ds >> exitFailure
     Right rx -> do
-      (src, preDiags) <- loadSourceFile (rxEntryFile rx)
-      let (cu, hostPrims) =
-            compileProgramWithNative (rxProvidedModules rx) defaultUnsafeConfig False moduleNameOf [(rxEntryFile rx, src)]
+      -- Load every package source file of the target and compile them as
+      -- one §8.1 package-mode unit (header/path agreement), with the
+      -- manifest-selected host.native modules available (§36.4).
+      loaded <- mapM (\(p, _) -> (\(s, d) -> (p, s, d)) <$> loadSourceFile p) (rxSourceFiles rx)
+      let nameTable = Map.fromList [(p, mn) | (p, mn) <- rxSourceFiles rx]
+          nameOf p = Map.findWithDefault (moduleNameOf p) p nameTable
+          files = [(p, s) | (p, s, _) <- loaded]
+          preDiags = concat [d | (_, _, d) <- loaded]
+          (cu, hostPrims) =
+            compileProgramWithNative (rxProvidedModules rx) defaultUnsafeConfig True nameOf files
           cuDs = preDiags ++ cuDiags cu
       emitDiags Human cuDs
       when (hasErrors cuDs) exitFailure
       let st = cuState cu
-          mainG = GName (cuModule cu) "main"
+          mainG = GName (rxEntryModule rx) "main"
       unless (Map.member mainG (csGlobals st)) $ do
         hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition"
         exitFailure
-      let opts =
+      let entryFile = maybe "<entry>" fst (lookupEntry rx)
+          opts =
             defaultBuildOptions
               { boOutput = maOut ma
               , boEmitCOnly = maEmitC ma
@@ -204,10 +212,16 @@ buildManifestTarget manifestFile bc ma = do
               , boHostPrims = hostPrims
               , boLinkSpecs = rxLinkSpecs rx
               }
-      result <- buildNative st mainG (rxEntryFile rx) opts
+      result <- buildNative st mainG entryFile opts
       case result of
         Left ds -> emitDiags Human ds >> exitFailure
         Right outPath -> hPutStrLn stderr ("built " <> outPath) >> exitSuccess
+  where
+    -- the source file whose module is the entry module (for the artifact
+    -- basename / generated-C path)
+    lookupEntry rx = case [(p, mn) | (p, mn) <- rxSourceFiles rx, mn == rxEntryModule rx] of
+      (x : _) -> Just x
+      [] -> Nothing
 
 -- | Resolve the manifest path: an explicit file, a directory (look for
 -- @kappa.build.kp@ inside), or — with no argument — a walk up from the

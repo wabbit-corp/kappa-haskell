@@ -171,13 +171,17 @@ a `symbolList` symbol that is not a member of the provided modules),
 the zig profile does not realize, §34.5.3), `E_BUILD_ENTRY_NOT_FOUND`,
 `E_HOST_MODULE_SOURCE_DEFINED`.
 
-Two CLI ergonomics notes: under `--emit-c` the generated `.c` is written
+A manifest build enumerates **every** `.kp` module under the package
+source roots (`Kappa.Build.Plan`), keeps those whose §8.1 path-derived
+module name matches the target's `modules` selector (or is its `main`),
+and compiles them as one §8.1 **package-mode** unit — so the entry module
+may import sibling package modules, and a `module` header that disagrees
+with its path is rejected (`E_MODULE_PATH_MISMATCH`). Modules outside the
+selector are not compiled into the target.
+
+One CLI ergonomics note: under `--emit-c` the generated `.c` is written
 next to the entry source (the `-o` path applies to the linked
-executable, not the `.c`); and a manifest build resolves the target's
-`main` module to a single entry file and compiles it standalone — the
-entry's `module` header is not yet checked against the manifest selector,
-and sibling program modules are not yet enumerated (full multi-file
-source-root resolution is increment 4).
+executable, not the `.c`).
 
 `kappa build --manifest [DIR] [--target NAME] [-o OUT] [--emit-c]` builds
 the executable target; `--check` stops at the evaluated configuration
@@ -187,6 +191,11 @@ the executable target; `--check` stops at the evaluated configuration
 
 ### Tracked temporary residue
 
+- **Multi-file resolution is single-package** (increment 3): all modules
+  under one package's source roots compile together, but cross-package
+  *dependency* resolution (§36.23 registry/git/path) is not yet wired —
+  declared dependencies are parsed/reified, not fetched/used. That is the
+  next increment.
 - **Static linkage** is emitted as a plain `-l` (linker default search
   order), without `-Wl,-Bstatic`/`-Bdynamic` grouping; a `staticLink`
   request is honored only if a static archive is what the linker finds.
@@ -214,12 +223,14 @@ the executable target; `--check` stops at the evaluated configuration
    §36.28): catalog + provider selection + host.native imports + codegen
    + link + diagnostics; `--ffi-full` and the hardcoded table retired; a
    minimal §36.4 build-plan slice (target select + entry resolve).
-3. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-4. Full build-plan resolution (§36.4): multi-file source-root
-   enumeration, module derivation, `kappa.lock`.
-5. Dependency resolution (§36.23, resolver profiles §36.23.1) + the
+3. **(done)** Multi-file build-plan resolution (§36.4): enumerate the
+   package's modules under its source roots, filter by the target's
+   `modules` selector, compile as one package-mode unit (header/path
+   agreement). `kappa.lock` and incremental caching are later.
+4. Dependency resolution (§36.23, resolver profiles §36.23.1) + the
    `kappa.package.reproducibility` pinning diagnostics in full; remove the
    static-link approximation.
+5. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
 6. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
    and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 

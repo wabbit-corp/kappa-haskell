@@ -1,0 +1,2 @@
+module app.Sub
+let b = 2

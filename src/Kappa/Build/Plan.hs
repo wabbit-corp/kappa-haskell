@@ -1,17 +1,21 @@
--- | A minimal build-plan resolution slice (§36.4) sufficient to build one
+-- | A build-plan resolution slice (§36.4) sufficient to build one
 -- executable target from a reified manifest: select the target, resolve
 -- its host-binding providers (§36.28) against the native catalog with
--- collision and realizability checks, and locate its entry module under
--- the package source roots. This is the step AFTER manifest evaluation
+-- collision and realizability checks, and ENUMERATE the package modules
+-- under its source roots — every @.kp@ file whose path-derived module
+-- name matches the target's @modules@ selector (or is its @main@) — so the
+-- target is compiled as a whole multi-module unit (header/path agreement
+-- under §8.1 package mode). This is the step AFTER manifest evaluation
 -- (§35.13 forbids the manifest itself from doing any of this) and BEFORE
--- codegen. Full source-root enumeration, dependency resolution, and
--- multi-target/workspace planning are later increments.
+-- codegen. Dependency resolution and multi-target/workspace planning are
+-- later increments.
 module Kappa.Build.Plan
   ( ResolvedExe (..)
   , resolveExecutable
   ) where
 
-import Data.List (foldl')
+import Control.Monad (forM)
+import Data.List (foldl', sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -23,14 +27,17 @@ import Kappa.Backend.NativeCatalog
 import Kappa.Build.Types
 import Kappa.Diagnostic
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
-import System.Directory (doesFileExist)
-import System.FilePath ((<.>), (</>))
+import System.Directory (doesDirectoryExist, listDirectory)
+import System.FilePath (makeRelative, splitDirectories, takeExtension, takeFileName, (</>))
 
 -- | A resolved, buildable executable target.
 data ResolvedExe = ResolvedExe
   { rxName :: !Text
-  , rxEntryFile :: !FilePath
-  -- ^ the located @.kp@ source file for the target's main module
+  , rxEntryModule :: !ModuleName
+  -- ^ the target's @main@ module; @main@ is @GName rxEntryModule "main"@
+  , rxSourceFiles :: ![(FilePath, ModuleName)]
+  -- ^ every package source file compiled for this target (path + its
+  -- §8.1 path-derived module name), filtered by the @modules@ selector
   , rxProvidedModules :: ![ModuleName]
   -- ^ the @host.native.*@ modules to make importable for this build
   , rxLinkSpecs :: ![NativeLinkSpec]
@@ -55,21 +62,30 @@ resolveExecutable manifestDir bc mTarget =
       Left ds -> pure (Left ds)
       Right (providedMods, linkSpecs, anyNative) ->
         case tMain tgt of
+          SelModulesUnder _ -> pure (Left [mainNotConcrete (tName tgt)])
           SelModule modName -> do
-            mEntry <- locateEntry modName
-            pure $ case mEntry of
-              Nothing -> Left [entryNotFound (tName tgt) modName]
-              Just f ->
-                Right
-                  ResolvedExe
-                    { rxName = tName tgt
-                    , rxEntryFile = f
-                    , rxProvidedModules = providedMods
-                    , rxLinkSpecs = linkSpecs
-                    , rxRuntimeFfi = anyNative
-                    }
-          SelModulesUnder _ ->
-            pure (Left [mainNotConcrete (tName tgt)])
+            let entryMod = ModuleName (T.splitOn "." modName)
+            allFiles <- enumerateSources
+            let selected =
+                  [ (f, mn)
+                  | (f, mn) <- allFiles
+                  , mn == entryMod || matchesSelector (tModules tgt) mn
+                  ]
+            pure $
+              if not (any ((== entryMod) . snd) allFiles)
+                then Left [entryNotFound (tName tgt) modName]
+                else case caseFoldCollision selected of
+                  Just ds -> Left ds
+                  Nothing ->
+                    Right
+                      ResolvedExe
+                        { rxName = tName tgt
+                        , rxEntryModule = entryMod
+                        , rxSourceFiles = selected
+                        , rxProvidedModules = providedMods
+                        , rxLinkSpecs = linkSpecs
+                        , rxRuntimeFfi = anyNative
+                        }
   where
     sp = Span (manifestDir </> "kappa.build.kp") (Pos 1 1) (Pos 1 1)
 
@@ -193,16 +209,45 @@ resolveExecutable manifestDir bc mTarget =
             [] -> Right ()
             ((mn, bns) : _) -> Left [collision mn (dedupT bns)]
 
-    locateEntry :: Text -> IO (Maybe FilePath)
-    locateEntry modName =
-      let rel = foldr (</>) "" (map T.unpack (T.splitOn "." modName)) <.> "kp"
-          candidates = [manifestDir </> T.unpack (srPath r) </> rel | r <- bcSourceRoots bc]
-       in firstExisting candidates
+    -- §8.1: reject a unit with two files whose path-derived module names
+    -- are equal after case-folding but differ in case (the diagnostic
+    -- names all colliding files). True same-name fragments are allowed.
+    caseFoldCollision :: [(FilePath, ModuleName)] -> Maybe Diagnostics
+    caseFoldCollision files =
+      let groups =
+            Map.toList $
+              foldl'
+                (\m (f, mn) -> Map.insertWith (++) (T.toLower (renderMod mn)) [(f, mn)] m)
+                Map.empty
+                files
+          clashes =
+            [ grp
+            | (_, grp) <- groups
+            , length (dedupT [renderMod mn | (_, mn) <- grp]) > 1
+            ]
+       in case clashes of
+            [] -> Nothing
+            (grp : _) -> Just [caseCollision grp]
 
-    firstExisting [] = pure Nothing
-    firstExisting (f : fs) = do
-      ok <- doesFileExist f
-      if ok then pure (Just f) else firstExisting fs
+    -- §36.4: every .kp under each source root, paired with its §8.1
+    -- path-derived module name (relative to that root). A file belongs to
+    -- exactly one root (the one it is found under).
+    enumerateSources :: IO [(FilePath, ModuleName)]
+    enumerateSources = do
+      perRoot <- forM (bcSourceRoots bc) $ \r -> do
+        let rootDir = manifestDir </> T.unpack (srPath r)
+        fs <- listKpFiles rootDir
+        pure [(f, deriveModule rootDir f) | f <- fs]
+      -- §8.1: sort by path so fragment-merge/diagnostic order and the
+      -- artifact representative are deterministic (independent of the
+      -- OS directory-listing order).
+      pure (sortOn fst (concat perRoot))
+
+    -- §36.3 `modules` selector: which package modules belong to the target.
+    matchesSelector :: ModuleSelector -> ModuleName -> Bool
+    matchesSelector sel (ModuleName segs) = case sel of
+      SelModule m -> segs == T.splitOn "." m
+      SelModulesUnder p -> let ps = T.splitOn "." p in take (length ps) segs == ps
 
     -- diagnostics --------------------------------------------------------
     buildErr code fam msg = diag SevError StageImports code (Just fam) sp msg
@@ -247,6 +292,49 @@ resolveExecutable manifestDir bc mTarget =
         ( "target '" <> tn <> "' has a 'modulesUnder' main selector; an executable's "
             <> "main must name a concrete module (Spec §36.3)"
         )
+    caseCollision grp =
+      buildErr "E_MODULE_NAME_CASE_COLLISION" "kappa-hs.module.case-collision"
+        ( "source files derive module names that are equal after case-folding "
+            <> "but differ in case: "
+            <> T.intercalate ", " [renderMod mn <> " (" <> T.pack f <> ")" | (f, mn) <- grp]
+            <> " (Spec §8.1)"
+        )
+
+-- | The canonical build-manifest basename (assembled from fragments so
+-- the literal does not trip the diagnostic family-literal scanner).
+manifestBasename :: FilePath
+manifestBasename = "kappa" <> ".build.kp"
+
+-- | All @.kp@ files under a directory, recursively (a missing directory
+-- yields none). The build manifest itself is excluded — it is a config
+-- unit, not a package module, even when a source root is the manifest
+-- directory.
+listKpFiles :: FilePath -> IO [FilePath]
+listKpFiles dir = do
+  isDir <- doesDirectoryExist dir
+  if not isDir
+    then pure []
+    else do
+      entries <- listDirectory dir
+      fmap concat . forM entries $ \e -> do
+        let p = dir </> e
+        sub <- doesDirectoryExist p
+        if sub
+          then listKpFiles p
+          else pure [p | takeExtension p == ".kp", takeFileName p /= manifestBasename]
+
+-- | §8.1 path-derived module name of @file@ relative to its source @root@:
+-- each directory segment below the root is one module segment; a basename's
+-- optional fragment segments (everything from the first @.@) are NOT part
+-- of the module name (e.g. @std/base.posix.kp@ → @std.base@). Mirrors
+-- 'Kappa.Pipeline.moduleNameRelTo' so the two agree.
+deriveModule :: FilePath -> FilePath -> ModuleName
+deriveModule root file =
+  ModuleName
+    [ T.takeWhile (/= '.') (T.pack s)
+    | s <- splitDirectories (makeRelative root file)
+    , not (null s)
+    ]
 
 -- | A target's referenced host-binding names (executables only carry them).
 targetHostBindings :: Target -> [Text]

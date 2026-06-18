@@ -1,0 +1,2 @@
+module wrongname
+let main = pure ()

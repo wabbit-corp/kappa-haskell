@@ -249,6 +249,8 @@ registry =
       "A build target references a host-binding name that the manifest's hostBindings does not declare (Spec §36.3, §36.28)."
   , ent "E_BUILD_ENTRY_NOT_FOUND" (Just "kappa-hs.build.entry-not-found")
       "A build target's entry (main) module could not be located as a source file under the package's source roots (Spec §36.3, §36.4)."
+  , ent "E_MODULE_NAME_CASE_COLLISION" (Just "kappa-hs.module.case-collision")
+      "Two source files in a compilation unit derive module names that are equal after case-folding but differ in case (Spec §8.1)."
   , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
       "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")

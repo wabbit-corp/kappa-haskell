@@ -1,0 +1,11 @@
+-- expect: BUILD_OK
+-- §8.1: a fragment-named file (main.linux.kp) derives module "main" — the
+-- fragment segment is not part of the module name.
+let buildConfig : BuildConfig = package { name = "frag"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], source = symbolList ["sqliteOpen", "sqliteClose"], abi = cAbi, headers = [], link = dynamicLink ["sqlite3"], load = systemLoader }]
+    , targets = [executable { name = "frag", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "main", modules = modulesUnder "main", dependencies = [], hostBindings = ["sqlite3"] }]
+    }

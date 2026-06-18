@@ -1,0 +1,12 @@
+-- expect: BUILD_OK
+-- A multi-module package: the entry app.main imports the sibling app.util
+-- (compiled together under the source root, §36.4) and host.native.sqlite3.
+-- The 'modules' selector scopes the unit to app.* (excluding extra.*).
+let buildConfig : BuildConfig = package { name = "multi"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], source = symbolList ["sqliteOpen", "sqliteClose"], abi = cAbi, headers = [], link = dynamicLink ["sqlite3"], load = systemLoader }]
+    , targets = [executable { name = "multi", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = ["sqlite3"] }]
+    }
