@@ -248,6 +248,71 @@ else
 fi
 find "$AG" -name '*.kappa.c' -delete 2>/dev/null; rm -rf "$AG"
 
+echo "== aggregate --locked: lock is the UNION of all members' closures (§36.4) =="
+# Two executables, each on its OWN path dependency, grouped by an aggregate.
+# A per-target lock would let the members overwrite each other (last wins),
+# leaving one dep out and making --locked spuriously fail. The lock must be
+# the package-wide union of both members.
+AGL="${TMPDIR:-/tmp}/kappa-agglock"; rm -rf "$AGL"
+mkdir -p "$AGL/src/appa" "$AGL/src/appb" "$AGL/depa/src/acodec" "$AGL/depb/src/bcodec"
+cat > "$AGL/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [pathDependency { name = "ca", path = "depa" }, pathDependency { name = "cb", path = "depb" }], hostBindings = [], targets = [executable { name = "exea", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "appa.main", modules = modulesUnder "appa", dependencies = ["ca"], hostBindings = [] }, executable { name = "exeb", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "appb.main", modules = modulesUnder "appb", dependencies = ["cb"], hostBindings = [] }, aggregate { name = "all", members = ["exea", "exeb"] }] }
+EOF
+cat > "$AGL/depa/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "ca", version = semver "1.0.0", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [library { name = "ca", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], modules = modulesUnder "acodec", dependencies = [] }] }
+EOF
+cat > "$AGL/depb/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "cb", version = semver "1.0.0", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [library { name = "cb", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], modules = modulesUnder "bcodec", dependencies = [] }] }
+EOF
+printf 'module acodec.util\nav : String -> String\nlet av s = stringAppend "a" s' > "$AGL/depa/src/acodec/util.kp"
+printf 'module bcodec.util\nbv : String -> String\nlet bv s = stringAppend "b" s' > "$AGL/depb/src/bcodec/util.kp"
+printf 'module appa.main\nimport acodec.util.(av)\nlet main = printlnString (av "x")' > "$AGL/src/appa/main.kp"
+printf 'module appb.main\nimport bcodec.util.(bv)\nlet main = printlnString (bv "x")' > "$AGL/src/appb/main.kp"
+timeout 120 $KAPPA build --manifest "$AGL" --target all --emit-c >/dev/null 2>&1
+nlk=$(grep -c . "$AGL/kappa.lock" 2>/dev/null || echo 0)
+if timeout 120 $KAPPA build --manifest "$AGL" --target all --emit-c --locked >/dev/null 2>&1 && [ "$nlk" -ge 2 ]; then
+  echo "PASS aggregate/locked (union lock of both members verifies under --locked)"
+else
+  echo "FAIL aggregate/locked (per-member overwrite would drop a dep; lock lines=$nlk)"; fails=$((fails+1))
+fi
+find "$AGL" -name '*.kappa.c' -delete 2>/dev/null; rm -rf "$AGL"
+
+echo "== backend profile gating: only the native profile is realized (§34.5.3, §36.4) =="
+BG="${TMPDIR:-/tmp}/kappa-bgtest"; rm -rf "$BG"; mkdir -p "$BG/src/app"
+cat > "$BG/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "cli", backend = jvm, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = [] }] }
+EOF
+printf 'module app.main\nlet main = printlnString "hi"' > "$BG/src/app/main.kp"
+bgout="$(timeout 120 $KAPPA build --manifest "$BG" --target cli --emit-c 2>&1)"
+if grep -q "E_BACKEND_PROFILE_UNREALIZED" <<<"$bgout"; then
+  echo "PASS backend/jvm-rejected (a jvm target is not silently built native)"
+else
+  echo "FAIL backend/jvm-rejected (expected E_BACKEND_PROFILE_UNREALIZED)"; echo "$bgout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+# --check still describes a jvm target (no resolution/build happens)
+if timeout 120 $KAPPA build --manifest "$BG" --check >/dev/null 2>&1; then
+  echo "PASS backend/jvm-check (--check describes a jvm target without building)"
+else
+  echo "FAIL backend/jvm-check (--check should not reject a jvm target)"; fails=$((fails+1))
+fi
+rm -rf "$BG"
+
+echo "== reserved host root is package-wide, not selector-scoped (§8.3.5) =="
+RH="${TMPDIR:-/tmp}/kappa-rhtest"; rm -rf "$RH"; mkdir -p "$RH/src/app" "$RH/src/host/native"
+cat > "$RH/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "cli", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = [] }] }
+EOF
+printf 'module app.main\nlet main = printlnString "hi"' > "$RH/src/app/main.kp"
+# a source-defined host.native.* module OUTSIDE the built target's selector
+printf 'module host.native.foo\nlet x = 1' > "$RH/src/host/native/foo.kp"
+rhout="$(timeout 120 $KAPPA build --manifest "$RH" --target cli --emit-c 2>&1)"
+if grep -q "E_HOST_MODULE_SOURCE_DEFINED" <<<"$rhout"; then
+  echo "PASS reserved-host/selector-excluded (host.native source rejected even outside selector)"
+else
+  echo "FAIL reserved-host/selector-excluded (expected E_HOST_MODULE_SOURCE_DEFINED)"; echo "$rhout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+find "$RH" -name '*.kappa.c' -delete 2>/dev/null; rm -rf "$RH"
+
 echo "== aliasTarget (§36.3): build/run the aliased target =="
 AL="${TMPDIR:-/tmp}/kappa-aliastest"; rm -rf "$AL"; mkdir -p "$AL/test/spec"
 cat > "$AL/kappa.build.kp" <<'EOF'

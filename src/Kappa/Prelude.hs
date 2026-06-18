@@ -2516,14 +2516,16 @@ stdSupervisorSource =
     ]
 
 -- | Embedded @std.config@ source (§35.4): the portable config-mode
--- external-input API. A build-manifest loader makes these names
--- available through the config schema scope (§35.3); portable config
--- units do not import @std.config@. 'ConfigInputKey' is config-safe;
--- @input@ reads a loader-supplied external value (the loader resolves
--- it during config evaluation). For increment 1 of build-manifest
--- support, @input@ is declared so the name is in scope and config
--- inputs typecheck; loader-side resolution of @input key@ is sequenced
--- with the build-input pipeline.
+-- external-input API. A build-manifest loader makes these names available
+-- through the config schema scope (§35.3); portable config units do not
+-- import @std.config@. 'ConfigInputKey' is config-safe and 'configInput'
+-- constructs a typed input key so config-input expressions are in scope and
+-- typecheck. NOTE: loader-side resolution of an external input value, and
+-- the §35.13 standard request keys (@requestedTarget@/@requestedBackend@/…),
+-- are NOT yet wired — the key is constructed but its value is never read
+-- (tracked in docs/BUILD_AND_NATIVE_BINDINGS.md). @--target@ selects among
+-- the produced targets post-hoc, which §35.13 permits for selection-only
+-- parameters.
 stdConfigSource :: Text
 stdConfigSource =
   T.unlines

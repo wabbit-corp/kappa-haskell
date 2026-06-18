@@ -96,8 +96,13 @@ Components:
   implementation family prefix `kappa-hs.config.*`. Build/provider codes
   are registered too: `E_BUILD_MANIFEST_NOT_FOUND`,
   `E_BUILD_TARGET_NOT_FOUND`, `E_PROVIDER_COLLISION`
-  (`kappa.provider.collision`, §3.2.15), `E_NATIVE_BINDING_UNPINNED`
-  (`kappa.package.reproducibility`, §3.2.15).
+  (`kappa.provider.collision`, §3.2.15), and
+  `E_BACKEND_PROFILE_UNREALIZED` (`kappa-hs.backend.profile`, a target that
+  selects a jvm/dotnet backend this implementation does not realize).
+  `E_NATIVE_BINDING_UNPINNED` (`kappa.package.reproducibility`, §3.2.15) is
+  **registered but not yet emitted** — reserved for the §36.28
+  unpinned-native-binding case, which cannot arise yet (every catalog
+  binding is pinned by its `symbolList`).
 
 - **Tests** (`tests/build/`, runner `run-build-tests.sh`): valid
   manifests (full §36.3 shape, minimal, symbol-list native binding),
@@ -334,6 +339,23 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   build-plan resolution for a later increment. A `symbolList`/`pkgConfig`
   provider selects a curated catalog module; its declared member names
   are the binding's surface.
+- **Only the native (zig) backend profile is realized.** A target whose
+  `backend` is `jvm`/`dotnet` is *rejected* at resolution with
+  `E_BACKEND_PROFILE_UNREALIZED` (§34.5.3/§36.4) rather than silently built
+  native. `--check`/`--provenance` still describe such a target (they
+  perform no resolution).
+- A native binding's `headers`/`abi` fields are reified but **not yet
+  consumed** by build-plan resolution (no header digesting / ABI-mode
+  selection, §36.28). The binding's surface is its provider's catalog
+  member set; the header/ABI descriptors are recorded but inert. This is a
+  silent drop of those descriptors and will be wired when header digesting
+  lands.
+- **External config inputs (§35.4) and the §35.13 standard request keys**
+  (`requestedTarget`/`requestedBackend`/…) are not implemented: `std.config`
+  declares only `configInput name`, with no loader-supplied `input`
+  resolution. `--target` selects post-hoc among the produced targets (which
+  §35.13 permits for selection-only parameters); no request parameter is
+  visible to the config evaluator.
 
 ## Increment sequencing (deferrals are spec-permitted, not defects)
 

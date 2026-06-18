@@ -258,7 +258,7 @@ registry =
   , ent "E_DEPENDENCY_PATH_NOT_FOUND" (Just "kappa-hs.build.dependency-path")
       "A path dependency points to a directory that does not contain a build manifest (Spec §36.23, §36.23.2)."
   , ent "E_DEPENDENCY_UNRESOLVED" (Just "kappa.package.reproducibility")
-      "A dependency cannot be resolved by the selected resolver profile: this implementation resolves only path dependencies; registry/git/url/artifact dependencies require a registry and lockfile it does not provide (Spec §36.23, §36.23.1)."
+      "A dependency cannot be resolved by the selected resolver profile: this implementation resolves path, git, vendored-registry (a local KAPPA_REGISTRY root), and url (archive) dependencies; a networked-registry server/protocol and artifact (target-output) dependencies are not provided (Spec §36.23, §36.23.1)."
   , ent "E_DEPENDENCY_MODULE_COLLISION" (Just "kappa-hs.build.dependency-module-collision")
       "More than one package in the build (the target's own package and/or its dependencies) provides the same module name; cross-package module names must be distinct (Spec §8.1, §36.23)."
   , ent "E_DEPENDENCY_LOCK_MISMATCH" (Just "kappa.package.reproducibility")
@@ -273,6 +273,8 @@ registry =
       "A url dependency could not be resolved: curl/tar is unavailable, or the archive could not be fetched, unpacked, or did not contain a build manifest (Spec §36.23)."
   , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
       "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
+  , ent "E_BACKEND_PROFILE_UNREALIZED" (Just "kappa-hs.backend.profile")
+      "A build target selects a backend profile (jvm/dotnet) this implementation does not provide; only the native profile is realized (Spec §34.5.3, §36.4)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
       "Two top-level declarations of the same kind in the same module bind the same name."
   , ent "E_DUPLICATE_PATTERN_BINDER" (Just "kappa-hs.pattern.duplicate-binder")

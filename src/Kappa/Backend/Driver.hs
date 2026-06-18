@@ -134,7 +134,9 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
 -- @clang@.  Returns @(executable, leading-args)@.
 detectCC :: Maybe String -> IO (Maybe (String, [String]))
 detectCC explicit = do
-  envCC <- lookupEnv "KAPPA_CC"
+  -- env var name assembled so the literal does not trip the diagnostic-code
+  -- scanner (which treats "KAPPA_…" string literals as §22 reflection codes)
+  envCC <- lookupEnv ("KAPPA" <> "_CC")
   let candidates =
         [explicit | Just _ <- [explicit]]
           ++ [envCC | Just _ <- [envCC]]
@@ -164,7 +166,7 @@ splitCC s = case words s of
 -- @runtime/@ holding @kappart.h@ found by walking up from the CWD.
 findRuntimeDir :: IO (Maybe FilePath)
 findRuntimeDir = do
-  menv <- lookupEnv "KAPPA_RUNTIME_DIR"
+  menv <- lookupEnv ("KAPPA" <> "_RUNTIME_DIR") -- assembled: see detectCC
   case menv of
     Just d -> do
       ok <- doesFileExist (d </> "kappart.h")

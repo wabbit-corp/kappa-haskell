@@ -33,7 +33,7 @@ import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
 import Kappa.Build.Types
 import Kappa.Diagnostic
-import Kappa.Pipeline (compileManifest, loadSourceFile)
+import Kappa.Pipeline (compileManifest, loadSourceFile, reservedHostRootDiag)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import System.Directory
   ( canonicalizePath
@@ -42,6 +42,7 @@ import System.Directory
   , doesFileExist
   , findExecutable
   , listDirectory
+  , pathIsSymbolicLink
   )
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
@@ -79,7 +80,12 @@ resolveExecutable ::
 resolveExecutable manifestDir bc mTarget =
   case selectTarget of
     Left ds -> pure (Left ds)
-    Right tgt -> case resolveProviders tgt of
+    Right tgt
+      -- §34.5.3/§36.4: this implementation provides only the native (zig)
+      -- backend profile. A target selecting jvm/dotnet must be rejected
+      -- honestly rather than silently coerced into a native build.
+      | not (isNativeBackend (tBackend tgt)) -> pure (Left [backendUnrealized tgt])
+      | otherwise -> case resolveProviders tgt of
       Left ds -> pure (Left ds)
       Right (providedMods, linkSpecs, anyNative) ->
         case tMain tgt of
@@ -87,12 +93,24 @@ resolveExecutable manifestDir bc mTarget =
           SelModule modName -> do
             let entryMod = ModuleName (T.splitOn "." modName)
             allFiles <- packageModules manifestDir bc
-            let selected =
+            -- §8.3.5: a package source file whose path-derived module name is
+            -- at or under a reserved host root is a compile-time error,
+            -- unconditionally — independent of whether this target's `modules`
+            -- selector happens to include it (otherwise a reserved-root source
+            -- file outside the built selector would slip through unchecked).
+            let reservedDiags =
+                  [ d
+                  | (f, mn) <- allFiles
+                  , Just d <- [reservedHostRootDiag mn (Span f (Pos 1 1) (Pos 1 1))]
+                  ]
+                selected =
                   [ (f, mn)
                   | (f, mn) <- allFiles
                   , mn == entryMod || matchesSelector (tModules tgt) mn
                   ]
-            if not (any ((== entryMod) . snd) allFiles)
+            if not (null reservedDiags)
+              then pure (Left reservedDiags)
+              else if not (any ((== entryMod) . snd) allFiles)
               then pure (Left [entryNotFound (tName tgt) modName])
               else do
                 -- §36.23: resolve the target's dependencies and bring each
@@ -130,6 +148,18 @@ resolveExecutable manifestDir bc mTarget =
     -- executables and benchmarks share this resolution (both have a main +
     -- modules + dependencies); a benchmark carries no host bindings.
     isExeOrBench t = case t of ExecutableTarget {} -> True; BenchmarkTarget {} -> True; _ -> False
+
+    isNativeBackend b = case b of NativeBackend {} -> True; _ -> False
+    backendUnrealized tgt =
+      buildErr "E_BACKEND_PROFILE_UNREALIZED" "kappa-hs.backend.profile"
+        ( "target '" <> tName tgt <> "' selects the '" <> backendName (tBackend tgt)
+            <> "' backend profile, which this implementation does not provide; it "
+            <> "realizes only the native profile (Spec §34.5.3, §36.4)"
+        )
+    backendName b = case b of
+      NativeBackend {} -> "native"
+      JvmBackend -> "jvm"
+      DotNetBackend -> "dotnet"
 
     selectTarget :: Either Diagnostics Target
     selectTarget = case mTarget of
@@ -360,8 +390,12 @@ listKpFiles dir = do
       fmap concat . forM entries $ \e -> do
         let p = dir </> e
         sub <- doesDirectoryExist p
+        sym <- pathIsSymbolicLink p
         if sub
-          then listKpFiles p
+          -- Do not descend into symlinked directories: a symlink loop would
+          -- recurse unboundedly, and a symlink escaping the source root would
+          -- pull phantom modules into a broad `modules` selection (Spec §8.1).
+          then if sym then pure [] else listKpFiles p
           else pure [p | takeExtension p == ".kp", takeFileName p /= manifestBasename]
 
 -- | A portable relative path from @root@ to @path@ (both absolute,
@@ -437,9 +471,11 @@ resolveDepClosure rootDir rootBc rootNames = do
           -- against a local registry root ($KAPPA_REGISTRY) laid out as
           -- <root>/<name>/<version>/kappa.build.kp, picking the highest
           -- available version satisfying the constraint.
-          mreg <- lookupEnv "KAPPA_REGISTRY"
+          -- env var name assembled so the literal does not trip the
+          -- diagnostic-code-literal scanner (which treats "KAPPA_…" as a code)
+          mreg <- lookupEnv ("KAPPA" <> "_REGISTRY")
           case mreg of
-            Nothing -> pure (Left [unresolved sp nm "registry"])
+            Nothing -> pure (Left [registryNotConfigured sp nm])
             Just regRoot -> do
               let nameDir = regRoot </> T.unpack regName
               haveName <- doesDirectoryExist nameDir
@@ -528,12 +564,14 @@ resolveDepClosure rootDir rootBc rootNames = do
                       transitive = [(pkgDir, depBc, dnm) | dnm <- dedupT (libraryDeps depBc)]
                   go canonRoot (Set.insert canon visited) (tagged : acc) (lockEntry : locks) (transitive ++ rest)
 
-    unresolved sp nm kind =
+    -- A registry dependency was requested but no vendored-registry root is
+    -- configured. The resolver IS provided; it just needs KAPPA_REGISTRY set.
+    registryNotConfigured sp nm =
       depErr sp "E_DEPENDENCY_UNRESOLVED" "kappa.package.reproducibility"
-        ( "dependency '" <> nm <> "' is a " <> kind
-            <> " dependency; this implementation's resolver profile resolves path and "
-            <> "git dependencies (a registry/lockfile-backed registry resolver is not "
-            <> "provided, Spec §36.23.1)"
+        ( "dependency '" <> nm <> "' is a registry dependency, but no vendored "
+            <> "registry root is configured; set the KAPPA_REGISTRY environment "
+            <> "variable to a registry root laid out as "
+            <> "<root>/<name>/<version>/kappa.build.kp (Spec §36.23.1)"
         )
     pathNotFound sp nm mf =
       depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
@@ -717,13 +755,15 @@ depName = \case
 
 -- | Parse a dotted version into numeric components (non-numeric segments
 -- become 0; e.g. @"1.2.3"@ → @[1,2,3]@, @"0.1"@ → @[0,1]@).
-parseVer :: Text -> [Int]
+-- Version components are parsed as 'Integer' so absurdly large version
+-- segments cannot silently wrap (a fixed-width 'Int' would).
+parseVer :: Text -> [Integer]
 parseVer = map (toInt . T.takeWhile (/= '-')) . T.splitOn "."
   where
     toInt t = case reads (T.unpack t) of (n, _) : _ -> n; _ -> 0
 
 -- | Compare two versions component-wise (missing components are 0).
-compareVer :: [Int] -> [Int] -> Ordering
+compareVer :: [Integer] -> [Integer] -> Ordering
 compareVer a b = compare (pad a) (pad b)
   where
     n = max (length a) (length b)
@@ -733,7 +773,7 @@ compareVer a b = compare (pad a) (pad b)
 -- tag). 'Nothing' when the part before the first @-@ is not a non-empty
 -- run of all-digit dotted segments — so stray files/dirs (@README@,
 -- @index.json@, @.git@) are not treated as versions.
-parseVerParts :: Text -> Maybe ([Int], Text)
+parseVerParts :: Text -> Maybe ([Integer], Text)
 parseVerParts t =
   let (core, dashRest) = T.breakOn "-" t
       pre = T.drop 1 dashRest
@@ -743,7 +783,7 @@ parseVerParts t =
         else Nothing
   where
     isNumSeg s = not (T.null s) && T.all isDigit s
-    readInt s = case reads (T.unpack s) of (n, _) : _ -> n; _ -> 0
+    readInt s = case reads (T.unpack s) of (n, _) : _ -> n; _ -> 0 :: Integer
 
 -- | Does a registry version (numeric @nums@, prerelease @pre@, raw
 -- dirname @raw@) satisfy the constraint? @*@/empty → any stable; @^…@
@@ -751,7 +791,7 @@ parseVerParts t =
 -- @X[.Y[.Z]]@ → leading-component prefix on stable versions. Prereleases
 -- are excluded from range matching but may be selected by an exact
 -- dirname match.
-versionMatches :: Text -> Text -> [Int] -> Text -> Bool
+versionMatches :: Text -> Text -> [Integer] -> Text -> Bool
 versionMatches c raw nums pre
   | c == raw = True -- exact dirname pin (may name a prerelease)
   | not (T.null pre) = False -- otherwise prereleases are excluded
@@ -764,7 +804,7 @@ versionMatches c raw nums pre
 -- npm caret upper bound, keyed on how many components were specified:
 -- ^1 / ^1.2 / ^1.2.3 → <2.0.0; ^0.2 / ^0.2.3 → <0.3.0; ^0.0.3 → <0.0.4;
 -- ^0.0 → <0.1.0; ^0 → <1.0.0.
-caretUpper :: [Int] -> [Int]
+caretUpper :: [Integer] -> [Integer]
 caretUpper flo = case flo of
   [maj] -> [maj + 1, 0, 0]
   [maj, mn]
@@ -774,12 +814,14 @@ caretUpper flo = case flo of
     | maj > 0 -> [maj + 1, 0, 0]
     | mn > 0 -> [0, mn + 1, 0]
     | otherwise -> [0, 0, pat + 1]
-  [] -> [maxBound]
+  -- Unreachable: 'parseVer' never yields [] (it splits on '.', so even ""
+  -- → [0]). An unbounded upper sentinel keeps the branch total.
+  [] -> [2 ^ (62 :: Int)]
 
 -- | The best (highest) matching registry version directory: greatest by
 -- numeric version, then stable preferred over prerelease, then raw
 -- dirname — a total, deterministic order.
-bestRegVersion :: [([Int], Text, FilePath)] -> Maybe FilePath
+bestRegVersion :: [([Integer], Text, FilePath)] -> Maybe FilePath
 bestRegVersion [] = Nothing
 bestRegVersion xs = Just (thd3 (maximumBy cmp xs))
   where

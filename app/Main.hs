@@ -190,17 +190,66 @@ cmdBuildManifest ma = do
           | maCheck ma -> TIO.putStr (renderBuildConfig bc) >> exitSuccess
           -- a --target dispatches on the named target's kind (executable
           -- build / test suite / aggregate of members); no --target builds
-          -- the default executable.
-          | Just nm <- maTarget ma -> do
-              ok <- runNamedTarget file bc ma Set.empty nm
-              if ok then exitSuccess else exitFailure
-          | otherwise -> do
-              ok <- runExecutable file bc ma Nothing
-              if ok then exitSuccess else exitFailure
+          -- the default executable. The dependency lock is verified/updated
+          -- ONCE for the whole invocation against the union of every reached
+          -- exe/bench target's closure (see runInvocation) — never per
+          -- target, which would let aggregate members overwrite each other.
+          | otherwise -> runInvocation file bc ma (maTarget ma)
+
+-- | Run a build invocation (default executable, or a named --target) with
+-- a single package-scoped lock step. The dependency lock reflects the union
+-- of the closures of every exe/bench target this invocation reaches; it is
+-- verified once up front (under --locked, before any build) and updated once
+-- after a successful build (without --locked). Test/library-only invocations
+-- carry no closure and leave the lock untouched.
+runInvocation :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO ()
+runInvocation file bc ma mtgt = do
+  let manifestDir = takeDirectory file
+  closure <- collectLockClosure file bc mtgt
+  case closure of
+    Left ds -> emitDiags Human ds >> exitFailure
+    Right (manages, entries) -> do
+      when (manages && maLocked ma) (verifyLock manifestDir entries)
+      ok <- case mtgt of
+        Just nm -> runNamedTarget file bc ma Set.empty nm
+        Nothing -> runExecutable file bc ma Nothing
+      when (manages && ok && not (maLocked ma)) (updateLock manifestDir entries)
+      if ok then exitSuccess else exitFailure
+
+-- | Resolve (without building) the dependency-lock closure of an
+-- invocation, mirroring 'runNamedTarget' dispatch. Returns @(managesLock,
+-- entries)@: @managesLock@ is True iff at least one exe/bench target is
+-- reached (only those carry a §36.23 closure); test/library targets
+-- contribute nothing and must not touch the package lock. A not-found or
+-- cyclic target is reported as carrying no closure here — the build pass
+-- emits the real diagnostic.
+collectLockClosure :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Either Diagnostics (Bool, [LockEntry]))
+collectLockClosure file bc mtgt = case mtgt of
+  Nothing -> fmap (fmap one) (resolveExecutable manifestDir bc Nothing)
+  Just nm -> go Set.empty nm
+  where
+    manifestDir = takeDirectory file
+    one rx = (True, rxLockEntries rx)
+    go visited nm
+      | nm `Set.member` visited = pure (Right (False, []))
+      | otherwise = case [t | t <- B.bcTargets bc, B.tName t == nm] of
+          [] -> pure (Right (False, []))
+          (t : _) -> case t of
+            B.ExecutableTarget {} -> fmap (fmap one) (resolveExecutable manifestDir bc (Just nm))
+            B.BenchmarkTarget {} -> fmap (fmap one) (resolveExecutable manifestDir bc (Just nm))
+            B.TestTarget {} -> pure (Right (False, []))
+            B.LibraryTarget {} -> pure (Right (False, []))
+            B.AliasTarget _ aliased -> go (Set.insert nm visited) aliased
+            B.AggregateTarget _ members -> do
+              rs <- mapM (go (Set.insert nm visited)) members
+              pure $ case sequence rs of
+                Left ds -> Left ds
+                Right parts -> Right (any fst parts, concatMap snd parts)
 
 -- | Run one manifest target by name, dispatching on its kind. Returns
 -- whether it succeeded (so an aggregate can combine its members). @visited@
--- detects aggregate cycles.
+-- detects aggregate cycles. The lockfile is handled by 'runInvocation', not
+-- here.
 runNamedTarget :: FilePath -> B.BuildConfig -> ManifestArgs -> Set.Set T.Text -> T.Text -> IO Bool
 runNamedTarget file bc ma visited nm
   | nm `Set.member` visited =
@@ -225,7 +274,7 @@ runNamedTarget file bc ma visited nm
           and <$> mapM (runNamedTarget file bc ma (Set.insert nm visited)) members
         B.AliasTarget _ aliased ->
           runNamedTarget file bc ma (Set.insert nm visited) aliased
-        B.BenchmarkTarget {} -> runBenchmark file bc ma nm
+        B.BenchmarkTarget {} -> runBenchmark file bc nm
         B.LibraryTarget {} -> do
           hPutStrLn stderr
             ("note: library target '" <> T.unpack nm <> "' is consumed as a dependency, not built directly; skipping")
@@ -247,19 +296,19 @@ runTest manifestFile bc nm = do
           <> show (sUnsupported s) <> " unsupported, " <> show (sHarnessError s) <> " harness errors"
       pure (sFail s == 0 && sHarnessError s == 0)
 
--- | Resolve an executable/benchmark target by name, verify the lock
--- (under --locked), load its package source files, and compile them as one
--- §8.1 package-mode unit with the manifest-selected host.native modules.
+-- | Resolve an executable/benchmark target by name, load its package
+-- source files, and compile them as one §8.1 package-mode unit with the
+-- manifest-selected host.native modules. (The lock is handled once per
+-- invocation by 'runInvocation', not here.)
 -- Returns the checked state, the @main@ GName, the gname→prim map, and the
 -- resolved plan — or 'Nothing' (diagnostics already emitted) on any error.
-prepareUnit :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName T.Text, ResolvedExe))
-prepareUnit manifestFile bc ma mname = do
+prepareUnit :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName T.Text, ResolvedExe))
+prepareUnit manifestFile bc mname = do
   let manifestDir = takeDirectory manifestFile
   resolved <- resolveExecutable manifestDir bc mname
   case resolved of
     Left ds -> emitDiags Human ds >> pure Nothing
     Right rx -> do
-      verifyLock manifestDir ma (rxLockEntries rx)
       loaded <- mapM (\(p, _) -> (\(s, d) -> (p, s, d)) <$> loadSourceFile p) (rxSourceFiles rx)
       let nameTable = Map.fromList [(p, mn) | (p, mn) <- rxSourceFiles rx]
           nameOf p = Map.findWithDefault (moduleNameOf p) p nameTable
@@ -281,7 +330,7 @@ prepareUnit manifestFile bc ma mname = do
 -- | Native build of an executable target. Returns whether it succeeded.
 runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
 runExecutable manifestFile bc ma mname = do
-  prep <- prepareUnit manifestFile bc ma mname
+  prep <- prepareUnit manifestFile bc mname
   case prep of
     Nothing -> pure False
     Just (st, mainG, hostPrims, rx) -> do
@@ -299,7 +348,6 @@ runExecutable manifestFile bc ma mname = do
       case result of
         Left ds -> emitDiags Human ds >> pure False
         Right outPath -> do
-          updateLock (takeDirectory manifestFile) ma (rxLockEntries rx)
           hPutStrLn stderr ("built " <> outPath)
           pure True
 
@@ -308,13 +356,12 @@ runExecutable manifestFile bc ma mname = do
 -- toolchain needed) and reports completion. Benchmarks are pure-compute
 -- (no host.native bindings); a benchmark that imports a host.native module
 -- fails honestly since the interpreter supplies no foreign operations.
-runBenchmark :: FilePath -> B.BuildConfig -> ManifestArgs -> T.Text -> IO Bool
-runBenchmark manifestFile bc ma nm = do
-  prep <- prepareUnit manifestFile bc ma (Just nm)
+runBenchmark :: FilePath -> B.BuildConfig -> T.Text -> IO Bool
+runBenchmark manifestFile bc nm = do
+  prep <- prepareUnit manifestFile bc (Just nm)
   case prep of
     Nothing -> pure False
-    Just (st, mainG, _, rx) -> do
-      updateLock (takeDirectory manifestFile) ma (rxLockEntries rx)
+    Just (st, mainG, _, _) -> do
       hPutStrLn stderr ("running benchmark " <> T.unpack nm)
       r <- runMain (Globals (csGlobals st)) (csMetas st) mainG
       case r of
@@ -333,35 +380,36 @@ lookupEntry rx = case [(p, mn) | (p, mn) <- rxSourceFiles rx, mn == rxEntryModul
 lockFileName :: FilePath
 lockFileName = "kappa" <> ".lock"
 
--- | Under @--locked@: verify the resolved path-dependency closure against
--- @kappa.lock@ and fail (E_DEPENDENCY_LOCK_MISMATCH, §3.2.15) if the lock
--- is missing, corrupt, or stale. A no-op without @--locked@.
-verifyLock :: FilePath -> ManifestArgs -> [LockEntry] -> IO ()
-verifyLock manifestDir ma entries =
-  when (maLocked ma) $ do
-    let lockPath = manifestDir </> lockFileName
-        desired = parseLock (renderLock entries) -- normalized + sorted
-        reject ex = emitDiags Human [lockMismatchDiag lockPath ex] >> exitFailure
-    exists <- doesFileExist lockPath
-    if not exists
-      then when (not (null entries)) (reject False)
-      else do
-        txt <- TIO.readFile lockPath
-        when (not (lockWellFormed txt) || parseLock txt /= desired) (reject True)
+-- | Verify the resolved package dependency closure against @kappa.lock@ and
+-- fail (E_DEPENDENCY_LOCK_MISMATCH, §3.2.15) if the lock is missing, corrupt,
+-- or stale. Called once per invocation by 'runInvocation' under @--locked@
+-- (the @entries@ are the union over every reached exe/bench target), so it
+-- never compares a single target's partial closure against the package lock.
+verifyLock :: FilePath -> [LockEntry] -> IO ()
+verifyLock manifestDir entries = do
+  let lockPath = manifestDir </> lockFileName
+      desired = parseLock (renderLock entries) -- normalized + sorted
+      reject ex = emitDiags Human [lockMismatchDiag lockPath ex] >> exitFailure
+  exists <- doesFileExist lockPath
+  if not exists
+    then when (not (null entries)) (reject False)
+    else do
+      txt <- TIO.readFile lockPath
+      when (not (lockWellFormed txt) || parseLock txt /= desired) (reject True)
 
--- | Without @--locked@: create/update @kappa.lock@ when the resolved
--- closure differs from it, and clear a now-stale lock when the closure is
--- empty. A no-op under @--locked@ (which never mutates the lock).
-updateLock :: FilePath -> ManifestArgs -> [LockEntry] -> IO ()
-updateLock manifestDir ma entries =
-  when (not (maLocked ma)) $ do
-    let lockPath = manifestDir </> lockFileName
-        desired = parseLock (renderLock entries)
-    exists <- doesFileExist lockPath
-    existing <- if exists then parseLock <$> TIO.readFile lockPath else pure []
-    if null entries
-      then when exists (removeFile lockPath) -- closure now empty: drop stale lock
-      else when (desired /= existing) (TIO.writeFile lockPath (renderLock entries))
+-- | Create/update @kappa.lock@ when the resolved package closure differs
+-- from it, and clear a now-stale lock when the closure is empty. Called once
+-- per invocation by 'runInvocation' after a successful build (without
+-- @--locked@); the @entries@ are the package-wide union.
+updateLock :: FilePath -> [LockEntry] -> IO ()
+updateLock manifestDir entries = do
+  let lockPath = manifestDir </> lockFileName
+      desired = parseLock (renderLock entries)
+  exists <- doesFileExist lockPath
+  existing <- if exists then parseLock <$> TIO.readFile lockPath else pure []
+  if null entries
+    then when exists (removeFile lockPath) -- closure now empty: drop stale lock
+    else when (desired /= existing) (TIO.writeFile lockPath (renderLock entries))
 
 lockMismatchDiag :: FilePath -> Bool -> Diagnostic
 lockMismatchDiag lockPath exists =

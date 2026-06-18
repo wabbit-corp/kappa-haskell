@@ -206,7 +206,7 @@ jsonEncoderSound = do
 -- must be present in the 'Kappa.Explain' registry.
 registryComplete :: IO Bool
 registryComplete = do
-  files <- haskellSources ["src/Kappa", "src/Kappa/Parser", "app"]
+  files <- haskellSources ["src/Kappa", "src/Kappa/Parser", "src/Kappa/Build", "src/Kappa/Backend", "app"]
   codes <- concat <$> mapM (fmap codeLiterals . TIO.readFile) files
   let missing = sort (nub [c | c <- codes, not (explainExists c)])
   if null missing
@@ -224,7 +224,7 @@ registryComplete = do
 -- spelled at an emission site must be carried by some registry entry.
 familiesHygienic :: IO Bool
 familiesHygienic = do
-  files <- haskellSources ["src/Kappa", "src/Kappa/Parser", "app"]
+  files <- haskellSources ["src/Kappa", "src/Kappa/Parser", "src/Kappa/Build", "src/Kappa/Backend", "app"]
   fams <- concat <$> mapM (fmap familyLiterals . TIO.readFile) files
   hasSpec <- doesFileExist "docs/Spec.md"
   specFams <-
