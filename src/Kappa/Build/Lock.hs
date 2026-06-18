@@ -27,10 +27,12 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word64, Word8)
 import Numeric (showHex)
 
--- | One resolved dependency in the lockfile. @leKind@ is @"path"@ or
--- @"git"@; @leKey@ is the dependency's stable locator (a project-relative
--- path, or a git URL); @leId@ is its immutable identity (a content digest
--- for a path dependency, the resolved commit SHA for a git dependency).
+-- | One resolved dependency in the lockfile. @leKind@ is @"path"@,
+-- @"git"@, or @"registry"@; @leKey@ is the dependency's stable locator (a
+-- project-relative path, a git URL, or the registry package name); @leId@
+-- is its immutable identity (a content digest for a path dependency, the
+-- resolved commit SHA for a git dependency, or @version+content-digest@
+-- for a registry dependency).
 data LockEntry = LockEntry
   { leKind :: !Text
   , leKey :: !Text
@@ -116,6 +118,6 @@ parseLine ln =
   let (k, r1) = T.breakOn " " ln
       (i, r2) = T.breakOn " " (T.drop 1 r1)
       key = T.drop 1 r2
-   in if k `elem` ["path", "git"] && not (T.null i) && not (T.null key)
+   in if k `elem` ["path", "git", "registry"] && not (T.null i) && not (T.null key)
         then Just (LockEntry k key i)
         else Nothing

@@ -263,6 +263,10 @@ registry =
       "A locked build's resolved path-dependency content identities do not match kappa.lock (a dependency changed, or the lock is missing/stale); the build is not reproducible against the lock (Spec §36.4, §36.23.2, §3.2.15)."
   , ent "E_DEPENDENCY_GIT_FAILED" (Just "kappa-hs.build.dependency-git")
       "A git dependency could not be resolved: git is unavailable, or a clone/checkout/rev-parse of the requested URL and revision failed (Spec §36.23)."
+  , ent "E_DEPENDENCY_REGISTRY_NOT_FOUND" (Just "kappa-hs.build.dependency-registry")
+      "A registry dependency names a package not present in the configured registry root (Spec §36.23, §36.23.1)."
+  , ent "E_DEPENDENCY_VERSION_UNSATISFIED" (Just "kappa-hs.build.dependency-version")
+      "No version of a registry dependency available in the configured registry satisfies the requested version constraint (Spec §36.23)."
   , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
       "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")

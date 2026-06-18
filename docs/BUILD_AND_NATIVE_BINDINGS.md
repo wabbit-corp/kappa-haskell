@@ -233,9 +233,23 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   `E_DEPENDENCY_GIT_FAILED`. Pin to a commit SHA for full reproducibility;
   a branch/tag is resolved best-effort and the lock pins whichever SHA
   resolved (so `--locked` detects a drifted branch).
-- **`registry`/`url`/artifact** dependencies are **not** resolved by this
-  implementation's resolver profile (§36.23.1): they require a registry it
-  does not provide, so they fail honestly with `E_DEPENDENCY_UNRESOLVED`.
+- A **`registry`** dependency is resolved against a **vendored/offline
+  registry** (§36.23.1 implementation-defined resolver profile): the
+  registry root comes from `$KAPPA_REGISTRY`, laid out as
+  `<root>/<name>/<version>/kappa.build.kp`. The resolver enumerates the
+  version directories (non-version entries are skipped), keeps those whose
+  version satisfies the constraint (`*`/empty = any; `^X[.Y[.Z]]` caret
+  with npm semantics; a bare `X[.Y[.Z]]` = leading-component prefix;
+  prereleases are excluded from ranges but may be pinned by an exact
+  dirname), picks the highest, and resolves it as a transitive path
+  dependency. The lock pins `version+content-digest` so `--locked` detects
+  both a version change and content drift of a vendored package.
+  Diagnostics: `$KAPPA_REGISTRY` unset → `E_DEPENDENCY_UNRESOLVED`; package
+  absent → `E_DEPENDENCY_REGISTRY_NOT_FOUND`; no satisfying version →
+  `E_DEPENDENCY_VERSION_UNSATISFIED`.
+- **`url`/artifact** dependency builders are not in the increment-1 §29.8
+  schema subset yet, so they cannot be authored; a networked package
+  registry (vs the local vendored one above) is also not provided.
 
 ### Tracked temporary residue
 
@@ -245,10 +259,11 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   dependency closure is *rejected* (`E_DEPENDENCY_MODULE_COLLISION`), not
   silently merged — there is no spec mechanism that namespaces a module by
   its package, so rejection is the correct enforcement.
-- **No registry resolver** — needs a package registry + protocol this
-  implementation does not provide; `registry`/`url`/artifact dependencies
-  fail honestly with `E_DEPENDENCY_UNRESOLVED`. (Path and git dependencies
-  ARE resolved; the lockfile records both.)
+- **No networked registry** — registry dependencies resolve against a
+  local vendored registry (`$KAPPA_REGISTRY`); a remote registry server/
+  protocol is not implemented. `url`/artifact dependency builders are not
+  in the §29.8 schema subset yet. Path, git, and vendored-registry
+  dependencies are all resolved; the lockfile records all three.
 - **Root-as-cyclic-dependency asymmetry**: when a path dependency cycles
   back to the package being built, the root contributes the modules of the
   *executable* target being built (its `modules` selector), not its
@@ -290,10 +305,12 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
 7. **(done)** Git dependency resolution via the `git` CLI (clone/checkout
    to a project-local cache, resolved SHA pinned in `kappa.lock`,
    `E_DEPENDENCY_GIT_FAILED` on failure). Registry/url still unresolved.
-8. A registry resolver (registry protocol + network) for `registry`/`url`
-   dependencies + their pinning diagnostics.
-9. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-10. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+8. **(done)** Vendored/offline registry resolver (`$KAPPA_REGISTRY`) with
+   semver constraints + version+content lock pinning (§36.23.1).
+9. A networked registry server/protocol + `url`/artifact dependency
+   builders (the remaining unresolvable sources).
+10. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
+11. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
     and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/

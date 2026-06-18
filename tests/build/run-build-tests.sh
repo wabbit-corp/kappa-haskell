@@ -144,6 +144,43 @@ else
   echo "SKIP git dependency tests (git not on PATH)"
 fi
 
+echo "== registry dependency resolution (§36.23.1 vendored registry + semver) =="
+RW="${TMPDIR:-/tmp}/kappa-reg-test"; rm -rf "$RW"; mkdir -p "$RW/reg/codec"
+for v in 0.1.0 0.1.5 0.2.0; do
+  mkdir -p "$RW/reg/codec/$v/src/codec"
+  printf 'module codec.util\ntag : String -> String\nlet tag s = stringAppend "%s" s' "$v" > "$RW/reg/codec/$v/src/codec/util.kp"
+  printf 'let buildConfig : BuildConfig = package { name="codec", version=semver "%s", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[], targets=[library { name="codec", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], modules=modulesUnder "codec", dependencies=[] }] }' "$v" > "$RW/reg/codec/$v/kappa.build.kp"
+done
+mkdir -p "$RW/app/src"; printf 'module app\nimport codec.util.(tag)\nlet main = printlnString (tag "hi")' > "$RW/app/src/app.kp"
+regmanifest() { printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[registry { name="codec", version="%s" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$1" > "$RW/app/kappa.build.kp"; }
+regmanifest "^0.1"; rm -f "$RW/app/kappa.lock"
+if KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --manifest "$RW/app" --emit-c >/dev/null 2>&1 \
+   && grep -qE "^registry 0\.1\.5(\+| )" "$RW/app/kappa.lock" 2>/dev/null; then
+  echo "PASS registry/resolve (^0.1 -> highest 0.1.x; lock pins resolved version)"
+else
+  echo "FAIL registry/resolve"; fails=$((fails+1))
+fi
+if KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --manifest "$RW/app" --emit-c --locked >/dev/null 2>&1; then
+  echo "PASS registry/locked (--locked matches the pinned version)"
+else
+  echo "FAIL registry/locked"; fails=$((fails+1))
+fi
+regmanifest "^9"; rm -f "$RW/app/kappa.lock"
+nvout="$(KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --manifest "$RW/app" --emit-c 2>&1)"
+if grep -q "E_DEPENDENCY_VERSION_UNSATISFIED" <<<"$nvout"; then
+  echo "PASS registry/no-version (^9 -> E_DEPENDENCY_VERSION_UNSATISFIED)"
+else
+  echo "FAIL registry/no-version"; echo "$nvout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+regmanifest "^0.1"
+ucout="$(timeout 120 $KAPPA build --manifest "$RW/app" --emit-c 2>&1)"
+if grep -q "E_DEPENDENCY_UNRESOLVED" <<<"$ucout"; then
+  echo "PASS registry/unconfigured (no \$KAPPA_REGISTRY -> E_DEPENDENCY_UNRESOLVED)"
+else
+  echo "FAIL registry/unconfigured"; echo "$ucout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+rm -rf "$RW"
+
 echo "== reproducibility: semantic identity is provenance-independent (§36.2.1) =="
 a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" --check 2>&1)"
 b="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/helpers.kappa.build.kp" --check 2>&1)"

@@ -14,9 +14,10 @@ module Kappa.Build.Plan
   , resolveExecutable
   ) where
 
-import Control.Monad (forM)
+import Control.Monad (filterM, forM)
 import qualified Data.ByteString as BS
-import Data.List (foldl', sortOn)
+import Data.Char (isDigit)
+import Data.List (foldl', maximumBy, sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -41,6 +42,7 @@ import System.Directory
   , findExecutable
   , listDirectory
   )
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (joinPath, makeRelative, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
@@ -426,7 +428,46 @@ resolveDepClosure rootDir rootBc rootNames = do
                     <> "', which its manifest does not declare (Spec §36.3, §36.23)"
                 )
             ]
-        (RegistryDep _ _ : _) -> pure (Left [unresolved sp nm "registry"])
+        (RegistryDep regName ver : _) -> do
+          -- §36.23.1: a vendored/offline registry resolver — resolve
+          -- against a local registry root ($KAPPA_REGISTRY) laid out as
+          -- <root>/<name>/<version>/kappa.build.kp, picking the highest
+          -- available version satisfying the constraint.
+          mreg <- lookupEnv "KAPPA_REGISTRY"
+          case mreg of
+            Nothing -> pure (Left [unresolved sp nm "registry"])
+            Just regRoot -> do
+              let nameDir = regRoot </> T.unpack regName
+              haveName <- doesDirectoryExist nameDir
+              if not haveName
+                then pure (Left [registryNotFound sp regName regRoot])
+                else do
+                  entries <- listDirectory nameDir
+                  -- only well-formed version directories are candidates
+                  -- (a stray file/dir must not shadow real versions)
+                  vdirs <- filterM (\v -> doesDirectoryExist (nameDir </> v)) entries
+                  let parsed = [(v, nums, pre) | v <- vdirs, Just (nums, pre) <- [parseVerParts (T.pack v)]]
+                      matching =
+                        [ (nums, pre, v)
+                        | (v, nums, pre) <- parsed
+                        , versionMatches ver (T.pack v) nums pre
+                        ]
+                  case bestRegVersion matching of
+                    Nothing -> pure (Left [versionUnsatisfied sp regName ver (map fst3 parsed)])
+                    Just v -> do
+                      let pkgDir = nameDir </> v
+                      okm <- doesFileExist (pkgDir </> manifestBasename)
+                      if not okm
+                        then pure (Left [pathNotFound sp nm (pkgDir </> manifestBasename)])
+                        else do
+                          canon <- canonicalizePath pkgDir
+                          collectResolved canon pkgDir $ \depBc -> do
+                            -- pin BOTH the resolved version and a content
+                            -- digest so --locked detects content drift of a
+                            -- vendored registry package, not only a version
+                            -- change (§36.23.2).
+                            srcBytes <- packageSourceBytes pkgDir depBc
+                            pure (LockEntry "registry" regName (T.pack v <> "+" <> contentId srcBytes))
         (PathDep _ path : _) -> do
           let pkgDir = depDir0 </> T.unpack path
           ok <- doesFileExist (pkgDir </> manifestBasename)
@@ -482,6 +523,16 @@ resolveDepClosure rootDir rootBc rootNames = do
       depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
         ( "dependency '" <> nm <> "' has no build manifest at '" <> T.pack mf
             <> "' (Spec §36.23.2)"
+        )
+    registryNotFound sp regName regRoot =
+      depErr sp "E_DEPENDENCY_REGISTRY_NOT_FOUND" "kappa-hs.build.dependency-registry"
+        ( "registry dependency '" <> regName <> "' is not present in the configured "
+            <> "registry root '" <> T.pack regRoot <> "' (Spec §36.23, §36.23.1)"
+        )
+    versionUnsatisfied sp regName ver avail =
+      depErr sp "E_DEPENDENCY_VERSION_UNSATISFIED" "kappa-hs.build.dependency-version"
+        ( "no version of registry dependency '" <> regName <> "' satisfies '" <> ver
+            <> "'; available: " <> T.intercalate ", " (map T.pack avail) <> " (Spec §36.23)"
         )
 
 -- | §36.23: resolve a git dependency to a local checkout and its resolved
@@ -585,6 +636,84 @@ depName = \case
   RegistryDep n _ -> n
   GitDep n _ _ -> n
   PathDep n _ -> n
+
+-- ── semver constraints (registry resolution, §36.23) ─────────────────
+
+-- | Parse a dotted version into numeric components (non-numeric segments
+-- become 0; e.g. @"1.2.3"@ → @[1,2,3]@, @"0.1"@ → @[0,1]@).
+parseVer :: Text -> [Int]
+parseVer = map (toInt . T.takeWhile (/= '-')) . T.splitOn "."
+  where
+    toInt t = case reads (T.unpack t) of (n, _) : _ -> n; _ -> 0
+
+-- | Compare two versions component-wise (missing components are 0).
+compareVer :: [Int] -> [Int] -> Ordering
+compareVer a b = compare (pad a) (pad b)
+  where
+    n = max (length a) (length b)
+    pad xs = take n (xs ++ repeat 0)
+
+-- | Parse a version DIRECTORY name into (numeric components, prerelease
+-- tag). 'Nothing' when the part before the first @-@ is not a non-empty
+-- run of all-digit dotted segments — so stray files/dirs (@README@,
+-- @index.json@, @.git@) are not treated as versions.
+parseVerParts :: Text -> Maybe ([Int], Text)
+parseVerParts t =
+  let (core, dashRest) = T.breakOn "-" t
+      pre = T.drop 1 dashRest
+      segs = T.splitOn "." core
+   in if not (null segs) && all isNumSeg segs
+        then Just (map readInt segs, pre)
+        else Nothing
+  where
+    isNumSeg s = not (T.null s) && T.all isDigit s
+    readInt s = case reads (T.unpack s) of (n, _) : _ -> n; _ -> 0
+
+-- | Does a registry version (numeric @nums@, prerelease @pre@, raw
+-- dirname @raw@) satisfy the constraint? @*@/empty → any stable; @^…@
+-- caret (npm semantics, keyed on specified-component count); a bare
+-- @X[.Y[.Z]]@ → leading-component prefix on stable versions. Prereleases
+-- are excluded from range matching but may be selected by an exact
+-- dirname match.
+versionMatches :: Text -> Text -> [Int] -> Text -> Bool
+versionMatches c raw nums pre
+  | c == raw = True -- exact dirname pin (may name a prerelease)
+  | not (T.null pre) = False -- otherwise prereleases are excluded
+  | c == "" || c == "*" = True
+  | Just flo <- T.stripPrefix "^" c =
+      let lo = parseVer flo in compareVer nums lo /= LT && compareVer nums (caretUpper lo) == LT
+  | otherwise =
+      let cs = parseVer c in not (null cs) && take (length cs) (nums ++ repeat 0) == cs
+
+-- npm caret upper bound, keyed on how many components were specified:
+-- ^1 / ^1.2 / ^1.2.3 → <2.0.0; ^0.2 / ^0.2.3 → <0.3.0; ^0.0.3 → <0.0.4;
+-- ^0.0 → <0.1.0; ^0 → <1.0.0.
+caretUpper :: [Int] -> [Int]
+caretUpper flo = case flo of
+  [maj] -> [maj + 1, 0, 0]
+  [maj, mn]
+    | maj > 0 -> [maj + 1, 0, 0]
+    | otherwise -> [0, mn + 1, 0]
+  (maj : mn : pat : _)
+    | maj > 0 -> [maj + 1, 0, 0]
+    | mn > 0 -> [0, mn + 1, 0]
+    | otherwise -> [0, 0, pat + 1]
+  [] -> [maxBound]
+
+-- | The best (highest) matching registry version directory: greatest by
+-- numeric version, then stable preferred over prerelease, then raw
+-- dirname — a total, deterministic order.
+bestRegVersion :: [([Int], Text, FilePath)] -> Maybe FilePath
+bestRegVersion [] = Nothing
+bestRegVersion xs = Just (thd3 (maximumBy cmp xs))
+  where
+    cmp (n1, p1, r1) (n2, p2, r2) =
+      compareVer n1 n2 <> compare (T.null p1) (T.null p2) <> compare r1 r2
+    thd3 (_, _, r) = r
+
+-- | First component of a triple (the version dirname in @parsed@).
+fst3 :: (a, b, c) -> a
+fst3 (a, _, _) = a
 
 depErr :: Span -> DiagnosticCode -> DiagnosticFamily -> Text -> Diagnostic
 depErr sp code fam = diag SevError StageImports code (Just fam) sp
