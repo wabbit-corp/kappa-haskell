@@ -113,11 +113,16 @@ contentLines txt =
   , not ("#" `T.isPrefixOf` ln)
   ]
 
+-- | The dependency kinds that may appear in a lockfile. Keep in sync with
+-- the lock entries produced by "Kappa.Build.Plan" (path/git/registry/url).
+lockKinds :: [Text]
+lockKinds = ["path", "git", "registry", "url"]
+
 parseLine :: Text -> Maybe LockEntry
 parseLine ln =
   let (k, r1) = T.breakOn " " ln
       (i, r2) = T.breakOn " " (T.drop 1 r1)
       key = T.drop 1 r2
-   in if k `elem` ["path", "git", "registry"] && not (T.null i) && not (T.null key)
+   in if k `elem` lockKinds && not (T.null i) && not (T.null key)
         then Just (LockEntry k key i)
         else Nothing

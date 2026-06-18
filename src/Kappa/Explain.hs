@@ -267,6 +267,8 @@ registry =
       "A registry dependency names a package not present in the configured registry root (Spec §36.23, §36.23.1)."
   , ent "E_DEPENDENCY_VERSION_UNSATISFIED" (Just "kappa-hs.build.dependency-version")
       "No version of a registry dependency available in the configured registry satisfies the requested version constraint (Spec §36.23)."
+  , ent "E_DEPENDENCY_URL_FAILED" (Just "kappa-hs.build.dependency-url")
+      "A url dependency could not be resolved: curl/tar is unavailable, or the archive could not be fetched, unpacked, or did not contain a build manifest (Spec §36.23)."
   , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
       "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")

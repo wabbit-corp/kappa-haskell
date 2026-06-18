@@ -339,6 +339,7 @@ renderBuildConfig bc =
     renderDep (B.RegistryDep n v) = "registry " <> n <> " " <> v
     renderDep (B.GitDep n u r) = "git " <> n <> " " <> u <> "@" <> r
     renderDep (B.PathDep n p) = "path " <> n <> " " <> p
+    renderDep (B.UrlDep n u) = "url " <> n <> " " <> u
     renderSel (B.SelModule m) = m
     renderSel (B.SelModulesUnder m) = m <> ".*"
     renderLink (B.DynamicLink ls) = "dynamic: " <> T.intercalate " " ls

@@ -493,6 +493,18 @@ resolveDepClosure rootDir rootBc rootNames = do
                 else do
                   canon <- canonicalizePath repoDir
                   collectResolved canon repoDir (const (pure (LockEntry "git" url sha)))
+        (UrlDep _ url : _) -> do
+          -- §36.23: fetch + unpack an archive URL into a project-local
+          -- cache and resolve it as a transitive path dependency; pin its
+          -- content digest in the lock.
+          res <- resolveUrlDep sp canonRoot url
+          case res of
+            Left ds -> pure (Left ds)
+            Right pkgDir -> do
+              canon <- canonicalizePath pkgDir
+              collectResolved canon pkgDir $ \depBc -> do
+                srcBytes <- packageSourceBytes pkgDir depBc
+                pure (LockEntry "url" url (contentId srcBytes))
       where
         sp = Span (depDir0 </> manifestBasename) (Pos 1 1) (Pos 1 1)
         -- shared: with the package resolved to @pkgDir@ (canonical
@@ -588,6 +600,65 @@ gitErr sp url msg =
   diag SevError StageImports "E_DEPENDENCY_GIT_FAILED" (Just "kappa-hs.build.dependency-git") sp
     ("git dependency '" <> url <> "': " <> msg <> " (Spec §36.23)")
 
+-- | §36.23: resolve a url dependency by fetching its archive (via @curl@,
+-- which handles @file://@ and @http(s)://@) into a project-local
+-- content-addressed cache and unpacking it (via @tar@, autodetecting
+-- compression). Returns the package directory (the unpacked tree, or its
+-- sole top-level subdirectory, that contains a build manifest). A
+-- populated cache is reused. Any failure is an honest
+-- 'E_DEPENDENCY_URL_FAILED'.
+resolveUrlDep :: Span -> FilePath -> Text -> IO (Either Diagnostics FilePath)
+resolveUrlDep sp canonRoot url = do
+  mcurl <- findExecutable "curl"
+  mtar <- findExecutable "tar"
+  case (mcurl, mtar) of
+    (Nothing, _) -> pure (Left [urlErr sp url "the 'curl' executable was not found on PATH"])
+    (_, Nothing) -> pure (Left [urlErr sp url "the 'tar' executable was not found on PATH"])
+    (Just curl, Just tar) -> do
+      let cacheDir = canonRoot </> ".kappa" </> "url" </> T.unpack (contentId [("url", encodeUtf8 url)])
+      existing <- locatePackageRoot cacheDir
+      case existing of
+        Just pkg -> pure (Right pkg) -- reuse a populated cache
+        Nothing -> do
+          createDirectoryIfMissing True cacheDir
+          let archive = cacheDir </> "archive.tar"
+          fetched <- runGit curl ["-fsSL", T.unpack url, "-o", archive]
+          case fetched of
+            Left e -> pure (Left [urlErr sp url ("fetch failed: " <> e)])
+            Right () -> do
+              unp <- runGit tar ["-xf", archive, "-C", cacheDir]
+              case unp of
+                Left e -> pure (Left [urlErr sp url ("unpack failed: " <> e)])
+                Right () -> do
+                  pkg <- locatePackageRoot cacheDir
+                  case pkg of
+                    Just p -> pure (Right p)
+                    Nothing -> pure (Left [urlErr sp url "the archive contains no build manifest at its root or a single top-level directory"])
+
+-- | Find the package root within an unpacked archive: the directory (the
+-- root itself, or its sole manifest-bearing top-level subdirectory) that
+-- contains a build manifest.
+locatePackageRoot :: FilePath -> IO (Maybe FilePath)
+locatePackageRoot dir = do
+  here <- doesFileExist (dir </> manifestBasename)
+  if here
+    then pure (Just dir)
+    else do
+      isDir <- doesDirectoryExist dir
+      if not isDir
+        then pure Nothing
+        else do
+          entries <- listDirectory dir
+          subs <- filterM (\e -> doesFileExist (dir </> e </> manifestBasename)) entries
+          case subs of
+            [s] -> pure (Just (dir </> s))
+            _ -> pure Nothing
+
+urlErr :: Span -> Text -> Text -> Diagnostic
+urlErr sp url msg =
+  diag SevError StageImports "E_DEPENDENCY_URL_FAILED" (Just "kappa-hs.build.dependency-url") sp
+    ("url dependency '" <> url <> "': " <> msg <> " (Spec §36.23)")
+
 -- | Load + evaluate a dependency package's manifest (§35.13).
 loadDepPackage :: FilePath -> IO (Either Diagnostics BuildConfig)
 loadDepPackage manifest = do
@@ -636,6 +707,7 @@ depName = \case
   RegistryDep n _ -> n
   GitDep n _ _ -> n
   PathDep n _ -> n
+  UrlDep n _ -> n
 
 -- ── semver constraints (registry resolution, §36.23) ─────────────────
 

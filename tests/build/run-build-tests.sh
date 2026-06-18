@@ -181,6 +181,34 @@ else
 fi
 rm -rf "$RW"
 
+echo "== url dependency resolution (§36.23): fetch + unpack archive =="
+if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+  UW="${TMPDIR:-/tmp}/kappa-urldep-test"; rm -rf "$UW"; mkdir -p "$UW/codecpkg/src/codec" "$UW/app/src"
+  printf 'module codec.util\ntag : String -> String\nlet tag s = stringAppend "<" s' > "$UW/codecpkg/src/codec/util.kp"
+  printf 'let buildConfig : BuildConfig = package { name="codec", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[], targets=[library { name="codec", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], modules=modulesUnder "codec", dependencies=[] }] }' > "$UW/codecpkg/kappa.build.kp"
+  ( cd "$UW" && tar -czf codec.tgz codecpkg )
+  printf 'module app\nimport codec.util.(tag)\nlet main = printlnString (tag "hi")' > "$UW/app/src/app.kp"
+  printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[urlDependency { name="codec", url="file://%s/codec.tgz" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$UW" > "$UW/app/kappa.build.kp"
+  if timeout 120 $KAPPA build --manifest "$UW/app" --emit-c >/dev/null 2>&1 \
+     && grep -q "^url " "$UW/app/kappa.lock" 2>/dev/null; then
+    echo "PASS url/resolve (fetched + unpacked archive; lock records content id)"
+  else
+    echo "FAIL url/resolve"; fails=$((fails+1))
+  fi
+  ufout="$(timeout 60 $KAPPA build --manifest "$UW/app" --emit-c 2>&1)"  # warm cache, then bad url
+  printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[urlDependency { name="codec", url="file://%s/nope.tgz" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$UW" > "$UW/app/kappa.build.kp"
+  rm -rf "$UW/app/.kappa"
+  ufout="$(timeout 60 $KAPPA build --manifest "$UW/app" --emit-c 2>&1)"
+  if grep -q "E_DEPENDENCY_URL_FAILED" <<<"$ufout"; then
+    echo "PASS url/bad (missing archive -> E_DEPENDENCY_URL_FAILED)"
+  else
+    echo "FAIL url/bad"; echo "$ufout" | sed 's/^/    /'; fails=$((fails+1))
+  fi
+  rm -rf "$UW"
+else
+  echo "SKIP url dependency tests (curl/tar not on PATH)"
+fi
+
 echo "== reproducibility: semantic identity is provenance-independent (§36.2.1) =="
 a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" --check 2>&1)"
 b="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/helpers.kappa.build.kp" --check 2>&1)"

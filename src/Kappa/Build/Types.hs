@@ -1,3 +1,8 @@
+-- @Target@ shares some field labels across its two constructors (the
+-- accessors are only ever reached by constructor pattern match, never as
+-- partial functions), so the partial-field warning is not meaningful here.
+{-# OPTIONS_GHC -Wno-partial-fields #-}
+
 -- | Haskell mirror of the increment-1 @std.build@ schema (§29.8). These
 -- records hold the *semantic* build configuration only: they carry no
 -- source spans or value provenance, so structural equality is the
@@ -50,6 +55,7 @@ data Dependency
   = RegistryDep !Text !Text -- ^ name, version requirement
   | GitDep !Text !Text !Text -- ^ name, url, rev
   | PathDep !Text !Text -- ^ name, path
+  | UrlDep !Text !Text -- ^ name, archive url
   deriving stock (Eq, Show)
 
 data ModuleSelector

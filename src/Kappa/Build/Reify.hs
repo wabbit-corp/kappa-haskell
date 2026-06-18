@@ -152,7 +152,8 @@ decDependency ctx v = do
     ("RegistryDep", [nm, ver]) -> RegistryDep <$> asStr ctx nm <*> asStr ctx ver
     ("GitDep", [nm, url, rev]) -> GitDep <$> asStr ctx nm <*> asStr ctx url <*> asStr ctx rev
     ("PathDep", [nm, p]) -> PathDep <$> asStr ctx nm <*> asStr ctx p
-    _ -> decFail "expected a dependency value ('registry'/'git'/'pathDependency') (Spec §36.23)"
+    ("UrlDep", [nm, u]) -> UrlDep <$> asStr ctx nm <*> asStr ctx u
+    _ -> decFail "expected a dependency value ('registry'/'git'/'pathDependency'/'urlDependency') (Spec §36.23)"
 
 decModuleSelector :: EvalCtx -> Value -> Dec ModuleSelector
 decModuleSelector ctx v = do

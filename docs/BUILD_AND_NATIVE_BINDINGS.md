@@ -247,9 +247,17 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   Diagnostics: `$KAPPA_REGISTRY` unset → `E_DEPENDENCY_UNRESOLVED`; package
   absent → `E_DEPENDENCY_REGISTRY_NOT_FOUND`; no satisfying version →
   `E_DEPENDENCY_VERSION_UNSATISFIED`.
-- **`url`/artifact** dependency builders are not in the increment-1 §29.8
-  schema subset yet, so they cannot be authored; a networked package
-  registry (vs the local vendored one above) is also not provided.
+- A **`url`** dependency (`urlDependency { name, url }`) fetches an
+  archive via `curl` (which handles `file://` and `http(s)://`) into a
+  project-local content-addressed cache, unpacks it via `tar`
+  (autodetecting compression), resolves the package root (the unpacked
+  tree, or its sole manifest-bearing top-level directory) as a transitive
+  path dependency, and pins its content digest in the lock. Honest
+  `E_DEPENDENCY_URL_FAILED` when curl/tar are unavailable or the
+  fetch/unpack fails or yields no manifest. (Remote `http(s)://` works
+  when the network allows; `file://` is offline.)
+- A **networked package registry** (vs the local vendored registry above)
+  and `artifact`/target-artifact dependency builders are not provided.
 
 ### Tracked temporary residue
 
@@ -261,9 +269,9 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   its package, so rejection is the correct enforcement.
 - **No networked registry** — registry dependencies resolve against a
   local vendored registry (`$KAPPA_REGISTRY`); a remote registry server/
-  protocol is not implemented. `url`/artifact dependency builders are not
-  in the §29.8 schema subset yet. Path, git, and vendored-registry
-  dependencies are all resolved; the lockfile records all three.
+  protocol, and `artifact`/target-artifact dependency builders, are not
+  provided. Path, git, vendored-registry, and url (archive) dependencies
+  are all resolved; the lockfile records each.
 - **Root-as-cyclic-dependency asymmetry**: when a path dependency cycles
   back to the package being built, the root contributes the modules of the
   *executable* target being built (its `modules` selector), not its
@@ -307,10 +315,12 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
    `E_DEPENDENCY_GIT_FAILED` on failure). Registry/url still unresolved.
 8. **(done)** Vendored/offline registry resolver (`$KAPPA_REGISTRY`) with
    semver constraints + version+content lock pinning (§36.23.1).
-9. A networked registry server/protocol + `url`/artifact dependency
-   builders (the remaining unresolvable sources).
-10. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-11. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+9. **(done)** `url` (archive) dependency resolution via curl+tar, content
+   pinned in the lock (`E_DEPENDENCY_URL_FAILED` on failure).
+10. A networked registry server/protocol + `artifact`/target-artifact
+    dependency builders (the remaining unresolvable sources).
+11. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
+12. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
     and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
