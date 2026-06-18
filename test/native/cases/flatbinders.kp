@@ -1,0 +1,23 @@
+-- R2.3-rest probe: a capture-free first-order worker with a MATCH (nested
+-- pattern bindings) AND a LET in the arm — must lower to a FLAT worker with the
+-- params, the let var, and the destructured pattern vars all as direct C
+-- locals (no `kvar`/`kpush`).  The pattern fields and the `mulInt acc 2` make
+-- the result sensitive to de Bruijn binder ORDER, so any prepend-order error in
+-- the flat binding changes the output, which must still match the interpreter.
+module main
+
+data Pair = MkPair Int Int
+
+sumPairs : List Pair -> Int -> Int
+let sumPairs xs acc =
+  match xs
+  case Nil -> acc
+  case MkPair a b :: rest ->
+    let d = subInt a b
+    sumPairs rest (addInt (mulInt acc 2) d)
+
+mk : Int -> List Pair
+let mk n = if leInt n 0 then Nil else MkPair n (mulInt n 2) :: mk (subInt n 1)
+
+main : UIO Unit
+let main = printlnString (showInt (sumPairs (mk 4) 1))

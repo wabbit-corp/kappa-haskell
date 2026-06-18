@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders; do run_diff_case "$c"; done
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -80,16 +80,18 @@ fi
 # signature is the applied implicit type argument `kappi(kclo(…), kunit())`
 # wrapping the constructor closure; after the fix that pattern is gone and the
 # cons site is a direct `kctor(KCT_CONS, …)`.  The builder's body is then
-# capture-free, so the QW2 in-place self-tail loop (P0-B) is re-enabled — its
-# parameter cells update via `kw_c…->val =` rather than rebuilding the env.
+# capture-free, so its self-tail loop runs in-place with NO per-iteration env:
+# under R2.3 the `range` worker is FLAT (params are direct C locals reassigned
+# `p0 = …; continue;`), so there is no `kvar`/`kpush` on the build path at all.
 echo "== R1.1: saturated constructor application is a direct kctor (no eta-ctor closure storm) =="
 rtmp="$WORK/r11c"; mkdir -p "$rtmp"
 if timeout 120 $KAPPA build "$CASES/adtcons.kp" --emit-c -o "$rtmp/ac" >"$rtmp/build.log" 2>&1; then
   cfile="$CASES/adtcons.kappa.c"
   if grep -qE 'kctor\(KCT_CONS,' "$cfile" \
      && ! grep -qE 'kappi\(kclo\(' "$cfile" \
-     && grep -qE 'kw_c[0-9]+->val = ' "$cfile"; then
-    echo "   ok (direct kctor on the construction path; capture-free in-place loop re-enabled)"
+     && grep -qE 'p[0-9]+ = tc_[0-9]+;' "$cfile" \
+     && ! grep -qE 'kvar\(kw_env' "$cfile"; then
+    echo "   ok (direct kctor on the construction path; flat in-place self-tail loop, no kclo storm)"
   else
     echo "   FAIL: constructor construction path is not a direct kctor / in-place loop not re-enabled"
     grep -nE 'kappi\(kclo\(' "$cfile" | sed 's/^/     /'; fails=$((fails+1))
@@ -214,6 +216,28 @@ if timeout 120 $KAPPA build "$CASES/flatframe.kp" --emit-c -o "$ftmp/ff" >"$ftmp
   rm -f "$cfile"
 else
   echo "   FAIL: flatframe --emit-c build failed"; cat "$ftmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+# R2.3-rest: a capture-free worker that BINDS via match/let is now also FLAT —
+# the params, the let var, and the destructured pattern vars are direct C
+# locals (no kvar/kpush), not a kpush'd KEnv chain.  Assert on flatbinders'
+# sumPairs worker (a nested-pattern match + a let in the arm): the worker reads
+# kctor_arg into pat_ locals and a let_ local, with NO kvar/kpush.
+echo "== R2.3-rest: capture-free match/let-bearing workers are flat (binders as C locals) =="
+btmp="$WORK/r23r"; mkdir -p "$btmp"
+if timeout 120 $KAPPA build "$CASES/flatbinders.kp" --emit-c -o "$btmp/fb" >"$btmp/build.log" 2>&1; then
+  cfile="$CASES/flatbinders.kappa.c"
+  spw="$(awk '/^static KValue \*kw_main_2e_sumPairs\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile" 2>/dev/null)"
+  if printf '%s' "$spw" | grep -qE 'KValue \*pat_[0-9]+ = kctor_arg' \
+     && printf '%s' "$spw" | grep -qE 'KValue \*let_[0-9]+ = ' \
+     && ! printf '%s' "$spw" | grep -qE 'kvar\(|kpush\('; then
+    echo "   ok (match/let binders are C locals; no kvar/kpush in the flat worker)"
+  else
+    echo "   FAIL: match/let-bearing worker still uses a kpush'd KEnv (R2.3-rest regressed)"; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: flatbinders --emit-c build failed"; cat "$btmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # Honest no-fallback property: the native backend never silently falls back

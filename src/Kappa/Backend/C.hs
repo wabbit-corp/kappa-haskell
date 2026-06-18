@@ -76,7 +76,7 @@ data GenState = GenState
   { gsFresh :: !Int
   , gsStmts :: ![Text] -- ^ current function body, reversed
   , gsEnv :: !Text -- ^ C expression for the current KEnv*
-  , gsParamLvals :: ![Text] -- ^ R2.3: in a FLAT (capture-free + binder-free) first-order worker, the C lvalue for each de Bruijn index (position @i@ = the C name for @kvar@ index @i@ = source param @n-1-i@); a 'CVar' then reads the C parameter directly instead of walking @kvar(kw_env,i)@. Empty outside a flat worker body (then 'CVar' uses @kvar@).
+  , gsParamLvals :: ![Text] -- ^ R2.3: in a FLAT (capture-free) first-order worker, the C lvalue for each de Bruijn index — the params (index @i@ = source param @n-1-i@) plus any @let@/@match@-bound locals prepended at index 0 (R2.3-rest); a 'CVar' reads the C local directly instead of walking @kvar(kw_env,i)@. Empty outside a flat worker body (then 'CVar' uses @kvar@).
   , gsTop :: ![Text] -- ^ completed top-level C functions, reversed
   , gsProtos :: ![Text] -- ^ forward declarations, reversed
   , gsEmitted :: !(Set GName) -- ^ globals already emitted or enqueued
@@ -143,10 +143,15 @@ captured :: Text -> Gen a -> Gen ([Text], a)
 captured env act = do
   saved <- gets gsStmts
   savedEnv <- gets gsEnv
+  -- R2.3-rest: a flat worker binds let/match vars by prepending C locals to
+  -- gsParamLvals; restoring it here scopes those bindings to this block (an
+  -- if-branch / match-alt), exactly as the KEnv tail did for the boxed path.
+  -- A no-op for the boxed path (gsParamLvals is empty there).
+  savedLvals <- gets gsParamLvals
   modify' $ \g -> g {gsStmts = [], gsEnv = env}
   r <- act
   produced <- gets gsStmts
-  modify' $ \g -> g {gsStmts = saved, gsEnv = savedEnv}
+  modify' $ \g -> g {gsStmts = saved, gsEnv = savedEnv, gsParamLvals = savedLvals}
   pure (reverse produced, r)
 
 -- | Record an unsupported-construct finding and return a placeholder C
@@ -535,95 +540,50 @@ bodyCapturesEnv = go
       CMeta {} -> False
     goAlt (CaseAlt _ mg body) = maybe False go mg || go body
 
--- | R2.3: does the worker body introduce NO value binder that pushes onto the
--- @KEnv@ (no @let@\/@letrec@\/@match@\/@do@)?  A pushed binding needs a real
--- @KEnv@ tail to chain onto and to @kvar@-walk parameters beneath it; the flat
--- (direct C-parameter) lowering provides no such chain, so it is restricted to
--- binder-free bodies (the safe first slice of R2.3 — anything richer keeps the
--- @kpush@\/@kvar@ frame).  Conservative: ANY @match@\/@let@\/@letrec@\/@do@ (and
--- any env-capturing form, already excluded by 'bodyCapturesEnv') disables it.
--- A binder-free body is exactly @if@\/prim\/ctor\/projection\/inject\/force\/
--- seal\/var\/lit over the parameters — the @recproj@ shape.
-bodyBindsNothing :: Term -> Bool
-bodyBindsNothing = go
-  where
-    go t = case t of
-      CLet {} -> False
-      CLetRec {} -> False
-      CMatch {} -> False
-      CDo {} -> False
-      CLam {} -> False
-      CThunkE {} -> False
-      CLazyE {} -> False
-      CQuote {} -> False
-      CApp _ f a -> go f && go a
-      CCtor _ args -> all go args
-      CIf c th el -> go c && go th && go el
-      CProj e _ -> go e
-      CProjAt e _ _ -> go e
-      CInject _ e -> go e
-      CForceE e -> go e
-      CSealE _ e -> go e
-      CRecordV fs -> all (go . snd) fs
-      CRecordT fs -> all (go . snd) fs
-      CVariantT ts -> all go ts
-      CSigT _ e -> go e
-      CPi _ _ _ a b -> go a && go b
-      CVar {} -> True
-      CGlob {} -> True
-      CSort {} -> True
-      CLit {} -> True
-      CMeta {} -> True
-
 -- | Lower a function global to: a worker @kw_…(p0,…,p{n-1})@ whose body is
--- a @while(1)@ loop (so a tail self-call updates the parameter cells and
+-- a @while(1)@ loop (so a tail self-call reassigns the C parameters and
 -- @continue@s instead of recursing in C — bounded C stack for tail
 -- recursion), plus a curried arity-1 closure chain that collects the
 -- arguments and calls the worker, returned by the accessor @kg_…()@.
 --
--- QW2: when the body is capture-free ('bodyCapturesEnv' is 'False'), the
--- parameter @KEnv@ cells are built ONCE before the loop and a self-tail call
--- updates @cell->val@ in place (see 'emitTailLoop'), so a tight self-recursive
--- loop allocates no @KEnv@ for its parameters per iteration.  When the body
--- captures the env by reference (a closure\/thunk\/do that can escape an
--- iteration), the env is instead REBUILT at the loop top from reassigned C
--- params — the pre-QW2 behaviour, correct because each iteration's escaping
--- closures then capture a distinct env (matching the interpreter).
+-- Two modes (R2.3): when the body is capture-free ('bodyCapturesEnv' is
+-- 'False'), the worker is FLAT — parameters are the C parameters read directly
+-- (via 'gsParamLvals'), and @let@/@match@-bound locals are plain C locals
+-- (R2.3-rest), so NO @KEnv@ is built at all.  When the body captures the env by
+-- reference (a closure\/thunk\/do that can escape an iteration), the env is
+-- REBUILT at the loop top from the reassigned C params (so each iteration's
+-- escaping closures capture a distinct env, matching the interpreter) and
+-- variables are read via @kvar@.
 compileFunctionGlobal :: GName -> Int -> Term -> Gen ()
 compileFunctionGlobal g n inner = do
   let ident = cGlobIdent g
       worker = "kw_" <> mangle (gKey g)
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
       inPlace = not (bodyCapturesEnv inner)
-      -- R2.3 FLAT frame: a capture-free AND binder-free body reads parameters
-      -- directly from the C parameters (no KEnv node, no kvar chain walk).  A
-      -- tail self-call reassigns the C params in place (like rebuild mode, but
-      -- with no env to rebuild).  Strict subset of the QW2 in-place case.
-      flat = inPlace && bodyBindsNothing inner
-      -- de Bruijn env: index 0 = innermost binder = the LAST parameter, so
-      -- cell for p0 is the deepest (next = 0) and p{n-1} is the head.
-      cells = ["kw_c" <> T.pack (show i) | i <- [0 .. n - 1]]
-      -- flat / rebuild reassign the C params (slots = ps); the QW2 cell path
-      -- updates cell->val (slots = cells).  tiInPlace drives that choice.
-      ti = TailInfo g n (if flat || not inPlace then ps else cells) (inPlace && not flat)
+      -- R2.3 FLAT frame: a CAPTURE-FREE body reads parameters directly from the
+      -- C parameters (no KEnv node, no kvar chain walk); a tail self-call
+      -- reassigns the C params in place (like rebuild mode, but with no env to
+      -- rebuild).  Strict subset of the QW2 in-place case.  A capture-free body
+      -- can only bind via `let`/`match` (CLetRec/CDo/CLam are env-capturing, so
+      -- excluded) — those push C locals onto 'gsParamLvals' (R2.3-rest), so no
+      -- KEnv is needed for binder-bearing bodies either.
+      flat = inPlace
+      -- Two worker modes: FLAT (capture-free) reads params as direct C locals
+      -- (gsParamLvals) with NO KEnv; REBUILD (capturing) rebuilds kw_env at the
+      -- loop top each iteration and reads via kvar.  Both reassign the C params
+      -- on a tail self-call (slots=ps) — so the in-place QW2 KEnv-cell mode is
+      -- subsumed by FLAT (which keeps no KEnv at all).
+      ti = TailInfo g n ps
       -- rebuild mode: rebuild kw_env at the loop top from the C params.
       envExpr = foldl (\acc p -> "kpush(" <> p <> ", " <> acc <> ")") "0" ps
-      cellDecls
-        | flat = [] -- no KEnv at all: params are C locals
-        | inPlace =
-            [ "  KEnv *" <> (cells !! j) <> " = kpush(" <> (ps !! j) <> ", "
-                <> (if j == 0 then "0" else cells !! (j - 1)) <> ");"
-            | j <- [0 .. n - 1]
-            ]
-              ++ ["  KEnv *kw_env = " <> (cells !! (n - 1)) <> "; (void)kw_env;"]
-        | otherwise = []
       loopTopEnv
-        | inPlace = [] -- flat + cell modes need no per-iteration env
+        | flat = [] -- FLAT: params are direct C locals, no KEnv
         | otherwise = ["    KEnv *kw_env = " <> envExpr <> "; (void)kw_env;"]
       paramDecls = T.intercalate ", " ["KValue *" <> p | p <- ps]
-  -- In a flat worker, a CVar resolves to its C parameter (gsParamLvals); the
-  -- mapping is reset for any other worker so CVar falls back to kvar.  (A flat
-  -- body has no env-capturing form, so a lifted closure can never read it.)
+  -- In a flat worker, a CVar resolves to its C parameter (gsParamLvals), and a
+  -- let/match binding prepends a C local; the mapping is reset for a capturing
+  -- worker so CVar/binders fall back to kvar/kpush.  (A flat body has no
+  -- env-capturing form, so a lifted closure can never read it.)
   saved <- gets gsParamLvals
   modify' $ \st -> st {gsParamLvals = if flat then reverse ps else []}
   (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
@@ -631,7 +591,6 @@ compileFunctionGlobal g n inner = do
   let workerFn =
         T.unlines $
           ["static KValue *" <> worker <> "(" <> paramDecls <> ") {"]
-            ++ cellDecls
             ++ ["  while (1) {"]
             ++ loopTopEnv
             ++ map ("    " <>) bodyStmts
@@ -1245,10 +1204,10 @@ compile term
   | Just action <- runIOSplice term = compileRunIO action
 compile term = case term of
   CVar i -> do
-    -- R2.3: in a flat worker, read the C parameter directly (no kvar chain
-    -- walk).  gsParamLvals is empty outside a flat body, and a flat body is
-    -- binder-free so every index is a parameter (i < n); the kvar fallback is
-    -- the general (boxed-KEnv) path.
+    -- R2.3: in a flat worker, read the C local for de Bruijn index @i@ directly
+    -- (no kvar chain walk) — a parameter or a let/match-bound local prepended
+    -- onto gsParamLvals (R2.3-rest).  gsParamLvals is empty outside a flat
+    -- body; the kvar fallback is the general (boxed-KEnv) path.
     lvals <- gets gsParamLvals
     if not (null lvals) && i >= 0 && i < length lvals
       then pure (lvals !! i)
@@ -1386,10 +1345,9 @@ emitTailLoop ti args = do
     t <- freshN "tc_"
     emit ("KValue *" <> t <> " = " <> e <> ";")
     pure t
-  forM_ (zip (tiSlots ti) temps) $ \(slot, t) ->
-    if tiInPlace ti
-      then emit (slot <> "->val = " <> t <> ";") -- QW2: update the cell in place
-      else emit (slot <> " = " <> t <> ";") -- rebuild mode: reassign the C param; loop top rebuilds the env
+  -- reassign the C parameters (FLAT: read directly; REBUILD: the loop top
+  -- rebuilds kw_env from them).  Temps first, so an arg may read a current param.
+  forM_ (zip (tiSlots ti) temps) $ \(slot, t) -> emit (slot <> " = " <> t <> ";")
   emit "continue;"
 
 -- | Emit a tail-position application.  A call whose spine head is a
@@ -1921,8 +1879,7 @@ withEnv e act = do
 data TailInfo = TailInfo
   { tiName :: !GName -- ^ the worker's own global
   , tiArity :: !Int -- ^ number of leading binders
-  , tiSlots :: ![Text] -- ^ the per-parameter update targets, in binder order: the @KEnv@ cell names when 'tiInPlace' (QW2 in-place loop), else the mutable C parameter variables (the env is rebuilt each iteration)
-  , tiInPlace :: !Bool -- ^ QW2: 'True' updates @cell->val@ in place (capture-free body, no per-iteration @KEnv@ alloc); 'False' reassigns the C params and rebuilds the env at the loop top (body captures the env by reference, so escaping closures need a fresh env per iteration)
+  , tiSlots :: ![Text] -- ^ the per-parameter update targets, in binder order: the mutable C parameter variables @p0@…@p{n-1}@.  A tail self-call evaluates its new args into temps then reassigns these (FLAT: params are direct C locals; REBUILD: the loop top rebuilds @kw_env@ from the reassigned params)
   }
 
 -- | Where a computed value flows: into a C variable (expression context),
@@ -1951,10 +1908,20 @@ consume sink term = case term of
     -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
     -- placeholder (§31.2) rather than compiling it as a value.
     re <- compileErasableArg rhs
-    env <- gets gsEnv
-    e2 <- freshN "env_"
-    emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
-    withEnv e2 (consume sink body)
+    lvals <- gets gsParamLvals
+    if null lvals
+      then do
+        -- boxed worker: push the binding onto the KEnv chain.
+        env <- gets gsEnv
+        e2 <- freshN "env_"
+        emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
+        withEnv e2 (consume sink body)
+      else do
+        -- R2.3-rest FLAT worker: bind a C local (no KEnv); 'bindFlatLocal'
+        -- prepends it as de Bruijn index 0 and the enclosing 'captured' block
+        -- (or the worker-body reset) restores the scope.
+        _ <- bindFlatLocal "let_" re
+        consume sink body
   -- A local recursive let: allocate the binder cell, evaluate the rhs
   -- (a function whose closure captures the cell but does not read it until
   -- applied), then back-patch (docs/NATIVE_BACKEND.md §5).
@@ -2624,12 +2591,31 @@ registerDefer (arr, cnt) te = emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
 -- | Like 'bindPat' but threads the concrete scrutinee C-expression
 -- through the binding projections.
 bindPatScrut :: Text -> Text -> CorePat -> Gen Text
-bindPatScrut sv env pat = foldM push env (patBindings sv pat)
+bindPatScrut sv env pat = do
+  lvals <- gets gsParamLvals
+  if null lvals
+    then foldM push env (patBindings sv pat) -- boxed: kpush each onto the KEnv
+    else do
+      -- R2.3-rest FLAT worker: bind each pattern variable to a C local via
+      -- 'bindFlatLocal' (the LAST binding becomes de Bruijn index 0, matching
+      -- the kpush order); the scope is restored by the enclosing 'captured'.
+      forM_ (patBindings sv pat) (bindFlatLocal "pat_")
+      gets gsEnv -- unchanged (flat reads via gsParamLvals, not the KEnv)
   where
     push e valExpr = do
       n <- freshN "env_"
       emit ("KEnv *" <> n <> " = kpush(" <> valExpr <> ", " <> e <> ");")
       pure n
+
+-- | R2.3-rest: bind @valExpr@ to a fresh C local in a flat worker and prepend
+-- it to 'gsParamLvals' as de Bruijn index 0 (params and earlier binders shift
+-- up); the enclosing 'captured' block restores the scope.  Returns the C name.
+bindFlatLocal :: Text -> Text -> Gen Text
+bindFlatLocal prefix valExpr = do
+  v <- freshN prefix
+  emit ("KValue *" <> v <> " = " <> valExpr <> ";")
+  modify' $ \st -> st {gsParamLvals = v : gsParamLvals st}
+  pure v
 
 compileKIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
 compileKIf alts mels = go alts
