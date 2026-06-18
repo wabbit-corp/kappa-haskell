@@ -37,6 +37,12 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad.State.Strict
+import Kappa.Backend.NativeFfi
+  ( ResolvedNativeSymbol (..)
+  , externPrototype
+  , wrapperCName
+  , wrapperDefinition
+  )
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
 import Kappa.Diagnostic
@@ -90,7 +96,8 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
-  , gsHostPrims :: !(Map GName Text) -- ^ §34.5.3: each provided @host.native.*@ member (an abstract global) ↦ its runtime FFI primitive; keyed by the full 'GName' (the binding is selected per build by the manifest, never a global bare-name table). A reference to such a member lowers to its primitive.
+  , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ §27.1.1/§36.28: each provided @host.native.*@ member (an abstract global) ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings (never a hardcoded catalog). A reference to such a member lowers to a DIRECT typed call ('knative'), not a runtime primitive.
+  , gsHostUsed :: !(Set GName) -- ^ §27.1.1: host members actually referenced; 'assemble' emits one extern prototype + marshalling wrapper per used member.
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
@@ -381,8 +388,8 @@ basePrims =
 -- implements (empty for the no-FFI build).  Returns @Left errs@ when any
 -- reachable definition uses an unsupported construct (the caller renders
 -- these as 'E_BACKEND_UNSUPPORTED'), or @Right csource@ on success.
-generateC :: CheckState -> GName -> Set Text -> Map GName Text -> Either [BackendError] Text
-generateC cs mainG ffiPrims hostPrims =
+generateC :: CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either [BackendError] Text
+generateC cs mainG ffiPrims hostSyms =
   let st0 =
         GenState
           { gsFresh = 0
@@ -402,8 +409,9 @@ generateC cs mainG ffiPrims hostPrims =
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)
           , gsDeclSites = csDeclSites cs
-          , gsPrims = Set.union (Set.union basePrims ffiPrims) (Set.fromList (Map.elems hostPrims))
-          , gsHostPrims = hostPrims
+          , gsPrims = Set.union basePrims ffiPrims
+          , gsHostSyms = hostSyms
+          , gsHostUsed = Set.empty
           , gsLoops = []
           , gsDefer = []
           , gsScopeDefers = []
@@ -1190,9 +1198,34 @@ assemble st =
       -- referenced by the generated constructions and pattern-match tests.
       ++ tagEnumBlock st
       ++ [""]
+      -- §27.1.1: direct extern prototypes + typed marshalling wrappers for
+      -- each used host-binding member — the manifest-declared C symbols are
+      -- called DIRECTLY (no name table, no strcmp dispatch).
+      ++ hostNativeBlock st
       ++ reverse (gsProtos st)
       ++ [""]
       ++ reverse (gsTop st)
+
+-- | The native host-binding block: one @extern@ prototype per distinct C
+-- symbol used, followed by one marshalling wrapper per used member
+-- ('Kappa.Backend.NativeFfi'). Empty when no host.native member is used.
+hostNativeBlock :: GenState -> [Text]
+hostNativeBlock st
+  | null used = []
+  | otherwise =
+      [ "/* §27.1.1 native host bindings: direct extern prototypes + typed wrappers. */" ]
+        ++ dedupKeep (map externPrototype used)
+        ++ [""]
+        ++ map wrapperDefinition used
+        ++ [""]
+  where
+    used = [rns | g <- Set.toList (gsHostUsed st), Just rns <- [Map.lookup g (gsHostSyms st)]]
+    dedupKeep = go Set.empty
+      where
+        go _ [] = []
+        go seen (x : xs)
+          | x `Set.member` seen = go seen xs
+          | otherwise = x : go (Set.insert x seen) xs
 
 -- ── Term lowering ────────────────────────────────────────────────────
 
@@ -1483,6 +1516,22 @@ emitPrim name = do
     else unsupported "primitive"
       ("the primitive '" <> name <> "' is not implemented by the native runtime")
 
+-- | §27.1.1: a bare reference to a host-binding member lowers to a curried
+-- native action carrying the codegen-emitted wrapper pointer ('knative').
+-- 'assemble' emits the wrapper + extern prototype for each used member.
+emitHostNative :: GName -> ResolvedNativeSymbol -> Gen Text
+emitHostNative g rns = do
+  markHostUsed g
+  pure
+    ( "knative(" <> wrapperCName rns <> ", "
+        <> T.pack (show (length (rnsParams rns))) <> ", "
+        <> cStr (rnsCSymbol rns) <> ")"
+    )
+
+-- | Record a host member as referenced so 'assemble' emits its wrapper.
+markHostUsed :: GName -> Gen ()
+markHostUsed g = modify' (\st -> st {gsHostUsed = Set.insert g (gsHostUsed st)})
+
 -- | The runtime primitive name a global resolves to, if it is one (a
 -- @primModule@ name, a prelude @prim@ registration, or a §34.5 host
 -- intrinsic that satisfied an @expect@), and that name is implemented by
@@ -1495,10 +1544,8 @@ globPrimName g@(GName m nm) = do
     then pure (known nm)
     else do
       globals <- gets gsGlobals
-      hostPrims <- gets gsHostPrims
       pure $ case Map.lookup g globals of
         Just gd | Just (VPrim pname _) <- gdValue gd -> known pname
-        Just gd | Nothing <- gdValue gd, Just prim <- Map.lookup g hostPrims -> known prim
         _ -> Nothing
 
 -- | QW1: the statically-known saturated pure primitives that have a direct C
@@ -1560,6 +1607,32 @@ compileApp term = do
   let (hd, sargs) = spineOf term
   case hd of
     CGlob g -> do
+      hostSyms <- gets gsHostSyms
+      case Map.lookup g hostSyms of
+        -- §27.1.1: a saturated host-member application is a DIRECT native
+        -- action — collect the args and build a saturated 'knative_sat'
+        -- (the suspended UIO action krun_io fires by calling the emitted
+        -- wrapper). A partial application falls through to the curried
+        -- bare-reference path (compileGlob → knative + kapp).
+        Just rns
+          | let arity = length (rnsParams rns)
+                explArgs = [a | (Expl, a) <- sargs]
+          , length explArgs >= arity
+          , arity > 0 -> do
+              markHostUsed g
+              aes <- mapM compileErasableArg (take arity explArgs)
+              arr <- freshN "na_"
+              emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+              pure
+                ( "knative_sat(" <> wrapperCName rns <> ", "
+                    <> T.pack (show arity) <> ", " <> arr <> ")"
+                )
+        _ -> compileAppGlob g sargs term
+    _ -> compileAppDefault term
+
+-- | The non-host global application spine (primitive / direct-call / default).
+compileAppGlob :: GName -> [(Icit, Term)] -> Term -> Gen Text
+compileAppGlob g sargs term = do
       mp <- globPrimName g
       case mp of
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] -> do
@@ -1582,7 +1655,6 @@ compileApp term = do
           case ar of
             Just n | length sargs >= n -> compileDirectCall g n sargs
             _ -> compileAppDefault term
-    _ -> compileAppDefault term
 
 -- | Compile @__runIO action@.  A mutable-reference action (@readRef@ /
 -- @writeRef@ / @newRef@, §18.6.1) run inline is lowered directly to the
@@ -1726,21 +1798,23 @@ compileGlob g@(GName m nm)
   | otherwise = do
       globals <- gets gsGlobals
       ctors <- gets gsCtors
-      gsHostPrimsMap <- gets gsHostPrims
+      hostSyms <- gets gsHostSyms
       case Map.lookup g globals of
         -- A prelude `prim` registration: its value is a bare VPrim, so it
         -- maps directly to the runtime primitive of the same name.
         Just gd | Just (VPrim pname _) <- gdValue gd ->
           emitPrim pname
-        -- §34.5.3: a provided host-binding member (an abstract global of a
-        -- manifest-selected `host.native.*` module) lowers to its runtime
-        -- FFI primitive. The gname→prim map is built per build from the
-        -- manifest's native bindings (Kappa.Backend.NativeCatalog supplies
-        -- the curated surface), never a global hardcoded list.
+        -- §27.1.1: a provided host-binding member (an abstract global of a
+        -- manifest-selected `host.native.*` module) lowers to a curried
+        -- native action carrying the codegen-emitted wrapper pointer — a
+        -- DIRECT typed call, no runtime name dispatch. The wrapper + extern
+        -- prototype are emitted by 'assemble' for each used member. The
+        -- gname→symbol map is built per build from the manifest's native
+        -- bindings (never a hardcoded catalog).
         Just gd
           | Nothing <- gdValue gd
-          , Just prim <- Map.lookup g gsHostPrimsMap ->
-              emitPrim prim
+          , Just rns <- Map.lookup g hostSyms ->
+              emitHostNative g rns
         _ -> case Map.lookup g ctors of
           Just ci ->
             -- A nullary constructor used as a value builds directly. A

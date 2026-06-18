@@ -8,6 +8,6 @@ let buildConfig : BuildConfig = package { name = "uses-native"
     , sourceRoots = [sourceRoot "src"]
     , fragmentAxes = []
     , dependencies = []
-    , hostBindings = [nativeBinding { name = "mathx", provides = [module "host.native.mathx"], source = symbolList ["mathx_add", "mathx_mul"], abi = cAbi, headers = [], link = staticLink ["mathx"], load = providedByHost }]
+    , hostBindings = [nativeBinding { name = "mathx", provides = [module "host.native.mathx"], surface = symbolList [symbolDecl "add" "mathx_add" [ctInt, ctInt] ctInt, symbolDecl "mul" "mathx_mul" [ctInt, ctInt] ctInt], abi = cAbi, inputs = [], link = staticLink ["mathx"], load = providedByHost }]
     , targets = [executable { name = "uses-native", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = ["mathx"] }]
     }

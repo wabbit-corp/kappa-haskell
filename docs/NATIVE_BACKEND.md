@@ -300,22 +300,20 @@ work (they would not change observable behaviour).
 
 ## 6. FFI and the HTTP + SQLite demo
 
-The foreign boundary is spec-conformant: a source program **explicitly
-declares** each foreign operation it needs as a §9.4 `expect term` (typed
-with `std.ffi` types — §26.2), and those expectations are satisfied **only**
-by the native (`zig`) profile's host-binding intrinsics (§34.5.3) when the
-FFI capability is selected. The foreign operations are *never* ordinary
-prelude globals; ordinary source cannot see or call them. The full
-capability→intrinsic→runtime mapping and rationale are in
-[`BUILD_AND_NATIVE_BINDINGS.md`](BUILD_AND_NATIVE_BINDINGS.md) (the
-authoritative doc — it supersedes the older `--ffi-full`/`expect` model
-described in `NATIVE_FFI_DESIGN.md`). Native bindings are obtained ONLY
-through a build manifest's `nativeBinding` providers (§36.28): a program
-`import`s a `host.native.*` module (§8.3.5) that the manifest provides;
-`Kappa.Backend.NativeCatalog` is the `zig` profile's curated surface
-(module + member → runtime primitive, §34.5.3); the runtime realizations
-(POSIX sockets + `sqlite3`) live in `runtime/kappart_ffi.c`. There is no
-`--ffi-full` and no hardcoded native list.
+The foreign boundary is spec-conformant and manifest-driven: a program
+`import`s a `host.native.*` module (§8.3.5) that a build manifest's
+`nativeBinding` provider (§36.28) supplies, realized by the `zig` profile
+through the direct native adapter (`native.direct`, §27.1.1). The binding's
+`symbolList` of `symbolDecl`s fully describes the surface (Kappa member, C
+symbol, ABI signature); codegen lowers each member to a **direct typed C
+call site** — an `extern` prototype + a marshalling wrapper + a `knative`
+action whose function pointer `krun_io` calls directly. There is no hardcoded
+native catalog, no runtime FFI primitive table, and no string/`KValue`
+dispatch in generated native output. The C symbols come from the manifest's
+`inputs` (a package `shim`, `pkgConfig`-resolved libraries, headers). The
+full mechanism and rationale are in
+[`NATIVE_FFI_DESIGN.md`](NATIVE_FFI_DESIGN.md) and
+[`BUILD_AND_NATIVE_BINDINGS.md`](BUILD_AND_NATIVE_BINDINGS.md).
 
 Honest failure modes (no silent fallback): under the interpreter
 (`run`/`check`) or a build with no manifest provider for a module, an

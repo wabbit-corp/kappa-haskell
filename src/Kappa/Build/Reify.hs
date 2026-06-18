@@ -172,20 +172,59 @@ decBackend ctx v = do
     ("DotNetBackend", _) -> Right DotNetBackend
     _ -> decFail "expected a backend profile ('native'/'jvm'/'dotnet') (Spec §29.8)"
 
-decNativeSource :: EvalCtx -> Value -> Dec NativeBindingSource
-decNativeSource ctx v = do
+decCType :: EvalCtx -> Value -> Dec CType
+decCType ctx v = do
+  (c, _) <- asCtor ctx v
+  case c of
+    "CtUnit" -> Right CtUnit
+    "CtInt" -> Right CtInt
+    "CtInt64" -> Right CtInt64
+    "CtBool" -> Right CtBool
+    "CtDouble" -> Right CtDouble
+    "CtString" -> Right CtString
+    "CtHandle" -> Right CtHandle
+    "CtRawPtr" -> Right CtRawPtr
+    _ -> decFail "expected an ABI type (e.g. 'ctInt'/'ctString'/'ctHandle') (Spec §26.1.1)"
+
+decSymbolDecl :: EvalCtx -> Value -> Dec SymbolDecl
+decSymbolDecl ctx v = do
   (c, args) <- asCtor ctx v
   case (c, args) of
-    ("PkgConfigSource", [pkg, mv]) -> do
+    ("MkSymbolDecl", [member, sym, params, result]) ->
+      SymbolDecl
+        <$> asStr ctx member
+        <*> asStr ctx sym
+        <*> (asList ctx params >>= mapM (decCType ctx))
+        <*> decCType ctx result
+    _ -> decFail "expected a 'symbolDecl' value (Spec §36.28)"
+
+decSurface :: EvalCtx -> Value -> Dec NativeSurface
+decSurface ctx v = do
+  (c, args) <- asCtor ctx v
+  case (c, args) of
+    ("SymbolListSurface", (ss : _)) -> SymbolListSurface <$> (asList ctx ss >>= mapM (decSymbolDecl ctx))
+    _ -> decFail "expected a binding surface ('symbolList [...]') (Spec §27.1.1)"
+
+decInput :: EvalCtx -> Value -> Dec NativeInput
+decInput ctx v = do
+  (c, args) <- asCtor ctx v
+  case (c, args) of
+    ("HeadersInput", (ps : _)) -> HeadersInput <$> asStrList ctx ps
+    ("IncludeDirInput", (d : _)) -> IncludeDirInput <$> asStr ctx d
+    ("DefineInput", [nm, val]) -> DefineInput <$> asStr ctx nm <*> asStr ctx val
+    ("PkgConfigInput", [pkg, mv]) -> do
       pkg' <- asStr ctx pkg
       mv' <- asOption ctx mv
       mvTxt <- traverse (asStr ctx) mv'
-      Right (PkgConfigSource pkg' mvTxt)
-    ("HeadersSource", (ps : _)) -> HeadersSource <$> asStrList ctx ps
-    ("SymbolListSource", (ss : _)) -> SymbolListSource <$> asStrList ctx ss
-    ("ShimSource", (p : _)) -> ShimSource <$> asStr ctx p
-    ("PrebuiltNativeSource", (p : _)) -> PrebuiltNativeSource <$> asStr ctx p
-    _ -> decFail "expected a native binding source (Spec §36.28)"
+      Right (PkgConfigInput pkg' mvTxt)
+    ("ShimInput", (ss : _)) -> ShimInput <$> asStrList ctx ss
+    ("ModuleMapInput", (fs : _)) -> ModuleMapInput <$> asStrList ctx fs
+    ("PrebuiltInput", [art, eid]) -> do
+      art' <- asStr ctx art
+      eid' <- asOption ctx eid
+      eidTxt <- traverse (asStr ctx) eid'
+      Right (PrebuiltInput art' eidTxt)
+    _ -> decFail "expected a native binding input ('headers'/'includeDir'/'define'/'pkgConfig'/'shim'/'moduleMap'/'prebuiltNative') (Spec §36.28)"
 
 decAbi :: EvalCtx -> Value -> Dec NativeAbi
 decAbi ctx v = do
@@ -217,13 +256,13 @@ decHostBinding :: EvalCtx -> Value -> Dec HostBinding
 decHostBinding ctx v = do
   (c, args) <- asCtor ctx v
   case (c, args) of
-    ("MkNativeBinding", [nm, provides, source, abi, hdrs, link, load]) ->
+    ("MkNativeBinding", [nm, provides, surface, abi, inputs, link, load]) ->
       NativeBinding
         <$> asStr ctx nm
         <*> (asList ctx provides >>= mapM (decModuleSelector ctx))
-        <*> decNativeSource ctx source
+        <*> decSurface ctx surface
         <*> decAbi ctx abi
-        <*> (asList ctx hdrs >>= mapM (decNativeSource ctx))
+        <*> (asList ctx inputs >>= mapM (decInput ctx))
         <*> decLink ctx link
         <*> decLoad ctx load
     _ -> decFail "expected a host binding ('nativeBinding') (Spec §36.28)"

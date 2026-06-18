@@ -11,6 +11,7 @@ import Kappa.Backend.Driver
   , buildNative
   , defaultBuildOptions
   )
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
 import Kappa.Build.Lock (LockEntry, lockWellFormed, parseLock, renderLock)
 import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
 import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
@@ -302,7 +303,7 @@ runTest manifestFile bc nm = do
 -- invocation by 'runInvocation', not here.)
 -- Returns the checked state, the @main@ GName, the gname→prim map, and the
 -- resolved plan — or 'Nothing' (diagnostics already emitted) on any error.
-prepareUnit :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName T.Text, ResolvedExe))
+prepareUnit :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName ResolvedNativeSymbol, ResolvedExe))
 prepareUnit manifestFile bc mname = do
   let manifestDir = takeDirectory manifestFile
   resolved <- resolveExecutable manifestDir bc mname
@@ -314,8 +315,8 @@ prepareUnit manifestFile bc mname = do
           nameOf p = Map.findWithDefault (moduleNameOf p) p nameTable
           files = [(p, s) | (p, s, _) <- loaded]
           preDiags = concat [d | (_, _, d) <- loaded]
-          (cu, hostPrims) =
-            compileProgramWithNative (rxProvidedModules rx) defaultUnsafeConfig True nameOf files
+          (cu, hostSyms) =
+            compileProgramWithNative (rxNativeSymbols rx) defaultUnsafeConfig True nameOf files
           cuDs = preDiags ++ cuDiags cu
       emitDiags Human cuDs
       let st = cuState cu
@@ -325,7 +326,7 @@ prepareUnit manifestFile bc mname = do
         else
           if not (Map.member mainG (csGlobals st))
             then hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition" >> pure Nothing
-            else pure (Just (st, mainG, hostPrims, rx))
+            else pure (Just (st, mainG, hostSyms, rx))
 
 -- | Native build of an executable target. Returns whether it succeeded.
 runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
@@ -333,16 +334,17 @@ runExecutable manifestFile bc ma mname = do
   prep <- prepareUnit manifestFile bc mname
   case prep of
     Nothing -> pure False
-    Just (st, mainG, hostPrims, rx) -> do
+    Just (st, mainG, hostSyms, rx) -> do
       let entryFile = maybe "<entry>" fst (lookupEntry rx)
           opts =
             defaultBuildOptions
               { boOutput = maOut ma
               , boEmitCOnly = maEmitC ma
               , boCC = maCC ma
-              , boRuntimeFfi = rxRuntimeFfi rx
-              , boHostPrims = hostPrims
+              , boHostSyms = hostSyms
               , boLinkSpecs = rxLinkSpecs rx
+              , boNativeInputs = rxNativeInputs rx
+              , boNativeBaseDir = Just (takeDirectory manifestFile)
               }
       result <- buildNative st mainG entryFile opts
       case result of

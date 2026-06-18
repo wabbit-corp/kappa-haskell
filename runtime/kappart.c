@@ -298,6 +298,33 @@ KValue *kfgn(void *p, const char *kind) {
   return r;
 }
 
+/* §27.1.1: a curried native host-binding action (argc=0).  Accumulates
+ * args via kapp; a saturated value is the suspended UIO action. */
+KValue *knative(KNativeFn fn, int arity, const char *kind) {
+  KValue *r = alloc_val(K_NATIVE);
+  r->as.native.fn = fn;
+  r->as.native.arity = arity;
+  r->as.native.argc = 0;
+  r->as.native.args = NULL;
+  r->as.native.kind = kind;
+  return r;
+}
+
+/* The saturated fast path: build a K_NATIVE holding all `arity` args at
+ * once (copied into GC memory so it outlives the caller's argument array).
+ * The result is the suspended UIO action; krun_io fires `fn(args)`. */
+KValue *knative_sat(KNativeFn fn, int arity, KValue **args) {
+  KValue *r = alloc_val(K_NATIVE);
+  r->as.native.fn = fn;
+  r->as.native.arity = arity;
+  r->as.native.argc = arity;
+  KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(arity > 0 ? arity : 1));
+  for (int i = 0; i < arity; i++) a[i] = args[i];
+  r->as.native.args = a;
+  r->as.native.kind = fn ? "native" : "native";
+  return r;
+}
+
 KValue *kinject(int tagid, const char *tag, KValue *payload) {
   KValue *r = alloc_val(K_VARIANT);
   r->as.var.tag = tag;          /* a generated static string literal */
@@ -374,6 +401,21 @@ static KValue *prim_append_arg(KValue *f, KValue *x) {
   return r;
 }
 
+/* §27.1.1: accumulate one argument onto a curried native action. */
+static KValue *native_append_arg(KValue *f, KValue *x) {
+  int n = f->as.native.argc;
+  KValue *r = alloc_val(K_NATIVE);
+  r->as.native.fn = f->as.native.fn;
+  r->as.native.arity = f->as.native.arity;
+  r->as.native.argc = n + 1;
+  r->as.native.kind = f->as.native.kind;
+  KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n + 1));
+  for (int i = 0; i < n; i++) a[i] = f->as.native.args[i];
+  a[n] = x;
+  r->as.native.args = a;
+  return r;
+}
+
 /* Apply once, without draining tail-call bounces. A closure body may
  * return a K_BOUNCE describing a tail call it deferred (§27.5A.3 stack-safe
  * lowering); the caller drives it via ktrampoline. */
@@ -389,6 +431,13 @@ static KValue *kapply_once(KValue *f, KValue *x) {
         return prim_fire_pure(r->as.prim.name, r->as.prim.args);
       }
       return r; /* still partial */
+    }
+    case K_NATIVE: {
+      /* §27.1.1: native bindings are conservatively typed in UIO, so a
+       * saturated native action is ALWAYS a suspended IO action (it runs
+       * under krun_io by calling its emitted wrapper — never fires here). */
+      KValue *r = native_append_arg(f, x);
+      return r;
     }
     default:
       krt_fail("kapp: applying a non-function value");
@@ -468,6 +517,7 @@ KValue *kappi(KValue *f, KValue *x) {
      * (§31.2); an implicit lambda is a real binder and is applied. */
     case K_CTOR:
     case K_PRIM:
+    case K_NATIVE:
       return f;
     case K_CLO:
       return ktrampoline(f->as.clo.fn(f->as.clo.env, x));
@@ -626,6 +676,16 @@ int kas_bool(KValue *v) {
   if (v->as.ctor.tagid == KCT_TRUE) return 1;
   if (v->as.ctor.tagid == KCT_FALSE) return 0;
   krt_fail("kas_bool: not a Bool constructor");
+}
+
+const char *kas_str(KValue *v) {
+  if (v->tag != K_STR) krt_fail("kas_str: not a String");
+  return v->as.str.p; /* kstr() NUL-terminates; length stays authoritative */
+}
+
+void *kas_fgn(KValue *v) {
+  if (v->tag != K_FGN) krt_fail("kas_fgn: not a foreign handle");
+  return v->as.fgn.p;
 }
 
 /* ── references ────────────────────────────────────────────────────── */
@@ -1797,8 +1857,15 @@ KValue *krun_io(KValue *action) {
       if (PRIM("newRef")) return krun_finish(kref_new(a[0]), discard, defers);
       if (PRIM("readRef")) return krun_finish(kref_get(a[0]), discard, defers);
       if (PRIM("writeRef")) return krun_finish(kref_set(a[0], a[1]), discard, defers);
-      /* FFI IO primitives are registered by the FFI runtime (kappart_ffi). */
-      { KValue *r = krun_io_ffi(action); return krun_finish(r, discard, defers); }
+      krt_fail("internal: unknown IO primitive (native host bindings run as K_NATIVE)");
+    }
+    case K_NATIVE: {
+      /* §27.1.1: fire the manifest symbol by calling the codegen-emitted
+       * wrapper DIRECTLY — no name lookup, no strcmp, no dispatch table. */
+      if (action->as.native.argc < action->as.native.arity)
+        krt_fail("internal: native action run before saturation");
+      KValue *r = action->as.native.fn(action->as.native.args);
+      return krun_finish(r, discard, defers);
     }
     default:
       /* a pure value used in IO position (e.g. a `return`ed result) */
@@ -1812,7 +1879,7 @@ KValue *krun_io(KValue *action) {
 static int prim_is_io(const char *p) {
   return PRIM("printString") || PRIM("printlnString") || PRIM("ioPure") ||
          PRIM("ioBind") || PRIM("ioThen") || PRIM("newRef") ||
-         PRIM("readRef") || PRIM("writeRef") || prim_is_io_ffi(p);
+         PRIM("readRef") || PRIM("writeRef");
 }
 
 static int prim_arity(const char *p) {
@@ -1880,5 +1947,5 @@ static int prim_arity(const char *p) {
       PRIM("__atomicRepEq") ||
       PRIM("ioBind") || PRIM("ioThen") || PRIM("writeRef"))
     return 2;
-  return prim_arity_ffi(p);
+  krt_fail("internal: unknown primitive arity");
 }

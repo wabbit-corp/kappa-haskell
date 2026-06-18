@@ -47,9 +47,17 @@ typedef enum {
   K_IOEFFECT, /* like K_IOTAIL but the scope discards the result (a tail  */
              /* statement-`if` branch, §18.8): krun_io runs it then       */
              /* yields Unit.  Never user-observable.                       */
-  K_IOFINALLY /* a do-block tail IO action carrying §18.7 deferred actions */
+  K_IOFINALLY, /* a do-block tail IO action carrying §18.7 deferred actions */
              /* to run (LIFO) once it completes; krun_io accumulates them  */
              /* on a heap stack so the recursion stays C-stack-bounded.    */
+  K_NATIVE  /* §26/§27.1.1 native host-binding action: a CODEGEN-EMITTED   */
+            /* direct C wrapper pointer + accumulated args.  Replaces the  */
+            /* former string-named FFI primitive: there is NO runtime name */
+            /* table and NO strcmp dispatch — krun_io fires the action by  */
+            /* CALLING the function pointer the .kappa.c emitted for the   */
+            /* manifest's symbol.  Curries like K_PRIM (argc<arity is a    */
+            /* partial value); a saturated K_NATIVE is the suspended UIO   */
+            /* action that krun_io runs.                                   */
 } KTag;
 
 /* LR2 constructor tag ids (numeric pattern-match dispatch).  These FIXED ids
@@ -107,8 +115,16 @@ struct KValue {
     struct { KValue *action; KValue **defers; int n; } iofin; /* K_IOFINALLY */
     unsigned char byte;
     struct { const unsigned char *p; size_t len; } bytes;
+    /* K_NATIVE: `fn` is the codegen-emitted direct wrapper, `arity` the
+     * declared param count, `argc` the args accumulated so far, `kind` a
+     * label for diagnostics only (NEVER used for dispatch). */
+    struct { KValue *(*fn)(KValue **args); int arity; int argc; KValue **args; const char *kind; } native;
   } as;
 };
+
+/* §27.1.1 native action body: receives the accumulated argument array and
+ * returns the (boxed) result.  Emitted per manifest symbol by the backend. */
+typedef KValue *(*KNativeFn)(KValue **args);
 
 /* de Bruijn environment: head is index 0 (the innermost binder). */
 struct KEnv {
@@ -224,6 +240,8 @@ int      klit_eq(KValue *a, KValue *b);          /* literal equality for CPLit *
 int64_t  kas_int(KValue *v);
 double   kas_dbl(KValue *v);
 int      kas_bool(KValue *v);
+const char *kas_str(KValue *v);   /* NUL-terminated bytes of a K_STR (§26 CtString) */
+void    *kas_fgn(KValue *v);      /* opaque pointer of a K_FGN (§26 CtHandle/CtRawPtr) */
 
 /* ── references ────────────────────────────────────────────────────── */
 KValue  *kref_get(KValue *r);
@@ -240,15 +258,14 @@ int      kis_cons(KValue *v);
 /* abort with a runtime error message (mirrors a Kappa runtime defect). */
 void     krt_fail(const char *msg) __attribute__((noreturn));
 
-/* ── FFI hooks ─────────────────────────────────────────────────────── */
-/* The core runtime dispatches any primitive it does not implement itself
- * to the FFI runtime (kappart_ffi.c).  The stub build provides a unit
- * that knows no FFI primitives; the demo build links the sockets+sqlite3
- * implementation instead.  The code generator only emits a primitive
- * after confirming the linked runtime implements it, so these are never
- * reached for an unknown name. */
-int      prim_is_io_ffi(const char *p);   /* is `p` an FFI IO primitive?  */
-int      prim_arity_ffi(const char *p);   /* arity of FFI primitive `p`   */
-KValue  *krun_io_ffi(KValue *action);     /* run an FFI IO action         */
+/* ── native host-binding actions (§26/§27.1.1) ─────────────────────── */
+/* A native action carries a DIRECT C function pointer emitted by the
+ * backend for a manifest-declared symbol — there is no name table and no
+ * strcmp dispatch.  `knative` builds the curried (argc=0) action value;
+ * `kapp` accumulates args and a saturated action is the suspended UIO
+ * action that `krun_io` runs by calling `fn`.  `knative_sat` is the
+ * saturated fast path the backend emits for an exactly-applied call. */
+KValue  *knative(KNativeFn fn, int arity, const char *kind);
+KValue  *knative_sat(KNativeFn fn, int arity, KValue **args);
 
 #endif /* KAPPART_H */

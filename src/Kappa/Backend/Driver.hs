@@ -18,7 +18,8 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
-import Kappa.Build.Types (NativeLinkSpec (..))
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
+import Kappa.Build.Types (NativeInput (..), NativeLinkSpec (..))
 import Kappa.Check (CheckState)
 import Kappa.Core (GName)
 import Kappa.Diagnostic
@@ -39,18 +40,22 @@ data BuildOptions = BuildOptions
   { boOutput :: !(Maybe FilePath) -- ^ output path (default: input basename)
   , boEmitCOnly :: !Bool -- ^ write the generated C and stop
   , boCC :: !(Maybe String) -- ^ explicit C driver override
-  , boRuntimeFfi :: !Bool
-  -- ^ Link the real FFI runtime unit (@kappart_ffi.c@) instead of the
-  -- no-FFI stub. True when the build provides any @host.native.*@ module
-  -- (i.e. a manifest native binding is selected).
-  , boHostPrims :: !(Map GName Text)
-  -- ^ §34.5.3: each provided host-binding member ↦ its runtime FFI
-  -- primitive (built per build from the manifest's native bindings via
-  -- "Kappa.Backend.NativeCatalog"). Threaded to codegen and used to seed
-  -- the known-prim set; replaces the former global bare-name table.
+  , boHostSyms :: !(Map GName ResolvedNativeSymbol)
+  -- ^ §27.1.1/§36.28: each provided host-binding member ↦ its resolved
+  -- native symbol (C symbol + ABI signature), built per build from the
+  -- manifest's native bindings (never a hardcoded catalog). Threaded to
+  -- codegen, which emits a direct extern prototype + typed wrapper +
+  -- direct call site per used member.
   , boLinkSpecs :: ![NativeLinkSpec]
   -- ^ §36.28 link specs from the selected native bindings; mapped to cc
   -- linker flags. Replaces the former @--lib@ extra-libs list.
+  , boNativeInputs :: ![NativeInput]
+  -- ^ §36.28 realization inputs of the selected bindings; drive the C
+  -- toolchain (include dirs, defines, pkg-config flags, compiled shim
+  -- translation units, prebuilt link inputs).
+  , boNativeBaseDir :: !(Maybe FilePath)
+  -- ^ directory that native input relative paths (headers/includeDir/
+  -- shim/prebuilt) resolve against — the manifest directory.
   , boWorkDir :: !(Maybe FilePath) -- ^ directory for generated artifacts
   }
 
@@ -60,9 +65,10 @@ defaultBuildOptions =
     { boOutput = Nothing
     , boEmitCOnly = False
     , boCC = Nothing
-    , boRuntimeFfi = False
-    , boHostPrims = Map.empty
+    , boHostSyms = Map.empty
     , boLinkSpecs = []
+    , boNativeInputs = []
+    , boNativeBaseDir = Nothing
     , boWorkDir = Nothing
     }
 
@@ -71,10 +77,10 @@ defaultBuildOptions =
 -- @--emit-c@).  On failure returns structured diagnostics.
 buildNative :: CheckState -> GName -> FilePath -> BuildOptions -> IO (Either Diagnostics FilePath)
 buildNative cs mainG inputPath opts =
-  -- The known-prim set is seeded inside generateC from boHostPrims, so no
-  -- separate FFI prim set is needed here (empty); the provided host
-  -- bindings' prims come through the gname→prim map.
-  case generateC cs mainG Set.empty (boHostPrims opts) of
+  -- Native host bindings lower to direct typed call sites generated from
+  -- the resolved symbol map (no FFI prim set); the runtime needs no extra
+  -- prim names seeded here.
+  case generateC cs mainG Set.empty (boHostSyms opts) of
     Left errs -> pure (Left (backendDiagnostics errs))
     Right csource -> do
       mruntime <- findRuntimeDir
@@ -99,33 +105,88 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
     Nothing -> pure (Left [toolDiag noCcMsg])
     Just (ccExe, ccLead) -> do
       let outPath = maybe (workDir </> base) id (boOutput opts)
-          ffiSrc =
-            if boRuntimeFfi opts
-              then runtimeDir </> "kappart_ffi.c"
-              else runtimeDir </> "kappart_ffi_stub.c"
-          args =
-            ccLead
-              ++ [ "-std=c11"
-                 -- Disable FP contraction (no implicit FMA fusion) so the
-                 -- backend's unboxed double arithmetic rounds per-operation
-                 -- exactly like the interpreter's (and the boxed kp_*Double
-                 -- prims), making native ≡ interpreter for Double bit-for-bit
-                 -- regardless of the -O level (R2.2 / §27 semantics).
-                 , "-ffp-contract=off"
-                 , "-I", runtimeDir
-                 , cPath
-                 , runtimeDir </> "kappart.c"
-                 , ffiSrc
-                 , "-lgc"
-                 , "-lgmp" -- unbounded Integer (§6); see docs/NATIVE_BACKEND.md
-                 ]
-              ++ linkFlags (boLinkSpecs opts)
-              ++ ["-o", outPath]
-      (ec, out, err) <- readProcessWithExitCode ccExe args ""
-      case ec of
-        ExitSuccess -> pure (Right outPath)
-        ExitFailure n ->
-          pure (Left [toolDiag (ccFailMsg ccExe n (out ++ err))])
+          baseDir = maybe "." id (boNativeBaseDir opts)
+      -- §36.28: realize the manifest's native inputs into toolchain flags
+      -- (include dirs, defines, compiled shim TUs, prebuilt link inputs)
+      -- and pkg-config cflags/libs (the only fs/tool discovery, done here
+      -- in the build phase, never at config-eval — §35.13).
+      (inCFlags, inSources, inLibs, pkgErr) <- resolveInputs baseDir (boNativeInputs opts)
+      case pkgErr of
+        Just msg -> pure (Left [toolDiag msg])
+        Nothing -> do
+          let args =
+                ccLead
+                  ++ [ "-std=c11"
+                     -- Disable FP contraction (no implicit FMA fusion) so the
+                     -- backend's unboxed double arithmetic rounds per-operation
+                     -- exactly like the interpreter's (and the boxed kp_*Double
+                     -- prims), making native ≡ interpreter for Double bit-for-bit
+                     -- regardless of the -O level (R2.2 / §27 semantics).
+                     , "-ffp-contract=off"
+                     , "-I", runtimeDir
+                     ]
+                  ++ inCFlags
+                  ++ [ cPath
+                     , runtimeDir </> "kappart.c"
+                     ]
+                  ++ inSources
+                  ++ [ "-lgc"
+                     , "-lgmp" -- unbounded Integer (§6); see docs/NATIVE_BACKEND.md
+                     ]
+                  ++ linkFlags (boLinkSpecs opts)
+                  ++ inLibs
+                  ++ ["-o", outPath]
+          (ec, out, err) <- readProcessWithExitCode ccExe args ""
+          case ec of
+            ExitSuccess -> pure (Right outPath)
+            ExitFailure n ->
+              pure (Left [toolDiag (ccFailMsg ccExe n (out ++ err))])
+
+-- | §36.28: turn native realization inputs into toolchain arguments —
+-- @(cflags, extra source/object inputs, link flags, error)@. Relative paths
+-- resolve against @baseDir@ (the manifest dir). @pkgConfig@ is the only
+-- external discovery here (run in the build phase, never config-eval).
+resolveInputs :: FilePath -> [NativeInput] -> IO ([String], [String], [String], Maybe T.Text)
+resolveInputs baseDir = go [] [] []
+  where
+    go cf sr lb [] = pure (reverse cf, reverse sr, reverse lb, Nothing)
+    go cf sr lb (i : is) = case i of
+      IncludeDirInput d -> go (rev2 ["-I", baseDir </> T.unpack d] cf) sr lb is
+      HeadersInput hs ->
+        -- a header contributes its containing directory as an include path
+        let dirs = [takeDirectory (baseDir </> T.unpack h) | h <- hs]
+         in go (foldl (\c d -> rev2 ["-I", d] c) cf dirs) sr lb is
+      DefineInput n v -> go (("-D" ++ T.unpack n ++ "=" ++ T.unpack v) : cf) sr lb is
+      ShimInput srcs -> go cf (foldl (\s p -> (baseDir </> T.unpack p) : s) sr srcs) lb is
+      PrebuiltInput art _ -> go cf ((baseDir </> T.unpack art) : sr) lb is
+      ModuleMapInput _ -> go cf sr lb is -- digested for identity; no toolchain effect
+      PkgConfigInput pkg _ -> do
+        r <- pkgConfigFlags (T.unpack pkg)
+        case r of
+          Left e -> pure (reverse cf, reverse sr, reverse lb, Just e)
+          Right (cflags, libs) ->
+            go (rev2 cflags cf) sr (rev2 libs lb) is
+    rev2 xs acc = reverse xs ++ acc
+
+-- | Run @pkg-config --cflags@ then @--libs@ for a package, so include dirs
+-- precede sources and @-l@ libs follow them on the link line. Missing
+-- pkg-config or an unknown package is a structured build error.
+pkgConfigFlags :: String -> IO (Either T.Text ([String], [String]))
+pkgConfigFlags pkg = do
+  mpc <- findExecutable "pkg-config"
+  case mpc of
+    Nothing -> pure (Left "pkg-config is required by a native binding but was not found on PATH (Spec §36.28)")
+    Just pc -> do
+      (ec1, cflagsOut, err1) <- readProcessWithExitCode pc ["--cflags", pkg] ""
+      case ec1 of
+        ExitFailure _ -> pure (Left (pkgErr err1))
+        ExitSuccess -> do
+          (ec2, libsOut, err2) <- readProcessWithExitCode pc ["--libs", pkg] ""
+          case ec2 of
+            ExitFailure _ -> pure (Left (pkgErr err2))
+            ExitSuccess -> pure (Right (words cflagsOut, words libsOut))
+  where
+    pkgErr e = "pkg-config failed for package '" <> T.pack pkg <> "': " <> T.pack e <> " (Spec §36.28)"
 
 -- ── Toolchain / runtime discovery ────────────────────────────────────
 

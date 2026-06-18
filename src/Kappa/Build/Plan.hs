@@ -24,11 +24,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import Kappa.Backend.NativeCatalog
-  ( CatalogMember (..)
-  , CatalogModule (..)
-  , catalogModule
-  )
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
 import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
 import Kappa.Build.Types
@@ -58,11 +54,19 @@ data ResolvedExe = ResolvedExe
   -- ^ every package source file compiled for this target (path + its
   -- §8.1 path-derived module name), filtered by the @modules@ selector
   , rxProvidedModules :: ![ModuleName]
-  -- ^ the @host.native.*@ modules to make importable for this build
+  -- ^ the distinct @host.native.*@ modules made importable for this build
+  -- (derived from 'rxNativeSymbols' — every module that has ≥1 symbol)
+  , rxNativeSymbols :: ![ResolvedNativeSymbol]
+  -- ^ §27.1.1/§36.28: every native symbol resolved from the selected
+  -- bindings' @symbolList@ surfaces (Kappa member ↦ C symbol + ABI
+  -- signature). This is the SOLE authority for the importable
+  -- @host.native.*@ surface and for direct-call codegen — there is no
+  -- hardcoded native catalog.
   , rxLinkSpecs :: ![NativeLinkSpec]
   -- ^ §36.28 link specs of the selected native bindings
-  , rxRuntimeFfi :: !Bool
-  -- ^ whether any native binding is selected (link the FFI runtime unit)
+  , rxNativeInputs :: ![NativeInput]
+  -- ^ §36.28 realization inputs (headers/includeDir/define/pkgConfig/shim/
+  -- moduleMap/prebuilt) of the selected bindings; drive the C toolchain
   , rxLockEntries :: ![LockEntry]
   -- ^ §36.23.2: content identity of each resolved path-dependency package
   -- in the closure (for kappa.lock / reproducibility)
@@ -87,7 +91,7 @@ resolveExecutable manifestDir bc mTarget =
       | not (isNativeBackend (tBackend tgt)) -> pure (Left [backendUnrealized tgt])
       | otherwise -> case resolveProviders tgt of
       Left ds -> pure (Left ds)
-      Right (providedMods, linkSpecs, anyNative) ->
+      Right (nativeSyms, linkSpecs, nativeInputs, _anyNative) ->
         case tMain tgt of
           SelModulesUnder _ -> pure (Left [mainNotConcrete (tName tgt)])
           SelModule modName -> do
@@ -136,9 +140,10 @@ resolveExecutable manifestDir bc mTarget =
                                   { rxName = tName tgt
                                   , rxEntryModule = entryMod
                                   , rxSourceFiles = unit
-                                  , rxProvidedModules = providedMods
+                                  , rxProvidedModules = dedup (map rnsModule nativeSyms)
+                                  , rxNativeSymbols = nativeSyms
                                   , rxLinkSpecs = linkSpecs
-                                  , rxRuntimeFfi = anyNative
+                                  , rxNativeInputs = nativeInputs
                                   , rxLockEntries = lockEntries
                                   }
   where
@@ -186,7 +191,7 @@ resolveExecutable manifestDir bc mTarget =
 
     -- Resolve the target's named host bindings to provided host.native
     -- modules, with collision + realizability checks (§36.28, §34.5.3).
-    resolveProviders :: Target -> Either Diagnostics ([ModuleName], [NativeLinkSpec], Bool)
+    resolveProviders :: Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], Bool)
     resolveProviders tgt =
       let wanted = targetHostBindings tgt
           lookupBinding nm = [hb | hb <- bcHostBindings bc, nbName hb == nm]
@@ -201,13 +206,17 @@ resolveExecutable manifestDir bc mTarget =
             -- realizability: this backend realizes only the load modes it
             -- implements; reject the rest honestly (§34.5.3).
             mapM_ checkRealizable selected
-            -- expand provides → concrete catalog modules, validating each
-            perBinding <- traverse expandBinding selected
+            -- resolve each binding's provides × symbolList surface into
+            -- concrete ResolvedNativeSymbols (§27.1.1/§36.28). The manifest
+            -- surface is the SOLE authority — no hardcoded catalog.
+            perBinding <- traverse resolveBinding selected
+            let allSyms = concat [ss | (_, ss) <- perBinding]
+                bindingMods = [(bn, dedup (map rnsModule ss)) | (bn, ss) <- perBinding]
             -- collision: same effective module provided by ≥2 bindings
-            let allMods = concat [ms | (_, ms) <- perBinding]
-            checkCollisions perBinding
+            checkCollisions bindingMods
             let linkSpecs = map nbLink selected
-            Right (dedup allMods, linkSpecs, not (null selected))
+                inputs = concatMap nbInputs selected
+            Right (allSyms, linkSpecs, inputs, not (null selected))
 
     -- §34.5.3: the zig native profile realizes only the system-loader load
     -- mode (dynamic/static linkage resolved by the system loader). It does
@@ -231,40 +240,51 @@ resolveExecutable manifestDir bc mTarget =
       RuntimeLoad -> "runtimeLoad"
       ProvidedByHost -> "providedByHost"
 
-    -- a binding's provides selectors → concrete catalog module names, plus
-    -- (for a symbolList source) validation that each named symbol is an
-    -- actual member of the provided catalog modules.
-    expandBinding :: HostBinding -> Either Diagnostics (Text, [ModuleName])
-    expandBinding hb = do
+    -- §27.1.1/§36.28: resolve a binding's provides × symbolList surface into
+    -- concrete ResolvedNativeSymbols. Each provided concrete host.native
+    -- module gets the binding's full declared surface (the manifest's
+    -- SymbolDecls, carrying the C symbol + ABI signature). The surface is
+    -- authoritative — there is no catalog to validate against.
+    resolveBinding :: HostBinding -> Either Diagnostics (Text, [ResolvedNativeSymbol])
+    resolveBinding hb = do
       mods <- concat <$> traverse (expandSelector hb) (nbProvides hb)
-      checkSymbols hb mods
-      Right (nbName hb, mods)
+      decls <- surfaceDecls hb
+      let syms =
+            [ ResolvedNativeSymbol
+                { rnsModule = mn
+                , rnsMember = sdMember d
+                , rnsCSymbol = sdSymbol d
+                , rnsParams = sdParams d
+                , rnsResult = sdResult d
+                }
+            | mn <- mods
+            , d <- decls
+            ]
+      Right (nbName hb, syms)
 
-    checkSymbols :: HostBinding -> [ModuleName] -> Either Diagnostics ()
-    checkSymbols hb mods = case nbSource hb of
-      SymbolListSource syms ->
-        let members =
-              [ cmName m
-              | mn <- mods
-              , Just cmo <- [catalogModule mn]
-              , m <- cmoMembers cmo
-              ]
-         in case [s | s <- syms, s `notElem` members] of
-              [] -> Right ()
-              (bad : _) -> Left [unsupportedSymbol hb bad]
-      _ -> Right ()
+    -- The binding's declared symbol surface (§36.28 symbolList). A binding
+    -- that provides modules but declares no surface is rejected: there is
+    -- nothing to make importable or to call.
+    surfaceDecls :: HostBinding -> Either Diagnostics [SymbolDecl]
+    surfaceDecls hb = case nbSurface hb of
+      SymbolListSurface [] -> Left [emptySurface hb]
+      SymbolListSurface ds -> Right ds
 
+    -- §36.28: a provides selector names a concrete host.native module
+    -- (SelModule) or a module-name prefix (SelModulesUnder). Both resolve to
+    -- a concrete provided module — the prefix form names the module at the
+    -- prefix path. The zig profile realizes only the @host.native@ root, so
+    -- a module under any other host root is rejected honestly (§34.5.3).
     expandSelector :: HostBinding -> ModuleSelector -> Either Diagnostics [ModuleName]
-    expandSelector hb sel = case sel of
-      SelModule m ->
-        let mn = ModuleName (T.splitOn "." m)
-         in case catalogModule mn of
-              Just _ -> Right [mn]
-              Nothing -> Left [unsupportedModule hb m]
-      SelModulesUnder _ ->
-        -- §36.28 providers name concrete host.native modules; a
-        -- prefix selector for a native binding is not supported here.
-        Left [unsupportedSelector hb]
+    expandSelector hb sel =
+      let validate m =
+            let mn@(ModuleName segs) = ModuleName (T.splitOn "." m)
+             in if take 2 segs == ["host", "native"] && length segs > 2
+                  then Right [mn]
+                  else Left [unsupportedModule hb m]
+       in case sel of
+            SelModule m -> validate m
+            SelModulesUnder m -> validate m
 
     checkCollisions :: [(Text, [ModuleName])] -> Either Diagnostics ()
     checkCollisions perBinding =
@@ -325,20 +345,15 @@ resolveExecutable manifestDir bc mTarget =
     unsupportedModule hb m =
       buildErr "E_NATIVE_BINDING_UNSUPPORTED" "kappa-hs.build.native-unsupported"
         ( "native binding '" <> nbName hb <> "' provides '" <> m
-            <> "', which the zig native profile does not supply in its host.native catalog "
-            <> "(Spec §27.1.1, §34.5.3)"
+            <> "', which is not a concrete module under the 'host.native' root; "
+            <> "the zig native profile realizes only host.native.* modules "
+            <> "(Spec §27.1.1, §34.5.3, §36.28)"
         )
-    unsupportedSelector hb =
+    emptySurface hb =
       buildErr "E_NATIVE_BINDING_UNSUPPORTED" "kappa-hs.build.native-unsupported"
-        ( "native binding '" <> nbName hb
-            <> "' uses a 'modulesUnder' provider selector; a native binding must name "
-            <> "concrete host.native modules (Spec §36.28)"
-        )
-    unsupportedSymbol hb sym =
-      buildErr "E_NATIVE_BINDING_UNSUPPORTED" "kappa-hs.build.native-unsupported"
-        ( "native binding '" <> nbName hb <> "' lists symbol '" <> sym
-            <> "', which is not a member of the host.native module(s) it provides in the "
-            <> "zig profile's native catalog (Spec §27.1.1, §36.28)"
+        ( "native binding '" <> nbName hb <> "' declares no symbol surface; a "
+            <> "native binding must describe its exported symbols with their ABI "
+            <> "signatures via symbolList (Spec §27.1.1, §36.28)"
         )
     collision mn bns =
       buildErr "E_PROVIDER_COLLISION" "kappa.provider.collision"

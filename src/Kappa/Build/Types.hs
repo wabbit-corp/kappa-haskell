@@ -18,7 +18,10 @@ module Kappa.Build.Types
   , Dependency (..)
   , ModuleSelector (..)
   , BackendProfile (..)
-  , NativeBindingSource (..)
+  , CType (..)
+  , SymbolDecl (..)
+  , NativeSurface (..)
+  , NativeInput (..)
   , NativeAbi (..)
   , NativeLinkSpec (..)
   , NativeLoadSpec (..)
@@ -69,12 +72,48 @@ data BackendProfile
   | DotNetBackend
   deriving stock (Eq, Show)
 
-data NativeBindingSource
-  = PkgConfigSource !Text !(Maybe Text) -- ^ package, minVersion
-  | HeadersSource ![Text]
-  | SymbolListSource ![Text]
-  | ShimSource !Text
-  | PrebuiltNativeSource !Text
+-- | §26.1.1/§26.1.4 conservative ABI type vocabulary admitted in a native
+-- binding's symbol signatures. Each maps to a documented Kappa surface type
+-- and a C ABI type (see "Kappa.Backend.NativeFfi").
+data CType
+  = CtUnit
+  | CtInt
+  | CtInt64
+  | CtBool
+  | CtDouble
+  | CtString
+  | CtHandle
+  | CtRawPtr
+  deriving stock (Eq, Show)
+
+-- | §36.28: one exported native symbol — the Kappa member spelling, the C
+-- symbol it calls, and its ABI signature (parameter types + result type).
+data SymbolDecl = SymbolDecl
+  { sdMember :: !Text
+  , sdSymbol :: !Text
+  , sdParams :: ![CType]
+  , sdResult :: !CType
+  }
+  deriving stock (Eq, Show)
+
+-- | §27.1.1: the binding's raw @host.native@ surface, derived from an
+-- explicit binding description (a symbol list with ABI signatures).
+newtype NativeSurface
+  = SymbolListSurface [SymbolDecl]
+  deriving stock (Eq, Show)
+
+-- | §36.28 binding sources: realization inputs naming WHERE/HOW the declared
+-- C symbols are provided and located. These are inert config data (§35.13);
+-- discovery (pkg-config, header digesting) happens later, in build-plan
+-- resolution, never during manifest evaluation.
+data NativeInput
+  = HeadersInput ![Text] -- ^ header files (also adds their dirs to -I)
+  | IncludeDirInput !Text -- ^ an explicit -I include directory
+  | DefineInput !Text !Text -- ^ a -D preprocessor definition (name, value)
+  | PkgConfigInput !Text !(Maybe Text) -- ^ pkg-config package, optional minVersion
+  | ShimInput ![Text] -- ^ user-authored C shim translation units to compile+link
+  | ModuleMapInput ![Text] -- ^ native module-map files (digested; surface still from symbolList)
+  | PrebuiltInput !Text !(Maybe Text) -- ^ prebuilt artifact path, optional expected identity
   deriving stock (Eq, Show)
 
 data NativeAbi = CAbi
@@ -96,9 +135,9 @@ data NativeLoadSpec
 data HostBinding = NativeBinding
   { nbName :: !Text
   , nbProvides :: ![ModuleSelector]
-  , nbSource :: !NativeBindingSource
+  , nbSurface :: !NativeSurface
   , nbAbi :: !NativeAbi
-  , nbHeaders :: ![NativeBindingSource]
+  , nbInputs :: ![NativeInput]
   , nbLink :: !NativeLinkSpec
   , nbLoad :: !NativeLoadSpec
   }

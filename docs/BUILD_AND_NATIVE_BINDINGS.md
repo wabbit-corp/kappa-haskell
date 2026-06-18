@@ -101,8 +101,9 @@ Components:
   selects a jvm/dotnet backend this implementation does not realize).
   `E_NATIVE_BINDING_UNPINNED` (`kappa.package.reproducibility`, §3.2.15) is
   **registered but not yet emitted** — reserved for the §36.28
-  unpinned-native-binding case, which cannot arise yet (every catalog
-  binding is pinned by its `symbolList`).
+  unpinned-native-binding case (resolved host-source digests + lockfile
+  pinning of headers/shim sources are a later increment; see the bug queue
+  N-6 in `KAPPA_SELF_HOSTING_PORT_NOTES.md`).
 
 - **Tests** (`tests/build/`, runner `run-build-tests.sh`): valid
   manifests (full §36.3 shape, minimal, symbol-list native binding),
@@ -179,31 +180,32 @@ mechanism. There is no hardcoded native list and no `--ffi-full`; the
 former `Kappa.Backend.Intrinsics` table and `Kappa.Backend.Ffi` are
 deleted.
 
-The model (§8.3.5 / §27.1.1 / §34.5.3):
+The model (§8.3.5 / §27.1.1 / §34.5.3) — **there is no in-compiler catalog**;
+the manifest binding is the sole authority for the surface:
 
-- **The catalog** (`src/Kappa/Backend/NativeCatalog.hs`) is the `zig`
-  profile's curated set of `host.native.*` module surfaces — each an
-  implementation-documented ABI description (§8.3.5): a list of typed
-  members and the runtime FFI primitive (`runtime/kappart_ffi.c`) that
-  realizes each (§34.5.3). Increment 2 supplies `host.native.sqlite3` and
-  `host.native.posix.net` (the former bare intrinsics, re-keyed by
-  module + member). These are runtime-only (§34.5.1): registered as
+- **A manifest `nativeBinding` fully describes** each `host.native.*` module
+  it provides: `provides = [module "host.native.sqlite3"]` (§36.28) names the
+  module, and `surface = symbolList [symbolDecl member cSymbol params result, …]`
+  declares every exported member, the C symbol it calls, and its ABI
+  signature (`CType` params/result — §26.1.1/§26.1.4). `inputs` name the
+  realization (`shim`/`headers`/`includeDir`/`define`/`pkgConfig`/
+  `prebuiltNative`); `link`/`load` drive the toolchain.
+- **The plan resolves** (`Kappa.Build.Plan.resolveBinding`, a §36.4 slice)
+  each binding's `provides × symbolList` into `ResolvedNativeSymbol` records
+  (module ↦ member, C symbol, ABI signature), with collision + realizability
+  + host-root checks. These are runtime-only (§34.5.1): registered as
   abstract globals (no value), so elaboration never demands them.
-- **A manifest `nativeBinding` selects** which `host.native.*` modules a
-  build provides (`provides = [module "host.native.sqlite3"]`, §36.28)
-  and supplies the link/load. `Kappa.Build.Plan.resolveExecutable` (a
-  §36.4 build-plan slice) selects the target, resolves its
-  `hostBindings` to catalog modules with collision + realizability
-  checks, and locates the entry module under the source roots.
 - **The program imports** the provided module
   (`import host.native.sqlite3 as sql`) and uses its members
-  (`sql.sqliteOpen`). `Kappa.Pipeline.compileProgramWithNative` registers
-  the selected catalog modules into the check state so the import
-  resolves, and returns a `GName → prim` map. Codegen
-  (`Kappa.Backend.C`, `gsHostPrims`) lowers each provided member to its
-  runtime primitive — keyed on the full `GName`, never a bare name.
-  `Kappa.Backend.Driver` links `kappart_ffi.c` and emits `-l` flags from
-  the binding's `link` spec.
+  (`sql.sqliteOpen`). `Kappa.Pipeline.applyNativeModules` registers each
+  resolved member as an abstract global whose Kappa type is DERIVED from its
+  ABI signature (`Kappa.Backend.NativeFfi.nativeMemberType`), and returns a
+  `GName → ResolvedNativeSymbol` map. Codegen (`Kappa.Backend.C`,
+  `gsHostSyms`) lowers each member to a **direct typed C call site**: an
+  `extern` prototype + a marshalling wrapper (`kw_*`) + a `knative` action.
+  `Kappa.Backend.Driver` compiles the `shim` translation units, runs
+  `pkg-config`, and threads `-I`/`-D`/`-l` from `inputs`/`link`. No
+  `kappart_ffi.c`, no runtime primitive table, no string dispatch.
 - **Source-defining** a `host.native.*` module (or any reserved host
   root) is rejected (`E_HOST_MODULE_SOURCE_DEFINED`, §8.3.5). With no
   manifest provider, importing `host.native.X` is unresolved
@@ -212,8 +214,8 @@ The model (§8.3.5 / §27.1.1 / §34.5.3):
 
 Diagnostics (all registered in `Kappa.Explain`): `E_PROVIDER_COLLISION`
 (two bindings provide one module), `E_NATIVE_BINDING_UNSUPPORTED`
-(provider names a module the catalog lacks, a `modulesUnder` selector, or
-a `symbolList` symbol that is not a member of the provided modules),
+(provider names a module not under the `host.native` root, or a binding
+with an empty symbol surface),
 `E_BUILD_BINDING_NOT_FOUND` (target names an undeclared binding),
 `E_BACKEND_HOST_LINK_UNREALIZABLE` (any load mode other than
 `systemLoader` — `bundledLoader`/`runtimeLoad`/`providedByHost` — which
@@ -333,23 +335,22 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   surface is `host.native` imports, not bare-name `expect`s. A bare
   `expect term` therefore has no native provider and is honestly
   unsatisfied. (Inert hook, not a hardcoded list or bootstrap path.)
-- `pkgConfig`/`headers` provider *discovery* (running `pkg-config`,
-  scanning headers) is not performed: §35.13 forbids the manifest from
-  doing it and §36.28 forbids inferring ABI from headers alone, so it is
-  build-plan resolution for a later increment. A `symbolList`/`pkgConfig`
-  provider selects a curated catalog module; its declared member names
-  are the binding's surface.
+- `pkgConfig`/`headers`/`includeDir`/`define`/`shim` inputs ARE realized in
+  the build phase (the driver runs `pkg-config`, adds `-I`/`-D`, and
+  compiles+links shim translation units) — never at config-eval (§35.13
+  forbids discovery there). The binding's surface comes from its own
+  `symbolList` (§36.28 forbids inferring ABI from headers alone), not from
+  any catalog. What is NOT yet done: digesting those inputs into a lockfile
+  for reproducible PINNING (bug queue N-6).
 - **Only the native (zig) backend profile is realized.** A target whose
   `backend` is `jvm`/`dotnet` is *rejected* at resolution with
   `E_BACKEND_PROFILE_UNREALIZED` (§34.5.3/§36.4) rather than silently built
   native. `--check`/`--provenance` still describe such a target (they
   perform no resolution).
-- A native binding's `headers`/`abi` fields are reified but **not yet
-  consumed** by build-plan resolution (no header digesting / ABI-mode
-  selection, §36.28). The binding's surface is its provider's catalog
-  member set; the header/ABI descriptors are recorded but inert. This is a
-  silent drop of those descriptors and will be wired when header digesting
-  lands.
+- A native binding's `abi` field is reified but currently only `cAbi` is
+  modeled; structured adapter-mode/calling-convention selection (§26.1.3,
+  §36.21) and the `M.Raw` raw surface (§26.1.2) are later increments (bug
+  queue N-8/N-10/N-12).
 - **External config inputs (§35.4) and the §35.13 standard request keys**
   (`requestedTarget`/`requestedBackend`/…) are not implemented: `std.config`
   declares only `configInput name`, with no loader-supplied `input`
@@ -362,9 +363,11 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
 1. **(done)** Build-manifest foundation: schema + config-mode check +
    reify + diagnostics + CLI discovery. Boundary: §35.13 (no resolution).
 2. **(done)** Native bindings driven by the manifest (§8.3.5/§34.5.3/
-   §36.28): catalog + provider selection + host.native imports + codegen
-   + link + diagnostics; `--ffi-full` and the hardcoded table retired; a
-   minimal §36.4 build-plan slice (target select + entry resolve).
+   §36.28): manifest `symbolList` surface (no catalog) + provider selection
+   + host.native imports + DIRECT typed-call codegen (extern proto + wrapper
+   + `knative`, no runtime FFI table) + shim/pkg-config/`-I`/`-l` realization
+   + diagnostics; a minimal §36.4 build-plan slice (target select + entry
+   resolve). `--ffi-full`, the hardcoded catalog, and `kappart_ffi.c` retired.
 3. **(done)** Multi-file build-plan resolution (§36.4): enumerate the
    package's modules under its source roots, filter by the target's
    `modules` selector, compile as one package-mode unit (header/path

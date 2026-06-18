@@ -56,13 +56,21 @@ for d in "$DIR"/native/*/; do
   out="$(timeout 120 $KAPPA build --manifest "$d" --emit-c -o /tmp/kbuild-out 2>&1)"; rc=$?
   if [ "$want" = "BUILD_OK" ]; then
     # a fixture that selects the sqlite host binding must emit its prim;
-    # otherwise just require that codegen produced a .c
+    # otherwise just require that codegen produced a .c. A fixture that
+    # selects the sqlite host binding must lower its members to DIRECT typed
+    # call sites (§27.1.1): the generated C must reference the per-member
+    # wrapper (kw_host_native_sqlite3_*) and must contain NO string-dispatched
+    # native primitive (kprim_call("__sqlite...) is the forbidden old design).
     needprim=0; grep -q "host.native.sqlite3" "$d/kappa.build.kp" && needprim=1
-    primok=1; [ "$needprim" = 1 ] && { find "$d" -name '*.kappa.c' -exec grep -ql "__sqlite" {} \; || primok=0; }
+    primok=1
+    if [ "$needprim" = 1 ]; then
+      grep -rql --include='*.kappa.c' "kw_host_native_sqlite3_" "$d" >/dev/null || primok=0
+      grep -rq --include='*.kappa.c' 'kprim_call("__' "$d" && primok=0
+    fi
     if [ "$rc" -eq 0 ] && [ -n "$(find "$d" -name '*.kappa.c')" ] && [ "$primok" = 1 ]; then
-      echo "PASS $name (built$([ "$needprim" = 1 ] && echo '; provider prim emitted'))"
+      echo "PASS $name (built$([ "$needprim" = 1 ] && echo '; direct native call sites, no string dispatch'))"
     else
-      echo "FAIL $name (expected build + prim)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
+      echo "FAIL $name (expected build + direct native call sites)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
     fi
     find "$d" -name '*.kappa.c' -delete 2>/dev/null
   else

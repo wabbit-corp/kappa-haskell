@@ -6,6 +6,6 @@ let buildConfig : BuildConfig = package { name = "frag"
     , sourceRoots = [sourceRoot "src"]
     , fragmentAxes = []
     , dependencies = []
-    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], source = symbolList ["sqliteOpen", "sqliteClose"], abi = cAbi, headers = [], link = dynamicLink ["sqlite3"], load = systemLoader }]
+    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], surface = symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi = cAbi, inputs = [], link = noLink, load = systemLoader }]
     , targets = [executable { name = "frag", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "main", modules = modulesUnder "main", dependencies = [], hostBindings = ["sqlite3"] }]
     }

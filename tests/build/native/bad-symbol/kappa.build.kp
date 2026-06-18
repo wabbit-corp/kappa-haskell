@@ -1,3 +1,4 @@
 -- expect: E_NATIVE_BINDING_UNSUPPORTED
--- A symbolList symbol that is not a member of the provided host.native module.
-let buildConfig : BuildConfig = package { name = "bs", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [nativeBinding { name = "s", provides = [module "host.native.sqlite3"], source = symbolList ["sqliteOpen", "bogusSymbol"], abi = cAbi, headers = [], link = noLink, load = systemLoader }], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["s"] }] }
+-- A native binding that declares no symbol surface: the surface is authoritative
+-- (no catalog), so an empty symbolList is rejected (§27.1.1/§36.28).
+let buildConfig : BuildConfig = package { name = "bs", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [nativeBinding { name = "s", provides = [module "host.native.sqlite3"], surface = symbolList [], abi = cAbi, inputs = [], link = noLink, load = systemLoader }], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["s"] }] }

@@ -30,10 +30,9 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
-import Kappa.Backend.NativeCatalog
-  ( CatalogMember (..)
-  , CatalogModule (..)
-  , catalogModule
+import Kappa.Backend.NativeFfi
+  ( ResolvedNativeSymbol (..)
+  , nativeMemberType
   )
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
@@ -217,48 +216,47 @@ compileFilesWith = compileFilesWithCfg Map.empty defaultUnsafeConfig
 -- hardcoded list); an unknown module name is silently skipped here (the
 -- build planner validates providers and reports diagnostics first).
 compileProgramWithNative ::
-  [ModuleName] ->
+  [ResolvedNativeSymbol] ->
   UnsafeConfig ->
   Bool ->
   (FilePath -> ModuleName) ->
   [(FilePath, Text)] ->
-  (CompiledUnit, Map.Map GName Text)
-compileProgramWithNative provided cfg packageMode nameOf files =
-  ( compileFilesWithCfgInj (applyNativeModules provided) Map.empty cfg packageMode nameOf files
-  , nativeHostPrims provided
+  (CompiledUnit, Map.Map GName ResolvedNativeSymbol)
+compileProgramWithNative syms cfg packageMode nameOf files =
+  ( compileFilesWithCfgInj (applyNativeModules syms) Map.empty cfg packageMode nameOf files
+  , nativeHostSymbols syms
   )
 
--- | Register each provided @host.native.*@ catalog module into a base
--- state as abstract globals (no value — runtime-only, §34.5.1) plus its
--- module export list, so a program can @import@ it and reference its
--- members. The member's Kappa type is evaluated to the global's type.
-applyNativeModules :: [ModuleName] -> CheckState -> CheckState
-applyNativeModules provided st0 = foldl' addMod st0 mods
+-- | Register each resolved native symbol as an abstract global (no value —
+-- runtime-only, §34.5.1) under its @host.native.*@ module, plus the module
+-- export list, so a program can @import@ it and reference its members. The
+-- member's Kappa type is DERIVED from its ABI signature (§26.1.4 via
+-- 'nativeMemberType') and evaluated to the global's type — there is no
+-- hardcoded catalog of types.
+applyNativeModules :: [ResolvedNativeSymbol] -> CheckState -> CheckState
+applyNativeModules syms st0 = foldl' addMod st0 byModule
   where
-    mods = [cmo | mn <- provided, Just cmo <- [catalogModule mn]]
-    addMod st cmo =
-      let mn = cmoName cmo
-          ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-          gdOf cm = GlobalDef (eval ec [] (cmType cm)) Nothing False
+    byModule =
+      Map.toList $
+        foldl' (\m s -> Map.insertWith (++) (rnsModule s) [s] m) Map.empty syms
+    addMod st (mn, ss) =
+      let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+          gdOf s = GlobalDef (eval ec [] (nativeMemberType (rnsParams s) (rnsResult s))) Nothing False
           gs =
             foldl'
-              (\g cm -> Map.insert (GName mn (cmName cm)) (gdOf cm) g)
+              (\g s -> Map.insert (GName mn (rnsMember s)) (gdOf s) g)
               (csGlobals st)
-              (cmoMembers cmo)
+              ss
        in st
             { csGlobals = gs
-            , csModuleExports = Map.insert mn (map cmName (cmoMembers cmo)) (csModuleExports st)
+            , csModuleExports = Map.insert mn (map rnsMember ss) (csModuleExports st)
             }
 
--- | The gname→runtime-primitive map for the provided host bindings.
-nativeHostPrims :: [ModuleName] -> Map.Map GName Text
-nativeHostPrims provided =
-  Map.fromList
-    [ (GName (cmoName cmo) (cmName cm), cmPrim cm)
-    | mn <- provided
-    , Just cmo <- [catalogModule mn]
-    , cm <- cmoMembers cmo
-    ]
+-- | The gname→resolved-symbol map for the provided host bindings, threaded
+-- into codegen so each member reference lowers to a DIRECT typed call.
+nativeHostSymbols :: [ResolvedNativeSymbol] -> Map.Map GName ResolvedNativeSymbol
+nativeHostSymbols syms =
+  Map.fromList [(GName (rnsModule s) (rnsMember s), s) | s <- syms]
 
 -- | §8.3.5 reserved host roots. A source-defined module at or under one of
 -- these is a compile-time error (host binding modules are host-supplied).

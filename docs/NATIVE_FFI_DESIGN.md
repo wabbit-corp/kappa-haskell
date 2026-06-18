@@ -1,105 +1,92 @@
-# Native FFI: spec-conformant foreign boundary
-
-> **SUPERSEDED (2026-06-18).** The mechanism below — bare `expect term`
-> declarations satisfied by a `Kappa.Backend.Intrinsics` table seeded with
-> `kappa build --ffi-full` — has been replaced by manifest-driven native
-> bindings: a program `import`s a `host.native.*` module (§8.3.5) that a
-> build manifest's `nativeBinding` provider supplies (§36.28), realized by
-> the `Kappa.Backend.NativeCatalog` surface (§34.5.3). There is no
-> `--ffi-full` and no hardcoded native list. See the authoritative
-> [`BUILD_AND_NATIVE_BINDINGS.md`](BUILD_AND_NATIVE_BINDINGS.md). The
-> historical rationale below is retained for context.
+# Native FFI: manifest-driven direct-call foreign boundary
 
 This note records how the native backend's foreign capabilities (TCP
 sockets + sqlite3, used by the HTTP demo) map onto the **explicit**
-foreign-boundary mechanisms of `docs/Spec.md`, and why the previous design
-(injecting `__tcp*` / `__sqlite*` as ordinary prelude `prim` globals) was
-not conformant.
+foreign-boundary mechanisms of `docs/Spec.md`, and the design invariant the
+backend must keep: native bindings are discovered/resolved entirely from the
+build manifest and lowered to **direct, typed C call sites** — there is no
+hardcoded native catalog, no runtime primitive registration table, and no
+string- or `KValue`-dispatched primitive firing in generated native output.
 
-## Why the old surface was wrong
+## What the design forbids (and how it is enforced)
 
-The first native backend registered the socket/sqlite operations as
-ordinary prelude `prim` globals (`__tcpListen`, `__connRead`,
-`__sqliteOpen`, …) with native-only IO semantics. That smuggles host
-capabilities into the *ordinary source namespace*: every program saw those
-magic globals in scope, with no declaration, no contract, and no backend
-capability gate. The spec's foreign model (§26) and `expect` model (§9.4)
-are explicit precisely to forbid this.
+Two earlier designs were rejected. The first registered the socket/sqlite
+operations as magic prelude `prim` globals (`__tcpListen`, `__sqliteOpen`,
+…): that smuggles host capabilities into the ordinary source namespace. The
+second moved them behind a hardcoded in-compiler catalog
+(`Kappa.Backend.NativeCatalog`) whose members lowered to string-named
+runtime FFI primitives dispatched by `strcmp` in `runtime/kappart_ffi.c`:
+that is still a hardcoded native list plus a runtime dispatch table. Both
+are gone. The forbidden shapes — a hardcoded catalog, a generic FFI-unit, a
+`kprim_call("__…")` / `prim_fire_pure` string dispatch over native symbols —
+must not reappear in optimized native output (the build-test suite asserts
+the generated `.kappa.c` contains the per-member wrapper and **no**
+`kprim_call("__` for a native binding).
 
 ## The conformant mechanism
 
-The boundary is built from three spec features that compose exactly:
+A program `import`s a `host.native.*` module (§8.3.5); a build manifest's
+`nativeBinding` provider (§36.28) supplies it; the `zig` profile realizes it
+through the direct native adapter (`native.direct`, §27.1.1). The binding
+FULLY DESCRIBES its surface — there is nothing to look up in the compiler.
 
 | Concern | Spec mechanism | Citation |
 | --- | --- | --- |
-| "this module needs a foreign declaration the source file does not define" | `expect term name : T` — an external requirement | §9.4 (Spec.md:8021–8095) |
-| "the native backend supplies that declaration" | a **backend intrinsic** of the selected backend profile satisfies the `expect` | §9.4 bullet "a backend intrinsic supplied by the selected backend profile (§34.5)" (Spec.md:8067); §34.5 (Spec.md:37878–37908); §34.5.3 host-binding intrinsics, runtime-only unless elaboration-available (Spec.md:37930–37951) |
-| "foreign handles / scalars have a stable ABI vocabulary" | `std.ffi` types, in particular `OpaqueHandle` and the exact-width scalars | §26.1.1 PortableAbi grammar (Spec.md:26031–26052); §26.2 `std.ffi` (Spec.md:27264–27323) |
-| "the native realization is the zig profile via the direct native adapter" | `zig` profile realizes `host.native` through `native.direct` | §27.1 (Spec.md:27329–27355); §27.1.1 (Spec.md:27357–27377); adapter modes §26.1.3 (Spec.md:26199–26230) |
+| "which host modules exist and what they export" | the manifest `nativeBinding`'s `provides` + `symbolList` (a list of `symbolDecl member cSymbol params result`) | §36.28 (Spec.md:41768–41805); §27.1.1 (Spec.md:27357–27377) |
+| "foreign handles / scalars have a stable ABI vocabulary" | `std.ffi` types — `OpaqueHandle`, `RawPtr`, scalars — via the conservative `CType` vocabulary | §26.1.1 PortableAbi (Spec.md:26031–26052); §26.1.4 conservative typing; §26.2 `std.ffi` |
+| "the native realization is the zig profile via the direct native adapter" | `zig` realizes `host.native` through `native.direct` | §27.1 (Spec.md:27329–27355); §27.1.1; adapter modes §26.1.3 |
 
-So a source program that wants a foreign operation **declares it
-explicitly** as an `expect term` using `std.ffi` types, and the operation
-is available **only** when a backend profile that supplies the matching
-intrinsic is selected. Under the interpreter (no native backend, §27.6
-capability set excludes it) the `expect` is simply unsatisfied and
-compilation fails honestly with `E_EXPECT_UNSATISFIED` (§9.4) — there is no
-hidden global to call and no silent interpreter fallback.
+Under the interpreter (no manifest, no native profile) the `host.native.*`
+imports are simply unresolved and compilation fails honestly with
+`E_MODULE_NAME_UNRESOLVED` (§8.3.5) — no hidden global, no fallback.
 
-### Capability → intrinsic → runtime mapping
+### Surface → ResolvedNativeSymbol → direct call
 
-The native (`zig`) profile supplies these runtime-only host-binding
-intrinsics (§34.5.3). Each is identified by its Kappa spelling and a pinned
-expected signature; the satisfying `expect`'s declared type must match the
-intrinsic's signature up to definitional equality (§9.4 "must match the
-expected signature up to definitional equality"; §34.5 "exactly up to
-definitional equality"). Handles use `std.ffi.OpaqueHandle` — a raw
-host-binding surface is permitted to expose bare `OpaqueHandle` (§26.1.1
-"a nominal opaque handle type or `std.ffi.OpaqueHandle`"; §26.2 "A raw host
-binding MAY expose bare `OpaqueHandle`"). Their concrete runtime
-representation is backend-specific (§26.2) — here a `K_FGN` wrapper around a
-socket fd or `sqlite3*`.
+The single source of truth is the manifest. `Kappa.Build.Plan.resolveBinding`
+turns each binding's `provides × symbolList` into `ResolvedNativeSymbol`
+records (`module ↦ member`, C symbol, `[CType]` params, `CType` result),
+which thread to both elaboration and codegen — there is no catalog:
 
-| Intrinsic (Kappa spelling) | Expected signature (std.ffi) | Native realization |
-| --- | --- | --- |
-| `tcpListen` | `Int -> UIO OpaqueHandle` | bind+listen on a port |
-| `tcpAccept` | `OpaqueHandle -> UIO OpaqueHandle` | accept one connection |
-| `connRead` | `OpaqueHandle -> UIO String` | read the request bytes |
-| `connWrite` | `OpaqueHandle -> String -> UIO Unit` | write the response |
-| `connClose` | `OpaqueHandle -> UIO Unit` | close a connection |
-| `listenClose` | `OpaqueHandle -> UIO Unit` | close the listener |
-| `sqliteOpen` | `String -> UIO OpaqueHandle` | open a database |
-| `sqliteExec` | `OpaqueHandle -> String -> UIO Unit` | run a statement |
-| `sqliteQueryInt` | `OpaqueHandle -> String -> UIO Int` | first column of first row |
-| `sqliteQueryText` | `OpaqueHandle -> String -> UIO String` | first column of first row |
-| `sqliteClose` | `OpaqueHandle -> UIO Unit` | close a database |
+1. **Elaboration** (`Kappa.Pipeline.applyNativeModules`): each resolved
+   member is registered as an abstract global (runtime-only, §34.5.1) under
+   its module, with its Kappa type DERIVED from the ABI signature via
+   `Kappa.Backend.NativeFfi.nativeMemberType` (`p₁ → … → UIO result`,
+   conservative §26.1.4). The module export list comes from the members, so
+   `import host.native.X as m; m.member` resolves and type-checks.
+2. **Code generation** (`Kappa.Backend.C`): a reference to a member lowers
+   to a curried native action (`knative`); a saturated application lowers to
+   a direct `knative_sat(kw_<member>, arity, args)`. `assemble` emits, per
+   used member, a direct `extern <ret> <cSymbol>(<params>);` prototype and a
+   statically-typed marshalling wrapper `kw_<member>(KValue **a)` that
+   unboxes each arg per its `CType` (`kas_int`/`kas_str`/`kas_fgn`/…), calls
+   `<cSymbol>` **directly**, and boxes the result. `krun_io` fires a
+   `K_NATIVE` action by calling that function pointer — no name, no `strcmp`.
 
-`Kappa.Backend.Intrinsics` is the single source of truth for this table
-(name → expected Core type → runtime FFI primitive). It is consulted in two
-places:
+The `CType ↔ C-ABI-spelling ↔ Kappa-type ↔ marshalling` mapping lives in
+`Kappa.Backend.NativeFfi` (the only place that knows the ABI vocabulary).
+Handles use `std.ffi.OpaqueHandle` and are represented at runtime as a
+`K_FGN` wrapper around the C pointer (a socket fd or `sqlite3*`), which the
+Kappa side treats opaquely (§26.2 permits a bare `OpaqueHandle` raw surface).
 
-1. **Elaboration** (only when the native profile is selected): the
-   intrinsic names seed `CheckState.csBackendIntrinsics`, so a matching
-   `expect term` is satisfied (§9.4) — after a definitional-equality check
-   of the declared type against the intrinsic signature (mismatch →
-   `E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH`, family
-   `kappa.ffi.backend-intrinsic`). With no native profile the set is empty,
-   so the `expect` is unsatisfied (`E_EXPECT_UNSATISFIED`).
-2. **Code generation**: a reference to an intrinsic global lowers to the
-   corresponding runtime FFI primitive (`runtime/kappart_ffi.c`).
+### Where the C symbols come from
 
-The runtime FFI primitives are **never** registered as prelude globals, so
-ordinary source can neither see nor call them; the only path to a foreign
-op is the explicit `expect` + native-profile build.
+The manifest's `inputs` name the realization (§36.28): a `shim [...]` is a
+package-authored C translation unit compiled+linked by the driver; `headers`
+/ `includeDir` add `-I`; `define` adds `-D`; `pkgConfig` runs `pkg-config`
+for cflags/libs; `link` adds `-l`/`-L`. The HTTP demo's C symbols live in
+`examples/native/http_sqlite/native_shim.c` (plain C-ABI functions named by
+its `symbolList`), and sqlite3 is linked via `pkgConfig "sqlite3"`.
 
 ### Honest failure modes (no silent fallback)
 
-* `kappa run` / `kappa check` (interpreter, no native intrinsics): the
-  demo's `expect term`s are unsatisfied → `E_EXPECT_UNSATISFIED` (§9.4).
-* `kappa build` without `--ffi-full` (native, but FFI capability off): the
-  intrinsic set excludes the socket/sqlite ops → `E_EXPECT_UNSATISFIED`.
-* An `expect term` whose declared type disagrees with the intrinsic →
-  `E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH` at the declaration's span.
-* A reachable construct outside the supported native subset →
+* `kappa run` / `kappa check` (interpreter, no manifest): `host.native.*`
+  imports are unresolved → `E_MODULE_NAME_UNRESOLVED` (§8.3.5).
+* a `nativeBinding` providing a module not under the `host.native` root, or
+  with an empty surface → `E_NATIVE_BINDING_UNSUPPORTED` (§27.1.1/§36.28).
+* a load mode the zig profile does not realize (`runtimeLoad`,
+  `providedByHost`, `bundledLoader`) → `E_BACKEND_HOST_LINK_UNREALIZABLE`
+  (§34.5.3/§36.28).
+* a reachable construct outside the supported native subset →
   `E_BACKEND_UNSUPPORTED` (unchanged).
 
 ## Native tail calls
