@@ -1,0 +1,19 @@
+-- R2.3 / P1-H probe: flat-frame (direct C-parameter) worker.
+--
+-- `go` is capture-free AND binder-free (its body is if / prims / projections /
+-- a self-call — no let/match/do), and its record parameter makes it
+-- non-scalar (so it is NOT an LR1/R2.2 unboxed scalar worker).  It must lower
+-- to a FLAT boxed worker that reads p0/p1/p2 directly — no `kvar` chain walk,
+-- no `kpush`/`KEnv` node for its parameters.  The parameter roles are
+-- asymmetric (the `mulInt acc 2` makes order matter), so any de Bruijn
+-- misalignment in the flat mapping changes the result, which must still match
+-- the interpreter exactly.
+module main
+
+type Pt = (x : Int, y : Int)
+
+go : Int -> Pt -> Int -> Int
+let go n p acc = if leInt n 0 then acc else go (subInt n 1) p (addInt (mulInt acc 2) (subInt p.x p.y))
+
+main : UIO Unit
+let main = printlnString (showInt (go 4 (x = 10, y = 3) 1))   -- 121

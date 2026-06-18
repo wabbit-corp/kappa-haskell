@@ -97,7 +97,7 @@ The historical `NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` defined five P0 bloc
 state:
 - **P0.1** monomorphic numeric boxed → scalar workers: **MET for `Int`** (LR1) **and `Double`/mixed** (R2.2); `Bool` open (low value — cached singletons).
 - **P0.2** `var` loops are heap-ref loops: **MET for non-escaping `Int` var loops**; effectful/escaping/non-`Int`/else/nested/for loops still boxed.
-- **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1 `Int` workers** (scalar locals); general first-order code still uses `kvar`.
+- **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1/R2.2 scalar workers** (scalar locals) **and for capture-free binder-free boxed workers** (R2.3 — params read as flat C locals, no `kvar`/`kpush`); binder-bearing first-order bodies still use `kvar`.
 - **P0.4** records/ADTs generic+string: **MET on the match/projection path** — projection is fixed-offset `krec_at`; ctor/variant matching is integer-tag (LR2). The `switch` shape and record-param boxing remain.
 - **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls** and **now for saturated constructor applications (R1.1/P0-A — a direct `kctor`, no eta-ctor closure chain)**; general known *function* calls drop `ktrampoline` when the callee provably cannot bounce (R3.1/P1-E); only a callee with a tail-call bounce effect is still trampolined.
 
@@ -138,10 +138,12 @@ scalar-expressible body, now gets a typed unboxed worker (e.g. `double kwd_g(dou
 int *kovf)`) — a scalar `while` loop with no per-iteration boxing — behind the same escape net
 (`kunbox_i64`/`kunbox_dbl` tag-check + boxed-worker fallback; `-ffp-contract=off` keeps `double`
 arithmetic bit-identical to the interpreter). `scalar_doubleloop` now lowers to a `double` register
-loop instead of a `kp_addDouble`+`kdbl`-per-iter loop. **Still open:** record-/tuple-param scalars,
-`Bool` workers (low value — comparisons already return cached singletons), and reading first-order
-*non-self-recursive* params via `kvar` rather than flat C frames. → **R2.3 / R2.4** (and the
-`recproj` `kint` boxing, which is a record-param worker, not yet a scalar worker).
+loop instead of a `kp_addDouble`+`kdbl`-per-iter loop. **Partly also addressed by R2.3:** a
+capture-free binder-free boxed worker (incl. record-param workers like `recproj`) now reads its
+params as flat C locals (no `kvar`/`kpush`). **Still open:** the per-iteration scalar re-boxing in a
+boxed worker (`recproj`'s `kint` storm — unbox the accumulator/field-read result), `Bool` workers
+(low value — cached singletons), and flat frames for *binder-bearing* bodies (mixed flat+linked
+frames). → **R2.3 (rest) / R2.4**.
 
 **P1-C — Pattern matching is a linear if-chain over integer tags, not a `switch`/decision tree.**
 *(Downgraded from P0 — LR2 shipped the integer tags; this is now a codegen-shape refinement, not a
@@ -405,6 +407,22 @@ an explicit lowered-IR requirement — see the header.)
   float ops are non-fused unless an explicit fuse node says otherwise. *Reusable lowering rule:* a
   representation-mismatched argument escapes to the boxed reference, never miscompiles. *Gate:*
   `scalar_doubleloop` + the `kwd_` codegen-shape assertion.
+- **R2.3 (flat-frame parameter slots for non-escaping first-order workers).** *Lowered-IR
+  requirement:* a frame is not intrinsically a linked list — the IR carries a per-frame
+  escape/capture bit (does anything in this scope get captured by reference by an escaping
+  closure/thunk/IO action?); when it is clear, the frame is a **flat record of typed slots addressed
+  by index**, lowered to C locals/registers, not a `kpush`/`kvar` linked chain. Only an escaping
+  frame needs a heap `KEnv` node. *Reusable lowering rule:* flat-frame eligibility is exactly
+  `not bodyCapturesEnv` (the same escape info that drives the QW2 in-place-vs-rebuild choice);
+  environment reads compile to a frame-relative slot, and only the escaping subset is heap-allocated.
+  *Boundary this slice discovered:* a binder introduced *on top of* a flat frame (a `let`/`match`/`do`
+  binding) needs either more flat slots or a spill to a linked tail — until the IR models mixed
+  flat+linked frames, the flat lowering applies only to binder-free scopes (the first slice restricts
+  to `bodyBindsNothing`; `recproj`-shaped workers qualify). *Honest scope:* removes the `kvar`/`KEnv`
+  parameter overhead, NOT the orthogonal per-iteration scalar re-boxing (e.g. `recproj`'s `kint`
+  storm — a separate unbox-the-accumulator item). *Gate:* `flatframe`'s `go` worker reads `p0/p1/p2`
+  directly with no `kvar(`/`kpush(`; asymmetric params so a de-Bruijn misalignment changes the
+  interpreter-equivalence result.
 - **R3.1 (trampoline elision on non-bouncing calls).** *Lowered-IR requirement:* a function carries
   a "tail-call/bounce effect" bit (can its tail position produce a deferred tail call?); a call to a
   callee with no such effect lowers to a direct call, not a trampoline drain. Realizes the
@@ -420,7 +438,7 @@ an explicit lowered-IR requirement — see the header.)
 | ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
 | ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
 | ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
-| 5 | **R2.3** first-order worker params/locals as C locals / flat frame | P0-D/P1-H | High | High | Med |
+| ◑ | **R2.3** first-order worker params/locals as C locals / flat frame — **PARTIAL** (capture-free + binder-free workers read params as flat C locals; binder-bearing bodies deferred) | P0-D/P1-H | High | High | Med |
 | 6 | **R2.4** cross-function unboxed scalar chaining | P0-D | Med | Med | Med |
 | ✓ | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls — **DONE** | P1-E | Med | Med | Med |
 | 8 | **R3.2** generalized eval/apply known-arity calls + flat closures | P0-D/P1-H | High | High | Med-High |
@@ -431,8 +449,9 @@ an explicit lowered-IR requirement — see the header.)
 Rationale: **R1.1 landed (this study)** — it attacked the verified worst path (`adtbuild`/
 `listfold`), was backend-local, and re-enabled QW2's in-place loop for free (P0-B); the next
 non-harness item, **R2.1** (atomic scalar boxes), also landed, as did **R2.2** (`Double`/mixed-kind
-unboxed workers); next is **R2.3** (first-order worker params/locals as flat C frames) then
-**R2.4** (cross-function unboxed scalar chaining). **R1.2 is
+unboxed workers); **R3.1** (trampoline elision) and the first slice of **R2.3** (flat C-parameter
+frames for capture-free binder-free workers) also landed; next is the rest of **R2.3** (binder-bearing
+bodies via mixed flat+linked frames) and **R2.4** (cross-function unboxed scalar chaining). **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk
@@ -498,6 +517,11 @@ string building (quadratic check), IO boundary, defer/effects, a sqlite-shaped q
   `kctor`, and the list-builder's in-place self-tail loop is re-enabled. Partial ctor applications
   still build a closure (correctly), and the small-arity `kctor` still copies a stack `argv` array
   (a separate, optional ABI refinement).
+- **Worker frame has three modes (R2.3).** A first-order worker is lowered as: (1) FLAT — params
+  read as direct C locals, no `KEnv`, when capture-free AND binder-free (`bodyBindsNothing`);
+  (2) in-place CELLS — `kpush` cells built once, updated via `cell->val` (QW2), when capture-free
+  but binder-bearing; (3) REBUILD — `kw_env` rebuilt each iteration, when the body captures the env.
+  Never describe a capture-free binder-free worker as walking `kvar` — that is the pre-R2.3 state.
 - **LR1/P0.2 = `Int`; R2.2 adds `Double` + mixed `Int`/`Double` scalar workers.** The unboxed
   worker is `kwi_` when all-`int64` (golden-stable), `kwd_` when any `double`. `Bool` and
   record-/tuple-param scalars are still boxed (P0-D). The P0.2 *var-loop* scalarizer stays

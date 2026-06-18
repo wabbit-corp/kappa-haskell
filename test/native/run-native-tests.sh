@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe; do run_diff_case "$c"; done
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -177,6 +177,27 @@ if [ "$nb_ok" -eq 1 ] && [ "$b_ok" -eq 1 ]; then
   echo "   ok (adtcons drops ktrampoline; tailrec's bouncing mutual recursion keeps it)"
 else
   echo "   FAIL: R3.1 ktrampoline elision wrong (non-bouncing dropped=$nb_ok bouncing-kept=$b_ok)"; fails=$((fails+1))
+fi
+
+# R2.3 / P1-H: a capture-free AND binder-free first-order BOXED worker (over
+# records/ADTs/etc., not scalar-eligible) reads its parameters directly from
+# the C parameters — no `kvar` chain walk and no `kpush`/`KEnv` node for the
+# parameter frame.  Assert on flatframe's `go` worker body (a record-param
+# worker): no kvar/kpush, and a direct `krec_at(p` field read.
+echo "== R2.3: capture-free binder-free workers read params as flat C locals (no kvar/kpush) =="
+ftmp="$WORK/r23c"; mkdir -p "$ftmp"
+if timeout 120 $KAPPA build "$CASES/flatframe.kp" --emit-c -o "$ftmp/ff" >"$ftmp/build.log" 2>&1; then
+  cfile="$CASES/flatframe.kappa.c"
+  goworker="$(awk '/^static KValue \*kw_main_2e_go\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  if printf '%s' "$goworker" | grep -qE 'krec_at\(p[0-9]' \
+     && ! printf '%s' "$goworker" | grep -qE 'kvar\(|kpush\('; then
+    echo "   ok (flat worker reads p0/p1/p2 directly; no kvar/kpush for the parameter frame)"
+  else
+    echo "   FAIL: flat-frame worker still walks kvar/kpush (R2.3 regressed)"; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: flatframe --emit-c build failed"; cat "$ftmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # Honest no-fallback property: the native backend never silently falls back

@@ -76,6 +76,7 @@ data GenState = GenState
   { gsFresh :: !Int
   , gsStmts :: ![Text] -- ^ current function body, reversed
   , gsEnv :: !Text -- ^ C expression for the current KEnv*
+  , gsParamLvals :: ![Text] -- ^ R2.3: in a FLAT (capture-free + binder-free) first-order worker, the C lvalue for each de Bruijn index (position @i@ = the C name for @kvar@ index @i@ = source param @n-1-i@); a 'CVar' then reads the C parameter directly instead of walking @kvar(kw_env,i)@. Empty outside a flat worker body (then 'CVar' uses @kvar@).
   , gsTop :: ![Text] -- ^ completed top-level C functions, reversed
   , gsProtos :: ![Text] -- ^ forward declarations, reversed
   , gsEmitted :: !(Set GName) -- ^ globals already emitted or enqueued
@@ -382,6 +383,7 @@ generateC cs mainG ffiPrims =
           { gsFresh = 0
           , gsStmts = []
           , gsEnv = "0"
+          , gsParamLvals = []
           , gsTop = []
           , gsProtos = []
           , gsEmitted = Set.singleton mainG
@@ -533,6 +535,46 @@ bodyCapturesEnv = go
       CMeta {} -> False
     goAlt (CaseAlt _ mg body) = maybe False go mg || go body
 
+-- | R2.3: does the worker body introduce NO value binder that pushes onto the
+-- @KEnv@ (no @let@\/@letrec@\/@match@\/@do@)?  A pushed binding needs a real
+-- @KEnv@ tail to chain onto and to @kvar@-walk parameters beneath it; the flat
+-- (direct C-parameter) lowering provides no such chain, so it is restricted to
+-- binder-free bodies (the safe first slice of R2.3 — anything richer keeps the
+-- @kpush@\/@kvar@ frame).  Conservative: ANY @match@\/@let@\/@letrec@\/@do@ (and
+-- any env-capturing form, already excluded by 'bodyCapturesEnv') disables it.
+-- A binder-free body is exactly @if@\/prim\/ctor\/projection\/inject\/force\/
+-- seal\/var\/lit over the parameters — the @recproj@ shape.
+bodyBindsNothing :: Term -> Bool
+bodyBindsNothing = go
+  where
+    go t = case t of
+      CLet {} -> False
+      CLetRec {} -> False
+      CMatch {} -> False
+      CDo {} -> False
+      CLam {} -> False
+      CThunkE {} -> False
+      CLazyE {} -> False
+      CQuote {} -> False
+      CApp _ f a -> go f && go a
+      CCtor _ args -> all go args
+      CIf c th el -> go c && go th && go el
+      CProj e _ -> go e
+      CProjAt e _ _ -> go e
+      CInject _ e -> go e
+      CForceE e -> go e
+      CSealE _ e -> go e
+      CRecordV fs -> all (go . snd) fs
+      CRecordT fs -> all (go . snd) fs
+      CVariantT ts -> all go ts
+      CSigT _ e -> go e
+      CPi _ _ _ a b -> go a && go b
+      CVar {} -> True
+      CGlob {} -> True
+      CSort {} -> True
+      CLit {} -> True
+      CMeta {} -> True
+
 -- | Lower a function global to: a worker @kw_…(p0,…,p{n-1})@ whose body is
 -- a @while(1)@ loop (so a tail self-call updates the parameter cells and
 -- @continue@s instead of recursing in C — bounded C stack for tail
@@ -553,14 +595,21 @@ compileFunctionGlobal g n inner = do
       worker = "kw_" <> mangle (gKey g)
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
       inPlace = not (bodyCapturesEnv inner)
+      -- R2.3 FLAT frame: a capture-free AND binder-free body reads parameters
+      -- directly from the C parameters (no KEnv node, no kvar chain walk).  A
+      -- tail self-call reassigns the C params in place (like rebuild mode, but
+      -- with no env to rebuild).  Strict subset of the QW2 in-place case.
+      flat = inPlace && bodyBindsNothing inner
       -- de Bruijn env: index 0 = innermost binder = the LAST parameter, so
       -- cell for p0 is the deepest (next = 0) and p{n-1} is the head.
       cells = ["kw_c" <> T.pack (show i) | i <- [0 .. n - 1]]
-      ti = TailInfo g n (if inPlace then cells else ps) inPlace
-      -- in-place mode: build the cells ONCE before the loop;
+      -- flat / rebuild reassign the C params (slots = ps); the QW2 cell path
+      -- updates cell->val (slots = cells).  tiInPlace drives that choice.
+      ti = TailInfo g n (if flat || not inPlace then ps else cells) (inPlace && not flat)
       -- rebuild mode: rebuild kw_env at the loop top from the C params.
       envExpr = foldl (\acc p -> "kpush(" <> p <> ", " <> acc <> ")") "0" ps
       cellDecls
+        | flat = [] -- no KEnv at all: params are C locals
         | inPlace =
             [ "  KEnv *" <> (cells !! j) <> " = kpush(" <> (ps !! j) <> ", "
                 <> (if j == 0 then "0" else cells !! (j - 1)) <> ");"
@@ -569,10 +618,16 @@ compileFunctionGlobal g n inner = do
               ++ ["  KEnv *kw_env = " <> (cells !! (n - 1)) <> "; (void)kw_env;"]
         | otherwise = []
       loopTopEnv
-        | inPlace = []
+        | inPlace = [] -- flat + cell modes need no per-iteration env
         | otherwise = ["    KEnv *kw_env = " <> envExpr <> "; (void)kw_env;"]
       paramDecls = T.intercalate ", " ["KValue *" <> p | p <- ps]
+  -- In a flat worker, a CVar resolves to its C parameter (gsParamLvals); the
+  -- mapping is reset for any other worker so CVar falls back to kvar.  (A flat
+  -- body has no env-capturing form, so a lifted closure can never read it.)
+  saved <- gets gsParamLvals
+  modify' $ \st -> st {gsParamLvals = if flat then reverse ps else []}
   (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
+  modify' $ \st -> st {gsParamLvals = saved}
   let workerFn =
         T.unlines $
           ["static KValue *" <> worker <> "(" <> paramDecls <> ") {"]
@@ -1094,8 +1149,16 @@ compile term
   | Just action <- runIOSplice term = compileRunIO action
 compile term = case term of
   CVar i -> do
-    env <- gets gsEnv
-    pure ("kvar(" <> env <> ", " <> T.pack (show i) <> ")")
+    -- R2.3: in a flat worker, read the C parameter directly (no kvar chain
+    -- walk).  gsParamLvals is empty outside a flat body, and a flat body is
+    -- binder-free so every index is a parameter (i < n); the kvar fallback is
+    -- the general (boxed-KEnv) path.
+    lvals <- gets gsParamLvals
+    if not (null lvals) && i >= 0 && i < length lvals
+      then pure (lvals !! i)
+      else do
+        env <- gets gsEnv
+        pure ("kvar(" <> env <> ", " <> T.pack (show i) <> ")")
   CGlob g -> compileGlob g
   CLit l -> compileLit l
   CApp {} -> compileApp term
