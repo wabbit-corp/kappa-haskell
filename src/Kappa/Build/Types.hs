@@ -121,4 +121,8 @@ data Target
       , tModules :: !ModuleSelector
       , tDependencies :: ![Text]
       }
+  | TestTarget
+      { tName :: !Text
+      , tModules :: !ModuleSelector
+      }
   deriving stock (Eq, Show)

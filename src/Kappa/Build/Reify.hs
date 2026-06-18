@@ -248,4 +248,6 @@ decTarget ctx v = do
         <*> decFragments ctx fr
         <*> decModuleSelector ctx mods
         <*> asStrList ctx deps
-    _ -> decFail "expected a target ('executable'/'library') (Spec §29.8)"
+    ("TestTarget", [nm, mods]) ->
+      TestTarget <$> asStr ctx nm <*> decModuleSelector ctx mods
+    _ -> decFail "expected a target ('executable'/'library'/'test') (Spec §29.8)"

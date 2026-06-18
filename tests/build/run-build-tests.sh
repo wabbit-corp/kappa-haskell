@@ -209,6 +209,25 @@ else
   echo "SKIP url dependency tests (curl/tar not on PATH)"
 fi
 
+echo "== test target (§36.31): build pipeline runs the Appendix-T suite =="
+TT="${TMPDIR:-/tmp}/kappa-testtgt"; rm -rf "$TT"; mkdir -p "$TT/test/spec"
+cat > "$TT/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "test"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [test { name = "unit", modules = modulesUnder "spec" }] }
+EOF
+printf -- '--! mode check\n--! assertNoErrors\nmodule spec.ok\nlet x : Int = 42' > "$TT/test/spec/ok.kp"
+if timeout 120 $KAPPA build --manifest "$TT" --target unit >/dev/null 2>&1; then
+  echo "PASS test-target/pass (passing suite -> exit 0)"
+else
+  echo "FAIL test-target/pass"; fails=$((fails+1))
+fi
+printf -- '--! mode check\n--! assertNoErrors\nmodule spec.bad\nlet y : Int = notInScope' > "$TT/test/spec/bad.kp"
+if timeout 120 $KAPPA build --manifest "$TT" --target unit >/dev/null 2>&1; then
+  echo "FAIL test-target/fail (failing suite should exit non-zero)"; fails=$((fails+1))
+else
+  echo "PASS test-target/fail (failing suite -> non-zero exit)"
+fi
+rm -rf "$TT"
+
 echo "== value provenance (§35.7): buildConfig provenance graph =="
 PV="${TMPDIR:-/tmp}/kappa-prov-test"; rm -rf "$PV"; mkdir -p "$PV"
 cat > "$PV/kappa.build.kp" <<'EOF'

@@ -135,6 +135,23 @@ performs no build). (Per-slice string-interpolation provenance, §35.8, is
 N/A while manifests use plain string literals; `E_CONFIG_PROVENANCE_UNAVAILABLE`
 remains registered with its four §35.11 sub-causes.)
 
+## Target kinds (§29.8, §36.30+)
+
+The schema supports three target kinds, each with a build-pipeline action:
+
+- **`executable`** — native build (lower `main`'s closure to C + link, §27.7).
+- **`library`** — its modules are compiled into a dependent that path/git/
+  registry/url-depends on the package (it is consumed, not built directly).
+- **`test`** (§36.31) — `kappa build --manifest --target <name>` runs the
+  target's modules through the Appendix-T test harness (each test file
+  standalone, like `kappa test FILE`) and reports pass/fail / exit status.
+
+`--target NAME` dispatches on the named target's kind (test → run suite;
+executable → native build). Other §29.8 kinds (`codegen`, `bridge`,
+`benchmark`, `publish`, `aggregate`, `aliasTarget`, …) are not in the
+schema subset yet (§29.8's "equivalent to" lets the implementation choose
+the subset; they are deferred-not-defective).
+
 ## Native bindings — driven by the manifest (increment 2, DONE)
 
 Native bindings are obtained **only** through the package/build/native
@@ -335,8 +352,9 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
     surfaced via `kappa build --manifest --provenance`.
 12. Canonical schema serialization + semantic-identity computation (§36.2)
     + per-slice string-interpolation provenance (§35.8).
-13. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
-    and JVM/.NET/Python ecosystems; deployment/reproducibility status.
+13. **(partly done)** Target kinds: `executable`/`library`/`test` are
+    built/run; `codegen`/`bridge`/`benchmark`/`publish`/`aggregate`/… and
+    JVM/.NET/Python ecosystems + deployment/reproducibility status remain.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
 builder set as "equivalent to" a portable schema (signatures are

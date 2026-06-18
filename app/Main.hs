@@ -11,7 +11,7 @@ import Kappa.Backend.Driver
   , defaultBuildOptions
   )
 import Kappa.Build.Lock (LockEntry, lockWellFormed, parseLock, renderLock)
-import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable)
+import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
 import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
@@ -187,7 +187,31 @@ cmdBuildManifest ma = do
                 Just prov -> TIO.putStr (renderProvenance prov) >> exitSuccess
                 Nothing -> hPutStrLn stderr "no buildConfig value provenance available" >> exitFailure
           | maCheck ma -> TIO.putStr (renderBuildConfig bc) >> exitSuccess
+          -- §36.31: a --target naming a test target runs its Appendix-T
+          -- suite; otherwise the default is the native executable build.
+          | Just nm <- maTarget ma, isTestTarget bc nm -> buildManifestTest file bc nm
           | otherwise -> buildManifestTarget file bc ma
+
+-- | True iff the manifest declares a test target with this name.
+isTestTarget :: B.BuildConfig -> T.Text -> Bool
+isTestTarget bc nm =
+  any (\t -> case t of B.TestTarget {} -> B.tName t == nm; _ -> False) (B.bcTargets bc)
+
+-- | Run a manifest @test@ target's Appendix-T suite (§36.31): resolve its
+-- test source files and run each through the test harness, then report.
+buildManifestTest :: FilePath -> B.BuildConfig -> T.Text -> IO ()
+buildManifestTest manifestFile bc nm = do
+  resolved <- resolveTestTarget (takeDirectory manifestFile) bc (Just nm)
+  case resolved of
+    Left ds -> emitDiags Human ds >> exitFailure
+    Right (_, files) -> do
+      reports <- concat <$> mapM runTestPath files
+      let s = summarize reports
+      putStrLn $
+        "test target " <> T.unpack nm <> ": total " <> show (length reports)
+          <> ": " <> show (sPass s) <> " passed, " <> show (sFail s) <> " failed, "
+          <> show (sUnsupported s) <> " unsupported, " <> show (sHarnessError s) <> " harness errors"
+      if sFail s > 0 || sHarnessError s > 0 then exitFailure else exitSuccess
 
 -- | The build-plan + codegen path for a manifest executable target.
 buildManifestTarget :: FilePath -> B.BuildConfig -> ManifestArgs -> IO ()
@@ -342,10 +366,13 @@ renderBuildConfig bc =
              <> " [" <> renderLink (B.nbLink hb) <> "]"
          | hb <- B.bcHostBindings bc
          ]
-      ++ [ "  target " <> B.tName t <> " (" <> renderBackend (B.tBackend t) <> ")"
+      ++ [ "  target " <> B.tName t <> " (" <> renderTargetKind t <> ")"
          | t <- B.bcTargets bc
          ]
   where
+    renderTargetKind t = case t of
+      B.TestTarget {} -> "test"
+      _ -> renderBackend (B.tBackend t)
     renderDep (B.RegistryDep n v) = "registry " <> n <> " " <> v
     renderDep (B.GitDep n u r) = "git " <> n <> " " <> u <> "@" <> r
     renderDep (B.PathDep n p) = "path " <> n <> " " <> p

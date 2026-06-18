@@ -12,6 +12,7 @@
 module Kappa.Build.Plan
   ( ResolvedExe (..)
   , resolveExecutable
+  , resolveTestTarget
   ) where
 
 import Control.Monad (filterM, forM)
@@ -794,11 +795,38 @@ depErr sp code fam = diag SevError StageImports code (Just fam) sp
 targetDependencies :: Target -> [Text]
 targetDependencies ExecutableTarget {tDependencies = ds} = ds
 targetDependencies LibraryTarget {tDependencies = ds} = ds
+targetDependencies TestTarget {} = []
 
 -- | A target's referenced host-binding names (executables only carry them).
 targetHostBindings :: Target -> [Text]
 targetHostBindings ExecutableTarget {tHostBindings = hs} = hs
 targetHostBindings LibraryTarget {} = []
+targetHostBindings TestTarget {} = []
+
+-- | Select and resolve a @test@ target (§36.31) to the set of source
+-- files to run through the Appendix-T harness: the package modules whose
+-- §8.1 name matches the target's @modules@ selector. (Each test file is
+-- run standalone, like @kappa test FILE@.)
+resolveTestTarget :: FilePath -> BuildConfig -> Maybe Text -> IO (Either Diagnostics (Text, [FilePath]))
+resolveTestTarget manifestDir bc mTarget =
+  case selectTest of
+    Left ds -> pure (Left ds)
+    Right tgt -> do
+      allFiles <- packageModules manifestDir bc
+      let files = [f | (f, mn) <- allFiles, matchesSelector (tModules tgt) mn]
+      pure (Right (tName tgt, files))
+  where
+    sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
+    tests = [t | t@TestTarget {} <- bcTargets bc]
+    notFound msg = Left [diag SevError StageImports "E_BUILD_TARGET_NOT_FOUND" (Just "kappa-hs.build.target-not-found") sp msg]
+    selectTest = case mTarget of
+      Just nm -> case [t | t <- tests, tName t == nm] of
+        (t : _) -> Right t
+        [] -> notFound ("no test target named '" <> nm <> "' in the manifest (Spec §36.3, §36.31)")
+      Nothing -> case tests of
+        [t] -> Right t
+        [] -> notFound "the manifest declares no test target (Spec §36.3, §36.31)"
+        _ -> notFound "the manifest declares multiple test targets; select one with --target NAME (Spec §36.3)"
 
 renderMod :: ModuleName -> Text
 renderMod (ModuleName segs) = T.intercalate "." segs
