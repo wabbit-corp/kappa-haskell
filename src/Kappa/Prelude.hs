@@ -724,12 +724,12 @@ preludeSource =
       -- §19.1-19.5). Operational subset: the IO carrier instances below
       -- and the prelude wrappers delegate to the IO primitives.
       "trait MonadFinally (m : Type -> Type) ="
-    , "    finallyM : forall (a : Type). m a -> m Unit -> m a"
+    , "    finally : forall (a : Type). m a -> m Unit -> m a"
     , ""
     , "trait MonadError (m : Type -> Type) ="
     , "    Error : Type"
-    , "    throwErrorM : forall (a : Type). Error -> m a"
-    , "    catchErrorM : forall (a : Type). m a -> (Error -> m a) -> m a"
+    , "    throwError : forall (a : Type). Error -> m a"
+    , "    catchError : forall (a : Type). m a -> (Error -> m a) -> m a"
     , ""
     , "trait MonadResource (m : Type -> Type) ="
     , "    bracketM : forall (a : Type) (b : Type). m a -> (a -> m Unit) -> (a -> m b) -> m b"
@@ -1052,6 +1052,18 @@ preludeSource =
     , "    let empty = stmAbort"
     , "    let append x y = catchIO x (\\err -> y)"
     , ""
+    , -- RC4 / §28: the mandated `IO e` error-handling instances.  Their
+      -- members ARE the §18.1.25 / §19.1 surface operations, delegating to
+      -- the IO primitives, so `finally`/`throwError`/`catchError` resolve via
+      -- the IO dictionary (the free functions they replaced are gone).
+      "instance MonadFinally (IO e) ="
+    , "    let finally ma mf = finallyIO ma mf"
+    , ""
+    , "instance MonadError (IO e) ="
+    , "    let Error = e"
+    , "    let throwError err = throwIO err"
+    , "    let catchError body handler = catchIO body handler"
+    , ""
     , -- §18.11: structured-concurrency handles (check-mode support)
       "data Fiber (e : Type) (a : Type) : Type ="
     , "    MkFiberHandle"
@@ -1082,14 +1094,13 @@ preludeSource =
     , "fork : forall (e : Type) (a : Type) (r : Type). IO e a -> IO r (Fiber e a)"
     , "let fork action = ioPure MkFiberHandle"
     , ""
-    , "throwError : forall (e : Type) (a : Type). e -> IO e a"
-    , "let throwError err = throwIO err"
-    , ""
-    , "raise : forall (e : Type) (a : Type). e -> IO e a"
+    , -- RC4: `throwError`/`catchError` are the §19.1 `MonadError` members
+      -- (resolved via the carrier's dictionary), NOT free IO-only functions.
+      -- The `IO e` instance below provides them for IO; `raise` stays a
+      -- distinct §28 surface name.  (Defining a free function of the same
+      -- name as a trait member would be E_DUPLICATE_DECLARATION.)
+      "raise : forall (e : Type) (a : Type). e -> IO e a"
     , "let raise err = throwIO err"
-    , ""
-    , "catchError : forall (e : Type) (a : Type). IO e a -> (e -> IO e a) -> IO e a"
-    , "let catchError body handler = catchIO body handler"
     , ""
     , "identity : forall (a : Type). a -> a"
     , "let identity x = x"
