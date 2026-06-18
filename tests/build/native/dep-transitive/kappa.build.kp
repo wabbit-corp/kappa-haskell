@@ -1,0 +1,4 @@
+-- expect: BUILD_OK
+-- Transitive path deps: app depends on codec, which depends on base; the
+-- whole closure (codec + base library modules) is compiled into the unit.
+let buildConfig : BuildConfig = package { name = "app", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [pathDependency { name = "codec", path = "codec" }], hostBindings = [], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = ["codec"], hostBindings = [] }] }

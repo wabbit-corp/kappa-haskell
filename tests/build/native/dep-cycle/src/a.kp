@@ -1,0 +1,3 @@
+module a
+import b.lib.(x)
+let main = printlnString x

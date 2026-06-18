@@ -17,6 +17,7 @@ module Kappa.Build.Plan
 import Control.Monad (forM)
 import Data.List (foldl', sortOn)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Backend.NativeCatalog
@@ -29,7 +30,7 @@ import Kappa.Build.Types
 import Kappa.Diagnostic
 import Kappa.Pipeline (compileManifest, loadSourceFile)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (makeRelative, splitDirectories, takeExtension, takeFileName, (</>))
 
 -- | A resolved, buildable executable target.
@@ -82,7 +83,7 @@ resolveExecutable manifestDir bc mTarget =
                 -- name) so a diamond/repeated dep dedups by path and a
                 -- cross-package same-module-name clash is rejected, while
                 -- legitimate same-origin §8.1 fragments are kept.
-                depResult <- resolveDeps manifestDir bc (targetDependencies tgt)
+                depResult <- resolveDepClosure manifestDir bc (targetDependencies tgt)
                 pure $ case depResult of
                   Left ds -> Left ds
                   Right depTagged ->
@@ -370,82 +371,96 @@ matchesSelector sel (ModuleName segs) = case sel of
   SelModule m -> segs == T.splitOn "." m
   SelModulesUnder p -> let ps = T.splitOn "." p in take (length ps) segs == ps
 
--- | §36.23: resolve a target's dependency names to the library modules
--- to compile into the unit. Path dependencies are resolved against the
--- local filesystem; registry/git/url dependencies are unresolved by this
--- implementation's resolver profile (§36.23.1) and reported honestly.
--- Direct dependencies only (transitive path dependencies are a later
--- increment). @manifestDir@ is the dependent package's directory.
-resolveDeps :: FilePath -> BuildConfig -> [Text] -> IO (Either Diagnostics [(FilePath, ModuleName, Text)])
-resolveDeps manifestDir bc names = go [] (dedupT names)
+-- | §36.23: resolve the TRANSITIVE path-dependency closure of a target's
+-- dependency names to the library modules to compile into the unit. Path
+-- dependencies are resolved against the local filesystem and followed
+-- recursively — a path dependency's own library dependencies are resolved
+-- too — with cycle detection and per-package deduplication (both keyed on
+-- the canonical package directory). Registry/git/url dependencies are
+-- unresolved by this implementation's resolver profile (§36.23.1) and
+-- reported honestly. Each module is tagged with its providing package's
+-- canonical directory (the collision origin).
+resolveDepClosure :: FilePath -> BuildConfig -> [Text] -> IO (Either Diagnostics [(FilePath, ModuleName, Text)])
+resolveDepClosure rootDir rootBc rootNames = do
+  canonRoot <- canonicalizePath rootDir
+  go (Set.singleton canonRoot) [] [(rootDir, rootBc, nm) | nm <- dedupT rootNames]
   where
-    sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
-    go acc [] = pure (Right (concat (reverse acc)))
-    go acc (nm : rest) = case [d | d <- bcDependencies bc, depName d == nm] of
-      [] ->
-        pure . Left $
-          [ depErr sp "E_DEPENDENCY_NOT_FOUND" "kappa-hs.build.dependency-not-found"
-              ( "target lists dependency '" <> nm
-                  <> "', which the manifest's dependencies do not declare (Spec §36.3, §36.23)"
-              )
-          ]
-      (dep : _) -> case dep of
-        PathDep _ path -> do
-          r <- resolvePathDep manifestDir nm path
-          case r of
-            Left ds -> pure (Left ds)
-            Right mods -> go ([(p, mn, nm) | (p, mn) <- mods] : acc) rest
-        RegistryDep _ _ -> pure (Left [unresolved "registry"])
-        GitDep _ _ _ -> pure (Left [unresolved "git"])
-      where
-        unresolved kind =
-          depErr sp "E_DEPENDENCY_UNRESOLVED" "kappa.package.reproducibility"
-            ( "dependency '" <> nm <> "' is a " <> kind
-                <> " dependency; this implementation's resolver profile resolves only path "
-                <> "dependencies (registry/git require a registry and lockfile it does not "
-                <> "provide, Spec §36.23.1)"
-            )
+    go _ acc [] = pure (Right (concat (reverse acc)))
+    go visited acc ((depDir0, depBc0, nm) : rest) =
+      let sp = Span (depDir0 </> manifestBasename) (Pos 1 1) (Pos 1 1)
+       in case [d | d <- bcDependencies depBc0, depName d == nm] of
+            [] ->
+              pure . Left $
+                [ depErr sp "E_DEPENDENCY_NOT_FOUND" "kappa-hs.build.dependency-not-found"
+                    ( "package at '" <> T.pack depDir0 <> "' lists dependency '" <> nm
+                        <> "', which its manifest does not declare (Spec §36.3, §36.23)"
+                    )
+                ]
+            (RegistryDep _ _ : _) -> pure (Left [unresolved sp nm "registry"])
+            (GitDep {} : _) -> pure (Left [unresolved sp nm "git"])
+            (PathDep _ path : _) -> do
+              let pkgDir = depDir0 </> T.unpack path
+                  manifest = pkgDir </> manifestBasename
+              ok <- doesFileExist manifest
+              if not ok
+                then
+                  pure . Left $
+                    [ depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
+                        ( "path dependency '" <> nm <> "' has no build manifest at '"
+                            <> T.pack manifest <> "' (Spec §36.23.2)"
+                        )
+                    ]
+                else do
+                  canon <- canonicalizePath pkgDir
+                  if canon `Set.member` visited
+                    then go visited acc rest -- already collected (dedup / cycle)
+                    else do
+                      loaded <- loadDepPackage manifest
+                      case loaded of
+                        Left ds -> pure (Left ds)
+                        Right depBc -> do
+                          mods <- depLibraryModules pkgDir depBc
+                          let tagged = [(p, m, T.pack canon) | (p, m) <- mods]
+                              transitive = [(pkgDir, depBc, dnm) | dnm <- dedupT (libraryDeps depBc)]
+                          go (Set.insert canon visited) (tagged : acc) (transitive ++ rest)
+    unresolved sp nm kind =
+      depErr sp "E_DEPENDENCY_UNRESOLVED" "kappa.package.reproducibility"
+        ( "dependency '" <> nm <> "' is a " <> kind
+            <> " dependency; this implementation's resolver profile resolves only path "
+            <> "dependencies (registry/git require a registry and lockfile it does not "
+            <> "provide, Spec §36.23.1)"
+        )
 
--- | Resolve one path dependency to its library modules: load the
--- dependency package's manifest (§35.13), and enumerate the modules
--- matching its library targets' `modules` selectors (or all its package
--- modules when it declares no library target).
-resolvePathDep :: FilePath -> Text -> Text -> IO (Either Diagnostics [(FilePath, ModuleName)])
-resolvePathDep manifestDir nm path = do
-  let depDir = manifestDir </> T.unpack path
-      depManifest = depDir </> manifestBasename
-      sp = Span depManifest (Pos 1 1) (Pos 1 1)
-  ok <- doesFileExist depManifest
-  if not ok
-    then
-      pure . Left $
-        [ depErr sp "E_DEPENDENCY_PATH_NOT_FOUND" "kappa-hs.build.dependency-path"
-            ( "path dependency '" <> nm <> "' has no build manifest at '"
-                <> T.pack depManifest <> "' (Spec §36.23.2)"
-            )
+-- | Load + evaluate a dependency package's manifest (§35.13).
+loadDepPackage :: FilePath -> IO (Either Diagnostics BuildConfig)
+loadDepPackage manifest = do
+  (src, _) <- loadSourceFile manifest
+  let (st, mn, diags) = compileManifest manifest src
+  if hasErrors diags
+    then pure (Left diags)
+    else pure (reifyBuildConfig (Span manifest (Pos 1 1) (Pos 1 1)) st mn)
+
+-- | A dependency package's library modules: those matching its library
+-- targets' `modules` selectors, or — when it declares no library target —
+-- all its package modules except its executables' entry modules (so a
+-- dependency's @main@ is never pulled into the dependent).
+depLibraryModules :: FilePath -> BuildConfig -> IO [(FilePath, ModuleName)]
+depLibraryModules pkgDir depBc = do
+  mods <- packageModules pkgDir depBc
+  let libSelectors = [tModules t | t@LibraryTarget {} <- bcTargets depBc]
+      exeMains =
+        [ ModuleName (T.splitOn "." nm')
+        | ExecutableTarget {tMain = SelModule nm'} <- bcTargets depBc
         ]
-    else do
-      (src, _) <- loadSourceFile depManifest
-      let (st, mn, diags) = compileManifest depManifest src
-      if hasErrors diags
-        then pure (Left diags)
-        else case reifyBuildConfig sp st mn of
-          Left ds -> pure (Left ds)
-          Right depBc -> do
-            mods <- packageModules depDir depBc
-            let libSelectors = [tModules t | t@LibraryTarget {} <- bcTargets depBc]
-                -- a dependency with no library target exports all its
-                -- modules EXCEPT its executables' entry modules (so we do
-                -- not pull a dependency's `main` into the dependent).
-                exeMains =
-                  [ ModuleName (T.splitOn "." nm')
-                  | ExecutableTarget {tMain = SelModule nm'} <- bcTargets depBc
-                  ]
-                selected =
-                  if null libSelectors
-                    then [x | x@(_, m) <- mods, m `notElem` exeMains]
-                    else [x | x@(_, m) <- mods, any (`matchesSelector` m) libSelectors]
-            pure (Right selected)
+  pure $
+    if null libSelectors
+      then [x | x@(_, m) <- mods, m `notElem` exeMains]
+      else [x | x@(_, m) <- mods, any (`matchesSelector` m) libSelectors]
+
+-- | The dependency names a package's library targets declare — followed
+-- transitively when resolving a path dependency's own dependencies.
+libraryDeps :: BuildConfig -> [Text]
+libraryDeps depBc = concat [tDependencies t | t@LibraryTarget {} <- bcTargets depBc]
 
 depName :: Dependency -> Text
 depName = \case

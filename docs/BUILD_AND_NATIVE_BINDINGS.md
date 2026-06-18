@@ -194,14 +194,18 @@ the executable target; `--check` stops at the evaluated configuration
 A target's `dependencies` names are resolved against the manifest's
 declared dependencies (`Kappa.Build.Plan.resolveDeps`):
 
-- A **`pathDependency`** is resolved against the local filesystem: the
-  dependency package's manifest (relative to the dependent's directory)
-  is loaded + evaluated, its **library** modules (those matching its
-  `library` targets' `modules` selectors, or all its package modules when
-  it declares no library) are enumerated and compiled into the unit, so
-  the dependent can `import` them. Missing manifest →
+- A **`pathDependency`** is resolved against the local filesystem and
+  followed **transitively**: the dependency package's manifest (relative
+  to the dependent's directory) is loaded + evaluated, its **library**
+  modules (those matching its `library` targets' `modules` selectors, or
+  all its package modules except executables' mains when it declares no
+  library) are enumerated and compiled into the unit, and its own library
+  dependencies are resolved the same way. The closure is deduplicated and
+  cycle-detected by canonical package directory, so a diamond or a
+  dependency cycle resolves once and terminates. Missing manifest →
   `E_DEPENDENCY_PATH_NOT_FOUND`; a dependent listing an undeclared
-  dependency name → `E_DEPENDENCY_NOT_FOUND`.
+  dependency name → `E_DEPENDENCY_NOT_FOUND`; a module provided by more
+  than one package in the closure → `E_DEPENDENCY_MODULE_COLLISION`.
 - **`registry`/`git`/`url`/artifact** dependencies are **not** resolved by
   this implementation's resolver profile (§36.23.1): they require a
   registry and lockfile it does not provide, so they fail honestly with
@@ -209,18 +213,22 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
 
 ### Tracked temporary residue
 
-- **Dependency resolution is direct-only** (increment 4): a path
-  dependency's own (transitive) dependencies are not pulled in, and there
-  is no cross-package module-name namespacing — two packages defining the
-  same module name would merge as fragments (the fixtures use distinct
-  namespaces, e.g. `codec.*` vs `app.*`). Transitive resolution +
-  `kappa.lock` + a real registry/git resolver are later increments.
-- **Static linkage** is emitted as a plain `-l` (linker default search
-  order), without `-Wl,-Bstatic`/`-Bdynamic` grouping; a `staticLink`
-  request is honored only if a static archive is what the linker finds.
-  Proper static grouping is deferred (see `linkFlags` in
-  `Kappa.Backend.Driver`). This is the one tracked native-link
-  approximation.
+- **No cross-package module namespacing.** Module identity is the dotted
+  name; packages are expected to choose distinct module prefixes by
+  convention (§36.3 uses `acme.image.*`). A collision anywhere in the
+  dependency closure is *rejected* (`E_DEPENDENCY_MODULE_COLLISION`), not
+  silently merged — there is no spec mechanism that namespaces a module by
+  its package, so rejection is the correct enforcement.
+- **No `kappa.lock` / reproducibility pinning yet** (§36.23.2 path-dep
+  content identity, §3.2.15 reproducibility diagnostics) and **no real
+  registry/git resolver** — those need a lockfile + network; registry/git
+  dependencies fail honestly with `E_DEPENDENCY_UNRESOLVED` until then.
+- **Root-as-cyclic-dependency asymmetry**: when a path dependency cycles
+  back to the package being built, the root contributes the modules of the
+  *executable* target being built (its `modules` selector), not its
+  *library* modules. A cyclic dependency importing a root module outside
+  that selector fails honestly with `E_MODULE_NAME_UNRESOLVED` (an
+  unusual topology; the failure is honest, not silent-wrong).
 - The general §9.4 `expect`→backend-intrinsic hook
   (`csBackendIntrinsics`/`backendIntrinsicSatisfies`) remains in the
   checker but is now **always seeded empty** — the conforming native
@@ -248,12 +256,14 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
    agreement). `kappa.lock` and incremental caching are later.
 4. **(done)** Dependency resolution (§36.23): path dependencies resolved
    + their library modules compiled into the unit; registry/git honestly
-   unresolved (§36.23.1). Direct-only; transitive + `kappa.lock` later.
-5. Transitive dependency resolution + `kappa.lock` + the full
-   `kappa.package.reproducibility` pinning diagnostics; a real
-   registry/git resolver; remove the static-link approximation.
-6. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-7. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+   unresolved (§36.23.1).
+5. **(done)** Transitive path-dependency closure (cycle-detected,
+   deduplicated) + proper `staticLink` `-Wl,-Bstatic` grouping.
+6. `kappa.lock` + path-dep content identity (§36.23.2) + the full
+   `kappa.package.reproducibility` pinning diagnostics (§3.2.15); a real
+   registry/git resolver.
+7. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
+8. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
    and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/

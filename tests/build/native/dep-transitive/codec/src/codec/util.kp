@@ -1,0 +1,4 @@
+module codec.util
+import base.core.(core)
+tag : String -> String
+let tag s = stringAppend core s

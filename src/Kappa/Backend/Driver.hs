@@ -184,18 +184,19 @@ findRuntimeDir = do
 
 -- ── helpers ──────────────────────────────────────────────────────────
 
--- | §36.28 link specs → cc linker flags. @dynamicLink@/@staticLink@
--- contribute @-l<lib>@ for each named library; @noLink@ contributes
--- nothing. NOTE (tracked temporary): static linkage is currently emitted
--- as an ordinary @-l@ without @-Wl,-Bstatic@/@-Bdynamic@ wrapping — i.e.
--- the linker's default search order — so a static request is honored only
--- if a static archive is what the linker finds. Proper static-grouping is
--- deferred; see docs/BUILD_AND_NATIVE_BINDINGS.md.
+-- | §36.28 link specs → cc linker flags. @dynamicLink@ contributes
+-- @-l<lib>@ for each named library; @staticLink@ wraps its libraries in
+-- @-Wl,-Bstatic … -Wl,-Bdynamic@ so the GNU/LLVM linker selects the
+-- static archive for exactly those libraries (and restores dynamic
+-- selection afterwards); @noLink@ contributes nothing.
 linkFlags :: [NativeLinkSpec] -> [String]
 linkFlags = concatMap one
   where
     one (DynamicLink libs) = [T.unpack ("-l" <> l) | l <- libs]
-    one (StaticLink libs) = [T.unpack ("-l" <> l) | l <- libs]
+    one (StaticLink libs)
+      | null libs = []
+      | otherwise =
+          ["-Wl,-Bstatic"] ++ [T.unpack ("-l" <> l) | l <- libs] ++ ["-Wl,-Bdynamic"]
     one NoLink = []
 
 dropExtensionSafe :: FilePath -> FilePath

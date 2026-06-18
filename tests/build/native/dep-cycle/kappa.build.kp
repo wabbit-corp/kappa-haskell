@@ -1,0 +1,4 @@
+-- expect: BUILD_OK
+-- A dependency cycle (a -> b -> a) must terminate via cycle detection and
+-- build (the back-edge to the already-visited root package is skipped).
+let buildConfig : BuildConfig = package { name = "a", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [pathDependency { name = "b", path = "b" }], hostBindings = [], targets = [executable { name = "a", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "a", modules = modulesUnder "a", dependencies = ["b"], hostBindings = [] }] }
