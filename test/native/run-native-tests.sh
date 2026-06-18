@@ -54,7 +54,26 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags; do run_diff_case "$c"; done
+
+# LR2: the pattern-match dispatch must be a numeric tag-id int compare
+# (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
+# on a constructor/variant-heavy program's generated C.
+echo "== LR2: match dispatch uses numeric tag ids, not strcmp =="
+ltmp="$WORK/lr2c"; mkdir -p "$ltmp"
+if timeout 120 $KAPPA build "$CASES/ctortags.kp" --emit-c -o "$ltmp/ct" >"$ltmp/build.log" 2>&1; then
+  cfile="$CASES/ctortags.kappa.c"
+  if grep -qE 'kctor_tagid\(' "$cfile" \
+     && ! grep -qE 'kctor_is\(|kvariant_is\(' "$cfile"; then
+    echo "   ok (matches dispatch on kctor_tagid/kvariant_tagid; no kctor_is/kvariant_is in generated C)"
+  else
+    echo "   FAIL: generated match path still uses a strcmp dispatch (or no tag id)"
+    grep -nE 'kctor_is\(|kvariant_is\(' "$cfile" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: ctortags --emit-c build failed"; cat "$ltmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
 
 # Honest no-fallback property: the native backend never silently falls back
 # to interpreter behaviour.  The full accepted run-mode (UIO) surface now

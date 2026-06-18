@@ -1,0 +1,44 @@
+-- LR2 native backend: pattern matching dispatches on numeric ctor/variant
+-- tag ids (kctor_tagid / kvariant_tagid int compare), not kctor_is/kvariant_is
+-- strcmp.  Exercises the builtin ids (Some/None/::/Nil/True/False) and
+-- codegen-assigned user ids, including a constructor that is MATCHED but never
+-- CONSTRUCTED (its tag id must still be assigned, or the C constant is
+-- undefined).  Native output must equal the interpreter (which matches by name).
+module main
+
+-- 4-constructor ADT, mixed arity; `Quux` is matched below but NEVER built.
+data E : Type =
+    Foo
+    Bar (n : Int)
+    Baz (a : Int) (b : Int)
+    Quux
+
+tag : E -> Int
+let tag e =
+    match e
+    case Foo -> 0
+    case Bar n -> n
+    case Baz a b -> addInt a b
+    case Quux -> 999
+
+-- Option builtins (Some/None -> KCT_SOME/KCT_NONE).
+unwrap : Option Int -> Int
+let unwrap o =
+    match o
+    case Some x -> x
+    case None -> negInt 1
+
+-- Unit pattern: the K_UNIT value matched by `()` (KCT_UNIT).
+unitToInt : Unit -> Int
+let unitToInt u =
+    match u
+    case () -> 7
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (tag Foo))
+    printlnString (showInt (tag (Bar 5)))
+    printlnString (showInt (tag (Baz 3 4)))
+    printlnString (showInt (unwrap (Some 11)))
+    printlnString (showInt (unwrap None))
+    printlnString (showInt (unitToInt ()))

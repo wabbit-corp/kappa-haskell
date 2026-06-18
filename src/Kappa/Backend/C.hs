@@ -29,6 +29,7 @@ module Kappa.Backend.C
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, ord)
+import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -94,6 +95,8 @@ data GenState = GenState
   , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
   , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
   , gsI64Escape :: !Text -- ^ the C statement spliced by i64Arith on overflow / INT64_MIN: @*kovf = 1; return 0;@ for an LR1 worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
+  , gsCollectCtors :: !(Set Text) -- ^ LR2: gKeys of USER constructors referenced (constructed or matched); builtins use the fixed @KCT_*@ ids so they are NOT collected. After codegen, @assemble@ assigns each a @KCT_USER_BASE+i@ id (sorted, deterministic) and emits a @KT_<mangle>@ enum.
+  , gsCollectVars :: !(Set Text) -- ^ LR2: §13 variant member-identity tags referenced (injected or matched); @assemble@ emits a 0-based @KVT_<mangle>@ enum (variants are never runtime-built, so no fixed-id constraint).
   }
 
 -- | A loop's labelled control targets: its source label (if any), the C
@@ -216,6 +219,73 @@ cStr t = "\"" <> T.concatMap esc t <> "\""
 cStrL :: Text -> Text
 cStrL s = "kstr(" <> cStr s <> ", " <> T.pack (show (utf8Len s)) <> ")"
 
+-- ── LR2: numeric constructor / variant tags ─────────────────────────
+--
+-- A constructor/variant value carries a small integer `tagid` so pattern
+-- matching dispatches on an int compare (kctor_tagid/kvariant_tagid) instead
+-- of a kctor_is/kvariant_is strcmp.  The id must be IDENTICAL at every
+-- construction site and every match site for a given name; codegen guarantees
+-- this with one rule:
+--
+--   * the runtime builds 8 builtins (Unit/True/False/::/Nil/Some/None/__rat)
+--     so those share a FIXED enum with the runtime — codegen spells them with
+--     the kappart.h `KCT_*` names (`builtinCtorTag`);
+--   * every other (user) constructor is referenced by a `KT_<mangle gKey>`
+--     name, collected into `gsCollectCtors`, and given a `KCT_USER_BASE + i`
+--     id by `assemble` (the value is irrelevant to correctness — both sides
+--     use the same symbolic name — only its disjointness from the builtins,
+--     guaranteed by KCT_USER_BASE, and from other user ctors, guaranteed by
+--     `mangle` being injective, matter);
+--   * variants are never runtime-built, so all variant tags are user ids:
+--     a `KVT_<mangle tag>` name, collected into `gsCollectVars`, 0-based.
+
+-- | The fixed kappart.h @KCT_*@ id for a runtime-built builtin constructor,
+-- or @Nothing@ for a user constructor (which gets a @KT_*@ id).
+builtinCtorTag :: Text -> Maybe Text
+builtinCtorTag = \case
+  "std.prelude.Unit" -> Just "KCT_UNIT"
+  "std.prelude.True" -> Just "KCT_TRUE"
+  "std.prelude.False" -> Just "KCT_FALSE"
+  "std.prelude.::" -> Just "KCT_CONS"
+  "std.prelude.Nil" -> Just "KCT_NIL"
+  "std.prelude.Some" -> Just "KCT_SOME"
+  "std.prelude.None" -> Just "KCT_NONE"
+  "__rat" -> Just "KCT_RAT"
+  _ -> Nothing
+
+-- | The C tag constant for a constructor, recording a user constructor's use
+-- so @assemble@ emits its @KT_*@ enum entry.
+ctorTagConst :: GName -> Gen Text
+ctorTagConst g = case builtinCtorTag (gKey g) of
+  Just kc -> pure kc
+  Nothing -> do
+    modify' $ \st -> st {gsCollectCtors = Set.insert (gKey g) (gsCollectCtors st)}
+    pure ("KT_" <> mangle (gKey g))
+
+-- | The C tag constant for a §13 variant member tag, recording its use so
+-- @assemble@ emits its @KVT_*@ enum entry.
+variantTagConst :: Text -> Gen Text
+variantTagConst tag = do
+  modify' $ \st -> st {gsCollectVars = Set.insert tag (gsCollectVars st)}
+  pure ("KVT_" <> mangle tag)
+
+-- | The @enum { KT_… = …, … }@ blocks for every collected user constructor
+-- and variant tag, emitted by @assemble@ after @#include "kappart.h"@ so the
+-- symbolic names referenced in generated constructions/matches are defined.
+tagEnumBlock :: GenState -> [Text]
+tagEnumBlock st =
+  block "KT_" "KCT_USER_BASE + " (Set.toList (gsCollectCtors st))
+    ++ block "KVT_" "" (Set.toList (gsCollectVars st))
+  where
+    block prefix base names = case sort names of
+      [] -> []
+      sorted ->
+        ["enum {"]
+          ++ [ "  " <> prefix <> mangle n <> " = " <> base <> T.pack (show i) <> ","
+             | (i, n) <- zip [(0 :: Int) ..] sorted
+             ]
+          ++ ["};"]
+
 -- | The number of UTF-8 bytes a 'Text' encodes to (the C string length).
 utf8Len :: Text -> Int
 utf8Len = T.foldl' (\acc c -> acc + length (utf8Bytes c)) 0
@@ -330,6 +400,8 @@ generateC cs mainG ffiPrims =
           , gsScalars = Map.empty
           , gsScalarRegion = False
           , gsI64Escape = "*kovf = 1; return 0;"
+          , gsCollectCtors = Set.empty
+          , gsCollectVars = Set.empty
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -859,6 +931,10 @@ assemble st =
     , "#include \"kappart.h\""
     , ""
     ]
+      -- LR2: per-program numeric constructor/variant tag ids (KT_/KVT_),
+      -- referenced by the generated constructions and pattern-match tests.
+      ++ tagEnumBlock st
+      ++ [""]
       ++ reverse (gsProtos st)
       ++ [""]
       ++ reverse (gsTop st)
@@ -899,7 +975,8 @@ compile term = case term of
   -- §13 closed/open variants: injection is a tagged payload.
   CInject tag e -> do
     ee <- compile e
-    pure ("kinject(" <> cStr tag <> ", " <> ee <> ")")
+    tc <- variantTagConst tag
+    pure ("kinject(" <> tc <> ", " <> cStr tag <> ", " <> ee <> ")")
   -- §13.2.10: `seal` is pure and non-generative (seal e as S ≡ e), so a
   -- sealed package's runtime value is exactly its underlying record/value.
   CSealE _ e -> compile e
@@ -1290,7 +1367,9 @@ compileGlob g@(GName m nm)
             -- so a bare positive-arity ctor never reaches codegen for an
             -- accepted program; treat it as an internal invariant.
             if null (ciFields ci)
-              then pure ("kctor0(" <> cStr (gKey g) <> ")")
+              then do
+                tc <- ctorTagConst g
+                pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
               else escalated "bare-ctor"
                 ("constructor '" <> nm <> "' is referenced un-eta-expanded; \
                  \accepted programs eta-expand constructor values (§10.1)")
@@ -1382,12 +1461,13 @@ compileCtor g args = do
   -- without compiling a type/quote value (which the interpreter stores but
   -- never inspects).
   argEs <- mapM compileErasableArg args
+  tc <- ctorTagConst g
   if null argEs
-    then pure ("kctor0(" <> cStr (gKey g) <> ")")
+    then pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
     else do
       arr <- freshN "args_"
       emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " argEs <> "};")
-      pure ("kctor(" <> cStr (gKey g) <> ", " <> T.pack (show (length argEs)) <> ", " <> arr <> ")")
+      pure ("kctor(" <> tc <> ", " <> cStr (gKey g) <> ", " <> T.pack (show (length argEs)) <> ", " <> arr <> ")")
 
 compileRecord :: [(Text, Term)] -> Gen Text
 compileRecord fs = do
@@ -1591,7 +1671,11 @@ patTest v = \case
     let nps = length ps
     subs <- forM (zip [0 ..] ps) $ \(i, p) ->
       patTest (ctorArgExpr v nps i) p
-    let here = "kctor_is(" <> v <> ", " <> cStr (gKey g) <> ")"
+    -- LR2: dispatch on the numeric ctor identity (int compare) rather than a
+    -- kctor_is strcmp.  kctor_tagid returns -1 for a non-ctor scrutinee, so
+    -- this preserves the `v->tag == K_CTOR &&` type guard kctor_is carried.
+    tc <- ctorTagConst g
+    let here = "kctor_tagid(" <> v <> ") == " <> tc
     pure (Just (conj (here : [t | Just t <- subs])))
   CPTuple ps -> do
     let n = length ps
@@ -1618,11 +1702,14 @@ patTest v = \case
   -- §13 variant patterns: tag match + payload sub-test.
   CPInject tag p -> do
     sub <- patTest ("kvariant_payload(" <> v <> ")") p
-    let here = "kvariant_is(" <> v <> ", " <> cStr tag <> ")"
+    -- LR2: numeric variant dispatch (kvariant_tagid -> -1 for a non-variant).
+    tc <- variantTagConst tag
+    let here = "kvariant_tagid(" <> v <> ") == " <> tc
     pure (Just (conj (here : [t | Just t <- [sub]])))
   -- §13 residual-row pattern: a variant whose tag is none of the excluded.
-  CPInjectRest excl ->
-    pure (Just (conj ("kis_variant(" <> v <> ")" : ["!kvariant_is(" <> v <> ", " <> cStr e <> ")" | e <- excl])))
+  CPInjectRest excl -> do
+    tcs <- mapM variantTagConst excl
+    pure (Just (conj ("kis_variant(" <> v <> ")" : ["kvariant_tagid(" <> v <> ") != " <> tc | tc <- tcs])))
   where
     recordTests rv pfs = do
       subs <- forM pfs $ \(n, p) -> patTest ("kproj(" <> rv <> ", " <> cStr n <> ")") p

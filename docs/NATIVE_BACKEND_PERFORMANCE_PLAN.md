@@ -33,18 +33,18 @@ claim the backend is raw-C overall — only the LR1 Int-worker case meets it):
 | **P0.1** monomorphic numeric boxed → scalar workers | **MET for `Int`** (LR1: scalar `int64` worker, zero per-iter alloc, 1.03× `cc -O2`); `Bool`/`Double` workers not yet done |
 | **P0.2** `var` loops are heap-ref loops | **MET for non-escaping Int var loops** — `arithloop` 145 MB → 704 bytes, 81.5× → 0.7× `cc -O2` (scalar int64 loop, GMP-overflow escape); effectful/escaping/non-Int/else/nested/for loops stay boxed |
 | **P0.3** `KEnv`/`kvar` on hot paths | **MET for LR1 Int workers** (scalar locals, no `KEnv`/`kvar`); general first-order code still uses `kvar` (QW2 only removed the per-iter *rebuild*) |
-| **P0.4** records/ADTs generic+string | **MET for closed-record projection** — `r.f` on a statically-known *sorted* layout lowers to fixed-offset `krec_at` (no `kproj` strcmp): named records (always `sortOn fst`) + tuples of arity <10 optimized; tuples ≥10 (positional `_1.._n` ≠ lexicographic), open/sealed/dict stay `kproj`. **Ctor/variant pattern-match tags still `kctor_is` strcmp (LR2, #147)**; the boxing/alloc on a record-param worker is orthogonal (LR1-class) |
+| **P0.4** records/ADTs generic+string | **MET (no string scans on the match/projection path).** Records: `r.f` on a statically-known *sorted* layout → fixed-offset `krec_at` (named records + tuples <10; tuples ≥10 / open / sealed / dict stay `kproj`). Ctors/variants (**LR2**): pattern matching dispatches on a numeric `tagid` int compare (`kctor_tagid`/`kvariant_tagid`), not `kctor_is`/`kvariant_is` strcmp; `kis_cons`/`kas_bool` likewise. The `switch`/jump-table shape is deferred (linear int-compare chain kept); the boxing/alloc on a record/ctor-param worker is orthogonal (LR1-class) |
 | **P0.5** known calls carry trampoline/closure | **MET for LR1 Int self-calls** (loop / direct, no trampoline); general known calls still trampoline |
 | **P1.1** `-O2` perf builds | **DONE** (`bench.sh` builds native + raw-C at `-O2`) |
 | **P1.2** raw-C baseline gates + ratios | **DONE** (raw-C baselines + native/C ratio; `tailsum` gated ≤5× C — actually 0.2×; `arithloop` reported as P0.2-pending) |
 | **P1.3** QW2 doc overclaim | **FIXED** (QW2 = "env rebuild removed", not "env/kvar eliminated"; see below) |
 
-LR1 (Int workers), P0.2 (`var`-loop locals), and P0.4 (closed-record fixed-
-offset projection) are landed. The remaining raw-C iterations are LR2 (numeric
-ctor/variant pattern-match tags — `switch` instead of `kctor_is`/`strcmp`) and
-the general P0.3/P0.5 (bare locals + direct calls for non-`Int` first-order
-code), each to be landed behind the boxed-ABI fallback with its own review and
-raw-C gate.
+LR1 (Int workers), P0.2 (`var`-loop locals), P0.4 (closed-record fixed-offset
+projection), and LR2 (numeric ctor/variant match tags) are landed. The
+remaining raw-C iterations are the `switch`/jump-table match shape (deferred
+from LR2), Bool/Double scalar workers, and the general P0.3/P0.5 (bare locals +
+direct calls for non-`Int` first-order code), each to be landed behind the
+boxed-ABI fallback with its own review and raw-C gate.
 
 ## Quick wins (this iteration) — DONE
 
@@ -200,14 +200,50 @@ field names) — the report's "no string scans / fixed-offset access".
   worker — an orthogonal LR1-class issue). Ctor/variant pattern-match tags
   (still `kctor_is`/`strcmp`) are DEFERRED to LR2 (#147).
 
-### LR2 — Numeric IDs for constructors / variants / record fields (notes §4, criterion #5)
-- Assign per-program integer IDs to constructor names, variant tags, and
-  record field labels (a codegen-built table). Store the int tag in
-  `K_CTOR`/`K_VARIANT` (debug name retained for diagnostics only); compile
-  pattern matching to a `switch` on the tag, and known record/tuple layouts
-  to fixed offsets. Keep `strcmp`/linear-scan only for dynamic/open-record
-  fallback. Staged: ship with tests proving the string path is not used in
-  list/tuple/record hot cases.
+### LR2 — Numeric tags for constructors / variants (notes §4, criterion #5) — **DONE (ctor/variant match dispatch)**
+Pattern matching dispatches on a per-value numeric `tagid` (an int compare)
+instead of a `kctor_is`/`kvariant_is` `strcmp` over the constructor name —
+the raw-C "no string scans on the match common path". (Record-field offsets
+were the P0.4 half of criterion #5.)
+- **Representation**: `int tagid` added to the `K_CTOR` and `K_VARIANT` union
+  members (`runtime/kappart.h`). It is FREE — the `KValue` union was already
+  32 bytes (the `thunk` member), so `sizeof(KValue)` stays 40 and there is no
+  per-value allocation increase. The constructor/variant `name`/`tag` strings
+  are retained (diagnostics, rep-equality, §13.3 member identity).
+- **Identity scheme**: the runtime builds 8 builtins (Unit/True/False/`::`/
+  Nil/Some/None/`__rat`) so those share a FIXED enum (`KCT_*`, pinned by a
+  `_Static_assert`) between the runtime and codegen. Every other (user)
+  constructor is referenced by a `KT_<mangle gKey>` name, collected during
+  emission and given a `KCT_USER_BASE + i` id by `assemble`; variants (never
+  runtime-built) get a 0-based `KVT_<mangle tag>` id. The `assemble` step
+  emits the `enum { KT_… }` / `enum { KVT_… }` blocks, so construction and
+  match reference the *same* symbolic constant — correctness needs only that
+  user ids clear the builtins (`KCT_USER_BASE`) and that distinct names get
+  distinct constants (the existing `mangle` is injective). `kctor_tagid`
+  returns `-1` for a non-constructor (and `KCT_UNIT` for the canonical
+  `K_UNIT`), so a ctor test on a non-ctor scrutinee fails — preserving the
+  `v->tag == K_CTOR` type guard the old `kctor_is` carried.
+- **Construction/match**: `kctor`/`kctor0`/`kinject` gained a leading `tagid`
+  parameter (the 7 runtime builtin sites pass the fixed enum; codegen passes
+  the program id). `patTest` emits `kctor_tagid(v) == <KCT_*|KT_*>` /
+  `kvariant_tagid(v) == KVT_*` / (`CPInjectRest`) `kvariant_tagid(v) != KVT_*`.
+  `kis_cons` and `kas_bool` are now `tagid` compares too. The linear if-chain
+  shape is unchanged (only the per-alt test expression changed), so behaviour
+  is provably identical; `kctor_is`/`kvariant_is` (strcmp) remain for the
+  non-hot diagnostics/rep-eq paths.
+- **Verified**: a vetted design review (3 angles) + this iteration's three
+  adversarial reviewers (spec-compliance, perf/code-quality, duplication/
+  architecture) all PASS zero-serious; in-tree conformance 242/242, `cabal
+  test`, the native suite (new `ctortags` case + a codegen assertion that the
+  generated match path carries no `kctor_is`/`kvariant_is`), and the external
+  fixture corpus (interpreter-only — LR2 touches only the `kappa build` path)
+  all native ≡ interpreter with zero regression.
+- **Deferred**: the `switch`/jump-table match shape — the int-compare chain
+  already removes every `strcmp` from the dispatch, and for the dominant hot
+  cases (list `::`/Nil, Bool, Option) `N` is tiny, so a jump table is a
+  follow-up gated on a closed-ADT 8–16-arm microbench showing it ≥2× faster
+  with guard-free single-head-tag arms. Also deferred: `as_rat` strcmp (non-
+  hot), Bool/Double scalar workers.
 
 ## Adversarial performance review (criterion #8) — findings + remediation
 

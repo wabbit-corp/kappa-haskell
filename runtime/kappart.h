@@ -52,6 +52,25 @@ typedef enum {
              /* on a heap stack so the recursion stays C-stack-bounded.    */
 } KTag;
 
+/* LR2 constructor tag ids (numeric pattern-match dispatch).  These FIXED ids
+ * are shared between the runtime (which builds these builtins) and codegen
+ * (which references them as KCT_* in generated matches/constructions), so the
+ * two MUST agree — see the _Static_assert in kappart.c.  KCT_OTHER=0 is a
+ * never-constructed-with sentinel distinct from every real id and from the
+ * kctor_tagid() "not a constructor" return of -1.  User constructors get
+ * codegen-assigned ids at KCT_USER_BASE and above (so they never collide with
+ * a builtin); variant injections get a disjoint 0-based codegen id space
+ * (a variant value is never tested with a ctor id, so overlap is harmless). */
+enum {
+  KCT_OTHER = 0,
+  KCT_UNIT  = 1,
+  KCT_TRUE, KCT_FALSE,
+  KCT_CONS, KCT_NIL,
+  KCT_SOME, KCT_NONE,
+  KCT_RAT,
+  KCT_USER_BASE = 16
+};
+
 typedef struct KValue KValue;
 typedef struct KEnv KEnv;
 
@@ -67,14 +86,21 @@ struct KValue {
     double   d;
     uint32_t chr;
     struct { const char *p; size_t len; } str;
-    struct { const char *name; int argc; KValue **args; } ctor;
+    /* LR2: `tagid` (a numeric ctor identity: a builtin KCT_ id or a
+     * codegen-assigned KCT_USER_BASE+ id) lets the match path dispatch via an
+     * int compare (kctor_tagid) instead of a kctor_is strcmp.  `name` is
+     * retained for diagnostics / rep-equality. */
+    struct { const char *name; int argc; KValue **args; int tagid; } ctor;
     struct { int n; const char **names; KValue **vals; } rec;
     struct { KFn fn; KEnv *env; } clo;
     struct { const char *name; int argc; KValue **args; } prim;
     struct { KIOFn fn; KEnv *env; } io;
     struct { KValue **cell; } ref;             /* cell[0] is the contents */
     struct { void *p; const char *kind; } fgn;
-    struct { const char *tag; KValue *payload; } var;
+    /* LR2: `tagid` is the variant injection's numeric identity (codegen-
+     * assigned, 0-based — variants are never built by the runtime).  `tag`
+     * (the §13.3 canonical member-identity string) is retained. */
+    struct { const char *tag; KValue *payload; int tagid; } var;
     struct { KIOFn fn; KEnv *env; int memo; KValue **cache; } thunk;
     struct { void *mpz; } big;   /* points to a GC-allocated __mpz_struct */
     struct { KValue *fn; KValue *arg; } bounce;
@@ -106,15 +132,15 @@ KValue *kstr0(const char *cstr);               /* from a C string literal */
 KValue *kchr(uint32_t scalar);
 KValue *kunit(void);
 KValue *kbool(int b);                           /* True/False constructors */
-KValue *kctor(const char *name, int argc, KValue **args);
-KValue *kctor0(const char *name);               /* nullary constructor     */
+KValue *kctor(int tagid, const char *name, int argc, KValue **args);
+KValue *kctor0(int tagid, const char *name);    /* nullary constructor     */
 KValue *krec(int n, const char **names, KValue **vals);
 KValue *kclo(KFn fn, KEnv *env);
 KValue *kprim(const char *name);                /* 0-ary; saturates via kapp */
 KValue *kio(KIOFn fn, KEnv *env);
 KValue *kref_new(KValue *init);
 KValue *kfgn(void *p, const char *kind);
-KValue *kinject(const char *tag, KValue *payload);   /* §13 variant injection */
+KValue *kinject(int tagid, const char *tag, KValue *payload); /* §13 variant injection */
 KValue *kthunk(KIOFn fn, KEnv *env, int memo);       /* §19 Delay(0)/Memo(1)  */
 KValue *kbyte(unsigned char w);                      /* §6.5 byte             */
 KValue *kbytes(const unsigned char *p, size_t len);  /* §29.5 byte sequence   */
@@ -166,11 +192,15 @@ KValue *kio_finally(KValue *action, KValue **defers, int n); /* tail action + §
 
 /* ── deconstruction (codegen for CMatch / CProj) ───────────────────── */
 int      kctor_is(KValue *v, const char *name);  /* tag-name equality     */
+int      kctor_tagid(KValue *v);   /* LR2: numeric ctor identity for matching;
+                                    * K_UNIT->KCT_UNIT; non-ctor -> -1 (matches
+                                    * no test, preserving the K_CTOR type guard) */
 const char *kctor_name(KValue *v);
 int      kctor_argc(KValue *v);
 KValue  *kctor_arg(KValue *v, int i);
 KValue  *kproj(KValue *rec, const char *name);
 int      kvariant_is(KValue *v, const char *tag);    /* §13 CPInject test     */
+int      kvariant_tagid(KValue *v);  /* LR2: numeric variant identity; non-variant -> -1 */
 int      kis_variant(KValue *v);                     /* §13 CPInjectRest guard */
 KValue  *kvariant_payload(KValue *v);
 KValue  *kforce(KValue *v);                          /* §19 force a thunk      */

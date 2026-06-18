@@ -128,7 +128,7 @@ static KValue *krat(mpz_t num, mpz_t den) {
   mpz_t g; mpz_init(g); mpz_gcd(g, num, den);
   if (mpz_sgn(g) != 0) { mpz_divexact(num, num, g); mpz_divexact(den, den, g); }
   KValue *args[2]; args[0] = kfrom_mpz(num); args[1] = kfrom_mpz(den);
-  return kctor("__rat", 2, args);
+  return kctor(KCT_RAT, "__rat", 2, args);
 }
 
 static void as_rat(KValue *r, mpz_t num, mpz_t den) {
@@ -178,9 +178,16 @@ KValue *kunit(void) {
   return the_unit;
 }
 
-KValue *kctor(const char *name, int argc, KValue **args) {
+/* LR2: the builtin tag ids are shared with codegen (which spells them KCT_*);
+ * pin the order so a header edit that desyncs them fails the build, not a
+ * pattern match at runtime. */
+_Static_assert(KCT_RAT == 8 && KCT_USER_BASE > KCT_RAT,
+               "LR2 builtin ctor tag ids must stay pinned and below KCT_USER_BASE");
+
+KValue *kctor(int tagid, const char *name, int argc, KValue **args) {
   KValue *r = alloc_val(K_CTOR);
   r->as.ctor.name = name;
+  r->as.ctor.tagid = tagid;   /* LR2 numeric identity for matching */
   r->as.ctor.argc = argc;
   if (argc) {
     KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
@@ -192,19 +199,21 @@ KValue *kctor(const char *name, int argc, KValue **args) {
   return r;
 }
 
-KValue *kctor0(const char *name) {
+KValue *kctor0(int tagid, const char *name) {
   /* canonicalise the nullary Unit constructor to the single K_UNIT value so
-   * Unit has one runtime representation (see kctor_is). */
+   * Unit has one runtime representation.  kctor_tagid maps K_UNIT->KCT_UNIT,
+   * so codegen passing KCT_UNIT here is consistent even though the K_UNIT
+   * value carries no ctor.tagid field. */
   if (strcmp(name, "std.prelude.Unit") == 0) return kunit();
-  return kctor(name, 0, NULL);
+  return kctor(tagid, name, 0, NULL);
 }
 
 /* The two Bool constructors are immutable nullary ctors; cache them so
  * every comparison/boolean result does not allocate (static = GC root). */
 static KValue *the_true = NULL, *the_false = NULL;
 KValue *kbool(int b) {
-  if (b) { if (!the_true) the_true = kctor0("std.prelude.True"); return the_true; }
-  if (!the_false) the_false = kctor0("std.prelude.False");
+  if (b) { if (!the_true) the_true = kctor0(KCT_TRUE, "std.prelude.True"); return the_true; }
+  if (!the_false) the_false = kctor0(KCT_FALSE, "std.prelude.False");
   return the_false;
 }
 
@@ -266,9 +275,10 @@ KValue *kfgn(void *p, const char *kind) {
   return r;
 }
 
-KValue *kinject(const char *tag, KValue *payload) {
+KValue *kinject(int tagid, const char *tag, KValue *payload) {
   KValue *r = alloc_val(K_VARIANT);
   r->as.var.tag = tag;          /* a generated static string literal */
+  r->as.var.tagid = tagid;      /* LR2 numeric identity for matching */
   r->as.var.payload = payload;
   return r;
 }
@@ -298,12 +308,12 @@ KValue *kbytes(const unsigned char *p, size_t len) {
 }
 
 /* lists */
-KValue *knil(void) { return kctor0("std.prelude.Nil"); }
+KValue *knil(void) { return kctor0(KCT_NIL, "std.prelude.Nil"); }
 KValue *kcons(KValue *h, KValue *t) {
   KValue *args[2] = {h, t};
-  return kctor("std.prelude.::", 2, args);
+  return kctor(KCT_CONS, "std.prelude.::", 2, args);
 }
-int kis_cons(KValue *v) { return v->tag == K_CTOR && strcmp(v->as.ctor.name, "std.prelude.::") == 0; }
+int kis_cons(KValue *v) { return v->tag == K_CTOR && v->as.ctor.tagid == KCT_CONS; }
 
 /* ── environment ───────────────────────────────────────────────────── */
 
@@ -452,6 +462,16 @@ int kctor_is(KValue *v, const char *name) {
   if (v->tag == K_UNIT) return strcmp(name, "std.prelude.Unit") == 0;
   return v->tag == K_CTOR && strcmp(v->as.ctor.name, name) == 0;
 }
+/* LR2: the numeric pattern-match dispatch primitive.  Unit's canonical K_UNIT
+ * value reports KCT_UNIT (its dual nullary-ctor spelling carries the same id).
+ * Any non-constructor value reports -1, which equals no valid tag id, so a
+ * ctor pattern test on a non-ctor scrutinee fails — preserving the
+ * `v->tag == K_CTOR &&` type guard that kctor_is had. */
+int kctor_tagid(KValue *v) {
+  if (v->tag == K_UNIT) return KCT_UNIT;
+  if (v->tag == K_CTOR) return v->as.ctor.tagid;
+  return -1;
+}
 const char *kctor_name(KValue *v) {
   if (v->tag != K_CTOR) krt_fail("kctor_name: not a constructor");
   return v->as.ctor.name;
@@ -483,6 +503,11 @@ KValue *kproj(KValue *rec, const char *name) {
 
 int kvariant_is(KValue *v, const char *tag) {
   return v->tag == K_VARIANT && strcmp(v->as.var.tag, tag) == 0;
+}
+/* LR2: numeric §13 variant dispatch; -1 for a non-variant value (matches no
+ * tag id, so a variant pattern test on a non-variant fails). */
+int kvariant_tagid(KValue *v) {
+  return v->tag == K_VARIANT ? v->as.var.tagid : -1;
 }
 int kis_variant(KValue *v) { return v->tag == K_VARIANT; }
 KValue *kvariant_payload(KValue *v) {
@@ -575,8 +600,8 @@ double kas_dbl(KValue *v) {
 }
 int kas_bool(KValue *v) {
   if (v->tag != K_CTOR) krt_fail("kas_bool: not a Bool");
-  if (strcmp(v->as.ctor.name, "std.prelude.True") == 0) return 1;
-  if (strcmp(v->as.ctor.name, "std.prelude.False") == 0) return 0;
+  if (v->as.ctor.tagid == KCT_TRUE) return 1;
+  if (v->as.ctor.tagid == KCT_FALSE) return 0;
   krt_fail("kas_bool: not a Bool constructor");
 }
 
@@ -730,8 +755,8 @@ static KValue *show_double(double x) {
 
 /* ── bytes / byte / grapheme helpers (§6.5, §29.5) ─────────────────── */
 
-static KValue *ksome(KValue *x) { KValue *a[1]; a[0] = x; return kctor("std.prelude.Some", 1, a); }
-static KValue *knone(void) { return kctor0("std.prelude.None"); }
+static KValue *ksome(KValue *x) { KValue *a[1]; a[0] = x; return kctor(KCT_SOME, "std.prelude.Some", 1, a); }
+static KValue *knone(void) { return kctor0(KCT_NONE, "std.prelude.None"); }
 
 /* first index of needle in hay, or -1 (portable; no memmem dependency). */
 static long bytes_index_of(const unsigned char *hay, size_t hl, const unsigned char *ned, size_t nl) {
