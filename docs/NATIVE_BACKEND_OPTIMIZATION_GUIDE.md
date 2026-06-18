@@ -11,6 +11,13 @@ Scope: `src/Kappa/Backend/C.hs`, `runtime/kappart.{c,h}`, `test/native/bench/*`,
 under `test/native/cases/`. Nothing here modifies compiler/runtime code — it is review, research,
 and planning.
 
+This guide is also an IR-discovery document, not only a C-backend tuning list. The current
+generated-C backend is a useful pressure test because every ugly optimization boundary identifies a
+fact that the eventual lowered IR should carry explicitly. Continue C-backend optimization only when
+the work produces at least one reusable lowering rule, benchmark/gate, runtime ABI decision, or
+lowered-IR requirement. Avoid investing in C-specific patchwork whose only effect is to make a
+boxed `KValue`/`KEnv` shape slightly less bad without teaching the next backend anything.
+
 Provenance note: the research findings (§5) and full citation list (§6) carry `[measured]` /
 `[design]` / `[folklore]` tags and survived two adversarial review passes (§10); two citation
 errors and one stale implementation claim were corrected during that review. Where this guide and
@@ -347,6 +354,24 @@ interpreter gate (the project's standing safety discipline — a wrong unboxing 
 tag switches, unboxed loop bodies, self-tail loops) in the frontend; do **not** re-implement
 LICM/unrolling/GVN that `-O2` already does. Full per-item detail (acceptance gates, dependencies)
 is preserved from the roadmap below.
+
+Each wave should also update the lowered-IR requirements. Treat the C backend as the current
+executable laboratory and portability backend, not the final optimized architecture. The pain points
+already imply these IR facts:
+
+- `KValue` everywhere -> typed scalar/value representations plus explicit boxed-boundary markers.
+- `KEnv` linked frames -> explicit closure/environment layout, escape information, and flat-frame
+  eligibility.
+- Trampolines -> tail-call groups, continuation strategy, and a lowering choice between loop,
+  `musttail`, state machine, and boxed trampoline fallback.
+- Saturated constructor closure storms -> known arity, direct constructor application, and an
+  explicit partial-application distinction.
+- Record/tuple projection hacks -> stable field IDs and layout offsets.
+- ADT matching chains -> tag IDs and decision-tree/switch match form.
+- `Int`/`Double`/`Bool` scalar gaps -> representation-specialized workers and cross-function scalar
+  chaining, not one-off primitive cases.
+- GC uncertainty -> root/lifetime/escape metadata and a clear boundary between conservative-C
+  fallback and any future precise/LLVM backend.
 
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
