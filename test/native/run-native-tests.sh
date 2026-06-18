@@ -195,6 +195,22 @@ if timeout 120 $KAPPA build "$CASES/flatframe.kp" --emit-c -o "$ftmp/ff" >"$ftmp
   else
     echo "   FAIL: flat-frame worker still walks kvar/kpush (R2.3 regressed)"; fails=$((fails+1))
   fi
+  # R2.4: flatframe's worker (Int counter + record param + Int accumulator) is
+  # ALSO emitted as a MIXED unboxed worker `kwm_…(int64_t, KValue *, int64_t,
+  # int *kovf)` — unboxed scalar slots, boxed record slot passed through, and a
+  # record-field read coerced via a tag-checked kunbox_i64.  Assert that mixed
+  # worker exists with the boxed→scalar coercion.
+  kwmworker="$(awk '/^static int64_t kwm_main_2e_go\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile" 2>/dev/null)"
+  # scope every check to the kwm_ worker BODY: krec_at(p..) field read + the
+  # worker-side coercion `kunbox_i64(fb_…, kovf)` (no `&` — distinct from the
+  # call-site `kunbox_i64(la_…, &kovf)`, which would pass spuriously).
+  if printf '%s' "$kwmworker" | grep -qE 'krec_at\(p[0-9]' \
+     && grep -qE 'int64_t kwm_main_2e_go\(int64_t .*KValue \*' "$cfile" 2>/dev/null \
+     && printf '%s' "$kwmworker" | grep -qE 'kunbox_i64\(fb_[0-9]+, kovf\)'; then
+    echo "   ok-R2.4 (mixed kwm_ worker: unboxed scalar slots + boxed record slot + tag-checked field coercion)"
+  else
+    echo "   FAIL: R2.4 mixed worker missing (record-param worker did not unbox its scalar slots)"; fails=$((fails+1))
+  fi
   rm -f "$cfile"
 else
   echo "   FAIL: flatframe --emit-c build failed"; cat "$ftmp/build.log" | sed 's/^/     /'; fails=$((fails+1))

@@ -720,6 +720,23 @@ unboxScalar :: ScalarKind -> Text -> Text -> Text
 unboxScalar KInt64 box ovf = "kunbox_i64(" <> box <> ", &" <> ovf <> ")"
 unboxScalar KDouble box ovf = "kunbox_dbl(" <> box <> ", &" <> ovf <> ")"
 
+-- | R2.4: a worker parameter slot is either an unboxed scalar (int64/double) or
+-- a boxed @KValue *@ passed through verbatim (a record/ADT/etc. param that is
+-- not scalar but whose scalar FIELDS may be read+coerced).  An all-@PScalar@
+-- worker is the LR1/R2.2 case (byte-identical @kwi_@/@kwd_@ output); a worker
+-- with any @PBoxed@ slot is a MIXED worker (@kwm_@).
+data ParamKind = PScalar !ScalarKind | PBoxed deriving (Eq)
+
+-- | The C type for a parameter slot.
+cParamTy :: ParamKind -> Text
+cParamTy (PScalar k) = cScalarTy k
+cParamTy PBoxed = "KValue *"
+
+-- | The scalar kind of a slot, or 'Nothing' for a boxed slot.
+paramSK :: ParamKind -> Maybe ScalarKind
+paramSK (PScalar k) = Just k
+paramSK PBoxed = Nothing
+
 -- | A scalar arith prim, with its (result kind, argument kinds).  @intToDouble@
 -- is the one cross-kind coercion (int → double, emitted as a C cast).
 arithPrim :: Text -> Maybe (ScalarKind, [ScalarKind])
@@ -777,7 +794,7 @@ stripLamsQ = go []
 -- for an unboxed worker: a recorded body of @n@ explicit relevant binders, a
 -- scalar type telescope of exactly @n@ runtime params + a scalar result, and a
 -- scalar-expressible body.  @Nothing@ ⇒ boxed-only (never a miscompile).
-scalarPlan :: GName -> Gen (Maybe ([ScalarKind], ScalarKind))
+scalarPlan :: GName -> Gen (Maybe ([ParamKind], ScalarKind))
 scalarPlan g = do
   bodies <- gets gsBodies
   case Map.lookup g bodies of
@@ -791,19 +808,23 @@ scalarPlan g = do
         then do
           mkinds <- typeScalarKinds g n
           case mkinds of
-            Just (pks, ret) -> do
+            -- require at least one unboxed scalar param (else there is nothing
+            -- to win — an all-boxed body stays on the boxed/flat path).
+            Just (pks, ret) | any (/= PBoxed) pks -> do
               ok <- scalarEligTail g pks ret inner
               pure (if ok then Just (pks, ret) else Nothing)
-            Nothing -> pure Nothing
+            _ -> pure Nothing
         else pure Nothing
 
--- | Read @g@'s per-parameter and result scalar kinds from its elaborated type
--- (quoted to a Term Pi telescope).  Requires exactly @n@ runtime (explicit,
--- non-@Q0@) params, each a scalar type, and a scalar result.  The count-match
--- against @n@ (the body's structural binder count) is a HARD guard: a
--- disagreement (point-free style, an unfoldable type alias, a function-typed
--- result) yields @Nothing@, so a kind is never assigned to the wrong binder.
-typeScalarKinds :: GName -> Int -> Gen (Maybe ([ScalarKind], ScalarKind))
+-- | Read @g@'s per-parameter kinds (unboxed scalar or boxed) and its (scalar)
+-- result kind from its elaborated type (quoted to a Term Pi telescope).  A
+-- non-scalar param domain is 'PBoxed' (R2.4 mixed worker — kept boxed,
+-- passed through); the RESULT must be scalar (a boxed-result worker is not
+-- eligible in this slice).  The count-match against @n@ (the body's structural
+-- binder count) is a HARD guard: a disagreement (point-free style, an
+-- unfoldable type alias, a function-typed result) yields @Nothing@, so a kind
+-- is never assigned to the wrong binder.
+typeScalarKinds :: GName -> Int -> Gen (Maybe ([ParamKind], ScalarKind))
 typeScalarKinds g n = do
   globals <- gets gsGlobals
   ctx <- gets gsEvalCtx
@@ -813,10 +834,12 @@ typeScalarKinds g n = do
       (pks, ret) <- walkPi [] (quote ctx 0 (gdType gd))
       if length pks == n then Just (pks, ret) else Nothing
   where
+    -- a scalar domain is PScalar k; any other (record/ADT/function/…) is PBoxed.
+    paramKind dom = maybe PBoxed PScalar (scalarHeadKind dom)
     walkPi acc (CPi ic q _ dom cod)
-      | ic == Expl && q /= Q0 = do k <- scalarHeadKind dom; walkPi (k : acc) cod
+      | ic == Expl && q /= Q0 = walkPi (paramKind dom : acc) cod
       | otherwise = walkPi acc cod -- erased/implicit binder: no runtime param
-    walkPi acc t = do rk <- scalarHeadKind t; Just (reverse acc, rk)
+    walkPi acc t = do rk <- scalarHeadKind t; Just (reverse acc, rk) -- result must be scalar
 
 -- | The scalar kind of a (bare) type head, or @Nothing@ for any non-scalar
 -- type.  Mirrors the elaborator's numeric-literal type classification
@@ -833,30 +856,62 @@ scalarHeadKind = \case
 -- @if@ (safe-compare condition, eligible branches), a saturated self-call
 -- (each arg checks against the corresponding PARAM kind), or a leaf value
 -- whose kind equals the return kind.
-scalarEligTail :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligTail :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
 scalarEligTail g pks ret term = case term of
   CIf c t e -> andM [scalarEligCond g pks ret c, scalarEligTail g pks ret t, scalarEligTail g pks ret e]
   _
-    | Just args <- lr1SelfArgs g (length pks) term -> andM (zipWith (scalarHasKind g pks ret) pks args)
+    | Just args <- lr1SelfArgs g (length pks) term -> andM (zipWith (selfArgElig g pks ret) pks args)
     | otherwise -> scalarHasKind g pks ret ret term
 
--- | Does the value-position @term@ have scalar kind @k@?
-scalarHasKind :: GName -> [ScalarKind] -> ScalarKind -> ScalarKind -> Term -> Gen Bool
-scalarHasKind g pks ret k term = do
-  mk <- scalarKindOf g pks ret term
-  pure (mk == Just k)
+-- | A self-call argument is eligible iff: for a scalar param slot, the arg is a
+-- value of that scalar kind; for a boxed param slot, the arg is a PASS-THROUGH
+-- of a boxed param (a bare @CVar@ of a boxed slot) — the only boxed value the
+-- mixed worker can supply without unboxing/rebuilding (R2.4 slice).
+selfArgElig :: GName -> [ParamKind] -> ScalarKind -> ParamKind -> Term -> Gen Bool
+selfArgElig g pks ret pk arg = case pk of
+  PScalar k -> scalarHasKind g pks ret k arg
+  -- any boxed CVar into a boxed slot is fine: source type-checking already
+  -- guarantees the self-call arg's type matches the param, and the runtime
+  -- representation of every boxed slot is the uniform @KValue *@.
+  PBoxed -> pure $ case arg of
+    CVar j -> varParamKind pks j == Just PBoxed
+    _ -> False
+
+-- | Is @term@ a FIXED-OFFSET projection of a BOXED param (@krec_at(boxed,i)@)?
+-- Its boxed field value can be coerced to any scalar kind by a tag-checked
+-- unbox (R2.4), so it is admissible in any scalar position.  ONLY 'CProjAt'
+-- (the P0.4 closed-record fixed-offset form, which codegen lowers to
+-- @krec_at@) qualifies; a name-based 'CProj' (open/sealed record, dict member,
+-- tuple ≥10) is NOT handled by the coercion codegen, so it must stay
+-- ineligible here (→ boxed worker) rather than reach the worker and escalate
+-- on a valid program.
+isBoxedProj :: [ParamKind] -> Term -> Bool
+isBoxedProj pks term = case term of
+  CProjAt (CVar j) _ _ -> varParamKind pks j == Just PBoxed
+  _ -> False
+
+-- | Does the value-position @term@ have scalar kind @k@?  A projection of a
+-- boxed param is coercible to any @k@ (a tag-checked unbox at codegen).
+scalarHasKind :: GName -> [ParamKind] -> ScalarKind -> ScalarKind -> Term -> Gen Bool
+scalarHasKind g pks ret k term
+  | isBoxedProj pks term = pure True
+  | otherwise = do
+      mk <- scalarKindOf g pks ret term
+      pure (mk == Just k)
 
 -- | The scalar kind of a value-position expression, or @Nothing@ if it is not
 -- scalar-expressible (every prim arg must match the prim's expected kind, so a
 -- mixed-kind misuse such as @addInt acc n@ with @acc:Double@ is rejected, never
--- miscompiled).  A self-call's result is the worker's return kind.
-scalarKindOf :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen (Maybe ScalarKind)
+-- miscompiled).  A self-call's result is the worker's return kind.  A bare
+-- @CVar@ of a BOXED param is NOT a scalar value (it is only usable as a
+-- projection base — see 'isBoxedProj'), so it is @Nothing@ here.
+scalarKindOf :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen (Maybe ScalarKind)
 scalarKindOf g pks ret term = case term of
   CLit (LitInt m)
     | m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int) -> pure (Just KInt64)
     | otherwise -> pure Nothing
   CLit (LitDouble _) -> pure (Just KDouble)
-  CVar i -> pure (scalarVarKind pks i)
+  CVar i -> pure (varParamKind pks i >>= paramSK)
   _ -> case spineOf term of
     (CGlob h, sargs) -> do
       let expl = [a | (Expl, a) <- sargs]
@@ -867,21 +922,21 @@ scalarKindOf g pks ret term = case term of
           pure (if and oks then Just rk else Nothing)
         _
           | Just args <- lr1SelfArgs g (length pks) term -> do
-              oks <- sequence (zipWith (scalarHasKind g pks ret) pks args)
+              oks <- sequence (zipWith (selfArgElig g pks ret) pks args)
               pure (if and oks then Just ret else Nothing)
           | otherwise -> pure Nothing
     _ -> pure Nothing
 
 -- | The kind of de Bruijn variable @i@ (env order: 0 = innermost = LAST
 -- param), i.e. source param @n-1-i@; out of range ⇒ Nothing.
-scalarVarKind :: [ScalarKind] -> Int -> Maybe ScalarKind
-scalarVarKind pks i =
+varParamKind :: [ParamKind] -> Int -> Maybe ParamKind
+varParamKind pks i =
   let n = length pks
    in if i >= 0 && i < n then Just (pks !! (n - 1 - i)) else Nothing
 
 -- | Eligibility of an @if@ condition: a saturated SAFE scalar compare whose
 -- operands have the comparison's operand kind.
-scalarEligCond :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligCond :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
 scalarEligCond g pks ret term = case spineOf term of
   (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
@@ -894,20 +949,22 @@ scalarEligCond g pks ret term = case spineOf term of
 -- | The unboxed worker name: keep @kwi_@ for an all-@int64@ worker (so existing
 -- golden C is byte-stable); a worker with any @double@ param/result uses
 -- @kwd_@.
-scalarWorkerName :: GName -> [ScalarKind] -> ScalarKind -> Text
+scalarWorkerName :: GName -> [ParamKind] -> ScalarKind -> Text
 scalarWorkerName g pks ret
-  | all (== KInt64) (ret : pks) = "kwi_" <> mangle (gKey g)
+  | any (== PBoxed) pks = "kwm_" <> mangle (gKey g) -- mixed boxed/unboxed (R2.4)
+  | all (== PScalar KInt64) pks && ret == KInt64 = "kwi_" <> mangle (gKey g)
   | otherwise = "kwd_" <> mangle (gKey g)
 
--- | Emit the unboxed worker with per-kind scalar params + return type, e.g.
--- @double kwd_g(double, int64_t, int *kovf)@.
-compileScalarWorker :: GName -> [ScalarKind] -> ScalarKind -> Term -> Gen ()
+-- | Emit the unboxed worker with per-slot param types + (scalar) return type,
+-- e.g. @double kwd_g(double, int64_t, int *kovf)@ or, with a boxed slot,
+-- @KValue *kwm_g(int64_t, KValue *, int64_t, int *kovf)@.
+compileScalarWorker :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen ()
 compileScalarWorker g pks ret inner = do
   let n = length pks
       worker = scalarWorkerName g pks ret
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
       env = reverse ps -- de Bruijn 0 = innermost binder = the LAST param
-      paramDecls = T.intercalate ", " (zipWith (\k p -> cScalarTy k <> " " <> p) pks ps ++ ["int *kovf"])
+      paramDecls = T.intercalate ", " (zipWith (\k p -> cParamTy k <> " " <> p) pks ps ++ ["int *kovf"])
   (bodyStmts, ()) <- captured "0" (scalarTail g pks ret ps env inner)
   let fn =
         T.unlines $
@@ -920,11 +977,21 @@ compileScalarWorker g pks ret inner = do
                ]
   emitTop ("static " <> cScalarTy ret <> " " <> worker <> "(" <> paramDecls <> ");") fn
 
+-- | The C expression and type for one self-call argument: a scalar slot is
+-- compiled to its scalar kind; a boxed slot is a pass-through of the boxed C
+-- param (eligibility guarantees the arg is a bare @CVar@ of a boxed slot).
+scalarSelfArg :: GName -> [ParamKind] -> ScalarKind -> [Text] -> ParamKind -> Term -> Gen (Text, Text)
+scalarSelfArg g pks ret env pk a = case pk of
+  PScalar k -> do e <- scalarExpr g pks ret env k a; pure (cScalarTy k, e)
+  PBoxed -> case a of
+    CVar j -> pure ("KValue *", env !! j)
+    _ -> do e <- lr1Unreachable; pure ("KValue *", e)
+
 -- | Compile the body in TAIL position: @if@ branches recurse in tail; a
--- saturated self-call reassigns the scalar params (each temp typed by its
--- param kind) and @continue@s (an in-place scalar loop — no @KEnv@, no
--- boxing); any other (leaf) scalar expr is returned.
-scalarTail :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> [Text] -> Term -> Gen ()
+-- saturated self-call reassigns the params (each temp typed by its slot kind)
+-- and @continue@s (an in-place loop — no @KEnv@); any other (leaf, scalar)
+-- expr is returned.
+scalarTail :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [Text] -> Term -> Gen ()
 scalarTail g pks ret ps env term = case term of
   CIf c t e -> do
     cond <- scalarCond g pks ret env c
@@ -939,15 +1006,15 @@ scalarTail g pks ret ps env term = case term of
     | Just args <- lr1SelfArgs g (length pks) term -> do
         -- tail self-call: evaluate new args into typed temps FIRST (they may
         -- read current params), then reassign params and loop.
-        temps <- forM (zip pks args) $ \(k, a) -> do
-          ae <- scalarExpr g pks ret env a
+        temps <- forM (zip pks args) $ \(pk, a) -> do
+          (cty, ae) <- scalarSelfArg g pks ret env pk a
           t <- freshN "ti_"
-          emit (cScalarTy k <> " " <> t <> " = " <> ae <> ";")
+          emit (cty <> " " <> t <> " = " <> ae <> ";")
           pure t
         forM_ (zip ps temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
         emit "continue;"
     | otherwise -> do
-        e <- scalarExpr g pks ret env term
+        e <- scalarExpr g pks ret env ret term
         emit ("return " <> e <> ";")
 
 -- | P0.2: if @term@ is a read of a scalarized var (@__runIO (readRef <var>)@,
@@ -976,33 +1043,56 @@ scalarReadOf term = do
 -- IEEE, @intToDouble@ a cast), or a (non-tail) self-call (whose @kovf@ is
 -- propagated immediately).  Each int op that overflows sets @*kovf@ (or runs
 -- 'gsI64Escape') and bails at once — never a wrapped value.
-scalarExpr :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Term -> Gen Text
-scalarExpr g pks ret env term = do
+-- | Worker-side unbox of a boxed value to a scalar: the worker's escape flag is
+-- the @int *kovf@ parameter (already a pointer), so pass it directly (unlike
+-- 'unboxScalar' at a call site, which takes @&@ of a local int).
+unboxWorker :: ScalarKind -> Text -> Text
+unboxWorker KInt64 fb = "kunbox_i64(" <> fb <> ", kovf)"
+unboxWorker KDouble fb = "kunbox_dbl(" <> fb <> ", kovf)"
+
+-- | Compile a scalar-expressible value for the demanded scalar kind @dk@: a
+-- scalarized var read (P0.2), a boxed-param field read coerced to @dk@ (R2.4),
+-- a literal, a (scalar) param var, an arith op, or a (non-tail) self-call.
+-- @dk@ is only consulted for the boxed-field coercion; everything else is
+-- determined bottom-up (so all-scalar output is unaffected).
+scalarExpr :: GName -> [ParamKind] -> ScalarKind -> [Text] -> ScalarKind -> Term -> Gen Text
+scalarExpr g pks ret env dk term = do
   msc <- scalarReadOf term
   case msc of
     Just sloc -> pure sloc
-    Nothing -> scalarExprBody g pks ret env term
+    Nothing -> scalarExprBody g pks ret env dk term
 
-scalarExprBody :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Term -> Gen Text
-scalarExprBody g pks ret env term = case term of
-  CLit (LitInt m) -> pure (cIntLit m)
-  CLit (LitDouble d) -> pure (cDblLit d)
-  CVar i -> pure (env !! i)
-  _ -> case spineOf term of
-    (CGlob h, sargs) -> do
-      let expl = [a | (Expl, a) <- sargs]
-      mp <- globPrimName h
-      case mp of
-        Just p | Just (_, argks) <- arithPrim p, length expl == length argks -> scalarArith g pks ret env p expl
-        _
-          | Just args <- lr1SelfArgs g (length pks) term -> do
-              aes <- mapM (scalarExpr g pks ret env) args
-              t <- freshN "ti_"
-              emit (cScalarTy ret <> " " <> t <> " = " <> scalarWorkerName g pks ret <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
-              emit "if (*kovf) return 0;"
-              pure t
-          | otherwise -> lr1Unreachable
-    _ -> lr1Unreachable
+scalarExprBody :: GName -> [ParamKind] -> ScalarKind -> [Text] -> ScalarKind -> Term -> Gen Text
+scalarExprBody g pks ret env dk term
+  -- R2.4: a record-field read of a BOXED param yields a boxed value; coerce it
+  -- to the demanded scalar kind with a tag-checked unbox that escapes to the
+  -- boxed worker on a wrong tag (so a non-Int/Double field never miscompiles).
+  | CProjAt (CVar j) _ off <- term, isBoxedProj pks term = do
+      fb <- freshN "fb_"
+      emit ("KValue *" <> fb <> " = krec_at(" <> (env !! j) <> ", " <> T.pack (show off) <> ");")
+      t <- freshN "ti_"
+      emit (cScalarTy dk <> " " <> t <> " = " <> unboxWorker dk fb <> ";")
+      emit "if (*kovf) return 0;"
+      pure t
+  | otherwise = case term of
+      CLit (LitInt m) -> pure (cIntLit m)
+      CLit (LitDouble d) -> pure (cDblLit d)
+      CVar i -> pure (env !! i)
+      _ -> case spineOf term of
+        (CGlob h, sargs) -> do
+          let expl = [a | (Expl, a) <- sargs]
+          mp <- globPrimName h
+          case mp of
+            Just p | Just (_, argks) <- arithPrim p, length expl == length argks -> scalarArith g pks ret env p expl
+            _
+              | Just args <- lr1SelfArgs g (length pks) term -> do
+                  aes <- mapM (\(pk, a) -> snd <$> scalarSelfArg g pks ret env pk a) (zip pks args)
+                  t <- freshN "ti_"
+                  emit (cScalarTy ret <> " " <> t <> " = " <> scalarWorkerName g pks ret <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
+                  emit "if (*kovf) return 0;"
+                  pure t
+              | otherwise -> lr1Unreachable
+        _ -> lr1Unreachable
 
 -- | Lower one scalar arith op.  Int ops mirror the @kp_*Int@ runtime helpers
 -- exactly (§6 unbounded Integer promotes to GMP via the boxed escape; div/mod
@@ -1013,9 +1103,12 @@ scalarExprBody g pks ret env term = case term of
 -- (Driver.hs), so the compiler cannot fuse a @mul@-then-@add@ into a
 -- single-rounding FMA at any @-O@ level.  @intToDouble@ is a C cast (== the
 -- prim's @(double)i@).
-scalarArith :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Text -> [Term] -> Gen Text
+scalarArith :: GName -> [ParamKind] -> ScalarKind -> [Text] -> Text -> [Term] -> Gen Text
 scalarArith g pks ret env p expl = do
-  aes <- mapM (scalarExpr g pks ret env) expl
+  -- each arg is compiled for the prim's expected kind (so a boxed-field arg is
+  -- coerced to the right scalar kind); arithPrim p is Just by the caller.
+  let argks = maybe [] snd (arithPrim p)
+  aes <- sequence (zipWith (\k a -> scalarExpr g pks ret env k a) argks expl)
   t <- freshN "ti_"
   esc <- gets gsI64Escape -- worker: `*kovf=1; return 0;`; scalar loop: flush+goto boxed
   case (p, aes) of
@@ -1037,15 +1130,15 @@ scalarArith g pks ret env p expl = do
 -- | Compile an @if@ condition (a saturated safe scalar compare) to a C boolean
 -- expr.  The C operator comes from 'cmpPrim', which admits only comparisons
 -- whose C operator matches the runtime prim exactly.
-scalarCond :: GName -> [ScalarKind] -> ScalarKind -> [Text] -> Term -> Gen Text
+scalarCond :: GName -> [ParamKind] -> ScalarKind -> [Text] -> Term -> Gen Text
 scalarCond g pks ret env term = case spineOf term of
   (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
     mp <- globPrimName h
     case (mp >>= cmpPrim, expl) of
-      (Just (op, _), [a, b]) -> do
-        ae <- scalarExpr g pks ret env a
-        be <- scalarExpr g pks ret env b
+      (Just (op, opk), [a, b]) -> do
+        ae <- scalarExpr g pks ret env opk a
+        be <- scalarExpr g pks ret env opk b
         pure ("(" <> ae <> " " <> op <> " " <> be <> ")")
       _ -> lr1Unreachable
   _ -> lr1Unreachable
@@ -1062,7 +1155,7 @@ lr1UnreachableStmt = lr1Unreachable >> pure ()
 -- | The saturated fast path at a call site: unbox each arg by its scalar kind,
 -- call the unboxed worker, and escape to the boxed @kw_g@ (from the ORIGINAL
 -- boxed args) on a wrong-tag arg or an int64 overflow.
-compileScalarCall :: GName -> [ScalarKind] -> ScalarKind -> [(Icit, Term)] -> Gen Text
+compileScalarCall :: GName -> [ParamKind] -> ScalarKind -> [(Icit, Term)] -> Gen Text
 compileScalarCall g pks ret sargs = do
   let worker = scalarWorkerName g pks ret
       kw = "kw_" <> mangle (gKey g)
@@ -1073,10 +1166,13 @@ compileScalarCall g pks ret sargs = do
     pure t
   ovf <- freshN "kovf_"
   emit ("int " <> ovf <> " = 0;")
-  avs <- forM (zip pks ts) $ \(k, t) -> do
-    av <- freshN "lu_"
-    emit (cScalarTy k <> " " <> av <> " = " <> unboxScalar k t ovf <> ";")
-    pure av
+  -- scalar slots unbox (tag-checked → escape); boxed slots pass through.
+  avs <- forM (zip pks ts) $ \(pk, t) -> case pk of
+    PScalar k -> do
+      av <- freshN "lu_"
+      emit (cScalarTy k <> " " <> av <> " = " <> unboxScalar k t ovf <> ";")
+      pure av
+    PBoxed -> pure t
   r <- freshN "lr_"
   res <- freshN "lres_"
   let boxed = "ktrampoline(" <> kw <> "(" <> T.intercalate ", " ts <> "))"
@@ -2809,7 +2905,7 @@ compileScalarWhile mlabel cond body = do
   emit ("if (!" <> ce <> ") goto " <> sflushL <> ";")
   forM_ body $ \item -> case item of
     KAssign (CVar idx) False rhs -> do
-      rhse <- scalarExpr cur [] KInt64 [] rhs
+      rhse <- scalarExpr cur [] KInt64 [] KInt64 rhs
       case Map.lookup idx scs of
         Just (s, _) -> emit (s <> " = " <> rhse <> ";")
         Nothing -> lr1UnreachableStmt

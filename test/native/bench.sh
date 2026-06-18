@@ -59,7 +59,7 @@ echo "== C driver (performance, -O2): $BENCHCC =="
 BENCHES=(
   "arithloop 2000001000000 1000000"
   "tailsum   2000001000000 1000000"
-  "recproj   7000000        140000000"
+  "recproj   7000000        1000000"
   "listfold  500000500000   620000000"
 )
 # arithloop's bound is now ~1MB (was 380MB): P0.2 scalarizes its non-escaping
@@ -68,6 +68,10 @@ BENCHES=(
 # tailsum's bound is now ~1MB (was 260MB): LR1 lowers it to a scalar int64
 # worker that allocates ~zero per iteration (≈hundreds of bytes total), so a
 # regression back to per-iteration kint boxing (~193MB) blows this bound.
+# recproj's bound is now ~1MB (was 140MB): R2.4 lowers it to a MIXED worker —
+# the Int counter/accumulator are unboxed int64 and the record fields are read
+# via a tag-checked kunbox_i64 coercion (zero kint/iteration; ~544 B total), so
+# a regression to the boxed record-param worker (96.8MB kint storm) blows it.
 
 fails=0
 printf "%-10s | %-16s | %8s | %12s | %12s | %10s | %s\n" "bench" "result" "native" "total_bytes" "bound" "heap" "interp"

@@ -140,10 +140,11 @@ int *kovf)`) — a scalar `while` loop with no per-iteration boxing — behind t
 arithmetic bit-identical to the interpreter). `scalar_doubleloop` now lowers to a `double` register
 loop instead of a `kp_addDouble`+`kdbl`-per-iter loop. **Partly also addressed by R2.3:** a
 capture-free binder-free boxed worker (incl. record-param workers like `recproj`) now reads its
-params as flat C locals (no `kvar`/`kpush`). **Still open:** the per-iteration scalar re-boxing in a
-boxed worker (`recproj`'s `kint` storm — unbox the accumulator/field-read result), `Bool` workers
-(low value — cached singletons), and flat frames for *binder-bearing* bodies (mixed flat+linked
-frames). → **R2.3 (rest) / R2.4**.
+params as flat C locals (no `kvar`/`kpush`). **Closed by R2.4:** `recproj`'s `kint` storm — a
+record-param worker now unboxes its `Int`/`Double` slots into a MIXED worker and coerces field
+reads to scalar with a tag-checked unbox (96.8 MB → 544 B). **Still open:** `Bool` workers (low
+value — cached singletons), flat frames for *binder-bearing* bodies (mixed flat+linked frames,
+R2.3 rest), and a boxed-result mixed worker / name-based field coercion (R2.4 deferred parts).
 
 **P1-C — Pattern matching is a linear if-chain over integer tags, not a `switch`/decision tree.**
 *(Downgraded from P0 — LR2 shipped the integer tags; this is now a codegen-shape refinement, not a
@@ -432,21 +433,24 @@ an explicit lowered-IR requirement — see the header.)
   effect-analysis and the bounce-emitter must share one definition. *Gate:* `adtcons` emits no
   `ktrampoline`; `tailrec` (mutual/value-indirect recursion) keeps it.
 
-### Designed next (not yet implemented): R2.4 mixed boxed/unboxed scalar workers
-The remaining visible waste is `recproj`'s 96.8 MB `kint` storm: a worker with a record param is
-rejected by `scalarPlan` (not all params scalar), so its `Int` counter/accumulator stay boxed and
-re-box every iteration. **Designed slice (reviewed):** generalize the per-parameter kind to
-`PScalar ScalarKind | PBoxed` so a worker can have *mixed* slots — unbox the scalar params
-(`int64`/`double`, overflow-escaped) while keeping non-scalar params boxed (`KValue *`, passed
-through). A record field read in a scalar context (`krec_at(p,i)` feeding `addInt`) becomes a
-**boxed→scalar coercion** with a tag-checked escape; on a non-`K_INT` field or overflow it escapes
-to the boxed worker (the oracle), so it cannot miscompile. This closes recproj's per-iteration
-allocation to zero (the record is built once, the result boxed once). *Lowered-IR requirement
-(the deliverable):* a frame's slots are **independently typed** (unboxed scalar vs boxed); scalar
-values flow unboxed between scalar ops; a **boxed→scalar coercion is an explicit IR node carrying a
-representation guard** inserted exactly where a boxed value is consumed in a scalar position; worker
-signatures are mixed, with the boxed worker as the semantic oracle for every guard failure. The
-new `adtbuild`/`scalar_doubleloop` alloc gates (R0.1) plus a recproj alloc gate will lock the win.
+- **R2.4 (mixed boxed/unboxed scalar workers). LANDED (this study).** A worker with a record/ADT
+  param was rejected by `scalarPlan` (not all params scalar), so its `Int` counter/accumulator
+  stayed boxed and re-boxed every iteration (`recproj`'s 96.8 MB `kint` storm). **Fix:** the
+  per-parameter kind is now `PScalar ScalarKind | PBoxed`, so a worker can have *mixed* slots —
+  scalar slots unboxed (`int64`/`double`, overflow-escaped), non-scalar slots passed through boxed
+  (`KValue *`). A fixed-offset record-field read in a scalar context (`krec_at(p,i)` feeding
+  `addInt`) is a **boxed→scalar coercion** (`kunbox_i64`/`kunbox_dbl`) with a tag-checked escape to
+  the boxed worker (the oracle) on a non-`K_INT`/`K_DBL` field or overflow — so it cannot
+  miscompile. `recproj` dropped **96.8 MB → 544 B** (the record is built once, the result boxed
+  once; zero `kint`/iteration). *Lowered-IR requirement (the deliverable):* a frame's slots are
+  **independently typed** (unboxed scalar vs boxed); scalar values flow unboxed between scalar ops;
+  a **boxed→scalar coercion is an explicit IR node carrying a representation guard**, inserted
+  exactly where a boxed value is consumed in a scalar position; worker signatures are mixed, with
+  the boxed worker as the semantic oracle for every guard failure. *Scope:* requires ≥1 scalar
+  param + a scalar result + fixed-offset (`CProjAt`, closed-record) field reads; name-based
+  projection / boxed result are deferred (stay boxed). *Gate:* `recproj` alloc bound tightened
+  140 MB → 1 MB; a `kwm_` codegen assertion (mixed worker with a tag-checked `kunbox_i64(fb,kovf)`
+  field coercion) + interpreter-equivalence (`recproj`/`recordproj`/`flatframe`).
 
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
@@ -455,7 +459,7 @@ new `adtbuild`/`scalar_doubleloop` alloc gates (R0.1) plus a recproj alloc gate 
 | ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
 | ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
 | ◑ | **R2.3** first-order worker params/locals as C locals / flat frame — **PARTIAL** (capture-free + binder-free workers read params as flat C locals; binder-bearing bodies deferred) | P0-D/P1-H | High | High | Med |
-| 6 | **R2.4** cross-function unboxed scalar chaining | P0-D | Med | Med | Med |
+| ✓ | **R2.4** mixed boxed/unboxed scalar workers (unbox scalar slots beside boxed record params + tag-checked field coercion) — **DONE** (recproj 96.8 MB → 544 B) | P0-D | Med | Med | Med |
 | ✓ | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls — **DONE** | P1-E | Med | Med | Med |
 | 8 | **R3.2** generalized eval/apply known-arity calls + flat closures | P0-D/P1-H | High | High | Med-High |
 | 9 | **R3.3** immediate-tagged small integers (Boehm tagging caveat) | P1-G | High | High | High |
@@ -466,8 +470,10 @@ Rationale: **R1.1 landed (this study)** — it attacked the verified worst path 
 `listfold`), was backend-local, and re-enabled QW2's in-place loop for free (P0-B); the next
 non-harness item, **R2.1** (atomic scalar boxes), also landed, as did **R2.2** (`Double`/mixed-kind
 unboxed workers); **R3.1** (trampoline elision) and the first slice of **R2.3** (flat C-parameter
-frames for capture-free binder-free workers) also landed; next is the rest of **R2.3** (binder-bearing
-bodies via mixed flat+linked frames) and **R2.4** (cross-function unboxed scalar chaining). **R1.2 is
+frames for capture-free binder-free workers) and **R2.4** (mixed boxed/unboxed scalar workers —
+recproj 96.8 MB → 544 B) also landed; next is the rest of **R2.3** (binder-bearing bodies via mixed
+flat+linked frames), **R3.2** (flat closures / eval-apply), and **R3.3** (immediate-tagged small
+ints). **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk
@@ -495,7 +501,7 @@ review; re-measure under §5.5 before citing as proof):
 |---|---|---|---|
 | `arithloop` 2e6 | 704 B (was 145 MB) | 0.0021 s | P0.2 scalar `int64` var loop; ≈4×, gated ≤5× |
 | `tailsum` 2e6 | 368 B (was 193 MB) | 0.0023 s | LR1 unboxed `Int` worker; ≈1.03× |
-| `recproj` 1e6 | 96.8 MB | 0.0014 s | P0.4 removed `strcmp`; `kint` boxing remains (P0-D) |
+| `recproj` 1e6 | **544 B / 0.02 s** (was 96.8 MB) | 0.0014 s | R2.4 mixed worker: unboxed `Int` counter/acc + tag-checked field coercion; zero `kint`/iter (gated ≤1 MB) |
 | `listfold` 1e6 | **240 MB / 0.68 s** (was 544 MB / 2.0 s) | 0.050 s | R1.1 removed the eta-ctor closure storm (P0-A); residual = cons cells + `kint` boxing (P0-D) |
 | `adtbuild` 2e6 | **480 MB / ~240 B/iter** (was ~1.09 GB) | 0.14 s | R1.1 direct `kctor`; the P0-A probe — now data-representation-bound |
 
