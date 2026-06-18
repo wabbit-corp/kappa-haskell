@@ -708,6 +708,9 @@ lr1SelfArgs self n term = case spineOf term of
 andM :: [Gen Bool] -> Gen Bool
 andM = foldr (\m acc -> do b <- m; if b then acc else pure False) (pure True)
 
+orM :: [Gen Bool] -> Gen Bool
+orM = foldr (\m acc -> do b <- m; if b then pure True else acc) (pure False)
+
 -- | Strip leading lambdas, recording each binder's (icity, quantity).
 stripLamsQ :: Term -> ([(Icit, Q)], Term)
 stripLamsQ = go []
@@ -1236,6 +1239,10 @@ emitTailLoop ti args = do
 -- A call to anything else (a function value / closure that could recurse)
 -- becomes a trampoline @kbounce(f,a)@, returned so the driving
 -- @kapp@/@krun_io@ performs the deferred application in constant C stack.
+-- NOTE: this is the AUTHORITY on when a worker returns a @K_BOUNCE@;
+-- 'workerMayBounce' mirrors the @kbounce@ condition below and must be kept in
+-- lock-step (a new @kbounce@ arm here without updating it would make R3.1's
+-- trampoline elision unsound).
 emitTailApp :: Term -> Gen ()
 emitTailApp term
   -- P0-A: a saturated eta-expanded constructor in tail position is a final
@@ -1489,12 +1496,60 @@ globFuncArity g = do
     Just tm | (n, _) <- funcArity tm, n >= 1 -> Just n
     _ -> Nothing
 
+-- | Can the boxed worker for @g@ (arity @n@, recorded body @body@) EVER return
+-- a @K_BOUNCE@?  A worker returns a bounce only from a tail-position general
+-- application ('emitTailApp's @kbounce@) — a tail @CApp Expl@ whose head is not
+-- a prim, not a saturated self-call (which loops in place), and not an
+-- eta-expanded constructor (which builds a value, R1.1).  Self-loops, leaf
+-- values, prim/ctor results, the IO do-kernel (which returns @K_IOTAIL@
+-- markers, NOT bounces), and @if@/@match@/@let@ over those never bounce.
+-- Conservative: anything not provably bounce-free counts as may-bounce.  When
+-- 'False', a saturated call can drop the 'ktrampoline' wrapper, since
+-- @ktrampoline@ drains only @K_BOUNCE@ and passes every other value through
+-- untouched — so @ktrampoline(kw_g(…)) ≡ kw_g(…)@ for a non-bouncing worker
+-- (P1-E / R3.1).
+--
+-- This is the dual of 'emitTailApp': it must classify a tail position as
+-- "bounces" exactly when 'emitTailApp' would emit @return kbounce(…)@ for it.
+-- The two are coupled — if 'emitTailApp' grows a new @kbounce@ arm, this
+-- analysis must grow with it or it becomes UNSOUND (a dropped trampoline is a
+-- stack overflow at scale).  'consume' reaches a worker's tail positions
+-- through @if@/@match@/@let@; only a tail @CApp Expl@ that is not a saturated
+-- self-call (loops), a prim spine, or an eta-ctor (a value) actually bounces.
+--
+-- Lowered-IR implication: a function carries a "tail-call/bounce effect" bit;
+-- a call to a callee with no such effect needs no trampoline drain (it lowers
+-- to a direct call), realizing the §7 "trampolines → loop/musttail/direct vs
+-- boxed-trampoline fallback" requirement for the non-bouncing case.
+workerMayBounce :: GName -> Int -> Term -> Gen Bool
+workerMayBounce g n = tailMay
+  where
+    tailMay term = case term of
+      CIf _ t e -> orM [tailMay t, tailMay e]
+      CMatch _ alts -> orM [tailMay b | CaseAlt _ _ b <- alts]
+      CLet _ _ _ _ body -> tailMay body
+      CLetRec _ _ _ _ body -> tailMay body
+      _
+        -- a saturated self-call loops in place; 'lr1SelfArgs' is the shared
+        -- recognizer (explicit-arg count == n) — intentionally stricter than
+        -- 'selfTailArgs' (full-spine count), which only ever makes this MORE
+        -- conservative (keeps a trampoline), never unsound.
+        | Just _ <- lr1SelfArgs g n term -> pure False
+        | CApp Expl _ _ <- term -> do
+            let (hd, _) = spineOf term
+            prim <- case hd of CGlob h -> globPrimName h; _ -> pure Nothing
+            pure $ case (prim, etaCtorApp term) of
+              (Nothing, Nothing) -> True -- a general tail call → kbounce
+              _ -> False -- prim spine / eta-ctor → returns a value
+        | otherwise -> pure False -- a leaf value / IO action (no bounce)
+
 -- | A saturated (or over-saturated) call to a known function global: call
 -- its worker @kw_…@ directly with the leading @n@ arguments instead of
--- building and draining a curried arity-1 closure chain.  The worker may
--- return a tail-call bounce (its body's tail position), so the result is
--- driven through 'ktrampoline'; any surplus arguments are then applied
--- normally.  Type-level/staging arguments are erased (§31.2).
+-- building and draining a curried arity-1 closure chain.  The worker's result
+-- is driven through 'ktrampoline' ONLY when its body can return a tail-call
+-- bounce ('workerMayBounce'); a provably non-bouncing worker is called
+-- directly (R3.1).  Any surplus arguments are then applied normally.
+-- Type-level/staging arguments are erased (§31.2).
 compileDirectCall :: GName -> Int -> [(Icit, Term)] -> Gen Text
 compileDirectCall g n sargs = do
   enqueue g
@@ -1508,7 +1563,12 @@ compileDirectCall g n sargs = do
       let (callArgs, extra) = splitAt n sargs
           worker = "kw_" <> mangle (gKey g)
       aes <- mapM (compileErasableArg . snd) callArgs
-      let base = "ktrampoline(" <> worker <> "(" <> T.intercalate ", " aes <> "))"
+      bodies <- gets gsBodies
+      mayBounce <- case Map.lookup g bodies of
+        Just body | (_, inner) <- funcArity body -> workerMayBounce g n inner
+        Nothing -> pure True -- no recorded body → keep the trampoline
+      let call = worker <> "(" <> T.intercalate ", " aes <> ")"
+          base = if mayBounce then "ktrampoline(" <> call <> ")" else call
       foldM applyExtra base extra
   where
     applyExtra acc (Expl, a) = do

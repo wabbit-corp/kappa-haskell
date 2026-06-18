@@ -154,6 +154,31 @@ else
   echo "   FAIL: scalar_doubleloop --emit-c build failed"; cat "$dtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+# R3.1 / P1-E: a saturated call to a worker that can NEVER return a K_BOUNCE
+# (its tail positions are all self-loops / values / prim or ctor results) drops
+# the ktrampoline wrapper, since ktrampoline drains only K_BOUNCE.  adtcons's
+# functions (self-recursive range/foldSum, value-returning fst3/snd3) are all
+# non-bouncing, so its generated C has NO ktrampoline; tailrec's mutual /
+# value-indirect recursion DOES bounce, so it must KEEP ktrampoline (the
+# conservative analysis must not drop a real trampoline — a stack-overflow bug).
+echo "== R3.1: ktrampoline dropped for non-bouncing workers, kept for bouncing ones =="
+btmp="$WORK/r31c"; mkdir -p "$btmp"
+nb_ok=1
+if timeout 120 $KAPPA build "$CASES/adtcons.kp" --emit-c -o "$btmp/ac" >"$btmp/ac.log" 2>&1; then
+  grep -qE 'ktrampoline\(' "$CASES/adtcons.kappa.c" && nb_ok=0   # must be NONE
+  rm -f "$CASES/adtcons.kappa.c"
+else nb_ok=0; fi
+b_ok=0
+if timeout 120 $KAPPA build "$CASES/tailrec.kp" --emit-c -o "$btmp/tr" >"$btmp/tr.log" 2>&1; then
+  grep -qE 'ktrampoline\(' "$CASES/tailrec.kappa.c" && b_ok=1   # must be PRESENT
+  rm -f "$CASES/tailrec.kappa.c"
+fi
+if [ "$nb_ok" -eq 1 ] && [ "$b_ok" -eq 1 ]; then
+  echo "   ok (adtcons drops ktrampoline; tailrec's bouncing mutual recursion keeps it)"
+else
+  echo "   FAIL: R3.1 ktrampoline elision wrong (non-bouncing dropped=$nb_ok bouncing-kept=$b_ok)"; fails=$((fails+1))
+fi
+
 # Honest no-fallback property: the native backend never silently falls back
 # to interpreter behaviour.  The full accepted run-mode (UIO) surface now
 # compiles (there is no spec-mandated runtime construct left to reject — the

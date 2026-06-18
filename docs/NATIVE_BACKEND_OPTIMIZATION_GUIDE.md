@@ -99,7 +99,7 @@ state:
 - **P0.2** `var` loops are heap-ref loops: **MET for non-escaping `Int` var loops**; effectful/escaping/non-`Int`/else/nested/for loops still boxed.
 - **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1 `Int` workers** (scalar locals); general first-order code still uses `kvar`.
 - **P0.4** records/ADTs generic+string: **MET on the match/projection path** — projection is fixed-offset `krec_at`; ctor/variant matching is integer-tag (LR2). The `switch` shape and record-param boxing remain.
-- **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls** and **now for saturated constructor applications (R1.1/P0-A — a direct `kctor`, no eta-ctor closure chain)**; general known *function* calls still `ktrampoline` (P1-E).
+- **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls** and **now for saturated constructor applications (R1.1/P0-A — a direct `kctor`, no eta-ctor closure chain)**; general known *function* calls drop `ktrampoline` when the callee provably cannot bounce (R3.1/P1-E); only a callee with a tail-call bounce effect is still trampolined.
 
 ---
 
@@ -151,10 +151,14 @@ matches and nested patterns (a Maranget decision tree avoids re-testing), plus n
 field-label tags for record *patterns*. The collision-free `KCT_USER_BASE + i` IDs mean **no
 name-derived-tag / `strcmp`-confirm scheme is needed**. → **R1.2** (re-ranked low).
 
-**P1-E — Known saturated calls are wrapped in `ktrampoline` even when they cannot bounce.**
-`compileDirectCall` wraps every non-LR1 worker call in `ktrampoline`. Correct at dynamic/higher-
-order boundaries; wasteful for a known first-order call whose tail position cannot produce a
-`K_BOUNCE`. → **R3.1**.
+**P1-E — Known saturated calls are wrapped in `ktrampoline` even when they cannot bounce. RESOLVED
+(R3.1).** `compileDirectCall` used to wrap every non-LR1 worker call in `ktrampoline`. **Fix:**
+`workerMayBounce` (the dual of `emitTailApp`) decides whether a worker's body can return a
+`K_BOUNCE`; a provably non-bouncing worker (tails are all self-loops / values / prim or ctor
+results) is called directly, since `ktrampoline` drains only `K_BOUNCE` and is the identity on any
+other value (verified: `adtbuild` main is now `kw_foldSum(kw_range(…))` with no drain; `tailrec`'s
+mutual recursion keeps it). Conservative default (may-bounce ⇒ keep the trampoline). Lowered-IR
+implication recorded in §7 (a per-function tail-call/bounce effect bit).
 
 **P1-F — Scalar boxes are GC-scanned, not `GC_MALLOC_ATOMIC`. RESOLVED (R2.1, this study).**
 `kint`/`kdbl`/`kchr`/`kbyte` have pointer-free payloads but allocated on the scanned path. **Fix:**
@@ -373,6 +377,43 @@ already imply these IR facts:
 - GC uncertainty -> root/lifetime/escape metadata and a clear boundary between conservative-C
   fallback and any future precise/LLVM backend.
 
+### Lowered-IR implications of landed waves
+Each landed C-backend wave is recorded here by the lowered-IR fact it discovered/validated, so the
+next backend inherits the rule rather than the C patch. (Discipline: a backend optimization is only
+worth landing if it produces a reusable lowering rule, a benchmark/gate, a runtime ABI decision, or
+an explicit lowered-IR requirement — see the header.)
+
+- **R1.1 (direct saturated-constructor lowering).** *Lowered-IR requirement:* the IR must mark a
+  constructor application's saturation — a fully-applied ctor is a direct allocation node (`kctor`,
+  known arity), a partial one is a closure. Realizes the §7 "known arity / explicit
+  partial-application distinction" fact. *Capture-info rule (P0-B):* a direct constructor captures
+  its field *values*, not the environment, so escape/capture analysis must look THROUGH an
+  eta-expanded constructor — an IR escape-metadata requirement. *Reusable lowering rule:* never
+  lower a saturated data constructor through the function/closure ABI.
+- **R2.1 (atomic scalar boxes).** *Runtime ABI decision:* a boxed value's representation carries a
+  "pointer-free payload" bit; pointer-free scalar boxes allocate on the non-scanned heap. *Lowered-IR
+  requirement:* value representations must record trace-ability (no-pointers), feeding both the
+  conservative-C heap-kind choice and any future precise-GC root/trace map. Realizes the GC-metadata
+  fact.
+- **R2.2 (per-parameter scalar-kind workers).** *Lowered-IR requirement:* a first-order function
+  signature carries an explicit per-parameter and per-result *representation* (int64 / double /
+  boxed), derived from its type, not a uniform `KValue`; the boxed↔unboxed boundary is an explicit
+  marker at the saturated-call site with a representation-guard + boxed fallback. Realizes both
+  "typed scalar representations + explicit boxed-boundary markers" and "representation-specialized
+  workers". *Runtime ABI decision:* float ops round per-operation (no implicit FMA fusion —
+  `-ffp-contract=off`) so the unboxed path is bit-identical to the boxed/interpreter path; the IR's
+  float ops are non-fused unless an explicit fuse node says otherwise. *Reusable lowering rule:* a
+  representation-mismatched argument escapes to the boxed reference, never miscompiles. *Gate:*
+  `scalar_doubleloop` + the `kwd_` codegen-shape assertion.
+- **R3.1 (trampoline elision on non-bouncing calls).** *Lowered-IR requirement:* a function carries
+  a "tail-call/bounce effect" bit (can its tail position produce a deferred tail call?); a call to a
+  callee with no such effect lowers to a direct call, not a trampoline drain. Realizes the
+  "trampolines → loop / `musttail` / direct vs boxed-trampoline fallback" choice for the
+  non-bouncing case. *Reusable lowering rule (and coupling note):* the bounce effect is exactly
+  "a tail-position general application" (not a self-loop, prim, or saturated constructor) — the
+  effect-analysis and the bounce-emitter must share one definition. *Gate:* `adtcons` emits no
+  `ktrampoline`; `tailrec` (mutual/value-indirect recursion) keeps it.
+
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
 | 1 | **R0.1** rigorous bench harness + broad coverage | P1-I | High | Med | Low |
@@ -381,7 +422,7 @@ already imply these IR facts:
 | ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
 | 5 | **R2.3** first-order worker params/locals as C locals / flat frame | P0-D/P1-H | High | High | Med |
 | 6 | **R2.4** cross-function unboxed scalar chaining | P0-D | Med | Med | Med |
-| 7 | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls | P1-E | Med | Med | Med |
+| ✓ | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls — **DONE** | P1-E | Med | Med | Med |
 | 8 | **R3.2** generalized eval/apply known-arity calls + flat closures | P0-D/P1-H | High | High | Med-High |
 | 9 | **R3.3** immediate-tagged small integers (Boehm tagging caveat) | P1-G | High | High | High |
 | 10 | **R1.2** `switch`/decision-tree match shape + record-field-pattern tags (LR2 core already shipped) | P1-C | Low-Med | Med | Low-Med |
