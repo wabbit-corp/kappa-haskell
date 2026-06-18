@@ -14,11 +14,11 @@ module Kappa.Backend.Driver
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
+import Kappa.Backend.NativeProbe (NativeProvenance (..), discoverAndVerifyNative)
 import Kappa.Build.Types (NativeInput (..), NativeLinkSpec (..))
 import Kappa.Check (CheckState)
 import Kappa.Core (GName)
@@ -92,9 +92,48 @@ buildNative cs mainG inputPath opts =
           let base = dropExtensionSafe (takeFileName inputPath)
               cPath = workDir </> (base ++ ".kappa.c")
           TIO.writeFile cPath csource
-          if boEmitCOnly opts
-            then pure (Right cPath)
-            else linkExecutable cs mainG opts runtimeDir cPath base workDir
+          -- §26.1.5/§27.1.1/§36.28: discover + VERIFY the native ABI against
+          -- the real host (pkg-config version/.pc identity, header digests,
+          -- compiler-checked signature probe) and record provenance. This is
+          -- fail-closed and runs for BOTH --emit-c and link (discovery is part
+          -- of the build, not the link). A no-op when no binding declares
+          -- pkg-config/headers/verify inputs.
+          mverified <- verifyAndRecord opts base workDir
+          case mverified of
+            Left ds -> pure (Left ds)
+            Right () ->
+              if boEmitCOnly opts
+                then pure (Right cPath)
+                else linkExecutable cs mainG opts runtimeDir cPath base workDir
+
+-- | Run native ABI discovery + verification for the binding inputs and write
+-- the resolved native provenance next to the artifact. A no-op (no cc needed)
+-- when no input requires discovery (no pkg-config/header/verify input).
+verifyAndRecord :: BuildOptions -> String -> FilePath -> IO (Either Diagnostics ())
+verifyAndRecord opts base workDir
+  | not (needsDiscovery (boNativeInputs opts)) = pure (Right ())
+  | otherwise = do
+      mcc <- detectCC (boCC opts)
+      case mcc of
+        Nothing -> pure (Left [toolDiag noCcMsg])
+        Just cc -> do
+          let baseDir = maybe "." id (boNativeBaseDir opts)
+          r <- discoverAndVerifyNative cc baseDir workDir (boNativeInputs opts)
+          case r of
+            Left ds -> pure (Left ds)
+            Right prov -> do
+              writeFile (workDir </> (base ++ ".native.prov"))
+                (T.unpack (T.unlines (npLines prov ++ ["composite " <> npComposite prov])))
+              pure (Right ())
+
+-- | True iff some binding input needs build-phase ABI discovery/verification.
+needsDiscovery :: [NativeInput] -> Bool
+needsDiscovery = any req
+  where
+    req PkgConfigInput {} = True
+    req HeadersInput {} = True
+    req VerifyInput {} = True
+    req _ = False
 
 linkExecutable
   :: CheckState -> GName -> BuildOptions -> FilePath -> FilePath -> String -> FilePath
@@ -160,6 +199,7 @@ resolveInputs baseDir = go [] [] []
       ShimInput srcs -> go cf (foldl (\s p -> (baseDir </> T.unpack p) : s) sr srcs) lb is
       PrebuiltInput art _ -> go cf ((baseDir </> T.unpack art) : sr) lb is
       ModuleMapInput _ -> go cf sr lb is -- digested for identity; no toolchain effect
+      VerifyInput _ -> go cf sr lb is -- verified by discoverAndVerifyNative; no link effect
       PkgConfigInput pkg _ -> do
         r <- pkgConfigFlags (T.unpack pkg)
         case r of

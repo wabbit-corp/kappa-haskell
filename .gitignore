@@ -10,6 +10,8 @@ dist-newstyle/
 
 # Native-backend generated artifacts
 *.kappa.c
+*.native.prov
+native-abi-probe.c
 examples/native/**/build/
 
 # Generated build lockfiles under test/example fixtures (real projects

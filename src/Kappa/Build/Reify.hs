@@ -224,7 +224,8 @@ decInput ctx v = do
       eid' <- asOption ctx eid
       eidTxt <- traverse (asStr ctx) eid'
       Right (PrebuiltInput art' eidTxt)
-    _ -> decFail "expected a native binding input ('headers'/'includeDir'/'define'/'pkgConfig'/'shim'/'moduleMap'/'prebuiltNative') (Spec §36.28)"
+    ("VerifyInput", (ds : _)) -> VerifyInput <$> asStrList ctx ds
+    _ -> decFail "expected a native binding input ('headers'/'includeDir'/'define'/'pkgConfig'/'shim'/'moduleMap'/'prebuiltNative'/'verify') (Spec §36.28)"
 
 decAbi :: EvalCtx -> Value -> Dec NativeAbi
 decAbi ctx v = do

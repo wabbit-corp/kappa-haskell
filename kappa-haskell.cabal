@@ -37,6 +37,7 @@ library
         Kappa.Backend.C
         Kappa.Backend.Driver
         Kappa.Backend.NativeFfi
+        Kappa.Backend.NativeProbe
         Kappa.Build.Lock
         Kappa.Build.Plan
         Kappa.Build.Provenance

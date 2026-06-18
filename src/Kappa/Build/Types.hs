@@ -114,6 +114,15 @@ data NativeInput
   | ShimInput ![Text] -- ^ user-authored C shim translation units to compile+link
   | ModuleMapInput ![Text] -- ^ native module-map files (digested; surface still from symbolList)
   | PrebuiltInput !Text !(Maybe Text) -- ^ prebuilt artifact path, optional expected identity
+  | VerifyInput ![Text]
+  -- ^ §26.1.5/§27.1.1: real C declarations (verbatim prototypes / type
+  -- aliases) that the binding's @symbolList@ / shim depends on. Build-plan
+  -- resolution VERIFIES each against the located real headers by compiling
+  -- a probe TU that @#include@s the headers and redeclares each — a
+  -- mismatch with the actual header declaration fails the build (fail-closed,
+  -- §36.28). This turns the otherwise author-controlled symbol surface into
+  -- one checked against the real ABI, and the verified decls + header digests
+  -- are recorded in the build's native provenance.
   deriving stock (Eq, Show)
 
 data NativeAbi = CAbi

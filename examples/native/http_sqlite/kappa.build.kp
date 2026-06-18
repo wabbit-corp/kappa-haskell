@@ -25,7 +25,28 @@ let buildConfig : BuildConfig = package { name = "kappa.demo.http_sqlite"
                 , symbolDecl "sqliteClose" "demo_sqlite_close" [ctHandle] ctUnit
                 ]
             , abi = cAbi
-            , inputs = [shim ["native_shim.c"], headers ["sqlite3.h"], pkgConfig "sqlite3" None]
+            -- Discovery + verification (§26.1.5/§27.1.1/§36.28): pkg-config
+            -- locates sqlite3 and enforces minVersion + records its version/.pc
+            -- identity; sqlite3.h is located+hashed; the `verify` decls are the
+            -- REAL sqlite3 symbols the adapter depends on — the build compiles a
+            -- probe that #includes the real sqlite3.h and redeclares each, so a
+            -- signature that disagrees with the installed header fails the build.
+            -- native_shim.c is the user adapter (it implements the conservative
+            -- surface by calling these verified real symbols).
+            , inputs =
+                [ shim ["native_shim.c"]
+                , headers ["sqlite3.h"]
+                , pkgConfig "sqlite3" (Some "3.0")
+                , verify
+                    [ "int sqlite3_open(const char *, sqlite3 **)"
+                    , "int sqlite3_exec(sqlite3 *, const char *, int (*)(void *, int, char **, char **), void *, char **)"
+                    , "int sqlite3_prepare_v2(sqlite3 *, const char *, int, sqlite3_stmt **, const char **)"
+                    , "int sqlite3_step(sqlite3_stmt *)"
+                    , "long long sqlite3_column_int64(sqlite3_stmt *, int)"
+                    , "int sqlite3_finalize(sqlite3_stmt *)"
+                    , "int sqlite3_close(sqlite3 *)"
+                    ]
+                ]
             , link = noLink
             , load = systemLoader
             }

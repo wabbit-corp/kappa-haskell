@@ -394,5 +394,33 @@ else
   echo "   SKIP: sqlite3 not available for the demo"
 fi
 
+echo "== native ABI discovery + verification against the real headers (§26.1.5/§36.28) =="
+if pkg-config --exists sqlite3 2>/dev/null; then
+  # (a) a real build records verified-against-sqlite3.h provenance
+  rm -f "$ROOT/examples/native/http_sqlite/server.native.prov"
+  if timeout 200 $KAPPA build --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/abi" >"$WORK/abi.log" 2>&1 \
+     && grep -q "verified-decl int sqlite3_open" "$ROOT/examples/native/http_sqlite/server.native.prov" \
+     && grep -q "pkg-config sqlite3 version=" "$ROOT/examples/native/http_sqlite/server.native.prov" \
+     && grep -q "header sqlite3.h digest=" "$ROOT/examples/native/http_sqlite/server.native.prov"; then
+    echo "   ok (pkg-config version + .pc digest + sqlite3.h digest + verified real decls recorded)"
+  else
+    echo "   FAIL: demo build did not record verified native provenance"; cat "$WORK/abi.log" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -f "$ROOT/examples/native/http_sqlite/server.native.prov"
+  # (b) a verify decl that disagrees with the real sqlite3.h fails the build (fail-closed)
+  BAD="$WORK/badabi"; rm -rf "$BAD"; mkdir -p "$BAD/src"
+  printf 'module app\nimport host.native.sqlite3 as db\nlet main = do\n  h <- db.sqliteOpen "x"\n  db.sqliteClose h\n' > "$BAD/src/app.kp"
+  printf 'let buildConfig : BuildConfig = package { name="b", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="s", provides=[module "host.native.sqlite3"], surface=symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi=cAbi, inputs=[headers ["sqlite3.h"], pkgConfig "sqlite3" None, verify ["int sqlite3_open(double)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["s"] }] }' > "$BAD/kappa.build.kp"
+  bout="$(timeout 120 $KAPPA build --manifest "$BAD" --emit-c -o "$WORK/badout" 2>&1)"; brc=$?
+  if [ "$brc" -ne 0 ] && grep -q "E_BUILD_NATIVE_ABI" <<<"$bout"; then
+    echo "   ok (a signature disagreeing with the real sqlite3.h -> E_BUILD_NATIVE_ABI, fail-closed)"
+  else
+    echo "   FAIL: bogus verify decl was not rejected"; echo "$bout" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -rf "$BAD"
+else
+  echo "   SKIP: pkg-config sqlite3 not available"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL NATIVE TESTS PASSED"; else echo "$fails NATIVE TEST(S) FAILED"; exit 1; fi

@@ -244,7 +244,9 @@ registry =
   , ent "E_HOST_MODULE_SOURCE_DEFINED" (Just "kappa-hs.host.reserved")
       "A source module's effective name is at or under a reserved host binding root (host.jvm/host.dotnet/host.native/host.python); those modules are supplied from host metadata or ABI descriptions, not user source (Spec §8.3.5)."
   , ent "E_NATIVE_BINDING_UNSUPPORTED" (Just "kappa-hs.build.native-unsupported")
-      "A manifest native binding names a host.native module, or a member of one, that the selected backend profile does not provide in its native catalog (Spec §27.1.1, §34.5.3, §36.28)."
+      "A manifest native binding provides a module not under the host.native root, or declares no symbol surface; the selected backend profile cannot realize it (Spec §27.1.1, §34.5.3, §36.28)."
+  , ent "E_BUILD_NATIVE_ABI" (Just "kappa-hs.build.native-abi")
+      "Build-phase native ABI discovery/verification failed: a pkg-config package was missing or older than the manifest's minVersion, a declared header was not on the resolved include path, or a 'verify' C declaration disagreed with the real header's declaration (Spec §26.1.5, §27.1.1, §36.28)."
   , ent "E_BUILD_BINDING_NOT_FOUND" (Just "kappa-hs.build.binding-not-found")
       "A build target references a host-binding name that the manifest's hostBindings does not declare (Spec §36.3, §36.28)."
   , ent "E_BUILD_ENTRY_NOT_FOUND" (Just "kappa-hs.build.entry-not-found")
