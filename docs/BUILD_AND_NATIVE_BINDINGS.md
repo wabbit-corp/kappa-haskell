@@ -150,13 +150,16 @@ The schema supports four target kinds, each with a build-pipeline action:
   member's action (build/run), succeeding iff all do. Cyclic membership is
   rejected (`E_BUILD_TARGET_CYCLE`); an unknown member is
   `E_BUILD_TARGET_NOT_FOUND`.
+- **`aliasTarget`** — an alias/rename of another target; building it builds
+  the aliased target (cycle-detected, same diagnostics as aggregate).
 
 `--target NAME` dispatches on the named target's kind (test → run suite;
-executable → native build; aggregate → run each member); no `--target`
-builds the default executable. Other §29.8 kinds (`codegen`, `bridge`,
-`benchmark`, `publish`, `aliasTarget`, …) are not in the schema subset yet
-(§29.8's "equivalent to" lets the implementation choose the subset; they
-are deferred-not-defective).
+executable → native build; aggregate → run each member; alias → run the
+aliased target); no `--target` builds the default executable. Other §29.8
+kinds (`codegen`, `bridge`, `benchmark`, `publish`, …) are not in the
+schema subset yet (§29.8's "equivalent to" lets the implementation choose
+the subset; they are deferred-not-defective; `codegen`/`bridge` also need
+generator/bridge backend infrastructure not present here).
 
 ## Native bindings — driven by the manifest (increment 2, DONE)
 
@@ -358,10 +361,11 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
     surfaced via `kappa build --manifest --provenance`.
 12. Canonical schema serialization + semantic-identity computation (§36.2)
     + per-slice string-interpolation provenance (§35.8).
-13. **(partly done)** Target kinds: `executable`/`library`/`test`/`aggregate`
-    are built/run/grouped; `codegen`/`bridge`/`benchmark`/`publish`/
-    `aliasTarget`/… and JVM/.NET/Python ecosystems + deployment/
-    reproducibility status remain.
+13. **(partly done)** Target kinds: `executable`/`library`/`test`/
+    `aggregate`/`aliasTarget` are built/run/grouped/aliased;
+    `codegen`/`bridge`/`benchmark`/`publish` (generator/bridge/perf
+    backends) and JVM/.NET/Python ecosystems + deployment/reproducibility
+    status remain.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/
 builder set as "equivalent to" a portable schema (signatures are

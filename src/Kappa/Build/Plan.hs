@@ -797,6 +797,7 @@ targetDependencies ExecutableTarget {tDependencies = ds} = ds
 targetDependencies LibraryTarget {tDependencies = ds} = ds
 targetDependencies TestTarget {} = []
 targetDependencies AggregateTarget {} = []
+targetDependencies AliasTarget {} = []
 
 -- | A target's referenced host-binding names (executables only carry them).
 targetHostBindings :: Target -> [Text]
@@ -804,6 +805,7 @@ targetHostBindings ExecutableTarget {tHostBindings = hs} = hs
 targetHostBindings LibraryTarget {} = []
 targetHostBindings TestTarget {} = []
 targetHostBindings AggregateTarget {} = []
+targetHostBindings AliasTarget {} = []
 
 -- | Select and resolve a @test@ target (§36.31) to the set of source
 -- files to run through the Appendix-T harness: the package modules whose

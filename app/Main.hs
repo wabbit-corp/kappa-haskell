@@ -223,6 +223,8 @@ runNamedTarget file bc ma visited nm
         B.ExecutableTarget {} -> runExecutable file bc ma (Just nm)
         B.AggregateTarget _ members ->
           and <$> mapM (runNamedTarget file bc ma (Set.insert nm visited)) members
+        B.AliasTarget _ aliased ->
+          runNamedTarget file bc ma (Set.insert nm visited) aliased
         B.LibraryTarget {} -> do
           hPutStrLn stderr
             ("note: library target '" <> T.unpack nm <> "' is consumed as a dependency, not built directly; skipping")
@@ -409,6 +411,8 @@ renderBuildConfig bc =
   where
     renderTargetKind t = case t of
       B.TestTarget {} -> "test"
+      B.AggregateTarget _ ms -> "aggregate of " <> T.intercalate ", " ms
+      B.AliasTarget _ a -> "alias of " <> a
       _ -> renderBackend (B.tBackend t)
     renderDep (B.RegistryDep n v) = "registry " <> n <> " " <> v
     renderDep (B.GitDep n u r) = "git " <> n <> " " <> u <> "@" <> r

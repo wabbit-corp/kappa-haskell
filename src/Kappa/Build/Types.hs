@@ -129,4 +129,8 @@ data Target
       { tName :: !Text
       , tMembers :: ![Text] -- ^ names of the member targets it groups
       }
+  | AliasTarget
+      { tName :: !Text
+      , tAlias :: !Text -- ^ the name of the target this aliases
+      }
   deriving stock (Eq, Show)

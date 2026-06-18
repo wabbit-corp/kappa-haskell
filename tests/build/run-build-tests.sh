@@ -248,6 +248,25 @@ else
 fi
 find "$AG" -name '*.kappa.c' -delete 2>/dev/null; rm -rf "$AG"
 
+echo "== aliasTarget (§36.3): build/run the aliased target =="
+AL="${TMPDIR:-/tmp}/kappa-aliastest"; rm -rf "$AL"; mkdir -p "$AL/test/spec"
+cat > "$AL/kappa.build.kp" <<'EOF'
+let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "test"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [test { name = "unit", modules = modulesUnder "spec" }, aliasTarget { name = "check", target = "unit" }, aliasTarget { name = "lp1", target = "lp2" }, aliasTarget { name = "lp2", target = "lp1" }] }
+EOF
+printf -- '--! mode check\n--! assertNoErrors\nmodule spec.ok\nlet x : Int = 1' > "$AL/test/spec/ok.kp"
+if timeout 120 $KAPPA build --manifest "$AL" --target check >/dev/null 2>&1; then
+  echo "PASS alias/run (alias resolves to and runs its target)"
+else
+  echo "FAIL alias/run"; fails=$((fails+1))
+fi
+alout="$(timeout 120 $KAPPA build --manifest "$AL" --target lp1 2>&1)"
+if grep -q "E_BUILD_TARGET_CYCLE" <<<"$alout"; then
+  echo "PASS alias/cycle (alias loop -> E_BUILD_TARGET_CYCLE)"
+else
+  echo "FAIL alias/cycle"; echo "$alout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+rm -rf "$AL"
+
 echo "== value provenance (§35.7): buildConfig provenance graph =="
 PV="${TMPDIR:-/tmp}/kappa-prov-test"; rm -rf "$PV"; mkdir -p "$PV"
 cat > "$PV/kappa.build.kp" <<'EOF'
