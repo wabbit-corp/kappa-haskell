@@ -1,0 +1,16 @@
+-- R3.2 probe: FLAT CLOSURE that both reads its own parameter AND captures a
+-- free variable.  The closure must read its param `x` directly as the C `arg`
+-- (de Bruijn 0) and the captured `k` from `cenv` via the shifted CVar fallback
+-- (`kvar(cenv, i - flat-prefix)`), with NO per-application `kpush`.  The
+-- `subInt (mulInt x 2) k` is asymmetric, so any param/capture mixup or a
+-- de-Bruijn-shift error changes the result, which must match the interpreter.
+module main
+
+applyN : (Int -> Int) -> Int -> Int -> Int
+let applyN f n acc = if leInt n 0 then acc else applyN f (subInt n 1) (addInt acc (f n))
+
+scaleBy : Int -> Int -> Int
+let scaleBy k base = applyN (\x -> subInt (mulInt x 2) k) 5 base
+
+main : UIO Unit
+let main = printlnString (showInt (scaleBy 3 100))   -- 100 + sum_{n=5..1}(2n-3) = 115

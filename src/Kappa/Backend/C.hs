@@ -1212,8 +1212,14 @@ compile term = case term of
     if not (null lvals) && i >= 0 && i < length lvals
       then pure (lvals !! i)
       else do
+        -- R3.2: in a FLAT CLOSURE the flat prefix (the param + any let/match
+        -- locals, 'gsParamLvals') covers the innermost de Bruijn indices and
+        -- the captured env @cenv@ covers the rest, so a captured-var index is
+        -- shifted PAST the flat prefix.  For a worker this branch is never
+        -- taken (all indices are flat); for the boxed path @lvals@ is empty so
+        -- the shift is 0 (unchanged @kvar(env,i)@).
         env <- gets gsEnv
-        pure ("kvar(" <> env <> ", " <> T.pack (show i) <> ")")
+        pure ("kvar(" <> env <> ", " <> T.pack (show (i - length lvals)) <> ")")
   CGlob g -> compileGlob g
   CLit l -> compileLit l
   CApp {} -> compileApp term
@@ -1803,20 +1809,29 @@ cBytesLit bs
 compileLam :: Term -> Gen Text
 compileLam body = do
   fnName <- freshFn "kfn_"
-  envName <- freshN "lenv_"
-  env <- gets gsEnv
-  -- inside the closure, the runtime env is `kpush(arg, cenv)`, bound to a
-  -- local once so each variable reference reuses it rather than re-consing
-  -- a fresh KEnv per occurrence.  The body is compiled in the 'SinkBounce'
-  -- tail sink so a tail-position application (e.g. the recursive call of a
-  -- local @let rec@ lambda) defers to the driving trampoline (§27.5A.3)
-  -- rather than recursing in the C stack — the loop-lowering of top-level
-  -- workers, generalised to closures with no mutable worker parameters.
-  (stmts, ()) <- captured envName (consume SinkBounce body)
-  -- only materialise the env local when the body actually reads a variable
-  -- (a constant lambda references neither — keeps the C -Wall clean).
-  let usesEnv = any (T.isInfixOf envName) stmts
-      envDecl = ["  KEnv *" <> envName <> " = kpush(arg, cenv);" | usesEnv]
+  env <- gets gsEnv -- the captured environment at closure creation
+  -- The body is compiled in the 'SinkBounce' tail sink so a tail-position
+  -- application (e.g. the recursive call of a local @let rec@ lambda) defers to
+  -- the driving trampoline (§27.5A.3) rather than recursing in the C stack.
+  --
+  -- R3.2 FLAT CLOSURE: when the body is capture-free (no nested closure/thunk/do
+  -- captures the parameter by reference), the parameter is read DIRECTLY as the
+  -- C argument @arg@ (de Bruijn 0, via 'gsParamLvals') and let/match locals are
+  -- flat C locals — NO per-application @kpush(arg, cenv)@.  Captured free vars
+  -- (de Bruijn ≥ 1) are read from @cenv@ via the shifted 'CVar' fallback.  When
+  -- the body captures the env, the parameter must live in a real @KEnv@ (a
+  -- nested closure captures it by reference), so build @kpush(arg, cenv)@ as
+  -- before and read everything via it (gsParamLvals empty).
+  let flat = not (bodyCapturesEnv body)
+  saved <- gets gsParamLvals
+  bodyEnv <- if flat then pure "cenv" else freshN "lenv_"
+  modify' $ \st -> st {gsParamLvals = if flat then ["arg"] else []}
+  (stmts, ()) <- captured bodyEnv (consume SinkBounce body)
+  modify' $ \st -> st {gsParamLvals = saved}
+  -- non-flat: materialise kpush(arg, cenv) only when a variable is read (a
+  -- constant lambda references neither — keeps the C -Wall clean).
+  let usesEnv = (not flat) && any (T.isInfixOf bodyEnv) stmts
+      envDecl = ["  KEnv *" <> bodyEnv <> " = kpush(arg, cenv);" | usesEnv]
       fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *arg) {"

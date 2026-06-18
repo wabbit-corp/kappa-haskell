@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders flatclosure; do run_diff_case "$c"; done
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -238,6 +238,28 @@ if timeout 120 $KAPPA build "$CASES/flatbinders.kp" --emit-c -o "$btmp/fb" >"$bt
   rm -f "$cfile"
 else
   echo "   FAIL: flatbinders --emit-c build failed"; cat "$btmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+# R3.2: a capture-free CLOSURE (lambda) reads its parameter DIRECTLY as the C
+# `arg` (de Bruijn 0) and captured free vars from `cenv`, with NO per-application
+# `kpush(arg, cenv)`.  Assert on flatclosure's `\x -> subInt (mulInt x 2) k`: the
+# kfn_ body reads `arg` and `kvar(cenv,` (the capture) but contains no `kpush`.
+echo "== R3.2: capture-free closures read the param flat (no per-application kpush) =="
+ctmp="$WORK/r32"; mkdir -p "$ctmp"
+if timeout 120 $KAPPA build "$CASES/flatclosure.kp" --emit-c -o "$ctmp/fc" >"$ctmp/build.log" 2>&1; then
+  cfile="$CASES/flatclosure.kappa.c"
+  # the lambda body: a kfn_ function that reads cenv (it captures k).
+  lam="$(awk '/^static KValue \*kfn_[A-Za-z0-9_]+\(KEnv \*cenv, KValue \*arg\) \{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  if printf '%s' "$lam" | grep -qE 'kvar\(cenv,' \
+     && printf '%s' "$lam" | grep -qE '\barg\b' \
+     && ! printf '%s' "$lam" | grep -qE 'kpush\('; then
+    echo "   ok (flat closure: param read as arg, capture via kvar(cenv,…), no per-application kpush)"
+  else
+    echo "   FAIL: closure still kpushes its parameter per application (R3.2 regressed)"; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: flatclosure --emit-c build failed"; cat "$ctmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # Honest no-fallback property: the native backend never silently falls back

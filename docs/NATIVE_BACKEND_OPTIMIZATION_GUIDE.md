@@ -181,10 +181,13 @@ correct). → **R2.1**.
 allocates a fresh box per update on the boxed path. The principled fix is immediate-tagged small
 ints (with the Boehm tagging caveat, §5.1); the cache is a stopgap. → **R3.3**.
 
-**P1-H — `KEnv` is a per-binding linked list, not a flat frame.** `kpush`/`kvar` allocate one node
-per bound variable and walk the chain on lookup (`foldSum` does 2× `kpush` per element). Both slow
-(chain walk) and space-unsafe (Shao/Appel). Flat frames + lambda-lifting non-escaping helpers fix
-it. → **R3.2**.
+**P1-H — `KEnv` is a per-binding linked list, not a flat frame. RESOLVED for non-escaping scopes
+(R2.3 + R2.3-rest + R3.2).** `kpush`/`kvar` allocated one node per bound variable and walked the
+chain on lookup. **Fix:** capture-free WORKERS read params + `let`/`match` locals as flat C locals
+(R2.3/R2.3-rest, no `KEnv`), and capture-free CLOSURES read their parameter directly as the C `arg`
++ locals as flat C locals, with captured vars from `cenv` (R3.2, no per-application `kpush`). Only
+env-capturing scopes (a closure/thunk/do that escapes) still build a `KEnv`. Lambda-lifting
+non-escaping helpers to top-level workers is a further (unneeded-so-far) refinement.
 
 **P1-I — Benchmark suite is a regression gate, not a raw-C performance proof.** `bench.sh` does
 several things right (raw-C baselines at `-O2`, `volatile`+runtime-N, `total_bytes` gates, two
@@ -434,6 +437,32 @@ an explicit lowered-IR requirement — see the header.)
   effect-analysis and the bounce-emitter must share one definition. *Gate:* `adtcons` emits no
   `ktrampoline`; `tailrec` (mutual/value-indirect recursion) keeps it.
 
+- **R3.2 (flat closures — capture-free lambda parameter as a register slot). LANDED (this study).**
+  A lambda was compiled as `kpush(arg, cenv)` into a linked `KEnv` then read via `kvar`, so EACH
+  application allocated a `KEnv` node just to bind the parameter (`hofmap`'s `\x -> x+1` allocated
+  one `kpush` per call — 2M nodes, the bulk of its 353 MB). **Fix:** a capture-free lambda
+  (`not bodyCapturesEnv`) reads its parameter DIRECTLY as the C argument `arg` (de Bruijn 0), its
+  `let`/`match` locals as flat C locals, and captured free vars from `cenv` via the `CVar` fallback
+  shifted past the flat prefix (`kvar(cenv, i - |flat prefix|)`) — NO per-application `kpush`.
+  `hofmap` 353 → 289 MB, `closure_capture` 200 → 184 MB (residual is `kint` result-boxing, a
+  data-rep cost, not closure overhead). *Lowered-IR requirement:* a closure is a flat record of
+  `{code, captured slots}`; its parameter is a fresh slot/register (de Bruijn 0), NOT an env-cons, so
+  a non-escaping closure allocates no per-application frame — only the one-time capture record at
+  closure creation (the Shao/Appel "flat closures, not linked `KEnv`" fact, for the closure case;
+  the same flat-frame escape bit as R2.3, with `cenv` as the captured tail). *Reusable lowering
+  rule:* `gsParamLvals` is the flat de-Bruijn prefix (param + locals); the env (`kw_env` for a
+  worker, `cenv` for a closure) holds the captured tail, addressed `i - |prefix|`. *Gate:*
+  `flatclosure`'s `\x -> subInt (mulInt x 2) k` (captures `k`, asymmetric → 115) emits `arg` +
+  `kvar(cenv,…)` with no `kpush`.
+  *The other half of R3.2 — generalized eval/apply (collecting N args for a known-arity closure
+  VALUE in one call instead of entering N arity-1 closures) — is deliberately NOT implemented:*
+  Marlow & PJ measured push/enter vs eval/apply as **parity** (§5.2, `[measured-parity]`), saturated
+  calls to known globals are ALREADY direct (`compileDirectCall`, no curried chain), and the only
+  residual is the intermediate `kclo0→kclo1→…` allocations when a known function is *used as a value
+  and over-applied* — off the critical path for ordinary monomorphic code (which goes direct) and a
+  guide-§1-scoped bounded factor for higher-order code. Revisit only if a measured HOF workload
+  shows it dominating.
+
 - **R2.4 (mixed boxed/unboxed scalar workers). LANDED (this study).** A worker with a record/ADT
   param was rejected by `scalarPlan` (not all params scalar), so its `Int` counter/accumulator
   stayed boxed and re-boxed every iteration (`recproj`'s 96.8 MB `kint` storm). **Fix:** the
@@ -462,7 +491,7 @@ an explicit lowered-IR requirement — see the header.)
 | ✓ | **R2.3** first-order worker params/locals as flat C locals — **DONE** (ALL capture-free workers — params AND `let`/`match`-bound locals are flat C locals, no `KEnv`; only env-capturing workers keep `kvar`) | P0-D/P1-H | High | High | Med |
 | ✓ | **R2.4** mixed boxed/unboxed scalar workers (unbox scalar slots beside boxed record params + tag-checked field coercion) — **DONE** (recproj 96.8 MB → 544 B) | P0-D | Med | Med | Med |
 | ✓ | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls — **DONE** | P1-E | Med | Med | Med |
-| 8 | **R3.2** generalized eval/apply known-arity calls + flat closures | P0-D/P1-H | High | High | Med-High |
+| ◑ | **R3.2** flat closures (capture-free lambda param as a register slot, no per-application `kpush`) — **DONE**; the multi-arg eval/apply half **rejected with rationale** (push/enter≈eval/apply parity §5.2; saturated calls already direct) | P0-D/P1-H | High | High | Med-High |
 | 9 | **R3.3** immediate-tagged small integers (Boehm tagging caveat) | P1-G | High | High | High |
 | 10 | **R1.2** `switch`/decision-tree match shape + record-field-pattern tags (LR2 core already shipped) | P1-C | Low-Med | Med | Low-Med |
 | — | **R4.x** architectural: escape analysis (R4.1), precise GC (R4.2), monomorphization/defunctionalization (R4.3), limited regions (R4.4) | P2-J/K/L/M | — | — | — |
@@ -472,9 +501,10 @@ Rationale: **R1.1 landed (this study)** — it attacked the verified worst path 
 non-harness item, **R2.1** (atomic scalar boxes), also landed, as did **R2.2** (`Double`/mixed-kind
 unboxed workers); **R3.1** (trampoline elision), **R2.3** in full (flat C-parameter frames for ALL
 capture-free workers — params + `let`/`match`-bound locals, including the binder-bearing rest), and
-**R2.4** (mixed boxed/unboxed scalar workers — recproj 96.8 MB → 544 B) also landed; next is
-**R3.2** (flat closures / eval-apply for higher-order code), and **R3.3** (immediate-tagged small
-ints). **R1.2 is
+**R2.4** (mixed boxed/unboxed scalar workers — recproj 96.8 MB → 544 B), and **R3.2** (flat
+closures — capture-free lambda param as a register slot, hofmap 353 → 289 MB; the multi-arg
+eval/apply half rejected with rationale) also landed; next is **R3.3** (immediate-tagged small
+ints — high-risk Boehm tagging) and **R1.2** (switch match, low). **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk
@@ -581,7 +611,7 @@ adversarial completion signoffs were executed:
   drift; a shared `tailShape` classifier coupling `workerMayBounce`↔`emitTailApp`; fold the dual
   eligibility/emit grammar walk if a fourth worker shape is added.
 
-The remaining roadmap items (R2.3-rest, R3.2, R3.3, R1.2, R0.1-rest, R4.x) are PERFORMANCE
+The remaining roadmap items (R3.3, R1.2, R0.1-rest, R4.x) are PERFORMANCE
 optimizations, not Spec.md gaps; R4.x carry the §5 documented architectural tradeoffs the project
 deliberately declines (whole-program monomorphization / precise moving GC).
 
