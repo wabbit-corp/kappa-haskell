@@ -432,6 +432,22 @@ an explicit lowered-IR requirement — see the header.)
   effect-analysis and the bounce-emitter must share one definition. *Gate:* `adtcons` emits no
   `ktrampoline`; `tailrec` (mutual/value-indirect recursion) keeps it.
 
+### Designed next (not yet implemented): R2.4 mixed boxed/unboxed scalar workers
+The remaining visible waste is `recproj`'s 96.8 MB `kint` storm: a worker with a record param is
+rejected by `scalarPlan` (not all params scalar), so its `Int` counter/accumulator stay boxed and
+re-box every iteration. **Designed slice (reviewed):** generalize the per-parameter kind to
+`PScalar ScalarKind | PBoxed` so a worker can have *mixed* slots — unbox the scalar params
+(`int64`/`double`, overflow-escaped) while keeping non-scalar params boxed (`KValue *`, passed
+through). A record field read in a scalar context (`krec_at(p,i)` feeding `addInt`) becomes a
+**boxed→scalar coercion** with a tag-checked escape; on a non-`K_INT` field or overflow it escapes
+to the boxed worker (the oracle), so it cannot miscompile. This closes recproj's per-iteration
+allocation to zero (the record is built once, the result boxed once). *Lowered-IR requirement
+(the deliverable):* a frame's slots are **independently typed** (unboxed scalar vs boxed); scalar
+values flow unboxed between scalar ops; a **boxed→scalar coercion is an explicit IR node carrying a
+representation guard** inserted exactly where a boxed value is consumed in a scalar position; worker
+signatures are mixed, with the boxed worker as the semantic oracle for every guard failure. The
+new `adtbuild`/`scalar_doubleloop` alloc gates (R0.1) plus a recproj alloc gate will lock the win.
+
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
 | ◑ | **R0.1** rigorous bench harness + broad coverage — **PARTIAL** (median-of-N timing, per-iteration alloc, and enforced landed-wave alloc gates — adtbuild/scalar_doubleloop/scalar_intloop — wired into the native suite; full CIs/setup-randomization still future) | P1-I | High | Med | Low |
