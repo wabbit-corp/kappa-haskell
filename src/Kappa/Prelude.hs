@@ -15,6 +15,8 @@ module Kappa.Prelude
   , stdGradualSource
   , stdBridgeSource
   , stdSupervisorSource
+  , stdConfigSource
+  , stdBuildSource
   , evalPurePrim
   ) where
 
@@ -2511,4 +2513,122 @@ stdSupervisorSource =
     , ""
     , "withSupervisor : forall (e : Type) (a : Type). SupervisorStrategy -> RestartIntensity -> List (ChildSpec e) -> (Supervisor e -> IO e a) -> IO e a"
     , "let withSupervisor strategy intensity children use = use (MkSupervisor children)"
+    ]
+
+-- | Embedded @std.config@ source (§35.4): the portable config-mode
+-- external-input API. A build-manifest loader makes these names
+-- available through the config schema scope (§35.3); portable config
+-- units do not import @std.config@. 'ConfigInputKey' is config-safe;
+-- @input@ reads a loader-supplied external value (the loader resolves
+-- it during config evaluation). For increment 1 of build-manifest
+-- support, @input@ is declared so the name is in scope and config
+-- inputs typecheck; loader-side resolution of @input key@ is sequenced
+-- with the build-input pipeline.
+stdConfigSource :: Text
+stdConfigSource =
+  T.unlines
+    [ "module std.config"
+    , ""
+    , "data ConfigInputKey (a : Type) : Type = MkConfigInputKey (name : String)"
+    , "let configInput name = MkConfigInputKey name"
+    ]
+
+-- | Embedded @std.build@ source (§29.8): the config-safe schema module
+-- supplying the portable build-manifest vocabulary. A build-manifest
+-- loader makes these names available through the config schema scope of
+-- §35.3; portable manifests do not import @std.build@ (§29.8). This is
+-- the increment-1 subset of §29.8 (package/source-root/fragment/
+-- dependency/native-binding/target vocabulary); the larger workspace,
+-- test/codegen/bridge/benchmark/publish, JVM/.NET/Python-ecosystem, and
+-- reproducibility-status surfaces are sequenced follow-ups (a build
+-- manifest MUST NOT assign a resolved 'ReproducibilityStatus' — §29.8 —
+-- so no such constructor is exposed). Every declaration is a config-safe
+-- data type, data constructor, or total transparent builder (§35.5);
+-- constructing a value performs no discovery (§29.8).
+stdBuildSource :: Text
+stdBuildSource =
+  T.unlines
+    [ "module std.build"
+    , ""
+    , "data PackageVersion : Type = MkPackageVersion (raw : String)"
+    , "let semver raw = MkPackageVersion raw"
+    , ""
+    , "data SourceRoot : Type = MkSourceRoot (path : String)"
+    , "let sourceRoot path = MkSourceRoot path"
+    , ""
+    , "data FragmentTag : Type = MkFragmentTag (name : String)"
+    , "let tag name = MkFragmentTag name"
+    , ""
+    , "data FragmentAxis : Type = MkFragmentAxis (name : String) (tags : List FragmentTag)"
+    , "let axis name tags = MkFragmentAxis name tags"
+    , ""
+    , "data FragmentSelection : Type = MkFragmentSelection (tags : List String)"
+    , "let tags ts = MkFragmentSelection ts"
+    , ""
+    , "data ModuleSelector : Type ="
+    , "    SelModule (name : String)"
+    , "    SelModulesUnder (prefix : String)"
+    , "let module name = SelModule name"
+    , "let modulesUnder prefix = SelModulesUnder prefix"
+    , ""
+    , "data BackendProfile : Type ="
+    , "    NativeBackend (toolchain : String) (targetTriple : String)"
+    , "    JvmBackend"
+    , "    DotNetBackend"
+    , "let native toolchain targetTriple = NativeBackend toolchain targetTriple"
+    , "let jvm = JvmBackend"
+    , "let dotnet = DotNetBackend"
+    , ""
+    , "data Dependency : Type ="
+    , "    RegistryDep (name : String) (version : String)"
+    , "    GitDep (name : String) (url : String) (rev : String)"
+    , "    PathDep (name : String) (path : String)"
+    , "let registry name version = RegistryDep name version"
+    , "let git name url rev = GitDep name url rev"
+    , "let pathDependency name path = PathDep name path"
+    , ""
+    , "data NativeBindingSource : Type ="
+    , "    PkgConfigSource (package : String) (minVersion : Option String)"
+    , "    HeadersSource (paths : List String)"
+    , "    SymbolListSource (symbols : List String)"
+    , "    ShimSource (path : String)"
+    , "    PrebuiltNativeSource (path : String)"
+    , "let pkgConfig package minVersion = PkgConfigSource package minVersion"
+    , "let headers paths = HeadersSource paths"
+    , "let symbolList symbols = SymbolListSource symbols"
+    , "let shim path = ShimSource path"
+    , "let prebuiltNative path = PrebuiltNativeSource path"
+    , ""
+    , "data NativeAbi : Type = CAbi"
+    , "let cAbi = CAbi"
+    , ""
+    , "data NativeLinkSpec : Type ="
+    , "    DynamicLink (libs : List String)"
+    , "    StaticLink (libs : List String)"
+    , "    NoLink"
+    , "let dynamicLink libs = DynamicLink libs"
+    , "let staticLink libs = StaticLink libs"
+    , "let noLink = NoLink"
+    , ""
+    , "data NativeLoadSpec : Type ="
+    , "    SystemLoader"
+    , "    BundledLoader"
+    , "    RuntimeLoad"
+    , "    ProvidedByHost"
+    , "let systemLoader = SystemLoader"
+    , "let bundledLoader = BundledLoader"
+    , "let runtimeLoad = RuntimeLoad"
+    , "let providedByHost = ProvidedByHost"
+    , ""
+    , "data HostBinding : Type = MkNativeBinding (name : String) (provides : List ModuleSelector) (source : NativeBindingSource) (abi : NativeAbi) (headers : List NativeBindingSource) (link : NativeLinkSpec) (load : NativeLoadSpec)"
+    , "let nativeBinding name provides source abi headers link load = MkNativeBinding name provides source abi headers link load"
+    , ""
+    , "data Target : Type ="
+    , "    ExecutableTarget (name : String) (backend : BackendProfile) (fragments : FragmentSelection) (main : ModuleSelector) (modules : ModuleSelector) (dependencies : List String) (hostBindings : List String)"
+    , "    LibraryTarget (name : String) (backend : BackendProfile) (fragments : FragmentSelection) (modules : ModuleSelector) (dependencies : List String)"
+    , "let executable name backend fragments main modules dependencies hostBindings = ExecutableTarget name backend fragments main modules dependencies hostBindings"
+    , "let library name backend fragments modules dependencies = LibraryTarget name backend fragments modules dependencies"
+    , ""
+    , "data BuildConfig : Type = MkBuildConfig (name : String) (version : PackageVersion) (sourceRoots : List SourceRoot) (fragmentAxes : List FragmentAxis) (dependencies : List Dependency) (hostBindings : List HostBinding) (targets : List Target)"
+    , "let package name version sourceRoots fragmentAxes dependencies hostBindings targets = MkBuildConfig name version sourceRoots fragmentAxes dependencies hostBindings targets"
     ]

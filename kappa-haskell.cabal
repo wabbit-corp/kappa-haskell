@@ -38,7 +38,10 @@ library
         Kappa.Backend.Driver
         Kappa.Backend.Ffi
         Kappa.Backend.Intrinsics
+        Kappa.Build.Reify
+        Kappa.Build.Types
         Kappa.Check
+        Kappa.Config
         Kappa.Core
         Kappa.Diagnostic
         Kappa.Eval

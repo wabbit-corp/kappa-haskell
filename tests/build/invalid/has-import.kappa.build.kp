@@ -1,0 +1,4 @@
+-- expect: E_CONFIG_IMPORT_NOT_SAFE
+-- §35.3: portable config profiles reject ordinary imports.
+import std.build.*
+let buildConfig : BuildConfig = package { name = "x", version = semver "1", sourceRoots = [], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [] }

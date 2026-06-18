@@ -1,0 +1,4 @@
+-- expect: E_CONFIG_RESTRICTED_FORM
+-- §35.1: a config unit has no module header.
+module mymanifest
+let buildConfig : BuildConfig = package { name = "x", version = semver "1", sourceRoots = [], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [] }

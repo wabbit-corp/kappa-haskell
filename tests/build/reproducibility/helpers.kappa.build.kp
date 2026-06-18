@@ -1,0 +1,15 @@
+-- Same semantic BuildConfig as 'direct', computed through helper config
+-- bindings (§35.1) and an 'if'. Helper-binding structure is provenance,
+-- not semantic identity (§36.2.1): the reified config must match exactly.
+let ver = semver "2.1.0"
+let roots = [sourceRoot "src", sourceRoot "lib"]
+let stdDep = registry { name = "std", version = "^0.1" }
+let appName = if True then "app" else "other"
+let buildConfig : BuildConfig = package { name = "repro.demo"
+    , version = ver
+    , sourceRoots = roots
+    , fragmentAxes = []
+    , dependencies = [stdDep]
+    , hostBindings = []
+    , targets = [executable { name = appName, backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = ["std"], hostBindings = [] }]
+    }

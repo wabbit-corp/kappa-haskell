@@ -1,0 +1,16 @@
+-- A complete portable build manifest (§36.3 shape), exercising every
+-- increment-1 std.build builder: package, semver, sourceRoot, axis/tag,
+-- registry/git dependencies, a native binding (pkgConfig source), and
+-- both executable (native) and library (jvm) targets. A config unit has
+-- no module header and no imports (§35.1, §35.3); the std.build/std.config
+-- vocabulary comes from the loader-supplied schema scope.
+let pkgVersion = semver "0.1.0"
+
+let buildConfig : BuildConfig = package { name = "one.wabbit.image"
+    , version = pkgVersion
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes = [axis "backend" [tag "native", tag "jvm"], axis "mode" [tag "debug", tag "release"]]
+    , dependencies = [registry { name = "std", version = "^0.1" }, git { name = "codec", url = "https://example.invalid/acme/codec.git", rev = "3f4a9c" }]
+    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], source = pkgConfig { package = "sqlite3", minVersion = Some "3.40" }, abi = cAbi, headers = [headers ["sqlite3.h"]], link = dynamicLink ["sqlite3"], load = systemLoader }]
+    , targets = [executable { name = "cli-native", backend = native { toolchain = "zig", targetTriple = "x86_64-linux-gnu" }, fragments = tags ["native", "linux", "release"], main = module "acme.image.main", modules = modulesUnder "acme", dependencies = ["std", "codec"], hostBindings = ["sqlite3"] }, library { name = "core-jvm", backend = jvm, fragments = tags ["jvm", "release"], modules = modulesUnder "acme", dependencies = ["std", "codec"] }]
+    }

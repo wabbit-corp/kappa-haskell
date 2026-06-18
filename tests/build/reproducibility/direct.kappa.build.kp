@@ -1,0 +1,13 @@
+-- §36.2.1 semantic build identity: this manifest writes the package
+-- fields directly. Its reified BuildConfig must be identical to the
+-- 'helpers' variant below, which computes the same values through helper
+-- bindings (a provenance difference that must NOT change semantic
+-- identity).
+let buildConfig : BuildConfig = package { name = "repro.demo"
+    , version = semver "2.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "lib"]
+    , fragmentAxes = []
+    , dependencies = [registry { name = "std", version = "^0.1" }]
+    , hostBindings = []
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = ["std"], hostBindings = [] }]
+    }

@@ -1,0 +1,3 @@
+-- expect: E_CONFIG_RESTRICTED_FORM
+-- §35.2.2: a config-expression evaluator must not admit first-class function values.
+let buildConfig : BuildConfig = package { name = "x", version = semver "1", sourceRoots = [], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [(\t -> t) (library { name = "l", backend = jvm, fragments = tags [], modules = modulesUnder "a", dependencies = [] })] }

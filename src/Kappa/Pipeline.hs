@@ -14,6 +14,8 @@ module Kappa.Pipeline
   , compileSourceWithPrelude
   , importScopeFor
   , loadSourceFile
+  , compileManifest
+  , manifestModuleName
   ) where
 
 import Control.Monad.State.Strict (evalState)
@@ -27,6 +29,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import Kappa.Check
+import Kappa.Config (ConfigProfile (..), checkConfigUnit)
 import Kappa.Core (GName (..), Term, gnameText)
 import Kappa.Diagnostic
 import Kappa.Parser (parseModule)
@@ -43,6 +46,8 @@ import Kappa.Prelude
   , stdBytesSource
   , stdSupervisorSource
   , stdUnicodeSource
+  , stdConfigSource
+  , stdBuildSource
   )
 import Kappa.Resolve (defaultFixities, fixitiesOf, multiFixityOps, resolveModule)
 import Kappa.Source
@@ -82,6 +87,13 @@ preludeState =
             , (ModuleName ["std", "gradual"], "<std.gradual>", stdGradualSource)
             , (ModuleName ["std", "bridge"], "<std.bridge>", stdBridgeSource) -- after std.gradual
             , (ModuleName ["std", "supervisor"], "<std.supervisor>", stdSupervisorSource)
+            , -- §35.3/§29.8: config-mode schema modules. They are checked
+              -- here so their config-safe vocabulary is registered in
+              -- csGlobals/csCtors/csModuleExports; a build-manifest loader
+              -- (Kappa.Config) installs their names into the manifest's
+              -- schema scope without an ordinary import.
+              (ModuleName ["std", "config"], "<std.config>", stdConfigSource)
+            , (ModuleName ["std", "build"], "<std.build>", stdBuildSource)
             ]
           (st', sdiags) =
             foldl
@@ -145,6 +157,29 @@ compileSourceWithPrelude path src = compileFiles [(path, src)]
 compileSourceWithIntrinsics :: Map.Map Text Term -> FilePath -> Text -> CompiledUnit
 compileSourceWithIntrinsics intrinsics =
   \path src -> compileFilesWithCfg intrinsics defaultUnsafeConfig False moduleNameOf [(path, src)]
+
+-- | The synthetic module name under which a build manifest's bindings
+-- live. A config unit has no module header (§35.1), so its globals are
+-- keyed under this fixed name; reification looks up @buildConfig@ here.
+manifestModuleName :: ModuleName
+manifestModuleName = ModuleName ["__manifest"]
+
+-- | Load and config-check a build manifest (§35.13): parse it as
+-- ordinary Kappa, then check it in the @config-expression@ profile under
+-- the @std.config@/@std.build@ schema scope with the Chapter-35
+-- restrictions (see "Kappa.Config"). Returns the checked state (whose
+-- 'csCoreBodies' holds the elaborated @buildConfig@ for reification), the
+-- manifest module name, and all diagnostics. This performs NO build-plan
+-- resolution (§35.13): no source-root enumeration, dependency
+-- resolution, or host inspection.
+compileManifest :: FilePath -> Text -> (CheckState, ModuleName, Diagnostics)
+compileManifest path src =
+  let (pst, pdiags) = preludeState
+   in case parseModule path src of
+        Left ds -> (pst, manifestModuleName, pdiags ++ ds)
+        Right (m, recovered) ->
+          let (st, diags) = checkConfigUnit ConfigExpression pst manifestModuleName m
+           in (st, manifestModuleName, pdiags ++ recovered ++ diags)
 
 -- | Multi-file compilation with basename-derived module names
 -- (standalone files: §8.1 path-name derivation is not in force).

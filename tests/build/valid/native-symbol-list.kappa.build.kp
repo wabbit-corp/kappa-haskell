@@ -1,0 +1,13 @@
+-- A native binding described by an explicit symbol list (§36.28): the
+-- binding source enumerates exported symbols rather than scanning
+-- headers, and statically links the library. This is the increment-1
+-- native-binding description path (no header inference of ownership or
+-- nullability — §36.28).
+let buildConfig : BuildConfig = package { name = "uses-native"
+    , version = semver "0.2.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = [nativeBinding { name = "mathx", provides = [module "host.native.mathx"], source = symbolList ["mathx_add", "mathx_mul"], abi = cAbi, headers = [], link = staticLink ["mathx"], load = providedByHost }]
+    , targets = [executable { name = "uses-native", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = ["mathx"] }]
+    }

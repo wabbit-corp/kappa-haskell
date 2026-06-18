@@ -205,6 +205,42 @@ registry =
       "A 'break' or 'continue' control expression appears outside any enclosing loop."
   , ent "E_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.constructor.arity")
       "A data constructor is applied to the wrong number of arguments for its declaration."
+  -- §35.11 config-mode diagnostic classes. A config unit (e.g. the
+  -- build manifest 'kappa.build.kp', §35.13) is ordinary Kappa checked
+  -- under a loader-supplied schema scope with the additional Chapter-35
+  -- restrictions; these are the required diagnostic classes for config
+  -- evaluation.
+  , ent "E_CONFIG_PARSE" (Just "kappa-hs.config.parse")
+      "A config unit failed to parse as ordinary Kappa syntax (Spec §35.11)."
+  , ent "E_CONFIG_RESTRICTED_FORM" (Just "kappa-hs.config.restricted-form")
+      "A config unit uses a declaration or expression form not admitted by the active config profile (e.g. a module header, an export, a function definition, a lambda, 'do'/IO, traits/instances, or local 'data') (Spec §35.1, §35.2.2)."
+  , ent "E_CONFIG_IMPORT_NOT_SAFE" (Just "kappa-hs.config.import-not-safe")
+      "A config unit uses an ordinary import; portable config profiles supply names through the loader's schema scope, not by import (Spec §35.3)."
+  , ent "E_CONFIG_TYPE" (Just "kappa-hs.config.type")
+      "A config unit is ill-typed under config-admissible typing (Spec §35.11)."
+  , ent "E_CONFIG_UNRESOLVED_NAME" (Just "kappa-hs.config.unresolved-name")
+      "A config unit references a name that is neither an earlier config binding nor a name in the loader-supplied schema scope (Spec §35.3, §35.11)."
+  , ent "E_CONFIG_CALL_NOT_SAFE" (Just "kappa-hs.config.call-not-safe")
+      "A config unit calls a function that is not marked config-safe in the schema scope (Spec §35.2.2, §35.5)."
+  , ent "E_CONFIG_PARTIAL_APPLICATION" (Just "kappa-hs.config.partial-application")
+      "A config unit leaves a config-safe function partially applied; config-mode calls must supply all explicit arguments (Spec §35.2.2)."
+  , ent "E_CONFIG_EVAL" (Just "kappa-hs.config.eval")
+      "A config unit could not be evaluated to a config value by deterministic normalization (Spec §35.6)."
+  , ent "E_CONFIG_PROVENANCE_UNAVAILABLE" (Just "kappa-hs.config.provenance-unavailable")
+      "Value provenance for a config value is unavailable (the value came from an opaque config-safe function, an implementation boundary, an implementation limit, or an unknown external input) (Spec §35.11)."
+  , ent "E_CONFIG_INTERPOLATION" (Just "kappa-hs.config.interpolation")
+      "A config unit uses a string interpolation or prefixed-string handler not admitted by the active config profile (Spec §35.11)."
+  , ent "E_CONFIG_EXPECTED_VALUE" (Just "kappa-hs.config.expected-value")
+      "A config unit did not produce the value the loader required (e.g. a build manifest that does not define exactly one 'let buildConfig : BuildConfig = ...') (Spec §35.13, §35.11)."
+  -- Build-manifest loading and provider diagnostics (§36, §3.2.15).
+  , ent "E_BUILD_MANIFEST_NOT_FOUND" (Just "kappa-hs.build.manifest-not-found")
+      "No build manifest ('kappa.build.kp') was found for the requested build (Spec §35.13, §36.3)."
+  , ent "E_BUILD_TARGET_NOT_FOUND" (Just "kappa-hs.build.target-not-found")
+      "The requested build target is not defined by the build manifest (Spec §36.3, §36.4)."
+  , ent "E_PROVIDER_COLLISION" (Just "kappa.provider.collision")
+      "More than one host-binding provider claims the same effective module name under a reserved host root; the manifest must disambiguate which provider supplies it (Spec §3.2.15, §36.28)."
+  , ent "E_NATIVE_BINDING_UNPINNED" (Just "kappa.package.reproducibility")
+      "A native binding selected by the manifest cannot be pinned to an immutable identity for reproducible builds (Spec §3.2.15, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
       "Two top-level declarations of the same kind in the same module bind the same name."
   , ent "E_DUPLICATE_PATTERN_BINDER" (Just "kappa-hs.pattern.duplicate-binder")

@@ -1,0 +1,4 @@
+-- expect: E_CONFIG_RESTRICTED_FORM
+-- §35.2.2: user-defined functions are not admitted in config-expression.
+let helper x = semver x
+let buildConfig : BuildConfig = package { name = "x", version = helper "1", sourceRoots = [], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [] }

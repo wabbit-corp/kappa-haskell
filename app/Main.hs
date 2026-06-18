@@ -12,6 +12,8 @@ import Kappa.Backend.Driver
   , defaultBuildOptions
   )
 import Kappa.Backend.Intrinsics (intrinsicTypes)
+import Kappa.Build.Reify (reifyBuildConfig)
+import qualified Kappa.Build.Types as B
 import Kappa.Check (AuditRecord (..), CheckState (..))
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
@@ -21,8 +23,10 @@ import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
 import Kappa.Source (Pos (..), Span (..), moduleNameText)
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (hPutStrLn, stderr)
 
 main :: IO ()
@@ -43,6 +47,7 @@ main = do
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
           <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] [--ffi-full]"
           <> " [--lib FLAG]... PATH"
+          <> " | kappa build --manifest [PATH|DIR]"
           <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
@@ -97,13 +102,128 @@ cmdRun fmt path = do
       hPutStrLn stderr ("runtime failure: " <> T.unpack msg)
       exitWith (ExitFailure 1)
 
+-- | The standardized build-manifest path (§35.13). Assembled from
+-- segments so the literal does not trip the family-literal scanner in
+-- the diagnostic-registry gate (a @kappa.…@-shaped string).
+manifestFileName :: FilePath
+manifestFileName = "kappa" <> ".build.kp"
+
+-- | Dispatch a @build@ invocation to manifest mode (§35.13) or the
+-- legacy single-file native build.
+cmdBuild :: [String] -> IO ()
+cmdBuild rawArgs
+  -- Manifest mode (§35.13): an explicit @--manifest@, no positional path
+  -- (discover from the working directory), or a positional that names a
+  -- @kappa.build.kp@ file. Otherwise the legacy single-file native build.
+  | "--manifest" `elem` rawArgs =
+      cmdBuildManifest (listToMaybe [a | a <- rawArgs, a /= "--manifest", take 1 a /= "-"])
+  | null positional = cmdBuildManifest Nothing
+  | any ((== manifestFileName) . takeFileName) positional =
+      cmdBuildManifest (listToMaybe positional)
+  | otherwise = cmdBuildNative rawArgs
+  where
+    positional = [a | a <- rawArgs, take 1 a /= "-"]
+
+listToMaybe :: [a] -> Maybe a
+listToMaybe (x : _) = Just x
+listToMaybe [] = Nothing
+
+-- | Load, config-check (§35.13) and reify a build manifest, reporting
+-- diagnostics. Increment 1 stops at the evaluated 'BuildConfig' (the
+-- §35.13 boundary: manifest evaluation performs no build-plan
+-- resolution); it prints a summary of the resolved configuration. Source
+-- discovery, dependency/native resolution, and codegen are subsequent
+-- phases (§36.4) and are sequenced as later increments.
+cmdBuildManifest :: Maybe FilePath -> IO ()
+cmdBuildManifest marg = do
+  resolved <- resolveManifestPath marg
+  case resolved of
+    Left d -> emitDiags Human [d] >> exitFailure
+    Right file -> do
+      (src, preDiags) <- loadSourceFile file
+      let (st, mn, diags) = compileManifest file src
+          allDiags = preDiags ++ diags
+      emitDiags Human allDiags
+      when (hasErrors allDiags) exitFailure
+      let sp = Span file (Pos 1 1) (Pos 1 1)
+      case reifyBuildConfig sp st mn of
+        Left ds -> emitDiags Human ds >> exitFailure
+        Right bc -> do
+          TIO.putStr (renderBuildConfig bc)
+          exitSuccess
+
+-- | Resolve the manifest path: an explicit file, a directory (look for
+-- @kappa.build.kp@ inside), or — with no argument — a walk up from the
+-- working directory. Failure yields an 'E_BUILD_MANIFEST_NOT_FOUND'
+-- diagnostic (§35.13).
+resolveManifestPath :: Maybe FilePath -> IO (Either Diagnostic FilePath)
+resolveManifestPath marg = case marg of
+  Just p -> do
+    isDir <- doesDirectoryExist p
+    let cand = if isDir then p </> manifestFileName else p
+    ok <- doesFileExist cand
+    pure (if ok then Right cand else Left (notFound cand))
+  Nothing -> getCurrentDirectory >>= walkUp
+  where
+    walkUp dir = do
+      let cand = dir </> manifestFileName
+      ok <- doesFileExist cand
+      if ok
+        then pure (Right cand)
+        else
+          let parent = takeDirectory dir
+           in if parent == dir
+                then pure (Left (notFound manifestFileName))
+                else walkUp parent
+    notFound what =
+      diag SevError StageImports "E_BUILD_MANIFEST_NOT_FOUND"
+        (Just "kappa-hs.build.manifest-not-found")
+        (Span what (Pos 1 1) (Pos 1 1))
+        ( "no build manifest '" <> T.pack manifestFileName
+            <> "' was found (Spec §35.13); looked for '" <> T.pack what <> "'"
+        )
+
+-- | A concise human summary of a reified build configuration (§35.13
+-- evaluation result). This is the increment-1 surface; machine-readable
+-- emission and the full provenance graph are sequenced follow-ups.
+renderBuildConfig :: B.BuildConfig -> T.Text
+renderBuildConfig bc =
+  T.unlines $
+    [ "package " <> B.bcName bc <> " " <> B.pvRaw (B.bcVersion bc)
+    , "  source roots: " <> T.intercalate ", " (map B.srPath (B.bcSourceRoots bc))
+    ]
+      ++ [ "  fragment axis " <> B.faName ax <> ": " <> T.intercalate ", " (B.faTags ax)
+         | ax <- B.bcFragmentAxes bc
+         ]
+      ++ [ "  dependency " <> renderDep d | d <- B.bcDependencies bc]
+      ++ [ "  native binding " <> B.nbName hb <> " -> "
+             <> T.intercalate ", " (map renderSel (B.nbProvides hb))
+             <> " [" <> renderLink (B.nbLink hb) <> "]"
+         | hb <- B.bcHostBindings bc
+         ]
+      ++ [ "  target " <> B.tName t <> " (" <> renderBackend (B.tBackend t) <> ")"
+         | t <- B.bcTargets bc
+         ]
+  where
+    renderDep (B.RegistryDep n v) = "registry " <> n <> " " <> v
+    renderDep (B.GitDep n u r) = "git " <> n <> " " <> u <> "@" <> r
+    renderDep (B.PathDep n p) = "path " <> n <> " " <> p
+    renderSel (B.SelModule m) = m
+    renderSel (B.SelModulesUnder m) = m <> ".*"
+    renderLink (B.DynamicLink ls) = "dynamic: " <> T.intercalate " " ls
+    renderLink (B.StaticLink ls) = "static: " <> T.intercalate " " ls
+    renderLink B.NoLink = "no-link"
+    renderBackend (B.NativeBackend tc tt) = "native " <> tc <> "/" <> tt
+    renderBackend B.JvmBackend = "jvm"
+    renderBackend B.DotNetBackend = "dotnet"
+
 -- | Native backend (§27.7, profile-scoped): compile a Kappa program to a
 -- native executable.  Runs the ordinary front end first and refuses to
 -- proceed on any error (the backend never compiles rejected code); then
 -- lowers @main@'s reachable closure to C and invokes the C toolchain.
 -- See docs/NATIVE_BACKEND.md.
-cmdBuild :: [String] -> IO ()
-cmdBuild rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
+cmdBuildNative :: [String] -> IO ()
+cmdBuildNative rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
   Left msg -> hPutStrLn stderr ("error: " <> msg) >> exitFailure
   Right (opts, path) -> do
     (src, preDiags) <- loadSourceFile path

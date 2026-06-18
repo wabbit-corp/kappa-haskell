@@ -11,6 +11,7 @@
 -- names belong to that inner quote's own elaboration (§21.1).
 module Kappa.SyntaxOps
   ( transformExprs
+  , queryExprs
   , collectSplices
   , replaceSplices
   , substQuoteHoles

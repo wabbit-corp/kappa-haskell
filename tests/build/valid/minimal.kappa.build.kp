@@ -1,0 +1,10 @@
+-- The smallest valid manifest: a package with one source root and one
+-- native executable target, no dependencies or host bindings.
+let buildConfig : BuildConfig = package { name = "demo"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = []
+    , targets = [executable { name = "demo", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "demo.main", modules = modulesUnder "demo", dependencies = [], hostBindings = [] }]
+    }
