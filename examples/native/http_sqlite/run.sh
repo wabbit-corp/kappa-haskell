@@ -17,9 +17,8 @@ LOG="/tmp/kserver.log"
 cd "$ROOT"
 rm -f "$DB" "$LOG" "$EXE"
 
-echo "== building server.kp -> native executable =="
-timeout 240 cabal run -v0 kappa -- build --ffi-full --lib -lsqlite3 \
-  examples/native/http_sqlite/server.kp -o "$EXE"
+echo "== building the demo via its build manifest -> native executable =="
+timeout 240 cabal run -v0 kappa -- build --manifest examples/native/http_sqlite -o "$EXE"
 file "$EXE" | sed 's/^/  /'
 
 echo "== starting server =="

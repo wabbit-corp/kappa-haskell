@@ -1,0 +1,2 @@
+-- expect: E_BUILD_ENTRY_NOT_FOUND
+let buildConfig : BuildConfig = package { name = "me", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "missing", modules = modulesUnder "x", dependencies = [], hostBindings = [] }] }

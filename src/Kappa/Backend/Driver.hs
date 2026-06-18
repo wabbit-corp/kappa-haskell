@@ -7,16 +7,18 @@
 -- toolchain failures as structured diagnostics.  See docs/NATIVE_BACKEND.md.
 module Kappa.Backend.Driver
   ( BuildOptions (..)
-  , FfiUnit (..)
   , defaultBuildOptions
   , buildNative
   ) where
 
-import qualified Data.Text as T
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
-import Kappa.Backend.Ffi (ffiPrimNames)
+import Kappa.Build.Types (NativeLinkSpec (..))
 import Kappa.Check (CheckState)
 import Kappa.Core (GName)
 import Kappa.Diagnostic
@@ -33,17 +35,22 @@ import System.Exit (ExitCode (..))
 import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
 
--- | Which FFI runtime unit to link: the no-FFI stub, or the full
--- POSIX-sockets + sqlite3 unit needed by the HTTP demo.
-data FfiUnit = FfiStub | FfiFull
-  deriving stock (Eq, Show)
-
 data BuildOptions = BuildOptions
   { boOutput :: !(Maybe FilePath) -- ^ output path (default: input basename)
   , boEmitCOnly :: !Bool -- ^ write the generated C and stop
   , boCC :: !(Maybe String) -- ^ explicit C driver override
-  , boExtraLibs :: ![String] -- ^ extra linker flags, e.g. ["-lsqlite3"]
-  , boFfiUnit :: !FfiUnit
+  , boRuntimeFfi :: !Bool
+  -- ^ Link the real FFI runtime unit (@kappart_ffi.c@) instead of the
+  -- no-FFI stub. True when the build provides any @host.native.*@ module
+  -- (i.e. a manifest native binding is selected).
+  , boHostPrims :: !(Map GName Text)
+  -- ^ §34.5.3: each provided host-binding member ↦ its runtime FFI
+  -- primitive (built per build from the manifest's native bindings via
+  -- "Kappa.Backend.NativeCatalog"). Threaded to codegen and used to seed
+  -- the known-prim set; replaces the former global bare-name table.
+  , boLinkSpecs :: ![NativeLinkSpec]
+  -- ^ §36.28 link specs from the selected native bindings; mapped to cc
+  -- linker flags. Replaces the former @--lib@ extra-libs list.
   , boWorkDir :: !(Maybe FilePath) -- ^ directory for generated artifacts
   }
 
@@ -53,8 +60,9 @@ defaultBuildOptions =
     { boOutput = Nothing
     , boEmitCOnly = False
     , boCC = Nothing
-    , boExtraLibs = []
-    , boFfiUnit = FfiStub
+    , boRuntimeFfi = False
+    , boHostPrims = Map.empty
+    , boLinkSpecs = []
     , boWorkDir = Nothing
     }
 
@@ -63,10 +71,10 @@ defaultBuildOptions =
 -- @--emit-c@).  On failure returns structured diagnostics.
 buildNative :: CheckState -> GName -> FilePath -> BuildOptions -> IO (Either Diagnostics FilePath)
 buildNative cs mainG inputPath opts =
-  let ffiPrims = case boFfiUnit opts of
-        FfiStub -> Set.empty
-        FfiFull -> ffiPrimNames
-   in case generateC cs mainG ffiPrims of
+  -- The known-prim set is seeded inside generateC from boHostPrims, so no
+  -- separate FFI prim set is needed here (empty); the provided host
+  -- bindings' prims come through the gname→prim map.
+  case generateC cs mainG Set.empty (boHostPrims opts) of
     Left errs -> pure (Left (backendDiagnostics errs))
     Right csource -> do
       mruntime <- findRuntimeDir
@@ -91,9 +99,10 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
     Nothing -> pure (Left [toolDiag noCcMsg])
     Just (ccExe, ccLead) -> do
       let outPath = maybe (workDir </> base) id (boOutput opts)
-          ffiSrc = case boFfiUnit opts of
-            FfiStub -> runtimeDir </> "kappart_ffi_stub.c"
-            FfiFull -> runtimeDir </> "kappart_ffi.c"
+          ffiSrc =
+            if boRuntimeFfi opts
+              then runtimeDir </> "kappart_ffi.c"
+              else runtimeDir </> "kappart_ffi_stub.c"
           args =
             ccLead
               ++ [ "-std=c11"
@@ -110,7 +119,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                  , "-lgc"
                  , "-lgmp" -- unbounded Integer (§6); see docs/NATIVE_BACKEND.md
                  ]
-              ++ boExtraLibs opts
+              ++ linkFlags (boLinkSpecs opts)
               ++ ["-o", outPath]
       (ec, out, err) <- readProcessWithExitCode ccExe args ""
       case ec of
@@ -174,6 +183,20 @@ findRuntimeDir = do
            in if parent == dir then pure Nothing else walkUp parent
 
 -- ── helpers ──────────────────────────────────────────────────────────
+
+-- | §36.28 link specs → cc linker flags. @dynamicLink@/@staticLink@
+-- contribute @-l<lib>@ for each named library; @noLink@ contributes
+-- nothing. NOTE (tracked temporary): static linkage is currently emitted
+-- as an ordinary @-l@ without @-Wl,-Bstatic@/@-Bdynamic@ wrapping — i.e.
+-- the linker's default search order — so a static request is honored only
+-- if a static archive is what the linker finds. Proper static-grouping is
+-- deferred; see docs/BUILD_AND_NATIVE_BINDINGS.md.
+linkFlags :: [NativeLinkSpec] -> [String]
+linkFlags = concatMap one
+  where
+    one (DynamicLink libs) = [T.unpack ("-l" <> l) | l <- libs]
+    one (StaticLink libs) = [T.unpack ("-l" <> l) | l <- libs]
+    one NoLink = []
 
 dropExtensionSafe :: FilePath -> FilePath
 dropExtensionSafe f = case break (== '.') f of

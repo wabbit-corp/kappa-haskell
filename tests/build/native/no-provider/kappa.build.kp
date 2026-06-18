@@ -1,0 +1,2 @@
+-- expect: E_MODULE_NAME_UNRESOLVED
+let buildConfig : BuildConfig = package { name = "np", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = [] }] }

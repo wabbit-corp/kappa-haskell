@@ -7,14 +7,13 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.Driver
   ( BuildOptions (..)
-  , FfiUnit (..)
   , buildNative
   , defaultBuildOptions
   )
-import Kappa.Backend.Intrinsics (intrinsicTypes)
+import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
-import Kappa.Check (AuditRecord (..), CheckState (..))
+import Kappa.Check (AuditRecord (..), CheckState (..), defaultUnsafeConfig)
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
 import Kappa.Eval (Globals (..))
@@ -45,9 +44,8 @@ main = do
     _ -> do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
-          <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] [--ffi-full]"
-          <> " [--lib FLAG]... PATH"
-          <> " | kappa build --manifest [PATH|DIR]"
+          <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] FILE"
+          <> " | kappa build --manifest [PATH|DIR] [--check] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
@@ -108,35 +106,61 @@ cmdRun fmt path = do
 manifestFileName :: FilePath
 manifestFileName = "kappa" <> ".build.kp"
 
--- | Dispatch a @build@ invocation to manifest mode (§35.13) or the
+-- | Manifest-build options parsed from the @build@ flags.
+data ManifestArgs = ManifestArgs
+  { maPath :: !(Maybe FilePath) -- ^ explicit manifest file/dir (else discover)
+  , maCheck :: !Bool -- ^ validate + summarize only, no build
+  , maTarget :: !(Maybe T.Text) -- ^ --target NAME
+  , maOut :: !(Maybe FilePath) -- ^ -o OUT
+  , maEmitC :: !Bool -- ^ --emit-c
+  , maCC :: !(Maybe String) -- ^ --cc DRIVER
+  }
+
+defaultManifestArgs :: ManifestArgs
+defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing
+
+-- | Dispatch a @build@ invocation to manifest mode (§35.13/§36) or the
 -- legacy single-file native build.
 cmdBuild :: [String] -> IO ()
 cmdBuild rawArgs
-  -- Manifest mode (§35.13): an explicit @--manifest@, no positional path
-  -- (discover from the working directory), or a positional that names a
-  -- @kappa.build.kp@ file. Otherwise the legacy single-file native build.
-  | "--manifest" `elem` rawArgs =
-      cmdBuildManifest (listToMaybe [a | a <- rawArgs, a /= "--manifest", take 1 a /= "-"])
-  | null positional = cmdBuildManifest Nothing
-  | any ((== manifestFileName) . takeFileName) positional =
-      cmdBuildManifest (listToMaybe positional)
+  -- Manifest mode (§35.13/§36): an explicit @--manifest@, no positional
+  -- path (discover from the working directory), or a positional that names
+  -- a @kappa.build.kp@ file. Otherwise the legacy single-file native build.
+  | manifestMode = case parseManifestArgs rawArgs of
+      Left msg -> hPutStrLn stderr ("error: " <> msg) >> exitFailure
+      Right ma -> cmdBuildManifest ma
   | otherwise = cmdBuildNative rawArgs
   where
     positional = [a | a <- rawArgs, take 1 a /= "-"]
+    manifestMode =
+      "--manifest" `elem` rawArgs
+        || null positional
+        || any ((== manifestFileName) . takeFileName) positional
 
-listToMaybe :: [a] -> Maybe a
-listToMaybe (x : _) = Just x
-listToMaybe [] = Nothing
+parseManifestArgs :: [String] -> Either String ManifestArgs
+parseManifestArgs = go defaultManifestArgs
+  where
+    go ma [] = Right ma
+    go ma ("--manifest" : xs) = go ma xs
+    go ma ("--check" : xs) = go ma {maCheck = True} xs
+    go ma ("--emit-c" : xs) = go ma {maEmitC = True} xs
+    go ma ("--target" : t : xs) = go ma {maTarget = Just (T.pack t)} xs
+    go ma ("-o" : o : xs) = go ma {maOut = Just o} xs
+    go ma ("--cc" : c : xs) = go ma {maCC = Just c} xs
+    go ma (x : xs)
+      | take 1 x /= "-", Nothing <- maPath ma = go ma {maPath = Just x} xs
+      | otherwise = Left ("kappa build: unexpected argument '" <> x <> "'")
 
--- | Load, config-check (§35.13) and reify a build manifest, reporting
--- diagnostics. Increment 1 stops at the evaluated 'BuildConfig' (the
--- §35.13 boundary: manifest evaluation performs no build-plan
--- resolution); it prints a summary of the resolved configuration. Source
--- discovery, dependency/native resolution, and codegen are subsequent
--- phases (§36.4) and are sequenced as later increments.
-cmdBuildManifest :: Maybe FilePath -> IO ()
-cmdBuildManifest marg = do
-  resolved <- resolveManifestPath marg
+-- | Load, config-check (§35.13) and reify a build manifest; then, unless
+-- @--check@ is given, run the build-plan slice (§36.4) for an executable
+-- target and drive native codegen/link. The manifest's native bindings
+-- (§36.28) select which @host.native.*@ modules the program may import and
+-- supply the link flags — codegen is driven entirely by this config, never
+-- a hardcoded native list. @--check@ stops at the evaluated configuration
+-- (the §35.13 boundary) and prints a summary.
+cmdBuildManifest :: ManifestArgs -> IO ()
+cmdBuildManifest ma = do
+  resolved <- resolveManifestPath (maPath ma)
   case resolved of
     Left d -> emitDiags Human [d] >> exitFailure
     Right file -> do
@@ -148,9 +172,42 @@ cmdBuildManifest marg = do
       let sp = Span file (Pos 1 1) (Pos 1 1)
       case reifyBuildConfig sp st mn of
         Left ds -> emitDiags Human ds >> exitFailure
-        Right bc -> do
-          TIO.putStr (renderBuildConfig bc)
-          exitSuccess
+        Right bc
+          | maCheck ma -> TIO.putStr (renderBuildConfig bc) >> exitSuccess
+          | otherwise -> buildManifestTarget file bc ma
+
+-- | The build-plan + codegen path for a manifest executable target.
+buildManifestTarget :: FilePath -> B.BuildConfig -> ManifestArgs -> IO ()
+buildManifestTarget manifestFile bc ma = do
+  let manifestDir = takeDirectory manifestFile
+  resolved <- resolveExecutable manifestDir bc (maTarget ma)
+  case resolved of
+    Left ds -> emitDiags Human ds >> exitFailure
+    Right rx -> do
+      (src, preDiags) <- loadSourceFile (rxEntryFile rx)
+      let (cu, hostPrims) =
+            compileProgramWithNative (rxProvidedModules rx) defaultUnsafeConfig False moduleNameOf [(rxEntryFile rx, src)]
+          cuDs = preDiags ++ cuDiags cu
+      emitDiags Human cuDs
+      when (hasErrors cuDs) exitFailure
+      let st = cuState cu
+          mainG = GName (cuModule cu) "main"
+      unless (Map.member mainG (csGlobals st)) $ do
+        hPutStrLn stderr "error[E_NO_MAIN]: the target's entry module has no 'main' definition"
+        exitFailure
+      let opts =
+            defaultBuildOptions
+              { boOutput = maOut ma
+              , boEmitCOnly = maEmitC ma
+              , boCC = maCC ma
+              , boRuntimeFfi = rxRuntimeFfi rx
+              , boHostPrims = hostPrims
+              , boLinkSpecs = rxLinkSpecs rx
+              }
+      result <- buildNative st mainG (rxEntryFile rx) opts
+      case result of
+        Left ds -> emitDiags Human ds >> exitFailure
+        Right outPath -> hPutStrLn stderr ("built " <> outPath) >> exitSuccess
 
 -- | Resolve the manifest path: an explicit file, a directory (look for
 -- @kappa.build.kp@ inside), or — with no argument — a walk up from the
@@ -217,24 +274,18 @@ renderBuildConfig bc =
     renderBackend B.JvmBackend = "jvm"
     renderBackend B.DotNetBackend = "dotnet"
 
--- | Native backend (§27.7, profile-scoped): compile a Kappa program to a
--- native executable.  Runs the ordinary front end first and refuses to
--- proceed on any error (the backend never compiles rejected code); then
--- lowers @main@'s reachable closure to C and invokes the C toolchain.
--- See docs/NATIVE_BACKEND.md.
+-- | Legacy single-file native build (§27.7, profile-scoped): compile a
+-- Kappa program to a native executable. No build manifest, so NO native
+-- host bindings are available — a program that imports a @host.native.*@
+-- module fails honestly (the module is unresolved without a manifest
+-- provider). Native bindings are obtained only through the manifest/
+-- package mechanism (@kappa build --manifest@); there is no @--ffi-full@.
 cmdBuildNative :: [String] -> IO ()
 cmdBuildNative rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
   Left msg -> hPutStrLn stderr ("error: " <> msg) >> exitFailure
   Right (opts, path) -> do
     (src, preDiags) <- loadSourceFile path
-    -- §34.5: when the native FFI capability is selected (--ffi-full), the
-    -- profile's host-binding intrinsics are available to satisfy the
-    -- program's §9.4 `expect` declarations; otherwise none are, so a
-    -- foreign `expect` is unsatisfied and fails honestly.
-    let intrinsics = case boFfiUnit opts of
-          FfiFull -> intrinsicTypes
-          FfiStub -> Map.empty
-        cu0 = compileSourceWithIntrinsics intrinsics path src
+    let cu0 = compileSourceWithPrelude path src
         cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
     emitDiags Human (cuDiags cu)
     when (hasErrors (cuDiags cu)) exitFailure
@@ -252,18 +303,18 @@ cmdBuildNative rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
         hPutStrLn stderr ("built " <> outPath)
         exitSuccess
 
--- | Parse @build@ flags.  The single positional argument is the source
--- path; unknown flags are an error (no silent acceptance).
+-- | Parse legacy @build FILE@ flags.  The single positional argument is
+-- the source path; unknown flags are an error (no silent acceptance).
+-- Native host bindings come from the manifest path, so there is no
+-- @--ffi-full@/@--lib@ here.
 parseBuildArgs :: [String] -> BuildOptions -> Either String (BuildOptions, FilePath)
 parseBuildArgs args opts0 = go args opts0 Nothing
   where
     go [] opts (Just p) = Right (opts, p)
     go [] _ Nothing = Left "kappa build: missing source path"
     go ("--emit-c" : xs) opts mp = go xs opts {boEmitCOnly = True} mp
-    go ("--ffi-full" : xs) opts mp = go xs opts {boFfiUnit = FfiFull} mp
     go ("-o" : o : xs) opts mp = go xs opts {boOutput = Just o} mp
     go ("--cc" : c : xs) opts mp = go xs opts {boCC = Just c} mp
-    go ("--lib" : l : xs) opts mp = go xs opts {boExtraLibs = boExtraLibs opts ++ [l]} mp
     go (x : xs) opts Nothing
       | take 1 x /= "-" = go xs opts (Just x)
     go (x : _) _ _ = Left ("kappa build: unexpected argument '" <> x <> "'")

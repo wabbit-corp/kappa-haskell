@@ -21,10 +21,10 @@ cd "$ROOT"
 echo "== building the kappa CLI =="
 timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 
-echo "== valid manifests (must load + reify) =="
+echo "== valid manifests (must load + reify; --check = no build) =="
 for f in "$DIR"/valid/*.kappa.build.kp; do
   name="$(basename "$f")"
-  if out="$(timeout 120 $KAPPA build --manifest "$f" 2>&1)"; then
+  if out="$(timeout 120 $KAPPA build --manifest "$f" --check 2>&1)"; then
     echo "PASS $name"
   else
     echo "FAIL $name (expected exit 0)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
@@ -35,7 +35,7 @@ echo "== invalid manifests (must fail with the expected diagnostic) =="
 for f in "$DIR"/invalid/*.kappa.build.kp; do
   name="$(basename "$f")"
   want="$(sed -n 's/^-- expect: //p' "$f" | head -1)"
-  out="$(timeout 120 $KAPPA build --manifest "$f" 2>&1)"; rc=$?
+  out="$(timeout 120 $KAPPA build --manifest "$f" --check 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then
     echo "FAIL $name (expected failure, got exit 0)"; fails=$((fails+1))
   elif [ -n "$want" ] && ! grep -q "$want" <<<"$out"; then
@@ -45,9 +45,36 @@ for f in "$DIR"/invalid/*.kappa.build.kp; do
   fi
 done
 
+echo "== native bindings: codegen + diagnostics driven by manifest providers (§36.28) =="
+# Each fixture dir holds a kappa.build.kp whose first line is
+# '-- expect: E_CODE' (the build must fail with that code) or
+# '-- expect: BUILD_OK' (must build to C, emitting the provider's prims).
+# --emit-c so no C toolchain/native lib is required.
+for d in "$DIR"/native/*/; do
+  name="native/$(basename "$d")"
+  want="$(sed -n 's/^-- expect: //p' "$d/kappa.build.kp" | head -1)"
+  out="$(timeout 120 $KAPPA build --manifest "$d" --emit-c -o /tmp/kbuild-out 2>&1)"; rc=$?
+  if [ "$want" = "BUILD_OK" ]; then
+    if [ "$rc" -eq 0 ] && find "$d" -name '*.kappa.c' -exec grep -ql "__sqlite" {} \; ; then
+      echo "PASS $name (built; provider prim emitted)"
+    else
+      echo "FAIL $name (expected build + prim)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
+    fi
+    find "$d" -name '*.kappa.c' -delete 2>/dev/null
+  else
+    if [ "$rc" -eq 0 ]; then
+      echo "FAIL $name (expected $want, got exit 0)"; fails=$((fails+1))
+    elif ! grep -q "$want" <<<"$out"; then
+      echo "FAIL $name (expected $want)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
+    else
+      echo "PASS $name ($want)"
+    fi
+  fi
+done
+
 echo "== reproducibility: semantic identity is provenance-independent (§36.2.1) =="
-a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" 2>&1)"
-b="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/helpers.kappa.build.kp" 2>&1)"
+a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" --check 2>&1)"
+b="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/helpers.kappa.build.kp" --check 2>&1)"
 if [ "$a" = "$b" ] && [ -n "$a" ]; then
   echo "PASS reproducibility (direct == helpers)"
 else

@@ -307,26 +307,31 @@ by the native (`zig`) profile's host-binding intrinsics (§34.5.3) when the
 FFI capability is selected. The foreign operations are *never* ordinary
 prelude globals; ordinary source cannot see or call them. The full
 capability→intrinsic→runtime mapping and rationale are in
-[`NATIVE_FFI_DESIGN.md`](NATIVE_FFI_DESIGN.md). `Kappa.Backend.Intrinsics`
-is the single source of truth (Kappa spelling → expected type → runtime
-primitive); the runtime realizations (POSIX sockets + `sqlite3`) live in
-`runtime/kappart_ffi.c`.
+[`BUILD_AND_NATIVE_BINDINGS.md`](BUILD_AND_NATIVE_BINDINGS.md) (the
+authoritative doc — it supersedes the older `--ffi-full`/`expect` model
+described in `NATIVE_FFI_DESIGN.md`). Native bindings are obtained ONLY
+through a build manifest's `nativeBinding` providers (§36.28): a program
+`import`s a `host.native.*` module (§8.3.5) that the manifest provides;
+`Kappa.Backend.NativeCatalog` is the `zig` profile's curated surface
+(module + member → runtime primitive, §34.5.3); the runtime realizations
+(POSIX sockets + `sqlite3`) live in `runtime/kappart_ffi.c`. There is no
+`--ffi-full` and no hardcoded native list.
 
 Honest failure modes (no silent fallback): under the interpreter
-(`run`/`check`) or a native build without `--ffi-full`, the foreign
-`expect`s are unsatisfied → `E_EXPECT_UNSATISFIED` (§9.4); a foreign
-`expect` whose declared type disagrees with the intrinsic →
-`E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH`.
+(`run`/`check`) or a build with no manifest provider for a module, an
+`import host.native.X` is unresolved → `E_MODULE_NAME_UNRESOLVED`; a bare
+`expect term` has no native provider → `E_EXPECT_UNSATISFIED` (§9.4);
+source-defining a `host.native.*` module → `E_HOST_MODULE_SOURCE_DEFINED`
+(§8.3.5).
 
-`examples/native/http_sqlite/` contains the demo: `server.kp` declares its
-foreign boundary (`expect term tcpListen : Int -> UIO OpaqueHandle`, …) and,
-for each request, performs a SQLite write (increment a persistent hit
-counter) and a SQLite read (the new count), then returns an HTTP/1.1
-response reporting the count. `run.sh` builds it with `--ffi-full`, drives
-three requests, and verifies both the responses (`hits=1/2/3`) and the
-persisted database state (`counter.hits = 3`) — proving the
-request → SQLite → response path runs in a real native process through the
-compliant boundary.
+`examples/native/http_sqlite/` contains the demo: `server.kp` imports
+`host.native.sqlite3` and `host.native.posix.net`, and its
+`kappa.build.kp` provides both via `nativeBinding`s. For each request it
+performs a SQLite write (increment a persistent hit counter) and read,
+then returns an HTTP/1.1 response reporting the count. `run.sh` builds it
+with `kappa build --manifest examples/native/http_sqlite`, drives three
+requests, and verifies both the responses (`hits=1/2/3`) and the
+persisted database state (`counter.hits = 3`).
 
 ## 7. Building and testing
 
@@ -343,16 +348,21 @@ cabal run -v0 kappa -- build examples/native/hello.kp -o /tmp/hello
 # inspect generated C without invoking the driver
 cabal run -v0 kappa -- build examples/native/hello.kp --emit-c
 
-# build + drive the HTTP + sqlite demo (needs -lsqlite3)
-cabal run -v0 kappa -- build --ffi-full --lib -lsqlite3 \
-  examples/native/http_sqlite/server.kp -o /tmp/kserver
+# build + drive the HTTP + sqlite demo via its build manifest (needs -lsqlite3)
+cabal run -v0 kappa -- build --manifest examples/native/http_sqlite -o /tmp/kserver
 bash examples/native/http_sqlite/run.sh   # end-to-end smoke test
 ```
 
-`kappa build` flags: `--emit-c` (stop after writing the `.c`), `-o OUT`,
-`--cc DRIVER` (override the C driver), `--ffi-full` (link the
-libc-sockets + sqlite3 FFI runtime instead of the no-FFI stub), and
-`--lib FLAG` (extra linker flags, repeatable).
+`kappa build FILE` flags: `--emit-c` (stop after writing the `.c`),
+`-o OUT`, `--cc DRIVER` (override the C driver). A single-file build has
+no native bindings (those come only through a manifest).
+
+`kappa build --manifest [DIR]` flags (§35.13/§36): `--check` (validate +
+summarize the configuration only, no build), `--target NAME` (select an
+executable target), plus `-o OUT`, `--emit-c`, `--cc DRIVER`. Native
+host bindings, codegen, and link flags are all driven by the manifest's
+`nativeBinding` providers — see
+[`BUILD_AND_NATIVE_BINDINGS.md`](BUILD_AND_NATIVE_BINDINGS.md).
 
 Native backend tests live under `test/` (driven by the Haskell test
 suite) and `examples/native/` (end-to-end build+run smoke tests with

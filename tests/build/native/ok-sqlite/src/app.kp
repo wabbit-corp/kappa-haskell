@@ -1,0 +1,5 @@
+module app
+import host.native.sqlite3 as db
+let main = do
+  h <- db.sqliteOpen "test.db"
+  db.sqliteClose h

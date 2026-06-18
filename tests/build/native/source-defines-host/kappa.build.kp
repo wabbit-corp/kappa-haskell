@@ -1,0 +1,2 @@
+-- expect: E_HOST_MODULE_SOURCE_DEFINED
+let buildConfig : BuildConfig = package { name = "sd", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "host.native.evil", modules = modulesUnder "x", dependencies = [], hostBindings = [] }] }

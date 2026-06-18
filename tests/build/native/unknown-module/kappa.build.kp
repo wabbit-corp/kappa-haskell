@@ -1,0 +1,2 @@
+-- expect: E_NATIVE_BINDING_UNSUPPORTED
+let buildConfig : BuildConfig = package { name = "um", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [nativeBinding { name = "x", provides = [module "host.native.nonesuch"], source = symbolList [], abi = cAbi, headers = [], link = noLink, load = systemLoader }], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["x"] }] }

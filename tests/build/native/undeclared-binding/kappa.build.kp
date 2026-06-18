@@ -1,0 +1,2 @@
+-- expect: E_BUILD_BINDING_NOT_FOUND
+let buildConfig : BuildConfig = package { name = "ub", version = semver "1", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["ghost"] }] }

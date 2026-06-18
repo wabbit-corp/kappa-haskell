@@ -1,0 +1,3 @@
+module app
+import host.native.sqlite3 as db
+let main = pure ()

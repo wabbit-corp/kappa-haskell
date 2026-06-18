@@ -1,5 +1,15 @@
 # Native FFI: spec-conformant foreign boundary
 
+> **SUPERSEDED (2026-06-18).** The mechanism below — bare `expect term`
+> declarations satisfied by a `Kappa.Backend.Intrinsics` table seeded with
+> `kappa build --ffi-full` — has been replaced by manifest-driven native
+> bindings: a program `import`s a `host.native.*` module (§8.3.5) that a
+> build manifest's `nativeBinding` provider supplies (§36.28), realized by
+> the `Kappa.Backend.NativeCatalog` surface (§34.5.3). There is no
+> `--ffi-full` and no hardcoded native list. See the authoritative
+> [`BUILD_AND_NATIVE_BINDINGS.md`](BUILD_AND_NATIVE_BINDINGS.md). The
+> historical rationale below is retained for context.
+
 This note records how the native backend's foreign capabilities (TCP
 sockets + sqlite3, used by the HTTP demo) map onto the **explicit**
 foreign-boundary mechanisms of `docs/Spec.md`, and why the previous design

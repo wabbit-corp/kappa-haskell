@@ -1,0 +1,18 @@
+-- Build manifest for the native HTTP+sqlite demo (§35.13/§36). It
+-- provides two host.native modules through nativeBinding providers
+-- (§36.28): sqlite3 (dynamically linked against -lsqlite3) and the POSIX
+-- sockets surface (no extra link — libc). The executable target imports
+-- those modules; codegen + link are driven entirely by this config.
+let buildConfig : BuildConfig = package { name = "kappa.demo.http_sqlite"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "."]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings =
+        [ nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], source = symbolList ["sqliteOpen", "sqliteExec", "sqliteQueryInt", "sqliteQueryText", "sqliteClose"], abi = cAbi, headers = [headers ["sqlite3.h"]], link = dynamicLink ["sqlite3"], load = systemLoader }
+        , nativeBinding { name = "posixnet", provides = [module "host.native.posix.net"], source = symbolList ["tcpListen", "tcpAccept", "connRead", "connWrite", "connClose", "listenClose"], abi = cAbi, headers = [], link = noLink, load = systemLoader }
+        ]
+    , targets =
+        [ executable { name = "kserver", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "server", modules = modulesUnder "server", dependencies = [], hostBindings = ["sqlite3", "posixnet"] }
+        ]
+    }

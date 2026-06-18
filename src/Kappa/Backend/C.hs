@@ -39,7 +39,6 @@ import qualified Data.Text as T
 import Control.Monad.State.Strict
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
-import Kappa.Backend.Intrinsics (intrinsicPrim)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
 import Kappa.Source (ModuleName (..), Span, noSpan)
@@ -91,6 +90,7 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
+  , gsHostPrims :: !(Map GName Text) -- ^ §34.5.3: each provided @host.native.*@ member (an abstract global) ↦ its runtime FFI primitive; keyed by the full 'GName' (the binding is selected per build by the manifest, never a global bare-name table). A reference to such a member lowers to its primitive.
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
@@ -381,8 +381,8 @@ basePrims =
 -- implements (empty for the no-FFI build).  Returns @Left errs@ when any
 -- reachable definition uses an unsupported construct (the caller renders
 -- these as 'E_BACKEND_UNSUPPORTED'), or @Right csource@ on success.
-generateC :: CheckState -> GName -> Set Text -> Either [BackendError] Text
-generateC cs mainG ffiPrims =
+generateC :: CheckState -> GName -> Set Text -> Map GName Text -> Either [BackendError] Text
+generateC cs mainG ffiPrims hostPrims =
   let st0 =
         GenState
           { gsFresh = 0
@@ -402,7 +402,8 @@ generateC cs mainG ffiPrims =
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)
           , gsDeclSites = csDeclSites cs
-          , gsPrims = Set.union basePrims ffiPrims
+          , gsPrims = Set.union (Set.union basePrims ffiPrims) (Set.fromList (Map.elems hostPrims))
+          , gsHostPrims = hostPrims
           , gsLoops = []
           , gsDefer = []
           , gsScopeDefers = []
@@ -1494,9 +1495,10 @@ globPrimName g@(GName m nm) = do
     then pure (known nm)
     else do
       globals <- gets gsGlobals
+      hostPrims <- gets gsHostPrims
       pure $ case Map.lookup g globals of
         Just gd | Just (VPrim pname _) <- gdValue gd -> known pname
-        Just gd | Nothing <- gdValue gd, Just prim <- intrinsicPrim nm -> known prim
+        Just gd | Nothing <- gdValue gd, Just prim <- Map.lookup g hostPrims -> known prim
         _ -> Nothing
 
 -- | QW1: the statically-known saturated pure primitives that have a direct C
@@ -1724,17 +1726,20 @@ compileGlob g@(GName m nm)
   | otherwise = do
       globals <- gets gsGlobals
       ctors <- gets gsCtors
+      gsHostPrimsMap <- gets gsHostPrims
       case Map.lookup g globals of
         -- A prelude `prim` registration: its value is a bare VPrim, so it
         -- maps directly to the runtime primitive of the same name.
         Just gd | Just (VPrim pname _) <- gdValue gd ->
           emitPrim pname
-        -- §34.5.3: a host-binding intrinsic that satisfied a §9.4 `expect`
-        -- (an abstract global with no body) lowers to its runtime FFI
-        -- primitive (Kappa.Backend.Intrinsics is the single source of truth).
+        -- §34.5.3: a provided host-binding member (an abstract global of a
+        -- manifest-selected `host.native.*` module) lowers to its runtime
+        -- FFI primitive. The gname→prim map is built per build from the
+        -- manifest's native bindings (Kappa.Backend.NativeCatalog supplies
+        -- the curated surface), never a global hardcoded list.
         Just gd
           | Nothing <- gdValue gd
-          , Just prim <- intrinsicPrim nm ->
+          , Just prim <- Map.lookup g gsHostPrimsMap ->
               emitPrim prim
         _ -> case Map.lookup g ctors of
           Just ci ->

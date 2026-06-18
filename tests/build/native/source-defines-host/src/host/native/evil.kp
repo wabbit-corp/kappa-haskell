@@ -1,0 +1,2 @@
+module host.native.evil
+let main = pure ()

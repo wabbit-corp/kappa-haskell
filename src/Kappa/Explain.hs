@@ -241,6 +241,16 @@ registry =
       "More than one host-binding provider claims the same effective module name under a reserved host root; the manifest must disambiguate which provider supplies it (Spec §3.2.15, §36.28)."
   , ent "E_NATIVE_BINDING_UNPINNED" (Just "kappa.package.reproducibility")
       "A native binding selected by the manifest cannot be pinned to an immutable identity for reproducible builds (Spec §3.2.15, §36.28)."
+  , ent "E_HOST_MODULE_SOURCE_DEFINED" (Just "kappa-hs.host.reserved")
+      "A source module's effective name is at or under a reserved host binding root (host.jvm/host.dotnet/host.native/host.python); those modules are supplied from host metadata or ABI descriptions, not user source (Spec §8.3.5)."
+  , ent "E_NATIVE_BINDING_UNSUPPORTED" (Just "kappa-hs.build.native-unsupported")
+      "A manifest native binding names a host.native module, or a member of one, that the selected backend profile does not provide in its native catalog (Spec §27.1.1, §34.5.3, §36.28)."
+  , ent "E_BUILD_BINDING_NOT_FOUND" (Just "kappa-hs.build.binding-not-found")
+      "A build target references a host-binding name that the manifest's hostBindings does not declare (Spec §36.3, §36.28)."
+  , ent "E_BUILD_ENTRY_NOT_FOUND" (Just "kappa-hs.build.entry-not-found")
+      "A build target's entry (main) module could not be located as a source file under the package's source roots (Spec §36.3, §36.4)."
+  , ent "E_BACKEND_HOST_LINK_UNREALIZABLE" (Just "kappa-hs.backend.host-link")
+      "A native binding requires a link or load mode the selected backend profile cannot realize (Spec §34.5.3, §36.28)."
   , ent "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate")
       "Two top-level declarations of the same kind in the same module bind the same name."
   , ent "E_DUPLICATE_PATTERN_BINDER" (Just "kappa-hs.pattern.duplicate-binder")

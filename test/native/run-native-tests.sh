@@ -292,7 +292,7 @@ fi
 
 echo "== namespace hygiene: hidden runtime symbols are not source-visible =="
 exe="$WORK/hidden"
-if timeout 120 $KAPPA build --ffi-full "$CASES/hidden-symbol.kp" -o "$exe" >"$WORK/hidden.log" 2>&1; then
+if timeout 120 $KAPPA build "$CASES/hidden-symbol.kp" -o "$exe" >"$WORK/hidden.log" 2>&1; then
   echo "   FAIL: a program calling __tcpListen built (hidden symbol leaked)"; fails=$((fails+1))
 elif grep -q "E_NAME_UNRESOLVED" "$WORK/hidden.log" && [ ! -f "$exe" ]; then
   echo "   ok (__tcpListen is E_NAME_UNRESOLVED, no executable; FFI prims are not prelude globals)"
@@ -301,10 +301,13 @@ else
   cat "$WORK/hidden.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
-echo "== native build refuses an unsatisfied foreign expect without --ffi-full (no silent FFI) =="
+echo "== a bare foreign 'expect' is unsatisfied without a host binding (no silent FFI) =="
+# §9.4: a bare `expect term` has no provider — native bindings come only
+# through the manifest's host.native modules, never a bare-name table or
+# --ffi-full. So the legacy single-file build leaves it unsatisfied.
 exe="$WORK/unsupported"
 if timeout 120 $KAPPA build "$CASES/unsupported.kp" -o "$exe" >"$WORK/unsupported.log" 2>&1; then
-  echo "   FAIL: a foreign-expect program built without --ffi-full (FFI fabricated)"; fails=$((fails+1))
+  echo "   FAIL: a bare foreign-expect program built (FFI fabricated)"; fails=$((fails+1))
 elif grep -q "E_EXPECT_UNSATISFIED" "$WORK/unsupported.log" && [ ! -f "$exe" ]; then
   echo "   ok (unsatisfied foreign expect -> E_EXPECT_UNSATISFIED, no executable, §9.4)"
 else
@@ -312,14 +315,29 @@ else
   cat "$WORK/unsupported.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
-echo "== foreign expects fail honestly under the interpreter (no fallback) =="
+echo "== host.native imports are unresolved under the interpreter (no manifest, no fallback) =="
+# The demo imports host.native.* modules; without a build manifest no
+# provider supplies them, so `kappa run` fails honestly.
 if timeout 120 $KAPPA run "$ROOT/examples/native/http_sqlite/server.kp" >"$WORK/server-run.log" 2>&1; then
-  echo "   FAIL: the FFI demo ran under the interpreter (expects should be unsatisfied)"; fails=$((fails+1))
-elif grep -q "E_EXPECT_UNSATISFIED" "$WORK/server-run.log"; then
-  echo "   ok (foreign expects unsatisfied -> E_EXPECT_UNSATISFIED, §9.4)"
+  echo "   FAIL: the FFI demo ran under the interpreter (host.native imports should be unresolved)"; fails=$((fails+1))
+elif grep -q "E_MODULE_NAME_UNRESOLVED" "$WORK/server-run.log"; then
+  echo "   ok (host.native imports unresolved -> E_MODULE_NAME_UNRESOLVED, §8.3.5)"
 else
-  echo "   FAIL: interpreter did not report E_EXPECT_UNSATISFIED for the foreign demo"
+  echo "   FAIL: interpreter did not report E_MODULE_NAME_UNRESOLVED for the host.native demo"
   head -3 "$WORK/server-run.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== native bindings are driven by the manifest (host.native imports -> prims) =="
+# Build a program that imports a manifest-provided host.native module to
+# C (--emit-c, no toolchain/lib needed) and confirm codegen lowered the
+# provider's members to their runtime FFI prims.
+if timeout 120 $KAPPA build --manifest "$ROOT/tests/build/native/ok-sqlite" --emit-c -o "$WORK/oksql" >"$WORK/oksql.log" 2>&1 \
+   && find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -exec grep -ql "__sqliteOpen" {} \; ; then
+  echo "   ok (manifest nativeBinding -> host.native.sqlite3 import -> __sqliteOpen prim)"
+  find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -delete 2>/dev/null
+else
+  echo "   FAIL: manifest-driven native build did not emit the provider prim"
+  cat "$WORK/oksql.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 echo "== performance smoke (sum 1..1_000_000, bounded) =="

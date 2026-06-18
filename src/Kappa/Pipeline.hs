@@ -9,13 +9,15 @@ module Kappa.Pipeline
   , compileFiles
   , compileFilesIn
   , compileFilesWithConfig
-  , compileSourceWithIntrinsics
   , moduleNameRelTo
   , compileSourceWithPrelude
   , importScopeFor
   , loadSourceFile
   , compileManifest
   , manifestModuleName
+  , compileProgramWithNative
+  , reservedHostRootDiag
+  , moduleNameOf
   ) where
 
 import Control.Monad.State.Strict (evalState)
@@ -28,10 +30,16 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
+import Kappa.Backend.NativeCatalog
+  ( CatalogMember (..)
+  , CatalogModule (..)
+  , catalogModule
+  )
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
 import Kappa.Core (GName (..), Term, gnameText)
 import Kappa.Diagnostic
+import Kappa.Eval (EvalCtx (..), Globals (..), eval)
 import Kappa.Parser (parseModule)
 import Kappa.Prelude
   ( builtinState
@@ -148,16 +156,6 @@ fileTrace parsedOk =
 compileSourceWithPrelude :: FilePath -> Text -> CompiledUnit
 compileSourceWithPrelude path src = compileFiles [(path, src)]
 
--- | Compile one source file with a set of backend host-binding intrinsics
--- (§34.5) available to satisfy its §9.4 @expect@ declarations. Used by the
--- native backend driver when a native FFI capability is selected; the
--- intrinsic spelling ↦ expected-type map comes from
--- "Kappa.Backend.Intrinsics". With an empty map this is exactly
--- 'compileSourceWithPrelude'.
-compileSourceWithIntrinsics :: Map.Map Text Term -> FilePath -> Text -> CompiledUnit
-compileSourceWithIntrinsics intrinsics =
-  \path src -> compileFilesWithCfg intrinsics defaultUnsafeConfig False moduleNameOf [(path, src)]
-
 -- | The synthetic module name under which a build manifest's bindings
 -- live. A config unit has no module header (§35.1), so its globals are
 -- keyed under this fixed name; reification looks up @buildConfig@ here.
@@ -209,15 +207,99 @@ data Fragment = Fragment
 compileFilesWith :: Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
 compileFilesWith = compileFilesWithCfg Map.empty defaultUnsafeConfig
 
+-- | Compile a program with a set of manifest-selected @host.native.*@
+-- host-binding modules made importable (§8.3.5/§34.5.3). Returns the
+-- compiled unit and the gname→runtime-primitive map for codegen
+-- ("Kappa.Backend.Driver" / 'Kappa.Backend.C.generateC'). The provided
+-- modules come from the build manifest's native bindings (never a global
+-- hardcoded list); an unknown module name is silently skipped here (the
+-- build planner validates providers and reports diagnostics first).
+compileProgramWithNative ::
+  [ModuleName] ->
+  UnsafeConfig ->
+  Bool ->
+  (FilePath -> ModuleName) ->
+  [(FilePath, Text)] ->
+  (CompiledUnit, Map.Map GName Text)
+compileProgramWithNative provided cfg packageMode nameOf files =
+  ( compileFilesWithCfgInj (applyNativeModules provided) Map.empty cfg packageMode nameOf files
+  , nativeHostPrims provided
+  )
+
+-- | Register each provided @host.native.*@ catalog module into a base
+-- state as abstract globals (no value — runtime-only, §34.5.1) plus its
+-- module export list, so a program can @import@ it and reference its
+-- members. The member's Kappa type is evaluated to the global's type.
+applyNativeModules :: [ModuleName] -> CheckState -> CheckState
+applyNativeModules provided st0 = foldl' addMod st0 mods
+  where
+    mods = [cmo | mn <- provided, Just cmo <- [catalogModule mn]]
+    addMod st cmo =
+      let mn = cmoName cmo
+          ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+          gdOf cm = GlobalDef (eval ec [] (cmType cm)) Nothing False
+          gs =
+            foldl'
+              (\g cm -> Map.insert (GName mn (cmName cm)) (gdOf cm) g)
+              (csGlobals st)
+              (cmoMembers cmo)
+       in st
+            { csGlobals = gs
+            , csModuleExports = Map.insert mn (map cmName (cmoMembers cmo)) (csModuleExports st)
+            }
+
+-- | The gname→runtime-primitive map for the provided host bindings.
+nativeHostPrims :: [ModuleName] -> Map.Map GName Text
+nativeHostPrims provided =
+  Map.fromList
+    [ (GName (cmoName cmo) (cmName cm), cmPrim cm)
+    | mn <- provided
+    , Just cmo <- [catalogModule mn]
+    , cm <- cmoMembers cmo
+    ]
+
+-- | §8.3.5 reserved host roots. A source-defined module at or under one of
+-- these is a compile-time error (host binding modules are host-supplied).
+reservedHostRoots :: [[Text]]
+reservedHostRoots =
+  [ ["host", "jvm", "jni"]
+  , ["host", "jvm"]
+  , ["host", "dotnet"]
+  , ["host", "native"]
+  , ["host", "python"]
+  ]
+
+-- | Emit 'E_HOST_MODULE_SOURCE_DEFINED' if @mn@ is exactly a reserved host
+-- root or lies under one (§8.3.5).
+reservedHostRootDiag :: ModuleName -> Span -> Maybe Diagnostic
+reservedHostRootDiag (ModuleName segs) sp
+  | any (`isRootOf` segs) reservedHostRoots =
+      Just $
+        diag SevError StageImports "E_HOST_MODULE_SOURCE_DEFINED" (Just "kappa-hs.host.reserved") sp
+          ( "module '" <> renderModuleName (ModuleName segs)
+              <> "' is at or under a reserved host binding root (host.jvm/host.dotnet/"
+              <> "host.native/host.python); such modules are supplied from host metadata "
+              <> "or ABI descriptions, not user source (Spec §8.3.5)"
+          )
+  | otherwise = Nothing
+  where
+    isRootOf root xs = xs == root || (take (length root) xs == root && length xs > length root)
+
 compileFilesWithCfg :: Map.Map Text Term -> UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
-compileFilesWithCfg intrinsics unsafeCfg packageMode nameOf files =
+compileFilesWithCfg = compileFilesWithCfgInj id
+
+-- | The general worker. @inject@ transforms the post-prelude base state
+-- before the user modules are checked — used to register manifest-selected
+-- @host.native.*@ host-binding modules (§8.3.5/§34.5.3) so a program can
+-- @import@ them. Plain compilation passes 'id'.
+compileFilesWithCfgInj :: (CheckState -> CheckState) -> Map.Map Text Term -> UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
+compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
   let (pst0, pdiags) = preludeState
       -- §4.2: seed the build configuration into the state the user
       -- modules are checked against; the prelude itself is always checked
-      -- with the default (disabled) configuration. §34.5: backend
-      -- host-binding intrinsics (empty unless a native profile is selected)
-      -- are likewise seeded only for the user modules.
-      pst = pst0 {csUnsafe = unsafeCfg, csBackendIntrinsics = intrinsics}
+      -- with the default (disabled) configuration. @inject@ registers any
+      -- manifest-provided host.native.* binding modules (§34.5.3).
+      pst = inject (pst0 {csUnsafe = unsafeCfg, csBackendIntrinsics = intrinsics})
       parsed = [(path, parseModule path src) | (path, src) <- files]
       parseFails = [ds | (_, Left ds) <- parsed]
       frags0 =
@@ -263,6 +345,15 @@ compileFilesWithCfg intrinsics unsafeCfg packageMode nameOf files =
         , badName mn
         ]
       badCount = length pathDiags
+      -- §8.3.5: a source-defined module whose effective name is exactly a
+      -- reserved host root, or begins with one followed by '.', is a
+      -- compile-time error. Host binding modules are supplied from host
+      -- metadata/ABI descriptions (the native catalog), never user source.
+      reservedRootDiags =
+        [ d
+        | (mn, fr) <- frags0
+        , Just d <- [reservedHostRootDiag mn (Span (frPath fr) (Pos 1 1) (Pos 1 1))]
+        ]
       goodFrags = [(mn, fr) | (mn, fr) <- frags0, not (badName mn)]
       -- merge same-module fragments (§8.1) in first-appearance order
       moduleOrder = nub [mn | (mn, _) <- goodFrags]
@@ -418,6 +509,7 @@ compileFilesWithCfg intrinsics unsafeCfg packageMode nameOf files =
       allDiags =
         concat parseFails
           ++ pathDiags
+          ++ reservedRootDiags
           ++ headerMismatchDiags
           ++ cycleDiags
           ++ concat (reverse diagChunks)

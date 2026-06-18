@@ -1,0 +1,12 @@
+-- expect: BUILD_OK
+-- A program that imports a manifest-provided host.native module; the
+-- build must lower its members to runtime FFI prims (codegen driven by
+-- the nativeBinding provider, §36.28/§34.5.3).
+let buildConfig : BuildConfig = package { name = "ok-sqlite"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], source = symbolList ["sqliteOpen", "sqliteClose"], abi = cAbi, headers = [], link = dynamicLink ["sqlite3"], load = systemLoader }]
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["sqlite3"] }]
+    }

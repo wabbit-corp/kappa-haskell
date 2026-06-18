@@ -36,8 +36,8 @@ library
     exposed-modules:
         Kappa.Backend.C
         Kappa.Backend.Driver
-        Kappa.Backend.Ffi
-        Kappa.Backend.Intrinsics
+        Kappa.Backend.NativeCatalog
+        Kappa.Build.Plan
         Kappa.Build.Reify
         Kappa.Build.Types
         Kappa.Check

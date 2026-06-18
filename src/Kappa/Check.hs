@@ -204,15 +204,14 @@ data CheckState = CheckState
   -- unresolved, each raising a suggestion diagnostic; rebuilding and
   -- rescanning the whole scope per diagnostic is O(Nerrors * Nscope).
   , csBackendIntrinsics :: !(Map Text Term)
-  -- ^ §34.5/§34.5.3 host-binding intrinsics the selected backend profile
-  -- supplies (intrinsic spelling ↦ expected Core type), seeded only when a
-  -- native FFI capability is selected. A §9.4 'expect term' whose name is a
-  -- key here is satisfied by that backend intrinsic, provided the declared
-  -- type matches the intrinsic type up to definitional equality. Empty
-  -- under the interpreter, so foreign 'expect's are then unsatisfied and
-  -- compilation fails honestly (E_EXPECT_UNSATISFIED). Populated by the
-  -- pipeline/driver from "Kappa.Backend.Intrinsics"; this module stays
-  -- backend-agnostic and only consults the map by name + type.
+  -- ^ §34.5/§34.5.3 general hook: bare-name backend intrinsics (spelling ↦
+  -- expected Core type) that satisfy a §9.4 'expect term' up to defeq. This
+  -- is now ALWAYS seeded empty: native host bindings are supplied as
+  -- @host.native.*@ modules selected by a build manifest (§8.3.5/§36.28)
+  -- and satisfied by ordinary import resolution, not by a bare-name table.
+  -- A bare foreign 'expect' therefore has no native provider and is
+  -- honestly unsatisfied (E_EXPECT_UNSATISFIED). The hook is retained as an
+  -- inert, backend-agnostic seam; see docs/BUILD_AND_NATIVE_BINDINGS.md.
   , csCoreBodies :: !(Map GName Term)
   -- ^ Elaborated KCore body of each top-level term definition, captured
   -- before evaluation to a value. The native backend (Kappa.Backend.C)

@@ -1,37 +1,23 @@
 -- A real native HTTP server backed by sqlite3, written through the
--- spec-conformant foreign boundary (§9.4 `expect` + §34.5 backend
--- intrinsics; §26.2 std.ffi types).  See docs/NATIVE_FFI_DESIGN.md.
+-- spec-conformant native host-binding boundary: it IMPORTS the
+-- `host.native.*` modules (§8.3.5) whose exported operations the zig
+-- profile realizes with backend intrinsics (§34.5.3). Those modules are
+-- made available, and linked, by this package's build manifest
+-- (`kappa.build.kp`) via its `nativeBinding` providers (§36.28) — there
+-- is no hidden symbol, no `--ffi-full`, and no hardcoded native list.
 --
--- The foreign operations are NOT hidden prelude globals: this module
--- EXPLICITLY declares each one it requires as an `expect term` external
--- requirement, typed with std.ffi.OpaqueHandle.  Those expectations are
--- satisfied only by the native (`zig`) backend's host-binding intrinsics
--- when the FFI capability is selected (`kappa build --ffi-full`).  Under
--- the interpreter (`kappa run`/`check`) no backend supplies them, so the
--- expectations are unsatisfied and compilation fails honestly
--- (E_EXPECT_UNSATISFIED) — there is no hidden symbol and no fallback.
+-- Under the interpreter (`kappa run`/`check`) there is no build manifest,
+-- so the `host.native.*` modules are not provided and the imports fail
+-- honestly (E_MODULE_NAME_UNRESOLVED) — no fallback.
 --
 -- Build + run:
---   kappa build --ffi-full --lib -lsqlite3 \
---       examples/native/http_sqlite/server.kp -o /tmp/kserver
+--   kappa build --manifest examples/native/http_sqlite -o /tmp/kserver
 --   /tmp/kserver        # listens on :8088, serves 3 requests, exits
 
-module main
+module server
 
-import std.ffi.(type OpaqueHandle)
-
--- ── foreign boundary contract (satisfied by native host-binding
--- intrinsics; OpaqueHandle is the raw §26.2 foreign-handle vocabulary) ──
-expect term tcpListen       : Int -> UIO OpaqueHandle
-expect term tcpAccept       : OpaqueHandle -> UIO OpaqueHandle
-expect term connRead        : OpaqueHandle -> UIO String
-expect term connWrite       : OpaqueHandle -> String -> UIO Unit
-expect term connClose       : OpaqueHandle -> UIO Unit
-expect term listenClose     : OpaqueHandle -> UIO Unit
-expect term sqliteOpen      : String -> UIO OpaqueHandle
-expect term sqliteExec      : OpaqueHandle -> String -> UIO Unit
-expect term sqliteQueryInt  : OpaqueHandle -> String -> UIO Int
-expect term sqliteClose     : OpaqueHandle -> UIO Unit
+import host.native.sqlite3 as sql
+import host.native.posix.net as net
 
 -- A minimal HTTP/1.1 response.  `Connection: close` (and closing the
 -- socket after writing) lets the client read the body up to EOF.
@@ -46,21 +32,21 @@ let dbPath = "/tmp/kappa_http_demo.db"
 
 main : UIO Unit
 let main = do
-    db <- sqliteOpen dbPath
-    sqliteExec db "CREATE TABLE IF NOT EXISTS counter (hits INTEGER)"
-    sqliteExec db "DELETE FROM counter"
-    sqliteExec db "INSERT INTO counter (hits) VALUES (0)"
-    listener <- tcpListen 8088
+    database <- sql.sqliteOpen dbPath
+    sql.sqliteExec database "CREATE TABLE IF NOT EXISTS counter (hits INTEGER)"
+    sql.sqliteExec database "DELETE FROM counter"
+    sql.sqliteExec database "INSERT INTO counter (hits) VALUES (0)"
+    listener <- net.tcpListen 8088
     printlnString "listening on :8088"
     var served = 0
     while ltInt served 3 do
-        conn <- tcpAccept listener
-        connRead conn
-        sqliteExec db "UPDATE counter SET hits = hits + 1"
-        count <- sqliteQueryInt db "SELECT hits FROM counter"
-        connWrite conn (httpResponse (stringAppend "hits=" (showInt count)))
-        connClose conn
+        conn <- net.tcpAccept listener
+        net.connRead conn
+        sql.sqliteExec database "UPDATE counter SET hits = hits + 1"
+        count <- sql.sqliteQueryInt database "SELECT hits FROM counter"
+        net.connWrite conn (httpResponse (stringAppend "hits=" (showInt count)))
+        net.connClose conn
         served = addInt served 1
-    listenClose listener
-    sqliteClose db
+    net.listenClose listener
+    sql.sqliteClose database
     printlnString "served 3 requests; exiting"
