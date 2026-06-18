@@ -74,7 +74,39 @@ for d in "$DIR"/native/*/; do
       echo "PASS $name ($want)"
     fi
   fi
+  # a path-dep build creates kappa.lock in the fixture dir; clean it
+  find "$d" -name 'kappa.lock' -delete 2>/dev/null
 done
+
+echo "== kappa.lock lifecycle: create / --locked match / drift / missing (§36.4, §36.23.2) =="
+LW="${TMPDIR:-/tmp}/kappa-lock-test"; rm -rf "$LW"; mkdir -p "$LW"
+cp -r "$DIR/native/pathdep/." "$LW/"   # a path-dep project (app + dep/)
+if timeout 120 $KAPPA build --manifest "$LW" --emit-c >/dev/null 2>&1 && [ -f "$LW/kappa.lock" ]; then
+  echo "PASS lock/create (kappa.lock written on first build)"
+else
+  echo "FAIL lock/create (no kappa.lock after build)"; fails=$((fails+1))
+fi
+if timeout 120 $KAPPA build --manifest "$LW" --emit-c --locked >/dev/null 2>&1; then
+  echo "PASS lock/match (--locked succeeds against a current lock)"
+else
+  echo "FAIL lock/match (--locked rejected a current lock)"; fails=$((fails+1))
+fi
+# mutate the dependency's source → content identity changes → drift
+printf 'module codec.util\ntag : String -> String\nlet tag s = stringAppend "CHANGED" s' > "$LW/dep/src/codec/util.kp"
+lout="$(timeout 120 $KAPPA build --manifest "$LW" --emit-c --locked 2>&1)"
+if [ $? -ne 0 ] && grep -q "E_DEPENDENCY_LOCK_MISMATCH" <<<"$lout"; then
+  echo "PASS lock/drift (changed dependency -> E_DEPENDENCY_LOCK_MISMATCH)"
+else
+  echo "FAIL lock/drift (expected E_DEPENDENCY_LOCK_MISMATCH)"; echo "$lout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+rm -f "$LW/kappa.lock"
+lout="$(timeout 120 $KAPPA build --manifest "$LW" --emit-c --locked 2>&1)"
+if [ $? -ne 0 ] && grep -q "E_DEPENDENCY_LOCK_MISMATCH" <<<"$lout"; then
+  echo "PASS lock/missing (--locked with no lock -> E_DEPENDENCY_LOCK_MISMATCH)"
+else
+  echo "FAIL lock/missing (expected E_DEPENDENCY_LOCK_MISMATCH)"; echo "$lout" | sed 's/^/    /'; fails=$((fails+1))
+fi
+rm -rf "$LW"
 
 echo "== reproducibility: semantic identity is provenance-independent (§36.2.1) =="
 a="$(timeout 120 $KAPPA build --manifest "$DIR/reproducibility/direct.kappa.build.kp" --check 2>&1)"

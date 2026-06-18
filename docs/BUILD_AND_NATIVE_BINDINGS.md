@@ -189,6 +189,24 @@ the executable target; `--check` stops at the evaluated configuration
 (`examples/native/http_sqlite/`) builds end-to-end via its
 `kappa.build.kp` (sqlite3 + POSIX sockets).
 
+### Lockfile + reproducibility (§36.4, §36.23.2, §3.2.15)
+
+`Kappa.Build.Lock` records the resolved **path-dependency closure** in
+`kappa.lock` (in the project directory): one entry per dependency package
+— its path relative to the project (a portable key using `..`) and a
+**content identity** (an FNV-1a digest over the package's manifest + all
+its `.kp` source files, path-sorted, so it is location- and
+enumeration-independent — an implementation-defined identity per §36.23.2,
+a change-detection digest, not a cryptographic one).
+
+`kappa build --manifest` creates/updates `kappa.lock` by default when the
+closure is non-empty. `kappa build --manifest --locked` makes no changes
+and fails with `E_DEPENDENCY_LOCK_MISMATCH` (family
+`kappa.package.reproducibility`, §3.2.15) if the lock is missing or any
+resolved content identity differs — i.e. the build is not reproducible
+against the recorded lock. `--check` performs no resolution and touches no
+lock.
+
 ### Dependency resolution (§36.23, increment 4)
 
 A target's `dependencies` names are resolved against the manifest's
@@ -219,10 +237,9 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
   dependency closure is *rejected* (`E_DEPENDENCY_MODULE_COLLISION`), not
   silently merged — there is no spec mechanism that namespaces a module by
   its package, so rejection is the correct enforcement.
-- **No `kappa.lock` / reproducibility pinning yet** (§36.23.2 path-dep
-  content identity, §3.2.15 reproducibility diagnostics) and **no real
-  registry/git resolver** — those need a lockfile + network; registry/git
-  dependencies fail honestly with `E_DEPENDENCY_UNRESOLVED` until then.
+- **No real registry/git resolver** — needs a registry + network;
+  registry/git dependencies fail honestly with `E_DEPENDENCY_UNRESOLVED`.
+  (The lockfile below records only the resolvable path-dependency closure.)
 - **Root-as-cyclic-dependency asymmetry**: when a path dependency cycles
   back to the package being built, the root contributes the modules of the
   *executable* target being built (its `modules` selector), not its
@@ -259,11 +276,12 @@ declared dependencies (`Kappa.Build.Plan.resolveDeps`):
    unresolved (§36.23.1).
 5. **(done)** Transitive path-dependency closure (cycle-detected,
    deduplicated) + proper `staticLink` `-Wl,-Bstatic` grouping.
-6. `kappa.lock` + path-dep content identity (§36.23.2) + the full
-   `kappa.package.reproducibility` pinning diagnostics (§3.2.15); a real
-   registry/git resolver.
-7. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
-8. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
+6. **(done)** `kappa.lock` + path-dep content identity (§36.23.2) +
+   `--locked` reproducibility check (`E_DEPENDENCY_LOCK_MISMATCH`, §3.2.15).
+7. A real registry/git resolver (network/registry) + the remaining
+   `kappa.package.reproducibility` pinning diagnostics for those sources.
+8. Value-provenance graph + canonical serialization (§35.7, §36.2/§36.2.1).
+9. Remaining target kinds (test/codegen/bridge/benchmark/publish, §36.30+)
    and JVM/.NET/Python ecosystems; deployment/reproducibility status.
 
 Spec-cited deferral grounds: §29.8 explicitly lists the larger type/

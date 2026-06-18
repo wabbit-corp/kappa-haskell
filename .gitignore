@@ -12,5 +12,10 @@ dist-newstyle/
 *.kappa.c
 examples/native/**/build/
 
+# Generated build lockfiles under test/example fixtures (real projects
+# commit kappa.lock; these fixture locks are build artifacts)
+tests/build/**/kappa.lock
+examples/native/**/kappa.lock
+
 # Native executables (build outputs)
 *.exe

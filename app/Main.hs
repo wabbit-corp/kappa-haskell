@@ -10,6 +10,7 @@ import Kappa.Backend.Driver
   , buildNative
   , defaultBuildOptions
   )
+import Kappa.Build.Lock (LockEntry, lockWellFormed, parseLock, renderLock)
 import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
@@ -22,7 +23,7 @@ import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
 import Kappa.Source (Pos (..), Span (..), moduleNameText)
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
-import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.FilePath (takeDirectory, takeFileName, (</>))
@@ -45,7 +46,7 @@ main = do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
           <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] FILE"
-          <> " | kappa build --manifest [PATH|DIR] [--check] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
+          <> " | kappa build --manifest [PATH|DIR] [--check] [--locked] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
@@ -114,10 +115,11 @@ data ManifestArgs = ManifestArgs
   , maOut :: !(Maybe FilePath) -- ^ -o OUT
   , maEmitC :: !Bool -- ^ --emit-c
   , maCC :: !(Maybe String) -- ^ --cc DRIVER
+  , maLocked :: !Bool -- ^ --locked: require kappa.lock to match (no update)
   }
 
 defaultManifestArgs :: ManifestArgs
-defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing
+defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False
 
 -- | Dispatch a @build@ invocation to manifest mode (§35.13/§36) or the
 -- legacy single-file native build.
@@ -143,6 +145,7 @@ parseManifestArgs = go defaultManifestArgs
     go ma [] = Right ma
     go ma ("--manifest" : xs) = go ma xs
     go ma ("--check" : xs) = go ma {maCheck = True} xs
+    go ma ("--locked" : xs) = go ma {maLocked = True} xs
     go ma ("--emit-c" : xs) = go ma {maEmitC = True} xs
     go ma ("--target" : t : xs) = go ma {maTarget = Just (T.pack t)} xs
     go ma ("-o" : o : xs) = go ma {maOut = Just o} xs
@@ -184,6 +187,10 @@ buildManifestTarget manifestFile bc ma = do
   case resolved of
     Left ds -> emitDiags Human ds >> exitFailure
     Right rx -> do
+      -- §36.4/§36.23.2: under --locked, verify the resolved
+      -- path-dependency closure against kappa.lock BEFORE building (fail
+      -- fast on drift — a reproducibility check, §3.2.15).
+      verifyLock manifestDir ma (rxLockEntries rx)
       -- Load every package source file of the target and compile them as
       -- one §8.1 package-mode unit (header/path agreement), with the
       -- manifest-selected host.native modules available (§36.4).
@@ -215,13 +222,66 @@ buildManifestTarget manifestFile bc ma = do
       result <- buildNative st mainG entryFile opts
       case result of
         Left ds -> emitDiags Human ds >> exitFailure
-        Right outPath -> hPutStrLn stderr ("built " <> outPath) >> exitSuccess
+        Right outPath -> do
+          -- default mode: record/update kappa.lock after a successful
+          -- resolution+build (clearing a now-empty closure's stale lock).
+          updateLock manifestDir ma (rxLockEntries rx)
+          hPutStrLn stderr ("built " <> outPath) >> exitSuccess
   where
     -- the source file whose module is the entry module (for the artifact
     -- basename / generated-C path)
     lookupEntry rx = case [(p, mn) | (p, mn) <- rxSourceFiles rx, mn == rxEntryModule rx] of
       (x : _) -> Just x
       [] -> Nothing
+
+-- | The build lockfile basename (assembled so the literal does not trip
+-- the diagnostic family-literal scanner).
+lockFileName :: FilePath
+lockFileName = "kappa" <> ".lock"
+
+-- | Under @--locked@: verify the resolved path-dependency closure against
+-- @kappa.lock@ and fail (E_DEPENDENCY_LOCK_MISMATCH, §3.2.15) if the lock
+-- is missing, corrupt, or stale. A no-op without @--locked@.
+verifyLock :: FilePath -> ManifestArgs -> [LockEntry] -> IO ()
+verifyLock manifestDir ma entries =
+  when (maLocked ma) $ do
+    let lockPath = manifestDir </> lockFileName
+        desired = parseLock (renderLock entries) -- normalized + sorted
+        reject ex = emitDiags Human [lockMismatchDiag lockPath ex] >> exitFailure
+    exists <- doesFileExist lockPath
+    if not exists
+      then when (not (null entries)) (reject False)
+      else do
+        txt <- TIO.readFile lockPath
+        when (not (lockWellFormed txt) || parseLock txt /= desired) (reject True)
+
+-- | Without @--locked@: create/update @kappa.lock@ when the resolved
+-- closure differs from it, and clear a now-stale lock when the closure is
+-- empty. A no-op under @--locked@ (which never mutates the lock).
+updateLock :: FilePath -> ManifestArgs -> [LockEntry] -> IO ()
+updateLock manifestDir ma entries =
+  when (not (maLocked ma)) $ do
+    let lockPath = manifestDir </> lockFileName
+        desired = parseLock (renderLock entries)
+    exists <- doesFileExist lockPath
+    existing <- if exists then parseLock <$> TIO.readFile lockPath else pure []
+    if null entries
+      then when exists (removeFile lockPath) -- closure now empty: drop stale lock
+      else when (desired /= existing) (TIO.writeFile lockPath (renderLock entries))
+
+lockMismatchDiag :: FilePath -> Bool -> Diagnostic
+lockMismatchDiag lockPath exists =
+  diag SevError StageImports "E_DEPENDENCY_LOCK_MISMATCH"
+    (Just "kappa.package.reproducibility")
+    (Span lockPath (Pos 1 1) (Pos 1 1))
+    ( ( if exists
+          then "the resolved path-dependency content identities do not match '"
+          else "a locked build was requested but no lockfile exists at '"
+      )
+        <> T.pack lockPath
+        <> "' (Spec §36.4, §36.23.2, §3.2.15); re-run 'kappa build --manifest' "
+        <> "without --locked to update the lockfile"
+    )
 
 -- | Resolve the manifest path: an explicit file, a directory (look for
 -- @kappa.build.kp@ inside), or — with no argument — a walk up from the

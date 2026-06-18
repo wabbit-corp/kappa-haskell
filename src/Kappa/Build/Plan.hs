@@ -15,6 +15,7 @@ module Kappa.Build.Plan
   ) where
 
 import Control.Monad (forM)
+import qualified Data.ByteString as BS
 import Data.List (foldl', sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -25,13 +26,14 @@ import Kappa.Backend.NativeCatalog
   , CatalogModule (..)
   , catalogModule
   )
+import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
 import Kappa.Build.Types
 import Kappa.Diagnostic
 import Kappa.Pipeline (compileManifest, loadSourceFile)
 import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath (makeRelative, splitDirectories, takeExtension, takeFileName, (</>))
+import System.FilePath (joinPath, makeRelative, splitDirectories, takeExtension, takeFileName, (</>))
 
 -- | A resolved, buildable executable target.
 data ResolvedExe = ResolvedExe
@@ -47,6 +49,9 @@ data ResolvedExe = ResolvedExe
   -- ^ §36.28 link specs of the selected native bindings
   , rxRuntimeFfi :: !Bool
   -- ^ whether any native binding is selected (link the FFI runtime unit)
+  , rxLockEntries :: ![LockEntry]
+  -- ^ §36.23.2: content identity of each resolved path-dependency package
+  -- in the closure (for kappa.lock / reproducibility)
   }
   deriving stock (Show)
 
@@ -86,7 +91,7 @@ resolveExecutable manifestDir bc mTarget =
                 depResult <- resolveDepClosure manifestDir bc (targetDependencies tgt)
                 pure $ case depResult of
                   Left ds -> Left ds
-                  Right depTagged ->
+                  Right (depTagged, lockEntries) ->
                     let tagged = [(p, mn, "") | (p, mn) <- selected] ++ depTagged
                         deduped = dedupByPath tagged
                         unit = [(p, mn) | (p, mn, _) <- deduped]
@@ -103,6 +108,7 @@ resolveExecutable manifestDir bc mTarget =
                                   , rxProvidedModules = providedMods
                                   , rxLinkSpecs = linkSpecs
                                   , rxRuntimeFfi = anyNative
+                                  , rxLockEntries = lockEntries
                                   }
   where
     sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
@@ -342,6 +348,21 @@ listKpFiles dir = do
           then listKpFiles p
           else pure [p | takeExtension p == ".kp", takeFileName p /= manifestBasename]
 
+-- | A portable relative path from @root@ to @path@ (both absolute,
+-- canonical), using @..@ to ascend — unlike 'makeRelative', which returns
+-- the absolute path when @path@ is not under @root@. Used as the
+-- (machine-independent) lockfile key for a path dependency.
+relPathTo :: FilePath -> FilePath -> FilePath
+relPathTo root path =
+  let rs = splitDirectories root
+      ps = splitDirectories path
+      common = length (takeWhile id (zipWith (==) rs ps))
+      ups = replicate (length rs - common) ".."
+      downs = drop common ps
+   in case ups ++ downs of
+        [] -> "."
+        segs -> joinPath segs
+
 -- | §8.1 path-derived module name of @file@ relative to its source @root@:
 -- each directory segment below the root is one module segment; a basename's
 -- optional fragment segments (everything from the first @.@) are NOT part
@@ -380,13 +401,13 @@ matchesSelector sel (ModuleName segs) = case sel of
 -- unresolved by this implementation's resolver profile (§36.23.1) and
 -- reported honestly. Each module is tagged with its providing package's
 -- canonical directory (the collision origin).
-resolveDepClosure :: FilePath -> BuildConfig -> [Text] -> IO (Either Diagnostics [(FilePath, ModuleName, Text)])
+resolveDepClosure :: FilePath -> BuildConfig -> [Text] -> IO (Either Diagnostics ([(FilePath, ModuleName, Text)], [LockEntry]))
 resolveDepClosure rootDir rootBc rootNames = do
   canonRoot <- canonicalizePath rootDir
-  go (Set.singleton canonRoot) [] [(rootDir, rootBc, nm) | nm <- dedupT rootNames]
+  go canonRoot (Set.singleton canonRoot) [] [] [(rootDir, rootBc, nm) | nm <- dedupT rootNames]
   where
-    go _ acc [] = pure (Right (concat (reverse acc)))
-    go visited acc ((depDir0, depBc0, nm) : rest) =
+    go _ _ acc locks [] = pure (Right (concat (reverse acc), reverse locks))
+    go canonRoot visited acc locks ((depDir0, depBc0, nm) : rest) =
       let sp = Span (depDir0 </> manifestBasename) (Pos 1 1) (Pos 1 1)
        in case [d | d <- bcDependencies depBc0, depName d == nm] of
             [] ->
@@ -413,16 +434,23 @@ resolveDepClosure rootDir rootBc rootNames = do
                 else do
                   canon <- canonicalizePath pkgDir
                   if canon `Set.member` visited
-                    then go visited acc rest -- already collected (dedup / cycle)
+                    then go canonRoot visited acc locks rest -- already collected (dedup / cycle)
                     else do
                       loaded <- loadDepPackage manifest
                       case loaded of
                         Left ds -> pure (Left ds)
                         Right depBc -> do
                           mods <- depLibraryModules pkgDir depBc
-                          let tagged = [(p, m, T.pack canon) | (p, m) <- mods]
+                          -- §36.23.2: content identity of this path-dep
+                          -- package, keyed by its path relative to the
+                          -- root project (a portable, deterministic key).
+                          srcBytes <- packageSourceBytes pkgDir depBc
+                          let cid = contentId srcBytes
+                              lockKey = T.pack (relPathTo canonRoot canon)
+                              lock = LockEntry lockKey cid
+                              tagged = [(p, m, T.pack canon) | (p, m) <- mods]
                               transitive = [(pkgDir, depBc, dnm) | dnm <- dedupT (libraryDeps depBc)]
-                          go (Set.insert canon visited) (tagged : acc) (transitive ++ rest)
+                          go canonRoot (Set.insert canon visited) (tagged : acc) (lock : locks) (transitive ++ rest)
     unresolved sp nm kind =
       depErr sp "E_DEPENDENCY_UNRESOLVED" "kappa.package.reproducibility"
         ( "dependency '" <> nm <> "' is a " <> kind
@@ -461,6 +489,18 @@ depLibraryModules pkgDir depBc = do
 -- transitively when resolving a path dependency's own dependencies.
 libraryDeps :: BuildConfig -> [Text]
 libraryDeps depBc = concat [tDependencies t | t@LibraryTarget {} <- bcTargets depBc]
+
+-- | A package's source bytes for content identity (§36.23.2): its build
+-- manifest plus every .kp under its source roots, each keyed by its path
+-- relative to the package directory (so the identity is location- and
+-- enumeration-independent).
+packageSourceBytes :: FilePath -> BuildConfig -> IO [(FilePath, BS.ByteString)]
+packageSourceBytes pkgDir bc = do
+  mods <- packageModules pkgDir bc
+  let paths = (pkgDir </> manifestBasename) : map fst mods
+  forM paths $ \p -> do
+    bytes <- BS.readFile p
+    pure (makeRelative pkgDir p, bytes)
 
 depName :: Dependency -> Text
 depName = \case
