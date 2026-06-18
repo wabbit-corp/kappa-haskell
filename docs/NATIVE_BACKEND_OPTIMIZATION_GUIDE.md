@@ -1,6 +1,6 @@
 # Kappa Native Backend — Optimization Guide (authoritative)
 
-Status: **authoritative, current to HEAD `fac5008` (LR2 landed), 2026-06-18.**
+Status: **authoritative, current to HEAD (R1.1/P0-A direct constructor lowering landed), 2026-06-18.**
 This document consolidates and **replaces** six prior native-backend performance documents,
 which have been **deleted** to reduce clutter (see §11 for the explicit old→new mapping; the
 three git-tracked ones remain recoverable from git history, and all non-stale content — including
@@ -25,14 +25,16 @@ The backend is genuinely **near raw C for first-order monomorphic `Int` scalar/l
 nothing else yet. The fast island is real and well-engineered: unboxed `int64` workers (LR1),
 scalarized `Int` `var` loops (P0.2), fixed-offset closed-record projection (P0.4), and — landed
 during this study — **integer-tag constructor/variant pattern matching (LR2)**, which removed the
-`strcmp` dispatch the earlier reviews complained about. **Outside that island the generic boxed/
-curried ABI is still the default**: building a data structure, using a non-`Int` scalar, or
-passing a function falls back to per-element allocation and the arity-1 closure chain, one to two
-orders of magnitude from C. The worst measured workload (`listfold`: 2.0 s, 544 MB vs 0.05 s raw
-C) is dominated by a single, fixable codegen gap — saturated constructor applications lowering
-through an eta-expanded closure chain instead of a direct `kctor` (**P0-A**, §4). The boxed
-`KValue`/`KEnv` ABI is correct as a *fallback* and must stay; the objection — repeated across all
-prior reviews and still valid — is that it remains the *default* for monomorphic non-`Int` code.
+`strcmp` dispatch the earlier reviews complained about — and, landed after it, **direct lowering of
+saturated constructor applications (R1.1/P0-A)**, which removed the eta-expanded closure storm that
+dominated `listfold`/`adtbuild`. **Outside that island the generic boxed/curried ABI is still the
+default**: using a non-`Int` scalar or passing a function falls back to per-element allocation and
+the arity-1 closure chain, one to two orders of magnitude from C. With P0-A fixed, `listfold`
+dropped from 2.0 s / 544 MB to **0.68 s / 240 MB**, and `adtbuild` from ~1.09 GB to **480 MB**
+(~240 B/iter) — the residual is now the genuine *data-representation* cost (one cons cell + one
+`kint` box per element: P0-D / P1-F), not closure overhead. The boxed `KValue`/`KEnv` ABI is
+correct as a *fallback* and must stay; the objection — repeated across all prior reviews and still
+valid — is that it remains the *default* for monomorphic non-`Int` code.
 
 **Can the output plausibly approach raw C?** Yes for what the typed IR can specialize to
 first-order monomorphic scalar/loop code (demonstrated: LR1 ≈1.03× `cc -O2` — a single-config
@@ -71,6 +73,8 @@ Legend: **DONE** = landed and gated; **PARTIAL** = landed for a subset; **OPEN**
 | P0.2 — scalarize non-escaping `Int` `var` while-loops to `int64` C locals | **DONE (Int)** | `arithloop`: 145 MB → **704 B**, ≈4× `cc -O2` (gated ≤5×); the boxed loop is a dead overflow-escape fallback |
 | P0.4 — fixed-offset closed-record projection (`krec_at`, no `kproj` strcmp) | **DONE (proj)** | named records + tuples <10; tuples ≥10 / open / sealed / dict stay `kproj` |
 | **LR2 — numeric ctor/variant pattern-match tags** | **DONE (match dispatch)** | `patTest` emits `kctor_tagid(v) == KCT_*` / `kvariant_tagid(v) == KT_*` **integer** compares; `kctor_is`/`strcmp` gone from the match path. **`switch`/jump-table shape deferred** (linear int-compare chain kept). Record-field-label tags for record *patterns* not done. |
+| **R1.1/P0-A — direct lowering of saturated constructor applications** | **DONE** | `etaCtorApp` (C.hs) beta-reduces a saturated eta-expanded ctor (`CApp…(CLam…(CCtor g …))`) to a direct `CCtor`; `compileApp`/`emitTailApp` emit `kctor(…)` with no `kclo`/`kapp`/`kappi`. Gated by `adtcons` (interpreter-equivalence) + a codegen-shape assertion (`kctor(KCT_CONS,` present, no `kappi(kclo(`). |
+| **P0-B — capture-free in-place self-tail loop re-enabled** | **DONE (with R1.1)** | `bodyCapturesEnv` looks through the eta lambdas to the real fields, so a list-builder body is now capture-free; the QW2 cells update via `kw_c…->val =` instead of rebuilding `kw_env` each iteration. |
 
 > **LR2 currency note (important).** LR2 (integer ctor/variant match tags) **landed during this
 > study** (committed `fac5008`). Older drafts — and parts of the now-superseded
@@ -88,7 +92,7 @@ state:
 - **P0.2** `var` loops are heap-ref loops: **MET for non-escaping `Int` var loops**; effectful/escaping/non-`Int`/else/nested/for loops still boxed.
 - **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1 `Int` workers** (scalar locals); general first-order code still uses `kvar`.
 - **P0.4** records/ADTs generic+string: **MET on the match/projection path** — projection is fixed-offset `krec_at`; ctor/variant matching is integer-tag (LR2). The `switch` shape and record-param boxing remain.
-- **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls**; general known calls still `ktrampoline`, and **saturated constructor applications still go through the eta-ctor closure chain (P0-A)**.
+- **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls** and **now for saturated constructor applications (R1.1/P0-A — a direct `kctor`, no eta-ctor closure chain)**; general known *function* calls still `ktrampoline` (P1-E).
 
 ---
 
@@ -97,20 +101,26 @@ state:
 Gap IDs (P0-A … P2-M) are defined here in §4 (they originate from the now-consolidated gap
 analysis — see the §11 mapping); each remediation maps to a roadmap item in §7.
 
-**P0-A — Saturated constructor applications lower to an eta-expanded arity-1 closure chain.**
-`n :: acc` does **not** become a direct `kctor("std.prelude.::", 2, …)`; it becomes
-`kapp(kapp(kappi(kclo(kfn_range_4, kw_env), kunit()), …), …)`, where `kfn_4→_6→_8` is the 3-deep
-curried closure for `(::)` and only `_8` calls `kctor`. So one cons cell costs ~3 `kclo` + 3
-`kpush` + 2 `kapp` + 1 `kappi`. Root cause: elaboration eta-expands the constructor to a lambda
-(`§10.1 etaCtor`); an applied occurrence stays `CApp(CApp(CLam…)…)` and `compileApp` special-cases
-only saturated prims and known function globals, never constructors, so it never reaches
-`compileCtor`. This dominates `listfold` (544 MB). **Highest-leverage open gap.** Verified at HEAD
-(re-emitted `adtbuild.kappa.c`). → roadmap **R1.1**.
+**P0-A — Saturated constructor applications lower to an eta-expanded arity-1 closure chain.
+RESOLVED (R1.1, this study).** Previously `n :: acc` became
+`kapp(kapp(kappi(kclo(kfn_range_4, kw_env), kunit()), …), …)` (the 3-deep curried `(::)` closure,
+only the innermost calling `kctor`) — one cons cell costing ~3 `kclo` + 3 `kpush` + 2 `kapp` + 1
+`kappi`, which dominated `listfold` (544 MB). Root cause: elaboration eta-expands the constructor
+to a lambda (`§10.1 etaCtor`) and `compileApp` special-cased only prims and known function globals.
+**Fix:** `etaCtorApp` recognises a saturated eta-ctor application (spine head is a `k`-deep `CLam`
+chain whose body is `CCtor g [CVar …]`, with exactly `k` applied args) and beta-reduces it — each
+field var names a binder, so the payload is just the applied arguments at those positions — to a
+direct `CCtor`, lowered by `compileApp`/`emitTailApp` via the existing `compileCtor` as a single
+`kctor(…)` with no closure/`kapp`. Verified on re-emitted `adtbuild.kappa.c` (`kctor(KCT_CONS,…)`,
+no `kclo`/`kappi`); `listfold` 544 MB → **240 MB**, 2.0 s → **0.68 s**; `adtbuild` ~1.09 GB →
+**480 MB**.
 
-**P0-B — A captured env disables the QW2 in-place loop for the whole worker.** Because the P0-A
-cons closure captures `kw_env`, `bodyCapturesEnv` is true and the `range` worker rebuilds
-`kw_env = kpush(p1, kpush(p0, 0))` every iteration. Fixing P0-A makes the body capture-free and
-re-enables the no-alloc in-place loop. Compounds with P0-A. → **R1.1**.
+**P0-B — A captured env disabled the QW2 in-place loop for the whole worker. RESOLVED (with R1.1).**
+The P0-A cons closure captured `kw_env`, so `bodyCapturesEnv` was true and the `range` worker
+rebuilt `kw_env = kpush(p1, kpush(p0, 0))` every iteration. The R1.1 fix makes the cons a direct
+`kctor` (capturing field *values*, not the env), and `bodyCapturesEnv` now looks through the eta
+lambdas to the real fields — so the body is capture-free and the no-alloc in-place loop
+(`kw_c…->val =`) is re-enabled. Confirmed in the re-emitted builder worker.
 
 **P0-D — Every non-`Int` scalar result is boxed; non-`Int` first-order workers use `KEnv`/`kvar`.**
 `Double`/`Bool`/record-param workers box a `kint`/`kdbl` per iteration (`recproj`'s 96.8 MB is
@@ -288,8 +298,8 @@ is preserved from the roadmap below.
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
 | 1 | **R0.1** rigorous bench harness + broad coverage | P1-I | High | Med | Low |
-| 2 | **R1.1** direct lowering of saturated constructor applications | P0-A/B | **Very high** | Med | Med |
-| 3 | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes | P1-F | Med | Low | Low |
+| ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
+| 2 | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes | P1-F | Med | Low | Low |
 | 4 | **R2.2** `Bool`/`Double` unboxed workers (LR1 generalized) | P0-D | Med-High | Med | Med |
 | 5 | **R2.3** first-order worker params/locals as C locals / flat frame | P0-D/P1-H | High | High | Med |
 | 6 | **R2.4** cross-function unboxed scalar chaining | P0-D | Med | Med | Med |
@@ -299,8 +309,10 @@ is preserved from the roadmap below.
 | 10 | **R1.2** `switch`/decision-tree match shape + record-field-pattern tags (LR2 core already shipped) | P1-C | Low-Med | Med | Low-Med |
 | — | **R4.x** architectural: escape analysis (R4.1), precise GC (R4.2), monomorphization/defunctionalization (R4.3), limited regions (R4.4) | P2-J/K/L/M | — | — | — |
 
-Rationale: **R1.1 is the top non-harness item** — it attacks the verified worst path (`adtbuild`/
-`listfold`), is backend-local, and re-enables QW2's in-place loop for free (P0-B). **R1.2 is
+Rationale: **R1.1 landed (this study)** — it attacked the verified worst path (`adtbuild`/
+`listfold`), was backend-local, and re-enabled QW2's in-place loop for free (P0-B); the next
+non-harness item is now **R2.1** (low-risk atomic scalar boxes), then the Wave-2 non-`Int`
+calling-convention work. **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk
@@ -329,7 +341,8 @@ review; re-measure under §5.5 before citing as proof):
 | `arithloop` 2e6 | 704 B (was 145 MB) | 0.0021 s | P0.2 scalar `int64` var loop; ≈4×, gated ≤5× |
 | `tailsum` 2e6 | 368 B (was 193 MB) | 0.0023 s | LR1 unboxed `Int` worker; ≈1.03× |
 | `recproj` 1e6 | 96.8 MB | 0.0014 s | P0.4 removed `strcmp`; `kint` boxing remains (P0-D) |
-| `listfold` 1e6 | 544 MB / 2.0 s | 0.050 s | eta-ctor closure storm (P0-A) — the worst |
+| `listfold` 1e6 | **240 MB / 0.68 s** (was 544 MB / 2.0 s) | 0.050 s | R1.1 removed the eta-ctor closure storm (P0-A); residual = cons cells + `kint` boxing (P0-D) |
+| `adtbuild` 2e6 | **480 MB / ~240 B/iter** (was ~1.09 GB) | 0.14 s | R1.1 direct `kctor`; the P0-A probe — now data-representation-bound |
 
 **Current gates (`test/native/bench.sh`, P1.1/P1.2 DONE):** native + raw-C built at `-O2`;
 `total_bytes` allocation bounds (`arithloop`/`tailsum` ≤1 MB, `recproj` ≤140 MB, `listfold`
@@ -360,6 +373,11 @@ string building (quadratic check), IO boundary, defer/effects, a sqlite-shaped q
 
 - **LR2 = DONE (match dispatch); `switch`-shape = OPEN.** Never describe matching as `strcmp`/
   `kctor_is` — that is the pre-`fac5008` state.
+- **R1.1/P0-A = DONE; P0-B = DONE (with it).** Never describe a saturated constructor application
+  as an eta-expanded `kclo`/`kapp`/`kappi` chain — that is the pre-R1.1 state; it is now a direct
+  `kctor`, and the list-builder's in-place self-tail loop is re-enabled. Partial ctor applications
+  still build a closure (correctly), and the small-arity `kctor` still copies a stack `argv` array
+  (a separate, optional ABI refinement).
 - **LR1/P0.2 = `Int` only.** `Bool`/`Double`/record-param scalars are still boxed (P0-D).
 - **P0.4 = projection only**, and only for sorted/closed layouts (named records, tuples <10);
   ctor/record-*pattern* field access and tuples ≥10 still use name-based paths.

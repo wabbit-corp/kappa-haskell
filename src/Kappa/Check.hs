@@ -1171,6 +1171,12 @@ globalType g = do
 
 -- Constructors as values: λ-wrap to a saturated 'CCtor' (erased
 -- implicit parameters are dropped from the runtime payload).
+--
+-- The native backend recognises a saturated application of this shape and
+-- beta-reduces it back to a direct 'CCtor' ('Kappa.Backend.C.etaCtorApp', gap
+-- P0-A); that recognizer depends on the exact shape produced here (nested
+-- 'CLam's whose body is a 'CCtor' selecting only the runtime-field binders by
+-- bare 'CVar'), so keep the two in sync.
 etaCtor :: EvalCtx -> GName -> Term -> Term
 etaCtor ec g cty = build 0 [] (eval ec [] cty)
   where

@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons; do run_diff_case "$c"; done
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -73,6 +73,30 @@ if timeout 120 $KAPPA build "$CASES/ctortags.kp" --emit-c -o "$ltmp/ct" >"$ltmp/
   rm -f "$cfile"
 else
   echo "   FAIL: ctortags --emit-c build failed"; cat "$ltmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+# R1.1 / P0-A: a saturated constructor application lowers to a DIRECT kctor,
+# not an eta-expanded curried kclo/kapp/kappi chain.  The eta-ctor storm's
+# signature is the applied implicit type argument `kappi(kclo(…), kunit())`
+# wrapping the constructor closure; after the fix that pattern is gone and the
+# cons site is a direct `kctor(KCT_CONS, …)`.  The builder's body is then
+# capture-free, so the QW2 in-place self-tail loop (P0-B) is re-enabled — its
+# parameter cells update via `kw_c…->val =` rather than rebuilding the env.
+echo "== R1.1: saturated constructor application is a direct kctor (no eta-ctor closure storm) =="
+rtmp="$WORK/r11c"; mkdir -p "$rtmp"
+if timeout 120 $KAPPA build "$CASES/adtcons.kp" --emit-c -o "$rtmp/ac" >"$rtmp/build.log" 2>&1; then
+  cfile="$CASES/adtcons.kappa.c"
+  if grep -qE 'kctor\(KCT_CONS,' "$cfile" \
+     && ! grep -qE 'kappi\(kclo\(' "$cfile" \
+     && grep -qE 'kw_c[0-9]+->val = ' "$cfile"; then
+    echo "   ok (direct kctor on the construction path; capture-free in-place loop re-enabled)"
+  else
+    echo "   FAIL: constructor construction path is not a direct kctor / in-place loop not re-enabled"
+    grep -nE 'kappi\(kclo\(' "$cfile" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: adtcons --emit-c build failed"; cat "$rtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # Honest no-fallback property: the native backend never silently falls back

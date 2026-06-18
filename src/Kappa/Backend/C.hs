@@ -503,6 +503,12 @@ bodyCapturesEnv = go
       CThunkE {} -> True -- kthunk(fn, env, 0)  (Delay)
       CLazyE {} -> True -- kthunk(fn, env, 1)  (Memo)
       CQuote {} -> True -- conservative (erased, but never in a hot worker)
+      -- P0-B: a saturated eta-expanded constructor application lowers to a
+      -- direct 'kctor' (no 'kclo' over the env — see 'etaCtorApp'), so it
+      -- captures its field VALUES, not the env, exactly like a 'CCtor'.
+      -- Look through the eta lambdas to the real fields so this no longer
+      -- forces the per-iteration env rebuild.
+      CApp {} | Just (_, ctorArgs) <- etaCtorApp t -> any go ctorArgs
       CApp _ f a -> go f || go a
       CCtor _ args -> any go args
       CMatch s alts -> go s || any goAlt alts
@@ -1019,6 +1025,48 @@ spineOf = go []
     go acc (CApp ic f a) = go ((ic, a) : acc) f
     go acc t = (t, acc)
 
+-- | Recognise a fully-saturated application of an eta-expanded constructor
+-- and beta-reduce it to a direct constructor (gap P0-A).
+--
+-- §10.1 'etaCtor' elaborates a constructor value of @k@ Pi binders into @k@
+-- nested lambdas whose innermost body is a saturated @CCtor g [CVar …]@
+-- selecting only the runtime-field binders (erased implicit/type binders are
+-- dropped from the payload).  An applied occurrence keeps that
+-- @CApp (… (CLam … (CCtor g …))) a@ shape, so without this it lowers through a
+-- @k@-deep curried @kclo@/@kapp@ chain (one cons cell costs ~3 closures + 3
+-- @kpush@ + 2 @kapp@ — the cost that dominates @listfold@/@adtbuild@).
+--
+-- When the spine applies exactly one argument per lambda the redex
+-- beta-reduces: each body @CVar j@ names the binder at de Bruijn index @j@,
+-- i.e. spine position @k-1-j@ (the spine lists arguments outermost-first),
+-- supplied by the applied argument there.  Because every field var is a bare
+-- binder reference (never a compound term or a free variable), the reduction
+-- is a simultaneous substitution that just selects applied arguments — no
+-- index shifting on open terms.  The result is @CCtor g [selected args]@,
+-- compiled by 'compileCtor' as a direct @kctor@.
+--
+-- 'Nothing' for a partial application (still a closure), an over-application
+-- (impossible for a well-typed ctor, but rejected for safety), or any head
+-- that is not an eta-expanded constructor — all of which keep the general
+-- curried lowering.
+etaCtorApp :: Term -> Maybe (GName, [Term])
+etaCtorApp term =
+  case spineOf term of
+    (hd, sargs)
+      | (k, body) <- funcArity hd -- count the leading eta lambdas
+      , k >= 1
+      , k == length sargs
+      , CCtor g fieldVars <- body ->
+          (,) g <$> traverse (pick (map snd sargs) k) fieldVars
+    _ -> Nothing
+  where
+    -- a field var must be a bare in-range binder reference; anything else
+    -- (a compound subterm, or a free variable at index >= k) bails to the
+    -- general lowering rather than misreading the payload.
+    pick args k = \case
+      CVar j | j >= 0, j < k -> Just (args !! (k - 1 - j))
+      _ -> Nothing
+
 -- | If @term@ is a saturated call to the worker's own global (a tail
 -- self-call), return its arguments (with icities); the worker then loops
 -- instead of recursing in C.
@@ -1054,6 +1102,13 @@ emitTailLoop ti args = do
 -- becomes a trampoline @kbounce(f,a)@, returned so the driving
 -- @kapp@/@krun_io@ performs the deferred application in constant C stack.
 emitTailApp :: Term -> Gen ()
+emitTailApp term
+  -- P0-A: a saturated eta-expanded constructor in tail position is a final
+  -- data value (it cannot bounce or recurse), so build it directly and
+  -- return it rather than trampolining through the closure chain.
+  | Just (g, ctorArgs) <- etaCtorApp term = do
+      e <- compileCtor g ctorArgs
+      emit ("return " <> e <> ";")
 emitTailApp term = do
   let (hd, _) = spineOf term
   mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
@@ -1230,6 +1285,10 @@ primDirect = \case
 -- per-argument allocation (the dominant cost in hot numeric loops).
 -- Otherwise fall back to per-argument 'kapp'/'kappi'.
 compileApp :: Term -> Gen Text
+compileApp term
+  -- P0-A: a saturated eta-expanded constructor application is a direct
+  -- 'kctor', not a curried closure chain (see 'etaCtorApp').
+  | Just (g, ctorArgs) <- etaCtorApp term = compileCtor g ctorArgs
 compileApp term = do
   let (hd, sargs) = spineOf term
   case hd of
