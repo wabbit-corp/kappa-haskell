@@ -559,6 +559,30 @@ string building (quadratic check), IO boundary, defer/effects, a sqlite-shaped q
 
 ## 10. Provenance, adversarial review, and currency history
 
+**Final project-level signoffs (HEAD `d5adb43`, 2026-06-18) — both PASS.** After the seven
+optimization waves (R1.1, R2.1, R2.2, R3.1, R2.3-slice, R0.1-partial, R2.4), the two independent
+adversarial completion signoffs were executed:
+- **Spec-compliance: PASS.** The frontend remains at full Spec.md compliance (the seven waves are
+  backend-only plus one 6-line `Check.hs` comment — git-diff-verified; conformance 242/242; the
+  native backend is correctly profile-scoped §27.7, compiles the full accepted UIO surface,
+  `E_BACKEND_UNSUPPORTED` is a genuine backstop for non-runtime forms only, and every wave preserves
+  interpreter-equivalent semantics — verified empirically incl. §6 GMP overflow promotion and
+  §6.1.3 IEEE rounding / signed-zero). No spec-mandated feature is unsupported, subset-only,
+  blocked, or future-work.
+- **Code-quality/perf: PASS.** `-Wall` clean; total `ScalarKind`/`ParamKind` types; soundness
+  Haddocks; no partial-function leaks; principled (non-gamed) gates on cumulative `total_bytes`;
+  perf claim defensible and honestly bounded (first-order monomorphic scalar/record/ctor ≈ small
+  constant factor of C, the per-iteration allocation storms eliminated; higher-order/binder-bearing
+  a bounded-larger factor; the boxed ABI the never-miscompiling fallback). Non-blocking
+  recommendations recorded as watch-items: a total env lookup that escalates on eligibility/emitter
+  drift; a shared `tailShape` classifier coupling `workerMayBounce`↔`emitTailApp`; fold the dual
+  eligibility/emit grammar walk if a fourth worker shape is added.
+
+The remaining roadmap items (R2.3-rest, R3.2, R3.3, R1.2, R0.1-rest, R4.x) are PERFORMANCE
+optimizations, not Spec.md gaps; R4.x carry the §5 documented architectural tradeoffs the project
+deliberately declines (whole-program monomorphization / precise moving GC).
+
+
 This guide consolidates a study whose research and review trail is preserved in the research
 workspace (`/opt/workspaces/kappa-haskell-perf-research/`): four raw research-cluster notes
 (`research/cluster{1..4}-*.md`), implementation evidence with emitted C
