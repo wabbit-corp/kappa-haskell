@@ -130,9 +130,31 @@ if [ "$GATE" -eq 1 ]; then
   else
     echo "   FAIL scalar_intloop alloc ${tb:-?}B > 100KB — the Int scalar loop regressed to boxing"; fails=$((fails+1))
   fi
-  # NOTE (R1.1): once direct-ctor lowering lands, add an adtbuild alloc/iter
-  # gate here (<= 1 cons cell + 1 int box per element ~ 64B/iter); today
-  # adtbuild is ~540B/iter (the eta-ctor closure storm, gap P0-A) — report-only.
+  # adtbuild (R1.1 LANDED): saturated-ctor applications lower to a direct kctor,
+  # so construction is bounded to the data representation (≈1 cons KValue + its
+  # arg array + 1 kint box ≈ 240 B/iter), NOT the ~540 B/iter eta-ctor closure
+  # storm.  Gate alloc/iter <= 300 B (catches a regression back to the storm).
+  if [ -x "$WORK/adtbuild" ]; then
+    tb="$(KAPPA_GC_STATS=1 "$WORK/adtbuild" 2>&1 | sed -n 's/.*total_bytes=\([0-9]*\).*/\1/p')"
+    n="${BN[adtbuild]}"
+    api="$(awk "BEGIN{ if($n>0) printf \"%.0f\", ${tb:-0}/$n; else print 0 }")"
+    if [ -n "$tb" ] && [ "$api" -le 300 ]; then
+      echo "   ok adtbuild alloc/iter ${api}B <= 300B (R1.1 direct ctor; no eta-ctor closure storm)"
+    else
+      echo "   FAIL adtbuild alloc/iter ${api:-?}B > 300B — saturated-ctor closure storm regressed (R1.1/P0-A)"; fails=$((fails+1))
+    fi
+  fi
+  # scalar_doubleloop (R2.2 LANDED): a monomorphic Double loop lowers to an
+  # unboxed `double` worker, so it allocates ~nothing per iteration (no kdbl
+  # box).  Gate total alloc <= 100KB (mirrors scalar_intloop's LR1/P0.2 gate).
+  if [ -x "$WORK/scalar_doubleloop" ]; then
+    tb="$(KAPPA_GC_STATS=1 "$WORK/scalar_doubleloop" 2>&1 | sed -n 's/.*total_bytes=\([0-9]*\).*/\1/p')"
+    if [ -n "$tb" ] && [ "$tb" -le 100000 ]; then
+      echo "   ok scalar_doubleloop alloc ${tb}B <= 100KB (R2.2 unboxed double worker)"
+    else
+      echo "   FAIL scalar_doubleloop alloc ${tb:-?}B > 100KB — the Double scalar loop regressed to kdbl boxing"; fails=$((fails+1))
+    fi
+  fi
 fi
 
 echo ""

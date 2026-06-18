@@ -290,6 +290,19 @@ else
   echo "   FAIL: benchmark gates failed"; tail -16 "$WORK/bench.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+# R0.1: enforce the now-fair landed-wave allocation gates from the proposed
+# bench suite (median-of-N timing, per-iteration allocation): adtbuild's
+# direct-ctor alloc/iter bound (R1.1) and scalar_doubleloop's unboxed-double
+# alloc bound (R2.2), alongside the scalar_intloop unboxed-Int bound (LR1/P0.2).
+# These convert three measured wins into deterministic regression gates.
+echo "== R0.1: landed-wave allocation gates (proposed bench --gate) =="
+if timeout 400 bash "$ROOT/test/native/bench/proposed/run-proposed.sh" --gate --reps 3 scalar_intloop adtbuild scalar_doubleloop >"$WORK/proposed.log" 2>&1; then
+  echo "   ok (adtbuild ≤300B/iter [R1.1], scalar_doubleloop ≤100KB [R2.2], scalar_intloop ≤100KB [LR1/P0.2])"
+  grep -E '^   ok (adtbuild|scalar_doubleloop|scalar_intloop)' "$WORK/proposed.log" | sed 's/^/  /'
+else
+  echo "   FAIL: a landed-wave allocation gate regressed"; grep -iE 'FAIL' "$WORK/proposed.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
 echo "== HTTP + sqlite demo =="
 if command -v sqlite3 >/dev/null 2>&1 || ldconfig -p 2>/dev/null | grep -q sqlite3; then
   if timeout 320 bash "$ROOT/examples/native/http_sqlite/run.sh" >"$WORK/demo.log" 2>&1 && grep -q "DEMO OK" "$WORK/demo.log"; then

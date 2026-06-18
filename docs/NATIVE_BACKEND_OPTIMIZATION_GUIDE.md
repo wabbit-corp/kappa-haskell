@@ -434,7 +434,7 @@ an explicit lowered-IR requirement — see the header.)
 
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
-| 1 | **R0.1** rigorous bench harness + broad coverage | P1-I | High | Med | Low |
+| ◑ | **R0.1** rigorous bench harness + broad coverage — **PARTIAL** (median-of-N timing, per-iteration alloc, and enforced landed-wave alloc gates — adtbuild/scalar_doubleloop/scalar_intloop — wired into the native suite; full CIs/setup-randomization still future) | P1-I | High | Med | Low |
 | ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
 | ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
 | ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
