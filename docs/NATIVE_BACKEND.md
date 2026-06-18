@@ -279,10 +279,12 @@ silent fallback to interpreter behaviour. See
 The representation is uniformly boxed (every value a GC'd `KValue`), but
 the hot paths avoid needless overhead:
 
-* A saturated application whose spine head is a known primitive lowers to
-  a single `kprim_call` over a stack argument array — no intermediate
-  curried `K_PRIM` boxes or per-argument allocation; the hottest
-  arithmetic/comparison ops are matched first in the arity dispatch.
+* A saturated application whose spine head is a known builtin primitive
+  lowers to a DIRECT call on that primitive's C entry point — a positional
+  `kp_…` helper for the hot arithmetic/comparison ops, else `kpf_…` over a
+  stack argument array (an IO builtin becomes a `knative_sat` direct action).
+  There is no `kprim_call`/`prim_fire_pure` string dispatch in the emitted
+  output; a partial application is a curried `knative` function-pointer value.
 * A saturated call to a known function global calls its worker `kw_…`
   directly (through the trampoline) instead of building a curried
   closure chain.
@@ -294,9 +296,8 @@ the hot paths avoid needless overhead:
 A tail-recursive `sum 1..10_000_000` runs in ~4.2 s and a
 `var`-mutating `while` loop of 1,000,000 steps in ~0.4 s, both at flat
 ~2.4 MB RSS (≈16× / ≈10× faster than the first cut). Residual cost is the
-inherent boxing/GC of the uniform representation and the by-name primitive
-dispatch; integer unboxing and opcode dispatch remain available future
-work (they would not change observable behaviour).
+inherent boxing/GC of the uniform representation; integer unboxing remains
+available future work (it would not change observable behaviour).
 
 ## 6. FFI and the HTTP + SQLite demo
 

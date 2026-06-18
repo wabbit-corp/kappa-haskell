@@ -298,22 +298,27 @@ KValue *kfgn(void *p, const char *kind) {
   return r;
 }
 
-/* §27.1.1: a curried native host-binding action (argc=0).  Accumulates
- * args via kapp; a saturated value is the suspended UIO action. */
-KValue *knative(KNativeFn fn, int arity, const char *kind) {
+/* A curried direct-call action (argc=0): the codegen-emitted function
+ * pointer for a builtin primitive (§34.5.3) or a native host-binding symbol
+ * (§27.1.1).  Accumulates args via kapp.  `is_io` distinguishes a pure
+ * builtin (fires its fn immediately on saturation) from an effectful action
+ * (a saturated value is the suspended IO action that krun_io fires). */
+KValue *knative(KNativeFn fn, int arity, const char *kind, int is_io) {
   KValue *r = alloc_val(K_NATIVE);
   r->as.native.fn = fn;
   r->as.native.arity = arity;
   r->as.native.argc = 0;
   r->as.native.args = NULL;
   r->as.native.kind = kind;
+  r->as.native.is_io = is_io;
   return r;
 }
 
-/* The saturated fast path: build a K_NATIVE holding all `arity` args at
- * once (copied into GC memory so it outlives the caller's argument array).
- * The result is the suspended UIO action; krun_io fires `fn(args)`. */
-KValue *knative_sat(KNativeFn fn, int arity, KValue **args) {
+/* The saturated fast path: build a K_NATIVE holding all `arity` args at once
+ * (copied into GC memory so it outlives the caller's argument array).  For an
+ * effectful action this is the suspended IO action krun_io fires; codegen
+ * emits this only for IO builtins / native symbols. */
+KValue *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io) {
   KValue *r = alloc_val(K_NATIVE);
   r->as.native.fn = fn;
   r->as.native.arity = arity;
@@ -321,9 +326,31 @@ KValue *knative_sat(KNativeFn fn, int arity, KValue **args) {
   KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(arity > 0 ? arity : 1));
   for (int i = 0; i < arity; i++) a[i] = args[i];
   r->as.native.args = a;
-  r->as.native.kind = fn ? "native" : "native";
+  r->as.native.kind = "native";
+  r->as.native.is_io = is_io;
   return r;
 }
+
+/* §34.5.3 IO builtin direct entry points (codegen calls these via K_NATIVE,
+ * never by name).  The pure builtins are kpf_* extracted from prim_fire_pure;
+ * these are the effectful ones the do-kernel sequences. */
+KValue *kpf_io_printString(KValue **a) {
+  if (a[0]->tag != K_STR) krt_fail("printString: argument is not a String");
+  fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
+  return kunit();
+}
+KValue *kpf_io_printlnString(KValue **a) {
+  if (a[0]->tag != K_STR) krt_fail("printlnString: argument is not a String");
+  fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
+  fputc('\n', stdout);
+  return kunit();
+}
+KValue *kpf_io_ioPure(KValue **a) { return a[0]; }
+KValue *kpf_io_ioBind(KValue **a) { KValue *r = krun_io(a[0]); return krun_io(kapp(a[1], r)); }
+KValue *kpf_io_ioThen(KValue **a) { (void)krun_io(a[0]); return krun_io(a[1]); }
+KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
+KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
+KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
 
 KValue *kinject(int tagid, const char *tag, KValue *payload) {
   KValue *r = alloc_val(K_VARIANT);
@@ -409,6 +436,7 @@ static KValue *native_append_arg(KValue *f, KValue *x) {
   r->as.native.arity = f->as.native.arity;
   r->as.native.argc = n + 1;
   r->as.native.kind = f->as.native.kind;
+  r->as.native.is_io = f->as.native.is_io;
   KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n + 1));
   for (int i = 0; i < n; i++) a[i] = f->as.native.args[i];
   a[n] = x;
@@ -433,10 +461,12 @@ static KValue *kapply_once(KValue *f, KValue *x) {
       return r; /* still partial */
     }
     case K_NATIVE: {
-      /* §27.1.1: native bindings are conservatively typed in UIO, so a
-       * saturated native action is ALWAYS a suspended IO action (it runs
-       * under krun_io by calling its emitted wrapper — never fires here). */
+      /* §34.5.3/§27.1.1: a direct-call action.  On saturation a PURE builtin
+       * fires its fn immediately (the value is its result); an effectful
+       * action stays suspended (a UIO value that krun_io fires later). */
       KValue *r = native_append_arg(f, x);
+      if (r->as.native.argc >= r->as.native.arity && !r->as.native.is_io)
+        return r->as.native.fn(r->as.native.args);
       return r;
     }
     default:
@@ -1363,87 +1393,153 @@ KValue *kp_intXor(KValue *x, KValue *y) {
   mpz_xor(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
 }
 
-static KValue *prim_fire_pure(const char *p, KValue **a) {
-  /* integer.  Int/Integer are unbounded (§6): the int64 inline form is a
-   * fast path; on overflow or a bignum operand the operation promotes to a
-   * GMP bignum, so results never wrap or trap (matching the interpreter). */
-  if (PRIM("addInt")) return kp_addInt(a[0], a[1]);
-  if (PRIM("subInt")) return kp_subInt(a[0], a[1]);
-  if (PRIM("mulInt")) return kp_mulInt(a[0], a[1]);
-  if (PRIM("divInt")) return kp_divInt(a[0], a[1]);
-  if (PRIM("modInt")) return kp_modInt(a[0], a[1]);
-  if (PRIM("negInt")) return kp_negInt(a[0]);
-  if (PRIM("eqInt")) return kp_eqInt(a[0], a[1]);
-  if (PRIM("ltInt")) return kp_ltInt(a[0], a[1]);
-  if (PRIM("leInt")) return kp_leInt(a[0], a[1]);
-  /* double */
-  if (PRIM("addDouble")) return kp_addDouble(a[0], a[1]);
-  if (PRIM("subDouble")) return kp_subDouble(a[0], a[1]);
-  if (PRIM("mulDouble")) return kp_mulDouble(a[0], a[1]);
-  if (PRIM("divDouble")) return kp_divDouble(a[0], a[1]);
-  if (PRIM("negDouble")) return kp_negDouble(a[0]);
-  if (PRIM("ltDouble")) return kp_ltDouble(a[0], a[1]);
-  if (PRIM("floatEq")) return kp_floatEq(a[0], a[1]);
-  if (PRIM("eqDouble")) return kp_eqDouble(a[0], a[1]);
-  /* string / scalar */
-  if (PRIM("stringAppend")) return kp_stringAppend(a[0], a[1]);
-  if (PRIM("eqStr")) return kp_eqStr(a[0], a[1]);
-  if (PRIM("ltStr")) return kp_ltStr(a[0], a[1]);
-  if (PRIM("eqScalar")) return kp_eqScalar(a[0], a[1]);
-  if (PRIM("ltScalar")) return kp_ltScalar(a[0], a[1]);
-  /* numeric conversions (§6.1) — Nat/Int share a representation */
-  if (PRIM("natToInt") || PRIM("natOfInt")) return a[0];
-  if (PRIM("intToNat")) {
-    if (a[0]->tag == K_INT ? a[0]->as.i < 0
+/* ── per-primitive direct entry points (codegen calls these directly;
+ * the string dispatcher below is the bootstrap/interpreter path only). */
+KValue *kpf_addInt(KValue **a) {
+  return kp_addInt(a[0], a[1]);
+}
+KValue *kpf_subInt(KValue **a) {
+  return kp_subInt(a[0], a[1]);
+}
+KValue *kpf_mulInt(KValue **a) {
+  return kp_mulInt(a[0], a[1]);
+}
+KValue *kpf_divInt(KValue **a) {
+  return kp_divInt(a[0], a[1]);
+}
+KValue *kpf_modInt(KValue **a) {
+  return kp_modInt(a[0], a[1]);
+}
+KValue *kpf_negInt(KValue **a) {
+  return kp_negInt(a[0]);
+}
+KValue *kpf_eqInt(KValue **a) {
+  return kp_eqInt(a[0], a[1]);
+}
+KValue *kpf_ltInt(KValue **a) {
+  return kp_ltInt(a[0], a[1]);
+}
+KValue *kpf_leInt(KValue **a) {
+  return kp_leInt(a[0], a[1]);
+}
+KValue *kpf_addDouble(KValue **a) {
+  return kp_addDouble(a[0], a[1]);
+}
+KValue *kpf_subDouble(KValue **a) {
+  return kp_subDouble(a[0], a[1]);
+}
+KValue *kpf_mulDouble(KValue **a) {
+  return kp_mulDouble(a[0], a[1]);
+}
+KValue *kpf_divDouble(KValue **a) {
+  return kp_divDouble(a[0], a[1]);
+}
+KValue *kpf_negDouble(KValue **a) {
+  return kp_negDouble(a[0]);
+}
+KValue *kpf_ltDouble(KValue **a) {
+  return kp_ltDouble(a[0], a[1]);
+}
+KValue *kpf_floatEq(KValue **a) {
+  return kp_floatEq(a[0], a[1]);
+}
+KValue *kpf_eqDouble(KValue **a) {
+  return kp_eqDouble(a[0], a[1]);
+}
+KValue *kpf_stringAppend(KValue **a) {
+  return kp_stringAppend(a[0], a[1]);
+}
+KValue *kpf_eqStr(KValue **a) {
+  return kp_eqStr(a[0], a[1]);
+}
+KValue *kpf_ltStr(KValue **a) {
+  return kp_ltStr(a[0], a[1]);
+}
+KValue *kpf_eqScalar(KValue **a) {
+  return kp_eqScalar(a[0], a[1]);
+}
+KValue *kpf_ltScalar(KValue **a) {
+  return kp_ltScalar(a[0], a[1]);
+}
+KValue *kpf_natToInt(KValue **a) {
+  return a[0];
+}
+KValue *kpf_intToNat(KValue **a) {
+  if (a[0]->tag == K_INT ? a[0]->as.i < 0
                            : mpz_sgn((const __mpz_struct *)a[0]->as.big.mpz) < 0)
       krt_fail("intToNat: negative Int has no Nat image");
     return a[0];
-  }
-  if (PRIM("intToDouble")) return kp_intToDouble(a[0]);
-  if (PRIM("primitiveIntToString")) return show_int_val(a[0]);
-  /* show */
-  if (PRIM("showInt")) return kp_showInt(a[0]);
-  if (PRIM("showDouble")) return kp_showDouble(a[0]);
-  if (PRIM("showScalar")) return kp_showScalar(a[0]);
-  if (PRIM("showStringLit")) return kp_showStringLit(a[0]);
-  /* §28.2 Rational */
-  if (PRIM("__ratOfInt")) {
-    mpz_t n, d; mpz_init(d); mpz_set_ui(d, 1); mpz_init(n); kload_mpz(a[0], n);
+}
+KValue *kpf_intToDouble(KValue **a) {
+  return kp_intToDouble(a[0]);
+}
+KValue *kpf_primitiveIntToString(KValue **a) {
+  return show_int_val(a[0]);
+}
+KValue *kpf_showInt(KValue **a) {
+  return kp_showInt(a[0]);
+}
+KValue *kpf_showDouble(KValue **a) {
+  return kp_showDouble(a[0]);
+}
+KValue *kpf_showScalar(KValue **a) {
+  return kp_showScalar(a[0]);
+}
+KValue *kpf_showStringLit(KValue **a) {
+  return kp_showStringLit(a[0]);
+}
+KValue *kpf___ratOfInt(KValue **a) {
+  mpz_t n, d; mpz_init(d); mpz_set_ui(d, 1); mpz_init(n); kload_mpz(a[0], n);
     return krat(n, d);
-  }
-  if (PRIM("__ratNum")) { mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); return kfrom_mpz(n); }
-  if (PRIM("__ratDen")) { mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); return kfrom_mpz(d); }
-  if (PRIM("addRat")) return rat_addsub(a[0], a[1], 0);
-  if (PRIM("subRat")) return rat_addsub(a[0], a[1], 1);
-  if (PRIM("mulRat")) {
-    mpz_t a1, b1, c1, d1, n, den; mpz_inits(a1, b1, c1, d1, n, den, NULL);
+}
+KValue *kpf___ratNum(KValue **a) {
+  mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); return kfrom_mpz(n);
+}
+KValue *kpf___ratDen(KValue **a) {
+  mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); return kfrom_mpz(d);
+}
+KValue *kpf_addRat(KValue **a) {
+  return rat_addsub(a[0], a[1], 0);
+}
+KValue *kpf_subRat(KValue **a) {
+  return rat_addsub(a[0], a[1], 1);
+}
+KValue *kpf_mulRat(KValue **a) {
+  mpz_t a1, b1, c1, d1, n, den; mpz_inits(a1, b1, c1, d1, n, den, NULL);
     as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
     mpz_mul(n, a1, c1); mpz_mul(den, b1, d1); return krat(n, den);
-  }
-  if (PRIM("divRat")) {
-    mpz_t a1, b1, c1, d1, n, den; mpz_inits(a1, b1, c1, d1, n, den, NULL);
+}
+KValue *kpf_divRat(KValue **a) {
+  mpz_t a1, b1, c1, d1, n, den; mpz_inits(a1, b1, c1, d1, n, den, NULL);
     as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
     if (mpz_sgn(c1) == 0) krt_fail("divRat: division by zero");
     mpz_mul(n, a1, d1); mpz_mul(den, b1, c1); return krat(n, den);
-  }
-  if (PRIM("negRat")) {
-    mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); mpz_neg(n, n); return krat(n, d);
-  }
-  if (PRIM("eqRat") || PRIM("ltRat")) {
-    mpz_t a1, b1, c1, d1, l, r; mpz_inits(a1, b1, c1, d1, l, r, NULL);
+}
+KValue *kpf_negRat(KValue **a) {
+  mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d); mpz_neg(n, n); return krat(n, d);
+}
+KValue *kpf_eqRat(KValue **a) {
+  mpz_t a1, b1, c1, d1, l, r; mpz_inits(a1, b1, c1, d1, l, r, NULL);
     as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
     mpz_mul(l, a1, d1); mpz_mul(r, c1, b1); /* dens positive, so cross-mul preserves order */
     int c = mpz_cmp(l, r);
-    return kbool(PRIM("eqRat") ? c == 0 : c < 0);
-  }
-  if (PRIM("showRat")) {
-    mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d);
+    return kbool(1 ? c == 0 : c < 0);
+}
+KValue *kpf_ltRat(KValue **a) {
+  mpz_t a1, b1, c1, d1, l, r; mpz_inits(a1, b1, c1, d1, l, r, NULL);
+    as_rat(a[0], a1, b1); as_rat(a[1], c1, d1);
+    mpz_mul(l, a1, d1); mpz_mul(r, c1, b1); /* dens positive, so cross-mul preserves order */
+    int c = mpz_cmp(l, r);
+    return kbool(0 ? c == 0 : c < 0);
+}
+KValue *kpf_showRat(KValue **a) {
+  mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d);
     KValue *ns = show_int_val(a[0]->as.ctor.args[0]);
     if (mpz_cmp_ui(d, 1) == 0) return ns;
     return str_append(str_append(ns, kstr0("/")), show_int_val(a[0]->as.ctor.args[1]));
-  }
-  if (PRIM("ratOfDouble")) {
-    double x = kas_dbl(a[0]);
+}
+KValue *kpf_ratOfDouble(KValue **a) {
+  double x = kas_dbl(a[0]);
     if (isnan(x) || isinf(x)) { mpz_t n, d; mpz_init(n); mpz_init_set_ui(d, 1); return krat(n, d); }
     int e2; double frac = frexp(x, &e2);            /* x = frac * 2^e2, 0.5<=|frac|<1 */
     long long mant = (long long)ldexp(frac, 53);    /* exact integer significand */
@@ -1451,115 +1547,140 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     mpz_t n, d; mpz_init_set_si(n, (long)mant); mpz_init_set_ui(d, 1);
     if (sh >= 0) mpz_mul_2exp(n, n, (unsigned)sh); else mpz_mul_2exp(d, d, (unsigned)(-sh));
     return krat(n, d);
-  }
-  /* §6.5 byte + §29.5 bytes + grapheme (grapheme is K_STR text) */
-  if (PRIM("eqByte")) return kp_eqByte(a[0], a[1]);
-  if (PRIM("ltByte")) return kp_ltByte(a[0], a[1]);
-  if (PRIM("showByte")) {
-    char t[8]; snprintf(t, sizeof t, "b'\\x%02x'", a[0]->as.byte); return kstr0(t);
-  }
-  if (PRIM("eqBytes")) return kbool(bytes_cmp(a[0], a[1]) == 0);
-  if (PRIM("ltBytes")) return kbool(bytes_cmp(a[0], a[1]) < 0);
-  if (PRIM("showBytes")) {
-    sbuf b; sb_init(&b); sb_puts(&b, "0x");
+}
+KValue *kpf_eqByte(KValue **a) {
+  return kp_eqByte(a[0], a[1]);
+}
+KValue *kpf_ltByte(KValue **a) {
+  return kp_ltByte(a[0], a[1]);
+}
+KValue *kpf_showByte(KValue **a) {
+  char t[8]; snprintf(t, sizeof t, "b'\\x%02x'", a[0]->as.byte); return kstr0(t);
+}
+KValue *kpf_eqBytes(KValue **a) {
+  return kbool(bytes_cmp(a[0], a[1]) == 0);
+}
+KValue *kpf_ltBytes(KValue **a) {
+  return kbool(bytes_cmp(a[0], a[1]) < 0);
+}
+KValue *kpf_showBytes(KValue **a) {
+  sbuf b; sb_init(&b); sb_puts(&b, "0x");
     for (size_t i = 0; i < a[0]->as.bytes.len; i++) { char t[3]; snprintf(t, 3, "%02x", a[0]->as.bytes.p[i]); sb_puts(&b, t); }
     return sb_to_str(&b);
-  }
-  if (PRIM("eqGrapheme")) return kbool(klit_eq(a[0], a[1])); /* exact scalar seq */
-  if (PRIM("showGrapheme")) return str_append(str_append(kstr0("g'"), a[0]), kstr0("'"));
-  /* §29.5 std.bytes operations */
-  if (PRIM("__bytesEmpty")) return kbytes((const unsigned char *)"", 0);
-  if (PRIM("__bytesSingleton")) { unsigned char w = a[0]->as.byte; return kbytes(&w, 1); }
-  if (PRIM("__bytesLength")) return kint((int64_t)a[0]->as.bytes.len);
-  if (PRIM("__bytesIsEmpty")) return kbool(a[0]->as.bytes.len == 0);
-  if (PRIM("__bytesGet")) {
-    int64_t i = kas_int(a[1]);
+}
+KValue *kpf_eqGrapheme(KValue **a) {
+  return kbool(klit_eq(a[0], a[1]));
+}
+KValue *kpf_showGrapheme(KValue **a) {
+  return str_append(str_append(kstr0("g'"), a[0]), kstr0("'"));
+}
+KValue *kpf___bytesEmpty(KValue **a) {
+  return kbytes((const unsigned char *)"", 0);
+}
+KValue *kpf___bytesSingleton(KValue **a) {
+  unsigned char w = a[0]->as.byte; return kbytes(&w, 1);
+}
+KValue *kpf___bytesLength(KValue **a) {
+  return kint((int64_t)a[0]->as.bytes.len);
+}
+KValue *kpf___bytesIsEmpty(KValue **a) {
+  return kbool(a[0]->as.bytes.len == 0);
+}
+KValue *kpf___bytesGet(KValue **a) {
+  int64_t i = kas_int(a[1]);
     if (i >= 0 && i < (int64_t)a[0]->as.bytes.len) return ksome(kbyte(a[0]->as.bytes.p[i]));
     return knone();
-  }
-  if (PRIM("__bytesIndexUnsafe")) {
-    int64_t i = kas_int(a[1]);
+}
+KValue *kpf___bytesIndexUnsafe(KValue **a) {
+  int64_t i = kas_int(a[1]);
     if (i < 0 || i >= (int64_t)a[0]->as.bytes.len) krt_fail("__bytesIndexUnsafe: out of range");
     return kbyte(a[0]->as.bytes.p[i]);
-  }
-  if (PRIM("__bytesAppend")) {
-    size_t la = a[0]->as.bytes.len, lb = a[1]->as.bytes.len;
+}
+KValue *kpf___bytesAppend(KValue **a) {
+  size_t la = a[0]->as.bytes.len, lb = a[1]->as.bytes.len;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(la + lb ? la + lb : 1);
     memcpy(buf, a[0]->as.bytes.p, la); memcpy(buf + la, a[1]->as.bytes.p, lb);
     return kbytes(buf, la + lb);
-  }
-  if (PRIM("__bytesSlice")) {
-    int64_t st = kas_int(a[1]), ln = kas_int(a[2]); size_t len = a[0]->as.bytes.len;
+}
+KValue *kpf___bytesSlice(KValue **a) {
+  int64_t st = kas_int(a[1]), ln = kas_int(a[2]); size_t len = a[0]->as.bytes.len;
     if (st < 0) st = 0;
     if (st > (int64_t)len) st = (int64_t)len;
     if (ln < 0) ln = 0;
     if (st + ln > (int64_t)len) ln = (int64_t)len - st;
     return kbytes(a[0]->as.bytes.p + st, (size_t)ln);
-  }
-  if (PRIM("__bytesTake")) {
-    int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
+}
+KValue *kpf___bytesTake(KValue **a) {
+  int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
     return kbytes(a[1]->as.bytes.p, (size_t)n);
-  }
-  if (PRIM("__bytesDrop")) {
-    int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
+}
+KValue *kpf___bytesDrop(KValue **a) {
+  int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
     return kbytes(a[1]->as.bytes.p + n, len - (size_t)n);
-  }
-  if (PRIM("__bytesStartsWith")) {
-    size_t pl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
+}
+KValue *kpf___bytesStartsWith(KValue **a) {
+  size_t pl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
     return kbool(pl <= hl && memcmp(a[1]->as.bytes.p, a[0]->as.bytes.p, pl) == 0);
-  }
-  if (PRIM("__bytesEndsWith")) {
-    size_t sl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
+}
+KValue *kpf___bytesEndsWith(KValue **a) {
+  size_t sl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
     return kbool(sl <= hl && memcmp(a[1]->as.bytes.p + (hl - sl), a[0]->as.bytes.p, sl) == 0);
-  }
-  if (PRIM("__bytesContains"))
-    return kbool(bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len) >= 0);
-  if (PRIM("__bytesFind")) {
-    unsigned char w = a[0]->as.byte;
+}
+KValue *kpf___bytesContains(KValue **a) {
+  return kbool(bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len) >= 0);
+}
+KValue *kpf___bytesFind(KValue **a) {
+  unsigned char w = a[0]->as.byte;
     for (size_t i = 0; i < a[1]->as.bytes.len; i++) if (a[1]->as.bytes.p[i] == w) return ksome(kint((int64_t)i));
     return knone();
-  }
-  if (PRIM("__bytesBreakIndex")) {
-    long ix = bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len);
+}
+KValue *kpf___bytesBreakIndex(KValue **a) {
+  long ix = bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len);
     return ix < 0 ? knone() : ksome(kint((int64_t)ix));
-  }
-  if (PRIM("__bytesToList")) {
-    KValue *acc = knil();
+}
+KValue *kpf___bytesToList(KValue **a) {
+  KValue *acc = knil();
     for (size_t i = a[0]->as.bytes.len; i > 0; i--) acc = kcons(kbyte(a[0]->as.bytes.p[i - 1]), acc);
     return acc;
-  }
-  if (PRIM("__bytesFromList")) {
-    /* count then fill */
+}
+KValue *kpf___bytesFromList(KValue **a) {
+  /* count then fill */
     size_t n = 0; for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) n++;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(n ? n : 1); size_t i = 0;
     for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) buf[i++] = kctor_arg(v, 0)->as.byte;
     return kbytes(buf, n);
-  }
-  if (PRIM("__bytesCompact")) return a[0];
-  /* §29.5 linear BytesBuilder: the accumulator is modelled directly by the
-   * bytes built so far (a K_BYTES carrier).  The type system separates
-   * BytesBuilder from Bytes, so only the builder prims observe it. */
-  if (PRIM("__newBytesBuilder")) return kbytes((const unsigned char *)"", 0);
-  if (PRIM("__bytesBuilderByte")) {            /* (byte, builder) -> builder */
+}
+KValue *kpf___bytesCompact(KValue **a) {
+  return a[0];
+}
+KValue *kpf___newBytesBuilder(KValue **a) {
+  return kbytes((const unsigned char *)"", 0);
+}
+KValue *kpf___bytesBuilderByte(KValue **a) {
+  /* (byte, builder) -> builder */
     size_t n = a[1]->as.bytes.len;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(n + 1);
     memcpy(buf, a[1]->as.bytes.p, n); buf[n] = a[0]->as.byte;
     return kbytes(buf, n + 1);
-  }
-  if (PRIM("__bytesBuilderBytes")) {           /* (bytes, builder) -> builder */
+}
+KValue *kpf___bytesBuilderBytes(KValue **a) {
+  /* (bytes, builder) -> builder */
     size_t na = a[1]->as.bytes.len, nb = a[0]->as.bytes.len;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(na + nb ? na + nb : 1);
     memcpy(buf, a[1]->as.bytes.p, na); memcpy(buf + na, a[0]->as.bytes.p, nb);
     return kbytes(buf, na + nb);
-  }
-  if (PRIM("__finishBytesBuilder")) return a[0];
-  /* ── §29.4 std.unicode (table-free): codec / scalars / cursors ─────── */
-  if (PRIM("__utf8Bytes"))
-    return kbytes((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len);
-  if (PRIM("__utf8Valid"))
-    return kbool(utf8_valid_all(a[0]->as.bytes.p, a[0]->as.bytes.len));
-  if (PRIM("__decodeUtf8Lossy")) {
-    /* Lenient decode (one U+FFFD per ill-formed maximal subpart).  The
+}
+KValue *kpf___finishBytesBuilder(KValue **a) {
+  return a[0];
+}
+KValue *kpf___utf8Bytes(KValue **a) {
+  return kbytes((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len);
+}
+KValue *kpf___utf8Valid(KValue **a) {
+  return kbool(utf8_valid_all(a[0]->as.bytes.p, a[0]->as.bytes.len));
+}
+KValue *kpf___decodeUtf8Lossy(KValue **a) {
+  /* Lenient decode (one U+FFFD per ill-formed maximal subpart).  The
      * std.unicode wrapper only calls this after __utf8Valid succeeds, so
      * the reachable case is the exact identity decode of valid UTF-8. */
     const unsigned char *p = a[0]->as.bytes.p, *end = p + a[0]->as.bytes.len;
@@ -1570,22 +1691,30 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       else { sb_puts(&b, "\xEF\xBF\xBD"); if (n == 0) p = end; else p += 1; }
     }
     return sb_to_str(&b);
-  }
-  if (PRIM("__byteLength")) return kint((int64_t)a[0]->as.str.len);
-  if (PRIM("__uniScalarValue")) return kint((int64_t)a[0]->as.chr);
-  if (PRIM("__scalarInRange")) {
-    int64_t n = kas_int(a[0]);
+}
+KValue *kpf___byteLength(KValue **a) {
+  return kint((int64_t)a[0]->as.str.len);
+}
+KValue *kpf___uniScalarValue(KValue **a) {
+  return kint((int64_t)a[0]->as.chr);
+}
+KValue *kpf___scalarInRange(KValue **a) {
+  int64_t n = kas_int(a[0]);
     return kbool(n >= 0 && n <= 0x10FFFF && !(n >= 0xD800 && n <= 0xDFFF));
-  }
-  if (PRIM("__scalarOfValue")) {
-    int64_t n = kas_int(a[0]);
+}
+KValue *kpf___scalarOfValue(KValue **a) {
+  int64_t n = kas_int(a[0]);
     if (n >= 0 && n <= 0x10FFFF && !(n >= 0xD800 && n <= 0xDFFF)) return kchr((uint32_t)n);
     krt_fail("__scalarOfValue: value is not a Unicode scalar");
-  }
-  if (PRIM("__scalarToString")) { sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return sb_to_str(&b); }
-  if (PRIM("__scalarCount")) return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
-  if (PRIM("__stringScalars")) {
-    const unsigned char *p = (const unsigned char *)a[0]->as.str.p, *end = p + a[0]->as.str.len;
+}
+KValue *kpf___scalarToString(KValue **a) {
+  sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return sb_to_str(&b);
+}
+KValue *kpf___scalarCount(KValue **a) {
+  return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
+}
+KValue *kpf___stringScalars(KValue **a) {
+  const unsigned char *p = (const unsigned char *)a[0]->as.str.p, *end = p + a[0]->as.str.len;
     KValue *acc = knil();
     /* collect codepoints then fold right-to-left into a cons list */
     size_t cnt = utf8_scalar_count(p, a[0]->as.str.len);
@@ -1594,24 +1723,29 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     while (q < end) { uint32_t cp; int k = utf8_next(q, end, &cp); q += (k > 0 ? k : 1); tmp[i++] = kchr(cp); }
     for (size_t j = cnt; j > 0; j--) acc = kcons(tmp[j - 1], acc);
     return acc;
-  }
-  if (PRIM("__byteToNat")) return kint((int64_t)a[0]->as.byte);
-  if (PRIM("__natToByte")) return kbyte((unsigned char)(kint_low64(a[0]) & 0xff));
-  if (PRIM("__graphemeToString")) return a[0];   /* grapheme is K_STR text */
-  /* §20 collection carriers / §28.2 transport: identity on the payload */
-  if (PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") ||
-      PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") ||
-      PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") ||
-      PRIM("__stringCompact"))
-    return a[0];
-  if (PRIM("unsafeConsume")) return kunit();      /* discard a linear value */
-  if (PRIM("__arrayIndexUnsafe")) {
-    KValue *v = a[0]; int64_t i = kas_int(a[1]);
+}
+KValue *kpf___byteToNat(KValue **a) {
+  return kint((int64_t)a[0]->as.byte);
+}
+KValue *kpf___natToByte(KValue **a) {
+  return kbyte((unsigned char)(kint_low64(a[0]) & 0xff));
+}
+KValue *kpf___graphemeToString(KValue **a) {
+  return a[0];
+}
+KValue *kpf___queryFromList(KValue **a) {
+  return a[0];
+}
+KValue *kpf_unsafeConsume(KValue **a) {
+  return kunit();
+}
+KValue *kpf___arrayIndexUnsafe(KValue **a) {
+  KValue *v = a[0]; int64_t i = kas_int(a[1]);
     while (kis_cons(v)) { if (i <= 0) return kctor_arg(v, 0); v = kctor_arg(v, 1); i--; }
     krt_fail("__arrayIndexUnsafe: index out of range");
-  }
-  if (PRIM("__rangeEnum")) {
-    int ex = kas_bool(a[2]); KValue *acc = knil();
+}
+KValue *kpf___rangeEnum(KValue **a) {
+  int ex = kas_bool(a[2]); KValue *acc = knil();
     if (a[0]->tag == K_CHR) {
       int64_t lo = (int64_t)a[0]->as.chr, hi = (int64_t)a[1]->as.chr, top = ex ? hi - 1 : hi;
       for (int64_t c = top; c >= lo; c--) { if (c >= 0xD800 && c <= 0xDFFF) continue; acc = kcons(kchr((uint32_t)c), acc); }
@@ -1620,34 +1754,56 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       for (int64_t n = top; n >= lo; n--) acc = kcons(kint(n), acc);
     }
     return acc;
-  }
-  /* §29.1 std.atomic bitwise (two's-complement over Integer). */
-  if (PRIM("__intAnd")) return kp_intAnd(a[0], a[1]);
-  if (PRIM("__intOr")) return kp_intOr(a[0], a[1]);
-  if (PRIM("__intXor")) return kp_intXor(a[0], a[1]);
-  /* §29.3 std.hash FNV-1a lane (deterministic per run). */
-  if (PRIM("__hashMixInt")) return ku64(fnv_mix_u64(kint_low64(a[0]), kint_low64(a[1])));
-  if (PRIM("__hashMixDouble")) {
-    uint64_t bits; double d = a[1]->as.d; memcpy(&bits, &d, sizeof bits);
+}
+KValue *kpf___intAnd(KValue **a) {
+  return kp_intAnd(a[0], a[1]);
+}
+KValue *kpf___intOr(KValue **a) {
+  return kp_intOr(a[0], a[1]);
+}
+KValue *kpf___intXor(KValue **a) {
+  return kp_intXor(a[0], a[1]);
+}
+KValue *kpf___hashMixInt(KValue **a) {
+  return ku64(fnv_mix_u64(kint_low64(a[0]), kint_low64(a[1])));
+}
+KValue *kpf___hashMixDouble(KValue **a) {
+  uint64_t bits; double d = a[1]->as.d; memcpy(&bits, &d, sizeof bits);
     return ku64(fnv_mix_u64(kint_low64(a[0]), bits));
-  }
-  if (PRIM("__hashMixString")) return ku64(fnv_mix_bytes(kint_low64(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len));
-  if (PRIM("__hashMixBytes")) return ku64(fnv_mix_bytes(kint_low64(a[0]), a[1]->as.bytes.p, a[1]->as.bytes.len));
-  /* §29.4 StringBuilder: a K_STR accumulator (type-separated from String). */
-  if (PRIM("__newStringBuilder")) return kstr0("");
-  if (PRIM("__stringBuilderString")) return str_append(a[1], a[0]);
-  if (PRIM("__stringBuilderScalar")) { sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return str_append(a[1], sb_to_str(&b)); }
-  if (PRIM("__stringBuilderGrapheme")) return str_append(a[1], a[0]);
-  if (PRIM("__finishStringBuilder")) return a[0];
-  /* §29.4 string cursors: a StringCursor is a scalar index (K_INT). */
-  if (PRIM("__stringStart")) return kint(0);
-  if (PRIM("__stringEnd")) return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
-  if (PRIM("__stringCursorOffset")) {
-    int64_t i = kas_int(a[1]); if (i < 0) i = 0;
+}
+KValue *kpf___hashMixString(KValue **a) {
+  return ku64(fnv_mix_bytes(kint_low64(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len));
+}
+KValue *kpf___hashMixBytes(KValue **a) {
+  return ku64(fnv_mix_bytes(kint_low64(a[0]), a[1]->as.bytes.p, a[1]->as.bytes.len));
+}
+KValue *kpf___newStringBuilder(KValue **a) {
+  return kstr0("");
+}
+KValue *kpf___stringBuilderString(KValue **a) {
+  return str_append(a[1], a[0]);
+}
+KValue *kpf___stringBuilderScalar(KValue **a) {
+  sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return str_append(a[1], sb_to_str(&b));
+}
+KValue *kpf___stringBuilderGrapheme(KValue **a) {
+  return str_append(a[1], a[0]);
+}
+KValue *kpf___finishStringBuilder(KValue **a) {
+  return a[0];
+}
+KValue *kpf___stringStart(KValue **a) {
+  return kint(0);
+}
+KValue *kpf___stringEnd(KValue **a) {
+  return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
+}
+KValue *kpf___stringCursorOffset(KValue **a) {
+  int64_t i = kas_int(a[1]); if (i < 0) i = 0;
     return kint((int64_t)utf8_scalar_byte_offset((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, (size_t)i));
-  }
-  if (PRIM("__stringNextScalar")) {
-    const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
+}
+KValue *kpf___stringNextScalar(KValue **a) {
+  const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
     int64_t i = kas_int(a[1]); size_t cnt = utf8_scalar_count(p, len);
     if (i >= 0 && i < (int64_t)cnt) {
       size_t off = utf8_scalar_byte_offset(p, len, (size_t)i);
@@ -1657,9 +1813,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       return ksome(krec(2, nm, vals));
     }
     return knone();
-  }
-  if (PRIM("__stringPrevScalar")) {
-    const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
+}
+KValue *kpf___stringPrevScalar(KValue **a) {
+  const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
     int64_t i = kas_int(a[1]); size_t cnt = utf8_scalar_count(p, len);
     if (i > 0 && i <= (int64_t)cnt) {
       size_t off = utf8_scalar_byte_offset(p, len, (size_t)(i - 1));
@@ -1669,9 +1825,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       return ksome(krec(2, nm, vals));
     }
     return knone();
-  }
-  if (PRIM("__stringSpan")) {
-    const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
+}
+KValue *kpf___stringSpan(KValue **a) {
+  const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
     int64_t aa = kas_int(a[1]), bb = kas_int(a[2]); size_t cnt = utf8_scalar_count(p, len);
     if (aa >= 0 && bb <= (int64_t)cnt && aa <= bb) {
       size_t oa = utf8_scalar_byte_offset(p, len, (size_t)aa);
@@ -1679,11 +1835,12 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       return ksome(kstr((const char *)(p + oa), ob - oa));
     }
     return knone();
-  }
-  /* §29.4 incremental UTF-8 decoder: pending bytes carried as K_BYTES. */
-  if (PRIM("__newUtf8Decoder")) return kbytes((const unsigned char *)"", 0);
-  if (PRIM("__decodeUtf8Chunk")) {
-    size_t pl = a[1]->as.bytes.len, cl = a[0]->as.bytes.len, total = pl + cl;
+}
+KValue *kpf___newUtf8Decoder(KValue **a) {
+  return kbytes((const unsigned char *)"", 0);
+}
+KValue *kpf___decodeUtf8Chunk(KValue **a) {
+  size_t pl = a[1]->as.bytes.len, cl = a[0]->as.bytes.len, total = pl + cl;
     unsigned char *comb = (unsigned char *)kgc_alloc_atomic(total ? total : 1);
     if (pl) memcpy(comb, a[1]->as.bytes.p, pl);
     if (cl) memcpy(comb + pl, a[0]->as.bytes.p, cl);
@@ -1692,35 +1849,37 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     static const char *nm[2] = {"decoder", "text"};
     KValue *vals[2]; vals[0] = kbytes(comb + plen, rlen); vals[1] = kstr((const char *)comb, plen);
     return ksome(krec(2, nm, vals));
-  }
-  if (PRIM("__finishUtf8Decoder"))
-    return a[0]->as.bytes.len == 0 ? ksome(kstr0("")) : knone();
-  /* §29.1 atomicCompareExchange representation equality. */
-  if (PRIM("__atomicRepEq")) return kbool(kvalue_rep_eq(a[0], a[1]));
-  /* ── §29.4 std.unicode table-driven: normalization, case fold, UAX#29 ─ */
-  if (PRIM("__normalize"))
-    return ku_normalize((int)kas_int(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len);
-  if (PRIM("__caseFold")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___finishUtf8Decoder(KValue **a) {
+  return a[0]->as.bytes.len == 0 ? ksome(kstr0("")) : knone();
+}
+KValue *kpf___atomicRepEq(KValue **a) {
+  return kbool(kvalue_rep_eq(a[0], a[1]));
+}
+KValue *kpf___normalize(KValue **a) {
+  return ku_normalize((int)kas_int(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len);
+}
+KValue *kpf___caseFold(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf out; cp_init(&out);
     for (size_t i = 0; i < in.len; i++) ku_casefold_scalar(in.p[i], &out);
     sbuf b; sb_init(&b); for (size_t i = 0; i < out.len; i++) utf8_encode(out.p[i], &b); return sb_to_str(&b);
-  }
-  if (PRIM("__graphemeCount")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___graphemeCount(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     return kint((int64_t)ku_grapheme_count(in.p, in.len));
-  }
-  if (PRIM("__graphemeValid")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___graphemeValid(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     return kbool(ku_grapheme_count(in.p, in.len) == 1);
-  }
-  if (PRIM("__graphemeOfString")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___graphemeOfString(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     if (ku_grapheme_count(in.p, in.len) == 1) return a[0];
     krt_fail("__graphemeOfString: string is not a single grapheme");
-  }
-  if (PRIM("__stringGraphemes")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___stringGraphemes(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf bounds; cp_init(&bounds);
     size_t i = 0; while (i < in.len) { cp_push(&bounds, (uint32_t)i); size_t l = ku_grapheme_len(in.p, in.len, i); i += (l ? l : 1); }
     KValue *acc = knil();
@@ -1729,9 +1888,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       acc = kcons(ku_encode_range(in.p, st, en), acc);
     }
     return acc;
-  }
-  if (PRIM("__stringNextGrapheme")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___stringNextGrapheme(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     int64_t i = kas_int(a[1]);
     if (i >= 0 && i < (int64_t)in.len) {
       size_t l = ku_grapheme_len(in.p, in.len, (size_t)i); if (l == 0) l = 1;
@@ -1740,9 +1899,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       return ksome(krec(2, nm, vals));
     }
     return knone();
-  }
-  if (PRIM("__stringWords")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___stringWords(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf ws, we; cp_init(&ws); cp_init(&we);
     size_t i = 0;
     while (i < in.len) {
@@ -1754,9 +1913,9 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
     KValue *acc = knil();
     for (size_t b = ws.len; b > 0; b--) acc = kcons(ku_encode_range(in.p, ws.p[b - 1], we.p[b - 1]), acc);
     return acc;
-  }
-  if (PRIM("__stringSentences")) {
-    cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
+}
+KValue *kpf___stringSentences(KValue **a) {
+  cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf ps, pe; cp_init(&ps); cp_init(&pe);
     size_t start = 0, i = 0;
     while (i < in.len) {
@@ -1772,7 +1931,128 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
       if (en > st) acc = kcons(ku_encode_range(in.p, st, en), acc);
     }
     return acc;
-  }
+}
+
+static KValue *prim_fire_pure(const char *p, KValue **a) {
+  if (PRIM("addInt")) return kpf_addInt(a);
+  if (PRIM("subInt")) return kpf_subInt(a);
+  if (PRIM("mulInt")) return kpf_mulInt(a);
+  if (PRIM("divInt")) return kpf_divInt(a);
+  if (PRIM("modInt")) return kpf_modInt(a);
+  if (PRIM("negInt")) return kpf_negInt(a);
+  if (PRIM("eqInt")) return kpf_eqInt(a);
+  if (PRIM("ltInt")) return kpf_ltInt(a);
+  if (PRIM("leInt")) return kpf_leInt(a);
+  if (PRIM("addDouble")) return kpf_addDouble(a);
+  if (PRIM("subDouble")) return kpf_subDouble(a);
+  if (PRIM("mulDouble")) return kpf_mulDouble(a);
+  if (PRIM("divDouble")) return kpf_divDouble(a);
+  if (PRIM("negDouble")) return kpf_negDouble(a);
+  if (PRIM("ltDouble")) return kpf_ltDouble(a);
+  if (PRIM("floatEq")) return kpf_floatEq(a);
+  if (PRIM("eqDouble")) return kpf_eqDouble(a);
+  if (PRIM("stringAppend")) return kpf_stringAppend(a);
+  if (PRIM("eqStr")) return kpf_eqStr(a);
+  if (PRIM("ltStr")) return kpf_ltStr(a);
+  if (PRIM("eqScalar")) return kpf_eqScalar(a);
+  if (PRIM("ltScalar")) return kpf_ltScalar(a);
+  if (PRIM("natToInt") || PRIM("natOfInt")) return kpf_natToInt(a);
+  if (PRIM("intToNat")) return kpf_intToNat(a);
+  if (PRIM("intToDouble")) return kpf_intToDouble(a);
+  if (PRIM("primitiveIntToString")) return kpf_primitiveIntToString(a);
+  if (PRIM("showInt")) return kpf_showInt(a);
+  if (PRIM("showDouble")) return kpf_showDouble(a);
+  if (PRIM("showScalar")) return kpf_showScalar(a);
+  if (PRIM("showStringLit")) return kpf_showStringLit(a);
+  if (PRIM("__ratOfInt")) return kpf___ratOfInt(a);
+  if (PRIM("__ratNum")) return kpf___ratNum(a);
+  if (PRIM("__ratDen")) return kpf___ratDen(a);
+  if (PRIM("addRat")) return kpf_addRat(a);
+  if (PRIM("subRat")) return kpf_subRat(a);
+  if (PRIM("mulRat")) return kpf_mulRat(a);
+  if (PRIM("divRat")) return kpf_divRat(a);
+  if (PRIM("negRat")) return kpf_negRat(a);
+  if (PRIM("eqRat")) return kpf_eqRat(a); if (PRIM("ltRat")) return kpf_ltRat(a);
+  if (PRIM("showRat")) return kpf_showRat(a);
+  if (PRIM("ratOfDouble")) return kpf_ratOfDouble(a);
+  if (PRIM("eqByte")) return kpf_eqByte(a);
+  if (PRIM("ltByte")) return kpf_ltByte(a);
+  if (PRIM("showByte")) return kpf_showByte(a);
+  if (PRIM("eqBytes")) return kpf_eqBytes(a);
+  if (PRIM("ltBytes")) return kpf_ltBytes(a);
+  if (PRIM("showBytes")) return kpf_showBytes(a);
+  if (PRIM("eqGrapheme")) return kpf_eqGrapheme(a);
+  if (PRIM("showGrapheme")) return kpf_showGrapheme(a);
+  if (PRIM("__bytesEmpty")) return kpf___bytesEmpty(a);
+  if (PRIM("__bytesSingleton")) return kpf___bytesSingleton(a);
+  if (PRIM("__bytesLength")) return kpf___bytesLength(a);
+  if (PRIM("__bytesIsEmpty")) return kpf___bytesIsEmpty(a);
+  if (PRIM("__bytesGet")) return kpf___bytesGet(a);
+  if (PRIM("__bytesIndexUnsafe")) return kpf___bytesIndexUnsafe(a);
+  if (PRIM("__bytesAppend")) return kpf___bytesAppend(a);
+  if (PRIM("__bytesSlice")) return kpf___bytesSlice(a);
+  if (PRIM("__bytesTake")) return kpf___bytesTake(a);
+  if (PRIM("__bytesDrop")) return kpf___bytesDrop(a);
+  if (PRIM("__bytesStartsWith")) return kpf___bytesStartsWith(a);
+  if (PRIM("__bytesEndsWith")) return kpf___bytesEndsWith(a);
+  if (PRIM("__bytesContains")) return kpf___bytesContains(a);
+  if (PRIM("__bytesFind")) return kpf___bytesFind(a);
+  if (PRIM("__bytesBreakIndex")) return kpf___bytesBreakIndex(a);
+  if (PRIM("__bytesToList")) return kpf___bytesToList(a);
+  if (PRIM("__bytesFromList")) return kpf___bytesFromList(a);
+  if (PRIM("__bytesCompact")) return kpf___bytesCompact(a);
+  if (PRIM("__newBytesBuilder")) return kpf___newBytesBuilder(a);
+  if (PRIM("__bytesBuilderByte")) return kpf___bytesBuilderByte(a);
+  if (PRIM("__bytesBuilderBytes")) return kpf___bytesBuilderBytes(a);
+  if (PRIM("__finishBytesBuilder")) return kpf___finishBytesBuilder(a);
+  if (PRIM("__utf8Bytes")) return kpf___utf8Bytes(a);
+  if (PRIM("__utf8Valid")) return kpf___utf8Valid(a);
+  if (PRIM("__decodeUtf8Lossy")) return kpf___decodeUtf8Lossy(a);
+  if (PRIM("__byteLength")) return kpf___byteLength(a);
+  if (PRIM("__uniScalarValue")) return kpf___uniScalarValue(a);
+  if (PRIM("__scalarInRange")) return kpf___scalarInRange(a);
+  if (PRIM("__scalarOfValue")) return kpf___scalarOfValue(a);
+  if (PRIM("__scalarToString")) return kpf___scalarToString(a);
+  if (PRIM("__scalarCount")) return kpf___scalarCount(a);
+  if (PRIM("__stringScalars")) return kpf___stringScalars(a);
+  if (PRIM("__byteToNat")) return kpf___byteToNat(a);
+  if (PRIM("__natToByte")) return kpf___natToByte(a);
+  if (PRIM("__graphemeToString")) return kpf___graphemeToString(a);
+  if (PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") || PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") || PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") || PRIM("__stringCompact")) return kpf___queryFromList(a);
+  if (PRIM("unsafeConsume")) return kpf_unsafeConsume(a);
+  if (PRIM("__arrayIndexUnsafe")) return kpf___arrayIndexUnsafe(a);
+  if (PRIM("__rangeEnum")) return kpf___rangeEnum(a);
+  if (PRIM("__intAnd")) return kpf___intAnd(a);
+  if (PRIM("__intOr")) return kpf___intOr(a);
+  if (PRIM("__intXor")) return kpf___intXor(a);
+  if (PRIM("__hashMixInt")) return kpf___hashMixInt(a);
+  if (PRIM("__hashMixDouble")) return kpf___hashMixDouble(a);
+  if (PRIM("__hashMixString")) return kpf___hashMixString(a);
+  if (PRIM("__hashMixBytes")) return kpf___hashMixBytes(a);
+  if (PRIM("__newStringBuilder")) return kpf___newStringBuilder(a);
+  if (PRIM("__stringBuilderString")) return kpf___stringBuilderString(a);
+  if (PRIM("__stringBuilderScalar")) return kpf___stringBuilderScalar(a);
+  if (PRIM("__stringBuilderGrapheme")) return kpf___stringBuilderGrapheme(a);
+  if (PRIM("__finishStringBuilder")) return kpf___finishStringBuilder(a);
+  if (PRIM("__stringStart")) return kpf___stringStart(a);
+  if (PRIM("__stringEnd")) return kpf___stringEnd(a);
+  if (PRIM("__stringCursorOffset")) return kpf___stringCursorOffset(a);
+  if (PRIM("__stringNextScalar")) return kpf___stringNextScalar(a);
+  if (PRIM("__stringPrevScalar")) return kpf___stringPrevScalar(a);
+  if (PRIM("__stringSpan")) return kpf___stringSpan(a);
+  if (PRIM("__newUtf8Decoder")) return kpf___newUtf8Decoder(a);
+  if (PRIM("__decodeUtf8Chunk")) return kpf___decodeUtf8Chunk(a);
+  if (PRIM("__finishUtf8Decoder")) return kpf___finishUtf8Decoder(a);
+  if (PRIM("__atomicRepEq")) return kpf___atomicRepEq(a);
+  if (PRIM("__normalize")) return kpf___normalize(a);
+  if (PRIM("__caseFold")) return kpf___caseFold(a);
+  if (PRIM("__graphemeCount")) return kpf___graphemeCount(a);
+  if (PRIM("__graphemeValid")) return kpf___graphemeValid(a);
+  if (PRIM("__graphemeOfString")) return kpf___graphemeOfString(a);
+  if (PRIM("__stringGraphemes")) return kpf___stringGraphemes(a);
+  if (PRIM("__stringNextGrapheme")) return kpf___stringNextGrapheme(a);
+  if (PRIM("__stringWords")) return kpf___stringWords(a);
+  if (PRIM("__stringSentences")) return kpf___stringSentences(a);
   krt_fail("internal: unknown pure primitive");
 }
 

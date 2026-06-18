@@ -118,7 +118,7 @@ struct KValue {
     /* K_NATIVE: `fn` is the codegen-emitted direct wrapper, `arity` the
      * declared param count, `argc` the args accumulated so far, `kind` a
      * label for diagnostics only (NEVER used for dispatch). */
-    struct { KValue *(*fn)(KValue **args); int arity; int argc; KValue **args; const char *kind; } native;
+    struct { KValue *(*fn)(KValue **args); int arity; int argc; KValue **args; const char *kind; int is_io; } native;
   } as;
 };
 
@@ -265,7 +265,7 @@ void     krt_fail(const char *msg) __attribute__((noreturn));
  * `kapp` accumulates args and a saturated action is the suspended UIO
  * action that `krun_io` runs by calling `fn`.  `knative_sat` is the
  * saturated fast path the backend emits for an exactly-applied call. */
-KValue  *knative(KNativeFn fn, int arity, const char *kind);
-KValue  *knative_sat(KNativeFn fn, int arity, KValue **args);
+KValue  *knative(KNativeFn fn, int arity, const char *kind, int is_io);
+KValue  *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io);
 
 #endif /* KAPPART_H */

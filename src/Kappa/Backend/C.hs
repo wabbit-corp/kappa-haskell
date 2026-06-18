@@ -96,6 +96,7 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
+  , gsPrimUsed :: !(Set Text) -- ^ §34.5.3: builtin primitives actually referenced; 'assemble' emits an @extern@ decl for each direct entry point (@kpf_*@) so the optimized output calls it DIRECTLY — never @kprim_call@/@prim_fire_pure@ string dispatch.
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ §27.1.1/§36.28: each provided @host.native.*@ member (an abstract global) ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings (never a hardcoded catalog). A reference to such a member lowers to a DIRECT typed call ('knative'), not a runtime primitive.
   , gsHostUsed :: !(Set GName) -- ^ §27.1.1: host members actually referenced; 'assemble' emits one extern prototype + marshalling wrapper per used member.
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
@@ -410,6 +411,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsTraits = Map.keysSet (csTraits cs)
           , gsDeclSites = csDeclSites cs
           , gsPrims = Set.union basePrims ffiPrims
+          , gsPrimUsed = Set.empty
           , gsHostSyms = hostSyms
           , gsHostUsed = Set.empty
           , gsLoops = []
@@ -1198,6 +1200,9 @@ assemble st =
       -- referenced by the generated constructions and pattern-match tests.
       ++ tagEnumBlock st
       ++ [""]
+      -- §34.5.3: extern decls for each used builtin primitive's direct C
+      -- entry point, so the optimized output calls it directly (no kprim_call).
+      ++ primExternBlock st
       -- §27.1.1: direct extern prototypes + typed marshalling wrappers for
       -- each used host-binding member — the manifest-declared C symbols are
       -- called DIRECTLY (no name table, no strcmp dispatch).
@@ -1205,6 +1210,23 @@ assemble st =
       ++ reverse (gsProtos st)
       ++ [""]
       ++ reverse (gsTop st)
+
+-- | Extern declarations for the direct C entry point of each used builtin
+-- primitive (@kpf_*@). The optimized output calls these directly; the runtime
+-- defines them (the @kprim_call@/@prim_fire_pure@ string path is bootstrap-only
+-- and never referenced by generated code).
+primExternBlock :: GenState -> [Text]
+primExternBlock st
+  | null cfns = []
+  | otherwise =
+      ["/* §34.5.3 builtin primitives: direct entry points (no string dispatch). */"]
+        ++ ["extern KValue *" <> cfn <> "(KValue **);" | cfn <- cfns]
+        ++ [""]
+  where
+    -- distinct entry-point names (several prims share one kpf_*)
+    cfns =
+      Set.toList . Set.fromList $
+        [cfn | n <- Set.toList (gsPrimUsed st), Just (PrimEntry cfn _ _) <- [Map.lookup n primEntries]]
 
 -- | The native host-binding block: one @extern@ prototype per distinct C
 -- symbol used, followed by one marshalling wrapper per used member
@@ -1508,24 +1530,42 @@ isSortValue _ = False
 -- | Emit a reference to a runtime primitive, after confirming the linked
 -- runtime implements it; an unimplemented primitive is a compile-time
 -- 'E_BACKEND_UNSUPPORTED' (never a silent runtime failure).
+-- | §34.5.3: a bare reference to a builtin primitive lowers to a DIRECT call
+-- on its runtime entry point. A nullary pure builtin is a value, fired
+-- immediately (@kpf_x(0)@); any other builtin becomes a curried native
+-- action carrying the function pointer (@knative@, pure fires on saturation,
+-- IO suspends). There is NO @kprim@/@kprim_call@ string dispatch. An unknown
+-- primitive is a compile-time 'E_BACKEND_UNSUPPORTED'.
 emitPrim :: Text -> Gen Text
-emitPrim name = do
-  prims <- gets gsPrims
-  if name `Set.member` prims
-    then pure ("kprim(" <> cStr name <> ")")
-    else unsupported "primitive"
+emitPrim name = case Map.lookup name primEntries of
+  Just (PrimEntry cfn ar isio) -> do
+    markPrimUsed name
+    pure $
+      if ar == 0 && not isio
+        then cfn <> "((KValue **)0)"
+        else "knative(" <> cfn <> ", " <> T.pack (show ar) <> ", " <> cStr name <> ", " <> ioFlag isio <> ")"
+  Nothing ->
+    unsupported "primitive"
       ("the primitive '" <> name <> "' is not implemented by the native runtime")
+
+ioFlag :: Bool -> Text
+ioFlag b = if b then "1" else "0"
+
+-- | Record a builtin primitive as referenced so 'assemble' emits its extern.
+markPrimUsed :: Text -> Gen ()
+markPrimUsed n = modify' (\st -> st {gsPrimUsed = Set.insert n (gsPrimUsed st)})
 
 -- | §27.1.1: a bare reference to a host-binding member lowers to a curried
 -- native action carrying the codegen-emitted wrapper pointer ('knative').
--- 'assemble' emits the wrapper + extern prototype for each used member.
+-- Native bindings are conservatively typed in UIO, so the action is IO
+-- (suspended). 'assemble' emits the wrapper + extern prototype per used member.
 emitHostNative :: GName -> ResolvedNativeSymbol -> Gen Text
 emitHostNative g rns = do
   markHostUsed g
   pure
     ( "knative(" <> wrapperCName rns <> ", "
         <> T.pack (show (length (rnsParams rns))) <> ", "
-        <> cStr (rnsCSymbol rns) <> ")"
+        <> cStr (rnsCSymbol rns) <> ", 1)"
     )
 
 -- | Record a host member as referenced so 'assemble' emits its wrapper.
@@ -1547,6 +1587,157 @@ globPrimName g@(GName m nm) = do
       pure $ case Map.lookup g globals of
         Just gd | Just (VPrim pname _) <- gdValue gd -> known pname
         _ -> Nothing
+
+-- | §34.5.3: the complete builtin-primitive table — each primitive maps to
+-- its DIRECT C entry point (@kpf_*@ in the runtime: pure builtins extracted
+-- from @prim_fire_pure@; effectful ones the do-kernel sequences), its arity,
+-- and whether it is an IO action. Codegen emits a direct call to the entry
+-- point (saturated) or a curried @knative@ value (partial) — never a
+-- @kprim_call@/@kprim@ string dispatch. Generated from the runtime's
+-- @prim_arity@/@prim_is_io@ and the @prim_fire_pure@ branch extraction.
+data PrimEntry = PrimEntry !Text !Int !Bool -- ^ C entry point, arity, isIO
+
+primEntries :: Map Text PrimEntry
+primEntries = Map.fromList
+  [ ("__arrayFromList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__arrayIndexUnsafe", PrimEntry "kpf___arrayIndexUnsafe" 2 False)
+  , ("__arrayToList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__atomicRepEq", PrimEntry "kpf___atomicRepEq" 2 False)
+  , ("__byteLength", PrimEntry "kpf___byteLength" 1 False)
+  , ("__byteToNat", PrimEntry "kpf___byteToNat" 1 False)
+  , ("__bytesAppend", PrimEntry "kpf___bytesAppend" 2 False)
+  , ("__bytesBreakIndex", PrimEntry "kpf___bytesBreakIndex" 2 False)
+  , ("__bytesBuilderByte", PrimEntry "kpf___bytesBuilderByte" 2 False)
+  , ("__bytesBuilderBytes", PrimEntry "kpf___bytesBuilderBytes" 2 False)
+  , ("__bytesCompact", PrimEntry "kpf___bytesCompact" 1 False)
+  , ("__bytesContains", PrimEntry "kpf___bytesContains" 2 False)
+  , ("__bytesDrop", PrimEntry "kpf___bytesDrop" 2 False)
+  , ("__bytesEmpty", PrimEntry "kpf___bytesEmpty" 0 False)
+  , ("__bytesEndsWith", PrimEntry "kpf___bytesEndsWith" 2 False)
+  , ("__bytesFind", PrimEntry "kpf___bytesFind" 2 False)
+  , ("__bytesFromList", PrimEntry "kpf___bytesFromList" 1 False)
+  , ("__bytesGet", PrimEntry "kpf___bytesGet" 2 False)
+  , ("__bytesIndexUnsafe", PrimEntry "kpf___bytesIndexUnsafe" 2 False)
+  , ("__bytesIsEmpty", PrimEntry "kpf___bytesIsEmpty" 1 False)
+  , ("__bytesLength", PrimEntry "kpf___bytesLength" 1 False)
+  , ("__bytesSingleton", PrimEntry "kpf___bytesSingleton" 1 False)
+  , ("__bytesSlice", PrimEntry "kpf___bytesSlice" 3 False)
+  , ("__bytesStartsWith", PrimEntry "kpf___bytesStartsWith" 2 False)
+  , ("__bytesTake", PrimEntry "kpf___bytesTake" 2 False)
+  , ("__bytesToList", PrimEntry "kpf___bytesToList" 1 False)
+  , ("__caseFold", PrimEntry "kpf___caseFold" 1 False)
+  , ("__decodeUtf8Chunk", PrimEntry "kpf___decodeUtf8Chunk" 2 False)
+  , ("__decodeUtf8Lossy", PrimEntry "kpf___decodeUtf8Lossy" 1 False)
+  , ("__finishBytesBuilder", PrimEntry "kpf___finishBytesBuilder" 1 False)
+  , ("__finishStringBuilder", PrimEntry "kpf___finishStringBuilder" 1 False)
+  , ("__finishUtf8Decoder", PrimEntry "kpf___finishUtf8Decoder" 1 False)
+  , ("__graphemeCount", PrimEntry "kpf___graphemeCount" 1 False)
+  , ("__graphemeOfString", PrimEntry "kpf___graphemeOfString" 1 False)
+  , ("__graphemeToString", PrimEntry "kpf___graphemeToString" 1 False)
+  , ("__graphemeValid", PrimEntry "kpf___graphemeValid" 1 False)
+  , ("__hashMixBytes", PrimEntry "kpf___hashMixBytes" 2 False)
+  , ("__hashMixDouble", PrimEntry "kpf___hashMixDouble" 2 False)
+  , ("__hashMixInt", PrimEntry "kpf___hashMixInt" 2 False)
+  , ("__hashMixString", PrimEntry "kpf___hashMixString" 2 False)
+  , ("__intAnd", PrimEntry "kpf___intAnd" 2 False)
+  , ("__intOr", PrimEntry "kpf___intOr" 2 False)
+  , ("__intXor", PrimEntry "kpf___intXor" 2 False)
+  , ("__mapFromEntries", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__mapToList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__natToByte", PrimEntry "kpf___natToByte" 1 False)
+  , ("__newBytesBuilder", PrimEntry "kpf___newBytesBuilder" 0 False)
+  , ("__newStringBuilder", PrimEntry "kpf___newStringBuilder" 0 False)
+  , ("__newUtf8Decoder", PrimEntry "kpf___newUtf8Decoder" 0 False)
+  , ("__normalize", PrimEntry "kpf___normalize" 2 False)
+  , ("__queryFromList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__queryToList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__rangeEnum", PrimEntry "kpf___rangeEnum" 3 False)
+  , ("__ratDen", PrimEntry "kpf___ratDen" 1 False)
+  , ("__ratNum", PrimEntry "kpf___ratNum" 1 False)
+  , ("__ratOfInt", PrimEntry "kpf___ratOfInt" 1 False)
+  , ("__scalarCount", PrimEntry "kpf___scalarCount" 1 False)
+  , ("__scalarInRange", PrimEntry "kpf___scalarInRange" 1 False)
+  , ("__scalarOfValue", PrimEntry "kpf___scalarOfValue" 1 False)
+  , ("__scalarToString", PrimEntry "kpf___scalarToString" 1 False)
+  , ("__setFromList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__setToList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__stringBuilderGrapheme", PrimEntry "kpf___stringBuilderGrapheme" 2 False)
+  , ("__stringBuilderScalar", PrimEntry "kpf___stringBuilderScalar" 2 False)
+  , ("__stringBuilderString", PrimEntry "kpf___stringBuilderString" 2 False)
+  , ("__stringCompact", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__stringCursorOffset", PrimEntry "kpf___stringCursorOffset" 2 False)
+  , ("__stringEnd", PrimEntry "kpf___stringEnd" 1 False)
+  , ("__stringGraphemes", PrimEntry "kpf___stringGraphemes" 1 False)
+  , ("__stringNextGrapheme", PrimEntry "kpf___stringNextGrapheme" 2 False)
+  , ("__stringNextScalar", PrimEntry "kpf___stringNextScalar" 2 False)
+  , ("__stringPrevScalar", PrimEntry "kpf___stringPrevScalar" 2 False)
+  , ("__stringScalars", PrimEntry "kpf___stringScalars" 1 False)
+  , ("__stringSentences", PrimEntry "kpf___stringSentences" 1 False)
+  , ("__stringSpan", PrimEntry "kpf___stringSpan" 3 False)
+  , ("__stringStart", PrimEntry "kpf___stringStart" 1 False)
+  , ("__stringWords", PrimEntry "kpf___stringWords" 1 False)
+  , ("__transport", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__uniScalarValue", PrimEntry "kpf___uniScalarValue" 1 False)
+  , ("__utf8Bytes", PrimEntry "kpf___utf8Bytes" 1 False)
+  , ("__utf8Valid", PrimEntry "kpf___utf8Valid" 1 False)
+  , ("addDouble", PrimEntry "kpf_addDouble" 2 False)
+  , ("addInt", PrimEntry "kpf_addInt" 2 False)
+  , ("addRat", PrimEntry "kpf_addRat" 2 False)
+  , ("divDouble", PrimEntry "kpf_divDouble" 2 False)
+  , ("divInt", PrimEntry "kpf_divInt" 2 False)
+  , ("divRat", PrimEntry "kpf_divRat" 2 False)
+  , ("eqByte", PrimEntry "kpf_eqByte" 2 False)
+  , ("eqBytes", PrimEntry "kpf_eqBytes" 2 False)
+  , ("eqDouble", PrimEntry "kpf_eqDouble" 2 False)
+  , ("eqGrapheme", PrimEntry "kpf_eqGrapheme" 2 False)
+  , ("eqInt", PrimEntry "kpf_eqInt" 2 False)
+  , ("eqRat", PrimEntry "kpf_eqRat" 2 False)
+  , ("eqScalar", PrimEntry "kpf_eqScalar" 2 False)
+  , ("eqStr", PrimEntry "kpf_eqStr" 2 False)
+  , ("floatEq", PrimEntry "kpf_floatEq" 2 False)
+  , ("intToDouble", PrimEntry "kpf_intToDouble" 1 False)
+  , ("intToNat", PrimEntry "kpf_intToNat" 1 False)
+  , ("ioBind", PrimEntry "kpf_io_ioBind" 2 True)
+  , ("ioPure", PrimEntry "kpf_io_ioPure" 1 True)
+  , ("ioThen", PrimEntry "kpf_io_ioThen" 2 True)
+  , ("leInt", PrimEntry "kpf_leInt" 2 False)
+  , ("ltByte", PrimEntry "kpf_ltByte" 2 False)
+  , ("ltBytes", PrimEntry "kpf_ltBytes" 2 False)
+  , ("ltDouble", PrimEntry "kpf_ltDouble" 2 False)
+  , ("ltInt", PrimEntry "kpf_ltInt" 2 False)
+  , ("ltRat", PrimEntry "kpf_ltRat" 2 False)
+  , ("ltScalar", PrimEntry "kpf_ltScalar" 2 False)
+  , ("ltStr", PrimEntry "kpf_ltStr" 2 False)
+  , ("modInt", PrimEntry "kpf_modInt" 2 False)
+  , ("mulDouble", PrimEntry "kpf_mulDouble" 2 False)
+  , ("mulInt", PrimEntry "kpf_mulInt" 2 False)
+  , ("mulRat", PrimEntry "kpf_mulRat" 2 False)
+  , ("natOfInt", PrimEntry "kpf_natToInt" 1 False)
+  , ("natToInt", PrimEntry "kpf_natToInt" 1 False)
+  , ("negDouble", PrimEntry "kpf_negDouble" 1 False)
+  , ("negInt", PrimEntry "kpf_negInt" 1 False)
+  , ("negRat", PrimEntry "kpf_negRat" 1 False)
+  , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
+  , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
+  , ("printString", PrimEntry "kpf_io_printString" 1 True)
+  , ("printlnString", PrimEntry "kpf_io_printlnString" 1 True)
+  , ("ratOfDouble", PrimEntry "kpf_ratOfDouble" 1 False)
+  , ("readRef", PrimEntry "kpf_io_readRef" 1 True)
+  , ("showByte", PrimEntry "kpf_showByte" 1 False)
+  , ("showBytes", PrimEntry "kpf_showBytes" 1 False)
+  , ("showDouble", PrimEntry "kpf_showDouble" 1 False)
+  , ("showGrapheme", PrimEntry "kpf_showGrapheme" 1 False)
+  , ("showInt", PrimEntry "kpf_showInt" 1 False)
+  , ("showRat", PrimEntry "kpf_showRat" 1 False)
+  , ("showScalar", PrimEntry "kpf_showScalar" 1 False)
+  , ("showStringLit", PrimEntry "kpf_showStringLit" 1 False)
+  , ("stringAppend", PrimEntry "kpf_stringAppend" 2 False)
+  , ("subDouble", PrimEntry "kpf_subDouble" 2 False)
+  , ("subInt", PrimEntry "kpf_subInt" 2 False)
+  , ("subRat", PrimEntry "kpf_subRat" 2 False)
+  , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 2 False)
+  , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
+  ]
 
 -- | QW1: the statically-known saturated pure primitives that have a direct C
 -- helper (`kp_…` in the runtime).  A saturated call to one of these is
@@ -1625,7 +1816,7 @@ compileApp term = do
               emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
               pure
                 ( "knative_sat(" <> wrapperCName rns <> ", "
-                    <> T.pack (show arity) <> ", " <> arr <> ")"
+                    <> T.pack (show arity) <> ", " <> arr <> ", 1)"
                 )
         _ -> compileAppGlob g sargs term
     _ -> compileAppDefault term
@@ -1635,20 +1826,31 @@ compileAppGlob :: GName -> [(Icit, Term)] -> Term -> Gen Text
 compileAppGlob g sargs term = do
       mp <- globPrimName g
       case mp of
-        Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] -> do
-          aes <- mapM compileErasableArg explArgs
-          case primDirect pname of
-            -- QW1: a statically known saturated pure primitive is a DIRECT
-            -- helper call — no string dispatch, no arity/IO check, no
-            -- per-call argument array (the dominant cost in hot numeric
-            -- loops).  Only the exact-arity case takes this path; a partial
-            -- application falls through to the curried 'kprim_call' below.
-            Just (helper, ar) | length aes == ar ->
-              pure (helper <> "(" <> T.intercalate ", " aes <> ")")
-            _ -> do
-              arr <- freshN "pa_"
-              emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
-              pure ("kprim_call(" <> cStr pname <> ", " <> T.pack (show (length aes)) <> ", " <> arr <> ")")
+        Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
+          case Map.lookup pname primEntries of
+            -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
+            -- entry point — no string dispatch. A pure builtin: the QW1
+            -- positional fast path ('primDirect', no argument array) when
+            -- available, else a direct @kpf_x(arr)@. An IO builtin: a
+            -- saturated @knative_sat@ (the suspended action krun_io fires by
+            -- calling the entry point). Partial / over-application falls
+            -- through to the curried bare-reference path (emitPrim → knative).
+            Just (PrimEntry cfn ar isio) | length explArgs == ar -> do
+              markPrimUsed pname
+              aes <- mapM compileErasableArg explArgs
+              if isio
+                then do
+                  arr <- freshN "na_"
+                  emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+                  pure ("knative_sat(" <> cfn <> ", " <> T.pack (show ar) <> ", " <> arr <> ", 1)")
+                else case primDirect pname of
+                  Just (helper, har) | har == ar ->
+                    pure (helper <> "(" <> T.intercalate ", " aes <> ")")
+                  _ -> do
+                    arr <- freshN "pa_"
+                    emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+                    pure (cfn <> "(" <> arr <> ")")
+            _ -> compileAppDefault term -- partial / over-applied: curried path
         Just _ -> compileAppDefault term -- prim with no explicit args yet
         Nothing -> do
           ar <- globFuncArity g

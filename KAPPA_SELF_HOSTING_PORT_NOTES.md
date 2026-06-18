@@ -47,7 +47,7 @@ string/KValue primitive dispatch in optimized native output. See NATIVE_BACKEND_
 | N-11 | MED | PARTIAL | `CType` closed 8-enum, not full §26.1.1 exact-width scalars | created `Kappa.Backend.NativeFfi` (CType↔C-ABI↔Kappa-type↔marshalling); widening CType to exact-width (Int8/16/32, UInt*, Size) still open |
 | N-12 | MED | open | adapter mode (§26.1.3) + trusted summaries (§26.1.5) not modeled | model adapter mode + trusted-summary types |
 | N-13 | MED | open | `prebuiltNative` expectedIdentity decoded then never verified (§36.28) | verify + fold into identity (with N-6) |
-| N-14 | MED | open | general language prims (`__stringScalars`, `printlnString`, unlisted IO prims) still go through `kprim_call`/`prim_fire_pure` string dispatch + `prim_arity`/`prim_is_io` linear scans (interpreter-compat runtime path, NOT native FFI) | opcode-switch the runtime builtin table; quarantined from native-FFI design but a real perf/cleanliness item |
+| N-14 | HIGH | DONE | builtin prims (`printlnString`, intrinsics, etc.) string-dispatched via `kprim_call`/`prim_fire_pure` in optimized native output | `prim_fire_pure` branches extracted into 119 direct `kpf_*` C entry points; codegen emits a direct call (saturated pure → `kpf_x(arr)`/positional `kp_*`; IO → `knative_sat(kpf_io_x,…,1)`; partial → curried `knative`). Emitted `.kappa.c` has ZERO `kprim_call`/`kprim` (test asserts it). `kprim_call`/`prim_fire_pure` remain only as the never-emitted bootstrap K_PRIM path |
 
 ## Findings / lessons
 

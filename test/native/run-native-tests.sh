@@ -394,6 +394,28 @@ else
   echo "   SKIP: sqlite3 not available for the demo"
 fi
 
+echo "== optimized native output has ZERO builtin string dispatch (§34.5.3; gap-5) =="
+# Builtins (printlnString, arithmetic, intrinsics) and native host symbols must
+# lower to DIRECT typed call sites (kpf_*/kw_* via knative); the emitted
+# .kappa.c must contain no kprim_call/kprim string-dispatched primitive firing.
+if pkg-config --exists sqlite3 2>/dev/null; then
+  rm -f "$ROOT/examples/native/http_sqlite/server.kappa.c"
+  if timeout 200 $KAPPA build --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/sd" >"$WORK/sd.log" 2>&1; then
+    SC="$ROOT/examples/native/http_sqlite/server.kappa.c"
+    nks="$(grep -cE 'kprim_call\(|kprim\(' "$SC" 2>/dev/null || true)"
+    if [ "$nks" = "0" ] && grep -q "kpf_io_printlnString" "$SC"; then
+      echo "   ok (0 kprim_call/kprim; printlnString + builtins lowered to direct kpf_* calls)"
+    else
+      echo "   FAIL: optimized output still string-dispatches builtins ($nks kprim sites)"; grep -nE 'kprim_call\(|kprim\(' "$SC" | head | sed 's/^/     /'; fails=$((fails+1))
+    fi
+    rm -f "$SC"
+  else
+    echo "   FAIL: demo emit-c failed"; cat "$WORK/sd.log" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+else
+  echo "   SKIP: pkg-config sqlite3 not available"
+fi
+
 echo "== native ABI discovery + verification against the real headers (§26.1.5/§36.28) =="
 if pkg-config --exists sqlite3 2>/dev/null; then
   # (a) a real build records verified-against-sqlite3.h provenance
