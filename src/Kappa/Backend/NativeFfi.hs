@@ -135,6 +135,14 @@ wrapperDefinition rns =
       r -> "return " <> box r call <> ";"
 
 -- | Unbox a @KValue*@ expression to a C value of the parameter's ABI type.
+--
+-- NOTE (§26.1.1 String ABI convention): @CtString@ marshals a Kappa @String@
+-- to/from a NUL-terminated @const char *@ (@kas_str@/@kstr0@). A Kappa String
+-- may contain embedded U+0000; such a string is truncated at the first NUL
+-- across this boundary, and a C result is read up to its NUL terminator. This
+-- is the documented conservative C-FFI string convention (no length channel);
+-- a binding needing byte-exact NUL-bearing data should use @CtRawPtr@ + an
+-- explicit length parameter.
 unbox :: CType -> Text -> Text
 unbox ty e = case ty of
   CtUnit -> "(void)" <> e -- a unit param carries no C argument; never emitted in practice

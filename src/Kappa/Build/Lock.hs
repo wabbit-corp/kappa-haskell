@@ -77,8 +77,14 @@ hashBytes = BS.foldl' hashByte
 
 -- ── lockfile format ──────────────────────────────────────────────────
 
+-- | The lockfile header. §36.6A requires a reproducibility artifact to state
+-- the digest algorithm used to compare identities — recorded here. (The digest
+-- is FNV-1a-64 over a length-prefixed, path-sorted encoding: a sound
+-- change-detection identity for drift; not a cryptographic primitive.)
 lockHeader :: Text
-lockHeader = "# kappa.lock v1 (generated; records resolved path-dependency content identities)"
+lockHeader =
+  "# kappa.lock v1 (generated) — entry kinds: path/git/registry/url/host-binding; "
+    <> "digest: fnv1a-64 (length-prefixed, sorted; §36.6A change-detection identity)"
 
 -- | A content line is @<kind> <id> <key>@. The kind and identity come
 -- first (tokens with no spaces) so the key (a path, which may contain
