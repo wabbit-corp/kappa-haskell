@@ -245,6 +245,8 @@ registry =
       "A source module's effective name is at or under a reserved host binding root (host.jvm/host.dotnet/host.native/host.python); those modules are supplied from host metadata or ABI descriptions, not user source (Spec §8.3.5)."
   , ent "E_NATIVE_BINDING_UNSUPPORTED" (Just "kappa-hs.build.native-unsupported")
       "A manifest native binding provides a module not under the host.native root, or declares no symbol surface; the selected backend profile cannot realize it (Spec §27.1.1, §34.5.3, §36.28)."
+  , ent "E_BUILD_FRAGMENT_AXIS_CONFLICT" (Just "kappa-hs.build.fragment-axis")
+      "A build target, or a selected source fragment, uses more than one tag from the same exclusive fragment axis (Spec §36.12)."
   , ent "E_BUILD_NATIVE_ABI" (Just "kappa-hs.build.native-abi")
       "Build-phase native ABI discovery/verification failed: a pkg-config package was missing or older than the manifest's minVersion, a declared header was not on the resolved include path, or a 'verify' C declaration disagreed with the real header's declaration (Spec §26.1.5, §27.1.1, §36.28)."
   , ent "E_BUILD_BINDING_NOT_FOUND" (Just "kappa-hs.build.binding-not-found")

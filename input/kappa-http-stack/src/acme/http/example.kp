@@ -1,0 +1,72 @@
+module acme.http.example
+
+import acme.http.core.*
+import acme.http.router as route
+import acme.http.endpoint as endpoint
+import acme.http.middleware as middleware
+import acme.http.server as server
+
+-- Yesod-style route datatype for reverse routing.
+data SiteRoute : Type =
+    HomeR
+    HealthR
+    EchoR
+
+urlFor : endpoint.UrlFor SiteRoute
+let urlFor r =
+    match r
+    case HomeR -> "/"
+    case HealthR -> "/health"
+    case EchoR -> "/echo"
+
+type Env : Type =
+    (appName : String)
+
+data AppError : Type =
+    AppFailed (message : String)
+
+home : route.App Env AppError
+let home env ctx =
+    pure (textResponse statusOk ("hello from " + env.appName + "\n"))
+
+healthEndpoint : endpoint.Endpoint Unit String
+let healthEndpoint =
+    endpoint.textEndpoint "health" Get (endpoint.unitPath (urlFor HealthR))
+
+echoEndpoint : endpoint.Endpoint Unit String
+let echoEndpoint =
+    endpoint.Endpoint
+        { name = "echo"
+        , method = Post
+        , path = endpoint.unitPath (urlFor EchoR)
+        , decode = \req -> Ok ()
+        , encode = \req output -> pure (textResponse statusOk output)
+        }
+
+healthImpl : Unit -> IO AppError String
+let healthImpl _ = pure "ok\n"
+
+echoImpl : Unit -> IO AppError String
+let echoImpl _ = pure "echo endpoint placeholder\n"
+
+routes : route.Routes Env AppError
+let routes =
+    route.Routes
+        [ route.get (route.pathEq (urlFor HomeR)) home
+        , endpoint.implement healthEndpoint healthImpl
+        , endpoint.implement echoEndpoint echoImpl
+        ]
+
+app : route.App Env AppError
+let app =
+    middleware.pipeline
+        [ middleware.withRequestId
+        , middleware.corsAllowAll
+        , middleware.recoverHttp
+        ]
+        (route.runRoutes routes)
+
+main : IO HttpError Unit
+let main =
+    let env : Env = (appName = "Kappa HTTP")
+    in server.serve defaultConfig env app

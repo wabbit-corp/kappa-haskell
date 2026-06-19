@@ -1,11 +1,12 @@
 -- expect: BUILD_OK
 -- §8.1: a fragment-named file (main.linux.kp) derives module "main" — the
--- fragment segment is not part of the module name.
+-- fragment segment is not part of the module name. §36.12: the "linux" tag is
+-- declared by an axis and enabled by the target, so the fragment is selected.
 let buildConfig : BuildConfig = package { name = "frag"
     , version = semver "1.0.0"
     , sourceRoots = [sourceRoot "src"]
-    , fragmentAxes = []
+    , fragmentAxes = [axis "platform" [tag "linux"]]
     , dependencies = []
     , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], surface = symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi = cAbi, inputs = [], link = noLink, load = systemLoader }]
-    , targets = [executable { name = "frag", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "main", modules = modulesUnder "main", dependencies = [], hostBindings = ["sqlite3"] }]
+    , targets = [executable { name = "frag", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags ["linux"], main = module "main", modules = modulesUnder "main", dependencies = [], hostBindings = ["sqlite3"] }]
     }

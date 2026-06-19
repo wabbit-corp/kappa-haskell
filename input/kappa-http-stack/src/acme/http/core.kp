@@ -1,0 +1,218 @@
+module acme.http.core
+
+import std.bytes as bytes
+import std.unicode as unicode
+
+-- Protocol and transport failures owned by the HTTP stack.
+data HttpError : Type =
+    TransportError (message : String)
+    ProtocolError  (status : Status) (message : String)
+    HeaderTooLarge (limit : Nat)
+    BodyTooLarge   (limit : Nat)
+    ConnectionClosed
+    RouteNotFound  (method : Method) (target : String)
+    CodecError     (message : String)
+
+-- Application code chooses its own error type `e`. Server code runs handlers
+-- in a variant channel containing both protocol errors and application errors.
+type ServerError (e : Type) =
+    (| HttpError | e |)
+
+data Method : Type =
+    Get
+    Post
+    Put
+    Delete
+    Head
+    Options
+    Patch
+    Trace
+    Connect
+    OtherMethod (name : String)
+
+data HttpVersion : Type =
+    Http10
+    Http11
+    OtherVersion (name : String)
+
+data Scheme : Type =
+    Http
+    Https
+
+data Status : Type =
+    Status { code : Int, reason : String }
+
+data MediaType : Type =
+    MediaType { main : String, sub : String, params : List HeaderParam }
+
+data HeaderParam : Type =
+    HeaderParam { name : String, value : String }
+
+data Header : Type =
+    Header { name : String, value : String }
+
+type Headers = List Header
+
+data QueryParam : Type =
+    QueryParam { name : String, value : String }
+
+data Peer : Type =
+    Peer { host : String, port : Int }
+
+data Body : Type =
+    EmptyBody
+    StrictBody (bytes : Bytes)
+    StreamBody (length : Option Nat) (chunks : OnceQuery Bytes)
+
+data Request : Type =
+    Request
+        { method  : Method
+        , target  : String
+        , path    : List String
+        , query   : List QueryParam
+        , version : HttpVersion
+        , headers : Headers
+        , body    : Body
+        , remote  : Option Peer
+        }
+
+data Response : Type =
+    Response
+        { status  : Status
+        , headers : Headers
+        , body    : Body
+        }
+
+data RequestContext : Type =
+    RequestContext
+        { request : Request
+        , routeParams : List QueryParam
+        , requestId : Option String
+        , startedAt : Instant
+        }
+
+data ReadResult : Type =
+    PeerClosed
+    ReadBytes (chunk : Bytes)
+
+data KeepAlive : Type =
+    CloseAfterResponse
+    ReuseConnection
+
+data ServerConfig : Type =
+    ServerConfig
+        { host : String
+        , port : Int
+        , backlog : Int
+        , readChunkBytes : Nat
+        , maxHeaderBytes : Nat
+        , maxStrictBodyBytes : Nat
+        , defaultKeepAlive : KeepAlive
+        , serverName : String
+        }
+
+defaultConfig : ServerConfig
+let defaultConfig =
+    ServerConfig
+        { host = "127.0.0.1"
+        , port = 8080
+        , backlog = 1024
+        , readChunkBytes = 8192
+        , maxHeaderBytes = 65536
+        , maxStrictBodyBytes = 10485760
+        , defaultKeepAlive = ReuseConnection
+        , serverName = "kappa-http"
+        }
+
+statusOk : Status
+let statusOk = Status { code = 200, reason = "OK" }
+
+statusCreated : Status
+let statusCreated = Status { code = 201, reason = "Created" }
+
+statusNoContent : Status
+let statusNoContent = Status { code = 204, reason = "No Content" }
+
+statusBadRequest : Status
+let statusBadRequest = Status { code = 400, reason = "Bad Request" }
+
+statusNotFound : Status
+let statusNotFound = Status { code = 404, reason = "Not Found" }
+
+statusMethodNotAllowed : Status
+let statusMethodNotAllowed = Status { code = 405, reason = "Method Not Allowed" }
+
+statusUnsupportedMediaType : Status
+let statusUnsupportedMediaType = Status { code = 415, reason = "Unsupported Media Type" }
+
+statusInternalServerError : Status
+let statusInternalServerError = Status { code = 500, reason = "Internal Server Error" }
+
+methodEq : Method -> Method -> Bool
+let methodEq a b =
+    match (a, b)
+    case (Get, Get) -> True
+    case (Post, Post) -> True
+    case (Put, Put) -> True
+    case (Delete, Delete) -> True
+    case (Head, Head) -> True
+    case (Options, Options) -> True
+    case (Patch, Patch) -> True
+    case (Trace, Trace) -> True
+    case (Connect, Connect) -> True
+    case (OtherMethod x, OtherMethod y) -> x == y
+    case _ -> False
+
+methodName : Method -> String
+let methodName m =
+    match m
+    case Get -> "GET"
+    case Post -> "POST"
+    case Put -> "PUT"
+    case Delete -> "DELETE"
+    case Head -> "HEAD"
+    case Options -> "OPTIONS"
+    case Patch -> "PATCH"
+    case Trace -> "TRACE"
+    case Connect -> "CONNECT"
+    case OtherMethod name -> name
+
+versionName : HttpVersion -> String
+let versionName v =
+    match v
+    case Http10 -> "HTTP/1.0"
+    case Http11 -> "HTTP/1.1"
+    case OtherVersion name -> name
+
+emptyRequest : Method -> String -> Request
+let emptyRequest method target =
+    Request
+        { method = method
+        , target = target
+        , path = Nil
+        , query = Nil
+        , version = Http11
+        , headers = Nil
+        , body = EmptyBody
+        , remote = None
+        }
+
+emptyResponse : Status -> Response
+let emptyResponse status =
+    Response { status = status, headers = Nil, body = EmptyBody }
+
+bytesResponse : Status -> Headers -> Bytes -> Response
+let bytesResponse status headers payload =
+    Response { status = status, headers = headers, body = StrictBody payload }
+
+textResponse : Status -> String -> Response
+let textResponse status text =
+    bytesResponse status
+        [ Header { name = "content-type", value = "text/plain; charset=utf-8" } ]
+        (unicode.utf8Bytes text)
+
+htmlResponse : Status -> String -> Response
+let htmlResponse status text =
+    bytesResponse status
+        [ Header { name = "content-type", value = "text/html; charset=utf-8" } ]
+        (unicode.utf8Bytes text)

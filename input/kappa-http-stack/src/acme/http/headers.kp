@@ -1,0 +1,116 @@
+module acme.http.headers
+
+import std.bytes as bytes
+import std.unicode as unicode
+import acme.http.core.*
+
+-- Backend-independent header names are stored in normalized lowercase ASCII.
+-- Non-ASCII bytes in header names are rejected by the wire parser before they
+-- reach this module.
+normalizeName : String -> String
+let normalizeName s =
+    unicode.decodeUtf8Lossy (normalizeNameBytes (unicode.utf8Bytes s))
+
+normalizeNameBytes : Bytes -> Bytes
+let normalizeNameBytes bs =
+    block
+        go : Bytes -> BytesBuilder -> Bytes
+        let go rest builder decreases bytes.bytesLength rest =
+            match bytes.bytesGet rest 0
+            case None -> bytes.finishBytesBuilder builder
+            case Some b ->
+                let c = asciiLowerHeaderByte b
+                go (bytes.bytesDrop 1 rest) (bytes.bytesBuilderByte c builder)
+        go bs bytes.newBytesBuilder
+
+asciiLowerHeaderByte : Byte -> Byte
+let asciiLowerHeaderByte b =
+    if b == b'A' then b'a'
+    elif b == b'B' then b'b'
+    elif b == b'C' then b'c'
+    elif b == b'D' then b'd'
+    elif b == b'E' then b'e'
+    elif b == b'F' then b'f'
+    elif b == b'G' then b'g'
+    elif b == b'H' then b'h'
+    elif b == b'I' then b'i'
+    elif b == b'J' then b'j'
+    elif b == b'K' then b'k'
+    elif b == b'L' then b'l'
+    elif b == b'M' then b'm'
+    elif b == b'N' then b'n'
+    elif b == b'O' then b'o'
+    elif b == b'P' then b'p'
+    elif b == b'Q' then b'q'
+    elif b == b'R' then b'r'
+    elif b == b'S' then b's'
+    elif b == b'T' then b't'
+    elif b == b'U' then b'u'
+    elif b == b'V' then b'v'
+    elif b == b'W' then b'w'
+    elif b == b'X' then b'x'
+    elif b == b'Y' then b'y'
+    elif b == b'Z' then b'z'
+    else b
+
+header : String -> String -> Header
+let header name value =
+    Header { name = normalizeName name, value = value }
+
+get : String -> Headers -> Option String
+let get name headers decreases listLength headers =
+    let wanted = normalizeName name
+    in
+        match headers
+        case Nil -> None
+        case (::) h rest ->
+            if h.name == wanted then Some h.value else get wanted rest
+
+has : String -> Headers -> Bool
+let has name headers =
+    match get name headers
+    case Some _ -> True
+    case None -> False
+
+put : Header -> Headers -> Headers
+let put h headers =
+    block
+        go : Bool -> Headers -> Headers
+        let go replaced rest decreases listLength rest =
+            match rest
+            case Nil ->
+                if replaced then Nil else [h]
+            case (::) x xs ->
+                if x.name == h.name then (::) h (go True xs)
+                else (::) x (go replaced xs)
+        go False headers
+
+append : Header -> Headers -> Headers
+let append h hs = (::) h hs
+
+contentType : Headers -> Option String
+let contentType = get "content-type"
+
+accept : Headers -> Option String
+let accept = get "accept"
+
+connection : Headers -> Option String
+let connection = get "connection"
+
+transferEncoding : Headers -> Option String
+let transferEncoding = get "transfer-encoding"
+
+contentLengthRaw : Headers -> Option String
+let contentLengthRaw = get "content-length"
+
+withContentLength : Nat -> Headers -> Headers
+let withContentLength n hs =
+    put (header "content-length" (show n)) hs
+
+withServer : String -> Headers -> Headers
+let withServer server hs =
+    put (header "server" server) hs
+
+withConnectionClose : Headers -> Headers
+let withConnectionClose hs =
+    put (header "connection" "close") hs

@@ -1,0 +1,128 @@
+module acme.http.codec
+
+import std.bytes as bytes
+import std.unicode as unicode
+import acme.http.core.*
+import acme.http.headers as headers
+import acme.http.body as body
+
+-- Entity codecs are deliberately simple. They are application-level, not wire
+-- parsers. Wire transfer decoding happens before this layer.
+trait EntityCodec (a : Type) =
+    mediaTypes : List MediaType
+
+    decodeEntity :
+        MediaType -> Bytes -> Result HttpError a
+
+    encodeEntity :
+        MediaType -> a -> Result HttpError Body
+
+textPlain : MediaType
+let textPlain = MediaType { main = "text", sub = "plain", params = [ HeaderParam { name = "charset", value = "utf-8" } ] }
+
+applicationJson : MediaType
+let applicationJson = MediaType { main = "application", sub = "json", params = Nil }
+
+applicationOctetStream : MediaType
+let applicationOctetStream = MediaType { main = "application", sub = "octet-stream", params = Nil }
+
+mediaTypeName : MediaType -> String
+let mediaTypeName mt = mt.main + "/" + mt.sub
+
+mediaEq : MediaType -> MediaType -> Bool
+let mediaEq a b = (a.main == b.main) && (thunk (a.sub == b.sub))
+
+firstSupported : List MediaType -> Option MediaType
+let firstSupported mts =
+    match mts
+    case Nil -> None
+    case (::) mt _ -> Some mt
+
+-- Minimal negotiation: choose the first supported media type when the client
+-- gives no Accept header, or the first supported type whose `main/sub` appears
+-- in Accept. Full quality-factor sorting can be added without changing users.
+negotiate : Headers -> List MediaType -> Result HttpError MediaType
+let negotiate hs supported =
+    match headers.accept hs
+    case None ->
+        match firstSupported supported
+        case Some mt -> Ok mt
+        case None -> Err (CodecError "no response media type available")
+    case Some raw ->
+        match findAccepted raw supported
+        case Some mt -> Ok mt
+        case None -> Err (ProtocolError statusUnsupportedMediaType "no acceptable response media type")
+
+findAccepted : String -> List MediaType -> Option MediaType
+let findAccepted raw supported decreases listLength supported =
+    match supported
+    case Nil -> None
+    case (::) mt rest ->
+        if stringContains raw (mediaTypeName mt) || (thunk (stringContains raw "*/*")) then Some mt
+        else findAccepted raw rest
+
+stringContains : String -> String -> Bool
+let stringContains haystack needle =
+    bytes.bytesContains (unicode.utf8Bytes haystack) (unicode.utf8Bytes needle)
+
+receive :
+    forall (a : Type).
+    (@ codec : EntityCodec a) ->
+    Request -> IO HttpError a
+let receive @codec req =
+    do
+        let payload <- body.collect req.body
+        let media =
+            match headers.contentType req.headers
+            case Some s -> parseMediaTypeLossy s
+            case None -> applicationOctetStream
+        match codec.decodeEntity media payload
+        case Ok value -> pure value
+        case Err err -> raise err
+
+respond :
+    forall (a : Type).
+    (@ codec : EntityCodec a) ->
+    Request -> Status -> a -> IO HttpError Response
+let respond @codec req status value =
+    do
+        let mt <- liftResult (negotiate req.headers codec.mediaTypes)
+        let b <- liftResult (codec.encodeEntity mt value)
+        pure (Response
+            { status = status
+            , headers = [ headers.header "content-type" (mediaTypeName mt) ]
+            , body = b
+            })
+
+liftResult : Result HttpError a -> IO HttpError a
+let liftResult r =
+    match r
+    case Ok x -> pure x
+    case Err e -> raise e
+
+parseMediaTypeLossy : String -> MediaType
+let parseMediaTypeLossy s =
+    if stringContains s "application/json" then applicationJson
+    elif stringContains s "text/plain" then textPlain
+    else applicationOctetStream
+
+instance EntityCodec String =
+    let mediaTypes = [ textPlain ]
+
+    let decodeEntity mt payload =
+        if mediaEq mt textPlain then
+            match unicode.decodeUtf8 payload
+            case Ok s -> Ok s
+            case Err _ -> Err (CodecError "request body is not valid UTF-8")
+        else Err (CodecError "expected text/plain")
+
+    let encodeEntity mt value =
+        if mediaEq mt textPlain then Ok (body.text value)
+        else Err (CodecError "cannot encode String as requested media type")
+
+instance EntityCodec Bytes =
+    let mediaTypes = [ applicationOctetStream ]
+
+    let decodeEntity _ payload = Ok payload
+
+    let encodeEntity _ value = Ok (body.strict value)

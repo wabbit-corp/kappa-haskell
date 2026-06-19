@@ -1,0 +1,3 @@
+# Trusted host-binding summary placeholder
+
+The .NET socket wrapper uses asynchronous socket APIs where available. Host exceptions crossing the wrapper are translated to `HttpError.TransportError` unless the selected binding generator provides a more specific typed mapping.

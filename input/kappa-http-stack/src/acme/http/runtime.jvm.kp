@@ -1,0 +1,112 @@
+module acme.http.runtime
+
+import std.bytes as bytes
+import std.unicode as unicode
+import acme.http.core.(HttpError, TransportError, ReadResult, PeerClosed, ReadBytes, Peer)
+
+import host.jvm.java.net.InetSocketAddress as InetSocketAddress
+import host.jvm.java.nio.ByteBuffer as ByteBuffer
+import host.jvm.java.nio.channels.SelectionKey as SelectionKey
+import host.jvm.java.nio.channels.Selector as Selector
+import host.jvm.java.nio.channels.ServerSocketChannel as ServerSocketChannel
+import host.jvm.java.nio.channels.SocketChannel as SocketChannel
+
+opaque data Listener : Type =
+    Listener (server : ServerSocketChannel.ServerSocketChannel)
+             (selector : Selector.Selector)
+
+opaque data Connection : Type =
+    Connection (socket : SocketChannel.SocketChannel)
+               (readSelector : Selector.Selector)
+               (writeSelector : Selector.Selector)
+
+hostError : String -> HttpError
+let hostError message = TransportError message
+
+bind : String -> Int -> Int -> IO HttpError Listener
+let bind host port backlog =
+    do
+        let selector <- Selector.open ()
+        let server <- ServerSocketChannel.open ()
+        let address <- InetSocketAddress.new host port
+        let _ <- ServerSocketChannel.configureBlocking server False
+        let _ <- ServerSocketChannel.bind server address backlog
+        let _ <- ServerSocketChannel.register server selector SelectionKey.OP_ACCEPT
+        pure (Listener server selector)
+
+accept : (& listener : Listener) -> IO HttpError Connection
+let accept listener =
+    do
+        var accepted = None
+        while !(readRef accepted) == None do
+            let _ <- blocking (Selector.select listener.selector)
+            match !(ServerSocketChannel.accept listener.server)
+            case None -> cede
+            case Some socket ->
+                let _ <- SocketChannel.configureBlocking socket False
+                let rs <- Selector.open ()
+                let ws <- Selector.open ()
+                let _ <- SocketChannel.register socket rs SelectionKey.OP_READ
+                let _ <- SocketChannel.register socket ws SelectionKey.OP_WRITE
+                accepted = Some (Connection socket rs ws)
+        match !(readRef accepted)
+        case Some c -> pure c
+        case None -> raise (hostError "accept loop ended without a connection")
+
+readSome : (& conn : Connection) -> Nat -> IO HttpError ReadResult
+let readSome conn maxBytes =
+    do
+        let buf <- ByteBuffer.allocate maxBytes
+        var done = False
+        var result = PeerClosed
+        while not (!(readRef done)) do
+            let _ <- blocking (Selector.select conn.readSelector)
+            let n <- SocketChannel.read conn.socket buf
+            if n < 0 then
+                do
+                    result = PeerClosed
+                    done = True
+            elif n == 0 then
+                cede
+            else
+                do
+                    let arr <- ByteBuffer.flipToBytes buf
+                    result = ReadBytes arr
+                    done = True
+        readRef result
+
+writeAll : (& conn : Connection) -> Bytes -> IO HttpError Unit
+let writeAll conn payload =
+    do
+        var offset = 0
+        let total = bytes.bytesLength payload
+        while !(readRef offset) < total do
+            let i <- readRef offset
+            let chunk = bytes.bytesDrop i payload
+            let buf <- ByteBuffer.wrap chunk
+            let _ <- blocking (Selector.select conn.writeSelector)
+            let n <- SocketChannel.write conn.socket buf
+            if n == 0 then cede else offset = i + n
+        pure ()
+
+flush : (& conn : Connection) -> IO HttpError Unit
+let flush conn = pure ()
+
+peer : (& conn : Connection) -> IO HttpError Peer
+let peer conn =
+    do
+        let addr <- SocketChannel.remoteAddress conn.socket
+        pure (Peer { host = InetSocketAddress.hostString addr, port = InetSocketAddress.port addr })
+
+closeListener : (1 listener : Listener) -> IO HttpError Unit
+let closeListener listener =
+    do
+        let _ <- Selector.close listener.selector
+        ServerSocketChannel.close listener.server
+
+closeConnection : (1 conn : Connection) -> IO HttpError Unit
+let closeConnection conn =
+    do
+        let _ <- Selector.close conn.readSelector
+        let _ <- Selector.close conn.writeSelector
+        SocketChannel.close conn.socket

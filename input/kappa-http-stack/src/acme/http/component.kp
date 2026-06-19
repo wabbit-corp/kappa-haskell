@@ -1,0 +1,49 @@
+module acme.http.component
+
+import acme.http.core.*
+import acme.http.router as router
+
+-- Snaplet-style composition without hiding lifecycle in global state.
+data Component (env : Type) (e : Type) : Type =
+    Component
+        { name : String
+        , routes : router.Routes env e
+        , startup : (& env : env) -> IO (ServerError e) Unit
+        , shutdown : (& env : env) -> IO (ServerError e) Unit
+        }
+
+component : String -> router.Routes env e -> Component env e
+let component name routes =
+    Component
+        { name = name
+        , routes = routes
+        , startup = \_ -> pure ()
+        , shutdown = \_ -> pure ()
+        }
+
+combine : Component env e -> Component env e -> Component env e
+let combine a b =
+    Component
+        { name = a.name + "+" + b.name
+        , routes = router.concat a.routes b.routes
+        , startup = \env -> do a.startup env; b.startup env
+        , shutdown = \env -> do b.shutdown env; a.shutdown env
+        }
+
+startupAll : List (Component env e) -> (& env : env) -> IO (ServerError e) Unit
+let startupAll cs env decreases listLength cs =
+    match cs
+    case Nil -> pure ()
+    case (::) c rest -> do c.startup env; startupAll rest env
+
+shutdownAll : List (Component env e) -> (& env : env) -> IO (ServerError e) Unit
+let shutdownAll cs env decreases listLength cs =
+    match cs
+    case Nil -> pure ()
+    case (::) c rest -> do shutdownAll rest env; c.shutdown env
+
+routesOf : List (Component env e) -> router.Routes env e
+let routesOf cs decreases listLength cs =
+    match cs
+    case Nil -> router.empty
+    case (::) c rest -> router.concat c.routes (routesOf rest)

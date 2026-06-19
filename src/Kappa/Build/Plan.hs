@@ -109,19 +109,33 @@ resolveExecutable manifestDir bc mTarget =
             -- unconditionally — independent of whether this target's `modules`
             -- selector happens to include it (otherwise a reserved-root source
             -- file outside the built selector would slip through unchecked).
-            let reservedDiags =
+            -- §36.12: the target's enabled fragment-tag set selects which
+            -- same-module fragments participate. A file is selected iff every
+            -- one of its fragment suffixes is enabled (a no-suffix file always);
+            -- unselected fragments (e.g. runtime.jvm.kp under the native target)
+            -- do not participate at all.
+            let enabled = tFragments tgt
+                fragSelected (f, _) = fragmentSelected enabled f
+                selectedAll = filter fragSelected allFiles
+                reservedDiags =
                   [ d
-                  | (f, mn) <- allFiles
+                  | (f, mn) <- selectedAll
                   , Just d <- [reservedHostRootDiag mn (Span f (Pos 1 1) (Pos 1 1))]
                   ]
+                -- §36.12 MUST: target / selected-file axis-exclusivity.
+                fragDiags =
+                  maybe [] pure (fragmentTargetDiag (manifestDir </> manifestBasename) (bcFragmentAxes bc) (tName tgt) enabled)
+                    ++ [d | (f, _) <- selectedAll, Just d <- [fragmentFileDiag (bcFragmentAxes bc) f]]
                 selected =
                   [ (f, mn)
-                  | (f, mn) <- allFiles
+                  | (f, mn) <- selectedAll
                   , mn == entryMod || matchesSelector (tModules tgt) mn
                   ]
-            if not (null reservedDiags)
+            if not (null fragDiags)
+              then pure (Left fragDiags)
+              else if not (null reservedDiags)
               then pure (Left reservedDiags)
-              else if not (any ((== entryMod) . snd) allFiles)
+              else if not (any ((== entryMod) . snd) selectedAll)
               then pure (Left [entryNotFound (tName tgt) modName])
               else do
                 -- §36.23: resolve the target's dependencies and bring each
@@ -476,6 +490,58 @@ matchesSelector :: ModuleSelector -> ModuleName -> Bool
 matchesSelector sel (ModuleName segs) = case sel of
   SelModule m -> segs == T.splitOn "." m
   SelModulesUnder p -> let ps = T.splitOn "." p in take (length ps) segs == ps
+
+-- | §8.1/§36.12: the fragment-suffix tags of a source file — the dotted
+-- segments of its final path component between the module-name leaf and the
+-- @.kp@ extension. @runtime.kp@ → @[]@; @runtime.native.kp@ → @["native"]@;
+-- @log.native.linux.kp@ → @["native","linux"]@.
+fragmentSuffixes :: FilePath -> [Text]
+fragmentSuffixes file =
+  case T.splitOn "." (T.pack (takeFileName file)) of
+    (_leaf : rest@(_ : _)) -> init rest -- drop the leaf and the trailing "kp"
+    _ -> []
+
+-- | §36.12: is @file@ selected for a target whose enabled fragment-tag set is
+-- @enabled@? A file is selected iff every one of its fragment suffixes is in
+-- @enabled@; a file with no suffixes is always selected.
+fragmentSelected :: [Text] -> FilePath -> Bool
+fragmentSelected enabled file = all (`elem` enabled) (fragmentSuffixes file)
+
+-- | §36.12: a SELECTED source file MUST NOT use more than one tag from the
+-- same exclusive fragment axis. (An undeclared suffix is not an error — it
+-- simply means the file is not selected, per the rule-4 selection criterion.)
+fragmentFileDiag :: [FragmentAxis] -> FilePath -> Maybe Diagnostic
+fragmentFileDiag axes file =
+  let sufs = fragmentSuffixes file
+      axisOf t = [faName a | a <- axes, t `elem` faTags a]
+      perAxis = Map.toList (foldl' (\m t -> foldl' (\m' an -> Map.insertWith (+) an (1 :: Int) m') m (axisOf t)) Map.empty sufs)
+      doubled = [an | (an, c) <- perAxis, c > 1]
+      sp = Span file (Pos 1 1) (Pos 1 1)
+   in case doubled of
+        (an : _) ->
+          Just $
+            diag SevError StageImports "E_BUILD_FRAGMENT_AXIS_CONFLICT" (Just "kappa-hs.build.fragment-axis") sp
+              ( "source fragment '" <> T.pack (takeFileName file) <> "' uses more than one tag from the exclusive "
+                  <> "fragment axis '" <> an <> "' (Spec §36.12)"
+              )
+        _ -> Nothing
+
+-- | §36.12: a target MUST NOT enable more than one tag from the same exclusive
+-- axis. Returns a diagnostic on violation.
+fragmentTargetDiag :: FilePath -> [FragmentAxis] -> Text -> [Text] -> Maybe Diagnostic
+fragmentTargetDiag manifestFile axes tgtName enabled =
+  let axisOf t = [faName a | a <- axes, t `elem` faTags a]
+      perAxis = Map.toList (foldl' (\m t -> foldl' (\m' an -> Map.insertWith (+) an (1 :: Int) m') m (axisOf t)) Map.empty enabled)
+      doubled = [an | (an, c) <- perAxis, c > 1]
+      sp = Span manifestFile (Pos 1 1) (Pos 1 1)
+   in case doubled of
+        (an : _) ->
+          Just $
+            diag SevError StageImports "E_BUILD_FRAGMENT_AXIS_CONFLICT" (Just "kappa-hs.build.fragment-axis") sp
+              ( "target '" <> tgtName <> "' enables more than one tag from the exclusive fragment axis '"
+                  <> an <> "' (Spec §36.12)"
+              )
+        _ -> Nothing
 
 -- | §36.23: resolve the TRANSITIVE path-dependency closure of a target's
 -- dependency names to the library modules to compile into the unit. Path

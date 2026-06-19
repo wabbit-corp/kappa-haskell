@@ -416,6 +416,35 @@ else
   echo "   SKIP: pkg-config sqlite3 not available"
 fi
 
+echo "== module-fragment selection: native fragment satisfies expect, .jvm excluded (§8.1/§36.12/§9.4) =="
+FG="$WORK/frag"; rm -rf "$FG"; mkdir -p "$FG/src/demo"
+# common facade: a signature + an expect term, no definition here
+printf 'module demo.svc\ngreet : String -> String\nexpect term greet : String -> String\n' > "$FG/src/demo/svc.kp"
+# selected-for-native fragment satisfies the expect; .jvm fragment is a CONFLICTING def that must be excluded
+printf 'module demo.svc\nlet greet s = stringAppend "native:" s\n' > "$FG/src/demo/svc.native.kp"
+printf 'module demo.svc\nlet greet s = stringAppend "jvm:" s\n' > "$FG/src/demo/svc.jvm.kp"
+printf 'module demo.app\nimport demo.svc.(greet)\nlet main = printlnString (greet "hi")\n' > "$FG/src/demo/app.kp"
+printf 'let buildConfig : BuildConfig = package { name="frag", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[axis "backend" [tag "native", tag "jvm"], axis "mode" [tag "debug", tag "release"]], dependencies=[], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags ["native","release"], main=module "demo.app", modules=modulesUnder "demo", dependencies=[], hostBindings=[] }] }' > "$FG/kappa.build.kp"
+if timeout 200 $KAPPA build --update --manifest "$FG" -o "$FG/app" >"$FG/b.log" 2>&1; then
+  fout="$("$FG/app" 2>&1)"
+  if [ "$fout" = "native:hi" ]; then
+    echo "   ok (native fragment selected + satisfied the expect; .jvm fragment excluded — no duplicate def)"
+  else
+    echo "   FAIL: wrong fragment selected (got '$fout', want 'native:hi')"; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: native fragment build failed"; cat "$FG/b.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+# a target enabling two tags from one exclusive axis is fail-closed (§36.12)
+sed 's/tags \["native","release"\]/tags ["native","jvm"]/' "$FG/kappa.build.kp" > "$FG/kappa.build.kp.bad" && mv "$FG/kappa.build.kp.bad" "$FG/kappa.build.kp"
+axout="$(timeout 120 $KAPPA build --update --manifest "$FG" --emit-c -o "$FG/o" 2>&1)"
+if grep -q "E_BUILD_FRAGMENT_AXIS_CONFLICT" <<<"$axout"; then
+  echo "   ok (a target enabling native+jvm from one axis -> E_BUILD_FRAGMENT_AXIS_CONFLICT)"
+else
+  echo "   FAIL: axis-exclusivity not enforced"; echo "$axout" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$FG"
+
 echo "== native ABI discovery + verification against the real headers (§26.1.5/§36.28) =="
 if pkg-config --exists sqlite3 2>/dev/null; then
   # (a) a real build records verified-against-sqlite3.h provenance

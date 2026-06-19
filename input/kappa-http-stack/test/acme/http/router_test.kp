@@ -1,0 +1,23 @@
+module acme.http.router_test
+
+import acme.http.core.*
+import acme.http.router as route
+
+-- Schematic test module. A real harness would execute `App` values using a
+-- fake RequestContext without opening sockets.
+
+sampleRequest : String -> Request
+let sampleRequest path =
+    (emptyRequest Get path).{ target = path }
+
+sampleContext : String -> RequestContext
+let sampleContext path =
+    RequestContext
+        { request = sampleRequest path
+        , routeParams = Nil
+        , requestId = None
+        , startedAt = zeroInstant
+        }
+
+zeroInstant : Instant
+expect term zeroInstant : Instant

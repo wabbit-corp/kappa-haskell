@@ -1,0 +1,111 @@
+module acme.http.endpoint
+
+import acme.http.core.*
+import acme.http.router as router
+import acme.http.codec as codec
+
+-- A path codec is a bidirectional piece of route knowledge. The parse side
+-- accepts a request; the print side builds links. Yesod would approve. Quietly.
+data PathSpec (a : Type) : Type =
+    PathSpec
+        { name : String
+        , parse : Request -> Option a
+        , print : a -> String
+        }
+
+data Endpoint (input : Type) (output : Type) : Type =
+    Endpoint
+        { name : String
+        , method : Method
+        , path : PathSpec input
+        , decode : Request -> Result HttpError input
+        , encode : Request -> output -> IO HttpError Response
+        }
+
+-- `UrlFor route` gives users a typed reverse-router function. In a production
+-- compiler this can be generated from endpoint declarations.
+type UrlFor (route : Type) =
+    route -> String
+
+unitPath : String -> PathSpec Unit
+let unitPath p =
+    PathSpec
+        { name = p
+        , parse = \req -> if req.target == p then Some () else None
+        , print = \_ -> p
+        }
+
+withDecoder : PathSpec a -> (Request -> Result HttpError a) -> PathSpec a
+let withDecoder spec decoder =
+    spec.{ parse = \req ->
+        match decoder req
+        case Ok x -> Some x
+        case Err _ -> None
+    }
+
+textEndpoint : String -> Method -> PathSpec input -> Endpoint input String
+let textEndpoint name method path =
+    Endpoint
+        { name = name
+        , method = method
+        , path = path
+        , decode = \req ->
+            match path.parse req
+            case Some x -> Ok x
+            case None -> Err (RouteNotFound req.method req.target)
+        , encode = \req output -> codec.respond req statusOk output
+        }
+
+jsonEndpoint :
+    forall (input : Type) (output : Type).
+    (@ c : codec.EntityCodec output) ->
+    String -> Method -> PathSpec input -> Endpoint input output
+let jsonEndpoint @c name method path =
+    Endpoint
+        { name = name
+        , method = method
+        , path = path
+        , decode = \req ->
+            match path.parse req
+            case Some x -> Ok x
+            case None -> Err (RouteNotFound req.method req.target)
+        , encode = \req output -> codec.respond @c req statusOk output
+        }
+
+implement : Endpoint input output -> (input -> IO e output) -> router.Route env e
+let implement endpoint handler env ctx =
+    if methodEq ctx.request.method endpoint.method then
+        match endpoint.decode ctx.request
+        case Err (RouteNotFound _ _) -> pure router.RouteMiss
+        case Err err -> pure (router.RouteRejected (textResponse statusBadRequest "bad request\n"))
+        case Ok input ->
+            do
+                let out <- liftApp (handler input)
+                let response <- liftHttp (endpoint.encode ctx.request out)
+                pure (router.RouteHandled response)
+    else
+        pure router.RouteMiss
+
+liftHttp : IO HttpError a -> IO (ServerError e) a
+let liftHttp action =
+    try action
+    except err -> raise (| err : HttpError |)
+
+liftApp : IO e a -> IO (ServerError e) a
+let liftApp action =
+    try action
+    except err -> raise (| err : e |)
+
+-- Cheap metadata surface for docs generation. A real OpenAPI emitter can be an
+-- Elab macro over the same Endpoint values.
+data EndpointDoc : Type =
+    EndpointDoc { name : String, method : String, examplePath : String, outputMedia : List MediaType }
+
+doc : Endpoint input output -> input -> List MediaType -> EndpointDoc
+let doc ep sample media =
+    EndpointDoc
+        { name = ep.name
+        , method = methodName ep.method
+        , examplePath = ep.path.print sample
+        , outputMedia = media
+        }

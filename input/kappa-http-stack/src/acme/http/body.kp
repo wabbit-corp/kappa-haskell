@@ -1,0 +1,63 @@
+module acme.http.body
+
+import std.bytes as bytes
+import std.unicode as unicode
+import acme.http.core.*
+import acme.http.headers as headers
+
+bodyLength : Body -> Option Nat
+let bodyLength body =
+    match body
+    case EmptyBody -> Some 0
+    case StrictBody bs -> Some (bytes.bytesLength bs)
+    case StreamBody len _ -> len
+
+isEmpty : Body -> Bool
+let isEmpty body =
+    match body
+    case EmptyBody -> True
+    case StrictBody bs -> bytes.bytesIsEmpty bs
+    case StreamBody _ _ -> False
+
+strict : Bytes -> Body
+let strict bs =
+    if bytes.bytesIsEmpty bs then EmptyBody else StrictBody bs
+
+text : String -> Body
+let text s = StrictBody (unicode.utf8Bytes s)
+
+stream : OnceQuery Bytes -> Body
+let stream chunks = StreamBody None chunks
+
+streamKnown : Nat -> OnceQuery Bytes -> Body
+let streamKnown n chunks = StreamBody (Some n) chunks
+
+-- A production implementation should keep this as a streaming fold over
+-- `OnceQuery`. The declaration is isolated so a compiler/runtime can supply the
+-- efficient primitive without changing public APIs.
+collect : Body -> IO HttpError Bytes
+let collect body =
+    match body
+    case EmptyBody -> pure bytes.emptyBytes
+    case StrictBody bs -> pure bs
+    case StreamBody _ chunks -> collectChunks chunks
+
+collectChunks : OnceQuery Bytes -> IO HttpError Bytes
+let collectChunks _ =
+    raise (CodecError "cannot collect a streaming body without an explicit stream fold")
+
+responseText : Status -> String -> Response
+let responseText status s =
+    Response
+        { status = status
+        , headers = [ headers.header "content-type" "text/plain; charset=utf-8" ]
+        , body = text s
+        }
+
+responseBytes : Status -> String -> Bytes -> Response
+let responseBytes status media payload =
+    Response
+        { status = status
+        , headers = [ headers.header "content-type" media ]
+        , body = strict payload
+        }

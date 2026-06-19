@@ -1,0 +1,72 @@
+module acme.http.runtime
+
+import std.bytes as bytes
+import acme.http.core.(HttpError, TransportError, ReadResult, PeerClosed, ReadBytes, Peer)
+
+import host.dotnet.System.Net.IPAddress as IPAddress
+import host.dotnet.System.Net.IPEndPoint as IPEndPoint
+import host.dotnet.System.Net.Sockets.AddressFamily as AddressFamily
+import host.dotnet.System.Net.Sockets.ProtocolType as ProtocolType
+import host.dotnet.System.Net.Sockets.Socket as Socket
+import host.dotnet.System.Net.Sockets.SocketType as SocketType
+
+opaque data Listener : Type =
+    Listener (socket : Socket.Socket)
+
+opaque data Connection : Type =
+    Connection (socket : Socket.Socket)
+
+hostError : String -> HttpError
+let hostError message = TransportError message
+
+bind : String -> Int -> Int -> IO HttpError Listener
+let bind host port backlog =
+    do
+        let address <- IPAddress.parse host
+        let endpoint <- IPEndPoint.new address port
+        let socket <- Socket.new AddressFamily.InterNetwork SocketType.Stream ProtocolType.Tcp
+        let _ <- Socket.setNoDelay socket True
+        let _ <- Socket.bind socket endpoint
+        let _ <- Socket.listen socket backlog
+        pure (Listener socket)
+
+accept : (& listener : Listener) -> IO HttpError Connection
+let accept listener =
+    do
+        let socket <- Socket.acceptAsync listener.socket
+        let _ <- Socket.setNoDelay socket True
+        pure (Connection socket)
+
+readSome : (& conn : Connection) -> Nat -> IO HttpError ReadResult
+let readSome conn maxBytes =
+    do
+        let chunk <- Socket.receiveBytesAsync conn.socket maxBytes
+        if bytes.bytesIsEmpty chunk then pure PeerClosed else pure (ReadBytes chunk)
+
+writeAll : (& conn : Connection) -> Bytes -> IO HttpError Unit
+let writeAll conn payload =
+    do
+        var sent = 0
+        let total = bytes.bytesLength payload
+        while !(readRef sent) < total do
+            let offset <- readRef sent
+            let remaining = bytes.bytesDrop offset payload
+            let n <- Socket.sendBytesAsync conn.socket remaining
+            if n == 0 then raise (TransportError "socket write returned zero bytes")
+            else sent = offset + n
+        pure ()
+
+flush : (& conn : Connection) -> IO HttpError Unit
+let flush conn = pure ()
+
+peer : (& conn : Connection) -> IO HttpError Peer
+let peer conn =
+    do
+        let ep <- Socket.remoteEndPoint conn.socket
+        pure (Peer { host = IPEndPoint.hostString ep, port = IPEndPoint.port ep })
+
+closeListener : (1 listener : Listener) -> IO HttpError Unit
+let closeListener listener = Socket.close listener.socket
+
+closeConnection : (1 conn : Connection) -> IO HttpError Unit
+let closeConnection conn = Socket.close conn.socket

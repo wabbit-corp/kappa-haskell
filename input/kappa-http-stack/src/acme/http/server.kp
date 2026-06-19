@@ -1,0 +1,65 @@
+module acme.http.server
+
+import acme.http.core.*
+import acme.http.runtime as net
+import std.bytes as bytes
+import acme.http.wire as wire
+import acme.http.router as router
+import acme.http.middleware as middleware
+
+serveRoutes : ServerConfig -> (& env : env) -> router.Routes env e -> IO HttpError Unit
+let serveRoutes cfg env routes =
+    serve cfg env (middleware.recoverHttp (router.runRoutes routes))
+
+serve : ServerConfig -> (& env : env) -> router.App env e -> IO HttpError Unit
+let serve cfg env app =
+    do
+        using listener <- net.bind cfg.host cfg.port cfg.backlog
+        withScope \scope ->
+            do
+                while True do
+                    let 1 conn <- net.accept listener
+                    let _ <- forkIn scope (handleConnection cfg env app conn)
+                    pure ()
+                pure ()
+
+handleConnection : ServerConfig -> (& env : env) -> router.App env e -> (1 conn : net.Connection) -> IO HttpError Unit
+let handleConnection cfg env app conn =
+    do
+        using conn <- pure conn
+        var keepGoing = True
+        var pending = bytes.emptyBytes
+        while !(readRef keepGoing) do
+            try
+                do
+                    let prefix <- readRef pending
+                    let read <- wire.readRequest conn cfg prefix
+                    pending = read.remaining
+                    let start <- nowMonotonic
+                    let ctx = RequestContext
+                                { request = read.request
+                                , routeParams = Nil
+                                , requestId = None
+                                , startedAt = start
+                                }
+                    let response <- runApp app env ctx
+                    wire.writeResponse conn cfg read.keepAlive response
+                    match read.keepAlive
+                    case CloseAfterResponse -> keepGoing = False
+                    case ReuseConnection -> keepGoing = True
+            except err ->
+                match err
+                case ConnectionClosed -> keepGoing = False
+                case _ ->
+                    do
+                        wire.writeResponse conn cfg CloseAfterResponse (wire.errorResponse err)
+                        keepGoing = False
+        pure ()
+
+runApp : router.App env e -> (& env : env) -> RequestContext -> IO HttpError Response
+let runApp app env ctx =
+    try app env ctx
+    except err ->
+        match err
+        case (| http : HttpError |) -> pure (wire.errorResponse http)
+        case (| _ : e |) -> pure (textResponse statusInternalServerError "application error\n")

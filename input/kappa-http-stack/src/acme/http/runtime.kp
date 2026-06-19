@@ -1,0 +1,36 @@
+module acme.http.runtime
+
+import acme.http.core.(HttpError, ReadResult, Peer)
+
+expect data Listener : Type
+expect data Connection : Type
+
+bind : String -> Int -> Int -> IO HttpError Listener
+expect term bind : String -> Int -> Int -> IO HttpError Listener
+
+accept : (& listener : Listener) -> IO HttpError Connection
+expect term accept : (& listener : Listener) -> IO HttpError Connection
+
+readSome : (& conn : Connection) -> Nat -> IO HttpError ReadResult
+expect term readSome : (& conn : Connection) -> Nat -> IO HttpError ReadResult
+
+writeAll : (& conn : Connection) -> Bytes -> IO HttpError Unit
+expect term writeAll : (& conn : Connection) -> Bytes -> IO HttpError Unit
+
+flush : (& conn : Connection) -> IO HttpError Unit
+expect term flush : (& conn : Connection) -> IO HttpError Unit
+
+peer : (& conn : Connection) -> IO HttpError Peer
+expect term peer : (& conn : Connection) -> IO HttpError Peer
+
+closeListener : (1 listener : Listener) -> IO HttpError Unit
+expect term closeListener : (1 listener : Listener) -> IO HttpError Unit
+
+closeConnection : (1 conn : Connection) -> IO HttpError Unit
+expect term closeConnection : (1 conn : Connection) -> IO HttpError Unit
+
+instance Releasable (IO HttpError) Listener =
+    let release listener = closeListener listener
+
+instance Releasable (IO HttpError) Connection =
+    let release conn = closeConnection conn

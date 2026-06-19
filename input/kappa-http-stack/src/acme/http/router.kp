@@ -1,0 +1,99 @@
+module acme.http.router
+
+import acme.http.core.*
+
+-- A Route is allowed to miss. Misses compose explicitly; there is no invisible
+-- fallthrough side-channel.
+data RouteResult : Type =
+    RouteMiss
+    RouteRejected (response : Response)
+    RouteHandled  (response : Response)
+
+type Route (env : Type) (e : Type) =
+    (& env : env) -> RequestContext -> IO (ServerError e) RouteResult
+
+data Routes (env : Type) (e : Type) : Type =
+    Routes (items : List (Route env e))
+
+type App (env : Type) (e : Type) =
+    (& env : env) -> RequestContext -> IO (ServerError e) Response
+
+empty : Routes env e
+let empty = Routes Nil
+
+single : Route env e -> Routes env e
+let single r = Routes [r]
+
+concat : Routes env e -> Routes env e -> Routes env e
+let concat left right =
+    match left
+    case Routes xs ->
+        match right
+        case Routes ys -> Routes (appendList xs ys)
+
+appendList : List a -> List a -> List a
+let appendList xs ys decreases listLength xs =
+    match xs
+    case Nil -> ys
+    case (::) h t -> (::) h (appendList t ys)
+
+orElse : Route env e -> Route env e -> Route env e
+let orElse a b env ctx =
+    do
+        let first <- a env ctx
+        match first
+        case RouteMiss -> b env ctx
+        case _ -> pure first
+
+runRoutes : Routes env e -> App env e
+let runRoutes routes env ctx =
+    match routes
+    case Routes items -> runList items env ctx
+
+runList : List (Route env e) -> (& env : env) -> RequestContext -> IO (ServerError e) Response
+let runList items env ctx decreases listLength items =
+    match items
+    case Nil -> raise (| RouteNotFound ctx.request.method ctx.request.target : HttpError |)
+    case (::) r rest ->
+        do
+            let result <- r env ctx
+            match result
+            case RouteMiss -> runList rest env ctx
+            case RouteRejected response -> pure response
+            case RouteHandled response -> pure response
+
+matchMethod : Method -> RequestContext -> Bool
+let matchMethod method ctx = methodEq method ctx.request.method
+
+route : Method -> (RequestContext -> Bool) -> App env e -> Route env e
+let route method predicate app env ctx =
+    if matchMethod method ctx && (thunk (predicate ctx)) then
+        do
+            let response <- app env ctx
+            pure (RouteHandled response)
+    else
+        pure RouteMiss
+
+get : (RequestContext -> Bool) -> App env e -> Route env e
+let get = route Get
+
+post : (RequestContext -> Bool) -> App env e -> Route env e
+let post = route Post
+
+put : (RequestContext -> Bool) -> App env e -> Route env e
+let put = route Put
+
+delete : (RequestContext -> Bool) -> App env e -> Route env e
+let delete = route Delete
+
+always : RequestContext -> Bool
+let always _ = True
+
+pathEq : String -> RequestContext -> Bool
+let pathEq expected ctx = ctx.request.target == expected
+
+okText : String -> App env e
+let okText text env ctx = pure (textResponse statusOk text)
+
+notFound : App env e
+let notFound env ctx = pure (textResponse statusNotFound "not found\n")

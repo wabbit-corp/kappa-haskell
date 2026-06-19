@@ -1,0 +1,4 @@
+# Trusted host-binding summary placeholder
+
+The JVM NIO wrapper exposes blocking operations only through `blocking` or through host operations documented as nonblocking.
+Host exceptions crossing the wrapper are translated to `HttpError.TransportError` unless the selected binding generator provides a more specific typed mapping.

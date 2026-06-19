@@ -1,0 +1,77 @@
+-- Chapter-36-style schematic manifest.
+-- A real build loader supplies the std.build vocabulary.
+
+let buildConfig : BuildConfig =
+    package
+        ( name = "acme.http.stack"
+        , version = semver "0.2.0"
+        , sourceRoots = [ sourceRoot "src" ]
+        , fragmentAxes =
+            [ axis "backend" [ tag "jvm", tag "dotnet" ]
+            , axis "mode"    [ tag "debug", tag "release" ]
+            ]
+        , hostBindings =
+            [ jvmBinding
+                ( name = "jvm-nio"
+                , provides =
+                    [ module "host.jvm.java.net.InetSocketAddress"
+                    , module "host.jvm.java.nio.ByteBuffer"
+                    , module "host.jvm.java.nio.channels.SelectionKey"
+                    , module "host.jvm.java.nio.channels.Selector"
+                    , module "host.jvm.java.nio.channels.ServerSocketChannel"
+                    , module "host.jvm.java.nio.channels.SocketChannel"
+                    ]
+                , source = jvmClasspath []
+                , summaries = [ trustedSummary "bindings/jvm-nio.summary" ]
+                )
+            , dotnetBinding
+                ( name = "dotnet-sockets"
+                , provides =
+                    [ module "host.dotnet.System.Net.IPAddress"
+                    , module "host.dotnet.System.Net.IPEndPoint"
+                    , module "host.dotnet.System.Net.Sockets.AddressFamily"
+                    , module "host.dotnet.System.Net.Sockets.ProtocolType"
+                    , module "host.dotnet.System.Net.Sockets.Socket"
+                    , module "host.dotnet.System.Net.Sockets.SocketType"
+                    ]
+                , source = clrReferenceAssemblies [ "System.Net.Sockets" ]
+                , summaries = [ trustedSummary "bindings/dotnet-sockets.summary" ]
+                )
+            ]
+        , targets =
+            [ library
+                ( name = "http-stack-jvm"
+                , backend = jvm ()
+                , fragments = tags [ "jvm", "release" ]
+                , modules = modulesUnder "acme.http"
+                , hostBindings = [ "jvm-nio" ]
+                , capabilities = [ "rt-core", "rt-blocking", "rt-atomics" ]
+                )
+            , library
+                ( name = "http-stack-dotnet"
+                , backend = dotnet ()
+                , fragments = tags [ "dotnet", "release" ]
+                , modules = modulesUnder "acme.http"
+                , hostBindings = [ "dotnet-sockets" ]
+                , capabilities = [ "rt-core", "rt-blocking", "rt-atomics" ]
+                )
+            , executable
+                ( name = "example-jvm"
+                , backend = jvm ()
+                , fragments = tags [ "jvm", "release" ]
+                , main = module "acme.http.example"
+                , modules = modulesUnder "acme.http"
+                , hostBindings = [ "jvm-nio" ]
+                , capabilities = [ "rt-core", "rt-blocking", "rt-atomics" ]
+                )
+            , executable
+                ( name = "example-dotnet"
+                , backend = dotnet ()
+                , fragments = tags [ "dotnet", "release" ]
+                , main = module "acme.http.example"
+                , modules = modulesUnder "acme.http"
+                , hostBindings = [ "dotnet-sockets" ]
+                , capabilities = [ "rt-core", "rt-blocking", "rt-atomics" ]
+                )
+            ]
+        )

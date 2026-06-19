@@ -1,0 +1,87 @@
+module acme.http.middleware
+
+import acme.http.core.*
+import acme.http.headers as headers
+import acme.http.router as router
+
+-- Ktor/ZIO-style middleware: transform an application without touching the
+-- transport layer.
+type Middleware (env : Type) (e : Type) =
+    router.App env e -> router.App env e
+
+id : Middleware env e
+let id app = app
+
+compose : Middleware env e -> Middleware env e -> Middleware env e
+let compose outer inner app = outer (inner app)
+
+pipeline : List (Middleware env e) -> Middleware env e
+let pipeline ms =
+    match ms
+    case Nil -> id
+    case (::) h t -> compose h (pipeline t)
+
+install : Middleware env e -> router.Routes env e -> router.App env e
+let install mw routes =
+    mw (router.runRoutes routes)
+
+mapResponse : (Response -> Response) -> Middleware env e
+let mapResponse f app env ctx =
+    do
+        let response <- app env ctx
+        pure (f response)
+
+addHeader : Header -> Middleware env e
+let addHeader h =
+    mapResponse (\resp -> resp.{ headers = headers.put h resp.headers })
+
+serverHeader : String -> Middleware env e
+let serverHeader name = addHeader (headers.header "server" name)
+
+corsAllowAll : Middleware env e
+let corsAllowAll =
+    pipeline
+        [ addHeader (headers.header "access-control-allow-origin" "*")
+        , addHeader (headers.header "access-control-allow-methods" "GET,POST,PUT,DELETE,OPTIONS")
+        , addHeader (headers.header "access-control-allow-headers" "content-type,authorization")
+        ]
+
+recoverHttp : Middleware env e
+let recoverHttp app env ctx =
+    try app env ctx
+    except err ->
+        match err
+        case (| http : HttpError |) -> pure (recoverHttpError http)
+        case (| appErr : e |) -> raise (| appErr : e |)
+
+recoverHttpError : HttpError -> Response
+let recoverHttpError err =
+    match err
+    case RouteNotFound _ _ -> textResponse statusNotFound "not found\n"
+    case ProtocolError status msg -> textResponse status msg
+    case CodecError msg -> textResponse statusUnsupportedMediaType (msg + "\n")
+    case HeaderTooLarge _ -> textResponse statusBadRequest "request headers are too large\n"
+    case BodyTooLarge _ -> textResponse statusBadRequest "request body is too large\n"
+    case ConnectionClosed -> textResponse statusBadRequest "connection closed\n"
+    case TransportError _ -> textResponse statusInternalServerError "transport error\n"
+
+timeoutApp : Duration -> Middleware env e
+timeoutApp d app env ctx = timeout d (app env ctx)
+
+withRequestId : Middleware env e
+let withRequestId app env ctx =
+    let rid =
+        match headers.get "x-request-id" ctx.request.headers
+        case Some x -> Some x
+        case None -> None
+    in app env (ctx.{ requestId = rid })
+
+around :
+    (RequestContext -> IO (ServerError e) Unit) ->
+    (RequestContext -> Response -> IO (ServerError e) Response) ->
+    Middleware env e
+let around before after app env ctx =
+    do
+        before ctx
+        let response <- app env ctx
+        after ctx response

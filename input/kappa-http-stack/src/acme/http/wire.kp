@@ -1,0 +1,393 @@
+module acme.http.wire
+
+import std.bytes as bytes
+import std.unicode as unicode
+import acme.http.core.*
+import acme.http.headers as headers
+import acme.http.body as body
+import acme.http.runtime as net
+
+crlf : Bytes
+let crlf = bytes.bytesConcat [ bytes.singletonByte b'\r', bytes.singletonByte b'\n' ]
+
+space : Bytes
+let space = bytes.singletonByte b' '
+
+colon : Bytes
+let colon = bytes.singletonByte b':'
+
+headerEnd : Bytes
+let headerEnd = bytes.bytesConcat [ crlf, crlf ]
+
+data RequestRead : Type =
+    RequestRead { request : Request, keepAlive : KeepAlive, remaining : Bytes }
+
+data FixedRead : Type =
+    FixedRead { body : Body, remaining : Bytes }
+
+data TransferMode : Type =
+    NoEntity
+    FixedLength (n : Nat)
+    Chunked
+
+liftResult : Result HttpError a -> IO HttpError a
+let liftResult r =
+    match r
+    case Ok x -> pure x
+    case Err e -> raise e
+
+isOws : Byte -> Bool
+let isOws b = (b == b' ') || (thunk (b == b'\t'))
+
+dropLeadingOws : Bytes -> Bytes
+let dropLeadingOws bs decreases bytes.bytesLength bs =
+    match bytes.bytesGet bs 0
+    case Some b -> if isOws b then dropLeadingOws (bytes.bytesDrop 1 bs) else bs
+    case None -> bs
+
+digitValue : Byte -> Option Nat
+let digitValue b =
+    if b == b'0' then Some 0
+    elif b == b'1' then Some 1
+    elif b == b'2' then Some 2
+    elif b == b'3' then Some 3
+    elif b == b'4' then Some 4
+    elif b == b'5' then Some 5
+    elif b == b'6' then Some 6
+    elif b == b'7' then Some 7
+    elif b == b'8' then Some 8
+    elif b == b'9' then Some 9
+    else None
+
+parseNatBytes : Bytes -> Option Nat
+let parseNatBytes bs =
+    block
+        go : Bool -> Nat -> Bytes -> Option Nat
+        let go seen acc rest decreases bytes.bytesLength rest =
+            match bytes.bytesGet rest 0
+            case None -> if seen then Some acc else None
+            case Some b ->
+                match digitValue b
+                case Some d -> go True ((acc * 10) + d) (bytes.bytesDrop 1 rest)
+                case None -> if isOws b then Some acc else None
+        go False 0 (dropLeadingOws bs)
+
+methodFromBytes : Bytes -> Method
+let methodFromBytes bs =
+    let s = unicode.decodeUtf8Lossy bs in
+        if s == "GET" then Get
+        elif s == "POST" then Post
+        elif s == "PUT" then Put
+        elif s == "DELETE" then Delete
+        elif s == "HEAD" then Head
+        elif s == "OPTIONS" then Options
+        elif s == "PATCH" then Patch
+        elif s == "TRACE" then Trace
+        elif s == "CONNECT" then Connect
+        else OtherMethod s
+
+versionFromBytes : Bytes -> HttpVersion
+let versionFromBytes bs =
+    let s = unicode.decodeUtf8Lossy bs in
+        if s == "HTTP/1.0" then Http10
+        elif s == "HTTP/1.1" then Http11
+        else OtherVersion s
+
+parseHeaderLine : Bytes -> Result HttpError Header
+let parseHeaderLine line =
+    match bytes.bytesBreakOn colon line
+    case None -> Err (ProtocolError statusBadRequest "malformed header line")
+    case Some hit ->
+        let nameBytes = headers.normalizeNameBytes hit.prefix
+        let valueBytes = dropLeadingOws (bytes.bytesDrop (bytes.bytesLength colon) hit.suffix)
+        Ok (Header { name = unicode.decodeUtf8Lossy nameBytes, value = unicode.decodeUtf8Lossy valueBytes })
+
+parseHeaderLines : Bytes -> Result HttpError Headers
+let parseHeaderLines block =
+    block
+        go : Headers -> Bytes -> Result HttpError Headers
+        let go acc rest decreases bytes.bytesLength rest =
+            if bytes.bytesIsEmpty rest then Ok acc
+            else
+                match bytes.bytesBreakOn crlf rest
+                case None ->
+                    match parseHeaderLine rest
+                    case Ok h -> Ok ((::) h acc)
+                    case Err e -> Err e
+                case Some split ->
+                    let line = split.prefix
+                    let tail = bytes.bytesDrop (bytes.bytesLength crlf) split.suffix
+                    if bytes.bytesIsEmpty line then Ok acc
+                    else
+                        match parseHeaderLine line
+                        case Ok h -> go ((::) h acc) tail
+                        case Err e -> Err e
+        go Nil block
+
+splitRequestLine : Bytes -> Result HttpError (method : Method, target : String, version : HttpVersion)
+let splitRequestLine line =
+    match bytes.bytesBreakOn space line
+    case None -> Err (ProtocolError statusBadRequest "missing method delimiter")
+    case Some first ->
+        let methodBytes = first.prefix
+        let afterMethod = bytes.bytesDrop (bytes.bytesLength space) first.suffix
+        match bytes.bytesBreakOn space afterMethod
+        case None -> Err (ProtocolError statusBadRequest "missing version delimiter")
+        case Some second ->
+            let targetBytes = second.prefix
+            let versionBytes = bytes.bytesDrop (bytes.bytesLength space) second.suffix
+            Ok (method = methodFromBytes methodBytes,
+                target = unicode.decodeUtf8Lossy targetBytes,
+                version = versionFromBytes versionBytes)
+
+parseHead : Bytes -> Result HttpError Request
+let parseHead headBlock =
+    match bytes.bytesBreakOn crlf headBlock
+    case None ->
+        match splitRequestLine headBlock
+        case Err e -> Err e
+        case Ok parts -> Ok ((emptyRequest parts.method parts.target).{ version = parts.version })
+    case Some split ->
+        match splitRequestLine split.prefix
+        case Err e -> Err e
+        case Ok parts ->
+            let rest = bytes.bytesDrop (bytes.bytesLength crlf) split.suffix
+            match parseHeaderLines rest
+            case Err e -> Err e
+            case Ok hs ->
+                let req0 = emptyRequest parts.method parts.target
+                Ok (req0.{ version = parts.version, headers = hs, path = splitPath parts.target, query = splitQuery parts.target })
+
+slash : Bytes
+let slash = bytes.singletonByte b'/'
+
+question : Bytes
+let question = bytes.singletonByte b'?'
+
+ampersand : Bytes
+let ampersand = bytes.singletonByte b'&'
+
+equalsSign : Bytes
+let equalsSign = bytes.singletonByte b'='
+
+dropOneIfPrefix : Bytes -> Bytes -> Bytes
+let dropOneIfPrefix prefix bs =
+    if bytes.bytesStartsWith bs prefix then bytes.bytesDrop (bytes.bytesLength prefix) bs else bs
+
+targetPathBytes : String -> Bytes
+let targetPathBytes target =
+    match bytes.bytesBreakOn question (unicode.utf8Bytes target)
+    case Some hit -> hit.prefix
+    case None -> unicode.utf8Bytes target
+
+targetQueryBytes : String -> Option Bytes
+let targetQueryBytes target =
+    match bytes.bytesBreakOn question (unicode.utf8Bytes target)
+    case Some hit -> Some (bytes.bytesDrop (bytes.bytesLength question) hit.suffix)
+    case None -> None
+
+splitPathBytes : Bytes -> List String
+let splitPathBytes raw decreases bytes.bytesLength raw =
+    let cleaned = dropOneIfPrefix slash raw
+    in
+        if bytes.bytesIsEmpty cleaned then Nil
+        else
+            match bytes.bytesBreakOn slash cleaned
+            case None -> [unicode.decodeUtf8Lossy cleaned]
+            case Some hit ->
+                let segment = unicode.decodeUtf8Lossy hit.prefix
+                let tail = bytes.bytesDrop (bytes.bytesLength slash) hit.suffix
+                (::) segment (splitPathBytes tail)
+
+splitPath : String -> List String
+let splitPath target =
+    splitPathBytes (targetPathBytes target)
+
+parseQueryPair : Bytes -> QueryParam
+let parseQueryPair part =
+    match bytes.bytesBreakOn equalsSign part
+    case Some hit ->
+        QueryParam
+            { name = unicode.decodeUtf8Lossy hit.prefix
+            , value = unicode.decodeUtf8Lossy (bytes.bytesDrop (bytes.bytesLength equalsSign) hit.suffix)
+            }
+    case None ->
+        QueryParam { name = unicode.decodeUtf8Lossy part, value = "" }
+
+splitQueryBytes : Bytes -> List QueryParam
+let splitQueryBytes raw decreases bytes.bytesLength raw =
+    if bytes.bytesIsEmpty raw then Nil
+    else
+        match bytes.bytesBreakOn ampersand raw
+        case None -> [parseQueryPair raw]
+        case Some hit ->
+            let one = parseQueryPair hit.prefix
+            let tail = bytes.bytesDrop (bytes.bytesLength ampersand) hit.suffix
+            (::) one (splitQueryBytes tail)
+
+splitQuery : String -> List QueryParam
+let splitQuery target =
+    match targetQueryBytes target
+    case Some q -> splitQueryBytes q
+    case None -> Nil
+
+transferMode : Request -> Result HttpError TransferMode
+let transferMode req =
+    match headers.transferEncoding req.headers
+    case Some enc ->
+        if headers.normalizeName enc == "chunked" then Ok Chunked
+        else Err (ProtocolError statusBadRequest "unsupported transfer encoding")
+    case None ->
+        match headers.contentLengthRaw req.headers
+        case None -> Ok NoEntity
+        case Some raw ->
+            match parseNatBytes (unicode.utf8Bytes raw)
+            case Some n -> Ok (FixedLength n)
+            case None -> Err (ProtocolError statusBadRequest "invalid Content-Length")
+
+keepAliveFor : ServerConfig -> Request -> KeepAlive
+let keepAliveFor cfg req =
+    match headers.connection req.headers
+    case Some c ->
+        let lowered = headers.normalizeName c
+        in if lowered == "close" then CloseAfterResponse
+           elif lowered == "keep-alive" then ReuseConnection
+           else cfg.defaultKeepAlive
+    case None ->
+        match req.version
+        case Http10 -> CloseAfterResponse
+        case _ -> cfg.defaultKeepAlive
+
+readUntilHeaderEnd : (& conn : net.Connection) -> ServerConfig -> Bytes -> IO HttpError Bytes
+let readUntilHeaderEnd conn cfg initial =
+    do
+        var acc = initial
+        var done = False
+        while not (!(readRef done)) do
+            let current <- readRef acc
+            if bytes.bytesLength current > cfg.maxHeaderBytes then
+                raise (HeaderTooLarge cfg.maxHeaderBytes)
+            else
+                match bytes.bytesBreakOn headerEnd current
+                case Some _ -> done = True
+                case None ->
+                    match !(net.readSome conn cfg.readChunkBytes)
+                    case PeerClosed ->
+                        if bytes.bytesIsEmpty current then raise ConnectionClosed
+                        else raise (ProtocolError statusBadRequest "peer closed before completing request headers")
+                    case ReadBytes chunk -> acc = bytes.bytesAppend current chunk
+        readRef acc
+
+readFixedBody : (& conn : net.Connection) -> ServerConfig -> Nat -> Bytes -> IO HttpError FixedRead
+let readFixedBody conn cfg needed initial =
+    do
+        if needed > cfg.maxStrictBodyBytes then raise (BodyTooLarge cfg.maxStrictBodyBytes) else pure ()
+        var acc = initial
+        var done = False
+        while not (!(readRef done)) do
+            let current <- readRef acc
+            if bytes.bytesLength current >= needed then done = True
+            else
+                match !(net.readSome conn cfg.readChunkBytes)
+                case PeerClosed -> raise (ProtocolError statusBadRequest "peer closed before completing request body")
+                case ReadBytes chunk -> acc = bytes.bytesAppend current chunk
+        let full <- readRef acc
+        let payload = bytes.bytesTake needed full
+        let remaining = bytes.bytesDrop needed full
+        pure (FixedRead { body = body.strict payload, remaining = remaining })
+
+readChunkedBody : (& conn : net.Connection) -> ServerConfig -> Bytes -> IO HttpError Body
+let readChunkedBody _ _ _ =
+    -- The public Body model supports chunked streaming with `OnceQuery Bytes`,
+    -- but this source-only package has no standard stream-fold/chunk-decoder
+    -- primitive to implement the connection-owned decoder portably. A real
+    -- runtime should replace this isolated branch with a `OnceQuery Bytes`
+    -- producer and preserve the remaining connection prefix for pipelining.
+    raise (ProtocolError statusBadRequest "chunked request bodies require a runtime stream decoder")
+
+readRequest : (& conn : net.Connection) -> ServerConfig -> Bytes -> IO HttpError RequestRead
+let readRequest conn cfg pending =
+    do
+        let raw <- readUntilHeaderEnd conn cfg pending
+        match bytes.bytesBreakOn headerEnd raw
+        case None -> raise (ProtocolError statusBadRequest "request header terminator not found")
+        case Some split ->
+            let headBytes = split.prefix
+            let initialBody = bytes.bytesDrop (bytes.bytesLength headerEnd) split.suffix
+            let req0 <- liftResult (parseHead headBytes)
+            let mode <- liftResult (transferMode req0)
+            let readBody <-
+                match mode
+                case NoEntity -> pure (FixedRead { body = EmptyBody, remaining = initialBody })
+                case FixedLength n -> readFixedBody conn cfg n initialBody
+                case Chunked ->
+                    do
+                        let b <- readChunkedBody conn cfg initialBody
+                        -- Streaming request bodies own the connection until the body is consumed.
+                        -- This skeleton closes after such requests unless the stream decoder can prove
+                        -- it has recovered the next request prefix.
+                        pure (FixedRead { body = b, remaining = bytes.emptyBytes })
+            let remote <- net.peer conn
+            let req = req0.{ body = readBody.body, remote = Some remote }
+            let keep =
+                match mode
+                case Chunked -> CloseAfterResponse
+                case _ -> keepAliveFor cfg req
+            pure (RequestRead { request = req, keepAlive = keep, remaining = readBody.remaining })
+
+renderHeader : Header -> Bytes
+let renderHeader h =
+    bytes.bytesConcat [ unicode.utf8Bytes h.name, colon, space, unicode.utf8Bytes h.value, crlf ]
+
+renderHeaders : Headers -> Bytes
+let renderHeaders hs decreases listLength hs =
+    match hs
+    case Nil -> bytes.emptyBytes
+    case (::) h rest -> bytes.bytesAppend (renderHeader h) (renderHeaders rest)
+
+renderStatusLine : Status -> Bytes
+let renderStatusLine s =
+    bytes.bytesConcat [ unicode.utf8Bytes "HTTP/1.1 ", unicode.utf8Bytes (show s.code), space, unicode.utf8Bytes s.reason, crlf ]
+
+writeResponse : (& conn : net.Connection) -> ServerConfig -> KeepAlive -> Response -> IO HttpError Unit
+let writeResponse conn cfg keep response =
+    do
+        let hs0 = headers.withServer cfg.serverName response.headers
+        let hs1 =
+            match keep
+            case CloseAfterResponse -> headers.withConnectionClose hs0
+            case ReuseConnection -> hs0
+        match response.body
+        case EmptyBody ->
+            net.writeAll conn (bytes.bytesConcat [ renderStatusLine response.status, renderHeaders (headers.withContentLength 0 hs1), crlf ])
+        case StrictBody bs ->
+            net.writeAll conn (bytes.bytesConcat [ renderStatusLine response.status, renderHeaders (headers.withContentLength (bytes.bytesLength bs) hs1), crlf, bs ])
+        case StreamBody (Some n) chunks ->
+            do
+                net.writeAll conn (bytes.bytesConcat [ renderStatusLine response.status, renderHeaders (headers.withContentLength n hs1), crlf ])
+                writeChunks conn chunks
+        case StreamBody None chunks ->
+            do
+                let hs = headers.put (headers.header "transfer-encoding" "chunked") hs1
+                net.writeAll conn (bytes.bytesConcat [ renderStatusLine response.status, renderHeaders hs, crlf ])
+                writeChunked conn chunks
+        net.flush conn
+
+writeChunks : (& conn : net.Connection) -> OnceQuery Bytes -> IO HttpError Unit
+let writeChunks _ _ =
+    raise (TransportError "stream writing requires a query-stream fold implementation")
+
+writeChunked : (& conn : net.Connection) -> OnceQuery Bytes -> IO HttpError Unit
+let writeChunked _ _ =
+    raise (TransportError "chunked stream writing requires a query-stream fold implementation")
+
+errorResponse : HttpError -> Response
+let errorResponse err =
+    match err
+    case TransportError _ -> textResponse statusInternalServerError "transport error\n"
+    case ProtocolError status msg -> textResponse status msg
+    case HeaderTooLarge _ -> textResponse statusBadRequest "request headers are too large\n"
+    case BodyTooLarge _ -> textResponse statusBadRequest "request body is too large\n"
+    case ConnectionClosed -> textResponse statusBadRequest "connection closed\n"
+    case RouteNotFound _ _ -> textResponse statusNotFound "not found\n"
+    case CodecError msg -> textResponse statusUnsupportedMediaType (msg + "\n")
