@@ -67,10 +67,10 @@ data ResolvedExe = ResolvedExe
   , rxNativeInputs :: ![NativeInput]
   -- ^ §36.28 realization inputs (headers/includeDir/define/pkgConfig/shim/
   -- moduleMap/prebuilt) of the selected bindings; drive the C toolchain
-  , rxNativeBindings :: ![(Text, [ResolvedNativeSymbol], [NativeInput])]
+  , rxNativeBindings :: ![(Text, [ResolvedNativeSymbol], [NativeInput], [Text])]
   -- ^ §36.7/§27.1.1: per selected native binding — its name, resolved symbol
-  -- surface, and realization inputs — used to compute the host-source
-  -- identity pinned in @kappa.lock@.
+  -- surface, realization inputs, and extra identity lines (canonical link/load
+  -- text) — used to compute the host-source identity pinned in @kappa.lock@.
   , rxTargetTriple :: !Text
   -- ^ §36.21 the target's declared toolchain triple (part of the native
   -- host-source identity, §27.1.1)
@@ -203,7 +203,7 @@ resolveExecutable manifestDir bc mTarget =
 
     -- Resolve the target's named host bindings to provided host.native
     -- modules, with collision + realizability checks (§36.28, §34.5.3).
-    resolveProviders :: Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput])], Bool)
+    resolveProviders :: Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput], [Text])], Bool)
     resolveProviders tgt =
       let wanted = targetHostBindings tgt
           lookupBinding nm = [hb | hb <- bcHostBindings bc, nbName hb == nm]
@@ -228,7 +228,7 @@ resolveExecutable manifestDir bc mTarget =
             checkCollisions bindingMods
             let linkSpecs = map nbLink selected
                 inputs = concatMap nbInputs selected
-                perBindingFull = [(nbName hb, ss, nbInputs hb) | (hb, (_, ss)) <- zip selected perBinding]
+                perBindingFull = [(nbName hb, ss, nbInputs hb, [linkText (nbLink hb), loadText (nbLoad hb)]) | (hb, (_, ss)) <- zip selected perBinding]
             Right (allSyms, linkSpecs, inputs, perBindingFull, not (null selected))
 
     -- §34.5.3: the zig native profile realizes only the system-loader load
@@ -252,6 +252,13 @@ resolveExecutable manifestDir bc mTarget =
       BundledLoader -> "bundledLoader"
       RuntimeLoad -> "runtimeLoad"
       ProvidedByHost -> "providedByHost"
+    -- §27.1.1/§36.21: canonical link/load text folded into the host-source
+    -- identity, so a change to the link or load specification repins.
+    linkText = \case
+      DynamicLink libs -> "link dynamic " <> T.intercalate "," libs
+      StaticLink libs -> "link static " <> T.intercalate "," libs
+      NoLink -> "link none"
+    loadText l = "load " <> loadName l
 
     -- §27.1.1/§36.28: resolve a binding's provides × symbolList surface into
     -- concrete ResolvedNativeSymbols. Each provided concrete host.native

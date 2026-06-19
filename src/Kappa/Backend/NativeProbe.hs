@@ -125,6 +125,8 @@ pkgProvLines pi_ =
   [ "pkg-config " <> piName pi_ <> " version=" <> piVersion pi_
       <> maybe "" (\d -> " pc-digest=" <> d) (piPcDigest pi_)
       <> maybe "" (\p -> " pc=" <> T.pack p) (piPcPath pi_)
+      -- §36.21:41848: the resolved linker flags are an identity input.
+      <> " libs=" <> T.pack (unwords (piLibs pi_))
   ]
 
 pkgConfig :: (Text, Maybe Text) -> IO (Either Diagnostics PkgInfo)

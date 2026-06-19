@@ -70,6 +70,7 @@ cAbiType = \case
   CtIsize -> "intptr_t"
   CtUsize -> "size_t"
   CtF32 -> "float"
+  CtF64 -> "double"
 
 -- | The Kappa surface type a 'CType' is presented as (conservative typing,
 -- §26.1.4). Integer-class C scalars surface as @Integer@; handles/pointers
@@ -110,6 +111,7 @@ ffiScalar = \case
   CtIsize -> Just ("Isize", "std.ffi.MkIsize")
   CtUsize -> Just ("Usize", "std.ffi.MkUsize")
   CtF32 -> Just ("F32", "std.ffi.MkF32")
+  CtF64 -> Just ("F64", "std.ffi.MkF64")
   _ -> Nothing
 
 -- | The std.ffi/std.prelude constructor gKeys a CType's marshalling
@@ -196,6 +198,7 @@ unbox ty e = case ty of
     "(kctor_tagid(" <> e <> ") == KCT_NONE ? (void *)0 : (void *)(intptr_t)kas_int("
       <> "kctor_arg(kctor_arg(" <> e <> ", 0), 0)))"
   CtF32 -> "(float)kas_dbl(kctor_arg(" <> e <> ", 0))"
+  CtF64 -> "kas_dbl(kctor_arg(" <> e <> ", 0))"
   -- nominal exact-width scalar (MkXxx rep): unbox the rep Integer, narrow to
   -- the declared C width.
   _ -> case ffiScalar ty of
@@ -218,6 +221,7 @@ box ty r = case ty of
       <> ctorExpr "std.ffi.MkRawPtr" "kint((int64_t)(intptr_t)(" "))" r
       <> "}))"
   CtF32 -> ctorExpr "std.ffi.MkF32" "kdbl((double)(" "))" r
+  CtF64 -> ctorExpr "std.ffi.MkF64" "kdbl(" ")" r
   -- nominal exact-width scalar: wrap the (widened) rep in its MkXxx ctor.
   _ -> case ffiScalar ty of
     Just (_, g) -> ctorExpr g "kint((int64_t)(" "))" r

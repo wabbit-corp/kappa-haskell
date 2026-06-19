@@ -90,7 +90,7 @@ data CType
   | CtI8 | CtI16 | CtI32 | CtI64
   | CtU8 | CtU16 | CtU32 | CtU64
   | CtIsize | CtUsize
-  | CtF32
+  | CtF32 | CtF64
   deriving stock (Eq, Show)
 
 -- | §36.28: one exported native symbol — the Kappa member spelling, the C

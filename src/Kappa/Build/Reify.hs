@@ -195,6 +195,7 @@ decCType ctx v = do
     "CtIsize" -> Right CtIsize
     "CtUsize" -> Right CtUsize
     "CtF32" -> Right CtF32
+    "CtF64" -> Right CtF64
     _ -> decFail "expected an ABI type (e.g. 'ctInt'/'ctU32'/'ctString'/'ctHandle') (Spec §26.1.1)"
 
 decSymbolDecl :: EvalCtx -> Value -> Dec SymbolDecl
