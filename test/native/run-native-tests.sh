@@ -331,7 +331,7 @@ echo "== native bindings are driven by the manifest (host.native imports -> prim
 # Build a program that imports a manifest-provided host.native module to
 # C (--emit-c, no toolchain/lib needed) and confirm codegen lowered the
 # provider's members to their runtime FFI prims.
-if timeout 120 $KAPPA build --manifest "$ROOT/tests/build/native/ok-sqlite" --emit-c -o "$WORK/oksql" >"$WORK/oksql.log" 2>&1 \
+if timeout 120 $KAPPA build --update --manifest "$ROOT/tests/build/native/ok-sqlite" --emit-c -o "$WORK/oksql" >"$WORK/oksql.log" 2>&1 \
    && find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -exec grep -ql "__sqliteOpen" {} \; ; then
   echo "   ok (manifest nativeBinding -> host.native.sqlite3 import -> __sqliteOpen prim)"
   find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -delete 2>/dev/null
@@ -400,7 +400,7 @@ echo "== optimized native output has ZERO builtin string dispatch (§34.5.3; gap
 # .kappa.c must contain no kprim_call/kprim string-dispatched primitive firing.
 if pkg-config --exists sqlite3 2>/dev/null; then
   rm -f "$ROOT/examples/native/http_sqlite/server.kappa.c"
-  if timeout 200 $KAPPA build --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/sd" >"$WORK/sd.log" 2>&1; then
+  if timeout 200 $KAPPA build --update --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/sd" >"$WORK/sd.log" 2>&1; then
     SC="$ROOT/examples/native/http_sqlite/server.kappa.c"
     nks="$(grep -cE 'kprim_call\(|kprim\(' "$SC" 2>/dev/null || true)"
     if [ "$nks" = "0" ] && grep -q "kpf_io_printlnString" "$SC"; then
@@ -420,7 +420,7 @@ echo "== native ABI discovery + verification against the real headers (§26.1.5/
 if pkg-config --exists sqlite3 2>/dev/null; then
   # (a) a real build records verified-against-sqlite3.h provenance
   rm -f "$ROOT/examples/native/http_sqlite/server.native.prov"
-  if timeout 200 $KAPPA build --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/abi" >"$WORK/abi.log" 2>&1 \
+  if timeout 200 $KAPPA build --update --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/abi" >"$WORK/abi.log" 2>&1 \
      && grep -q "verified-decl int sqlite3_open" "$ROOT/examples/native/http_sqlite/server.native.prov" \
      && grep -q "pkg-config sqlite3 version=" "$ROOT/examples/native/http_sqlite/server.native.prov" \
      && grep -q "header sqlite3.h digest=" "$ROOT/examples/native/http_sqlite/server.native.prov"; then
@@ -433,7 +433,7 @@ if pkg-config --exists sqlite3 2>/dev/null; then
   BAD="$WORK/badabi"; rm -rf "$BAD"; mkdir -p "$BAD/src"
   printf 'module app\nimport host.native.sqlite3 as db\nlet main = do\n  h <- db.sqliteOpen "x"\n  db.sqliteClose h\n' > "$BAD/src/app.kp"
   printf 'let buildConfig : BuildConfig = package { name="b", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="s", provides=[module "host.native.sqlite3"], surface=symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi=cAbi, inputs=[headers ["sqlite3.h"], pkgConfig "sqlite3" None, verify ["int sqlite3_open(double)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["s"] }] }' > "$BAD/kappa.build.kp"
-  bout="$(timeout 120 $KAPPA build --manifest "$BAD" --emit-c -o "$WORK/badout" 2>&1)"; brc=$?
+  bout="$(timeout 120 $KAPPA build --update --manifest "$BAD" --emit-c -o "$WORK/badout" 2>&1)"; brc=$?
   if [ "$brc" -ne 0 ] && grep -q "E_BUILD_NATIVE_ABI" <<<"$bout"; then
     echo "   ok (a signature disagreeing with the real sqlite3.h -> E_BUILD_NATIVE_ABI, fail-closed)"
   else
@@ -448,7 +448,7 @@ echo "== exact-width ABI vocabulary (ctU32/ctUsize…) maps to real C widths + v
 WD="$WORK/widths"; rm -rf "$WD"; mkdir -p "$WD/src"
 printf 'module app\nimport host.native.netbyte as n\nimport std.ffi.(u32, u32Value)\nlet main = do\n  x <- n.htonl (u32 256)\n  printlnString (showInt (u32Value x))\n' > "$WD/src/app.kp"
 printf 'let buildConfig : BuildConfig = package { name="w", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="nb", provides=[module "host.native.netbyte"], surface=symbolList [symbolDecl "htonl" "htonl" [ctU32] ctU32], abi=cAbi, inputs=[headers ["arpa/inet.h"], verify ["uint32_t htonl(uint32_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["nb"] }] }' > "$WD/kappa.build.kp"
-wout="$(timeout 200 $KAPPA build --manifest "$WD" --emit-c -o "$WORK/wbin" 2>&1)"; wrc=$?
+wout="$(timeout 200 $KAPPA build --update --manifest "$WD" --emit-c -o "$WORK/wbin" 2>&1)"; wrc=$?
 WC="$(find "$WD" -name '*.kappa.c' | head -1)"
 if [ "$wrc" -eq 0 ] && grep -q "extern uint32_t htonl(uint32_t);" "$WC" 2>/dev/null; then
   echo "   ok (ctU32 -> 'uint32_t' extern prototype, verified against arpa/inet.h)"
@@ -457,12 +457,25 @@ else
 fi
 rm -rf "$WD"
 
+echo "== a shim symbol whose ABI signature disagrees with the manifest is fail-closed (§27.1.1, N-19) =="
+SB="$WORK/shimabi"; rm -rf "$SB"; mkdir -p "$SB/src"
+printf 'module app\nimport host.native.probe as p\nlet main = do\n  x <- p.thing 7\n  printlnString "ok"\n' > "$SB/src/app.kp"
+# shim DEFINES probe_thing returning double, but the manifest declares ctI64 (int64_t)
+printf '#include <stdint.h>\ndouble probe_thing(int64_t x) { return (double)x + 0.5; }\n' > "$SB/src/shim.c"
+printf 'let buildConfig : BuildConfig = package { name="s", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="pb", provides=[module "host.native.probe"], surface=symbolList [symbolDecl "thing" "probe_thing" [ctI64] ctI64], abi=cAbi, inputs=[shim ["src/shim.c"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["pb"] }] }' > "$SB/kappa.build.kp"
+if timeout 200 $KAPPA build --update --manifest "$SB" -o "$WORK/sbbin" >"$SB/b.log" 2>&1; then
+  echo "   FAIL: a shim with a conflicting ABI signature built successfully (silent mis-marshalling)"; fails=$((fails+1))
+else
+  echo "   ok (shim ABI conflict rejected at compile via the force-included prototype header)"
+fi
+rm -rf "$SB"
+
 echo "== RawPtr results surface as Option RawPtr (nullability, §26.1.1:27307) =="
 RP="$WORK/rawptr"; rm -rf "$RP"; mkdir -p "$RP/src"
 printf 'module app\nimport host.native.envx as n\nlet main = do\n  r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"
 printf 'let buildConfig : BuildConfig = package { name="r", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="e", provides=[module "host.native.envx"], surface=symbolList [symbolDecl "getenv" "getenv" [ctString] ctRawPtr], abi=cAbi, inputs=[headers ["stdlib.h"], verify ["char *getenv(const char *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["e"] }] }' > "$RP/kappa.build.kp"
 RPC="$WORK/rpbin"
-if timeout 200 $KAPPA build --manifest "$RP" -o "$RPC" >"$RP/b.log" 2>&1; then
+if timeout 200 $KAPPA build --update --manifest "$RP" -o "$RPC" >"$RP/b.log" 2>&1; then
   rpout="$(PATH="$PATH" "$RPC" 2>&1)"
   if [ "$rpout" = "PATH=some" ]; then
     echo "   ok (RawPtr result is Option RawPtr; non-null PATH -> Some, matched in Kappa)"
@@ -478,7 +491,7 @@ echo "== native host-source identity is pinned in kappa.lock + drift is fail-clo
 if pkg-config --exists sqlite3 2>/dev/null; then
   LK="$WORK/lockpin"; rm -rf "$LK"; mkdir -p "$LK"
   cp "$ROOT/examples/native/http_sqlite/server.kp" "$ROOT/examples/native/http_sqlite/kappa.build.kp" "$ROOT/examples/native/http_sqlite/native_shim.c" "$LK/"
-  timeout 200 $KAPPA build --manifest "$LK" --emit-c -o "$WORK/lp" >"$LK/b1.log" 2>&1
+  timeout 200 $KAPPA build --update --manifest "$LK" --emit-c -o "$WORK/lp" >"$LK/b1.log" 2>&1
   if grep -q "^host-binding .* sqlite3$" "$LK/kappa.lock" 2>/dev/null && grep -q "^host-binding .* posixnet$" "$LK/kappa.lock" 2>/dev/null; then
     if timeout 200 $KAPPA build --manifest "$LK" --emit-c --locked -o "$WORK/lp" >/dev/null 2>&1; then
       printf '/* drift */\n' >> "$LK/native_shim.c"

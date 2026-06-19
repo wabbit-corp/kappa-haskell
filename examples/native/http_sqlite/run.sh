@@ -18,7 +18,7 @@ cd "$ROOT"
 rm -f "$DB" "$LOG" "$EXE"
 
 echo "== building the demo via its build manifest -> native executable =="
-timeout 240 cabal run -v0 kappa -- build --manifest examples/native/http_sqlite -o "$EXE"
+timeout 240 cabal run -v0 kappa -- build --update --manifest examples/native/http_sqlite -o "$EXE"
 file "$EXE" | sed 's/^/  /'
 
 echo "== starting server =="

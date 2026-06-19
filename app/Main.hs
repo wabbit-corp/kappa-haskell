@@ -51,7 +51,7 @@ main = do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
           <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] FILE"
-          <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
+          <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--update] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
@@ -120,12 +120,13 @@ data ManifestArgs = ManifestArgs
   , maOut :: !(Maybe FilePath) -- ^ -o OUT
   , maEmitC :: !Bool -- ^ --emit-c
   , maCC :: !(Maybe String) -- ^ --cc DRIVER
-  , maLocked :: !Bool -- ^ --locked: require kappa.lock to match (no update)
+  , maLocked :: !Bool -- ^ --locked: explicit verify-only (now the package-mode default; accepted as an alias)
   , maProvenance :: !Bool -- ^ --provenance: print buildConfig value provenance (§35.7)
+  , maUpdate :: !Bool -- ^ --update: permit rewriting kappa.lock (the only mode that may write; §36.7 update-all)
   }
 
 defaultManifestArgs :: ManifestArgs
-defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False False
+defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False False False
 
 -- | Dispatch a @build@ invocation to manifest mode (§35.13/§36) or the
 -- legacy single-file native build.
@@ -152,6 +153,8 @@ parseManifestArgs = go defaultManifestArgs
     go ma ("--manifest" : xs) = go ma xs
     go ma ("--check" : xs) = go ma {maCheck = True} xs
     go ma ("--locked" : xs) = go ma {maLocked = True} xs
+    go ma ("--update" : xs) = go ma {maUpdate = True} xs
+    go ma ("--lockfile-update" : xs) = go ma {maUpdate = True} xs
     go ma ("--provenance" : xs) = go ma {maProvenance = True} xs
     go ma ("--emit-c" : xs) = go ma {maEmitC = True} xs
     go ma ("--target" : t : xs) = go ma {maTarget = Just (T.pack t)} xs
@@ -199,12 +202,13 @@ cmdBuildManifest ma = do
           -- target, which would let aggregate members overwrite each other.
           | otherwise -> runInvocation file bc ma (maTarget ma)
 
--- | Run a build invocation (default executable, or a named --target) with
--- a single package-scoped lock step. The dependency lock reflects the union
--- of the closures of every exe/bench target this invocation reaches; it is
--- verified once up front (under --locked, before any build) and updated once
--- after a successful build (without --locked). Test/library-only invocations
--- carry no closure and leave the lock untouched.
+-- | Run a build invocation (default executable, or a named --target) with a
+-- single package-scoped lock step. §36.7:39662/:39664: package-mode ordinary
+-- compilation uses @locked@ — the lock is VERIFIED up front and a missing or
+-- stale required entry is a fail-closed error — UNLESS the build explicitly
+-- selects an update mode (@--update@/@--lockfile-update@), which is the only
+-- mode that may write the lock. Test/library-only invocations carry no closure
+-- and leave the lock untouched.
 runInvocation :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO ()
 runInvocation file bc ma mtgt = do
   let manifestDir = takeDirectory file
@@ -212,11 +216,13 @@ runInvocation file bc ma mtgt = do
   case closure of
     Left ds -> emitDiags Human ds >> exitFailure
     Right (manages, entries) -> do
-      when (manages && maLocked ma) (verifyLock manifestDir entries)
+      -- default (locked): verify before building, fail-closed on missing/stale.
+      when (manages && not (maUpdate ma)) (verifyLock manifestDir entries)
       ok <- case mtgt of
         Just nm -> runNamedTarget file bc ma Set.empty nm
         Nothing -> runExecutable file bc ma Nothing
-      when (manages && ok && not (maLocked ma)) (updateLock manifestDir entries)
+      -- only an explicit update mode may write the lock (§36.7).
+      when (manages && ok && maUpdate ma) (updateLock manifestDir entries)
       if ok then exitSuccess else exitFailure
 
 -- | Resolve (without building) the dependency-lock closure of an

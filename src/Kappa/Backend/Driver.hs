@@ -12,13 +12,14 @@ module Kappa.Backend.Driver
   , detectCC
   ) where
 
+import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
-import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype)
 import Kappa.Backend.NativeProbe (NativeProvenance (..), discoverAndVerifyNative)
 import Kappa.Build.Types (NativeInput (..), NativeLinkSpec (..))
 import Kappa.Check (CheckState)
@@ -161,6 +162,33 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
       case pkgErr of
         Just msg -> pure (Left [toolDiag msg])
         Nothing -> do
+          -- §27.1.1/§26.1.3: write a header of the codegen extern prototypes for
+          -- the host symbols and force-`-include` it into the compile, so a shim
+          -- translation unit that DEFINES a symbol with an ABI signature that
+          -- disagrees with the manifest's symbolDecl is a hard compile error
+          -- (conflicting types) rather than a silent ABI mismatch.
+          let -- Symbols already declared by a `verify` C prototype are real
+              -- library symbols, checked separately against the real headers;
+              -- declaring our conservative prototype for them would conflict
+              -- with the system header (e.g. void* vs char* getenv). The
+              -- force-include header therefore covers only the OTHER cSymbols —
+              -- the shim-provided ones — so a shim ABI mismatch is a hard error.
+              verifyText = T.concat [d | VerifyInput ds <- boNativeInputs opts, d <- ds]
+              shimSyms = [rns | rns <- Map.elems (boHostSyms opts), not (rnsCSymbol rns `T.isInfixOf` verifyText)]
+          hdrInclude <-
+            if null shimSyms
+              then pure []
+              else do
+                let hdrPath = workDir </> (base ++ ".kappa.h")
+                    protos = nub (map externPrototype shimSyms)
+                    -- the header is force-included before any system header, so
+                    -- it must pull in the exact-width / size types it spells.
+                    hdr = "/* generated host-binding prototypes (§27.1.1 ABI check). */"
+                            : "#include <stdint.h>"
+                            : "#include <stddef.h>"
+                            : protos
+                TIO.writeFile hdrPath (T.unlines hdr)
+                pure ["-include", hdrPath]
           let -- §36.21: a cross-capable driver (zig cc) targets the manifest's
               -- triple; for a host gcc/clang/cc we leave the native host target
               -- (an explicit non-host triple there would fail the link, which is
@@ -182,6 +210,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                      , "-ffp-contract=off"
                      , "-I", runtimeDir
                      ]
+                  ++ hdrInclude
                   ++ inCFlags
                   ++ [ cPath
                      , runtimeDir </> "kappart.c"

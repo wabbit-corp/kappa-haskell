@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build-manifest test suite (Spec §35.13 config-mode evaluation, §36
-# build schema). Drives `kappa build --manifest` over fixtures:
+# build schema). Drives `kappa build --update --manifest` over fixtures:
 #   * valid/*          — must load, config-check and reify (exit 0);
 #   * invalid/*        — must fail, emitting the expected §35.11 config
 #                        diagnostic declared on the fixture's first line;
@@ -53,7 +53,7 @@ echo "== native bindings: codegen + diagnostics driven by manifest providers (§
 for d in "$DIR"/native/*/; do
   name="native/$(basename "$d")"
   want="$(sed -n 's/^-- expect: //p' "$d/kappa.build.kp" | head -1)"
-  out="$(timeout 120 $KAPPA build --manifest "$d" --emit-c -o /tmp/kbuild-out 2>&1)"; rc=$?
+  out="$(timeout 120 $KAPPA build --update --manifest "$d" --emit-c -o /tmp/kbuild-out 2>&1)"; rc=$?
   if [ "$want" = "BUILD_OK" ]; then
     # a fixture that selects the sqlite host binding must emit its prim;
     # otherwise just require that codegen produced a .c. A fixture that
@@ -89,7 +89,7 @@ done
 echo "== kappa.lock lifecycle: create / --locked match / drift / missing (§36.4, §36.23.2) =="
 LW="${TMPDIR:-/tmp}/kappa-lock-test"; rm -rf "$LW"; mkdir -p "$LW"
 cp -r "$DIR/native/pathdep/." "$LW/"   # a path-dep project (app + dep/)
-if timeout 120 $KAPPA build --manifest "$LW" --emit-c >/dev/null 2>&1 && [ -f "$LW/kappa.lock" ]; then
+if timeout 120 $KAPPA build --update --manifest "$LW" --emit-c >/dev/null 2>&1 && [ -f "$LW/kappa.lock" ]; then
   echo "PASS lock/create (kappa.lock written on first build)"
 else
   echo "FAIL lock/create (no kappa.lock after build)"; fails=$((fails+1))
@@ -128,7 +128,7 @@ if command -v git >/dev/null 2>&1; then
   mkdir -p "$GW/app/src"
   printf 'module app\nimport codec.util.(tag)\nlet main = printlnString (tag "hi")' > "$GW/app/src/app.kp"
   printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[git { name="codec", url="%s/codecrepo", rev="%s" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$GW" "$REV" > "$GW/app/kappa.build.kp"
-  if timeout 120 $KAPPA build --manifest "$GW/app" --emit-c >/dev/null 2>&1 \
+  if timeout 120 $KAPPA build --update --manifest "$GW/app" --emit-c >/dev/null 2>&1 \
      && grep -q "^git $REV " "$GW/app/kappa.lock" 2>/dev/null; then
     echo "PASS git/resolve (cloned + checked out + lock records git SHA)"
   else
@@ -141,7 +141,7 @@ if command -v git >/dev/null 2>&1; then
   fi
   printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[git { name="codec", url="%s/codecrepo", rev="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$GW" > "$GW/app/kappa.build.kp"
   rm -rf "$GW/app/.kappa" "$GW/app/kappa.lock"
-  brout="$(timeout 120 $KAPPA build --manifest "$GW/app" --emit-c 2>&1)"
+  brout="$(timeout 120 $KAPPA build --update --manifest "$GW/app" --emit-c 2>&1)"
   if grep -q "E_DEPENDENCY_GIT_FAILED" <<<"$brout"; then
     echo "PASS git/bad-rev (unresolvable revision -> E_DEPENDENCY_GIT_FAILED)"
   else
@@ -162,7 +162,7 @@ done
 mkdir -p "$RW/app/src"; printf 'module app\nimport codec.util.(tag)\nlet main = printlnString (tag "hi")' > "$RW/app/src/app.kp"
 regmanifest() { printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[registry { name="codec", version="%s" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$1" > "$RW/app/kappa.build.kp"; }
 regmanifest "^0.1"; rm -f "$RW/app/kappa.lock"
-if KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --manifest "$RW/app" --emit-c >/dev/null 2>&1 \
+if KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --update --manifest "$RW/app" --emit-c >/dev/null 2>&1 \
    && grep -qE "^registry 0\.1\.5(\+| )" "$RW/app/kappa.lock" 2>/dev/null; then
   echo "PASS registry/resolve (^0.1 -> highest 0.1.x; lock pins resolved version)"
 else
@@ -174,14 +174,14 @@ else
   echo "FAIL registry/locked"; fails=$((fails+1))
 fi
 regmanifest "^9"; rm -f "$RW/app/kappa.lock"
-nvout="$(KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --manifest "$RW/app" --emit-c 2>&1)"
+nvout="$(KAPPA_REGISTRY="$RW/reg" timeout 120 $KAPPA build --update --manifest "$RW/app" --emit-c 2>&1)"
 if grep -q "E_DEPENDENCY_VERSION_UNSATISFIED" <<<"$nvout"; then
   echo "PASS registry/no-version (^9 -> E_DEPENDENCY_VERSION_UNSATISFIED)"
 else
   echo "FAIL registry/no-version"; echo "$nvout" | sed 's/^/    /'; fails=$((fails+1))
 fi
 regmanifest "^0.1"
-ucout="$(timeout 120 $KAPPA build --manifest "$RW/app" --emit-c 2>&1)"
+ucout="$(timeout 120 $KAPPA build --update --manifest "$RW/app" --emit-c 2>&1)"
 if grep -q "E_DEPENDENCY_UNRESOLVED" <<<"$ucout"; then
   echo "PASS registry/unconfigured (no \$KAPPA_REGISTRY -> E_DEPENDENCY_UNRESOLVED)"
 else
@@ -197,16 +197,16 @@ if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
   ( cd "$UW" && tar -czf codec.tgz codecpkg )
   printf 'module app\nimport codec.util.(tag)\nlet main = printlnString (tag "hi")' > "$UW/app/src/app.kp"
   printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[urlDependency { name="codec", url="file://%s/codec.tgz" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$UW" > "$UW/app/kappa.build.kp"
-  if timeout 120 $KAPPA build --manifest "$UW/app" --emit-c >/dev/null 2>&1 \
+  if timeout 120 $KAPPA build --update --manifest "$UW/app" --emit-c >/dev/null 2>&1 \
      && grep -q "^url " "$UW/app/kappa.lock" 2>/dev/null; then
     echo "PASS url/resolve (fetched + unpacked archive; lock records content id)"
   else
     echo "FAIL url/resolve"; fails=$((fails+1))
   fi
-  ufout="$(timeout 60 $KAPPA build --manifest "$UW/app" --emit-c 2>&1)"  # warm cache, then bad url
+  ufout="$(timeout 60 $KAPPA build --update --manifest "$UW/app" --emit-c 2>&1)"  # warm cache, then bad url
   printf 'let buildConfig : BuildConfig = package { name="app", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[urlDependency { name="codec", url="file://%s/nope.tgz" }], hostBindings=[], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=["codec"], hostBindings=[] }] }' "$UW" > "$UW/app/kappa.build.kp"
   rm -rf "$UW/app/.kappa"
-  ufout="$(timeout 60 $KAPPA build --manifest "$UW/app" --emit-c 2>&1)"
+  ufout="$(timeout 60 $KAPPA build --update --manifest "$UW/app" --emit-c 2>&1)"
   if grep -q "E_DEPENDENCY_URL_FAILED" <<<"$ufout"; then
     echo "PASS url/bad (missing archive -> E_DEPENDENCY_URL_FAILED)"
   else
@@ -223,13 +223,13 @@ cat > "$TT/kappa.build.kp" <<'EOF'
 let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "test"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [test { name = "unit", modules = modulesUnder "spec" }] }
 EOF
 printf -- '--! mode check\n--! assertNoErrors\nmodule spec.ok\nlet x : Int = 42' > "$TT/test/spec/ok.kp"
-if timeout 120 $KAPPA build --manifest "$TT" --target unit >/dev/null 2>&1; then
+if timeout 120 $KAPPA build --update --manifest "$TT" --target unit >/dev/null 2>&1; then
   echo "PASS test-target/pass (passing suite -> exit 0)"
 else
   echo "FAIL test-target/pass"; fails=$((fails+1))
 fi
 printf -- '--! mode check\n--! assertNoErrors\nmodule spec.bad\nlet y : Int = notInScope' > "$TT/test/spec/bad.kp"
-if timeout 120 $KAPPA build --manifest "$TT" --target unit >/dev/null 2>&1; then
+if timeout 120 $KAPPA build --update --manifest "$TT" --target unit >/dev/null 2>&1; then
   echo "FAIL test-target/fail (failing suite should exit non-zero)"; fails=$((fails+1))
 else
   echo "PASS test-target/fail (failing suite -> non-zero exit)"
@@ -243,12 +243,12 @@ let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0
 EOF
 printf 'module app.main\nlet main = printlnString "hi"' > "$AG/src/app/main.kp"
 printf -- '--! mode check\n--! assertNoErrors\nmodule spec.ok\nlet x : Int = 1' > "$AG/test/spec/ok.kp"
-if timeout 120 $KAPPA build --manifest "$AG" --target all --emit-c >/dev/null 2>&1; then
+if timeout 120 $KAPPA build --update --manifest "$AG" --target all --emit-c >/dev/null 2>&1; then
   echo "PASS aggregate/run (builds executable member + runs test member)"
 else
   echo "FAIL aggregate/run"; fails=$((fails+1))
 fi
-agout="$(timeout 120 $KAPPA build --manifest "$AG" --target cyc1 --emit-c 2>&1)"
+agout="$(timeout 120 $KAPPA build --update --manifest "$AG" --target cyc1 --emit-c 2>&1)"
 if grep -q "E_BUILD_TARGET_CYCLE" <<<"$agout"; then
   echo "PASS aggregate/cycle (cyclic membership -> E_BUILD_TARGET_CYCLE)"
 else
@@ -276,7 +276,7 @@ printf 'module acodec.util\nav : String -> String\nlet av s = stringAppend "a" s
 printf 'module bcodec.util\nbv : String -> String\nlet bv s = stringAppend "b" s' > "$AGL/depb/src/bcodec/util.kp"
 printf 'module appa.main\nimport acodec.util.(av)\nlet main = printlnString (av "x")' > "$AGL/src/appa/main.kp"
 printf 'module appb.main\nimport bcodec.util.(bv)\nlet main = printlnString (bv "x")' > "$AGL/src/appb/main.kp"
-timeout 120 $KAPPA build --manifest "$AGL" --target all --emit-c >/dev/null 2>&1
+timeout 120 $KAPPA build --update --manifest "$AGL" --target all --emit-c >/dev/null 2>&1
 nlk=$(grep -c . "$AGL/kappa.lock" 2>/dev/null || echo 0)
 if timeout 120 $KAPPA build --manifest "$AGL" --target all --emit-c --locked >/dev/null 2>&1 && [ "$nlk" -ge 2 ]; then
   echo "PASS aggregate/locked (union lock of both members verifies under --locked)"
@@ -291,7 +291,7 @@ cat > "$BG/kappa.build.kp" <<'EOF'
 let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "src"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [executable { name = "cli", backend = jvm, fragments = tags [], main = module "app.main", modules = modulesUnder "app", dependencies = [], hostBindings = [] }] }
 EOF
 printf 'module app.main\nlet main = printlnString "hi"' > "$BG/src/app/main.kp"
-bgout="$(timeout 120 $KAPPA build --manifest "$BG" --target cli --emit-c 2>&1)"
+bgout="$(timeout 120 $KAPPA build --update --manifest "$BG" --target cli --emit-c 2>&1)"
 if grep -q "E_BACKEND_PROFILE_UNREALIZED" <<<"$bgout"; then
   echo "PASS backend/jvm-rejected (a jvm target is not silently built native)"
 else
@@ -313,7 +313,7 @@ EOF
 printf 'module app.main\nlet main = printlnString "hi"' > "$RH/src/app/main.kp"
 # a source-defined host.native.* module OUTSIDE the built target's selector
 printf 'module host.native.foo\nlet x = 1' > "$RH/src/host/native/foo.kp"
-rhout="$(timeout 120 $KAPPA build --manifest "$RH" --target cli --emit-c 2>&1)"
+rhout="$(timeout 120 $KAPPA build --update --manifest "$RH" --target cli --emit-c 2>&1)"
 if grep -q "E_HOST_MODULE_SOURCE_DEFINED" <<<"$rhout"; then
   echo "PASS reserved-host/selector-excluded (host.native source rejected even outside selector)"
 else
@@ -327,12 +327,12 @@ cat > "$AL/kappa.build.kp" <<'EOF'
 let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "test"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [test { name = "unit", modules = modulesUnder "spec" }, aliasTarget { name = "check", target = "unit" }, aliasTarget { name = "lp1", target = "lp2" }, aliasTarget { name = "lp2", target = "lp1" }] }
 EOF
 printf -- '--! mode check\n--! assertNoErrors\nmodule spec.ok\nlet x : Int = 1' > "$AL/test/spec/ok.kp"
-if timeout 120 $KAPPA build --manifest "$AL" --target check >/dev/null 2>&1; then
+if timeout 120 $KAPPA build --update --manifest "$AL" --target check >/dev/null 2>&1; then
   echo "PASS alias/run (alias resolves to and runs its target)"
 else
   echo "FAIL alias/run"; fails=$((fails+1))
 fi
-alout="$(timeout 120 $KAPPA build --manifest "$AL" --target lp1 2>&1)"
+alout="$(timeout 120 $KAPPA build --update --manifest "$AL" --target lp1 2>&1)"
 if grep -q "E_BUILD_TARGET_CYCLE" <<<"$alout"; then
   echo "PASS alias/cycle (alias loop -> E_BUILD_TARGET_CYCLE)"
 else
@@ -346,13 +346,13 @@ cat > "$BM/kappa.build.kp" <<'EOF'
 let buildConfig : BuildConfig = package { name = "demo", version = semver "1.0.0", sourceRoots = [sourceRoot "bench"], fragmentAxes = [], dependencies = [], hostBindings = [], targets = [benchmark { name = "loop", backend = native { toolchain = "cc", targetTriple = "t" }, fragments = tags [], main = module "perf.loop", modules = modulesUnder "perf", dependencies = [] }] }
 EOF
 printf 'module perf.loop\nlet main = printlnString (showInt (addInt 2 3))' > "$BM/bench/perf/loop.kp"
-if timeout 120 $KAPPA build --manifest "$BM" --target loop >/dev/null 2>&1; then
+if timeout 120 $KAPPA build --update --manifest "$BM" --target loop >/dev/null 2>&1; then
   echo "PASS benchmark/run (benchmark program runs under the interpreter, exit 0)"
 else
   echo "FAIL benchmark/run"; fails=$((fails+1))
 fi
 printf 'module perf.loop\nlet main = printlnString (showInt (divInt 1 0))' > "$BM/bench/perf/loop.kp"
-if timeout 120 $KAPPA build --manifest "$BM" --target loop >/dev/null 2>&1; then
+if timeout 120 $KAPPA build --update --manifest "$BM" --target loop >/dev/null 2>&1; then
   echo "FAIL benchmark/fail (a failing benchmark should exit non-zero)"; fails=$((fails+1))
 else
   echo "PASS benchmark/fail (runtime failure -> non-zero exit)"
@@ -399,7 +399,7 @@ else
 fi
 
 echo "== manifest not found (§35.13) =="
-if out="$(timeout 60 $KAPPA build --manifest "$DIR/does-not-exist" 2>&1)"; then
+if out="$(timeout 60 $KAPPA build --update --manifest "$DIR/does-not-exist" 2>&1)"; then
   echo "FAIL not-found (expected failure)"; fails=$((fails+1))
 elif grep -q "E_BUILD_MANIFEST_NOT_FOUND" <<<"$out"; then
   echo "PASS manifest-not-found (E_BUILD_MANIFEST_NOT_FOUND)"
