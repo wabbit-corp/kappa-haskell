@@ -57,6 +57,17 @@ cAbiType = \case
   CtString -> "const char *"
   CtHandle -> "void *"
   CtRawPtr -> "void *"
+  CtI8 -> "int8_t"
+  CtI16 -> "int16_t"
+  CtI32 -> "int32_t"
+  CtI64 -> "int64_t"
+  CtU8 -> "uint8_t"
+  CtU16 -> "uint16_t"
+  CtU32 -> "uint32_t"
+  CtU64 -> "uint64_t"
+  CtIsize -> "intptr_t"
+  CtUsize -> "size_t"
+  CtF32 -> "float"
 
 -- | The Kappa surface type a 'CType' is presented as (conservative typing,
 -- §26.1.4). Integer-class C scalars surface as @Integer@; handles/pointers
@@ -64,13 +75,18 @@ cAbiType = \case
 ctypeKappaTerm :: CType -> Term
 ctypeKappaTerm = \case
   CtUnit -> gp "Unit"
-  CtInt -> gp "Integer"
-  CtInt64 -> gp "Integer"
   CtBool -> gp "Bool"
   CtDouble -> gp "Double"
   CtString -> gp "String"
   CtHandle -> ffi "OpaqueHandle"
   CtRawPtr -> ffi "RawPtr"
+  CtF32 -> gp "Double"
+  -- the integer class (exact-width + word-width) surfaces as Integer (§26.1.4
+  -- conservative typing; the ABI width is carried by 'cAbiType'/marshalling).
+  t | isIntClass t -> gp "Integer"
+  _ -> gp "Integer"
+  where
+    isIntClass t = t `elem` [CtInt, CtInt64, CtI8, CtI16, CtI32, CtI64, CtU8, CtU16, CtU32, CtU64, CtIsize, CtUsize]
 
 -- | The Kappa type of a native member: @p1 -> … -> pn -> UIO result@.
 -- Native bindings are effectful, so the result is in @UIO@ (= @IO Void@),
@@ -122,25 +138,31 @@ wrapperDefinition rns =
 unbox :: CType -> Text -> Text
 unbox ty e = case ty of
   CtUnit -> "(void)" <> e -- a unit param carries no C argument; never emitted in practice
-  CtInt -> "(int)kas_int(" <> e <> ")"
   CtInt64 -> "kas_int(" <> e <> ")"
   CtBool -> "kas_bool(" <> e <> ")"
   CtDouble -> "kas_dbl(" <> e <> ")"
   CtString -> "kas_str(" <> e <> ")"
   CtHandle -> "kas_fgn(" <> e <> ")"
   CtRawPtr -> "kas_fgn(" <> e <> ")"
+  CtF32 -> "(float)kas_dbl(" <> e <> ")"
+  -- integer class: unbox to int64 then narrow to the declared C width.
+  _ -> "(" <> cAbiType ty <> ")kas_int(" <> e <> ")"
 
 -- | Box a C call expression of the result's ABI type back to a @KValue*@.
 box :: CType -> Text -> Text
 box ty call = case ty of
   CtUnit -> "(" <> call <> ", kunit())"
-  CtInt -> "kint((int64_t)(" <> call <> "))"
   CtInt64 -> "kint(" <> call <> ")"
   CtBool -> "kbool(" <> call <> ")"
   CtDouble -> "kdbl(" <> call <> ")"
   CtString -> "kstr0(" <> call <> ")"
   CtHandle -> "kfgn((void *)(" <> call <> "), \"native\")"
   CtRawPtr -> "kfgn((void *)(" <> call <> "), \"native\")"
+  CtF32 -> "kdbl((double)(" <> call <> "))"
+  CtU64 -> "kint((int64_t)(uint64_t)(" <> call <> "))" -- values > INT64_MAX wrap (Integer surface; documented)
+  -- other integer-class results: the C call already returns the exact width;
+  -- widen to int64 (sign/zero extension follows from the C return type).
+  _ -> "kint((int64_t)(" <> call <> "))"
 
 -- ── small Core helpers (canonical, δ-unfold to an `expect`'s defeq) ────
 

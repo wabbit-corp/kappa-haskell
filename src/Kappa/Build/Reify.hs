@@ -184,7 +184,18 @@ decCType ctx v = do
     "CtString" -> Right CtString
     "CtHandle" -> Right CtHandle
     "CtRawPtr" -> Right CtRawPtr
-    _ -> decFail "expected an ABI type (e.g. 'ctInt'/'ctString'/'ctHandle') (Spec §26.1.1)"
+    "CtI8" -> Right CtI8
+    "CtI16" -> Right CtI16
+    "CtI32" -> Right CtI32
+    "CtI64" -> Right CtI64
+    "CtU8" -> Right CtU8
+    "CtU16" -> Right CtU16
+    "CtU32" -> Right CtU32
+    "CtU64" -> Right CtU64
+    "CtIsize" -> Right CtIsize
+    "CtUsize" -> Right CtUsize
+    "CtF32" -> Right CtF32
+    _ -> decFail "expected an ABI type (e.g. 'ctInt'/'ctU32'/'ctString'/'ctHandle') (Spec §26.1.1)"
 
 decSymbolDecl :: EvalCtx -> Value -> Dec SymbolDecl
 decSymbolDecl ctx v = do

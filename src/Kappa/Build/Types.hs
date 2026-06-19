@@ -77,13 +77,20 @@ data BackendProfile
 -- and a C ABI type (see "Kappa.Backend.NativeFfi").
 data CType
   = CtUnit
-  | CtInt
-  | CtInt64
+  | CtInt -- ^ C @int@ (the ergonomic default; surfaces as Integer)
+  | CtInt64 -- ^ C @int64_t@
   | CtBool
-  | CtDouble
+  | CtDouble -- ^ C @double@ (= F64)
   | CtString
   | CtHandle
   | CtRawPtr
+  -- §26.1.1 exact-width / pointer-width / float scalars (std.ffi). The C ABI
+  -- spelling carries the exact width + signedness; the Kappa surface stays
+  -- Integer/Double (the conservative integer/float class, §26.1.4).
+  | CtI8 | CtI16 | CtI32 | CtI64
+  | CtU8 | CtU16 | CtU32 | CtU64
+  | CtIsize | CtUsize
+  | CtF32
   deriving stock (Eq, Show)
 
 -- | §36.28: one exported native symbol — the Kappa member spelling, the C

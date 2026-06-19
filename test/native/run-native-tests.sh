@@ -444,6 +444,19 @@ else
   echo "   SKIP: pkg-config sqlite3 not available"
 fi
 
+echo "== exact-width ABI vocabulary (ctU32/ctUsize…) maps to real C widths + verifies (§26.1.1) =="
+WD="$WORK/widths"; rm -rf "$WD"; mkdir -p "$WD/src"
+printf 'module app\nimport host.native.netbyte as n\nlet main = do\n  x <- n.htonl 256\n  printlnString (showInt x)\n' > "$WD/src/app.kp"
+printf 'let buildConfig : BuildConfig = package { name="w", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="nb", provides=[module "host.native.netbyte"], surface=symbolList [symbolDecl "htonl" "htonl" [ctU32] ctU32], abi=cAbi, inputs=[headers ["arpa/inet.h"], verify ["uint32_t htonl(uint32_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["nb"] }] }' > "$WD/kappa.build.kp"
+wout="$(timeout 200 $KAPPA build --manifest "$WD" --emit-c -o "$WORK/wbin" 2>&1)"; wrc=$?
+WC="$(find "$WD" -name '*.kappa.c' | head -1)"
+if [ "$wrc" -eq 0 ] && grep -q "extern uint32_t htonl(uint32_t);" "$WC" 2>/dev/null; then
+  echo "   ok (ctU32 -> 'uint32_t' extern prototype, verified against arpa/inet.h)"
+else
+  echo "   FAIL: exact-width ctU32 did not map to uint32_t / verify"; echo "$wout" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$WD"
+
 echo "== native host-source identity is pinned in kappa.lock + drift is fail-closed (§8.3.5/§36.7) =="
 if pkg-config --exists sqlite3 2>/dev/null; then
   LK="$WORK/lockpin"; rm -rf "$LK"; mkdir -p "$LK"
