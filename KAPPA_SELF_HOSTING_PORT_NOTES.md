@@ -57,12 +57,12 @@ Confirmed DONE+correct by 3 independent reviewers: N-2..N-5, N-7, N-14 (zero kpr
 | N-23 | HIGH | open | `M.Raw` mechanically-derived raw surface unimplemented | §26.1.2 | expose `host.native.X.Raw` |
 | N-24 | HIGH | open | RawPtr/OpaqueHandle nullability+ownership dropped (bare non-optional) | §26.1.1:27303-27314, §26.1.4 | default to `Option RawPtr`/wrapped handle unless trusted-summary/shim overrides |
 | N-25 | HIGH | open | adapter modes (§26.1.3) + trusted summaries (§26.1.5) unmodeled; adapter mode absent from identity | §26.1.1:26221, §26.1.3, §26.1.5 | add adapterMode field + trusted-summary input; fold into identity |
-| N-26 | HIGH | open | `prebuiltNative` expectedIdentity decoded then never verified (fail-OPEN) | §36.28, §36.6 | digest artifact; compare expectedIdentity fail-closed; fold into identity |
-| N-27 | MED | open | shim source content not digested into identity (a shim edit is invisible) | §27.1.1:27367 | digest shim .c/.h into composite + lock |
-| N-28 | MED | open | `moduleMap` input silently dropped (comment claims a digest that doesn't happen) | §27.1.1:27370 | digest moduleMap or fail-closed if unrealized |
-| N-29 | MED | open | no §36.11 path-escape/symlink hardening on native header/shim/prebuilt paths | §36.11, §36.6A | reuse source-tree normalize+symlink guard; fail-closed on escape |
+| N-26 | HIGH | DONE | `prebuiltNative` artifact now digested + expectedIdentity VERIFIED fail-closed (`NativeProbe.verifyPrebuilt`); digest folded into identity | §36.28, §36.6 | done |
+| N-27 | MED | DONE | shim source content digested into the host-binding lock identity (`shimDigestLines`) | §27.1.1:27367 | done |
+| N-28 | MED | DONE | `moduleMap` files now located+digested into the native identity (`digestRel`), fail-closed if missing; `needsDiscovery` triggers on it | §27.1.1:27370 | done |
+| N-29 | MED | DONE | native shim/prebuilt/moduleMap paths routed through `safeWithinRoot` (rejects `..`-escape + symlink, §36.11) fail-closed | §36.11, §36.6A | done (headers stay system-path; shim/prebuilt/moduleMap within-root) |
 | N-30 | MED | open | lock parser drops malformed lines unless `--locked`; no per-entry schema identity; unescaped field separator | §36.7:39603 | per-entry schema id; escape separators; reject corrupt lock always |
-| N-31 | LOW | open | `unsafeConsume` table arity 2 but only 1 explicit arg (implicit erased) → native leaves it an unsaturated function (masked: result always discarded) | — | arity 1 in prim_arity + table + interp arm |
+| N-31 | LOW | DONE (native) | `unsafeConsume` native arity fixed to 1 (prim_arity + codegen table); interp arm `[_,_]` is correct (interp does not erase implicits) | — | done |
 | N-32 | LOW | open | `CtString` marshalling truncates embedded NUL (kstr0/kas_str), no length channel | §26.1.1 | document ABI constraint or thread length |
 | N-7 | HIGH | DONE | `nbInputs` decoded then ignored; FFI-unit picked by a Bool | Driver `resolveInputs` threads headers/includeDir/define/shim/prebuilt + runs pkg-config; `boRuntimeFfi`/stub removed; demo links real sqlite3 via pkgConfig |
 | N-8 | HIGH | open | `M.Raw` mechanically-derived raw surface unimplemented (§26.1.2) | expose `host.native.X.Raw` from the binding description |

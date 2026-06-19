@@ -1735,7 +1735,7 @@ primEntries = Map.fromList
   , ("subDouble", PrimEntry "kpf_subDouble" 2 False)
   , ("subInt", PrimEntry "kpf_subInt" 2 False)
   , ("subRat", PrimEntry "kpf_subRat" 2 False)
-  , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 2 False)
+  , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 1 False)
   , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
   ]
 

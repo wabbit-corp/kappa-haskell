@@ -35,10 +35,10 @@ import Kappa.Build.Types (NativeInput (..))
 import Kappa.Diagnostic
 import Kappa.Source (Pos (..), Span (..))
 import Control.Exception (catch, SomeException)
-import System.Directory (doesFileExist, findExecutable, removeFile)
+import System.Directory (doesFileExist, findExecutable, pathIsSymbolicLink, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (splitSearchPath, (</>))
+import System.FilePath (isAbsolute, splitDirectories, splitSearchPath, (</>))
 import System.Process (readProcessWithExitCode)
 
 -- | The recorded identity of a build's resolved native bindings: ordered,
@@ -87,13 +87,25 @@ discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs = do
           case ever of
             Left ds -> pure (Left ds)
             Right verLines -> do
-              let allLines =
-                    pkgLines
-                      ++ [hdrLine r | r <- hdrResults]
-                      ++ verLines
-                      ++ ["define " <> n <> "=" <> v | (n, v) <- defines]
-                  composite = contentId [("native-identity", encodeLines allLines)]
-              pure (Right (NativeProvenance allLines composite))
+              -- 4. module-map digests (§27.1.1 host-source identity input).
+              let moduleMaps = concat [ms | ModuleMapInput ms <- inputs]
+              emm <- runAll [digestRel baseDir "module-map" (T.unpack m) | m <- moduleMaps]
+              -- 5. prebuilt artifacts: digest + VERIFY any declared expected
+              -- identity, fail-closed (§36.28/§36.6 — never trust unverified bytes).
+              eprebuilt <- runAll [verifyPrebuilt baseDir a e | PrebuiltInput a e <- inputs]
+              case (emm, eprebuilt) of
+                (Left ds, _) -> pure (Left ds)
+                (_, Left ds) -> pure (Left ds)
+                (Right mmLines, Right pbLines) -> do
+                  let allLines =
+                        pkgLines
+                          ++ [hdrLine r | r <- hdrResults]
+                          ++ verLines
+                          ++ mmLines
+                          ++ pbLines
+                          ++ ["define " <> n <> "=" <> v | (n, v) <- defines]
+                      composite = contentId [("native-identity", encodeLines allLines)]
+                  pure (Right (NativeProvenance allLines composite))
   where
     encodeLines ls = BS.intercalate (BS.singleton 10) (map encodeUtf8 ls)
 
@@ -195,6 +207,57 @@ locateHash dirs name = do
     Just p -> do
       bs <- BS.readFile p
       pure (Right (HdrInfo (T.pack name) p (contentId [(p, bs)])))
+
+-- | Digest a package-relative file (module map, …) into an identity line,
+-- fail-closed if it escapes the package root, is a symlink, or is missing
+-- (§36.11 path hardening, §27.1.1 identity input).
+digestRel :: FilePath -> Text -> FilePath -> IO (Either Diagnostics Text)
+digestRel baseDir kind rel = do
+  esafe <- safeWithinRoot baseDir rel
+  case esafe of
+    Left e -> pure (Left [pErr e])
+    Right p -> do
+      ok <- doesFileExist p
+      if ok
+        then do bs <- BS.readFile p; pure (Right (kind <> " " <> T.pack rel <> " digest=" <> contentId [(rel, bs)]))
+        else pure (Left [pErr ("native binding " <> kind <> " '" <> T.pack rel <> "' was not found (Spec §27.1.1)")])
+
+-- | §36.28/§36.6: digest a prebuilt artifact and, when the manifest declares
+-- an expected identity, compare it — a mismatch is fail-closed (never link an
+-- artifact whose bytes do not match the pinned identity).
+verifyPrebuilt :: FilePath -> Text -> Maybe Text -> IO (Either Diagnostics Text)
+verifyPrebuilt baseDir art mexp = do
+  esafe <- safeWithinRoot baseDir (T.unpack art)
+  case esafe of
+    Left e -> pure (Left [pErr e])
+    Right p -> do
+      ok <- doesFileExist p
+      if not ok
+        then pure (Left [pErr ("prebuilt native artifact '" <> art <> "' was not found (Spec §36.28)")])
+        else do
+          bs <- BS.readFile p
+          let dig = contentId [(T.unpack art, bs)]
+          case mexp of
+            Just expected
+              | expected /= dig ->
+                  pure (Left [pErr ("prebuilt native artifact '" <> art <> "' has identity " <> dig
+                                      <> " but the manifest declares expected identity " <> expected
+                                      <> " (Spec §36.28/§36.6)")])
+            _ -> pure (Right ("prebuilt " <> art <> " digest=" <> dig
+                                <> maybe "" (const " (expected-verified)") mexp))
+
+-- | Resolve a package-relative path within the root, rejecting @..@ escapes
+-- and symlinks (§36.11). Returns the absolute path or a diagnostic message.
+safeWithinRoot :: FilePath -> FilePath -> IO (Either Text FilePath)
+safeWithinRoot baseDir rel
+  | isAbsolute rel || ".." `elem` splitDirectories rel =
+      pure (Left ("native binding path '" <> T.pack rel <> "' escapes the package root (Spec §36.11)"))
+  | otherwise = do
+      let p = baseDir </> rel
+      sym <- pathIsSymbolicLink p `catch` \(_ :: SomeException) -> pure False
+      if sym
+        then pure (Left ("native binding path '" <> T.pack rel <> "' is a symlink (unpinnable, Spec §36.11)"))
+        else pure (Right p)
 
 -- ── signature verification ─────────────────────────────────────────────
 

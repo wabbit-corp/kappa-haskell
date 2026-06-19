@@ -2194,6 +2194,7 @@ static int prim_arity(const char *p) {
       PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") ||
       PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") ||
       PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") ||
+      PRIM("unsafeConsume") || /* {a} -> (x:a) -> Unit : one explicit arg */
       PRIM("__stringStart") || PRIM("__stringEnd") || PRIM("__finishStringBuilder") ||
       PRIM("__finishUtf8Decoder") ||
       PRIM("ioPure") || PRIM("newRef") || PRIM("readRef") ||
@@ -2218,7 +2219,7 @@ static int prim_arity(const char *p) {
       PRIM("__bytesBuilderByte") || PRIM("__bytesBuilderBytes") ||
       PRIM("__intAnd") || PRIM("__intOr") || PRIM("__intXor") ||
       PRIM("__hashMixInt") || PRIM("__hashMixDouble") || PRIM("__hashMixString") ||
-      PRIM("__hashMixBytes") || PRIM("__arrayIndexUnsafe") || PRIM("unsafeConsume") ||
+      PRIM("__hashMixBytes") || PRIM("__arrayIndexUnsafe") ||
       PRIM("__stringBuilderString") || PRIM("__stringBuilderScalar") ||
       PRIM("__stringBuilderGrapheme") || PRIM("__stringCursorOffset") ||
       PRIM("__stringNextScalar") || PRIM("__stringPrevScalar") ||

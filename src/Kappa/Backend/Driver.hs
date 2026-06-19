@@ -134,6 +134,8 @@ needsDiscovery = any req
     req PkgConfigInput {} = True
     req HeadersInput {} = True
     req VerifyInput {} = True
+    req ModuleMapInput {} = True
+    req PrebuiltInput {} = True
     req _ = False
 
 linkExecutable
