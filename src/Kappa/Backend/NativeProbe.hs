@@ -347,6 +347,11 @@ hostBindingLockEntries cc baseDir triple = goB []
                   ++ shims
                   ++ ["symbol " <> s | s <- symLines]
                   ++ ["target-triple " <> triple]
+                  -- §26.1.3: the adapter mode participates in host-binding
+                  -- identity. The zig native profile realizes only native.direct
+                  -- (the sole mode the manifest schema can select today), so it is
+                  -- a constant identity input here.
+                  ++ ["adapter native.direct"]
               cid = contentId [("host-binding:" <> T.unpack name, encU (T.intercalate "\n" idLines))]
           goB (LockEntry "host-binding" name cid : acc) rest
     encU = encodeUtf8
