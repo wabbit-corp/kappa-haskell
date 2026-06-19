@@ -470,6 +470,23 @@ else
 fi
 rm -rf "$SB"
 
+echo "== U64 round-trips the full unsigned range incl. >= 2^63 (§26.1.1, N-35) =="
+U6="$WORK/u64"; rm -rf "$U6"; mkdir -p "$U6/src"
+printf 'module app\nimport host.native.u64x as n\nimport std.ffi.(u64, u64Value)\nlet main = do\n  x <- n.u64id (u64 18446744073709551615)\n  printlnString (showInt (u64Value x))\n' > "$U6/src/app.kp"
+printf '#include <stdint.h>\nuint64_t u64id(uint64_t x) { return x; }\n' > "$U6/src/shim.c"
+printf 'let buildConfig : BuildConfig = package { name="u", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="ub", provides=[module "host.native.u64x"], surface=symbolList [symbolDecl "u64id" "u64id" [ctU64] ctU64], abi=cAbi, inputs=[shim ["src/shim.c"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["ub"] }] }' > "$U6/kappa.build.kp"
+if timeout 200 $KAPPA build --update --manifest "$U6" -o "$WORK/u64bin" >"$U6/b.log" 2>&1; then
+  u6out="$("$WORK/u64bin" 2>&1)"
+  if [ "$u6out" = "18446744073709551615" ]; then
+    echo "   ok (U64 2^64-1 round-trips exactly through MkU64/ku64/kas_u64)"
+  else
+    echo "   FAIL: U64 round-trip lossy (got '$u6out')"; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: U64 binding did not build"; cat "$U6/b.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$U6"
+
 echo "== RawPtr results surface as Option RawPtr (nullability, §26.1.1:27307) =="
 RP="$WORK/rawptr"; rm -rf "$RP"; mkdir -p "$RP/src"
 printf 'module app\nimport host.native.envx as n\nlet main = do\n  r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"

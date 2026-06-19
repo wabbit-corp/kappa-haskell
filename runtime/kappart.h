@@ -242,6 +242,8 @@ double   kas_dbl(KValue *v);
 int      kas_bool(KValue *v);
 const char *kas_str(KValue *v);   /* NUL-terminated bytes of a K_STR (§26 CtString) */
 void    *kas_fgn(KValue *v);      /* opaque pointer of a K_FGN (§26 CtHandle/CtRawPtr) */
+uint64_t kas_u64(KValue *v);      /* Integer as unsigned 64-bit (§26 U64/Usize) */
+KValue  *ku64(uint64_t u);        /* box an unsigned 64-bit as a non-negative Integer */
 
 /* ── references ────────────────────────────────────────────────────── */
 KValue  *kref_get(KValue *r);

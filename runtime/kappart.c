@@ -713,6 +713,17 @@ const char *kas_str(KValue *v) {
   return v->as.str.p; /* kstr() NUL-terminates; length stays authoritative */
 }
 
+/* Read an Integer as an unsigned 64-bit value (§26.1.1 U64/Usize), including
+ * the >= 2^63 range that kas_int rejects — the low 64 bits of the magnitude. */
+uint64_t kas_u64(KValue *v) {
+  if (v->tag == K_INT) return (uint64_t)v->as.i;
+  mpz_t z; mpz_init(z); kload_mpz(v, z);
+  uint64_t u = 0; size_t cnt = 0;
+  mpz_export(&u, &cnt, -1, sizeof(uint64_t), 0, 0, z);
+  mpz_clear(z);
+  return u;
+}
+
 void *kas_fgn(KValue *v) {
   if (v->tag != K_FGN) krt_fail("kas_fgn: not a foreign handle");
   return v->as.fgn.p;
@@ -1059,8 +1070,9 @@ static uint64_t kint_low64(KValue *v) {
 }
 
 /* Box an unsigned 64-bit result as the corresponding non-negative integer
- * (K_INT when it fits a signed 64-bit, else a K_BIGINT). */
-static KValue *ku64(uint64_t u) {
+ * (K_INT when it fits a signed 64-bit, else a K_BIGINT). Public: the native
+ * FFI marshalling boxes U64/Usize results through it (§26.1.1 exact-width). */
+KValue *ku64(uint64_t u) {
   if (u <= (uint64_t)INT64_MAX) return kint((int64_t)u);
   mpz_t z; mpz_init(z); mpz_import(z, 1, -1, sizeof(uint64_t), 0, 0, &u);
   return kbig_from_mpz(z);

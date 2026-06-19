@@ -67,7 +67,7 @@ Confirmed DONE+correct by 3 independent reviewers: N-2..N-5, N-7, N-14 (zero kpr
 | N-36 | MED | DONE | (subsumed by N-18: a corrupt/missing lock is now fail-closed by default, not silently overwritten — writing requires `--update`) | §36.7 | done |
 | N-33 | HIGH | DONE | canonical link/load text + resolved pkg-config `--libs` now folded into the host-binding identity (`Plan.linkText`/`loadText`, `pkgProvLines libs=`); a link-spec change repins → `E_NATIVE_BINDING_UNPINNED` under `--locked` (verified) | §27.1.1:27368, §36.21:41848,:41861 | done |
 | N-34 | MED | DONE | added `ctF64`→`std.ffi.F64` (exact-ABI binary64 name, §26.2:27297); `ctDouble` kept as the documented ergonomic `Double` alias (like `ctInt`) | §26.1.2:26114, §26.2:27297 | done |
-| N-35 | MED | open | U64/Usize round-trip lossy ≥ 2^63 (`kas_int` rejects > INT64_MAX; box stores as negative int64) | §26.1.1:27293 | unsigned marshalling path (kas_uint/kuint via bignum) |
+| N-35 | MED | DONE | U64/Usize now round-trip the FULL unsigned range incl. ≥ 2^63 via `kas_u64`/`ku64` (mpz import/export; bignum Integer) — native suite round-trips 2^64-1 exactly | §26.1.1:27293 | done |
 | N-36 | MED | open | corrupt lock silently overwritten on a default (non-`--locked`) build (`lockWellFormed` checked only under `--locked`); subsumed once N-18 flips the default | §36.7 | gate updateLock on lockWellFormed |
 | N-31 | LOW | DONE (native) | `unsafeConsume` native arity fixed to 1 (prim_arity + codegen table); interp arm `[_,_]` is correct (interp does not erase implicits) | — | done |
 | N-32 | LOW | DONE | `CtString` NUL-truncation ABI convention now documented at the marshalling site (§26.1.1 String ABI; use CtRawPtr+length for byte-exact NUL-bearing data) | §26.1.1 | done |

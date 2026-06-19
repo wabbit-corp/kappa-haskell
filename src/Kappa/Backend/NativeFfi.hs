@@ -199,6 +199,9 @@ unbox ty e = case ty of
       <> "kctor_arg(kctor_arg(" <> e <> ", 0), 0)))"
   CtF32 -> "(float)kas_dbl(kctor_arg(" <> e <> ", 0))"
   CtF64 -> "kas_dbl(kctor_arg(" <> e <> ", 0))"
+  -- §26.1.1: the full unsigned 64-bit / pointer-width range (incl. ≥ 2^63).
+  CtU64 -> "(uint64_t)kas_u64(kctor_arg(" <> e <> ", 0))"
+  CtUsize -> "(size_t)kas_u64(kctor_arg(" <> e <> ", 0))"
   -- nominal exact-width scalar (MkXxx rep): unbox the rep Integer, narrow to
   -- the declared C width.
   _ -> case ffiScalar ty of
@@ -222,6 +225,9 @@ box ty r = case ty of
       <> "}))"
   CtF32 -> ctorExpr "std.ffi.MkF32" "kdbl((double)(" "))" r
   CtF64 -> ctorExpr "std.ffi.MkF64" "kdbl(" ")" r
+  -- §26.1.1: unsigned 64-bit / pointer-width box the FULL range (bignum ≥ 2^63).
+  CtU64 -> ctorExpr "std.ffi.MkU64" "ku64((uint64_t)(" "))" r
+  CtUsize -> ctorExpr "std.ffi.MkUsize" "ku64((uint64_t)(" "))" r
   -- nominal exact-width scalar: wrap the (widened) rep in its MkXxx ctor.
   _ -> case ffiScalar ty of
     Just (_, g) -> ctorExpr g "kint((int64_t)(" "))" r
