@@ -10,6 +10,7 @@ dist-newstyle/
 
 # Native-backend generated artifacts
 *.kappa.c
+*.kappa.h
 *.native.prov
 native-abi-probe.c
 examples/native/**/build/

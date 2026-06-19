@@ -721,7 +721,43 @@ pCtorDecl = do
       -- consumed by the block-level splitter (inlineCtors / ctorSeq), not
       -- here, so a non-first constructor is registered correctly.
       binders <- concat <$> many pCtorBinder
-      CtorDecl n binders Nothing <$> spanFrom start
+      -- §10.1: the record-style {...} block may begin on a following,
+      -- more-indented line (the constructor name alone on its line):
+      --     Request
+      --         { method : Method, ... }
+      indented <- pIndentedRecord <|> pure []
+      CtorDecl n (binders ++ indented) Nothing <$> spanFrom start
+
+-- | A record-style @{ … }@ block that starts on a following, more-indented
+-- line. The lexer emits an INDENT before the brace; layout is suppressed
+-- inside the braces, so the field list is parsed flat and the matching
+-- DEDENT (if any) is consumed after.
+pIndentedRecord :: P [Binder]
+pIndentedRecord = try $ do
+  void (many pNewline)
+  token TokIndent
+  fs <- pRecordFields
+  void (optional (token TokDedent))
+  pure fs
+
+-- | The body of a record-style constructor block: @{ field, … }@.
+pRecordFields :: P [Binder]
+pRecordFields = do
+  sp <- currentSpan
+  token TokLBrace
+  fs <- sepBy1 (pFieldDecl sp) (token TokComma)
+  void (optional (token TokComma))
+  token TokRBrace
+  pure fs
+  where
+    pFieldDecl sp = do
+      prefix <- pBinderPrefix
+      susp <- pSuspension
+      n <- pIdent
+      token TokColon
+      ty <- noEq pExprArg
+      def <- optionMaybe (token TokEquals *> noEq pExpr)
+      pure (Binder False prefix susp NoReceiver False (Just n) False (Just ty) def sp)
 
 -- Constructor binders (§10.1): bare field, parenthesized param/type,
 -- record-style {...} block.
@@ -729,22 +765,7 @@ pCtorBinder :: P [Binder]
 pCtorBinder =
   recordStyle <|> parenParam <|> ((: []) <$> bareField)
   where
-    recordStyle = do
-      sp <- currentSpan
-      token TokLBrace
-      fs <- sepBy1 (pFieldDecl sp) (token TokComma)
-      void (optional (token TokComma))
-      token TokRBrace
-      pure fs
-    pFieldDecl sp = do
-      prefix <- pBinderPrefix
-      susp <- pSuspension
-      n <- pIdent
-      token TokColon
-      ty <- noEq pExprArg
-      -- a field default is a full expression (operators allowed, §10.1.1)
-      def <- optionMaybe (token TokEquals *> noEq pExpr)
-      pure (Binder False prefix susp NoReceiver False (Just n) False (Just ty) def sp)
+    recordStyle = pRecordFields
     parenParam = try $ do
       sp <- currentSpan
       token TokLParen
@@ -1780,9 +1801,15 @@ pAppExpr :: P Expr
 pAppExpr = do
   f <- pPostfixExpr
   args <- many pAppArg
+  -- a record-construction/named-argument block may begin on a following,
+  -- more-indented line (e.g. `Request\n    { method = ..., ... }`, §10.1.1
+  -- record construction under layout §5.4):
+  inb <- pIndentedNamedBlock <|> pure []
   mlam <- trailingLambda
-  targs <- pTrailingBlockArgs
-  pure $ case args ++ maybe [] (: []) mlam ++ targs of
+  -- the indented named block is the spine's final argument; don't also try
+  -- general trailing block args after it
+  targs <- if null inb then pTrailingBlockArgs else pure []
+  pure $ case args ++ inb ++ maybe [] (: []) mlam ++ targs of
     [] -> f
     allArgs -> EApp f allArgs
   where
@@ -1831,17 +1858,7 @@ pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
     namedBlock = do
       ok <- namedBlockOk
       unless ok (parseFail "named-block argument suppressed here")
-      sp <- currentSpan
-      token TokLBrace
-      items <- clearExtraStops (sepBy1 namedItem (token TokComma))
-      void (optional (token TokComma))
-      token TokRBrace
-      sp' <- spanFrom sp
-      pure (ArgNamedBlock items sp')
-    namedItem = do
-      n <- pIdent
-      me <- optionMaybe (token TokEquals *> pExpr)
-      pure (n, me)
+      namedBlockArg
     bangArg = do
       sp <- currentSpan
       token TokBang
@@ -1849,6 +1866,36 @@ pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
       sp' <- spanFrom sp
       pure (ArgExplicit (EBang False e sp'))
     plainArg = ArgExplicit <$> pArgOperand
+
+-- | A record-construction / named-argument block @{ name = e, … }@ as an
+-- application argument (§10.1.1, §16.1.7.2).
+namedBlockArg :: P Arg
+namedBlockArg = do
+  sp <- currentSpan
+  token TokLBrace
+  items <- clearExtraStops (sepBy1 namedItem (token TokComma))
+  void (optional (token TokComma))
+  token TokRBrace
+  ArgNamedBlock items <$> spanFrom sp
+  where
+    namedItem = do
+      n <- pIdent
+      me <- optionMaybe (token TokEquals *> pExpr)
+      pure (n, me)
+
+-- | A named-argument block that begins on a following, more-indented line
+-- (the spine head alone on its line; §10.1.1 record construction under §5.4
+-- layout). The lexer emits an INDENT before the brace; the matching DEDENT
+-- (if any) is consumed after.
+pIndentedNamedBlock :: P [Arg]
+pIndentedNamedBlock = try $ do
+  ok <- namedBlockOk
+  unless ok (parseFail "named-block argument suppressed here")
+  void (many pNewline)
+  token TokIndent
+  nb <- namedBlockArg
+  void (optional (token TokDedent))
+  pure [nb]
 
 -- An argument operand must not begin with a stop keyword.
 pArgOperand :: P Expr
