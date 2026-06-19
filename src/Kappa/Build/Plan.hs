@@ -67,6 +67,13 @@ data ResolvedExe = ResolvedExe
   , rxNativeInputs :: ![NativeInput]
   -- ^ §36.28 realization inputs (headers/includeDir/define/pkgConfig/shim/
   -- moduleMap/prebuilt) of the selected bindings; drive the C toolchain
+  , rxNativeBindings :: ![(Text, [ResolvedNativeSymbol], [NativeInput])]
+  -- ^ §36.7/§27.1.1: per selected native binding — its name, resolved symbol
+  -- surface, and realization inputs — used to compute the host-source
+  -- identity pinned in @kappa.lock@.
+  , rxTargetTriple :: !Text
+  -- ^ §36.21 the target's declared toolchain triple (part of the native
+  -- host-source identity, §27.1.1)
   , rxLockEntries :: ![LockEntry]
   -- ^ §36.23.2: content identity of each resolved path-dependency package
   -- in the closure (for kappa.lock / reproducibility)
@@ -91,7 +98,7 @@ resolveExecutable manifestDir bc mTarget =
       | not (isNativeBackend (tBackend tgt)) -> pure (Left [backendUnrealized tgt])
       | otherwise -> case resolveProviders tgt of
       Left ds -> pure (Left ds)
-      Right (nativeSyms, linkSpecs, nativeInputs, _anyNative) ->
+      Right (nativeSyms, linkSpecs, nativeInputs, nativeBindings, _anyNative) ->
         case tMain tgt of
           SelModulesUnder _ -> pure (Left [mainNotConcrete (tName tgt)])
           SelModule modName -> do
@@ -144,6 +151,8 @@ resolveExecutable manifestDir bc mTarget =
                                   , rxNativeSymbols = nativeSyms
                                   , rxLinkSpecs = linkSpecs
                                   , rxNativeInputs = nativeInputs
+                                  , rxNativeBindings = nativeBindings
+                                  , rxTargetTriple = backendTriple (tBackend tgt)
                                   , rxLockEntries = lockEntries
                                   }
   where
@@ -165,6 +174,9 @@ resolveExecutable manifestDir bc mTarget =
       NativeBackend {} -> "native"
       JvmBackend -> "jvm"
       DotNetBackend -> "dotnet"
+    backendTriple b = case b of
+      NativeBackend _ triple -> triple
+      _ -> ""
 
     selectTarget :: Either Diagnostics Target
     selectTarget = case mTarget of
@@ -191,7 +203,7 @@ resolveExecutable manifestDir bc mTarget =
 
     -- Resolve the target's named host bindings to provided host.native
     -- modules, with collision + realizability checks (§36.28, §34.5.3).
-    resolveProviders :: Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], Bool)
+    resolveProviders :: Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput])], Bool)
     resolveProviders tgt =
       let wanted = targetHostBindings tgt
           lookupBinding nm = [hb | hb <- bcHostBindings bc, nbName hb == nm]
@@ -216,7 +228,8 @@ resolveExecutable manifestDir bc mTarget =
             checkCollisions bindingMods
             let linkSpecs = map nbLink selected
                 inputs = concatMap nbInputs selected
-            Right (allSyms, linkSpecs, inputs, not (null selected))
+                perBindingFull = [(nbName hb, ss, nbInputs hb) | (hb, (_, ss)) <- zip selected perBinding]
+            Right (allSyms, linkSpecs, inputs, perBindingFull, not (null selected))
 
     -- §34.5.3: the zig native profile realizes only the system-loader load
     -- mode (dynamic/static linkage resolved by the system loader). It does

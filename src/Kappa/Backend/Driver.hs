@@ -9,6 +9,7 @@ module Kappa.Backend.Driver
   ( BuildOptions (..)
   , defaultBuildOptions
   , buildNative
+  , detectCC
   ) where
 
 import Data.Map.Strict (Map)

@@ -444,5 +444,30 @@ else
   echo "   SKIP: pkg-config sqlite3 not available"
 fi
 
+echo "== native host-source identity is pinned in kappa.lock + drift is fail-closed (§8.3.5/§36.7) =="
+if pkg-config --exists sqlite3 2>/dev/null; then
+  LK="$WORK/lockpin"; rm -rf "$LK"; mkdir -p "$LK"
+  cp "$ROOT/examples/native/http_sqlite/server.kp" "$ROOT/examples/native/http_sqlite/kappa.build.kp" "$ROOT/examples/native/http_sqlite/native_shim.c" "$LK/"
+  timeout 200 $KAPPA build --manifest "$LK" --emit-c -o "$WORK/lp" >"$LK/b1.log" 2>&1
+  if grep -q "^host-binding .* sqlite3$" "$LK/kappa.lock" 2>/dev/null && grep -q "^host-binding .* posixnet$" "$LK/kappa.lock" 2>/dev/null; then
+    if timeout 200 $KAPPA build --manifest "$LK" --emit-c --locked -o "$WORK/lp" >/dev/null 2>&1; then
+      printf '/* drift */\n' >> "$LK/native_shim.c"
+      dout="$(timeout 200 $KAPPA build --manifest "$LK" --emit-c --locked -o "$WORK/lp" 2>&1)"; drc=$?
+      if [ "$drc" -ne 0 ] && grep -q "E_NATIVE_BINDING_UNPINNED" <<<"$dout"; then
+        echo "   ok (host-binding pins written; --locked verifies; shim drift -> E_NATIVE_BINDING_UNPINNED)"
+      else
+        echo "   FAIL: shim drift not caught fail-closed"; echo "$dout" | sed 's/^/     /'; fails=$((fails+1))
+      fi
+    else
+      echo "   FAIL: --locked rejected a fresh valid native lock"; fails=$((fails+1))
+    fi
+  else
+    echo "   FAIL: build did not pin host bindings in kappa.lock"; cat "$LK/b1.log" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -rf "$LK"
+else
+  echo "   SKIP: pkg-config sqlite3 not available"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL NATIVE TESTS PASSED"; else echo "$fails NATIVE TEST(S) FAILED"; exit 1; fi

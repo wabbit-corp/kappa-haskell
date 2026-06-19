@@ -113,10 +113,12 @@ contentLines txt =
   , not ("#" `T.isPrefixOf` ln)
   ]
 
--- | The dependency kinds that may appear in a lockfile. Keep in sync with
--- the lock entries produced by "Kappa.Build.Plan" (path/git/registry/url).
+-- | The entry kinds that may appear in a lockfile. Keep in sync with the
+-- lock entries produced by "Kappa.Build.Plan" (path/git/registry/url) and the
+-- native host-binding identity pin (§36.7/§27.1.1) produced by
+-- "Kappa.Backend.NativeProbe".
 lockKinds :: [Text]
-lockKinds = ["path", "git", "registry", "url"]
+lockKinds = ["path", "git", "registry", "url", "host-binding"]
 
 parseLine :: Text -> Maybe LockEntry
 parseLine ln =

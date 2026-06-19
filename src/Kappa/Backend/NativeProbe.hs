@@ -22,6 +22,7 @@
 module Kappa.Backend.NativeProbe
   ( NativeProvenance (..)
   , discoverAndVerifyNative
+  , hostBindingLockEntries
   ) where
 
 import qualified Data.ByteString as BS
@@ -29,7 +30,7 @@ import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
-import Kappa.Build.Lock (contentId)
+import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Types (NativeInput (..))
 import Kappa.Diagnostic
 import Kappa.Source (Pos (..), Span (..))
@@ -257,3 +258,46 @@ pErr msg =
   diag SevError StageElaborate "E_BUILD_NATIVE_ABI" (Just "kappa-hs.build.native-abi")
     (Span "<native-binding>" (Pos 1 1) (Pos 1 1))
     msg
+
+-- | §36.7/§27.1.1: compute the per-binding host-source identity lock entries.
+-- For each selected native binding this runs the same discovery + fail-closed
+-- ABI verification ('discoverAndVerifyNative') and digests the binding's shim
+-- sources, then composites the pkg-config/header/verified-decl identity with
+-- the binding's declared symbol surface and the target triple into a single
+-- content id. The result is a @host-binding@ 'LockEntry' (key = binding name)
+-- so a package-mode build PINS — and a later @--locked@ build VERIFIES — every
+-- input that can affect the generated host module interface / ABI.
+hostBindingLockEntries
+  :: (String, [String]) -> FilePath -> Text -> [(Text, [Text], [NativeInput])]
+  -> IO (Either Diagnostics [LockEntry])
+hostBindingLockEntries cc baseDir triple = goB []
+  where
+    goB acc [] = pure (Right (reverse acc))
+    goB acc ((name, symLines, inputs) : rest) = do
+      ev <- discoverAndVerifyNative cc baseDir baseDir inputs
+      case ev of
+        Left ds -> pure (Left ds)
+        Right prov -> do
+          shims <- shimDigestLines baseDir inputs
+          let idLines =
+                npLines prov
+                  ++ shims
+                  ++ ["symbol " <> s | s <- symLines]
+                  ++ ["target-triple " <> triple]
+              cid = contentId [("host-binding:" <> T.unpack name, encU (T.intercalate "\n" idLines))]
+          goB (LockEntry "host-binding" name cid : acc) rest
+    encU = encodeUtf8
+
+-- | Digest each shim source's content (§27.1.1 shim-source digests) so a shim
+-- edit forces a repin. A missing shim is a fail-closed build error elsewhere
+-- (the C toolchain), so here a missing file simply contributes a sentinel.
+shimDigestLines :: FilePath -> [NativeInput] -> IO [Text]
+shimDigestLines baseDir inputs =
+  fmap concat . mapM one $ [s | ShimInput ss <- inputs, s <- ss] ++ [a | PrebuiltInput a _ <- inputs]
+  where
+    one rel = do
+      let p = baseDir </> T.unpack rel
+      ok <- doesFileExist p
+      if ok
+        then do bs <- BS.readFile p; pure ["shim " <> rel <> " digest=" <> contentId [(p, bs)]]
+        else pure ["shim " <> rel <> " digest=<missing>"]

@@ -10,9 +10,11 @@ import Kappa.Backend.Driver
   ( BuildOptions (..)
   , buildNative
   , defaultBuildOptions
+  , detectCC
   )
-import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
-import Kappa.Build.Lock (LockEntry, lockWellFormed, parseLock, renderLock)
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
+import Kappa.Backend.NativeProbe (hostBindingLockEntries)
+import Kappa.Build.Lock (LockEntry (..), lockWellFormed, parseLock, renderLock)
 import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
 import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
 import Kappa.Build.Reify (reifyBuildConfig)
@@ -226,18 +228,39 @@ runInvocation file bc ma mtgt = do
 -- emits the real diagnostic.
 collectLockClosure :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Either Diagnostics (Bool, [LockEntry]))
 collectLockClosure file bc mtgt = case mtgt of
-  Nothing -> fmap (fmap one) (resolveExecutable manifestDir bc Nothing)
+  Nothing -> resolveExecutable manifestDir bc Nothing >>= oneIO
   Just nm -> go Set.empty nm
   where
     manifestDir = takeDirectory file
-    one rx = (True, rxLockEntries rx)
+    -- §36.7/§27.1.1: an exe/bench target's lock closure is its dependency
+    -- entries PLUS the host-source identity pin of every selected native
+    -- binding (computed by discovery + fail-closed ABI verification). The
+    -- native pin is what makes a package-mode host.native build reproducible
+    -- (a later --locked build verifies it; drift fails).
+    oneIO :: Either Diagnostics ResolvedExe -> IO (Either Diagnostics (Bool, [LockEntry]))
+    oneIO (Left ds) = pure (Left ds)
+    oneIO (Right rx)
+      | null (rxNativeBindings rx) = pure (Right (True, rxLockEntries rx))
+      | otherwise = do
+          mcc <- detectCC Nothing
+          case mcc of
+            Nothing -> pure (Right (True, rxLockEntries rx)) -- no toolchain: build step reports it
+            Just cc -> do
+              let bindings = [(nm', map renderSym ss, ins) | (nm', ss, ins) <- rxNativeBindings rx]
+              r <- hostBindingLockEntries cc manifestDir (rxTargetTriple rx) bindings
+              pure $ case r of
+                Left ds -> Left ds
+                Right hbs -> Right (True, rxLockEntries rx ++ hbs)
+    renderSym s =
+      rnsMember s <> " " <> rnsCSymbol s <> " "
+        <> T.pack (show (rnsParams s)) <> "->" <> T.pack (show (rnsResult s))
     go visited nm
       | nm `Set.member` visited = pure (Right (False, []))
       | otherwise = case [t | t <- B.bcTargets bc, B.tName t == nm] of
           [] -> pure (Right (False, []))
           (t : _) -> case t of
-            B.ExecutableTarget {} -> fmap (fmap one) (resolveExecutable manifestDir bc (Just nm))
-            B.BenchmarkTarget {} -> fmap (fmap one) (resolveExecutable manifestDir bc (Just nm))
+            B.ExecutableTarget {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
+            B.BenchmarkTarget {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
             B.TestTarget {} -> pure (Right (False, []))
             B.LibraryTarget {} -> pure (Right (False, []))
             B.AliasTarget _ aliased -> go (Set.insert nm visited) aliased
@@ -391,13 +414,37 @@ verifyLock :: FilePath -> [LockEntry] -> IO ()
 verifyLock manifestDir entries = do
   let lockPath = manifestDir </> lockFileName
       desired = parseLock (renderLock entries) -- normalized + sorted
-      reject ex = emitDiags Human [lockMismatchDiag lockPath ex] >> exitFailure
+      -- §8.3.5/§27.1.1: a host-binding (host.native) entry that is missing or
+      -- changed in the lock is an UNPINNED native binding — emit the
+      -- native-specific diagnostic rather than the dependency one.
+      reject ex actual =
+        let actualSet = Set.fromList [(leKind e, leKey e, leId e) | e <- actual]
+            hbBad = [e | e <- desired, leKind e == "host-binding", not ((leKind e, leKey e, leId e) `Set.member` actualSet)]
+            depBad = any (\e -> leKind e /= "host-binding") desired
+                       && parseLock (renderLock [e | e <- desired, leKind e /= "host-binding"])
+                          /= [e | e <- actual, leKind e /= "host-binding"]
+            ds = [nativeUnpinnedDiag lockPath e | e <- hbBad]
+                   ++ [lockMismatchDiag lockPath ex | depBad || (null hbBad)]
+         in emitDiags Human ds >> exitFailure
   exists <- doesFileExist lockPath
   if not exists
-    then when (not (null entries)) (reject False)
+    then when (not (null entries)) (reject False [])
     else do
       txt <- TIO.readFile lockPath
-      when (not (lockWellFormed txt) || parseLock txt /= desired) (reject True)
+      let actual = parseLock txt
+      when (not (lockWellFormed txt) || actual /= desired) (reject True actual)
+
+nativeUnpinnedDiag :: FilePath -> LockEntry -> Diagnostic
+nativeUnpinnedDiag lockPath e =
+  diag SevError StageImports "E_NATIVE_BINDING_UNPINNED"
+    (Just "kappa.package.reproducibility")
+    (Span lockPath (Pos 1 1) (Pos 1 1))
+    ( "the host.native binding '" <> leKey e <> "' is not pinned by a matching host-source "
+        <> "identity in '" <> T.pack lockPath <> "' (its pkg-config version, header/shim "
+        <> "digests, symbol surface, or target triple changed, or no entry exists); a "
+        <> "package-mode host.native build MUST be pinned (Spec §8.3.5, §27.1.1, §36.7) — "
+        <> "re-run 'kappa build --manifest' without --locked to update the lockfile"
+    )
 
 -- | Create/update @kappa.lock@ when the resolved package closure differs
 -- from it, and clear a now-stale lock when the closure is empty. Called once

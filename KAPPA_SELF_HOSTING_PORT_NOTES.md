@@ -40,6 +40,30 @@ string/KValue primitive dispatch in optimized native output. See NATIVE_BACKEND_
 | N-5 | CRIT | DONE | runtime `kappart_ffi.c` strcmp dispatch wired into core loop | **deleted** both FFI units; added `K_NATIVE` (codegen fn-pointer action) to runtime; removed `*_ffi` hooks |
 | N-6 | CRIT | PARTIAL | native host-source identity now DISCOVERED + VERIFIED + recorded as provenance (`Kappa.Backend.NativeProbe`): pkg-config `--modversion`/`--atleast-version` (minVersion enforced fail-closed), `.pc` located+hashed, headers located+hashed, `verify` C decls compiled against the real headers (fail-closed `E_BUILD_NATIVE_ABI` on signature mismatch), composite identity written to `<base>.native.prov`. STILL OPEN: fold this identity into `kappa.lock` (verify-against-lock pinning) | add a `host-native` lock entry kind keyed per binding |
 | N-15 | HIGH | PARTIAL | symbolList C-symbol names still author-named (the adapter/shim symbols); only the binding's declared REAL dependencies (`verify` decls) are checked against headers | bind directly to real symbols where the ABI fits + auto-derive/verify each symbolList entry |
+
+## Broad adversarial review round 2 (post b59c759) — new findings (all spec-cited; deferrals are INCOMPLETENESS, not subset)
+
+Confirmed DONE+correct by 3 independent reviewers: N-2..N-5, N-7, N-14 (zero kprim in emitted C, faithful extraction via compiled-probe arity check, K_NATIVE is_io correct, marshalling sound). H-3/H-4 elaborator pathology NOT reproducible (26-term ‖-chain checks in 0.27s; Eval.hs:162-174 already carries the fix) → resolved.
+
+| ID | Sev | Status | Issue | Spec | Fix |
+|----|-----|--------|-------|------|-----|
+| N-16 | CRIT | DONE | native host-source identity now folded into `kappa.lock` as a `host-binding` entry kind (per binding); computed in the resolve/lock phase (`collectLockClosure`→`NativeProbe.hostBindingLockEntries`) so `--locked` verifies it and an unlocked build writes it. Identity composites pkg-config version+.pc digest, header digests, verified decls, defines, SHIM SOURCE DIGESTS (N-27), the SYMBOL SURFACE (N-19 partial), and the TARGET TRIPLE (N-22 partial) | §8.3.5:6918, §36.7 | done |
+| N-17 | CRIT | DONE | `E_NATIVE_BINDING_UNPINNED` is now LIVE: `verifyLock` emits it (not the dep-mismatch code) when a `host-binding` entry is missing/changed under `--locked` (native suite: shim drift → E_NATIVE_BINDING_UNPINNED, fail-closed) | §8.3.5:6918 | done |
+| N-18 | CRIT | open | reproducibility is opt-in (`--locked` off by default; unlocked build rewrites lock) — inverted vs F# verify-only default | §36.7, §3.2.15 | default package-mode to verify-only; explicit `--update` to write |
+| N-19 | CRIT | open | symbolList C symbols themselves never ABI-verified (only the disjoint author-listed `verify` set); a bogus symbolList cSymbol builds unchecked; `inputs=[]` bindings have ZERO checking | §27.1.1:27367, §26.1.3 | require each symbolDecl carry a real C prototype compiled in the probe, or derive surface from headers; digest symbolList |
+| N-20 | HIGH | open | `CType` 8-enum lacks exact-width/unsigned/C-spelling scalars (no I8/16/32, U8..U64, Isize/Usize, F32, CChar..CBool) → unsigned/size_t APIs mis-declared | §26.1.1:27270-27288 | widen CType + cAbiType/ctypeKappaTerm/marshal + ctXxx builders |
+| N-21 | HIGH | open | content identity is FNV-1a, not sha256 → cross-impl divergence + weak identity | §36.6A:39557 | add sha256 dep; switch contentId/native digests to sha256 |
+| N-22 | HIGH | open | `targetTriple` decoded but IGNORED (cross-compile silently builds host); triple/CC/linked-lib absent from identity | §36.21, §27.1.1:27366 | thread `-target` to cc; model platform roles; fold triple/CC/lib into composite |
+| N-23 | HIGH | open | `M.Raw` mechanically-derived raw surface unimplemented | §26.1.2 | expose `host.native.X.Raw` |
+| N-24 | HIGH | open | RawPtr/OpaqueHandle nullability+ownership dropped (bare non-optional) | §26.1.1:27303-27314, §26.1.4 | default to `Option RawPtr`/wrapped handle unless trusted-summary/shim overrides |
+| N-25 | HIGH | open | adapter modes (§26.1.3) + trusted summaries (§26.1.5) unmodeled; adapter mode absent from identity | §26.1.1:26221, §26.1.3, §26.1.5 | add adapterMode field + trusted-summary input; fold into identity |
+| N-26 | HIGH | open | `prebuiltNative` expectedIdentity decoded then never verified (fail-OPEN) | §36.28, §36.6 | digest artifact; compare expectedIdentity fail-closed; fold into identity |
+| N-27 | MED | open | shim source content not digested into identity (a shim edit is invisible) | §27.1.1:27367 | digest shim .c/.h into composite + lock |
+| N-28 | MED | open | `moduleMap` input silently dropped (comment claims a digest that doesn't happen) | §27.1.1:27370 | digest moduleMap or fail-closed if unrealized |
+| N-29 | MED | open | no §36.11 path-escape/symlink hardening on native header/shim/prebuilt paths | §36.11, §36.6A | reuse source-tree normalize+symlink guard; fail-closed on escape |
+| N-30 | MED | open | lock parser drops malformed lines unless `--locked`; no per-entry schema identity; unescaped field separator | §36.7:39603 | per-entry schema id; escape separators; reject corrupt lock always |
+| N-31 | LOW | open | `unsafeConsume` table arity 2 but only 1 explicit arg (implicit erased) → native leaves it an unsaturated function (masked: result always discarded) | — | arity 1 in prim_arity + table + interp arm |
+| N-32 | LOW | open | `CtString` marshalling truncates embedded NUL (kstr0/kas_str), no length channel | §26.1.1 | document ABI constraint or thread length |
 | N-7 | HIGH | DONE | `nbInputs` decoded then ignored; FFI-unit picked by a Bool | Driver `resolveInputs` threads headers/includeDir/define/shim/prebuilt + runs pkg-config; `boRuntimeFfi`/stub removed; demo links real sqlite3 via pkgConfig |
 | N-8 | HIGH | open | `M.Raw` mechanically-derived raw surface unimplemented (§26.1.2) | expose `host.native.X.Raw` from the binding description |
 | N-9 | HIGH | DONE | `SelModulesUnder` prefix selector hard-rejected | both selector forms resolve to concrete host.native modules; root validated (non-host.native → E_NATIVE_BINDING_UNSUPPORTED) |
