@@ -58,9 +58,9 @@ data NativeProvenance = NativeProvenance
 -- the manifest directory (header/relative paths resolve against it); @workDir@
 -- holds the generated probe TU.
 discoverAndVerifyNative
-  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput]
+  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> [Text]
   -> IO (Either Diagnostics NativeProvenance)
-discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs = do
+discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs extraExterns = do
   let pkgs = [(p, mv) | PkgConfigInput p mv <- inputs]
       hdrs = concat [hs | HeadersInput hs <- inputs]
       incDirs = [d | IncludeDirInput d <- inputs]
@@ -83,7 +83,7 @@ discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs = do
           -- 3. signature verification: a probe TU that includes the real
           -- headers and redeclares each verify decl; cc rejects a mismatch.
           let defLines = [T.pack ("-D" <> T.unpack n <> "=" <> T.unpack v) | (n, v) <- defines]
-          ever <- verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags (map T.unpack defLines) hdrs decls
+          ever <- verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags (map T.unpack defLines) hdrs decls extraExterns
           case ever of
             Left ds -> pure (Left ds)
             Right verLines -> do
@@ -269,26 +269,38 @@ safeWithinRoot baseDir rel
 -- the verified-decl provenance lines, or a fail-closed diagnostic with the
 -- compiler output.
 verifyDecls
-  :: String -> [String] -> FilePath -> FilePath -> [FilePath] -> [String] -> [String] -> [Text] -> [Text]
+  :: String -> [String] -> FilePath -> FilePath -> [FilePath] -> [String] -> [String] -> [Text] -> [Text] -> [Text]
   -> IO (Either Diagnostics [Text])
-verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags defFlags hdrs decls
-  | null decls = pure (Right [])
+verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags defFlags hdrs decls extraExterns
+  | null decls && null extraExterns = pure (Right [])
   | otherwise = do
       let probePath = workDir </> "native-abi-probe.c"
+          objPath = workDir </> "native-abi-probe.o"
           probe =
             T.unlines $
-              ["/* generated ABI verification probe (Kappa.Backend.NativeProbe). */"]
+              [ "/* generated ABI verification probe (Kappa.Backend.NativeProbe). */"
+              , "#include <stdint.h>" -- the conservative externs spell exact-width / size types
+              , "#include <stddef.h>"
+              ]
                 ++ ["#include <" <> h <> ">" | h <- hdrs]
+                -- §26.1.5: author-declared real prototypes, AND the conservative
+                -- prototypes of all-scalar symbolDecls (extraExterns) — both are
+                -- checked against the real header, so a declared width/signedness
+                -- that disagrees with the installed header is a hard error.
                 ++ ["extern " <> d <> ";" | d <- decls]
+                ++ extraExterns
       writeFile probePath (T.unpack probe)
       let iflags = concat [["-I", d] | d <- nub (baseDir : searchDirs)]
-          args = ccLead ++ ["-std=c11", "-fsyntax-only"] ++ iflags ++ pkgCflags ++ defFlags ++ [probePath]
+          -- compile to a throwaway object (NOT -fsyntax-only, which the
+          -- zig-cc driver rejects); this still performs full type checking.
+          args = ccLead ++ ["-std=c11", "-c", "-o", objPath] ++ iflags ++ pkgCflags ++ defFlags ++ [probePath]
       (ec, out, err) <- readProcessWithExitCode ccExe args ""
       removeFile probePath `catch` \(_ :: SomeException) -> pure ()
+      removeFile objPath `catch` \(_ :: SomeException) -> pure ()
       case ec of
         ExitSuccess -> pure (Right ["verified-decl " <> d | d <- decls])
         ExitFailure _ ->
-          pure (Left [pErr ("a native binding 'verify' declaration does not match the real header ABI (Spec §26.1.5/§36.28):\n" <> T.pack (trim (out ++ err)))])
+          pure (Left [pErr ("a native binding declaration does not match the real header ABI (Spec §26.1.5/§36.28):\n" <> T.pack (trim (out ++ err)))])
   where
     trim s = if length s <= 3000 then s else "...\n" ++ drop (length s - 3000) s
 
@@ -333,13 +345,16 @@ pErr msg =
 -- so a package-mode build PINS — and a later @--locked@ build VERIFIES — every
 -- input that can affect the generated host module interface / ABI.
 hostBindingLockEntries
-  :: (String, [String]) -> FilePath -> Text -> [(Text, [Text], [NativeInput])]
+  :: (String, [String]) -> FilePath -> Text -> [(Text, [Text], [NativeInput], [Text])]
   -> IO (Either Diagnostics [LockEntry])
 hostBindingLockEntries cc baseDir triple = goB []
   where
     goB acc [] = pure (Right (reverse acc))
-    goB acc ((name, symLines, inputs) : rest) = do
-      ev <- discoverAndVerifyNative cc baseDir baseDir inputs
+    goB acc ((name, symLines, inputs, scalarExterns) : rest) = do
+      -- §26.1.5: verify the binding's all-scalar symbolDecls against the real
+      -- headers too (their conservative C prototypes), so a declared scalar
+      -- width that disagrees with the installed header is fail-closed.
+      ev <- discoverAndVerifyNative cc baseDir baseDir inputs scalarExterns
       case ev of
         Left ds -> pure (Left ds)
         Right prov -> do

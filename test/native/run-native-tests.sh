@@ -487,6 +487,19 @@ else
 fi
 rm -rf "$U6"
 
+echo "== a direct library binding with a mismatched scalar width is fail-closed (§26.1.5, N-19/F2) =="
+AB="$WORK/absabi"; rm -rf "$AB"; mkdir -p "$AB/src"
+printf 'module app\nimport host.native.absx as n\nimport std.ffi.(i64)\nlet main = do\n  x <- n.myabs (i64 5)\n  printlnString "ok"\n' > "$AB/src/app.kp"
+# binds the real libc `abs` (int abs(int)) but DECLARES it [ctI64] ctI64 — a width mismatch
+printf 'let buildConfig : BuildConfig = package { name="a", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="ab", provides=[module "host.native.absx"], surface=symbolList [symbolDecl "myabs" "abs" [ctI64] ctI64], abi=cAbi, inputs=[headers ["stdlib.h"], verify ["int abs(int)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["ab"] }] }' > "$AB/kappa.build.kp"
+about="$(timeout 200 $KAPPA build --update --manifest "$AB" --emit-c -o "$WORK/abbin" 2>&1)"; abrc=$?
+if [ "$abrc" -ne 0 ] && grep -q "E_BUILD_NATIVE_ABI" <<<"$about"; then
+  echo "   ok (declared int64_t for the real int abs -> E_BUILD_NATIVE_ABI against stdlib.h)"
+else
+  echo "   FAIL: a width-mismatched direct library binding was not rejected"; echo "$about" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$AB"
+
 echo "== RawPtr results surface as Option RawPtr (nullability, §26.1.1:27307) =="
 RP="$WORK/rawptr"; rm -rf "$RP"; mkdir -p "$RP/src"
 printf 'module app\nimport host.native.envx as n\nlet main = do\n  r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"

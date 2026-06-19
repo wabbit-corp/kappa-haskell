@@ -20,6 +20,7 @@ module Kappa.Backend.NativeFfi
   , wrapperDefinition
   , cAbiType
   , rnsCollectCtors
+  , scalarOnly
   ) where
 
 import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, ord)
@@ -113,6 +114,15 @@ ffiScalar = \case
   CtF32 -> Just ("F32", "std.ffi.MkF32")
   CtF64 -> Just ("F64", "std.ffi.MkF64")
   _ -> Nothing
+
+-- | True iff every param/result is a non-pointer scalar (no RawPtr / Handle /
+-- String) — only such a symbol's CONSERVATIVE C prototype can be soundly
+-- checked against the real header (a pointer maps to @void *@, intentionally
+-- not the real pointer type, so its prototype would falsely conflict).
+scalarOnly :: ResolvedNativeSymbol -> Bool
+scalarOnly rns = all isScalar (rnsResult rns : rnsParams rns)
+  where
+    isScalar t = t `notElem` [CtRawPtr, CtHandle, CtString]
 
 -- | The std.ffi/std.prelude constructor gKeys a CType's marshalling
 -- constructs (so codegen collects their KT_ tag ids). @Some@/@None@ are

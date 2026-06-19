@@ -41,6 +41,13 @@ string/KValue primitive dispatch in optimized native output. See NATIVE_BACKEND_
 | N-6 | CRIT | PARTIAL | native host-source identity now DISCOVERED + VERIFIED + recorded as provenance (`Kappa.Backend.NativeProbe`): pkg-config `--modversion`/`--atleast-version` (minVersion enforced fail-closed), `.pc` located+hashed, headers located+hashed, `verify` C decls compiled against the real headers (fail-closed `E_BUILD_NATIVE_ABI` on signature mismatch), composite identity written to `<base>.native.prov`. STILL OPEN: fold this identity into `kappa.lock` (verify-against-lock pinning) | add a `host-native` lock entry kind keyed per binding |
 | N-15 | HIGH | PARTIAL | symbolList C-symbol names still author-named (the adapter/shim symbols); only the binding's declared REAL dependencies (`verify` decls) are checked against headers | bind directly to real symbols where the ABI fits + auto-derive/verify each symbolList entry |
 
+## Broad adversarial review round 3 (post dfba529) — two findings, both fixed
+
+| ID | Sev | Status | Issue | Fix |
+|----|-----|--------|-------|-----|
+| N-37 | HIGH | DONE | the ABI verify probe used `-fsyntax-only`, which the documented `zig cc` driver rejects (FileNotFound) → every verify build spuriously fail-closed under zig (the suite only passed via gcc fallback) | compile the probe to a throwaway object (`-c -o`), which zig supports + still type-checks; verified the demo builds under `zig cc` |
+| N-38 | HIGH | DONE | a direct library `symbolDecl` with a mismatched scalar width (e.g. `abs` declared `[ctI64] ctI64`, real `int abs(int)`) was never checked → silent miscompile; the shim-exclusion used a loose substring match | the verify probe now ALSO compiles the conservative externs of every all-scalar symbolDecl against the real headers (width/sign mismatch → E_BUILD_NATIVE_ABI); the force-include shim-exclusion now matches the verify decl's EXACT symbol name, not a substring. Native suite: `abs` width mismatch rejected |
+
 ## Broad adversarial review round 2 (post b59c759) — new findings (all spec-cited; deferrals are INCOMPLETENESS, not subset)
 
 Confirmed DONE+correct by 3 independent reviewers: N-2..N-5, N-7, N-14 (zero kprim in emitted C, faithful extraction via compiled-probe arity check, K_NATIVE is_io correct, marshalling sound). H-3/H-4 elaborator pathology NOT reproducible (26-term ‖-chain checks in 0.27s; Eval.hs:162-174 already carries the fix) → resolved.

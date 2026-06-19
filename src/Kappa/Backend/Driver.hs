@@ -125,7 +125,7 @@ verifyAndRecord opts base workDir
         Nothing -> pure (Left [toolDiag noCcMsg])
         Just cc -> do
           let baseDir = maybe "." id (boNativeBaseDir opts)
-          r <- discoverAndVerifyNative cc baseDir workDir (boNativeInputs opts)
+          r <- discoverAndVerifyNative cc baseDir workDir (boNativeInputs opts) []
           case r of
             Left ds -> pure (Left ds)
             Right prov -> do
@@ -173,8 +173,11 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- with the system header (e.g. void* vs char* getenv). The
               -- force-include header therefore covers only the OTHER cSymbols —
               -- the shim-provided ones — so a shim ABI mismatch is a hard error.
-              verifyText = T.concat [d | VerifyInput ds <- boNativeInputs opts, d <- ds]
-              shimSyms = [rns | rns <- Map.elems (boHostSyms opts), not (rnsCSymbol rns `T.isInfixOf` verifyText)]
+              -- exclude only symbols whose EXACT name is a `verify` decl's
+              -- declared symbol (real library symbols, checked against headers);
+              -- a substring match would wrongly exclude an unrelated shim symbol.
+              verifyNames = [verifyDeclName d | VerifyInput ds <- boNativeInputs opts, d <- ds]
+              shimSyms = [rns | rns <- Map.elems (boHostSyms opts), rnsCSymbol rns `notElem` verifyNames]
           hdrInclude <-
             if null shimSyms
               then pure []
@@ -348,6 +351,16 @@ linkFlags = concatMap one
       | otherwise =
           ["-Wl,-Bstatic"] ++ [T.unpack ("-l" <> l) | l <- libs] ++ ["-Wl,-Bdynamic"]
     one NoLink = []
+
+-- | The declared symbol name of a C prototype: the identifier immediately
+-- before the first @(@ (e.g. "int abs(int)" → "abs", "char *getenv(const
+-- char *)" → "getenv"). Used to exclude verified library symbols from the
+-- shim-prototype force-include by EXACT name (not a loose substring).
+verifyDeclName :: T.Text -> T.Text
+verifyDeclName d =
+  let before = T.takeWhile (/= '(') d
+      idChar c = c == '_' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+   in T.takeWhileEnd idChar (T.dropWhileEnd (not . idChar) before)
 
 dropExtensionSafe :: FilePath -> FilePath
 dropExtensionSafe f = case break (== '.') f of

@@ -12,7 +12,7 @@ import Kappa.Backend.Driver
   , defaultBuildOptions
   , detectCC
   )
-import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, scalarOnly)
 import Kappa.Backend.NativeProbe (hostBindingLockEntries)
 import Kappa.Build.Lock (LockEntry (..), lockWellFormed, parseLock, renderLock)
 import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
@@ -252,7 +252,10 @@ collectLockClosure file bc mtgt = case mtgt of
           case mcc of
             Nothing -> pure (Right (True, rxLockEntries rx)) -- no toolchain: build step reports it
             Just cc -> do
-              let bindings = [(nm', map renderSym ss ++ meta, ins) | (nm', ss, ins, meta) <- rxNativeBindings rx]
+              let bindings =
+                    [ (nm', map renderSym ss ++ meta, ins, [externPrototype s | s <- ss, scalarOnly s])
+                    | (nm', ss, ins, meta) <- rxNativeBindings rx
+                    ]
               r <- hostBindingLockEntries cc manifestDir (rxTargetTriple rx) bindings
               pure $ case r of
                 Left ds -> Left ds
