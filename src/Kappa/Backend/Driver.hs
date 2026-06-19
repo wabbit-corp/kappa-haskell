@@ -57,6 +57,10 @@ data BuildOptions = BuildOptions
   , boNativeBaseDir :: !(Maybe FilePath)
   -- ^ directory that native input relative paths (headers/includeDir/
   -- shim/prebuilt) resolve against — the manifest directory.
+  , boTargetTriple :: !T.Text
+  -- ^ §36.21 the target's toolchain triple; passed to a cross-capable C
+  -- driver (@zig cc -target <triple>@) so a cross-compile actually targets
+  -- the requested platform instead of silently building for the host.
   , boWorkDir :: !(Maybe FilePath) -- ^ directory for generated artifacts
   }
 
@@ -70,6 +74,7 @@ defaultBuildOptions =
     , boLinkSpecs = []
     , boNativeInputs = []
     , boNativeBaseDir = Nothing
+    , boTargetTriple = ""
     , boWorkDir = Nothing
     }
 
@@ -156,8 +161,18 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
       case pkgErr of
         Just msg -> pure (Left [toolDiag msg])
         Nothing -> do
-          let args =
+          let -- §36.21: a cross-capable driver (zig cc) targets the manifest's
+              -- triple; for a host gcc/clang/cc we leave the native host target
+              -- (an explicit non-host triple there would fail the link, which is
+              -- the honest outcome — the toolchain cannot cross-compile).
+              targetFlags
+                | not (T.null (boTargetTriple opts)) && isZig =
+                    ["-target", T.unpack (boTargetTriple opts)]
+                | otherwise = []
+              isZig = takeFileName ccExe == "zig" && ccLead == ["cc"]
+              args =
                 ccLead
+                  ++ targetFlags
                   ++ [ "-std=c11"
                      -- Disable FP contraction (no implicit FMA fusion) so the
                      -- backend's unboxed double arithmetic rounds per-operation

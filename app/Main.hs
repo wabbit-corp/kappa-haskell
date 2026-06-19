@@ -368,6 +368,7 @@ runExecutable manifestFile bc ma mname = do
               , boLinkSpecs = rxLinkSpecs rx
               , boNativeInputs = rxNativeInputs rx
               , boNativeBaseDir = Just (takeDirectory manifestFile)
+              , boTargetTriple = rxTargetTriple rx
               }
       result <- buildNative st mainG entryFile opts
       case result of
