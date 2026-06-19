@@ -345,7 +345,10 @@ hostBindingLockEntries cc baseDir triple = goB []
         Right prov -> do
           shims <- shimDigestLines baseDir inputs
           let idLines =
-                npLines prov
+                -- §36.7:39604/:39637: the entry's schema identity — a schema
+                -- change invalidates the pin (the digest changes → repin),
+                -- so an entry is never reused under an incompatible schema.
+                ("schema host-source-v1" : npLines prov)
                   ++ shims
                   ++ ["symbol " <> s | s <- symLines]
                   ++ ["target-triple " <> triple]
