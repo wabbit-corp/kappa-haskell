@@ -18,6 +18,7 @@ module server
 
 import host.native.sqlite3 as sql
 import host.native.posix.net as net
+import std.ffi.(i64Value)
 
 -- A minimal HTTP/1.1 response.  `Connection: close` (and closing the
 -- socket after writing) lets the client read the body up to EOF.
@@ -44,7 +45,7 @@ let main = do
         net.connRead conn
         sql.sqliteExec database "UPDATE counter SET hits = hits + 1"
         count <- sql.sqliteQueryInt database "SELECT hits FROM counter"
-        net.connWrite conn (httpResponse (stringAppend "hits=" (showInt count)))
+        net.connWrite conn (httpResponse (stringAppend "hits=" (showInt (i64Value count))))
         net.connClose conn
         served = addInt served 1
     net.listenClose listener

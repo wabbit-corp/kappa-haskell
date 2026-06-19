@@ -20,7 +20,7 @@ let buildConfig : BuildConfig = package { name = "kappa.demo.http_sqlite"
             , surface = symbolList
                 [ symbolDecl "sqliteOpen" "demo_sqlite_open" [ctString] ctHandle
                 , symbolDecl "sqliteExec" "demo_sqlite_exec" [ctHandle, ctString] ctUnit
-                , symbolDecl "sqliteQueryInt" "demo_sqlite_query_int" [ctHandle, ctString] ctInt64
+                , symbolDecl "sqliteQueryInt" "demo_sqlite_query_int" [ctHandle, ctString] ctI64
                 , symbolDecl "sqliteQueryText" "demo_sqlite_query_text" [ctHandle, ctString] ctString
                 , symbolDecl "sqliteClose" "demo_sqlite_close" [ctHandle] ctUnit
                 ]
@@ -54,7 +54,7 @@ let buildConfig : BuildConfig = package { name = "kappa.demo.http_sqlite"
             { name = "posixnet"
             , provides = [module "host.native.posix.net"]
             , surface = symbolList
-                [ symbolDecl "tcpListen" "demo_tcp_listen" [ctInt64] ctHandle
+                [ symbolDecl "tcpListen" "demo_tcp_listen" [ctInt] ctHandle
                 , symbolDecl "tcpAccept" "demo_tcp_accept" [ctHandle] ctHandle
                 , symbolDecl "connRead" "demo_conn_read" [ctHandle] ctString
                 , symbolDecl "connWrite" "demo_conn_write" [ctHandle, ctString] ctUnit

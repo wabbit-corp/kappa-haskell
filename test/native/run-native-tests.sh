@@ -446,7 +446,7 @@ fi
 
 echo "== exact-width ABI vocabulary (ctU32/ctUsize…) maps to real C widths + verifies (§26.1.1) =="
 WD="$WORK/widths"; rm -rf "$WD"; mkdir -p "$WD/src"
-printf 'module app\nimport host.native.netbyte as n\nlet main = do\n  x <- n.htonl 256\n  printlnString (showInt x)\n' > "$WD/src/app.kp"
+printf 'module app\nimport host.native.netbyte as n\nimport std.ffi.(u32, u32Value)\nlet main = do\n  x <- n.htonl (u32 256)\n  printlnString (showInt (u32Value x))\n' > "$WD/src/app.kp"
 printf 'let buildConfig : BuildConfig = package { name="w", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="nb", provides=[module "host.native.netbyte"], surface=symbolList [symbolDecl "htonl" "htonl" [ctU32] ctU32], abi=cAbi, inputs=[headers ["arpa/inet.h"], verify ["uint32_t htonl(uint32_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["nb"] }] }' > "$WD/kappa.build.kp"
 wout="$(timeout 200 $KAPPA build --manifest "$WD" --emit-c -o "$WORK/wbin" 2>&1)"; wrc=$?
 WC="$(find "$WD" -name '*.kappa.c' | head -1)"
@@ -456,6 +456,23 @@ else
   echo "   FAIL: exact-width ctU32 did not map to uint32_t / verify"; echo "$wout" | sed 's/^/     /'; fails=$((fails+1))
 fi
 rm -rf "$WD"
+
+echo "== RawPtr results surface as Option RawPtr (nullability, §26.1.1:27307) =="
+RP="$WORK/rawptr"; rm -rf "$RP"; mkdir -p "$RP/src"
+printf 'module app\nimport host.native.envx as n\nlet main = do\n  r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"
+printf 'let buildConfig : BuildConfig = package { name="r", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="e", provides=[module "host.native.envx"], surface=symbolList [symbolDecl "getenv" "getenv" [ctString] ctRawPtr], abi=cAbi, inputs=[headers ["stdlib.h"], verify ["char *getenv(const char *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["e"] }] }' > "$RP/kappa.build.kp"
+RPC="$WORK/rpbin"
+if timeout 200 $KAPPA build --manifest "$RP" -o "$RPC" >"$RP/b.log" 2>&1; then
+  rpout="$(PATH="$PATH" "$RPC" 2>&1)"
+  if [ "$rpout" = "PATH=some" ]; then
+    echo "   ok (RawPtr result is Option RawPtr; non-null PATH -> Some, matched in Kappa)"
+  else
+    echo "   FAIL: Option RawPtr round-trip wrong (got '$rpout')"; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: Option RawPtr binding did not build"; cat "$RP/b.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$RP"
 
 echo "== native host-source identity is pinned in kappa.lock + drift is fail-closed (§8.3.5/§36.7) =="
 if pkg-config --exists sqlite3 2>/dev/null; then

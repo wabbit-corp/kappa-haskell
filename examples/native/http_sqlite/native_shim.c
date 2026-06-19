@@ -56,7 +56,7 @@ void demo_sqlite_close(void *db) { sqlite3_close((sqlite3 *)db); }
 
 /* ── POSIX TCP (CtHandle = fd cast to void*; CtInt64 port; CtString io) ─ */
 
-void *demo_tcp_listen(int64_t port) {
+void *demo_tcp_listen(int port) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) shim_fail("socket() failed");
   int one = 1;

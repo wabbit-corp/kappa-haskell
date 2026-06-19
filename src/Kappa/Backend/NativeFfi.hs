@@ -19,11 +19,13 @@ module Kappa.Backend.NativeFfi
   , externPrototype
   , wrapperDefinition
   , cAbiType
+  , rnsCollectCtors
   ) where
 
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Numeric (showHex)
 import Kappa.Build.Types (CType (..))
 import Kappa.Core (GName (..), Icit (..), Q (..), Term (..))
 import Kappa.Source (ModuleName (..))
@@ -73,20 +75,53 @@ cAbiType = \case
 -- §26.1.4). Integer-class C scalars surface as @Integer@; handles/pointers
 -- as the abstract @std.ffi@ types (the runtime boxes them as opaque K_FGN).
 ctypeKappaTerm :: CType -> Term
-ctypeKappaTerm = \case
+ctypeKappaTerm ty = case ty of
   CtUnit -> gp "Unit"
   CtBool -> gp "Bool"
-  CtDouble -> gp "Double"
+  CtDouble -> gp "Double" -- = std.ffi.F64 (§26.2: F64 MAY be Double)
   CtString -> gp "String"
+  CtInt -> gp "Integer" -- C `int` (not exact-width); ergonomic Integer surface
+  -- §26.1.1:27307-27309: a RawPtr we cannot prove non-null MUST surface as
+  -- `Option RawPtr`.
+  CtRawPtr -> CApp Expl (gp "Option") (ffi "RawPtr")
+  -- §27.1.1:27316: a raw host.native binding MAY expose bare OpaqueHandle for
+  -- a resource whose release is supplied out of band (the binding's close op).
   CtHandle -> ffi "OpaqueHandle"
-  CtRawPtr -> ffi "RawPtr"
-  CtF32 -> gp "Double"
-  -- the integer class (exact-width + word-width) surfaces as Integer (§26.1.4
-  -- conservative typing; the ABI width is carried by 'cAbiType'/marshalling).
-  t | isIntClass t -> gp "Integer"
-  _ -> gp "Integer"
+  -- §26.1.2:26114: exact-width / pointer-width / float scalars MUST surface as
+  -- the corresponding std.ffi nominal types.
+  _ -> case ffiScalar ty of
+    Just (tyName, _) -> ffi tyName
+    Nothing -> gp "Integer"
+
+-- | The std.ffi nominal scalar a CType surfaces as (type name, ctor gKey), for
+-- the exact-width / pointer-width / float classes (§26.1.2). 'Nothing' for the
+-- ergonomic/builtin-typed CTypes (Int/Bool/Double/String/Handle/RawPtr/Unit).
+ffiScalar :: CType -> Maybe (Text, Text)
+ffiScalar = \case
+  CtInt64 -> Just ("I64", "std.ffi.MkI64") -- int64_t is exact-width
+  CtI8 -> Just ("I8", "std.ffi.MkI8")
+  CtI16 -> Just ("I16", "std.ffi.MkI16")
+  CtI32 -> Just ("I32", "std.ffi.MkI32")
+  CtI64 -> Just ("I64", "std.ffi.MkI64")
+  CtU8 -> Just ("U8", "std.ffi.MkU8")
+  CtU16 -> Just ("U16", "std.ffi.MkU16")
+  CtU32 -> Just ("U32", "std.ffi.MkU32")
+  CtU64 -> Just ("U64", "std.ffi.MkU64")
+  CtIsize -> Just ("Isize", "std.ffi.MkIsize")
+  CtUsize -> Just ("Usize", "std.ffi.MkUsize")
+  CtF32 -> Just ("F32", "std.ffi.MkF32")
+  _ -> Nothing
+
+-- | The std.ffi/std.prelude constructor gKeys a CType's marshalling
+-- constructs (so codegen collects their KT_ tag ids). @Some@/@None@ are
+-- builtin (fixed KCT_ ids) and are not collected.
+rnsCollectCtors :: ResolvedNativeSymbol -> [Text]
+rnsCollectCtors rns =
+  concatMap ctorsOf (rnsResult rns : rnsParams rns)
   where
-    isIntClass t = t `elem` [CtInt, CtInt64, CtI8, CtI16, CtI32, CtI64, CtU8, CtU16, CtU32, CtU64, CtIsize, CtUsize]
+    ctorsOf t = case t of
+      CtRawPtr -> ["std.ffi.MkRawPtr"]
+      _ -> maybe [] (\(_, g) -> [g]) (ffiScalar t)
 
 -- | The Kappa type of a native member: @p1 -> … -> pn -> UIO result@.
 -- Native bindings are effectful, so the result is in @UIO@ (= @IO Void@),
@@ -123,16 +158,21 @@ externPrototype rns =
 wrapperDefinition :: ResolvedNativeSymbol -> Text
 wrapperDefinition rns =
   T.unlines
-    [ "static KValue *" <> wrapperCName rns <> "(KValue **a) {"
-    , "  " <> body
-    , "}"
-    ]
+    ( ["static KValue *" <> wrapperCName rns <> "(KValue **a) {"]
+        ++ map ("  " <>) bodyLines
+        ++ ["}"]
+    )
   where
     args = T.intercalate ", " [unbox p ("a[" <> T.pack (show i) <> "]") | (i, p) <- zip [0 :: Int ..] (rnsParams rns)]
     call = rnsCSymbol rns <> "(" <> args <> ")"
-    body = case rnsResult rns of
-      CtUnit -> call <> "; return kunit();"
-      r -> "return " <> box r call <> ";"
+    bodyLines = case rnsResult rns of
+      CtUnit -> [call <> "; return kunit();"]
+      r ->
+        -- capture the C result in a typed temp, then box it (the box for a
+        -- nominal/Option result references it more than once).
+        [ cAbiType r <> " r = " <> call <> ";"
+        , "return " <> box r "r" <> ";"
+        ]
 
 -- | Unbox a @KValue*@ expression to a C value of the parameter's ABI type.
 --
@@ -146,31 +186,59 @@ wrapperDefinition rns =
 unbox :: CType -> Text -> Text
 unbox ty e = case ty of
   CtUnit -> "(void)" <> e -- a unit param carries no C argument; never emitted in practice
-  CtInt64 -> "kas_int(" <> e <> ")"
   CtBool -> "kas_bool(" <> e <> ")"
   CtDouble -> "kas_dbl(" <> e <> ")"
   CtString -> "kas_str(" <> e <> ")"
   CtHandle -> "kas_fgn(" <> e <> ")"
-  CtRawPtr -> "kas_fgn(" <> e <> ")"
-  CtF32 -> "(float)kas_dbl(" <> e <> ")"
-  -- integer class: unbox to int64 then narrow to the declared C width.
-  _ -> "(" <> cAbiType ty <> ")kas_int(" <> e <> ")"
+  CtInt -> "(int)kas_int(" <> e <> ")"
+  -- §26.1.1: Option RawPtr — None ↦ NULL, Some (MkRawPtr a) ↦ (void*)a.
+  CtRawPtr ->
+    "(kctor_tagid(" <> e <> ") == KCT_NONE ? (void *)0 : (void *)(intptr_t)kas_int("
+      <> "kctor_arg(kctor_arg(" <> e <> ", 0), 0)))"
+  CtF32 -> "(float)kas_dbl(kctor_arg(" <> e <> ", 0))"
+  -- nominal exact-width scalar (MkXxx rep): unbox the rep Integer, narrow to
+  -- the declared C width.
+  _ -> case ffiScalar ty of
+    Just _ -> "(" <> cAbiType ty <> ")kas_int(kctor_arg(" <> e <> ", 0))"
+    Nothing -> "(" <> cAbiType ty <> ")kas_int(" <> e <> ")"
 
--- | Box a C call expression of the result's ABI type back to a @KValue*@.
+-- | Box a C value (the temp @r@) of the result's ABI type back to a @KValue*@.
 box :: CType -> Text -> Text
-box ty call = case ty of
-  CtUnit -> "(" <> call <> ", kunit())"
-  CtInt64 -> "kint(" <> call <> ")"
-  CtBool -> "kbool(" <> call <> ")"
-  CtDouble -> "kdbl(" <> call <> ")"
-  CtString -> "kstr0(" <> call <> ")"
-  CtHandle -> "kfgn((void *)(" <> call <> "), \"native\")"
-  CtRawPtr -> "kfgn((void *)(" <> call <> "), \"native\")"
-  CtF32 -> "kdbl((double)(" <> call <> "))"
-  CtU64 -> "kint((int64_t)(uint64_t)(" <> call <> "))" -- values > INT64_MAX wrap (Integer surface; documented)
-  -- other integer-class results: the C call already returns the exact width;
-  -- widen to int64 (sign/zero extension follows from the C return type).
-  _ -> "kint((int64_t)(" <> call <> "))"
+box ty r = case ty of
+  CtUnit -> "kunit()"
+  CtBool -> "kbool(" <> r <> ")"
+  CtDouble -> "kdbl(" <> r <> ")"
+  CtString -> "kstr0(" <> r <> ")"
+  CtHandle -> "kfgn((void *)(" <> r <> "), \"native\")"
+  CtInt -> "kint((int64_t)(" <> r <> "))"
+  -- §26.1.1: Option RawPtr — NULL ↦ None, else Some (MkRawPtr addr).
+  CtRawPtr ->
+    "((" <> r <> ") == (void *)0 ? kctor0(KCT_NONE, \"std.prelude.None\")"
+      <> " : kctor(KCT_SOME, \"std.prelude.Some\", 1, (KValue *[]){"
+      <> ctorExpr "std.ffi.MkRawPtr" "kint((int64_t)(intptr_t)(" "))" r
+      <> "}))"
+  CtF32 -> ctorExpr "std.ffi.MkF32" "kdbl((double)(" "))" r
+  -- nominal exact-width scalar: wrap the (widened) rep in its MkXxx ctor.
+  _ -> case ffiScalar ty of
+    Just (_, g) -> ctorExpr g "kint((int64_t)(" "))" r
+    Nothing -> "kint((int64_t)(" <> r <> "))"
+
+-- | @kctor(KT_<g>, "<g>", 1, (KValue*[]){<pre><r><post>})@ — construct a
+-- single-field std.ffi wrapper ctor around the (converted) C value.
+ctorExpr :: Text -> Text -> Text -> Text -> Text
+ctorExpr gkey pre post r =
+  "kctor(" <> ktag gkey <> ", " <> cStrLit gkey <> ", 1, (KValue *[]){"
+    <> pre <> r <> post <> "})"
+
+-- | The C tag-id macro name for a constructor gKey — matches
+-- "Kappa.Backend.C"'s @KT_<mangle gKey>@ (the ctor is registered for emission
+-- via 'rnsCollectCtors').
+ktag :: Text -> Text
+ktag g = "KT_" <> cMangle g
+
+-- | A C string literal (the ctor gKey, used as the runtime ctor name).
+cStrLit :: Text -> Text
+cStrLit s = "\"" <> s <> "\""
 
 -- ── small Core helpers (canonical, δ-unfold to an `expect`'s defeq) ────
 
@@ -191,10 +259,21 @@ uio a = CApp Expl (CApp Expl (gp "IO") (gp "Void")) a
 renderMod :: ModuleName -> Text
 renderMod (ModuleName segs) = T.intercalate "." segs
 
--- | Mangle an arbitrary dotted name into a C identifier fragment.
+-- | Mangle an arbitrary dotted name into a C identifier fragment (for the
+-- wrapper name; need only be injective within the host-symbol set).
 mangle :: Text -> Text
 mangle = T.concatMap esc
   where
     esc c
       | isAlphaNum c = T.singleton c
       | otherwise = "_"
+
+-- | The EXACT mangle "Kappa.Backend.C" uses for @KT_<name>@ tag-id macros
+-- (alphanumerics kept; every other char becomes @_<hex>_@). Must match so a
+-- ctor constructed here and matched in compiled Kappa share the same KT_ id.
+cMangle :: Text -> Text
+cMangle = T.concatMap esc
+  where
+    esc c
+      | isAsciiLower c || isAsciiUpper c || isDigit c = T.singleton c
+      | otherwise = "_" <> T.pack (showHex (ord c) "") <> "_"

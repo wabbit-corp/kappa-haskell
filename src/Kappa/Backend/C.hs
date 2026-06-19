@@ -40,6 +40,7 @@ import Control.Monad.State.Strict
 import Kappa.Backend.NativeFfi
   ( ResolvedNativeSymbol (..)
   , externPrototype
+  , rnsCollectCtors
   , wrapperCName
   , wrapperDefinition
   )
@@ -1562,6 +1563,7 @@ markPrimUsed n = modify' (\st -> st {gsPrimUsed = Set.insert n (gsPrimUsed st)})
 emitHostNative :: GName -> ResolvedNativeSymbol -> Gen Text
 emitHostNative g rns = do
   markHostUsed g
+  collectHostCtors rns
   pure
     ( "knative(" <> wrapperCName rns <> ", "
         <> T.pack (show (length (rnsParams rns))) <> ", "
@@ -1571,6 +1573,13 @@ emitHostNative g rns = do
 -- | Record a host member as referenced so 'assemble' emits its wrapper.
 markHostUsed :: GName -> Gen ()
 markHostUsed g = modify' (\st -> st {gsHostUsed = Set.insert g (gsHostUsed st)})
+
+-- | Register the std.ffi wrapper constructors a host symbol's marshalling
+-- builds (MkI64/MkU32/MkRawPtr/…) so 'assemble' emits their KT_ tag ids
+-- (shared with any in-program match on the same ctor).
+collectHostCtors :: ResolvedNativeSymbol -> Gen ()
+collectHostCtors rns =
+  modify' (\st -> st {gsCollectCtors = foldr Set.insert (gsCollectCtors st) (rnsCollectCtors rns)})
 
 -- | The runtime primitive name a global resolves to, if it is one (a
 -- @primModule@ name, a prelude @prim@ registration, or a §34.5 host
@@ -1811,6 +1820,7 @@ compileApp term = do
           , length explArgs >= arity
           , arity > 0 -> do
               markHostUsed g
+              collectHostCtors rns
               aes <- mapM compileErasableArg (take arity explArgs)
               arr <- freshN "na_"
               emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
