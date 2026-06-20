@@ -3,18 +3,19 @@
 import std.bytes as bytes
 import acme.qoi.core.*
 import acme.png.prim as prim
+import acme.natutil as nat
 
 public data Cursor : Type =
-    Cursor (source : Bytes) (offset : Nat)
+    MkCursor (source : Bytes) (offset : Nat)
 
 public data Step (a : Type) : Type =
     Step (value : a) (cursor : Cursor)
 
 public cursorStart : Bytes -> Cursor
-let cursorStart source = Cursor source 0
+let cursorStart source = MkCursor source 0
 
 public remaining : Cursor -> Nat
-let remaining c = bytes.bytesLength c.source - c.offset
+let remaining c = nat.satSub (bytes.bytesLength c.source) c.offset
 
 public atEnd : Cursor -> Bool
 let atEnd c = c.offset >= bytes.bytesLength c.source
@@ -34,21 +35,18 @@ let takeBytes c n =
     case Err e -> Err e
     case Ok Unit ->
         let chunk = safeSlice c.source c.offset n
-        let next = Cursor c.source (c.offset + n)
+        let next = MkCursor c.source (c.offset + n)
         in Ok (Step chunk next)
 
 public readByte : Cursor -> Result QoiError (Step Byte)
 let readByte c =
     match bytes.bytesGet c.source c.offset
     case None -> Err (NeedBytes c.offset 1 (remaining c))
-    case Some b -> Ok (Step b (Cursor c.source (c.offset + 1)))
+    case Some b -> Ok (Step b (MkCursor c.source (c.offset + 1)))
 
 public u32NatOfBytes : Byte -> Byte -> Byte -> Byte -> Nat
 let u32NatOfBytes b0 b1 b2 b3 =
-    (prim.byteToNat b0 * 16777216) +
-    (prim.byteToNat b1 * 65536) +
-    (prim.byteToNat b2 * 256) +
-    prim.byteToNat b3
+    (prim.byteToNat b0 * 16777216) + (prim.byteToNat b1 * 65536) + (prim.byteToNat b2 * 256) + (prim.byteToNat b3)
 
 public readU32NatBE : Cursor -> Result QoiError (Step Nat)
 let readU32NatBE c =
@@ -66,16 +64,16 @@ let readTagByte c =
     case Ok step -> Ok (Step (prim.byteToNat step.value) step.cursor)
 
 public modNat : Nat -> Nat -> Nat
-let modNat n d = n - ((n / d) * d)
+let modNat n d = nat.satSub n ((nat.safeDiv n d) * d)
 
 public high2 : Nat -> Nat
-let high2 b = b / 64
+let high2 b = nat.safeDiv b 64
 
 public low6 : Nat -> Nat
 let low6 b = modNat b 64
 
 public nibbleHigh : Nat -> Nat
-let nibbleHigh b = modNat (b / 16) 16
+let nibbleHigh b = modNat (nat.safeDiv b 16) 16
 
 public nibbleLow : Nat -> Nat
 let nibbleLow b = modNat b 16

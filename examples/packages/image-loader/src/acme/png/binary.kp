@@ -3,19 +3,20 @@
 import std.bytes as bytes
 import acme.png.core.*
 import acme.png.prim as prim
+import acme.natutil as nat
 
 public data Cursor : Type =
-    Cursor (source : Bytes) (offset : Nat)
+    MkCursor (source : Bytes) (offset : Nat)
 
 public data Step (a : Type) : Type =
     Step (value : a) (cursor : Cursor)
 
 public cursorStart : Bytes -> Cursor
-let cursorStart source = Cursor source 0
+let cursorStart source = MkCursor source 0
 
 public remaining : Cursor -> Nat
 let remaining c =
-    bytes.bytesLength c.source - c.offset
+    nat.satSub (bytes.bytesLength c.source) c.offset
 
 public atEnd : Cursor -> Bool
 let atEnd c =
@@ -36,27 +37,24 @@ let takeBytes c n =
     case Err e -> Err e
     case Ok Unit ->
         let chunk = safeSlice c.source c.offset n
-        let next = Cursor c.source (c.offset + n)
+        let next = MkCursor c.source (c.offset + n)
         in Ok (Step chunk next)
 
 public readByte : Cursor -> Result PngError (Step Byte)
 let readByte c =
     match bytes.bytesGet c.source c.offset
     case None -> Err (NeedBytes c.offset 1 (remaining c))
-    case Some b -> Ok (Step b (Cursor c.source (c.offset + 1)))
+    case Some b -> Ok (Step b (MkCursor c.source (c.offset + 1)))
 
 public byteAt : Bytes -> Nat -> Result PngError Byte
 let byteAt source index =
     match bytes.bytesGet source index
-    case None -> Err (NeedBytes index 1 (bytes.bytesLength source - index))
+    case None -> Err (NeedBytes index 1 (nat.satSub (bytes.bytesLength source) index))
     case Some b -> Ok b
 
 public u32NatOfBytes : Byte -> Byte -> Byte -> Byte -> Nat
 let u32NatOfBytes b0 b1 b2 b3 =
-    (prim.byteToNat b0 * 16777216) +
-    (prim.byteToNat b1 * 65536) +
-    (prim.byteToNat b2 * 256) +
-    prim.byteToNat b3
+    (prim.byteToNat b0 * 16777216) + (prim.byteToNat b1 * 65536) + (prim.byteToNat b2 * 256) + (prim.byteToNat b3)
 
 public readU32NatBE : Cursor -> Result PngError (Step Nat)
 let readU32NatBE c =

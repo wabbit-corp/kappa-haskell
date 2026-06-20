@@ -5,6 +5,7 @@ import acme.png.binary as bin
 import acme.png.chunk as chunk
 import acme.png.core.*
 import acme.png.ihdr as ihdr
+import acme.natutil as nat
 
 public data ParseState : Type =
     ParseState
@@ -19,15 +20,16 @@ public data ParseState : Type =
 
 public initialState : ParseState
 let initialState =
-    ParseState
-        (ihdr = None)
-        (palette = None)
-        (idatPartsRev = Nil)
-        (chunksRev = Nil)
-        (ancillaryRev = Nil)
-        (chunkIndex = 0)
-        (seenIdat = False)
-        (closedIdat = False)
+    ParseState {
+        ihdr = None,
+        palette = None,
+        idatPartsRev = Nil,
+        chunksRev = Nil,
+        ancillaryRev = Nil,
+        chunkIndex = 0,
+        seenIdat = False,
+        closedIdat = False
+    }
 
 public parsePng : Bytes -> Result PngError PngImage
 let parsePng source = parsePngWith chunk.VerifyCrc source
@@ -42,7 +44,7 @@ let parsePngWith policy source =
     case Ok cursor -> parseLoop policy cursor initialState
 
 parseLoop : chunk.CrcPolicy -> bin.Cursor -> ParseState -> Result PngError PngImage
-let parseLoop policy cursor state decreases bytes.bytesLength cursor.source - cursor.offset =
+let parseLoop policy cursor state decreases nat.satSub (bytes.bytesLength cursor.source) cursor.offset =
     if bin.atEnd cursor then Err IendMissing
     else
         match chunk.parseRawChunk policy cursor
@@ -67,7 +69,68 @@ let applyChunk state raw =
 
 bump : ParseState -> RawChunk -> ParseState
 let bump state raw =
-    state.{ chunksRev = raw :: state.chunksRev, chunkIndex = state.chunkIndex + 1 }
+    ParseState {
+        ihdr = state.ihdr,
+        palette = state.palette,
+        idatPartsRev = state.idatPartsRev,
+        chunksRev = raw :: state.chunksRev,
+        ancillaryRev = state.ancillaryRev,
+        chunkIndex = state.chunkIndex + 1,
+        seenIdat = state.seenIdat,
+        closedIdat = state.closedIdat
+    }
+
+withIhdr : ParseState -> Ihdr -> ParseState
+let withIhdr s h =
+    ParseState {
+        ihdr = Some h,
+        palette = s.palette,
+        idatPartsRev = s.idatPartsRev,
+        chunksRev = s.chunksRev,
+        ancillaryRev = s.ancillaryRev,
+        chunkIndex = s.chunkIndex,
+        seenIdat = s.seenIdat,
+        closedIdat = s.closedIdat
+    }
+
+withPalette : ParseState -> Palette -> ParseState
+let withPalette s p =
+    ParseState {
+        ihdr = s.ihdr,
+        palette = Some p,
+        idatPartsRev = s.idatPartsRev,
+        chunksRev = s.chunksRev,
+        ancillaryRev = s.ancillaryRev,
+        chunkIndex = s.chunkIndex,
+        seenIdat = s.seenIdat,
+        closedIdat = s.closedIdat
+    }
+
+withIdat : ParseState -> Bytes -> ParseState
+let withIdat s d =
+    ParseState {
+        ihdr = s.ihdr,
+        palette = s.palette,
+        idatPartsRev = d :: s.idatPartsRev,
+        chunksRev = s.chunksRev,
+        ancillaryRev = s.ancillaryRev,
+        chunkIndex = s.chunkIndex,
+        seenIdat = True,
+        closedIdat = s.closedIdat
+    }
+
+withAncillary : ParseState -> RawChunk -> Bool -> ParseState
+let withAncillary s raw closed =
+    ParseState {
+        ihdr = s.ihdr,
+        palette = s.palette,
+        idatPartsRev = s.idatPartsRev,
+        chunksRev = s.chunksRev,
+        ancillaryRev = raw :: s.ancillaryRev,
+        chunkIndex = s.chunkIndex,
+        seenIdat = s.seenIdat,
+        closedIdat = closed
+    }
 
 applyIhdr : ParseState -> RawChunk -> Result PngError ParseState
 let applyIhdr state raw =
@@ -78,7 +141,7 @@ let applyIhdr state raw =
         case None ->
             match ihdr.parseIhdr raw
             case Err e -> Err e
-            case Ok header -> Ok ((bump state raw).{ ihdr = Some header })
+            case Ok header -> Ok (withIhdr (bump state raw) header)
 
 applyPlte : ParseState -> RawChunk -> Result PngError ParseState
 let applyPlte state raw =
@@ -95,7 +158,7 @@ let applyPlte state raw =
                 else
                     match ihdr.parsePalette raw
                     case Err e -> Err e
-                    case Ok palette -> Ok ((bump state raw).{ palette = Some palette })
+                    case Ok palette -> Ok (withPalette (bump state raw) palette)
 
 applyIdat : ParseState -> RawChunk -> Result PngError ParseState
 let applyIdat state raw =
@@ -104,10 +167,7 @@ let applyIdat state raw =
     case Some _ ->
         if state.closedIdat then Err IdatNotConsecutive
         else
-            Ok ((bump state raw).{
-                idatPartsRev = raw.data :: state.idatPartsRev,
-                seenIdat = True
-            })
+            Ok (withIdat (bump state raw) raw.data)
 
 applyIend : ParseState -> RawChunk -> Result PngError ParseState
 let applyIend state raw =
@@ -128,15 +188,12 @@ let applyUnknown state raw =
 applyAncillary : ParseState -> RawChunk -> Result PngError ParseState
 let applyAncillary state raw =
     let closed = state.closedIdat || state.seenIdat
-    let next = (bump state raw).{
-        ancillaryRev = raw :: state.ancillaryRev,
-        closedIdat = closed
-    }
+    let next = withAncillary (bump state raw) raw closed
     in Ok next
 
 finishImage : Bytes -> bin.Cursor -> ParseState -> Result PngError PngImage
 let finishImage source cursor state =
-    if not (bin.atEnd cursor) then Err (IendNotLast (bytes.bytesLength source - cursor.offset))
+    if not (bin.atEnd cursor) then Err (IendNotLast (nat.satSub (bytes.bytesLength source) cursor.offset))
     else
         match state.ihdr
         case None -> Err MissingIhdr
@@ -149,9 +206,10 @@ let finishImage source cursor state =
 
 makeImage : Ihdr -> ParseState -> Result PngError PngImage
 let makeImage header state =
-    Ok (PngImage
-        (ihdr = header)
-        (palette = state.palette)
-        (idat = bytes.bytesConcat (reverse state.idatPartsRev))
-        (chunks = reverse state.chunksRev)
-        (ancillary = reverse state.ancillaryRev))
+    Ok (PngImage {
+        ihdr = header,
+        palette = state.palette,
+        idat = bytes.bytesConcat (nat.reverse state.idatPartsRev),
+        chunks = nat.reverse state.chunksRev,
+        ancillary = nat.reverse state.ancillaryRev
+    })

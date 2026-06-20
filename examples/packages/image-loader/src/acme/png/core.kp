@@ -40,6 +40,16 @@ public data ColorType : Type =
     GreyscaleAlpha
     TruecolorAlpha
 
+instance Eq ColorType =
+    let (==) a b =
+        match (a, b)
+        case (Greyscale, Greyscale) -> True
+        case (Truecolor, Truecolor) -> True
+        case (IndexedColor, IndexedColor) -> True
+        case (GreyscaleAlpha, GreyscaleAlpha) -> True
+        case (TruecolorAlpha, TruecolorAlpha) -> True
+        case _ -> False
+
 public data InterlaceMethod : Type =
     NoInterlace
     Adam7

@@ -3,6 +3,7 @@
 import std.bytes as bytes
 import acme.png.core as png
 import acme.qoi.core as qoi
+import acme.qoi.core.(ChannelsRgb, ChannelsRgba)
 
 public data ImageFormat : Type =
     FormatPng
@@ -12,6 +13,28 @@ public data PixelFormat : Type =
     RGB8
     RGBA8
     PngCompressed
+
+instance Eq ImageFormat =
+    let (==) a b =
+        match (a, b)
+        case (FormatPng, FormatPng) -> True
+        case (FormatQoi, FormatQoi) -> True
+        case _ -> False
+
+instance Eq PixelFormat =
+    let (==) a b =
+        match (a, b)
+        case (RGB8, RGB8) -> True
+        case (RGBA8, RGBA8) -> True
+        case (PngCompressed, PngCompressed) -> True
+        case _ -> False
+
+instance Eq a => Eq (Option a) =
+    let (==) x y =
+        match (x, y)
+        case (None, None) -> True
+        case (Some p, Some q) -> p == q
+        case _ -> False
 
 public data RasterImage : Type =
     RasterImage
@@ -51,11 +74,12 @@ let rasterByteLengthExpected image =
 
 public qoiAsRaster : qoi.QoiImage -> RasterImage
 let qoiAsRaster img =
-    RasterImage
-        (width = img.desc.width)
-        (height = img.desc.height)
-        (format =
+    RasterImage {
+        width = img.desc.width,
+        height = img.desc.height,
+        format =
             match img.desc.channels
-            case qoi.ChannelsRgb -> RGB8
-            case qoi.ChannelsRgba -> RGBA8)
-        (pixels = img.pixels)
+            case ChannelsRgb -> RGB8
+            case ChannelsRgba -> RGBA8,
+        pixels = img.pixels
+    }

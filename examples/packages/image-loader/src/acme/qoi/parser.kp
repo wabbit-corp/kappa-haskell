@@ -4,6 +4,7 @@ import std.bytes as bytes
 import acme.png.prim as prim
 import acme.qoi.binary as bin
 import acme.qoi.core.*
+import acme.natutil as nat
 
 qoiMagic : Bytes
 let qoiMagic = bytes.bytesFromList [b'q', b'o', b'i', b'f']
@@ -25,12 +26,13 @@ let parseQoi source =
     case Err e -> Err e
     case Ok headerStep ->
         let pixelCount = headerStep.value.width * headerStep.value.height
-        let state = DecodeState
-            (cursor = headerStep.cursor)
-            (index = emptyIndex 64)
-            (previous = initialPixel)
-            (outputRev = Nil)
-            (remainingPixels = pixelCount)
+        let state = DecodeState {
+            cursor = headerStep.cursor,
+            index = emptyIndex 64,
+            previous = initialPixel,
+            outputRev = Nil,
+            remainingPixels = pixelCount
+        }
         in
             match decodeLoop headerStep.value state
             case Err e -> Err e
@@ -64,7 +66,7 @@ let readHeader c0 =
 validateHeader : Nat -> Nat -> Nat -> Nat -> bin.Cursor -> Result QoiError (bin.Step QoiDesc)
 let validateHeader width height channelsNat colorspaceNat cursor =
     if width == 0 || height == 0 then Err (BadDimensions width height)
-    elif height >= maxPixels / width then Err (PixelCountTooLarge width height maxPixels)
+    elif height >= nat.safeDiv maxPixels width then Err (PixelCountTooLarge width height maxPixels)
     else
         match channelsFromNat channelsNat
         case None -> Err (BadChannels channelsNat)
@@ -73,57 +75,66 @@ let validateHeader width height channelsNat colorspaceNat cursor =
             case None -> Err (BadColorspace colorspaceNat)
             case Some colorspace ->
                 Ok (bin.Step
-                    (QoiDesc
-                        (width = width)
-                        (height = height)
-                        (channels = channels)
-                        (colorspace = colorspace))
+                    (QoiDesc {
+                        width = width,
+                        height = height,
+                        channels = channels,
+                        colorspace = colorspace
+                    })
                     cursor)
 
 emptyIndex : Nat -> List Pixel
 let emptyIndex n decreases n =
-    if n == 0 then Nil else pixelZero :: emptyIndex (n - 1)
+    if n == 0 then Nil else pixelZero :: emptyIndex (nat.satSub n 1)
 
 indexGet : Nat -> List Pixel -> Result QoiError Pixel
 let indexGet i xs decreases listLength xs =
     match xs
     case Nil -> Err (InternalInvariant "QOI index lookup out of range")
     case h :: t ->
-        if i == 0 then Ok h else indexGet (i - 1) t
+        if i == 0 then Ok h else indexGet (nat.satSub i 1) t
 
 indexPut : Nat -> Pixel -> List Pixel -> List Pixel
 let indexPut i px xs decreases listLength xs =
     match xs
     case Nil -> Nil
     case h :: t ->
-        if i == 0 then px :: t else h :: indexPut (i - 1) px t
+        if i == 0 then px :: t else h :: indexPut (nat.satSub i 1) px t
 
 pixelHash : Pixel -> Nat
 let pixelHash px =
     bin.modNat
-        ((prim.byteToNat px.r * 3) +
-         (prim.byteToNat px.g * 5) +
-         (prim.byteToNat px.b * 7) +
-         (prim.byteToNat px.a * 11))
+        ((prim.byteToNat px.r * 3) + (prim.byteToNat px.g * 5) + (prim.byteToNat px.b * 7) + (prim.byteToNat px.a * 11))
         64
+
+withCursor : DecodeState -> bin.Cursor -> DecodeState
+let withCursor state cur =
+    DecodeState {
+        cursor = cur,
+        index = state.index,
+        previous = state.previous,
+        outputRev = state.outputRev,
+        remainingPixels = state.remainingPixels
+    }
 
 emitPixel : Channels -> Pixel -> DecodeState -> DecodeState
 let emitPixel channels px state =
     let h = pixelHash px
     let bytes = pixelBytes channels px
     in
-        state.{
+        DecodeState {
+            cursor = state.cursor,
             previous = px,
             index = indexPut h px state.index,
             outputRev = bytes :: state.outputRev,
-            remainingPixels = state.remainingPixels - 1
+            remainingPixels = nat.satSub state.remainingPixels 1
         }
 
 emitRun : Channels -> Nat -> DecodeState -> Result QoiError DecodeState
 let emitRun channels count state decreases count =
     if count == 0 then Ok state
     elif count > state.remainingPixels then Err (RunOverflowsImage count state.remainingPixels)
-    else emitRun channels (count - 1) (emitPixel channels state.previous state)
+    else emitRun channels (nat.satSub count 1) (emitPixel channels state.previous state)
 
 decodeLoop : QoiDesc -> DecodeState -> Result QoiError DecodeState
 let decodeLoop desc state decreases state.remainingPixels =
@@ -131,7 +142,7 @@ let decodeLoop desc state decreases state.remainingPixels =
     else
         match bin.readTagByte state.cursor
         case Err _ -> Err (UnexpectedEndOfChunks state.remainingPixels)
-        case Ok tagStep -> decodeTag desc tagStep.value state.{ cursor = tagStep.cursor }
+        case Ok tagStep -> decodeTag desc tagStep.value (withCursor state tagStep.cursor)
 
 decodeTag : QoiDesc -> Nat -> DecodeState -> Result QoiError DecodeState
 let decodeTag desc tag state =
@@ -154,7 +165,7 @@ let decodeRgb desc state =
         match (bytes.bytesGet step.value 0, bytes.bytesGet step.value 1, bytes.bytesGet step.value 2)
         case (Some r, Some g, Some b) ->
             let px = Pixel r g b state.previous.a
-            let next = emitPixel desc.channels px state.{ cursor = step.cursor }
+            let next = emitPixel desc.channels px (withCursor state step.cursor)
             in decodeLoop desc next
         case _ -> Err (NeedBytes state.cursor.offset 3 (bin.remaining state.cursor))
 
@@ -166,7 +177,7 @@ let decodeRgba desc state =
         match (bytes.bytesGet step.value 0, bytes.bytesGet step.value 1, bytes.bytesGet step.value 2, bytes.bytesGet step.value 3)
         case (Some r, Some g, Some b, Some a) ->
             let px = Pixel r g b a
-            let next = emitPixel desc.channels px state.{ cursor = step.cursor }
+            let next = emitPixel desc.channels px (withCursor state step.cursor)
             in decodeLoop desc next
         case _ -> Err (NeedBytes state.cursor.offset 4 (bin.remaining state.cursor))
 
@@ -180,8 +191,8 @@ let decodeIndex desc tag state =
 
 decodeDiff : QoiDesc -> Nat -> DecodeState -> Result QoiError DecodeState
 let decodeDiff desc tag state =
-    let dr = bin.low2 (tag / 16)
-    let dg = bin.low2 (tag / 4)
+    let dr = bin.low2 (nat.safeDiv tag 16)
+    let dg = bin.low2 (nat.safeDiv tag 4)
     let db = bin.low2 tag
     let px = Pixel
         (prim.byteAddBiased state.previous.r dr 2)
@@ -203,7 +214,7 @@ let decodeLuma desc tag state =
         let r = prim.byteAddBiased (prim.byteAddBiased state.previous.r vg 32) drdg 8
         let b = prim.byteAddBiased (prim.byteAddBiased state.previous.b vg 32) dbdg 8
         let px = Pixel r g b state.previous.a
-        let next = emitPixel desc.channels px state.{ cursor = step.cursor }
+        let next = emitPixel desc.channels px (withCursor state step.cursor)
         in decodeLoop desc next
 
 decodeRun : QoiDesc -> Nat -> DecodeState -> Result QoiError DecodeState
@@ -223,4 +234,4 @@ let finishImage desc state =
     case Ok marker ->
         if not (marker.value == qoiEndMarker) then Err BadEndMarker
         elif not (bin.atEnd marker.cursor) then Err (TrailingBytes (bin.remaining marker.cursor))
-        else Ok (QoiImage desc (bytes.bytesConcat (reverse state.outputRev)))
+        else Ok (QoiImage desc (bytes.bytesConcat (nat.reverse state.outputRev)))

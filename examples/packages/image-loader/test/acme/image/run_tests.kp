@@ -36,6 +36,4 @@ let main = do
     printlnString (line "image.sniffQoi" c6)
     printlnString (line "image.sniffPng" c7)
     printlnString (line "image.loadQoiRaster" c8)
-    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8
-        then printlnString "IMAGE TESTS: ALL PASS"
-        else printlnString "IMAGE TESTS: FAIL"
+    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 then printlnString "IMAGE TESTS: ALL PASS" else printlnString "IMAGE TESTS: FAIL"

@@ -2,6 +2,7 @@
 
 import std.bytes as bytes
 import acme.png.prim as prim
+import acme.natutil as nat
 
 -- PNG CRC-32, bitwise form. This is not the fastest version, which is fine;
 -- the first person to benchmark a format parser before validating it probably
@@ -12,7 +13,7 @@ let crc32 payload =
     prim.u32Not (foldBytes prim.u32FFFFFFFF payload 0)
 
 foldBytes : prim.U32 -> Bytes -> Nat -> prim.U32
-let foldBytes crc payload index decreases bytes.bytesLength payload - index =
+let foldBytes crc payload index decreases nat.satSub (bytes.bytesLength payload) index =
     if index >= bytes.bytesLength payload then crc
     else
         match bytes.bytesGet payload index
@@ -33,4 +34,4 @@ let crcBits crc count decreases count =
         let next =
             if prim.u32Eq low prim.u32One then prim.u32Xor shifted prim.u32EDB88320
             else shifted
-        in crcBits next (count - 1)
+        in crcBits next (nat.satSub count 1)

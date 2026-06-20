@@ -1,0 +1,16 @@
+module acme.natutil
+
+public satSub : Nat -> Nat -> Nat
+let satSub a b = natOfInt (subInt (natToInt a) (natToInt b))
+
+reverseGo : forall (a : Type). List a -> List a -> List a
+let reverseGo acc xs decreases listLength xs =
+    match xs
+    case Nil -> acc
+    case h :: t -> reverseGo (h :: acc) t
+
+public reverse : forall (a : Type). List a -> List a
+let reverse xs = reverseGo Nil xs
+
+public safeDiv : Nat -> Nat -> Nat
+let safeDiv a b = natOfInt (divInt (natToInt a) (natToInt b))

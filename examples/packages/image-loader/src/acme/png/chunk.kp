@@ -71,7 +71,7 @@ let fdAT = chunkBytes b'f' b'd' b'A' b'T'
 
 public checkSignature : Bytes -> Result PngError bin.Cursor
 let checkSignature source =
-    if bytes.bytesStartsWith source pngSignature then Ok (bin.Cursor source 8)
+    if bytes.bytesStartsWith pngSignature source then Ok (bin.MkCursor source 8)
     else Err BadSignature
 
 public isAsciiUpper : Byte -> Bool
@@ -158,12 +158,13 @@ let parseRawChunk policy cursor =
                                     match validateCrc policy chunkOffset typeStep.value dataStep.value crcStep.value
                                     case Err e -> Err e
                                     case Ok Unit ->
-                                        let raw = RawChunk
-                                            (offset = chunkOffset)
-                                            (length = length)
-                                            (chunkType = typeStep.value)
-                                            (data = dataStep.value)
-                                            (crc = crcStep.value)
-                                            (known = classed.known)
-                                            (class = classed.class)
+                                        let raw = RawChunk {
+                                            offset = chunkOffset,
+                                            length = length,
+                                            chunkType = typeStep.value,
+                                            data = dataStep.value,
+                                            crc = crcStep.value,
+                                            known = classed.known,
+                                            class = classed.class
+                                        }
                                         in Ok (bin.Step raw crcStep.cursor)

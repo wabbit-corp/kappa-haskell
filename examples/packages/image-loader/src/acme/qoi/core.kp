@@ -20,6 +20,13 @@ public data Channels : Type =
     ChannelsRgb
     ChannelsRgba
 
+instance Eq Channels =
+    let (==) a b =
+        match (a, b)
+        case (ChannelsRgb, ChannelsRgb) -> True
+        case (ChannelsRgba, ChannelsRgba) -> True
+        case _ -> False
+
 public data Colorspace : Type =
     SrgbLinearAlpha
     AllLinear

@@ -5,7 +5,8 @@ Two uploaded packages were unpacked here (sources preserved verbatim from
 Kappa front end (schematic `build.kp` manifests; jvm/dotnet backends; assumed
 proof inference and named-argument constructor syntax). This file records,
 honestly, what builds under THIS implementation and what is blocked, with exact
-causes. Neither package builds end-to-end yet.
+causes. **image-loader now builds, tests, and runs end-to-end** (all checks pass);
+delve's status is recorded below.
 
 ## image-loader (`image-loader/`) — PNG container validation + QOI decode
 
@@ -23,40 +24,88 @@ mandatory). Added toward a native port:
 - `kappa.build.kp` — a native executable target in this implementation's manifest
   schema.
 
-**Build BLOCKED** by package source written against features this front end does
-not accept (these are real, separately-tracked items, NOT silent failures):
-1. `Ctor (field = value) …` **parenthesized named-argument constructor
-   application** (e.g. `acme/image/core.kp` `qoiAsRaster`). This front end parses
-   `(x = e)` as an anonymous record; the supported named form is the brace block
-   `Ctor { field = value, … }`. (Spec §16.1.7 named-argument blocks.)
-2. **`Nat` subtraction** — both the unguarded measure form `bytesLength src - offset`
-   (`acme/png/binary.kp` `remaining`/`byteAt`; the `decreases` measures in
-   `png/parser.kp:45`, `png/ihdr.kp:71`, `png/crc32.kp:15`) AND the guarded
-   recursive decrements `if i == 0 then … else f (i - 1)` (`qoi/parser.kp:85,92,99`).
-   §28.2 checked subtraction requires a proof `subDefined x y = True`
-   (KNOWN_SPEC_ISSUES #6). PRECISE ROOT CAUSE (investigated this pass): even the
-   explicitly-`<=`-guarded form `if y <= x then x - y else 0` is rejected. The flow
-   machinery (`Check.propProof`/`factReduce`, `csBoolFacts`) discharges an equality
-   goal only by reducing the goal term against branch-fact *condition terms*. But
-   for `Nat`: the guard `y <= x` lowers through `Ord`/`compare`
-   (`if ltInt (natToInt y) (natToInt x) then LT elif eqInt … then EQ else GT`,
-   Prelude:1010), the guard `i == 0` lowers to `eqInt (natToInt i) 0 = False`
-   (Prelude:1007), while the proof goal `subDefined x y` lowers to
-   `leInt (natToInt y) (natToInt x) = True` (Prelude:1266). These are structurally
-   unrelated terms over the same `natToInt`+Int-primitive substrate, so `factReduce`
-   (which matches whole condition terms) cannot connect them. Discharging this needs
-   a genuine §16.4.4 flow-typing **arithmetic bridge**: a sound decision step over
-   Int-primitive branch facts (`eqInt`/`ltInt`/`leInt` on `natToInt _`) that proves
-   the `leInt`-shaped goal — including the Nat-non-negativity lemma `natToInt n ≥ 0`
-   needed for `eqInt (natToInt i) 0 = False ⟹ leInt 1 (natToInt i) = True`. This is
-   a real elaborator feature (multi-step, with regression surface on the implicit
-   solver), not a convertibility tweak; it is the shared prerequisite for both the
-   guarded decrements and the `decreases` measures here. The `CheckedSub Nat`
-   instance exists; `natOfInt (subInt (natToInt a) (natToInt b))` is the total
-   saturating escape hatch (verified to compile) but changes the package's intended
-   checked-arithmetic semantics, so it is a rewrite, not a transparent fix.
-3. **Multi-line operator continuation** at constant deeper indent (`u32NatOfBytes`'s
-   `+`-chain) — KNOWN_SPEC_ISSUES #13.
+**STATUS: BUILDS, TESTS, AND RUNS.** `kappa build` exits 0 (only
+`W_TERMINATION_UNVERIFIED` warnings, which are acceptable — termination is
+recorded-not-verified by this front end), produces the `image-tests` native
+executable, and running it prints `IMAGE TESTS: ALL PASS` with all 8 checks
+(`qoi.onePixelRed`, `qoi.run`, `qoi.badMagicRejected`, `png.onePixelHeader`,
+`png.badSignatureRejected`, `image.sniffQoi`, `image.sniffPng`,
+`image.loadQoiRaster`) showing `: PASS`.
+
+The package source was written against a richer/hypothetical front end. The
+following purely-mechanical, behavior-preserving adaptations were applied to the
+`.kp` sources to make it accepted by THIS front end (the original `build.kp` is
+untouched for provenance; `kappa.build.kp` is unchanged):
+
+1. **Parenthesized named-argument constructor application → brace form.** This
+   front end parses `Ctor (field = e) …` as application to *anonymous records*
+   (`actual: (field : T) expected: T`). Every constructor application of that
+   shape was rewritten to the brace block `Ctor { field = e, … }`. Sites:
+   `image/core.kp` (`RasterImage`), `png/parser.kp` (`ParseState` in
+   `initialState`/`bump`/the `with*` helpers, `PngImage` in `makeImage`),
+   `png/ihdr.kp` (`Ihdr`), `png/chunk.kp` (`RawChunk`), `qoi/parser.kp`
+   (`DecodeState`, `QoiDesc`). Same constructor, same field values → identical
+   runtime value.
+2. **`Nat` subtraction → total saturating `satSub`** (KNOWN_SPEC_ISSUES #6: checked
+   `Nat` `-` needs a `subDefined x y = True` proof this front end cannot infer).
+   Added `src/acme/natutil.kp` defining `satSub a b = natOfInt (subInt (natToInt a)
+   (natToInt b))` and replaced every `a - b` (including the `decreases` measures)
+   with `nat.satSub a b`. Sites: `png/binary.kp` (`remaining`, `byteAt`),
+   `png/crc32.kp` (`foldBytes` measure, `crcBits` decrement), `png/parser.kp`
+   (`parseLoop` measure, `IendNotLast`), `png/ihdr.kp` (`divisibleBy3` decrement,
+   `parsePaletteEntries` measure), `qoi/binary.kp` (`remaining`, `modNat`),
+   `qoi/parser.kp` (`emptyIndex`/`indexGet`/`indexPut`/`emitPixel`/`emitRun`).
+   Saturating subtraction is runtime-identical to checked subtraction whenever
+   `b <= a`, which always holds here (byte cursors/counters never underflow), so
+   observable behavior is preserved.
+3. **`Nat` division → total `safeDiv`.** The same proof-inference gap affects checked
+   `Nat` `/` (needs `divDefined x y = True`). Added `safeDiv a b = natOfInt (divInt
+   (natToInt a) (natToInt b))` in `natutil.kp` and replaced `/` at the QOI sites
+   (`qoi/binary.kp` `modNat`/`high2`/`nibbleHigh`; `qoi/parser.kp` `validateHeader`
+   bound and the `decodeDiff` `tag/16`,`tag/4`). All divisors are nonzero constants
+   or the already-`!= 0`-validated `width`, so identical to checked division.
+4. **Multi-line operator continuation joined onto one line** (KNOWN_SPEC_ISSUES #13):
+   the `+`-chains in `u32NatOfBytes` (`png/binary.kp`, `qoi/binary.kp`) and the hash
+   sum in `qoi/parser.kp` `pixelHash` were joined/parenthesized onto one line.
+   Arithmetic is unchanged.
+5. **`reverse` helper added** (`natutil.kp`): the front-end prelude has no `reverse`;
+   added a standard accumulator `reverse`. Used in `png/ihdr.kp`,
+   `png/parser.kp`, `qoi/parser.kp` where the originals called `reverse`.
+6. **Record patch `.{ … }` on nominal data → full reconstruction.** This front end's
+   `.{ }` update only applies to anonymous record types, not nominal `data` records
+   (`E_TYPE_EQUALITY_MISMATCH: record patch requires a closed record`). The
+   `ParseState`/`DecodeState` patches were rewritten as full constructor
+   reconstructions (named `with*`/`withCursor` helpers in `png/parser.kp` and
+   `qoi/parser.kp`) that copy unchanged fields by projection and set the updated
+   ones — semantically identical to the patch.
+7. **`Eq` instances added for user enums.** `==` on `Channels` (`qoi/core.kp`),
+   `ColorType` (`png/core.kp`), `ImageFormat`/`PixelFormat` and `Eq a => Eq (Option
+   a)` (`image/core.kp`) — the richer front end auto-derived these; here they are
+   written out as match-based structural equality. Used only by the test asserts;
+   no parser/decoder behavior change.
+8. **`Cursor` data constructor renamed `Cursor` → `MkCursor`** (`png/binary.kp`,
+   `qoi/binary.kp`, and the one external use in `png/chunk.kp`). A qualified type
+   reference `bin.Cursor` resolved to the same-named *constructor* (term) instead of
+   the type; giving the constructor a distinct name disambiguates. Type name and all
+   field/projection behavior unchanged.
+9. **Qualified constructor pattern → selective import.** `image/core.kp` matched
+   `case qoi.ChannelsRgb`/`qoi.ChannelsRgba`, which did not resolve; added
+   `import acme.qoi.core.(ChannelsRgb, ChannelsRgba)` and used the unqualified
+   constructors in the patterns.
+10. **`do`-block trailing `if` joined to one line** (`test/acme/image/run_tests.kp`):
+    the do-statement `if … then … else …` with `then`/`else` on indented
+    continuation lines is not accepted as a do-item; placing it on one line parses.
+    Control flow unchanged.
+
+**One genuine latent bug fixed (behavior corrected to intended):**
+`png/chunk.kp` `checkSignature` called `bytes.bytesStartsWith source pngSignature`,
+but this prelude's signature is `bytesStartsWith prefix haystack` (the prefix is the
+first argument). The swapped order made every valid PNG fail with `BadSignature`
+(`png.onePixelHeader` FAIL). Corrected to `bytesStartsWith pngSignature source`,
+matching the prefix-first convention the package's own `loader.startsWith` uses.
+After the fix the CRC-checked parse of the bundled 1×1 truecolor PNG succeeds, so
+the package's `crc32` is confirmed correct. (`testBadSignatureRejected` still passes:
+the 2-byte non-PNG input is rejected under either argument order.)
 
 The data-declaration layout the package uses (constructor binders on indented
 continuation lines) WAS a front-end gap and is now FIXED (see the Parser commit
