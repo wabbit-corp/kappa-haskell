@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n"
+
+-- §18.1.5/§18.1.13: cooperative single-agent scheduling with weak fairness.
+-- The consumer fiber blocks on `check (v > 0)` (STM retry) while tv = 0 — it
+-- SUSPENDS rather than erroring or running to completion. The producer fiber
+-- writes tv, which RESUMES the parked consumer; it re-runs and observes 42.
+-- This requires two concurrently-runnable fibers where one unblocks the other.
+module main
+
+producer : TVar Int -> UIO Unit
+let producer tv = do
+    atomically (writeTVar tv 42)
+
+consumer : TVar Int -> STM Int
+let consumer tv = do
+    v <- readTVar tv
+    check (v > 0)
+    readTVar tv
+
+main : UIO Unit
+let main = do
+    tv <- atomically (newTVar 0)
+    c <- fork (atomically (consumer tv))
+    p <- fork (producer tv)
+    ec <- await c
+    match ec
+      case Success v -> printlnString (showInt v)
+      case Failure _ -> printlnString "failed"

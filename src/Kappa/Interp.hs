@@ -12,10 +12,15 @@ module Kappa.Interp
   , RunResult (..)
   ) where
 
-import Control.Exception (AsyncException (..), Exception, fromException, throwIO, try)
+import Control.Concurrent (forkIO, yield)
+import Control.Concurrent.MVar (newEmptyMVar, readMVar, tryPutMVar)
+import qualified Control.Concurrent.STM as STM
+import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import Data.IORef
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.IO.Unsafe (unsafePerformIO)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -32,6 +37,47 @@ newtype KappaError = KappaError Value
 instance Show KappaError where
   show (KappaError v) = "error: " ++ T.unpack (renderValueShallow v)
 instance Exception KappaError
+
+-- | §18.1.13: a transaction attempt that must suspend until a TVar it read
+-- changes (`retry`/`check False`/`stmAbort`/STM `empty`). Caught by the
+-- 'stmAtomically' driver, which parks (via GHC STM) until the global STM
+-- write-version advances, then re-runs the transaction.
+data RetrySignal = RetrySignal
+instance Show RetrySignal where show _ = "STM retry"
+instance Exception RetrySignal
+
+-- | §18.1.13 cooperative STM wake signal: a monotonic counter bumped by every
+-- 'writeTVar'. A retrying transaction blocks (GHC STM 'retry', which the RTS
+-- suspends the fiber on) until this advances — so another fiber writing a
+-- TVar wakes the parked transaction (weak fairness via the GHC scheduler).
+{-# NOINLINE globalStmVersion #-}
+globalStmVersion :: STM.TVar Int
+globalStmVersion = unsafePerformIO (STM.newTVarIO 0)
+
+-- | §18.8.2: a fiber's terminal Exit from its run result — Success on normal
+-- completion, Failure (Fail e) for a raised Kappa error (isolated from the
+-- parent), Failure (Defect …) for any other host exception.
+exitOf :: Either SomeException Value -> Value
+exitOf (Right v) = VCtor (prelG "Success") [v]
+exitOf (Left e) = case fromException e of
+  Just (KappaError ev) -> VCtor (prelG "Failure") [VCtor (prelG "Fail") [ev]]
+  Nothing ->
+    VCtor (prelG "Failure")
+      [VCtor (prelG "Defect") [VCtor (prelG "MkDefectInfo") [VLit (LitStr (T.pack (show e)))]]]
+
+-- | §18.1.13 'atomically' on the single agent: run the transaction; if it
+-- signals retry, park until the STM write-version advances, then re-run.
+stmAtomically :: RT -> Value -> IO Value
+stmAtomically rt action = loop
+  where
+    loop = do
+      v0 <- STM.readTVarIO globalStmVersion
+      r <- try (runIOValue rt action)
+      case r of
+        Right val -> pure val
+        Left RetrySignal -> do
+          STM.atomically (do v <- STM.readTVar globalStmVersion; STM.check (v /= v0))
+          loop
 
 data Completion
   = CplNormal Value
@@ -375,49 +421,61 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- is a cell holding that Exit, retrieved by __awaitFiber. A fiber failure
   -- is isolated here (not propagated to the forking context) and surfaced
   -- via the Exit the parent awaits.
+  -- fork spawns a cooperative fiber (a GHC green thread on the single OS
+  -- agent — non-threaded RTS ⇒ no parallelism, weak fairness from the RTS
+  -- scheduler). The child runs concurrently; its terminal Exit is delivered
+  -- through an MVar that await reads. fork does NOT run to completion here.
   ("__forkRun", [action]) -> do
-    r <- try (runIOValue rt action)
-    let exitV = case r of
-          Right v -> VCtor (prelG "Success") [v]
-          Left (KappaError e) -> VCtor (prelG "Failure") [VCtor (prelG "Fail") [e]]
-    VRef <$> newIORef exitV
-  ("__awaitFiber", [VRef ref]) -> readIORef ref
+    mv <- newEmptyMVar
+    _ <- forkIO $ do
+      r <- try (runIOValue rt action) :: IO (Either SomeException Value)
+      _ <- tryPutMVar mv (exitOf r)
+      pure ()
+    pure (VMVar mv)
+  -- await PARKS the current fiber on the result MVar until the child
+  -- completes (the RTS runs other runnable fibers meanwhile).
+  ("__awaitFiber", [VMVar mv]) -> readMVar mv
   -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
   -- transaction directly (no concurrent agent ⇒ trivially serializable);
   -- `retry`/`check False`/`stmAbort` abort the transaction.
-  ("newTVar", [v]) -> VRef <$> newIORef v
-  ("readTVar", [VRef r]) -> readIORef r
-  ("writeTVar", [VRef r, v]) -> writeIORef r v >> pure unitV
-  ("atomically", [action]) -> runIOValue rt action
+  ("newTVar", [v]) -> VTVar <$> STM.newTVarIO v
+  ("readTVar", [VTVar tv]) -> STM.readTVarIO tv
+  -- a write commits and advances the wake-version so any parked (retrying)
+  -- transaction is resumed by the GHC STM scheduler.
+  ("writeTVar", [VTVar tv, v]) ->
+    STM.atomically (STM.writeTVar tv v >> STM.modifyTVar' globalStmVersion (+ 1)) >> pure unitV
+  ("atomically", [action]) -> stmAtomically rt action
   ("check", [VCtor (GName _ "True") []]) -> pure unitV
-  ("check", [VCtor (GName _ "False") []]) -> throwIO (KappaError (VLit (LitStr "STM check failed (retry with no progress on the single runtime agent)")))
-  ("retry", _) -> throwIO (KappaError (VLit (LitStr "STM retry: transaction blocked with no progress on the single runtime agent")))
-  ("stmAbort", _) -> throwIO (KappaError (VLit (LitStr "STM empty/abort: no transactional alternative succeeded")))
+  ("check", [VCtor (GName _ "False") []]) -> throwIO RetrySignal
+  ("retry", _) -> throwIO RetrySignal
+  ("stmAbort", _) -> throwIO RetrySignal
   -- §18.11 one-shot promises: a cell holding Option (Exit e a) — None until
   -- completed. The first completePromise wins (True); later ones return
   -- False. await reads the stored Exit; awaiting an uncompleted promise with
   -- no other fiber to complete it is a single-agent deadlock (clean error).
-  ("newPromise", _) -> VRef <$> newIORef (VCtor (prelG "None") [])
-  ("completePromise", [VRef r, exitV]) -> do
-    cur <- readIORef r
-    case force ec cur of
-      VCtor (GName _ "None") [] -> writeIORef r (VCtor (prelG "Some") [exitV]) >> pure (VCtor (prelG "True") [])
-      _ -> pure (VCtor (prelG "False") [])
-  ("awaitPromiseExit", [VRef r]) -> do
-    cur <- readIORef r
-    case force ec cur of
-      VCtor (GName _ "Some") [exitV] -> pure exitV
-      _ -> throwIO (KappaError (VLit (LitStr "awaitPromiseExit: promise never completed (single-agent deadlock)")))
-  ("awaitPromise", [VRef r]) -> do
-    cur <- readIORef r
-    case force ec cur of
-      VCtor (GName _ "Some") [exitV] -> case force ec exitV of
-        VCtor (GName _ "Success") [v] -> pure v
-        VCtor (GName _ "Failure") [c] -> case force ec c of
-          VCtor (GName _ "Fail") [e] -> throwIO (KappaError e)
-          _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise failed with a non-Fail cause")))
-        _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: malformed promise Exit")))
-      _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise never completed (single-agent deadlock)")))
+  -- a promise is an empty MVar; the first completePromise fills it (True),
+  -- later attempts return False; await PARKS on the MVar until completion
+  -- (another runnable fiber completes it; the RTS resumes the parked one).
+  ("newPromise", _) -> VMVar <$> newEmptyMVar
+  ("completePromise", [VMVar mv, exitV]) ->
+    (\b -> VCtor (prelG (if b then "True" else "False")) []) <$> tryPutMVar mv exitV
+  ("awaitPromiseExit", [VMVar mv]) -> readMVar mv
+  ("awaitPromise", [VMVar mv]) -> do
+    exitV <- readMVar mv
+    case force ec exitV of
+      VCtor (GName _ "Success") [v] -> pure v
+      VCtor (GName _ "Failure") [c] -> case force ec c of
+        VCtor (GName _ "Fail") [e] -> throwIO (KappaError e)
+        _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise failed with a non-Fail cause")))
+      _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: malformed promise Exit")))
+  -- §18.1 monotonic timers (single agent): nowMonotonic reads the host
+  -- monotonic clock; sleepFor/sleepUntil advance instantly (a single agent
+  -- has no other fiber to schedule during a sleep).
+  ("nowMonotonic", _) -> (VLit . LitInt . fromIntegral) <$> getMonotonicTimeNSec
+  -- sleep parks the fiber cooperatively, yielding to other runnable fibers
+  -- (it MUST NOT block the whole agent); monotonic time is approximate here.
+  ("sleepFor", [_]) -> yield >> pure unitV
+  ("sleepUntil", [_]) -> yield >> pure unitV
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV

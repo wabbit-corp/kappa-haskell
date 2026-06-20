@@ -448,6 +448,23 @@ builtinState =
         prim "completePromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
             ~> CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1) ~> io (tcon "Void") tBool))))
+      , -- §18.1/§29 monotonic time: Duration/Instant construction + arithmetic
+        prim "nanos" (tyV (tInt ~> tcon "Duration"))
+      , prim "micros" (tyV (tInt ~> tcon "Duration"))
+      , prim "millis" (tyV (tInt ~> tcon "Duration"))
+      , prim "seconds" (tyV (tInt ~> tcon "Duration"))
+      , prim "minutes" (tyV (tInt ~> tcon "Duration"))
+      , prim "durationAdd" (tyV (tcon "Duration" ~> tcon "Duration" ~> tcon "Duration"))
+      , prim "durationSub" (tyV (tcon "Duration" ~> tcon "Duration" ~> tcon "Duration"))
+      , prim "durationCompare" (tyV (tcon "Duration" ~> tcon "Duration" ~> tcon "Ordering"))
+      , prim "instantAdd" (tyV (tcon "Instant" ~> tcon "Duration" ~> tcon "Instant"))
+      , prim "instantDiff" (tyV (tcon "Instant" ~> tcon "Instant" ~> tcon "Duration"))
+      , -- §18.1 timers (single agent): nowMonotonic reads the agent clock;
+        -- sleepFor/sleepUntil advance instantly (no preemption to schedule
+        -- against on one agent).
+        prim "nowMonotonic" (tyV (io (tcon "Void") (tcon "Instant")))
+      , prim "sleepFor" (tyV (tcon "Duration" ~> io (tcon "Void") tUnit))
+      , prim "sleepUntil" (tyV (tcon "Instant" ~> io (tcon "Void") tUnit))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime

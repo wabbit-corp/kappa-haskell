@@ -448,6 +448,8 @@ quote ctx lvl v = case forceQ ctx v of
   VPrim p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
   -- runtime-only values; never legitimately quoted, render opaquely
   VRef _ -> CGlob (GName primModule "__ref")
+  VMVar _ -> CGlob (GName primModule "__mvar")
+  VTVar _ -> CGlob (GName primModule "__tvar")
   VIOAction p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
   VQuote qs slots -> CQuote qs (map (quote ctx lvl) slots)
   where
@@ -544,6 +546,19 @@ evalPurePrim p args = case (p, args) of
   ("divInt", [VLit (LitInt a), VLit (LitInt b)]) | b /= 0 -> int (a `quot` b)
   ("modInt", [VLit (LitInt a), VLit (LitInt b)]) | b /= 0 -> int (a `rem` b)
   ("negInt", [VLit (LitInt a)]) -> int (negate a)
+  -- §18.1/§29: Duration/Instant are monotonic-nanosecond Integers at
+  -- runtime; construction scales to nanos and arithmetic is integer add/sub.
+  ("nanos", [VLit (LitInt n)]) -> int n
+  ("micros", [VLit (LitInt n)]) -> int (n * 1000)
+  ("millis", [VLit (LitInt n)]) -> int (n * 1000000)
+  ("seconds", [VLit (LitInt n)]) -> int (n * 1000000000)
+  ("minutes", [VLit (LitInt n)]) -> int (n * 60000000000)
+  ("durationAdd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a + b)
+  ("durationSub", [VLit (LitInt a), VLit (LitInt b)]) -> int (a - b)
+  ("instantAdd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a + b)
+  ("instantDiff", [VLit (LitInt a), VLit (LitInt b)]) -> int (a - b)
+  ("durationCompare", [VLit (LitInt a), VLit (LitInt b)]) ->
+    Just (VCtor (prelG (case compare a b of LT -> "LT"; EQ -> "EQ"; GT -> "GT")) [])
   -- §13.2.6/§11.3.1A row extension: append the field to the record
   -- value, keeping canonical lexicographic field order (§31.4)
   ("__rowExtend", [VRecordV fs, VLit (LitStr l), v])

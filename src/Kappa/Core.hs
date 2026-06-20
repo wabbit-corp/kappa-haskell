@@ -36,6 +36,8 @@ module Kappa.Core
   , QuotedSyntax (..)
   ) where
 
+import Control.Concurrent.MVar (MVar)
+import Control.Concurrent.STM (TVar)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.Text (Text)
@@ -216,6 +218,8 @@ data Value
   | VIfN !Value !Closure !Closure -- ^ stuck if
   | VPrim !Text ![Value] -- ^ builtin primitive, partially applied
   | VRef !(IORef Value) -- ^ runtime mutable cell (MonadRef, §18.6.1)
+  | VMVar !(MVar Value) -- ^ §18.11 fiber-result / one-shot-promise cell (blocking read parks the fiber)
+  | VTVar !(TVar Value) -- ^ §18.1.13 STM transactional variable
   | VIOAction !Text ![Value] -- ^ suspended IO primitive application
   | VQuote !QuotedSyntax ![Value] -- ^ §21.1 syntax value: payload + slot values (grafted lazily)
 
