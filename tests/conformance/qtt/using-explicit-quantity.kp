@@ -9,6 +9,9 @@ module main
 data File : Type =
     Handle Int
 
+instance Releasable (IO e) File =
+    let release f = pure ()
+
 let openFile name = pure (Handle 1)
 
 let main : IO Unit = do

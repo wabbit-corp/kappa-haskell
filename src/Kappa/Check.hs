@@ -7793,12 +7793,24 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           forM_ mq $ \qsp ->
             errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
               "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
-          -- §19.5 resource bind: typed like a monadic bind of the
-          -- acquired resource (the scope-exit release action is not
-          -- modelled by this kernel; the binding is borrowed for the
-          -- §12.3 usage analysis, which inspects the surface item)
-          goItems loops c errT resT
-            (DoBind (LetBind False emptyPrefix pat Nothing rhs usp) : rest)
+          -- §19.5/§18.8.5 resource-scoped bind: `acquire` yields an owned
+          -- resource of type `m A`; `pat` is bound (borrowed) for the rest
+          -- of the scope, and the resource's `release` (resolved from the
+          -- required `Releasable m A` instance) is attached to scope exit,
+          -- running on EVERY exit path (normal/return/break/continue/error)
+          -- in LIFO order with any `defer`s — realized by the protected
+          -- exit machinery (KUsing), not a source rewrite to `defer` (which
+          -- would move the resource before the borrowed use, §19.5).
+          aT <- freshMetaV c
+          acquireTm <- check c (desugarBang rhs) (ioType errT aT)
+          -- Releasable (m := IO errT) (a := aT); `release : a -> m Unit`
+          let mTyV = VGlobN (gPrel "IO") [(Expl, errT)]
+          dictTm <- resolveImplicit c usp (VGlobN (gPrel "Releasable") [(Expl, mTyV), (Expl, aT)])
+          let releaseTm = CProj dictTm "release"
+          checkIrrefutable c pat aT usp
+          (patC, cBound, _) <- elabPattern c pat aT
+          ks <- goItems loops cBound errT resT rest
+          pure (KUsing patC acquireTm releaseTm : ks)
         DoDecl d -> do
           case d of
             DLet _ (LetDef (Just n) _ Nothing _ [] mty Nothing rhs) dsp ->

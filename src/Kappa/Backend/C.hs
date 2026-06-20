@@ -2625,7 +2625,8 @@ compileItems selfLabel mode items0 = do
   -- `defer@selfLabel` written anywhere in this scope's kernel subtree
   -- (nested loop/if bodies route to it). A `defer@other` written here
   -- routes to an enclosing frame, so it is NOT counted at this scope.
-  let ndirect = length [() | KDefer Nothing _ <- items0]
+  -- §19.5 `using` also attaches a release to this scope's exit frame.
+  let ndirect = length [() | KDefer Nothing _ <- items0] + length [() | KUsing {} <- items0]
       nlabeled = case selfLabel of
         Just s -> countLabeledDefers s items0
         Nothing -> 0
@@ -2816,11 +2817,19 @@ compileItems selfLabel mode items0 = do
             _ -> head (gsDefer g)
         registerDefer frame de
         go rest
-      -- §18 `using` desugars to a plain bind in elaboration (Check.hs); a
-      -- KUsing never reaches codegen for an accepted program.
-      KUsing {} -> do
-        _ <- escalated "KUsing" "`using` is desugared to a bind in elaboration (§18); a KUsing kernel item is unreachable"
-        go rest
+      -- §19.5: acquire the owned resource, attach `release resource` to this
+      -- scope's exit frame (run LIFO with defers via krun_io at exit, on every
+      -- exit path), then bind `pat` (borrowed) for the rest of the scope.
+      KUsing pat acquireT releaseT -> do
+        ae <- compile acquireT
+        rv <- freshN "ures_"
+        emit ("KValue *" <> rv <> " = krun_io(" <> ae <> ");")
+        re <- compile releaseT
+        frame <- gets $ \g -> case mode of
+          Nested -> head (gsScopeDefers g)
+          _ -> head (gsDefer g)
+        registerDefer frame ("kapp(" <> re <> ", " <> rv <> ")")
+        bindAndContinue rv pat
       where
         -- bind an irrefutable do-pattern (with a runtime check for any
         -- refutable shape) and continue with the rest of this scope (the

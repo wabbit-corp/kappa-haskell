@@ -8,6 +8,9 @@ module main
 data Handle : Type =
     MkHandle Int
 
+instance Releasable (IO e) Handle =
+    let release h = pure ()
+
 openFile : String -> IO Handle
 let openFile name = pure (MkHandle 1)
 

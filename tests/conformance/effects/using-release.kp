@@ -1,0 +1,24 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquire 1\nacquire 2\nbody\nrelease 2\nrelease 1\n"
+
+-- §19.5/§18.8.5: `using pat <- acquire` binds the resource (borrowed) and
+-- attaches its `release` (from the required Releasable instance) to scope
+-- exit, running on every exit path in LIFO order with defers.
+module main
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString (stringAppend "release " (showInt i))
+
+acquireRes : Int -> UIO Res
+let acquireRes i = do
+    printlnString (stringAppend "acquire " (showInt i))
+    pure (MkRes i)
+
+main : UIO Unit
+let main = do
+    using a <- acquireRes 1
+    using b <- acquireRes 2
+    printlnString "body"

@@ -268,7 +268,14 @@ runScope rt reg0 selfLabel env0 items0 = do
           case r of
             CplNormal _ -> go env rest
             other -> leave other
-        KUsing {} -> throwIO (KappaError (VLit (LitStr "using is unsupported")))
+        -- §19.5: acquire the owned resource, bind `pat` (borrowed) for the
+        -- rest of the scope, and attach `release resource` to this scope's
+        -- exit queue so it runs LIFO on every exit path (like `defer`).
+        KUsing pat acquireT releaseT -> do
+          resource <- runIOValue rt =<< evalK rt env acquireT
+          releaseFn <- evalK rt env releaseT
+          modifyIORef' exitsRef ((() <$ runIOValue rt (vapp ec releaseFn Expl resource)) :)
+          bindOrDie pat resource $ \bs -> go (reverse bs ++ env) rest
         where
           loopOut r = case r of
             CplNormal _ -> go env rest
