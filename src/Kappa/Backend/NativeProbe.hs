@@ -346,11 +346,61 @@ verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hd
       removeFile probePath `catch` \(_ :: SomeException) -> pure ()
       removeFile objPath `catch` \(_ :: SomeException) -> pure ()
       case ec of
-        ExitSuccess -> pure (Right ["verified-decl " <> d | d <- decls])
         ExitFailure _ ->
           pure (Left [pErr ("a native binding declaration does not match the real header ABI (Spec §26.1.5/§36.28):\n" <> T.pack (trim (out ++ err)))])
+        ExitSuccess -> do
+          -- §26.1.5: a `verify` redeclaration only PROVES the ABI when the
+          -- symbol is actually declared by an included header. A lone
+          -- `extern <decl>;` with no header that declares the symbol is
+          -- self-consistent C and verifies nothing (the redeclaration would
+          -- agree with any fabricated prototype). Require header coverage: a
+          -- probe that takes the address of each verified symbol with NO
+          -- local extern in scope — an undeclared identifier is then a hard
+          -- error, so a fabricated ABI for a symbol no included header
+          -- declares is rejected fail-closed rather than linked.
+          covRes <- coverageProbe
+          case covRes of
+            Left ds -> pure (Left ds)
+            Right () -> pure (Right ["verified-decl " <> d | d <- decls])
   where
     trim s = if length s <= 3000 then s else "...\n" ++ drop (length s - 3000) s
+    -- symbol name of a C prototype: the identifier just before the first '('.
+    protoSym :: Text -> Text
+    protoSym d =
+      let idChar c = c == '_' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
+          before = T.takeWhile (/= '(') d
+       in T.takeWhileEnd idChar (T.dropWhileEnd (not . idChar) before)
+    coverageProbe = do
+      let names = nub (filter (not . T.null) (map protoSym decls))
+      if null names
+        then pure (Right ())
+        else do
+          let covPath = workDir </> "native-abi-coverage.c"
+              covObj = workDir </> "native-abi-coverage.o"
+              refs = ["  syms[" <> T.pack (show i) <> "] = (void *)(&" <> n <> ");" | (i, n) <- zip [0 :: Int ..] names]
+              cov =
+                T.unlines $
+                  [ "/* generated header-coverage probe (Kappa.Backend.NativeProbe). */"
+                  , "#include <stdint.h>"
+                  , "#include <stddef.h>"
+                  ]
+                    ++ ["#include <" <> h <> ">" | h <- hdrs]
+                    ++ [ "void *kappa_abi_coverage(void);"
+                       , "void *kappa_abi_coverage(void) {"
+                       , "  void *syms[" <> T.pack (show (length names)) <> "];"
+                       ]
+                    ++ refs
+                    ++ ["  return syms[0];", "}"]
+              iflags = concat [["-I", d] | d <- nub (baseDir : searchDirs)]
+              args = ccLead ++ tflags ++ ["-std=c11", "-c", "-o", covObj] ++ iflags ++ pkgCflags ++ defFlags ++ [covPath]
+          writeFile covPath (T.unpack cov)
+          (ec, out, err) <- readProcessWithExitCode ccExe args ""
+          removeFile covPath `catch` \(_ :: SomeException) -> pure ()
+          removeFile covObj `catch` \(_ :: SomeException) -> pure ()
+          case ec of
+            ExitSuccess -> pure (Right ())
+            ExitFailure _ ->
+              pure (Left [pErr ("a native binding `verify` declaration cannot be checked against the real ABI: no included header declares the symbol, so the redeclaration verifies nothing (Spec §26.1.5/§36.28). Add the header that declares it (or provide the symbol via a shim).\n" <> T.pack (trim (out ++ err)))])
 
 -- ── helpers ────────────────────────────────────────────────────────────
 

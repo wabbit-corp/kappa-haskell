@@ -54,13 +54,13 @@ let listGet xs i decreases listLength xs =
 -- counters that need them (runtime-identical when no underflow / nonzero
 -- divisor — true for the game's turn/rng counters).
 public satSub : Nat -> Nat -> Nat
-let satSub a b = natOfInt (subInt (natToInt a) (natToInt b))
+let satSub a b = if leInt (natToInt b) (natToInt a) then natOfInt (subInt (natToInt a) (natToInt b)) else 0
 
 public safeDiv : Nat -> Nat -> Nat
-let safeDiv a b = natOfInt (divInt (natToInt a) (natToInt b))
+let safeDiv a b = if eqInt (natToInt b) 0 then 0 else natOfInt (divInt (natToInt a) (natToInt b))
 
 public safeMod : Nat -> Nat -> Nat
-let safeMod a b = natOfInt (modInt (natToInt a) (natToInt b))
+let safeMod a b = if eqInt (natToInt b) 0 then a else natOfInt (modInt (natToInt a) (natToInt b))
 
 -- Int-indexed array helpers. `index` produces an Int, so these wrap the
 -- prelude's Nat-indexed `arrayGet` and provide the missing set/replicate.

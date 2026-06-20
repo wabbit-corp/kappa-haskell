@@ -1,7 +1,10 @@
 module acme.natutil
 
+-- Total saturating subtraction: clamps to 0 when b > a (Nat cannot be
+-- negative). Runtime-identical to checked `-` whenever b <= a, and safe
+-- (never produces a negative-as-Nat) otherwise.
 public satSub : Nat -> Nat -> Nat
-let satSub a b = natOfInt (subInt (natToInt a) (natToInt b))
+let satSub a b = if leInt (natToInt b) (natToInt a) then natOfInt (subInt (natToInt a) (natToInt b)) else 0
 
 reverseGo : forall (a : Type). List a -> List a -> List a
 let reverseGo acc xs decreases listLength xs =
@@ -12,5 +15,7 @@ let reverseGo acc xs decreases listLength xs =
 public reverse : forall (a : Type). List a -> List a
 let reverse xs = reverseGo Nil xs
 
+-- Total division: returns 0 on a zero divisor (all real call sites use a
+-- nonzero/validated divisor, so this matches checked `/` for them).
 public safeDiv : Nat -> Nat -> Nat
-let safeDiv a b = natOfInt (divInt (natToInt a) (natToInt b))
+let safeDiv a b = if eqInt (natToInt b) 0 then 0 else natOfInt (divInt (natToInt a) (natToInt b))

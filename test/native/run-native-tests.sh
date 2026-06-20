@@ -534,6 +534,23 @@ else
 fi
 rm -rf "$AB"
 
+echo "== a verify decl with NO header that declares the symbol verifies nothing -> rejected (§26.1.5/§36.28) =="
+# Reviewer-found BLOCKER: a fabricated pointer ABI (real getenv is
+# `char *getenv(const char*)`, declared here as a 2-arg `void*(void*,void*)`)
+# with NO header in scope used to LINK, because a lone `extern` redeclaration
+# is self-consistent C and the redeclaration check only fires when a header
+# ALSO declares the symbol. Header-coverage must reject this fail-closed.
+NH="$WORK/noheader"; rm -rf "$NH"; mkdir -p "$NH/src"
+printf 'module app\nimport host.native.envx as n\nlet main = do\n  let r = n.getenv2 None None\n  printlnString "x"\n' > "$NH/src/app.kp"
+printf 'let buildConfig : BuildConfig = package { name="e", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="e", provides=[module "host.native.envx"], surface=symbolList [symbolDecl "getenv2" "getenv" [ctRawPtr, ctRawPtr] ctRawPtr], abi=cAbi, inputs=[verify ["void *getenv(void *, void *)"]], link=dynamicLink ["c"], load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["e"] }] }' > "$NH/kappa.build.kp"
+nhout="$(timeout 200 $KAPPA build --update --manifest "$NH" -o "$WORK/nhbin" 2>&1)"; nhrc=$?
+if [ "$nhrc" -ne 0 ] && grep -q "E_BUILD_NATIVE_ABI" <<<"$nhout" && [ ! -e "$WORK/nhbin" ]; then
+  echo "   ok (fabricated ABI with no declaring header -> E_BUILD_NATIVE_ABI, nothing linked)"
+else
+  echo "   FAIL: a verify decl with no declaring header was accepted (vacuous proof)"; echo "$nhout" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$NH"
+
 echo "== RawPtr results surface as Option RawPtr (nullability, §26.1.1:27307) =="
 RP="$WORK/rawptr"; rm -rf "$RP"; mkdir -p "$RP/src"
 printf 'module app\nimport host.native.envx as n\nlet main = do\n  r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"

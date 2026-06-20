@@ -212,7 +212,12 @@ cmdBuildManifest ma = do
 runInvocation :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO ()
 runInvocation file bc ma mtgt = do
   let manifestDir = takeDirectory file
-  closure <- collectLockClosure file bc mtgt
+  -- The lockfile is a PACKAGE-WIDE artifact: its entries are the union over
+  -- every exe/bench target (§36.7), not just the one named by --target. A
+  -- per-target closure would make a binding-free target (e.g. a test runner)
+  -- spuriously mismatch a sibling target's host-binding pin, and a per-target
+  -- --update would drop sibling entries. So verify/update against the union.
+  closure <- collectPackageLockClosure file bc
   case closure of
     Left ds -> emitDiags Human ds >> exitFailure
     Right (manages, entries) -> do
@@ -224,6 +229,34 @@ runInvocation file bc ma mtgt = do
       -- only an explicit update mode may write the lock (§36.7).
       when (manages && ok && maUpdate ma) (updateLock manifestDir entries)
       if ok then exitSuccess else exitFailure
+
+-- | The package-wide lock closure: the de-duplicated union of every
+-- exe/bench target's closure (§36.7 — the lockfile pins the whole package,
+-- not one target). @managesLock@ is True iff the package has at least one
+-- exe/bench target (only those carry a closure / pin the lock); a pure
+-- library/test package manages no lock. A discovery failure in any target's
+-- native-binding pin propagates (fail-closed).
+collectPackageLockClosure :: FilePath -> B.BuildConfig -> IO (Either Diagnostics (Bool, [LockEntry]))
+collectPackageLockClosure file bc = do
+  let isExeBench t = case t of
+        B.ExecutableTarget {} -> True
+        B.BenchmarkTarget {} -> True
+        _ -> False
+      names = [B.tName t | t <- B.bcTargets bc, isExeBench t]
+  results <- mapM (\nm -> collectLockClosure file bc (Just nm)) names
+  case sequence results of
+    Left ds -> pure (Left ds)
+    Right rs ->
+      let entries = dedupEntries (concatMap snd rs)
+       in pure (Right (not (null names), entries))
+  where
+    dedupEntries = go Set.empty
+      where
+        go _ [] = []
+        go seen (e : es)
+          | k `Set.member` seen = go seen es
+          | otherwise = e : go (Set.insert k seen) es
+          where k = (leKind e, leKey e, leId e)
 
 -- | Resolve (without building) the dependency-lock closure of an
 -- invocation, mirroring 'runNamedTarget' dispatch. Returns @(managesLock,
