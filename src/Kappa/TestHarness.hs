@@ -43,7 +43,7 @@ import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), checkM
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), convertible, force, quote)
-import Kappa.Explain (codeNames, explainExists, portableAlias)
+import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)

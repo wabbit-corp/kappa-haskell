@@ -31,7 +31,7 @@ module Kappa.Explain
 import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Kappa.Diagnostic (Severity (..))
+import Kappa.Diagnostic (Severity (..), portableAlias, requiredAliasTable)
 
 -- | §3.1.2A registry-entry stability classification.
 data Stability = Stable | Experimental | Deprecated | Internal
@@ -104,53 +104,6 @@ explainExists s
 -- standardize is compared verbatim, so a diagnostic that emits a
 -- materially different code than a fixture pins is reported as a
 -- mismatch rather than silently reconciled.
-portableAlias :: Text -> Maybe Text
-portableAlias c = lookup c requiredAliasTable
-
--- | Required portable diagnostic-code aliases (§3.1.4). Each entry maps
--- this implementation's rendered code for a §3.1.4-listed condition to
--- the standardized portable-alias spelling that subsection mandates. A
--- diagnostic "code" in the sense of §3.1 is recoverable either as the
--- rendered code or as its portable alias (§3.1.2A allows an
--- implementation to expose either spelling), so the harness accepts
--- both. Every right-hand spelling here appears in the §3.1.4 normative
--- list (Spec.md:827-896): @E_TYPE_MISMATCH@, @E_SAFE_NAV_GENERIC_AMBIGUOUS@,
--- @E_APPLICATION_NON_CALLABLE@, @E_MISSING_EXPLICIT_SIGNATURE@,
--- @E_CONSTRUCTOR_ARITY_MISMATCH@. (Codes whose rendered spelling already
--- equals the §3.1.4 portable spelling — e.g.
--- @E_NUMERIC_LITERAL_DOMAIN_MISMATCH@ — need no alias entry.)
---
--- The three @E_NAMED_ARG_*@ codes are the implementation-specific
--- spellings of a malformed *named* constructor application (a missing,
--- duplicated, or unexpected named field on a known constructor; emitted
--- only on the constructor branch of 'Check.elabNamedBlock'). §3.2
--- (Spec.md:3210-3225) classes this as a malformed constructor
--- application: the standardized family is @kappa.constructor.arity@ and
--- the diagnostic "MUST use portable alias @E_CONSTRUCTOR_ARITY_MISMATCH@"
--- (also §3.1.4 Spec.md:925-926, "too few, too many, duplicated, or
--- otherwise malformed constructor arguments after constructor identity
--- is known"). §3.1.4 (Spec.md:819) permits also exposing an
--- implementation-specific code, so the precise duplicate/missing/unknown
--- distinction is preserved in the rendered code while tooling recovers
--- the portable alias here.
---
--- §3.1.4 (Spec.md:823): "A portable diagnostic-code alias MUST NOT be
--- reused for a materially different diagnostic meaning." Accordingly
--- this table maps only codes whose condition is the *same* condition the
--- target alias standardizes; conditions §3.1.4 does not standardize
--- (e.g. a stuck @kappa.implicit.unsolved@ trait/evidence goal, §3.2.4)
--- are NOT folded onto an unrelated alias.
-requiredAliasTable :: [(Text, Text)]
-requiredAliasTable =
-  [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
-  , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
-  , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
-  , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
-  , ("E_NAMED_ARG_MISSING", "E_CONSTRUCTOR_ARITY_MISMATCH")
-  , ("E_NAMED_ARG_DUPLICATE", "E_CONSTRUCTOR_ARITY_MISMATCH")
-  , ("E_NAMED_ARG_UNKNOWN", "E_CONSTRUCTOR_ARITY_MISMATCH")
-  ]
-
 -- | All acceptable spellings of a diagnostic's code: the rendered code
 -- plus its §3.1.2A portable alias, when defined.
 codeNames :: Text -> [Text]

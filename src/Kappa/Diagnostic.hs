@@ -47,6 +47,8 @@ module Kappa.Diagnostic
   , renderDiagnostic
   , renderDiagnosticJson
   , renderDiagnosticsJson
+  , portableAlias
+  , requiredAliasTable
   , jStr
   , jArray
   , jObject
@@ -419,6 +421,25 @@ renderDiagnosticJson d = jObject (diagPairs d)
 renderDiagnosticsJson :: Diagnostics -> Text
 renderDiagnosticsJson ds = jArray (map renderDiagnosticJson ds)
 
+-- | §3.1.4: the portable code alias for an implementation diagnostic code,
+-- when the condition is one whose portable alias the spec requires. Exposed on
+-- the emitted record (JSON @portableCode@) so tooling/conformance recover it
+-- without parsing prose, and reused by the test harness's code comparison.
+portableAlias :: Text -> Maybe Text
+portableAlias c = lookup c requiredAliasTable
+
+-- | §3.1.4 / §3.1.2A: implementation code ↦ required portable alias.
+requiredAliasTable :: [(Text, Text)]
+requiredAliasTable =
+  [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
+  , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
+  , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
+  , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")
+  , ("E_NAMED_ARG_MISSING", "E_CONSTRUCTOR_ARITY_MISMATCH")
+  , ("E_NAMED_ARG_DUPLICATE", "E_CONSTRUCTOR_ARITY_MISMATCH")
+  , ("E_NAMED_ARG_UNKNOWN", "E_CONSTRUCTOR_ARITY_MISMATCH")
+  ]
+
 diagPairs :: Diagnostic -> [(Text, Text)]
 diagPairs d =
   [ ("schemaVersion", jInt schemaVersion)
@@ -436,6 +457,10 @@ diagPairs d =
   , ("related", jArray (map relatedJson (dRelated d)))
   , ("payload", payloadJson (dPayload d))
   , ("explain", jStr (dCode d))
+  -- §3.1.4: the portable code alias MUST be recoverable from the emitted
+  -- diagnostic record without parsing prose. Present when the emitted code has
+  -- a listed portable alias; null otherwise.
+  , ("portableCode", maybe jNull jStr (portableAlias (dCode d)))
   , ("suppressed", jArray (map suppressedJson (dSuppressed d)))
   ]
   where
