@@ -1002,10 +1002,66 @@ mismatchPayload expectedR actualR =
       withPayloadField "mismatchKind" "expression-type" $
         payloadKind "expected-actual"
 
+-- | §18.1 effect-row subsumption (check direction): succeed when @actual@
+-- and @expected@ are both Eff types whose result types unify and every
+-- label in actual's row appears in expected's row with a unifiable
+-- interface (so actual's effects ⊆ expected's). Restores state on failure.
+tryEffRowSubsume :: Ctx -> Value -> Value -> CheckM Bool
+tryEffRowSubsume ctx actual expected = do
+  aF <- forceM actual
+  eF <- forceM expected
+  case (aF, eF) of
+    (VGlobN (GName _ "Eff") [(_, aRow), (_, aRes)], VGlobN (GName _ "Eff") [(_, eRow), (_, eRes)]) -> do
+      st0 <- get
+      resOk <- unify ctx aRes eRes
+      aEs <- rowEntriesV aRow
+      eEs <- rowEntriesV eRow
+      case (aEs, eEs) of
+        (Just aEntries, Just eEntries) | resOk -> do
+          oks <- forM aEntries $ \(al, ai) -> do
+            ms <- forM eEntries $ \(el, ei) -> do
+              le <- sameLabelV al el
+              if le then unify ctx ai ei else pure False
+            pure (or ms)
+          if and oks then pure True else put st0 >> pure False
+        _ -> put st0 >> pure False
+    _ -> pure False
+
+-- | The (label, interface) entries of a fully-concrete effect row (ending
+-- in @__effRowNil@); Nothing if the row has a non-cons tail (e.g. a
+-- metavariable), where this subsumption does not apply.
+rowEntriesV :: Value -> CheckM (Maybe [(Value, Value)])
+rowEntriesV row0 = do
+  row <- forceM row0
+  case row of
+    VGlobN (GName _ "__effRowNil") [] -> pure (Just [])
+    VGlobN (GName _ "__effRowCons") [(_, l), (_, e), (_, rest)] -> do
+      mrest <- rowEntriesV rest
+      pure (fmap ((l, e) :) mrest)
+    _ -> pure Nothing
+
+sameLabelV :: Value -> Value -> CheckM Bool
+sameLabelV a b = do
+  aF <- forceM a
+  bF <- forceM b
+  pure $ case (aF, bF) of
+    (VGlobN g1 [], VGlobN g2 []) -> g1 == g2
+    (VCtor g1 [], VCtor g2 []) -> g1 == g2
+    _ -> False
+
 expectType :: Ctx -> Span -> Value -> Value -> CheckM ()
 expectType ctx sp actual expected = do
   ok <- unify ctx actual expected
-  unless ok $ do
+  -- §18.1: effect-row subsumption. A computation whose effect row's labels
+  -- are a SUBSET of the expected row's (with matching interfaces) is usable
+  -- where the larger row is demanded — it simply does not use the extra
+  -- effects. This is what lets an operation `l.op` (natural row `<[l:E]>`)
+  -- and any single-effect sub-computation compose inside a do-block whose
+  -- row carries several effects. The OpCall tree is row-agnostic at runtime,
+  -- so the relaxation is purely at the type level (sound in the check
+  -- direction). Tried only after exact unification fails.
+  subsumed <- if ok then pure True else tryEffRowSubsume ctx actual expected
+  unless subsumed $ do
     aT <- quoteIn ctx actual
     eT <- quoteIn ctx expected
     -- §13.2.10: a mismatch whose head is an opaque sealed-package

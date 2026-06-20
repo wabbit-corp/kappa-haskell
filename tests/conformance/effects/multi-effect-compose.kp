@@ -1,0 +1,35 @@
+--! assertNoErrors
+--! assertEval res 7
+
+-- §18.1: effect-row subsumption lets a computation using several effects
+-- compose — each operation's natural singleton row weakens into the
+-- combined row. State and Log are handled in sequence (residual rows).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect Log =
+    1 emit : Int -> Unit
+
+comp : Eff <[State : State, Log : Log]> Int
+let comp =
+    do
+        let a <- State.get ()
+        let _ <- Log.emit a
+        pure a
+
+let handledState =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 7
+        case put _ k -> k ()
+
+let result =
+    deep handle Log handledState with
+        case return x -> pure x
+        case emit _ k -> k ()
+
+res : Int
+let res = runPure result
