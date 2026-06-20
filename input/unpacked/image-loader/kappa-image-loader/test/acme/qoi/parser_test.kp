@@ -1,0 +1,32 @@
+@PrivateByDefault module acme.qoi.parser_test
+
+import std.bytes as bytes
+import acme.qoi.core.*
+import acme.qoi.example as example
+import acme.qoi.parser as parser
+
+public testOnePixelRed : Result QoiError Bool
+let testOnePixelRed =
+    match parser.parseQoi example.onePixelRedRgbaQoi
+    case Err e -> Err e
+    case Ok image ->
+        Ok (image.desc.width == 1 &&
+            image.desc.height == 1 &&
+            image.desc.channels == ChannelsRgba &&
+            image.pixels == bytes.bytesFromList [b'\xFF', b'\x00', b'\x00', b'\xFF'])
+
+public testRun : Result QoiError Bool
+let testRun =
+    match parser.parseQoi example.twoPixelRedRunQoi
+    case Err e -> Err e
+    case Ok image ->
+        Ok (image.desc.width == 2 &&
+            image.desc.height == 1 &&
+            image.pixels == bytes.bytesFromList [b'\xFF', b'\x00', b'\x00', b'\xFF', b'\xFF', b'\x00', b'\x00', b'\xFF'])
+
+public testBadMagicRejected : Bool
+let testBadMagicRejected =
+    match parser.parseQoi (bytes.bytesFromList [b'N', b'O'])
+    case Err BadMagic -> True
+    case Err (NeedBytes _ _ _) -> True
+    case _ -> False

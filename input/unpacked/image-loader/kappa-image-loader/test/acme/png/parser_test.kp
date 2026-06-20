@@ -1,0 +1,22 @@
+@PrivateByDefault module acme.png.parser_test
+
+import std.bytes as bytes
+import acme.png.example as example
+import acme.png.parser as parser
+import acme.png.core.*
+
+public testOnePixelHeader : Result PngError Bool
+let testOnePixelHeader =
+    match parser.parsePng example.onePixelRedPng
+    case Err e -> Err e
+    case Ok image ->
+        Ok (image.ihdr.width == 1 &&
+            image.ihdr.height == 1 &&
+            image.ihdr.bitDepth == 8 &&
+            image.ihdr.colorType == Truecolor)
+
+public testBadSignatureRejected : Bool
+let testBadSignatureRejected =
+    match parser.parsePngUncheckedCrc (bytes.bytesFromList [b'N', b'O'])
+    case Err BadSignature -> True
+    case _ -> False

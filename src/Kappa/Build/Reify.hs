@@ -240,6 +240,7 @@ decInput ctx v = do
       Right (PrebuiltInput art' eidTxt)
     ("VerifyInput", (ds : _)) -> VerifyInput <$> asStrList ctx ds
     ("ClassifyInput", (cv : _)) -> ClassifyInput <$> decFfiClass ctx cv
+    ("CStringSymbolsInput", (ss : _)) -> CStringSymbolsInput <$> asStrList ctx ss
     _ -> decFail "expected a native binding input ('headers'/'includeDir'/'define'/'pkgConfig'/'shim'/'moduleMap'/'prebuiltNative'/'verify'/'classify') (Spec §36.28)"
 
 decFfiClass :: EvalCtx -> Value -> Dec FfiClass

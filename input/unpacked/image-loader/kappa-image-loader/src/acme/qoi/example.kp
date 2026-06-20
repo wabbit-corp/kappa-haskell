@@ -1,0 +1,31 @@
+@PrivateByDefault module acme.qoi.example
+
+import std.bytes as bytes
+
+-- Minimal QOI fixtures. These are tiny enough to keep in source without
+-- pretending fixture files are a personality.
+
+public onePixelRedRgbaQoi : Bytes
+let onePixelRedRgbaQoi =
+    bytes.bytesFromList
+        [ b'q', b'o', b'i', b'f'
+        , b'\x00', b'\x00', b'\x00', b'\x01'
+        , b'\x00', b'\x00', b'\x00', b'\x01'
+        , b'\x04'
+        , b'\x00'
+        , b'\xFF', b'\xFF', b'\x00', b'\x00', b'\xFF'
+        , b'\x00', b'\x00', b'\x00', b'\x00', b'\x00', b'\x00', b'\x00', b'\x01'
+        ]
+
+public twoPixelRedRunQoi : Bytes
+let twoPixelRedRunQoi =
+    bytes.bytesFromList
+        [ b'q', b'o', b'i', b'f'
+        , b'\x00', b'\x00', b'\x00', b'\x02'
+        , b'\x00', b'\x00', b'\x00', b'\x01'
+        , b'\x04'
+        , b'\x00'
+        , b'\xFF', b'\xFF', b'\x00', b'\x00', b'\xFF'
+        , b'\xC0'
+        , b'\x00', b'\x00', b'\x00', b'\x00', b'\x00', b'\x00', b'\x00', b'\x01'
+        ]

@@ -1,0 +1,169 @@
+@PrivateByDefault module acme.png.chunk
+
+import std.bytes as bytes
+import acme.png.binary as bin
+import acme.png.core.*
+import acme.png.crc32 as crc32
+import acme.png.prim as prim
+
+public data CrcPolicy : Type =
+    IgnoreCrc
+    VerifyCrc
+
+public pngSignature : Bytes
+let pngSignature =
+    bytes.bytesFromList [b'\x89', b'P', b'N', b'G', b'\r', b'\n', b'\x1A', b'\n']
+
+public chunkBytes : Byte -> Byte -> Byte -> Byte -> Bytes
+let chunkBytes a b c d =
+    bytes.bytesFromList [a, b, c, d]
+
+public IHDR : Bytes
+let IHDR = chunkBytes b'I' b'H' b'D' b'R'
+
+public PLTE : Bytes
+let PLTE = chunkBytes b'P' b'L' b'T' b'E'
+
+public IDAT : Bytes
+let IDAT = chunkBytes b'I' b'D' b'A' b'T'
+
+public IEND : Bytes
+let IEND = chunkBytes b'I' b'E' b'N' b'D'
+
+public tRNS : Bytes
+let tRNS = chunkBytes b't' b'R' b'N' b'S'
+
+public gAMA : Bytes
+let gAMA = chunkBytes b'g' b'A' b'M' b'A'
+
+public cHRM : Bytes
+let cHRM = chunkBytes b'c' b'H' b'R' b'M'
+
+public iCCP : Bytes
+let iCCP = chunkBytes b'i' b'C' b'C' b'P'
+
+public sRGB : Bytes
+let sRGB = chunkBytes b's' b'R' b'G' b'B'
+
+public bKGD : Bytes
+let bKGD = chunkBytes b'b' b'K' b'G' b'D'
+
+public pHYs : Bytes
+let pHYs = chunkBytes b'p' b'H' b'Y' b's'
+
+public tEXt : Bytes
+let tEXt = chunkBytes b't' b'E' b'X' b't'
+
+public zTXt : Bytes
+let zTXt = chunkBytes b'z' b'T' b'X' b't'
+
+public iTXt : Bytes
+let iTXt = chunkBytes b'i' b'T' b'X' b't'
+
+public acTL : Bytes
+let acTL = chunkBytes b'a' b'c' b'T' b'L'
+
+public fcTL : Bytes
+let fcTL = chunkBytes b'f' b'c' b'T' b'L'
+
+public fdAT : Bytes
+let fdAT = chunkBytes b'f' b'd' b'A' b'T'
+
+public checkSignature : Bytes -> Result PngError bin.Cursor
+let checkSignature source =
+    if bytes.bytesStartsWith source pngSignature then Ok (bin.Cursor source 8)
+    else Err BadSignature
+
+public isAsciiUpper : Byte -> Bool
+let isAsciiUpper b = b >= b'A' && b <= b'Z'
+
+public isAsciiLower : Byte -> Bool
+let isAsciiLower b = b >= b'a' && b <= b'z'
+
+public isAsciiLetter : Byte -> Bool
+let isAsciiLetter b = isAsciiUpper b || isAsciiLower b
+
+public classifyType : Bytes -> Result PngError (class : ChunkClass, known : ChunkKnown)
+let classifyType t =
+    match (bytes.bytesGet t 0, bytes.bytesGet t 1, bytes.bytesGet t 2, bytes.bytesGet t 3)
+    case (Some a, Some b, Some c, Some d) ->
+        if not (isAsciiLetter a && isAsciiLetter b && isAsciiLetter c && isAsciiLetter d) then
+            Err (BadChunkType 0 t)
+        elif isAsciiLower c then
+            Err (ReservedChunkBitSet 0 t)
+        else
+            let class = if isAsciiUpper a then Critical else Ancillary
+            let known = knownType t
+            in Ok (class = class, known = known)
+    case _ -> Err (BadChunkType 0 t)
+
+public knownType : Bytes -> ChunkKnown
+let knownType t =
+    if t == IHDR then C_IHDR
+    elif t == PLTE then C_PLTE
+    elif t == IDAT then C_IDAT
+    elif t == IEND then C_IEND
+    elif t == tRNS then C_tRNS
+    elif t == gAMA then C_gAMA
+    elif t == cHRM then C_cHRM
+    elif t == iCCP then C_iCCP
+    elif t == sRGB then C_sRGB
+    elif t == bKGD then C_bKGD
+    elif t == pHYs then C_pHYs
+    elif t == tEXt then C_tEXt
+    elif t == zTXt then C_zTXt
+    elif t == iTXt then C_iTXt
+    elif t == acTL then C_acTL
+    elif t == fcTL then C_fcTL
+    elif t == fdAT then C_fdAT
+    else C_Unknown
+
+public crcInput : Bytes -> Bytes -> Bytes
+let crcInput chunkType data =
+    bytes.bytesAppend chunkType data
+
+public validateCrc : CrcPolicy -> Nat -> Bytes -> Bytes -> prim.U32 -> Result PngError Unit
+let validateCrc policy offset chunkType data stored =
+    match policy
+    case IgnoreCrc -> Ok Unit
+    case VerifyCrc ->
+        let actual = crc32.crc32 (crcInput chunkType data)
+        in
+            if prim.u32Eq actual stored then Ok Unit
+            else Err (CrcMismatch offset chunkType stored actual)
+
+public parseRawChunk : CrcPolicy -> bin.Cursor -> Result PngError (bin.Step RawChunk)
+let parseRawChunk policy cursor =
+    let chunkOffset = cursor.offset
+    in
+        match bin.readU32NatBE cursor
+        case Err e -> Err e
+        case Ok lengthStep ->
+            let length = lengthStep.value
+            in
+                if length > maxPngU31 then Err (BadChunkLength chunkOffset length)
+                else
+                    match bin.takeBytes lengthStep.cursor 4
+                    case Err e -> Err e
+                    case Ok typeStep ->
+                        match classifyType typeStep.value
+                        case Err e -> Err e
+                        case Ok classed ->
+                            match bin.takeBytes typeStep.cursor length
+                            case Err e -> Err e
+                            case Ok dataStep ->
+                                match bin.readU32BE dataStep.cursor
+                                case Err e -> Err e
+                                case Ok crcStep ->
+                                    match validateCrc policy chunkOffset typeStep.value dataStep.value crcStep.value
+                                    case Err e -> Err e
+                                    case Ok Unit ->
+                                        let raw = RawChunk
+                                            (offset = chunkOffset)
+                                            (length = length)
+                                            (chunkType = typeStep.value)
+                                            (data = dataStep.value)
+                                            (crc = crcStep.value)
+                                            (known = classed.known)
+                                            (class = classed.class)
+                                        in Ok (bin.Step raw crcStep.cursor)

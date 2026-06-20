@@ -99,11 +99,19 @@ Components:
   (`kappa.provider.collision`, §3.2.15), and
   `E_BACKEND_PROFILE_UNREALIZED` (`kappa-hs.backend.profile`, a target that
   selects a jvm/dotnet backend this implementation does not realize).
-  `E_NATIVE_BINDING_UNPINNED` (`kappa.package.reproducibility`, §3.2.15) is
-  **registered but not yet emitted** — reserved for the §36.28
-  unpinned-native-binding case (resolved host-source digests + lockfile
-  pinning of headers/shim sources are a later increment; see the bug queue
-  N-6 in `KAPPA_SELF_HOSTING_PORT_NOTES.md`).
+  `E_NATIVE_BINDING_UNPINNED` (`kappa.package.reproducibility`, §3.2.15) IS
+  emitted: a package-mode build pins each binding's host-source identity (a
+  `host-binding` lock entry over pkg-config version/.pc digest + resolved
+  cflags/libs, located header digests, verified decls, shim-source digests, the
+  symbol surface, target triple, classification, capabilities, and cstring
+  declarations); a later `--locked` build VERIFIES it and any drift (e.g. an
+  edited shim) is rejected fail-closed with `E_NATIVE_BINDING_UNPINNED` (covered
+  by the native suite "host-source identity is pinned … drift is fail-closed").
+  Newer native fail-closed codes: `E_NATIVE_BINDING_PATH_ESCAPE`
+  (`kappa-hs.build.native-path`, §36.11 root-escaping/symlink input path),
+  `E_NATIVE_BINDING_ABI_UNVERIFIED` (`kappa-hs.build.native-abi`, an explicit
+  symbolList pointer/string/handle symbol with no shim/verify ABI proof), and
+  `E_BACKEND_CAPABILITY_UNREALIZED` (`kappa-hs.backend.capability`).
 
 - **Tests** (`tests/build/`, runner `run-build-tests.sh`): valid
   manifests (full §36.3 shape, minimal, symbol-list native binding),

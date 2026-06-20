@@ -25,9 +25,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Kappa.Backend.Capabilities (ffiRequiredCapabilities, nativeRuntimeCapabilities)
-import Kappa.Backend.Driver (detectCC)
+import Kappa.Backend.Driver (detectCC, verifyDeclName)
 import Kappa.Backend.HeaderGen (generatePrefixSurfaceDecls, generateSurfaceDecls)
-import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
+import Kappa.Backend.NativeProbe (safeWithinRoot)
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), scalarOnly)
 import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
 import Kappa.Build.Types
@@ -46,7 +47,7 @@ import System.Directory
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 import System.Exit (ExitCode (..))
-import System.FilePath (joinPath, makeRelative, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
+import System.FilePath (isAbsolute, joinPath, makeRelative, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
 
 -- | A resolved, buildable executable target.
@@ -230,7 +231,15 @@ resolveExecutable manifestDir bc mTarget =
           selected = [hb | nm <- wanted, hb <- bcHostBindings bc, nbName hb == nm]
           gens = [hb | hb <- selected, isGenerated (nbSurface hb)]
           tgtTriple = backendTriple (tBackend tgt)
-      if null gens
+      -- §36.11: validate every package-relative native input path of every
+      -- selected binding (shim sources, prebuilt artifacts, include dirs,
+      -- module maps) stays within the package root — no `..`, absolute, or
+      -- symlink escape — before any toolchain step touches it.
+      epaths <- validateNativePaths manifestDir selected
+      case epaths of
+       Left ds -> pure (Left ds)
+       Right () ->
+        if null gens
         then k Map.empty
         -- §26.1.3: the header-derived generator's integer-width mapping assumes
         -- the LP64 data model (the realized target set). Rather than INFER a
@@ -293,6 +302,41 @@ resolveExecutable manifestDir bc mTarget =
             <> "rather than inferred for an unmodelled ABI (Spec §26.1.3)"
         )
 
+    -- §36.11: every package-relative native input path must stay within the
+    -- package root. Shim sources / prebuilt artifacts / include dirs / module
+    -- maps are compiled, linked, or digested as package files, so they get the
+    -- full check (no `..`/absolute/symlink/symlinked-dir escape). Header entries
+    -- are #include NAMES that may resolve to system headers, so only a lexical
+    -- escape (`..`/absolute) is rejected for them.
+    validateNativePaths :: FilePath -> [HostBinding] -> IO (Either Diagnostics ())
+    validateNativePaths baseDir hbs = goV (concatMap binp hbs)
+      where
+        binp hb = concatMap one (nbInputs hb)
+        one (ShimInput ss) = [(True, s) | s <- ss]
+        one (PrebuiltInput a _) = [(True, a)]
+        one (IncludeDirInput d) = [(True, d)]
+        one (ModuleMapInput fs) = [(True, f) | f <- fs]
+        one (HeadersInput hs) = [(False, h) | h <- hs]
+        one _ = []
+        goV [] = pure (Right ())
+        goV ((strict, rel) : rest)
+          | not strict =
+              if isAbsolute (T.unpack rel) || ".." `elem` splitDirectories (T.unpack rel)
+                then pure (Left [pathEscape rel])
+                else goV rest
+          | otherwise = do
+              r <- safeWithinRoot baseDir (T.unpack rel)
+              case r of
+                Left e -> pure (Left [pathEscapeMsg e])
+                Right _ -> goV rest
+
+    pathEscape :: Text -> Diagnostic
+    pathEscape rel =
+      pathEscapeMsg ("native binding path '" <> rel <> "' escapes the package root (Spec §36.11)")
+    pathEscapeMsg :: Text -> Diagnostic
+    pathEscapeMsg msg =
+      buildErr "E_NATIVE_BINDING_PATH_ESCAPE" "kappa-hs.build.native-path" msg
+
     genNeedsCc :: Text -> Diagnostic
     genNeedsCc nm =
       buildErr "E_BUILD_NATIVE_HEADER_GEN" "kappa-hs.build.native-header-gen"
@@ -329,8 +373,16 @@ resolveExecutable manifestDir bc mTarget =
             perBinding <- traverse (resolveBinding genMap) selected
             let allSyms = concat [ss | (_, ss) <- perBinding]
                 bindingMods = [(bn, dedup (map rnsModule ss)) | (bn, ss) <- perBinding]
-            -- collision: same effective module provided by ≥2 bindings
+            -- collision: same effective module provided by ≥2 bindings (a
+            -- structural manifest error — reported before the per-symbol ABI check).
             checkCollisions bindingMods
+            -- §26.1.5/§36.28: an explicit symbolList symbol with a pointer/
+            -- string/handle signature has no all-scalar conservative prototype
+            -- the probe can check; its ABI must be PROVEN — by a `verify` decl
+            -- (checked against the real header) or by being shim-provided
+            -- (force-include ABI check) — else it is an unverified escape hatch.
+            -- Header-generated surfaces are exempt (parsed from the real header).
+            mapM_ (uncurry checkSymbolListAbi) (zip selected (map snd perBinding))
             let linkSpecs = map nbLink selected
                 inputs = concatMap nbInputs selected
                 perBindingFull = [(nbName hb, ss, nbInputs hb, [linkText (nbLink hb), loadText (nbLoad hb)]) | (hb, (_, ss)) <- zip selected perBinding]
@@ -419,6 +471,36 @@ resolveExecutable manifestDir bc mTarget =
     isShimInput :: NativeInput -> Bool
     isShimInput ShimInput {} = True
     isShimInput _ = False
+
+    -- §26.1.5/§36.28: reject an explicit-symbolList symbol whose pointer/string/
+    -- handle ABI is neither shim-provided (force-include ABI-checked) nor proven
+    -- by a `verify` decl (checked against the real header). Generated surfaces
+    -- are exempt (their signatures are parsed from the header).
+    checkSymbolListAbi :: HostBinding -> [ResolvedNativeSymbol] -> Either Diagnostics ()
+    checkSymbolListAbi hb syms = case nbSurface hb of
+      SymbolListSurface _ ->
+        let verifyNames = [verifyDeclName d | VerifyInput ds <- nbInputs hb, d <- ds]
+            unproven =
+              [ s
+              | s <- syms
+              , not (scalarOnly s)
+              , not (rnsShimProvided s)
+              , rnsCSymbol s `notElem` verifyNames
+              ]
+         in case unproven of
+              [] -> Right ()
+              (s : _) -> Left [unverifiedAbi hb s]
+      _ -> Right ()
+
+    unverifiedAbi :: HostBinding -> ResolvedNativeSymbol -> Diagnostic
+    unverifiedAbi hb s =
+      buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
+        ( "native binding '" <> nbName hb <> "' symbolList declares '" <> rnsMember s
+            <> "' (C symbol '" <> rnsCSymbol s <> "') with a pointer/string/handle signature whose ABI is not "
+            <> "verified: it is not shim-provided and has no matching 'verify' declaration to check against the "
+            <> "real header. Add a 'verify' prototype for '" <> rnsCSymbol s <> "', provide it via a shim, or "
+            <> "generate the surface from a header (Spec §26.1.5/§36.28)"
+        )
 
     -- The binding's resolved symbol surface (§36.28). Either an explicit
     -- symbolList, or one MECHANICALLY GENERATED from a header (looked up in

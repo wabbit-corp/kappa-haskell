@@ -461,7 +461,10 @@ if pkg-config --exists sqlite3 2>/dev/null; then
   # (b) a verify decl that disagrees with the real sqlite3.h fails the build (fail-closed)
   BAD="$WORK/badabi"; rm -rf "$BAD"; mkdir -p "$BAD/src"
   printf 'module app\nimport host.native.sqlite3 as db\nlet main = do\n  h <- db.sqliteOpen "x"\n  db.sqliteClose h\n' > "$BAD/src/app.kp"
-  printf 'let buildConfig : BuildConfig = package { name="b", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="s", provides=[module "host.native.sqlite3"], surface=symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi=cAbi, inputs=[headers ["sqlite3.h"], pkgConfig "sqlite3" None, verify ["int sqlite3_open(double)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["s"] }] }' > "$BAD/kappa.build.kp"
+  # real C symbol names so 2d's ABI-proof requirement is satisfied by the verify
+  # decls; one verify decl is deliberately BOGUS (wrong sqlite3_open signature),
+  # which the verify probe must catch against the real sqlite3.h.
+  printf 'let buildConfig : BuildConfig = package { name="b", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="s", provides=[module "host.native.sqlite3"], surface=symbolList [symbolDecl "sqliteOpen" "sqlite3_open" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close" [ctHandle] ctUnit], abi=cAbi, inputs=[headers ["sqlite3.h"], pkgConfig "sqlite3" None, verify ["int sqlite3_open(double)", "int sqlite3_close(sqlite3 *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["s"] }] }' > "$BAD/kappa.build.kp"
   bout="$(timeout 120 $KAPPA build --update --manifest "$BAD" --emit-c -o "$WORK/badout" 2>&1)"; brc=$?
   if [ "$brc" -ne 0 ] && grep -q "E_BUILD_NATIVE_ABI" <<<"$bout"; then
     echo "   ok (a signature disagreeing with the real sqlite3.h -> E_BUILD_NATIVE_ABI, fail-closed)"
@@ -667,7 +670,7 @@ if pkg-config --exists libuv 2>/dev/null; then
   CAP="$WORK/gcap"; rm -rf "$CAP"; mkdir -p "$CAP/src/app"
   # the module header MUST match the §8.1 path-derived name (src/app/main.kp -> app.main)
   printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CAP/src/app/main.kp"
-  capbuild() { printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), classify %s], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$CAP/kappa.build.kp"; }
+  capbuild() { printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), cstrings ["uv_version_string"], classify %s], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$CAP/kappa.build.kp"; }
   okc=1
   capbuild "blocking"
   timeout 200 $KAPPA build --update --manifest "$CAP" -o "$WORK/capb" >"$CAP/b.log" 2>&1 || { echo "   FAIL: a 'blocking' binding was rejected though rt-blocking is advertised"; cat "$CAP/b.log" | sed 's/^/     /'; okc=0; }
@@ -709,6 +712,62 @@ if pkg-config --exists libuv 2>/dev/null; then
   { [ "$r3" -ne 0 ] && grep -q "E_BUILD_NATIVE_HEADER_GEN" <<<"$o3" && grep -q "function-pointer" <<<"$o3"; } || { echo "   FAIL: an inline function-pointer parameter was not fail-closed"; echo "$o3" | sed 's/^/     /'; okf=0; }
   [ "$okf" -eq 1 ] && echo "   ok (missing symbol, by-value enum, and inline function-pointer param all fail-closed -> E_BUILD_NATIVE_HEADER_GEN)"
   rm -rf "$FC"
+else
+  echo "   SKIP: pkg-config libuv not available"
+fi
+
+echo "== native input path escape is fail-closed (§36.11) =="
+HP="$WORK/ghp"; rm -rf "$HP"; mkdir -p "$HP/src/app"
+printf 'module app.main\nimport host.native.x as x\nlet main = printlnString "x"\n' > "$HP/src/app/main.kp"
+printf 'int demo_x(void);\n' > "$HP/ok.c"; printf 'int demo_x(void);\n' > "$WORK/outside_shim.c"
+hpbuild() { printf 'let buildConfig : BuildConfig = package { name="hp", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="x", provides=[module "host.native.x"], surface=symbolList [symbolDecl "demoX" "demo_x" [] ctInt], abi=cAbi, inputs=[shim [%s]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["x"] }] }' "$1" > "$HP/kappa.build.kp"; }
+okp=1
+hpbuild '"../outside_shim.c"'
+po="$(timeout 60 $KAPPA build --update --manifest "$HP" -o "$WORK/hpb" 2>&1)"
+grep -q "E_NATIVE_BINDING_PATH_ESCAPE" <<<"$po" || { echo "   FAIL: a '..' shim path was not rejected"; echo "$po" | sed 's/^/     /'; okp=0; }
+hpbuild '"/etc/passwd"'
+po2="$(timeout 60 $KAPPA build --update --manifest "$HP" -o "$WORK/hpb" 2>&1)"
+grep -q "E_NATIVE_BINDING_PATH_ESCAPE" <<<"$po2" || { echo "   FAIL: an absolute shim path was not rejected"; okp=0; }
+ln -sf "$WORK/outside_shim.c" "$HP/linked.c"; hpbuild '"linked.c"'
+po3="$(timeout 60 $KAPPA build --update --manifest "$HP" -o "$WORK/hpb" 2>&1)"
+grep -q "E_NATIVE_BINDING_PATH_ESCAPE" <<<"$po3" || { echo "   FAIL: a symlinked shim path was not rejected"; okp=0; }
+[ "$okp" -eq 1 ] && echo "   ok ('..', absolute, and symlink shim paths all rejected -> E_NATIVE_BINDING_PATH_ESCAPE)" || fails=$((fails+1))
+rm -rf "$HP"; rm -f "$WORK/outside_shim.c"
+
+echo "== explicit symbolList pointer/handle ABI must be verified (§26.1.5/§36.28) =="
+if pkg-config --exists libuv 2>/dev/null; then
+  AV="$WORK/gabi"; rm -rf "$AV"; mkdir -p "$AV/src/app"
+  printf 'module app.main\nimport host.native.uvx as u\nlet main = do\n  h <- u.uvLoopNew\n  printlnString "x"\n' > "$AV/src/app/main.kp"
+  # uv_loop_new returns a uv_loop_t* (handle); declared via symbolList with NO
+  # shim and NO verify -> its ABI is unproven -> must be rejected.
+  printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[headers ["uv.h"], pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
+  ao="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avb" 2>&1)"
+  oka=1
+  grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$ao" || { echo "   FAIL: an unverified symbolList handle symbol was not rejected"; echo "$ao" | sed 's/^/     /'; oka=0; }
+  # adding a matching verify decl proves the ABI against uv.h -> accepted
+  printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[headers ["uv.h"], pkgConfig "libuv" (Some "1.0"), verify ["uv_loop_t *uv_loop_new(void)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
+  ao2="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avb" 2>&1)"
+  grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$ao2" && { echo "   FAIL: a verify-covered handle symbol was wrongly rejected"; echo "$ao2" | sed 's/^/     /'; oka=0; }
+  [ "$oka" -eq 1 ] && echo "   ok (unverified pointer/handle symbolList rejected; a matching verify decl against uv.h proves + accepts it)" || fails=$((fails+1))
+  rm -rf "$AV"
+else
+  echo "   SKIP: pkg-config libuv not available"
+fi
+
+echo "== generated char* is conservative: Option RawPtr unless cstrings proves it (§26.1.4) =="
+if pkg-config --exists libuv 2>/dev/null; then
+  CS="$WORK/gcs"; rm -rf "$CS"; mkdir -p "$CS/src/app"
+  printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CS/src/app/main.kp"
+  # no cstrings: uv_version_string's char* is Option RawPtr, so printlnString on it type-errors
+  printf 'let buildConfig : BuildConfig = package { name="cs", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' > "$CS/kappa.build.kp"
+  cso="$(timeout 120 $KAPPA build --update --manifest "$CS" -o "$WORK/csb" 2>&1)"
+  oks=1
+  grep -q "Option RawPtr" <<<"$cso" || { echo "   FAIL: an undeclared char* did not surface as Option RawPtr"; echo "$cso" | sed 's/^/     /'; oks=0; }
+  # with cstrings: char* is String -> builds + runs
+  printf 'let buildConfig : BuildConfig = package { name="cs", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), cstrings ["uv_version_string"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' > "$CS/kappa.build.kp"
+  if timeout 120 $KAPPA build --update --manifest "$CS" -o "$WORK/csb" >/dev/null 2>&1 && [ -n "$("$WORK/csb" 2>/dev/null)" ]; then : ; else echo "   FAIL: a cstrings-declared char* did not build/run as String"; oks=0; fi
+  [ "$oks" -eq 1 ] && echo "   ok (undeclared char* -> Option RawPtr; cstrings-declared char* -> String, builds + runs)" || fails=$((fails+1))
+  rm -rf "$CS"
 else
   echo "   SKIP: pkg-config libuv not available"
 fi

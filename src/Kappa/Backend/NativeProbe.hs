@@ -24,6 +24,7 @@ module Kappa.Backend.NativeProbe
   , discoverAndVerifyNative
   , hostBindingLockEntries
   , crossTargetFlags
+  , safeWithinRoot
   ) where
 
 import qualified Data.ByteString as BS
@@ -37,7 +38,7 @@ import Kappa.Build.Types (FfiClass (..), NativeInput (..))
 import Kappa.Diagnostic
 import Kappa.Source (Pos (..), Span (..))
 import Control.Exception (catch, SomeException)
-import System.Directory (doesFileExist, findExecutable, pathIsSymbolicLink, removeFile)
+import System.Directory (canonicalizePath, doesFileExist, findExecutable, pathIsSymbolicLink, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, splitDirectories, splitSearchPath, takeFileName, (</>))
@@ -123,6 +124,9 @@ discoverAndVerifyNative cc@(ccExe, ccLead) triple baseDir workDir inputs extraEx
                           -- plus the native profile's advertised capability set.
                           ++ ["foreign-call-classification " <> classifyText inputs]
                           ++ ["backend-capabilities " <> T.intercalate "," nativeRuntimeCapabilities]
+                          -- §26.1.4: which symbols' char* are proven C strings
+                          -- (affects the generated surface), an identity input.
+                          ++ ["cstring-symbols " <> T.intercalate "," (concat [ss | CStringSymbolsInput ss <- inputs])]
                       composite = contentId [("native-identity", encodeLines allLines)]
                   pure (Right (NativeProvenance allLines composite))
   where
@@ -155,7 +159,10 @@ pkgProvLines pi_ =
   [ "pkg-config " <> piName pi_ <> " version=" <> piVersion pi_
       <> maybe "" (\d -> " pc-digest=" <> d) (piPcDigest pi_)
       <> maybe "" (\p -> " pc=" <> T.pack p) (piPcPath pi_)
-      -- §36.21:41848: the resolved linker flags are an identity input.
+      -- §36.28/§36.7: the RESOLVED pkg-config cflags (include dirs + defines
+      -- that drive header preprocessing, hence the generated surface) and libs
+      -- (the link inputs) are both host-source identity inputs.
+      <> " cflags=" <> T.pack (unwords (piCflags pi_))
       <> " libs=" <> T.pack (unwords (piLibs pi_))
   ]
 
@@ -278,8 +285,10 @@ verifyPrebuilt baseDir art mexp = do
             _ -> pure (Right ("prebuilt " <> art <> " digest=" <> dig
                                 <> maybe "" (const " (expected-verified)") mexp))
 
--- | Resolve a package-relative path within the root, rejecting @..@ escapes
--- and symlinks (§36.11). Returns the absolute path or a diagnostic message.
+-- | Resolve a package-relative path within the root, rejecting @..@ escapes,
+-- absolute paths, leaf symlinks, AND symlinked-directory traversal that would
+-- resolve outside the package root (§36.11). Returns the absolute path or a
+-- diagnostic message.
 safeWithinRoot :: FilePath -> FilePath -> IO (Either Text FilePath)
 safeWithinRoot baseDir rel
   | isAbsolute rel || ".." `elem` splitDirectories rel =
@@ -289,7 +298,16 @@ safeWithinRoot baseDir rel
       sym <- pathIsSymbolicLink p `catch` \(_ :: SomeException) -> pure False
       if sym
         then pure (Left ("native binding path '" <> T.pack rel <> "' is a symlink (unpinnable, Spec §36.11)"))
-        else pure (Right p)
+        else do
+          -- follow any intermediate symlinks and confirm the real path is still
+          -- under the package root (a symlinked subdirectory cannot escape it).
+          root <- canonicalizePath baseDir `catch` \(_ :: SomeException) -> pure baseDir
+          canon <- canonicalizePath p `catch` \(_ :: SomeException) -> pure p
+          if splitDirectories root `isPathPrefixOf` splitDirectories canon
+            then pure (Right p)
+            else pure (Left ("native binding path '" <> T.pack rel <> "' resolves outside the package root (symlink escape, Spec §36.11)"))
+  where
+    isPathPrefixOf pre full = pre == take (length pre) full
 
 -- ── signature verification ─────────────────────────────────────────────
 

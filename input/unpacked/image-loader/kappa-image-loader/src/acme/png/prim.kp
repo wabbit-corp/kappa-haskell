@@ -1,0 +1,31 @@
+@PrivateByDefault module acme.png.prim
+
+-- Tiny primitive facade needed by a portable binary parser.
+-- Kappa deliberately keeps Byte as a raw octet, not as a pretend character
+-- or accidental integer. So byte-to-Nat and fixed-width CRC arithmetic are
+-- explicit backend/compiler evidence. Tedious, but at least honest.
+
+public expect type U32
+
+public expect term byteToNat : Byte -> Nat
+public expect term byteAddBiased : Byte -> Nat -> Nat -> Byte
+public expect term natToU32 : Nat -> U32
+public expect term u32ToNat : U32 -> Nat
+
+public expect term u32Eq : (& left : U32) -> (& right : U32) -> Bool
+public expect term u32Xor : U32 -> U32 -> U32
+public expect term u32And : U32 -> U32 -> U32
+public expect term u32ShiftRight : U32 -> Nat -> U32
+public expect term u32Not : U32 -> U32
+
+public u32Zero : U32
+let u32Zero = natToU32 0
+
+public u32One : U32
+let u32One = natToU32 1
+
+public u32FFFFFFFF : U32
+let u32FFFFFFFF = natToU32 0xFFFFFFFF
+
+public u32EDB88320 : U32
+let u32EDB88320 = natToU32 0xEDB88320

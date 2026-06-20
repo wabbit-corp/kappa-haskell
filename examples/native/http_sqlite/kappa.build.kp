@@ -62,7 +62,11 @@ let buildConfig : BuildConfig = package { name = "kappa.demo.http_sqlite"
                 , symbolDecl "listenClose" "demo_listen_close" [ctHandle] ctUnit
                 ]
             , abi = cAbi
-            , inputs = []
+            -- §26.1.5/§36.28: these handle/string symbols are defined by the
+            -- package shim (native_shim.c), so list it here too — that makes
+            -- them shim-provided and ABI-checked by the force-included prototype
+            -- header (the shim TU compiles once: Driver dedups shared sources).
+            , inputs = [ shim ["native_shim.c"] ]
             , link = noLink
             , load = systemLoader
             }

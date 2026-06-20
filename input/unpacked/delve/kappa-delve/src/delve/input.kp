@@ -1,0 +1,45 @@
+module delve.input
+
+import delve.core.*
+
+keyToCommand : Key -> Command
+let keyToCommand key =
+    match key
+    case KeyChar "h" -> Move West
+    case KeyChar "j" -> Move South
+    case KeyChar "k" -> Move North
+    case KeyChar "l" -> Move East
+    case KeyChar "y" -> Move NorthWest
+    case KeyChar "u" -> Move NorthEast
+    case KeyChar "b" -> Move SouthWest
+    case KeyChar "n" -> Move SouthEast
+    case KeyChar "." -> Rest
+    case KeyChar "," -> PickUp
+    case KeyChar "g" -> PickUp
+    case KeyChar "d" -> DropFirst
+    case KeyChar "i" -> Inventory
+    case KeyChar "q" -> QuitNoSave
+    case KeyChar "S" -> SaveAndQuit
+    case KeyChar ">" -> Descend
+    case KeyChar "<" -> Ascend
+    case KeyChar "o" -> Open
+    case KeyChar "c" -> Close
+    case KeyChar "?" -> Help
+    case KeyChar "e" -> UseFirst
+    case KeyArrow dir -> Move dir
+    case KeyEscape -> NoCommand
+    case _ -> NoCommand
+
+helpLines : List String
+let helpLines =
+    [ "Delve keys"
+    , "h/j/k/l/y/u/b/n or arrows: move"
+    , ".: wait"
+    , "g or ,: pick up"
+    , "i: inventory"
+    , "e: use first item"
+    , "d: drop first item"
+    , ">/<: stairs"
+    , "?: help"
+    , "q: quit"
+    ]

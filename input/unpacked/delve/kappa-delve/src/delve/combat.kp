@@ -1,0 +1,38 @@
+module delve.combat
+
+import delve.core.*
+import delve.rng as rng
+
+attackRoll : Actor -> Actor -> rng.Rng -> (hit : Bool, damage : Int, rng : rng.Rng)
+let attackRoll attacker defender r0 =
+    let roll = rng.range 1 20 r0
+    let hit = roll.value + attacker.stats.dex >= 8 + defender.stats.dex
+    let base = max 1 (attacker.stats.str - defender.stats.def)
+    let spread = rng.range 0 3 roll.rng
+    in (hit = hit, damage = if hit then base + spread.value else 0, rng = spread.rng)
+
+awardXp : Actor -> Actor -> Actor
+let awardXp killer victim =
+    if killer.species != PlayerSpecies then killer
+    else
+        let gained = killer.stats.xp + max 1 victim.stats.xp
+        let nextLevel = killer.stats.level + 1
+        if gained >= nextLevel * nextLevel * 10 then
+            killer.{ stats = killer.stats.{ xp = gained, level = nextLevel, maxHp = killer.stats.maxHp + 5, hp = killer.stats.hp + 5, str = killer.stats.str + 1 } }
+        else killer.{ stats = killer.stats.{ xp = gained } }
+
+strike : Actor -> Actor -> rng.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rng.Rng)
+let strike attacker defender r0 =
+    let roll = attackRoll attacker defender r0
+    in
+        if not roll.hit then
+            (attacker = attacker, defender = defender, log = attacker.name ++ " misses " ++ defender.name ++ ".", rng = roll.rng)
+        else
+            let hp2 = defender.stats.hp - roll.damage
+            let alive = hp2 > 0
+            let defender2 = defender.{ stats = defender.stats.{ hp = max 0 hp2 }, alive = alive }
+            let attacker2 = if alive then attacker else awardXp attacker defender2
+            let text =
+                if alive then attacker.name ++ " hits " ++ defender.name ++ " for " ++ show roll.damage ++ "."
+                else attacker.name ++ " kills " ++ defender.name ++ "."
+            in (attacker = attacker2, defender = defender2, log = text, rng = roll.rng)

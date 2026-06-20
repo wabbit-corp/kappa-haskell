@@ -1,0 +1,36 @@
+@PrivateByDefault module acme.png.crc32
+
+import std.bytes as bytes
+import acme.png.prim as prim
+
+-- PNG CRC-32, bitwise form. This is not the fastest version, which is fine;
+-- the first person to benchmark a format parser before validating it probably
+-- also alphabetizes soup cans.
+
+public crc32 : Bytes -> prim.U32
+let crc32 payload =
+    prim.u32Not (foldBytes prim.u32FFFFFFFF payload 0)
+
+foldBytes : prim.U32 -> Bytes -> Nat -> prim.U32
+let foldBytes crc payload index decreases bytes.bytesLength payload - index =
+    if index >= bytes.bytesLength payload then crc
+    else
+        match bytes.bytesGet payload index
+        case None -> crc
+        case Some b -> foldBytes (crcByte crc b) payload (index + 1)
+
+crcByte : prim.U32 -> Byte -> prim.U32
+let crcByte crc b =
+    let withByte = prim.u32Xor crc (prim.natToU32 (prim.byteToNat b))
+    in crcBits withByte 8
+
+crcBits : prim.U32 -> Nat -> prim.U32
+let crcBits crc count decreases count =
+    if count == 0 then crc
+    else
+        let low = prim.u32And crc prim.u32One
+        let shifted = prim.u32ShiftRight crc 1
+        let next =
+            if prim.u32Eq low prim.u32One then prim.u32Xor shifted prim.u32EDB88320
+            else shifted
+        in crcBits next (count - 1)

@@ -56,7 +56,8 @@ generateSurfaceDecls cc triple baseDir workDir inputs header symbols = do
   pure $ e >>= \norm ->
     let decls = headerDecls norm
         ptds = pointerTypedefs norm
-     in traverse (parseOne ptds header decls) symbols
+        cstrSet = cstringSet inputs
+     in traverse (\s -> parseOne ptds (s `Set.member` cstrSet) header decls s) symbols
 
 -- | Generate a BROAD raw surface from a header (§26.1.2): every function
 -- declaration whose C name begins with @prefix@ is extracted and mapped. A
@@ -71,9 +72,11 @@ generatePrefixSurfaceDecls cc triple baseDir workDir inputs header prefix = do
   e <- preprocessHeader cc triple baseDir workDir inputs header
   pure $ flip fmap e $ \norm ->
     let ptds = pointerTypedefs norm
+        cstrSet = cstringSet inputs
         decls = [d | d@(n, _, _) <- headerDecls norm, T.unpack prefix `isPrefixOf` n]
         step (accOk, accSkip) (name, retRaw, paramRaw) =
-          case (mapType ptds True retRaw, parseParams ptds paramRaw) of
+          let charStr = T.pack name `Set.member` cstrSet
+           in case (mapType ptds charStr True retRaw, parseParams ptds charStr paramRaw) of
             (Right result, Right params) ->
               (SymbolDecl (T.pack name) (T.pack name) params result : accOk, accSkip)
             (Left r, _) -> (accOk, (T.pack name, r) : accSkip)
@@ -119,17 +122,22 @@ preprocessHeader cc@(ccExe, ccLead) triple baseDir workDir inputs header = do
 -- | Build the @SymbolDecl@ for one requested name out of the header's parsed
 -- declarations. Fail-closed if it is not declared or its types are not
 -- conservatively mappable. @ptds@ is the header's pointer-typedef set.
-parseOne :: Set String -> Text -> [(String, String, String)] -> Text -> Either Diagnostics SymbolDecl
-parseOne ptds header decls sym =
+parseOne :: Set String -> Bool -> Text -> [(String, String, String)] -> Text -> Either Diagnostics SymbolDecl
+parseOne ptds charStr header decls sym =
   case [(r, p) | (n, r, p) <- decls, n == T.unpack sym] of
     [] ->
       Left [genErr ("native binding header '" <> header <> "' does not declare a function '" <> sym <> "' (Spec §27.1.1)")]
     ((retRaw, paramRaw) : _) -> do
-      result <- first (typeErr header sym) (mapType ptds True retRaw)
-      params <- first (typeErr header sym) (parseParams ptds paramRaw)
+      result <- first (typeErr header sym) (mapType ptds charStr True retRaw)
+      params <- first (typeErr header sym) (parseParams ptds charStr paramRaw)
       Right (SymbolDecl sym sym params result)
   where
     first f = either (Left . pure . f) Right
+
+-- | The set of C symbols a binding declares as NUL-terminated-C-string-bearing
+-- (their @char *@ generate as @String@ rather than the conservative @Option RawPtr@).
+cstringSet :: [NativeInput] -> Set Text
+cstringSet inputs = Set.fromList [s | CStringSymbolsInput ss <- inputs, s <- ss]
 
 -- ── declaration location (one O(n) pass over ;-separated chunks) ────────
 
@@ -224,12 +232,12 @@ matchParen s0 = go (0 :: Int) (drop 1 s0) []
 
 -- | Map a parameter list's inner text to conservative parameter CTypes. An
 -- empty list or a lone @void@ means no parameters.
-parseParams :: Set String -> String -> Either Text [CType]
-parseParams ptds inner =
+parseParams :: Set String -> Bool -> String -> Either Text [CType]
+parseParams ptds charStr inner =
   case trimStr inner of
     "" -> Right []
     "void" -> Right []
-    s -> traverse (mapType ptds False) (splitTop s)
+    s -> traverse (mapType ptds charStr False) (splitTop s)
 
 -- | Split a parameter list on top-level commas (respecting nested parens, so a
 -- function-pointer parameter stays intact — it will then fail to map, which is
@@ -247,8 +255,8 @@ splitTop = go (0 :: Int) "" []
 -- | Map a single C type (a return type or a parameter declaration, possibly
 -- carrying a parameter name) to a conservative 'CType'. @isResult@ selects the
 -- @void@→Unit result framing.
-mapType :: Set String -> Bool -> String -> Either Text CType
-mapType ptds isResult raw =
+mapType :: Set String -> Bool -> Bool -> String -> Either Text CType
+mapType ptds charStr isResult raw =
   let s = trimStr raw
       -- an array parameter (`T x[]` / `T x[N]`) decays to a pointer `T *`.
       ptr = length (filter (== '*') s) + (if '[' `elem` s then 1 else 0)
@@ -262,9 +270,12 @@ mapType ptds isResult raw =
         then Left ("cannot map the C type '" <> T.pack s <> "' (a function-pointer/callback or parenthesized declarator has no conservative C-ABI correspondence)")
         else if ptr >= 1
           then
-            if "char" `elem` baseToks
-              then Right CtString -- a char pointer is the conservative C-string surface
-              else Right CtRawPtr -- §26.1.1: a pointer we cannot prove non-null ⇒ Option RawPtr
+            -- §26.1.4: a char* is a String ONLY when the binding PROVES NUL-
+            -- terminated string semantics (cstrings); otherwise it is just a
+            -- nullable pointer like any other (no proof of readability/encoding).
+            if "char" `elem` baseToks && charStr
+              then Right CtString
+              else Right CtRawPtr -- §26.1.4: a pointer we cannot prove ⇒ Option RawPtr
           else if any (`Set.member` ptds) baseToks
             -- a pointer typedef (e.g. `z_streamp` = `struct z_stream *`) is a
             -- pointer; surface it conservatively as Option RawPtr (§26.1.4).

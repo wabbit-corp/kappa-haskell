@@ -1,0 +1,49 @@
+@PrivateByDefault module acme.png.prim
+
+import host.dotnet.Kappa.Runtime.UInt32 as DU32
+import host.dotnet.Kappa.Runtime.Bytes as DBytes
+
+-- Schematic CLR fragment. The parser itself is pure Kappa; only byte/numeric
+-- representation helpers are backend-specific. Humanity survived worse.
+
+public data U32 : Type =
+    U32 (bits : DU32.UInt32)
+
+public byteToNat : Byte -> Nat
+let byteToNat b = DBytes.byteToNat b
+
+public byteAddBiased : Byte -> Nat -> Nat -> Byte
+let byteAddBiased b encoded bias = DBytes.byteAddBiased b encoded bias
+
+public natToU32 : Nat -> U32
+let natToU32 n = U32 (DU32.fromNat n)
+
+public u32ToNat : U32 -> Nat
+let u32ToNat x =
+    match x
+    case U32 bits -> DU32.toNat bits
+
+public u32Eq : (& left : U32) -> (& right : U32) -> Bool
+let u32Eq left right =
+    match (left, right)
+    case (U32 a, U32 b) -> DU32.eq a b
+
+public u32Xor : U32 -> U32 -> U32
+let u32Xor left right =
+    match (left, right)
+    case (U32 a, U32 b) -> U32 (DU32.xor a b)
+
+public u32And : U32 -> U32 -> U32
+let u32And left right =
+    match (left, right)
+    case (U32 a, U32 b) -> U32 (DU32.and a b)
+
+public u32ShiftRight : U32 -> Nat -> U32
+let u32ShiftRight value bits =
+    match value
+    case U32 x -> U32 (DU32.shiftRightUnsigned x bits)
+
+public u32Not : U32 -> U32
+let u32Not value =
+    match value
+    case U32 x -> U32 (DU32.not x)

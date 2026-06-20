@@ -1,0 +1,49 @@
+@PrivateByDefault module acme.png.prim
+
+import host.jvm.kappa.runtime.UInt32 as JU32
+import host.jvm.kappa.runtime.Bytes as JBytes
+
+-- Schematic JVM fragment. A real Kappa compiler would usually provide this
+-- as a standard refined overlay over primitive int/byte operations.
+
+public data U32 : Type =
+    U32 (bits : JU32.UInt32)
+
+public byteToNat : Byte -> Nat
+let byteToNat b = JBytes.byteToNat b
+
+public byteAddBiased : Byte -> Nat -> Nat -> Byte
+let byteAddBiased b encoded bias = JBytes.byteAddBiased b encoded bias
+
+public natToU32 : Nat -> U32
+let natToU32 n = U32 (JU32.fromNat n)
+
+public u32ToNat : U32 -> Nat
+let u32ToNat x =
+    match x
+    case U32 bits -> JU32.toNat bits
+
+public u32Eq : (& left : U32) -> (& right : U32) -> Bool
+let u32Eq left right =
+    match (left, right)
+    case (U32 a, U32 b) -> JU32.eq a b
+
+public u32Xor : U32 -> U32 -> U32
+let u32Xor left right =
+    match (left, right)
+    case (U32 a, U32 b) -> U32 (JU32.xor a b)
+
+public u32And : U32 -> U32 -> U32
+let u32And left right =
+    match (left, right)
+    case (U32 a, U32 b) -> U32 (JU32.and a b)
+
+public u32ShiftRight : U32 -> Nat -> U32
+let u32ShiftRight value bits =
+    match value
+    case U32 x -> U32 (JU32.shiftRightUnsigned x bits)
+
+public u32Not : U32 -> U32
+let u32Not value =
+    match value
+    case U32 x -> U32 (JU32.not x)

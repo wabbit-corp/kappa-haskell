@@ -1,0 +1,91 @@
+@PrivateByDefault module acme.png.ihdr
+
+import std.bytes as bytes
+import acme.png.binary as bin
+import acme.png.core.*
+import acme.png.prim as prim
+
+public parseIhdr : RawChunk -> Result PngError Ihdr
+let parseIhdr raw =
+    if not (raw.length == 13) then Err (BadIhdrLength raw.length)
+    else
+        let c = bin.cursorStart raw.data
+        in
+            match bin.readU32NatBE c
+            case Err e -> Err e
+            case Ok widthStep ->
+                match bin.readU32NatBE widthStep.cursor
+                case Err e -> Err e
+                case Ok heightStep ->
+                    match (bytes.bytesGet raw.data 8, bytes.bytesGet raw.data 9, bytes.bytesGet raw.data 10, bytes.bytesGet raw.data 11, bytes.bytesGet raw.data 12)
+                    case (Some bitDepthByte, Some colorTypeByte, Some compressionByte, Some filterByte, Some interlaceByte) ->
+                        let width = widthStep.value
+                        let height = heightStep.value
+                        let bitDepth = prim.byteToNat bitDepthByte
+                        let colorTypeCode = prim.byteToNat colorTypeByte
+                        let compression = prim.byteToNat compressionByte
+                        let filter = prim.byteToNat filterByte
+                        let interlace = prim.byteToNat interlaceByte
+                        in
+                            if width == 0 || height == 0 || width > maxPngU31 || height > maxPngU31 then
+                                Err (BadDimensions width height)
+                            else
+                                match colorTypeFromNat colorTypeCode
+                                case None -> Err (BadBitDepthColorType bitDepth colorTypeCode)
+                                case Some colorType ->
+                                    if not (legalBitDepth bitDepth colorType) then
+                                        Err (BadBitDepthColorType bitDepth colorTypeCode)
+                                    elif not (compression == 0) then
+                                        Err (BadCompressionMethod compression)
+                                    elif not (filter == 0) then
+                                        Err (BadFilterMethod filter)
+                                    else
+                                        match interlaceFromNat interlace
+                                        case None -> Err (BadInterlaceMethod interlace)
+                                        case Some im ->
+                                            Ok (Ihdr
+                                                (width = width)
+                                                (height = height)
+                                                (bitDepth = bitDepth)
+                                                (colorType = colorType)
+                                                (compressionMethod = compression)
+                                                (filterMethod = filter)
+                                                (interlaceMethod = im))
+                    case _ -> Err (BadIhdrLength raw.length)
+
+public divisibleBy3 : Nat -> Bool
+let divisibleBy3 n decreases n =
+    if n == 0 then True
+    elif n == 1 then False
+    elif n == 2 then False
+    else divisibleBy3 (n - 3)
+
+public parsePalette : RawChunk -> Result PngError Palette
+let parsePalette raw =
+    if raw.length == 0 || raw.length > 768 || not (divisibleBy3 raw.length) then
+        Err (BadPlteLength raw.length)
+    else
+        parsePaletteEntries raw.data 0 Nil
+
+parsePaletteEntries : Bytes -> Nat -> List RGB -> Result PngError Palette
+let parsePaletteEntries data offset acc decreases bytes.bytesLength data - offset =
+    if offset >= bytes.bytesLength data then
+        Ok (Palette (reverse acc))
+    else
+        match (bytes.bytesGet data offset, bytes.bytesGet data (offset + 1), bytes.bytesGet data (offset + 2))
+        case (Some r, Some g, Some b) ->
+            parsePaletteEntries data (offset + 3) (RGB r g b :: acc)
+        case _ -> Err (BadPlteLength (bytes.bytesLength data))
+
+public paletteAllowedFor : ColorType -> Bool
+let paletteAllowedFor ct =
+    match ct
+    case Greyscale -> False
+    case GreyscaleAlpha -> False
+    case _ -> True
+
+public paletteRequiredFor : ColorType -> Bool
+let paletteRequiredFor ct =
+    match ct
+    case IndexedColor -> True
+    case _ -> False

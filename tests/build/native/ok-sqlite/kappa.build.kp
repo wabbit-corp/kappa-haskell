@@ -7,6 +7,6 @@ let buildConfig : BuildConfig = package { name = "ok-sqlite"
     , sourceRoots = [sourceRoot "src"]
     , fragmentAxes = []
     , dependencies = []
-    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], surface = symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi = cAbi, inputs = [], link = noLink, load = systemLoader }]
+    , hostBindings = [nativeBinding { name = "sqlite3", provides = [module "host.native.sqlite3"], surface = symbolList [symbolDecl "sqliteOpen" "sqlite3_open_x" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close_x" [ctHandle] ctUnit], abi = cAbi, inputs = [shim ["shim.c"]], link = noLink, load = systemLoader }]
     , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["sqlite3"] }]
     }

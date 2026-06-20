@@ -10,6 +10,7 @@ module Kappa.Backend.Driver
   , defaultBuildOptions
   , buildNative
   , detectCC
+  , verifyDeclName
   ) where
 
 import Data.List (nub)
@@ -251,7 +252,11 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
 resolveInputs :: FilePath -> [NativeInput] -> IO ([String], [String], [String], Maybe T.Text)
 resolveInputs baseDir = go [] [] []
   where
-    go cf sr lb [] = pure (reverse cf, reverse sr, reverse lb, Nothing)
+    -- dedup compiled sources: a shim TU shared by several bindings (each
+    -- listing it so its symbols are shim-provided / ABI-checked) must be
+    -- compiled only ONCE, else its symbols multiply-define at link. (cflags are
+    -- left as-is: nub would break `-I dir` two-token pairs.)
+    go cf sr lb [] = pure (reverse cf, nub (reverse sr), reverse lb, Nothing)
     go cf sr lb (i : is) = case i of
       IncludeDirInput d -> go (rev2 ["-I", baseDir </> T.unpack d] cf) sr lb is
       HeadersInput hs ->
@@ -264,6 +269,7 @@ resolveInputs baseDir = go [] [] []
       ModuleMapInput _ -> go cf sr lb is -- digested for identity; no toolchain effect
       VerifyInput _ -> go cf sr lb is -- verified by discoverAndVerifyNative; no link effect
       ClassifyInput _ -> go cf sr lb is -- §26.1.4 classification metadata; no toolchain effect
+      CStringSymbolsInput _ -> go cf sr lb is -- §26.1.4 string-semantics metadata; no toolchain effect
       PkgConfigInput pkg _ -> do
         r <- pkgConfigFlags (T.unpack pkg)
         case r of

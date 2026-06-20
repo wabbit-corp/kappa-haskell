@@ -1,0 +1,47 @@
+module delve.fov
+
+import delve.core.*
+import delve.grid as grid
+
+radius : Int
+let radius = 9
+
+sign : Int -> Int
+let sign n = if n < 0 then -1 elif n > 0 then 1 else 0
+
+lineStep : Vec2 -> Vec2 -> Vec2
+let lineStep a b =
+    Vec2 (sign (b.x - a.x)) (sign (b.y - a.y))
+
+clearLine : Level -> Vec2 -> Vec2 -> Bool
+let clearLine level from to =
+    block
+        go : Vec2 -> Bool
+        let go p decreases max (abs (to.x - p.x)) (abs (to.y - p.y)) =
+            if eqPos p to then True
+            else
+                let n = addPos p (lineStep p to)
+                if eqPos n to then True
+                else if isTransparent (grid.getTile level n) then go n
+                else False
+        go from
+
+visibleFrom : Level -> Vec2 -> Vec2 -> Bool
+let visibleFrom level origin p =
+    grid.inBounds level.size p && chebyshev origin p <= radius && clearLine level origin p
+
+refreshVisibility : Vec2 -> Level -> Level
+let refreshVisibility origin level =
+    block
+        mark : Vec2 -> Level -> Level
+        let mark p lv =
+            let v = visibleFrom level origin p
+            in grid.mapTile p (\t -> t.{ lit = v, seen = t.seen || v }) lv
+
+        go : List Vec2 -> Level -> Level
+        let go ps lv decreases listLength ps =
+            match ps
+            case Nil -> lv
+            case (::) p rest -> go rest (mark p lv)
+
+        go (grid.positions level.size) level

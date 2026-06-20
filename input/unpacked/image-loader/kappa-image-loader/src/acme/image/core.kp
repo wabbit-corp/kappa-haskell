@@ -1,0 +1,61 @@
+@PrivateByDefault module acme.image.core
+
+import std.bytes as bytes
+import acme.png.core as png
+import acme.qoi.core as qoi
+
+public data ImageFormat : Type =
+    FormatPng
+    FormatQoi
+
+public data PixelFormat : Type =
+    RGB8
+    RGBA8
+    PngCompressed
+
+public data RasterImage : Type =
+    RasterImage
+        (width : Nat)
+        (height : Nat)
+        (format : PixelFormat)
+        (pixels : Bytes)
+
+public data ImageDocument : Type =
+    DecodedRaster (format : ImageFormat) (image : RasterImage)
+    PngContainer (image : png.PngImage)
+
+public data ImageLoadError : Type =
+    UnsupportedMagic
+    RasterDecodeUnavailable (format : ImageFormat)
+    PngLoadError (error : png.PngError)
+    QoiLoadError (error : qoi.QoiError)
+
+public formatName : ImageFormat -> String
+let formatName format =
+    match format
+    case FormatPng -> "PNG"
+    case FormatQoi -> "QOI"
+
+public rasterBytesPerPixel : PixelFormat -> Option Nat
+let rasterBytesPerPixel format =
+    match format
+    case RGB8 -> Some 3
+    case RGBA8 -> Some 4
+    case PngCompressed -> None
+
+public rasterByteLengthExpected : RasterImage -> Option Nat
+let rasterByteLengthExpected image =
+    match rasterBytesPerPixel image.format
+    case None -> None
+    case Some bpp -> Some (image.width * image.height * bpp)
+
+public qoiAsRaster : qoi.QoiImage -> RasterImage
+let qoiAsRaster img =
+    RasterImage
+        (width = img.desc.width)
+        (height = img.desc.height)
+        (format =
+            match img.desc.channels
+            case qoi.ChannelsRgb -> RGB8
+            case qoi.ChannelsRgba -> RGBA8)
+        (pixels = img.pixels)

@@ -40,6 +40,10 @@ let buildConfig : BuildConfig = package
                 [ headers ["uv.h"]
                 , define "_GNU_SOURCE" "1"
                 , pkgConfig "libuv" (Some "1.0")
+                -- §26.1.4: uv_version_string returns a NUL-terminated C string
+                -- (libuv contract); declare it so its char* generates as String.
+                -- Other uv_* char* stay conservatively Option RawPtr.
+                , cstrings ["uv_version_string"]
                 ]
             , link = noLink
             , load = systemLoader
@@ -61,6 +65,10 @@ let buildConfig : BuildConfig = package
                 -- foreign-call classification (the raw libuv.Raw value
                 -- functions stay nonblocking by default).
                 , classify blocking
+                -- §26.1.4: the adapter guarantees these char* are NUL-terminated
+                -- C strings (the request chunk, the host name, the response
+                -- bytes); declare so they generate as String, not Option RawPtr.
+                , cstrings ["http_uv_listen", "http_uv_read", "http_uv_write"]
                 ]
             , link = noLink
             , load = systemLoader

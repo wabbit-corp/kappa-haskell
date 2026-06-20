@@ -1,0 +1,9 @@
+trusted-summary: dotnet-kappa-runtime-u32
+surface: host.dotnet.Kappa.Runtime.UInt32, host.dotnet.Kappa.Runtime.Bytes
+operations:
+  byteToNat: exact Byte -> Nat conversion
+  byteAddBiased: wrapping Byte + (encoded - bias) modulo 256
+  UInt32.fromNat/toNat/eq/xor/and/shiftRightUnsigned/not
+used-by:
+  PNG CRC-32
+  QOI wrapping color deltas

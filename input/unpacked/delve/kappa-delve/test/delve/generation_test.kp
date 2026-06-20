@@ -1,0 +1,18 @@
+module delve.generation_test
+
+import delve.core.*
+import delve.gen as gen
+import delve.grid as grid
+
+seededDungeonHasPlayer : Bool
+let seededDungeonHasPlayer =
+    let g = gen.newLevel 1 (Size 80 24) 12345
+    in
+        match playerActor g
+        case Some p -> grid.inBounds g.level.size p.pos
+        case None -> False
+
+seededDungeonHasRooms : Bool
+let seededDungeonHasRooms =
+    let g = gen.newLevel 1 (Size 80 24) 12345
+    in listLength g.level.rooms > 0

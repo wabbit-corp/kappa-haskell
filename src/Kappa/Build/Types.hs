@@ -154,6 +154,13 @@ data NativeInput
   | ShimInput ![Text] -- ^ user-authored C shim translation units to compile+link
   | ModuleMapInput ![Text] -- ^ native module-map files (digested; surface still from symbolList)
   | PrebuiltInput !Text !(Maybe Text) -- ^ prebuilt artifact path, optional expected identity
+  | CStringSymbolsInput ![Text]
+  -- ^ §26.1.4: the C symbols whose @char *@ parameters/results the binding
+  -- PROVES are NUL-terminated C strings (the "binding description proves string
+  -- semantics" path). Header-derived generation maps a @char *@ to @CtString@
+  -- ONLY for a symbol in this set; otherwise a @char *@ is conservatively an
+  -- @Option RawPtr@ like any other pointer (a raw @char *@ is not provably a
+  -- readable NUL-terminated string of a known encoding). Recorded in identity.
   | ClassifyInput !FfiClass
   -- ^ §26.1.4/§27.6: the foreign-call classification carried by the binding's
   -- raw declarations. Default (when absent) is @nonblocking@ — the conservative

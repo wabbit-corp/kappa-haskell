@@ -1,0 +1,25 @@
+@PrivateByDefault module acme.image.loader_test
+
+import std.bytes as bytes
+import acme.image.core.*
+import acme.image.loader as loader
+import acme.qoi.example as qoiExample
+import acme.png.example as pngExample
+
+public testSniffQoi : Bool
+let testSniffQoi =
+    loader.sniff qoiExample.onePixelRedRgbaQoi == Some FormatQoi
+
+public testSniffPng : Bool
+let testSniffPng =
+    loader.sniff pngExample.onePixelRedPng == Some FormatPng
+
+public testLoadQoiRaster : Result ImageLoadError Bool
+let testLoadQoiRaster =
+    match loader.loadRaster qoiExample.onePixelRedRgbaQoi
+    case Err e -> Err e
+    case Ok raster ->
+        Ok (raster.width == 1 &&
+            raster.height == 1 &&
+            raster.format == RGBA8 &&
+            raster.pixels == bytes.bytesFromList [b'\xFF', b'\x00', b'\x00', b'\xFF'])
