@@ -19,6 +19,7 @@ module Kappa.Build.Types
   , ModuleSelector (..)
   , BackendProfile (..)
   , CType (..)
+  , FfiClass (..)
   , SymbolDecl (..)
   , NativeSurface (..)
   , NativeInput (..)
@@ -93,6 +94,16 @@ data CType
   | CtF32 | CtF64
   deriving stock (Eq, Show)
 
+-- | §26.1.4/§27.6: the foreign-call classification metadata every raw foreign
+-- declaration MUST carry. It determines invocation routing — @nonblocking@ uses
+-- ordinary runtime execution; @blocking@/@blocking-cancellable@ require backend
+-- capability @rt-blocking@ and route through the blocking-work bridge.
+data FfiClass
+  = FfiNonblocking
+  | FfiBlocking
+  | FfiBlockingCancellable
+  deriving stock (Eq, Show)
+
 -- | §36.28: one exported native symbol — the Kappa member spelling, the C
 -- symbol it calls, and its ABI signature (parameter types + result type).
 data SymbolDecl = SymbolDecl
@@ -143,6 +154,12 @@ data NativeInput
   | ShimInput ![Text] -- ^ user-authored C shim translation units to compile+link
   | ModuleMapInput ![Text] -- ^ native module-map files (digested; surface still from symbolList)
   | PrebuiltInput !Text !(Maybe Text) -- ^ prebuilt artifact path, optional expected identity
+  | ClassifyInput !FfiClass
+  -- ^ §26.1.4/§27.6: the foreign-call classification carried by the binding's
+  -- raw declarations. Default (when absent) is @nonblocking@ — the conservative
+  -- choice for a direct native call that returns to the caller. A binding whose
+  -- calls genuinely wait on I/O declares @blocking@. Recorded in the binding's
+  -- native provenance + host-source identity (it affects runtime semantics).
   | VerifyInput ![Text]
   -- ^ §26.1.5/§27.1.1: real C declarations (verbatim prototypes / type
   -- aliases) that the binding's @symbolList@ / shim depends on. Build-plan

@@ -31,7 +31,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Kappa.Build.Lock (LockEntry (..), contentId)
-import Kappa.Build.Types (NativeInput (..))
+import Kappa.Build.Types (FfiClass (..), NativeInput (..))
 import Kappa.Diagnostic
 import Kappa.Source (Pos (..), Span (..))
 import Control.Exception (catch, SomeException)
@@ -104,10 +104,24 @@ discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs extraExterns = do
                           ++ mmLines
                           ++ pbLines
                           ++ ["define " <> n <> "=" <> v | (n, v) <- defines]
+                          -- §26.1.4/§27.6: the foreign-call classification the
+                          -- binding's raw declarations carry (default nonblocking).
+                          ++ ["foreign-call-classification " <> classifyText inputs]
                       composite = contentId [("native-identity", encodeLines allLines)]
                   pure (Right (NativeProvenance allLines composite))
   where
     encodeLines ls = BS.intercalate (BS.singleton 10) (map encodeUtf8 ls)
+
+-- | §26.1.4/§27.6: the foreign-call classification a binding declares (the last
+-- 'ClassifyInput' wins; default @nonblocking@ for a direct native call).
+classifyText :: [NativeInput] -> Text
+classifyText inputs = case [c | ClassifyInput c <- inputs] of
+  [] -> "nonblocking"
+  cs -> render (last cs)
+  where
+    render FfiNonblocking = "nonblocking"
+    render FfiBlocking = "blocking"
+    render FfiBlockingCancellable = "blocking-cancellable"
 
 -- ── pkg-config ─────────────────────────────────────────────────────────
 

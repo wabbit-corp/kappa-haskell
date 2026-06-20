@@ -240,6 +240,64 @@ the executable target; `--check` stops at the evaluated configuration
 (`examples/native/http_sqlite/`) builds end-to-end via its
 `kappa.build.kp` (sqlite3 + POSIX sockets).
 
+### Generated raw surfaces + foreign-call classification (§26.1.2, §26.1.4, §27.1.1)
+
+A binding's surface need not be hand-authored. Two header-derived forms
+(`Kappa.Backend.HeaderGen`, resolved in `Kappa.Build.Plan.genThen`) generate
+the `host.native.*.Raw` surface mechanically — there is no hand-written
+`symbolDecl` on these paths:
+
+- `surface = generateFromHeader "h" ["f", "g", …]` — preprocess `h` (`cc -E -P`
+  with the binding's pkg-config cflags, `-D` defines, resolved `-I` path), parse
+  the named functions, and map each conservatively. Use for a small curated
+  surface (e.g. a shim's public API).
+- `surface = generateAllFromHeader "h" "prefix"` — the **general** path: parse
+  EVERY function in `h` whose C name begins with `prefix`. For the libuv example
+  this derives the broad `host.native.libuv.Raw` (≈210 `uv_*` functions from
+  `<uv.h>`), not a curated handful.
+
+Conservative mapping (§26.1.4): a non-`char` pointer ⇒ `Option RawPtr`; a `char`
+pointer ⇒ the C-string convention; integer/float scalars ⇒ their exact-width
+`std.ffi` nominal; an array parameter decays to a pointer; `void` result ⇒
+`Unit`. A declaration the conservative C-ABI cannot represent soundly — a
+callback/function-pointer, a by-value struct/union/enum, a variadic, or
+`long long`/`long double` — is **rejected, never guessed** (§26.1.2): the
+explicit-list form fails closed (`E_BUILD_NATIVE_HEADER_GEN`); the broad form
+skips it and reports the skipped count on stderr (no silent omission). The
+generated symbol set is pinned in `kappa.lock`, so a header change repins and
+regenerates (§27.1.1 host-source identity).
+
+Shims are the spec-sanctioned escape hatch for exactly the rejected cases
+(§26.1.2: callbacks/structs/variadics "MUST be rejected or require an explicit
+shim … rather than guessed"; §27.1.1: "MAY require a user-provided shim …
+rather than guessing"). libuv's event loop is callback-driven, so the broad raw
+surface cannot expose `uv_listen`/`uv_read_start`/`uv_run`/`uv_close` (they take
+callbacks); `examples/native/http_uv/native_uv_shim.c` is the minimal blocking
+adapter over exactly those, and its surface is itself generated from
+`native_uv_shim.h` — no hand-authored `symbolDecl`.
+
+**Foreign-call classification (§26.1.4 MUST).** Every binding carries a
+foreign-call classification — `classify nonblocking` (the default for a direct
+native call), `classify blocking`, or `classify blockingCancellable`. It is
+recorded in the binding's native provenance (`*.native.prov`,
+`foreign-call-classification …`) and folded into the host-source identity
+(`kappa.lock`), so it participates in reproducibility (§26.1.3). The libuv
+adapter declares `blocking` (its `accept`/`read` wait on socket I/O); the raw
+`libuv.Raw` value functions are `nonblocking`.
+
+**Routing — honest scope (§26.1.4 / §27.6).** The classification metadata is
+carried (the §26.1.4 MUST). The §26.1.4 *routing* rule — a `blocking` call
+"is executed through the backend's blocking-work bridge … unless … already
+routed through an equivalent blocking lane" and "MUST NOT … starve unrelated
+runnable fibers" — is realized by **direct execution** on the native runtime.
+For a program with no concurrently runnable fibers (the sequential HTTP server),
+this starves nothing, so direct execution *is* an equivalent blocking lane and
+the rule is satisfied vacuously. A rigorous blocking-work bridge that preserves
+this guarantee for a program that *both* forks fibers *and* makes a blocking
+foreign call is **not** implemented; that combination is a tracked gap (see
+`KAPPA_SELF_HOSTING_PORT_NOTES.md`, H-7), not a claim of full concurrent
+blocking-lane support.
+
 ### Lockfile + reproducibility (§36.4, §36.23.2, §3.2.15)
 
 `Kappa.Build.Lock` records the resolved **path-dependency closure** in

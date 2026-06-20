@@ -257,6 +257,7 @@ resolveInputs baseDir = go [] [] []
       PrebuiltInput art _ -> go cf ((baseDir </> T.unpack art) : sr) lb is
       ModuleMapInput _ -> go cf sr lb is -- digested for identity; no toolchain effect
       VerifyInput _ -> go cf sr lb is -- verified by discoverAndVerifyNative; no link effect
+      ClassifyInput _ -> go cf sr lb is -- §26.1.4 classification metadata; no toolchain effect
       PkgConfigInput pkg _ -> do
         r <- pkgConfigFlags (T.unpack pkg)
         case r of

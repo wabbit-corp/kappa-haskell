@@ -239,7 +239,17 @@ decInput ctx v = do
       eidTxt <- traverse (asStr ctx) eid'
       Right (PrebuiltInput art' eidTxt)
     ("VerifyInput", (ds : _)) -> VerifyInput <$> asStrList ctx ds
-    _ -> decFail "expected a native binding input ('headers'/'includeDir'/'define'/'pkgConfig'/'shim'/'moduleMap'/'prebuiltNative'/'verify') (Spec §36.28)"
+    ("ClassifyInput", (cv : _)) -> ClassifyInput <$> decFfiClass ctx cv
+    _ -> decFail "expected a native binding input ('headers'/'includeDir'/'define'/'pkgConfig'/'shim'/'moduleMap'/'prebuiltNative'/'verify'/'classify') (Spec §36.28)"
+
+decFfiClass :: EvalCtx -> Value -> Dec FfiClass
+decFfiClass ctx v = do
+  (c, _) <- asCtor ctx v
+  case c of
+    "FfiNonblocking" -> Right FfiNonblocking
+    "FfiBlocking" -> Right FfiBlocking
+    "FfiBlockingCancellable" -> Right FfiBlockingCancellable
+    _ -> decFail "expected a foreign-call class ('nonblocking'/'blocking'/'blockingCancellable') (Spec §26.1.4)"
 
 decAbi :: EvalCtx -> Value -> Dec NativeAbi
 decAbi ctx v = do

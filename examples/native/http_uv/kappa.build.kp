@@ -57,6 +57,10 @@ let buildConfig : BuildConfig = package
                 , define "_GNU_SOURCE" "1"
                 , pkgConfig "libuv" (Some "1.0")
                 , shim ["native_uv_shim.c"]
+                -- §26.1.4: accept/readChunk wait on socket I/O — a blocking
+                -- foreign-call classification (the raw libuv.Raw value
+                -- functions stay nonblocking by default).
+                , classify blocking
                 ]
             , link = noLink
             , load = systemLoader

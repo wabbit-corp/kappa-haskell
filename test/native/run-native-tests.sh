@@ -623,6 +623,10 @@ if pkg-config --exists libuv 2>/dev/null; then
     skipN="$(grep -oE "skipped [0-9]+ requiring" "$GE/b.log" | head -1 | grep -oE "[0-9]+")"
     { [ -n "$genN" ] && [ "$genN" -ge 50 ]; } || { echo "   FAIL: broad libuv surface too small (generated '${genN:-0}', expected >=50)"; okg=0; }
     { [ -n "$skipN" ] && [ "$skipN" -ge 1 ]; } || { echo "   FAIL: no callback/struct functions were skipped (expected fail-closed skips)"; okg=0; }
+    # §26.1.4: every raw foreign declaration MUST carry a foreign-call
+    # classification; the blocking-I/O adapter binding declares `blocking`,
+    # recorded in native provenance + pinned in the host-source identity.
+    grep -rq "foreign-call-classification blocking" "$GE"/src/ 2>/dev/null || { echo "   FAIL: foreign-call classification not recorded in native provenance (§26.1.4)"; okg=0; }
     if [ "$okg" -eq 1 ]; then
       echo "   ok (no symbolDecl; broad uv_* surface = $genN fns from uv.h, $skipN skipped; http_uv_listen from the shim header; both pinned)"
     else fails=$((fails+1)); fi
