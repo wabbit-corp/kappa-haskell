@@ -10,8 +10,10 @@ with no fixture is satisfied.
 Build verified clean: `cabal build all --enable-tests --ghc-options=-Werror`.
 Conformance re-run (2026-06-20): `kappa test tests/conformance` → `total 242: 242
 passed, 0 failed, 0 unsupported, 0 harness errors`. External black-box corpus
-(fresh, same date): **962 pass / 76 fail / 11 unsupported / 59 harness-error /
-1108 total** (the upstream corpus grew from 959 → 1108; see
+(fresh, same date): **962 pass / 76 fail / 11 unsupported / 66 harness-error /
+1115 total** (the upstream corpus grew from 959 → 1115; the 66 harness errors
+are mostly foreign §36 build-resolution code spellings this implementation
+spells differently or does not emit — NOT a clean bill; see TESTING.md and
 `tests/external-results.md`). Binary: `dist-newstyle/.../x/kappa/build/kappa/kappa`.
 CLI surface: `check | run [--json] | test [--suite] | audit | build | explain`.
 A machine-readable `--json` diagnostic channel exists (G3, below); the §3.1.4
@@ -353,6 +355,13 @@ re-audit; no concurrent build). Build re-confirmed `-Werror` clean; in-tree
 `cabal test` PASS. External corpus re-run with per-fixture diff vs the prior
 raw log: **927 pass / 30 fail / 2 unsupported / 0 harness-error (959 total)**,
 **0 pass→fail regressions**, identical fixture status set.
+
+> **SUPERSEDED (2026-06-20):** these are the 2026-06-15 snapshot figures and
+> are retained only as a historical record. The current authoritative counts
+> are at the top of this file: in-tree conformance **242/242**, external corpus
+> **962 / 76 / 11 / 66 / 1115** (the upstream corpus grew and harness errors
+> are now reported honestly — see TESTING.md). Do not cite the 229/229 or
+> 927/30/2/0/959 figures as current.
 
 - **RESOLVED (32):** G1, G2, G3, G5, G6, G7, G8, G9, G10, G11, G12, G13, G14,
   G15, G16, G17, G19, G21, G22, G23, G24, G25, G26, G27, G28, G29, G30, G31,

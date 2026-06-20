@@ -1,8 +1,8 @@
 <!-- RECONCILIATION NOTE (2026-06-20): the upstream external corpus GREW from
-959 to 1108 fixtures; a fresh `tools/run-external-fixtures.sh` reports 962 pass /
-76 fail / 11 unsupported / 59 harness-error / 1108 total (see external-results.md).
+959 to 1115 fixtures; a fresh `tools/run-external-fixtures.sh` reports 962 pass /
+76 fail / 11 unsupported / 66 harness-error / 1115 total (see external-results.md).
 The hand-maintained per-fixture classes below predate that growth and are NOT yet
-a complete triage of the current 76 fail + 59 harness-error. An independent
+a complete triage of the current 76 fail + 66 harness-error. An independent
 adversarial spot-check of the fails found them to be, by frequency: (a)
 NON-NORMATIVE diagnostic-code spelling divergences — the fixture pins one portable
 spelling; this implementation emits a different but spec-valid code AND exposes
@@ -13,10 +13,19 @@ matches the raw `code`, so these are the other implementation's spelling choice,
 not MUST violations. (b) build-DSL surface gaps (`BuildConfig` manifests outside
 the documented manifest subset). (c) two genuine accept-clean under-rejections
 (`for value in (Option a)` non-List source; a member-resolution-at-lowering case)
-tracked in SPEC_COVERAGE §18.6/§22. The 59 harness-errors are predominantly
-fixtures using language features this implementation does not provide (effect
-handlers §18/§19, labeled control §18.5/§18.7) — reported as the §2.1
-deterministic-unsupported / harnessError outcome, not silent miscompiles. A full
+tracked in SPEC_COVERAGE §18.6/§22. The 66 harness-errors are predominantly in
+the `build` category: fixtures assert another implementation's §36
+build-resolution diagnostic spellings (`E_BUILD_DEP_UNRESOLVED`,
+`E_BUILD_LOCK_MISMATCH`, `E_BUILD_PROVIDER_COLLISION`, …) that this
+implementation either spells differently (`E_DEPENDENCY_LOCK_MISMATCH`,
+`E_NATIVE_BINDING_UNPINNED`) or does not yet emit (dependency/registry/git
+resolution + provider-collision detection not implemented); the asserted code
+is outside this implementation's §3.1.2A registry, so the directive cannot be
+type-checked and is classified harnessError per §T (NOT silently reconciled —
+§3.1.4 forbids reusing a portable alias for a different meaning; see
+KNOWN_SPEC_ISSUES #7). NOTE: the §18 scoped effect + handler mechanism IS
+implemented and tested (`tests/conformance/effects/`); only top-level `effect`
+declarations and `return@`/`defer@` are deterministic-unsupported. A full
 per-fixture re-triage of the grown corpus remains outstanding. -->
 
 ## Blocked classifications
