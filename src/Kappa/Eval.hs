@@ -340,7 +340,7 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
         or [maybe False (definitelyNoMatch p) (lookup n fs) | (n, p) <- pfs]
       (CPInject t p, VInject t' x) -> t /= t' || definitelyNoMatch p x
       (CPInjectRest excl, VInject t _) -> t `elem` excl
-      (CPOr ps, v) -> all (`definitelyNoMatch` v) ps
+      (CPOr ps _, v) -> all (`definitelyNoMatch` v) ps
       (CPAs _ p, v) -> definitelyNoMatch p v
       _ -> False
 
@@ -369,7 +369,14 @@ matchPat ctx pat v0 =
             _ -> Just sub
         (CPInject t p, VInject t' x) | t == t' -> matchPat ctx p x
         (CPInjectRest excl, VInject t _) | t `notElem` excl -> Just [v]
-        (CPOr ps, _) -> firstJust [matchPat ctx p v | p <- ps]
+        -- §17.2.3: an alternative yields its bindings in ITS OWN structural
+        -- order; reorder to the canonical (first-alternative) order via the
+        -- alternative's permutation so the body's de Bruijn layout is correct.
+        (CPOr ps perms, _) ->
+          firstJust
+            [ (\bs -> [bs !! j | j <- perm]) <$> matchPat ctx p v
+            | (p, perm) <- zip ps perms
+            ]
         (CPAs _ p, _) -> (v :) <$> matchPat ctx p v
         _ -> Nothing
   where

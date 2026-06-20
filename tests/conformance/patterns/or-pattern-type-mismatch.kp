@@ -1,0 +1,8 @@
+--! assertDiagnostic error E_OR_PATTERN_BINDER_MISMATCH
+
+-- §17.2.3: corresponding binders must have definitionally-equal types.
+module main
+data T : Type = I Integer | S String
+let f t = match t case I v | S v -> v
+main : UIO Unit
+let main = printlnString "x"

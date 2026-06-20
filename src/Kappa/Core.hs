@@ -162,7 +162,16 @@ data CorePat
   -- discards them)
   | CPInject !Text !CorePat -- ^ variant member pattern
   | CPInjectRest ![Text] -- ^ residual-row pattern: excluded tags
-  | CPOr ![CorePat]
+  | -- | An or-pattern @p₁ | … | pₖ@ (§17.2.3). All alternatives bind the same
+    -- set of names; the BODY uses the first alternative's binder order
+    -- (canonical). The parallel @[[Int]]@ holds, per alternative, the
+    -- permutation from that alternative's own structural binder order to the
+    -- canonical order: when alternative @i@ matches and yields bindings @bs@
+    -- (structural order), the canonical bindings are @[bs !! (perm!!j)]@. This
+    -- keeps the body's de Bruijn layout correct no matter which alternative
+    -- matched, even when alternatives list the shared binders in different
+    -- positions (e.g. @A p q | B q p@).
+    CPOr ![CorePat] ![[Int]]
   | CPAs !Text !CorePat -- ^ as-pattern: binds the whole value, then inner
   deriving stock (Eq, Show)
 

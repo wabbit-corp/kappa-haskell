@@ -1,0 +1,25 @@
+--! mode run
+--! assertStdout "100\n9\n7\n"
+
+-- §17.2.3: or-pattern alternatives bind the same set of names; the body uses
+-- the first alternative's binder order, and a reordered alternative
+-- (`A p q | B q p`) still resolves each name correctly.
+module main
+
+data Two : Type =
+    A (p : Integer) (q : Integer)
+    B (q : Integer) (p : Integer)
+
+let getP t =
+    match t
+    case A p q | B q p -> p
+
+let getQ t =
+    match t
+    case A p q | B q p -> q
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (getP (B 1 100)))   -- B's p field = 100
+    printlnString (showInt (getQ (B 9 5)))      -- B's q field = 9
+    printlnString (showInt (getP (A 7 3)))      -- A's p field = 7

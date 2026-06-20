@@ -2295,8 +2295,31 @@ consumeMatch sink scrut alts = do
   env <- gets gsEnv
   done <- freshN "matched_"
   emit ("int " <> done <> " = 0;")
+  -- §17.2.3: an or-pattern whose alternatives list the shared binders in a
+  -- different order than the first needs a per-alternative de-Bruijn body
+  -- permutation; the native backend distributes alternatives over a shared
+  -- body and does not perform it, so refuse rather than miscompile. (The
+  -- interpreter — the §27 conformance engine — handles this case.)
+  forM_ alts $ \(CaseAlt pat _ _) ->
+    when (orReordered pat) $
+      void $
+        unsupported "or-pattern-reordered-binders"
+          "an or-pattern alternative that binds the shared names in a different order than the first alternative is not supported by the native backend (use a consistent binder order across alternatives)"
   forM_ (concatMap expandTopOr alts) $ \alt -> consumeAlt sink sv env done alt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
+
+-- | Whether a pattern contains an or-pattern whose alternatives bind the shared
+-- names in a non-canonical order (a non-identity permutation on some
+-- alternative) — see 'consumeMatch'.
+orReordered :: CorePat -> Bool
+orReordered = \case
+  CPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReordered ps
+  CPCtor _ ps -> any orReordered ps
+  CPTuple ps -> any orReordered ps
+  CPRecord fs _ -> any (orReordered . snd) fs
+  CPInject _ p -> orReordered p
+  CPAs _ p -> orReordered p
+  _ -> False
 
 -- | §17.2.3: a top-level or-pattern alternative is equivalent to one
 -- alternative per branch (matchPat's firstJust, in order), with the same
@@ -2314,7 +2337,7 @@ expandTopOr (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePat pat]
 -- handled by the ordinary single-pattern test/binding path.
 distributePat :: CorePat -> [CorePat]
 distributePat = \case
-  CPOr ps -> concatMap distributePat ps
+  CPOr ps _ -> concatMap distributePat ps
   CPCtor g ps -> [CPCtor g qs | qs <- mapM distributePat ps]
   CPTuple ps -> [CPTuple qs | qs <- mapM distributePat ps]
   CPRecord fs rest ->
@@ -2390,7 +2413,7 @@ patTest v = \case
   -- §17.2.5: a record pattern's rest binder always matches; the named
   -- fields determine the test (with or without a rest binder).
   CPRecord pfs _ -> recordTests v pfs
-  CPOr ps -> do
+  CPOr ps _ -> do
     -- Top-level binding or-patterns are split into separate alternatives
     -- before reaching here (see consumeMatch), so any CPOr that arrives is
     -- nested. Non-binding nested ors disjoin their tests; a nested or that
@@ -2456,7 +2479,7 @@ bindsNothing = \case
   CPLit _ -> True
   CPCtor _ ps -> all bindsNothing ps
   CPTuple ps -> all bindsNothing ps
-  CPOr ps -> all bindsNothing ps
+  CPOr ps _ -> all bindsNothing ps
   CPInjectRest _ -> True
   _ -> False
 
@@ -2482,7 +2505,7 @@ patBindings = go
           ++ case mrest of
             Just nm | not (T.null nm) -> [recWithoutExpr v (map fst pfs)]
             _ -> []
-      CPOr _ -> [] -- only non-binding or-patterns reach here
+      CPOr _ _ -> [] -- only non-binding or-patterns reach here
       -- §13 variant payload / whole-value bindings (matchPat semantics).
       CPInject _ p -> go ("kvariant_payload(" <> v <> ")") p
       CPInjectRest _ -> [v]

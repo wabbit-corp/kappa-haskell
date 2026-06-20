@@ -1,0 +1,8 @@
+--! assertDiagnostic error E_OR_PATTERN_BINDER_MISMATCH
+
+-- §17.2.3: alternatives must bind the SAME set of names.
+module main
+data T : Type = A Integer | B Integer
+let f t = match t case A x | B y -> addInt x 0
+main : UIO Unit
+let main = printlnString (showInt (f (A 1)))

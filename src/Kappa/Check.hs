@@ -7258,7 +7258,7 @@ checkExhaustive ctx sp ty alts = do
       CPWild -> True
       CPVar _ -> True
       CPAs _ p -> isCatchAll p
-      CPOr ps -> any isCatchAll ps
+      CPOr ps _ -> any isCatchAll ps
       _ -> False
     irrefutableSub = \case
       CPWild -> True
@@ -7269,7 +7269,7 @@ checkExhaustive ctx sp ty alts = do
       _ -> False
     coveredTags = \case
       CPInject tag p | irrefutableSub p -> [tag]
-      CPOr ps -> concatMap coveredTags ps
+      CPOr ps _ -> concatMap coveredTags ps
       _ -> []
     hasRestPat = \case
       CPInjectRest _ -> True
@@ -7297,7 +7297,7 @@ expandRow :: [CorePat] -> [[CorePat]]
 expandRow [] = [[]]
 expandRow (p : ps) = case p of
   CPAs _ q -> expandRow (q : ps)
-  CPOr qs -> concat [expandRow (q : ps) | q <- qs]
+  CPOr qs _ -> concat [expandRow (q : ps) | q <- qs]
   _ -> [p : ps]
 
 -- a first-column pattern this analysis treats as matching anything
@@ -7423,7 +7423,7 @@ elabPattern ctx0 pat0 ty0 = do
       CPRecord fs mr -> concatMap (corePatNames . snd) fs ++ [nm | Just nm <- [mr], not (T.null nm)]
       CPInject _ p -> corePatNames p
       -- or-pattern alternatives bind the same names; count one side
-      CPOr (p : _) -> corePatNames p
+      CPOr (p : _) _ -> corePatNames p
       _ -> []
     go ctx pat tyIn = do
       ty <- forceM tyIn
@@ -7481,15 +7481,46 @@ elabPattern ctx0 pat0 ty0 = do
           rs <- mapM (\p -> go ctx p ty) ps
           let pats = map fst rs
           case rs of
-            ((p1, ctx1) : _) -> do
-              -- §17.2.3: each alternative must bind the same names; we
-              -- approximate by requiring the same binder count.
-              let count1 = patBindersCount p1
-              unless (all (\(p, _) -> patBindersCount p == count1) rs) $
-                errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa-hs.pattern.or-bindings")
-                  "all alternatives of an or-pattern must bind the same names (§17.2.3)"
-              pure (CPOr pats, ctx1)
             [] -> pure (CPWild, ctx)
+            ((p1, ctx1) : _) -> do
+              -- §17.2.3: every alternative must bind the SAME SET of names,
+              -- with corresponding binders at definitionally-equal types. The
+              -- body uses the first alternative's binder order (canonical); for
+              -- each alternative we record the permutation from its own
+              -- structural binder order to canonical, so a reordered binding
+              -- (e.g. `A p q | B q p`) still resolves correctly at runtime.
+              let canonical = corePatNames p1
+                  n = length canonical
+                  structNames (p, _) = corePatNames p
+                  typesOf (_, c) =
+                    [ (ceName e, ceType e)
+                    | e <- take (ctxLen c - ctxLen ctx) (ctxEntries c)
+                    ]
+              ec <- ec_
+              if not (all (\r -> sort (structNames r) == sort canonical) rs)
+                then do
+                  errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa-hs.pattern.or-bindings")
+                    "all alternatives of an or-pattern must bind the same set of names (§17.2.3)"
+                  pure (CPOr pats (map (const [0 .. n - 1]) rs), ctx1)
+                else do
+                  -- §17.2.3 binder-type agreement (best-effort at the scrutinee
+                  -- context depth; catches e.g. `I (n:Integer) | S (s:String)`)
+                  let t1 = typesOf (p1, ctx1)
+                  forM_ (drop 1 rs) $ \r -> do
+                    let ti = typesOf r
+                    forM_ canonical $ \nm ->
+                      case (lookup nm t1, lookup nm ti) of
+                        (Just a, Just b) ->
+                          unless (convertible ec (ctxLen ctx) a b) $
+                            errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa-hs.pattern.or-bindings")
+                              ( "or-pattern binder '" <> nm
+                                  <> "' has incompatible types across alternatives (§17.2.3)")
+                        _ -> pure ()
+                  let perms =
+                        [ [fromMaybe 0 (elemIndex (canonical !! j) (structNames r)) | j <- [0 .. n - 1]]
+                        | r <- rs
+                        ]
+                  pure (CPOr pats perms, ctx1)
         PVariant mn mtyE isWild mrest _ -> case ty of
           VVariantT members -> case (mn, mtyE, mrest) of
             (_, Just tyE, Nothing) -> do
@@ -7587,7 +7618,7 @@ elabPattern ctx0 pat0 ty0 = do
       CPRecord fs mr -> sum (map (patBindersCount . snd) fs) + (case mr of Just nm | not (T.null nm) -> 1; _ -> 0)
       CPInject _ p -> patBindersCount p
       CPInjectRest _ -> 1
-      CPOr ps -> case ps of
+      CPOr ps _ -> case ps of
         (p : _) -> patBindersCount p
         [] -> 0
       _ -> 0
@@ -10836,7 +10867,7 @@ patBindersC = \case
   CPRecord fs mr -> sum (map (patBindersC . snd) fs) + (case mr of Just nm | not (T.null nm) -> 1; _ -> 0)
   CPInject _ p -> patBindersC p
   CPInjectRest _ -> 1
-  CPOr ps -> case ps of
+  CPOr ps _ -> case ps of
     (p : _) -> patBindersC p
     [] -> 0
   CPAs _ p -> 1 + patBindersC p
@@ -11601,7 +11632,7 @@ structuralOK g _ tm0 =
     ctorBinds = \case
       CPCtor _ _ -> True
       CPInject _ _ -> True
-      CPOr ps -> all ctorBinds ps
+      CPOr ps _ -> all ctorBinds ps
       CPAs _ p -> ctorBinds p
       _ -> False
 
