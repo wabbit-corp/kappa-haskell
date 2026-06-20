@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "30\n110\n"
+
+-- §18.1.13: STM transactional state. Single-agent semantics — TVars are
+-- mutable cells and `atomically` runs the transaction directly. Both
+-- single-op transactions and multi-op STM do-blocks (read-modify-write)
+-- are supported.
+module main
+
+bump : TVar Int -> STM Int
+let bump counter = do
+    cur <- readTVar counter
+    writeTVar counter (cur + 100)
+    readTVar counter
+
+main : UIO Unit
+let main = do
+    c <- atomically (newTVar 10)
+    atomically (writeTVar c 25)
+    a <- atomically (readTVar c)
+    atomically (writeTVar c (a + 5))
+    v1 <- atomically (readTVar c)
+    printlnString (showInt v1)
+    d <- atomically (newTVar 10)
+    v2 <- atomically (bump d)
+    printlnString (showInt v2)

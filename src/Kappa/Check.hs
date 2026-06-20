@@ -7617,6 +7617,13 @@ elabDoIOItems mlabel _sp ctx mexp items = do
   kitems <- goItems [] ctx errT resT items
   pure (CDo mlabel kitems, fromMaybe (ioType errT resT) doTy)
   where
+    -- §18.1.13: the monad an item of this do-scope is checked at. For an
+    -- STM-typed block, items are STM actions (the kernel still runs them as
+    -- the underlying IO at runtime); otherwise IO of the scope's error type.
+    wrapTy :: Value -> Value -> Value
+    wrapTy errT x = case mexp of
+      Just (VGlobN (GName _ "STM") _) -> VGlobN (gPrel "STM") [(Expl, x)]
+      _ -> ioType errT x
     goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
     goItems loops c errT resT (item : rest) = do
@@ -7625,7 +7632,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
         DoExpr e -> do
           aT <- if lastItem then pure resT else freshMetaV c
           let eD = desugarBang e
-              ioT = ioType errT aT
+              ioT = wrapTy errT aT
           -- statements are IO actions (§18.2); the corpus also
           -- sequences pure expressions as statements, and the §18.8
           -- kernel passes pure statement values through unchanged, so
@@ -7668,7 +7675,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           let rhsD = desugarBang rhs
           st0 <- get
           n0 <- gets (length . csDiags)
-          rhsTm0 <- check c rhsD (ioType errT aT)
+          rhsTm0 <- check c rhsD (wrapTy errT aT)
           n1 <- gets (length . csDiags)
           rhsTm <-
             if n1 == n0
@@ -7687,9 +7694,9 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                         expectType c bsp lastArg aT
                         pure tm1
                   _ -> do
-                    -- not container-shaped: restore the IO diagnosis
+                    -- not container-shaped: restore the IO/STM diagnosis
                     put st0
-                    check c rhsD (ioType errT aT)
+                    check c rhsD (wrapTy errT aT)
           checkIrrefutable c pat aT bsp
           (patC, cBound, _) <- elabPattern c pat aT
           let c' = markImplicitLocal bsp implocal prefix c cBound

@@ -424,6 +424,15 @@ builtinState =
         prim "__handleEff" (tyV (piI Q0 "a" tType (CVar 0)))
       , -- §18.1.13: aborted STM alternative (the `empty` action)
         prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
+      , -- §18.1.13 STM transactional state. Single-agent semantics: TVars
+        -- are mutable cells and `atomically` runs the transaction directly
+        -- (transactions are trivially serializable with no concurrent agent).
+        prim "newTVar" (tyV (piI Q0 "a" tType (CVar 0 ~> CApp Expl (tcon "STM") (CApp Expl (tcon "TVar") (CVar 1)))))
+      , prim "readTVar" (tyV (piI Q0 "a" tType (CApp Expl (tcon "TVar") (CVar 0) ~> CApp Expl (tcon "STM") (CVar 1))))
+      , prim "writeTVar" (tyV (piI Q0 "a" tType (CApp Expl (tcon "TVar") (CVar 0) ~> CVar 1 ~> CApp Expl (tcon "STM") tUnit)))
+      , prim "retry" (tyV (piI Q0 "a" tType (CApp Expl (tcon "STM") (CVar 0))))
+      , prim "check" (tyV (tBool ~> CApp Expl (tcon "STM") tUnit))
+      , prim "atomically" (tyV (piI Q0 "a" tType (CApp Expl (tcon "STM") (CVar 0) ~> io (tcon "Void") (CVar 1))))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime

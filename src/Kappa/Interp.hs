@@ -382,6 +382,17 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
           Left (KappaError e) -> VCtor (prelG "Failure") [VCtor (prelG "Fail") [e]]
     VRef <$> newIORef exitV
   ("__awaitFiber", [VRef ref]) -> readIORef ref
+  -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
+  -- transaction directly (no concurrent agent ⇒ trivially serializable);
+  -- `retry`/`check False`/`stmAbort` abort the transaction.
+  ("newTVar", [v]) -> VRef <$> newIORef v
+  ("readTVar", [VRef r]) -> readIORef r
+  ("writeTVar", [VRef r, v]) -> writeIORef r v >> pure unitV
+  ("atomically", [action]) -> runIOValue rt action
+  ("check", [VCtor (GName _ "True") []]) -> pure unitV
+  ("check", [VCtor (GName _ "False") []]) -> throwIO (KappaError (VLit (LitStr "STM check failed (retry with no progress on the single runtime agent)")))
+  ("retry", _) -> throwIO (KappaError (VLit (LitStr "STM retry: transaction blocked with no progress on the single runtime agent")))
+  ("stmAbort", _) -> throwIO (KappaError (VLit (LitStr "STM empty/abort: no transactional alternative succeeded")))
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
