@@ -5,11 +5,12 @@
  * realization input (§36.28). It does NOT hand-roll a socket primitive set:
  * all transport work is delegated to libuv (uv_tcp_*, uv_listen, uv_accept,
  * uv_read_*, uv_write, uv_run, uv_close), a pkg-config-discoverable public C
- * library. The libuv functions the shim depends on are declared in the
- * manifest's `verify` list and checked against the installed <uv.h> by the
- * native ABI verifier (fail-closed); the manifest's symbolList declares THESE
- * adapter symbols with their conservative ABI, which the backend lowers to
- * direct typed call sites.
+ * library, and the shim is compiled against the real <uv.h>, so its libuv use
+ * is checked by the toolchain. The adapter's public surface is declared in
+ * native_uv_shim.h (included below); the build plan GENERATES the Kappa
+ * `host.native.uvnet` surface by PARSING that header (generateFromHeader), and
+ * these definitions are checked against it — there is no hand-authored
+ * symbolDecl and no `verify` list for this binding.
  *
  * The adapter presents a simple blocking interface (listen / accept / read /
  * write / close) by running a single libuv event loop. The accept/read/write
@@ -32,6 +33,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "native_uv_shim.h" /* the public surface the build plan parses */
 
 static void http_uv_die(const char *what, int err) {
   if (err)

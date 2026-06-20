@@ -103,10 +103,20 @@ data SymbolDecl = SymbolDecl
   }
   deriving stock (Eq, Show)
 
--- | §27.1.1: the binding's raw @host.native@ surface, derived from an
--- explicit binding description (a symbol list with ABI signatures).
-newtype NativeSurface
+-- | §27.1.1: the binding's raw @host.native@ surface.
+data NativeSurface
   = SymbolListSurface [SymbolDecl]
+  -- ^ an explicit binding description (a symbol list with ABI signatures).
+  | GeneratedSurface !Text ![Text]
+  -- ^ §27.1.1/§36.28: a surface MECHANICALLY DERIVED by preprocessing + parsing
+  -- a real header — there is NO hand-authored 'SymbolDecl'. @gsHeader@ names the
+  -- header to parse (resolved on the binding's include path / pkg-config cflags);
+  -- @gsSymbols@ are the C function names to extract. Build-plan resolution
+  -- preprocesses the header with the binding's pkg-config\/define\/include
+  -- inputs and the target ABI, parses each named function's declaration, and
+  -- maps its C parameter\/result types to the conservative std.ffi\/opaque\/
+  -- Option 'CType' vocabulary. A symbol whose declaration cannot be located or
+  -- whose types are not conservatively mappable is a fail-closed build error.
   deriving stock (Eq, Show)
 
 -- | §36.28 binding sources: realization inputs naming WHERE/HOW the declared

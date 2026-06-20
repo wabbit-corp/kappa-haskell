@@ -6,9 +6,12 @@ module acme.http.example
 import acme.http.runtime as net
 import acme.http.wire as wire
 import acme.http.router as router
+import host.native.libuv.Raw as libuv
 
 main : UIO Unit
 let main = do
+    ver <- libuv.uv_version_string
+    printlnString (stringAppend "libuv " ver)
     listener <- net.listen "127.0.0.1" 8090 16
     printlnString "listening on :8090"
     var served = 0

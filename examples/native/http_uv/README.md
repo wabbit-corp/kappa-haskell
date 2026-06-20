@@ -11,16 +11,33 @@ native backend. It exercises the full chain the HTTP-stack design calls for:
     selected here. They import `host.jvm.*` / `host.dotnet.*` modules that do not
     exist natively, so a successful native build is itself proof that fragment
     selection excluded them.
-- **libuv host binding, no hardcoded sockets (§26.1 / §26.1.5 / §36.28).** The
-  native fragment delegates to `host.native.uvnet`, a `nativeBinding` in
-  `kappa.build.kp`. The build plan discovers libuv via `pkg-config`, verifies the
-  real `uv_*` prototypes the adapter uses against the installed `<uv.h>`
-  (fail-closed), and pins the resolved host-source identity in `kappa.lock`
-  (§36.7). `native_uv_shim.c` is an ordinary C blocking adapter over libuv — it
-  does not hand-roll a socket primitive set.
+- **Host bindings GENERATED from parsed headers — no hand-authored `symbolDecl`
+  (§26.1 / §27.1.1 / §36.28).** Both native surfaces in `kappa.build.kp` use
+  `generateFromHeader`: the build plan preprocesses the named header (with the
+  binding's pkg-config cflags, `-D` defines, and target ABI), parses each named
+  C function's declaration, and maps its types to the conservative
+  `std.ffi`/opaque/Option vocabulary (a non-`char` pointer ⇒ `Option RawPtr`, a
+  `char` pointer ⇒ the C-string convention, integer/float scalars ⇒ their
+  exact-width nominal, `void` ⇒ Unit).
+  - `host.native.libuv.Raw` is generated from the real `<uv.h>` discovered via
+    `pkg-config` — the raw libuv surface (its synchronous, value-typed
+    functions, e.g. `uv_version_string`, which the server prints at startup).
+  - `host.native.uvnet` is generated from `native_uv_shim.h`, the public ABI of
+    the blocking adapter. libuv's API is callback/async — which a conservative
+    C-ABI binding cannot drive directly — so `native_uv_shim.c` is the justified
+    event-loop companion (§26.1.9). It delegates entirely to libuv (no
+    hand-rolled socket primitives) and is compiled against `<uv.h>`, so its
+    libuv use is verified by the toolchain.
+  pkg-config pins libuv's version/`.pc` identity and the header bytes are
+  digested into `kappa.lock` (§36.7), so a header drift repins and regenerates.
+- **Refining overlay.** `runtime.native.kp` is a thin Kappa overlay over the
+  generated conservative surface: it refines the raw `Option RawPtr` handles
+  into the facade's `RawPtr` `Listener`/`Connection` types and satisfies the
+  facade's `expect` declarations.
 - **Wire + router.** `wire.kp` parses the request line over `Bytes`; `router.kp`
   builds a well-formed response (byte-accurate `Content-Length`). `example.kp`
-  is the server loop: serve three requests, then exit.
+  is the server loop: print the (generated-surface) libuv version, then serve
+  three requests and exit.
 
 ## Build & run
 

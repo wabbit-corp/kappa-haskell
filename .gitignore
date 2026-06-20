@@ -13,6 +13,7 @@ dist-newstyle/
 *.kappa.h
 *.native.prov
 native-abi-probe.c
+native-header-gen-probe.c
 examples/native/**/build/
 
 # Generated build lockfiles under test/example fixtures (real projects

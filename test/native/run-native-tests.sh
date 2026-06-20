@@ -593,18 +593,76 @@ else
 fi
 rm -rf "$WR"
 
-echo "== native libuv HTTP server: fragment selection + pkg-config/uv.h binding + live serve (§8.1/§9.4/§26.1/§36) =="
+echo "== native binding surface is GENERATED from a parsed header, not hand-authored symbolDecl (§27.1.1/§36.28) =="
+# The libuv example MUST derive its host.native surface mechanically from real
+# headers (generateFromHeader) — the manifest must contain NO symbolDecl, and
+# the generated extern prototypes must reflect the types parsed out of the
+# headers (uv.h for the raw libuv surface; native_uv_shim.h for the adapter).
+if pkg-config --exists libuv 2>/dev/null; then
+  GENM="$ROOT/examples/native/http_uv/kappa.build.kp"
+  okg=1
+  # strip line comments (-- …) so a comment merely *mentioning* symbolDecl does
+  # not count; we forbid an actual symbolDecl call in the binding path.
+  if sed 's/--.*//' "$GENM" | grep -q "symbolDecl"; then
+    echo "   FAIL: the libuv example manifest uses a hand-authored symbolDecl (must generateFromHeader)"; okg=0
+  fi
+  sed 's/--.*//' "$GENM" | grep -q "generateFromHeader" || { echo "   FAIL: the libuv example manifest does not use generateFromHeader"; okg=0; }
+  GE="$WORK/httpgen"; rm -rf "$GE"; mkdir -p "$GE"; cp -r "$ROOT/examples/native/http_uv/." "$GE/"
+  if timeout 240 $KAPPA build --update --manifest "$GE" --emit-c -o "$WORK/gexe" >"$GE/b.log" 2>&1; then
+    ext="$(cat "$GE"/src/acme/http/*.kappa.c 2>/dev/null)"
+    # parsed from uv.h: a void-arg const-char* return; parsed from the shim header:
+    # the (const char *, int, int) -> void* prototype.  Neither was typed by hand.
+    grep -q "extern const char \* uv_version_string(void);" <<<"$ext" || { echo "   FAIL: uv_version_string not generated from uv.h"; okg=0; }
+    grep -q "extern void \* http_uv_listen(const char \*, int, int);" <<<"$ext" || { echo "   FAIL: http_uv_listen not generated from native_uv_shim.h"; okg=0; }
+    grep -q "^host-binding .* libuv$" "$GE/kappa.lock" || { echo "   FAIL: generated libuv surface not pinned"; okg=0; }
+    grep -q "^host-binding .* uvnet$" "$GE/kappa.lock" || { echo "   FAIL: generated uvnet surface not pinned"; okg=0; }
+    if [ "$okg" -eq 1 ]; then
+      echo "   ok (no symbolDecl; uv_version_string parsed from uv.h, http_uv_listen from the shim header; both surfaces pinned)"
+    else fails=$((fails+1)); fi
+  else
+    echo "   FAIL: generated-surface build failed"; cat "$GE/b.log" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -rf "$GE"
+else
+  echo "   SKIP: pkg-config libuv not available"
+fi
+
+echo "== header-surface generation is fail-closed: missing symbol / unmappable type (§27.1.1/§36.28) =="
+if pkg-config --exists libuv 2>/dev/null; then
+  FC="$WORK/gfc"; rm -rf "$FC"; mkdir -p "$FC/src/app"
+  printf 'module app\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$FC/src/app/main.kp"
+  fcbuild() { printf 'let buildConfig : BuildConfig = package { name="fc", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateFromHeader "uv.h" [%s], abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$FC/kappa.build.kp"; }
+  okf=1
+  fcbuild '"uv_not_a_function"'
+  o1="$(timeout 120 $KAPPA build --update --manifest "$FC" -o "$WORK/fc1" 2>&1)"; r1=$?
+  { [ "$r1" -ne 0 ] && grep -q "E_BUILD_NATIVE_HEADER_GEN" <<<"$o1" && grep -q "does not declare a function" <<<"$o1"; } || { echo "   FAIL: a missing header symbol was not fail-closed"; echo "$o1" | sed 's/^/     /'; okf=0; }
+  fcbuild '"uv_run"'  # uv_run takes a uv_run_mode by-value enum -> not conservatively mappable
+  o2="$(timeout 120 $KAPPA build --update --manifest "$FC" -o "$WORK/fc2" 2>&1)"; r2=$?
+  { [ "$r2" -ne 0 ] && grep -q "E_BUILD_NATIVE_HEADER_GEN" <<<"$o2" && grep -q "cannot conservatively map" <<<"$o2"; } || { echo "   FAIL: an unmappable C type was not fail-closed"; echo "$o2" | sed 's/^/     /'; okf=0; }
+  # an INLINE function-pointer/callback parameter must fail closed (not be
+  # silently mapped to void*), via a local header we control.
+  printf '#ifndef FCH\n#define FCH\nint fc_cb(int (*cb)(int), int n);\nlong long fc_ll(unsigned long long x);\n#endif\n' > "$FC/fc.h"
+  printf 'let buildConfig : BuildConfig = package { name="fc", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="d", provides=[module "host.native.d"], surface=generateFromHeader "fc.h" ["fc_cb"], abi=cAbi, inputs=[headers ["fc.h"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["d"] }] }' > "$FC/kappa.build.kp"
+  o3="$(timeout 120 $KAPPA build --update --manifest "$FC" -o "$WORK/fc3" 2>&1)"; r3=$?
+  { [ "$r3" -ne 0 ] && grep -q "E_BUILD_NATIVE_HEADER_GEN" <<<"$o3" && grep -q "function-pointer" <<<"$o3"; } || { echo "   FAIL: an inline function-pointer parameter was not fail-closed"; echo "$o3" | sed 's/^/     /'; okf=0; }
+  [ "$okf" -eq 1 ] && echo "   ok (missing symbol, by-value enum, and inline function-pointer param all fail-closed -> E_BUILD_NATIVE_HEADER_GEN)"
+  rm -rf "$FC"
+else
+  echo "   SKIP: pkg-config libuv not available"
+fi
+
+echo "== native libuv HTTP server: generated surfaces + fragment selection + live serve (§8.1/§9.4/§26.1/§36) =="
 # The example facade (runtime.kp) declares `expect term` transport; the .native
-# fragment satisfies it via a libuv host binding discovered by pkg-config and
-# ABI-verified against the real <uv.h>.  The .jvm/.dotnet fragments import
-# host.jvm/host.dotnet modules that do NOT exist natively, so a successful build
-# PROVES they were excluded by fragment selection.  Then we serve real requests.
+# fragment refines the GENERATED libuv-adapter surface to satisfy it.  The
+# .jvm/.dotnet fragments import host.jvm/host.dotnet modules that do NOT exist
+# natively, so a successful build PROVES fragment selection excluded them.  The
+# server also prints libuv's version via the generated host.native.libuv.Raw
+# surface (uv_version_string, parsed from uv.h), then serves real requests.
 if pkg-config --exists libuv 2>/dev/null && command -v curl >/dev/null 2>&1; then
   HU="$WORK/httpuv"; rm -rf "$HU"; mkdir -p "$HU"
   cp -r "$ROOT/examples/native/http_uv/." "$HU/"
   HUEXE="$WORK/httpuvd"
   if timeout 240 $KAPPA build --update --manifest "$HU" -o "$HUEXE" >"$HU/b.log" 2>&1; then
-    # pkg-config + uv.h discovery/verification must have produced the binding pin.
     if grep -q "^host-binding .* uvnet$" "$HU/kappa.lock" 2>/dev/null; then
       "$HUEXE" >"$HU/srv.log" 2>&1 &
       srv=$!
@@ -620,11 +678,12 @@ if pkg-config --exists libuv 2>/dev/null && command -v curl >/dev/null 2>&1; the
       for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$srv" 2>/dev/null || break; sleep 0.3; done
       kill "$srv" 2>/dev/null
       wait "$srv" 2>/dev/null
+      grep -q "^libuv " "$HU/srv.log" || { echo "   FAIL: server did not print libuv version via the generated raw surface"; ok=0; }
       [ "$root" = "hello from kappa + libuv" ] || { echo "   FAIL: GET / body wrong (got '$root')"; ok=0; }
       [ "$health" = "ok" ] || { echo "   FAIL: GET /health body wrong (got '$health')"; ok=0; }
       [ "$notf" = "404" ] || { echo "   FAIL: GET /nope status wrong (got '$notf')"; ok=0; }
       if [ "$ok" -eq 1 ]; then
-        echo "   ok (libuv binding from pkg-config+uv.h; native fragment served /, /health, 404 — jvm/dotnet excluded)"
+        echo "   ok (generated libuv.Raw + uvnet surfaces; version printed; served /, /health, 404 — jvm/dotnet excluded)"
       else
         cat "$HU/srv.log" | sed 's/^/     /'; fails=$((fails+1))
       fi

@@ -24,6 +24,8 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Kappa.Backend.Driver (detectCC)
+import Kappa.Backend.HeaderGen (generateSurfaceDecls)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
 import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
@@ -96,7 +98,7 @@ resolveExecutable manifestDir bc mTarget =
       -- backend profile. A target selecting jvm/dotnet must be rejected
       -- honestly rather than silently coerced into a native build.
       | not (isNativeBackend (tBackend tgt)) -> pure (Left [backendUnrealized tgt])
-      | otherwise -> case resolveProviders tgt of
+      | otherwise -> genThen tgt $ \genMap -> case resolveProviders genMap tgt of
       Left ds -> pure (Left ds)
       Right (nativeSyms, linkSpecs, nativeInputs, nativeBindings, _anyNative) ->
         case tMain tgt of
@@ -215,10 +217,46 @@ resolveExecutable manifestDir bc mTarget =
                 "the manifest declares multiple executable targets; select one with --target NAME (Spec §36.3)"
             ]
 
+    -- §27.1.1/§36.28: MECHANICALLY generate each selected binding's surface
+    -- whose @nbSurface@ is a 'GeneratedSurface' — preprocess + parse its real
+    -- header (no hand-authored symbolDecl). Runs only when the target actually
+    -- references a generated-surface binding; that requires a C toolchain
+    -- (preprocessing the header), so its absence is a fail-closed diagnostic.
+    genThen :: Target -> (Map.Map Text [SymbolDecl] -> IO (Either Diagnostics a)) -> IO (Either Diagnostics a)
+    genThen tgt k = do
+      let wanted = targetHostBindings tgt
+          selected = [hb | nm <- wanted, hb <- bcHostBindings bc, nbName hb == nm]
+          gens = [(nbName hb, h, ss, nbInputs hb) | hb <- selected, GeneratedSurface h ss <- [nbSurface hb]]
+      if null gens
+        then k Map.empty
+        else do
+          mcc <- detectCC Nothing
+          case mcc of
+            Nothing -> pure (Left [genNeedsCc (fst4 (head gens))])
+            Just cc -> do
+              eMap <- goGen cc Map.empty gens
+              either (pure . Left) k eMap
+      where
+        fst4 (a, _, _, _) = a
+        goGen _ acc [] = pure (Right acc)
+        goGen cc acc ((nm, h, ss, ins) : rest) = do
+          r <- generateSurfaceDecls cc manifestDir manifestDir ins h ss
+          case r of
+            Left ds -> pure (Left ds)
+            Right decls -> goGen cc (Map.insert nm decls acc) rest
+
+    genNeedsCc :: Text -> Diagnostic
+    genNeedsCc nm =
+      buildErr "E_BUILD_NATIVE_HEADER_GEN" "kappa-hs.build.native-header-gen"
+        ( "native binding '" <> nm <> "' derives its surface from a header (generateFromHeader), "
+            <> "which requires a C toolchain to preprocess; none was found (set $KAPPA_CC or install "
+            <> "zig/cc/gcc/clang) (Spec §27.1.1/§36.28)"
+        )
+
     -- Resolve the target's named host bindings to provided host.native
     -- modules, with collision + realizability checks (§36.28, §34.5.3).
-    resolveProviders :: Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput], [Text])], Bool)
-    resolveProviders tgt =
+    resolveProviders :: Map.Map Text [SymbolDecl] -> Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput], [Text])], Bool)
+    resolveProviders genMap tgt =
       let wanted = targetHostBindings tgt
           lookupBinding nm = [hb | hb <- bcHostBindings bc, nbName hb == nm]
        in do
@@ -232,10 +270,11 @@ resolveExecutable manifestDir bc mTarget =
             -- realizability: this backend realizes only the load modes it
             -- implements; reject the rest honestly (§34.5.3).
             mapM_ checkRealizable selected
-            -- resolve each binding's provides × symbolList surface into
-            -- concrete ResolvedNativeSymbols (§27.1.1/§36.28). The manifest
-            -- surface is the SOLE authority — no hardcoded catalog.
-            perBinding <- traverse resolveBinding selected
+            -- resolve each binding's provides × surface into concrete
+            -- ResolvedNativeSymbols (§27.1.1/§36.28). The surface is either an
+            -- explicit symbolList or one MECHANICALLY GENERATED from a header
+            -- (pre-resolved into genMap) — the SOLE authority, no hardcoded catalog.
+            perBinding <- traverse (resolveBinding genMap) selected
             let allSyms = concat [ss | (_, ss) <- perBinding]
                 bindingMods = [(bn, dedup (map rnsModule ss)) | (bn, ss) <- perBinding]
             -- collision: same effective module provided by ≥2 bindings
@@ -279,10 +318,10 @@ resolveExecutable manifestDir bc mTarget =
     -- module gets the binding's full declared surface (the manifest's
     -- SymbolDecls, carrying the C symbol + ABI signature). The surface is
     -- authoritative — there is no catalog to validate against.
-    resolveBinding :: HostBinding -> Either Diagnostics (Text, [ResolvedNativeSymbol])
-    resolveBinding hb = do
+    resolveBinding :: Map.Map Text [SymbolDecl] -> HostBinding -> Either Diagnostics (Text, [ResolvedNativeSymbol])
+    resolveBinding genMap hb = do
       mods <- concat <$> traverse (expandSelector hb) (nbProvides hb)
-      decls <- surfaceDecls hb
+      decls <- surfaceDecls genMap hb
       let syms =
             [ ResolvedNativeSymbol
                 { rnsModule = mn
@@ -296,13 +335,17 @@ resolveExecutable manifestDir bc mTarget =
             ]
       Right (nbName hb, syms)
 
-    -- The binding's declared symbol surface (§36.28 symbolList). A binding
-    -- that provides modules but declares no surface is rejected: there is
-    -- nothing to make importable or to call.
-    surfaceDecls :: HostBinding -> Either Diagnostics [SymbolDecl]
-    surfaceDecls hb = case nbSurface hb of
+    -- The binding's resolved symbol surface (§36.28). Either an explicit
+    -- symbolList, or one MECHANICALLY GENERATED from a header (looked up in
+    -- genMap, which 'genThen' populated). A binding that provides modules but
+    -- resolves to no surface is rejected: nothing to make importable or call.
+    surfaceDecls :: Map.Map Text [SymbolDecl] -> HostBinding -> Either Diagnostics [SymbolDecl]
+    surfaceDecls genMap hb = case nbSurface hb of
       SymbolListSurface [] -> Left [emptySurface hb]
       SymbolListSurface ds -> Right ds
+      GeneratedSurface _ _ -> case Map.lookup (nbName hb) genMap of
+        Just ds@(_ : _) -> Right ds
+        _ -> Left [emptySurface hb]
 
     -- §36.28: a provides selector names a concrete host.native module
     -- (SelModule) or a module-name prefix (SelModulesUnder). Both resolve to

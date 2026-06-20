@@ -6,16 +6,18 @@
 -- §36.12 fragment selection) supplies the definitions. Public modules import
 -- THIS module, never host.native.* / host.jvm.* directly.
 --
--- The handle types are opaque foreign handles (std.ffi.OpaqueHandle); the
--- native fragment realizes them through a libuv host binding generated from
--- pkg-config + <uv.h> (no hardcoded socket primitives).
+-- The handle types are foreign pointers (std.ffi.RawPtr); the native fragment
+-- realizes them through a libuv adapter whose surface is GENERATED from a
+-- parsed header (no hand-authored symbolDecl). The generated raw surface uses
+-- the conservative `Option RawPtr` pointer type; the native fragment refines
+-- it into these non-optional handles.
 module acme.http.runtime
 
-import std.ffi.(OpaqueHandle)
+import std.ffi.(RawPtr)
 
--- A bound TCP listener and an accepted connection are opaque host handles.
-type Listener = OpaqueHandle
-type Connection = OpaqueHandle
+-- A bound TCP listener and an accepted connection are foreign host pointers.
+type Listener = RawPtr
+type Connection = RawPtr
 
 -- The transport surface is declared with `expect term` only (§9.2/§9.4): a
 -- plain top-level signature would be satisfiable solely by a definition in

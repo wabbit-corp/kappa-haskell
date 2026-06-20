@@ -36,6 +36,7 @@ library
     exposed-modules:
         Kappa.Backend.C
         Kappa.Backend.Driver
+        Kappa.Backend.HeaderGen
         Kappa.Backend.NativeFfi
         Kappa.Backend.NativeProbe
         Kappa.Build.Lock
