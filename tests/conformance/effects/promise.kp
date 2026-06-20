@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "99 T F\nfailed 7\nfork 21\n"
+
+-- §18.11 one-shot promises: first completion wins; await retrieves the
+-- stored value (awaitPromise) or Exit (awaitPromiseExit); a fiber may
+-- complete a promise the parent awaits.
+module main
+
+worker : Promise Void Int -> UIO Unit
+let worker p = do
+    done <- completePromise p (Success 21)
+    let _ = done
+    pure ()
+
+main : UIO Unit
+let main = do
+    p <- newPromise
+    ok <- completePromise p (Success 99)
+    again <- completePromise p (Success 1)
+    v <- awaitPromise p
+    printlnString (stringAppend (showInt v) (stringAppend (if ok then " T" else " F") (if again then " T" else " F")))
+    q <- newPromise
+    qdone <- completePromise q (Failure (Fail 7))
+    let _ = qdone
+    ex <- awaitPromiseExit q
+    match ex
+      case Success _ -> printlnString "ok"
+      case Failure c -> match c
+        case Fail e -> printlnString (stringAppend "failed " (showInt e))
+        case _ -> printlnString "other"
+    r <- newPromise
+    child <- fork (worker r)
+    let _ = child
+    rv <- awaitPromise r
+    printlnString (stringAppend "fork " (showInt rv))

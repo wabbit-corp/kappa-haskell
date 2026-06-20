@@ -92,6 +92,7 @@ builtinState =
       , (prel "Instant", opaqueTy (tyV tType)) -- §18.1 monotonic time value
       , (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
       , (prel "TVar", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
+      , (prel "Promise", opaqueTy (tyV (tType ~> tType ~> tType))) -- §18.11 one-shot promise
       , (prel "Thunk", opaqueTy (tyV (tType ~> tType)))
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
@@ -433,6 +434,20 @@ builtinState =
       , prim "retry" (tyV (piI Q0 "a" tType (CApp Expl (tcon "STM") (CVar 0))))
       , prim "check" (tyV (tBool ~> CApp Expl (tcon "STM") tUnit))
       , prim "atomically" (tyV (piI Q0 "a" tType (CApp Expl (tcon "STM") (CVar 0) ~> io (tcon "Void") (CVar 1))))
+      , -- §18.11 one-shot promises. newPromise : forall e a. UIO (Promise e a)
+        prim "newPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+          (io (tcon "Void") (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0))))))
+      , -- awaitPromiseExit : forall e a. Promise e a -> UIO (Exit e a)
+        prim "awaitPromiseExit" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
+            ~> io (tcon "Void") (CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1))))))
+      , -- awaitPromise : forall e a. Promise e a -> IO e a
+        prim "awaitPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0) ~> io (CVar 2) (CVar 1)))))
+      , -- completePromise : forall e a. Promise e a -> Exit e a -> UIO Bool
+        prim "completePromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
+            ~> CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1) ~> io (tcon "Void") tBool))))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime

@@ -393,6 +393,31 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("check", [VCtor (GName _ "False") []]) -> throwIO (KappaError (VLit (LitStr "STM check failed (retry with no progress on the single runtime agent)")))
   ("retry", _) -> throwIO (KappaError (VLit (LitStr "STM retry: transaction blocked with no progress on the single runtime agent")))
   ("stmAbort", _) -> throwIO (KappaError (VLit (LitStr "STM empty/abort: no transactional alternative succeeded")))
+  -- §18.11 one-shot promises: a cell holding Option (Exit e a) — None until
+  -- completed. The first completePromise wins (True); later ones return
+  -- False. await reads the stored Exit; awaiting an uncompleted promise with
+  -- no other fiber to complete it is a single-agent deadlock (clean error).
+  ("newPromise", _) -> VRef <$> newIORef (VCtor (prelG "None") [])
+  ("completePromise", [VRef r, exitV]) -> do
+    cur <- readIORef r
+    case force ec cur of
+      VCtor (GName _ "None") [] -> writeIORef r (VCtor (prelG "Some") [exitV]) >> pure (VCtor (prelG "True") [])
+      _ -> pure (VCtor (prelG "False") [])
+  ("awaitPromiseExit", [VRef r]) -> do
+    cur <- readIORef r
+    case force ec cur of
+      VCtor (GName _ "Some") [exitV] -> pure exitV
+      _ -> throwIO (KappaError (VLit (LitStr "awaitPromiseExit: promise never completed (single-agent deadlock)")))
+  ("awaitPromise", [VRef r]) -> do
+    cur <- readIORef r
+    case force ec cur of
+      VCtor (GName _ "Some") [exitV] -> case force ec exitV of
+        VCtor (GName _ "Success") [v] -> pure v
+        VCtor (GName _ "Failure") [c] -> case force ec c of
+          VCtor (GName _ "Fail") [e] -> throwIO (KappaError e)
+          _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise failed with a non-Fail cause")))
+        _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: malformed promise Exit")))
+      _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise never completed (single-agent deadlock)")))
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
