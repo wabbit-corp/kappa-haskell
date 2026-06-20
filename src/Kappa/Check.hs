@@ -360,6 +360,12 @@ data Ctx = Ctx
   , ctxCodeDepth :: !Int
   -- ^ Nesting depth of enclosing §23.2 code quotes ('.~' is only
   -- meaningful inside one).
+  , ctxReturnTarget :: !(Maybe Text)
+  -- ^ §18.5: name/label of the innermost enclosing return target — a named
+  -- function/method, an inherited-name lambda, or a labeled lambda. A
+  -- @return@L@ resolves only when @L@ matches this (resolution does not
+  -- cross user-written lambda boundaries); an anonymous lambda resets it to
+  -- Nothing (nothing outside is reachable across it).
   }
 
 -- | A scoped effect's elaborated interface (§9.3.1.1, §18.1.15): label
@@ -378,7 +384,7 @@ data EffOpInfo = EffOpInfo
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False Map.empty Map.empty 0
+emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False Map.empty Map.empty 0 Nothing
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
@@ -2500,9 +2506,9 @@ infer ctx expr = case expr of
     (tm, _) <- inferType ctx t
     pure (CApp Expl (CGlob (gPrel "Option")) tm, VSort 0)
   EVariant arms mtail sp -> elabVariant ctx arms mtail sp Nothing
-  -- a lambda label is only consumable by return@label (§18.5.1), which
-  -- is rejected as unsupported at its use site, so the label is inert
-  ELambda _ bs body sp -> elabLambda ctx bs body sp Nothing
+  -- §18.5.1: a lambda label names a return target consumable by
+  -- @return@L@ inside the body.
+  ELambda mlbl bs body sp -> elabLambda (ctx {ctxReturnTarget = nameText <$> mlbl}) bs body sp Nothing
   ELet binds body _ -> elabLet ctx binds body Nothing
   EBlock ds fin sp -> elabBlock ctx ds fin sp
   EIf alts mels sp -> do
@@ -2515,7 +2521,11 @@ infer ctx expr = case expr of
     pure (tm, resT)
   -- a do-scope label is only consumable by defer@label, which is
   -- rejected as unsupported at its use site, so the label is inert here
-  EDo mlbl items sp -> elabDo ctx mlbl items sp Nothing
+  -- a do block in expression position is a NESTED completion boundary: a
+  -- `return@outer` cannot cross it at runtime (it is run as a do value), so
+  -- reset the return target here (the function/lambda body do is elaborated
+  -- directly by checkAgainstSig/elabLambda, which preserve it). §18.5/§18.8.
+  EDo mlbl items sp -> elabDo (ctx {ctxReturnTarget = Nothing}) mlbl items sp Nothing
   EThunk e sp
     -- §5.2: soft keywords shadowed by a local binding are ordinary names
     | Just _ <- lookupCtx "thunk" ctx ->
@@ -2685,8 +2695,10 @@ check ctx expr expected0 = do
     (ELambda {}, VGlobN (GName pm "__captures") ((_, inner) : _))
       | pm == preludeModule ->
           check ctx expr =<< forceM inner
-    (ELambda _ bs body sp, _) -> do
-      (tm, ty) <- elabLambda ctx bs body sp (Just expected)
+    (ELambda mlbl bs body sp, _) -> do
+      -- §18.5.1: an explicit lambda label, else (anonymous) a reset so a
+      -- `return@outer` cannot cross this user-written lambda boundary.
+      (tm, ty) <- elabLambda (ctx {ctxReturnTarget = nameText <$> mlbl}) bs body sp (Just expected)
       expectType ctx sp ty expected
       pure tm
     (_, VPi Impl q nm dom clo)
@@ -2791,7 +2803,9 @@ check ctx expr expected0 = do
     (EIf alts mels sp, _) -> checkIf ctx alts mels sp expected
     (EMatch scrut cases sp, _) -> checkMatch ctx scrut cases sp expected
     (EDo mlbl items sp, _) -> do
-      (tm, ty) <- elabDo ctx mlbl items sp (Just expected)
+      -- nested do in checked expression position: reset the return target
+      -- (a `return@outer` cannot cross this do-value boundary at runtime).
+      (tm, ty) <- elabDo (ctx {ctxReturnTarget = Nothing}) mlbl items sp (Just expected)
       expectType ctx sp ty expected
       pure tm
     (ELet binds body _, _) -> do
@@ -5931,11 +5945,21 @@ elabLambda ctx0 bs0 body sp mexpected =
   -- the surrounding scope may not be captured into it (§16.3.3)
   go (pushCtxBarrier ctx0) bs0 mexpected
   where
-    go ctx [] mexp = case mexp of
-      Just t -> do
+    -- §18.5.1: the lambda body do IS the labeled lambda's completion
+    -- boundary, so elaborate an EDo body directly with ctxReturnTarget
+    -- preserved (the generic EDo path resets it as a nested do).
+    go ctx [] mexp = case (body, mexp) of
+      (EDo mlbl items isp, Just t) -> do
+        (tm, ty') <- elabDo ctx mlbl items isp (Just t)
+        expectType ctx isp ty' t
+        pure (tm, t)
+      (EDo mlbl items isp, Nothing) -> do
+        (tm, ty) <- elabDo ctx mlbl items isp Nothing
+        insertAllImplicits ctx (exprSpan body) tm ty
+      (_, Just t) -> do
         tm <- check ctx body t
         pure (tm, t)
-      Nothing -> do
+      (_, Nothing) -> do
         (tm, ty) <- infer ctx body
         insertAllImplicits ctx (exprSpan body) tm ty
     go ctx (b : rest) mexp = do
@@ -7531,12 +7555,19 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                     ("unresolved name '" <> nameText n <> "'")
                   goItems loops c errT resT rest
         DoReturn ml me rsp -> do
-          -- return@label targets named functions or labeled lambdas
-          -- (§18.5.1); this implementation's kernel only returns from
-          -- the current do-scope, so a labeled return is rejected
-          -- rather than silently retargeted.
+          -- §18.5/§18.5.1: `return@L` targets the enclosing named function
+          -- or labeled lambda L. Resolution is confined to the current
+          -- function/lambda body and does not cross a user-written lambda
+          -- boundary, so the only reachable target is the innermost
+          -- enclosing one (`ctxReturnTarget`). When L names it, the abrupt
+          -- Return targets exactly the construct that bare `return` does
+          -- here (the current body's completion), so it lowers to the same
+          -- KReturn; a label naming anything else is a compile-time error.
           forM_ ml $ \l ->
-            reportUnsupported (nameSpan l) "labeled return (return@label)"
+            unless (Just (nameText l) == ctxReturnTarget c) $
+              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
+                ("return@" <> nameText l
+                   <> " does not target the enclosing named function or labeled lambda; return resolution is confined to the current function/lambda body and does not cross a lambda boundary (§18.5/§18.5.1)")
           tm <- case me of
             Just e -> do
               -- a `return` payload ordinarily carries this do-scope's
@@ -10941,8 +10972,8 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
               (tm', ty') <- infer emptyCtx (EVar bn)
               expectType emptyCtx (nameSpan bn) ty' sigTy
               pure tm'
-            _ -> checkAgainstSig sigTy binders body sp
-          else checkAgainstSig sigTy binders body sp
+            _ -> checkAgainstSig (Just (nameText n)) sigTy binders body sp
+          else checkAgainstSig (Just (nameText n)) sigTy binders body sp
       flushPending
       tm <- zonkTermM 0 tm0
       tmV <- evalIn emptyCtx tm
@@ -11177,12 +11208,28 @@ structuralOK g _ tm0 =
         Just (Just root) -> root `elem` take (i + 1) paramLevels || root `elem` paramLevels
         _ -> False
 
-checkAgainstSig :: Value -> [Binder] -> Expr -> Span -> CheckM Term
-checkAgainstSig sigTy binders body sp = do
-  -- consume binders against the signature's Pi telescope
-  go emptyCtx sigTy binders
+checkAgainstSig :: Maybe Text -> Value -> [Binder] -> Expr -> Span -> CheckM Term
+checkAgainstSig retName sigTy binders body sp = do
+  -- consume binders against the signature's Pi telescope. §18.5: the body
+  -- is the named function's body, so a `return@<name>` inside it resolves.
+  go (emptyCtx {ctxReturnTarget = retName}) sigTy binders
   where
-    go ctx ty [] = check ctx body ty
+    -- §9.1: `let name = \binders -> body` is a named function `name`; the
+    -- RHS lambda inherits the name as its return target. Inject it as the
+    -- lambda's label so `return@name` inside the body resolves (an explicit
+    -- label on the lambda is kept).
+    body' = case (binders, body, retName) of
+      ([], ELambda Nothing lbs lbody lsp, Just nm) -> ELambda (Just (Name nm lsp)) lbs lbody lsp
+      _ -> body
+    -- The function body do IS the return target's completion boundary, so
+    -- elaborate it directly with ctxReturnTarget preserved (the generic
+    -- EDo path would reset it, treating it as a nested do). §18.5.
+    go ctx ty [] = case body' of
+      EDo mlbl items isp -> do
+        (tm, ty') <- elabDo ctx mlbl items isp (Just ty)
+        expectType ctx isp ty' ty
+        pure tm
+      _ -> check ctx body' ty
     go ctx ty0 (b : rest) = do
       ty <- forceM ty0
       case ty of

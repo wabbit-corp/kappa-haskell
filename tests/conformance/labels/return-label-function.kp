@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "enter\ndone\n"
+
+-- §18.5: `return@f` targets the enclosing named function f and exits it,
+-- transparent through the enclosing `if`. The "late" line is skipped.
+f : Nat -> UIO Unit
+let f x = do
+    printlnString "enter"
+    if x == 0 then
+        return@f ()
+    printlnString "late"
+
+main : UIO Unit
+let main = do
+    f 0
+    printlnString "done"

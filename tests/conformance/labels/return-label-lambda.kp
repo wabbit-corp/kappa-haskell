@@ -1,0 +1,16 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "in-lambda\ndone\n"
+
+-- §18.5.1: a labeled lambda `lam@\ n -> …` is a return target; `return@lam`
+-- inside the body exits that lambda. Bare `return` would target the nearest
+-- named function, so the explicit label is what targets the lambda.
+main : UIO Unit
+let main = do
+    let k = lam@\ n -> do
+            printlnString "in-lambda"
+            if n > 0 then
+                return@lam ()
+            printlnString "lam-late"
+    k 5
+    printlnString "done"

@@ -1,0 +1,14 @@
+--! assertDiagnostic error E_LABEL_UNRESOLVED
+
+-- §18.5/§18.8.10: return resolution is confined to the current function or
+-- lambda body and does not cross a do-VALUE / lambda boundary. `return@main`
+-- written inside a nested `inner@do` (a separate completion boundary in this
+-- implementation, like break/continue in a first-class do) cannot target the
+-- enclosing function, so it is a compile-time error rather than a return that
+-- would exit only the inner scope. Bare `return` is available where it is
+-- transparent (directly in the function body and its if/loop sub-scopes).
+main : UIO Unit
+let main = do
+    inner@do
+        return@main ()
+    printlnString "after"
