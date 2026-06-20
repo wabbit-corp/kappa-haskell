@@ -1,0 +1,12 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\nd2\nd1\n"
+
+-- §18.7: `defer@L` schedules onto the do-scope labeled L. Here L is the
+-- current scope, so it behaves like plain `defer`: the actions run LIFO
+-- when the scope exits.
+main : UIO Unit
+let main = outer@do
+    defer@outer printlnString "d1"
+    defer@outer printlnString "d2"
+    printlnString "body"

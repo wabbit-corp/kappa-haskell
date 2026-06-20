@@ -568,7 +568,7 @@ mentionsThis = \case
   CLet _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
   CLetRec _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
   CMeta _ -> False
-  CDo _ -> False
+  CDo _ _ -> False
   CSealE _ e -> mentionsThis e
   CSigT _ e -> mentionsThis e
   CThunkE e -> mentionsThis e
@@ -604,7 +604,7 @@ thisDepsOf = nub . go
       CLet _ _ a b c -> go a ++ go b ++ go c
       CLetRec _ _ a b c -> go a ++ go b ++ go c
       CMeta _ -> []
-      CDo _ -> []
+      CDo _ _ -> []
       CSealE _ e -> go e
       CSigT _ e -> go e
       CThunkE e -> go e
@@ -640,7 +640,7 @@ substThisTm recv = go 0
       CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
       CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta _ -> t
-      CDo _ -> t
+      CDo _ _ -> t
       CSealE ls e -> CSealE ls (go d e)
       CSigT ls e -> CSigT ls (go d e)
       CThunkE e -> CThunkE (go d e)
@@ -1880,7 +1880,7 @@ metaIdsOf = nub . go
       CGlob _ -> []
       CSort _ -> []
       CLit _ -> []
-      CDo _ -> []
+      CDo _ _ -> []
 
 -- | The unsolved subset of 'metaIdsOf' under the current solution map.
 unsolvedMetasOf :: CheckState -> Term -> [MetaId]
@@ -1928,7 +1928,7 @@ zonkTermM depth0 t0 = do
         KWhile l c b e -> (KWhile l (go d c) (goI d b) (fmap (goI d) e), d)
         KFor l p s b e -> (KFor l p (go d s) (goI (d + patBindersC p) b) (fmap (goI d) e), d)
         KIf alts e -> (KIf [(go d c, goI d b) | (c, b) <- alts] (fmap (goI d) e), d)
-        KDefer t -> (KDefer (go d t), d)
+        KDefer ml t -> (KDefer ml (go d t), d)
         KUsing p a r -> (KUsing p (go d a) (go d r), d)
       go :: Int -> Term -> Term
       go d = \case
@@ -1953,7 +1953,7 @@ zonkTermM depth0 t0 = do
         CInject tg e -> CInject tg (go d e)
         CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
         CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
-        CDo items -> CDo (goI d items)
+        CDo lbl items -> CDo lbl (goI d items)
         CSealE ls e -> CSealE ls (go d e)
         CSigT ls e -> CSigT ls (go d e)
         CThunkE e -> CThunkE (go d e)
@@ -2515,7 +2515,7 @@ infer ctx expr = case expr of
     pure (tm, resT)
   -- a do-scope label is only consumable by defer@label, which is
   -- rejected as unsupported at its use site, so the label is inert here
-  EDo _ items sp -> elabDo ctx items sp Nothing
+  EDo mlbl items sp -> elabDo ctx mlbl items sp Nothing
   EThunk e sp
     -- §5.2: soft keywords shadowed by a local binding are ordinary names
     | Just _ <- lookupCtx "thunk" ctx ->
@@ -2790,8 +2790,8 @@ check ctx expr expected0 = do
       pure tm
     (EIf alts mels sp, _) -> checkIf ctx alts mels sp expected
     (EMatch scrut cases sp, _) -> checkMatch ctx scrut cases sp expected
-    (EDo _ items sp, _) -> do
-      (tm, ty) <- elabDo ctx items sp (Just expected)
+    (EDo mlbl items sp, _) -> do
+      (tm, ty) <- elabDo ctx mlbl items sp (Just expected)
       expectType ctx sp ty expected
       pure tm
     (ELet binds body _, _) -> do
@@ -3414,7 +3414,7 @@ renameThisLabels labelOf = go
       CSort _ -> t
       CLit _ -> t
       CMeta _ -> t
-      CDo _ -> t
+      CDo _ _ -> t
 -- | Check an all-explicit application against an expected function
 -- type by peeling the callee's Pi spine with placeholder metas,
 -- unifying the result type with the expectation FIRST, and only then
@@ -5780,7 +5780,7 @@ varUsedAt = go
       CSort _ -> False
       CLit _ -> False
       CMeta _ -> False
-      CDo _ -> False
+      CDo _ _ -> False
 
 -- | A record literal against a §13.2.1 dependent record type (or one
 -- whose initializers use sibling references): fields elaborate in
@@ -7337,8 +7337,8 @@ elabTry ctx body excepts mfin sp = do
 -- The loop's @else@ suite runs after normal completion, so the loop
 -- itself is not in scope as a target there. Each do-expression starts a
 -- fresh scope: targets never cross a first-class do-value boundary.
-elabDo :: Ctx -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
-elabDo ctx0 items _sp mexpected = do
+elabDo :: Ctx -> Maybe Name -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
+elabDo ctx0 mlabel items _sp mexpected = do
   -- §18.9.3: '~' inout markers are admissible within this do elaboration
   let ctx = ctx0 {ctxInDo = True}
   me <- traverse forceM mexpected
@@ -7354,10 +7354,10 @@ elabDo ctx0 items _sp mexpected = do
           elabElabDo ctx a items _sp
     _ -> elabDoIO ctx me items
   where
-    elabDoIO = elabDoIOItems _sp
+    elabDoIO = elabDoIOItems (nameText <$> mlabel) _sp
 
-elabDoIOItems :: Span -> Ctx -> Maybe Value -> [DoItem] -> CheckM (Term, Value)
-elabDoIOItems _sp ctx mexp items = do
+elabDoIOItems :: Maybe Text -> Span -> Ctx -> Maybe Value -> [DoItem] -> CheckM (Term, Value)
+elabDoIOItems mlabel _sp ctx mexp items = do
   (errT, resT, doTy) <- case mexp of
     Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) ->
       pure (e, a, Nothing)
@@ -7377,7 +7377,7 @@ elabDoIOItems _sp ctx mexp items = do
       a <- freshMetaV ctx
       pure (e, a, Nothing)
   kitems <- goItems [] ctx errT resT items
-  pure (CDo kitems, fromMaybe (ioType errT resT) doTy)
+  pure (CDo mlabel kitems, fromMaybe (ioType errT resT) doTy)
   where
     goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
@@ -7655,14 +7655,22 @@ elabDoIOItems _sp ctx mexp items = do
           ks <- goItems loops cAfter errT resT rest
           pure (KIf alts' elsKs : ks)
         DoDefer ml e _ -> do
-          -- defer@label schedules onto a labeled outer do-scope
-          -- (§18.7); the kernel only schedules onto the current scope,
-          -- so a labeled defer is rejected rather than run too early.
+          -- §18.7: `defer e` schedules onto the current do-scope;
+          -- `defer@L e` schedules onto the enclosing do-scope labeled L
+          -- (which may be outer, so the action stays pending across inner
+          -- scope exits and runs only when L itself exits). The labeled
+          -- do-scopes enclosing this point are this do-block (mlabel) and
+          -- every enclosing labeled loop body (loops); a label naming
+          -- none of them is a compile-time error rather than a defer that
+          -- never fires.
           forM_ ml $ \l ->
-            reportUnsupported (nameSpan l) "labeled defer (defer@label)"
+            unless (Just (nameText l) == mlabel || Just (nameText l) `elem` loops) $
+              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
+                ("defer@" <> nameText l
+                   <> " does not target an enclosing labeled do-scope (explicit 'do' or loop) of this do-scope (§18.7)")
           eTm <- check c (desugarBang e) (ioType errT (VGlobN (gPrel "Unit") []))
           ks <- goItems loops c errT resT rest
-          pure (KDefer eTm : ks)
+          pure (KDefer (nameText <$> ml) eTm : ks)
         DoUsing mq pat rhs usp -> do
           -- §9.3: using always binds its pattern with borrowed access at
           -- the default quantity ω; an explicit prefix is rejected
@@ -10072,7 +10080,7 @@ mentionsGroup groupNames = go
       CLet _ _ a b c -> go a || go b || go c
       CLetRec _ _ a b c -> go a || go b || go c
       CMeta _ -> False
-      CDo _ -> False
+      CDo _ _ -> False
       CSealE _ e -> go e
       CSigT _ e -> go e
       CThunkE e -> go e
@@ -10105,7 +10113,7 @@ mentionsVar = go
       CLet _ _ a b c -> go v a || go v b || go (v + 1) c
       CLetRec _ _ a b c -> go v a || go (v + 1) b || go (v + 1) c
       CMeta _ -> False
-      CDo _ -> False
+      CDo _ _ -> False
       CSealE _ e -> go v e
       CSigT _ e -> go v e
       CThunkE e -> go v e
@@ -10328,7 +10336,7 @@ coreUsesVar0 = go 0
       CLet _ _ a b c -> go d a || go d b || go (d + 1) c
       CLetRec _ _ a b c -> go d a || go (d + 1) b || go (d + 1) c
       CMeta _ -> False
-      CDo _ -> True
+      CDo _ _ -> True
       CSealE _ e -> go d e
       CSigT _ e -> go d e
       CThunkE e -> go d e
@@ -10364,7 +10372,7 @@ shiftTerm by = go
       CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
       CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta m -> CMeta m
-      CDo items -> CDo items
+      CDo lbl items -> CDo lbl items
       CSealE ls e -> CSealE ls (go d e)
       CSigT ls e -> CSigT ls (go d e)
       CThunkE e -> CThunkE (go d e)
@@ -10825,7 +10833,7 @@ placesToThis n = go 0
       CLet q nm a b c -> CLet q nm (go d a) (go d b) (go (d + 1) c)
       CLetRec q nm a b c -> CLetRec q nm (go d a) (go (d + 1) b) (go (d + 1) c)
       CMeta _ -> t
-      CDo _ -> t
+      CDo _ _ -> t
       CSealE ls e -> CSealE ls (go d e)
       CSigT ls e -> CSigT ls (go d e)
       CThunkE e -> CThunkE (go d e)
@@ -11040,7 +11048,7 @@ occursGlobal g = go
       CThunkE e -> go e
       CLazyE e -> go e
       CForceE e -> go e
-      CDo items -> any goK items
+      CDo _ items -> any goK items
       _ -> False
     goK = \case
       KBind _ _ t -> go t
@@ -11053,7 +11061,7 @@ occursGlobal g = go
       KWhile _ c b e -> go c || any goK b || maybe False (any goK) e
       KFor _ _ s b e -> go s || any goK b || maybe False (any goK) e
       KIf alts e -> any (\(c, b) -> go c || any goK b) alts || maybe False (any goK) e
-      KDefer t -> go t
+      KDefer _ t -> go t
       KUsing _ a r -> go a || go r
       _ -> False
 
@@ -11139,7 +11147,7 @@ structuralOK g _ tm0 =
       CThunkE e -> collect d sub e
       CLazyE e -> collect d sub e
       CForceE e -> collect d sub e
-      CDo _ -> Just [] -- loops handle their own progress; no self-calls expected
+      CDo _ _ -> Just [] -- loops handle their own progress; no self-calls expected
       _ -> Just []
       where
         concat3 a b c = a ++ b ++ c

@@ -15,6 +15,7 @@ module Kappa.Interp
 import Control.Exception (AsyncException (..), Exception, fromException, throwIO, try)
 import Data.IORef
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -106,8 +107,8 @@ runMainRT rt mainG =
 -- | Execute a value of IO type to completion.
 runIOValue :: RT -> Value -> IO Value
 runIOValue rt v = case force (rtEC rt) v of
-  VDoV items env -> do
-    r <- runScope rt env items
+  VDoV lbl items env -> do
+    r <- runScope rt [] lbl env items
     case r of
       CplNormal x -> pure x
       CplReturn x -> pure x
@@ -194,11 +195,19 @@ evalK rt env t = runSplices rt (eval (rtEC rt) env t)
 
 -- One do-scope: exit actions are scheduled here and run exactly once,
 -- LIFO, on every way out (§18.7, §18.8.3).
-runScope :: RT -> Env -> [KItem] -> IO Completion
-runScope rt env0 items0 = do
+-- | Run a do-scope. @reg@ maps the labels of enclosing do-scopes to their
+-- exit-action queues, so a @defer@L@ (§18.7) registers onto the labeled
+-- (possibly outer) scope; @selfLabel@ is this scope's own label, added to
+-- the registry visible to nested scopes. Deferred actions run LIFO when the
+-- scope they were scheduled onto exits.
+runScope :: RT -> [(Text, IORef [IO ()])] -> Maybe Text -> Env -> [KItem] -> IO Completion
+runScope rt reg0 selfLabel env0 items0 = do
   let ec = rtEC rt
   exitsRef <- newIORef []
-  let runExits = do
+  let reg = case selfLabel of
+        Just l -> (l, exitsRef) : reg0
+        Nothing -> reg0
+      runExits = do
         exits <- readIORef exitsRef
         writeIORef exitsRef []
         sequence_ exits
@@ -242,8 +251,15 @@ runScope rt env0 items0 = do
         KReturn t -> leave . CplReturn =<< evalK rt env t
         KBreak ml -> leave (CplBreak ml)
         KContinue ml -> leave (CplContinue ml)
-        KDefer t -> do
-          modifyIORef' exitsRef ((() <$ (runIOValue rt =<< evalK rt env t)) :)
+        KDefer ml t -> do
+          -- §18.7: schedule onto the current scope (Nothing) or the named
+          -- enclosing labeled scope; the action's env is captured here but
+          -- it runs when the targeted scope unwinds. The label is resolved
+          -- at compile time, so a missing entry falls back to this scope.
+          let target = case ml of
+                Nothing -> exitsRef
+                Just l -> fromMaybe exitsRef (lookup l reg)
+          modifyIORef' target ((() <$ (runIOValue rt =<< evalK rt env t)) :)
           go env rest
         KWhile ml cond body mels -> loopOut =<< whileLoop env ml cond body mels
         KFor ml pat src body mels -> loopOut =<< forLoop env ml pat src body mels
@@ -265,7 +281,7 @@ runScope rt env0 items0 = do
         where
           loop = (asBool <$> evalK rt env cond) >>= \cv -> case cv of
             Just True -> do
-              r <- runScope rt env body
+              r <- runScope rt reg ml env body
               case r of
                 CplNormal _ -> loop
                 CplContinue l | l `targets` ml -> loop
@@ -282,7 +298,7 @@ runScope rt env0 items0 = do
           loop (x : xs) = case matchPat ec pat x of
             Nothing -> throwIO (KappaError (VLit (LitStr "for pattern failed")))
             Just bs -> do
-              r <- runScope rt (reverse bs ++ env) body
+              r <- runScope rt reg ml (reverse bs ++ env) body
               case r of
                 CplNormal _ -> loop xs
                 CplContinue l | l `targets` ml -> loop xs
@@ -290,13 +306,13 @@ runScope rt env0 items0 = do
                 other -> pure other
 
       runElse env mels = case mels of
-        Just els -> runScope rt env els
+        Just els -> runScope rt reg Nothing env els
         Nothing -> pure (CplNormal unitV)
 
       pickIf env [] mels = runElse env mels
       pickIf env ((c, body) : more) mels =
         (asBool <$> evalK rt env c) >>= \cv -> case cv of
-          Just True -> runScope rt env body
+          Just True -> runScope rt reg Nothing env body
           Just False -> pickIf env more mels
           Nothing -> throwIO (KappaError (VLit (LitStr "if condition was not a Bool")))
 

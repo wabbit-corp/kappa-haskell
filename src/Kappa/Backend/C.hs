@@ -103,6 +103,7 @@ data GenState = GenState
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
+  , gsDeferLabels :: ![(Text, (Text, Text))] -- ^ §18.7 label ↦ (arr,cnt) frame of each enclosing LABELED do-scope (explicit `do`/loop), innermost first; a `defer@L` registers onto the frame of the scope labeled L (which may be outer) instead of the current scope.
   , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
   , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
   , gsI64Escape :: !Text -- ^ the C statement spliced by scalarArith on int overflow / INT64_MIN: @*kovf = 1; return 0;@ for an unboxed scalar worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
@@ -418,6 +419,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsLoops = []
           , gsDefer = []
           , gsScopeDefers = []
+          , gsDeferLabels = []
           , gsScalars = Map.empty
           , gsScalarRegion = False
           , gsI64Escape = "*kovf = 1; return 0;"
@@ -1296,7 +1298,7 @@ compile term = case term of
   CProjAt e _ i -> do
     ee <- compile e
     pure (recAtExpr ee i)
-  CDo items -> compileDo items
+  CDo lbl items -> compileDo lbl items
   -- §13 closed/open variants: injection is a tagged payload.
   CInject tag e -> do
     ee <- compile e
@@ -2498,18 +2500,19 @@ litValue = \case
 
 -- | Compile a do-block to a suspended IO action (@kio@) whose body runs
 -- the scope.  The captured environment is the current one.
-compileDo :: [KItem] -> Gen Text
-compileDo items = do
+compileDo :: Maybe Text -> [KItem] -> Gen Text
+compileDo lbl items = do
   fnName <- freshFn "kdo_"
   env <- gets gsEnv
-  -- A do-block is a fresh scope in its own C function: its defer frames and
-  -- enclosing loops do not extend into it (control cannot break out of a
-  -- do-block value to an outer loop), so reset those for the do-fn body.
-  -- compileItems sets up this scope's §18.7 defer frame.
-  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g)
-  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = []}
-  (stmts, ()) <- captured "cenv" (compileItems Tail items)
-  modify' $ \g -> let (d, s, l) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l}
+  -- A do-block is a fresh scope in its own C function: its defer frames,
+  -- labeled-scope map and enclosing loops do not extend into it (control
+  -- cannot break out of, nor defer@L into, a do-block VALUE's outer scope),
+  -- so reset those for the do-fn body. compileItems sets up this scope's
+  -- §18.7 defer frame (tagged with `lbl` for defer@label routing).
+  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g, gsDeferLabels g)
+  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = [], gsDeferLabels = []}
+  (stmts, ()) <- captured "cenv" (compileItems lbl Tail items)
+  modify' $ \g -> let (d, s, l, dl) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l, gsDeferLabels = dl}
   let fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
@@ -2594,8 +2597,21 @@ data ScopeMode = Tail | Nested | TailEffect
 -- 'Nested' position items run for effect and break\/continue\/return
 -- propagate via C statements.  A single traversal serves both modes so the
 -- two can never drift (the previous split caused real divergences).
-compileItems :: ScopeMode -> [KItem] -> Gen ()
-compileItems mode items0 = do
+-- | §18.7: count the @defer@L@ actions in a kernel subtree that target the
+-- scope labeled @L@. Recurses into nested loop/if bodies (which route their
+-- @defer@L@ to this scope) but never into a 'KDefer' action term (a nested
+-- @do@ VALUE there is a fresh scope with its own label map).
+countLabeledDefers :: Text -> [KItem] -> Int
+countLabeledDefers s = sum . map go
+  where
+    go (KDefer (Just l) _) | l == s = 1
+    go (KWhile _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
+    go (KFor _ _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
+    go (KIf alts mels) = sum [countLabeledDefers s b | (_, b) <- alts] + maybe 0 (countLabeledDefers s) mels
+    go _ = 0
+
+compileItems :: Maybe Text -> ScopeMode -> [KItem] -> Gen ()
+compileItems selfLabel mode items0 = do
   -- A scope that registers §18.7 defers gets a frame (a GC-heap array +
   -- count, declared at scope entry — for a loop body that means a fresh
   -- frame per iteration).  A Tail/TailEffect scope's frame is pushed on
@@ -2603,7 +2619,17 @@ compileItems mode items0 = do
   -- emitTailIO/emitTailReturn); a Nested scope's frame is pushed on
   -- gsScopeDefers and flushed INLINE at normal completion here (and at any
   -- break/continue/return that unwinds it — see gotoLoop / KReturn).
-  let ndefer = length [() | KDefer _ <- items0]
+  --
+  -- The frame must be sized for every action that lands on it: the
+  -- unlabeled `defer`s written DIRECTLY in this scope, plus any
+  -- `defer@selfLabel` written anywhere in this scope's kernel subtree
+  -- (nested loop/if bodies route to it). A `defer@other` written here
+  -- routes to an enclosing frame, so it is NOT counted at this scope.
+  let ndirect = length [() | KDefer Nothing _ <- items0]
+      nlabeled = case selfLabel of
+        Just s -> countLabeledDefers s items0
+        Nothing -> 0
+      ndefer = ndirect + nlabeled
   if ndefer == 0
     then go items0
     else do
@@ -2615,7 +2641,9 @@ compileItems mode items0 = do
       case mode of
         Nested -> modify' $ \g -> g {gsScopeDefers = frame : gsScopeDefers g}
         _ -> modify' $ \g -> g {gsDefer = frame : gsDefer g}
+      forM_ selfLabel $ \l -> modify' $ \g -> g {gsDeferLabels = (l, frame) : gsDeferLabels g}
       go items0
+      forM_ selfLabel $ \_ -> modify' $ \g -> g {gsDeferLabels = drop 1 (gsDeferLabels g)}
       case mode of
         Nested -> do flushFramesInline [frame]; modify' $ \g -> g {gsScopeDefers = drop 1 (gsScopeDefers g)}
         _ -> modify' $ \g -> g {gsDefer = drop 1 (gsDefer g)}
@@ -2776,11 +2804,16 @@ compileItems mode items0 = do
       -- (not eagerly at registration), so it observes state mutated between
       -- here and the flush — matching the interpreter (`evalK ... t` is run
       -- lazily from the exit list).
-      KDefer t -> do
+      KDefer ml t -> do
         de <- compileDeferAction t
-        frame <- gets $ \g -> case mode of
-          Nested -> head (gsScopeDefers g)
-          _ -> head (gsDefer g)
+        -- §18.7: `defer@L` registers onto the frame of the enclosing scope
+        -- labeled L (which may be outer; its C arr/cnt locals are lexically
+        -- in scope here). Plain `defer` uses the current scope's frame.
+        frame <- gets $ \g -> case ml of
+          Just l | Just fr <- lookup l (gsDeferLabels g) -> fr
+          _ -> case mode of
+            Nested -> head (gsScopeDefers g)
+            _ -> head (gsDefer g)
         registerDefer frame de
         go rest
       -- §18 `using` desugars to a plain bind in elaboration (Check.hs); a
@@ -2933,7 +2966,7 @@ compileKIf alts mels = go alts
       ce <- compile c
       emit ("if (kas_bool(" <> ce <> ")) {")
       env <- gets gsEnv
-      (blk, ()) <- captured env (compileItems Nested body)
+      (blk, ()) <- captured env (compileItems Nothing Nested body)
       forM_ blk (emit . ("  " <>))
       emit "}"
       unless (null more && mels == Nothing) $ do
@@ -2942,7 +2975,7 @@ compileKIf alts mels = go alts
         emit "}"
     emitBlock items = do
       env <- gets gsEnv
-      (blk, ()) <- captured env (compileItems Nested items)
+      (blk, ()) <- captured env (compileItems Nothing Nested items)
       emit "{"
       forM_ blk (emit . ("  " <>))
       emit "}"
@@ -2967,7 +3000,7 @@ compileKIfTail alts mels = goAlts alts
       emit "}"
     emitBranch items = do
       env <- gets gsEnv
-      (blk, ()) <- captured env (compileItems TailEffect items)
+      (blk, ()) <- captured env (compileItems Nothing TailEffect items)
       forM_ blk (emit . ("  " <>))
 
 data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
@@ -2997,7 +3030,7 @@ compileLoop mlabel kind body mels = do
   bodyBlk <- case kind of
     LoopWhile cond -> do
       (condBlk, ce) <- captured env (compile cond)
-      (bb, ()) <- withLoop ctx (captured env (compileItems Nested body))
+      (bb, ()) <- withLoop ctx (captured env (compileItems mlabel Nested body))
       emit (contL <> ": ;")
       forM_ condBlk (emit . ("  " <>))
       emit ("if (!kas_bool(" <> ce <> ")) goto " <> normL <> ";")
@@ -3010,12 +3043,12 @@ compileLoop mlabel kind body mels = do
       emit ("KValue *" <> it <> " = " <> se <> ";")
       (bb, ()) <- withLoop ctx $ captured env $ case pat of
         -- a wildcard element binds nothing: skip the unused element var
-        CPWild -> compileItems Nested body
+        CPWild -> compileItems mlabel Nested body
         _ -> do
           elemV <- freshN "elem_"
           emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
           e' <- bindPatScrut elemV env pat
-          withEnv e' (compileItems Nested body)
+          withEnv e' (compileItems mlabel Nested body)
       emit (contL <> ": ;")
       emit ("if (!kis_cons(" <> it <> ")) goto " <> normL <> ";")
       forM_ bb emit
@@ -3026,7 +3059,7 @@ compileLoop mlabel kind body mels = do
   emit (normL <> ": ;")
   elsBlk <- case mels of
     Just els -> do
-      (eb, ()) <- captured env (compileItems Nested els)
+      (eb, ()) <- captured env (compileItems Nothing Nested els)
       emit "{"
       forM_ eb (emit . ("  " <>))
       emit "}"
@@ -3124,7 +3157,7 @@ itemHasClosure item = case item of
   KWhile _ c b mels -> bodyCapturesEnv c || any itemHasClosure b || maybe False (any itemHasClosure) mels
   KFor _ _ s b mels -> bodyCapturesEnv s || any itemHasClosure b || maybe False (any itemHasClosure) mels
   KIf alts mels -> any (\(c, b) -> bodyCapturesEnv c || any itemHasClosure b) alts || maybe False (any itemHasClosure) mels
-  KDefer t -> bodyCapturesEnv t
+  KDefer _ t -> bodyCapturesEnv t
   KUsing _ a r -> bodyCapturesEnv a || bodyCapturesEnv r
   KBreak _ -> False
   KContinue _ -> False

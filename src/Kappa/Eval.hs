@@ -127,7 +127,7 @@ eval ctx env = \case
   CMeta m -> case Map.lookup m (ecMetas ctx) of
     Just (Just v) -> v
     _ -> VFlex m []
-  CDo items -> VDoV items env
+  CDo lbl items -> VDoV lbl items env
   CSealE ls e -> VSealV ls (eval ctx env e)
   CSigT ls e -> VSigT ls (eval ctx env e)
   CThunkE e -> VThunkV (Closure env e)
@@ -436,7 +436,7 @@ quote ctx lvl v = case forceQ ctx v of
   VProjN e f -> CProj (quote ctx lvl e) f
   VSealV ls x -> CSealE ls (quote ctx lvl x)
   VSigT ls x -> CSigT ls (quote ctx lvl x)
-  VDoV items _ -> CDo items
+  VDoV lbl items _ -> CDo lbl items
   VThunkV (Closure env body) -> CThunkE (quoteUnder env body)
   VLazyV (Closure env body) -> CLazyE (quoteUnder env body)
   VIfN c t f ->

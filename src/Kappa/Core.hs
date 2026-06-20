@@ -101,7 +101,7 @@ data Term
   | CLet !Q !Text !Term !Term !Term -- ^ q, name, type, rhs, body
   | CLetRec !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
   | CMeta !MetaId
-  | CDo ![KItem] -- ^ §18.8 do kernel; executed natively
+  | CDo !(Maybe Text) ![KItem] -- ^ §18.8 do kernel (optional scope label, §18.7); executed natively
   | CSealE ![Text] !Term -- ^ §13.2.10 sealed package: opaque labels + record
   | CSigT ![Text] !Term -- ^ §13.2.10 signature type: opaque labels + record type
   | CThunkE !Term -- ^ Delay
@@ -177,7 +177,7 @@ data KItem
   | KWhile !(Maybe Text) !Term ![KItem] !(Maybe [KItem])
   | KFor !(Maybe Text) !CorePat !Term ![KItem] !(Maybe [KItem])
   | KIf ![(Term, [KItem])] !(Maybe [KItem])
-  | KDefer !Term
+  | KDefer !(Maybe Text) !Term -- ^ defer (Nothing) / defer@label (§18.7)
   | KUsing !CorePat !Term !Term -- ^ pattern, acquire, release-dict-member
   deriving stock (Eq, Show)
 
@@ -210,7 +210,7 @@ data Value
   | VProjN !Value !Text -- ^ stuck projection
   | VSealV ![Text] !Value -- ^ §13.2.10 sealed package (opaque member projections stick)
   | VSigT ![Text] !Value -- ^ §13.2.10 signature type (opaque labels + record type)
-  | VDoV ![KItem] !Env -- ^ suspended do block (runtime object)
+  | VDoV !(Maybe Text) ![KItem] !Env -- ^ suspended do block (optional scope label, §18.7)
   | VThunkV !Closure
   | VLazyV !Closure
   | VIfN !Value !Closure !Closure -- ^ stuck if

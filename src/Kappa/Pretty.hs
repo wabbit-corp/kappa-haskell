@@ -69,7 +69,7 @@ renderTerm = go 0
       -- After zonking, any metavariable that survives is genuinely
       -- unknown, so it renders as the stable hole spelling `_`.
       CMeta _ -> "_"
-      CDo _ -> "do ..."
+      CDo _ _ -> "do ..."
       CSealE _ e -> paren (p > 1) ("seal " <> go 2 e)
       CSigT ls e ->
         case e of

@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "start\niter\ninner-defer\niter\ninner-defer\nafter-loop\nouter-defer\nouter-defer\n"
+
+-- §18.7/§18.8.3.1: `defer@outer` from inside an inner (loop-body) scope
+-- schedules onto the OUTER labeled do-scope. The action stays pending
+-- across each inner-scope exit (where the plain `defer` fires) and runs
+-- only when the labeled `outer` scope itself exits — LIFO with the other
+-- actions scheduled onto it.
+main : UIO Unit
+let main = outer@do
+    printlnString "start"
+    for i in (1 :: 2 :: Nil) do
+        defer@outer printlnString "outer-defer"
+        defer printlnString "inner-defer"
+        printlnString "iter"
+    printlnString "after-loop"
