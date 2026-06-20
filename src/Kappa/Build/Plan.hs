@@ -15,6 +15,7 @@ module Kappa.Build.Plan
   , resolveTestTarget
   ) where
 
+import Control.Exception (SomeException, catch)
 import Control.Monad (filterM, forM)
 import qualified Data.ByteString as BS
 import Data.Char (isDigit)
@@ -26,7 +27,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Kappa.Backend.Capabilities (ffiRequiredCapabilities, nativeRuntimeCapabilities)
 import Kappa.Backend.Driver (detectCC, verifyDeclName)
-import Kappa.Backend.HeaderGen (generatePrefixSurfaceDecls, generateSurfaceDecls)
+import Kappa.Backend.HeaderGen (AbiClass (..), ctypeAbiClass, definedSymbols, generatePrefixSurfaceDecls, generateSurfaceDecls, protoArity)
 import Kappa.Backend.NativeProbe (safeWithinRoot)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), scalarOnly)
 import Kappa.Build.Lock (LockEntry (..), contentId)
@@ -101,7 +102,7 @@ resolveExecutable manifestDir bc mTarget =
       -- backend profile. A target selecting jvm/dotnet must be rejected
       -- honestly rather than silently coerced into a native build.
       | not (isNativeBackend (tBackend tgt)) -> pure (Left [backendUnrealized tgt])
-      | otherwise -> genThen tgt $ \genMap -> case resolveProviders genMap tgt of
+      | otherwise -> genThen tgt $ \genMap shimDefs -> case resolveProviders genMap shimDefs tgt of
       Left ds -> pure (Left ds)
       Right (nativeSyms, linkSpecs, nativeInputs, nativeBindings, _anyNative) ->
         case tMain tgt of
@@ -225,7 +226,7 @@ resolveExecutable manifestDir bc mTarget =
     -- header (no hand-authored symbolDecl). Runs only when the target actually
     -- references a generated-surface binding; that requires a C toolchain
     -- (preprocessing the header), so its absence is a fail-closed diagnostic.
-    genThen :: Target -> (Map.Map Text [SymbolDecl] -> IO (Either Diagnostics a)) -> IO (Either Diagnostics a)
+    genThen :: Target -> (Map.Map Text [SymbolDecl] -> Map.Map Text (Set.Set Text) -> IO (Either Diagnostics a)) -> IO (Either Diagnostics a)
     genThen tgt k = do
       let wanted = targetHostBindings tgt
           selected = [hb | nm <- wanted, hb <- bcHostBindings bc, nbName hb == nm]
@@ -238,27 +239,37 @@ resolveExecutable manifestDir bc mTarget =
       epaths <- validateNativePaths manifestDir selected
       case epaths of
        Left ds -> pure (Left ds)
-       Right () ->
-        if null gens
-        then k Map.empty
-        -- §26.1.3: the header-derived generator's integer-width mapping assumes
-        -- the LP64 data model (the realized target set). Rather than INFER a
-        -- layout-sensitive surface for an unknown data model, reject a clearly
-        -- non-LP64 target triple fail-closed.
-        else if nonLp64Triple tgtTriple
-        then pure (Left [nonLp64Diag tgtTriple])
-        else do
-          mcc <- detectCC Nothing
-          case mcc of
-            Nothing -> pure (Left [genNeedsCc (nbName (head gens))])
-            Just cc -> do
-              eMap <- goGen cc Map.empty gens
-              either (pure . Left) k eMap
+       Right ()
+        -- §26.1.3: the conservative CType widths assume the LP64 data model.
+        -- Reject a clearly non-LP64 target for ANY native binding (generated or
+        -- explicit symbolList) rather than realize a wrong-width ABI.
+        | not (null selected) && nonLp64Triple tgtTriple -> pure (Left [nonLp64Diag tgtTriple])
+        | otherwise -> do
+            -- §26.1.5/§36.28: which symbols each binding's shim TUs actually
+            -- DEFINE (symbol-granular), so only a genuinely shim-defined symbol
+            -- is force-include ABI-checked and exempt from the verify proof.
+            shimDefMap <- buildShimDefMap selected
+            if null gens
+              then k Map.empty shimDefMap
+              else do
+                mcc <- detectCC Nothing
+                case mcc of
+                  Nothing -> pure (Left [genNeedsCc (nbName (head gens))])
+                  Just cc -> do
+                    eMap <- goGen cc Map.empty gens
+                    either (pure . Left) (\m -> k m shimDefMap) eMap
       where
         isGenerated SymbolListSurface {} = False
         isGenerated GeneratedSurface {} = True
         isGenerated GeneratedPrefixSurface {} = True
         triple = backendTriple (tBackend tgt)
+        buildShimDefMap hbs =
+          Map.fromList <$> mapM (\hb -> (,) (nbName hb) <$> shimDefsFor hb) hbs
+        shimDefsFor hb = do
+          let srcs = [manifestDir </> T.unpack s | ShimInput ss <- nbInputs hb, s <- ss]
+          defs <- concat <$> mapM readDefs srcs
+          pure (Set.fromList (map T.pack defs))
+        readDefs p = (definedSymbols <$> readFile p) `catch` \(_ :: SomeException) -> pure []
         goGen _ acc [] = pure (Right acc)
         goGen cc acc (hb : rest) = case nbSurface hb of
           GeneratedSurface h ss -> do
@@ -347,8 +358,8 @@ resolveExecutable manifestDir bc mTarget =
 
     -- Resolve the target's named host bindings to provided host.native
     -- modules, with collision + realizability checks (§36.28, §34.5.3).
-    resolveProviders :: Map.Map Text [SymbolDecl] -> Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput], [Text])], Bool)
-    resolveProviders genMap tgt =
+    resolveProviders :: Map.Map Text [SymbolDecl] -> Map.Map Text (Set.Set Text) -> Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput], [Text])], Bool)
+    resolveProviders genMap shimDefs tgt =
       let wanted = targetHostBindings tgt
           lookupBinding nm = [hb | hb <- bcHostBindings bc, nbName hb == nm]
        in do
@@ -370,7 +381,7 @@ resolveExecutable manifestDir bc mTarget =
             -- ResolvedNativeSymbols (§27.1.1/§36.28). The surface is either an
             -- explicit symbolList or one MECHANICALLY GENERATED from a header
             -- (pre-resolved into genMap) — the SOLE authority, no hardcoded catalog.
-            perBinding <- traverse (resolveBinding genMap) selected
+            perBinding <- traverse (resolveBinding genMap shimDefs) selected
             let allSyms = concat [ss | (_, ss) <- perBinding]
                 bindingMods = [(bn, dedup (map rnsModule ss)) | (bn, ss) <- perBinding]
             -- collision: same effective module provided by ≥2 bindings (a
@@ -449,11 +460,14 @@ resolveExecutable manifestDir bc mTarget =
     -- module gets the binding's full declared surface (the manifest's
     -- SymbolDecls, carrying the C symbol + ABI signature). The surface is
     -- authoritative — there is no catalog to validate against.
-    resolveBinding :: Map.Map Text [SymbolDecl] -> HostBinding -> Either Diagnostics (Text, [ResolvedNativeSymbol])
-    resolveBinding genMap hb = do
+    resolveBinding :: Map.Map Text [SymbolDecl] -> Map.Map Text (Set.Set Text) -> HostBinding -> Either Diagnostics (Text, [ResolvedNativeSymbol])
+    resolveBinding genMap shimDefs hb = do
       mods <- concat <$> traverse (expandSelector hb) (nbProvides hb)
       decls <- surfaceDecls genMap hb
-      let shimProvided = any isShimInput (nbInputs hb)
+      -- §26.1.5: a symbol is shim-provided only if a shim TU of this binding
+      -- actually DEFINES it (symbol-granular) — a non-shim-defined library
+      -- symbol cannot ride the binding's shim past the ABI proof.
+      let defined = Map.findWithDefault Set.empty (nbName hb) shimDefs
           syms =
             [ ResolvedNativeSymbol
                 { rnsModule = mn
@@ -461,43 +475,66 @@ resolveExecutable manifestDir bc mTarget =
                 , rnsCSymbol = sdSymbol d
                 , rnsParams = sdParams d
                 , rnsResult = sdResult d
-                , rnsShimProvided = shimProvided
+                , rnsShimProvided = sdSymbol d `Set.member` defined
                 }
             | mn <- mods
             , d <- decls
             ]
       Right (nbName hb, syms)
 
-    isShimInput :: NativeInput -> Bool
-    isShimInput ShimInput {} = True
-    isShimInput _ = False
-
-    -- §26.1.5/§36.28: reject an explicit-symbolList symbol whose pointer/string/
-    -- handle ABI is neither shim-provided (force-include ABI-checked) nor proven
-    -- by a `verify` decl (checked against the real header). Generated surfaces
-    -- are exempt (their signatures are parsed from the header).
+    -- §26.1.5/§36.28: an explicit-symbolList symbol with a pointer/string/handle
+    -- signature has no all-scalar conservative prototype the probe can check;
+    -- its ABI must be PROVEN — by being genuinely shim-DEFINED (force-include
+    -- ABI-checked) or by a `verify` decl WHOSE SIGNATURE IS ABI-CONSISTENT with
+    -- the declared one (the verify decl is itself checked against the real
+    -- header). A name-only verify match no longer suffices: the declared arity /
+    -- pointer-vs-scalar classes must agree with the verify prototype, else the
+    -- declared surface could lie about the real ABI. Generated surfaces are
+    -- exempt (their signatures are parsed from the header).
     checkSymbolListAbi :: HostBinding -> [ResolvedNativeSymbol] -> Either Diagnostics ()
     checkSymbolListAbi hb syms = case nbSurface hb of
-      SymbolListSurface _ ->
-        let verifyNames = [verifyDeclName d | VerifyInput ds <- nbInputs hb, d <- ds]
-            unproven =
-              [ s
-              | s <- syms
-              , not (scalarOnly s)
-              , not (rnsShimProvided s)
-              , rnsCSymbol s `notElem` verifyNames
-              ]
-         in case unproven of
-              [] -> Right ()
-              (s : _) -> Left [unverifiedAbi hb s]
+      SymbolListSurface _ -> mapM_ checkOne syms
       _ -> Right ()
+      where
+        verifyByName = [(verifyDeclName d, d) | VerifyInput ds <- nbInputs hb, d <- ds]
+        hasHeaders = any isHeadersInput (nbInputs hb)
+        isHeadersInput HeadersInput {} = True
+        isHeadersInput _ = False
+        checkOne s
+          | rnsShimProvided s = Right () -- shim-defined → force-include ABI-checked
+          | otherwise = case lookup (rnsCSymbol s) verifyByName of
+              Just d -> case protoArity (T.unpack d) of
+                Just (ps, r) | abiConsistent s ps r -> Right ()
+                _ -> Left [abiMismatch hb s d]
+              Nothing
+                -- a scalar symbol's conservative prototype is meaningfully
+                -- checked by the scalar probe only if the binding supplies a
+                -- header to check it against; without a header (and without a
+                -- verify decl or shim) its ABI is unproven.
+                | scalarOnly s && hasHeaders -> Right ()
+                | otherwise -> Left [unverifiedAbi hb s]
+        -- declared params must match the verify prototype's arity + per-position
+        -- ABI class; a declared Unit result may discard ANY real return.
+        abiConsistent s ps r =
+          map ctypeAbiClass (rnsParams s) == ps
+            && (ctypeAbiClass (rnsResult s) == ClsVoid || ctypeAbiClass (rnsResult s) == r)
+
+    abiMismatch :: HostBinding -> ResolvedNativeSymbol -> Text -> Diagnostic
+    abiMismatch hb s d =
+      buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
+        ( "native binding '" <> nbName hb <> "' symbolList declares '" <> rnsMember s
+            <> "' (C symbol '" <> rnsCSymbol s <> "') with an ABI signature that is NOT consistent with its "
+            <> "'verify' prototype \"" <> d <> "\" (arity or pointer/scalar/float class disagree); the declared "
+            <> "surface would misrepresent the real ABI. Make the symbolList signature match the verify prototype, "
+            <> "or generate the surface from a header (Spec §26.1.5/§36.28)"
+        )
 
     unverifiedAbi :: HostBinding -> ResolvedNativeSymbol -> Diagnostic
     unverifiedAbi hb s =
       buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
         ( "native binding '" <> nbName hb <> "' symbolList declares '" <> rnsMember s
             <> "' (C symbol '" <> rnsCSymbol s <> "') with a pointer/string/handle signature whose ABI is not "
-            <> "verified: it is not shim-provided and has no matching 'verify' declaration to check against the "
+            <> "verified: it is not shim-defined and has no matching 'verify' declaration to check against the "
             <> "real header. Add a 'verify' prototype for '" <> rnsCSymbol s <> "', provide it via a shim, or "
             <> "generate the surface from a header (Spec §26.1.5/§36.28)"
         )

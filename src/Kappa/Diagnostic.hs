@@ -431,7 +431,8 @@ portableAlias c = lookup c requiredAliasTable
 -- | §3.1.4 / §3.1.2A: implementation code ↦ required portable alias.
 requiredAliasTable :: [(Text, Text)]
 requiredAliasTable =
-  [ ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
+  [ ("E_UNSUPPORTED", "E_UNSUPPORTED_DETERMINISTIC")
+  , ("E_TYPE_EQUALITY_MISMATCH", "E_TYPE_MISMATCH")
   , ("E_SAFE_NAVIGATION_AMBIGUOUS", "E_SAFE_NAV_GENERIC_AMBIGUOUS")
   , ("E_APPLICATION_NONCALLABLE", "E_APPLICATION_NON_CALLABLE")
   , ("E_RECURSION_REQUIRES_SIGNATURE", "E_MISSING_EXPLICIT_SIGNATURE")

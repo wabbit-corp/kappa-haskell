@@ -729,21 +729,13 @@ pCtorDecl = do
       -- or a record-style {...} block:
       --     Request
       --         { method : Method, ... }
-      indented <- pIndentedBinders <|> pIndentedRecord <|> pure []
+      indented <- pIndentedBinders <|> pure []
       CtorDecl n (binders ++ indented) Nothing <$> spanFrom start
 
 -- | A record-style @{ … }@ block that starts on a following, more-indented
 -- line. The lexer emits an INDENT before the brace; layout is suppressed
 -- inside the braces, so the field list is parsed flat and the matching
 -- DEDENT (if any) is consumed after.
-pIndentedRecord :: P [Binder]
-pIndentedRecord = try $ do
-  void (many pNewline)
-  token TokIndent
-  fs <- pRecordFields
-  void (optional (token TokDedent))
-  pure fs
-
 -- | A constructor's binders on a following, more-indented continuation block,
 -- one binder per line (positional @(field : Type)@ binders, bare fields, or a
 -- record @{ … }@ block). Triggers only when a genuine deeper INDENT follows the

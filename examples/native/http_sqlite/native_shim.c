@@ -52,6 +52,26 @@ int64_t demo_sqlite_query_int(void *db, const char *sql) {
   return result;
 }
 
+/* Return the first column of the first row as a NUL-terminated string (a small
+ * static buffer; the conservative C-string convention, declared `cstrings`). */
+const char *demo_sqlite_query_text(void *db, const char *sql) {
+  static char buf[1024];
+  buf[0] = '\0';
+  sqlite3_stmt *stmt = NULL;
+  if (sqlite3_prepare_v2((sqlite3 *)db, sql, -1, &stmt, NULL) != SQLITE_OK)
+    shim_fail("sqlite3_prepare failed");
+  if (sqlite3_step(stmt) == SQLITE_ROW) {
+    const unsigned char *t = sqlite3_column_text(stmt, 0);
+    if (t) {
+      size_t i = 0;
+      for (; t[i] != '\0' && i + 1 < sizeof(buf); i++) buf[i] = (char)t[i];
+      buf[i] = '\0';
+    }
+  }
+  sqlite3_finalize(stmt);
+  return buf;
+}
+
 void demo_sqlite_close(void *db) { sqlite3_close((sqlite3 *)db); }
 
 /* ── POSIX TCP (CtHandle = fd cast to void*; CtInt64 port; CtString io) ─ */

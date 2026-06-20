@@ -24,6 +24,10 @@
 module Kappa.Backend.HeaderGen
   ( generateSurfaceDecls
   , generatePrefixSurfaceDecls
+  , definedSymbols
+  , protoArity
+  , AbiClass (..)
+  , ctypeAbiClass
   ) where
 
 import Control.Exception (SomeException, catch, finally)
@@ -207,6 +211,121 @@ pointerTypedefs = Set.fromList . mapMaybe ptd . chunks
             then let n = lastIdent t in if null n then Nothing else Just n
             else Nothing
 
+-- ── shim definitions + prototype ABI-class (for §26.1.5 ABI proof) ──────
+
+-- | The C function names DEFINED (with a @{ … }@ body) in a shim source — used
+-- to make shim-provenance symbol-granular: only a symbol the shim actually
+-- defines is force-include ABI-checked, so a non-shim-defined library symbol
+-- cannot ride a binding's shim exemption past the ABI proof (§26.1.5/§36.28).
+-- A best-effort C scan over normalized text: an identifier immediately before a
+-- balanced @(...)@ whose close is followed (after attributes) by @{@.
+definedSymbols :: String -> [String]
+definedSymbols = go . normalize . stripCStringsAndComments
+  where
+    go [] = []
+    go s@(c : cs)
+      | isIdentChar c =
+          let (name, rest) = span isIdentChar s
+              afterName = dropWhile (== ' ') rest
+           in case afterName of
+                ('(' : _) -> case matchParen afterName of
+                  Just (_, after) | defTail after && not (isKeyword name) -> name : go (skipBody after)
+                  _ -> go (dropWhile isIdentChar cs)
+                _ -> go (dropWhile isIdentChar cs)
+      | otherwise = go cs
+    -- after ')', a definition's body opens with '{' (allowing trailing attrs)
+    defTail after = case dropWhile (== ' ') (dropAttrText after) of
+      ('{' : _) -> True
+      _ -> False
+    dropAttrText = id -- attributes were already stripped by normalize/dropAttrs
+    -- skip to past the function body's matching '}' so a name inside the body
+    -- is not mistaken for another top-level definition
+    skipBody after = case dropWhile (/= '{') after of
+      ('{' : rest) -> skipBraces (1 :: Int) rest
+      _ -> after
+    skipBraces 0 s = s
+    skipBraces _ [] = []
+    skipBraces d ('{' : s) = skipBraces (d + 1) s
+    skipBraces d ('}' : s) = skipBraces (d - 1) s
+    skipBraces d (_ : s) = skipBraces d s
+    isKeyword w = w `elem` ["if", "for", "while", "switch", "return", "sizeof", "do", "else"]
+
+-- | Replace the CONTENT of C line/block comments and string/char literals with
+-- spaces (preserving length/structure) so that braces, parens, or semicolons
+-- inside them do not corrupt the brace/paren counting in 'definedSymbols' over
+-- a RAW C shim source (the preprocessed-header path never sees comments).
+stripCStringsAndComments :: String -> String
+stripCStringsAndComments = goN
+  where
+    goN [] = []
+    goN ('/' : '/' : r) = ' ' : ' ' : lineC r
+    goN ('/' : '*' : r) = ' ' : ' ' : blockC r
+    goN ('"' : r) = '"' : strC '"' r
+    goN ('\'' : r) = '\'' : strC '\'' r
+    goN (c : r) = c : goN r
+    lineC [] = []
+    lineC ('\n' : r) = '\n' : goN r
+    lineC (_ : r) = ' ' : lineC r
+    blockC [] = []
+    blockC ('*' : '/' : r) = ' ' : ' ' : goN r
+    blockC (c : r) = (if c == '\n' then '\n' else ' ') : blockC r
+    strC _ [] = []
+    strC q ('\\' : _ : r) = ' ' : ' ' : strC q r -- skip an escaped char
+    strC q (c : r)
+      | c == q = c : goN r
+      | otherwise = ' ' : strC q r
+
+-- | Conservative ABI class of a C type, for cross-checking a declared symbolList
+-- signature against a @verify@ prototype: pointers (incl. @char *@), integers,
+-- floats, and @void@ are the classes that must agree positionally.
+data AbiClass = ClsPtr | ClsInt | ClsFloat | ClsVoid
+  deriving stock (Eq, Show)
+
+-- | The ABI class a declared 'CType' presents.
+ctypeAbiClass :: CType -> AbiClass
+ctypeAbiClass = \case
+  CtUnit -> ClsVoid
+  CtString -> ClsPtr
+  CtHandle -> ClsPtr
+  CtRawPtr -> ClsPtr
+  CtF32 -> ClsFloat
+  CtF64 -> ClsFloat
+  CtDouble -> ClsFloat
+  _ -> ClsInt
+
+-- | Parse a single C prototype string (e.g. @char *getenv(const char *)@) into
+-- its parameter ABI classes and result ABI class. Used to verify a declared
+-- symbolList signature is ABI-consistent with a @verify@ decl (§26.1.5): the
+-- verify decl is checked against the real header, so agreement here means the
+-- declared surface matches the real ABI (no fabricated arity/pointer-vs-scalar).
+protoArity :: String -> Maybe ([AbiClass], AbiClass)
+protoArity proto = do
+  (before, fromParen) <- splitAtFirst '(' proto
+  guard (take 1 (dropWhile (== ' ') (drop 1 fromParen)) /= "*") -- not a function-pointer typedef
+  (inner, _) <- matchParen fromParen
+  let name = lastIdent before
+  guard (not (null name))
+  let retTxt = dropLastIdent before name
+      params = case trimStr inner of
+        "" -> []
+        "void" -> []
+        s -> map cClass (splitTop s)
+  pure (params, cClass retTxt)
+  where
+    cClass t =
+      let s = trimStr t
+       in if '(' `elem` s
+            then ClsPtr -- a parenthesized declarator (function pointer) — treat as pointer-ish
+            else if '*' `elem` s || '[' `elem` s
+              then ClsPtr
+              else
+                let toks = words s
+                 in if any (`elem` ["float", "double"]) toks
+                      then ClsFloat
+                      else if toks == ["void"]
+                        then ClsVoid
+                        else ClsInt
+
 -- | The return-type text, with storage classes stripped (operates on the short
 -- pre-name text of one chunk, so it is O(chunk) not O(file)).
 returnType :: String -> String
@@ -270,10 +389,11 @@ mapType ptds charStr isResult raw =
         then Left ("cannot map the C type '" <> T.pack s <> "' (a function-pointer/callback or parenthesized declarator has no conservative C-ABI correspondence)")
         else if ptr >= 1
           then
-            -- §26.1.4: a char* is a String ONLY when the binding PROVES NUL-
-            -- terminated string semantics (cstrings); otherwise it is just a
-            -- nullable pointer like any other (no proof of readability/encoding).
-            if "char" `elem` baseToks && charStr
+            -- §26.1.4: a single-level char* is a String ONLY when the binding
+            -- PROVES NUL-terminated string semantics (cstrings); otherwise it is
+            -- just a nullable pointer (no proof of readability/encoding). A
+            -- multi-level char** is never a String.
+            if "char" `elem` baseToks && charStr && ptr == 1
               then Right CtString
               else Right CtRawPtr -- §26.1.4: a pointer we cannot prove ⇒ Option RawPtr
           else if any (`Set.member` ptds) baseToks

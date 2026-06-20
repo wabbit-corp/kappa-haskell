@@ -364,8 +364,10 @@ registry =
       "A member access names a member that the receiver's type, trait, or module does not provide."
   , ent "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
       "A name is not in scope: no declaration, import, or prelude binding provides it."
-  , ent "E_UNSUPPORTED" Nothing
-      "The construct is recognized but not supported by this implementation (outside the implemented portable profile)."
+  , ent "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+      "The construct is recognized but not supported by this implementation (outside the implemented portable profile). Portable alias: E_UNSUPPORTED_DETERMINISTIC (§2.1, §3.3)."
+  , ent "E_UNSUPPORTED_DETERMINISTIC" (Just "kappa.unsupported.deterministic")
+      "The §3.1.4/§3.3 portable alias for a deterministic 'unsupported' result (a feature/query/backend/mode not implemented or not supported by the selected profile); this implementation's records spell it E_UNSUPPORTED with this alias exposed as portableCode."
   , ent "E_UNTERMINATED_BACKTICK_IDENTIFIER" Nothing
       "A backtick-quoted identifier is missing its closing backtick on the same line."
   , ent "E_UNTERMINATED_BLOCK_COMMENT" Nothing

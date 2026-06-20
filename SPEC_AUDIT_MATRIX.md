@@ -409,8 +409,8 @@ flagged MISSING if no such clause exists.
 | LSP / analysis-session / semantic-query surface | 37.3.* | §37.3 explicitly divides IDE support into conformance profiles (Tooling Core/First-Class/Broad-Compat/Syntax-Only) | PROFILE-SCOPED (cited) — but §37.3.1's "machine-readable structured diagnostics" reinforces CORE §3.1.1 = G3 |
 | Dynamics / boundary contracts / FFI / bridges | 24/25/26 | §25 conditional on a boundary; §1.1 boundary honesty applies only when a foreign connection exists; §36.28/§36.30 profile-scoped; Appendix O roadmap | PROFILE-SCOPED (cited) |
 | Incremental step suites + `stageDumps` harness capability | App. T.7 / T.4 | §T.4 lists `incremental`/`stageDumps` as optional capabilities; unmet `requires capability` → §T.8 `unsupported` | PROFILE-SCOPED (cited) — un-gated downgrade is G32 |
-| **§4 unsafe/debug language forms (`unhide`/`clarify`/`assertTerminates`/`assertReducible`/`assertTotal`/`unsafeAssertProof`)** | 4.1–4.5 | **NO clause makes §4 optional.** §4.1 line 4220: "These facilities remain part of the language specification" | **MISSING — flagged (= G13). Profile-scoped-WITHOUT-citation.** |
-| **§4.7 unsafe/debug audit ledger + audit queries** | 4.7 | partially separate-compilation-adjacent, but §4.7 line 4385 is an unconditional MUST for artifacts carrying unsafe use | **MISSING — flagged (= G36). Vacuous today (no §4 features) but the audit-query surface MUST is unmet; no clause cited as optional.** |
+| §4 unsafe/debug language forms (`unhide`/`clarify`/`assertTerminates`/`assertReducible`/`assertTotal`/`unsafeAssertProof`) | 4.1–4.5 | §4.1 line 4220: "These facilities remain part of the language specification" | RESOLVED (= G13): recognized, build-gated (`allow_*`, default off), and audited; `tests/conformance/unsafe_debug/*.kp` pass. Stale "MISSING" corrected. |
+| §4.7 unsafe/debug audit ledger + audit queries | 4.7 | §4.7 line 4385 unconditional MUST for artifacts carrying unsafe use | RESOLVED (= G36): the §4.7 ledger is recorded and exposed via `kappa audit` / `assertAuditLedger` (`tests/conformance/unsafe_debug/`). Stale "MISSING" corrected. |
 
 Profile-scoped-WITHOUT-citation (= real gaps already counted in the worklist):
 **2** areas — §4.1–§4.5 (G13) and §4.7 (G36). All other profile-scoped areas have
@@ -422,7 +422,7 @@ an explicit permitting clause.
 
 | id | § | conflict | lane |
 |----|---|----------|------|
-| C1 | 6.1.1 | Underscores in hex/oct/bin literals change the value (`0xDEAD_BEEF`→`59776745199`); spec says "no semantic effect" | SYN,V (= G2) |
+| C1 | 6.1.1 | RESOLVED (= G2): re-verified 2026-06-20 `0xDEAD_BEEF`→`3735928559`, `0b1_0_1_0`→`10`, `0o1_2_3`→`83` — digit-group underscores have no semantic effect. Stale conflict; no longer applicable. | SYN,V (= G2) |
 | C2 | 18.3.1 | `!f x` parsed as `(!f) x`; spec line: "It is not parsed as `(!f) x y`" | RUN (= G7) |
 | C3 | 28.2.2 | `EuclideanSemiring` present with signature `euclideanDivMod : a -> a -> (a,a)`, no superclasses; spec defines it as a law-member refinement of `(Semiring,Ord,CheckedDiv,CheckedMod)` | RUN (part of G16) |
 | C4 | 3.1.11 | Internal metavariable / witness names (`?m1236`, `@-1.⟨wit0⟩`) rendered as the sole user-facing explanation; §3.1.11 forbids exposing generated metavariable/sentinel names as the only explanation | TYP (= G11) |

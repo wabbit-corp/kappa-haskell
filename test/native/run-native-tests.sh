@@ -461,10 +461,12 @@ if pkg-config --exists sqlite3 2>/dev/null; then
   # (b) a verify decl that disagrees with the real sqlite3.h fails the build (fail-closed)
   BAD="$WORK/badabi"; rm -rf "$BAD"; mkdir -p "$BAD/src"
   printf 'module app\nimport host.native.sqlite3 as db\nlet main = do\n  h <- db.sqliteOpen "x"\n  db.sqliteClose h\n' > "$BAD/src/app.kp"
-  # real C symbol names so 2d's ABI-proof requirement is satisfied by the verify
-  # decls; one verify decl is deliberately BOGUS (wrong sqlite3_open signature),
-  # which the verify probe must catch against the real sqlite3.h.
-  printf 'let buildConfig : BuildConfig = package { name="b", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="s", provides=[module "host.native.sqlite3"], surface=symbolList [symbolDecl "sqliteOpen" "sqlite3_open" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close" [ctHandle] ctUnit], abi=cAbi, inputs=[headers ["sqlite3.h"], pkgConfig "sqlite3" None, verify ["int sqlite3_open(double)", "int sqlite3_close(sqlite3 *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["s"] }] }' > "$BAD/kappa.build.kp"
+  # real C symbol names; the verify decls are ABI-CONSISTENT with the declared
+  # symbolList signatures (pointer params/results), so they pass the signature
+  # consistency check — but the sqlite3_open verify prototype is deliberately
+  # WRONG vs the real sqlite3.h (1 param, not 2), which the verify PROBE must
+  # catch against the installed header → E_BUILD_NATIVE_ABI.
+  printf 'let buildConfig : BuildConfig = package { name="b", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="s", provides=[module "host.native.sqlite3"], surface=symbolList [symbolDecl "sqliteOpen" "sqlite3_open" [ctString] ctHandle, symbolDecl "sqliteClose" "sqlite3_close" [ctHandle] ctUnit], abi=cAbi, inputs=[headers ["sqlite3.h"], pkgConfig "sqlite3" None, verify ["void *sqlite3_open(const char *)", "int sqlite3_close(sqlite3 *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["s"] }] }' > "$BAD/kappa.build.kp"
   bout="$(timeout 120 $KAPPA build --update --manifest "$BAD" --emit-c -o "$WORK/badout" 2>&1)"; brc=$?
   if [ "$brc" -ne 0 ] && grep -q "E_BUILD_NATIVE_ABI" <<<"$bout"; then
     echo "   ok (a signature disagreeing with the real sqlite3.h -> E_BUILD_NATIVE_ABI, fail-closed)"
@@ -737,7 +739,10 @@ rm -rf "$HP"; rm -f "$WORK/outside_shim.c"
 echo "== explicit symbolList pointer/handle ABI must be verified (§26.1.5/§36.28) =="
 if pkg-config --exists libuv 2>/dev/null; then
   AV="$WORK/gabi"; rm -rf "$AV"; mkdir -p "$AV/src/app"
-  printf 'module app.main\nimport host.native.uvx as u\nlet main = do\n  h <- u.uvLoopNew\n  printlnString "x"\n' > "$AV/src/app/main.kp"
+  # the symbol is declared (so the per-symbol ABI check runs) but not CALLED, so
+  # the accept-case build does not need the symbol linked (these are ABI-proof
+  # checks at resolution time, independent of linkage).
+  printf 'module app.main\nimport host.native.uvx as u\nlet main = printlnString "x"\n' > "$AV/src/app/main.kp"
   # uv_loop_new returns a uv_loop_t* (handle); declared via symbolList with NO
   # shim and NO verify -> its ABI is unproven -> must be rejected.
   printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[headers ["uv.h"], pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
@@ -746,9 +751,23 @@ if pkg-config --exists libuv 2>/dev/null; then
   grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$ao" || { echo "   FAIL: an unverified symbolList handle symbol was not rejected"; echo "$ao" | sed 's/^/     /'; oka=0; }
   # adding a matching verify decl proves the ABI against uv.h -> accepted
   printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[headers ["uv.h"], pkgConfig "libuv" (Some "1.0"), verify ["uv_loop_t *uv_loop_new(void)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
-  ao2="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avb" 2>&1)"
-  grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$ao2" && { echo "   FAIL: a verify-covered handle symbol was wrongly rejected"; echo "$ao2" | sed 's/^/     /'; oka=0; }
-  [ "$oka" -eq 1 ] && echo "   ok (unverified pointer/handle symbolList rejected; a matching verify decl against uv.h proves + accepts it)" || fails=$((fails+1))
+  # a CONSISTENT verify decl proves the ABI against uv.h -> build SUCCEEDS
+  # (uv.h's unix backend needs _GNU_SOURCE for pthread_rwlock_t).
+  printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), verify ["uv_loop_t *uv_loop_new(void)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
+  timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avb" >"$AV/ok.log" 2>&1 || { echo "   FAIL: a verify-consistent handle symbol did not BUILD"; cat "$AV/ok.log" | sed 's/^/     /'; oka=0; }
+  [ -x "$WORK/avb" ] || { echo "   FAIL: verify-consistent handle binding produced no executable"; oka=0; }
+  # a verify decl whose ARITY/CLASS disagrees with the declared signature is a
+  # fabricated ABI -> rejected (closes the reviewer-found name-only-match hole).
+  printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "getit" "getenv" [ctInt, ctInt, ctInt] ctHandle], abi=cAbi, inputs=[headers ["stdlib.h"], verify ["char *getenv(const char *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
+  am="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avm" 2>&1)"
+  { grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$am" && grep -q "NOT consistent" <<<"$am"; } || { echo "   FAIL: a signature-inconsistent verify decl was accepted"; echo "$am" | sed 's/^/     /'; oka=0; }
+  # a shim-bearing binding whose shim does NOT define the symbol (a library
+  # symbol) must NOT ride the shim exemption (symbol-granular shim provenance).
+  printf 'int defined_one(void){return 0;}\n' > "$AV/sh.c"
+  printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[shim ["sh.c"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
+  as="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avs" 2>&1)"
+  grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$as" || { echo "   FAIL: a non-shim-defined symbol rode a binding's shim exemption"; echo "$as" | sed 's/^/     /'; oka=0; }
+  [ "$oka" -eq 1 ] && echo "   ok (unverified rejected; consistent verify builds; inconsistent verify + non-shim-defined-in-shim-binding both rejected — symbol-granular)" || fails=$((fails+1))
   rm -rf "$AV"
 else
   echo "   SKIP: pkg-config libuv not available"
