@@ -413,8 +413,10 @@ flagged MISSING if no such clause exists.
 | §4.7 unsafe/debug audit ledger + audit queries | 4.7 | §4.7 line 4385 unconditional MUST for artifacts carrying unsafe use | RESOLVED (= G36): the §4.7 ledger is recorded and exposed via `kappa audit` / `assertAuditLedger` (`tests/conformance/unsafe_debug/`). Stale "MISSING" corrected. |
 
 Profile-scoped-WITHOUT-citation (= real gaps already counted in the worklist):
-**2** areas — §4.1–§4.5 (G13) and §4.7 (G36). All other profile-scoped areas have
-an explicit permitting clause.
+**0** (re-validated 2026-06-20). The previously-flagged §4.1–§4.5 (G13) and §4.7
+(G36) are RESOLVED — the unsafe/debug forms are recognized, build-gated, and
+audited (`tests/conformance/unsafe_debug/*.kp` pass). All other profile-scoped
+areas have an explicit permitting clause.
 
 ---
 
@@ -459,6 +461,10 @@ because the implementation actively contradicts normative text (not mere absence
   - INTENTIONALLY-UNSUPPORTED (cited): 26
   - SPEC-CONFLICT: 7
   - UNCLEAR: 8 (rows) / 8 follow-up questions
-- Consolidated legitimate-gap worklist: **36** (4 BLOCKER, 17 MAJOR, 15 MINOR)
-- Profile-scoped-WITHOUT-citation (= real, uncited) gaps: **2** (§4.1–§4.5 = G13;
-  §4.7 = G36) — both already in the worklist.
+- Consolidated legitimate-gap worklist: **36** at audit time (4 BLOCKER, 17
+  MAJOR, 15 MINOR). Re-validated 2026-06-20: many are now RESOLVED (G2, G13, G17,
+  G18, G20, G21, G36 verified resolved this pass; the per-row statuses above are
+  updated). The original aggregate is kept for provenance; it is not current.
+- Profile-scoped-WITHOUT-citation (= real, uncited) gaps: **0** (re-validated):
+  §4.1–§4.5 (G13) and §4.7 (G36) are RESOLVED (recognized + build-gated +
+  audited).

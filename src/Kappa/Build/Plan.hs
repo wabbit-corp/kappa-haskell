@@ -29,7 +29,7 @@ import Kappa.Backend.Capabilities (ffiRequiredCapabilities, nativeRuntimeCapabil
 import Kappa.Backend.Driver (detectCC, verifyDeclName)
 import Kappa.Backend.HeaderGen (AbiClass (..), ctypeAbiClass, definedSymbols, generatePrefixSurfaceDecls, generateSurfaceDecls, protoArity)
 import Kappa.Backend.NativeProbe (safeWithinRoot)
-import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), scalarOnly)
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
 import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
 import Kappa.Build.Types
@@ -497,22 +497,20 @@ resolveExecutable manifestDir bc mTarget =
       _ -> Right ()
       where
         verifyByName = [(verifyDeclName d, d) | VerifyInput ds <- nbInputs hb, d <- ds]
-        hasHeaders = any isHeadersInput (nbInputs hb)
-        isHeadersInput HeadersInput {} = True
-        isHeadersInput _ = False
         checkOne s
           | rnsShimProvided s = Right () -- shim-defined → force-include ABI-checked
           | otherwise = case lookup (rnsCSymbol s) verifyByName of
+              -- a verify decl PROVES the ABI: it is checked against the real
+              -- header AND (for scalars) conflicts with the conservative scalar
+              -- extern in the same probe if its width disagrees — so a name-only
+              -- match no longer suffices; the classes must be consistent. A mere
+              -- `headers` input is NOT enough (a header that does not declare the
+              -- symbol contradicts nothing), so every non-shim symbol — scalar or
+              -- pointer — requires a consistent verify decl.
               Just d -> case protoArity (T.unpack d) of
                 Just (ps, r) | abiConsistent s ps r -> Right ()
                 _ -> Left [abiMismatch hb s d]
-              Nothing
-                -- a scalar symbol's conservative prototype is meaningfully
-                -- checked by the scalar probe only if the binding supplies a
-                -- header to check it against; without a header (and without a
-                -- verify decl or shim) its ABI is unproven.
-                | scalarOnly s && hasHeaders -> Right ()
-                | otherwise -> Left [unverifiedAbi hb s]
+              Nothing -> Left [unverifiedAbi hb s]
         -- declared params must match the verify prototype's arity + per-position
         -- ABI class; a declared Unit result may discard ANY real return.
         abiConsistent s ps r =
@@ -533,10 +531,11 @@ resolveExecutable manifestDir bc mTarget =
     unverifiedAbi hb s =
       buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
         ( "native binding '" <> nbName hb <> "' symbolList declares '" <> rnsMember s
-            <> "' (C symbol '" <> rnsCSymbol s <> "') with a pointer/string/handle signature whose ABI is not "
-            <> "verified: it is not shim-defined and has no matching 'verify' declaration to check against the "
-            <> "real header. Add a 'verify' prototype for '" <> rnsCSymbol s <> "', provide it via a shim, or "
-            <> "generate the surface from a header (Spec §26.1.5/§36.28)"
+            <> "' (C symbol '" <> rnsCSymbol s <> "') whose ABI is not verified: it is not shim-defined and has "
+            <> "no matching 'verify' declaration. A `headers` input alone is insufficient (a header that does not "
+            <> "declare the symbol proves nothing). Add a 'verify' prototype for '" <> rnsCSymbol s
+            <> "' consistent with the declared signature, provide it via a shim, or generate the surface from a "
+            <> "header (Spec §26.1.5/§36.28)"
         )
 
     -- The binding's resolved symbol surface (§36.28). Either an explicit

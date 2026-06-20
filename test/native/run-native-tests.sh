@@ -767,6 +767,11 @@ if pkg-config --exists libuv 2>/dev/null; then
   printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "uvLoopNew" "uv_loop_new" [] ctHandle], abi=cAbi, inputs=[shim ["sh.c"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
   as="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avs" 2>&1)"
   grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$as" || { echo "   FAIL: a non-shim-defined symbol rode a binding's shim exemption"; echo "$as" | sed 's/^/     /'; oka=0; }
+  # a scalar library symbol with a `headers` input that does NOT declare it, and
+  # no verify decl, must be rejected (a header's mere presence proves nothing).
+  printf 'let buildConfig : BuildConfig = package { name="av", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="uvx", provides=[module "host.native.uvx"], surface=symbolList [symbolDecl "labsx" "labs" [ctInt] ctInt], abi=cAbi, inputs=[headers ["stdint.h"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["uvx"] }] }' > "$AV/kappa.build.kp"
+  ah="$(timeout 120 $KAPPA build --update --manifest "$AV" -o "$WORK/avh" 2>&1)"
+  grep -q "E_NATIVE_BINDING_ABI_UNVERIFIED" <<<"$ah" || { echo "   FAIL: a scalar symbol with a non-declaring header (no verify) was accepted (fabricated-ABI bypass)"; echo "$ah" | sed 's/^/     /'; oka=0; }
   [ "$oka" -eq 1 ] && echo "   ok (unverified rejected; consistent verify builds; inconsistent verify + non-shim-defined-in-shim-binding both rejected — symbol-granular)" || fails=$((fails+1))
   rm -rf "$AV"
 else
