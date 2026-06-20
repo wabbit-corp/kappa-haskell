@@ -721,11 +721,15 @@ pCtorDecl = do
       -- consumed by the block-level splitter (inlineCtors / ctorSeq), not
       -- here, so a non-first constructor is registered correctly.
       binders <- concat <$> many pCtorBinder
-      -- §10.1: the record-style {...} block may begin on a following,
-      -- more-indented line (the constructor name alone on its line):
+      -- §10.1: the constructor's binders may begin on a following, more-
+      -- indented continuation block — either positional binders, one per line:
+      --     Ihdr
+      --         (width : Nat)
+      --         (height : Nat)
+      -- or a record-style {...} block:
       --     Request
       --         { method : Method, ... }
-      indented <- pIndentedRecord <|> pure []
+      indented <- pIndentedBinders <|> pIndentedRecord <|> pure []
       CtorDecl n (binders ++ indented) Nothing <$> spanFrom start
 
 -- | A record-style @{ … }@ block that starts on a following, more-indented
@@ -739,6 +743,19 @@ pIndentedRecord = try $ do
   fs <- pRecordFields
   void (optional (token TokDedent))
   pure fs
+
+-- | A constructor's binders on a following, more-indented continuation block,
+-- one binder per line (positional @(field : Type)@ binders, bare fields, or a
+-- record @{ … }@ block). Triggers only when a genuine deeper INDENT follows the
+-- constructor name; a stacked 0-binder alternative list (no deeper indent) does
+-- not match, so it backtracks cleanly.
+pIndentedBinders :: P [Binder]
+pIndentedBinders = try $ do
+  void (many pNewline)
+  token TokIndent
+  bs <- concat <$> many1 (pCtorBinder <* void (many pNewline))
+  void (optional (token TokDedent))
+  pure bs
 
 -- | The body of a record-style constructor block: @{ field, … }@.
 pRecordFields :: P [Binder]
