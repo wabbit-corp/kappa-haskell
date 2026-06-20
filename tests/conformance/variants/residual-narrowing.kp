@@ -1,0 +1,35 @@
+--! mode run
+--! assertStdout "int\nhi\ntrue\n"
+
+-- §13.1.4: in a variant match, the `(| ..rest |)` binder has type Variant r —
+-- the scrutinee members MINUS those matched by earlier clauses. Here `rest`
+-- has type (| String | Bool |) and is passed to a function expecting exactly
+-- that residual variant.
+module main
+
+useRest : (| String | Bool |) -> String
+let useRest r =
+    match r
+    case (| s : String |) -> s
+    case (| b : Bool |) -> "true"
+
+classify : (| Integer | String | Bool |) -> String
+let classify u =
+    match u
+    case (| n : Integer |) -> "int"
+    case (| ..rest |) -> useRest rest
+
+v1 : (| Integer | String | Bool |)
+let v1 = 5
+
+v2 : (| Integer | String | Bool |)
+let v2 = "hi"
+
+v3 : (| Integer | String | Bool |)
+let v3 = True
+
+main : UIO Unit
+let main = do
+    printlnString (classify v1)
+    printlnString (classify v2)
+    printlnString (classify v3)

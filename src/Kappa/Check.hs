@@ -7170,15 +7170,33 @@ checkMatchPlain ctx scrut cases sp resT = do
             _ -> Nothing
           Nothing -> Nothing
         _ -> Nothing
-      goCase (accAlts, prior) c = case c of
+      -- §13.1.4: in a variant match, a `(| ..rest |)` clause's binder has type
+      -- `Variant r`, where r is the scrutinee's members MINUS those matched by
+      -- earlier clauses. We thread the covered member tags through the fold and
+      -- narrow the residual binder accordingly.
+      variantResidual c = case c of
+        PVariant Nothing Nothing _ (Just restN) _ -> Just restN
+        _ -> Nothing
+      goCase (accAlts, prior, covered) c = case c of
         MatchImpossible isp -> do
           empty <- scrutineeEmpty sTy1
           unless empty $
             errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.proof.impossible-reachable")
               "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
-          pure (accAlts, prior)
+          pure (accAlts, prior, covered)
         MatchCase pat mguard body _ -> do
-          (patC, ctx', _) <- elabPattern ctx pat sTy1
+          sVarF <- forceM sTy1
+          (patC, ctx') <- case (variantResidual pat, sVarF) of
+            (Just restN, VVariantT members) -> do
+              memberTags <- mapM (tagOf ctx) members
+              let residual = [m | (m, t) <- zip members memberTags, t `notElem` covered]
+              pure
+                ( CPInjectRest covered
+                , bindCtx (nameText restN) False (VVariantT residual) ctx
+                )
+            _ -> do
+              (pc, cx, _) <- elabPattern ctx pat sTy1
+              pure (pc, cx)
           let fact = case patC of
                 CPCtor g [] -> Just (FactIs (VCtor g []))
                 _ | not (null prior) -> Just (FactNot prior)
@@ -7190,9 +7208,10 @@ checkMatchPlain ctx scrut cases sp resT = do
           bTm <- check ctx' body resT
           modify' $ \st -> st {csFacts = oldFacts}
           let prior' = prior ++ [g | CPCtor g _ <- [patC]]
-          pure (accAlts ++ [CaseAlt patC gTm bTm], prior')
+              covered' = covered ++ [t | CPInject t _ <- [patC]]
+          pure (accAlts ++ [CaseAlt patC gTm bTm], prior', covered')
   nErrsBefore <- gets (length . filter isError . csDiags)
-  (alts, _) <- foldM goCase ([], []) cases
+  (alts, _, _) <- foldM goCase ([], [], []) cases
   nErrsAfter <- gets (length . filter isError . csDiags)
   -- §3.1: a match whose arms already failed to type against the
   -- scrutinee gets no piled-on exhaustiveness diagnostic
@@ -7608,20 +7627,6 @@ elabPattern ctx0 pat0 ty0 = do
       (p', ctx') <- go ctx p t
       (ps, ctx'') <- goList ctx' rest
       pure (p' : ps, ctx'')
-
-    patBindersCount :: CorePat -> Int
-    patBindersCount = \case
-      CPVar _ -> 1
-      CPAs _ p -> 1 + patBindersCount p
-      CPCtor _ ps -> sum (map patBindersCount ps)
-      CPTuple ps -> sum (map patBindersCount ps)
-      CPRecord fs mr -> sum (map (patBindersCount . snd) fs) + (case mr of Just nm | not (T.null nm) -> 1; _ -> 0)
-      CPInject _ p -> patBindersCount p
-      CPInjectRest _ -> 1
-      CPOr ps _ -> case ps of
-        (p : _) -> patBindersCount p
-        [] -> 0
-      _ -> 0
 
     coreLit = \case
       LInt v _ -> LitInt v
