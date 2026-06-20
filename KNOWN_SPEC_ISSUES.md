@@ -114,6 +114,29 @@ with an unsolved-implicit error that puzzles users. Evidence:
 vs `tests/conformance/equality/sub-unknown.kp` (symbolic case fails
 `E_IMPLICIT_UNSOLVED` by design).
 
+Precise mechanism (investigated 2026-06; relevant to the two native
+package ports in `examples/packages/`): even an *explicitly* guarded
+`if y <= x then x - y else 0` is rejected today, not just bare `x - y`.
+`Check.propProof`/`factReduce` discharge an equality goal only by
+reducing the goal term against the *condition terms* recorded in
+`csBoolFacts` on entering an `if`/`match` branch. For `Nat`, the guard
+`y <= x` lowers through `Ord`/`compare`
+(`if ltInt (natToInt y) (natToInt x) then LT elif eqInt … then EQ else
+GT`), the guard `i == 0` lowers to `eqInt (natToInt i) 0`, while the
+proof goal `subDefined x y` lowers to `leInt (natToInt y) (natToInt x) =
+True`. All three sit over the same `natToInt`+Int-primitive substrate,
+but they are structurally distinct terms, so the syntactic
+`factReduce` cannot connect a `<=`/`==` branch fact to the `leInt`-shaped
+goal. A conforming fix is a §16.4.4 flow-typing **arithmetic bridge**: a
+sound decision step over Int-primitive facts (`eqInt`/`ltInt`/`leInt` on
+`natToInt _`) that closes the goal, including the non-negativity lemma
+`natToInt n ≥ 0` for the `eqInt (natToInt i) 0 = False ⟹
+leInt 1 (natToInt i) = True` step. This is a real multi-step elaborator
+feature with regression surface on the implicit solver, not a
+convertibility tweak. Total saturating
+`natOfInt (subInt (natToInt a) (natToInt b))` compiles today but changes
+checked-subtraction semantics.
+
 ## 7. §3.1.2 / §3.1.4: diagnostic code names are implementation-defined, so black-box suites do not transfer
 
 §3.1.2 makes codes stable but implementation-chosen; §3.1.4 pins only a

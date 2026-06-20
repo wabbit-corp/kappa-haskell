@@ -29,11 +29,32 @@ not accept (these are real, separately-tracked items, NOT silent failures):
    application** (e.g. `acme/image/core.kp` `qoiAsRaster`). This front end parses
    `(x = e)` as an anonymous record; the supported named form is the brace block
    `Ctor { field = value, … }`. (Spec §16.1.7 named-argument blocks.)
-2. Unguarded **`Nat` subtraction** `bytesLength src - offset` (`acme/png/binary.kp`
-   `remaining`/`byteAt`). §28.2 checked subtraction requires a proof
-   `offset <= bytesLength src`; this is the deliberate partial-subtraction design,
-   tracked as KNOWN_SPEC_ISSUES #6 (needs a guarding `if`/flow fact or a saturating
-   helper). The `CheckedSub Nat` instance exists; the proof obligation is real.
+2. **`Nat` subtraction** — both the unguarded measure form `bytesLength src - offset`
+   (`acme/png/binary.kp` `remaining`/`byteAt`; the `decreases` measures in
+   `png/parser.kp:45`, `png/ihdr.kp:71`, `png/crc32.kp:15`) AND the guarded
+   recursive decrements `if i == 0 then … else f (i - 1)` (`qoi/parser.kp:85,92,99`).
+   §28.2 checked subtraction requires a proof `subDefined x y = True`
+   (KNOWN_SPEC_ISSUES #6). PRECISE ROOT CAUSE (investigated this pass): even the
+   explicitly-`<=`-guarded form `if y <= x then x - y else 0` is rejected. The flow
+   machinery (`Check.propProof`/`factReduce`, `csBoolFacts`) discharges an equality
+   goal only by reducing the goal term against branch-fact *condition terms*. But
+   for `Nat`: the guard `y <= x` lowers through `Ord`/`compare`
+   (`if ltInt (natToInt y) (natToInt x) then LT elif eqInt … then EQ else GT`,
+   Prelude:1010), the guard `i == 0` lowers to `eqInt (natToInt i) 0 = False`
+   (Prelude:1007), while the proof goal `subDefined x y` lowers to
+   `leInt (natToInt y) (natToInt x) = True` (Prelude:1266). These are structurally
+   unrelated terms over the same `natToInt`+Int-primitive substrate, so `factReduce`
+   (which matches whole condition terms) cannot connect them. Discharging this needs
+   a genuine §16.4.4 flow-typing **arithmetic bridge**: a sound decision step over
+   Int-primitive branch facts (`eqInt`/`ltInt`/`leInt` on `natToInt _`) that proves
+   the `leInt`-shaped goal — including the Nat-non-negativity lemma `natToInt n ≥ 0`
+   needed for `eqInt (natToInt i) 0 = False ⟹ leInt 1 (natToInt i) = True`. This is
+   a real elaborator feature (multi-step, with regression surface on the implicit
+   solver), not a convertibility tweak; it is the shared prerequisite for both the
+   guarded decrements and the `decreases` measures here. The `CheckedSub Nat`
+   instance exists; `natOfInt (subInt (natToInt a) (natToInt b))` is the total
+   saturating escape hatch (verified to compile) but changes the package's intended
+   checked-arithmetic semantics, so it is a rewrite, not a transparent fix.
 3. **Multi-line operator continuation** at constant deeper indent (`u32NatOfBytes`'s
    `+`-chain) — KNOWN_SPEC_ISSUES #13.
 
