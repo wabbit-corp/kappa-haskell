@@ -697,6 +697,31 @@ errOncePerSpan sp code fam msg = do
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
 
+-- | §3 @kappa.unsupported.deterministic@ payload: the family REQUIRES the
+-- diagnostic to carry the unsupported action, the selected language profile,
+-- and whether source analysis continued (plus a backend profile / required
+-- capability when those are relevant — these v1 restrictions are
+-- elaboration-level with no owning capability gate, so those fields are
+-- recorded as not-applicable). Source analysis continues: the error is
+-- collected and the rest of the unit is still checked.
+unsupportedPayload :: Text -> Payload
+unsupportedPayload action =
+  withPayloadField "unsupportedAction" action
+    $ withPayloadField "languageProfile" "default"
+    $ withPayloadField "backendProfile" "n/a"
+    $ withPayloadField "requiredCapability" "none"
+    $ withPayloadField "sourceAnalysisContinued" "true"
+    $ payloadKind "unsupported-deterministic"
+
+-- | Emit a deterministic-unsupported diagnostic (§3.x family
+-- @kappa.unsupported.deterministic@) carrying the mandated payload.
+unsupportedAt :: Span -> Text -> CheckM ()
+unsupportedAt sp msg =
+  report
+    ( withPayload (unsupportedPayload msg)
+        (diag SevError StageElaborate "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") sp msg)
+    )
+
 -- | Allocate a fresh, unsolved metavariable and return its raw id.
 freshMetaId :: CheckM MetaId
 freshMetaId = do
@@ -1412,10 +1437,11 @@ anyHole ctx = do
 
 reportUnsupported :: Span -> Text -> CheckM ()
 reportUnsupported sp what =
-  report $
-    withNote "see SPEC_COVERAGE.md for the implemented subset" $
-      diag SevError StageElaborate "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") sp
-        (what <> " is not supported by this implementation")
+  let msg = what <> " is not supported by this implementation"
+   in report $
+        withNote "see SPEC_COVERAGE.md for the implemented subset" $
+          withPayload (unsupportedPayload msg) $
+            diag SevError StageElaborate "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") sp msg
 
 unsupported :: Ctx -> Span -> Text -> CheckM (Term, Value)
 unsupported ctx sp what = reportUnsupported sp what >> anyHole ctx
@@ -5181,7 +5207,7 @@ elabPatchWith nested ctx e items sp = do
               pure Nothing
         PatchUpdate ((False, _) : _ : _) _ -> pure Nothing -- grouped above
         PatchUpdate _ _ -> do
-          errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "implicit patch paths are not supported by this implementation"
+          unsupportedAt sp "implicit patch paths are not supported by this implementation"
           pure Nothing
         -- §13.2.6 row extension: the label must be absent; the result
         -- row gains the field
@@ -5809,7 +5835,7 @@ elabDependentPatch ctx baseTm fs items sp = do
             ("record has no field '" <> nameText n <> "'")
           pure Nothing
     it -> do
-      errAt (patchItemSpan it sp) "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+      unsupportedAt (patchItemSpan it sp)
         "this update form is not supported on a dependent record"
       pure Nothing
   forM_ (duplicatesOf (map fst ups)) $ \n ->
@@ -6121,7 +6147,7 @@ elabBlock ctx0 ds0 mfin sp = do
               bs -> (ELambda Nothing bs rhs dsp, Nothing)
          in (LetBind False emptyPrefix (PVar n) ann body sp :) <$> goDecls sigs rest
       _ -> do
-        errAt (declSpan d) "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+        unsupportedAt (declSpan d)
           "this local declaration form is not supported inside block by this implementation"
         goDecls sigs rest
     annOf n mty sigs = case mty of
@@ -6446,7 +6472,7 @@ elabEffDo ctx0 row aT items0 sp = do
             body <- go c' rest
             pure (CLet QW "__b" tyTm rhsTm (CMatch (CVar 0) [CaseAlt patC Nothing body]))
       other -> do
-        errAt (doItemSpan other) "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+        unsupportedAt (doItemSpan other)
           "this do-item form is not supported in an Eff-typed do block by this implementation"
         go c rest
     effBindTm m f = CApp Expl (CApp Expl (CGlob (gPrel "__effBind")) m) f
@@ -6673,7 +6699,7 @@ lowerActiveMatch ctx scrut cases sp = case scrut of
               Just info -> case mapM activePatArgExpr (init ps) of
                 Just args -> pure (CActive (crName cref) info args (last ps) mguard body csp)
                 Nothing -> do
-                  errAt csp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "this active-pattern argument form is not supported by this implementation"
+                  unsupportedAt csp "this active-pattern argument form is not supported by this implementation"
                   pure (CBad csp)
               Nothing -> do
                 mg <- lookupGlobalName (nameText (crName cref))
@@ -7199,7 +7225,7 @@ elabPattern ctx0 pat0 ty0 = do
               (ps', ctx') <- goList ctx (zip ps (fieldTys ++ padTys))
               pure (CPCtor g ps', ctx')
         PActive _ _ _ sp -> do
-          errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "active patterns are not supported by this implementation"
+          unsupportedAt sp "active patterns are not supported by this implementation"
           pure (CPWild, ctx)
         POpChain {} -> do
           errAt (patternSpan pat) "E_INTERNAL" Nothing "operator pattern not re-associated"
@@ -7654,7 +7680,7 @@ elabDoIOItems _sp ctx mexp items = do
             DLet _ (LetDef (Just n) _ Nothing _ [] mty Nothing rhs) dsp ->
               goItems loops c errT resT (DoLet (LetBind False emptyPrefix (PVar n) mty rhs dsp) : rest)
             _ -> do
-              errAt (declSpan d) "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+              unsupportedAt (declSpan d)
                 "this local declaration form inside do is not supported by this implementation"
               goItems loops c errT resT rest
       where
@@ -9662,7 +9688,7 @@ headerPassIn siglessLets = \case
     addGlobal g (GlobalDef tyV Nothing False)
   DTrait _ td sp -> headerTrait td sp
   DEffect _ _ sp ->
-    errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "effect declarations are accepted syntactically but not elaborated by this implementation"
+    unsupportedAt sp "effect declarations are accepted syntactically but not elaborated by this implementation"
   DExpect _ form sp -> headerExpect form sp
   -- §4.4: register the wrapped definition's header like any other; the
   -- assertion prefix only affects termination checking and gating, which
@@ -10496,9 +10522,9 @@ bodyPass = \case
   DPattern mods ld sp -> elabActivePatternDecl mods ld sp
   DProjection mods n bs ty body sp -> elabProjectionDecl mods n bs ty body sp
   DDerive _ sp ->
-    errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "derive declarations are not supported by this implementation"
+    unsupportedAt sp "derive declarations are not supported by this implementation"
   DTopSplice _ sp ->
-    errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "top-level splices are not supported by this implementation"
+    unsupportedAt sp "top-level splices are not supported by this implementation"
   DUnsafeAssert akind inner sp -> elabUnsafeAssert akind inner sp
   _ -> pure ()
 
@@ -10990,7 +11016,7 @@ elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
         addGlobal g (GlobalDef (ceType entry) (Just projV) True)
         recordCoreBody g proj
 elabLetDecl _ _ sp =
-  errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") "this let-definition form is not supported at top level"
+  unsupportedAt sp "this let-definition form is not supported at top level"
 
 occursGlobal :: GName -> Term -> Bool
 occursGlobal g = go
