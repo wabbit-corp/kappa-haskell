@@ -1,0 +1,15 @@
+--! mode run
+--! assertStdout "3\n2\n2\n20\n"
+
+-- §20.1/§20.3.1: a set literal holds each element at most once.
+-- §20.5/§20.5.1: a map literal resolves duplicate keys (default keep last).
+module main
+
+main : UIO Unit
+let main = do
+    printlnString (show (setSize {| 1, 2, 2, 3, 3, 3 |}))   -- 3 distinct
+    printlnString (show (setSize {| 7, 7, 7, 8 |}))          -- 2 distinct
+    printlnString (show (mapSize { 1: 10, 1: 20, 2: 30 }))   -- 2 keys
+    match mapLookup 1 { 1: 10, 1: 20, 2: 30 }
+      case Some v -> printlnString (show v)                  -- 20 (keep last)
+      case None -> printlnString "none"

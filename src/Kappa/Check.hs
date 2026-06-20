@@ -2645,26 +2645,22 @@ infer ctx expr = case expr of
       ( foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) tms
       , VGlobN (gPrel "List") [(Expl, elemT)]
       )
-  EMapLit kvs _ -> do
-    keyT <- freshMetaV ctx
-    valT <- freshMetaV ctx
-    entries <- forM kvs $ \(k, v) -> do
-      kTm <- check ctx k keyT
-      vTm <- check ctx v valT
-      pure (CRecordV [("key", kTm), ("value", vTm)])
-    let listTm = foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) entries
-    pure
-      ( CApp Expl (CGlob (gPrel "__mapFromEntries")) listTm
-      , VGlobN (gPrel "Map") [(Expl, keyT), (Expl, valT)]
-      )
-  ESetLit es _ -> do
-    elemT <- freshMetaV ctx
-    tms <- mapM (\e -> check ctx e elemT) es
-    let listTm = foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) tms
-    pure
-      ( CApp Expl (CGlob (gPrel "__setFromList")) listTm
-      , VGlobN (gPrel "Set") [(Expl, elemT)]
-      )
+  -- §20.5/§20.5.1: a map literal resolves duplicate keys (default: keep last),
+  -- mirroring the map-comprehension lowering, so `{ 1: 10, 1: 20 }` keeps 20.
+  EMapLit kvs sp -> do
+    eqLam <- pairEqLam sp
+    comb <- conflictLam ctx Nothing sp
+    let entry (k, v) =
+          ERecordLit
+            [RecItem False (Name "key" sp) (Just k), RecItem False (Name "value" sp) (Just v)]
+            sp
+        entriesE = EListLit (map entry kvs) sp
+    infer ctx (prelApp1 sp "__mapFromEntries" [prelApp1 sp "__mapResolve" [entriesE, eqLam, comb]])
+  -- §20.1/§20.3.1: a set literal holds each element at most once, mirroring the
+  -- set-comprehension lowering, so `{| 7, 7, 8 |}` has two elements.
+  ESetLit es sp -> do
+    eqLam <- pairEqLam sp
+    infer ctx (prelApp1 sp "__setFromList" [prelApp1 sp "__distinctBy" [EListLit es sp, eqLam]])
   ESectionLeft e op sp ->
     infer ctx (lam1 sp "__x" (\x -> EApp (EVar op) [ArgExplicit e, ArgExplicit x]))
   ESectionRight op e sp ->
