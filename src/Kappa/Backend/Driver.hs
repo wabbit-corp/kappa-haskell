@@ -212,6 +212,12 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                 ccLead
                   ++ targetFlags
                   ++ [ "-std=c11"
+                     -- Optimize: the generated C is direct typed code, but the
+                     -- codegen leaves dead partial-application closure ladders +
+                     -- sink-tail stores for the C compiler to erase; -O2 also
+                     -- inlines the marshalling wrappers and register-allocates the
+                     -- unboxed worker loops.
+                     , "-O2"
                      -- Disable FP contraction (no implicit FMA fusion) so the
                      -- backend's unboxed double arithmetic rounds per-operation
                      -- exactly like the interpreter's (and the boxed kp_*Double
