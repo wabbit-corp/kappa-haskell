@@ -1,0 +1,10 @@
+-- JVM fragment — NOT selected for the native profile (§36.12). Present to
+-- prove backend-selected fragments isolate host bindings behind one facade.
+module acme.http.runtime
+import host.jvm.java.nio.channels.SocketChannel as ch
+let listen host port backlog = ch.bindServer host port backlog
+let accept l = ch.accept l
+let readChunk c = ch.read c
+let writeAll c payload = ch.write c payload
+let closeConn c = ch.close c
+let closeListener l = ch.close l

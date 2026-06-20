@@ -1,0 +1,40 @@
+-- acme.http.runtime — the backend-NEUTRAL transport facade (§8.3.5/§26.1.9).
+--
+-- This common fragment declares the transport surface with `expect`
+-- declarations (§9.2/§9.4). A backend-selected fragment (runtime.native.kp for
+-- the native backend; runtime.jvm.kp / runtime.dotnet.kp otherwise — see
+-- §36.12 fragment selection) supplies the definitions. Public modules import
+-- THIS module, never host.native.* / host.jvm.* directly.
+--
+-- The handle types are opaque foreign handles (std.ffi.OpaqueHandle); the
+-- native fragment realizes them through a libuv host binding generated from
+-- pkg-config + <uv.h> (no hardcoded socket primitives).
+module acme.http.runtime
+
+import std.ffi.(OpaqueHandle)
+
+-- A bound TCP listener and an accepted connection are opaque host handles.
+type Listener = OpaqueHandle
+type Connection = OpaqueHandle
+
+-- The transport surface is declared with `expect term` only (§9.2/§9.4): a
+-- plain top-level signature would be satisfiable solely by a definition in
+-- THIS file, whereas `expect term` is the form satisfied by a definition in a
+-- selected companion fragment (runtime.native.kp).
+
+-- bind+listen on host:port with the given backlog.
+expect term listen : String -> Int -> Int -> UIO Listener
+
+-- accept the next connection (borrows the listener).
+expect term accept : (& l : Listener) -> UIO Connection
+
+-- read one request chunk (NUL-free HTTP text) from the connection.
+expect term readChunk : (& c : Connection) -> UIO String
+
+-- write the full response bytes to the connection.
+expect term writeAll : (& c : Connection) -> String -> UIO Unit
+
+-- close a connection / the listener.
+expect term closeConn : (& c : Connection) -> UIO Unit
+
+expect term closeListener : (& l : Listener) -> UIO Unit

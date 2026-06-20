@@ -1,0 +1,24 @@
+-- acme.http.runtime — the NATIVE backend transport fragment.
+--
+-- Selected only when the target's fragment tags include `native` (§36.12).
+-- It satisfies the `expect` declarations in the common runtime.kp facade by
+-- delegating to a libuv host binding (host.native.uvnet) that the build plan
+-- generates from pkg-config + <uv.h> — there is no hardcoded socket primitive
+-- set, no native catalog: the libuv adapter symbols are declared in the
+-- manifest's symbolList with their ABI, and the real libuv functions the
+-- adapter depends on are verified against <uv.h> (fail-closed).
+module acme.http.runtime
+
+import host.native.uvnet as uv
+
+let listen host port backlog = uv.uvListen host port backlog
+
+let accept l = uv.uvAccept l
+
+let readChunk c = uv.uvRead c
+
+let writeAll c payload = uv.uvWrite c payload
+
+let closeConn c = uv.uvCloseConn c
+
+let closeListener l = uv.uvCloseListener l

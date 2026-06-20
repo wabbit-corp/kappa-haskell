@@ -1,0 +1,27 @@
+-- acme.http.wire — minimal HTTP/1.x request-line parsing over Bytes (§ wire
+-- layer). Parses the method and target from the first request line; bytes,
+-- not host strings (std.bytes / std.unicode).
+module acme.http.wire
+
+import std.bytes as bytes
+import std.unicode as unicode
+
+data ReqLine : Type = ReqLine { method : String, path : String }
+
+firstLineBytes : String -> Bytes
+let firstLineBytes req =
+    match bytes.bytesBreakOn (bytes.singletonByte b'\r') (unicode.utf8Bytes req)
+    case Some hit -> hit.prefix
+    case None -> unicode.utf8Bytes req
+
+parseRequestLine : String -> ReqLine
+let parseRequestLine req =
+    let line = firstLineBytes req in
+      match bytes.bytesBreakOn (bytes.singletonByte b' ') line
+      case None -> ReqLine { method = "GET", path = "/" }
+      case Some m ->
+          let method = unicode.decodeUtf8Lossy m.prefix in
+            let rest = bytes.bytesDrop 1 m.suffix in
+              match bytes.bytesBreakOn (bytes.singletonByte b' ') rest
+              case None -> ReqLine { method = method, path = unicode.decodeUtf8Lossy rest }
+              case Some p -> ReqLine { method = method, path = unicode.decodeUtf8Lossy p.prefix }

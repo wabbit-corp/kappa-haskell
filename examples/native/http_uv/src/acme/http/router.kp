@@ -1,0 +1,24 @@
+-- acme.http.router — a tiny path router that builds a full HTTP/1.1 response
+-- string for a parsed request line (Snap-style explicit handler core).
+module acme.http.router
+
+import std.bytes as bytes
+import std.unicode as unicode
+import acme.http.wire.(ReqLine)
+
+-- Build a complete HTTP/1.1 response with a Content-Length and Connection:
+-- close header (the smoke server closes after each response).
+httpResponse : String -> String -> String
+let httpResponse status body =
+    let len = bytes.bytesLength (unicode.utf8Bytes body) in
+      stringAppend "HTTP/1.1 "
+          (stringAppend status
+              (stringAppend "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: "
+                  (stringAppend (showInt (natToInt len))
+                      (stringAppend "\r\nConnection: close\r\n\r\n" body))))
+
+respond : ReqLine -> String
+let respond r =
+    if r.path == "/" then httpResponse "200 OK" "hello from kappa + libuv\n"
+    elif r.path == "/health" then httpResponse "200 OK" "ok\n"
+    else httpResponse "404 Not Found" "not found\n"

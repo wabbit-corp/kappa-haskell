@@ -571,5 +571,73 @@ else
   echo "   SKIP: pkg-config sqlite3 not available"
 fi
 
+echo "== HTTP wire parser + router behavior (backend-neutral, no sockets) =="
+# wire.parseRequestLine + router.respond are pure modules; build a tiny native
+# executable that exercises them (no libuv / no host bindings) so parse/route
+# correctness is checked apart from the native transport, using the real files.
+WR="$WORK/wirep"; rm -rf "$WR"; mkdir -p "$WR/src/acme/http"
+cp "$ROOT/examples/native/http_uv/src/acme/http/wire.kp" "$ROOT/examples/native/http_uv/src/acme/http/router.kp" "$WR/src/acme/http/"
+printf 'module acme.http.check\nimport acme.http.wire as wire\nimport acme.http.router as router\nlet main = do\n  let a = wire.parseRequestLine "GET /health HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n"\n  printlnString a.method\n  printlnString a.path\n  printlnString (router.respond a)\n  let b = wire.parseRequestLine "POST /submit HTTP/1.0\\r\\n\\r\\n"\n  printlnString b.method\n  printlnString b.path\n' > "$WR/src/acme/http/check.kp"
+printf 'let buildConfig : BuildConfig = package { name="wirecheck", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[], targets=[executable { name="check", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "acme.http.check", modules=modulesUnder "acme.http", dependencies=[], hostBindings=[] }] }' > "$WR/kappa.build.kp"
+if timeout 200 $KAPPA build --update --manifest "$WR" -o "$WORK/wirechk" >"$WR/b.log" 2>&1; then
+  wrout="$(timeout 30 "$WORK/wirechk" 2>&1)"
+  if grep -q "^GET$" <<<"$wrout" && grep -q "^/health$" <<<"$wrout" \
+     && grep -q "HTTP/1.1 200 OK" <<<"$wrout" && grep -q "Content-Length: 3" <<<"$wrout" \
+     && grep -q "^POST$" <<<"$wrout" && grep -q "^/submit$" <<<"$wrout"; then
+    echo "   ok (method/path parsed from the request line; router built a well-formed 200)"
+  else
+    echo "   FAIL: wire/router behavior wrong"; echo "$wrout" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: wire/router check did not build"; cat "$WR/b.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -rf "$WR"
+
+echo "== native libuv HTTP server: fragment selection + pkg-config/uv.h binding + live serve (§8.1/§9.4/§26.1/§36) =="
+# The example facade (runtime.kp) declares `expect term` transport; the .native
+# fragment satisfies it via a libuv host binding discovered by pkg-config and
+# ABI-verified against the real <uv.h>.  The .jvm/.dotnet fragments import
+# host.jvm/host.dotnet modules that do NOT exist natively, so a successful build
+# PROVES they were excluded by fragment selection.  Then we serve real requests.
+if pkg-config --exists libuv 2>/dev/null && command -v curl >/dev/null 2>&1; then
+  HU="$WORK/httpuv"; rm -rf "$HU"; mkdir -p "$HU"
+  cp -r "$ROOT/examples/native/http_uv/." "$HU/"
+  HUEXE="$WORK/httpuvd"
+  if timeout 240 $KAPPA build --update --manifest "$HU" -o "$HUEXE" >"$HU/b.log" 2>&1; then
+    # pkg-config + uv.h discovery/verification must have produced the binding pin.
+    if grep -q "^host-binding .* uvnet$" "$HU/kappa.lock" 2>/dev/null; then
+      "$HUEXE" >"$HU/srv.log" 2>&1 &
+      srv=$!
+      ok=1
+      # wait for the listener (bounded), then drive three requests through it
+      for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q "listening" "$HU/srv.log" 2>/dev/null && break; sleep 0.3; done
+      root="$(timeout 10 curl -s http://127.0.0.1:8090/ 2>/dev/null)"
+      health="$(timeout 10 curl -s http://127.0.0.1:8090/health 2>/dev/null)"
+      notf="$(timeout 10 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/nope 2>/dev/null)"
+      # bounded reap: the server self-exits after 3 requests; if a request was
+      # dropped it might not, so wait briefly then kill — `wait` must never be
+      # able to block the suite indefinitely.
+      for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$srv" 2>/dev/null || break; sleep 0.3; done
+      kill "$srv" 2>/dev/null
+      wait "$srv" 2>/dev/null
+      [ "$root" = "hello from kappa + libuv" ] || { echo "   FAIL: GET / body wrong (got '$root')"; ok=0; }
+      [ "$health" = "ok" ] || { echo "   FAIL: GET /health body wrong (got '$health')"; ok=0; }
+      [ "$notf" = "404" ] || { echo "   FAIL: GET /nope status wrong (got '$notf')"; ok=0; }
+      if [ "$ok" -eq 1 ]; then
+        echo "   ok (libuv binding from pkg-config+uv.h; native fragment served /, /health, 404 — jvm/dotnet excluded)"
+      else
+        cat "$HU/srv.log" | sed 's/^/     /'; fails=$((fails+1))
+      fi
+    else
+      echo "   FAIL: libuv host binding not pinned in kappa.lock"; cat "$HU/b.log" | sed 's/^/     /'; fails=$((fails+1))
+    fi
+  else
+    echo "   FAIL: native libuv HTTP build failed"; cat "$HU/b.log" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -rf "$HU"
+else
+  echo "   SKIP: pkg-config libuv or curl not available"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL NATIVE TESTS PASSED"; else echo "$fails NATIVE TEST(S) FAILED"; exit 1; fi

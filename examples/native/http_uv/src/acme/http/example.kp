@@ -1,0 +1,23 @@
+-- acme.http.example — the sample native HTTP server. Listens via the
+-- backend-neutral runtime facade (satisfied natively by the libuv fragment),
+-- serves three requests through the wire parser + router, then exits.
+module acme.http.example
+
+import acme.http.runtime as net
+import acme.http.wire as wire
+import acme.http.router as router
+
+main : UIO Unit
+let main = do
+    listener <- net.listen "127.0.0.1" 8090 16
+    printlnString "listening on :8090"
+    var served = 0
+    while ltInt served 3 do
+        conn <- net.accept listener
+        req <- net.readChunk conn
+        let line = wire.parseRequestLine req
+        net.writeAll conn (router.respond line)
+        net.closeConn conn
+        served = addInt served 1
+    net.closeListener listener
+    printlnString "served 3 requests; exiting"

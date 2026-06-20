@@ -1,0 +1,9 @@
+-- .NET fragment — NOT selected for the native profile (§36.12).
+module acme.http.runtime
+import host.dotnet.System.Net.Sockets.Socket as sock
+let listen host port backlog = sock.bindListen host port backlog
+let accept l = sock.accept l
+let readChunk c = sock.receive c
+let writeAll c payload = sock.send c payload
+let closeConn c = sock.close c
+let closeListener l = sock.close l
