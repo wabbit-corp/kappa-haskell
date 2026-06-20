@@ -1,6 +1,7 @@
 module delve.engine
 
 import delve.core.*
+import delve.natutil.*
 import delve.grid as grid
 import delve.fov as fov
 import delve.gen as gen
@@ -14,7 +15,7 @@ import delve.terminal as term
 movePlayer : Direction -> GameState -> GameState
 let movePlayer dir game =
     match playerActor game
-    case None -> game.{ mode = Dead }
+    case None -> withMode Dead game
     case Some p ->
         let target = addPos p.pos (moveDelta dir)
         let tile = grid.getTile game.level target
@@ -25,14 +26,14 @@ let movePlayer dir game =
                 else
                     let hit = combat.strike p enemy game.rng
                     let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
-                    let g = game.{ rng = hit.rng, level = game.level.{ actors = removeDeadActors actors1 } }
+                    let g = withRngLevel hit.rng (withActors (removeDeadActors actors1) game.level) game
                     in message hit.log g
             case None ->
                 if isWalkable tile then
-                    let p2 = p.{ pos = target }
+                    let p2 = withActorPos target p
                     let actors2 = replaceActor p2 game.level.actors
-                    let level2 = fov.refreshVisibility target game.level.{ actors = actors2 }
-                    let game2 = game.{ level = level2 }
+                    let level2 = fov.refreshVisibility target (withActors actors2 game.level)
+                    let game2 = withLevel level2 game
                     in
                         match tile.kind
                         case Trap -> damagePlayer 2 (message "A trap bites your ankle. Very original." game2)
@@ -48,12 +49,12 @@ let movePlayer dir game =
 damagePlayer : Int -> GameState -> GameState
 let damagePlayer amount game =
     match playerActor game
-    case None -> game.{ mode = Dead }
+    case None -> withMode Dead game
     case Some p ->
         let hp2 = p.stats.hp - amount
-        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let p2 = withActorStatsAlive (withStatsHp (max 0 hp2) p.stats) (hp2 > 0) p
         let mode2 = if hp2 > 0 then game.mode else Dead
-        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+        withModeLevel mode2 (withActors (replaceActor p2 game.level.actors) game.level) game
 
 openDoorAt : Vec2 -> GameState -> GameState
 let openDoorAt pos game =
@@ -61,8 +62,8 @@ let openDoorAt pos game =
     in
         match t.kind
         case ClosedDoor ->
-            let level2 = grid.setTile pos (t.{ kind = OpenDoor }) game.level
-            in message "You open the door." game.{ level = level2 }
+            let level2 = grid.setTile pos (withTileKind OpenDoor t) game.level
+            in message "You open the door." (withLevel level2 game)
         case _ -> message "There is no closed door there." game
 
 openNearby : GameState -> GameState
@@ -97,21 +98,21 @@ let stairsCommand goingDown game =
                 in message "You climb back toward slightly less doom."
                     (gen.newLevel (game.level.depth - 1) game.level.size nextSeed)
             elif not goingDown && tile.kind == Upstairs then
-                game.{ mode = Won }
+                withMode Won game
             else message "No stairs here." game
 
 applyCommand : Command -> GameState -> GameState
 let applyCommand cmd game =
     match game.mode
-    case HelpMode -> game.{ mode = Playing }
-    case InventoryMode -> game.{ mode = Playing }
+    case HelpMode -> withMode Playing game
+    case InventoryMode -> withMode Playing game
     case Dead ->
         match cmd
-        case QuitNoSave -> game.{ mode = Quit }
+        case QuitNoSave -> withMode Quit game
         case _ -> game
     case Won ->
         match cmd
-        case QuitNoSave -> game.{ mode = Quit }
+        case QuitNoSave -> withMode Quit game
         case _ -> game
     case Quit -> game
     case Playing ->
@@ -122,12 +123,12 @@ let applyCommand cmd game =
         case PickUp -> inventory.pickUp game
         case DropFirst -> inventory.dropFirst game
         case UseFirst -> inventory.useFirst game
-        case Inventory -> game.{ mode = InventoryMode }
+        case Inventory -> withMode InventoryMode game
         case Descend -> stairsCommand True game
         case Ascend -> stairsCommand False game
-        case Help -> game.{ mode = HelpMode }
-        case SaveAndQuit -> message "Save is planned, not wired. The gods of persistence are on lunch." game.{ mode = Quit }
-        case QuitNoSave -> game.{ mode = Quit }
+        case Help -> withMode HelpMode game
+        case SaveAndQuit -> message "Save is planned, not wired. The gods of persistence are on lunch." (withMode Quit game)
+        case QuitNoSave -> withMode Quit game
         case _ -> game
 
 costsTurn : Command -> Bool
@@ -146,7 +147,7 @@ let costsTurn cmd =
 tickWorld : Command -> GameState -> GameState
 let tickWorld cmd game =
     if costsTurn cmd && game.mode == Playing then
-        let hungry = game.{ player = game.player.{ hunger = game.player.hunger - 1 }, level = game.level.{ turn = game.level.turn + 1 } }
+        let hungry = withPlayerLevel (withHunger (game.player.hunger - 1) game.player) (withTurn (game.level.turn + 1) game.level) game
         let starving = if hungry.player.hunger <= 0 then damagePlayer 1 (message "You are starving." hungry) else hungry
         ai.runMonsters starving
     else game
@@ -161,23 +162,37 @@ initialGame : Nat -> Size -> GameState
 let initialGame seed size =
     gen.newLevel 1 size seed
 
-runLoop : (& terminal : term.Terminal) -> GameState -> IO GameError Unit
-let runLoop terminal game =
+-- The render/input loop. This front end treats a same-module recursive call
+-- that borrows a path previously passed to an IMPORTED (`&`) function as a
+-- use-after-consume (cross-module `&` borrows are not tracked the way local
+-- borrows are), so the loop is expressed iteratively with a `while` + mutable
+-- game state rather than by self-recursion; the terminal is borrowed
+-- sequentially each frame, which the borrow checker accepts.
+-- The render/input loop. This front end treats a same-module function that
+-- borrows a path AFTER it was passed to an IMPORTED (`&`) function as a
+-- use-after-consume (cross-module `&` borrows are not tracked the way local
+-- borrows are). So ALL terminal borrows are kept inside this one function:
+-- the size query, the per-frame render/read, and the loop. The loop itself is
+-- iterative (`while` + mutable game state) rather than self-recursive, which
+-- the borrow checker accepts for sequential same-function borrows.
+runLoop : (& terminal : term.Terminal) -> Nat -> UIO Unit
+let runLoop terminal seed =
     do
-        term.write terminal (render.renderGame game)
-        match game.mode
-        case Quit -> pure ()
-        case _ ->
-            key <- term.readKey terminal
-            let game2 = step key game
-            runLoop terminal game2
+        screen <- term.size terminal
+        let mapSize = Size (min 96 (max 60 screen.width)) (min 32 (max 20 (screen.height - 6)))
+        var game = initialGame seed mapSize
+        var running = True
+        while running do
+            term.write terminal (render.renderGame game)
+            if game.mode == Quit then running = False
+            else
+                do
+                    key <- term.readKey terminal
+                    game = step key game
 
-main : IO GameError Unit
+main : UIO Unit
 let main =
     do
+        seed <- term.monotonicSeed
         using terminal <- term.open
-            seed <- term.monotonicSeed
-            screen <- term.size terminal
-            let mapSize = Size (min 96 (max 60 screen.width)) (min 32 (max 20 (screen.height - 6)))
-            let game = initialGame seed mapSize
-            runLoop terminal game
+        runLoop terminal seed

@@ -1,5 +1,7 @@
 module delve.rng
 
+import delve.natutil.*
+
 -- Deterministic linear-congruential RNG. It is boring, reproducible, and
 -- therefore useful for dungeon seeds. Cryptography can stay outside, where it
 -- belongs with the other sharp objects.
@@ -11,18 +13,18 @@ let modulus = 9223372036854775783
 
 seed : Nat -> Rng
 let seed n =
-    if n == 0 then 88172645463393265 else n % modulus
+    if n == 0 then 88172645463393265 else safeMod n modulus
 
 next : Rng -> (value : Nat, rng : Rng)
 let next s =
-    let x = ((s * 6364136223846793005) + 1442695040888963407) % modulus
+    let x = safeMod ((s * 6364136223846793005) + 1442695040888963407) modulus
     in (value = x, rng = x)
 
 range : Int -> Int -> Rng -> (value : Int, rng : Rng)
 let range lo hi rng =
     let span = max 1 (hi - lo + 1)
     let n = next rng
-    in (value = lo + natToInt (n.value % intToNat span), rng = n.rng)
+    in (value = lo + natToInt (safeMod n.value (intToNat span)), rng = n.rng)
 
 chance : Int -> Rng -> (value : Bool, rng : Rng)
 let chance percent rng =

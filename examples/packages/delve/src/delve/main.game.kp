@@ -3,5 +3,5 @@ module delve.main
 import delve.core.*
 import delve.engine as engine
 
-main : IO GameError Unit
+main : UIO Unit
 let main = engine.main

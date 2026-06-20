@@ -1,6 +1,7 @@
 module delve.grid
 
 import delve.core.*
+import delve.natutil.*
 
 index : Size -> Vec2 -> Int
 let index size pos =
@@ -14,14 +15,14 @@ getTile : Level -> Vec2 -> Tile
 let getTile level pos =
     if not (inBounds level.size pos) then Tile VoidTile True False False
     else
-        match arrayGet level.tiles (index level.size pos)
+        match arrayGetI level.tiles (index level.size pos)
         case Some t -> t
         case None -> Tile VoidTile True False False
 
 setTile : Vec2 -> Tile -> Level -> Level
 let setTile pos tile level =
     if not (inBounds level.size pos) then level
-    else level.{ tiles = arraySet level.tiles (index level.size pos) tile }
+    else withTiles (arraySet level.tiles (index level.size pos) tile) level
 
 mapTile : Vec2 -> (Tile -> Tile) -> Level -> Level
 let mapTile pos f level =
@@ -30,15 +31,15 @@ let mapTile pos f level =
 positions : Size -> List Vec2
 let positions size =
     block
-        goY : Int -> List Vec2 -> List Vec2
-        let goY y acc decreases max 0 (size.height - y) =
-            if y >= size.height then reverse acc
-            else goY (y + 1) (goX 0 y acc)
-
         goX : Int -> Int -> List Vec2 -> List Vec2
         let goX x y acc decreases max 0 (size.width - x) =
             if x >= size.width then acc
             else goX (x + 1) y ((::) (Vec2 x y) acc)
+
+        goY : Int -> List Vec2 -> List Vec2
+        let goY y acc decreases max 0 (size.height - y) =
+            if y >= size.height then reverse acc
+            else goY (y + 1) (goX 0 y acc)
 
         goY 0 Nil
 
@@ -74,11 +75,12 @@ blankLevel : Int -> Size -> Level
 let blankLevel depth size =
     let count = size.width * size.height
     in Level
-        (depth = depth)
-        (size = size)
-        (tiles = arrayReplicate count defaultTile)
-        (rooms = Nil)
-        (actors = Nil)
-        (items = Nil)
-        (messages = ["Welcome to Delve. The dungeon apologizes in advance."])
-        (turn = 0)
+        { depth = depth
+        , size = size
+        , tiles = arrayReplicate count defaultTile
+        , rooms = Nil
+        , actors = Nil
+        , items = Nil
+        , messages = ["Welcome to Delve. The dungeon apologizes in advance."]
+        , turn = 0
+        }

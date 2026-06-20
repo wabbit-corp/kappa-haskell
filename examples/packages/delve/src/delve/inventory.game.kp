@@ -1,6 +1,7 @@
 module delve.inventory
 
 import delve.core.*
+import delve.natutil.*
 import delve.grid as grid
 
 itemsAt : Vec2 -> List GroundItem -> List GroundItem
@@ -28,9 +29,9 @@ let pickUp game =
         match found.picked
         case None -> message "There is nothing here." game
         case Some item ->
-            let p2 = p.{ inventory = (::) item p.inventory }
+            let p2 = withActorInventory ((::) item p.inventory) p
             message ("You pick up " ++ item.name ++ ".")
-                (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors, items = found.rest } })
+                (withLevel (withActorsItems (replaceActor p2 game.level.actors) found.rest game.level) game)
 
 dropFirst : GameState -> GameState
 let dropFirst game =
@@ -40,10 +41,10 @@ let dropFirst game =
         match p.inventory
         case Nil -> message "You have nothing to drop." game
         case (::) item rest ->
-            let p2 = p.{ inventory = rest }
+            let p2 = withActorInventory rest p
             let gi = GroundItem p.pos item
             message ("You drop " ++ item.name ++ ".")
-                (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors, items = (::) gi game.level.items } })
+                (withLevel (withActorsItems (replaceActor p2 game.level.actors) ((::) gi game.level.items) game.level) game)
 
 healPlayer : Int -> GameState -> GameState
 let healPlayer amount game =
@@ -51,8 +52,8 @@ let healPlayer amount game =
     case None -> game
     case Some p ->
         let hp2 = min p.stats.maxHp (p.stats.hp + amount)
-        let p2 = p.{ stats = p.stats.{ hp = hp2 } }
-        game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+        let p2 = withActorStats (withStatsHp hp2 p.stats) p
+        withLevel (withActors (replaceActor p2 game.level.actors) game.level) game
 
 useFirst : GameState -> GameState
 let useFirst game =
@@ -64,13 +65,13 @@ let useFirst game =
         case (::) item rest ->
             match item.kind
             case PotionHealing ->
-                let p2 = p.{ inventory = rest }
-                let g1 = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+                let p2 = withActorInventory rest p
+                let g1 = withLevel (withActors (replaceActor p2 game.level.actors) game.level) game
                 in message "You feel less like a cautionary tale." (healPlayer item.power g1)
             case FoodRation ->
-                let p2 = p.{ inventory = rest }
+                let p2 = withActorInventory rest p
                 message "You eat the ration. Blandness triumphs."
-                    (game.{ player = game.player.{ hunger = game.player.hunger + 800 }, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+                    (withPlayerLevel (withHunger (game.player.hunger + 800) game.player) (withActors (replaceActor p2 game.level.actors) game.level) game)
             case _ -> message ("You cannot figure out how to use " ++ item.name ++ ".") game
 
 inventoryText : Actor -> List String

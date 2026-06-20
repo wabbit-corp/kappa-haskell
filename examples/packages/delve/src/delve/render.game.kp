@@ -1,6 +1,7 @@
 module delve.render
 
 import delve.core.*
+import delve.natutil.*
 import delve.grid as grid
 import delve.inventory as inv
 import delve.input as input
@@ -64,13 +65,13 @@ let cellGlyph level pos =
 renderMap : Level -> String
 let renderMap level =
     block
-        row : Int -> String
-        let row y = rowLoop 0 y ""
-
         rowLoop : Int -> Int -> String -> String
         let rowLoop x y acc decreases max 0 (level.size.width - x) =
             if x >= level.size.width then acc ++ "\r\n"
             else rowLoop (x + 1) y (acc ++ cellGlyph level (Vec2 x y))
+
+        row : Int -> String
+        let row y = rowLoop 0 y ""
 
         rows : Int -> String -> String
         let rows y acc decreases max 0 (level.size.height - y) =
@@ -81,9 +82,7 @@ let renderMap level =
 
 hpBar : Actor -> String
 let hpBar p =
-    "HP " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++
-    "  Lv " ++ show p.stats.level ++
-    "  XP " ++ show p.stats.xp
+    "HP " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++ "  Lv " ++ show p.stats.level ++ "  XP " ++ show p.stats.xp
 
 messages : List String -> String
 let messages ms =

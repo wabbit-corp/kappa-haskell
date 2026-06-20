@@ -1,0 +1,84 @@
+module delve.natutil
+
+-- Portable helpers this front end's prelude does not provide directly.
+-- Brought in unqualified by the pure game modules (`import delve.natutil.*`).
+-- Behavior matches the standard list/arithmetic helpers the package's source
+-- was written against.
+
+public abs : Int -> Int
+let abs n = if n < 0 then negInt n else n
+
+public max : Int -> Int -> Int
+let max a b = if a >= b then a else b
+
+public min : Int -> Int -> Int
+let min a b = if a <= b then a else b
+
+public sign : Int -> Int
+let sign n = if n < 0 then negInt 1 elif n > 0 then 1 else 0
+
+reverseGo : forall (a : Type). List a -> List a -> List a
+let reverseGo acc xs decreases listLength xs =
+    match xs
+    case Nil -> acc
+    case h :: t -> reverseGo (h :: acc) t
+
+public reverse : forall (a : Type). List a -> List a
+let reverse xs = reverseGo Nil xs
+
+public listIsEmpty : forall (a : Type). List a -> Bool
+let listIsEmpty xs =
+    match xs
+    case Nil -> True
+    case _ :: _ -> False
+
+public take : forall (a : Type). Int -> List a -> List a
+let take n xs decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case h :: t -> if n <= 0 then Nil else h :: take (subInt n 1) t
+
+public drop : forall (a : Type). Int -> List a -> List a
+let drop n xs decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case h :: t -> if n <= 0 then xs else drop (subInt n 1) t
+
+public listGet : forall (a : Type). List a -> Int -> Option a
+let listGet xs i decreases listLength xs =
+    match xs
+    case Nil -> None
+    case h :: t -> if i <= 0 then Some h else listGet t (subInt i 1)
+
+-- Nat helpers: total saturating subtraction / safe division for the few Nat
+-- counters that need them (runtime-identical when no underflow / nonzero
+-- divisor — true for the game's turn/rng counters).
+public satSub : Nat -> Nat -> Nat
+let satSub a b = natOfInt (subInt (natToInt a) (natToInt b))
+
+public safeDiv : Nat -> Nat -> Nat
+let safeDiv a b = natOfInt (divInt (natToInt a) (natToInt b))
+
+public safeMod : Nat -> Nat -> Nat
+let safeMod a b = natOfInt (modInt (natToInt a) (natToInt b))
+
+-- Int-indexed array helpers. `index` produces an Int, so these wrap the
+-- prelude's Nat-indexed `arrayGet` and provide the missing set/replicate.
+public arrayGetI : forall (a : Type). Array a -> Int -> Option a
+let arrayGetI xs i = arrayGet xs (natOfInt i)
+
+replicateGo : forall (a : Type). Int -> a -> List a -> List a
+let replicateGo n x acc decreases max 0 n =
+    if n <= 0 then acc else replicateGo (subInt n 1) x (x :: acc)
+
+public arrayReplicate : forall (a : Type). Int -> a -> Array a
+let arrayReplicate n x = arrayFromList (replicateGo n x Nil)
+
+setGo : forall (a : Type). Int -> a -> List a -> List a
+let setGo i x xs decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case h :: t -> if i <= 0 then x :: t else h :: setGo (subInt i 1) x t
+
+public arraySet : forall (a : Type). Array a -> Int -> a -> Array a
+let arraySet xs i x = arrayFromList (setGo i x (arrayToList xs))

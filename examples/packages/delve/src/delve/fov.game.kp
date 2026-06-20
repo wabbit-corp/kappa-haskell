@@ -1,13 +1,11 @@
 module delve.fov
 
 import delve.core.*
+import delve.natutil.*
 import delve.grid as grid
 
 radius : Int
 let radius = 9
-
-sign : Int -> Int
-let sign n = if n < 0 then -1 elif n > 0 then 1 else 0
 
 lineStep : Vec2 -> Vec2 -> Vec2
 let lineStep a b =
@@ -36,7 +34,7 @@ let refreshVisibility origin level =
         mark : Vec2 -> Level -> Level
         let mark p lv =
             let v = visibleFrom level origin p
-            in grid.mapTile p (\t -> t.{ lit = v, seen = t.seen || v }) lv
+            in grid.mapTile p (\t -> withTileLitSeen v (t.seen || v) t) lv
 
         go : List Vec2 -> Level -> Level
         let go ps lv decreases listLength ps =

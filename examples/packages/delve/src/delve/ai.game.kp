@@ -1,10 +1,11 @@
 module delve.ai
 
 import delve.core.*
+import delve.natutil.*
 import delve.grid as grid
 import delve.fov as fov
 import delve.combat as combat
-import delve.rng as rng
+import delve.rng as prng
 
 toward : Vec2 -> Vec2 -> Direction
 let toward from to =
@@ -21,9 +22,9 @@ let toward from to =
         elif dx > 0 && dy > 0 then SouthEast
         else Wait
 
-randomDir : rng.Rng -> (dir : Direction, rng : rng.Rng)
+randomDir : prng.Rng -> (dir : Direction, rng : prng.Rng)
 let randomDir r0 =
-    let r = rng.range 0 7 r0
+    let r = prng.range 0 7 r0
     let dir =
         match r.value
         case 0 -> North
@@ -40,18 +41,18 @@ tryMoveActor : Actor -> Vec2 -> Level -> Actor
 let tryMoveActor actor target level =
     if grid.inBounds level.size target && isWalkable (grid.getTile level target) then
         match actorAt target level.actors
-        case None -> actor.{ pos = target }
+        case None -> withActorPos target actor
         case Some _ -> actor
     else actor
 
-monsterTurn : Actor -> Actor -> GameState -> (game : GameState, rng : rng.Rng)
+monsterTurn : Actor -> Actor -> GameState -> (game : GameState, rng : prng.Rng)
 let monsterTurn monster player game =
     if not monster.alive then (game = game, rng = game.rng)
     elif chebyshev monster.pos player.pos <= 1 then
         let hit = combat.strike monster player game.rng
         let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
         let mode = if hit.defender.alive then game.mode else Dead
-        let g = game.{ rng = hit.rng, mode = mode, level = game.level.{ actors = actors1 } }
+        let g = withRngModeLevel hit.rng mode (withActors actors1 game.level) game
         in (game = message hit.log g, rng = hit.rng)
     else
         let chase = fov.visibleFrom game.level monster.pos player.pos
@@ -59,12 +60,12 @@ let monsterTurn monster player game =
         let target = addPos monster.pos (moveDelta dirRoll.dir)
         let monster2 = tryMoveActor monster target game.level
         let actors2 = replaceActor monster2 game.level.actors
-        in (game = game.{ rng = dirRoll.rng, level = game.level.{ actors = actors2 } }, rng = dirRoll.rng)
+        in (game = withRngLevel dirRoll.rng (withActors actors2 game.level) game, rng = dirRoll.rng)
 
 runMonsters : GameState -> GameState
 let runMonsters game =
     match playerActor game
-    case None -> game.{ mode = Dead }
+    case None -> withMode Dead game
     case Some player ->
         block
             go : List Actor -> GameState -> GameState

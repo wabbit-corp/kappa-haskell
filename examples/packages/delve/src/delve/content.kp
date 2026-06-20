@@ -4,7 +4,7 @@ import delve.core.*
 
 playerStats : Stats
 let playerStats =
-    Stats (hp = 24) (maxHp = 24) (mp = 4) (maxMp = 4) (str = 6) (dex = 6) (def = 2) (xp = 0) (level = 1)
+    Stats { hp = 24, maxHp = 24, mp = 4, maxMp = 4, str = 6, dex = 6, def = 2, xp = 0, level = 1 }
 
 monsterStats : Species -> Stats
 let monsterStats s =
@@ -51,15 +51,16 @@ let speciesGlyph s =
 mkPlayer : Int -> Vec2 -> Actor
 let mkPlayer id pos =
     Actor
-        (id = id)
-        (species = PlayerSpecies)
-        (name = "player")
-        (glyph = "@")
-        (pos = pos)
-        (stats = playerStats)
-        (attitude = PlayerControlled)
-        (inventory = [mkItem Dagger, mkItem FoodRation])
-        (alive = True)
+        { id = id
+        , species = PlayerSpecies
+        , name = "player"
+        , glyph = "@"
+        , pos = pos
+        , stats = playerStats
+        , attitude = PlayerControlled
+        , inventory = [mkItem Dagger, mkItem FoodRation]
+        , alive = True
+        }
 
 mkMonster : Int -> Species -> Vec2 -> Actor
 let mkMonster id s pos =

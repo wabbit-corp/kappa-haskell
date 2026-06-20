@@ -1,7 +1,7 @@
 module delve.core
 
-import std.bytes.(Bytes)
 import std.unicode.(utf8Bytes)
+import delve.natutil.*
 
 -- Delve: a terminal-only Linux/native roguelike skeleton with enough meat on
 -- its bones to be called a game without lying too loudly.
@@ -42,6 +42,20 @@ let moveDelta dir =
     case SouthEast -> Vec2 1 1
     case Wait -> Vec2 0 0
 
+instance Eq Direction =
+    let (==) a b =
+        match (a, b)
+        case (North, North) -> True
+        case (South, South) -> True
+        case (West, West) -> True
+        case (East, East) -> True
+        case (NorthWest, NorthWest) -> True
+        case (NorthEast, NorthEast) -> True
+        case (SouthWest, SouthWest) -> True
+        case (SouthEast, SouthEast) -> True
+        case (Wait, Wait) -> True
+        case _ -> False
+
 addPos : Vec2 -> Vec2 -> Vec2
 let addPos a b =
     Vec2 (a.x + b.x) (a.y + b.y)
@@ -69,6 +83,21 @@ data TileKind : Type =
     Water
     Lava
     Trap
+
+instance Eq TileKind =
+    let (==) a b =
+        match (a, b)
+        case (VoidTile, VoidTile) -> True
+        case (Floor, Floor) -> True
+        case (Wall, Wall) -> True
+        case (ClosedDoor, ClosedDoor) -> True
+        case (OpenDoor, OpenDoor) -> True
+        case (Upstairs, Upstairs) -> True
+        case (Downstairs, Downstairs) -> True
+        case (Water, Water) -> True
+        case (Lava, Lava) -> True
+        case (Trap, Trap) -> True
+        case _ -> False
 
 data Tile : Type =
     Tile
@@ -133,6 +162,21 @@ data Species : Type =
     Skeleton
     Wizard
     Dragon
+
+instance Eq Species =
+    let (==) a b =
+        match (a, b)
+        case (PlayerSpecies, PlayerSpecies) -> True
+        case (Goblin, Goblin) -> True
+        case (Orc, Orc) -> True
+        case (Kobold, Kobold) -> True
+        case (Rat, Rat) -> True
+        case (Bat, Bat) -> True
+        case (Troll, Troll) -> True
+        case (Skeleton, Skeleton) -> True
+        case (Wizard, Wizard) -> True
+        case (Dragon, Dragon) -> True
+        case _ -> False
 
 data Attitude : Type =
     PlayerControlled
@@ -206,6 +250,17 @@ data GameMode : Type =
     Won
     Quit
 
+instance Eq GameMode =
+    let (==) a b =
+        match (a, b)
+        case (Playing, Playing) -> True
+        case (InventoryMode, InventoryMode) -> True
+        case (HelpMode, HelpMode) -> True
+        case (Dead, Dead) -> True
+        case (Won, Won) -> True
+        case (Quit, Quit) -> True
+        case _ -> False
+
 data GameState : Type =
     GameState
         (rng : Nat)
@@ -231,6 +286,26 @@ data Command : Type =
     QuitNoSave
     NoCommand
 
+instance Eq Command =
+    let (==) a b =
+        match (a, b)
+        case (Move d1, Move d2) -> d1 == d2
+        case (Rest, Rest) -> True
+        case (Open, Open) -> True
+        case (Close, Close) -> True
+        case (PickUp, PickUp) -> True
+        case (DropFirst, DropFirst) -> True
+        case (Inventory, Inventory) -> True
+        case (UseFirst, UseFirst) -> True
+        case (Descend, Descend) -> True
+        case (Ascend, Ascend) -> True
+        case (Look, Look) -> True
+        case (Help, Help) -> True
+        case (SaveAndQuit, SaveAndQuit) -> True
+        case (QuitNoSave, QuitNoSave) -> True
+        case (NoCommand, NoCommand) -> True
+        case _ -> False
+
 data Key : Type =
     KeyChar (text : String)
     KeyEscape
@@ -240,10 +315,110 @@ data Key : Type =
     KeyResize
     KeyUnknown
 
+withMessages : List String -> Level -> Level
+let withMessages msgs lv =
+    Level lv.depth lv.size lv.tiles lv.rooms lv.actors lv.items msgs lv.turn
+
+withTiles : Array Tile -> Level -> Level
+let withTiles tiles lv =
+    Level lv.depth lv.size tiles lv.rooms lv.actors lv.items lv.messages lv.turn
+
+withContents : List Room -> List Actor -> List GroundItem -> Level -> Level
+let withContents rooms actors items lv =
+    Level lv.depth lv.size lv.tiles rooms actors items lv.messages lv.turn
+
+-- Reconstruction helpers (this front end's `.{ }` patch applies only to
+-- anonymous records, not nominal `data`; these copy unchanged fields by
+-- projection and set the updated ones — semantically identical to the patch).
+
+withActors : List Actor -> Level -> Level
+let withActors actors lv =
+    Level lv.depth lv.size lv.tiles lv.rooms actors lv.items lv.messages lv.turn
+
+withActorsItems : List Actor -> List GroundItem -> Level -> Level
+let withActorsItems actors items lv =
+    Level lv.depth lv.size lv.tiles lv.rooms actors items lv.messages lv.turn
+
+withTurn : Nat -> Level -> Level
+let withTurn turn lv =
+    Level lv.depth lv.size lv.tiles lv.rooms lv.actors lv.items lv.messages turn
+
+withTileKind : TileKind -> Tile -> Tile
+let withTileKind kind t =
+    Tile kind t.seen t.lit t.blood
+
+withTileLitSeen : Bool -> Bool -> Tile -> Tile
+let withTileLitSeen lit seen t =
+    Tile t.kind seen lit t.blood
+
+withStatsHp : Int -> Stats -> Stats
+let withStatsHp hp s =
+    Stats hp s.maxHp s.mp s.maxMp s.str s.dex s.def s.xp s.level
+
+withStatsXp : Int -> Stats -> Stats
+let withStatsXp xp s =
+    Stats s.hp s.maxHp s.mp s.maxMp s.str s.dex s.def xp s.level
+
+withStatsLevelUp : Int -> Int -> Int -> Int -> Int -> Stats -> Stats
+let withStatsLevelUp xp level maxHp hp str s =
+    Stats hp maxHp s.mp s.maxMp str s.dex s.def xp level
+
+withActorStats : Stats -> Actor -> Actor
+let withActorStats stats a =
+    Actor a.id a.species a.name a.glyph a.pos stats a.attitude a.inventory a.alive
+
+withActorStatsAlive : Stats -> Bool -> Actor -> Actor
+let withActorStatsAlive stats alive a =
+    Actor a.id a.species a.name a.glyph a.pos stats a.attitude a.inventory alive
+
+withActorPos : Vec2 -> Actor -> Actor
+let withActorPos pos a =
+    Actor a.id a.species a.name a.glyph pos a.stats a.attitude a.inventory a.alive
+
+withActorInventory : List Item -> Actor -> Actor
+let withActorInventory inv a =
+    Actor a.id a.species a.name a.glyph a.pos a.stats a.attitude inv a.alive
+
+withHunger : Int -> PlayerState -> PlayerState
+let withHunger hunger p =
+    PlayerState p.actorId hunger p.gold p.identified
+
+withMode : GameMode -> GameState -> GameState
+let withMode mode game =
+    GameState game.rng game.player game.level mode game.lastCommand
+
+withRng : Nat -> GameState -> GameState
+let withRng rng game =
+    GameState rng game.player game.level game.mode game.lastCommand
+
+withPlayer : PlayerState -> GameState -> GameState
+let withPlayer player game =
+    GameState game.rng player game.level game.mode game.lastCommand
+
+withRngLevel : Nat -> Level -> GameState -> GameState
+let withRngLevel rng level game =
+    GameState rng game.player level game.mode game.lastCommand
+
+withModeLevel : GameMode -> Level -> GameState -> GameState
+let withModeLevel mode level game =
+    GameState game.rng game.player level mode game.lastCommand
+
+withRngModeLevel : Nat -> GameMode -> Level -> GameState -> GameState
+let withRngModeLevel rng mode level game =
+    GameState rng game.player level mode game.lastCommand
+
+withPlayerLevel : PlayerState -> Level -> GameState -> GameState
+let withPlayerLevel player level game =
+    GameState game.rng player level game.mode game.lastCommand
+
+withLevel : Level -> GameState -> GameState
+let withLevel lv game =
+    GameState game.rng game.player lv game.mode game.lastCommand
+
 message : String -> GameState -> GameState
 let message text game =
     let msgs = take 7 ((::) text game.level.messages)
-    in game.{ level = game.level.{ messages = msgs } }
+    in withLevel (withMessages msgs game.level) game
 
 playerActor : GameState -> Option Actor
 let playerActor game =

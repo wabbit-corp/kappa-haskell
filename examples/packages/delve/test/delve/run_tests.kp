@@ -1,0 +1,24 @@
+module delve.run_tests
+
+-- Native test runner for the delve package: invokes the pure game-logic test
+-- values (generation + input) and prints a PASS/FAIL line per check plus a
+-- final summary. Builds under the native backend with the `test` role
+-- fragment; the interactive `.game` fragments and the terminal binding are
+-- excluded by §36.12 fragment selection (this target does not enable the
+-- `game`/`linux` tags).
+
+import delve.generation_test as g
+import delve.input_test as i
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    let c1 = g.seededDungeonHasPlayer
+    let c2 = g.seededDungeonHasRooms
+    let c3 = i.hjklWorks
+    printlnString (line "gen.seededDungeonHasPlayer" c1)
+    printlnString (line "gen.seededDungeonHasRooms" c2)
+    printlnString (line "input.hjklWorks" c3)
+    if c1 && c2 && c3 then printlnString "DELVE TESTS: ALL PASS" else printlnString "DELVE TESTS: FAIL"

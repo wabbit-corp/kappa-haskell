@@ -1,4 +1,8 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #include "delve_terminal.h"
 
 #include <errno.h>
@@ -121,9 +125,15 @@ int delve_get_size(delve_terminal_handle *h, delve_size *out_size) {
 }
 
 uint64_t delve_monotonic_seed(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ (uint64_t)getpid();
+    /* The native build force-`-include`s a generated prototype header (pulling
+     * in <stdint.h>/<features.h>) BEFORE this file's own feature-test macros
+     * take effect, so CLOCK_MONOTONIC / clock_gettime may not be visible. Use
+     * the always-available ISO C time() mixed with the pid for a process- and
+     * time-specific seed instead of the POSIX monotonic clock. */
+    uint64_t t = (uint64_t)time(NULL);
+    uint64_t pid = (uint64_t)getpid();
+    uint64_t mixed = (t * 6364136223846793005ULL) + (pid * 1442695040888963407ULL) + 1ULL;
+    return mixed ^ (mixed >> 31);
 }
 
 const char *delve_strerror(int code) {

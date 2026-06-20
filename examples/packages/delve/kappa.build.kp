@@ -1,0 +1,64 @@
+-- Native build manifest (this implementation's schema) for the delve package.
+-- The original `build.kp` (kept verbatim for provenance) targets a schematic
+-- multi-backend manifest with a trusted-summary terminal binding. This manifest
+-- realizes the native backend only and exposes two targets:
+--
+--   * `delve-tests` — a native executable over the PURE game-logic tests
+--     (generation + input). It enables the `test` role fragment, so the
+--     interactive `.game` fragments (engine/render/main/terminal/ai/combat/
+--     fov/inventory) and the native/linux terminal binding are EXCLUDED by
+--     §36.12 fragment selection — the pure modules (no fragment suffix) are
+--     always selected.
+--
+--   * `delve` — the full interactive game. It enables the `game` + `linux`
+--     fragments and links the conservative `delve-terminal` native binding.
+--
+-- The `role` axis (game/test) keeps the two targets from pulling each other's
+-- fragments; the `os` axis (linux) gates the terminal implementation fragment.
+let buildConfig : BuildConfig = package
+    { name = "delve"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes =
+        [ axis "backend" [tag "native"]
+        , axis "os" [tag "linux"]
+        , axis "role" [tag "game", tag "test"]
+        ]
+    , dependencies = []
+    , hostBindings =
+        [ nativeBinding
+            { name = "delve-terminal"
+            , provides = [module "host.native.delve_terminal.Raw"]
+            , surface = generateAllFromHeader "native/delve_terminal_adapter.h" "delve_"
+            , abi = cAbi
+            , inputs =
+                [ headers ["native/delve_terminal_adapter.h"]
+                , shim ["native/delve_terminal_adapter.c", "native/delve_terminal.c"]
+                , cstrings ["delve_describe_error2", "delve_write_all2"]
+                , classify blocking
+                ]
+            , link = noLink
+            , load = systemLoader
+            }
+        ]
+    , targets =
+        [ executable
+            { name = "delve-tests"
+            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , fragments = tags ["native", "test"]
+            , main = module "delve.run_tests"
+            , modules = modulesUnder "delve"
+            , dependencies = []
+            , hostBindings = []
+            }
+        , executable
+            { name = "delve"
+            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , fragments = tags ["native", "linux", "game"]
+            , main = module "delve.main"
+            , modules = modulesUnder "delve"
+            , dependencies = []
+            , hostBindings = ["delve-terminal"]
+            }
+        ]
+    }
