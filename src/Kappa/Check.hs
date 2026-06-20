@@ -43,6 +43,7 @@ import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval
 import Kappa.Pretty (renderTerm)
+import Kappa.Parser (parseExprText)
 import Kappa.Source
 import Kappa.Syntax hiding (CompClause (..), Quantity (..))
 import qualified Kappa.Syntax as S
@@ -4357,6 +4358,27 @@ elabString ctx sl parts sp = case (slPrefix sl, parts) of
           showDict <- resolveImplicit ctx sp (VGlobN (gPrel "Show") [(Expl, ty1)])
           pure (CApp Expl (CProj showDict "show") tm1)
         _ -> pure (CLit (LitStr ""))
+  (Just "type", _)
+    -- §6.3.5: the conventional `type"…"` prefix handler. `type` is a soft
+    -- keyword (§5.2) that cannot be an ordinary binding, so the
+    -- implementation provides this built-in type-producing handler: the
+    -- string content is parsed and elaborated as a type expression,
+    -- yielding that Type. (Literal content; an interpolation fragment is
+    -- reported, since splicing a runtime value into a static type is not a
+    -- meaningful type-producing form here.)
+    | all (\f -> case f of FragLit _ -> True; _ -> False) (slFragments sl) -> do
+        let content = T.concat [t | FragLit t <- slFragments sl]
+        case parseExprText "<type-prefix>" content of
+          Left d -> do
+            report d {dMessage = "type\"…\" content does not parse as a type (§6.3.5): " <> dMessage d}
+            anyHole ctx
+          Right tyE -> do
+            (tyTm, lvl) <- inferType ctx tyE
+            pure (tyTm, VSort lvl)
+    | otherwise -> do
+        errAt sp "E_PREFIX_HANDLER_TYPE" (Just "kappa.macro.failure")
+          "the conventional type\"…\" handler (§6.3.5) takes literal type-expression content; it does not support ${…} interpolation (a runtime value cannot be spliced into a static type)"
+        anyHole ctx
   (Just p, _) -> do
     -- §6.3.4.3: the prefix is resolved by ordinary term name
     -- resolution and must elaborate to an 'Elab (InterpolatedMacro t)'

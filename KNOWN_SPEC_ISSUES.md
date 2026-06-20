@@ -80,9 +80,14 @@ handler form (§6.3.4 requires adjacency), so token gluing cannot be
 decided in the lexer either. The spec never acknowledges that this one
 identifier requires special lookahead treatment. Evidence: this
 parser special-cases `type` in several distinct productions
-(`Kappa.Parser`); the
-prefixed-string handler form for `type` is consequently left
-unsupported (SPEC_COVERAGE.md §6.3.5).
+(`Kappa.Parser`). RESOLVED for the handler form (2026-06): the parser
+already lexes adjacent `type"…"` as a prefixed string, and the
+implementation now provides the conventional built-in `type"…"`
+type-producing handler (it parses the literal content as a type
+expression and elaborates it; `macros/type-prefix-handler.kp`,
+SPEC_COVERAGE.md §6.3.5). The remaining lookahead observation about the
+three roles of `type` stands as a spec-ergonomics note, but no
+normative form is unsupported on its account.
 
 ## 5. §16.1.3 vs §16.4.2: short-circuit operators are "ordinary terms", yet flow typing must see through them
 

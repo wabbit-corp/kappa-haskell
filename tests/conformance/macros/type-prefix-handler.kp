@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\n42\n"
+
+-- §6.3.5: the conventional `type"…"` prefixed-string handler. Because `type`
+-- is a soft keyword (§5.2), `type"…"` lexes as a prefixed string and the
+-- implementation's built-in type-producing handler parses its content as a
+-- type expression. Used here in type-annotation position.
+module main
+
+xs : type"List Int"
+let xs = 1 :: 2 :: Nil
+
+n : type"Integer"
+let n = 42
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (listLength xs))
+    printlnString (showInt n)
