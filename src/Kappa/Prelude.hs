@@ -1200,6 +1200,18 @@ preludeSource =
     , "    let throwError err = throwIO err"
     , "    let catchError body handler = catchIO body handler"
     , ""
+    , -- §18.1/§19.5/§28.2 MonadResource: a protected resource scope. The
+      -- release runs exactly once on every exit path from `use` (normal
+      -- completion, typed failure, interruption, defect), as the §18.8/§18.1
+      -- finally kernel guarantees.
+      "instance MonadResource (IO e) ="
+    , "    let bracketM acquire release use ="
+    , "        ioBind acquire (\\r -> finallyIO (use r) (release r))"
+    , ""
+    , -- §28.2 `bracket` surface name (the MonadResource method for IO).
+      "bracket : forall (e : Type) (a : Type) (b : Type). IO e a -> (a -> IO e Unit) -> (a -> IO e b) -> IO e b"
+    , "let bracket acquire release use = bracketM acquire release use"
+    , ""
     , -- §18.11: structured-concurrency handles (check-mode support)
       "data Fiber (e : Type) (a : Type) : Type ="
     , "    MkFiberHandle"

@@ -560,12 +560,16 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     case r of
       Right v -> pure v
       Left (KappaError e) -> runIOValue rt (vapp ec handler Expl e)
+  -- §18.8/§18.1: the finalizer runs exactly once on EVERY exit path from the
+  -- body — normal completion, typed failure, interruption, and defects — then
+  -- the original outcome is propagated. (Catches SomeException, not just
+  -- KappaError, so a finalizer/release also runs when the body is interrupted.)
   ("finallyIO", [body, fin]) -> do
-    r <- try (runIOValue rt body)
+    r <- try (runIOValue rt body) :: IO (Either SomeException Value)
     _ <- runIOValue rt fin
     case r of
       Right v -> pure v
-      Left err -> throwIO (err :: KappaError)
+      Left err -> throwIO err
   ("__runIO", [action]) -> runIOValue rt action
   -- §18.1.4/§18.11: fork spawns a cooperative child fiber (a GHC green thread
   -- on the single OS agent — non-threaded RTS ⇒ no parallelism, weak fairness

@@ -1,0 +1,53 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquire\nuse\nrelease\n7\nacquire\nuse-fail\nrelease\nfailed\nreleased-on-interrupt\ninterrupted\n"
+
+-- §18.1/§28.2 bracket (MonadResource for IO): the release runs exactly once on
+-- every exit path from `use` — normal completion, typed failure, and
+-- interruption.
+module main
+
+acquireS : IO String Integer
+let acquireS = do
+    printlnString "acquire"
+    ioPure 7
+
+releaseS : Integer -> IO String Unit
+let releaseS r = printlnString "release"
+
+useOk : Integer -> IO String Integer
+let useOk r = do
+    printlnString "use"
+    ioPure r
+
+useFail : Integer -> IO String Integer
+let useFail r = do
+    printlnString "use-fail"
+    throwIO "boom"
+
+relInt : Integer -> IO String Unit
+let relInt r = printlnString "released-on-interrupt"
+
+useSleep : Integer -> IO String Integer
+let useSleep r = do
+    sleepFor (seconds 10)
+    ioPure r
+
+main : UIO Unit
+let main = do
+    f1 <- fork (bracket acquireS releaseS useOk)
+    r1 <- await f1
+    match r1
+      case Success v -> printlnString (showInt v)
+      case Failure c -> printlnString "unexpected"
+    f2 <- fork (bracket acquireS releaseS useFail)
+    r2 <- await f2
+    match r2
+      case Success v -> printlnString "unexpected"
+      case Failure c -> printlnString "failed"
+    f3 <- fork (bracket (ioPure 1) relInt useSleep)
+    interrupt f3
+    r3 <- await f3
+    match r3
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"
