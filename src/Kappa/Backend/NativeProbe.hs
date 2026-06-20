@@ -30,6 +30,7 @@ import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Kappa.Backend.Capabilities (nativeRuntimeCapabilities)
 import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Types (FfiClass (..), NativeInput (..))
 import Kappa.Diagnostic
@@ -105,8 +106,10 @@ discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs extraExterns = do
                           ++ pbLines
                           ++ ["define " <> n <> "=" <> v | (n, v) <- defines]
                           -- §26.1.4/§27.6: the foreign-call classification the
-                          -- binding's raw declarations carry (default nonblocking).
+                          -- binding's raw declarations carry (default nonblocking),
+                          -- plus the native profile's advertised capability set.
                           ++ ["foreign-call-classification " <> classifyText inputs]
+                          ++ ["backend-capabilities " <> T.intercalate "," nativeRuntimeCapabilities]
                       composite = contentId [("native-identity", encodeLines allLines)]
                   pure (Right (NativeProvenance allLines composite))
   where

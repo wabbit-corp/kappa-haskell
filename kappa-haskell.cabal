@@ -35,6 +35,7 @@ library
     import:           warnings, deps
     exposed-modules:
         Kappa.Backend.C
+        Kappa.Backend.Capabilities
         Kappa.Backend.Driver
         Kappa.Backend.HeaderGen
         Kappa.Backend.NativeFfi

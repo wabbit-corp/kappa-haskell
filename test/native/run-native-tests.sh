@@ -658,6 +658,27 @@ else
   echo "   SKIP: pkg-config zlib not available"
 fi
 
+echo "== foreign-call classification capability rule is fail-closed (§26.1.4/§27.6) =="
+# The native profile advertises rt-blocking (realized as direct execution on the
+# single agent), so a `blocking` binding builds; it does NOT advertise a
+# safe-cancellation capability, so a `blocking-cancellable` binding is rejected
+# rather than executed with weakened semantics.
+if pkg-config --exists libuv 2>/dev/null; then
+  CAP="$WORK/gcap"; rm -rf "$CAP"; mkdir -p "$CAP/src/app"
+  printf 'module app\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CAP/src/app/main.kp"
+  capbuild() { printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), classify %s], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$CAP/kappa.build.kp"; }
+  okc=1
+  capbuild "blocking"
+  timeout 200 $KAPPA build --update --manifest "$CAP" -o "$WORK/capb" >"$CAP/b.log" 2>&1 || { echo "   FAIL: a 'blocking' binding was rejected though rt-blocking is advertised"; cat "$CAP/b.log" | sed 's/^/     /'; okc=0; }
+  capbuild "blockingCancellable"
+  co="$(timeout 200 $KAPPA build --update --manifest "$CAP" -o "$WORK/capc" 2>&1)"; cr=$?
+  { [ "$cr" -ne 0 ] && grep -q "E_BACKEND_CAPABILITY_UNREALIZED" <<<"$co" && grep -q "rt-blocking-cancel" <<<"$co"; } || { echo "   FAIL: a 'blocking-cancellable' binding was not rejected fail-closed"; echo "$co" | sed 's/^/     /'; okc=0; }
+  [ "$okc" -eq 1 ] && echo "   ok (capability set declared + recorded; blocking accepted under rt-blocking; blocking-cancellable rejected — no rt-blocking-cancel)"
+  rm -rf "$CAP"
+else
+  echo "   SKIP: pkg-config libuv not available"
+fi
+
 echo "== header-surface generation is fail-closed: missing symbol / unmappable type (§27.1.1/§36.28) =="
 if pkg-config --exists libuv 2>/dev/null; then
   FC="$WORK/gfc"; rm -rf "$FC"; mkdir -p "$FC/src/app"

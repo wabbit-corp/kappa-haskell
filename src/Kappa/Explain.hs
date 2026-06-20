@@ -654,6 +654,8 @@ registry =
       "A reachable definition uses a construct or primitive the native backend does not support; it is rejected at build time rather than silently diverging from the interpreter (§27.7)."
   , ent "E_BACKEND_TOOLCHAIN" (Just "kappa-hs.backend.toolchain")
       "The native backend could not locate its runtime or a C toolchain, or the C toolchain failed while compiling or linking the generated program (§27.1)."
+  , ent "E_BACKEND_CAPABILITY_UNREALIZED" (Just "kappa-hs.backend.capability")
+      "A native binding's foreign-call classification requires a runtime capability the backend profile does not advertise (e.g. a 'blocking-cancellable' binding needs a safe-cancellation capability the native profile lacks); the binding is rejected rather than executed with weakened semantics (Spec §26.1.4, §27.6)."
   , ent "E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH" (Just "kappa-hs.backend.intrinsic")
       "An 'expect term' whose name matches a native backend host-binding intrinsic declares a type that does not match the intrinsic's signature up to definitional equality (Spec §9.4, §34.5)."
   ]

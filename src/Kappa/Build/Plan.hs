@@ -24,6 +24,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Kappa.Backend.Capabilities (ffiRequiredCapabilities, nativeRuntimeCapabilities)
 import Kappa.Backend.Driver (detectCC)
 import Kappa.Backend.HeaderGen (generatePrefixSurfaceDecls, generateSurfaceDecls)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
@@ -290,6 +291,10 @@ resolveExecutable manifestDir bc mTarget =
             -- realizability: this backend realizes only the load modes it
             -- implements; reject the rest honestly (§34.5.3).
             mapM_ checkRealizable selected
+            -- §26.1.4/§27.6: a binding whose foreign-call classification needs
+            -- a runtime capability the native profile does not advertise is
+            -- rejected fail-closed (never silently executed weaker).
+            mapM_ checkClassificationCapability selected
             -- resolve each binding's provides × surface into concrete
             -- ResolvedNativeSymbols (§27.1.1/§36.28). The surface is either an
             -- explicit symbolList or one MECHANICALLY GENERATED from a header
@@ -303,6 +308,33 @@ resolveExecutable manifestDir bc mTarget =
                 inputs = concatMap nbInputs selected
                 perBindingFull = [(nbName hb, ss, nbInputs hb, [linkText (nbLink hb), loadText (nbLoad hb)]) | (hb, (_, ss)) <- zip selected perBinding]
             Right (allSyms, linkSpecs, inputs, perBindingFull, not (null selected))
+
+    -- §26.1.4/§27.6: every binding's foreign-call classification (default
+    -- nonblocking) must have its required runtime capabilities advertised by
+    -- the native profile; otherwise reject (e.g. blocking-cancellable needs a
+    -- safe-cancellation capability the native runtime does not provide).
+    checkClassificationCapability :: HostBinding -> Either Diagnostics ()
+    checkClassificationCapability hb =
+      let cls = case [c | ClassifyInput c <- nbInputs hb] of
+                  [] -> FfiNonblocking
+                  cs -> last cs
+          missing = [c | c <- ffiRequiredCapabilities cls, c `notElem` nativeRuntimeCapabilities]
+       in case missing of
+            [] -> Right ()
+            ms ->
+              Left
+                [ buildErr "E_BACKEND_CAPABILITY_UNREALIZED" "kappa-hs.backend.capability"
+                    ( "native binding '" <> nbName hb <> "' is classified '" <> classText cls
+                        <> "', which requires runtime capabilit" <> (if length ms == 1 then "y " else "ies ")
+                        <> T.intercalate ", " ms <> " that the native profile does not advertise (it advertises "
+                        <> T.intercalate ", " nativeRuntimeCapabilities <> "); reject rather than weaken semantics "
+                        <> "(Spec §26.1.4, §27.6)"
+                    )
+                ]
+    classText = \case
+      FfiNonblocking -> "nonblocking"
+      FfiBlocking -> "blocking"
+      FfiBlockingCancellable -> "blocking-cancellable"
 
     -- §34.5.3: the zig native profile realizes only the system-loader load
     -- mode (dynamic/static linkage resolved by the system loader). It does
