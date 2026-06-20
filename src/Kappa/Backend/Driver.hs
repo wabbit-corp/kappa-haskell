@@ -177,7 +177,14 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- declared symbol (real library symbols, checked against headers);
               -- a substring match would wrongly exclude an unrelated shim symbol.
               verifyNames = [verifyDeclName d | VerifyInput ds <- boNativeInputs opts, d <- ds]
-              shimSyms = [rns | rns <- Map.elems (boHostSyms opts), rnsCSymbol rns `notElem` verifyNames]
+              -- Only SHIM-PROVIDED symbols get a force-included conservative
+              -- prototype: a real library symbol (a generated raw surface over
+              -- a header) is declared by its own header, so asserting our
+              -- conservative `void *` prototype for it would falsely conflict
+              -- with the real pointer type when that header is in scope
+              -- (e.g. uv.h's `uint16_t *` vs our `void *`). Library-symbol ABI
+              -- is checked instead by the scalar-only verify probe (§26.1.5).
+              shimSyms = [rns | rns <- Map.elems (boHostSyms opts), rnsShimProvided rns, rnsCSymbol rns `notElem` verifyNames]
           hdrInclude <-
             if null shimSyms
               then pure []

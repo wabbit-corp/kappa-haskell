@@ -117,6 +117,18 @@ data NativeSurface
   -- maps its C parameter\/result types to the conservative std.ffi\/opaque\/
   -- Option 'CType' vocabulary. A symbol whose declaration cannot be located or
   -- whose types are not conservatively mappable is a fail-closed build error.
+  -- (The explicit-list form is appropriate for a small curated surface such as
+  -- a shim's public API.)
+  | GeneratedPrefixSurface !Text !Text
+  -- ^ §26.1.2/§27.1.1: a BROAD raw surface derived by parsing EVERY function
+  -- declaration in @gpHeader@ (first field) whose C name begins with @gpPrefix@
+  -- (second field). This is the general header-derived binding path: the build
+  -- plan extracts all matching declarations and maps each conservatively;
+  -- declarations requiring features the conservative ABI cannot represent
+  -- soundly (callbacks\/function pointers, by-value structs\/unions\/enums,
+  -- variadics) are SKIPPED — i.e. rejected from the surface, never guessed
+  -- (§26.1.2) — and the skipped set is reported (no silent omission). The
+  -- generated set is pinned in the lockfile, so a header change repins.
   deriving stock (Eq, Show)
 
 -- | §36.28 binding sources: realization inputs naming WHERE/HOW the declared

@@ -216,7 +216,8 @@ decSurface ctx v = do
   case (c, args) of
     ("SymbolListSurface", (ss : _)) -> SymbolListSurface <$> (asList ctx ss >>= mapM (decSymbolDecl ctx))
     ("GeneratedSurface", [hdr, syms]) -> GeneratedSurface <$> asStr ctx hdr <*> asStrList ctx syms
-    _ -> decFail "expected a binding surface ('symbolList [...]' or 'generateFromHeader ...') (Spec §27.1.1)"
+    ("GeneratedPrefixSurface", [hdr, pfx]) -> GeneratedPrefixSurface <$> asStr ctx hdr <*> asStr ctx pfx
+    _ -> decFail "expected a binding surface ('symbolList [...]', 'generateFromHeader ...', or 'generateAllFromHeader ...') (Spec §27.1.1)"
 
 decInput :: EvalCtx -> Value -> Dec NativeInput
 decInput ctx v = do

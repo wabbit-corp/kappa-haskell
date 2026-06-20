@@ -616,8 +616,15 @@ if pkg-config --exists libuv 2>/dev/null; then
     grep -q "extern void \* http_uv_listen(const char \*, int, int);" <<<"$ext" || { echo "   FAIL: http_uv_listen not generated from native_uv_shim.h"; okg=0; }
     grep -q "^host-binding .* libuv$" "$GE/kappa.lock" || { echo "   FAIL: generated libuv surface not pinned"; okg=0; }
     grep -q "^host-binding .* uvnet$" "$GE/kappa.lock" || { echo "   FAIL: generated uvnet surface not pinned"; okg=0; }
+    # BROAD surface (§26.1.2): the libuv binding generates the whole mappable
+    # uv_* surface from uv.h (many functions, not a curated handful), and the
+    # callback/struct/variadic functions are skipped (reported, not guessed).
+    genN="$(grep -oE "generated [0-9]+ function" "$GE/b.log" | head -1 | grep -oE "[0-9]+")"
+    skipN="$(grep -oE "skipped [0-9]+ requiring" "$GE/b.log" | head -1 | grep -oE "[0-9]+")"
+    { [ -n "$genN" ] && [ "$genN" -ge 50 ]; } || { echo "   FAIL: broad libuv surface too small (generated '${genN:-0}', expected >=50)"; okg=0; }
+    { [ -n "$skipN" ] && [ "$skipN" -ge 1 ]; } || { echo "   FAIL: no callback/struct functions were skipped (expected fail-closed skips)"; okg=0; }
     if [ "$okg" -eq 1 ]; then
-      echo "   ok (no symbolDecl; uv_version_string parsed from uv.h, http_uv_listen from the shim header; both surfaces pinned)"
+      echo "   ok (no symbolDecl; broad uv_* surface = $genN fns from uv.h, $skipN skipped; http_uv_listen from the shim header; both pinned)"
     else fails=$((fails+1)); fi
   else
     echo "   FAIL: generated-surface build failed"; cat "$GE/b.log" | sed 's/^/     /'; fails=$((fails+1))

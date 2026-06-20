@@ -23,11 +23,12 @@
 -- fail-closed build error — the binding must not silently omit or guess it.
 module Kappa.Backend.HeaderGen
   ( generateSurfaceDecls
+  , generatePrefixSurfaceDecls
   ) where
 
 import Control.Exception (SomeException, catch, finally)
 import Data.Char (isAlphaNum, isSpace)
-import Data.List (isPrefixOf)
+import Data.List (foldl', isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Build.Types (CType (..), NativeInput (..), SymbolDecl (..))
@@ -45,8 +46,40 @@ import System.Process (readProcessWithExitCode)
 generateSurfaceDecls
   :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> Text -> [Text]
   -> IO (Either Diagnostics [SymbolDecl])
-generateSurfaceDecls (ccExe, ccLead) baseDir workDir inputs header symbols = do
-  cflags <- pkgCflags [(p) | PkgConfigInput p _ <- inputs]
+generateSurfaceDecls cc baseDir workDir inputs header symbols = do
+  e <- preprocessHeader cc baseDir workDir inputs header
+  pure (e >>= \norm -> traverse (parseOne header norm) symbols)
+
+-- | Generate a BROAD raw surface from a header (§26.1.2): every function
+-- declaration whose C name begins with @prefix@ is extracted and mapped. A
+-- declaration whose types are not conservatively mappable (callback/function
+-- pointer, by-value struct/union/enum, variadic, long long/long double) is
+-- SKIPPED — rejected from the surface, never guessed — and returned in the
+-- second component (name, reason) so the omission is reported, not silent.
+generatePrefixSurfaceDecls
+  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> Text -> Text
+  -> IO (Either Diagnostics ([SymbolDecl], [(Text, Text)]))
+generatePrefixSurfaceDecls cc baseDir workDir inputs header prefix = do
+  e <- preprocessHeader cc baseDir workDir inputs header
+  pure $ flip fmap e $ \norm ->
+    let decls = findAllPrefixed (T.unpack prefix) norm
+        step (accOk, accSkip) (name, retRaw, paramRaw) =
+          case (mapType True retRaw, parseParams paramRaw) of
+            (Right result, Right params) ->
+              (SymbolDecl (T.pack name) (T.pack name) params result : accOk, accSkip)
+            (Left r, _) -> (accOk, (T.pack name, r) : accSkip)
+            (_, Left r) -> (accOk, (T.pack name, r) : accSkip)
+        (oks, skips) = foldl' step ([], []) decls
+     in (reverse oks, reverse skips)
+
+-- | Preprocess a probe TU that @#include@s @header@ with the binding's
+-- pkg-config cflags, @-D@ defines, and resolved include path; return the
+-- NORMALIZED preprocessed text or a fail-closed diagnostic.
+preprocessHeader
+  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> Text
+  -> IO (Either Diagnostics String)
+preprocessHeader (ccExe, ccLead) baseDir workDir inputs header = do
+  cflags <- pkgCflags [p | PkgConfigInput p _ <- inputs]
   let incDirs = [baseDir </> T.unpack d | IncludeDirInput d <- inputs]
       hdrDirs = [takeDirectory (baseDir </> T.unpack h) | HeadersInput hs <- inputs, h <- hs]
       defs = ["-D" <> T.unpack n <> "=" <> T.unpack v | DefineInput n v <- inputs]
@@ -65,12 +98,10 @@ generateSurfaceDecls (ccExe, ccLead) baseDir workDir inputs header symbols = do
   (ec, out, err) <-
     readProcessWithExitCode ccExe args ""
       `finally` (removeFile probePath `catch` \(_ :: SomeException) -> pure ())
-  case ec of
+  pure $ case ec of
     ExitFailure _ ->
-      pure (Left [genErr ("could not preprocess header '" <> header <> "' for native surface generation (Spec §27.1.1/§36.28):\n" <> T.pack (trim (out ++ err)))])
-    ExitSuccess ->
-      let norm = normalize out
-       in pure (traverse (parseOne header norm) symbols)
+      Left [genErr ("could not preprocess header '" <> header <> "' for native surface generation (Spec §27.1.1/§36.28):\n" <> T.pack (trim (out ++ err)))]
+    ExitSuccess -> Right (normalize out)
   where
     trim s = if length s <= 3000 then s else "...\n" ++ drop (length s - 3000) s
 
@@ -110,12 +141,42 @@ findDecl txt sym = go (zip3 (' ' : txt) [0 :: Int ..] (tailsList txt))
               | declTail after -> Just (returnType (take i txt), inner)
             _ -> go rest
       | otherwise = go rest
-    -- a prototype ends in ';'; a definition body opens with '{' — both are
-    -- genuine declarations (we never request a macro/call site).
-    declTail after = case dropWhile (== ' ') after of
-      (';' : _) -> True
-      ('{' : _) -> True
-      _ -> False
+
+-- | A balanced parameter list's close is a genuine declaration iff it is
+-- followed by ';' (a prototype) or '{' (a definition) — never a call site.
+declTail :: String -> Bool
+declTail after = case dropWhile (== ' ') after of
+  (';' : _) -> True
+  ('{' : _) -> True
+  _ -> False
+
+-- | Find EVERY function declaration whose name begins with @prefix@: each
+-- whole-word identifier starting with @prefix@ and immediately followed by a
+-- balanced @(...)@ whose close is a declaration tail, with a non-empty return
+-- type. Deduplicated by name (first declaration wins). Used for broad
+-- prefix-driven surface generation (§26.1.2).
+findAllPrefixed :: String -> String -> [(String, String, String)]
+findAllPrefixed prefix txt = dedupByName (go (zip3 (' ' : txt) [0 :: Int ..] (tailsList txt)))
+  where
+    go [] = []
+    go ((pc, i, suf) : rest)
+      | prefix `isPrefixOf` suf
+      , not (isIdentChar pc)
+      , name <- takeWhile isIdentChar suf
+      , afterName <- dropWhile (== ' ') (drop (length name) suf)
+      , take 1 afterName == ("(" :: String)
+      , Just (inner, after) <- matchParen afterName
+      , declTail after
+      , ret <- returnType (take i txt)
+      , not (null ret) =
+          (name, ret, inner) : go rest
+      | otherwise = go rest
+    dedupByName = goD []
+      where
+        goD _ [] = []
+        goD seen ((n, r, p) : xs)
+          | n `elem` seen = goD seen xs
+          | otherwise = (n, r, p) : goD (n : seen) xs
 
 -- | The return-type text preceding the function name: everything since the
 -- previous top-level declaration terminator, with storage classes stripped.
@@ -168,7 +229,8 @@ splitTop = go (0 :: Int) "" []
 mapType :: Bool -> String -> Either Text CType
 mapType isResult raw =
   let s = trimStr raw
-      ptr = length (filter (== '*') s)
+      -- an array parameter (`T x[]` / `T x[N]`) decays to a pointer `T *`.
+      ptr = length (filter (== '*') s) + (if '[' `elem` s then 1 else 0)
       toks = words (map (\c -> if c == '*' then ' ' else c) s)
       qual = ["const", "volatile", "struct", "union", "enum", "restrict", "__restrict", "__restrict__", "_Atomic"]
       baseToks = filter (`notElem` qual) toks

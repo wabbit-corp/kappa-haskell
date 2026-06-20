@@ -42,6 +42,13 @@ data ResolvedNativeSymbol = ResolvedNativeSymbol
   -- ^ the C symbol the wrapper calls directly (no name dispatch)
   , rnsParams :: ![CType]
   , rnsResult :: !CType
+  , rnsShimProvided :: !Bool
+  -- ^ True iff this symbol is DEFINED by one of the binding's shim translation
+  -- units (the binding has a @shim@ input). Only shim-provided symbols get a
+  -- force-included conservative prototype for shim-ABI checking (§27.1.1): a
+  -- real LIBRARY symbol is declared by its own header, so asserting our
+  -- conservative @void *@ prototype for it would falsely conflict with the real
+  -- pointer type when that header is in scope.
   }
   deriving stock (Eq, Show)
 

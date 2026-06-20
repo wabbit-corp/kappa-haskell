@@ -29,8 +29,12 @@ let buildConfig : BuildConfig = package
         [ nativeBinding
             { name = "libuv"
             , provides = [module "host.native.libuv.Raw"]
-            , surface = generateFromHeader "uv.h"
-                [ "uv_version", "uv_version_string", "uv_strerror", "uv_err_name" ]
+            -- BROAD raw surface: every uv_* function in <uv.h> that the
+            -- conservative C-ABI can represent is generated; the callback-,
+            -- struct-, and variadic-taking functions (uv_listen, uv_read_start,
+            -- uv_run, uv_close, …) are skipped (rejected, reported), which is
+            -- exactly why the minimal libuv adapter below is needed (§26.1.2).
+            , surface = generateAllFromHeader "uv.h" "uv_"
             , abi = cAbi
             , inputs =
                 [ headers ["uv.h"]

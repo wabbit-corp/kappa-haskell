@@ -25,7 +25,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Kappa.Backend.Driver (detectCC)
-import Kappa.Backend.HeaderGen (generateSurfaceDecls)
+import Kappa.Backend.HeaderGen (generatePrefixSurfaceDecls, generateSurfaceDecls)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..))
 import Kappa.Build.Lock (LockEntry (..), contentId)
 import Kappa.Build.Reify (reifyBuildConfig)
@@ -43,6 +43,7 @@ import System.Directory
   , pathIsSymbolicLink
   )
 import System.Environment (lookupEnv)
+import System.IO (hPutStrLn, stderr)
 import System.Exit (ExitCode (..))
 import System.FilePath (joinPath, makeRelative, splitDirectories, takeDirectory, takeExtension, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
@@ -226,24 +227,43 @@ resolveExecutable manifestDir bc mTarget =
     genThen tgt k = do
       let wanted = targetHostBindings tgt
           selected = [hb | nm <- wanted, hb <- bcHostBindings bc, nbName hb == nm]
-          gens = [(nbName hb, h, ss, nbInputs hb) | hb <- selected, GeneratedSurface h ss <- [nbSurface hb]]
+          gens = [hb | hb <- selected, isGenerated (nbSurface hb)]
       if null gens
         then k Map.empty
         else do
           mcc <- detectCC Nothing
           case mcc of
-            Nothing -> pure (Left [genNeedsCc (fst4 (head gens))])
+            Nothing -> pure (Left [genNeedsCc (nbName (head gens))])
             Just cc -> do
               eMap <- goGen cc Map.empty gens
               either (pure . Left) k eMap
       where
-        fst4 (a, _, _, _) = a
+        isGenerated SymbolListSurface {} = False
+        isGenerated GeneratedSurface {} = True
+        isGenerated GeneratedPrefixSurface {} = True
         goGen _ acc [] = pure (Right acc)
-        goGen cc acc ((nm, h, ss, ins) : rest) = do
-          r <- generateSurfaceDecls cc manifestDir manifestDir ins h ss
-          case r of
-            Left ds -> pure (Left ds)
-            Right decls -> goGen cc (Map.insert nm decls acc) rest
+        goGen cc acc (hb : rest) = case nbSurface hb of
+          GeneratedSurface h ss -> do
+            r <- generateSurfaceDecls cc manifestDir manifestDir (nbInputs hb) h ss
+            case r of
+              Left ds -> pure (Left ds)
+              Right decls -> goGen cc (Map.insert (nbName hb) decls acc) rest
+          GeneratedPrefixSurface h pfx -> do
+            r <- generatePrefixSurfaceDecls cc manifestDir manifestDir (nbInputs hb) h pfx
+            case r of
+              Left ds -> pure (Left ds)
+              Right (decls, skipped) -> do
+                -- §26.1.2: report (never silently omit) declarations rejected
+                -- from the broad surface because the conservative ABI cannot
+                -- represent them (callbacks/structs/variadics).
+                hPutStrLn stderr
+                  ( "note: host binding '" <> T.unpack (nbName hb) <> "': generated "
+                      <> show (length decls) <> " function(s) from " <> T.unpack h
+                      <> " (prefix '" <> T.unpack pfx <> "'); skipped " <> show (length skipped)
+                      <> " requiring callbacks/structs/variadics (rejected, not guessed)"
+                  )
+                goGen cc (Map.insert (nbName hb) decls acc) rest
+          SymbolListSurface {} -> goGen cc acc rest
 
     genNeedsCc :: Text -> Diagnostic
     genNeedsCc nm =
@@ -322,18 +342,24 @@ resolveExecutable manifestDir bc mTarget =
     resolveBinding genMap hb = do
       mods <- concat <$> traverse (expandSelector hb) (nbProvides hb)
       decls <- surfaceDecls genMap hb
-      let syms =
+      let shimProvided = any isShimInput (nbInputs hb)
+          syms =
             [ ResolvedNativeSymbol
                 { rnsModule = mn
                 , rnsMember = sdMember d
                 , rnsCSymbol = sdSymbol d
                 , rnsParams = sdParams d
                 , rnsResult = sdResult d
+                , rnsShimProvided = shimProvided
                 }
             | mn <- mods
             , d <- decls
             ]
       Right (nbName hb, syms)
+
+    isShimInput :: NativeInput -> Bool
+    isShimInput ShimInput {} = True
+    isShimInput _ = False
 
     -- The binding's resolved symbol surface (§36.28). Either an explicit
     -- symbolList, or one MECHANICALLY GENERATED from a header (looked up in
@@ -343,9 +369,12 @@ resolveExecutable manifestDir bc mTarget =
     surfaceDecls genMap hb = case nbSurface hb of
       SymbolListSurface [] -> Left [emptySurface hb]
       SymbolListSurface ds -> Right ds
-      GeneratedSurface _ _ -> case Map.lookup (nbName hb) genMap of
-        Just ds@(_ : _) -> Right ds
-        _ -> Left [emptySurface hb]
+      GeneratedSurface _ _ -> fromGen
+      GeneratedPrefixSurface _ _ -> fromGen
+      where
+        fromGen = case Map.lookup (nbName hb) genMap of
+          Just ds@(_ : _) -> Right ds
+          _ -> Left [emptySurface hb]
 
     -- §36.28: a provides selector names a concrete host.native module
     -- (SelModule) or a module-name prefix (SelModulesUnder). Both resolve to
