@@ -27,8 +27,12 @@ module Kappa.Backend.HeaderGen
   ) where
 
 import Control.Exception (SomeException, catch, finally)
+import Control.Monad (guard)
 import Data.Char (isAlphaNum, isSpace)
 import Data.List (foldl', isPrefixOf)
+import Data.Maybe (mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Build.Types (CType (..), NativeInput (..), SymbolDecl (..))
@@ -48,7 +52,10 @@ generateSurfaceDecls
   -> IO (Either Diagnostics [SymbolDecl])
 generateSurfaceDecls cc baseDir workDir inputs header symbols = do
   e <- preprocessHeader cc baseDir workDir inputs header
-  pure (e >>= \norm -> traverse (parseOne header norm) symbols)
+  pure $ e >>= \norm ->
+    let decls = headerDecls norm
+        ptds = pointerTypedefs norm
+     in traverse (parseOne ptds header decls) symbols
 
 -- | Generate a BROAD raw surface from a header (§26.1.2): every function
 -- declaration whose C name begins with @prefix@ is extracted and mapped. A
@@ -62,9 +69,10 @@ generatePrefixSurfaceDecls
 generatePrefixSurfaceDecls cc baseDir workDir inputs header prefix = do
   e <- preprocessHeader cc baseDir workDir inputs header
   pure $ flip fmap e $ \norm ->
-    let decls = findAllPrefixed (T.unpack prefix) norm
+    let ptds = pointerTypedefs norm
+        decls = [d | d@(n, _, _) <- headerDecls norm, T.unpack prefix `isPrefixOf` n]
         step (accOk, accSkip) (name, retRaw, paramRaw) =
-          case (mapType True retRaw, parseParams paramRaw) of
+          case (mapType ptds True retRaw, parseParams ptds paramRaw) of
             (Right result, Right params) ->
               (SymbolDecl (T.pack name) (T.pack name) params result : accOk, accSkip)
             (Left r, _) -> (accOk, (T.pack name, r) : accSkip)
@@ -105,84 +113,94 @@ preprocessHeader (ccExe, ccLead) baseDir workDir inputs header = do
   where
     trim s = if length s <= 3000 then s else "...\n" ++ drop (length s - 3000) s
 
--- | Parse the one declaration of @sym@ out of the normalized preprocessed text
--- and build its 'SymbolDecl' (member = C symbol = @sym@). Fail-closed if it is
--- not found or any of its types are not conservatively mappable.
-parseOne :: Text -> String -> Text -> Either Diagnostics SymbolDecl
-parseOne header norm sym =
-  case findDecl norm (T.unpack sym) of
-    Nothing ->
+-- | Build the @SymbolDecl@ for one requested name out of the header's parsed
+-- declarations. Fail-closed if it is not declared or its types are not
+-- conservatively mappable. @ptds@ is the header's pointer-typedef set.
+parseOne :: Set String -> Text -> [(String, String, String)] -> Text -> Either Diagnostics SymbolDecl
+parseOne ptds header decls sym =
+  case [(r, p) | (n, r, p) <- decls, n == T.unpack sym] of
+    [] ->
       Left [genErr ("native binding header '" <> header <> "' does not declare a function '" <> sym <> "' (Spec §27.1.1)")]
-    Just (retRaw, paramRaw) -> do
-      result <- first (typeErr header sym) (mapType True retRaw)
-      params <- first (typeErr header sym) (parseParams paramRaw)
+    ((retRaw, paramRaw) : _) -> do
+      result <- first (typeErr header sym) (mapType ptds True retRaw)
+      params <- first (typeErr header sym) (parseParams ptds paramRaw)
       Right (SymbolDecl sym sym params result)
   where
     first f = either (Left . pure . f) Right
 
--- ── declaration location ───────────────────────────────────────────────
+-- ── declaration location (one O(n) pass over ;-separated chunks) ────────
 
--- | Find the first real declaration of @sym@: a whole-word occurrence
--- immediately followed (after a normalized single space removal) by a
--- balanced @(...)@ parameter list, whose close paren is followed by @;@ or
--- @{@. Returns @(returnTypeText, parameterListText)@.
-findDecl :: String -> String -> Maybe (String, String)
-findDecl txt sym = go (zip3 (' ' : txt) [0 :: Int ..] (tailsList txt))
+-- | Every top-level function declaration in the normalized preprocessed text,
+-- as @(name, returnTypeText, parameterListText)@, deduplicated by name (first
+-- wins). A single linear pass: split on @;@ into candidate chunks, then parse
+-- each as a prototype. Shared by the explicit and prefix surface forms.
+headerDecls :: String -> [(String, String, String)]
+headerDecls = dedupByName . mapMaybe parseChunkDecl . chunks
   where
-    slen = length sym
-    go [] = Nothing
-    go ((pc, i, suf) : rest)
-      | sym `isPrefixOf` suf
-      , not (isIdentChar pc)
-      , afterName <- dropWhile (== ' ') (drop slen suf)
-      , take 1 afterName == ("(" :: String) =
-          case matchParen afterName of
-            Just (inner, after)
-              | declTail after -> Just (returnType (take i txt), inner)
-            _ -> go rest
-      | otherwise = go rest
+    dedupByName = goD Set.empty
+    goD _ [] = []
+    goD seen (d@(n, _, _) : xs)
+      | n `Set.member` seen = goD seen xs
+      | otherwise = d : goD (Set.insert n seen) xs
 
--- | A balanced parameter list's close is a genuine declaration iff it is
--- followed by ';' (a prototype) or '{' (a definition) — never a call site.
-declTail :: String -> Bool
-declTail after = case dropWhile (== ' ') after of
-  (';' : _) -> True
-  ('{' : _) -> True
-  _ -> False
+-- | Split on top-level @;@ (each chunk is a candidate declaration — a function
+-- prototype is ;-terminated and self-contained; a struct body's inner @;@ only
+-- yields chunks that carry no top-level @name(@ prototype, so are ignored).
+chunks :: String -> [String]
+chunks s = case break (== ';') s of
+  (c, ';' : rest) -> c : chunks rest
+  (c, _) -> [c]
 
--- | Find EVERY function declaration whose name begins with @prefix@: each
--- whole-word identifier starting with @prefix@ and immediately followed by a
--- balanced @(...)@ whose close is a declaration tail, with a non-empty return
--- type. Deduplicated by name (first declaration wins). Used for broad
--- prefix-driven surface generation (§26.1.2).
-findAllPrefixed :: String -> String -> [(String, String, String)]
-findAllPrefixed prefix txt = dedupByName (go (zip3 (' ' : txt) [0 :: Int ..] (tailsList txt)))
+-- | Parse a chunk as a function prototype @<ret> <name>(<params>)@. Rejects a
+-- function-pointer declarator @(*name)(…)@ and anything with trailing tokens
+-- after the close paren (not a clean prototype).
+parseChunkDecl :: String -> Maybe (String, String, String)
+parseChunkDecl chunk = do
+  (before, fromParen) <- splitAtFirst '(' chunk
+  guard (take 1 (dropWhile (== ' ') (drop 1 fromParen)) /= "*") -- not (*name)(…)
+  (inner, after) <- matchParen fromParen
+  guard (all isSpace after) -- a clean prototype: nothing after ')'
+  let name = lastIdent before
+  guard (not (null name) && isIdentStart (head name))
+  let ret = returnType (dropLastIdent before name)
+  guard (not (null ret))
+  pure (name, ret, inner)
+
+-- | Split @s@ at its first occurrence of @c@; @Nothing@ if absent. The second
+-- component begins AT @c@.
+splitAtFirst :: Char -> String -> Maybe (String, String)
+splitAtFirst c s = case break (== c) s of
+  (a, b@(_ : _)) -> Just (a, b)
+  _ -> Nothing
+
+-- | The last maximal identifier in a string (the declared name precedes '(').
+lastIdent :: String -> String
+lastIdent = reverse . takeWhile isIdentChar . reverse . trimStr
+
+-- | Drop the trailing @name@ (and surrounding space) from the pre-'(' text,
+-- leaving the return-type text.
+dropLastIdent :: String -> String -> String
+dropLastIdent before name =
+  reverse (drop (length name) (reverse (trimStr before)))
+
+-- | The pointer-typedef names declared in the header (a @typedef@ whose body
+-- contains @*@ but no @(@ — i.e. an object pointer, not a function pointer).
+-- A parameter/result spelled with such a typedef is a pointer (§26.1.4 ⇒
+-- @Option RawPtr@), so it need not be skipped for hiding its @*@ behind a name.
+pointerTypedefs :: String -> Set String
+pointerTypedefs = Set.fromList . mapMaybe ptd . chunks
   where
-    go [] = []
-    go ((pc, i, suf) : rest)
-      | prefix `isPrefixOf` suf
-      , not (isIdentChar pc)
-      , name <- takeWhile isIdentChar suf
-      , afterName <- dropWhile (== ' ') (drop (length name) suf)
-      , take 1 afterName == ("(" :: String)
-      , Just (inner, after) <- matchParen afterName
-      , declTail after
-      , ret <- returnType (take i txt)
-      , not (null ret) =
-          (name, ret, inner) : go rest
-      | otherwise = go rest
-    dedupByName = goD []
-      where
-        goD _ [] = []
-        goD seen ((n, r, p) : xs)
-          | n `elem` seen = goD seen xs
-          | otherwise = (n, r, p) : goD (n : seen) xs
+    ptd chunk =
+      let t = trimStr chunk
+       in if "typedef" `isPrefixOf` t && '*' `elem` t && '(' `notElem` t
+            then let n = lastIdent t in if null n then Nothing else Just n
+            else Nothing
 
--- | The return-type text preceding the function name: everything since the
--- previous top-level declaration terminator, with storage classes stripped.
+-- | The return-type text, with storage classes stripped (operates on the short
+-- pre-name text of one chunk, so it is O(chunk) not O(file)).
 returnType :: String -> String
-returnType prefix =
-  let raw = reverse (takeWhile (`notElem` (";}{" :: String)) (reverse prefix))
+returnType pre =
+  let raw = reverse (takeWhile (`notElem` (";}{" :: String)) (reverse pre))
    in unwords (filter (`notElem` storageClasses) (words raw))
 
 storageClasses :: [String]
@@ -203,12 +221,12 @@ matchParen s0 = go (0 :: Int) (drop 1 s0) []
 
 -- | Map a parameter list's inner text to conservative parameter CTypes. An
 -- empty list or a lone @void@ means no parameters.
-parseParams :: String -> Either Text [CType]
-parseParams inner =
+parseParams :: Set String -> String -> Either Text [CType]
+parseParams ptds inner =
   case trimStr inner of
     "" -> Right []
     "void" -> Right []
-    s -> traverse (mapType False) (splitTop s)
+    s -> traverse (mapType ptds False) (splitTop s)
 
 -- | Split a parameter list on top-level commas (respecting nested parens, so a
 -- function-pointer parameter stays intact — it will then fail to map, which is
@@ -226,8 +244,8 @@ splitTop = go (0 :: Int) "" []
 -- | Map a single C type (a return type or a parameter declaration, possibly
 -- carrying a parameter name) to a conservative 'CType'. @isResult@ selects the
 -- @void@→Unit result framing.
-mapType :: Bool -> String -> Either Text CType
-mapType isResult raw =
+mapType :: Set String -> Bool -> String -> Either Text CType
+mapType ptds isResult raw =
   let s = trimStr raw
       -- an array parameter (`T x[]` / `T x[N]`) decays to a pointer `T *`.
       ptr = length (filter (== '*') s) + (if '[' `elem` s then 1 else 0)
@@ -244,6 +262,10 @@ mapType isResult raw =
             if "char" `elem` baseToks
               then Right CtString -- a char pointer is the conservative C-string surface
               else Right CtRawPtr -- §26.1.1: a pointer we cannot prove non-null ⇒ Option RawPtr
+          else if any (`Set.member` ptds) baseToks
+            -- a pointer typedef (e.g. `z_streamp` = `struct z_stream *`) is a
+            -- pointer; surface it conservatively as Option RawPtr (§26.1.4).
+            then Right CtRawPtr
           else classifyScalar isResult raw baseToks
 
 -- | Classify a non-pointer C type. A parameter name (a trailing identifier
@@ -350,11 +372,13 @@ dropAttrs = go
 isIdentChar :: Char -> Bool
 isIdentChar c = isAlphaNum c || c == '_'
 
+-- | A C identifier starts with a letter or underscore (not a digit), so a
+-- numeric token before '(' is never mistaken for a function name.
+isIdentStart :: Char -> Bool
+isIdentStart c = (isAlphaNum c && not (c `elem` ['0' .. '9'])) || c == '_'
+
 trimStr :: String -> String
 trimStr = f . f where f = reverse . dropWhile isSpace
-
-tailsList :: [a] -> [[a]]
-tailsList xs = xs : case xs of [] -> []; (_ : t) -> tailsList t
 
 systemIncludeDirs :: [FilePath]
 systemIncludeDirs = ["/usr/include", "/usr/local/include"]

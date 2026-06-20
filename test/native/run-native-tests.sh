@@ -638,6 +638,26 @@ else
   echo "   SKIP: pkg-config libuv not available"
 fi
 
+echo "== broad surface generalizes beyond libuv + resolves pointer typedefs (§26.1.2/§26.1.4) =="
+# generateAllFromHeader is library-agnostic, not libuv-specific. zlib's deflate*
+# functions take `z_streamp` (= struct z_stream *, a POINTER TYPEDEF); resolving
+# the typedef is what lets them generate (they would otherwise be skipped).
+if pkg-config --exists zlib 2>/dev/null; then
+  ZL="$WORK/zlibgen"; rm -rf "$ZL"; mkdir -p "$ZL/src/app"
+  printf 'module app\nimport host.native.z.Raw as z\nlet main = printlnString "x"\n' > "$ZL/src/app/main.kp"
+  printf 'let buildConfig : BuildConfig = package { name="z", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="z", provides=[module "host.native.z.Raw"], surface=generateAllFromHeader "zlib.h" "deflate", abi=cAbi, inputs=[headers ["zlib.h"], pkgConfig "zlib" None], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["z"] }] }' > "$ZL/kappa.build.kp"
+  zout="$(timeout 120 $KAPPA build --update --manifest "$ZL" -o "$WORK/zexe" 2>&1)"
+  zN="$(grep -oE "generated [0-9]+ function" <<<"$zout" | head -1 | grep -oE "[0-9]+")"
+  if [ -n "$zN" ] && [ "$zN" -ge 5 ]; then
+    echo "   ok (zlib deflate* surface = $zN functions; z_streamp pointer typedef resolved — general, not libuv-specific)"
+  else
+    echo "   FAIL: zlib deflate* surface too small (got '${zN:-0}'); pointer typedefs not resolved?"; echo "$zout" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+  rm -rf "$ZL"
+else
+  echo "   SKIP: pkg-config zlib not available"
+fi
+
 echo "== header-surface generation is fail-closed: missing symbol / unmappable type (§27.1.1/§36.28) =="
 if pkg-config --exists libuv 2>/dev/null; then
   FC="$WORK/gfc"; rm -rf "$FC"; mkdir -p "$FC/src/app"
