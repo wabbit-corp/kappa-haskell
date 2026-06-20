@@ -389,8 +389,11 @@ data EffLabelInfo = EffLabelInfo
 data EffOpInfo = EffOpInfo
   { eoiName :: !Text
   , eoiQ :: !Q -- ^ declared resumption quantity (§18.1.16)
-  , eoiArgT :: !Term -- ^ payload type, de Bruijn UNDER the effect's parameters
-  , eoiResT :: !Term -- ^ declared result type, de Bruijn under the parameters
+  , eoiArgsT :: ![Term]
+  -- ^ §18.1.21: the operation's explicit parameter types @A₁ … Aₙ@ (an
+  -- operation @op : Π(x₁:A₁)…(xₙ:Aₙ). B@ has @n@ arguments), each de Bruijn
+  -- under the effect's parameters. Always non-empty (the signature is a Pi).
+  , eoiResT :: !Term -- ^ the final result type @B@, de Bruijn under the parameters
   }
 
 emptyCtx :: Ctx
@@ -6369,24 +6372,34 @@ elabEffInterface ctx eff = do
   ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
     (tyTm, _) <- inferType ctxP (eoType op)
     tyV <- evalIn ctxP tyTm >>= forceM
-    case tyV of
-      VPi Expl _ _ dom clo -> do
-        res <- clApp clo (VRigid (ctxLen ctxP) []) >>= forceM
-        argT <- quoteIn ctxP dom
-        resT <- quoteIn ctxP res
+    -- §18.1.21: an operation @op : Π(x₁:A₁)…(xₙ:Aₙ). B@ has every explicit Pi
+    -- parameter as an argument; @B@ is the final codomain. Peel all explicit
+    -- arrows (the v1 restriction is only that arguments are non-dependent on
+    -- each other, which the common operation shapes satisfy).
+    let peel acc t = case t of
+          VPi Expl _ _ dom clo -> do
+            argT <- quoteIn ctxP dom
+            res <- clApp clo (VRigid (ctxLen ctxP) []) >>= forceM
+            peel (acc ++ [argT]) res
+          _ -> do
+            resT <- quoteIn ctxP t
+            pure (acc, resT)
+    (argsT, resT) <- peel [] tyV
+    if null argsT
+      then do
+        errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa-hs.effect.operation")
+          "an effect operation signature must elaborate to a function type (§18.1.15)"
+        pure Nothing
+      else
         pure
           ( Just
               EffOpInfo
                 { eoiName = nameText (eoName op)
                 , eoiQ = maybe Q1 (qOf . Just) (eoQuantity op) -- §18.1.17 one-shot default
-                , eoiArgT = argT
+                , eoiArgsT = argsT
                 , eoiResT = resT
                 }
           )
-      _ -> do
-        errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa-hs.effect.operation")
-          "an effect operation signature must elaborate to a function type (§18.1.15)"
-        pure Nothing
   pure (params, ifaceKindTm, ops)
 
 elabScopedEffect :: Ctx -> EffectDecl -> Span -> CheckM (Ctx, Term -> Term)
@@ -6526,10 +6539,15 @@ effTyV row a = VGlobN (gPrel "Eff") [(Expl, row), (Expl, a)]
 -- parameter VALUES (outer-to-inner). The stored types are de Bruijn under the
 -- parameter binders, so the eval environment lists the parameters
 -- innermost-first.
-instOpTypes :: EvalCtx -> [Value] -> EffOpInfo -> (Value, Value)
+instOpTypes :: EvalCtx -> [Value] -> EffOpInfo -> ([Value], Value)
 instOpTypes ec ps op =
   let env = reverse ps
-   in (eval ec env (eoiArgT op), eval ec env (eoiResT op))
+   in (map (eval ec env) (eoiArgsT op), eval ec env (eoiResT op))
+
+-- | The field name of the @i@-th tuple component (§6.6 tuples are records with
+-- @_1@, @_2@, … fields), used to bundle a multi-argument operation payload.
+effTupleField :: Int -> Text
+effTupleField i = "_" <> T.pack (show (i + 1))
 
 -- | An operation selection @label.op@ (§18.1.15): a first-class value of type
 -- @forall params. argTy -> Eff <[label : E params]> resTy@ that builds the
@@ -6539,29 +6557,39 @@ instOpTypes ec ps op =
 effOpSelection :: EffLabelInfo -> EffOpInfo -> CheckM (Term, Value)
 effOpSelection eli op = do
   let params = eliParams eli
-      n = length params
+      np = length params
+      argsT = eoiArgsT op
+      na = length argsT
       -- the interface applied to the parameter variables; @extra@ counts
-      -- binders introduced after the parameters (the operation's arg binder).
+      -- binders introduced after the parameters.
       ifaceApp extra =
-        foldl (\f i -> CApp Expl f (CVar (n - 1 - i + extra)))
-          (CGlob (eliIface eli)) [0 .. n - 1]
+        foldl (\f i -> CApp Expl f (CVar (np - 1 - i + extra)))
+          (CGlob (eliIface eli)) [0 .. np - 1]
       rowT extra =
         CApp Expl
           (CApp Expl (CApp Expl (CGlob (gPrel "__effRowCons")) (CGlob (eliLabel eli))) (ifaceApp extra))
           (CGlob (gPrel "__effRowNil"))
-      -- under the arg binder (+1): row + result refer to params shifted by 1
-      effCod = CApp Expl (CApp Expl (CGlob (gPrel "Eff")) (rowT 1)) (shiftTerm 1 0 (eoiResT op))
-      bodyTy = CPi Expl QW "__x" (eoiArgT op) effCod
-      tyTerm = foldr (\(nm, kT) acc -> CPi Impl Q0 nm kT acc) bodyTy params
-      opBody =
-        CLam Expl QW "__x" $
-          CCtor
-            (gPrel "__EffOp")
-            [ CGlob (eliLabel eli)
-            , CLit (LitStr (eoiName op))
-            , CVar 0
-            , CLam Expl Q1 "__r" (CCtor (gPrel "__EffPure") [CVar 0])
-            ]
+      -- TYPE: forall params. A₁ -> … -> Aₙ -> Eff <[label : iface params]> B.
+      -- Under the k-th argument binder, the parameters are shifted by k, and
+      -- argument type Aₖ (which is de Bruijn under params only) by k.
+      effCod = CApp Expl (CApp Expl (CGlob (gPrel "Eff")) (rowT na)) (shiftTerm na 0 (eoiResT op))
+      argArrows = foldr (\(k, aT) acc -> CPi Expl QW "__x" (shiftTerm k 0 aT) acc) effCod (zip [0 ..] argsT)
+      tyTerm = foldr (\(nm, kT) acc -> CPi Impl Q0 nm kT acc) argArrows params
+      -- TERM: \@params -> \x₁ … \xₙ -> __EffOp label op PAYLOAD (\r -> __EffPure r),
+      -- where PAYLOAD is the single argument when n = 1, else the tuple
+      -- (x₁, …, xₙ) — a record matched positionally by the handler clause.
+      payload
+        | na == 1 = CVar 0
+        | otherwise = CRecordV [(effTupleField i, CVar (na - 1 - i)) | i <- [0 .. na - 1]]
+      opCall =
+        CCtor
+          (gPrel "__EffOp")
+          [ CGlob (eliLabel eli)
+          , CLit (LitStr (eoiName op))
+          , payload
+          , CLam Expl Q1 "__r" (CCtor (gPrel "__EffPure") [CVar 0])
+          ]
+      opBody = foldr (\_ acc -> CLam Expl QW "__x" acc) opCall argsT
       tm = foldr (\(nm, _) acc -> CLam Impl Q0 nm acc) opBody params
   tyV <- evalIn emptyCtx tyTerm
   pure (tm, tyV)
@@ -6647,23 +6675,36 @@ elabHandle ctx deep lblE scrutE cases sp = do
                   ("the handled effect declares no operation '" <> nameText onm <> "' (§18.1.21)")
                 pure Nothing
               Just op -> do
-                argPat <- case argPats of
-                  [p] -> pure p
-                  _ -> do
-                    reportUnsupported csp "effect operations with other than one parameter"
-                    pure (PWild csp)
-                -- the operation's payload/result types at the effect's actual
-                -- type parameters (§18.1.15)
-                let (opArgV, opResV) = opTypes op
+                -- the operation's argument types and result type at the
+                -- effect's actual type parameters (§18.1.15)
+                let (opArgVs, opResV) = opTypes op
+                    nArgs = length opArgVs
+                when (length argPats /= nArgs) $
+                  errAt csp "E_HANDLER_OP_ARITY" (Just "kappa-hs.effect.handler")
+                    ( "operation '" <> nameText onm <> "' takes " <> T.pack (show nArgs)
+                        <> " argument(s) but this clause binds " <> T.pack (show (length argPats)) <> " (§18.1.21)")
                 -- shallow k resumes in the unhandled carrier; deep k is
                 -- already re-handled (§18.1.21/§18.1.22)
                 let kTy
                       | deep = nonDepPiV Q1 opResV resultTy
                       | otherwise = nonDepPiV Q1 opResV (effTyV row aT)
-                lam <- handlerClauseLam ctx QW argPat opArgV $ \cArg -> do
-                  let cK = bindCtx (nameText kn) False kTy cArg
-                  inner <- check cK body resultTy
-                  pure (CLam Expl (eoiQ op) (nameText kn) inner)
+                    -- bind the resumption `k` (at its declared quantity) and
+                    -- check the body in the target carrier
+                    mkK cArgs = do
+                      let cK = bindCtx (nameText kn) False kTy cArgs
+                      inner <- check cK body resultTy
+                      pure (CLam Expl (eoiQ op) (nameText kn) inner)
+                lam <- case (argPats, opArgVs) of
+                  -- single argument: the payload IS the value (§18.1.21)
+                  ([p], [argV]) -> handlerClauseLam ctx QW p argV mkK
+                  -- n ≥ 2 arguments: the payload is the tuple (x₁,…,xₙ);
+                  -- destructure it positionally to bind the clause parameters
+                  (ps, _) -> do
+                    let tupTy = VRecordT [(effTupleField i, v) | (i, v) <- zip [0 ..] opArgVs]
+                        c0 = bindCtx "__payload" False tupTy ctx
+                    (patC, cArgs, _) <- elabPattern c0 (PTuple ps csp) tupTy
+                    inner <- mkK cArgs
+                    pure (CLam Expl QW "__payload" (CMatch (CVar 0) [CaseAlt patC Nothing inner]))
                 pure (Just (eoiName op, lam))
           let opsRec = CRecordV (sortOn fst clauseTms)
               deepTm = CCtor (gPrel (if deep then "True" else "False")) []

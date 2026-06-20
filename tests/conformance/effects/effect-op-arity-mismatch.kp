@@ -1,0 +1,19 @@
+--! assertDiagnostic error E_HANDLER_OP_ARITY
+
+-- §18.1.21: a handler clause must bind exactly as many arguments as the
+-- operation declares.
+module main
+
+effect Add2 =
+    1 add : Int -> Int -> Int
+
+comp : Eff <[Add2 : Add2]> Int
+let comp = Add2.add 1 2
+
+let handled =
+    deep handle Add2 comp with
+        case return x -> pure x
+        case add x k -> k 0
+
+result : Int
+let result = runPure handled

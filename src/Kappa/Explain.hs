@@ -432,6 +432,8 @@ registry =
       "An effect operation's declared signature is malformed for its effect declaration (§9.3.1.1)."
   , ent "E_EFFECT_LABEL_FORM" (Just "kappa-hs.effect.label")
       "An 'effect label l : E' declaration is malformed — E must be a named top-level effect (§18.1.15)."
+  , ent "E_HANDLER_OP_ARITY" (Just "kappa-hs.effect.handler")
+      "A handler operation clause binds a different number of arguments than the operation declares (§18.1.21)."
   , ent "E_HANDLER_OP_MISSING" (Just "kappa-hs.effect.handler")
       "A handler does not provide a clause for one of the handled effect's operations (§18.1.21)."
   , ent "E_HANDLER_OP_UNKNOWN" (Just "kappa-hs.effect.handler")

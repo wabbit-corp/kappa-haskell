@@ -1,0 +1,27 @@
+--! assertNoErrors
+--! assertEval result 36
+
+-- §18.1.21: an effect operation may have multiple (explicit) parameters
+-- `op : Π(x₁:A₁)…(xₙ:Aₙ). B`; the handler clause binds `case op x₁ … xₙ k`.
+-- The selected operation is the curried value `A₁ -> … -> Aₙ -> Eff <[..]> B`.
+module main
+
+effect Arith =
+    1 add2 : Int -> Int -> Int
+    1 add3 : Int -> Int -> Int -> Int
+
+comp : Eff <[Arith : Arith]> Int
+let comp =
+    do
+        let a <- Arith.add2 10 20
+        let b <- Arith.add3 1 2 3
+        pure (addInt a b)
+
+let handled =
+    deep handle Arith comp with
+        case return x -> pure x
+        case add2 x y k -> k (addInt x y)
+        case add3 x y z k -> k (addInt x (addInt y z))
+
+result : Int
+let result = runPure handled
