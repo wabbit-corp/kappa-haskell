@@ -29,12 +29,8 @@ instance Eq PixelFormat =
         case (PngCompressed, PngCompressed) -> True
         case _ -> False
 
-instance Eq a => Eq (Option a) =
-    let (==) x y =
-        match (x, y)
-        case (None, None) -> True
-        case (Some p, Some q) -> p == q
-        case _ -> False
+-- Eq (Option a) is now provided by the prelude (§28.2); the previous
+-- package-local instance was removed to avoid an overlapping-instance conflict.
 
 public data RasterImage : Type =
     RasterImage

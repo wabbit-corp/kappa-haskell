@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "[1, 2, 3]\nTrue\nFalse\nLT\nSome 5\nNone\nTrue\nLT\nOk 5\nErr bad\nTrue\nFalse\nLT\nGT\n[Some 1, None]\n"
+
+-- §28.2: Eq/Ord/Show instances for the mandated container types
+-- List/Option/Result, including the recursive (premise-driven) and nested
+-- cases (a List of Options).
+module main
+
+main : UIO Unit
+let main = do
+    -- List
+    printlnString (show (1 :: 2 :: 3 :: Nil))
+    printlnString (show ((1 :: 2 :: Nil) == (1 :: 2 :: Nil)))
+    printlnString (show ((1 :: 2 :: Nil) == (1 :: 3 :: Nil)))
+    printlnString (show (compare (1 :: 2 :: Nil) (1 :: 3 :: Nil)))
+    -- Option
+    printlnString (show (Some 5))
+    printlnString (show (None : Option Integer))
+    printlnString (show ((Some 5) == (Some 5)))
+    printlnString (show (compare (Some 1) (Some 2)))
+    -- Result
+    printlnString (show (Ok 5 : Result String Integer))
+    printlnString (show (Err "bad" : Result String Integer))
+    printlnString (show ((Ok 1 : Result String Integer) == (Ok 1 : Result String Integer)))
+    printlnString (show ((Ok 1 : Result String Integer) == (Err "x" : Result String Integer)))
+    printlnString (show (compare (Err "a" : Result String Integer) (Ok 1 : Result String Integer)))
+    printlnString (show (compare (Ok 2 : Result String Integer) (Ok 1 : Result String Integer)))
+    -- nested
+    printlnString (show ((Some 1) :: (None : Option Integer) :: Nil))

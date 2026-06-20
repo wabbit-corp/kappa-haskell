@@ -2,15 +2,24 @@
 --! assertNoErrors
 --! assertStdout "True\nFalse\nTrue\n"
 
-instance Eq a => Eq (List a) =
+-- §14.3: an instance with a premise (Eq a => Eq (Stack a)) resolves the
+-- premise dictionary, including recursively for nested element types.
+-- (List/Option/Result Eq now ship in the prelude, so this uses a user type
+-- to keep exercising user-declared premise instances.)
+
+data Stack (a : Type) : Type =
+    Empty
+    Push a (Stack a)
+
+instance Eq a => Eq (Stack a) =
     let (==) xs ys =
         match (xs, ys)
-        case (Nil, Nil) -> True
-        case (x :: xr, y :: yr) -> if x == y then xr == yr else False
+        case (Empty, Empty) -> True
+        case (Push x xr, Push y yr) -> if x == y then xr == yr else False
         case _ -> False
 
 main : UIO Unit
 let main = do
-    printlnString (show ((1 :: 2 :: Nil) == (1 :: 2 :: Nil)))
-    printlnString (show ((1 :: Nil) == (2 :: Nil)))
-    printlnString (show (((1 :: Nil) :: Nil) == ((1 :: Nil) :: Nil)))
+    printlnString (show (Push 1 (Push 2 Empty) == Push 1 (Push 2 Empty)))
+    printlnString (show (Push 1 Empty == Push 2 Empty))
+    printlnString (show ((Push (Push 1 Empty) Empty) == (Push (Push 1 Empty) Empty)))

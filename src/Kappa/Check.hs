@@ -2075,6 +2075,11 @@ rowProof goal = do
             _ -> pure Nothing
     _ -> pure Nothing
 
+-- | Whether a forced value is an unsolved metavariable (a flexible head).
+isFlexV :: Value -> Bool
+isFlexV (VFlex _ _) = True
+isFlexV _ = False
+
 instanceSearch :: Ctx -> Span -> Value -> CheckM (Maybe Term)
 instanceSearch ctx sp goal = searchDepth 0 ctx sp goal
 
@@ -2086,7 +2091,20 @@ searchDepth depth ctx sp goal
       case g of
         VGlobN traitG spine -> do
           st <- get
-          if not (Map.member traitG (csTraits st))
+          -- §14.3.1/§14.3.5: a PREMISE goal (depth > 0) whose trait arguments
+          -- all force to bare unsolved metavars is underdetermined and MUST NOT
+          -- drive instance selection. Without this, a recursive multi-premise
+          -- instance (e.g. `(Eq e, Eq a) => Eq (Result e a)`) makes its premise
+          -- goals `Eq ?e`/`Eq ?a` match the instance's own head, assigning the
+          -- metavars and recursing with fan-out — an exponential blow-up up to
+          -- the depth backstop. The cut is confined to premise resolution: a
+          -- top-level use-site goal (depth 0) whose metavar is solved BY the
+          -- matching instance still resolves, and determined goals
+          -- (`Eq Integer`, `Eq a`, `Eq (Result ?e ?a)`) always resolve.
+          spineFlex <- mapM (fmap isFlexV . forceM . snd) spine
+          if depth > 0 && not (null spine) && and spineFlex
+            then pure Nothing
+          else if not (Map.member traitG (csTraits st))
             then pure Nothing
             else do
               let cands = [ie | ie <- csInstances st, ieTrait ie == traitG]
@@ -11660,11 +11678,19 @@ instSplitHead e = case e of
     pure (mg, [])
   _ -> pure (Nothing, [])
 
+-- | Bind the instance's premise dictionaries as implicit-local candidates.
+-- Each premise term was elaborated under the fv binders only, so the k-th
+-- premise sits under k earlier premise binders and must be shifted by k. Each
+-- dictionary also gets a DISTINCT name: 'localCandidate' dedups candidates by
+-- name, so premises sharing a name (e.g. two @Eq@ premises @Eq e@, @Eq a@)
+-- would shadow each other and the second goal would never resolve locally.
 instBindPremises :: Ctx -> [Term] -> CheckM Ctx
-instBindPremises ctx [] = pure ctx
-instBindPremises ctx (p : rest) = do
-  pv <- evalIn ctx p
-  instBindPremises (bindCtx "__prem" True pv ctx) rest
+instBindPremises ctx0 = go (0 :: Int) ctx0
+  where
+    go _ c [] = pure c
+    go i c (p : rest) = do
+      pv <- evalIn c (shiftTerm i 0 p)
+      go (i + 1) (bindCtx ("__prem" <> T.pack (show i)) True pv c) rest
 
 instCheckHeadArgs :: Ctx -> Value -> [Expr] -> CheckM [Term]
 instCheckHeadArgs _ _ [] = pure []
