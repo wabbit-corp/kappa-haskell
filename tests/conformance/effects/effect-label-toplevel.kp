@@ -1,0 +1,24 @@
+--! assertNoErrors
+--! assertEval result 42
+
+-- §18.1.15: `effect label l : E` introduces a fresh effect label `l` that
+-- shares the interface and operations of an existing effect `E` but has its
+-- own label identity. Operations are invoked `l.op`, the label appears in
+-- rows `<[l : E]>`, and `handle l` / `deep handle l` resolve it.
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label myLabel : Counter
+
+comp : Eff <[myLabel : Counter]> Int
+let comp = myLabel.tick ()
+
+let handled =
+    deep handle myLabel comp with
+        case return x -> pure x
+        case tick u k -> k 42
+
+result : Int
+let result = runPure handled
