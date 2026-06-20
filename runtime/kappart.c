@@ -352,6 +352,81 @@ KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
 KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
 KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
 
+/* ── §18.1 algebraic-effect runtime ───────────────────────────────────
+ * Mirrors Kappa.Eval.evalEffPrim over the untyped OpCall tree
+ * (`__EffPure v` / `__EffOp label op payload cont`).  Labels are string
+ * tokens (the label global's name); the handler `ops` is a record keyed by
+ * operation name.  Continuations are GC closures built with kclo/kpush. */
+KValue *kpf___effBind(KValue **a);
+KValue *kpf___handleEff(KValue **a);
+
+static KValue *eff_bind_k(KEnv *env, KValue *x) {
+  /* env: kvar0 = f, kvar1 = cont.  \x -> __effBind (cont x) f */
+  KValue *f = kvar(env, 0), *cont = kvar(env, 1);
+  KValue *args[2]; args[0] = kapp(cont, x); args[1] = f;
+  return kpf___effBind(args);
+}
+
+/* runPure : Eff <[]> a -> a  (§18.1.14) */
+KValue *kpf_runPure(KValue **a) {
+  if (kctor_tagid(a[0]) == KCT_EFFPURE) return kctor_arg(a[0], 0);
+  krt_fail("runPure: computation is not fully handled (an operation escaped its handlers)");
+  return 0;
+}
+
+/* __effBind m f : monadic bind over the Eff tree (§18.1.14) */
+KValue *kpf___effBind(KValue **a) {
+  KValue *m = a[0], *f = a[1];
+  int t = kctor_tagid(m);
+  if (t == KCT_EFFPURE) return kapp(f, kctor_arg(m, 0));
+  if (t == KCT_EFFOP) {
+    KEnv *env = kpush(f, kpush(kctor_arg(m, 3), 0)); /* kvar0=f, kvar1=cont */
+    KValue *args[4];
+    args[0] = kctor_arg(m, 0); args[1] = kctor_arg(m, 1); args[2] = kctor_arg(m, 2);
+    args[3] = kclo(eff_bind_k, env);
+    return kctor(KCT_EFFOP, "__EffOp", 4, args);
+  }
+  krt_fail("__effBind: not an Eff value");
+  return 0;
+}
+
+/* env for the deep/propagate resumption: kvar0=cont,1=ops,2=ret,3=label,4=deep */
+static KValue *eff_reinstall_k(KEnv *env, KValue *x) {
+  KValue *cont = kvar(env, 0), *ops = kvar(env, 1), *ret = kvar(env, 2),
+         *label = kvar(env, 3), *deepV = kvar(env, 4);
+  KValue *args[5];
+  args[0] = deepV; args[1] = label; args[2] = ret; args[3] = ops;
+  args[4] = kapp(cont, x);
+  return kpf___handleEff(args);
+}
+static int eff_label_eq(KValue *x, KValue *y) {
+  return x->tag == K_STR && y->tag == K_STR && x->as.str.len == y->as.str.len &&
+         memcmp(x->as.str.p, y->as.str.p, x->as.str.len) == 0;
+}
+
+/* __handleEff deep label ret ops comp  (§18.1.21/.22) */
+KValue *kpf___handleEff(KValue **a) {
+  KValue *deepV = a[0], *label = a[1], *ret = a[2], *ops = a[3], *comp = a[4];
+  int t = kctor_tagid(comp);
+  if (t == KCT_EFFPURE) return kapp(ret, kctor_arg(comp, 0));
+  if (t == KCT_EFFOP) {
+    KValue *l = kctor_arg(comp, 0), *op = kctor_arg(comp, 1),
+           *pay = kctor_arg(comp, 2), *cont = kctor_arg(comp, 3);
+    KEnv *renv = kpush(cont, kpush(ops, kpush(ret, kpush(label, kpush(deepV, 0)))));
+    if (eff_label_eq(l, label)) {
+      KValue *clause = kproj(ops, op->as.str.p); /* op is a null-terminated KString */
+      KValue *k = (kctor_tagid(deepV) == KCT_TRUE) ? kclo(eff_reinstall_k, renv) : cont;
+      return kapp(kapp(clause, pay), k);
+    } else {
+      KValue *args[4];
+      args[0] = l; args[1] = op; args[2] = pay; args[3] = kclo(eff_reinstall_k, renv);
+      return kctor(KCT_EFFOP, "__EffOp", 4, args);
+    }
+  }
+  krt_fail("__handleEff: not an Eff value");
+  return 0;
+}
+
 KValue *kinject(int tagid, const char *tag, KValue *payload) {
   KValue *r = alloc_val(K_VARIANT);
   r->as.var.tag = tag;          /* a generated static string literal */

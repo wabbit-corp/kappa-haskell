@@ -268,6 +268,10 @@ builtinCtorTag = \case
   "std.prelude.Some" -> Just "KCT_SOME"
   "std.prelude.None" -> Just "KCT_NONE"
   "__rat" -> Just "KCT_RAT"
+  -- §18.1 algebraic-effect OpCall tree nodes (built/matched by the native
+  -- effect runtime in kappart.c, so they need fixed shared tags)
+  "std.prelude.__EffPure" -> Just "KCT_EFFPURE"
+  "std.prelude.__EffOp" -> Just "KCT_EFFOP"
   _ -> Nothing
 
 -- | The C tag constant for a constructor, recording a user constructor's use
@@ -1711,6 +1715,10 @@ primEntries = Map.fromList
   , ("ioBind", PrimEntry "kpf_io_ioBind" 2 True)
   , ("ioPure", PrimEntry "kpf_io_ioPure" 1 True)
   , ("ioThen", PrimEntry "kpf_io_ioThen" 2 True)
+  -- §18.1 algebraic-effect tree primitives (pure tree transformations)
+  , ("runPure", PrimEntry "kpf_runPure" 1 False)
+  , ("__effBind", PrimEntry "kpf___effBind" 2 False)
+  , ("__handleEff", PrimEntry "kpf___handleEff" 5 False)
   , ("leInt", PrimEntry "kpf_leInt" 2 False)
   , ("ltByte", PrimEntry "kpf_ltByte" 2 False)
   , ("ltBytes", PrimEntry "kpf_ltBytes" 2 False)

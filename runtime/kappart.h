@@ -76,6 +76,7 @@ enum {
   KCT_CONS, KCT_NIL,
   KCT_SOME, KCT_NONE,
   KCT_RAT,
+  KCT_EFFPURE, KCT_EFFOP,   /* §18.1 algebraic-effect tree nodes */
   KCT_USER_BASE = 16
 };
 

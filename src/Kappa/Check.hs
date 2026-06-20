@@ -6247,6 +6247,8 @@ elabScopedEffect ctx eff dsp = do
   -- (§18.1.18 handler matching is by label identity)
   addGlobal ifaceG (GlobalDef (VSort 0) Nothing False)
   addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+  -- §18.1.18: native string-token identity for the label (see elabTopEffect).
+  recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
   ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
     (tyTm, _) <- inferType ctx (eoType op)
     tyV <- evalIn ctx tyTm >>= forceM
@@ -6277,6 +6279,11 @@ elabScopedEffect ctx eff dsp = do
 -- | Effect-label resolution (§18.1): a §9.3.1.1 lexically scoped effect in
 -- 'ctxEffLabels' wins; otherwise a module-level (top-level) @effect@
 -- declaration in 'csModEffLabels' is visible everywhere in the module.
+-- | §18.1.18: the unique runtime identity string of an effect label (its
+-- fully-qualified global name), used as the native label token.
+effLabelKey :: GName -> Text
+effLabelKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
+
 lookupEffLabelM :: Ctx -> Text -> CheckM (Maybe EffLabelInfo)
 lookupEffLabelM ctx nm = case Map.lookup nm (ctxEffLabels ctx) of
   Just e -> pure (Just e)
@@ -6304,6 +6311,11 @@ elabTopEffect eff dsp = do
         labelG = GName (csModule st0) (nm <> ".label")
     addGlobal ifaceG (GlobalDef (VSort 0) Nothing False)
     addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+    -- §18.1.18: the label's runtime identity is its (unique) global name.
+    -- The interpreter uses the neutral global; the native backend has no
+    -- neutral globals, so record a string-token core body for it (label
+    -- equality in the native effect runtime is string equality).
+    recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
     -- the effect type name resolves module-wide as its interface type
     modify' $ \st -> st {csScope = Map.insert nm ifaceG (csScope st)}
     ops <- fmap catMaybes . forM (effOps eff) $ \op -> do

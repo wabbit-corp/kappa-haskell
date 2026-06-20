@@ -1,0 +1,47 @@
+module main
+
+-- §18.1 algebraic effects must produce identical results under the native
+-- backend and the interpreter: a top-level effect with a deep stateful
+-- handler, and a scoped multi-shot effect resuming its continuation twice.
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+stateComp : Eff <[State : State]> Int
+let stateComp =
+    do
+        let a <- State.get ()
+        let _ <- State.put 5
+        let b <- State.get ()
+        pure (a + b)
+
+let stateHandled =
+    deep handle State stateComp with
+        case return x -> pure x
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+multi : Int
+let multi =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                let b <- Choice.choose ()
+                if b then 1 else 20
+        let handled =
+            deep handle Choice comp with
+                case return x -> pure x
+                case choose _ k ->
+                    do
+                        let l <- k True
+                        let r <- k False
+                        pure (l + r)
+        runPure handled
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (runPure stateHandled))
+    printlnString (showInt multi)

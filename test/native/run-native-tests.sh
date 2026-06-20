@@ -54,7 +54,7 @@ run_diff_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders flatclosure; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders flatclosure effects; do run_diff_case "$c"; done
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
