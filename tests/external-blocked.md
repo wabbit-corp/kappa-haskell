@@ -1,3 +1,24 @@
+<!-- RECONCILIATION NOTE (2026-06-20): the upstream external corpus GREW from
+959 to 1108 fixtures; a fresh `tools/run-external-fixtures.sh` reports 962 pass /
+76 fail / 11 unsupported / 59 harness-error / 1108 total (see external-results.md).
+The hand-maintained per-fixture classes below predate that growth and are NOT yet
+a complete triage of the current 76 fail + 59 harness-error. An independent
+adversarial spot-check of the fails found them to be, by frequency: (a)
+NON-NORMATIVE diagnostic-code spelling divergences — the fixture pins one portable
+spelling; this implementation emits a different but spec-valid code AND exposes
+the §3.1.4 portable alias via `portableCode` (e.g. E_TYPE_EQUALITY_MISMATCH→
+E_TYPE_MISMATCH; E_NUMERIC_LITERAL_DOMAIN_MISMATCH, itself a §3.1.4 required alias;
+E_UNSOLVED_IMPLICIT, for which §3.1.4 defines no alias). The external harness
+matches the raw `code`, so these are the other implementation's spelling choice,
+not MUST violations. (b) build-DSL surface gaps (`BuildConfig` manifests outside
+the documented manifest subset). (c) two genuine accept-clean under-rejections
+(`for value in (Option a)` non-List source; a member-resolution-at-lowering case)
+tracked in SPEC_COVERAGE §18.6/§22. The 59 harness-errors are predominantly
+fixtures using language features this implementation does not provide (effect
+handlers §18/§19, labeled control §18.5/§18.7) — reported as the §2.1
+deterministic-unsupported / harnessError outcome, not silent miscompiles. A full
+per-fixture re-triage of the grown corpus remains outstanding. -->
+
 ## Blocked classifications
 
 Hand-maintained (in `tests/external-blocked.md`, appended to this
