@@ -296,6 +296,23 @@ recorded in the binding's native provenance (`*.native.prov`,
 adapter declares `blocking` (its `accept`/`read` wait on socket I/O); the raw
 `libuv.Raw` value functions are `nonblocking`.
 
+**Interface-artifact records (§26.1.2).** §26.1.2:26141 conditions the
+record-keeping MUST on *generated overload spellings* ("For every generated
+overload spelling, the module interface artifact MUST record …"). A C/native
+surface has no overloading — each generated member's name is its C symbol
+verbatim, the overload rule is trivially *unsuffixed-unique*, and the adapter
+mode is constant (`native.direct`) — so no overload spellings are generated and
+that per-overload MUST is vacuous. The unconditional §26.1.2:26193 diagnostic
+MUST (report both the generated Kappa spelling and the original host identity)
+holds because for a native binding the generated spelling *is* the host symbol
+(member == C symbol). The substantive record fields the spec enumerates
+(generated spelling, host spelling/identity, host signature, adapter mode) are
+nonetheless recorded in the host-source identity pinned in `kappa.lock` (the
+per-symbol `symbol <member> <cSymbol> <params>-><result>` lines + the
+`adapter native.direct` line in the native provenance). A separate managed-host
+overload-disambiguation/interface-artifact subsystem is only needed for a future
+`host.jvm`/`host.dotnet` profile, which is not implemented.
+
 **Capability profile + routing (§26.1.4 / §27.6).** §27.6 requires every backend
 profile to declare a runtime capability set; the native profile's is declared in
 `Kappa.Backend.Capabilities` (`nativeRuntimeCapabilities = rt-core, rt-blocking,
