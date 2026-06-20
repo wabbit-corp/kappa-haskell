@@ -674,6 +674,15 @@ if pkg-config --exists libuv 2>/dev/null; then
   co="$(timeout 200 $KAPPA build --update --manifest "$CAP" -o "$WORK/capc" 2>&1)"; cr=$?
   { [ "$cr" -ne 0 ] && grep -q "E_BACKEND_CAPABILITY_UNREALIZED" <<<"$co" && grep -q "rt-blocking-cancel" <<<"$co"; } || { echo "   FAIL: a 'blocking-cancellable' binding was not rejected fail-closed"; echo "$co" | sed 's/^/     /'; okc=0; }
   [ "$okc" -eq 1 ] && echo "   ok (capability set declared + recorded; blocking accepted under rt-blocking; blocking-cancellable rejected — no rt-blocking-cancel)"
+  # §26.1.3: the generator's width mapping assumes LP64; a non-LP64 target
+  # triple (LLP64 = windows) is rejected rather than inferred for an unmodelled ABI.
+  printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-windows-msvc" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' > "$CAP/kappa.build.kp"
+  wo="$(timeout 120 $KAPPA build --update --manifest "$CAP" -o "$WORK/capw" 2>&1)"; wr=$?
+  if [ "$wr" -ne 0 ] && grep -q "LP64" <<<"$wo"; then
+    echo "   ok (non-LP64 target triple rejected — surface not inferred for an unmodelled data model, §26.1.3)"
+  else
+    echo "   FAIL: a non-LP64 target triple was not rejected"; echo "$wo" | sed 's/^/     /'; fails=$((fails+1))
+  fi
   rm -rf "$CAP"
 else
   echo "   SKIP: pkg-config libuv not available"

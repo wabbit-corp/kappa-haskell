@@ -35,6 +35,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Kappa.Backend.NativeProbe (crossTargetFlags)
 import Kappa.Build.Types (CType (..), NativeInput (..), SymbolDecl (..))
 import Kappa.Diagnostic
 import Kappa.Source (Pos (..), Span (..))
@@ -48,10 +49,10 @@ import System.Process (readProcessWithExitCode)
 -- include paths resolve against it); @workDir@ holds the generated probe TU.
 -- The Kappa member of each generated symbol is its C function name verbatim.
 generateSurfaceDecls
-  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> Text -> [Text]
+  :: (String, [String]) -> Text -> FilePath -> FilePath -> [NativeInput] -> Text -> [Text]
   -> IO (Either Diagnostics [SymbolDecl])
-generateSurfaceDecls cc baseDir workDir inputs header symbols = do
-  e <- preprocessHeader cc baseDir workDir inputs header
+generateSurfaceDecls cc triple baseDir workDir inputs header symbols = do
+  e <- preprocessHeader cc triple baseDir workDir inputs header
   pure $ e >>= \norm ->
     let decls = headerDecls norm
         ptds = pointerTypedefs norm
@@ -64,10 +65,10 @@ generateSurfaceDecls cc baseDir workDir inputs header symbols = do
 -- SKIPPED — rejected from the surface, never guessed — and returned in the
 -- second component (name, reason) so the omission is reported, not silent.
 generatePrefixSurfaceDecls
-  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> Text -> Text
+  :: (String, [String]) -> Text -> FilePath -> FilePath -> [NativeInput] -> Text -> Text
   -> IO (Either Diagnostics ([SymbolDecl], [(Text, Text)]))
-generatePrefixSurfaceDecls cc baseDir workDir inputs header prefix = do
-  e <- preprocessHeader cc baseDir workDir inputs header
+generatePrefixSurfaceDecls cc triple baseDir workDir inputs header prefix = do
+  e <- preprocessHeader cc triple baseDir workDir inputs header
   pure $ flip fmap e $ \norm ->
     let ptds = pointerTypedefs norm
         decls = [d | d@(n, _, _) <- headerDecls norm, T.unpack prefix `isPrefixOf` n]
@@ -84,9 +85,9 @@ generatePrefixSurfaceDecls cc baseDir workDir inputs header prefix = do
 -- pkg-config cflags, @-D@ defines, and resolved include path; return the
 -- NORMALIZED preprocessed text or a fail-closed diagnostic.
 preprocessHeader
-  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> Text
+  :: (String, [String]) -> Text -> FilePath -> FilePath -> [NativeInput] -> Text
   -> IO (Either Diagnostics String)
-preprocessHeader (ccExe, ccLead) baseDir workDir inputs header = do
+preprocessHeader cc@(ccExe, ccLead) triple baseDir workDir inputs header = do
   cflags <- pkgCflags [p | PkgConfigInput p _ <- inputs]
   let incDirs = [baseDir </> T.unpack d | IncludeDirInput d <- inputs]
       hdrDirs = [takeDirectory (baseDir </> T.unpack h) | HeadersInput hs <- inputs, h <- hs]
@@ -101,7 +102,9 @@ preprocessHeader (ccExe, ccLead) baseDir workDir inputs header = do
           , "#include \"" <> T.unpack header <> "\""
           ]
   writeFile probePath probe
-  let args = ccLead ++ ["-std=c11", "-E", "-P"] ++ iflags ++ cflags ++ defs ++ [probePath]
+  -- §26.1.3: target the declared triple when the driver is cross-capable (zig),
+  -- so the header preprocesses for the target ABI rather than the host.
+  let args = ccLead ++ crossTargetFlags cc triple ++ ["-std=c11", "-E", "-P"] ++ iflags ++ cflags ++ defs ++ [probePath]
   -- clean the probe TU from the package dir even if preprocessing throws.
   (ec, out, err) <-
     readProcessWithExitCode ccExe args ""

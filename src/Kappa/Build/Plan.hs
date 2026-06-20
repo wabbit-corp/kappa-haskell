@@ -229,8 +229,15 @@ resolveExecutable manifestDir bc mTarget =
       let wanted = targetHostBindings tgt
           selected = [hb | nm <- wanted, hb <- bcHostBindings bc, nbName hb == nm]
           gens = [hb | hb <- selected, isGenerated (nbSurface hb)]
+          tgtTriple = backendTriple (tBackend tgt)
       if null gens
         then k Map.empty
+        -- §26.1.3: the header-derived generator's integer-width mapping assumes
+        -- the LP64 data model (the realized target set). Rather than INFER a
+        -- layout-sensitive surface for an unknown data model, reject a clearly
+        -- non-LP64 target triple fail-closed.
+        else if nonLp64Triple tgtTriple
+        then pure (Left [nonLp64Diag tgtTriple])
         else do
           mcc <- detectCC Nothing
           case mcc of
@@ -242,15 +249,16 @@ resolveExecutable manifestDir bc mTarget =
         isGenerated SymbolListSurface {} = False
         isGenerated GeneratedSurface {} = True
         isGenerated GeneratedPrefixSurface {} = True
+        triple = backendTriple (tBackend tgt)
         goGen _ acc [] = pure (Right acc)
         goGen cc acc (hb : rest) = case nbSurface hb of
           GeneratedSurface h ss -> do
-            r <- generateSurfaceDecls cc manifestDir manifestDir (nbInputs hb) h ss
+            r <- generateSurfaceDecls cc triple manifestDir manifestDir (nbInputs hb) h ss
             case r of
               Left ds -> pure (Left ds)
               Right decls -> goGen cc (Map.insert (nbName hb) decls acc) rest
           GeneratedPrefixSurface h pfx -> do
-            r <- generatePrefixSurfaceDecls cc manifestDir manifestDir (nbInputs hb) h pfx
+            r <- generatePrefixSurfaceDecls cc triple manifestDir manifestDir (nbInputs hb) h pfx
             case r of
               Left ds -> pure (Left ds)
               Right (decls, skipped) -> do
@@ -265,6 +273,25 @@ resolveExecutable manifestDir bc mTarget =
                   )
                 goGen cc (Map.insert (nbName hb) decls acc) rest
           SymbolListSurface {} -> goGen cc acc rest
+
+    -- §26.1.3: data models the header-derived width mapping does not model are
+    -- rejected (LLP64 = Windows; ILP32 = 32-bit). Conservative denylist: any
+    -- target not matching is assumed LP64 (the 64-bit-unix realized set).
+    nonLp64Triple :: Text -> Bool
+    nonLp64Triple t =
+      let s = T.toLower t
+          has x = x `T.isInfixOf` s
+       in has "windows" || has "msvc" || has "win32"
+            || has "i386" || has "i486" || has "i586" || has "i686"
+            || has "wasm32" || has "thumb" || T.isPrefixOf "arm-" s || T.isPrefixOf "armv7" s
+
+    nonLp64Diag :: Text -> Diagnostic
+    nonLp64Diag t =
+      buildErr "E_BACKEND_CAPABILITY_UNREALIZED" "kappa-hs.backend.capability"
+        ( "header-derived native binding generation targets '" <> t <> "', whose data model is not "
+            <> "the LP64 model the generator's integer-width mapping assumes; the surface is rejected "
+            <> "rather than inferred for an unmodelled ABI (Spec §26.1.3)"
+        )
 
     genNeedsCc :: Text -> Diagnostic
     genNeedsCc nm =

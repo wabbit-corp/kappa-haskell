@@ -125,7 +125,7 @@ verifyAndRecord opts base workDir
         Nothing -> pure (Left [toolDiag noCcMsg])
         Just cc -> do
           let baseDir = maybe "." id (boNativeBaseDir opts)
-          r <- discoverAndVerifyNative cc baseDir workDir (boNativeInputs opts) []
+          r <- discoverAndVerifyNative cc (boTargetTriple opts) baseDir workDir (boNativeInputs opts) []
           case r of
             Left ds -> pure (Left ds)
             Right prov -> do

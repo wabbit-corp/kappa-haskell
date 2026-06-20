@@ -267,6 +267,17 @@ skips it and reports the skipped count on stderr (no silent omission). The
 generated symbol set is pinned in `kappa.lock`, so a header change repins and
 regenerates (§27.1.1 host-source identity).
 
+**Target ABI (§26.1.3).** The pinned target ABI description is the target triple
+(in `kappa.lock`) plus the LP64 data model the integer-width mapping assumes.
+For a cross-capable driver (`zig cc`) the header is preprocessed AND ABI-verified
+*for the declared triple* (`-target` is threaded into the `cc -E` and verify
+steps, matching the link step), so a cross-build derives the surface from the
+target's headers — not the host's. A host `cc`/`gcc`/`clang` cannot retarget, so
+it preprocesses for the host (the realized configurations keep the triple equal
+to the host). A target triple whose data model is not LP64 (LLP64 Windows, ILP32
+32-bit) is **rejected** (`E_BACKEND_CAPABILITY_UNREALIZED`) rather than have a
+layout-sensitive surface inferred for an unmodelled ABI (§26.1.3:26245).
+
 Shims are the spec-sanctioned escape hatch for exactly the rejected cases
 (§26.1.2: callbacks/structs/variadics "MUST be rejected or require an explicit
 shim … rather than guessed"; §27.1.1: "MAY require a user-provided shim …

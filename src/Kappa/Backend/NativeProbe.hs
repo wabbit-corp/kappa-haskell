@@ -23,6 +23,7 @@ module Kappa.Backend.NativeProbe
   ( NativeProvenance (..)
   , discoverAndVerifyNative
   , hostBindingLockEntries
+  , crossTargetFlags
   ) where
 
 import qualified Data.ByteString as BS
@@ -39,7 +40,7 @@ import Control.Exception (catch, SomeException)
 import System.Directory (doesFileExist, findExecutable, pathIsSymbolicLink, removeFile)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
-import System.FilePath (isAbsolute, splitDirectories, splitSearchPath, (</>))
+import System.FilePath (isAbsolute, splitDirectories, splitSearchPath, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
 
 -- | The recorded identity of a build's resolved native bindings: ordered,
@@ -58,10 +59,21 @@ data NativeProvenance = NativeProvenance
 -- diagnostic. @cc@ is the detected C driver @(exe, leadingArgs)@; @baseDir@ is
 -- the manifest directory (header/relative paths resolve against it); @workDir@
 -- holds the generated probe TU.
+-- | §26.1.3: the @-target@ flags for the declared triple, when the driver is a
+-- cross-capable @zig cc@. A host gcc/clang/cc cannot retarget, so preprocessing
+-- and ABI verification then reflect the host (which the realized configurations
+-- keep equal to the declared target); for a zig cross-build these flags make
+-- the header preprocess/verify for the actual target ABI, matching the link.
+crossTargetFlags :: (String, [String]) -> Text -> [String]
+crossTargetFlags (ccExe, ccLead) triple
+  | not (T.null triple) && takeFileName ccExe == "zig" && ccLead == ["cc"] =
+      ["-target", T.unpack triple]
+  | otherwise = []
+
 discoverAndVerifyNative
-  :: (String, [String]) -> FilePath -> FilePath -> [NativeInput] -> [Text]
+  :: (String, [String]) -> Text -> FilePath -> FilePath -> [NativeInput] -> [Text]
   -> IO (Either Diagnostics NativeProvenance)
-discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs extraExterns = do
+discoverAndVerifyNative cc@(ccExe, ccLead) triple baseDir workDir inputs extraExterns = do
   let pkgs = [(p, mv) | PkgConfigInput p mv <- inputs]
       hdrs = concat [hs | HeadersInput hs <- inputs]
       incDirs = [d | IncludeDirInput d <- inputs]
@@ -84,7 +96,8 @@ discoverAndVerifyNative (ccExe, ccLead) baseDir workDir inputs extraExterns = do
           -- 3. signature verification: a probe TU that includes the real
           -- headers and redeclares each verify decl; cc rejects a mismatch.
           let defLines = [T.pack ("-D" <> T.unpack n <> "=" <> T.unpack v) | (n, v) <- defines]
-          ever <- verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags (map T.unpack defLines) hdrs decls extraExterns
+              tflags = crossTargetFlags cc triple
+          ever <- verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags (map T.unpack defLines) hdrs decls extraExterns
           case ever of
             Left ds -> pure (Left ds)
             Right verLines -> do
@@ -286,9 +299,9 @@ safeWithinRoot baseDir rel
 -- the verified-decl provenance lines, or a fail-closed diagnostic with the
 -- compiler output.
 verifyDecls
-  :: String -> [String] -> FilePath -> FilePath -> [FilePath] -> [String] -> [String] -> [Text] -> [Text] -> [Text]
+  :: String -> [String] -> [String] -> FilePath -> FilePath -> [FilePath] -> [String] -> [String] -> [Text] -> [Text] -> [Text]
   -> IO (Either Diagnostics [Text])
-verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags defFlags hdrs decls extraExterns
+verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hdrs decls extraExterns
   | null decls && null extraExterns = pure (Right [])
   | otherwise = do
       let probePath = workDir </> "native-abi-probe.c"
@@ -310,7 +323,7 @@ verifyDecls ccExe ccLead workDir baseDir searchDirs pkgCflags defFlags hdrs decl
       let iflags = concat [["-I", d] | d <- nub (baseDir : searchDirs)]
           -- compile to a throwaway object (NOT -fsyntax-only, which the
           -- zig-cc driver rejects); this still performs full type checking.
-          args = ccLead ++ ["-std=c11", "-c", "-o", objPath] ++ iflags ++ pkgCflags ++ defFlags ++ [probePath]
+          args = ccLead ++ tflags ++ ["-std=c11", "-c", "-o", objPath] ++ iflags ++ pkgCflags ++ defFlags ++ [probePath]
       (ec, out, err) <- readProcessWithExitCode ccExe args ""
       removeFile probePath `catch` \(_ :: SomeException) -> pure ()
       removeFile objPath `catch` \(_ :: SomeException) -> pure ()
@@ -371,7 +384,7 @@ hostBindingLockEntries cc baseDir triple = goB []
       -- §26.1.5: verify the binding's all-scalar symbolDecls against the real
       -- headers too (their conservative C prototypes), so a declared scalar
       -- width that disagrees with the installed header is fail-closed.
-      ev <- discoverAndVerifyNative cc baseDir baseDir inputs scalarExterns
+      ev <- discoverAndVerifyNative cc triple baseDir baseDir inputs scalarExterns
       case ev of
         Left ds -> pure (Left ds)
         Right prov -> do
