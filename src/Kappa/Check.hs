@@ -228,6 +228,11 @@ data CheckState = CheckState
   -- per-error scan to the length-compatible names rather than all of
   -- scope. 'Nothing' means "not yet built"; entering a new module clears
   -- it (Pipeline / TestHarness), since the import scope and module change.
+  , csModEffLabels :: !(Map Text EffLabelInfo)
+  -- ^ §18.1: module-level (top-level) @effect@ declarations, keyed by name.
+  -- Unlike §9.3.1.1 @scoped effect@ (which lives in 'ctxEffLabels'), a
+  -- top-level effect is visible to every definition in the module; effect
+  -- resolution consults this as a fallback to 'ctxEffLabels'.
   }
 
 -- | §4.2 build-level gating record. Each flag enables exactly one
@@ -305,7 +310,7 @@ initCheckState =
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
     Map.empty Map.empty Set.empty defaultUnsafeConfig [] Nothing
-    Map.empty Map.empty
+    Map.empty Map.empty Map.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -4460,10 +4465,11 @@ elabDot ctx e member = do
   let mname = case member of
         DotName n -> n
         DotOperator n -> n
-  -- effect-operation selection label.op (§18.1.15, §7.3)
+  -- effect-operation selection label.op (§18.1.15, §7.3) — scoped or top-level
+  merged <- effMerged ctx
   case e of
     EVar ln
-      | Just eli <- Map.lookup (nameText ln) (ctxEffLabels ctx)
+      | Just eli <- Map.lookup (nameText ln) merged
       , Just op <- find ((== nameText mname) . eoiName) (eliOps eli) ->
           effOpSelection eli op
     _ -> elabDotOrdinary ctx e member mname
@@ -4524,7 +4530,9 @@ elabModuleMember ctx segs sp = do
 -- §2.8.6 kind-qualified static-object expressions: select the named
 -- facet; an unknown subject is E_STATIC_OBJECT_UNRESOLVED.
 elabKindQualified :: Ctx -> KindSelector -> Name -> Span -> CheckM (Term, Value)
-elabKindQualified ctx sel (Name n nsp) sp = case sel of
+elabKindQualified ctx sel (Name n nsp) sp = do
+ merged <- effMerged ctx
+ case sel of
   SelModule -> do
     st <- get
     let target = case Map.lookup n (csModuleAliases st) of
@@ -4544,7 +4552,7 @@ elabKindQualified ctx sel (Name n nsp) sp = case sel of
   -- interface, §7.6) and an effect-label facet (its canonical self
   -- label)
   SelEffectLabel
-    | Just eli <- Map.lookup (nameText (Name n nsp)) (ctxEffLabels ctx) ->
+    | Just eli <- Map.lookup n merged ->
         pure (CGlob (eliLabel eli), VGlobN (gPrel "EffLabel") [])
   SelType
     | Just (i, e) <- lookupCtx n ctx -> do
@@ -6244,18 +6252,73 @@ elabScopedEffect ctx eff dsp = do
       wrap = CLet QW nm (CSort 0) (CGlob ifaceG)
   pure (ctx', wrap)
 
+-- | Effect-label resolution (§18.1): a §9.3.1.1 lexically scoped effect in
+-- 'ctxEffLabels' wins; otherwise a module-level (top-level) @effect@
+-- declaration in 'csModEffLabels' is visible everywhere in the module.
+lookupEffLabelM :: Ctx -> Text -> CheckM (Maybe EffLabelInfo)
+lookupEffLabelM ctx nm = case Map.lookup nm (ctxEffLabels ctx) of
+  Just e -> pure (Just e)
+  Nothing -> gets (Map.lookup nm . csModEffLabels)
+
+-- | The scoped (§9.3.1.1) and top-level (§18.1) effect labels visible here,
+-- merged (scoped wins), for use in pure pattern guards.
+effMerged :: Ctx -> CheckM (Map Text EffLabelInfo)
+effMerged ctx = gets (\st -> Map.union (ctxEffLabels ctx) (csModEffLabels st))
+
+-- | §18.1: elaborate a TOP-LEVEL @effect@ declaration. Like a scoped effect
+-- it mints an opaque interface type + label value and computes the operation
+-- signatures, but it registers them as module globals and records the
+-- interface in 'csModEffLabels' (visible module-wide) and the type name in
+-- the import scope, rather than as a lexically scoped local.
+elabTopEffect :: EffectDecl -> Span -> CheckM ()
+elabTopEffect eff dsp = do
+  let nm = nameText (effName eff)
+  unless (null (effParams eff)) $
+    reportUnsupported dsp "top-level effect parameters"
+  already <- gets (Map.member nm . csModEffLabels)
+  unless already $ do
+    st0 <- get
+    let ifaceG = GName (csModule st0) nm
+        labelG = GName (csModule st0) (nm <> ".label")
+    addGlobal ifaceG (GlobalDef (VSort 0) Nothing False)
+    addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+    -- the effect type name resolves module-wide as its interface type
+    modify' $ \st -> st {csScope = Map.insert nm ifaceG (csScope st)}
+    ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
+      (tyTm, _) <- inferType emptyCtx (eoType op)
+      tyV <- evalIn emptyCtx tyTm >>= forceM
+      case tyV of
+        VPi Expl _ _ dom clo -> do
+          res <- clApp clo (VRigid 0 []) >>= forceM
+          pure
+            ( Just
+                EffOpInfo
+                  { eoiName = nameText (eoName op)
+                  , eoiQ = maybe Q1 (qOf . Just) (eoQuantity op)
+                  , eoiArg = dom
+                  , eoiRes = res
+                  }
+            )
+        _ -> do
+          errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa-hs.effect.operation")
+            "an effect operation signature must elaborate to a function type (§18.1.15)"
+          pure Nothing
+    let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliOps = ops}
+    modify' $ \st -> st {csModEffLabels = Map.insert nm info (csModEffLabels st)}
+
 -- | Effect-row syntax @<[l1 : E1, ... | tail]>@ (§18.1.14): rows are
 -- neutral spines of @__effRowCons label iface rest@.
 elabEffRow :: Ctx -> [(Name, Expr)] -> Maybe Expr -> Span -> CheckM (Term, Value)
 elabEffRow ctx entries mtail _sp = do
-  parts <- fmap catMaybes . forM entries $ \(ln, ifE) ->
-    case Map.lookup (nameText ln) (ctxEffLabels ctx) of
+  parts <- fmap catMaybes . forM entries $ \(ln, ifE) -> do
+    meli <- lookupEffLabelM ctx (nameText ln)
+    case meli of
       Just eli -> do
         ifTm <- check ctx ifE (VSort 0)
         pure (Just (CGlob (eliLabel eli), ifTm))
       Nothing -> do
         errAt (nameSpan ln) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-          ("unresolved effect label '" <> nameText ln <> "' (only §9.3.1.1 scoped effect labels are supported by this implementation)")
+          ("unresolved effect label '" <> nameText ln <> "' (not a scoped (§9.3.1.1) or top-level (§18.1) effect)")
         pure Nothing
   tailTm <- case mtail of
     Nothing -> pure (CGlob (gPrel "__effRowNil"))
@@ -6325,13 +6388,13 @@ splitEffRow labelG row0 = do
 -- target carrier is @Eff r@ for the residual row @r@ in v1.
 elabHandle :: Ctx -> Bool -> Expr -> Expr -> [HandlerCase] -> Span -> CheckM (Term, Value)
 elabHandle ctx deep lblE scrutE cases sp = do
-  let mEli = case lblE of
-        EVar ln -> Map.lookup (nameText ln) (ctxEffLabels ctx)
-        _ -> Nothing
+  mEli <- case lblE of
+    EVar ln -> lookupEffLabelM ctx (nameText ln)
+    _ -> pure Nothing
   case mEli of
     Nothing -> do
       errAt (exprSpan lblE) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-        "'handle' requires an effect label in scope (only §9.3.1.1 scoped effect labels are supported by this implementation)"
+        "'handle' requires an effect label in scope (a §9.3.1.1 scoped or §18.1 top-level effect)"
       anyHole ctx
     Just eli -> do
       (scrutTm0, scrutTy0) <- infer ctx scrutE
@@ -9726,8 +9789,14 @@ headerPassIn siglessLets = \case
     tyV <- aliasKind params
     addGlobal g (GlobalDef tyV Nothing False)
   DTrait _ td sp -> headerTrait td sp
-  DEffect _ _ sp ->
-    unsupportedAt sp "effect declarations are accepted syntactically but not elaborated by this implementation"
+  -- §18.1: a top-level (non-scoped) effect declaration registers a
+  -- module-wide effect interface; a `scoped effect` is handled lexically by
+  -- hoistScopedEffects in the block where it appears (so it is skipped here).
+  DEffect mods eff sp
+    | dmScoped mods -> pure ()
+    | effIsLabelDecl eff ->
+        unsupportedAt sp "effect label declarations (effect label l : E)"
+    | otherwise -> elabTopEffect eff sp
   DExpect _ form sp -> headerExpect form sp
   -- §4.4: register the wrapped definition's header like any other; the
   -- assertion prefix only affects termination checking and gating, which
