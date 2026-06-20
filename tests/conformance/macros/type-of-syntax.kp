@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42 2\n"
+
+-- §21.6: `typeOfSyntax s` elaborates the quoted expression s, infers its
+-- type, and reifies that type back to `Syntax Type`. Spliced into a type
+-- annotation position, the reflected type governs the binding.
+module main
+
+val : $(typeOfSyntax '{ 42 })
+let val = 42
+
+listval : $(typeOfSyntax '{ 1 :: 2 :: Nil })
+let listval = 7 :: 8 :: Nil
+
+main : UIO Unit
+let main = printlnString (stringAppend (showInt val) (stringAppend " " (showInt (listLength listval))))

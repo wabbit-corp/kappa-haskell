@@ -457,6 +457,9 @@ builtinState =
       , prim "normalizeSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
       , prim "withSyntaxOrigin" (tyV (piI Q0 "t" tType (tOrigin ~> synT (CVar 1) ~> elabT (synT (CVar 2)))))
       , prim "whnfSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT (CVar 1)))))
+      , -- §21.6 'typeOfSyntax': the type of a quoted expression, reified as
+        -- 'Syntax Type' (forall t. Syntax t -> Elab (Syntax Type))
+        prim "typeOfSyntax" (tyV (piI Q0 "t" tType (synT (CVar 0) ~> elabT (synT tType))))
       , -- §21.6 semantic-reflection convenience queries (elaboration-time;
         -- interpreted by 'Kappa.Check.runElab')
         prim "defEqSyntax"

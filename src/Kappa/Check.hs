@@ -8288,7 +8288,36 @@ spliceSyntaxValue ctx sp tV sv = do
 -- | The §21.6 convenience reflection queries that may be run directly
 -- by the elaborator in ordinary term positions.
 reflQueryNames :: [Text]
-reflQueryNames = ["defEqSyntax", "headSymbolSyntax"]
+reflQueryNames = ["defEqSyntax", "headSymbolSyntax", "typeOfSyntax"]
+
+-- | §21.6: delaborate a first-order TYPE term back to surface syntax (for
+-- 'typeOfSyntax'). Covers the type-expression forms — universes, type
+-- constructors/names, type application (implicit args inferred away),
+-- saturated type-level constructors, and de Bruijn variables (resolved
+-- through the binder stack, then the context). A form that is not a
+-- first-order type expression yields Nothing, so the query fails gracefully
+-- rather than fabricating syntax.
+delaborateType :: Ctx -> Span -> Term -> Maybe Expr
+delaborateType ctx dsp = go []
+  where
+    nm t = Name t dsp
+    go env tm = case tm of
+      CSort _ -> Just (EVar (nm "Type"))
+      CGlob g -> Just (EVar (nm (gnameText g)))
+      CVar i
+        | i < length env -> Just (EVar (nm (env !! i)))
+        | otherwise -> case drop (i - length env) (ctxEntries ctx) of
+            (e : _) -> Just (EVar (nm (ceName e)))
+            [] -> Nothing
+      CApp Impl f _ -> go env f
+      CApp Expl f a -> do
+        fE <- go env f
+        aE <- go env a
+        pure (EApp fE [ArgExplicit aE])
+      CCtor g args -> do
+        argEs <- mapM (go env) args
+        pure (foldl (\acc e -> EApp acc [ArgExplicit e]) (EVar (nm (gnameText g))) argEs)
+      _ -> Nothing
 
 -- | §21.6: the convenience reflection operations are elaboration-time
 -- queries. In an 'Elab'-typed position an application is an ordinary
@@ -8482,6 +8511,30 @@ runElab ctx sp v0 = do
       pure (Right (VPrim "__syntaxOriginV" [VLit (LitStr (T.pack (show osp)))]))
     VPrim "normalizeSyntax" [s] -> pure (Right s)
     VPrim "whnfSyntax" [s] -> pure (Right s)
+    -- §21.6 'typeOfSyntax': elaborate the payload at the current call site,
+    -- infer its type, and reify that type back to a 'Syntax Type' by
+    -- delaborating the inferred type term to surface syntax. The query
+    -- commits no constraints (state restored).
+    VPrim "typeOfSyntax" [s] -> do
+      mq <- graftQuoteV ctx sp s
+      case mq of
+        Nothing -> pure (Left ())
+        Just qs -> do
+          ok <- validateCaptures ctx sp (qsCaptures qs)
+          if not ok
+            then pure (Left ())
+            else do
+              let ctx' = extendHyg ctx (qsCaptures qs)
+              st0 <- get
+              mr <- trySpec (infer ctx' (qsExpr qs))
+              put st0
+              case mr of
+                Nothing -> pure (Left ())
+                Just (_, tyV) -> do
+                  tyTm <- quoteIn ctx' tyV
+                  case delaborateType ctx' (qsSpan qs) tyTm of
+                    Just tyE -> pure (Right (VQuote (QuotedSyntax tyE [] (qsSpan qs)) []))
+                    Nothing -> pure (Left ())
     -- §21.6 'defEqSyntax': elaborate both syntax values at the current
     -- call site and answer the same Boolean that 'defEq' would for the
     -- resulting cores; the query commits no constraints
