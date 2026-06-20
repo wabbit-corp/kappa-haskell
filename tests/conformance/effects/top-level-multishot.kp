@@ -1,0 +1,28 @@
+--! assertNoErrors
+--! assertEval result 21
+
+-- §18.1.17/§18.1: a TOP-LEVEL effect may declare an ω (multi-shot)
+-- operation; a handler clause may then resume the captured continuation
+-- more than once (here twice), exactly as for a §9.3.1.1 scoped effect.
+module main
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+comp : Eff <[Choice : Choice]> Int
+let comp =
+    do
+        let b <- Choice.choose ()
+        if b then 1 else 20
+
+let handled =
+    deep handle Choice comp with
+        case return x -> pure x
+        case choose _ k ->
+            do
+                let l <- k True
+                let r <- k False
+                pure (l + r)
+
+result : Int
+let result = runPure handled

@@ -340,6 +340,18 @@ usageDiagnostics expansions m = concatMap analyzeDecl lets
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
     lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    -- §18.1: top-level effect declarations are visible module-wide, so seed
+    -- the resumption-quantity map with them (a scoped effect adds to it via
+    -- addEffDecls in its block); without this a `return@/k` in a handler of
+    -- a top-level ω-operation would be miscounted as one-shot.
+    topEffOps =
+      Map.fromList
+        [ ( nameText (effName ed)
+          , [(nameText (eoName o), fromMaybe QOne (eoQuantity o)) | o <- effOps ed]
+          )
+        | DEffect _ ed _ <- decls
+        , not (effIsLabelDecl ed)
+        ]
     projs =
       Map.fromList
         [ (nameText n, ProjUse isPlace placeNames yields)
@@ -393,7 +405,7 @@ usageDiagnostics expansions m = concatMap analyzeDecl lets
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs sigTy ld) (S [] False 0)
+          final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs topEffOps sigTy ld) (S [] False 0)
        in if sBail final then [] else reverse (sDiags final)
 
 -- Callee demand for prelude helpers the fixtures rely on.
@@ -608,10 +620,11 @@ analyzeLet ::
   Map Text [(Text, [Text])] ->
   Map Text [(Text, [Maybe Quantity])] ->
   Map Text ProjUse ->
+  Map Text [(Text, Quantity)] ->
   Maybe Expr ->
   LetDef ->
   M ()
-analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
+analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -624,7 +637,7 @@ analyzeLet expansions fns aliases aliasDeps ctors projs msig ld = do
         ELambda {} -> remainingSig (ldBinders ld) sigPs
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = (Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps Map.empty expansions []) {ePendingSig = pendingSig}
+  let env = (Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps effs expansions []) {ePendingSig = pendingSig}
   checkInoutResult msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
