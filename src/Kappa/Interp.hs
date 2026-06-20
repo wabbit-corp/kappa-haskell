@@ -12,8 +12,8 @@ module Kappa.Interp
   , RunResult (..)
   ) where
 
-import Control.Concurrent (forkIO, killThread, threadDelay, throwTo, yield)
-import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, tryPutMVar)
+import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo, yield)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import Data.IORef
@@ -93,17 +93,89 @@ reraiseCauseValue v = case v of
   VCtor (GName _ "Interrupt") [cause] -> throwIO (Interrupt cause)
   _ -> throwIO (CauseReraise v)
 
--- | §18.1.4 spawn a cooperative child fiber: a GHC green thread whose terminal
--- 'Exit' is delivered through a result MVar; the 'VFiber' handle carries its
--- ThreadId (the interrupt target) and that cell (the await target).
-forkFiber :: RT -> Value -> IO Value
-forkFiber rt action = do
+-- | §18.1.7 fiber-local state. A 'FiberRef' is identified by a counter id;
+-- @fiberRefInit@ holds each cell's initial value (the fallback for fibers with
+-- no explicit override) and @fiberLocals@ maps each runtime fiber (a GHC
+-- ThreadId) to its per-cell overrides. A child inherits a snapshot of the
+-- parent's overrides at fork; afterwards the two diverge independently.
+{-# NOINLINE fiberRefCounter #-}
+fiberRefCounter :: IORef Int
+fiberRefCounter = unsafePerformIO (newIORef 0)
+
+{-# NOINLINE fiberRefInit #-}
+fiberRefInit :: IORef (Map.Map Int Value)
+fiberRefInit = unsafePerformIO (newIORef Map.empty)
+
+{-# NOINLINE fiberLocals #-}
+fiberLocals :: IORef (Map.Map ThreadId (Map.Map Int Value))
+fiberLocals = unsafePerformIO (newIORef Map.empty)
+
+-- | The current fiber's value for a fiber-local cell: its override if set,
+-- else the cell's initial value.
+getFiberLocal :: Int -> IO Value
+getFiberLocal rid = do
+  tid <- myThreadId
+  locals <- readIORef fiberLocals
+  case Map.lookup tid locals >>= Map.lookup rid of
+    Just v -> pure v
+    Nothing -> Map.findWithDefault unitV rid <$> readIORef fiberRefInit
+
+-- | Set the current fiber's override for a cell (other cells untouched).
+setFiberLocal :: Int -> Value -> IO ()
+setFiberLocal rid v = do
+  tid <- myThreadId
+  modifyIORef' fiberLocals (Map.insertWith Map.union tid (Map.singleton rid v))
+
+-- | Spawn a fiber thread that ALWAYS records its terminal 'Exit' into a fresh
+-- MVar, returning the thread id and that cell. The child starts with async
+-- exceptions masked and only unmasks inside the 'try' (via 'forkIOWithUnmask'),
+-- so an interruption delivered before the handler is installed is still caught
+-- and recorded as @Failure (Interrupt …)@ — otherwise the thread could die
+-- before filling the cell and a waiter would block forever. The child also
+-- inherits a snapshot of the parent's fiber-local overrides (§18.1.7).
+spawnExit :: RT -> Value -> IO (ThreadId, MVar Value)
+spawnExit rt action = do
+  parentTid <- myThreadId
+  snap <- Map.findWithDefault Map.empty parentTid <$> readIORef fiberLocals
   mv <- newEmptyMVar
-  tid <- forkIO $ do
-    r <- try (runIOValue rt action) :: IO (Either SomeException Value)
+  tid <- forkIOWithUnmask $ \unmask -> do
+    childTid <- myThreadId
+    modifyIORef' fiberLocals (Map.insert childTid snap)
+    r <- try (unmask (runIOValue rt action)) :: IO (Either SomeException Value)
     _ <- tryPutMVar mv (exitOf r)
     pure ()
-  pure (VFiber tid mv)
+  pure (tid, mv)
+
+-- | §18.1.4 spawn a cooperative child fiber as a 'VFiber' handle: the ThreadId
+-- is the interrupt target, the MVar the await target.
+forkFiber :: RT -> Value -> IO Value
+forkFiber rt action = uncurry VFiber <$> spawnExit rt action
+
+-- | Deliver a structured interruption to a fiber and block until it has
+-- terminated and its finalizers have run (§18.1.4) — by reading its result
+-- cell, which 'spawnExit' always fills. The 'yield' first hands the agent to
+-- the target so it can reach its interruptible point inside the fork driver's
+-- 'try' before the interrupt arrives; combined with the masked setup in
+-- 'spawnExit', this guarantees the interrupt is caught and recorded rather than
+-- killing a not-yet-started fiber before it can fill its cell.
+interruptWait :: ThreadId -> MVar Value -> Value -> IO ()
+interruptWait tid mv cause = do
+  yield
+  throwTo tid (Interrupt cause)
+  _ <- readMVar mv
+  pure ()
+
+-- | §18.1.8 shut a supervision scope down: interrupt every still-live attached
+-- fiber with tag @ScopeShutdown@ and wait until each has terminated. Idempotent
+-- — the registry is emptied first, so a repeat shutdown finds nothing.
+shutdownScopeReg :: IORef [Value] -> IO ()
+shutdownScopeReg reg = do
+  fibers <- readIORef reg
+  writeIORef reg []
+  mapM_ interruptAndWait fibers
+  where
+    interruptAndWait (VFiber tid mv) = interruptWait tid mv (interruptCause "ScopeShutdown")
+    interruptAndWait _ = pure ()
 
 -- | The signed nanosecond magnitude of a (forced) Duration/Instant value
 -- (§18.1.6 — both are monotonic nanosecond integers at runtime).
@@ -514,7 +586,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- and all its finalizers have run (readMVar on its result cell); the fork
   -- form returns immediately.
   ("__interruptWait", [cause, VFiber tid mv]) ->
-    throwTo tid (Interrupt cause) >> readMVar mv >> pure unitV
+    interruptWait tid mv cause >> pure unitV
   ("__interruptNoWait", [cause, VFiber tid _]) ->
     throwTo tid (Interrupt cause) >> pure unitV
   -- §18.1.5 cede: yield to the scheduler (also an interruption point — GHC
@@ -547,11 +619,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     if ns <= 0
       then pure (VCtor (prelG "TOTimedOut") [])
       else do
-        mv <- newEmptyMVar
-        tid <- forkIO $ do
-          r <- try (runIOValue rt action) :: IO (Either SomeException Value)
-          _ <- tryPutMVar mv (exitOf r)
-          pure ()
+        (tid, mv) <- spawnExit rt action
         timer <- forkIO $ do
           threadDelay (nanosToMicros ns)
           throwTo tid (Interrupt (interruptCause "TimedOut"))
@@ -565,21 +633,13 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- wins, the loser is interrupted with tag RaceLost and race waits for it to
   -- terminate. The left branch wins ties.
   ("__race", [leftIO, rightIO]) -> do
-    lmv <- newEmptyMVar
-    rmv <- newEmptyMVar
+    (ltid, lmv) <- spawnExit rt leftIO
+    (rtid, rmv) <- spawnExit rt rightIO
+    -- notifier threads report which branch terminated first (they only read
+    -- the always-filled result cells, so they cannot deadlock).
     resMV <- newEmptyMVar
-    ltid <- forkIO $ do
-      r <- try (runIOValue rt leftIO) :: IO (Either SomeException Value)
-      let ex = exitOf r
-      putMVar lmv ex
-      _ <- tryPutMVar resMV (True, ex)
-      pure ()
-    rtid <- forkIO $ do
-      r <- try (runIOValue rt rightIO) :: IO (Either SomeException Value)
-      let ex = exitOf r
-      putMVar rmv ex
-      _ <- tryPutMVar resMV (False, ex)
-      pure ()
+    _ <- forkIO (readMVar lmv >>= \ex -> tryPutMVar resMV (True, ex) >> pure ())
+    _ <- forkIO (readMVar rmv >>= \ex -> tryPutMVar resMV (False, ex) >> pure ())
     (isLeft, ex) <- readMVar resMV
     if isLeft
       then do
@@ -590,6 +650,41 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
         throwTo ltid (Interrupt (interruptCause "RaceLost"))
         _ <- readMVar lmv
         pure (VCtor (prelG "RORight") [ex])
+  -- §18.1.8 explicit supervision scopes. A scope is a registry of attached
+  -- fibers; forkIn attaches, shutdownScope interrupts + drains them, and
+  -- withScope brackets a fresh scope with masked shutdown on every exit.
+  ("newScope", _) -> VScope <$> newIORef []
+  ("forkIn", [VScope reg, action]) -> do
+    fib <- forkFiber rt action
+    modifyIORef' reg (fib :)
+    pure fib
+  ("shutdownScope", [VScope reg]) -> shutdownScopeReg reg >> pure unitV
+  ("withScope", [useFn]) -> do
+    reg <- newIORef []
+    r <- try (runIOValue rt (vapp ec useFn Expl (VScope reg))) :: IO (Either SomeException Value)
+    shutdownScopeReg reg
+    either throwIO pure r
+  -- §18.1.8 monitors: a non-destructive observer of a fiber's terminal Exit
+  -- (the result cell is read, not consumed, so monitoring is independent of
+  -- awaiting). demonitor drops the observation.
+  ("monitor", [VFiber _ mv]) -> pure (VMVar mv)
+  ("awaitMonitor", [VMVar mv]) -> readMVar mv
+  ("demonitor", [_]) -> pure unitV
+  -- §18.1.7 fiber-local state.
+  ("newFiberRef", [v]) -> do
+    rid <- atomicModifyIORef' fiberRefCounter (\n -> (n + 1, n))
+    modifyIORef' fiberRefInit (Map.insert rid v)
+    pure (VFiberRef rid)
+  ("getFiberRef", [VFiberRef rid]) -> getFiberLocal rid
+  ("setFiberRef", [VFiberRef rid, v]) -> setFiberLocal rid v >> pure unitV
+  -- locallyFiberRef installs a value for the dynamic extent of the body and
+  -- restores the previous value on every exit (a masked finalizer).
+  ("locallyFiberRef", [VFiberRef rid, v, body]) -> do
+    old <- getFiberLocal rid
+    setFiberLocal rid v
+    r <- try (runIOValue rt body) :: IO (Either SomeException Value)
+    setFiberLocal rid old
+    either throwIO pure r
   -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
   -- transaction directly (no concurrent agent ⇒ trivially serializable);
   -- `retry`/`check False`/`stmAbort` abort the transaction.

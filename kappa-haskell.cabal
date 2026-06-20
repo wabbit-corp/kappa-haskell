@@ -87,7 +87,12 @@ executable kappa
     hs-source-dirs:   app
     default-language: GHC2021
     default-extensions: LambdaCase, OverloadedStrings
-    ghc-options:      -rtsopts "-with-rtsopts=-K64m"
+    -- §18.1 concurrency runtime: the threaded RTS pinned to a single
+    -- capability (-N1) realizes the single runtime agent (§18.1.5 cooperative
+    -- realization) while giving a scheduler/IO-manager that delivers cross-fiber
+    -- throwTo, MVar wakeups, and timers reliably (the non-threaded RTS can mis-
+    -- fire the deadlock detector on a throwTo immediately followed by a wait).
+    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N1 -K64m"
 
 test-suite kappa-test
     import:           warnings, deps
@@ -97,6 +102,6 @@ test-suite kappa-test
     hs-source-dirs:   test
     default-language: GHC2021
     default-extensions: LambdaCase, OverloadedStrings
-    -- same RTS stack limit as the executable, so deep-recursion fixtures
-    -- behave identically under 'cabal test' and the CLI
-    ghc-options:      -rtsopts "-with-rtsopts=-K64m"
+    -- same RTS settings as the executable (single-capability threaded runtime,
+    -- 64m stack), so in-process fixtures behave identically to the CLI
+    ghc-options:      -threaded -rtsopts "-with-rtsopts=-N1 -K64m"

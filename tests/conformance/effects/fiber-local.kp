@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n42\n5\n42\n"
+
+-- §18.1.7 fiber-local state: a child inherits a snapshot of the parent's
+-- values at fork and then diverges independently; locallyFiberRef installs a
+-- value for a dynamic extent and restores it on exit.
+module main
+
+child : FiberRef Int -> UIO Int
+let child ref = do
+    v <- getFiberRef ref
+    setFiberRef ref 99
+    ioPure v
+
+probe : FiberRef Int -> UIO Int
+let probe ref = getFiberRef ref
+
+main : UIO Unit
+let main = do
+    ref <- newFiberRef 7
+    setFiberRef ref 42
+    f <- fork (child ref)
+    inherited <- await f
+    match inherited
+      case Success v -> printlnString (showInt v)
+      case Failure c -> printlnString "fail"
+    mine <- getFiberRef ref
+    printlnString (showInt mine)
+    during <- locallyFiberRef ref 5 (probe ref)
+    printlnString (showInt during)
+    after <- getFiberRef ref
+    printlnString (showInt after)

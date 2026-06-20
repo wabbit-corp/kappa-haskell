@@ -93,6 +93,9 @@ builtinState =
       , (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
       , (prel "TVar", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
       , (prel "Promise", opaqueTy (tyV (tType ~> tType ~> tType))) -- §18.11 one-shot promise
+      , (prel "Scope", opaqueTy (tyV tType)) -- §18.1.8 explicit supervision scope
+      , (prel "Monitor", opaqueTy (tyV (tType ~> tType ~> tType))) -- §18.1.8 fiber monitor
+      , (prel "FiberRef", opaqueTy (tyV (tType ~> tType))) -- §18.1.7 fiber-local cell
       , (prel "Thunk", opaqueTy (tyV (tType ~> tType)))
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
@@ -444,6 +447,43 @@ builtinState =
             (io (CVar 4) (CVar 2) ~> io (CVar 4) (CVar 2)
               ~> io (CVar 2)
                    (CApp Expl (CApp Expl (CApp Expl (CApp Expl (tcon "RaceOutcome") (CVar 6)) (CVar 5)) (CVar 4)) (CVar 3)))))))))
+      , -- §18.1.8 explicit supervision scopes.
+        prim "newScope" (tyV (io (tcon "Void") (tcon "Scope")))
+      , -- forall e a. Scope -> IO e a -> UIO (Fiber e a)
+        prim "forkIn"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+            (tcon "Scope" ~> io (CVar 2) (CVar 1)
+              ~> io (tcon "Void") (CApp Expl (CApp Expl (tcon "Fiber") (CVar 3)) (CVar 2))))))
+      , prim "shutdownScope" (tyV (tcon "Scope" ~> io (tcon "Void") tUnit))
+      , -- forall e a. (Scope -> IO e a) -> IO e a
+        prim "withScope"
+          (tyV (forallEA
+            ((tcon "Scope" ~> io (CVar 2) (CVar 1)) ~> io (CVar 2) (CVar 1))))
+      , -- §18.1.8 monitors. forall e a. Fiber e a -> UIO (Monitor e a)
+        prim "monitor"
+          (tyV (forallEA
+            (CApp Expl (CApp Expl (tcon "Fiber") (CVar 1)) (CVar 0)
+              ~> io (tcon "Void") (CApp Expl (CApp Expl (tcon "Monitor") (CVar 2)) (CVar 1)))))
+      , prim "awaitMonitor"
+          (tyV (forallEA
+            (CApp Expl (CApp Expl (tcon "Monitor") (CVar 1)) (CVar 0)
+              ~> io (tcon "Void") (CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1)))))
+      , prim "demonitor"
+          (tyV (forallEA
+            (CApp Expl (CApp Expl (tcon "Monitor") (CVar 1)) (CVar 0) ~> io (tcon "Void") tUnit)))
+      , -- §18.1.7 fiber-local state. forall a. a -> UIO (FiberRef a)
+        prim "newFiberRef"
+          (tyV (piI Q0 "a" tType (CVar 0 ~> io (tcon "Void") (CApp Expl (tcon "FiberRef") (CVar 1)))))
+      , prim "getFiberRef"
+          (tyV (piI Q0 "a" tType (CApp Expl (tcon "FiberRef") (CVar 0) ~> io (tcon "Void") (CVar 1))))
+      , prim "setFiberRef"
+          (tyV (piI Q0 "a" tType
+            (CApp Expl (tcon "FiberRef") (CVar 0) ~> CVar 1 ~> io (tcon "Void") tUnit)))
+      , -- forall e a b. FiberRef a -> a -> IO e b -> IO e b
+        prim "locallyFiberRef"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "b" tType
+            (CApp Expl (tcon "FiberRef") (CVar 1) ~> CVar 2
+              ~> io (CVar 4) (CVar 2) ~> io (CVar 5) (CVar 3))))))
       , prim "throwIO" (tyV (forallEA (CVar 1 ~> io (CVar 2) (CVar 1))))
       , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))

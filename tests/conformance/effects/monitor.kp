@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n5\n"
+
+-- §18.1.8 monitors observe a fiber's terminal Exit non-destructively, so a
+-- later await still sees the same result.
+module main
+
+worker : UIO Int
+let worker = ioPure 5
+
+emit : forall (e : Type). Exit e Int -> UIO Unit
+let emit ex =
+    match ex
+    case Success v -> printlnString (showInt v)
+    case Failure c -> printlnString "fail"
+
+main : UIO Unit
+let main = do
+    f <- fork worker
+    m <- monitor f
+    e1 <- awaitMonitor m
+    emit e1
+    demonitor m
+    e2 <- await f
+    emit e2

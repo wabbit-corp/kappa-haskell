@@ -221,6 +221,8 @@ data Value
   | VRef !(IORef Value) -- ^ runtime mutable cell (MonadRef, §18.6.1)
   | VMVar !(MVar Value) -- ^ §18.11 one-shot-promise cell (blocking read parks the fiber)
   | VFiber !ThreadId !(MVar Value) -- ^ §18.1.4 fiber handle: interrupt target (ThreadId) + terminal-Exit cell
+  | VScope !(IORef [Value]) -- ^ §18.1.8 explicit supervision scope: registry of attached fibers
+  | VFiberRef !Int -- ^ §18.1.7 fiber-local cell identity (per-fiber values live in the runtime registry)
   | VTVar !(TVar Value) -- ^ §18.1.13 STM transactional variable
   | VIOAction !Text ![Value] -- ^ suspended IO primitive application
   | VQuote !QuotedSyntax ![Value] -- ^ §21.1 syntax value: payload + slot values (grafted lazily)
