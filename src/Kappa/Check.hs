@@ -379,14 +379,18 @@ data Ctx = Ctx
 data EffLabelInfo = EffLabelInfo
   { eliLabel :: !GName -- ^ effect-label value identity (§18.1.18)
   , eliIface :: !GName -- ^ effect-interface type constructor
+  , eliParams :: ![(Text, Term)]
+  -- ^ §18.1.15 effect type parameters (outermost-first; each kind 'Term' is
+  -- de Bruijn under the preceding parameters). Empty for an unparameterized
+  -- effect; non-empty for e.g. @effect State (s : Type)@.
   , eliOps :: ![EffOpInfo]
   }
 
 data EffOpInfo = EffOpInfo
   { eoiName :: !Text
   , eoiQ :: !Q -- ^ declared resumption quantity (§18.1.16)
-  , eoiArg :: !Value -- ^ payload type (v1: one explicit parameter)
-  , eoiRes :: !Value -- ^ declared result type
+  , eoiArgT :: !Term -- ^ payload type, de Bruijn UNDER the effect's parameters
+  , eoiResT :: !Term -- ^ declared result type, de Bruijn under the parameters
   }
 
 emptyCtx :: Ctx
@@ -6338,47 +6342,75 @@ elabScopedEffectLabel ctx eff dsp = do
         ("'scoped effect " <> lblName <> " : E' requires E to be a named effect in scope (§18.1.15)")
       pure ctx
 
-elabScopedEffect :: Ctx -> EffectDecl -> Span -> CheckM (Ctx, Term -> Term)
-elabScopedEffect ctx eff dsp = do
-  let nm = nameText (effName eff)
-  unless (null (effParams eff)) $
-    reportUnsupported dsp "scoped effect parameters"
-  st0 <- get
-  suffix <- freshNameM "#eff"
-  let ifaceG = GName (csModule st0) (nm <> suffix)
-      labelG = GName (csModule st0) (nm <> suffix <> ".label")
-  -- the interface is an opaque local type constructor; the label is an
-  -- opaque value of type EffLabel whose identity is its global name
-  -- (§18.1.18 handler matching is by label identity)
-  addGlobal ifaceG (GlobalDef (VSort 0) Nothing False)
-  addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
-  -- §18.1.18: native string-token identity for the label (see elabTopEffect).
-  recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
+-- | §18.1.15 effect type parameters (e.g. @effect State (s : Type)@): bind
+-- each parameter as a local in @ctx@ (so later parameters and the operation
+-- signatures may reference earlier ones) and collect the @(name, kind)@ pairs,
+-- each kind being de Bruijn under the preceding parameters.
+elabEffParams :: Ctx -> [Binder] -> CheckM (Ctx, [(Text, Term)])
+elabEffParams ctx [] = pure (ctx, [])
+elabEffParams ctx (b : bs) = do
+  let nm = maybe "_" nameText (bName b)
+  kT <- case binderTypeExpr b of
+    Just e -> fst <$> inferType ctx e
+    Nothing -> pure (CSort 0)
+  kV <- evalIn ctx kT
+  (ctxF, rest) <- elabEffParams (bindCtx nm False kV ctx) bs
+  pure (ctxF, (nm, kT) : rest)
+
+-- | Elaborate an effect interface's parameters and operations (§18.1.15),
+-- shared by the top-level and scoped forms. Returns the parameter binders, the
+-- interface kind term (@k0 -> … -> Type@, just @Type@ when unparameterized),
+-- and the operation metadata (each operation's payload/result type quoted
+-- under the parameter binders).
+elabEffInterface :: Ctx -> EffectDecl -> CheckM ([(Text, Term)], Term, [EffOpInfo])
+elabEffInterface ctx eff = do
+  (ctxP, params) <- elabEffParams ctx (effParams eff)
+  let ifaceKindTm = foldr (\(nm, kT) acc -> CPi Expl Q0 nm kT acc) (CSort 0) params
   ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
-    (tyTm, _) <- inferType ctx (eoType op)
-    tyV <- evalIn ctx tyTm >>= forceM
+    (tyTm, _) <- inferType ctxP (eoType op)
+    tyV <- evalIn ctxP tyTm >>= forceM
     case tyV of
       VPi Expl _ _ dom clo -> do
-        res <- clApp clo (VRigid (ctxLen ctx) []) >>= forceM
+        res <- clApp clo (VRigid (ctxLen ctxP) []) >>= forceM
+        argT <- quoteIn ctxP dom
+        resT <- quoteIn ctxP res
         pure
           ( Just
               EffOpInfo
                 { eoiName = nameText (eoName op)
                 , eoiQ = maybe Q1 (qOf . Just) (eoQuantity op) -- §18.1.17 one-shot default
-                , eoiArg = dom
-                , eoiRes = res
+                , eoiArgT = argT
+                , eoiResT = resT
                 }
           )
       _ -> do
         errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa-hs.effect.operation")
           "an effect operation signature must elaborate to a function type (§18.1.15)"
         pure Nothing
-  let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliOps = ops}
+  pure (params, ifaceKindTm, ops)
+
+elabScopedEffect :: Ctx -> EffectDecl -> Span -> CheckM (Ctx, Term -> Term)
+elabScopedEffect ctx eff _dsp = do
+  let nm = nameText (effName eff)
+  st0 <- get
+  suffix <- freshNameM "#eff"
+  let ifaceG = GName (csModule st0) (nm <> suffix)
+      labelG = GName (csModule st0) (nm <> suffix <> ".label")
+  (params, ifaceKindTm, ops) <- elabEffInterface ctx eff
+  ifaceKindV <- evalIn ctx ifaceKindTm
+  -- the interface is a (possibly parameterized) local type constructor; the
+  -- label is an opaque value of type EffLabel whose identity is its global
+  -- name (§18.1.18 handler matching is by label identity)
+  addGlobal ifaceG (GlobalDef ifaceKindV Nothing False)
+  addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+  -- §18.1.18: native string-token identity for the label (see elabTopEffect).
+  recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
+  let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliParams = params, eliOps = ops}
       ctx' =
-        (bindCtxLet nm False (VSort 0) (VGlobN ifaceG []) ctx)
+        (bindCtxLet nm False ifaceKindV (VGlobN ifaceG []) ctx)
           { ctxEffLabels = Map.insert nm info (ctxEffLabels ctx)
           }
-      wrap = CLet QW nm (CSort 0) (CGlob ifaceG)
+      wrap = CLet QW nm ifaceKindTm (CGlob ifaceG)
   pure (ctx', wrap)
 
 -- | Effect-label resolution (§18.1): a §9.3.1.1 lexically scoped effect in
@@ -6405,44 +6437,26 @@ effMerged ctx = gets (\st -> Map.union (ctxEffLabels ctx) (csModEffLabels st))
 -- interface in 'csModEffLabels' (visible module-wide) and the type name in
 -- the import scope, rather than as a lexically scoped local.
 elabTopEffect :: EffectDecl -> Span -> CheckM ()
-elabTopEffect eff dsp = do
+elabTopEffect eff _dsp = do
   let nm = nameText (effName eff)
-  unless (null (effParams eff)) $
-    reportUnsupported dsp "top-level effect parameters"
   already <- gets (Map.member nm . csModEffLabels)
   unless already $ do
     st0 <- get
     let ifaceG = GName (csModule st0) nm
         labelG = GName (csModule st0) (nm <> ".label")
-    addGlobal ifaceG (GlobalDef (VSort 0) Nothing False)
+    (params, ifaceKindTm, ops) <- elabEffInterface emptyCtx eff
+    ifaceKindV <- evalIn emptyCtx ifaceKindTm
+    addGlobal ifaceG (GlobalDef ifaceKindV Nothing False)
     addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
     -- §18.1.18: the label's runtime identity is its (unique) global name.
     -- The interpreter uses the neutral global; the native backend has no
     -- neutral globals, so record a string-token core body for it (label
     -- equality in the native effect runtime is string equality).
     recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
-    -- the effect type name resolves module-wide as its interface type
+    -- the effect type name resolves module-wide as its interface (type
+    -- constructor when parameterized, §18.1.15)
     modify' $ \st -> st {csScope = Map.insert nm ifaceG (csScope st)}
-    ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
-      (tyTm, _) <- inferType emptyCtx (eoType op)
-      tyV <- evalIn emptyCtx tyTm >>= forceM
-      case tyV of
-        VPi Expl _ _ dom clo -> do
-          res <- clApp clo (VRigid 0 []) >>= forceM
-          pure
-            ( Just
-                EffOpInfo
-                  { eoiName = nameText (eoName op)
-                  , eoiQ = maybe Q1 (qOf . Just) (eoQuantity op)
-                  , eoiArg = dom
-                  , eoiRes = res
-                  }
-            )
-        _ -> do
-          errAt (eoSpan op) "E_EFFECT_OP_SIGNATURE" (Just "kappa-hs.effect.operation")
-            "an effect operation signature must elaborate to a function type (§18.1.15)"
-          pure Nothing
-    let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliOps = ops}
+    let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliParams = params, eliOps = ops}
     modify' $ \st -> st {csModEffLabels = Map.insert nm info (csModEffLabels st)}
 
 -- | §18.1.15: a top-level @effect label l : E@ mints a fresh effect label
@@ -6508,23 +6522,38 @@ nonDepPiV q dom cod = VPi Expl q "_" dom (Closure [cod] (CVar 1))
 effTyV :: Value -> Value -> Value
 effTyV row a = VGlobN (gPrel "Eff") [(Expl, row), (Expl, a)]
 
--- | The one-entry row @<[l : E]>@ of a scoped effect, as a value.
-selfRowV :: EffLabelInfo -> Value
-selfRowV eli =
-  VGlobN
-    (gPrel "__effRowCons")
-    [ (Expl, VGlobN (eliLabel eli) [])
-    , (Expl, VGlobN (eliIface eli) [])
-    , (Expl, VGlobN (gPrel "__effRowNil") [])
-    ]
+-- | Instantiate an operation's payload and result types at concrete effect
+-- parameter VALUES (outer-to-inner). The stored types are de Bruijn under the
+-- parameter binders, so the eval environment lists the parameters
+-- innermost-first.
+instOpTypes :: EvalCtx -> [Value] -> EffOpInfo -> (Value, Value)
+instOpTypes ec ps op =
+  let env = reverse ps
+   in (eval ec env (eoiArgT op), eval ec env (eoiResT op))
 
--- | An operation selection @label.op@ (§18.1.15): a first-class value of
--- type @argTy -> Eff <[label : E]> resTy@ that builds the §30.2.2.7
--- OpCall tree node with the identity continuation.
+-- | An operation selection @label.op@ (§18.1.15): a first-class value of type
+-- @forall params. argTy -> Eff <[label : E params]> resTy@ that builds the
+-- §30.2.2.7 OpCall tree node with the identity continuation. For an
+-- unparameterized effect (@params = []@) this is just @argTy -> Eff <[label :
+-- E]> resTy@.
 effOpSelection :: EffLabelInfo -> EffOpInfo -> CheckM (Term, Value)
 effOpSelection eli op = do
-  let ty = nonDepPiV QW (eoiArg op) (effTyV (selfRowV eli) (eoiRes op))
-      tm =
+  let params = eliParams eli
+      n = length params
+      -- the interface applied to the parameter variables; @extra@ counts
+      -- binders introduced after the parameters (the operation's arg binder).
+      ifaceApp extra =
+        foldl (\f i -> CApp Expl f (CVar (n - 1 - i + extra)))
+          (CGlob (eliIface eli)) [0 .. n - 1]
+      rowT extra =
+        CApp Expl
+          (CApp Expl (CApp Expl (CGlob (gPrel "__effRowCons")) (CGlob (eliLabel eli))) (ifaceApp extra))
+          (CGlob (gPrel "__effRowNil"))
+      -- under the arg binder (+1): row + result refer to params shifted by 1
+      effCod = CApp Expl (CApp Expl (CGlob (gPrel "Eff")) (rowT 1)) (shiftTerm 1 0 (eoiResT op))
+      bodyTy = CPi Expl QW "__x" (eoiArgT op) effCod
+      tyTerm = foldr (\(nm, kT) acc -> CPi Impl Q0 nm kT acc) bodyTy params
+      opBody =
         CLam Expl QW "__x" $
           CCtor
             (gPrel "__EffOp")
@@ -6533,7 +6562,9 @@ effOpSelection eli op = do
             , CVar 0
             , CLam Expl Q1 "__r" (CCtor (gPrel "__EffPure") [CVar 0])
             ]
-  pure (tm, ty)
+      tm = foldr (\(nm, _) acc -> CLam Impl Q0 nm acc) opBody params
+  tyV <- evalIn emptyCtx tyTerm
+  pure (tm, tyV)
 
 -- | Split an effect-row value at a label: the matching interface and
 -- the residual row (§18.1.21 SplitEff, by §18.1.18 label identity).
@@ -6573,12 +6604,21 @@ elabHandle ctx deep lblE scrutE cases sp = do
       case scrutTy of
         VGlobN (GName _ "Eff") [(_, row), (_, aT)] -> do
           msplit <- splitEffRow (eliLabel eli) row
-          residual <- case msplit of
-            Just (_, rest) -> pure rest
+          -- the matched interface fixes the effect's type parameters (§18.1.15):
+          -- @<[l : State Int]>@ gives @State Int@, so the parameters are @[Int]@.
+          (residual, paramVs) <- case msplit of
+            Just (ifaceV0, rest) -> do
+              ifaceV <- forceM ifaceV0
+              let ps = case ifaceV of
+                    VGlobN g spn | g == eliIface eli -> map snd spn
+                    _ -> []
+              pure (rest, ps)
             Nothing -> do
               errAt (exprSpan scrutE) "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row-mismatch")
                 "the handled computation's effect row does not contain the handled label (§18.1.21)"
-              pure (VGlobN (gPrel "__effRowNil") [])
+              pure (VGlobN (gPrel "__effRowNil") [], [])
+          ecH <- ec_
+          let opTypes op = instOpTypes ecH paramVs op
           bT <- freshMetaV ctx
           let resultTy = effTyV residual bT
           -- exactly one return clause (§18.1.21)
@@ -6612,12 +6652,15 @@ elabHandle ctx deep lblE scrutE cases sp = do
                   _ -> do
                     reportUnsupported csp "effect operations with other than one parameter"
                     pure (PWild csp)
+                -- the operation's payload/result types at the effect's actual
+                -- type parameters (§18.1.15)
+                let (opArgV, opResV) = opTypes op
                 -- shallow k resumes in the unhandled carrier; deep k is
                 -- already re-handled (§18.1.21/§18.1.22)
                 let kTy
-                      | deep = nonDepPiV Q1 (eoiRes op) resultTy
-                      | otherwise = nonDepPiV Q1 (eoiRes op) (effTyV row aT)
-                lam <- handlerClauseLam ctx QW argPat (eoiArg op) $ \cArg -> do
+                      | deep = nonDepPiV Q1 opResV resultTy
+                      | otherwise = nonDepPiV Q1 opResV (effTyV row aT)
+                lam <- handlerClauseLam ctx QW argPat opArgV $ \cArg -> do
                   let cK = bindCtx (nameText kn) False kTy cArg
                   inner <- check cK body resultTy
                   pure (CLam Expl (eoiQ op) (nameText kn) inner)

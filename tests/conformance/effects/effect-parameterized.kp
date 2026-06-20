@@ -1,0 +1,29 @@
+--! assertNoErrors
+--! assertEval result 20
+
+-- §18.1.15: a parameterized effect interface `effect State (s : Type)`. The
+-- type parameter `s` appears in the operation signatures; it is fixed by the
+-- applied interface in the effect row (`<[State : State Int]>` ⇒ s = Int) and
+-- threaded through operation selection and handler clause typing.
+module main
+
+effect State (s : Type) =
+    1 get : Unit -> s
+    1 put : s -> Unit
+
+comp : Eff <[State : State Int]> Int
+let comp =
+    do
+        let a <- State.get ()
+        let _ <- State.put 5
+        let b <- State.get ()
+        pure (addInt a b)
+
+let handled =
+    deep handle State comp with
+        case return x -> pure x
+        case get u k -> k 10
+        case put v k -> k ()
+
+result : Int
+let result = runPure handled

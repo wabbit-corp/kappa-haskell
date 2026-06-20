@@ -1,0 +1,26 @@
+--! assertNoErrors
+--! assertEval result "ab1"
+
+-- §18.1.15: a multi-parameter effect interface (two type parameters). Each
+-- parameter is fixed by the applied interface `TwoP String Int` in the row.
+module main
+
+effect TwoP (a : Type) (b : Type) =
+    1 left : Unit -> a
+    1 right : Unit -> b
+
+comp : Eff <[TwoP : TwoP String Int]> String
+let comp =
+    do
+        let s <- TwoP.left ()
+        let n <- TwoP.right ()
+        pure (s ++ showInt n)
+
+let handled =
+    deep handle TwoP comp with
+        case return x -> pure x
+        case left u k -> k "ab"
+        case right u k -> k 1
+
+result : String
+let result = runPure handled
