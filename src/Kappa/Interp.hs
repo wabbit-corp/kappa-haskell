@@ -473,6 +473,17 @@ runScope rt reg0 selfLabel env0 items0 = do
           releaseFn <- evalK rt env releaseT
           modifyIORef' exitsRef ((() <$ runIOValue rt (vapp ec releaseFn Expl resource)) :)
           bindOrDie pat resource $ \bs -> go (reverse bs ++ env) rest
+        -- §18.8.3.1: a transparent nested do-scope. It runs as a child scope
+        -- (its own exit-action frame and label) sharing the current label
+        -- registry @reg@ — so its own `defer` runs at its exit while
+        -- `defer@outerLabel` still reaches the enclosing frame — but any abrupt
+        -- completion (break/continue/return targeting an enclosing construct)
+        -- propagates outward through this scope's own exit unwinding.
+        KSubDo subLbl subItems -> do
+          r <- runScope rt reg subLbl env subItems
+          case r of
+            CplNormal x -> if null rest then leave (CplNormal x) else go env rest
+            other -> leave other
         where
           loopOut r = case r of
             CplNormal _ -> go env rest

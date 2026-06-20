@@ -1998,6 +1998,7 @@ zonkTermM depth0 t0 = do
         KIf alts e -> (KIf [(go d c, goI d b) | (c, b) <- alts] (fmap (goI d) e), d)
         KDefer ml t -> (KDefer ml (go d t), d)
         KUsing p a r -> (KUsing p (go d a) (go d r), d)
+        KSubDo l b -> (KSubDo l (goI d b), d)
       go :: Int -> Term -> Term
       go d = \case
         CMeta m -> case Map.lookup m (ecMetas ec) of
@@ -7642,11 +7643,31 @@ elabDoIOItems mlabel _sp ctx mexp items = do
     wrapTy errT x = case mexp of
       Just (VGlobN (GName _ "STM") _) -> VGlobN (gPrel "STM") [(Expl, x)]
       _ -> ioType errT x
+    -- whether this do-scope is STM-typed (its items are STM actions, not
+    -- IO) — the transparent nested-do path applies only to IO-shaped scopes
+    isStmExpected :: Maybe Value -> Bool
+    isStmExpected (Just (VGlobN (GName _ "STM") _)) = True
+    isStmExpected _ = False
     goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
     goItems loops c errT resT (item : rest) = do
       let lastItem = null rest
       case item of
+        -- §18.8.3.1: a nested `do` block in statement position is a child
+        -- scope that is TRANSPARENT to abrupt completion. Its items are
+        -- elaborated under the SAME lexical completion context (enclosing
+        -- `loops` and `ctxReturnTarget`), so a `break`/`continue`/`return@L`
+        -- inside it that targets an enclosing loop or function resolves and
+        -- propagates outward. (A first-class do VALUE — `let x = do …`, or a
+        -- spliced `!doVal` — stays opaque: it is elaborated through the
+        -- ordinary value path, which resets the completion context.) STM-typed
+        -- do-scopes keep the generic path.
+        DoExpr (EDo innerLbl innerItems _)
+          | not (isStmExpected mexp) -> do
+              aT <- if lastItem then pure resT else freshMetaV c
+              subItems <- goItems loops c errT aT innerItems
+              ks <- goItems loops c errT resT rest
+              pure (KSubDo (nameText <$> innerLbl) subItems : ks)
         DoExpr e -> do
           aT <- if lastItem then pure resT else freshMetaV c
           let eD = desugarBang e
@@ -11403,6 +11424,7 @@ occursGlobal g = go
       KIf alts e -> any (\(c, b) -> go c || any goK b) alts || maybe False (any goK) e
       KDefer _ t -> go t
       KUsing _ a r -> go a || go r
+      KSubDo _ b -> any goK b
       _ -> False
 
 -- Structural-descent verification (§15.3 minimum, direct recursion):

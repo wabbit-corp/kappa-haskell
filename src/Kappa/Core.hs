@@ -182,6 +182,14 @@ data KItem
   | KIf ![(Term, [KItem])] !(Maybe [KItem])
   | KDefer !(Maybe Text) !Term -- ^ defer (Nothing) / defer@label (§18.7)
   | KUsing !CorePat !Term !Term -- ^ pattern, acquire, release-dict-member
+  | -- | A nested @do@ block written in statement position (§18.8.3.1): it runs
+    -- as a child scope — its own optional label, bindings, and LIFO exit
+    -- actions — but it is TRANSPARENT to abrupt completion, so a @break@ /
+    -- @continue@ / @return\@L@ inside it that targets an enclosing loop or
+    -- function (resolved against the inherited lexical context) propagates
+    -- outward. Distinct from a first-class @do@ VALUE (e.g. @let x = do …@),
+    -- which is an opaque computation reached through 'KExpr'/'KBind'.
+    KSubDo !(Maybe Text) ![KItem]
   deriving stock (Eq, Show)
 
 type Telescope = [(Icit, Q, Text, Term)]

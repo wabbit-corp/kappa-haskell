@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "0\n1\n2\nin-inner\ninner-defer\nafter-inner\nbroke\nto-outer\n"
+
+-- §18.8.3.1: a nested `do` block in statement position is transparent to
+-- abrupt completion — `break`/`continue` written inside it (via an explicit
+-- `then do …`) target the enclosing loop — while its own `defer` runs at the
+-- nested scope's exit and `defer@L` still reaches the labeled enclosing scope.
+module main
+
+main : UIO Unit
+let main = outer@do
+    -- break written inside `then do …` targets the enclosing while loop
+    var i = 0
+    while ltInt i 5 do
+        printlnString (showInt i)
+        if eqInt i 2 then do
+            break
+        i = addInt i 1
+    -- nested-do defer scoping
+    inner@do
+        defer (printlnString "inner-defer")
+        defer@outer (printlnString "to-outer")
+        printlnString "in-inner"
+    printlnString "after-inner"
+    printlnString "broke"

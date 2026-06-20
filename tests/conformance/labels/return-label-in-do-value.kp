@@ -1,0 +1,13 @@
+--! assertDiagnostic error E_LABEL_UNRESOLVED
+
+-- §18.5: a first-class do VALUE (`let inner = do …`) is an opaque computation,
+-- NOT a nested statement scope. `return@main` written inside it has no
+-- enclosing function at its definition site (the do-value could be run
+-- anywhere), so it is a compile-time error — unlike a nested do STATEMENT,
+-- which is transparent (labels/return-label-cross-do.kp).
+main : UIO Unit
+let main = do
+    let inner = do
+        return@main ()
+    !inner
+    printlnString "after"

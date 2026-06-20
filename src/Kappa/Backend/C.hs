@@ -2616,6 +2616,10 @@ countLabeledDefers s = sum . map go
     go (KWhile _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
     go (KFor _ _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
     go (KIf alts mels) = sum [countLabeledDefers s b | (_, b) <- alts] + maybe 0 (countLabeledDefers s) mels
+    -- a transparent nested do-statement routes its @defer@s@ to this scope,
+    -- unless it is itself labeled @s@ (then it owns those defers)
+    go (KSubDo subL body) | subL == Just s = 0
+                          | otherwise = countLabeledDefers s body
     go _ = 0
 
 compileItems :: Maybe Text -> ScopeMode -> [KItem] -> Gen ()
@@ -2748,6 +2752,11 @@ compileItems selfLabel mode items0 = do
         | otherwise -> compileKIf alts mels >> go rest
       KWhile ml cond bdy mels -> compileLoop ml (LoopWhile cond) bdy mels >> go rest
       KFor ml pat src bdy mels -> compileLoop ml (LoopFor pat src) bdy mels >> go rest
+      -- §18.8.3.1: a transparent nested do-statement compiles as a Nested child
+      -- scope (its own §18.7 defer frame and label) that inherits the enclosing
+      -- loop/return targets, so break/continue/return inside it propagate
+      -- outward via the same gotoLoop / KReturn unwinding as an inline branch.
+      KSubDo subLbl subItems -> compileItems subLbl Nested subItems >> go rest
       KBreak ml -> gotoLoop ml lcBreak
       KContinue ml -> gotoLoop ml lcContinue
       -- §18 let? : bind the pattern and continue, or run the else block
@@ -3176,6 +3185,7 @@ itemHasClosure item = case item of
   KIf alts mels -> any (\(c, b) -> bodyCapturesEnv c || any itemHasClosure b) alts || maybe False (any itemHasClosure) mels
   KDefer _ t -> bodyCapturesEnv t
   KUsing _ a r -> bodyCapturesEnv a || bodyCapturesEnv r
+  KSubDo _ b -> any itemHasClosure b
   KBreak _ -> False
   KContinue _ -> False
 
