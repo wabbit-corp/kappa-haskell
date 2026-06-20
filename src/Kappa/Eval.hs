@@ -449,6 +449,7 @@ quote ctx lvl v = case forceQ ctx v of
   -- runtime-only values; never legitimately quoted, render opaquely
   VRef _ -> CGlob (GName primModule "__ref")
   VMVar _ -> CGlob (GName primModule "__mvar")
+  VFiber _ _ -> CGlob (GName primModule "__fiber")
   VTVar _ -> CGlob (GName primModule "__tvar")
   VIOAction p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
   VQuote qs slots -> CQuote qs (map (quote ctx lvl) slots)

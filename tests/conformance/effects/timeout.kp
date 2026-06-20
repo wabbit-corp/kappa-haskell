@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "TIMED-OUT\n42\n"
+
+-- §18.1.6 timeout: the timer interrupts a computation that runs too long
+-- (TimedOut → typed Fail Timeout), while a fast computation passes through.
+module main
+
+slowBody : UIO Int
+let slowBody = do
+    sleepFor (seconds 10)
+    ioPure 1
+
+report : forall (e : Type). Exit e Int -> UIO Unit
+let report ex =
+    match ex
+    case Success v -> printlnString (showInt v)
+    case Failure c -> printlnString "TIMED-OUT"
+
+main : UIO Unit
+let main = do
+    f1 <- fork (timeout (millis 20) slowBody)
+    e1 <- await f1
+    report e1
+    f2 <- fork (timeout (seconds 5) (ioPure 42))
+    e2 <- await f2
+    report e2

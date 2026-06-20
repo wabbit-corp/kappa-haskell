@@ -12,8 +12,8 @@ module Kappa.Interp
   , RunResult (..)
   ) where
 
-import Control.Concurrent (forkIO, yield)
-import Control.Concurrent.MVar (newEmptyMVar, readMVar, tryPutMVar)
+import Control.Concurrent (forkIO, killThread, threadDelay, throwTo, yield)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, readMVar, tryPutMVar)
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import Data.IORef
@@ -46,6 +46,89 @@ data RetrySignal = RetrySignal
 instance Show RetrySignal where show _ = "STM retry"
 instance Exception RetrySignal
 
+-- | §18.1.4 fiber interruption / cancellation. Delivered cross-fiber by
+-- 'throwTo' (the target fiber is a GHC green thread); the payload is the
+-- structured §18.1.2 'InterruptCause' value. The target's outermost 'try'
+-- in the fork driver catches it (after its finalizers unwind) and records
+-- @Failure (Interrupt cause)@ as the fiber's terminal Exit.
+newtype Interrupt = Interrupt Value
+instance Show Interrupt where show _ = "fiber interrupt"
+instance Exception Interrupt
+
+-- | A re-raised non-typed runtime cause (§18.1.2 Defect / composite) thrown
+-- back into host execution by 'reraiseCauseValue' / @__reraiseCause@; carries
+-- the original 'Cause' value so 'exitOf' can reconstruct it unchanged.
+newtype CauseReraise = CauseReraise Value
+instance Show CauseReraise where show _ = "reraised cause"
+instance Exception CauseReraise
+
+-- | Build a structured 'InterruptCause' with the given §18.1.2 tag and no
+-- initiating fiber (@by = None@) — the form used by runtime-originated
+-- interruption (timeout's @TimedOut@, race's @RaceLost@).
+interruptCause :: Text -> Value
+interruptCause tag =
+  VCtor (prelG "MkInterruptCause") [VCtor (prelG tag) [], VCtor (prelG "None") []]
+
+-- | The §18.1.2 'Cause' value carried by a host exception that escaped a
+-- fiber/sandbox: typed 'Fail', structured 'Interrupt', a faithfully
+-- round-tripped re-raised cause, or a 'Defect' for any other host failure.
+causeOf :: SomeException -> Value
+causeOf e = case fromException e of
+  Just (KappaError ev) -> VCtor (prelG "Fail") [ev]
+  Nothing -> case fromException e of
+    Just (Interrupt cause) -> VCtor (prelG "Interrupt") [cause]
+    Nothing -> case fromException e of
+      Just (CauseReraise cause) -> cause
+      Nothing ->
+        VCtor (prelG "Defect")
+          [VCtor (prelG "MkDefectInfo") [VLit (LitStr (T.pack (show e)))]]
+
+-- | Re-raise a §18.1.2 'Cause' value back into host execution: typed 'Fail'
+-- becomes a 'KappaError'; every non-typed cause (Interrupt/Defect/composite)
+-- is carried verbatim by 'CauseReraise' so it propagates as the same runtime
+-- cause (§18.1.4 join, §18.1.6 timeout/race, §18.1.2 unsandbox).
+reraiseCauseValue :: Value -> IO a
+reraiseCauseValue v = case v of
+  VCtor (GName _ "Fail") [ev] -> throwIO (KappaError ev)
+  VCtor (GName _ "Interrupt") [cause] -> throwIO (Interrupt cause)
+  _ -> throwIO (CauseReraise v)
+
+-- | §18.1.4 spawn a cooperative child fiber: a GHC green thread whose terminal
+-- 'Exit' is delivered through a result MVar; the 'VFiber' handle carries its
+-- ThreadId (the interrupt target) and that cell (the await target).
+forkFiber :: RT -> Value -> IO Value
+forkFiber rt action = do
+  mv <- newEmptyMVar
+  tid <- forkIO $ do
+    r <- try (runIOValue rt action) :: IO (Either SomeException Value)
+    _ <- tryPutMVar mv (exitOf r)
+    pure ()
+  pure (VFiber tid mv)
+
+-- | The signed nanosecond magnitude of a (forced) Duration/Instant value
+-- (§18.1.6 — both are monotonic nanosecond integers at runtime).
+durationNanos :: Value -> Integer
+durationNanos (VLit (LitInt n)) = n
+durationNanos _ = 0
+
+-- | Convert signed nanoseconds to the microsecond argument 'threadDelay'
+-- expects, rounding up so a sub-microsecond positive duration still parks.
+nanosToMicros :: Integer -> Int
+nanosToMicros ns = fromInteger (max 1 ((ns + 999) `div` 1000))
+
+-- | Whether a (forced) terminal 'Exit' is @Failure (Interrupt cause)@ whose
+-- cause carries the @TimedOut@ tag — i.e. the timer beat the computation.
+exitTimedOut :: EvalCtx -> Value -> Bool
+exitTimedOut ec v = case force ec v of
+  VCtor (GName _ "Failure") [c] -> case force ec c of
+    VCtor (GName _ "Interrupt") [cause] -> case force ec cause of
+      VCtor (GName _ "MkInterruptCause") (tag : _) -> case force ec tag of
+        VCtor (GName _ "TimedOut") _ -> True
+        _ -> False
+      _ -> False
+    _ -> False
+  _ -> False
+
 -- | §18.1.13 cooperative STM wake signal: a monotonic counter bumped by every
 -- 'writeTVar'. A retrying transaction blocks (GHC STM 'retry', which the RTS
 -- suspends the fiber on) until this advances — so another fiber writing a
@@ -59,11 +142,7 @@ globalStmVersion = unsafePerformIO (STM.newTVarIO 0)
 -- parent), Failure (Defect …) for any other host exception.
 exitOf :: Either SomeException Value -> Value
 exitOf (Right v) = VCtor (prelG "Success") [v]
-exitOf (Left e) = case fromException e of
-  Just (KappaError ev) -> VCtor (prelG "Failure") [VCtor (prelG "Fail") [ev]]
-  Nothing ->
-    VCtor (prelG "Failure")
-      [VCtor (prelG "Defect") [VCtor (prelG "MkDefectInfo") [VLit (LitStr (T.pack (show e)))]]]
+exitOf (Left e) = VCtor (prelG "Failure") [causeOf e]
 
 -- | §18.1.13 'atomically' on the single agent: run the transaction; if it
 -- signals retry, park until the STM write-version advances, then re-run.
@@ -416,25 +495,101 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
       Right v -> pure v
       Left err -> throwIO (err :: KappaError)
   ("__runIO", [action]) -> runIOValue rt action
-  -- §18.11/§32.2: fork runs the fiber to completion on the single agent,
-  -- capturing its terminal Exit (Success v / Failure (Fail e)); the handle
-  -- is a cell holding that Exit, retrieved by __awaitFiber. A fiber failure
-  -- is isolated here (not propagated to the forking context) and surfaced
-  -- via the Exit the parent awaits.
-  -- fork spawns a cooperative fiber (a GHC green thread on the single OS
-  -- agent — non-threaded RTS ⇒ no parallelism, weak fairness from the RTS
-  -- scheduler). The child runs concurrently; its terminal Exit is delivered
-  -- through an MVar that await reads. fork does NOT run to completion here.
-  ("__forkRun", [action]) -> do
-    mv <- newEmptyMVar
-    _ <- forkIO $ do
-      r <- try (runIOValue rt action) :: IO (Either SomeException Value)
-      _ <- tryPutMVar mv (exitOf r)
-      pure ()
-    pure (VMVar mv)
+  -- §18.1.4/§18.11: fork spawns a cooperative child fiber (a GHC green thread
+  -- on the single OS agent — non-threaded RTS ⇒ no parallelism, weak fairness
+  -- from the RTS scheduler). The child runs concurrently; its terminal Exit
+  -- (Success v / Failure (Fail e / Interrupt c / Defect …)) is delivered
+  -- through an MVar that await reads. A child failure is isolated here (not
+  -- propagated to the forking context). fork does NOT run to completion. The
+  -- handle (VFiber) carries the child's ThreadId so it can be interrupted.
+  -- forkDaemon differs from fork only in structured-scope attachment, which
+  -- the single-agent runtime models leniently (§18.1.4).
+  ("__forkRun", [action]) -> forkFiber rt action
+  ("__forkDaemon", [action]) -> forkFiber rt action
   -- await PARKS the current fiber on the result MVar until the child
-  -- completes (the RTS runs other runnable fibers meanwhile).
-  ("__awaitFiber", [VMVar mv]) -> readMVar mv
+  -- terminates (the RTS runs other runnable fibers meanwhile).
+  ("__awaitFiber", [VFiber _ mv]) -> readMVar mv
+  -- §18.1.4 interruption: deliver a structured InterruptCause to the target
+  -- fiber by throwTo. The waiting form blocks until the target has terminated
+  -- and all its finalizers have run (readMVar on its result cell); the fork
+  -- form returns immediately.
+  ("__interruptWait", [cause, VFiber tid mv]) ->
+    throwTo tid (Interrupt cause) >> readMVar mv >> pure unitV
+  ("__interruptNoWait", [cause, VFiber tid _]) ->
+    throwTo tid (Interrupt cause) >> pure unitV
+  -- §18.1.5 cede: yield to the scheduler (also an interruption point — GHC
+  -- delivers any pending throwTo at the yield).
+  ("cede", _) -> yield >> pure unitV
+  -- §18.1.2 sandbox: run the action and expose its full terminal Cause in the
+  -- typed-error channel — every failure (Fail/Interrupt/Defect) becomes a
+  -- typed Fail carrying the Cause value.
+  ("sandbox", [action]) -> do
+    r <- try (runIOValue rt action)
+    case r of
+      Right v -> pure v
+      Left e -> throwIO (KappaError (causeOf e))
+  -- §18.1.2 unsandbox: reverse the exposure — a typed Fail carrying a Cause is
+  -- re-raised as that very cause.
+  ("unsandbox", [action]) -> do
+    r <- try (runIOValue rt action)
+    case r of
+      Right v -> pure v
+      Left (KappaError causeV) -> reraiseCauseValue causeV
+  -- §18.1.6 reraise a non-typed runtime cause (used by the typed timeout/race
+  -- wrappers when the winning/completed branch ended in interruption/defect).
+  ("__reraiseCause", [causeV]) -> reraiseCauseValue causeV
+  -- §18.1.6 timeout: race the action against a monotonic timer. A nonpositive
+  -- duration fires before the first step (the action is never started). When
+  -- the timer wins, the action is interrupted with tag TimedOut and timeout
+  -- waits for it to terminate; completion of the action wins ties.
+  ("__timeout", [dVal, action]) -> do
+    let ns = durationNanos dVal
+    if ns <= 0
+      then pure (VCtor (prelG "TOTimedOut") [])
+      else do
+        mv <- newEmptyMVar
+        tid <- forkIO $ do
+          r <- try (runIOValue rt action) :: IO (Either SomeException Value)
+          _ <- tryPutMVar mv (exitOf r)
+          pure ()
+        timer <- forkIO $ do
+          threadDelay (nanosToMicros ns)
+          throwTo tid (Interrupt (interruptCause "TimedOut"))
+        exitV <- readMVar mv
+        killThread timer
+        pure $
+          if exitTimedOut ec exitV
+            then VCtor (prelG "TOTimedOut") []
+            else VCtor (prelG "TOExit") [exitV]
+  -- §18.1.6 race: run both branches concurrently; the first to terminate
+  -- wins, the loser is interrupted with tag RaceLost and race waits for it to
+  -- terminate. The left branch wins ties.
+  ("__race", [leftIO, rightIO]) -> do
+    lmv <- newEmptyMVar
+    rmv <- newEmptyMVar
+    resMV <- newEmptyMVar
+    ltid <- forkIO $ do
+      r <- try (runIOValue rt leftIO) :: IO (Either SomeException Value)
+      let ex = exitOf r
+      putMVar lmv ex
+      _ <- tryPutMVar resMV (True, ex)
+      pure ()
+    rtid <- forkIO $ do
+      r <- try (runIOValue rt rightIO) :: IO (Either SomeException Value)
+      let ex = exitOf r
+      putMVar rmv ex
+      _ <- tryPutMVar resMV (False, ex)
+      pure ()
+    (isLeft, ex) <- readMVar resMV
+    if isLeft
+      then do
+        throwTo rtid (Interrupt (interruptCause "RaceLost"))
+        _ <- readMVar rmv
+        pure (VCtor (prelG "ROLeft") [ex])
+      else do
+        throwTo ltid (Interrupt (interruptCause "RaceLost"))
+        _ <- readMVar lmv
+        pure (VCtor (prelG "RORight") [ex])
   -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
   -- transaction directly (no concurrent agent ⇒ trivially serializable);
   -- `retry`/`check False`/`stmAbort` abort the transaction.
@@ -472,10 +627,18 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- monotonic clock; sleepFor/sleepUntil advance instantly (a single agent
   -- has no other fiber to schedule during a sleep).
   ("nowMonotonic", _) -> (VLit . LitInt . fromIntegral) <$> getMonotonicTimeNSec
-  -- sleep parks the fiber cooperatively, yielding to other runnable fibers
-  -- (it MUST NOT block the whole agent); monotonic time is approximate here.
-  ("sleepFor", [_]) -> yield >> pure unitV
-  ("sleepUntil", [_]) -> yield >> pure unitV
+  -- §18.1.6 sleep parks ONLY the current fiber (interruptible threadDelay on
+  -- a non-threaded RTS yields to other runnable fibers — it does not block the
+  -- agent; a throwTo wakes it as an interruption point). Nonpositive / past
+  -- deadlines return immediately.
+  ("sleepFor", [dVal]) -> do
+    let ns = durationNanos dVal
+    if ns <= 0 then pure unitV else threadDelay (nanosToMicros ns) >> pure unitV
+  ("sleepUntil", [tVal]) -> do
+    let target = durationNanos tVal
+    now <- fromIntegral <$> getMonotonicTimeNSec
+    let ns = target - now
+    if ns <= 0 then pure unitV else threadDelay (nanosToMicros ns) >> pure unitV
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV

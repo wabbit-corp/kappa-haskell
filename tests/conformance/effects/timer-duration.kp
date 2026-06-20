@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "GT\nEQ\nEQ\n"
+
+-- §18.1 monotonic time: Duration/Instant construction and arithmetic.
+module main
+
+-- show an Ordering
+let showOrd o =
+    match o
+      case GT -> "GT"
+      case EQ -> "EQ"
+      case LT -> "LT"
+
+main : UIO Unit
+let main = do
+    -- 2ms vs 1ms  ⇒ GT
+    printlnString (showOrd (durationCompare (millis 2) (millis 1)))
+    -- 1000us + 2000us = 3ms  ⇒ EQ vs millis 3
+    let sum = durationAdd (micros 1000) (micros 2000)
+    printlnString (showOrd (durationCompare sum (millis 3)))
+    -- instant arithmetic round-trips a Duration: diff of (t0 + 3us) and t0
+    t0 <- nowMonotonic
+    let later = instantAdd t0 (micros 3)
+    let d = instantDiff later t0
+    -- d should be 3000 ns
+    printlnString (showOrd (durationCompare d (nanos 3000)))

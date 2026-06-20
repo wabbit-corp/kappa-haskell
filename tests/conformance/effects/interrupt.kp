@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "interrupt:Requested\n"
+
+-- §18.1.4 interrupt: a parked fiber is interrupted with a structured
+-- InterruptCause (tag Requested); interrupt waits for it to terminate and its
+-- terminal Exit is Failure (Interrupt cause).
+module main
+
+sleeper : UIO Int
+let sleeper = do
+    sleepFor (seconds 10)
+    ioPure 0
+
+main : UIO Unit
+let main = do
+    s <- fork sleeper
+    interrupt s
+    ex <- await s
+    match ex
+    case Success v -> printlnString "completed"
+    case Failure (Interrupt (MkInterruptCause Requested by)) -> printlnString "interrupt:Requested"
+    case Failure c -> printlnString "other"

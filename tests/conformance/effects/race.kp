@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n"
+
+-- §18.1.6 race: the first branch to complete wins; the slow loser is
+-- interrupted (RaceLost) and awaited, so race returns promptly with LeftWins.
+module main
+
+slowR : UIO Int
+let slowR = do
+    sleepFor (seconds 10)
+    ioPure 2
+
+fastL : UIO Int
+let fastL = ioPure 1
+
+main : UIO Unit
+let main = do
+    f <- fork (race fastL slowR)
+    ex <- await f
+    match ex
+    case Success r ->
+      match r
+      case LeftWins v -> printlnString (showInt v)
+      case RightWins v -> printlnString "right"
+    case Failure c -> printlnString "failed"

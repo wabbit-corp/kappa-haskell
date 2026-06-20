@@ -404,6 +404,46 @@ builtinState =
         prim "__awaitFiber"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "r" tType
             (CApp Expl (CApp Expl (tcon "Fiber") (CVar 2)) (CVar 1) ~> io (CVar 1) (CApp Expl (CApp Expl (tcon "Exit") (CVar 3)) (CVar 2)))))))
+      , -- §18.1.4 forkDaemon: like fork but unattached to the structured scope.
+        -- forall e a r. IO e a -> IO r (Fiber e a)
+        prim "__forkDaemon"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "r" tType
+            (io (CVar 2) (CVar 1) ~> io (CVar 1) (CApp Expl (CApp Expl (tcon "Fiber") (CVar 3)) (CVar 2)))))))
+      , -- §18.1.4 interruption. __interruptWait blocks until the target fiber
+        -- has terminated and all finalizers have run; __interruptNoWait does
+        -- not. forall e a. InterruptCause -> Fiber e a -> UIO Unit
+        prim "__interruptWait"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+            (tcon "InterruptCause" ~> CApp Expl (CApp Expl (tcon "Fiber") (CVar 2)) (CVar 1) ~> io (tcon "Void") tUnit))))
+      , prim "__interruptNoWait"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+            (tcon "InterruptCause" ~> CApp Expl (CApp Expl (tcon "Fiber") (CVar 2)) (CVar 1) ~> io (tcon "Void") tUnit))))
+      , -- §18.1.5 scheduler yield / interruption point.
+        prim "cede" (tyV (io (tcon "Void") tUnit))
+      , -- §18.1.2 sandbox/unsandbox: expose / re-hide the full terminal Cause.
+        prim "sandbox" (tyV (forallEA
+          (io (CVar 1) (CVar 0) ~> io (CApp Expl (tcon "Cause") (CVar 2)) (CVar 1))))
+      , prim "unsandbox" (tyV (forallEA
+          (io (CApp Expl (tcon "Cause") (CVar 1)) (CVar 0) ~> io (CVar 2) (CVar 1))))
+      , -- §18.1.6 re-raise a non-typed runtime cause (interrupt/defect) in any
+        -- error context. forall e g a. Cause e -> IO g a
+        prim "__reraiseCause"
+          (tyV (piI Q0 "e" tType (piI Q0 "g" tType (piI Q0 "a" tType
+            (CApp Expl (tcon "Cause") (CVar 2) ~> io (CVar 2) (CVar 1))))))
+      , -- §18.1.6 timeout/race kernels. The typed-error injection is done in
+        -- the Kappa wrappers (below); these return a structured outcome in any
+        -- error context (the outcome is pure data, so the result error is free).
+        -- forall e a g. Duration -> IO e a -> IO g (TimeoutOutcome e a)
+        prim "__timeout"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "g" tType
+            (tcon "Duration" ~> io (CVar 3) (CVar 2)
+              ~> io (CVar 2) (CApp Expl (CApp Expl (tcon "TimeoutOutcome") (CVar 4)) (CVar 3)))))))
+      , -- forall e f a b g. IO e a -> IO f b -> IO g (RaceOutcome e f a b)
+        prim "__race"
+          (tyV (piI Q0 "e" tType (piI Q0 "f" tType (piI Q0 "a" tType (piI Q0 "b" tType (piI Q0 "g" tType
+            (io (CVar 4) (CVar 2) ~> io (CVar 4) (CVar 2)
+              ~> io (CVar 2)
+                   (CApp Expl (CApp Expl (CApp Expl (CApp Expl (tcon "RaceOutcome") (CVar 6)) (CVar 5)) (CVar 4)) (CVar 3)))))))))
       , prim "throwIO" (tyV (forallEA (CVar 1 ~> io (CVar 2) (CVar 1))))
       , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
@@ -1124,9 +1164,21 @@ preludeSource =
       "data Fiber (e : Type) (a : Type) : Type ="
     , "    MkFiberHandle"
     , ""
-    , -- §18.8.2 terminal results and causes (vocabulary subset)
-      "data InterruptCause : Type ="
-    , "    MkInterruptCause"
+    , -- §18.1.2 structured interruption metadata: a tag classifying why the
+      -- interruption occurred plus the initiating fiber when semantically known.
+      "data InterruptTag : Type ="
+    , "    Requested"
+    , "    ScopeShutdown"
+    , "    TimedOut"
+    , "    RaceLost"
+    , "    External"
+    , "    Custom String"
+    , ""
+    , "data FiberId : Type ="
+    , "    MkFiberId Integer"
+    , ""
+    , "data InterruptCause : Type ="
+    , "    MkInterruptCause InterruptTag (Option FiberId)"
     , ""
     , "data DefectInfo : Type ="
     , "    MkDefectInfo (message : String)"
@@ -1153,6 +1205,88 @@ preludeSource =
     , -- §18.11/§32.2: await a fiber's terminal result (its Exit).
       "await : forall (e : Type) (a : Type) (r : Type). Fiber e a -> IO r (Exit e a)"
     , "let await fib = __awaitFiber fib"
+    , ""
+    , -- §18.1.4 forkDaemon: an unattached child fiber.
+      "forkDaemon : forall (e : Type) (a : Type). IO e a -> UIO (Fiber e a)"
+    , "let forkDaemon action = __forkDaemon action"
+    , ""
+    , -- §18.1.4 join: await a fiber and project its outcome into the caller —
+      -- success returns the value, typed failure re-fails, and any non-typed
+      -- runtime cause (interruption/defect) terminates the caller likewise.
+      "join : forall (e : Type) (a : Type). Fiber e a -> IO e a"
+    , "let join fib ="
+    , "    ioBind (await fib) (\\ex ->"
+    , "      match ex"
+    , "      case Success v -> ioPure v"
+    , "      case Failure (Fail e) -> throwIO e"
+    , "      case Failure c -> __reraiseCause c)"
+    , ""
+    , -- §18.1.4 interruption surface. interrupt/interruptFork use the Requested
+      -- tag with no recorded initiator; the *As forms carry explicit metadata.
+      "interruptAs : forall (e : Type) (a : Type). InterruptCause -> Fiber e a -> UIO Unit"
+    , "let interruptAs cause fib = __interruptWait cause fib"
+    , ""
+    , "interruptForkAs : forall (e : Type) (a : Type). InterruptCause -> Fiber e a -> UIO Unit"
+    , "let interruptForkAs cause fib = __interruptNoWait cause fib"
+    , ""
+    , "interrupt : forall (e : Type) (a : Type). Fiber e a -> UIO Unit"
+    , "let interrupt fib = __interruptWait (MkInterruptCause Requested None) fib"
+    , ""
+    , "interruptFork : forall (e : Type) (a : Type). Fiber e a -> UIO Unit"
+    , "let interruptFork fib = __interruptNoWait (MkInterruptCause Requested None) fib"
+    , ""
+    , -- §18.1.6 race result + the typed timeout error.
+      "data RaceResult (a : Type) (b : Type) : Type ="
+    , "    LeftWins a"
+    , "    RightWins b"
+    , ""
+    , "data TimeoutError : Type ="
+    , "    Timeout"
+    , ""
+    , -- internal structured outcomes returned by the timeout/race kernels;
+      -- the wrappers below perform the typed-error injection.
+      "data TimeoutOutcome (e : Type) (a : Type) : Type ="
+    , "    TOTimedOut"
+    , "    TOExit (Exit e a)"
+    , ""
+    , "data RaceOutcome (e : Type) (f : Type) (a : Type) (b : Type) : Type ="
+    , "    ROLeft (Exit e a)"
+    , "    RORight (Exit f b)"
+    , ""
+    , -- typed re-throw helper for the timeout-timer case: a concrete
+      -- combined-error signature so the `Timeout` member widens in direct
+      -- checking position (member→variant widening does not fire through the
+      -- `ioBind`/`match` inference path).
+      "__failTimeout : forall (e : Type) (a : Type). IO (| TimeoutError | e |) a"
+    , "let __failTimeout = throwIO Timeout"
+    , ""
+    , -- §18.1.6 timeout: when the timer fires first the result is the typed
+      -- failure `Fail Timeout`; otherwise the computation's outcome passes
+      -- through. A typed `Fail e` is re-raised by `__reraiseCause` (which throws
+      -- the typed error directly), and any non-typed cause is re-raised too —
+      -- so a single `Failure c` arm covers every cause, and its free result
+      -- error unifies to the combined channel with no variant widening.
+      "timeout : forall (e : Type) (a : Type). Duration -> IO e a -> IO (| TimeoutError | e |) a"
+    , "let timeout d io ="
+    , "    ioBind (__timeout d io) (\\o ->"
+    , "      match o"
+    , "      case TOTimedOut -> __failTimeout"
+    , "      case TOExit (Success v) -> ioPure v"
+    , "      case TOExit (Failure c) -> __reraiseCause c)"
+    , ""
+    , -- §18.1.6 race: the first branch to complete wins; the loser is
+      -- interrupted (RaceLost) and awaited. A winning typed failure re-fails in
+      -- the combined channel and any non-typed cause is re-raised — both via
+      -- `__reraiseCause`, whose free result-error type unifies to the combined
+      -- channel directly (no two-variable-variant widening, which is ambiguous).
+      "race : forall (e : Type) (a : Type) (f : Type) (b : Type). IO e a -> IO f b -> IO (| e | f |) (RaceResult a b)"
+    , "let race left right ="
+    , "    ioBind (__race left right) (\\o ->"
+    , "      match o"
+    , "      case ROLeft (Success v) -> ioPure (LeftWins v)"
+    , "      case ROLeft (Failure c) -> __reraiseCause c"
+    , "      case RORight (Success v) -> ioPure (RightWins v)"
+    , "      case RORight (Failure c) -> __reraiseCause c)"
     , ""
     , -- RC4: `throwError`/`catchError` are the §19.1 `MonadError` members
       -- (resolved via the carrier's dictionary), NOT free IO-only functions.
