@@ -1,0 +1,32 @@
+--! assertNoErrors
+--! assertEval result 20
+
+-- §9.3.1.1/§18.1.15: a local `scoped effect label l : E` introduces a fresh
+-- scope-local effect label l sharing effect E's operations and interface.
+-- Here the computation and handler use the alias label `st`, not the
+-- canonical `State` self-label.
+module main
+
+result : Int
+let result : Int =
+    block
+        scoped effect State =
+            1 get : Unit -> Int
+            1 put : Int -> Unit
+
+        scoped effect label st : State
+
+        let comp : Eff <[st : State]> Int =
+            do
+                let a <- st.get ()
+                let _ <- st.put 5
+                let b <- st.get ()
+                pure (a + b)
+
+        let handled =
+            deep handle st comp with
+                case return x -> pure x
+                case get _ k -> k 10
+                case put _ k -> k ()
+
+        runPure handled

@@ -6229,9 +6229,39 @@ hoistScopedEffects ctx0 ds0 = go ctx0 id ds0
       | dmScoped mods && not (effIsLabelDecl eff) = do
           (ctx', wrap') <- elabScopedEffect ctx eff dsp
           go ctx' (wrap . wrap') rest
+      | dmScoped mods && effIsLabelDecl eff = do
+          ctx' <- elabScopedEffectLabel ctx eff dsp
+          go ctx' wrap rest
     go ctx wrap (d : rest) = do
       (ctx', wrap', rest') <- go ctx wrap rest
       pure (ctx', wrap', d : rest')
+
+-- | §9.3.1.1/§18.1.15: a local @scoped effect l : E@ introduces a fresh
+-- effect label @l@ for the lexical scope that shares the operations and
+-- interface of an effect @E@ already in scope (scoped or top-level).
+elabScopedEffectLabel :: Ctx -> EffectDecl -> Span -> CheckM Ctx
+elabScopedEffectLabel ctx eff dsp = do
+  let lblName = nameText (effName eff)
+  case effLabelType eff of
+    Just (EVar en) -> do
+      mbase <- lookupEffLabelM ctx (nameText en)
+      case mbase of
+        Nothing -> do
+          errAt (nameSpan en) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+            ("scoped effect label '" <> lblName <> "' references unknown effect '"
+               <> nameText en <> "' (§18.1.15)")
+          pure ctx
+        Just base -> do
+          st0 <- get
+          suffix <- freshNameM "#efflbl"
+          let labelG = GName (csModule st0) (lblName <> suffix <> ".label")
+          addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+          recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
+          pure ctx {ctxEffLabels = Map.insert lblName (base {eliLabel = labelG}) (ctxEffLabels ctx)}
+    _ -> do
+      errAt dsp "E_EFFECT_LABEL_FORM" (Just "kappa-hs.effect.label")
+        ("'scoped effect " <> lblName <> " : E' requires E to be a named effect in scope (§18.1.15)")
+      pure ctx
 
 elabScopedEffect :: Ctx -> EffectDecl -> Span -> CheckM (Ctx, Term -> Term)
 elabScopedEffect ctx eff dsp = do
