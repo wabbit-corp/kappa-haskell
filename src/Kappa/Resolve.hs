@@ -466,7 +466,7 @@ rExpr env = go
       ESetLit es sp -> ESetLit <$> mapM go es <*> pure sp
       EMapLit es sp -> EMapLit <$> mapM (\(k, v) -> (,) <$> go k <*> go v) es <*> pure sp
       EComprehension k cs y sp ->
-        EComprehension k <$> mapM goClause cs <*> goYield y <*> pure sp
+        EComprehension <$> goKind k <*> mapM goClause cs <*> goYield y <*> pure sp
       EArrow b e -> EArrow <$> rBinder env b <*> go e
       EForall bs e sp -> EForall <$> mapM (rBinder env) bs <*> go e <*> pure sp
       EExists bs e sp -> EExists <$> mapM (rBinder env) bs <*> go e <*> pure sp
@@ -558,6 +558,19 @@ rExpr env = go
     goYield = \case
       YieldExpr e -> YieldExpr <$> go e
       YieldPair k v -> YieldPair <$> go k <*> go v
+
+    -- §5.5.2: the comprehension carrier/conflict expressions also carry
+    -- operator chains that must be re-associated (a `combine with (\a b ->
+    -- a + b)` lambda's body otherwise reaches elaboration as an unresolved
+    -- EOpChain and silently becomes a hole).
+    goKind = \case
+      CompMap mconf -> CompMap <$> mapM goConflict mconf
+      CompCarrier e -> CompCarrier <$> go e
+      k -> pure k
+    goConflict = \case
+      CombineUsing e -> CombineUsing <$> go e
+      CombineWith e -> CombineWith <$> go e
+      c -> pure c
 
 rPattern :: FixityEnv -> Pattern -> RW Pattern
 rPattern env = goP

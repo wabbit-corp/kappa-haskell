@@ -1,0 +1,20 @@
+--! mode run
+--! assertStdout "3\nab\n"
+
+-- §20.5.1: `on conflict combine with f` uses f to fold per-key values. The
+-- combiner may be a lambda whose body uses a trait operator (`+`, `++`); the
+-- operator chain in that lambda is fixity-resolved like any other (it was
+-- previously reaching elaboration as an unresolved chain and silently
+-- becoming a hole).
+module main
+
+main : UIO Unit
+let main = do
+    let m = { for x in [1, 1, 1, 2], yield x : x on conflict combine with (\old new -> old + new) }
+    match mapLookup 1 m
+      case Some v -> printlnString (show v)            -- 1+1+1 = 3
+      case None -> printlnString "none"
+    let s = { for w in ["a", "b"], yield 0 : w on conflict combine with (\old new -> old ++ new) }
+    match mapLookup 0 s
+      case Some v -> printlnString v                    -- "a" ++ "b" = "ab"
+      case None -> printlnString "none"
