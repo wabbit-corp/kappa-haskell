@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "fiber ran\n105\nfailed 42\n"
+
+-- §18.11/§32.2: `fork` runs a fiber on the single runtime agent; `await`
+-- retrieves its terminal Exit. A successful fiber yields Success v; a
+-- failing fiber's error is isolated and surfaced as Failure (Fail e),
+-- not propagated to the awaiting parent.
+module main
+
+worker : Int -> UIO Int
+let worker n = do
+    printlnString "fiber ran"
+    pure (n + 100)
+
+failing : IO Int Int
+let failing = do
+    raise 42
+
+main : UIO Unit
+let main = do
+    f <- fork (worker 5)
+    ex <- await f
+    let _ = ex
+    match ex
+      case Success v -> printlnString (showInt v)
+      case Failure _ -> printlnString "ok-failed"
+    g <- fork failing
+    ex2 <- await g
+    match ex2
+      case Success v -> printlnString (stringAppend "ok " (showInt v))
+      case Failure c -> match c
+        case Fail e -> printlnString (stringAppend "failed " (showInt e))
+        case _ -> printlnString "other"

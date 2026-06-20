@@ -370,6 +370,18 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
       Right v -> pure v
       Left err -> throwIO (err :: KappaError)
   ("__runIO", [action]) -> runIOValue rt action
+  -- §18.11/§32.2: fork runs the fiber to completion on the single agent,
+  -- capturing its terminal Exit (Success v / Failure (Fail e)); the handle
+  -- is a cell holding that Exit, retrieved by __awaitFiber. A fiber failure
+  -- is isolated here (not propagated to the forking context) and surfaced
+  -- via the Exit the parent awaits.
+  ("__forkRun", [action]) -> do
+    r <- try (runIOValue rt action)
+    let exitV = case r of
+          Right v -> VCtor (prelG "Success") [v]
+          Left (KappaError e) -> VCtor (prelG "Failure") [VCtor (prelG "Fail") [e]]
+    VRef <$> newIORef exitV
+  ("__awaitFiber", [VRef ref]) -> readIORef ref
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV

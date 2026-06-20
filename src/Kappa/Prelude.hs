@@ -393,6 +393,16 @@ builtinState =
       , prim "printString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "printlnString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "ioPure" (tyV (forallEA (CVar 0 ~> io (CVar 2) (CVar 1))))
+      , -- §18.11/§32.2: run a forked fiber to completion on the single
+        -- runtime agent, capturing its Exit; the result is retrievable by
+        -- __awaitFiber. (forall e a r. IO e a -> IO r (Fiber e a))
+        prim "__forkRun"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "r" tType
+            (io (CVar 2) (CVar 1) ~> io (CVar 1) (CApp Expl (CApp Expl (tcon "Fiber") (CVar 3)) (CVar 2)))))))
+      , -- forall e a r. Fiber e a -> IO r (Exit e a)
+        prim "__awaitFiber"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "r" tType
+            (CApp Expl (CApp Expl (tcon "Fiber") (CVar 2)) (CVar 1) ~> io (CVar 1) (CApp Expl (CApp Expl (tcon "Exit") (CVar 3)) (CVar 2)))))))
       , prim "throwIO" (tyV (forallEA (CVar 1 ~> io (CVar 2) (CVar 1))))
       , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
@@ -1097,7 +1107,11 @@ preludeSource =
     , "    No (p -> Void)"
     , ""
     , "fork : forall (e : Type) (a : Type) (r : Type). IO e a -> IO r (Fiber e a)"
-    , "let fork action = ioPure MkFiberHandle"
+    , "let fork action = __forkRun action"
+    , ""
+    , -- §18.11/§32.2: await a fiber's terminal result (its Exit).
+      "await : forall (e : Type) (a : Type) (r : Type). Fiber e a -> IO r (Exit e a)"
+    , "let await fib = __awaitFiber fib"
     , ""
     , -- RC4: `throwError`/`catchError` are the §19.1 `MonadError` members
       -- (resolved via the carrier's dictionary), NOT free IO-only functions.
