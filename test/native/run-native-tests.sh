@@ -665,7 +665,8 @@ echo "== foreign-call classification capability rule is fail-closed (§26.1.4/§
 # rather than executed with weakened semantics.
 if pkg-config --exists libuv 2>/dev/null; then
   CAP="$WORK/gcap"; rm -rf "$CAP"; mkdir -p "$CAP/src/app"
-  printf 'module app\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CAP/src/app/main.kp"
+  # the module header MUST match the §8.1 path-derived name (src/app/main.kp -> app.main)
+  printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CAP/src/app/main.kp"
   capbuild() { printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), classify %s], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$CAP/kappa.build.kp"; }
   okc=1
   capbuild "blocking"
@@ -673,7 +674,7 @@ if pkg-config --exists libuv 2>/dev/null; then
   capbuild "blockingCancellable"
   co="$(timeout 200 $KAPPA build --update --manifest "$CAP" -o "$WORK/capc" 2>&1)"; cr=$?
   { [ "$cr" -ne 0 ] && grep -q "E_BACKEND_CAPABILITY_UNREALIZED" <<<"$co" && grep -q "rt-blocking-cancel" <<<"$co"; } || { echo "   FAIL: a 'blocking-cancellable' binding was not rejected fail-closed"; echo "$co" | sed 's/^/     /'; okc=0; }
-  [ "$okc" -eq 1 ] && echo "   ok (capability set declared + recorded; blocking accepted under rt-blocking; blocking-cancellable rejected — no rt-blocking-cancel)"
+  if [ "$okc" -eq 1 ]; then echo "   ok (capability set declared + recorded; blocking accepted under rt-blocking; blocking-cancellable rejected — no rt-blocking-cancel)"; else fails=$((fails+1)); fi
   # §26.1.3: the generator's width mapping assumes LP64; a non-LP64 target
   # triple (LLP64 = windows) is rejected rather than inferred for an unmodelled ABI.
   printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-windows-msvc" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' > "$CAP/kappa.build.kp"
