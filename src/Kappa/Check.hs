@@ -6340,6 +6340,37 @@ elabTopEffect eff dsp = do
     let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliOps = ops}
     modify' $ \st -> st {csModEffLabels = Map.insert nm info (csModEffLabels st)}
 
+-- | §18.1.15: a top-level @effect label l : E@ mints a fresh effect label
+-- @l@ that shares the operations and interface of an existing effect @E@
+-- (so several labels can name distinct instances of one effect). The new
+-- label gets its own identity; its operations and interface are E's.
+elabTopEffectLabel :: EffectDecl -> Span -> CheckM ()
+elabTopEffectLabel eff sp = do
+  let lblName = nameText (effName eff)
+  unless (null (effParams eff)) $
+    reportUnsupported sp "effect-label declaration parameters"
+  case effLabelType eff of
+    Just (EVar en) -> do
+      mbase <- gets (Map.lookup (nameText en) . csModEffLabels)
+      case mbase of
+        Nothing ->
+          errAt (nameSpan en) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+            ("effect label '" <> lblName <> "' references unknown effect '" <> nameText en
+               <> "' (the interface must be a top-level 'effect' declaration in scope, §18.1.15)")
+        Just base -> do
+          already <- gets (Map.member lblName . csModEffLabels)
+          unless already $ do
+            st0 <- get
+            let labelG = GName (csModule st0) (lblName <> ".label")
+            addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+            recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
+            -- same interface + operations as E, but a fresh label identity
+            modify' $ \st ->
+              st {csModEffLabels = Map.insert lblName (base {eliLabel = labelG}) (csModEffLabels st)}
+    _ ->
+      errAt sp "E_EFFECT_LABEL_FORM" (Just "kappa-hs.effect.label")
+        ("'effect label " <> lblName <> " : E' requires E to be a named top-level effect (§18.1.15)")
+
 -- | Effect-row syntax @<[l1 : E1, ... | tail]>@ (§18.1.14): rows are
 -- neutral spines of @__effRowCons label iface rest@.
 elabEffRow :: Ctx -> [(Name, Expr)] -> Maybe Expr -> Span -> CheckM (Term, Value)
@@ -9840,8 +9871,7 @@ headerPassIn siglessLets = \case
   -- hoistScopedEffects in the block where it appears (so it is skipped here).
   DEffect mods eff sp
     | dmScoped mods -> pure ()
-    | effIsLabelDecl eff ->
-        unsupportedAt sp "effect label declarations (effect label l : E)"
+    | effIsLabelDecl eff -> elabTopEffectLabel eff sp
     | otherwise -> elabTopEffect eff sp
   DExpect _ form sp -> headerExpect form sp
   -- §4.4: register the wrapped definition's header like any other; the

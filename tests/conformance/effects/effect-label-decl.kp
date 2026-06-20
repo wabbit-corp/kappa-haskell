@@ -1,0 +1,33 @@
+--! assertNoErrors
+--! assertEval result 107
+
+-- §18.1.15: `effect label l : E` declares a fresh effect label l sharing
+-- the operations and interface of effect E. Distinct labels of the same
+-- effect are handled independently.
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label other : Counter
+
+useDefault : Eff <[Counter : Counter]> Int
+let useDefault = do
+    let x <- Counter.tick ()
+    pure x
+
+useOther : Eff <[other : Counter]> Int
+let useOther = do
+    let x <- other.tick ()
+    pure x
+
+let h1 = deep handle Counter useDefault with
+    case return x -> pure x
+    case tick _ k -> k 7
+
+let h2 = deep handle other useOther with
+    case return x -> pure x
+    case tick _ k -> k 100
+
+result : Int
+let result = runPure h1 + runPure h2
