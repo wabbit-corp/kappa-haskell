@@ -1,0 +1,27 @@
+-- Native build manifest (this implementation's schema) for the image-loader
+-- package. The package ships only jvm/dotnet library targets in its original
+-- build.kp (kept for provenance); this implementation realizes only the native
+-- backend (§27.2/§27.3 jvm/dotnet are MAY-provide, not provided here), so this
+-- manifest adds a native executable that runs the pure PNG/QOI parser tests.
+-- The portable `prim.native` fragment satisfies the prim facade's `expect`
+-- declarations; the prim.jvm/prim.dotnet fragments are excluded (§36.12).
+let buildConfig : BuildConfig = package
+    { name = "acme.image"
+    , version = semver "0.2.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes =
+        [ axis "backend" [tag "native", tag "jvm", tag "dotnet"] ]
+    , dependencies = []
+    , hostBindings = []
+    , targets =
+        [ executable
+            { name = "image-tests"
+            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , fragments = tags ["native"]
+            , main = module "acme.image.run_tests"
+            , modules = modulesUnder "acme"
+            , dependencies = []
+            , hostBindings = []
+            }
+        ]
+    }

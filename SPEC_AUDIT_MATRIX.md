@@ -3,15 +3,19 @@
 Single, §-ordered consolidation of four hostile lane audits
 (`docs/audit/lane-{syntax,types,runtime,meta}.md`), reconciled against
 `docs/Spec.md` normative text and re-verified by independent probes of the built
-binary. Stance: hostile (disprove compliance). "195/195 conformance" and the
+binary. Stance: hostile (disprove compliance). The conformance pass-count and the
 prior completion claim are treated as irrelevant to whether a normative MUST/SHALL
 with no fixture is satisfied.
 
 Build verified clean: `cabal build all --enable-tests --ghc-options=-Werror`.
-Conformance re-run: `kappa test tests/conformance` → `195 passed, 0 failed`.
-Binary: `dist-newstyle/.../x/kappa/build/kappa/kappa`. CLI surface:
-`check | run | test [--suite] | explain`. No `--json`/`--format` flag exists
-(re-verified: `kappa check --json FILE` falls through to usage).
+Conformance re-run (2026-06-20): `kappa test tests/conformance` → `total 242: 242
+passed, 0 failed, 0 unsupported, 0 harness errors`. External black-box corpus
+(fresh, same date): **962 pass / 76 fail / 11 unsupported / 59 harness-error /
+1108 total** (the upstream corpus grew from 959 → 1108; see
+`tests/external-results.md`). Binary: `dist-newstyle/.../x/kappa/build/kappa/kappa`.
+CLI surface: `check | run [--json] | test [--suite] | audit | build | explain`.
+A machine-readable `--json` diagnostic channel exists (G3, below); the §3.1.4
+portable alias is now on the JSON record as `portableCode`.
 
 Status values: `IMPLEMENTED+TESTED` | `IMPLEMENTED-WEAKLY-TESTED` | `MISSING` |
 `INTENTIONALLY-UNSUPPORTED(cite)` | `SPEC-CONFLICT(cite)` | `UNCLEAR`.
@@ -94,7 +98,7 @@ here by re-probe.
 | 5.5.2 | fixity decls parse; block-scoped, exported with operator | IMPLEMENTED-WEAKLY-TESTED | SYN | all forms parse; cross-module fixity import not probed |
 | 5.5.3 | infix/prefix position gating | IMPLEMENTED+TESTED | SYN | `1 <+> 2` no fixity → `E_OPERATOR_NO_FIXITY`; postfix gating unreachable (see above) |
 | 6.1.1 | decimal/hex/octal/binary integer literals | IMPLEMENTED+TESTED | SYN | values w/o underscores correct |
-| **6.1.1** | **underscores between digits have NO semantic effect (hex/oct/bin)** | **SPEC-CONFLICT/MISSING** | SYN,V | `0xDEAD_BEEF`→`59776745199` (≠`3735928559`); re-verified. Silent miscompile. **BLOCKER** |
+| 6.1.1 | underscores between digits have NO semantic effect (hex/oct/bin) | RESOLVED (was BLOCKER) | SYN,V | re-verified 2026-06-20: `0xDEAD_BEEF`→`3735928559` ✓, `0b1_0_1_0`→`10` ✓, `0o1_2_3`→`83` ✓ (radix path strips `_` like the decimal path). Stale claim corrected. |
 | 6.1.2 | decimal float forms | IMPLEMENTED+TESTED | SYN | `1e10`,`3.14e-2` |
 | 6.1.2 | `.5`/`5.` not portable floats | IMPLEMENTED+TESTED | SYN | rejected (span quality poor) |
 | 6.1.3 | Float raw-bit eq; `+0.0`≠`-0.0`; total order | IMPLEMENTED+TESTED | SYN | `0.0 == negate 0.0`→neq |
@@ -213,7 +217,7 @@ here by re-probe.
 | 28.2 | numeric/comparison/applicative/fold/show terms | IMPLEMENTED+TESTED | RUN | resolve and run |
 | 28.2 | `(~=)` equivalence operator | IMPLEMENTED-WEAKLY (operator/trait yes, blanket instance no) | RUN,V | `~=`+`Equiv`+fixity present (no more `E_NAME_UNRESOLVED`); but `instance Eq a => Equiv a` (§14113 MUST) absent ⇒ `1 ~= 1` → `E_UNSOLVED_IMPLICIT`. (G18 residual) |
 | 28.2 | `for_`, `sequence_` | MISSING | RUN | unresolved. **MINOR** |
-| 28.2 | proof helpers `absurd pathInd subst sym trans cong unsafeAssertProof witness measureRelation lexRelation` | IMPLEMENTED-MOSTLY (8/10) | RUN,V | `absurd pathInd subst sym trans cong unsafeAssertProof witness` resolve with spec sigs (usable with determined endpoints, KNOWN_SPEC_ISSUES §19); `measureRelation`/`lexRelation` still `E_NAME_UNRESOLVED`. (G20 residual) |
+| 28.2 | proof helpers `absurd pathInd subst sym trans cong unsafeAssertProof witness measureRelation lexRelation` | IMPLEMENTED (10/10) | RUN,V | all resolve with spec sigs (usable with determined endpoints, KNOWN_SPEC_ISSUES §19). Re-verified 2026-06-20: `measureRelation`/`lexRelation` now resolve as names (E_UNSOLVED_IMPLICIT on the `WellFoundedRelation` arg, not E_NAME_UNRESOLVED) — same shape as the other erased proof helpers. (G20 resolved) |
 | 28.2 | surface collection terms (array*/set*/map*/sizedArray*) | MISSING | RUN | only internal `__*` prims + `listLength`/`listAppend`. **MAJOR** |
 | 28.2 | resource/finalize, fibers/scopes/promises, STM, time terms | MISSING(names) | RUN | unresolved; §27.6 `rt-core`-tension flagged (see ledger) |
 | 28.2 | required trait names `Equiv Alternative Iterator MonadError MonadFinally MonadResource MonadRef WellFoundedRelation IntoQuery BorrowSourceIntoQuery BorrowItemsIntoQuery QuotedLiteralMacro` | MISSING | RUN | each unresolved. **MAJOR** |
@@ -279,6 +283,15 @@ here by re-probe.
 
 ## Consolidated legitimate-gap worklist (ranked, in-scope MUST/SHALL only)
 
+> **Re-validation note (2026-06-20):** this worklist was a point-in-time hostile
+> audit; several entries are now STALE (the underlying gaps were fixed since).
+> Re-verified resolved this pass: **G2** (hex/oct/bin digit-group underscores —
+> was BLOCKER, now correct), **G17** (required trait names resolve), **G18**
+> (`Equiv` blanket instance present; `1 ~= 1` runs), **G20** (`measureRelation`/
+> `lexRelation` resolve), **G21** (`CheckedSub` instances present; `Nat`
+> partiality is by-design §28.2). The per-row statuses below have been updated
+> for these. The aggregate counts further down predate this re-validation.
+
 Deduped across lanes. In-scope = CORE per the task (Parts I–IV, VII §28–§29, VIII
 §30–§33, the §3 diagnostic contract, §4 unsafe/debug which has no optionality
 clause). Profile-scoped items excluded (see ledger). Severity: BLOCKER (soundness
@@ -287,7 +300,7 @@ or whole-contract) > MAJOR > MINOR.
 | id | § | severity | one-line failing probe | fix locus |
 |----|---|----------|------------------------|-----------|
 | G1 | 10.4 | RESOLVED (was BLOCKER, soundness) | `data Bad = MkBad (Bad -> Bad)` → `E_DATA_NOT_STRICTLY_POSITIVE` (was exit 0) | DONE: `positivityPass` in `src/Kappa/Check.hs` runs the §10.4 strict-positivity check after the header pass; mirrored in `tests/conformance/data_types` |
-| G2 | 6.1.1 | BLOCKER (silent miscompile) | `0xDEAD_BEEF` → `59776745199` (≠ `3735928559`); `0b1_0_1_0`→1748; `0o1_2_3`→25027 | `src/Kappa/Lexer.hs:462` fold over `T.filter (/= '_') digits` (radix path, like the decimal path at :488) |
+| G2 | 6.1.1 | RESOLVED (was BLOCKER) | re-verified 2026-06-20: `0xDEAD_BEEF`→`3735928559` ✓, `0b1_0_1_0`→`10` ✓, `0o1_2_3`→`83` ✓ — digit-group `_` correctly has no semantic effect across all radices. The matrix entry was stale. |
 | G3 | 3.1.1 | RESOLVED (was BLOCKER) | `kappa check --json FILE`/`run --json` now emit one JSON object per diagnostic with the §3.1.1 16-field surface | DONE: `Diagnostic.hs` enriched record + hand-rolled JSON encoder (boot `text` only); `--json` wired in `app/Main.hs` |
 | G4 | 3.1.1A | RESOLVED (was BLOCKER) | related origins populated for unresolved/ambiguous name (use-site), type-mismatch (use-site), application (call-site), duplicate-declaration (declaration-site ×2), path-consumed (consumed-here + used-after-consume), trait-coherence (instance-declaration-site), implicit-ambiguous (obligation-required-here). All borrow families now also carry them: `E_QTT_BORROW_ESCAPE` (escape-through-result, place-arg, closure-escape, and the `Check.hs` implicit-candidate form — the last with a §3.1.1A line-610-611 payload fallback recording why an origin is unavailable), `E_QTT_BORROW_OVERLAP` (lexical, same-call FMove, §18.9.3 inout), and `E_QTT_BORROW_CONSUME` — all `emitRel` with `borrow-start` + the failing use/escape origin. Final fix: gave `eBorrows`/`FBorrow`/`borrowLocks` a borrow-introduction `Span` so `checkBorrowOverlap` and the consume path can attach `borrow-start` | DONE: `dRelated`+role enum threaded across `Check.hs`/`Usage.hs`; regressions in `qtt/record-paths.kp`, `qtt/inout-overlap.kp`, `qtt/borrow-consume-related.kp`, `projections/selector-footprint.kp` |
 | G5 | 5.5.1.1, 5.5.3 | MAJOR | `(5 ?)` with `postfix 90 (?)` → `E_APPLICATION_NONCALLABLE`; `let b = 5 ?` corrupts next decl | `src/Kappa/Resolve.hs:390` add `postfixOf` branch mirroring 394-401; `src/Kappa/Parser.hs` chain path (~1540-1583) tolerate trailing postfix |
@@ -302,11 +315,11 @@ or whole-contract) > MAJOR > MINOR.
 | G14 | 29.5 | MAJOR | `import std.bytes` → `E_MODULE_NAME_UNRESOLVED` (unconditional MUST, no gate) | add `stdBytesSource` to `src/Kappa/Prelude.hs`; wire in `src/Kappa/Pipeline.hs:80` |
 | G15 | 28.2 | MAJOR | `Rational` type + required FieldLike/numeric instances absent | `src/Kappa/Prelude.hs` add `Rational` type + §28.2.3 instances |
 | G16 | 28.2.2, 28.2.3 | MAJOR | `AdditiveMonoid`/`Semiring`/`Ring`/`FieldLike`/`OrderedSemiring` traits + instances absent | `src/Kappa/Prelude.hs` add hierarchy with law members + instances; correct `EuclideanSemiring` shape |
-| G17 | 28.2, 19.x, 20.2 | MAJOR | required trait names `Equiv Alternative Iterator MonadError MonadFinally MonadResource MonadRef WellFoundedRelation IntoQuery Borrow*IntoQuery QuotedLiteralMacro` all `E_NAME_UNRESOLVED` | `src/Kappa/Prelude.hs` `preludeSource` declare these abstract traits |
-| G18 | 28.2 | RESOLVED-WITH-RESIDUAL (was MAJOR) | original probe fixed: `~=` now tokenizes/resolves as an operator (no `E_NAME_UNRESOLVED '~='`), `Equiv` trait declared, `~=` in `defaultFixities` at prec 40. RE-AUDIT RESIDUAL: the canonical §28.2/§14113 prelude bridge `instance Eq a => Equiv a = let (~=) = (==)` is NOT provided (zero `Equiv` instances in `Prelude.hs`), so `1 ~= 1` now fails `E_UNSOLVED_IMPLICIT (Equiv Integer)` rather than running; a user-declared `instance Equiv Int` makes it work, so the machinery is sound but the MUST blanket instance is missing | `src/Kappa/Prelude.hs` add `instance Eq a => Equiv a` |
+| G17 | 28.2, 19.x, 20.2 | RESOLVED (was MAJOR) | re-verified 2026-06-20: `Equiv Alternative Iterator MonadError …` all resolve as trait names (no `E_NAME_UNRESOLVED`); declared in `Prelude.hs`. | DONE. |
+| G18 | 28.2 | RESOLVED (was MAJOR) | the canonical bridge `instance Eq a => Equiv a = let (~=) x y = x == y` IS provided (`Prelude.hs` ~L707). Re-verified 2026-06-20: `1 ~= 1` type-checks and runs (`eq-yes`); the prior "blanket instance missing" residual was stale. | DONE in `src/Kappa/Prelude.hs`. |
 | G19 | 28.2 | MAJOR | surface collection terms (`arrayFromList`/`mapEmpty`/`setEmpty`/… ) `E_NAME_UNRESOLVED`; only internal `__*` prims | `src/Kappa/Prelude.hs` export §28.2 Array/Set/Map/SizedArray ops over existing carriers/prims |
-| G20 | 28.2 | RESOLVED-WITH-RESIDUAL (was MAJOR) | 8/10 resolve: `absurd subst sym trans cong pathInd unsafeAssertProof witness` declared with spec signatures (usable only with determined endpoints per KNOWN_SPEC_ISSUES §19). RE-AUDIT RESIDUAL: `measureRelation` and `lexRelation` (the §28.2/§29854/§15.11 standard well-founded-relation vocabulary) are still `E_NAME_UNRESOLVED` — never declared in `Prelude.hs`, and not covered by KNOWN_SPEC_ISSUES §18 (which only documents the `WellFoundedRelation.wf` member omission). These are erased compile-time terms (no runtime effect) | `src/Kappa/Prelude.hs` declare `measureRelation`/`lexRelation` (erased `expect term`-shaped decls per §29109/§29115) |
-| G21 | 28.2.3 | MAJOR | `CheckedSub Nat` and `CheckedSub Float/Double` missing → unsolved-implicit on `Nat 3-5`, `Double 5.0-2.0` | `src/Kappa/Prelude.hs` add `CheckedSub Nat`(`subDefined=y<=x`)/`Double`/`Float`(`subDefined=True`) |
+| G20 | 28.2 | RESOLVED (was MAJOR) | 10/10 resolve: `absurd subst sym trans cong pathInd unsafeAssertProof witness measureRelation lexRelation` all declared with spec signatures (usable with determined endpoints per KNOWN_SPEC_ISSUES §19). Re-verified 2026-06-20: `measureRelation`/`lexRelation` resolve as names (E_UNSOLVED_IMPLICIT on the `WellFoundedRelation` implicit, not E_NAME_UNRESOLVED) — the prior "still unresolved" residual was stale. | DONE in `src/Kappa/Prelude.hs`. |
+| G21 | 28.2.3 | RESOLVED (instances present; Nat partiality is by-design) | re-verified 2026-06-20: `Double`/`Float` subtraction works (`subDefined=True`); `Nat` subtraction has a `CheckedSub Nat` instance (`subDefined = \x y -> leInt x y`), so `a - b` is correctly PARTIAL — it requires the §28.2 proof `b <= a = True`, which is the deliberate checked-subtraction design (KNOWN_SPEC_ISSUES #6), not a missing instance. Unguarded `a - b` over abstract Nats fails `E_UNSOLVED_IMPLICIT` as intended; a guard / saturating helper discharges it. | DONE in `src/Kappa/Prelude.hs`; partiality is spec-correct. |
 | G22 | 6.3.4.1 | MINOR | `f"cost: \$5"` → `E_STRING_ESCAPE_INVALID` | `src/Kappa/Lexer.hs:724-725` emit `'$'` only (drop backslash) or add `\$` case to `decodeEscapes` |
 | G23 | 8.3 | MINOR | `import M.(type T(..) as U)` accepted (spec says ill-formed) | `src/Kappa/Parser.hs:865` reject `ctorAll && isJust alias` (e.g. `E_IMPORT_ITEM_MALFORMED`) |
 | G24 | 5.5.1 | MINOR | bare `(-)` with both `infix -` and `prefix -` in scope accepted (no `E_*AMBIGUOUS`) | `src/Kappa/Check.hs` where `EOpRef Nothing` is elaborated: reject >1 callable fixity w/o disambiguating expected type |

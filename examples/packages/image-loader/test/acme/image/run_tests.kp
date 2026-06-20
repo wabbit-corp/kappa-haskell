@@ -1,0 +1,41 @@
+module acme.image.run_tests
+
+-- Native test runner for the image-loader package: invokes the pure PNG/QOI
+-- parser test functions and prints a PASS/FAIL line per check plus a final
+-- summary. Builds under the native backend with the portable `prim.native`
+-- fragment (the jvm/dotnet fragments are excluded by §36.12 selection).
+
+import acme.qoi.parser_test as q
+import acme.png.parser_test as p
+import acme.image.loader_test as l
+
+resultOk : forall (e : Type). Result e Bool -> Bool
+let resultOk r =
+    match r
+    case Ok b -> b
+    case Err _ -> False
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    let c1 = resultOk q.testOnePixelRed
+    let c2 = resultOk q.testRun
+    let c3 = q.testBadMagicRejected
+    let c4 = resultOk p.testOnePixelHeader
+    let c5 = p.testBadSignatureRejected
+    let c6 = l.testSniffQoi
+    let c7 = l.testSniffPng
+    let c8 = resultOk l.testLoadQoiRaster
+    printlnString (line "qoi.onePixelRed" c1)
+    printlnString (line "qoi.run" c2)
+    printlnString (line "qoi.badMagicRejected" c3)
+    printlnString (line "png.onePixelHeader" c4)
+    printlnString (line "png.badSignatureRejected" c5)
+    printlnString (line "image.sniffQoi" c6)
+    printlnString (line "image.sniffPng" c7)
+    printlnString (line "image.loadQoiRaster" c8)
+    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8
+        then printlnString "IMAGE TESTS: ALL PASS"
+        else printlnString "IMAGE TESTS: FAIL"

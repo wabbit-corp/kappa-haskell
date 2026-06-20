@@ -1,0 +1,183 @@
+module delve.engine
+
+import delve.core.*
+import delve.grid as grid
+import delve.fov as fov
+import delve.gen as gen
+import delve.input as input
+import delve.inventory as inventory
+import delve.combat as combat
+import delve.ai as ai
+import delve.render as render
+import delve.terminal as term
+
+movePlayer : Direction -> GameState -> GameState
+let movePlayer dir game =
+    match playerActor game
+    case None -> game.{ mode = Dead }
+    case Some p ->
+        let target = addPos p.pos (moveDelta dir)
+        let tile = grid.getTile game.level target
+        in
+            match actorAt target game.level.actors
+            case Some enemy ->
+                if enemy.id == p.id then game
+                else
+                    let hit = combat.strike p enemy game.rng
+                    let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
+                    let g = game.{ rng = hit.rng, level = game.level.{ actors = removeDeadActors actors1 } }
+                    in message hit.log g
+            case None ->
+                if isWalkable tile then
+                    let p2 = p.{ pos = target }
+                    let actors2 = replaceActor p2 game.level.actors
+                    let level2 = fov.refreshVisibility target game.level.{ actors = actors2 }
+                    let game2 = game.{ level = level2 }
+                    in
+                        match tile.kind
+                        case Trap -> damagePlayer 2 (message "A trap bites your ankle. Very original." game2)
+                        case Water -> message "You splash through dark water." game2
+                        case Lava -> damagePlayer 6 (message "Lava is still lava. Good experiment." game2)
+                        case _ -> game2
+                else
+                    match tile.kind
+                    case ClosedDoor -> openDoorAt target game
+                    case Wall -> message "You bump into a wall." game
+                    case _ -> message "You cannot move there." game
+
+damagePlayer : Int -> GameState -> GameState
+let damagePlayer amount game =
+    match playerActor game
+    case None -> game.{ mode = Dead }
+    case Some p ->
+        let hp2 = p.stats.hp - amount
+        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let mode2 = if hp2 > 0 then game.mode else Dead
+        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+
+openDoorAt : Vec2 -> GameState -> GameState
+let openDoorAt pos game =
+    let t = grid.getTile game.level pos
+    in
+        match t.kind
+        case ClosedDoor ->
+            let level2 = grid.setTile pos (t.{ kind = OpenDoor }) game.level
+            in message "You open the door." game.{ level = level2 }
+        case _ -> message "There is no closed door there." game
+
+openNearby : GameState -> GameState
+let openNearby game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match findFirstClosed (grid.neighbors8 p.pos) game.level
+        case Some pos -> openDoorAt pos game
+        case None -> message "No nearby closed door." game
+
+findFirstClosed : List Vec2 -> Level -> Option Vec2
+let findFirstClosed ps level decreases listLength ps =
+    match ps
+    case Nil -> None
+    case (::) p rest ->
+        if (grid.getTile level p).kind == ClosedDoor then Some p else findFirstClosed rest level
+
+stairsCommand : Bool -> GameState -> GameState
+let stairsCommand goingDown game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let tile = grid.getTile game.level p.pos
+        in
+            if goingDown && tile.kind == Downstairs then
+                let nextSeed = game.rng + 11400714819323198485
+                in message "You descend. The air gets worse. Naturally."
+                    (gen.newLevel (game.level.depth + 1) game.level.size nextSeed)
+            elif not goingDown && tile.kind == Upstairs && game.level.depth > 1 then
+                let nextSeed = game.rng + 13787848793156543929
+                in message "You climb back toward slightly less doom."
+                    (gen.newLevel (game.level.depth - 1) game.level.size nextSeed)
+            elif not goingDown && tile.kind == Upstairs then
+                game.{ mode = Won }
+            else message "No stairs here." game
+
+applyCommand : Command -> GameState -> GameState
+let applyCommand cmd game =
+    match game.mode
+    case HelpMode -> game.{ mode = Playing }
+    case InventoryMode -> game.{ mode = Playing }
+    case Dead ->
+        match cmd
+        case QuitNoSave -> game.{ mode = Quit }
+        case _ -> game
+    case Won ->
+        match cmd
+        case QuitNoSave -> game.{ mode = Quit }
+        case _ -> game
+    case Quit -> game
+    case Playing ->
+        match cmd
+        case Move dir -> movePlayer dir game
+        case Rest -> message "You wait. The dungeon appreciates the free turn." game
+        case Open -> openNearby game
+        case PickUp -> inventory.pickUp game
+        case DropFirst -> inventory.dropFirst game
+        case UseFirst -> inventory.useFirst game
+        case Inventory -> game.{ mode = InventoryMode }
+        case Descend -> stairsCommand True game
+        case Ascend -> stairsCommand False game
+        case Help -> game.{ mode = HelpMode }
+        case SaveAndQuit -> message "Save is planned, not wired. The gods of persistence are on lunch." game.{ mode = Quit }
+        case QuitNoSave -> game.{ mode = Quit }
+        case _ -> game
+
+costsTurn : Command -> Bool
+let costsTurn cmd =
+    match cmd
+    case Move _ -> True
+    case Rest -> True
+    case Open -> True
+    case PickUp -> True
+    case DropFirst -> True
+    case UseFirst -> True
+    case Descend -> True
+    case Ascend -> True
+    case _ -> False
+
+tickWorld : Command -> GameState -> GameState
+let tickWorld cmd game =
+    if costsTurn cmd && game.mode == Playing then
+        let hungry = game.{ player = game.player.{ hunger = game.player.hunger - 1 }, level = game.level.{ turn = game.level.turn + 1 } }
+        let starving = if hungry.player.hunger <= 0 then damagePlayer 1 (message "You are starving." hungry) else hungry
+        ai.runMonsters starving
+    else game
+
+step : Key -> GameState -> GameState
+let step key game =
+    let cmd = input.keyToCommand key
+    let afterPlayer = applyCommand cmd game
+    in tickWorld cmd afterPlayer
+
+initialGame : Nat -> Size -> GameState
+let initialGame seed size =
+    gen.newLevel 1 size seed
+
+runLoop : (& terminal : term.Terminal) -> GameState -> IO GameError Unit
+let runLoop terminal game =
+    do
+        term.write terminal (render.renderGame game)
+        match game.mode
+        case Quit -> pure ()
+        case _ ->
+            key <- term.readKey terminal
+            let game2 = step key game
+            runLoop terminal game2
+
+main : IO GameError Unit
+let main =
+    do
+        using terminal <- term.open
+            seed <- term.monotonicSeed
+            screen <- term.size terminal
+            let mapSize = Size (min 96 (max 60 screen.width)) (min 32 (max 20 (screen.height - 6)))
+            let game = initialGame seed mapSize
+            runLoop terminal game

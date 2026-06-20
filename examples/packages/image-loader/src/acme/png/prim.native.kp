@@ -1,0 +1,52 @@
+@PrivateByDefault module acme.png.prim
+
+-- Portable native/interpreter fragment for the tiny u32/byte primitive facade.
+-- A standard refined overlay over the prelude's Integer/Byte primitives: U32 is
+-- an Integer kept in [0, 2^32) by masking to 32 bits. Selected for the `native`
+-- fragment tag (the jvm/dotnet fragments are excluded there).
+
+public data U32 : Type =
+    MkU32 (rep : Integer)
+
+-- low 32 bits
+let clamp32 n = __intAnd n 0xFFFFFFFF
+
+public byteToNat : Byte -> Nat
+let byteToNat b = __byteToNat b
+
+-- (prevByte + encoded - bias) mod 256, computed without Nat underflow:
+-- bias is a small positive offset (2/8/32) and we add 256 before subtracting.
+public byteAddBiased : Byte -> Nat -> Nat -> Byte
+let byteAddBiased b encoded bias =
+    let total = subInt (addInt (addInt (natToInt (__byteToNat b)) (natToInt encoded)) 256) (natToInt bias)
+    in __natToByte (intToNat (__intAnd total 0xFF))
+
+public natToU32 : Nat -> U32
+let natToU32 n = MkU32 (clamp32 (natToInt n))
+
+public u32ToNat : U32 -> Nat
+let u32ToNat x = intToNat x.rep
+
+public u32Eq : (& left : U32) -> (& right : U32) -> Bool
+let u32Eq left right = eqInt left.rep right.rep
+
+public u32Xor : U32 -> U32 -> U32
+let u32Xor left right = MkU32 (clamp32 (__intXor left.rep right.rep))
+
+public u32And : U32 -> U32 -> U32
+let u32And left right = MkU32 (__intAnd left.rep right.rep)
+
+-- unsigned shift right by `bits` = integer division by 2^bits (U32 is >= 0)
+public u32ShiftRight : U32 -> Nat -> U32
+let u32ShiftRight value bits = MkU32 (divInt value.rep (pow2 bits))
+
+public u32Not : U32 -> U32
+let u32Not value = MkU32 (__intXor value.rep 0xFFFFFFFF)
+
+pow2 : Nat -> Integer
+let pow2 n =
+    if eqInt (natToInt n) 0 then 1
+    else mulInt 2 (pow2 (natOfInt (subInt (natToInt n) 1)))
+
+natOfInt : Integer -> Nat
+let natOfInt n = intToNat n

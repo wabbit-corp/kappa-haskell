@@ -1,0 +1,7 @@
+module delve.main
+
+import delve.core.*
+import delve.engine as engine
+
+main : IO GameError Unit
+let main = engine.main

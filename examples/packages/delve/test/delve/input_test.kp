@@ -1,0 +1,11 @@
+module delve.input_test
+
+import delve.core.*
+import delve.input as input
+
+hjklWorks : Bool
+let hjklWorks =
+    input.keyToCommand (KeyChar "h") == Move West &&
+    input.keyToCommand (KeyChar "j") == Move South &&
+    input.keyToCommand (KeyChar "k") == Move North &&
+    input.keyToCommand (KeyChar "l") == Move East

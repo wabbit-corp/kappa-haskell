@@ -4,7 +4,7 @@
 
 ```
 cabal build                                       # zero warnings under -Wall
-cabal run -v0 kappa -- test tests/conformance     # in-tree suite (195/195)
+cabal run -v0 kappa -- test tests/conformance     # in-tree suite (242/242)
 cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
@@ -166,8 +166,16 @@ diagnostic, so an invalid program is never accepted (§3.1.14A soundness).
 
 ## In-tree conformance suite
 
-`tests/conformance/` — **229/229 passing**, zero unsupported, zero
-harness errors. Layout by area:
+`tests/conformance/` — **242/242 passing**, zero harness errors (fresh run:
+`kappa test tests/conformance` → `total 242: 242 passed, 0 failed, 0
+unsupported, 0 harness errors`). Three fixtures under `unsupported/`
+(`handle.kp`, `return-label.kp`, `defer-label.kp`) PASS by asserting
+`E_UNSUPPORTED` — they pin the deterministic-unsupported behavior (§ "Deterministic
+unsupported result") for three normative features this implementation does not
+yet provide: effect handlers (§18/§19), `return@label` (§18.5), and `defer@label`
+(§18.7). Those are tracked unimplemented MUST-level language features (not
+spec-optional); the fixtures verify the rejection is clean, not that the
+features are complete. Layout by area:
 
 | Directory | Covers |
 | --- | --- |

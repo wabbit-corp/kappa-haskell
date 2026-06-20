@@ -1,0 +1,144 @@
+@PrivateByDefault module acme.png.core
+
+import std.bytes as bytes
+import acme.png.prim.(U32)
+
+public data PngError : Type =
+    NeedBytes (offset : Nat) (needed : Nat) (available : Nat)
+    BadSignature
+    BadChunkLength (offset : Nat) (length : Nat)
+    BadChunkType (offset : Nat) (chunkType : Bytes)
+    ReservedChunkBitSet (offset : Nat) (chunkType : Bytes)
+    CrcMismatch (offset : Nat) (chunkType : Bytes) (expected : U32) (actual : U32)
+    IhdrNotFirst (found : Bytes)
+    DuplicateIhdr
+    MissingIhdr
+    BadIhdrLength (length : Nat)
+    BadDimensions (width : Nat) (height : Nat)
+    BadBitDepthColorType (bitDepth : Nat) (colorType : Nat)
+    BadCompressionMethod (method : Nat)
+    BadFilterMethod (method : Nat)
+    BadInterlaceMethod (method : Nat)
+    DuplicatePlte
+    PlteBeforeIhdr
+    PlteAfterIdat
+    PlteForbiddenForColorType (colorType : Nat)
+    PlteRequired
+    BadPlteLength (length : Nat)
+    IdatBeforeIhdr
+    IdatMissing
+    IdatNotConsecutive
+    BadIendLength (length : Nat)
+    IendMissing
+    IendNotLast (trailingBytes : Nat)
+    UnknownCriticalChunk (chunkType : Bytes)
+
+public data ColorType : Type =
+    Greyscale
+    Truecolor
+    IndexedColor
+    GreyscaleAlpha
+    TruecolorAlpha
+
+public data InterlaceMethod : Type =
+    NoInterlace
+    Adam7
+
+public data Ihdr : Type =
+    Ihdr
+        (width : Nat)
+        (height : Nat)
+        (bitDepth : Nat)
+        (colorType : ColorType)
+        (compressionMethod : Nat)
+        (filterMethod : Nat)
+        (interlaceMethod : InterlaceMethod)
+
+public data RGB : Type =
+    RGB (red : Byte) (green : Byte) (blue : Byte)
+
+public data Palette : Type =
+    Palette (entries : List RGB)
+
+public data ChunkClass : Type =
+    Critical
+    Ancillary
+
+public data ChunkKnown : Type =
+    C_IHDR
+    C_PLTE
+    C_IDAT
+    C_IEND
+    C_tRNS
+    C_gAMA
+    C_cHRM
+    C_iCCP
+    C_sRGB
+    C_bKGD
+    C_pHYs
+    C_tEXt
+    C_zTXt
+    C_iTXt
+    C_acTL
+    C_fcTL
+    C_fdAT
+    C_Unknown
+
+public data RawChunk : Type =
+    RawChunk
+        (offset : Nat)
+        (length : Nat)
+        (chunkType : Bytes)
+        (data : Bytes)
+        (crc : U32)
+        (known : ChunkKnown)
+        (class : ChunkClass)
+
+public data PngImage : Type =
+    PngImage
+        (ihdr : Ihdr)
+        (palette : Option Palette)
+        (idat : Bytes)
+        (chunks : List RawChunk)
+        (ancillary : List RawChunk)
+
+public maxPngU31 : Nat
+let maxPngU31 = 2147483647
+
+public colorTypeCode : ColorType -> Nat
+let colorTypeCode ct =
+    match ct
+    case Greyscale -> 0
+    case Truecolor -> 2
+    case IndexedColor -> 3
+    case GreyscaleAlpha -> 4
+    case TruecolorAlpha -> 6
+
+public colorTypeFromNat : Nat -> Option ColorType
+let colorTypeFromNat n =
+    if n == 0 then Some Greyscale
+    elif n == 2 then Some Truecolor
+    elif n == 3 then Some IndexedColor
+    elif n == 4 then Some GreyscaleAlpha
+    elif n == 6 then Some TruecolorAlpha
+    else None
+
+public legalBitDepth : Nat -> ColorType -> Bool
+let legalBitDepth depth colorType =
+    match colorType
+    case Greyscale ->
+        depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16
+    case Truecolor ->
+        depth == 8 || depth == 16
+    case IndexedColor ->
+        depth == 1 || depth == 2 || depth == 4 || depth == 8
+    case GreyscaleAlpha ->
+        depth == 8 || depth == 16
+    case TruecolorAlpha ->
+        depth == 8 || depth == 16
+
+public interlaceFromNat : Nat -> Option InterlaceMethod
+let interlaceFromNat n =
+    if n == 0 then Some NoInterlace
+    elif n == 1 then Some Adam7
+    else None

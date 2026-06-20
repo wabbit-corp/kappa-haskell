@@ -1,0 +1,25 @@
+@PrivateByDefault module acme.png.example
+
+import std.bytes as bytes
+import acme.png.parser as png
+import acme.png.core.*
+
+-- A minimal 1x1 truecolor PNG datastream. The parser validates the PNG
+-- container and returns the compressed IDAT payload, but does not inflate it.
+public onePixelRedPng : Bytes
+let onePixelRedPng =
+    bytes.bytesFromList
+        [ b'\x89', b'P', b'N', b'G', b'\r', b'\n', b'\x1A', b'\n'
+        , b'\x00', b'\x00', b'\x00', b'\x0D', b'I', b'H', b'D', b'R'
+        , b'\x00', b'\x00', b'\x00', b'\x01', b'\x00', b'\x00', b'\x00', b'\x01'
+        , b'\x08', b'\x02', b'\x00', b'\x00', b'\x00', b'\x90', b'\x77', b'\x53', b'\xDE'
+        , b'\x00', b'\x00', b'\x00', b'\x0C', b'I', b'D', b'A', b'T'
+        , b'\x08', b'\xD7', b'\x63', b'\xF8', b'\xCF', b'\xC0', b'\x00', b'\x00'
+        , b'\x03', b'\x01', b'\x01', b'\x00', b'\x18', b'\xDD', b'\x8D', b'\xB0'
+        , b'\x00', b'\x00', b'\x00', b'\x00', b'I', b'E', b'N', b'D'
+        , b'\xAE', b'\x42', b'\x60', b'\x82'
+        ]
+
+public parseExample : Result PngError PngImage
+let parseExample =
+    png.parsePng onePixelRedPng

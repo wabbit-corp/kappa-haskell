@@ -1,0 +1,30 @@
+trusted-summary: delve-terminal-linux
+host-root: host.native
+provided-module: host.native.delve_terminal.Raw
+headers:
+  - native/delve_terminal.h
+sources:
+  - native/delve_terminal.c
+target:
+  os: linux
+  abi: c
+  libraries: []
+blocking-classification:
+  delve_open_terminal: blocking
+  delve_close_terminal: blocking
+  delve_read_key: blocking-cancellable via poll/read interruption
+  delve_write_all: blocking
+  delve_get_size: nonblocking
+  delve_monotonic_seed: nonblocking
+error-contract:
+  raw C functions return errno-compatible int status
+  status 0 means success
+  nonzero status maps to Raw.TerminalError and then delve.core.TerminalError
+ownership:
+  delve_open_terminal returns an owned TerminalHandle
+  delve_close_terminal consumes and releases the TerminalHandle
+  terminal raw mode is restored by close
+callbacks: none
+notes:
+  The raw host binding generator should expose Result TerminalError a wrappers rather
+  than bare errno integers when this trusted summary is selected.

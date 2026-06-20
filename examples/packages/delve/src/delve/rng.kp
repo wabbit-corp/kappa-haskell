@@ -1,0 +1,41 @@
+module delve.rng
+
+-- Deterministic linear-congruential RNG. It is boring, reproducible, and
+-- therefore useful for dungeon seeds. Cryptography can stay outside, where it
+-- belongs with the other sharp objects.
+
+type Rng = Nat
+
+modulus : Nat
+let modulus = 9223372036854775783
+
+seed : Nat -> Rng
+let seed n =
+    if n == 0 then 88172645463393265 else n % modulus
+
+next : Rng -> (value : Nat, rng : Rng)
+let next s =
+    let x = ((s * 6364136223846793005) + 1442695040888963407) % modulus
+    in (value = x, rng = x)
+
+range : Int -> Int -> Rng -> (value : Int, rng : Rng)
+let range lo hi rng =
+    let span = max 1 (hi - lo + 1)
+    let n = next rng
+    in (value = lo + natToInt (n.value % intToNat span), rng = n.rng)
+
+chance : Int -> Rng -> (value : Bool, rng : Rng)
+let chance percent rng =
+    let r = range 1 100 rng
+    in (value = r.value <= percent, rng = r.rng)
+
+choose : List a -> Rng -> Option (value : a, rng : Rng)
+let choose xs rng =
+    let n = listLength xs
+    in
+        if n == 0 then None
+        else
+            let r = range 0 (n - 1) rng
+            in match listGet xs r.value
+               case Some v -> Some (value = v, rng = r.rng)
+               case None -> None

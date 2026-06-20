@@ -1,0 +1,165 @@
+module delve.gen
+
+import delve.core.*
+import delve.grid as grid
+import delve.rng as rng
+import delve.content as content
+
+minRoom : Int
+let minRoom = 4
+
+maxRoom : Int
+let maxRoom = 10
+
+carveRect : Room -> Level -> Level
+let carveRect r level =
+    block
+        goY : Int -> Level -> Level
+        let goY y lv decreases max 0 ((r.y + r.h) - y) =
+            if y >= r.y + r.h then lv
+            else goY (y + 1) (goX r.x y lv)
+
+        goX : Int -> Int -> Level -> Level
+        let goX x y lv decreases max 0 ((r.x + r.w) - x) =
+            if x >= r.x + r.w then lv
+            else goX (x + 1) y (grid.setTile (Vec2 x y) (Tile Floor False False False) lv)
+
+        goY r.y level
+
+carveHorizontal : Int -> Int -> Int -> Level -> Level
+let carveHorizontal x1 x2 y level =
+    let lo = min x1 x2
+    let hi = max x1 x2
+    in block
+        go : Int -> Level -> Level
+        let go x lv decreases max 0 (hi - x + 1) =
+            if x > hi then lv
+            else go (x + 1) (grid.setTile (Vec2 x y) (Tile Floor False False False) lv)
+        go lo level
+
+carveVertical : Int -> Int -> Int -> Level -> Level
+let carveVertical y1 y2 x level =
+    let lo = min y1 y2
+    let hi = max y1 y2
+    in block
+        go : Int -> Level -> Level
+        let go y lv decreases max 0 (hi - y + 1) =
+            if y > hi then lv
+            else go (y + 1) (grid.setTile (Vec2 x y) (Tile Floor False False False) lv)
+        go lo level
+
+connectRooms : Room -> Room -> Level -> Level
+let connectRooms a b level =
+    let ca = roomCenter a
+    let cb = roomCenter b
+    let level1 = carveHorizontal ca.x cb.x ca.y level
+    in carveVertical ca.y cb.y cb.x level1
+
+roomOverlaps : Room -> Room -> Bool
+let roomOverlaps a b =
+    not (a.x + a.w + 1 < b.x || b.x + b.w + 1 < a.x || a.y + a.h + 1 < b.y || b.y + b.h + 1 < a.y)
+
+anyOverlap : Room -> List Room -> Bool
+let anyOverlap room rooms decreases listLength rooms =
+    match rooms
+    case Nil -> False
+    case (::) r rest -> if roomOverlaps room r then True else anyOverlap room rest
+
+tryRoom : Size -> rng.Rng -> (room : Room, rng : rng.Rng)
+let tryRoom size r0 =
+    let rw = rng.range minRoom maxRoom r0
+    let rh = rng.range minRoom maxRoom rw.rng
+    let rx = rng.range 2 (size.width - rw.value - 3) rh.rng
+    let ry = rng.range 2 (size.height - rh.value - 3) rx.rng
+    in (room = Room rx.value ry.value rw.value rh.value, rng = ry.rng)
+
+buildRooms : Int -> Size -> List Room -> Level -> rng.Rng -> (level : Level, rooms : List Room, rng : rng.Rng)
+let buildRooms tries size rooms level r decreases tries =
+    if tries <= 0 then (level = level, rooms = reverse rooms, rng = r)
+    else
+        let candidate = tryRoom size r
+        if anyOverlap candidate.room rooms then
+            buildRooms (tries - 1) size rooms level candidate.rng
+        else
+            let connected =
+                match rooms
+                case Nil -> carveRect candidate.room level
+                case (::) prev _ -> connectRooms prev candidate.room (carveRect candidate.room level)
+            in buildRooms (tries - 1) size ((::) candidate.room rooms) connected candidate.rng
+
+placeStairs : List Room -> Level -> Level
+let placeStairs rooms level =
+    match rooms
+    case Nil -> level
+    case (::) first rest ->
+        let up = roomCenter first
+        let down = roomCenter (lastOr first rest)
+        let level1 = grid.setTile up (Tile Upstairs False False False) level
+        in grid.setTile down (Tile Downstairs False False False) level1
+
+lastOr : a -> List a -> a
+let lastOr fallback xs decreases listLength xs =
+    match xs
+    case Nil -> fallback
+    case (::) x Nil -> x
+    case (::) _ rest -> lastOr fallback rest
+
+randomFloorInRoom : Room -> rng.Rng -> (pos : Vec2, rng : rng.Rng)
+let randomFloorInRoom room r0 =
+    let x = rng.range (room.x + 1) (room.x + room.w - 2) r0
+    let y = rng.range (room.y + 1) (room.y + room.h - 2) x.rng
+    in (pos = Vec2 x.value y.value, rng = y.rng)
+
+spawnMonsters : Int -> List Room -> Int -> List Actor -> rng.Rng -> (actors : List Actor, rng : rng.Rng)
+let spawnMonsters depth rooms nextId actors r decreases listLength rooms =
+    match rooms
+    case Nil -> (actors = actors, rng = r)
+    case (::) room rest ->
+        let roll = rng.chance (35 + min 30 (depth * 5)) r
+        if not roll.value then spawnMonsters depth rest nextId actors roll.rng
+        else
+            let speciesChoice = rng.choose (content.monsterTable depth) roll.rng
+            match speciesChoice
+            case None -> spawnMonsters depth rest nextId actors roll.rng
+            case Some chosen ->
+                let p = randomFloorInRoom room chosen.rng
+                let m = content.mkMonster nextId chosen.value p.pos
+                spawnMonsters depth rest (nextId + 1) ((::) m actors) p.rng
+
+spawnItems : Int -> List Room -> List GroundItem -> rng.Rng -> (items : List GroundItem, rng : rng.Rng)
+let spawnItems depth rooms items r decreases listLength rooms =
+    match rooms
+    case Nil -> (items = items, rng = r)
+    case (::) room rest ->
+        let roll = rng.chance 45 r
+        if not roll.value then spawnItems depth rest items roll.rng
+        else
+            let kind = rng.choose (content.itemTable depth) roll.rng
+            match kind
+            case None -> spawnItems depth rest items roll.rng
+            case Some k ->
+                let p = randomFloorInRoom room k.rng
+                spawnItems depth rest ((::) (GroundItem p.pos (content.mkItem k.value)) items) p.rng
+
+newLevel : Int -> Size -> Nat -> GameState
+let newLevel depth size seed0 =
+    let r0 = rng.seed seed0
+    let base = grid.blankLevel depth size
+    let built = buildRooms 80 size Nil base r0
+    let rooms = built.rooms
+    let levelWithStairs = placeStairs rooms built.level
+    let startRoom =
+        match rooms
+        case Nil -> Room 2 2 8 8
+        case (::) first _ -> first
+    let start = roomCenter startRoom
+    let player = content.mkPlayer 1 start
+    let monsters = spawnMonsters depth (drop 1 rooms) 2 [player] built.rng
+    let items = spawnItems depth rooms Nil monsters.rng
+    let level = levelWithStairs.{ rooms = rooms, actors = reverse monsters.actors, items = items.items }
+    in GameState
+        (rng = items.rng)
+        (player = PlayerState 1 1200 0 Nil)
+        (level = level)
+        (mode = Playing)
+        (lastCommand = "")

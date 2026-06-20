@@ -1,0 +1,38 @@
+-- Schematic build manifest for the Kappa image loader.
+-- Common source validates PNG containers and fully decodes QOI rasters.
+-- Backend fragments remain limited to the tiny byte/u32 primitive facade.
+
+let buildConfig : BuildConfig =
+    package
+        ( name = "acme.image"
+        , version = semver "0.2.0"
+        , sourceRoots = [ sourceRoot "src", sourceRoot "test" ]
+        , fragmentAxes =
+            [ axis "backend" [tag "jvm", tag "dotnet"] ]
+        , targets =
+            [ library
+                ( name = "image-jvm"
+                , backend = jvm ()
+                , fragments = tags ["jvm"]
+                , modules = modulesUnder "acme"
+                , hostBindings = ["jvm-kappa-runtime-u32"]
+                )
+            , library
+                ( name = "image-dotnet"
+                , backend = dotnet ()
+                , fragments = tags ["dotnet"]
+                , modules = modulesUnder "acme"
+                , hostBindings = ["dotnet-kappa-runtime-u32"]
+                )
+            , test
+                ( name = "image-tests-jvm"
+                , dependsOn = target "image-jvm"
+                , modules = modulesUnder "acme"
+                )
+            , test
+                ( name = "image-tests-dotnet"
+                , dependsOn = target "image-dotnet"
+                , modules = modulesUnder "acme"
+                )
+            ]
+        )

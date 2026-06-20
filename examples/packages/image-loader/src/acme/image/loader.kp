@@ -1,0 +1,44 @@
+@PrivateByDefault module acme.image.loader
+
+import std.bytes as bytes
+import acme.image.core.*
+import acme.png.parser as png
+import acme.qoi.parser as qoi
+
+pngSignature : Bytes
+let pngSignature = bytes.bytesFromList [b'\x89', b'P', b'N', b'G', b'\r', b'\n', b'\x1A', b'\n']
+
+qoiSignature : Bytes
+let qoiSignature = bytes.bytesFromList [b'q', b'o', b'i', b'f']
+
+public startsWith : Bytes -> Bytes -> Bool
+let startsWith prefix source =
+    bytes.bytesTake (bytes.bytesLength prefix) source == prefix
+
+public sniff : Bytes -> Option ImageFormat
+let sniff source =
+    if startsWith pngSignature source then Some FormatPng
+    elif startsWith qoiSignature source then Some FormatQoi
+    else None
+
+public loadImage : Bytes -> Result ImageLoadError ImageDocument
+let loadImage source =
+    match sniff source
+    case None -> Err UnsupportedMagic
+    case Some FormatPng ->
+        match png.parsePng source
+        case Err e -> Err (PngLoadError e)
+        case Ok parsed -> Ok (PngContainer parsed)
+    case Some FormatQoi ->
+        match qoi.parseQoi source
+        case Err e -> Err (QoiLoadError e)
+        case Ok parsed -> Ok (DecodedRaster FormatQoi (qoiAsRaster parsed))
+
+public loadRaster : Bytes -> Result ImageLoadError RasterImage
+let loadRaster source =
+    match loadImage source
+    case Err e -> Err e
+    case Ok doc ->
+        match doc
+        case DecodedRaster _ raster -> Ok raster
+        case PngContainer _ -> Err (RasterDecodeUnavailable FormatPng)

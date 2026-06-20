@@ -1,0 +1,77 @@
+@PrivateByDefault module acme.qoi.core
+
+import std.bytes as bytes
+
+public data QoiError : Type =
+    NeedBytes (offset : Nat) (needed : Nat) (available : Nat)
+    BadMagic
+    BadDimensions (width : Nat) (height : Nat)
+    BadChannels (value : Nat)
+    BadColorspace (value : Nat)
+    PixelCountTooLarge (width : Nat) (height : Nat) (limit : Nat)
+    BadEndMarker
+    TrailingBytes (count : Nat)
+    UnexpectedEndOfChunks (pixelsRemaining : Nat)
+    BadRunLength
+    RunOverflowsImage (run : Nat) (remaining : Nat)
+    InternalInvariant (message : String)
+
+public data Channels : Type =
+    ChannelsRgb
+    ChannelsRgba
+
+public data Colorspace : Type =
+    SrgbLinearAlpha
+    AllLinear
+
+public data Pixel : Type =
+    Pixel (r : Byte) (g : Byte) (b : Byte) (a : Byte)
+
+public data QoiDesc : Type =
+    QoiDesc
+        (width : Nat)
+        (height : Nat)
+        (channels : Channels)
+        (colorspace : Colorspace)
+
+public data QoiImage : Type =
+    QoiImage
+        (desc : QoiDesc)
+        (pixels : Bytes)
+
+public maxPixels : Nat
+let maxPixels = 400000000
+
+public channelsToNat : Channels -> Nat
+let channelsToNat c =
+    match c
+    case ChannelsRgb -> 3
+    case ChannelsRgba -> 4
+
+public channelsFromNat : Nat -> Option Channels
+let channelsFromNat n =
+    if n == 3 then Some ChannelsRgb
+    elif n == 4 then Some ChannelsRgba
+    else None
+
+public colorspaceFromNat : Nat -> Option Colorspace
+let colorspaceFromNat n =
+    if n == 0 then Some SrgbLinearAlpha
+    elif n == 1 then Some AllLinear
+    else None
+
+public pixelZero : Pixel
+let pixelZero = Pixel b'\x00' b'\x00' b'\x00' b'\x00'
+
+public initialPixel : Pixel
+let initialPixel = Pixel b'\x00' b'\x00' b'\x00' b'\xFF'
+
+public pixelEq : (& x : Pixel) -> (& y : Pixel) -> Bool
+let pixelEq x y =
+    x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a
+
+public pixelBytes : Channels -> Pixel -> Bytes
+let pixelBytes channels px =
+    match channels
+    case ChannelsRgb -> bytes.bytesFromList [px.r, px.g, px.b]
+    case ChannelsRgba -> bytes.bytesFromList [px.r, px.g, px.b, px.a]

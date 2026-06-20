@@ -1,0 +1,38 @@
+-- Schematic Kappa build manifest for the native Linux target. The exact manifest
+-- schema is implementation-defined in the draft, but this records the semantic
+-- choices the compiler needs: native backend, linux fragment tag, host.native
+-- terminal shim, and native deployment prerequisites.
+
+let buildConfig : BuildConfig =
+    package
+        ( name = "delve"
+        , version = semver "0.1.0"
+        , sourceRoots = [ sourceRoot "src" ]
+        , fragmentAxes =
+            [ axis "backend" [tag "native"]
+            , axis "os" [tag "linux"]
+            ]
+        , hostBindings =
+            [ nativeBinding
+                ( name = "delve-terminal"
+                , provides = [ module "host.native.delve_terminal.Raw" ]
+                , headers = [ path "native/delve_terminal.h" ]
+                , sources = [ path "native/delve_terminal.c" ]
+                , summaries = [ trustedSummary "bindings/delve-terminal.summary" ]
+                , adapterMode = cAbi ()
+                , link = compileAndLinkStatic []
+                )
+            ]
+        , targets =
+            [ executable
+                ( name = "delve"
+                , backend = native ()
+                , fragments = tags ["native", "linux"]
+                , main = module "delve.main"
+                , modules = modulesUnder "delve"
+                , hostBindings = ["delve-terminal"]
+                , capabilities = ["rt-core", "rt-blocking"]
+                , deployment = systemPrerequisite "linux terminal with POSIX termios"
+                )
+            ]
+        )

@@ -1,0 +1,84 @@
+@PrivateByDefault module acme.qoi.binary
+
+import std.bytes as bytes
+import acme.qoi.core.*
+import acme.png.prim as prim
+
+public data Cursor : Type =
+    Cursor (source : Bytes) (offset : Nat)
+
+public data Step (a : Type) : Type =
+    Step (value : a) (cursor : Cursor)
+
+public cursorStart : Bytes -> Cursor
+let cursorStart source = Cursor source 0
+
+public remaining : Cursor -> Nat
+let remaining c = bytes.bytesLength c.source - c.offset
+
+public atEnd : Cursor -> Bool
+let atEnd c = c.offset >= bytes.bytesLength c.source
+
+public requireBytes : Cursor -> Nat -> Result QoiError Unit
+let requireBytes c n =
+    if c.offset + n <= bytes.bytesLength c.source then Ok Unit
+    else Err (NeedBytes c.offset n (remaining c))
+
+public safeSlice : Bytes -> Nat -> Nat -> Bytes
+let safeSlice source start len =
+    bytes.bytesTake len (bytes.bytesDrop start source)
+
+public takeBytes : Cursor -> Nat -> Result QoiError (Step Bytes)
+let takeBytes c n =
+    match requireBytes c n
+    case Err e -> Err e
+    case Ok Unit ->
+        let chunk = safeSlice c.source c.offset n
+        let next = Cursor c.source (c.offset + n)
+        in Ok (Step chunk next)
+
+public readByte : Cursor -> Result QoiError (Step Byte)
+let readByte c =
+    match bytes.bytesGet c.source c.offset
+    case None -> Err (NeedBytes c.offset 1 (remaining c))
+    case Some b -> Ok (Step b (Cursor c.source (c.offset + 1)))
+
+public u32NatOfBytes : Byte -> Byte -> Byte -> Byte -> Nat
+let u32NatOfBytes b0 b1 b2 b3 =
+    (prim.byteToNat b0 * 16777216) +
+    (prim.byteToNat b1 * 65536) +
+    (prim.byteToNat b2 * 256) +
+    prim.byteToNat b3
+
+public readU32NatBE : Cursor -> Result QoiError (Step Nat)
+let readU32NatBE c =
+    match takeBytes c 4
+    case Err e -> Err e
+    case Ok step ->
+        match (bytes.bytesGet step.value 0, bytes.bytesGet step.value 1, bytes.bytesGet step.value 2, bytes.bytesGet step.value 3)
+        case (Some b0, Some b1, Some b2, Some b3) -> Ok (Step (u32NatOfBytes b0 b1 b2 b3) step.cursor)
+        case _ -> Err (NeedBytes c.offset 4 (remaining c))
+
+public readTagByte : Cursor -> Result QoiError (Step Nat)
+let readTagByte c =
+    match readByte c
+    case Err e -> Err e
+    case Ok step -> Ok (Step (prim.byteToNat step.value) step.cursor)
+
+public modNat : Nat -> Nat -> Nat
+let modNat n d = n - ((n / d) * d)
+
+public high2 : Nat -> Nat
+let high2 b = b / 64
+
+public low6 : Nat -> Nat
+let low6 b = modNat b 64
+
+public nibbleHigh : Nat -> Nat
+let nibbleHigh b = modNat (b / 16) 16
+
+public nibbleLow : Nat -> Nat
+let nibbleLow b = modNat b 16
+
+public low2 : Nat -> Nat
+let low2 b = modNat b 4

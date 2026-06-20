@@ -1,0 +1,19 @@
+module delve.terminal
+
+import delve.core.*
+
+-- Terminal facade. The selected native/linux fragment supplies the definitions.
+-- The rest of the game sees neither termios nor errno, which is how civilized
+-- software avoids turning into a haunted basement.
+
+expect data Terminal : Type
+
+expect term open : IO GameError Terminal
+expect term close : (1 terminal : Terminal) -> IO GameError Unit
+expect term readKey : (& terminal : Terminal) -> IO GameError Key
+expect term write : (& terminal : Terminal) -> String -> IO GameError Unit
+expect term size : (& terminal : Terminal) -> IO GameError Size
+expect term monotonicSeed : UIO Nat
+
+instance Releasable (IO GameError) Terminal =
+    let release terminal = close terminal

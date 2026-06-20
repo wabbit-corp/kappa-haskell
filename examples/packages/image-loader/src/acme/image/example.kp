@@ -1,0 +1,9 @@
+@PrivateByDefault module acme.image.example
+
+import acme.image.core.*
+import acme.image.loader as loader
+import acme.qoi.example as qoiExample
+
+public sample : Result ImageLoadError RasterImage
+let sample =
+    loader.loadRaster qoiExample.onePixelRedRgbaQoi

@@ -1,0 +1,132 @@
+module delve.render
+
+import delve.core.*
+import delve.grid as grid
+import delve.inventory as inv
+import delve.input as input
+
+ansiClear : String
+let ansiClear = "\x1b[2J\x1b[H"
+
+ansiHideCursor : String
+let ansiHideCursor = "\x1b[?25l"
+
+ansiShowCursor : String
+let ansiShowCursor = "\x1b[?25h"
+
+fg : String -> String -> String
+let fg code text = "\x1b[" ++ code ++ "m" ++ text ++ "\x1b[0m"
+
+tileGlyph : Tile -> String
+let tileGlyph t =
+    if not t.seen then " "
+    else
+        let glyph =
+            match t.kind
+            case VoidTile -> " "
+            case Floor -> "."
+            case Wall -> "#"
+            case ClosedDoor -> "+"
+            case OpenDoor -> "/"
+            case Upstairs -> "<"
+            case Downstairs -> ">"
+            case Water -> "~"
+            case Lava -> "~"
+            case Trap -> "^"
+        in if t.lit then glyph else fg "90" glyph
+
+itemAt : Vec2 -> List GroundItem -> Option Item
+let itemAt pos items decreases listLength items =
+    match items
+    case Nil -> None
+    case (::) gi rest -> if eqPos pos gi.pos then Some gi.item else itemAt pos rest
+
+actorGlyphAt : Vec2 -> List Actor -> Option String
+let actorGlyphAt pos actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case (::) a rest ->
+        if a.alive && eqPos a.pos pos then Some a.glyph else actorGlyphAt pos rest
+
+cellGlyph : Level -> Vec2 -> String
+let cellGlyph level pos =
+    let tile = grid.getTile level pos
+    in
+        if not tile.lit then tileGlyph tile
+        else
+            match actorGlyphAt pos level.actors
+            case Some g -> g
+            case None ->
+                match itemAt pos level.items
+                case Some item -> item.glyph
+                case None -> tileGlyph tile
+
+renderMap : Level -> String
+let renderMap level =
+    block
+        row : Int -> String
+        let row y = rowLoop 0 y ""
+
+        rowLoop : Int -> Int -> String -> String
+        let rowLoop x y acc decreases max 0 (level.size.width - x) =
+            if x >= level.size.width then acc ++ "\r\n"
+            else rowLoop (x + 1) y (acc ++ cellGlyph level (Vec2 x y))
+
+        rows : Int -> String -> String
+        let rows y acc decreases max 0 (level.size.height - y) =
+            if y >= level.size.height then acc
+            else rows (y + 1) (acc ++ row y)
+
+        rows 0 ""
+
+hpBar : Actor -> String
+let hpBar p =
+    "HP " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++
+    "  Lv " ++ show p.stats.level ++
+    "  XP " ++ show p.stats.xp
+
+messages : List String -> String
+let messages ms =
+    block
+        go : List String -> String -> String
+        let go xs acc decreases listLength xs =
+            match xs
+            case Nil -> acc
+            case (::) m rest -> go rest (acc ++ m ++ "\r\n")
+        go (reverse ms) ""
+
+renderInventory : Actor -> String
+let renderInventory actor =
+    let lines = inv.inventoryText actor
+    in renderBox "Inventory" lines
+
+renderHelp : String
+let renderHelp = renderBox "Help" input.helpLines
+
+renderBox : String -> List String -> String
+let renderBox title lines =
+    block
+        go : List String -> String -> String
+        let go xs acc decreases listLength xs =
+            match xs
+            case Nil -> acc
+            case (::) l rest -> go rest (acc ++ "  " ++ l ++ "\r\n")
+        ansiClear ++ title ++ "\r\n" ++ "--------------------------------\r\n" ++ go lines "" ++ "\r\npress Esc or any movement key\r\n"
+
+renderGame : GameState -> String
+let renderGame game =
+    match game.mode
+    case HelpMode -> renderHelp
+    case InventoryMode ->
+        match playerActor game
+        case Some p -> renderInventory p
+        case None -> renderBox "Inventory" ["No player. Philosophy wins, roguelike loses."]
+    case Dead -> ansiClear ++ "You died. The dungeon looks smug.\r\n\r\npress q to quit\r\n"
+    case Won -> ansiClear ++ "You escape with the amulet. Ridiculous, but allowed.\r\n\r\npress q to quit\r\n"
+    case Quit -> ansiClear ++ ansiShowCursor
+    case Playing ->
+        let hud =
+            match playerActor game
+            case Some p -> hpBar p
+            case None -> "No player"
+        ansiClear ++ ansiHideCursor ++ renderMap game.level ++ hud ++ "\r\n" ++ messages game.level.messages

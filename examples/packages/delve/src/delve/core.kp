@@ -1,0 +1,281 @@
+module delve.core
+
+import std.bytes.(Bytes)
+import std.unicode.(utf8Bytes)
+
+-- Delve: a terminal-only Linux/native roguelike skeleton with enough meat on
+-- its bones to be called a game without lying too loudly.
+
+data GameError : Type =
+    TerminalError (message : String)
+    SaveError (message : String)
+    InvalidWorld (message : String)
+    QuitRequested
+
+data Vec2 : Type =
+    Vec2 (x : Int) (y : Int)
+
+data Size : Type =
+    Size (width : Int) (height : Int)
+
+data Direction : Type =
+    North
+    South
+    West
+    East
+    NorthWest
+    NorthEast
+    SouthWest
+    SouthEast
+    Wait
+
+moveDelta : Direction -> Vec2
+let moveDelta dir =
+    match dir
+    case North -> Vec2 0 (-1)
+    case South -> Vec2 0 1
+    case West -> Vec2 (-1) 0
+    case East -> Vec2 1 0
+    case NorthWest -> Vec2 (-1) (-1)
+    case NorthEast -> Vec2 1 (-1)
+    case SouthWest -> Vec2 (-1) 1
+    case SouthEast -> Vec2 1 1
+    case Wait -> Vec2 0 0
+
+addPos : Vec2 -> Vec2 -> Vec2
+let addPos a b =
+    Vec2 (a.x + b.x) (a.y + b.y)
+
+eqPos : Vec2 -> Vec2 -> Bool
+let eqPos a b =
+    (a.x == b.x) && (a.y == b.y)
+
+manhattan : Vec2 -> Vec2 -> Int
+let manhattan a b =
+    abs (a.x - b.x) + abs (a.y - b.y)
+
+chebyshev : Vec2 -> Vec2 -> Int
+let chebyshev a b =
+    max (abs (a.x - b.x)) (abs (a.y - b.y))
+
+data TileKind : Type =
+    VoidTile
+    Floor
+    Wall
+    ClosedDoor
+    OpenDoor
+    Upstairs
+    Downstairs
+    Water
+    Lava
+    Trap
+
+data Tile : Type =
+    Tile
+        (kind : TileKind)
+        (seen : Bool)
+        (lit : Bool)
+        (blood : Bool)
+
+defaultTile : Tile
+let defaultTile = Tile Wall False False False
+
+isTransparent : Tile -> Bool
+let isTransparent t =
+    match t.kind
+    case Wall -> False
+    case ClosedDoor -> False
+    case VoidTile -> False
+    case _ -> True
+
+isWalkable : Tile -> Bool
+let isWalkable t =
+    match t.kind
+    case Floor -> True
+    case OpenDoor -> True
+    case ClosedDoor -> False
+    case Upstairs -> True
+    case Downstairs -> True
+    case Trap -> True
+    case Water -> True
+    case _ -> False
+
+data ItemKind : Type =
+    Gold
+    PotionHealing
+    ScrollIdentify
+    FoodRation
+    Dagger
+    Sword
+    Mace
+    LeatherArmor
+    ChainMail
+    WandFire
+    Amulet
+
+data Item : Type =
+    Item
+        (kind : ItemKind)
+        (name : String)
+        (glyph : String)
+        (stackable : Bool)
+        (power : Int)
+        (count : Int)
+
+data Species : Type =
+    PlayerSpecies
+    Goblin
+    Orc
+    Kobold
+    Rat
+    Bat
+    Troll
+    Skeleton
+    Wizard
+    Dragon
+
+data Attitude : Type =
+    PlayerControlled
+    Hostile
+    Sleeping
+    Fleeing
+
+data Stats : Type =
+    Stats
+        (hp : Int)
+        (maxHp : Int)
+        (mp : Int)
+        (maxMp : Int)
+        (str : Int)
+        (dex : Int)
+        (def : Int)
+        (xp : Int)
+        (level : Int)
+
+data Actor : Type =
+    Actor
+        (id : Int)
+        (species : Species)
+        (name : String)
+        (glyph : String)
+        (pos : Vec2)
+        (stats : Stats)
+        (attitude : Attitude)
+        (inventory : List Item)
+        (alive : Bool)
+
+data GroundItem : Type =
+    GroundItem
+        (pos : Vec2)
+        (item : Item)
+
+data Room : Type =
+    Room
+        (x : Int)
+        (y : Int)
+        (w : Int)
+        (h : Int)
+
+roomCenter : Room -> Vec2
+let roomCenter r =
+    Vec2 (r.x + (r.w / 2)) (r.y + (r.h / 2))
+
+data Level : Type =
+    Level
+        (depth : Int)
+        (size : Size)
+        (tiles : Array Tile)
+        (rooms : List Room)
+        (actors : List Actor)
+        (items : List GroundItem)
+        (messages : List String)
+        (turn : Nat)
+
+data PlayerState : Type =
+    PlayerState
+        (actorId : Int)
+        (hunger : Int)
+        (gold : Int)
+        (identified : List ItemKind)
+
+data GameMode : Type =
+    Playing
+    InventoryMode
+    HelpMode
+    Dead
+    Won
+    Quit
+
+data GameState : Type =
+    GameState
+        (rng : Nat)
+        (player : PlayerState)
+        (level : Level)
+        (mode : GameMode)
+        (lastCommand : String)
+
+data Command : Type =
+    Move (dir : Direction)
+    Rest
+    Open
+    Close
+    PickUp
+    DropFirst
+    Inventory
+    UseFirst
+    Descend
+    Ascend
+    Look
+    Help
+    SaveAndQuit
+    QuitNoSave
+    NoCommand
+
+data Key : Type =
+    KeyChar (text : String)
+    KeyEscape
+    KeyEnter
+    KeyBackspace
+    KeyArrow (dir : Direction)
+    KeyResize
+    KeyUnknown
+
+message : String -> GameState -> GameState
+let message text game =
+    let msgs = take 7 ((::) text game.level.messages)
+    in game.{ level = game.level.{ messages = msgs } }
+
+playerActor : GameState -> Option Actor
+let playerActor game =
+    findActor game.player.actorId game.level.actors
+
+findActor : Int -> List Actor -> Option Actor
+let findActor id actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case (::) a rest ->
+        if a.id == id then Some a else findActor id rest
+
+replaceActor : Actor -> List Actor -> List Actor
+let replaceActor actor actors decreases listLength actors =
+    match actors
+    case Nil -> Nil
+    case (::) a rest ->
+        if a.id == actor.id then (::) actor rest else (::) a (replaceActor actor rest)
+
+removeDeadActors : List Actor -> List Actor
+let removeDeadActors actors decreases listLength actors =
+    match actors
+    case Nil -> Nil
+    case (::) a rest ->
+        if a.alive then (::) a (removeDeadActors rest) else removeDeadActors rest
+
+actorAt : Vec2 -> List Actor -> Option Actor
+let actorAt pos actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case (::) a rest ->
+        if a.alive && eqPos a.pos pos then Some a else actorAt pos rest
+
+bytes : String -> Bytes
+let bytes text = utf8Bytes text

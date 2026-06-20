@@ -1,0 +1,157 @@
+@PrivateByDefault module acme.png.parser
+
+import std.bytes as bytes
+import acme.png.binary as bin
+import acme.png.chunk as chunk
+import acme.png.core.*
+import acme.png.ihdr as ihdr
+
+public data ParseState : Type =
+    ParseState
+        (ihdr : Option Ihdr)
+        (palette : Option Palette)
+        (idatPartsRev : List Bytes)
+        (chunksRev : List RawChunk)
+        (ancillaryRev : List RawChunk)
+        (chunkIndex : Nat)
+        (seenIdat : Bool)
+        (closedIdat : Bool)
+
+public initialState : ParseState
+let initialState =
+    ParseState
+        (ihdr = None)
+        (palette = None)
+        (idatPartsRev = Nil)
+        (chunksRev = Nil)
+        (ancillaryRev = Nil)
+        (chunkIndex = 0)
+        (seenIdat = False)
+        (closedIdat = False)
+
+public parsePng : Bytes -> Result PngError PngImage
+let parsePng source = parsePngWith chunk.VerifyCrc source
+
+public parsePngUncheckedCrc : Bytes -> Result PngError PngImage
+let parsePngUncheckedCrc source = parsePngWith chunk.IgnoreCrc source
+
+public parsePngWith : chunk.CrcPolicy -> Bytes -> Result PngError PngImage
+let parsePngWith policy source =
+    match chunk.checkSignature source
+    case Err e -> Err e
+    case Ok cursor -> parseLoop policy cursor initialState
+
+parseLoop : chunk.CrcPolicy -> bin.Cursor -> ParseState -> Result PngError PngImage
+let parseLoop policy cursor state decreases bytes.bytesLength cursor.source - cursor.offset =
+    if bin.atEnd cursor then Err IendMissing
+    else
+        match chunk.parseRawChunk policy cursor
+        case Err e -> Err e
+        case Ok step ->
+            match applyChunk state step.value
+            case Err e -> Err e
+            case Ok nextState ->
+                match step.value.known
+                case C_IEND -> finishImage cursor.source step.cursor nextState
+                case _ -> parseLoop policy step.cursor nextState
+
+applyChunk : ParseState -> RawChunk -> Result PngError ParseState
+let applyChunk state raw =
+    match raw.known
+    case C_IHDR -> applyIhdr state raw
+    case C_PLTE -> applyPlte state raw
+    case C_IDAT -> applyIdat state raw
+    case C_IEND -> applyIend state raw
+    case C_Unknown -> applyUnknown state raw
+    case _ -> applyAncillary state raw
+
+bump : ParseState -> RawChunk -> ParseState
+let bump state raw =
+    state.{ chunksRev = raw :: state.chunksRev, chunkIndex = state.chunkIndex + 1 }
+
+applyIhdr : ParseState -> RawChunk -> Result PngError ParseState
+let applyIhdr state raw =
+    if not (state.chunkIndex == 0) then Err (IhdrNotFirst raw.chunkType)
+    else
+        match state.ihdr
+        case Some _ -> Err DuplicateIhdr
+        case None ->
+            match ihdr.parseIhdr raw
+            case Err e -> Err e
+            case Ok header -> Ok ((bump state raw).{ ihdr = Some header })
+
+applyPlte : ParseState -> RawChunk -> Result PngError ParseState
+let applyPlte state raw =
+    match state.ihdr
+    case None -> Err PlteBeforeIhdr
+    case Some header ->
+        if state.seenIdat then Err PlteAfterIdat
+        else
+            match state.palette
+            case Some _ -> Err DuplicatePlte
+            case None ->
+                if not (ihdr.paletteAllowedFor header.colorType) then
+                    Err (PlteForbiddenForColorType (colorTypeCode header.colorType))
+                else
+                    match ihdr.parsePalette raw
+                    case Err e -> Err e
+                    case Ok palette -> Ok ((bump state raw).{ palette = Some palette })
+
+applyIdat : ParseState -> RawChunk -> Result PngError ParseState
+let applyIdat state raw =
+    match state.ihdr
+    case None -> Err IdatBeforeIhdr
+    case Some _ ->
+        if state.closedIdat then Err IdatNotConsecutive
+        else
+            Ok ((bump state raw).{
+                idatPartsRev = raw.data :: state.idatPartsRev,
+                seenIdat = True
+            })
+
+applyIend : ParseState -> RawChunk -> Result PngError ParseState
+let applyIend state raw =
+    if not (raw.length == 0) then Err (BadIendLength raw.length)
+    else
+        match state.ihdr
+        case None -> Err MissingIhdr
+        case Some _ ->
+            if not state.seenIdat then Err IdatMissing
+            else Ok (bump state raw)
+
+applyUnknown : ParseState -> RawChunk -> Result PngError ParseState
+let applyUnknown state raw =
+    match raw.class
+    case Critical -> Err (UnknownCriticalChunk raw.chunkType)
+    case Ancillary -> applyAncillary state raw
+
+applyAncillary : ParseState -> RawChunk -> Result PngError ParseState
+let applyAncillary state raw =
+    let closed = state.closedIdat || state.seenIdat
+    let next = (bump state raw).{
+        ancillaryRev = raw :: state.ancillaryRev,
+        closedIdat = closed
+    }
+    in Ok next
+
+finishImage : Bytes -> bin.Cursor -> ParseState -> Result PngError PngImage
+let finishImage source cursor state =
+    if not (bin.atEnd cursor) then Err (IendNotLast (bytes.bytesLength source - cursor.offset))
+    else
+        match state.ihdr
+        case None -> Err MissingIhdr
+        case Some header ->
+            if ihdr.paletteRequiredFor header.colorType then
+                match state.palette
+                case None -> Err PlteRequired
+                case Some _ -> makeImage header state
+            else makeImage header state
+
+makeImage : Ihdr -> ParseState -> Result PngError PngImage
+let makeImage header state =
+    Ok (PngImage
+        (ihdr = header)
+        (palette = state.palette)
+        (idat = bytes.bytesConcat (reverse state.idatPartsRev))
+        (chunks = reverse state.chunksRev)
+        (ancillary = reverse state.ancillaryRev))

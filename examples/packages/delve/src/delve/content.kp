@@ -1,0 +1,94 @@
+module delve.content
+
+import delve.core.*
+
+playerStats : Stats
+let playerStats =
+    Stats (hp = 24) (maxHp = 24) (mp = 4) (maxMp = 4) (str = 6) (dex = 6) (def = 2) (xp = 0) (level = 1)
+
+monsterStats : Species -> Stats
+let monsterStats s =
+    match s
+    case Rat -> Stats 4 4 0 0 2 8 0 1 1
+    case Bat -> Stats 3 3 0 0 1 10 0 1 1
+    case Goblin -> Stats 7 7 0 0 3 6 1 2 1
+    case Kobold -> Stats 5 5 0 0 3 7 0 2 1
+    case Orc -> Stats 12 12 0 0 5 5 2 4 2
+    case Skeleton -> Stats 10 10 0 0 4 4 3 5 2
+    case Troll -> Stats 24 24 0 0 8 3 3 9 4
+    case Wizard -> Stats 15 15 8 8 3 6 1 12 5
+    case Dragon -> Stats 60 60 20 20 14 5 8 60 10
+    case PlayerSpecies -> playerStats
+
+speciesName : Species -> String
+let speciesName s =
+    match s
+    case PlayerSpecies -> "you"
+    case Goblin -> "goblin"
+    case Orc -> "orc"
+    case Kobold -> "kobold"
+    case Rat -> "giant rat"
+    case Bat -> "cave bat"
+    case Troll -> "troll"
+    case Skeleton -> "skeleton"
+    case Wizard -> "dark wizard"
+    case Dragon -> "ancient dragon"
+
+speciesGlyph : Species -> String
+let speciesGlyph s =
+    match s
+    case PlayerSpecies -> "@"
+    case Rat -> "r"
+    case Bat -> "b"
+    case Goblin -> "g"
+    case Kobold -> "k"
+    case Orc -> "o"
+    case Skeleton -> "s"
+    case Troll -> "T"
+    case Wizard -> "W"
+    case Dragon -> "D"
+
+mkPlayer : Int -> Vec2 -> Actor
+let mkPlayer id pos =
+    Actor
+        (id = id)
+        (species = PlayerSpecies)
+        (name = "player")
+        (glyph = "@")
+        (pos = pos)
+        (stats = playerStats)
+        (attitude = PlayerControlled)
+        (inventory = [mkItem Dagger, mkItem FoodRation])
+        (alive = True)
+
+mkMonster : Int -> Species -> Vec2 -> Actor
+let mkMonster id s pos =
+    Actor id s (speciesName s) (speciesGlyph s) pos (monsterStats s) Hostile Nil True
+
+mkItem : ItemKind -> Item
+let mkItem k =
+    match k
+    case Gold -> Item Gold "gold pieces" "$" True 1 1
+    case PotionHealing -> Item PotionHealing "healing potion" "!" True 8 1
+    case ScrollIdentify -> Item ScrollIdentify "scroll of insight" "?" True 0 1
+    case FoodRation -> Item FoodRation "food ration" "%" True 0 1
+    case Dagger -> Item Dagger "dagger" ")" False 2 1
+    case Sword -> Item Sword "long sword" ")" False 5 1
+    case Mace -> Item Mace "iron mace" ")" False 4 1
+    case LeatherArmor -> Item LeatherArmor "leather armor" "[" False 2 1
+    case ChainMail -> Item ChainMail "chain mail" "[" False 4 1
+    case WandFire -> Item WandFire "wand of fire" "/" False 10 1
+    case Amulet -> Item Amulet "amulet of exit" "\"" False 0 1
+
+monsterTable : Int -> List Species
+let monsterTable depth =
+    if depth <= 1 then [Rat, Bat, Goblin, Kobold]
+    elif depth <= 3 then [Rat, Bat, Goblin, Kobold, Orc, Skeleton]
+    elif depth <= 6 then [Goblin, Orc, Skeleton, Troll, Wizard]
+    else [Orc, Skeleton, Troll, Wizard, Dragon]
+
+itemTable : Int -> List ItemKind
+let itemTable depth =
+    if depth <= 2 then [Gold, PotionHealing, FoodRation, Dagger, LeatherArmor]
+    elif depth <= 5 then [Gold, PotionHealing, ScrollIdentify, Sword, Mace, ChainMail]
+    else [Gold, PotionHealing, Sword, ChainMail, WandFire, Amulet]

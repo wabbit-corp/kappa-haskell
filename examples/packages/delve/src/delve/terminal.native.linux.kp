@@ -1,0 +1,78 @@
+module delve.terminal
+
+import delve.core.*
+import host.native.delve_terminal.Raw as Raw
+
+-- Native Linux terminal implementation. `Raw` is produced from the checked-in C
+-- shim under native/delve_terminal.c and the trusted summary in bindings/.
+
+opaque data Terminal : Type =
+    Terminal (handle : Raw.TerminalHandle)
+
+translate : Raw.TerminalError -> GameError
+let translate e =
+    TerminalError (Raw.describeError e)
+
+open : IO GameError Terminal
+let open =
+    do
+        result <- Raw.delve_open_terminal ()
+        match result
+        case Err e -> raise (translate e)
+        case Ok h -> pure (Terminal h)
+
+close : (1 terminal : Terminal) -> IO GameError Unit
+let close terminal =
+    match terminal
+    case Terminal h ->
+        do
+            result <- Raw.delve_close_terminal h
+            match result
+            case Err e -> raise (translate e)
+            case Ok _ -> pure ()
+
+readKey : (& terminal : Terminal) -> IO GameError Key
+let readKey terminal =
+    match terminal
+    case Terminal h ->
+        do
+            result <- Raw.delve_read_key h
+            match result
+            case Err e -> raise (translate e)
+            case Ok code -> pure (decodeKey code)
+
+write : (& terminal : Terminal) -> String -> IO GameError Unit
+let write terminal text =
+    match terminal
+    case Terminal h ->
+        do
+            result <- Raw.delve_write_all h text
+            match result
+            case Err e -> raise (translate e)
+            case Ok _ -> pure ()
+
+size : (& terminal : Terminal) -> IO GameError Size
+let size terminal =
+    match terminal
+    case Terminal h ->
+        do
+            result <- Raw.delve_get_size h
+            match result
+            case Err e -> raise (translate e)
+            case Ok s -> pure (Size s.cols s.rows)
+
+monotonicSeed : UIO Nat
+let monotonicSeed = Raw.delve_monotonic_seed ()
+
+decodeKey : Int -> Key
+let decodeKey code =
+    if code == 1000 then KeyArrow North
+    elif code == 1001 then KeyArrow South
+    elif code == 1002 then KeyArrow West
+    elif code == 1003 then KeyArrow East
+    elif code == 1004 then KeyResize
+    elif code == 27 then KeyEscape
+    elif code == 10 || code == 13 then KeyEnter
+    elif code == 127 then KeyBackspace
+    elif code >= 32 && code < 127 then KeyChar (charFromAscii code)
+    else KeyUnknown
