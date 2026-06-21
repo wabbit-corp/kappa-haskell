@@ -109,7 +109,8 @@ jobs:
             --installdir="$out_dir/bin" \
             --overwrite-policy=always
 
-          "$out_dir/bin/kappa" --help >/dev/null
+          usage_output="$("$out_dir/bin/kappa" 2>&1 || true)"
+          grep -q '^usage: kappa' <<<"$usage_output"
 
           cp LICENSE "$out_dir/LICENSE"
           cp CHANGELOG.md "$out_dir/CHANGELOG.md"
