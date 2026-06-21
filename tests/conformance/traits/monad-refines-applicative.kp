@@ -1,0 +1,17 @@
+--! mode run
+--! assertStdout "9\n"
+
+-- §14.1.4 / Spec 13923: in std.prelude `Monad` is declared with
+-- supertrait `Applicative`. Generic code constrained only by `Monad m`
+-- may therefore use `pureA` — the `Applicative m` evidence is projected
+-- from the in-scope `Monad m` evidence.
+module main
+
+wrap : forall (m : Type -> Type). (@_ : Monad m) -> Int -> m Int
+let wrap n = pureA n
+
+main : UIO Unit
+let main =
+    match (wrap 9 : Option Int)
+    case Some n -> printInt n
+    case None -> printString "none"
