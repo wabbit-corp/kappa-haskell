@@ -2710,7 +2710,7 @@ infer ctx expr = case expr of
             ]
             sp
     elabTry ctx inner excepts mfin sp
-  EHandle deep lblE scrutE cases sp -> elabHandle ctx deep lblE scrutE cases sp
+  EHandle deep lblE scrutE cases sp -> elabHandle ctx deep lblE scrutE cases sp Nothing
   EEffRow entries mtail sp -> elabEffRow ctx entries mtail sp
   ESeal e tyE sp -> elabSeal ctx e tyE sp
   ESealExists ws e tyE sp -> elabSealExistsExplicit ctx ws e tyE sp
@@ -2891,6 +2891,13 @@ check ctx expr expected0 = do
       expectType ctx (exprSpan expr) ty expected
       pure tm
     (EIf alts mels sp, _) -> checkIf ctx alts mels sp expected
+    -- §18.1.21: a handler eliminates into the expected target carrier `m`
+    -- (which may be `IO e` or another carrier, not only `Eff r`); thread the
+    -- expectation in so non-Eff clause bodies type-check.
+    (EHandle deep lblE scrutE cases sp, _) -> do
+      (tm, ty) <- elabHandle ctx deep lblE scrutE cases sp (Just expected)
+      expectType ctx sp ty expected
+      pure tm
     (EMatch scrut cases sp, _) -> checkMatch ctx scrut cases sp expected
     (EDo mlbl items sp, _) -> do
       -- nested do in checked expression position: reset the return target
@@ -6630,8 +6637,8 @@ splitEffRow labelG row0 = do
 
 -- | @[deep] handle label expr with case ...@ (§18.1.21–§18.1.22). The
 -- target carrier is @Eff r@ for the residual row @r@ in v1.
-elabHandle :: Ctx -> Bool -> Expr -> Expr -> [HandlerCase] -> Span -> CheckM (Term, Value)
-elabHandle ctx deep lblE scrutE cases sp = do
+elabHandle :: Ctx -> Bool -> Expr -> Expr -> [HandlerCase] -> Span -> Maybe Value -> CheckM (Term, Value)
+elabHandle ctx deep lblE scrutE cases sp mexpected = do
   mEli <- case lblE of
     EVar ln -> lookupEffLabelM ctx (nameText ln)
     _ -> pure Nothing
@@ -6674,7 +6681,19 @@ elabHandle ctx deep lblE scrutE cases sp = do
                 goBOI c' (accInOrder ++ [VRigid (ctxLen c) []]) rest
               bindOpImplicits c0 = goBOI c0 []
           bT <- freshMetaV ctx
-          let resultTy = effTyV residual bT
+          -- §18.1.21: the handler eliminates into a target carrier `m`. By
+          -- default (and for an `Eff r` expectation) that is `Eff residual`;
+          -- when the surrounding context expects a NON-Eff carrier (e.g.
+          -- `IO e`), use it directly — the §30.2.2.7 handler kernel is
+          -- carrier-agnostic (it applies the clauses/return and threads the
+          -- resumption, never imposing Eff).
+          resultTy <- case mexpected of
+            Just t -> do
+              tf <- forceM t
+              case tf of
+                VGlobN (GName _ "Eff") _ -> pure (effTyV residual bT)
+                _ -> pure tf
+            Nothing -> pure (effTyV residual bT)
           -- exactly one return clause (§18.1.21)
           retLam <- case [(pat, body, csp) | HandlerReturn pat body csp <- cases] of
             [(pat, body, _)] ->

@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\n5\nafter\n"
+
+-- §18.1.21: a handler eliminates into a target carrier `m` that may be `IO e`
+-- (not only `Eff r`). A deep handler over `IO` runs its clause bodies as IO
+-- actions and its resumption is re-handled into IO — no `runPure` needed.
+module main
+
+effect Tick =
+    1 tick : Unit -> Int
+
+doit : Eff <[Tick : Tick]> Int
+let doit =
+    do
+        let n <- Tick.tick ()
+        pure n
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    deep handle Tick doit with
+        case return r -> printlnString (showInt r)
+        case tick u k -> k 5
+    printlnString "after"
