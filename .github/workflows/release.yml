@@ -227,11 +227,13 @@ jobs:
           else
             tag="${GITHUB_REF_NAME}"
           fi
+          repo="${GITHUB_REPOSITORY}"
 
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" release-assets/* --clobber
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --repo "$repo" --clobber
           else
             gh release create "$tag" release-assets/* \
+              --repo "$repo" \
               --target "$GITHUB_SHA" \
               --title "Kappa Haskell compiler ${tag}" \
               --notes "Automated Haskell compiler and Delve release for ${tag}."
