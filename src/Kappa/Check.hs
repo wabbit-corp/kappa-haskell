@@ -29,6 +29,7 @@ module Kappa.Check
   , shapeModule
   ) where
 
+import Control.Monad (filterM, foldM, forM, forM_, unless, void, when, zipWithM)
 import Control.Monad.State.Strict
 import Data.Data (Data, cast, gmapQ)
 import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
