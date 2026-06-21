@@ -74,6 +74,8 @@ jobs:
             platform: linux-x64
           - os: macos-14
             platform: macos-arm64
+          - os: windows-latest
+            platform: windows-x64
 
     steps:
       - name: Check out repository
@@ -103,13 +105,17 @@ jobs:
           cabal update
           out_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
           mkdir -p "$out_dir/bin"
+          exe_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            exe_ext=".exe"
+          fi
 
           cabal install exe:kappa \
             --install-method=copy \
             --installdir="$out_dir/bin" \
             --overwrite-policy=always
 
-          usage_output="$("$out_dir/bin/kappa" 2>&1 || true)"
+          usage_output="$("$out_dir/bin/kappa${exe_ext}" 2>&1 || true)"
           grep -q '^usage: kappa' <<<"$usage_output"
 
           cp LICENSE "$out_dir/LICENSE"
