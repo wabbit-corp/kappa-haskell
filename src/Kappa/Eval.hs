@@ -952,6 +952,14 @@ evalEffPrim ctx p args = case (p, args) of
         VRecordV _ -> True
         VInject _ _ -> True
         _ -> False
+  -- §12.4.3 first-class borrowed views. At runtime a borrow IS its
+  -- value (borrows carry no runtime witness), so `captureBorrow x`
+  -- reifies the view as the value itself and `withBorrowView v k`
+  -- eliminates it by reinstating the borrowed binder — i.e. applies
+  -- the continuation to the viewed value. The forall (ρ, a, r) are
+  -- erased and do not reach the primitive.
+  ("captureBorrow", [x]) -> Just x
+  ("withBorrowView", [v, k]) -> Just (vapp ctx k Expl v)
   -- runPure : Eff <[ ]> a -> a (§18.1.14)
   ("runPure", [comp]) -> case force ctx comp of
     VCtor (GName _ "__EffPure") [v] -> Just v

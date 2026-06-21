@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §12.4.3 / §12.3.2: a `BorrowView ρ A` is a reified borrow of region ρ,
+-- so capturing it in a closure that escapes through the result is the
+-- same escape as capturing an anonymous borrowed binding — rejected.
+module main
+
+data Box : Type =
+    MkBox (n : Int)
+
+escape : forall (r : Region) . BorrowView r Box -> (Unit -> BorrowView r Box)
+let escape v = \u -> v
+
+main : UIO Unit
+let main = printString "x"

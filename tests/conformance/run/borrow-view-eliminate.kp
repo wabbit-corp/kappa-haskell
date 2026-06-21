@@ -1,0 +1,22 @@
+--! mode run
+--! assertStdout "42\n"
+
+-- §12.4.3: a first-class borrowed view reifies a borrow as an ordinary
+-- value (`captureBorrow`) and is eliminated by reinstating the borrowed
+-- binder (`withBorrowView v k = k <viewed>`). At runtime a borrow is its
+-- value, so the round-trip recovers the original.
+module main
+
+data Box : Type =
+    MkBox (n : Int)
+
+unbox : Box -> Int
+let unbox b = match b case MkBox n -> n
+
+viewIt : Box -> Int
+let viewIt b =
+    let v = captureBorrow b
+    withBorrowView v (\x -> unbox x)
+
+main : UIO Unit
+let main = printInt (viewIt (MkBox 42))
