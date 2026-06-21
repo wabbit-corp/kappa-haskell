@@ -1,0 +1,16 @@
+--! mode run
+--! assertStdout "True\nTrue\nFalse\n"
+
+-- §14.1.4 / Spec 13921: in std.prelude `Ord` is declared with supertrait
+-- `Eq`. Generic code constrained only by `Ord a` may therefore use `==`
+-- (the `Eq a` evidence is projected from the in-scope `Ord a` evidence).
+module main
+
+sameOrAfter : forall (a : Type). (@_ : Ord a) -> a -> a -> Bool
+let sameOrAfter x y = if x == y then True else compare x y == GT
+
+main : UIO Unit
+let main = do
+    println (sameOrAfter 5 5)
+    println (sameOrAfter 7 3)
+    println (sameOrAfter 2 9)

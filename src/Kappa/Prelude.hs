@@ -716,7 +716,9 @@ preludeSource =
     , "trait Eq (a : Type) ="
     , "    (==) : a -> a -> Bool"
     , ""
-    , "trait Ord (a : Type) ="
+    , -- §14.1.4 (Spec 13921): in std.prelude Ord refines Eq, and its
+      -- equality classes MUST agree with (==).
+      "trait Eq a => Ord (a : Type) ="
     , "    compare : a -> a -> Ordering"
     , ""
     , "trait Add (a : Type) ="
