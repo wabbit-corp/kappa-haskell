@@ -1,0 +1,21 @@
+-- §12.4.3: the first-class borrowed-view round-trip must compute
+-- identically under the native backend and the interpreter.
+-- captureBorrow reifies a borrow as its value; withBorrowView
+-- eliminates it by reinstating the borrowed binder.
+module main
+
+data Box : Type =
+    MkBox (n : Int)
+
+unbox : Box -> Int
+let unbox b = match b case MkBox n -> n
+
+viewIt : Box -> Int
+let viewIt b =
+    let v = captureBorrow b
+    withBorrowView v (\x -> unbox x)
+
+main : UIO Unit
+let main =
+    let _ = printInt (viewIt (MkBox 42))
+    printInt (viewIt (MkBox 7))

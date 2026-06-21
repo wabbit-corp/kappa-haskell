@@ -367,6 +367,13 @@ static KValue *eff_bind_k(KEnv *env, KValue *x) {
   return kpf___effBind(args);
 }
 
+/* §12.4.3 first-class borrowed views. A borrow carries no runtime
+ * witness (it IS its value), so captureBorrow reifies the view as the
+ * value itself and withBorrowView eliminates it by reinstating the
+ * borrowed binder (applying the continuation to the viewed value). */
+KValue *kpf_captureBorrow(KValue **a) { return a[0]; }
+KValue *kpf_withBorrowView(KValue **a) { return kapp(a[1], a[0]); }
+
 /* runPure : Eff <[]> a -> a  (§18.1.14) */
 KValue *kpf_runPure(KValue **a) {
   if (kctor_tagid(a[0]) == KCT_EFFPURE) return kctor_arg(a[0], 0);
