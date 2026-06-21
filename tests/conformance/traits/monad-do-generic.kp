@@ -1,0 +1,34 @@
+--! mode run
+--! assertStdout "7\n30\ndiv0"
+
+-- §18.8: a `do` block whose result type is a user monad `m` (one with a
+-- Monad instance) elaborates by the classic monadic desugaring to
+-- `(>>=)`. Verified over Option (both binds succeed) and Result (success
+-- threads values; an Err short-circuits the remaining binds).
+module main
+
+safeDiv : Int -> Int -> Result String Int
+let safeDiv a b = if b == 0 then Err "div0" else Ok (a / b)
+
+optSum : Option Int
+let optSum = do
+    x <- Some 3
+    y <- Some 4
+    Some (x + y)
+
+okChain : Result String Int
+let okChain = do
+    x <- safeDiv 100 5
+    y <- safeDiv x 2
+    Ok (x + y)
+
+errChain : Result String Int
+let errChain = do
+    x <- safeDiv 100 0
+    Ok (x + 1)
+
+main : UIO Unit
+let main = do
+    (match optSum case Some n -> printInt n case None -> printString "none")
+    (match okChain case Ok n -> printInt n case Err e -> printString e)
+    (match errChain case Ok n -> printInt n case Err e -> printString e)

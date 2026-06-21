@@ -6874,6 +6874,56 @@ elabEffDo ctx0 row aT items0 sp = do
         go c rest
     effBindTm m f = CApp Expl (CApp Expl (CGlob (gPrel "__effBind")) m) f
 
+-- | A @do@ block whose result type is a user monad @m@ (one with a
+-- @Monad@ instance) that is not one of the kernel carriers IO\/STM\/Eff\/
+-- Elab. §18.8 specifies @do@ over an arbitrary enclosing monad; for a
+-- control-flow-free block this is exactly the classic monadic
+-- desugaring, so the items are rewritten to surface @(>>=)@\/lambda
+-- applications and elaborated through the ordinary trait-method path
+-- (which inserts the @Monad m@ dictionary). The supported item set
+-- mirrors 'elabEffDo' — bind\/let\/expression\/statement-if; abrupt
+-- control-flow items (which would need the §18.8 completion protocol
+-- realized over @m@) are rejected here, exactly as in an Eff-typed do.
+elabMonadDo :: Ctx -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
+elabMonadDo ctx me items0 sp = do
+  e <- desugar items0
+  tm <- check ctx e me
+  pure (tm, me)
+  where
+    bindOp = EVar (Name ">>=" sp)
+    mkLam pat body = case pat of
+      PVar n -> ELambda Nothing [simpleBinder n] body sp
+      PWild _ -> ELambda Nothing [simpleBinder (Name "__u" sp)] body sp
+      _ ->
+        ELambda Nothing [simpleBinder (Name "__x" sp)]
+          (EMatch (EVar (Name "__x" sp)) [MatchCase pat Nothing body sp] sp)
+          sp
+    mkBind pat act rest = EApp bindOp [ArgExplicit act, ArgExplicit (mkLam pat rest)]
+    ifToExpr alts mels isp =
+      let toExpr its = case its of
+            [DoExpr e] -> e
+            _ -> EDo Nothing its isp
+       in EIf [(cnd, toExpr body) | (cnd, body) <- alts] (toExpr <$> mels) isp
+    desugar [] = do
+      errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
+        "a do block must end with an expression item (§18.2)"
+      pure (EVar (Name "__u" sp))
+    desugar [DoExpr e] = pure (desugarBang e)
+    desugar [DoIf alts mels isp] = pure (ifToExpr alts mels isp)
+    desugar (item : rest) = case item of
+      DoExpr e -> mkBind (PWild sp) (desugarBang e) <$> desugar rest
+      DoBind (LetBind _ _ pat _ rhs _) -> mkBind pat (desugarBang rhs) <$> desugar rest
+      -- a bare `x <- act` (monadic flag True) is the same monadic bind as
+      -- `let x <- act`; `x = e` (False) is an imperative reassignment with
+      -- no meaning in a pure monad and is rejected below.
+      DoAssign n True rhs _ -> mkBind (PVar n) (desugarBang rhs) <$> desugar rest
+      DoLet lb@(LetBind _ _ _ _ _ bsp) -> (\r -> ELet [lb] r bsp) <$> desugar rest
+      DoIf alts mels isp -> mkBind (PWild sp) (ifToExpr alts mels isp) <$> desugar rest
+      other -> do
+        unsupportedAt (doItemSpan other)
+          "this do-item form is not supported in a user-monad do block by this implementation (§18.8)"
+        desugar rest
+
 doItemSpan :: DoItem -> Span
 doItemSpan = \case
   DoBind lb -> lbSpan lb
@@ -7785,6 +7835,16 @@ elabDo ctx0 mlabel items _sp mexpected = do
     Just (VGlobN (GName pm "Elab") [(_, a)])
       | pm == preludeModule ->
           elabElabDo ctx a items _sp
+    -- §18.8: a do-block whose result is a user monad `m a` (m has a
+    -- Monad instance) and is not a kernel carrier (IO/STM handled by
+    -- elabDoIO; Eff/Elab above) elaborates by the classic monadic
+    -- desugaring to (>>=)/pure.
+    Just t@(VGlobN g@(GName _ gn) spine)
+      | not (null spine)
+      , gn `notElem` ["IO", "STM", "Eff", "Elab"] -> do
+          let mV = VGlobN g (init spine)
+          hasMonad <- isJust <$> instanceSearch ctx _sp (VGlobN (gPrel "Monad") [(Expl, mV)])
+          if hasMonad then elabMonadDo ctx t items _sp else elabDoIO ctx me items
     _ -> elabDoIO ctx me items
   where
     elabDoIO = elabDoIOItems (nameText <$> mlabel) _sp
