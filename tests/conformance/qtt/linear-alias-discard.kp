@@ -1,0 +1,15 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §12.2.6: a generic discard may not silently launder a linear
+-- obligation. `let _ = t` aliases the linear `t` under a wildcard
+-- binder and then drops it; the move must not discharge `t`.
+module main
+
+data Token : Type =
+    Token
+
+bad : (1 t : Token) -> Unit
+let bad t =
+    let _ = t
+    ()

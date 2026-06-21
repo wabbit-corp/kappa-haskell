@@ -1,0 +1,14 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §12.2.6: binding a linear value to a fresh name and then dropping
+-- the alias is rejected — the alias inherits the must-use obligation.
+module main
+
+data Token : Type =
+    Token
+
+bad : (1 t : Token) -> Unit
+let bad t =
+    let x = t
+    ()

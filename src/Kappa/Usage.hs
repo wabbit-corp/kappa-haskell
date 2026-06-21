@@ -871,6 +871,14 @@ closeVar vi u = do
 -- ── Place helpers (§12.4) ────────────────────────────────────────────
 
 -- | A stable place rooted at a tracked binding: root info plus path.
+-- | Whether a let-binder pattern is a wildcard discard — an explicit @_@ or a
+-- @_@-spelled variable binder (the surface @let _ = …@ parses as the latter).
+isWildBinder :: Pattern -> Bool
+isWildBinder = \case
+  PWild _ -> True
+  PVar n -> nameText n == "_"
+  _ -> False
+
 placeOf :: Env -> Expr -> Maybe (VInfo, [Text], Span)
 placeOf env = \case
   EVar n -> do
@@ -1778,20 +1786,29 @@ walkBinds env binds = go env binds
               let (u', t') = flatR r
               pure (u', t', Map.empty, [])
           else case (pat, rhs) of
-            -- a wildcard discard of a bare binding is not a use and
-            -- never discharges a positive lower bound (§12.2.6)
-            (PWild _, EVar n)
-              | Map.member (nameText n) (eVars envc) -> pure (Map.empty, Nothing, Map.empty, [])
+            -- §12.2.6: a wildcard discard of a bare binding (`let _ = t`, also
+            -- the surface `let _ = t` which parses as a `_`-named binder) is
+            -- NOT a use and never discharges a positive lower bound — accepting
+            -- it would be a generic discard for all linear values, so the bound
+            -- value is left unconsumed and reported dropped.
+            (p, EVar n)
+              | isWildBinder p, Map.member (nameText n) (eVars envc) ->
+                  pure (Map.empty, Nothing, Map.empty, [])
             _ -> do
               R u' t' l' <- walkE envc rhs
               pure (u', t', l', [])
       let names = patVars pat
           single = length names == 1
-          -- a binding receiving a quantity-1 field projection inherits
-          -- the field's linearity (§12.4)
+          -- a binding receiving a quantity-1 field projection inherits the
+          -- field's linearity (§12.4); a binding that ALIASES a bare must-use
+          -- binding (`let x = t` with `t` of quantity `1`/`>=1`) inherits that
+          -- quantity, so dropping the alias is caught (§12.2.6 — otherwise the
+          -- move would silently launder the obligation).
           inherited = case place of
             Just (vi, path, _)
               | not borrowed, isLinearPath vi path -> Just QOne
+              | not borrowed, null path, not (isWildBinder pat)
+              , Just q <- vQ vi, q `elem` [QOne, QAtLeastOne] -> Just q
             _ -> Nothing
           q = if single then mq `orElse` inherited else Nothing
           -- §13.2.1: a record literal that places a linear value into a

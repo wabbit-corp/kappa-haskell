@@ -1,0 +1,17 @@
+--! assertNoErrors
+
+-- §12.2.6: moving a linear value through a fresh binder and consuming
+-- the alias exactly once is accepted — the obligation transfers, it is
+-- not duplicated.
+module main
+
+data Token : Type =
+    Token
+
+consume : (1 t : Token) -> Unit
+let consume t = unsafeConsume t
+
+ok : (1 t : Token) -> Unit
+let ok t =
+    let x = t
+    consume x
