@@ -2200,7 +2200,16 @@ tryInstance depth ctx goalArgs ie
                 mi <- searchDepth (depth + 1) ctx noSpan pv
                 case mi of
                   Just t -> pure (Just t)
-                  Nothing -> propProof pv
+                  Nothing -> do
+                    -- §14.1.4: premise resolution is local implicit
+                    -- resolution, so an in-scope evidence value may be
+                    -- projected to any of its declared supertraits — e.g.
+                    -- discharging an `Eq a` premise from a `Hashable a`
+                    -- binder via Hashable's Eq supertrait field.
+                    mSup <- superCandidate ctx pv
+                    case mSup of
+                      Just t -> pure (Just t)
+                      Nothing -> propProof pv
           if all isJust prems
             then do
               metaTms <- mapM (quoteIn ctx) =<< mapM (evalIn emptyCtx) metas

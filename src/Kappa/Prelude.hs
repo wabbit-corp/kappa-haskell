@@ -2282,27 +2282,28 @@ stdHashSource =
     , -- §14.1.3 container instances. Each mixes a per-constructor tag
       -- before the payload so structurally distinct shapes (None vs
       -- Some, Nil vs ::) cannot collide, and recurses through the
-      -- element 'Hashable' (whose Eq superclass discharges the
-      -- container's Eq superclass).
-      "instance (Eq a, Hashable a) => Hashable (Option a) ="
+      -- element 'Hashable'. The container's own Eq supertrait obligation
+      -- (e.g. Eq (Option a)) is discharged by projecting Eq a from the
+      -- Hashable a premise via §14.1.4 supertrait projection.
+      "instance Hashable a => Hashable (Option a) ="
     , "    let hashInto value state ="
     , "        match value"
     , "        case None -> hashNatTag 0 state"
     , "        case Some x -> hashInto x (hashNatTag 1 state)"
     , ""
-    , "instance (Eq a, Hashable a) => Hashable (List a) ="
+    , "instance Hashable a => Hashable (List a) ="
     , "    let hashInto value state ="
     , "        match value"
     , "        case Nil -> hashNatTag 0 state"
     , "        case x :: rest -> hashInto rest (hashInto x (hashNatTag 1 state))"
     , ""
-    , "instance (Eq e, Eq a, Hashable e, Hashable a) => Hashable (Result e a) ="
+    , "instance (Hashable e, Hashable a) => Hashable (Result e a) ="
     , "    let hashInto value state ="
     , "        match value"
     , "        case Ok x -> hashInto x (hashNatTag 0 state)"
     , "        case Err y -> hashInto y (hashNatTag 1 state)"
     , ""
-    , "instance (Eq a, Hashable a) => Hashable (Array a) ="
+    , "instance Hashable a => Hashable (Array a) ="
     , "    let hashInto value state = hashInto (arrayToList value) state"
     , ""
     , "instance Eq HashCode ="

@@ -1,0 +1,35 @@
+--! mode run
+--! assertStdout "ok:7\n"
+
+-- §14.1.4: "inside local implicit resolution, an in-scope evidence value
+-- for `Tr args` may be projected to any of its declared supertraits."
+-- Instance-premise resolution IS local implicit resolution, so the
+-- `Describe (Box a)` supertrait obligation of `instance Tagged a =>
+-- Tagged (Box a)` is dischargeable: `Describe a` is projected from the
+-- `Tagged a` premise (Tagged's Describe supertrait), then fed to
+-- `instance Describe a => Describe (Box a)`.
+module main
+
+trait Describe (a : Type) =
+    describe : a -> String
+
+trait Describe a => Tagged (a : Type) =
+    tagOf : a -> Int
+
+data Box (a : Type) =
+    MkBox (unBox : a)
+
+instance Describe Int =
+    let describe n = "ok"
+
+instance Tagged Int =
+    let tagOf n = n
+
+instance Describe a => Describe (Box a) =
+    let describe b = match b case MkBox x -> describe x
+
+instance Tagged a => Tagged (Box a) =
+    let tagOf b = match b case MkBox x -> tagOf x
+
+main : UIO Unit
+let main = printlnString (describe (MkBox 7) ++ ":" ++ showInt (tagOf (MkBox 7)))
