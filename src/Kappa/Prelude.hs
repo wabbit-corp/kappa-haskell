@@ -1718,6 +1718,15 @@ preludeSource =
     , "          case Nil -> GT"
     , "          case y :: yrest -> __ordChain (compare x y) (compare xrest yrest)"
     , ""
+    , -- §10.4 Array equality/order are the elementwise (list) relations on
+      -- the array's element sequence; this also discharges the Eq
+      -- superclass of the §14.1.3 'Hashable (Array a)' instance.
+      "instance Eq a => Eq (Array a) ="
+    , "    let (==) xs ys = arrayToList xs == arrayToList ys"
+    , ""
+    , "instance Ord a => Ord (Array a) ="
+    , "    let compare xs ys = compare (arrayToList xs) (arrayToList ys)"
+    , ""
     , "__showListGo : forall (a : Type). (@_ : Show a) -> Bool -> List a -> String"
     , "let __showListGo first xs ="
     , "    match xs"
@@ -2217,7 +2226,15 @@ stdHashSource =
     , "hashNatTag : Nat -> (1 state : HashState) -> HashState"
     , "let hashNatTag value state = __mix __hashMixInt (natToInt value) state"
     , ""
-    , "trait Hashable (a : Type) ="
+    , -- §28.2 Rational hashes its canonical reduced rendering, which is
+      -- injective up to 'eqRat' (equal rationals share a reduced form, so
+      -- equal renderings), hence Eq-consistent per §14.1.3.
+      "hashRational : Rational -> (1 state : HashState) -> HashState"
+    , "let hashRational value state = hashString (showRat value) state"
+    , ""
+    , -- §14.1.3: Hashable refines Eq — hash acceleration is meaningful
+      -- only relative to equality classes (so Eq-equal values hash equal).
+      "trait Eq a => Hashable (a : Type) ="
     , "    hashInto : (& value : a) -> (1 state : HashState) -> HashState"
     , ""
     , "hashField : forall (a : Type). (@_ : Hashable a) -> (& value : a) -> (1 state : HashState) -> HashState"
@@ -2258,6 +2275,35 @@ stdHashSource =
     , ""
     , "instance Hashable Ordering ="
     , "    let hashInto value state = hashInt (orderingCode value) state"
+    , ""
+    , "instance Hashable Rational ="
+    , "    let hashInto value state = hashRational value state"
+    , ""
+    , -- §14.1.3 container instances. Each mixes a per-constructor tag
+      -- before the payload so structurally distinct shapes (None vs
+      -- Some, Nil vs ::) cannot collide, and recurses through the
+      -- element 'Hashable' (whose Eq superclass discharges the
+      -- container's Eq superclass).
+      "instance (Eq a, Hashable a) => Hashable (Option a) ="
+    , "    let hashInto value state ="
+    , "        match value"
+    , "        case None -> hashNatTag 0 state"
+    , "        case Some x -> hashInto x (hashNatTag 1 state)"
+    , ""
+    , "instance (Eq a, Hashable a) => Hashable (List a) ="
+    , "    let hashInto value state ="
+    , "        match value"
+    , "        case Nil -> hashNatTag 0 state"
+    , "        case x :: rest -> hashInto rest (hashInto x (hashNatTag 1 state))"
+    , ""
+    , "instance (Eq e, Eq a, Hashable e, Hashable a) => Hashable (Result e a) ="
+    , "    let hashInto value state ="
+    , "        match value"
+    , "        case Ok x -> hashInto x (hashNatTag 0 state)"
+    , "        case Err y -> hashInto y (hashNatTag 1 state)"
+    , ""
+    , "instance (Eq a, Hashable a) => Hashable (Array a) ="
+    , "    let hashInto value state = hashInto (arrayToList value) state"
     , ""
     , "instance Eq HashCode ="
     , "    let (==) a b ="

@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TRAIT_SUPERTRAIT_UNSATISFIED
+
+-- §14.1.3/§14.1.4: `Hashable` refines `Eq`, so an instance for a type
+-- with no `Eq` instance is rejected — hash acceleration is meaningful
+-- only relative to equality classes.
+import std.hash.*
+
+data Widget : Type =
+    MkWidget
+
+instance Hashable Widget =
+    let hashInto value state = hashNatTag 0 state

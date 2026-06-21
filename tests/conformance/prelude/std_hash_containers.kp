@@ -1,0 +1,24 @@
+--! mode run
+--! assertStdout "True\nTrue\nFalse\nTrue\nFalse\nTrue\nFalse\nTrue\nTrue\n"
+
+-- §14.1.3 / §29.3: the standard `Hashable` container and `Rational`
+-- instances. Each is Eq-consistent (Eq-equal values hash equal) and
+-- mixes a per-constructor tag so structurally distinct shapes do not
+-- collide. `Rational` hashes its canonical reduced rendering, so the
+-- Eq-equal 6/8 and 3/4 hash equally.
+import std.hash.*
+
+eqH : forall (a : Type). (@_ : Hashable a) -> a -> a -> Bool
+let eqH x y = hashWith defaultHashSeed x == hashWith defaultHashSeed y
+
+main : UIO Unit
+let main = do
+    println (eqH (Some 7) (Some 7))
+    println (eqH (None : Option Int) (None : Option Int))
+    println (eqH (None : Option Int) (Some 0))
+    println (eqH (1 :: 2 :: 3 :: Nil) (1 :: 2 :: 3 :: Nil))
+    println (eqH (1 :: 2 :: Nil) (2 :: 1 :: Nil))
+    println (eqH (Ok 5 : Result Int Int) (Ok 5 : Result Int Int))
+    println (eqH (Ok 5 : Result Int Int) (Err 5 : Result Int Int))
+    println (eqH (divRat (__ratOfInt 6) (__ratOfInt 8)) (divRat (__ratOfInt 3) (__ratOfInt 4)))
+    println (eqH (arrayFromList (1 :: 2 :: Nil)) (arrayFromList (1 :: 2 :: Nil)))
