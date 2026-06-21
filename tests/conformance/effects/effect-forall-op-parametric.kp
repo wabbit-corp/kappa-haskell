@@ -1,0 +1,21 @@
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- §18.1.15: the operation's forall parameter is a rigid skolem in the handler
+-- clause, so a clause that assumes a concrete type (here Integer) is rejected.
+module main
+
+effect Poly =
+    1 idop : forall (a : Type). a -> a
+
+comp : Eff <[Poly : Poly]> Int
+let comp = do
+    let n <- Poly.idop 5
+    pure n
+
+let handled =
+    deep handle Poly comp with
+        case return x -> pure x
+        case idop x k -> k (addInt x 1)
+
+result : Int
+let result = runPure handled

@@ -1,0 +1,26 @@
+--! assertNoErrors
+--! assertEval result 7
+
+-- §18.1.15: an operation may have its own implicit (forall-bound) parameters,
+-- e.g. `idop : forall a. a -> a`. The parameter is instantiated fresh at each
+-- call (here at Int and at String in one computation) and is a rigid skolem in
+-- the handler clause, so `k x` resumes parametrically.
+module main
+
+effect Poly =
+    1 idop : forall (a : Type). a -> a
+
+comp : Eff <[Poly : Poly]> Int
+let comp =
+    do
+        let n <- Poly.idop 5
+        let s <- Poly.idop "hi"
+        pure (addInt n 2)
+
+let handled =
+    deep handle Poly comp with
+        case return x -> pure x
+        case idop x k -> k x
+
+result : Int
+let result = runPure handled
