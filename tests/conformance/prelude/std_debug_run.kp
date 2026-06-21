@@ -1,0 +1,15 @@
+--! mode run
+--! allow_debug_introspection
+--! assertStdout "Branch(Leaf(1) Leaf(2))\nSome(7)\nequal\ndifferent\nunknown\nLeaf"
+import std.debug.*
+data Tree : Type = Leaf (n : Int) | Branch (l : Tree) (r : Tree)
+eqText : DebugEq -> String
+let eqText e = match e case Equal -> "equal" case Different -> "different" case Unknown r -> "unknown"
+main : UIO Unit
+let main = do
+    printlnString (render (Branch (Leaf 1) (Leaf 2)))
+    printlnString (render (Some 7))
+    printlnString (eqText (compare 5 5))
+    printlnString (eqText (compare 5 6))
+    printlnString (eqText (compare (\x -> x) (\y -> y)))
+    (match inspect (Leaf 9) case Node tag fs -> printString tag case Scalar s -> printString s case OpaqueValue r -> printString "opaque")

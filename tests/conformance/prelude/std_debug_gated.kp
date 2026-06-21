@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_FEATURE_INACTIVE
+
+-- §29.6: importing `std.debug` is a compile-time error unless the build
+-- enables `allow_debug_introspection`. This fixture does NOT request the
+-- capability, so the import is gated.
+import std.debug.*
+
+main : UIO Unit
+let main = printString "x"

@@ -7,6 +7,7 @@ module Kappa.Prelude
   , preludeSource
   , stdDerivingShapeSource
   , stdHashSource
+  , stdDebugSource
   , stdBytesSource
   , stdUnicodeSource
   , stdFfiSource
@@ -380,6 +381,13 @@ builtinState =
       , prim "__hashMixDouble" (tyV (tInt ~> tDouble ~> tInt))
       , prim "__hashMixString" (tyV (tInt ~> tStr ~> tInt))
       , prim "__hashMixBytes" (tyV (tInt ~> tBytes ~> tInt))
+      , -- §29.6 std.debug introspection internals: result type is fixed by
+        -- the std.debug wrappers (DebugTree / DebugEq), which live one
+        -- module up, so the prim result is an unconstrained `r` pinned at
+        -- the call site. The runtime builds the std.debug constructors.
+        prim "__debugInspect" (tyV (piI Q0 "a" tType (piI Q0 "r" tType (CVar 1 ~> CVar 0))))
+      , prim "__debugRender" (tyV (piI Q0 "a" tType (CVar 0 ~> tStr)))
+      , prim "__debugCompare" (tyV (piI Q0 "a" tType (piI Q0 "r" tType (CVar 1 ~> CVar 1 ~> CVar 0))))
       , prim "stringAppend" (tyV (tStr ~> tStr ~> tStr))
       , prim "showInt" (tyV (tInt ~> tStr))
       , prim "primitiveIntToString" (tyV (tInt ~> tStr))
@@ -2343,6 +2351,52 @@ stdHashSource =
     , "        case MkHashCode x ->"
     , "            match b"
     , "            case MkHashCode y -> if ltInt x y then LT elif eqInt x y then EQ else GT"
+    ]
+
+-- | Embedded @std.debug@ source (§29.6). Provided only when the build
+-- enables @allow_debug_introspection@ (the import is gated in
+-- 'Kappa.Pipeline'). The structured 'DebugTree' view, its human
+-- rendering, and the debug-only 'compare' delegate to the runtime
+-- introspection primitives (@__debugInspect@\/@__debugRender@\/
+-- @__debugCompare@), which build these very constructors by walking the
+-- runtime value representation. None of these participate in implicit
+-- resolution, equality reflection, or coherence (§29.6).
+stdDebugSource :: Text
+stdDebugSource =
+  T.unlines
+    [ "module std.debug"
+    , ""
+    , "data DebugReason : Type ="
+    , "    Opaque"
+    , "    FunctionValue"
+    , "    ForeignValue"
+    , "    Cyclic"
+    , "    DepthLimit"
+    , "    SizeLimit"
+    , "    Unsupported"
+    , "    Unavailable"
+    , ""
+    , "data DebugEq : Type ="
+    , "    Equal"
+    , "    Different"
+    , "    Unknown (reason : DebugReason)"
+    , ""
+    , "data DebugTree : Type ="
+    , "    Scalar (text : String)"
+    , "    Node (tag : String) (fields : List DebugField)"
+    , "    OpaqueValue (reason : DebugReason)"
+    , ""
+    , "data DebugField : Type ="
+    , "    DebugField (label : Option String) (value : DebugTree)"
+    , ""
+    , "inspect : forall (a : Type). (& x : a) -> DebugTree"
+    , "let inspect x = __debugInspect x"
+    , ""
+    , "render : forall (a : Type). (& x : a) -> String"
+    , "let render x = __debugRender x"
+    , ""
+    , "compare : forall (a : Type). (& x : a) -> (& y : a) -> DebugEq"
+    , "let compare x y = __debugCompare x y"
     ]
 
 -- | Embedded @std.bytes@ source (§29.5, MUST). Portable operations over

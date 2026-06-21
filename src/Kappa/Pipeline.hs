@@ -50,6 +50,7 @@ import Kappa.Prelude
   , stdGradualSource
   , stdDerivingShapeSource
   , stdHashSource
+  , stdDebugSource
   , stdBytesSource
   , stdSupervisorSource
   , stdUnicodeSource
@@ -86,6 +87,7 @@ preludeState =
           stdSources =
             [ (ModuleName ["std", "deriving", "shape"], "<std.deriving.shape>", stdDerivingShapeSource)
             , (ModuleName ["std", "hash"], "<std.hash>", stdHashSource)
+            , (ModuleName ["std", "debug"], "<std.debug>", stdDebugSource)
             , (ModuleName ["std", "bytes"], "<std.bytes>", stdBytesSource)
             , (ModuleName ["std", "unicode"], "<std.unicode>", stdUnicodeSource)
             , (ModuleName ["std", "ffi"], "<std.ffi>", stdFfiSource)
@@ -790,6 +792,32 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
                      )
                  ]
         }
+    -- §29.6: importing `std.debug` is a compile-time error unless the
+    -- build enables `allow_debug_introspection`. (The module is always
+    -- registered so its names exist; only the user import is gated.)
+    refPathModule = \case
+      ImportModule (RefPath mp) _ -> Just (pathModule mp)
+      ImportAll (RefPath mp) _ -> Just (pathModule mp)
+      ImportItems (RefPath mp) _ -> Just (pathModule mp)
+      ImportSingleton (RefPath mp) _ -> Just (pathModule mp)
+      _ -> Nothing
+    debugGateErr ie sp =
+      ie
+        { ieDiags =
+            ieDiags ie
+              ++ [ withPayload (featureGatedPayload "debug-introspection" "allow_debug_introspection")
+                     $ withRelated
+                       (related RoleFeatureGateSite sp "build setting 'allow_debug_introspection' is disabled")
+                     ( diag SevError StageImports "E_FEATURE_INACTIVE" (Just "kappa.feature.gated") sp
+                         "importing 'std.debug' requires the build setting 'allow_debug_introspection', which is disabled (Spec §29.6)"
+                     )
+                 ]
+        }
+    addSpec ie (spec, sp)
+      | Just mn <- refPathModule spec
+      , mn == ModuleName ["std", "debug"]
+      , not (allowDebugIntrospection cfg) =
+          debugGateErr ie sp
     addSpec ie (spec, sp) = case spec of
       ImportModule (RefUrl u _) _ -> urlErr ie sp u
       ImportItems (RefUrl u _) _ -> urlErr ie sp u

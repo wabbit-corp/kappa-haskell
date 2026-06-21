@@ -929,6 +929,101 @@ evalPrimCtx ctx p args = case evalPurePrim p args of
   Just v -> Just v
   Nothing -> evalEffPrim ctx p args
 
+-- | §29.6 std.debug runtime introspection. The primitives build the
+-- std.debug 'DebugTree'\/'DebugEq' constructors by walking the runtime
+-- value representation; representation that is hidden (sealed packages),
+-- a function, a backend object, or stopped by the depth limit becomes
+-- the corresponding 'OpaqueValue'\/'Unknown' reason (§29.6).
+debugGN :: Text -> GName
+debugGN = GName (ModuleName ["std", "debug"])
+
+debugPrelGN :: Text -> GName
+debugPrelGN = GName (ModuleName ["std", "prelude"])
+
+debugListV :: [Value] -> Value
+debugListV = foldr (\h t -> VCtor (debugPrelGN "::") [h, t]) (VCtor (debugPrelGN "Nil") [])
+
+debugOptV :: Maybe Value -> Value
+debugOptV = maybe (VCtor (debugPrelGN "None") []) (\v -> VCtor (debugPrelGN "Some") [v])
+
+-- literal rendering kept local to avoid a dependency on Kappa.Pretty
+debugLitText :: Literal -> Text
+debugLitText = \case
+  LitInt n -> T.pack (show n)
+  LitDouble d -> T.pack (show d)
+  LitStr s -> s
+  LitScalar c -> T.singleton c
+  LitByte w -> T.pack (show w)
+  LitBytes bs -> T.pack ("<" <> show (BS.length bs) <> " bytes>")
+  LitGrapheme g -> g
+
+-- | The reason a value is not transparently inspectable\/comparable, or
+-- 'Nothing' when its representation is available structurally.
+debugOpaqueReason :: Value -> Maybe Text
+debugOpaqueReason = \case
+  VLam {} -> Just "FunctionValue"
+  VPrim {} -> Just "FunctionValue"
+  VThunkV {} -> Just "FunctionValue"
+  VLazyV {} -> Just "FunctionValue"
+  VRef {} -> Just "ForeignValue"
+  VMVar {} -> Just "ForeignValue"
+  VFiber {} -> Just "ForeignValue"
+  VScope {} -> Just "ForeignValue"
+  VFiberRef {} -> Just "ForeignValue"
+  VTVar {} -> Just "ForeignValue"
+  VIOAction {} -> Just "ForeignValue"
+  VSealV {} -> Just "Opaque"
+  VQuote {} -> Just "Unsupported"
+  VRigid {} -> Just "Unsupported"
+  VFlex {} -> Just "Unsupported"
+  VGlobN {} -> Just "Unsupported"
+  VMatchN {} -> Just "Unsupported"
+  VProjN {} -> Just "Unsupported"
+  _ -> Nothing
+
+debugInspect :: EvalCtx -> Int -> Value -> Value
+debugInspect ctx depth v0
+  | depth <= 0 = VCtor (debugGN "OpaqueValue") [VCtor (debugGN "DepthLimit") []]
+  | otherwise = case force ctx v0 of
+      VLit l -> VCtor (debugGN "Scalar") [VLit (LitStr (debugLitText l))]
+      VCtor g args -> node (gnameText g) [field Nothing a | a <- args]
+      VInject tag w -> node tag [field Nothing w]
+      VRecordV fs -> node "Record" [field (Just lbl) w | (lbl, w) <- fs]
+      other -> case debugOpaqueReason other of
+        Just r -> VCtor (debugGN "OpaqueValue") [VCtor (debugGN r) []]
+        Nothing -> VCtor (debugGN "OpaqueValue") [VCtor (debugGN "Unsupported") []]
+  where
+    node tag fs = VCtor (debugGN "Node") [VLit (LitStr tag), debugListV fs]
+    field mlabel w =
+      VCtor (debugGN "DebugField")
+        [debugOptV (VLit . LitStr <$> mlabel), debugInspect ctx (depth - 1) w]
+
+debugRender :: EvalCtx -> Int -> Value -> Text
+debugRender ctx depth v0
+  | depth <= 0 = "<\x2026>"
+  | otherwise = case force ctx v0 of
+      VLit l -> debugLitText l
+      VCtor g [] -> gnameText g
+      VCtor g args -> gnameText g <> "(" <> T.intercalate " " (map (debugRender ctx (depth - 1)) args) <> ")"
+      VInject tag w -> tag <> " " <> debugRender ctx (depth - 1) w
+      VRecordV fs ->
+        "(" <> T.intercalate ", " [lbl <> " = " <> debugRender ctx (depth - 1) w | (lbl, w) <- fs] <> ")"
+      other -> case debugOpaqueReason other of
+        Just r -> "<" <> r <> ">"
+        Nothing -> "<opaque>"
+
+debugCompare :: EvalCtx -> Value -> Value -> Value
+debugCompare ctx x y =
+  case orMaybe (debugOpaqueReason (force ctx x)) (debugOpaqueReason (force ctx y)) of
+    Just r -> VCtor (debugGN "Unknown") [VCtor (debugGN r) []]
+    Nothing ->
+      if convertible ctx 0 x y
+        then VCtor (debugGN "Equal") []
+        else VCtor (debugGN "Different") []
+  where
+    orMaybe (Just a) _ = Just a
+    orMaybe Nothing b = b
+
 -- | The §30.2.2.7 effect kernel over the runtime 'Eff' tree
 -- representation: @__EffPure v@ for a finished computation and
 -- @__EffOp label op payload cont@ for a suspended operation, where
@@ -960,6 +1055,12 @@ evalEffPrim ctx p args = case (p, args) of
   -- erased and do not reach the primitive.
   ("captureBorrow", [x]) -> Just x
   ("withBorrowView", [v, k]) -> Just (vapp ctx k Expl v)
+  -- §29.6 std.debug introspection: walk the runtime value into the
+  -- std.debug DebugTree / DebugEq constructors (representation-only; no
+  -- trait evidence is consulted).
+  ("__debugInspect", [x]) -> Just (debugInspect ctx 64 x)
+  ("__debugRender", [x]) -> Just (VLit (LitStr (debugRender ctx 64 x)))
+  ("__debugCompare", [x, y]) -> Just (debugCompare ctx x y)
   -- runPure : Eff <[ ]> a -> a (§18.1.14)
   ("runPure", [comp]) -> case force ctx comp of
     VCtor (GName _ "__EffPure") [v] -> Just v
