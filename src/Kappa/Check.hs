@@ -12202,7 +12202,17 @@ freeLower = go
         | nameText hd == "LacksRec" -> go f ++ goArg rowA
       EApp f args -> go f ++ concatMap goArg args
       EArrow b e -> maybe [] go (bType b) ++ withoutBinders [b] (go e)
-      EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ withoutBinders bs (go e)
+      -- §11.3.3: a `forall` binder is in scope for every LATER binder's
+      -- type and the body, so a name bound earlier in the telescope is not
+      -- free where a subsequent binder's type mentions it (e.g. the `a` in
+      -- `(x : Core G a)` after `(a : Type)`). Threading the binders left to
+      -- right avoids spuriously universalizing such a name as an extra
+      -- leading implicit, which otherwise duplicates the binder and
+      -- cross-links shared dependent indices.
+      EForall bs e _ -> goTele bs
+        where
+          goTele [] = go e
+          goTele (b : rest) = maybe [] go (bType b) ++ withoutBinders [b] (goTele rest)
       ETraitArrow a b -> go a ++ go b
       EOptionSugar e _ -> go e
       ETuple es _ -> concatMap go es
