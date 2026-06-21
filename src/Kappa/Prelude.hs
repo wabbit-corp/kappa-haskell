@@ -1626,6 +1626,15 @@ preludeSource =
     , "        case Nil -> Nil"
     , "        case x :: rest -> f x :: map f rest"
     , ""
+    , -- §28.2.2: List is the standard nondeterminism monad — `pureA` is the
+      -- singleton list and bind is `concatMap` (Cartesian sequencing).
+      "instance Applicative List ="
+    , "    let pureA x = x :: Nil"
+    , "    let liftA2 f xs ys = concatMap (\\x -> map (f x) ys) xs"
+    , ""
+    , "instance Monad List ="
+    , "    let (>>=) xs f = concatMap f xs"
+    , ""
     , "instance Functor Option ="
     , "    let map f o ="
     , "        match o"

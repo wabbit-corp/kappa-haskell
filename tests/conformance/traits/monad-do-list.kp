@@ -1,0 +1,22 @@
+--! mode run
+--! assertStdout "11,21,12,22,"
+
+-- §18.8 / §28.2.2: List is the standard nondeterminism monad; a `do`
+-- block over List sequences via `concatMap`, so two binds enumerate the
+-- Cartesian product in row-major order.
+module main
+
+showList : List Int -> String
+let showList xs =
+    match xs
+    case Nil -> ""
+    case y :: rest -> showInt y ++ "," ++ showList rest
+
+pairs : List Int
+let pairs = do
+    x <- 1 :: 2 :: Nil
+    y <- 10 :: 20 :: Nil
+    (x + y) :: Nil
+
+main : UIO Unit
+let main = printString (showList pairs)
