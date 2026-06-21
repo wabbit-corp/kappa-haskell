@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.6 semantic-reflection tier: the `Core Γ t` / `CoreEq` types and the
+-- exact-equality witness operations `reflCoreEq` / `symCoreEq` compose at
+-- their dependent signatures (here over hypothetical reflected terms in
+-- scope). These are compile-time/erased and carry no runtime content.
+module main
+
+reflexive : forall (@0 G : CoreCtx) (@0 a : Type) (@0 x : Core G a) . CoreEq x x
+let reflexive = reflCoreEq
+
+symmetric : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type) (@0 x : Core G a) (@0 y : Core G b) . CoreEq x y -> CoreEq y x
+let symmetric p = symCoreEq p
+
+-- symCoreEq composed with itself round-trips to the original orientation
+twice : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type) (@0 x : Core G a) (@0 y : Core G b) . CoreEq x y -> CoreEq x y
+let twice p = symCoreEq (symCoreEq p)

@@ -154,6 +154,12 @@ builtinState =
       , (prel "SyntaxOrigin", opaqueTy (tyV tType))
       , -- §21.6 semantic-reflection symbol identity (compile-time only)
         (prel "Symbol", opaqueTy (tyV tType))
+      , -- §21.6 semantic-reflection tier (compile-time only, erased): an
+        -- elaborated well-scoped core term `Core Γ t` in context `Γ`, with
+        -- the witness-bearing exact equality `CoreEq`.
+        (prel "CoreCtx", opaqueTy (tyV tType))
+      , (prel "Core", opaqueTy (tyV (tcon "CoreCtx" ~> CSort 1 ~> tType)))
+      , (prel "CoreEq", opaqueTy coreEqKind)
       , -- §23.1 generative staged code (not inspectable as Syntax)
         (prel "Code", opaqueTy (tyV (tType ~> tType)))
       , (prel "ClosedCode", opaqueTy (tyV (tType ~> tType)))
@@ -170,6 +176,15 @@ builtinState =
         piI Q0 "a" tType $
           piI Q0 "x" (CVar 0) $
             CApp Expl (CApp Expl (CApp Impl (tcon "=") (CVar 1)) (CVar 0)) (CVar 0)
+    -- §21.6 CoreEq kind: forall (@0 Γ : CoreCtx) (@0 a b : Type).
+    -- Core Γ a -> Core Γ b -> Type
+    coreEqKind =
+      tyV $
+        piI Q0 "G" (tcon "CoreCtx") $
+          piI Q0 "a" (CSort 1) $
+            piI Q0 "b" (CSort 1) $
+              CApp Expl (CApp Expl (tcon "Core") (CVar 2)) (CVar 1)
+                ~> CApp Expl (CApp Expl (tcon "Core") (CVar 3)) (CVar 1) ~> tType
     projT r f = CApp Expl (CApp Expl (tcon "Projector") r) f
     -- §12.4.3 composeProjector (one-field root packs of the middle
     -- projector are admitted structurally, hence the extra parameter)
@@ -1878,6 +1893,19 @@ preludeSource =
     , ""
     , "cong : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y"
     , "let cong f eq = __eqProof"
+    , ""
+    , -- §21.6 semantic-reflection witness algebra (compile-time/erased).
+      -- Bodies use '__eqProof', the same magic-inhabitant mechanism as
+      -- sym/trans/cong, so the elaborator builds the dependent signatures.
+      -- 'transCoreEq'/'substCoreEq' are deferred: a signature sharing a
+      -- variable across implicit type-former-argument positions (the
+      -- middle 'y' of transitivity) currently mis-infers CoreEq's implicit
+      -- indices at the application site; see SPEC_COVERAGE.md.
+      "reflCoreEq : forall (@0 G : CoreCtx) (@0 a : Type) (@0 x : Core G a) . CoreEq x x"
+    , "let reflCoreEq = __eqProof"
+    , ""
+    , "symCoreEq : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type) (@0 x : Core G a) (@0 y : Core G b) . CoreEq x y -> CoreEq y x"
+    , "let symCoreEq p = __eqProof"
     , ""
     , -- §11.4: dependent path induction over the motive 'c'. The base
       -- case is transported to the (proof-irrelevantly identical) goal.
