@@ -699,6 +699,14 @@ preludeSource =
     , "    Nil"
     , "    (::) (head : a) (tail : List a)"
     , ""
+    , -- §29.5 length-indexed array. The 'Nat' index is a phantom length
+      -- witness (the element sequence is the as-if-list model of §20.10.11);
+      -- the index is fixed at construction (e.g. `bytesAsSizedArray` packs
+      -- it to `bytesLength`), which is how the §29.5 propositional-length
+      -- guarantee is carried.
+      "data SizedArray (n : Nat) (a : Type) : Type ="
+    , "    MkSizedArray (elements : List a)"
+    , ""
     , -- §12.4.3 canonical zipper: an opened owned focus plus a linear
       -- filler back to the whole
       "data Zipper (whole : Type) (focus : Type) (replace : Type) : Type ="
@@ -2488,6 +2496,20 @@ stdBytesSource =
     , ""
     , "finishBytesBuilder : (1 builder : BytesBuilder) -> Bytes"
     , "let finishBytesBuilder builder = __finishBytesBuilder builder"
+    , ""
+    , -- §29.5 dependent SizedArray views. `bytesAsSizedArray` packs the
+      -- existential with witness `bytesLength bs`, so the §29.5 guarantee
+      -- (witness propositionally equal to `bytesLength bs`) holds by
+      -- construction; `bytesFromSizedArray` recovers the same byte
+      -- sequence and `bytesBuilderSizedArray` appends it.
+      "bytesAsSizedArray : Bytes -> exists (n : Nat). SizedArray n Byte"
+    , "let bytesAsSizedArray bs = seal exists (n = bytesLength bs). MkSizedArray (bytesToList bs) as exists (n : Nat). SizedArray n Byte"
+    , ""
+    , "bytesFromSizedArray : forall (n : Nat). SizedArray n Byte -> Bytes"
+    , "let bytesFromSizedArray arr = match arr case MkSizedArray es -> bytesFromList es"
+    , ""
+    , "bytesBuilderSizedArray : forall (n : Nat). SizedArray n Byte -> (1 builder : BytesBuilder) -> BytesBuilder"
+    , "let bytesBuilderSizedArray arr builder = bytesBuilderBytes (bytesFromSizedArray arr) builder"
     ]
 
 -- | Embedded @std.unicode@ source (§29.4; see SPEC_COVERAGE.md).

@@ -1,0 +1,28 @@
+--! mode run
+--! assertStdout "4\n4\ntrue"
+
+-- §29.5: the dependent SizedArray byte views. `bytesAsSizedArray` packs a
+-- length-indexed existential whose witness is `bytesLength bs`;
+-- `bytesFromSizedArray` recovers the same byte sequence, and
+-- `bytesBuilderSizedArray` appends it to a builder.
+import std.bytes.*
+
+roundtripLen : Bytes -> Nat
+let roundtripLen bs =
+    open bytesAsSizedArray bs as exists (n). arr in bytesLength (bytesFromSizedArray arr)
+
+builtLen : Bytes -> Nat
+let builtLen bs =
+    open bytesAsSizedArray bs as exists (n). arr in
+        bytesLength (finishBytesBuilder (bytesBuilderSizedArray arr newBytesBuilder))
+
+sameBytes : Bytes -> Bool
+let sameBytes bs =
+    open bytesAsSizedArray bs as exists (n). arr in (bytesFromSizedArray arr) == bs
+
+main : UIO Unit
+let main = do
+    let bs = bytesFromList (b'a' :: b'b' :: b'c' :: b'd' :: Nil)
+    println (roundtripLen bs)
+    println (builtLen bs)
+    printString (if sameBytes bs then "true" else "false")
