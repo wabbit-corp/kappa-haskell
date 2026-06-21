@@ -1,0 +1,231 @@
+name: CI and Release
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub release tag to create or update"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kappa-haskell-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test Haskell compiler
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libgc-dev libgmp-dev pkg-config
+
+      - name: Set up Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.7"
+          cabal-version: "3.10.3.0"
+
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ runner.os }}-ghc-9.6.7-cabal-${{ hashFiles('kappa-haskell.cabal') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-9.6.7-cabal-
+
+      - name: Build
+        run: |
+          cabal update
+          cabal build all
+
+      - name: Test
+        run: cabal test all --test-show-details=direct
+
+  package-compiler:
+    name: Package Haskell compiler (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    needs: test
+    if: github.event_name != 'pull_request'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: macos-14
+            platform: macos-arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.7"
+          cabal-version: "3.10.3.0"
+
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ runner.os }}-ghc-9.6.7-package-${{ hashFiles('kappa-haskell.cabal') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-9.6.7-package-
+
+      - name: Build release executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cabal update
+          out_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
+          mkdir -p "$out_dir/bin"
+
+          cabal install exe:kappa \
+            --install-method=copy \
+            --installdir="$out_dir/bin" \
+            --overwrite-policy=always
+
+          "$out_dir/bin/kappa" --help >/dev/null
+
+          cp LICENSE "$out_dir/LICENSE"
+          cp CHANGELOG.md "$out_dir/CHANGELOG.md"
+          cp docs/Spec.md "$out_dir/Spec.md"
+          cp TESTING.md "$out_dir/TESTING.md"
+          cp SPEC_COVERAGE.md "$out_dir/SPEC_COVERAGE.md" || true
+
+          mkdir -p "$PWD/dist/assets"
+          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/kappa-haskell-${{ matrix.platform }}.tar.gz" "kappa-haskell-${{ matrix.platform }}"
+
+      - name: Upload compiler package
+        uses: actions/upload-artifact@v4
+        with:
+          name: kappa-haskell-${{ matrix.platform }}
+          path: dist/assets/*
+          if-no-files-found: error
+
+  package-delve:
+    name: Package Delve game (linux-x64)
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libgc-dev libgmp-dev pkg-config
+
+      - name: Set up Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.7"
+          cabal-version: "3.10.3.0"
+
+      - name: Build compiler and Delve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cabal update
+
+          compiler_dir="$PWD/dist/release/kappa-haskell-linux-x64"
+          mkdir -p "$compiler_dir/bin"
+          cabal install exe:kappa \
+            --install-method=copy \
+            --installdir="$compiler_dir/bin" \
+            --overwrite-policy=always
+
+          game_dir="$PWD/dist/release/delve-linux-x64"
+          mkdir -p "$game_dir/bin"
+
+          "$compiler_dir/bin/kappa" build \
+            --manifest examples/packages/delve \
+            --target delve-tests \
+            -o "$game_dir/bin/delve-tests" \
+            --cc cc
+
+          "$game_dir/bin/delve-tests"
+
+          "$compiler_dir/bin/kappa" build \
+            --manifest examples/packages/delve \
+            --target delve \
+            -o "$game_dir/bin/delve" \
+            --cc cc
+
+          cp LICENSE "$game_dir/LICENSE"
+          cp examples/packages/delve/README.md "$game_dir/README.md"
+          cp examples/packages/delve/DESIGN.md "$game_dir/DESIGN.md"
+
+          mkdir -p "$PWD/dist/assets"
+          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/delve-linux-x64.tar.gz" "delve-linux-x64"
+
+      - name: Upload Delve package
+        uses: actions/upload-artifact@v4
+        with:
+          name: delve-linux-x64
+          path: dist/assets/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - package-compiler
+      - package-delve
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber
+          else
+            gh release create "$tag" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "Kappa Haskell compiler ${tag}" \
+              --notes "Automated Haskell compiler and Delve release for ${tag}."
+          fi
