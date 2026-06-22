@@ -238,5 +238,6 @@ let newLevel pack depth size seed0 =
         rumors = pack.rumors,
         content = pack,
         ecs = ecs.fromLevel pack level,
-        savePath = pack.save.path
+        savePath = pack.save.path,
+        audioMuted = False
     }

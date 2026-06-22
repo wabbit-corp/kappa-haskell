@@ -1,0 +1,43 @@
+module delve.audio
+
+import delve.core.*
+import delve.natutil.*
+import host.native.delve_audio.Raw as Raw
+
+-- macOS fragment for the chiptune-audio facade. The raw surface is the
+-- miniaudio-backed synth shim (native/delve_audio.c). All raw calls return a status
+-- int we deliberately ignore: audio is non-essential, so a disabled subsystem
+-- (no device, or DELVE_NO_AUDIO set) simply yields silence, never a GameError.
+
+liftUIO : forall (a : Type). UIO a -> IO GameError a
+let liftUIO action = catchIO action (\v -> raise (absurd v))
+
+init : IO GameError Unit
+let init =
+    do
+        _ <- liftUIO Raw.delve_audio_init
+        pure ()
+
+playSfx : Int -> IO GameError Unit
+let playSfx id =
+    do
+        _ <- liftUIO (Raw.delve_audio_play_sfx id)
+        pure ()
+
+playMusic : Int -> IO GameError Unit
+let playMusic id =
+    do
+        _ <- liftUIO (Raw.delve_audio_play_music id)
+        pure ()
+
+stopMusic : IO GameError Unit
+let stopMusic =
+    do
+        _ <- liftUIO Raw.delve_audio_stop_music
+        pure ()
+
+shutdown : IO GameError Unit
+let shutdown =
+    do
+        _ <- liftUIO Raw.delve_audio_shutdown
+        pure ()

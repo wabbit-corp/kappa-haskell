@@ -1,0 +1,38 @@
+trusted-summary: delve-audio
+host-root: host.native
+provided-module: host.native.delve_audio.Raw
+headers:
+  - native/delve_audio_adapter.h
+sources:
+  - native/delve_audio.c
+target:
+  abi: c
+  vendored-header: native/miniaudio.h
+  libraries: [pthread, m, dl]
+  macos-frameworks: [CoreFoundation, CoreAudio, AudioToolbox]  (self-linked from source via .linker_option)
+blocking-classification:
+  delve_audio_init: nonblocking
+  delve_audio_play_sfx: nonblocking
+  delve_audio_play_music: nonblocking
+  delve_audio_stop_music: nonblocking
+  delve_audio_shutdown: nonblocking
+error-contract:
+  every raw function returns int 0 on success, nonzero meaning "audio unavailable"
+  audio is best-effort: a nonzero init disables all subsequent calls (no-ops)
+  the delve.audio facade discards the status; audio never raises a GameError
+ownership:
+  the synth pre-renders all SFX/music PCM into heap buffers held for the
+  process lifetime; miniaudio owns the audio device between init and shutdown
+callbacks:
+  delve_audio.c registers a miniaudio data callback (mix_cb) that runs on
+  miniaudio's audio thread; shared voice/music state is guarded by an ma_mutex
+notes:
+  Self-contained chiptune synthesizer — square / triangle / LFSR-noise
+  oscillators with an attack-decay envelope — rendered once at init. The music
+  is a longform "Sweden"-style theme chiptuned from a Strudel composition. There
+  is NO third-party DSP/synth dependency; the only audio library is the vendored
+  header-only miniaudio (native/miniaudio.h), which has no link-time dependency
+  (runtime-loads ALSA/Pulse on Linux, self-links CoreAudio on macOS) and fails
+  soft with no device, so the binary loads on machines with no audio hardware.
+  The delve.audio facade exposes Unit-returning IO actions; the id constants and
+  the game-event -> sound mapping live in delve.engine.

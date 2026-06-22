@@ -14,10 +14,12 @@ let testFeatureKeys =
     input.keyToCommand (KeyChar "p") == Pray &&
     input.keyToCommand (KeyChar "E") == Engrave &&
     input.keyToCommand (KeyChar "C") == CycleTactic &&
-    input.keyToCommand (KeyChar "a") == TargetedAttack
+    input.keyToCommand (KeyChar "a") == TargetedAttack &&
+    input.keyToCommand (KeyChar "m") == ToggleAudio
 
 testMenuKeys : Bool
 let testMenuKeys =
     input.menuKeyToCommand (KeyChar "n") == StartNewGame &&
     input.menuKeyToCommand (KeyChar "c") == LoadGame &&
-    input.menuKeyToCommand (KeyChar "l") == LoadGame
+    input.menuKeyToCommand (KeyChar "l") == LoadGame &&
+    input.menuKeyToCommand (KeyChar "m") == ToggleAudio

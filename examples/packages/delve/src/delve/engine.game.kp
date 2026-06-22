@@ -21,6 +21,7 @@ import delve.knowledge as know
 import delve.config as config
 import delve.save as save
 import delve.ecs as ecs
+import delve.audio as audio
 
 addCorpseFor : Actor -> GameState -> GameState
 let addCorpseFor victim game =
@@ -409,6 +410,18 @@ let throwFirst game =
 
 applyCommand : Command -> GameState -> GameState
 let applyCommand cmd game =
+    match cmd
+    case ToggleAudio -> toggleAudio game
+    case _ -> applyModeCommand cmd game
+
+toggleAudio : GameState -> GameState
+let toggleAudio game =
+    let muted = not game.audioMuted
+    let label = if muted then "Sound muted." else "Sound unmuted."
+    in message label game.{ audioMuted = muted }
+
+applyModeCommand : Command -> GameState -> GameState
+let applyModeCommand cmd game =
     match game.mode
     case MainMenu -> game
     case HelpMode -> game.{ mode = Playing }
@@ -544,7 +557,10 @@ let stepIO mapSize cmd game =
     match game.mode
     case MainMenu ->
         match cmd
-        case StartNewGame -> pure (initialGame game.content (game.rng + 1) mapSize)
+        case ToggleAudio -> pure (toggleAudio game)
+        case StartNewGame ->
+            let fresh = initialGame game.content (game.rng + 1) mapSize
+            in pure fresh.{ audioMuted = game.audioMuted }
         case LoadGame ->
             catchError (save.loadGame game.content mapSize) (\_ -> pure (message "No save file found, or it could not be loaded." game))
         case QuitNoSave -> pure game.{ mode = Quit }
@@ -584,29 +600,158 @@ let mapSizeFor pack screen =
 liftUIO : forall (a : Type). UIO a -> IO GameError a
 let liftUIO action = catchIO action (\v -> raise (absurd v))
 
-runLoop : (& terminal : term.Terminal) -> Size -> GameState -> IO GameError Unit
-let runLoop terminal mapSize game =
+-- ── Audio: event ids (mirror native/delve_audio_adapter.h) ──────────────
+sfxHit : Int
+let sfxHit = 0
+sfxHurt : Int
+let sfxHurt = 1
+sfxKill : Int
+let sfxKill = 2
+sfxPickup : Int
+let sfxPickup = 3
+sfxStairs : Int
+let sfxStairs = 4
+sfxLevelup : Int
+let sfxLevelup = 5
+sfxWard : Int
+let sfxWard = 6
+sfxZap : Int
+let sfxZap = 7
+sfxChaos : Int
+let sfxChaos = 8
+sfxDeath : Int
+let sfxDeath = 9
+sfxWin : Int
+let sfxWin = 10
+musicDungeon : Int
+let musicDungeon = 0
+musicMenu : Int
+let musicMenu = 1
+musicDanger : Int
+let musicDanger = 2
+musicNone : Int
+let musicNone = 0 - 1
+
+-- Pure game-event -> sound mapping: infer salient events by diffing the
+-- pre/post-command states (no IO, no schema change). Playback happens in the IO
+-- loop; the mixer plays any/all returned ids at once.
+audioPlayerHp : GameState -> Int
+let audioPlayerHp g =
+    match playerActor g
+    case Some p -> p.stats.hp
+    case None -> 0
+
+audioPlayerLevel : GameState -> Int
+let audioPlayerLevel g =
+    match playerActor g
+    case Some p -> p.stats.level
+    case None -> 0
+
+audioInvCount : GameState -> Int
+let audioInvCount g =
+    match playerActor g
+    case Some p -> listLength p.inventory
+    case None -> 0
+
+audioInvScore : GameState -> Int
+let audioInvScore g = audioInvCount g + g.player.gold
+
+consIf : Int -> Bool -> List Int -> List Int
+let consIf x cond xs = if cond then (::) x xs else xs
+
+isMoveCmd : Command -> Bool
+let isMoveCmd cmd =
+    match cmd
+    case Move _ -> True
+    case _ -> False
+
+audioEventsFor : Command -> GameState -> GameState -> List Int
+let audioEventsFor cmd before after =
+    let e1 = consIf sfxDeath (after.mode == Dead && before.mode != Dead) Nil
+    let e2 = consIf sfxWin (after.mode == Won && before.mode != Won) e1
+    let e3 = consIf sfxLevelup (audioPlayerLevel after > audioPlayerLevel before) e2
+    let e4 = consIf sfxStairs (after.level.depth != before.level.depth) e3
+    let e5 = consIf sfxKill (listLength after.level.actors < listLength before.level.actors) e4
+    let e6 = consIf sfxChaos (after.player.corruption >= before.player.corruption + 5) e5
+    let e7 = consIf sfxPickup (audioInvScore after > audioInvScore before) e6
+    let e8 = consIf sfxZap (cmd == ZapFirst) e7
+    let e9 = consIf sfxWard (cmd == Engrave) e8
+    let bumpHit = isMoveCmd cmd && actorVitality after.level.actors < actorVitality before.level.actors && audioPlayerHp after >= audioPlayerHp before
+    let e10 = consIf sfxHit (cmd == TargetedAttack || bumpHit) e9
+    consIf sfxHurt (audioPlayerHp after < audioPlayerHp before && audioPlayerHp after > 0) e10
+
+lowHp : GameState -> Bool
+let lowHp g =
+    match playerActor g
+    case Some p -> p.stats.hp * 4 < p.stats.maxHp
+    case None -> False
+
+desiredMusic : GameState -> Int
+let desiredMusic game =
+    if game.audioMuted then musicNone
+    else
+        match game.mode
+        case MainMenu -> musicMenu
+        case Playing -> if lowHp game then musicDanger else musicDungeon
+        case _ -> musicNone
+
+playSfxList : List Int -> IO GameError Unit
+let playSfxList ids decreases listLength ids =
+    match ids
+    case Nil -> pure ()
+    case id :: rest ->
+        do
+            audio.playSfx id
+            playSfxList rest
+
+playEvents : GameState -> Command -> GameState -> IO GameError Unit
+let playEvents before cmd after =
+    if before.mode == Playing && not after.audioMuted then playSfxList (audioEventsFor cmd before after)
+    else pure ()
+
+updateMusic : Int -> Int -> IO GameError Int
+let updateMusic last want =
+    if want == last then pure last
+    elif want < 0 then
+        do
+            audio.stopMusic
+            pure want
+    else
+        do
+            audio.playMusic want
+            pure want
+
+runLoop : (& terminal : term.Terminal) -> Size -> Int -> GameState -> IO GameError Unit
+let runLoop terminal mapSize lastMusic game =
     do
         term.write terminal (render.renderGame game)
         match game.mode
         case Quit -> pure ()
         case _ ->
             do
+                nextMusic <- updateMusic lastMusic (desiredMusic game)
                 key <- term.readKey terminal
                 let cmd = commandFor game key
                 game2 <- stepIO mapSize cmd game
-                runLoop terminal mapSize game2
+                musicAfterInput <- if game2.audioMuted && not game.audioMuted then updateMusic nextMusic musicNone else pure nextMusic
+                playEvents game cmd game2
+                runLoop terminal mapSize musicAfterInput game2
 
 main : IO GameError Unit
 let main =
     do
         pack <- config.loadDefault
         terminal <- term.open
+        let cleanup =
+            do
+                audio.shutdown
+                term.close terminal
         let body =
             do
+                audio.init
                 seed <- liftUIO term.monotonicSeed
                 screen <- term.size terminal
                 let mapSize = mapSizeFor pack screen
                 let game = initialMenu pack seed mapSize
-                runLoop terminal mapSize game
-        finallyIO body (term.close terminal)
+                runLoop terminal mapSize musicNone game
+        finallyIO body cleanup

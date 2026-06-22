@@ -31,18 +31,21 @@ visibleFrom : Level -> Vec2 -> Vec2 -> Bool
 let visibleFrom level origin p =
     grid.inBounds level.size p && chebyshev origin p <= radius && clearLine level origin p
 
+-- One linear pass over the tile list (Array is cons-list backed at runtime, so
+-- per-cell setTile is O(index) and folding it over every cell was O(n^2) with
+-- O(n^2) allocation). arrayToList/arrayFromList are identity at runtime, so this
+-- rebuilds the tile vector once. Visibility per cell is unchanged.
 refreshVisibility : Vec2 -> Level -> Level
 let refreshVisibility origin level =
-    block
-        mark : Vec2 -> Level -> Level
-        let mark p lv =
-            let v = visibleFrom level origin p
-            in grid.mapTile p (\t -> t.{ lit = v, seen = t.seen || v }) lv
+    let w = level.size.width
+    let newTiles = markTiles origin level w 0 (arrayToList level.tiles)
+    in level.{ tiles = arrayFromList newTiles }
 
-        go : List Vec2 -> Level -> Level
-        let go ps lv decreases listLength ps =
-            match ps
-            case Nil -> lv
-            case p :: rest -> go rest (mark p lv)
-
-        go (grid.positions level.size) level
+markTiles : Vec2 -> Level -> Int -> Int -> List Tile -> List Tile
+let markTiles origin level w i tiles decreases listLength tiles =
+    match tiles
+    case Nil -> Nil
+    case t :: rest ->
+        let p = Vec2 (modInt i w) (divInt i w)
+        let v = visibleFrom level origin p
+        in (::) (t.{ lit = v, seen = t.seen || v }) (markTiles origin level w (i + 1) rest)

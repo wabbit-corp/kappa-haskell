@@ -29,6 +29,17 @@ let tc r g b text = "\x1b[38;2;" ++ show r ++ ";" ++ show g ++ ";" ++ show b ++ 
 tcb : Int -> Int -> Int -> String -> String
 let tcb r g b text = "\x1b[1;38;2;" ++ show r ++ ";" ++ show g ++ ";" ++ show b ++ "m" ++ text ++ reset
 
+-- Bare SGR color codes (no trailing reset) — the map emits one reset per row and
+-- run-length-encodes color so a run of same-colored cells shares a single code.
+sgr : Int -> Int -> Int -> String
+let sgr r g b = "\x1b[38;2;" ++ show r ++ ";" ++ show g ++ ";" ++ show b ++ "m"
+
+sgrb : Int -> Int -> Int -> String
+let sgrb r g b = "\x1b[1;38;2;" ++ show r ++ ";" ++ show g ++ ";" ++ show b ++ "m"
+
+memColor : String
+let memColor = sgr 75 75 80
+
 repeatStr : Int -> String -> String
 let repeatStr n s decreases max 0 n =
     if n <= 0 then "" else s ++ repeatStr (n - 1) s
@@ -59,101 +70,97 @@ let tileKindChar k =
     case LoreStone -> "?"
     case ChaosVent -> "*"
 
--- Fully-lit tile: rich color.
-litTile : Tile -> String
-let litTile t =
-    if t.warded then tcb 90 230 130 ";"
-    else litKindGlyph t.kind
+litTileStyle : Tile -> (color : String, glyph : String)
+let litTileStyle t =
+    if t.warded then (color = sgrb 90 230 130, glyph = ";")
+    else litKindStyle t.kind
 
-litKindGlyph : TileKind -> String
-let litKindGlyph k =
+litKindStyle : TileKind -> (color : String, glyph : String)
+let litKindStyle k =
     match k
-    case VoidTile -> " "
-    case Floor -> tc 120 120 105 "."
-    case Wall -> tc 150 130 100 "#"
-    case ClosedDoor -> tc 190 135 70 "+"
-    case OpenDoor -> tc 190 135 70 "/"
-    case Upstairs -> tcb 235 235 250 "<"
-    case Downstairs -> tcb 235 235 250 ">"
-    case Water -> tc 80 130 220 "~"
-    case Lava -> tcb 240 110 40 "~"
-    case Trap -> tcb 225 80 80 "^"
-    case Altar -> tcb 235 205 95 "_"
-    case LoreStone -> tc 95 205 225 "?"
-    case ChaosVent -> tcb 210 95 220 "*"
-
--- Remembered but unlit: dim monochrome.
-memTile : Tile -> String
-let memTile t = tc 75 75 80 (tileChar t)
+    case VoidTile -> (color = "", glyph = " ")
+    case Floor -> (color = sgr 120 120 105, glyph = ".")
+    case Wall -> (color = sgr 150 130 100, glyph = "#")
+    case ClosedDoor -> (color = sgr 190 135 70, glyph = "+")
+    case OpenDoor -> (color = sgr 190 135 70, glyph = "/")
+    case Upstairs -> (color = sgrb 235 235 250, glyph = "<")
+    case Downstairs -> (color = sgrb 235 235 250, glyph = ">")
+    case Water -> (color = sgr 80 130 220, glyph = "~")
+    case Lava -> (color = sgrb 240 110 40, glyph = "~")
+    case Trap -> (color = sgrb 225 80 80, glyph = "^")
+    case Altar -> (color = sgrb 235 205 95, glyph = "_")
+    case LoreStone -> (color = sgr 95 205 225, glyph = "?")
+    case ChaosVent -> (color = sgrb 210 95 220, glyph = "*")
 
 -- ── Entities ────────────────────────────────────────────────────────────
-actorGlyph : Actor -> String
-let actorGlyph a =
-    if a.species == PlayerSpecies then tcb 250 250 250 a.glyph
-    elif a.faction == HeroFaction then tc 95 220 125 a.glyph
-    elif a.faction == ChaosFaction then tcb 210 95 220 a.glyph
-    elif a.faction == UndeadFaction then tc 205 205 215 a.glyph
-    elif a.attitude == Neutral then tc 95 205 225 a.glyph
-    elif a.faction == BeastFaction then tc 200 150 95 a.glyph
-    else tc 220 120 95 a.glyph
+actorStyle : Actor -> (color : String, glyph : String)
+let actorStyle a =
+    if a.species == PlayerSpecies then (color = sgrb 250 250 250, glyph = a.glyph)
+    elif a.faction == HeroFaction then (color = sgr 95 220 125, glyph = a.glyph)
+    elif a.faction == ChaosFaction then (color = sgrb 210 95 220, glyph = a.glyph)
+    elif a.faction == UndeadFaction then (color = sgr 205 205 215, glyph = a.glyph)
+    elif a.attitude == Neutral then (color = sgr 95 205 225, glyph = a.glyph)
+    elif a.faction == BeastFaction then (color = sgr 200 150 95, glyph = a.glyph)
+    else (color = sgr 220 120 95, glyph = a.glyph)
 
-itemGlyphColored : Item -> String
-let itemGlyphColored item =
+itemStyle : Item -> (color : String, glyph : String)
+let itemStyle item =
     match item.class
-    case CoinClass -> tcb 235 205 95 item.glyph
-    case PotionClass -> tc 225 110 165 item.glyph
-    case ScrollClass -> tc 225 225 185 item.glyph
-    case WeaponClass -> tc 205 205 215 item.glyph
-    case ArmorClass -> tc 170 170 190 item.glyph
-    case WandClass -> tc 160 205 235 item.glyph
-    case ArtifactClass -> tcb 245 220 120 item.glyph
-    case FoodClass -> tc 200 160 95 item.glyph
-    case CorpseClass -> tc 170 110 110 item.glyph
-    case ToolClass -> tc 200 200 200 item.glyph
+    case CoinClass -> (color = sgrb 235 205 95, glyph = item.glyph)
+    case PotionClass -> (color = sgr 225 110 165, glyph = item.glyph)
+    case ScrollClass -> (color = sgr 225 225 185, glyph = item.glyph)
+    case WeaponClass -> (color = sgr 205 205 215, glyph = item.glyph)
+    case ArmorClass -> (color = sgr 170 170 190, glyph = item.glyph)
+    case WandClass -> (color = sgr 160 205 235, glyph = item.glyph)
+    case ArtifactClass -> (color = sgrb 245 220 120, glyph = item.glyph)
+    case FoodClass -> (color = sgr 200 160 95, glyph = item.glyph)
+    case CorpseClass -> (color = sgr 170 110 110, glyph = item.glyph)
+    case ToolClass -> (color = sgr 200 200 200, glyph = item.glyph)
 
-itemAt : Vec2 -> List GroundItem -> Option Item
-let itemAt pos items decreases listLength items =
-    match items
-    case Nil -> None
-    case gi :: rest -> if eqPos pos gi.pos then Some gi.item else itemAt pos rest
-
-actorGlyphAt : Vec2 -> List Actor -> Option String
-let actorGlyphAt pos actors decreases listLength actors =
+actorStyleAt : Vec2 -> List Actor -> Option (color : String, glyph : String)
+let actorStyleAt pos actors decreases listLength actors =
     match actors
     case Nil -> None
     case a :: rest ->
-        if a.alive && eqPos a.pos pos then Some (actorGlyph a) else actorGlyphAt pos rest
+        if a.alive && eqPos a.pos pos then Some (actorStyle a) else actorStyleAt pos rest
 
-cellGlyph : Level -> Vec2 -> String
-let cellGlyph level pos =
-    let tile = grid.getTile level pos
-    if not tile.seen then " "
-    elif not tile.lit then memTile tile
+itemStyleAt : Vec2 -> List GroundItem -> Option (color : String, glyph : String)
+let itemStyleAt pos items decreases listLength items =
+    match items
+    case Nil -> None
+    case gi :: rest -> if eqPos pos gi.pos then Some (itemStyle gi.item) else itemStyleAt pos rest
+
+cellStyle : Level -> Vec2 -> Tile -> (color : String, glyph : String)
+let cellStyle level pos t =
+    if not t.seen then (color = "", glyph = " ")
+    elif not t.lit then (color = memColor, glyph = tileChar t)
     else
-        match actorGlyphAt pos level.actors
-        case Some g -> g
+        match actorStyleAt pos level.actors
+        case Some s -> s
         case None ->
-            match itemAt pos level.items
-            case Some item -> itemGlyphColored item
-            case None -> litTile tile
+            match itemStyleAt pos level.items
+            case Some s -> s
+            case None -> litTileStyle t
 
+-- Single linear pass over the tile list (Array is cons-list backed, so getTile
+-- is O(index); the old per-cell getTile made render O((w*h)^2)). The string is
+-- built by right-recursion (`piece ++ go rest`) so concatenation is O(total),
+-- and color is run-length-encoded per row (one SGR per color run, one reset/row).
 renderMap : Level -> String
 let renderMap level =
     block
-        cells : Int -> Int -> String -> String
-        let cells x y acc decreases max 0 (level.size.width - x) =
-            if x >= level.size.width then acc ++ "\r\n"
-            else cells (x + 1) y (acc ++ cellGlyph level (Vec2 x y))
+        go : Int -> Int -> String -> List Tile -> String
+        let go x y cur tiles decreases listLength tiles =
+            match tiles
+            case Nil -> ""
+            case t :: rest ->
+                let s = cellStyle level (Vec2 x y) t
+                let piece = if s.color == cur then s.glyph else s.color ++ s.glyph
+                let x2 = x + 1
+                if x2 >= level.size.width then piece ++ reset ++ "\r\n" ++ go 0 (y + 1) "" rest
+                else piece ++ go x2 y s.color rest
 
-        row : Int -> String
-        let row y = cells 0 y ""
-
-        rows : Int -> String -> String
-        let rows y acc decreases max 0 (level.size.height - y) =
-            if y >= level.size.height then acc
-            else rows (y + 1) (acc ++ row y)
-
-        rows 0 ""
+        go 0 0 "" (arrayToList level.tiles)
 
 -- ── Meters / status ─────────────────────────────────────────────────────
 meter : Int -> Int -> Int -> String
@@ -183,12 +190,16 @@ let hungerWord h =
     elif h <= 150 then tc 230 180 70 "Hungry"
     else tc 150 200 150 "Fed"
 
-statusLine : ContentPack -> PlayerState -> Actor -> String
-let statusLine pack player p =
+soundLabel : Bool -> String
+let soundLabel muted = if muted then tcb 230 180 70 "Muted" else tc 150 200 150 "On"
+
+statusLine : ContentPack -> PlayerState -> Actor -> Bool -> String
+let statusLine pack player p muted =
     tc 200 200 210 "HP " ++ hpMeter p.stats.hp p.stats.maxHp ++ " " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++
     tc 200 200 210 "   Chaos " ++ chaosMeter player ++ " " ++ show player.corruption ++ "\r\n" ++
     tc 180 180 195 "Lv " ++ show p.stats.level ++ "  XP " ++ show p.stats.xp ++ "  Gold " ++ tc 235 205 95 (show player.gold) ++
-    tc 180 180 195 "  Food " ++ hungerWord player.hunger ++ tc 180 180 195 "  Tactic " ++ tc 150 200 230 (tactics.tacticName pack player.tactic)
+    tc 180 180 195 "  Food " ++ hungerWord player.hunger ++ tc 180 180 195 "  Tactic " ++ tc 150 200 230 (tactics.tacticName pack player.tactic) ++
+    tc 180 180 195 "  Sound " ++ soundLabel muted ++ tc 120 120 140 " (m)"
 
 -- ── Message log (recency fade: newest brightest, at the bottom) ──────────
 fade : Int -> String -> String
@@ -282,6 +293,7 @@ let renderMenu game =
     tcb 210 95 220 "          ╶──────────────────────────────╴" ++ "\r\n\r\n" ++
     tc 205 205 215 "            " ++ tcb 235 235 250 "n" ++ tc 205 205 215 " / Enter   New game" ++ "\r\n" ++
     tc 205 205 215 "            " ++ tcb 235 235 250 "c" ++ tc 205 205 215 " / l       Continue saved game" ++ "\r\n" ++
+    tc 205 205 215 "            " ++ tcb 235 235 250 "m" ++ tc 205 205 215 "           Sound: " ++ soundLabel game.audioMuted ++ "\r\n" ++
     tc 205 205 215 "            " ++ tcb 235 235 250 "q" ++ tc 205 205 215 " / Esc     Quit" ++ "\r\n\r\n" ++
     tc 120 120 140 ("          Pack: " ++ game.content.packId ++ " " ++ game.content.version) ++ "\r\n" ++
     tc 120 120 140 ("          Save: " ++ game.savePath) ++ "\r\n\r\n" ++
@@ -305,5 +317,5 @@ let renderGame game =
         match playerActor game
         case Some p ->
             ansiClear ++ ansiHideCursor ++ renderMap game.level ++ ruleLine game.level.size.width ++
-            statusLine game.content game.player p ++ "\r\n" ++ ruleLine game.level.size.width ++ renderMessages game.level.messages
+            statusLine game.content game.player p game.audioMuted ++ "\r\n" ++ ruleLine game.level.size.width ++ renderMessages game.level.messages
         case None -> ansiClear ++ renderMap game.level ++ "No player"

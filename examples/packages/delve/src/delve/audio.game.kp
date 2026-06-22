@@ -1,0 +1,17 @@
+module delve.audio
+
+import delve.core.*
+import delve.natutil.*
+
+-- Portable chiptune-audio facade. The selected native fragment supplies the
+-- definitions, wiring these to the miniaudio shim via host.native.delve_audio.Raw.
+-- Audio is best-effort: `init` never fails (a missing device just disables
+-- sound), and every other action is a no-op when audio is off. SFX/music ids
+-- are plain Ints matching native/delve_audio_adapter.h; the id constants and
+-- the pure game-event -> sound mapping live in delve.engine.
+
+expect term init : IO GameError Unit
+expect term playSfx : Int -> IO GameError Unit
+expect term playMusic : Int -> IO GameError Unit
+expect term stopMusic : IO GameError Unit
+expect term shutdown : IO GameError Unit

@@ -236,8 +236,10 @@ jobs:
 
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
           mkdir -p "$game_dir/bin"
-          cc_cmd="cc"
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
+          cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cc_cmd="cc"
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
             cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           fi
           export KAPPA_CC="$cc_cmd"
@@ -252,6 +254,9 @@ jobs:
           cp -R examples/packages/delve/assets "$game_dir/assets"
           mkdir -p "$game_dir/saves"
           touch "$game_dir/saves/.gitkeep"
+          test -f "$game_dir/assets/delve/pack.json"
+          test -f "$game_dir/assets/delve/items.json"
+          test -f "$game_dir/assets/delve/systems.json"
 
           test_output="$(cd "$game_dir" && "bin/delve-tests${{ matrix.exe-ext }}")"
           printf '%s\n' "$test_output"

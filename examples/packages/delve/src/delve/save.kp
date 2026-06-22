@@ -63,6 +63,7 @@ let encodeGame game =
         , field "player" (encodePlayer game.player)
         , field "level" (encodeLevel game.level)
         , field "rumors" (arr (map encodeRumor game.rumors))
+        , field "audio_muted" (bool game.audioMuted)
         , field "ecs" (encodeEcs game.ecs)
         ]
 
@@ -193,6 +194,7 @@ let decodeGame pack fallbackSize value =
         playerJson <- requireField "player" value
         levelJson <- requireField "level" value
         rumorJson <- requireArrayField "rumors" value
+        audioMuted <- optBoolField False "audio_muted" value
         player <- decodePlayer pack playerJson
         level <- decodeLevel fallbackSize levelJson
         rumors <- traverse decodeRumor rumorJson
@@ -206,7 +208,8 @@ let decodeGame pack fallbackSize value =
                 rumors = rumors,
                 content = pack,
                 ecs = ecs.fromLevel pack level,
-                savePath = pack.save.path
+                savePath = pack.save.path,
+                audioMuted = audioMuted
             })
 
 requireField : String -> JsonValue -> IO GameError JsonValue

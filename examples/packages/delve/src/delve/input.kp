@@ -27,6 +27,8 @@ let keyToCommand key =
     case KeyChar "o" -> Open
     case KeyChar "c" -> Close
     case KeyChar "?" -> Help
+    case KeyChar "m" -> ToggleAudio
+    case KeyChar "M" -> ToggleAudio
     case KeyChar "e" -> UseFirst
     case KeyChar "z" -> ZapFirst
     case KeyChar "t" -> ThrowFirst
@@ -49,6 +51,7 @@ let helpLines =
     , "o/c: open / close nearby door"
     , "g or ,: pick up"
     , "i: inventory    @: character"
+    , "m: mute / unmute sound"
     , "e: use first item    z: zap first wand"
     , "d: drop first item"
     , "p: pray / offer corpse on altar"
@@ -68,6 +71,8 @@ let menuKeyToCommand key =
     case KeyChar "C" -> LoadGame
     case KeyChar "l" -> LoadGame
     case KeyChar "L" -> LoadGame
+    case KeyChar "m" -> ToggleAudio
+    case KeyChar "M" -> ToggleAudio
     case KeyEnter -> StartNewGame
     case KeyChar "q" -> QuitNoSave
     case KeyChar "Q" -> QuitNoSave
@@ -80,6 +85,7 @@ let menuLines =
     , ""
     , "n / Enter  New game"
     , "c / l      Continue saved game"
+    , "m          Mute / unmute sound"
     , "q / Esc    Quit"
     , ""
     , "Configs are loaded from JSON assets under assets/delve/."

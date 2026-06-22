@@ -502,6 +502,7 @@ data GameState : Type =
         (content : ContentPack)
         (ecs : EcsWorld)
         (savePath : String)
+        (audioMuted : Bool)
 
 data Command : Type =
     StartNewGame
@@ -526,6 +527,7 @@ data Command : Type =
     Talk
     CycleTactic
     TargetedAttack
+    ToggleAudio
     SaveAndQuit
     QuitNoSave
     NoCommand
@@ -785,9 +787,10 @@ let commandTag c =
     case Talk -> 19
     case CycleTactic -> 20
     case TargetedAttack -> 21
-    case SaveAndQuit -> 22
-    case QuitNoSave -> 23
-    case NoCommand -> 24
+    case ToggleAudio -> 22
+    case SaveAndQuit -> 23
+    case QuitNoSave -> 24
+    case NoCommand -> 25
 
 instance Eq Command =
     let (==) a b =
@@ -817,7 +820,7 @@ message : String -> GameState -> GameState
 let message text game =
     let msgs = takeMessages game.content.rules.messageLimit ((::) text game.level.messages)
     let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn
-    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath
+    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted
 
 playerActor : GameState -> Option Actor
 let playerActor game =

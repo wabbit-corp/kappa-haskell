@@ -33,6 +33,33 @@ let buildConfig : BuildConfig = package
             , link = noLink
             , load = systemLoader
             }
+        , nativeBinding
+            { name = "delve-audio"
+            , provides = [module "host.native.delve_audio.Raw"]
+            -- Flat conservative surface: every delve_audio_* call is int-typed,
+            -- so it binds directly. The chiptune synth shim (native/delve_audio.c)
+            -- vendors miniaudio (native/miniaudio.h) — a header-only audio library
+            -- with NO third-party link dependency: it runtime-loads ALSA/Pulse on
+            -- Linux and self-links the macOS CoreAudio frameworks from source (via
+            -- Mach-O .linker_option directives), so the only link libs are the
+            -- always-present system ones below. It fails soft with no device, so
+            -- the binary loads on machines with no audio hardware at all.
+            , surface = generateFromHeader "native/delve_audio_adapter.h"
+                [ "delve_audio_init"
+                , "delve_audio_play_sfx"
+                , "delve_audio_play_music"
+                , "delve_audio_stop_music"
+                , "delve_audio_shutdown"
+                ]
+            , abi = cAbi
+            , inputs =
+                [ headers ["native/delve_audio_adapter.h"]
+                , includeDir "native"
+                , shim ["native/delve_audio.c"]
+                ]
+            , link = dynamicLink ["pthread", "m", "dl"]
+            , load = systemLoader
+            }
         ]
     , targets =
         [ executable
@@ -51,7 +78,7 @@ let buildConfig : BuildConfig = package
             , main = module "delve.main"
             , modules = modulesUnder "delve"
             , dependencies = []
-            , hostBindings = ["delve-terminal"]
+            , hostBindings = ["delve-terminal", "delve-audio"]
             }
         , executable
             { name = "delve-tests-macos-arm64"
@@ -69,7 +96,7 @@ let buildConfig : BuildConfig = package
             , main = module "delve.main"
             , modules = modulesUnder "delve"
             , dependencies = []
-            , hostBindings = ["delve-terminal"]
+            , hostBindings = ["delve-terminal", "delve-audio"]
             }
         ]
     }

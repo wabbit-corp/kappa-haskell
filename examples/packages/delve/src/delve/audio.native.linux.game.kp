@@ -1,0 +1,43 @@
+module delve.audio
+
+import delve.core.*
+import delve.natutil.*
+import host.native.delve_audio.Raw as Raw
+
+-- Linux fragment for the chiptune-audio facade. Identical wiring to the macOS
+-- fragment: the miniaudio-backed synth shim (native/delve_audio.c) is portable,
+-- and the platform difference (CoreAudio vs ALSA/Pulse) is handled inside miniaudio.
+-- All raw status ints are ignored; audio is best-effort and never raises.
+
+liftUIO : forall (a : Type). UIO a -> IO GameError a
+let liftUIO action = catchIO action (\v -> raise (absurd v))
+
+init : IO GameError Unit
+let init =
+    do
+        _ <- liftUIO Raw.delve_audio_init
+        pure ()
+
+playSfx : Int -> IO GameError Unit
+let playSfx id =
+    do
+        _ <- liftUIO (Raw.delve_audio_play_sfx id)
+        pure ()
+
+playMusic : Int -> IO GameError Unit
+let playMusic id =
+    do
+        _ <- liftUIO (Raw.delve_audio_play_music id)
+        pure ()
+
+stopMusic : IO GameError Unit
+let stopMusic =
+    do
+        _ <- liftUIO Raw.delve_audio_stop_music
+        pure ()
+
+shutdown : IO GameError Unit
+let shutdown =
+    do
+        _ <- liftUIO Raw.delve_audio_shutdown
+        pure ()
