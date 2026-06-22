@@ -75,11 +75,20 @@ data PInfo = PInfo
   , pBorrow :: !Bool
   , pInout :: !Bool
   , pKnown :: !Bool -- ^ from a same-module signature (vs. assumed)
+  , pEscapingParam :: !Bool -- ^ unrestricted argument position may retain the value beyond the call
   , pReceiver :: !Bool -- ^ §7.4 receiver-marked binder
+  , pCaptureBound :: !CaptureBound
+  , pEscapeKind :: !EscapeKind
   }
 
+data CaptureBound = CapAny | CapClosed
+  deriving (Eq)
+
+data EscapeKind = EscapeOrdinaryParam | EscapeFork | EscapeForkDaemon | EscapeForkIn
+  deriving (Eq)
+
 defaultP :: PInfo
-defaultP = PInfo Nothing Nothing False False False False
+defaultP = PInfo Nothing Nothing False False False True False CapAny EscapeOrdinaryParam
 
 -- | Demand interval of a parameter (§12.2.1); 'Nothing' upper = ω.
 pDemand :: PInfo -> (Int, Maybe Int)
@@ -404,7 +413,7 @@ usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
                 ]
         , c <- ddCtors dd
         ]
-    fns = moduleUsageSignatures m `Map.union` importedFnParams `Map.union` builtinFns
+    fns = moduleUsageSignatures m `Map.union` builtinFns `Map.union` importedFnParams
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
@@ -415,11 +424,25 @@ usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
 builtinFns :: Map Text [PInfo]
 builtinFns =
   Map.fromList
-    [ ("unsafeConsume", [PInfo Nothing (Just QOne) False False True False])
+    [ ("unsafeConsume", [defaultP {pQuantity = Just QOne, pKnown = True}])
+    , -- §18.1.1/§12.3.2: pure/ioPure are result-carrying computation
+      -- constructors. They preserve the argument's hidden capture into
+      -- the resulting IO value, but their argument position is not an
+      -- arbitrary retained callback slot, so the ordinary unrestricted-
+      -- parameter escape diagnostic must not fire here.
+      ("pure", [defaultP {pKnown = True, pEscapingParam = False}])
+    , ("ioPure", [defaultP {pKnown = True, pEscapingParam = False}])
     , -- §14.3.2 'summon': the explicit goal argument is a type, erased
       -- at runtime (§31.2), so mentioning an erased type binder there
       -- is not a runtime use
-      ("summon", [PInfo Nothing (Just QZero) False False True False])
+      ("summon", [defaultP {pQuantity = Just QZero, pKnown = True}])
+    , ("fork", [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeFork}])
+    , ("forkDaemon", [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeForkDaemon}])
+    , ( "forkIn"
+      , [ defaultP {pKnown = True}
+        , defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeForkIn}
+        ]
+      )
     ]
 
 moduleUsageSignatures :: Module -> Map Text [PInfo]
@@ -620,9 +643,44 @@ fnParams msig ld =
   where
     binderP b =
       let BinderPrefix mq mb = bPrefix b
-       in PInfo (nameText <$> bName b) mq (isJust mb) (bInout b) True (bReceiver b /= NoReceiver)
-    mergeP (PInfo n1 q1 b1 i1 k1 r1) (PInfo n2 q2 b2 i2 k2 r2) =
-      PInfo (n1 `orElse` n2) (q1 `orElse` q2) (b1 || b2) (i1 || i2) (k1 || k2) (r1 || r2)
+       in defaultP
+            { pName = nameText <$> bName b
+            , pQuantity = mq
+            , pBorrow = isJust mb
+            , pInout = bInout b
+            , pKnown = True
+            , pEscapingParam = True
+            , pReceiver = bReceiver b /= NoReceiver
+            , pCaptureBound = captureBoundOf (bType b)
+            , pEscapeKind = escapeKindFor (nameText <$> ldName ld)
+            }
+    mergeP p1 p2 =
+      defaultP
+        { pName = pName p1 `orElse` pName p2
+        , pQuantity = pQuantity p1 `orElse` pQuantity p2
+        , pBorrow = pBorrow p1 || pBorrow p2
+        , pInout = pInout p1 || pInout p2
+        , pKnown = pKnown p1 || pKnown p2
+        , pEscapingParam = pEscapingParam p1 || pEscapingParam p2
+        , pReceiver = pReceiver p1 || pReceiver p2
+        , pCaptureBound = mergeCaptureBound (pCaptureBound p1) (pCaptureBound p2)
+        , pEscapeKind = mergeEscapeKind (pEscapeKind p1) (pEscapeKind p2)
+        }
+    captureBoundOf = \case
+      Just (ECaptures _ [] _) -> CapClosed
+      Just (EAscription e _ _) -> captureBoundOf (Just e)
+      _ -> CapAny
+    mergeCaptureBound CapClosed _ = CapClosed
+    mergeCaptureBound _ CapClosed = CapClosed
+    mergeCaptureBound _ _ = CapAny
+    escapeKindFor = \case
+      Just "fork" -> EscapeFork
+      Just "forkDaemon" -> EscapeForkDaemon
+      Just "forkIn" -> EscapeForkIn
+      _ -> EscapeOrdinaryParam
+    mergeEscapeKind EscapeOrdinaryParam k = k
+    mergeEscapeKind k EscapeOrdinaryParam = k
+    mergeEscapeKind k _ = k
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
@@ -1136,7 +1194,8 @@ walkE env e0 = case e0 of
   EDo _ items _ -> do
     fl <- walkItems env items
     let paths = maybeToList (fU fl) ++ fRet fl ++ fBC fl
-    pure (R (altUs paths) (fT fl) Map.empty)
+        computeTaint = firstJust (maybeToList (fT fl) ++ mapMaybe (usageAnonBorrowIntro env) paths)
+    pure (R (altUs paths) computeTaint Map.empty)
   EIf alts mels _ -> do
     condsU <- mapM (fmap (fst . flatR) . walkE env . fst) alts
     branches <- mapM (fmap flatR . walkE env . snd) alts
@@ -1478,13 +1537,6 @@ data Fact
   | FInout !Text ![Text] !Span
   -- ^ a '~'-marked inout argument's place footprint (§18.9.3)
 
-argSpan :: Arg -> Span
-argSpan = \case
-  ArgExplicit e -> exprSpan e
-  ArgImplicit e -> exprSpan e
-  ArgNamedBlock _ sp -> sp
-  ArgInout _ sp -> sp
-
 walkApp :: Env -> Expr -> [Arg] -> M R
 walkApp env (EDot recv (DotName m)) args
   -- §7.4 method-call sugar: the receiver is one ordinary argument of
@@ -1545,36 +1597,6 @@ walkApp env f args = do
         ]
         "two '~' inout arguments of the same call have overlapping place footprints (§18.9.3, §12.4)"
     [] -> pure ()
-  -- §18.11: a forked computation outlives the current scope, so its
-  -- action may not touch an anonymous borrow
-  let headName = case f of
-        EVar n | not (Map.member (nameText n) (eVars env)) -> Just (nameText n)
-        _ -> Nothing
-      -- anonymous-borrow binders in scope, keyed for taint-touch lookup
-      -- and carrying the §3.1.1A borrow-introduction (binder) site
-      anonIntro = Map.fromList [(vKey vi, vSpan vi) | vi <- Map.elems (eVars env), vAnonBorrow vi]
-      argNames = \case
-        ArgExplicit e -> surfaceVarNames e
-        ArgImplicit e -> surfaceVarNames e
-        ArgInout e _ -> surfaceVarNames e
-        ArgNamedBlock items _ -> concatMap (maybe [] surfaceVarNames . snd) items
-  when (headName == Just "fork") $
-    forM_ (zip args (map fst rs)) $ \(a, r) -> do
-      let touched = Map.keys (Map.filter cTouch (rU r `seqU` rL r))
-          usageIntros = [sp | k <- touched, Just sp <- [Map.lookup k anonIntro]]
-          syntaxIntros = [sp | n <- argNames a, Just sp <- [Map.lookup n anonIntro]]
-          capturedIntros = usageIntros ++ syntaxIntros
-      case capturedIntros of
-        [] -> pure ()
-        -- §3.1.1A (line 602-603): cite the anonymous-borrow introduction
-        -- site (its binder, RoleBorrowStart) and the failing escape site
-        -- where the forked computation captures it (RoleBorrowEscapeSite).
-        (introSp : _) ->
-          emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" (argSpan a)
-            [ related RoleBorrowStart introSp "anonymous borrow introduced here"
-            , related RoleBorrowEscapeSite (argSpan a) "captured by a forked computation here"
-            ]
-            "a forked computation may not capture an anonymous borrow (§12.3.2, §18.11)"
   -- A general callee neither stores nor returns its tainted
   -- callees/arguments, so the taint does not flow to its result.
   -- Two head families do carry an argument's taint into the result and
@@ -1656,16 +1678,20 @@ walkArg env params arg p = case arg of
     | Just (vi, path, sp) <- placeOf env e
     , null path || isLinearPath vi path -> do
         let d = pDemand p
+            escapeT = vEscape vi sp
         u <-
           if fst d >= 1
             then movePlace env vi path sp
             else pure (placeUse vi path sp)
         let latent = scaleU d (vLatent vi)
+        checkCaptureBound p escapeT sp
         -- a tainted closure binding may flow only into an at-most-once
         -- consuming position, like a directly written closure (§12.3.2)
-        case vTaint vi of
+        case escapeT of
           Just tsp
             | pKnown p
+            , pEscapingParam p
+            , pCaptureBound p == CapAny
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] ->
                 -- §3.1.1A: cite the borrow-capturing closure formation
                 -- site (primary) and the escape site where it flows out.
@@ -1676,7 +1702,7 @@ walkArg env params arg p = case arg of
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
           _ -> pure ()
         pure
-          ( R (scaleU d u `seqU` latent) (vEscape vi sp) Map.empty
+          ( R (scaleU d u `seqU` latent) escapeT Map.empty
           , [FMove (vKey vi) path sp | fst d >= 1]
           )
     -- a definite consume of a deeper (non-linear) path still conflicts
@@ -1690,6 +1716,7 @@ walkArg env params arg p = case arg of
           )
     | otherwise -> do
         R u t l <- walkE env e
+        checkCaptureBound p t (exprSpan e)
         let d = pDemand p
             -- §16.2.1/§13.2.7: a composite argument value (e.g. a record
             -- literal carrying a linear field) is demanded at the
@@ -1705,6 +1732,8 @@ walkArg env params arg p = case arg of
         case t of
           Just tsp
             | pKnown p
+            , pEscapingParam p
+            , pCaptureBound p == CapAny
             , pQuantity p `notElem` [Just QOne, Just QAtMostOne] -> do
                 -- §3.1.1A (line 602-603): cite the borrow-capturing
                 -- closure formation site carried by the composite value's
@@ -1750,6 +1779,42 @@ walkArg env params arg p = case arg of
       (r, fs) <- borrowish e
       pure (r, [FInout k path isp | FBorrow k path _ <- fs])
 
+checkCaptureBound :: PInfo -> Maybe Span -> Span -> M ()
+checkCaptureBound p mt escapeSp =
+  case (pCaptureBound p, mt) of
+    (CapClosed, Just introSp) ->
+      emitRel "E_QTT_BORROW_ESCAPE" "kappa.borrow.escape" escapeSp
+        [ related RoleBorrowStart introSp "borrowed region captured here"
+        , related RoleBorrowEscapeSite escapeSp (escapeSiteLabel (pEscapeKind p))
+        ]
+        (escapeMessage (pEscapeKind p))
+    _ -> pure ()
+
+escapeSiteLabel :: EscapeKind -> Text
+escapeSiteLabel = \case
+  EscapeFork -> "captured by a forked computation here"
+  EscapeForkDaemon -> "captured by a daemon fiber computation here"
+  EscapeForkIn -> "captured by a scoped fiber computation here"
+  EscapeOrdinaryParam -> "flows into a closed-capture parameter here"
+
+escapeMessage :: EscapeKind -> Text
+escapeMessage = \case
+  EscapeFork -> "a forked computation must be closed over local borrow regions (§18.1.4)"
+  EscapeForkDaemon -> "a daemon fiber computation must be closed over local borrow regions (§18.1.4)"
+  EscapeForkIn -> "a scoped fiber computation must be closed over local borrow regions unless the scope is region-indexed (§18.1.4)"
+  EscapeOrdinaryParam -> "this argument's hidden capture environment is not allowed by a closed captures() parameter (§12.3.1)"
+
+usageAnonBorrowIntro :: Env -> Usage -> Maybe Span
+usageAnonBorrowIntro env u =
+  firstJust
+    [ vSpan vi
+    | vi <- Map.elems (eVars env)
+    , vAnonBorrow vi
+    , any (touches vi) (Map.toList u)
+    ]
+  where
+    touches vi (k, c) = cTouch c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k)
+
 calleeDemandName :: Env -> Expr -> Maybe Text
 calleeDemandName env = \case
   EVar n
@@ -1768,7 +1833,7 @@ coreFnParams = \case
   Core.CPi Core.Impl _ _ _ body -> coreFnParams body
   _ -> []
   where
-    coreP nm q = PInfo (Just nm) (coreQuantity q) False False True False
+    coreP nm q = defaultP {pName = Just nm, pQuantity = coreQuantity q, pKnown = True}
     coreQuantity = \case
       Core.Q0 -> Just QZero
       Core.Q1 -> Just QOne
@@ -1852,7 +1917,7 @@ walkBinds env binds = go env binds
             Just (vi, path, _)
               | not borrowed, isLinearPath vi path -> Just QOne
               | not borrowed, null path, not (isWildBinder pat)
-              , Just q <- vQ vi, q `elem` [QOne, QAtLeastOne] -> Just q
+              , Just inheritedQ <- vQ vi, inheritedQ `elem` [QOne, QAtLeastOne] -> Just inheritedQ
             _ -> Nothing
           q = if single then mq `orElse` inherited else Nothing
           -- §13.2.1: a record literal that places a linear value into a

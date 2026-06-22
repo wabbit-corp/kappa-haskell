@@ -421,7 +421,7 @@ builtinState =
       , prim "printString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "printlnString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "ioPure" (tyV (forallEA (CVar 0 ~> io (CVar 2) (CVar 1))))
-      , -- §18.11/§32.2: run a forked fiber to completion on the single
+      , -- §18.1.4/§32.2: run a forked fiber to completion on the single
         -- runtime agent, capturing its Exit; the result is retrievable by
         -- __awaitFiber. (forall e a r. IO e a -> IO r (Fiber e a))
         prim "__forkRun"
@@ -473,7 +473,8 @@ builtinState =
                    (CApp Expl (CApp Expl (CApp Expl (CApp Expl (tcon "RaceOutcome") (CVar 6)) (CVar 5)) (CVar 4)) (CVar 3)))))))))
       , -- §18.1.8 explicit supervision scopes.
         prim "newScope" (tyV (io (tcon "Void") (tcon "Scope")))
-      , -- forall e a. Scope -> IO e a -> UIO (Fiber e a)
+      , -- forall e a. Scope -> IO e a -> UIO (Fiber e a). The source
+        -- usage pass applies the §18.1.4 closed-capture bound to the action.
         prim "forkIn"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType
             (tcon "Scope" ~> io (CVar 2) (CVar 1)
@@ -1255,7 +1256,7 @@ preludeSource =
       "bracket : forall (e : Type) (a : Type) (b : Type). IO e a -> (a -> IO e Unit) -> (a -> IO e b) -> IO e b"
     , "let bracket acquire release use = bracketM acquire release use"
     , ""
-    , -- §18.11: structured-concurrency handles (check-mode support)
+    , -- §18.1.4: structured-concurrency handles (check-mode support)
       "data Fiber (e : Type) (a : Type) : Type ="
     , "    MkFiberHandle"
     , ""
@@ -1294,15 +1295,15 @@ preludeSource =
     , "    Yes p"
     , "    No (p -> Void)"
     , ""
-    , "fork : forall (e : Type) (a : Type) (r : Type). IO e a -> IO r (Fiber e a)"
+    , "fork : forall (e : Type) (a : Type) (r : Type). (IO e a captures ()) -> IO r (Fiber e a)"
     , "let fork action = __forkRun action"
     , ""
-    , -- §18.11/§32.2: await a fiber's terminal result (its Exit).
+    , -- §18.1.4/§32.2: await a fiber's terminal result (its Exit).
       "await : forall (e : Type) (a : Type) (r : Type). Fiber e a -> IO r (Exit e a)"
     , "let await fib = __awaitFiber fib"
     , ""
     , -- §18.1.4 forkDaemon: an unattached child fiber.
-      "forkDaemon : forall (e : Type) (a : Type). IO e a -> UIO (Fiber e a)"
+      "forkDaemon : forall (e : Type) (a : Type). (IO e a captures ()) -> UIO (Fiber e a)"
     , "let forkDaemon action = __forkDaemon action"
     , ""
     , -- §18.1.4 join: await a fiber and project its outcome into the caller —

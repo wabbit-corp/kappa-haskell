@@ -12303,14 +12303,25 @@ collectFunEdges funMap src =
     go :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
     go d sub ho esc facts boolFacts t = case t of
       CApp {} -> do
-        syntactic <- collectApplication d sub ho esc facts boolFacts t
         if containsSccReference d ho esc t
           then do
             tNorm <- normalizeTermAt d t
             if tNorm /= t
-              then joinEdges syntactic <$> go d sub ho esc facts boolFacts tNorm
-              else pure syntactic
-          else pure syntactic
+              -- §15.11: transparent higher-order helpers are part of the
+              -- semantic call shape.  Do not reject the pre-normalized term
+              -- just because it appears to pass a partial recursive closure
+              -- through a helper; unfold the helper first, then classify the
+              -- actual application that remains.  However, transparent
+              -- normalization must not erase recursive calls that occur while
+              -- evaluating strict helper arguments, such as `ignore (f n)`.
+              -- Collect complete recursive calls from the original strict
+              -- subterms and combine them with the normalized semantic edge.
+              -- Incomplete partial calls are not charged here; they are either
+              -- exposed by transparent normalization or rejected as opaque
+              -- higher-order escape by 'goArg'.
+              then joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts t <*> go d sub ho esc facts boolFacts tNorm
+              else collectApplication d sub ho esc facts boolFacts t
+          else collectApplication d sub ho esc facts boolFacts t
       CGlob callee | Set.member callee sccNames -> pure Nothing
       CVar i
         | Set.member (d - 1 - i) esc -> pure Nothing
@@ -12415,6 +12426,119 @@ collectFunEdges funMap src =
             rf <- go d sub ho esc facts boolFacts f
             rs <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) args
             pure (joinEdges rf rs)
+
+    -- Strict source subterms are still evaluated even when a transparent helper
+    -- later normalizes away their value.  This traversal records only complete
+    -- recursive calls.  It deliberately ignores incomplete partial recursive
+    -- closures: a partial closure is not a call edge until transparent code
+    -- applies it, and if opaque code receives it 'goArg' rejects the escape.
+    collectStrictSubtermEdges :: Int -> Map Int Int -> Map Int PartialCall -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
+    collectStrictSubtermEdges d sub ho facts boolFacts t = case t of
+      CApp {} -> do
+        let here = case partialCallOf d ho t of
+              Just pc | Set.member (pcTarget pc) sccNames, partialCallComplete pc ->
+                Just [CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub]
+              _ -> Just []
+            (f, args) = spineOfTerm t
+        children <- joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts) (f : [a | (_, a) <- args])
+        pure (joinEdges here children)
+      CVar i
+        | Just pc0 <- Map.lookup (d - 1 - i) ho -> do
+            let pc = instantiatePartialCall d pc0
+            pure $ case () of
+              _ | Set.member (pcTarget pc) sccNames, partialCallComplete pc ->
+                    Just [CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub]
+                | otherwise -> Just []
+      CLam {} -> pure (Just [])
+      CThunkE {} -> pure (Just [])
+      CLazyE {} -> pure (Just [])
+      CQuote {} -> pure (Just [])
+      CPi _ _ _ a b -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts a <*> collectStrictSubtermEdges (d + 1) sub ho facts boolFacts b
+      CLet _ _ a b c ->
+        join3Edges
+          <$> collectStrictSubtermEdges d sub ho facts boolFacts a
+          <*> collectStrictSubtermEdges d sub ho facts boolFacts b
+          <*> collectStrictSubtermEdges (d + 1) sub ho facts boolFacts c
+      CLetRec _ _ a b c ->
+        join3Edges
+          <$> collectStrictSubtermEdges d sub ho facts boolFacts a
+          <*> collectStrictSubtermEdges (d + 1) sub ho facts boolFacts b
+          <*> collectStrictSubtermEdges (d + 1) sub ho facts boolFacts c
+      CIf c th el -> do
+        rc <- collectStrictSubtermEdges d sub ho facts boolFacts c
+        c' <- normalizeTermAt d c
+        rt <- collectStrictSubtermEdges d sub ho (assumeBool d True c' ++ facts) ((c', True) : boolFacts) th
+        re <- collectStrictSubtermEdges d sub ho (assumeBool d False c' ++ facts) ((c', False) : boolFacts) el
+        pure (joinManyEdges [rc, rt, re])
+      CMatch scrut alts -> do
+        rs <- collectStrictSubtermEdges d sub ho facts boolFacts scrut
+        let scrutRoot = case scrut of
+              CVar i -> rootOf (d - 1 - i) sub
+              CProj e _ -> structuralArgRoot src d sub e
+              CProjAt e _ _ -> structuralArgRoot src d sub e
+              _ -> Nothing
+        ralts <- forM alts $ \(CaseAlt pat gd b) -> do
+          let nb = patBindersC pat
+              d' = d + nb
+              flags = patStrictBinderFlags pat
+              newLvls = [d .. d + nb - 1]
+              sub' = case scrutRoot of
+                Just root ->
+                  foldr
+                    (\(lvl, strict) acc -> if strict then Map.insert lvl root acc else acc)
+                    sub
+                    (zip newLvls flags)
+                Nothing -> sub
+          rg <- maybe (pure (Just [])) (collectStrictSubtermEdges d' sub' ho facts boolFacts) gd
+          gd' <- traverse (normalizeTermAt d') gd
+          let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd'
+              boolFacts' = maybe boolFacts (\guardTm -> (guardTm, True) : boolFacts) gd'
+          rb <- collectStrictSubtermEdges d' sub' ho facts' boolFacts' b
+          pure (joinEdges rg rb)
+        pure (joinManyEdges (rs : ralts))
+      CCtor _ as -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts) as
+      CRecordT fs -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts . snd) fs
+      CRecordV fs -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts . snd) fs
+      CProj e _ -> collectStrictSubtermEdges d sub ho facts boolFacts e
+      CProjAt e _ _ -> collectStrictSubtermEdges d sub ho facts boolFacts e
+      CVariantT ms -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts) ms
+      CInject _ e -> collectStrictSubtermEdges d sub ho facts boolFacts e
+      CForceE e -> collectStrictSubtermEdges d sub ho facts boolFacts e
+      CSealE _ e -> collectStrictSubtermEdges d sub ho facts boolFacts e
+      CSigT _ e -> collectStrictSubtermEdges d sub ho facts boolFacts e
+      CDo _ items -> joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts) items
+      _ -> pure (Just [])
+
+    collectStrictSubtermEdgesK :: Int -> Map Int Int -> Map Int PartialCall -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
+    collectStrictSubtermEdgesK d sub ho facts boolFacts = \case
+      KBind _ _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KLet _ _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KLetQ _ t m -> do
+        rt <- collectStrictSubtermEdges d sub ho facts boolFacts t
+        rm <- maybe (pure (Just [])) (collectStrictSubtermEdges d sub ho facts boolFacts . snd) m
+        pure (joinEdges rt rm)
+      KExpr t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KVarItem _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KAssign lhs _ rhs -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts lhs <*> collectStrictSubtermEdges d sub ho facts boolFacts rhs
+      KReturn t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KWhile _ c b e ->
+        joinManyEdges <$>
+          sequence (collectStrictSubtermEdges d sub ho facts boolFacts c : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
+      KFor _ _ s b e ->
+        joinManyEdges <$>
+          sequence (collectStrictSubtermEdges d sub ho facts boolFacts s : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
+      KIf alts e -> do
+        ralts <- forM alts $ \(c, b) -> do
+          rc <- collectStrictSubtermEdges d sub ho facts boolFacts c
+          c' <- normalizeTermAt d c
+          rb <- joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho (assumeBool d True c' ++ facts) ((c', True) : boolFacts)) b
+          pure (joinEdges rc rb)
+        relse <- maybe (pure []) (mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e
+        pure (joinManyEdges (ralts ++ relse))
+      KDefer _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KUsing _ a r -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts a <*> collectStrictSubtermEdges d sub ho facts boolFacts r
+      KSubDo _ b -> joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts) b
+      _ -> pure (Just [])
 
     -- Traversal for syntactic positions that pass a value to an unknown
     -- consumer.  A partial recursive function may be returned directly or

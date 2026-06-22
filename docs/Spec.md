@@ -11679,7 +11679,7 @@ machinery rather than a naive `defer (release res)` source-level expansion.
 Kappa provides an optional postfix capture annotation on value types:
 
 ```text
-typeCapture ::= typeApp [ 'captures' '(' regionRef (',' regionRef)* ')' ]
+typeCapture ::= typeApp [ 'captures' '(' [regionRef (',' regionRef)*] ')' ]
 typeArrow   ::= typeCapture ('->' typeArrow)?
 regionRef   ::= ident
 ```
@@ -11688,12 +11688,13 @@ This grammar amends the type grammar at the layer between type application and a
 type former.
 
 `T captures (s1, ..., sn)` is well-formed only if each `si` resolves to an explicit binder `si : Region` already in
-scope.
+scope. The empty form `T captures ()` is well-formed and requires an empty hidden region environment.
 
 Meaning:
 
 * A value of type `T captures (s1, ..., sn)` has ordinary value type `T`.
 * In addition, its hidden region environment must be contained in the finite set `{s1, ..., sn}`.
+* A value of type `T captures ()` has no runtime-relevant hidden borrow-region environment.
 * `captures (...)` is compile-time only and is erased under §§31.2 and 34.3.
 * The listed regions form a set:
   * duplicates are a compile-time error;
@@ -12254,7 +12255,7 @@ Grammar (amends the type grammar):
 typeAtom     ::= ... existing atoms ...
 typePostfix  ::= typeAtom ('?')*
 typeApp      ::= typePostfix typePostfix*
-typeCapture  ::= typeApp [ 'captures' '(' regionRef (',' regionRef)* ')' ]
+typeCapture  ::= typeApp [ 'captures' '(' [regionRef (',' regionRef)*] ')' ]
 typeArrow    ::= typeCapture ('->' typeArrow)?
 ```
 
@@ -18652,11 +18653,11 @@ The standard fiber operations are:
 ```kappa
 expect term fork          :
     forall (e : Type) (a : Type).
-    IO e a -> UIO (Fiber e a)
+    (IO e a captures ()) -> UIO (Fiber e a)
 
 expect term forkDaemon    :
     forall (e : Type) (a : Type).
-    IO e a -> UIO (Fiber e a)
+    (IO e a captures ()) -> UIO (Fiber e a)
 
 expect term await         :
     forall (e : Type) (a : Type).
@@ -18703,6 +18704,28 @@ Semantics:
   caller fiber id.
 * `interruptFork fiber` behaves as `interruptForkAs (InterruptCause Requested (Some id)) fiber`, where `id` is the
   current caller fiber id.
+
+Borrow capture and fiber escape:
+
+Creating a child fiber is an escaping use of the computation supplied to the fiber. The action passed to `fork`,
+`forkDaemon`, or any operation specified as spawning a child fiber is checked as a first-class computation value whose
+possible execution may continue after the current lexical borrow scope has ended.
+
+For portable v1, `fork` and `forkDaemon` require the action argument to have an empty hidden region environment,
+written as `IO e a captures ()`. A computation's hidden region environment includes regions captured by closures,
+thunks, lazy values, handlers, resumptions, records, constructors, packages, abstract values, first-class borrowed views,
+delayed computation steps, continuations, finalizers, bracket release actions, timeout/race branches, and other delayed
+subcomputations reachable from the action.
+
+If an action passed to `fork` or `forkDaemon` would require an anonymous rigid region in its capture environment,
+elaboration fails with `E_QTT_BORROW_ESCAPE`. The diagnostic MUST cite the borrow introduction site and the fiber-spawn
+argument position as the borrow escape site. Wrapping an action or borrowed value in `return`, a constructor, a record,
+a package, an abstract value, a handler, `timeout`, `race`, `bracket`, or another ordinary delayed computation wrapper
+does not remove its hidden region environment; capture propagation is structural.
+
+In portable v1, `forkIn scope action` also requires `action : IO e a captures ()`. A later region-indexed supervision
+scope may admit `Scope s` together with `IO e a captures (s)`, but a runtime scope value alone does not prove that a
+lexical borrow outlives the child fiber.
 
 `fork` is structured by default. Portable source semantics do not provide arbitrary cross-fiber asynchronous exception
 injection. Portable cross-fiber asynchronous failure is limited to interruption.
@@ -18860,7 +18883,7 @@ expect term withScope :
 
 expect term forkIn :
     forall (e : Type) (a : Type).
-    Scope -> IO e a -> UIO (Fiber e a)
+    Scope -> (IO e a captures ()) -> UIO (Fiber e a)
 
 expect term shutdownScope :
     Scope -> UIO Unit
@@ -29709,7 +29732,7 @@ expect term withScope :
 
 expect term forkIn :
     forall (e : Type) (a : Type).
-    Scope -> IO e a -> UIO (Fiber e a)
+    Scope -> (IO e a captures ()) -> UIO (Fiber e a)
 
 expect term shutdownScope :
     Scope -> UIO Unit

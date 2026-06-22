@@ -2032,7 +2032,7 @@ pSuffixes e = do
         TokLParen -> do
           pKeyword "captures"
           token TokLParen
-          rs <- sepBy1 pIdent (token TokComma)
+          rs <- sepBy pIdent (token TokComma)
           token TokRParen
           sp <- spanFrom (exprSpan e)
           pSuffixes (ECaptures e rs sp)

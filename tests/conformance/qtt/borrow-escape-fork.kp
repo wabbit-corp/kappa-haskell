@@ -8,13 +8,16 @@
 --! assertDiagnosticRelated error kappa.borrow.escape borrow-start
 --! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
 
--- §18.11/§12.3.2: a forked computation outlives the current scope, so
--- its action may not capture an anonymous borrow.
+-- §18.1.4/§12.3.2: a forked computation outlives the current scope, so
+-- the action passed to fork must not carry a value that captures an
+-- anonymous borrow.  This fixture stores a closure in the child
+-- computation; it does not rely on `pure (read x)` being delayed.
 module main
 
 read : (& x : Int) -> Int
 let read (& x : Int) : Int = x
 
-bad : (& x : Int) -> UIO (Fiber Void Int)
-let bad (& x : Int) : UIO (Fiber Void Int) =
-    fork (pure (read x))
+bad : (& x : Int) -> UIO (Fiber Void (Int -> Int))
+let bad (& x : Int) : UIO (Fiber Void (Int -> Int)) =
+    let child = pure (\y -> read x)
+    in fork child
