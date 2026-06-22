@@ -239,7 +239,8 @@ jobs:
           ghc-version: "9.6.7"
           cabal-version: "3.10.3.0"
 
-      - name: Build compiler and Delve
+      - name: Build compiler and Delve (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -255,57 +256,12 @@ jobs:
 
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
           mkdir -p "$game_dir/bin"
-          cc_cmd=""
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            msys_prefix=""
-            for prefix in /c/msys64/mingw64 /mingw64 /ucrt64 /clang64; do
-              if [[ -f "$prefix/lib/pkgconfig/bdw-gc.pc" ]]; then
-                msys_prefix="$prefix"
-                break
-              fi
-            done
-            if [[ -z "$msys_prefix" ]]; then
-              bdw_pc="$(find /c/msys64 -type f -path '*/lib/pkgconfig/bdw-gc.pc' -print -quit 2>/dev/null || true)"
-              if [[ -n "$bdw_pc" ]]; then
-                msys_prefix="${bdw_pc%/lib/pkgconfig/bdw-gc.pc}"
-              fi
-            fi
-            if [[ -z "$msys_prefix" ]]; then
-              printf 'Could not locate MSYS2 MinGW prefix containing bdw-gc.pc.\n' >&2
-              printf 'PATH=%s\n' "$PATH" >&2
-              exit 1
-            fi
-            export PATH="$msys_prefix/bin:/c/msys64/usr/bin:$PATH"
-            export PKG_CONFIG_PATH="$msys_prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-            pkgconf_bin="$msys_prefix/bin/pkgconf"
-            if [[ ! -x "$pkgconf_bin" ]]; then
-              pkgconf_bin="$msys_prefix/bin/pkg-config"
-            fi
-            cc_bin="$msys_prefix/bin/gcc"
-            if [[ ! -x "$cc_bin" ]]; then
-              cc_bin="$msys_prefix/bin/clang"
-            fi
-            if [[ ! -x "$pkgconf_bin" || ! -x "$cc_bin" ]]; then
-              printf 'Windows native tool lookup failed in %s.\n' "$msys_prefix" >&2
-              printf 'pkgconf=%s\n' "$pkgconf_bin" >&2
-              printf 'cc=%s\n' "$cc_bin" >&2
-              exit 1
-            fi
-            printf 'Using MSYS2 prefix: %s\n' "$msys_prefix"
-            printf 'Using pkg-config tool: %s\n' "$pkgconf_bin"
-            printf 'Using C compiler: %s\n' "$cc_bin"
-            msys_mingw_bin="$msys_prefix/bin"
-            cc_cmd="$cc_bin $("$pkgconf_bin" --cflags --libs bdw-gc gmp)"
-          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
             cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           else
             cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           fi
           export KAPPA_CC="$cc_cmd"
-
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            chcp.com 65001 >/dev/null || true
-          fi
 
           "$compiler_dir/bin/kappa" build \
             --update \
@@ -336,11 +292,77 @@ jobs:
             -o "$game_dir/delve${{ matrix.exe-ext }}" \
             --cc "$cc_cmd"
 
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "$msys_mingw_bin/libgc-1.dll" "$game_dir/"
-            cp "$msys_mingw_bin/libgmp-10.dll" "$game_dir/"
-          fi
+          cp LICENSE "$game_dir/LICENSE"
+          cp examples/packages/delve/README.md "$game_dir/README.md"
+          cp examples/packages/delve/DESIGN.md "$game_dir/DESIGN.md"
 
+          mkdir -p "$PWD/dist/assets"
+          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/delve-${{ matrix.platform }}.tar.gz" "delve-${{ matrix.platform }}"
+
+      - name: Build compiler and Delve (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+
+          cabal update
+
+          compiler_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
+          mkdir -p "$compiler_dir/bin"
+          cabal install exe:kappa \
+            --install-method=copy \
+            --installdir="$compiler_dir/bin" \
+            --overwrite-policy=always
+
+          game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
+          mkdir -p "$game_dir/bin"
+
+          pkgconf_bin="$(command -v pkgconf || command -v pkg-config || true)"
+          cc_bin="$(command -v gcc || command -v clang || true)"
+          if [[ -z "$pkgconf_bin" || -z "$cc_bin" ]]; then
+            printf 'Windows native tool lookup failed.\n' >&2
+            printf 'pkgconf=%s\n' "$pkgconf_bin" >&2
+            printf 'cc=%s\n' "$cc_bin" >&2
+            printf 'PATH=%s\n' "$PATH" >&2
+            exit 1
+          fi
+          "$pkgconf_bin" --exists bdw-gc gmp
+          cc_cmd="$cc_bin $("$pkgconf_bin" --cflags --libs bdw-gc gmp)"
+          export KAPPA_CC="$cc_cmd"
+
+          chcp.com 65001 >/dev/null || true
+
+          "$compiler_dir/bin/kappa.exe" build \
+            --update \
+            --manifest examples/packages/delve \
+            --target "${{ matrix.test-target }}" \
+            -o "$game_dir/bin/delve-tests${{ matrix.exe-ext }}" \
+            --cc "$cc_cmd"
+
+          cp -R examples/packages/delve/assets "$game_dir/assets"
+          mkdir -p "$game_dir/saves"
+          touch "$game_dir/saves/.gitkeep"
+          test -f "$game_dir/assets/delve/pack.json"
+          test -f "$game_dir/assets/delve/items.json"
+          test -f "$game_dir/assets/delve/systems.json"
+
+          test_output="$(cd "$game_dir" && "bin/delve-tests${{ matrix.exe-ext }}")"
+          printf '%s\n' "$test_output"
+          grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
+          rm -rf "$game_dir/bin"
+          rm -rf "$game_dir/saves"
+          mkdir -p "$game_dir/saves"
+          touch "$game_dir/saves/.gitkeep"
+
+          "$compiler_dir/bin/kappa.exe" build \
+            --update \
+            --manifest examples/packages/delve \
+            --target "${{ matrix.game-target }}" \
+            -o "$game_dir/delve${{ matrix.exe-ext }}" \
+            --cc "$cc_cmd"
+
+          cp /mingw64/bin/libgc-1.dll "$game_dir/"
+          cp /mingw64/bin/libgmp-10.dll "$game_dir/"
           cp LICENSE "$game_dir/LICENSE"
           cp examples/packages/delve/README.md "$game_dir/README.md"
           cp examples/packages/delve/DESIGN.md "$game_dir/DESIGN.md"
