@@ -256,8 +256,18 @@ jobs:
           mkdir -p "$game_dir/bin"
           cc_cmd=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            pkgconf_bin="$(command -v pkgconf)"
-            clang_bin="$(command -v clang)"
+            export PATH="/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH"
+            pkgconf_bin="$(command -v pkgconf || command -v pkg-config || true)"
+            clang_bin="$(command -v clang || true)"
+            if [[ -z "$pkgconf_bin" || -z "$clang_bin" ]]; then
+              printf 'Windows native tool lookup failed.\n' >&2
+              printf 'PATH=%s\n' "$PATH" >&2
+              printf 'pkgconf=%s\n' "${pkgconf_bin:-<missing>}" >&2
+              printf 'clang=%s\n' "${clang_bin:-<missing>}" >&2
+              exit 1
+            fi
+            printf 'Using pkg-config tool: %s\n' "$pkgconf_bin"
+            printf 'Using C compiler: %s\n' "$clang_bin"
             msys_mingw_bin="$(dirname "$pkgconf_bin")"
             cc_cmd="$clang_bin $("$pkgconf_bin" --cflags --libs bdw-gc gmp)"
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
