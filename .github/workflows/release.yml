@@ -283,6 +283,7 @@ jobs:
           test_output="$(cd "$game_dir" && "bin/delve-tests${{ matrix.exe-ext }}")"
           printf '%s\n' "$test_output"
           grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
+          rm -rf "$game_dir/bin"
 
           "$compiler_dir/bin/kappa" build \
             --update \
