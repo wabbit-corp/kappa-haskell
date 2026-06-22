@@ -26,7 +26,7 @@ data Match (a : Type) (r : Type) : Type = Hit a | Miss r
 data Dec (p : Type) : Type = Yes p | No (p -> Void)
 data Exit (e : Type) (a : Type) : Type = Success a | Failure (Cause e)
 data Cause (e : Type) : Type = Fail e | Interrupt InterruptCause | Defect DefectInfo | Both (Cause e) (Cause e) | Then (Cause e) (Cause e)
-data (=) (@0 a : Type) (x : a) : a -> Type = refl : x = x
+data (=) (@0 a : Type) (x : a) (y : a) : Type = refl : x = x
 ```
 Option/Result constructors: Option.None, Option.Some, Result.Ok, Result.Err (data blocks not spelled out in §28.2).
 

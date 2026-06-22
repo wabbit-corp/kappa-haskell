@@ -1,0 +1,11 @@
+--! mode check
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+-- §10.4 recorded signatures: Contra is accepted in another module with a
+-- non-positive parameter signature. Importing that type must not make its
+-- parameter position positive for later strict-positivity checks.
+module main
+
+import lib.(type Contra)
+
+data Bad : Type =
+    MkBad (Contra Bad)

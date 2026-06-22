@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- §10.1.3 / §11.4.1: equality has uniform family arguments. The
+-- parenthesized family name accepts the two ordinary endpoints directly;
+-- the endpoint type is inferred.
+
+module main
+
+typeSelf : (=) Integer Integer
+let typeSelf = refl
+
+termSelf : 1 = 1
+let termSelf = refl
+
+termSelfViaFamily : (=) 1 1
+let termSelfViaFamily = refl

@@ -2209,8 +2209,8 @@ Payload MUST include:
 * equality goals attempted;
 * proof sources considered;
 * implicit-resolution result for each equality goal;
-* relevant local equality, branch-refinement, boolean-refinement, constructor-index, stable-alias, `Eq.eqSound`, or
-  row-uniqueness evidence;
+* relevant local equality, branch-refinement, boolean-refinement, constructor-family-argument, stable-alias,
+  `Eq.eqSound`, or row-uniqueness evidence;
 * whether any rejected plan would have required proof-relevant runtime transport; and
 * whether the failure was no proof, ambiguous proof, invalid plan shape, non-deterministic plan order, or
   non-lowerable runtime transport.
@@ -2563,7 +2563,7 @@ Payload MUST include:
 
 * impossible form kind;
 * scrutinee type or proposition being refuted;
-* active constructor, index, boolean, and equality refinements;
+* active constructor, family-argument, boolean, and equality refinements;
 * uncovered or still-reachable residual pattern shape when available;
 * contradiction that was expected;
 * reason the contradiction was not derivable;
@@ -7649,7 +7649,7 @@ occurrence satisfy the dependent residual-tail capture rule of §17.2.1. A patte
 surface record shape cannot fail; its rest binder must also have a well-formed type.
 
 Constructor patterns are refutable for `let` bindings unless the compiler can prove the scrutinee type has exactly one
-constructor at the binding site (via definitional equality / index unification). Only in that
+constructor at the binding site (via definitional equality / family-argument unification). Only in that
 provable-single-constructor case may a constructor pattern be treated as irrefutable.
 
 Implementations must reject any `let pat = expr` binding whose `pat` is not irrefutable for the inferred/annotated type
@@ -8105,9 +8105,11 @@ definitions in the selected companion fragments.
 Opening grammar:
 
 ```text
+dataName ::= ident | '(' operator_token ')' | '(' '=' ')'
+
 dataDecl ::=
-    [public|private] [opaque] 'data' ident dataParam* ':' type
-  | [public|private] [opaque] 'data' ident dataParam* ':' type '=' constructorBlock
+    [public|private] [opaque] 'data' dataName dataParam* ':' type
+  | [public|private] [opaque] 'data' dataName dataParam* ':' type '=' constructorBlock
 
 constructorBlock ::=
     NEWLINE INDENT constructorDecl+ DEDENT
@@ -8115,6 +8117,10 @@ constructorBlock ::=
 
 Rules:
 
+* A parenthesized operator token, or the reserved equality token `=`, used as a `dataName` introduces a type declaration
+  of declaration kind `type`, not a term operator declaration. Such a type-level operator name is available in type
+  positions according to the ordinary type-name resolution rules. It does not by itself introduce a term-level operator
+  or fixity declaration.
 * A `data` declaration without `=` declares an empty algebraic data type with no constructors.
 * An empty data declaration is a definition, not an external requirement.
 * Empty data declarations satisfy strict positivity vacuously.
@@ -8549,10 +8555,54 @@ When `unicode-names` is inactive, lowercase-generalizable means ASCII lowercase-
 
 When `unicode-names` is active, lowercase-generalizable uses the active Unicode name profile as specified by §11.3.3.
 
+<!-- data_types.uniform_family_arguments -->
+#### 10.1.3 Uniform data-family arguments
+
+Kappa has no declaration-level parameter/index partition for data families.
+
+The binders written in a `data` declaration header are **uniform data-family arguments**. They are ordinary binders in
+the type constructor telescope. The specification may use informal phrases such as "indexed data" or "family argument"
+when discussing GADT-style refinement, but those phrases do not introduce a separate syntactic or semantic class of
+parameters versus indices.
+
+For a declaration of the form:
+
+```kappa
+data F Δ : Type =
+    ...
+```
+
+the type constructor `F` has an elaborated telescope corresponding to `Δ` and result classifier `Type`, subject to the
+ordinary universe rules.
+
+A GADT-style constructor may instantiate any data-family argument in its explicit result type. For example:
+
+```kappa
+data T (a : Type) (x : a) (y : a) : Type =
+    C : T a x x
+```
+
+declares a constructor whose result constrains the third family argument to be the same term as the second family
+argument. This is not a parameter/index split. It is an ordinary constructor-result constraint.
+
+When pattern matching on a GADT-style constructor, the branch-local environment receives the equalities between the
+scrutinee's family arguments and the constructor result's family arguments forced by that constructor result type.
+
+Consequences:
+
+* implementations MUST NOT assign special declaration-level "parameter" status to a prefix of a data-family telescope;
+* implementations MUST NOT assign special declaration-level "index" status to the remaining arguments;
+* constructor result types, not a parameter/index partition, determine which family-argument equalities become available
+  in constructor branches;
+* diagnostics may use user-facing terms such as "first argument", "left endpoint", "right endpoint", or "family
+  argument", but MUST NOT describe data-family arguments as parameters versus indices unless a future extension
+  explicitly introduces such a distinction.
+
 <!-- data_types.gadts -->
 ### 10.2 GADT-style constructors
 
-GADT-style constructors are written with an explicit result type after `:`:
+GADT-style constructors are written with an explicit result type after `:`. The explicit result type may instantiate or
+constrain any uniform data-family argument of the enclosing `data` declaration.
 
 ```kappa
 data Vec (n : Nat) (a : Type) : Type =
@@ -8562,7 +8612,8 @@ data Vec (n : Nat) (a : Type) : Type =
 
 They support the full range of constructor features, including the named-argument sugar described in §10.1 (the binders
 in the Pi signature become the named parameters). Exhaustiveness checking and pattern matching treat GADT constructors
-identically to ordinary constructors once indices are unified.
+identically to ordinary constructors once the family-argument equalities forced by the constructor result type are
+accounted for.
 
 Defaulted GADT constructor parameters:
 
@@ -8660,7 +8711,7 @@ Definitions:
   treated as preserving positivity during strict-positivity checking.
 
 * An occurrence of the type being defined `T` is in a **strictly positive** position in a constructor argument type if:
-  * it is the argument type itself (possibly with parameters/indices), or
+  * it is the argument type itself (possibly with family arguments), or
   * the argument type is `X -> U` where `T` does not occur in `X` and `T` occurs strictly positively in `U`, or
   * the argument type is a dependent function `(x : X) -> U` with the same condition and `T` does not occur in `X`, or
   * the argument type is an application `F A1 ... An` where `F` is admissible in a strictly positive position and `T`
@@ -8670,19 +8721,114 @@ Definitions:
 * A `data` declaration is **strictly positive** iff every occurrence of the defined type constructor in every
   constructor's argument types is in a strictly positive position.
 
-* When a `data` declaration `data F p1 ... pn = ...` is accepted, implementations MUST record a parameter-positivity
-  signature for `F`. Parameter `pi` is marked positive only if every occurrence of `pi` in the constructor argument
-  types of `F` is itself in a strictly positive position. Later strict-positivity checks MUST consult this recorded
-  signature rather than treating all arguments of `F` as positive.
+* Parameter-positivity signatures are computed for each accepted `data`
+  declaration or mutually recursive `data` group before the signatures are
+  recorded in the module interface.
 
-* For a mutually recursive group of `data` declarations, implementations MUST compute the parameter-positivity
-  signatures of the whole group simultaneously by fixed-point iteration over the group:
-  * initialize every parameter of every type in the group as non-positive;
-  * repeatedly recompute the signatures using the current signatures of the whole group until a fixed point is reached;
-  * after convergence, reject the group if any type in the group still has a non-strictly-positive occurrence in any
-    constructor argument type.
+  The signature lattice is ordered pointwise by:
+
+  ```text
+  non-positive < positive
+  ```
+
+  A parameter marked `positive` may be used by later strict-positivity
+  checks as preserving strictly positive occurrences through that argument.
+  A parameter marked `non-positive` is not an error by itself; it means that
+  later strict-positivity checks must not rely on that argument position to
+  preserve positivity.
+
+* For a singleton `data` declaration or a mutually recursive group of
+  `data` declarations, implementations MUST compute parameter-positivity
+  signatures as the greatest fixed point of the group signature
+  recomputation operator.
+
+  Let `G` be the group being checked.
+
+  Let `Σ` assign a tentative parameter-positivity signature to every type
+  constructor declared in `G`.
+
+  Given `Σ`, `recompute(Σ)` assigns a new signature to each group member
+  `F`. A parameter `pi` of `F` is marked `positive` in `recompute(Σ)` iff
+  every occurrence of `pi` in every constructor argument type of `F` occurs
+  in a positive parameter position under the structural positivity rules
+  below.
+
+  For this signature recomputation only, occurrence-positivity for a
+  parameter `pi` is the same structural judgment as strict positivity for a
+  recursive type occurrence, except that the tracked atom is the parameter
+  `pi` rather than a recursive type constructor head.
+
+  In particular:
+
+  * an occurrence of `pi` as the argument type itself is positive;
+  * in a function type `X -> U`, or dependent function type
+    `(x : X) -> U`, `pi` must not occur in `X`, and every occurrence of
+    `pi` in `U` must be positive;
+  * in an application `H A1 ... An`, every occurrence of `pi` inside `Aj`
+    is positive only when the `j`th parameter of `H` is marked `positive`
+    in the applicable signature;
+  * if the `j`th parameter of `H` is marked `non-positive`, then `pi` must
+    be absent from `Aj` for `pi` to remain positive;
+  * applications of type constructors outside `G` use their already recorded
+    parameter-positivity signatures;
+  * applications of type constructors inside `G` use the tentative
+    signatures supplied by `Σ`.
+
+  If `pi` does not occur in the constructor argument types of `F`, it is
+  positive vacuously.
+
+  The fixed-point iteration is:
+
+  ```text
+  Σ0     = every parameter of every type constructor in G is positive
+  Σk+1   = recompute(Σk)
+  ```
+
+  Iteration continues until `Σk+1 = Σk`.
+
+  Because `recompute` is monotone in the pointwise order above and the
+  iteration starts at the top element, the resulting stable signature is the
+  greatest fixed point. A conforming implementation MAY use any equivalent
+  algorithm, but it MUST produce the same signatures as this greatest-fixed-
+  point computation. It MUST NOT compute the least fixed point obtained by
+  starting from all parameters `non-positive`.
+
+* After the group signatures converge, the implementation checks the
+  strict-positivity rejection judgment for the group using the converged
+  signatures.
+
+  For this final rejection judgment:
+
+  * a recursive occurrence means an occurrence of any type constructor
+    declared by the group `G` in any constructor argument type of any member
+    of `G`;
+  * applications of type constructors declared by `G` use the converged
+    signatures of `G`;
+  * applications of type constructors outside `G` use their recorded
+    signatures;
+  * a final `non-positive` parameter in a converged signature is not itself
+    a rejection condition;
+  * the group is rejected iff some recursive occurrence is not in a strictly
+    positive position.
+
+  When the group is accepted, the converged parameter-positivity signatures
+  of all members of `G` are recorded and used by later strict-positivity
+  checks. Later checks MUST consult those recorded signatures rather than
+  treating all parameters of an accepted data type as positive.
 
 Implementations MUST reject non-strictly-positive `data` declarations.
+
+Consequences:
+
+* `data Tree a = Leaf | Branch (Tree a) a (Tree a)` records parameter
+  `a` as positive.
+* `data Rose a = Node a (List (Rose a))` records parameter `a` as
+  positive, assuming `List`'s element parameter is recorded as positive.
+* `data Rose a = Node a ((Rose a -> a) -> Rose a)` is rejected by the
+  final strict-positivity judgment, not merely because its parameter
+  signature becomes non-positive.
+* Starting the group-signature iteration from all parameters
+  `non-positive` is not an equivalent implementation strategy.
 
 Examples rejected:
 
@@ -9833,23 +9979,37 @@ Kappa supports propositional equality as a built-in inductive family.
 <!-- types.propositions.propositional_equality_type_positions -->
 #### 11.4.1 Propositional equality (`=`) in type positions
 
-The propositional equality type `x = y` is a built-in inductive family. It is exported by `std.prelude` as if by:
+The propositional equality type `x = y` is the distinguished propositional equality data family exported by
+`std.prelude`.
+
+Normative declaration:
 
 ```kappa
-data (=) (@0 a : Type) (x : a) : a -> Type =
+data (=) (@0 a : Type) (x : a) (y : a) : Type =
     refl : x = x
 ```
+
+This is an ordinary data-family declaration using the uniform data-family argument discipline of §10.1.3. It does not
+introduce, rely on, or expose a parameter/index partition.
+
+The constructor declaration:
+
+```kappa
+refl : x = x
+```
+
+is a GADT-style constructor result type. It states that `refl` constructs equality only when both endpoints are the same
+term. It does not mean that the left endpoint is a parameter and the right endpoint is an index.
 
 Formation:
 
 * If `A : Type` and `x : A` and `y : A`, then `(x = y) : Type`.
+* The surface type expression `x = y` elaborates to the equality family applied to the inferred endpoint type and the
+  two endpoint terms.
 
 Introduction:
 
 * `refl` is the canonical reflexivity proof and inhabits `x = x`.
-
-Definitional equality interaction:
-
 * If `x` and `y` are definitionally equal, then `refl` may be used at type `x = y`.
 
 Eliminators:
@@ -9876,6 +10036,17 @@ Normative behavior:
 * When the proof argument is definitionally `refl`, both eliminators reduce by the usual reflexivity computation rule:
   * `pathInd base refl` reduces to `base`;
   * `subst refl v` reduces to `v`.
+
+Endpoint discipline:
+
+* The equality family has two ordinary endpoint arguments.
+* The apparent orientation of `pathInd` and `subst` is eliminator orientation only.
+* Implementations MUST NOT treat the left endpoint of `x = y` as a declaration-level parameter and the right endpoint as
+  a declaration-level index.
+* An implementation may choose a deterministic elaboration orientation for equality induction, but that choice is not
+  part of the type identity of equality.
+* Diagnostics may refer to the printed left and right endpoints of `x = y`, but MUST NOT describe them as parameter and
+  index positions.
 * The equality proof argument is not assigned quantity `0` by the definition of equality itself.
 * It is erased when the surrounding ambient demand is `0`, or when the equality type is known to satisfy
   `RuntimeErased`.
@@ -12000,8 +12171,9 @@ must be written explicitly as `(| ..rest |)`.
 <!-- types.unions.interaction_gadts_indexed_types -->
 #### 13.1.8 Interaction with GADTs / indexed types
 
-Union types may be indexed. An injection such as `(| v : Vec n a |)` is valid when the expected union type contains `Vec
-n a` among its member types. Exhaustiveness and reachability are determined by index unification exactly as in §17.1.1.
+Union types may mention GADT-style data families. An injection such as `(| v : Vec n a |)` is valid when the expected
+union type contains `Vec n a` among its member types. Exhaustiveness and reachability are determined by family-argument
+unification exactly as in §17.1.1.
 
 <!-- types.unions.optional_type_sugar -->
 #### 13.1.9 Optional-type sugar
@@ -14385,7 +14557,7 @@ The checker MUST NOT:
 * accept a malformed associated static member merely because its written syntax resembles the trait declaration;
 * reject a valid associated static member merely because its written parameter order or alias-expanded shape differs
   syntactically from the trait declaration;
-* ignore kind or index refinement induced by the instance head;
+* ignore kind or family-argument refinement induced by the instance head;
 * postpone malformed associated static member checking until a later internal panic or missing-skolem failure.
 
 Undeclared member definitions:
@@ -15116,7 +15288,7 @@ The implementation MUST preserve:
 * hidden phase components;
 * branch-local constructor facts;
 * branch-local boolean facts;
-* constructor-forced index equalities;
+* constructor-forced family-argument equalities;
 * stable-alias facts;
 * transparent-family reduction facts available in the source branch;
 * equality transports inserted by elaboration;
@@ -16276,7 +16448,7 @@ For each transport step, the equality proof may be synthesized from:
 
 * an explicit local or implicit equality proof;
 * branch-local boolean equality evidence such as `b = True` or `b = False`;
-* constructor-forced index equalities;
+* constructor-forced family-argument equalities;
 * stable-alias equalities;
 * equality evidence transported across stable aliases;
 * `Eq.eqSound` applied to an available proof of `(x == y) = True`;
@@ -17011,7 +17183,7 @@ The success-side constructor evidence MUST be strong enough that:
 * if `C` declares named explicit parameters, dotted projection `e.field` may refer to those named constructor parameters
   via constructor-field projection (§7.3).
 
-The success evidence additionally includes any index equalities forced by constructor `C`, exactly as in the
+The success evidence additionally includes any family-argument equalities forced by constructor `C`, exactly as in the
 corresponding constructor branch of `match` (§17.1.2).
 
 Failure-side constructor narrowing:
@@ -17307,12 +17479,12 @@ match expr
 <!-- expressions.match.exhaustiveness_indexed_types_gadts -->
 #### 17.1.1 Exhaustiveness with indexed types (GADTs)
 
-For indexed/"GADT-style" types, pattern matching refines the scrutinee's indices and may render some constructor cases
-impossible.
+For GADT-style data families, pattern matching refines the scrutinee's family arguments and may render some constructor
+cases impossible.
 
 Implementations should:
 
-* attempt to use definitional equality / unification of indices to detect unreachable cases;
+* attempt to use definitional equality / unification of family arguments to detect unreachable cases;
 * after ordinary branch refinement, MAY compute the inhabitance summary of the refined case type under §30.2.7;
 * if that summary is `Empty`, treat the case as unreachable and therefore not required for exhaustiveness;
 * otherwise (if coverage still cannot be established) require an explicit catch-all (`_`) or an explicit user-written
@@ -17326,22 +17498,25 @@ Optional strengthening rules from §30.2.7 MAY improve diagnostics, but acceptan
 rule outside the required structural fragment of that section.
 
 <!-- expressions.match.index_refinement_constructor_knowledge -->
-#### 17.1.2 Index refinement from constructor knowledge
+#### 17.1.2 Family-argument refinement from constructor knowledge
 
-Positive constructor knowledge refines not only the outer constructor tag but also any equalities on indices or
-parameters forced by that constructor declaration.
+Positive constructor knowledge refines not only the outer constructor tag but also any equalities on data-family
+arguments forced by that constructor's explicit or implicit result type.
 
 Rules:
 
-* In a constructor branch of `match`, the branch-local environment includes all index equalities and parameter
-  refinements forced by the matched constructor.
-* The same index refinement is introduced by `if e is C then ... else ...`.
-* The same index refinement is introduced by any other flow-sensitive boolean condition position whose branch fact is
-  `e is C`.
+* In a constructor branch of `match`, the branch-local environment includes all family-argument equalities forced by the
+  matched constructor result type.
+* The same family-argument refinement is introduced by `if e is C then ... else ...`.
+* The same family-argument refinement is introduced by any other flow-sensitive boolean condition position whose branch
+  fact is `e is C`.
 * These equalities participate in definitional equality, reachability, and implicit resolution within the refined
   branch.
-* Accordingly, constructor tests on indexed families may narrow associated indices whenever the constructor declaration
-  forces those indices to specific values or shapes.
+* Constructor tests on GADT-style data families may narrow associated family arguments whenever the constructor result
+  type forces those arguments to specific values or shapes.
+
+This refinement is driven by constructor result types. It is not driven by a declaration-level parameter/index
+partition.
 
 <!-- expressions.match.discriminating_erased_scrutinees -->
 #### 17.1.3 Discriminating erased scrutinees
@@ -17352,7 +17527,7 @@ quantity `0` is permitted only when the scrutinee's constructor shape is already
 Rules:
 
 * If the scrutinee is available only at quantity `0`, discrimination is well-formed only when the implementation can
-  prove from definitional equality, index unification, or already-available refinement evidence that the tested
+  prove from definitional equality, family-argument unification, or already-available refinement evidence that the tested
   constructor is the only possible constructor.
 * Otherwise, matching or testing that scrutinee is a compile-time error.
 * This rule applies equally to `if e is C`, `match e`, constructor-field projection made possible by refinement, and any
@@ -17389,7 +17564,7 @@ match e
 
 Typing rule:
 * A branch body `impossible` is accepted only if the compiler can prove that the corresponding case is unreachable using
-  definitional equality, index unification, and the required structural inhabitance rules of §30.2.7.
+  definitional equality, family-argument unification, and the required structural inhabitance rules of §30.2.7.
 * In particular, if the refined case type has inhabitance summary `Empty`, the branch is unreachable.
 * If the compiler cannot prove the case unreachable, it is a compile-time error.
 
@@ -17428,8 +17603,8 @@ Rules:
 * `case impossible` may appear only as the final case of a `match`.
 * `case impossible` introduces no binders and has no guard.
 * It is accepted only if, after accounting for the preceding cases and guards, the remaining uncovered remainder of the
-  scrutinee is unreachable using definitional equality, index unification, and the required structural inhabitance rules
-  of §30.2.7.
+  scrutinee is unreachable using definitional equality, family-argument unification, and the required structural
+  inhabitance rules of §30.2.7.
 * In particular, if that uncovered remainder has inhabitance summary `Empty`, the clause is accepted.
 * Otherwise it is a compile-time error.
 
@@ -29251,7 +29426,7 @@ data RaceResult (a : Type) (b : Type) : Type =
     LeftWins a
     RightWins b
 
-data (=) (@0 a : Type) (x : a) : a -> Type =
+data (=) (@0 a : Type) (x : a) (y : a) : Type =
     refl : x = x
 
 expect term absurd :
@@ -33523,7 +33698,7 @@ Base types:
 * `Unit` summarizes to `Contractible`.
 * `Bool` summarizes to `Finite 2`.
 * A closed finite nullary-constructor data type summarizes to `Finite n`, where `n` is the number of reachable
-  constructors after ordinary visibility, opacity, and index-refinement checks.
+  constructors after ordinary visibility, opacity, and family-argument refinement checks.
 
 Closed products and records:
 
@@ -33554,18 +33729,18 @@ Closed sums and variants:
 * If more than one non-empty arm is known only as `Subsingleton`, the required result is `Unknown` unless an
   implementation applies an optional sound strengthening rule.
 
-Constructor-index refinement:
+Constructor-result family-argument refinement:
 
-For an indexed data type or GADT-style constructor family, a constructor arm is reachable only if the constructor's
-result indices can be unified with the demanded target type using ordinary definitional equality and index unification.
+For a GADT-style data family, a constructor arm is reachable only if the constructor's result family arguments can be
+unified with the demanded target type using ordinary definitional equality and family-argument unification.
 
 If the required unification fails, that constructor arm contributes `Empty`.
 
 If the required unification succeeds, the constructor arm summary is the product of the summaries of its retained
-constructor fields under the branch-local index equalities and parameter refinements.
+constructor fields under the branch-local family-argument equalities forced by the constructor result type.
 
-For `RuntimeShape` and `Optimization`, compile-time-only fields, quantity-`0` fields, runtime-erased proof fields, and erased
-indices are removed before this product is computed.
+For `RuntimeShape` and `Optimization`, compile-time-only fields, quantity-`0` fields, runtime-erased proof fields, and
+erased compile-time-only family arguments are removed before this product is computed.
 
 Proof-classification evidence:
 
@@ -33604,7 +33779,7 @@ At minimum, this includes:
 
 * distinct visible constructors of the same ordinary algebraic data type;
 * distinct closed literals of the same literal type where the literal type's equality is primitive and discrete;
-* constructor index contradictions already accepted by ordinary index unification.
+* constructor family-argument contradictions already accepted by ordinary family-argument unification.
 
 A no-confusion rule MUST NOT conclude that two inhabitants of `Type` are unequal merely because their normalized type
 heads are different nominal declarations.
@@ -33921,7 +34096,7 @@ The active refinement context contains only compiler-introduced branch-local fac
 
 * boolean branch facts such as `b = True` and `b = False`;
 * constructor facts such as `HasCtor s ⟨C⟩` and `LacksCtor s ⟨C⟩`;
-* constructor-forced index equalities; and
+* constructor-forced family-argument equalities; and
 * stable-alias equalities used only to transport such refinement facts.
 
 Ordinary user-written propositional equality evidence is not, merely by being in scope, an active definitional-equality
@@ -36690,8 +36865,8 @@ At minimum, hole-goal queries MUST preserve:
 * active constructor refinements;
 * failure-side `LacksCtor` facts and any derived remaining-constructor facts;
 * boolean assumptions from condition positions;
-* equality refinements from indexed pattern matching;
-* transparent-family index reductions available in the branch;
+* equality refinements from GADT-style family-argument pattern matching;
+* transparent-family argument reductions available in the branch;
 * stable-alias equalities used to transport refinements;
 * local implicit evidence introduced by constructor choice or implicit record unpacking;
 * quantity and linearity status of local binders;
@@ -43642,9 +43817,9 @@ A case split response MUST include:
 * coverage justification; and
 * diagnostics for any branch that cannot be generated.
 
-Case splitting over indexed types MUST preserve index refinements.
+Case splitting over GADT-style data families MUST preserve family-argument refinements.
 
-Case splitting over GADT constructors MUST expose equalities and refined indices in generated branch contexts.
+Case splitting over GADT constructors MUST expose family-argument equalities in generated branch contexts.
 
 Case splitting over variants and rows MUST preserve residual-row binders when required.
 
@@ -44289,7 +44464,7 @@ The coverage view displays:
 * scrutinee type;
 * constructors or variants covered;
 * missing constructors or variants;
-* indexed refinements;
+* family-argument refinements;
 * impossible branches;
 * reachable residual shapes;
 * guard effects on coverage;
@@ -45271,7 +45446,7 @@ For Kappa v1, the intended support profile is:
 * checked one-way and two-way refinement predicates;
 * linearity-aware, non-consuming narrowing;
 * reborrow-respecting narrowing of borrowed scrutinees; and
-* constructor and index refinement.
+* constructor and family-argument refinement.
 
 A conforming implementation MAY deliberately omit more expensive global analyses, such as backward fixpoint narrowing,
 provided that omission is documented together with the rationale and the observable conservatism it introduces.
@@ -46108,7 +46283,7 @@ Tooling and protocol:
 
 * batch and tooling diagnostics agree for the same complete source;
 * incomplete-file diagnostics identify recovery-derived facts;
-* hole-goal queries show refined indexed equalities and branch-local evidence;
+* hole-goal queries show refined family-argument equalities and branch-local evidence;
 * case-split generation preserves real constructor identity;
 * machine-readable protocol shutdown/error paths remain framed.
 

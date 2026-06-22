@@ -1,0 +1,4 @@
+module lib
+
+data Contra (a : Type) : Type =
+    MkContra (a -> Integer)

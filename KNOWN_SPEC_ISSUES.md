@@ -26,32 +26,7 @@ to be portable, because whether a *user* redefinition of a prelude name
 is a duplicate, a shadow, or an ambiguity at use sites is decided by
 §7/§8 scope rules that never address the implicit import specifically.
 
-## 2. §11.4.1 / §28.2: the `(=)` declaration leaves the parameter/index split implicit
-
-The normative declaration (§11.4.1, restated in §28.2):
-
-```kappa
-data (=) (@0 a : Type) (x : a) : a -> Type =
-    refl : x = x
-```
-
-`a` and `x` are *parameters* (left of the `:`), while the second `a` is
-an *index*. Nothing in §10/§11 states the elaboration consequences of
-that split for `(=)` specifically, yet they are observable:
-
-* `refl : x = x` only makes sense if `x` is fixed as a parameter and
-  only the index position generalizes;
-* unification/matching against `lhs = rhs` must treat `lhs`
-  (parameter) and `rhs` (index) asymmetrically;
-* §3.2.3's equality diagnostics talk about "left/right" without
-  acknowledging the asymmetry.
-
-An implementation must reverse-engineer the intended discipline from
-the `refl` constructor. Evidence: `Kappa.Prelude` hand-builds `(=)` /
-`refl` with exactly this parameter/index telescope; getting it wrong
-breaks `tests/conformance/equality/*`.
-
-## 3. §5.5.1: longest-match-first makes `[1]>x` lex as `]>`
+## 2. §5.5.1: longest-match-first makes `[1]>x` lex as `]>`
 
 §5.5.1 reserves `<[` and `]>` as single tokens and states they are
 recognized "in preference to `<` plus `[` and `]` plus `>`"
@@ -64,7 +39,7 @@ this nor requires a tailored diagnostic. Evidence: the lexer here
 follows the rule literally (`Kappa.Lexer` longest-match table) and the
 misparse reproduces.
 
-## 4. §6.3.5 / §7.1.1 / §9: the soft keyword `type` needs unbounded lookahead
+## 3. §6.3.5 / §7.1.1 / §9: the soft keyword `type` needs unbounded lookahead
 
 `type` is simultaneously:
 
@@ -89,7 +64,7 @@ SPEC_COVERAGE.md §6.3.5). The remaining lookahead observation about the
 three roles of `type` stands as a spec-ergonomics note, but no
 normative form is unsupported on its account.
 
-## 5. §16.1.3 vs §16.4.2: short-circuit operators are "ordinary terms", yet flow typing must see through them
+## 4. §16.1.3 vs §16.4.2: short-circuit operators are "ordinary terms", yet flow typing must see through them
 
 §16.1.3 defines `(&&)` and `(||)` as ordinary prelude functions over
 `Thunk Bool` — first-class values, shadowable, passable. §16.4.2 then
@@ -104,7 +79,7 @@ read as if written under different assumptions. (This implementation
 sidesteps it only because flow typing is unimplemented —
 SPEC_COVERAGE.md §16.4.)
 
-## 6. §28.2.1 + §16.4.4: checked subtraction makes ordinary `x - y` unwritable without flow facts
+## 5. §28.2.1 + §16.4.4: checked subtraction makes ordinary `x - y` unwritable without flow facts
 
 `(-)` requires an implicit proof `(@_ : subDefined x y = True)`
 (§28.2.1). For `Integer`, `subDefined x y = True` definitionally, so
@@ -142,7 +117,7 @@ convertibility tweak. Total saturating
 `natOfInt (subInt (natToInt a) (natToInt b))` compiles today but changes
 checked-subtraction semantics.
 
-## 7. §3.1.2 / §3.1.4: diagnostic code names are implementation-defined, so black-box suites do not transfer
+## 6. §3.1.2 / §3.1.4: diagnostic code names are implementation-defined, so black-box suites do not transfer
 
 §3.1.2 makes codes stable but implementation-chosen; §3.1.4 pins only a
 small table of portable aliases. Everything else (`E_UNRESOLVED_NAME`
@@ -155,7 +130,7 @@ Evidence: a large slice of the 509 external-corpus failures
 (`tests/external-results.md`, "foreign diagnostic-code naming") match
 behaviour but fail purely on the asserted code name.
 
-## 8. §31.3: variant member identity by "canonical rendering" is not pinned enough for interop
+## 7. §31.3: variant member identity by "canonical rendering" is not pinned enough for interop
 
 §31.3 keys variant runtime representation to stable member identities
 derived from the member *type*, with alias-transparent identity. But
@@ -169,7 +144,7 @@ tag. Evidence: this implementation had to invent a rendering
 variant tags") and external fixtures still cannot check it
 portably.
 
-## 9. §T.2/§T.6: directory suites leave compilation order and failure scope unspecified
+## 8. §T.2/§T.6: directory suites leave compilation order and failure scope unspecified
 
 §T.2 says a directory suite's "compilation roots are all `.kp` files
 under the suite root", and §T.6 distributes assertions over files — but
@@ -185,7 +160,7 @@ suite-level directive merge (`Kappa.TestHarness`, TESTING.md, commit
 `dd427f0`) — with no spec text to appeal to, and external directory
 suites only began passing once that particular policy was chosen.
 
-## 10. §6.1.3 / §28.2: two float equalities with the surprising one on `(==)`
+## 9. §6.1.3 / §28.2: two float equalities with the surprising one on `(==)`
 
 §6.1.3 fixes `Double`'s `Eq` instance to raw-bit equality and provides
 IEEE numeric equality separately as `floatEq` (§28.2). So in Kappa,
@@ -199,7 +174,7 @@ float equality portably will silently encode one convention or the
 other. Evidence: `Kappa.Prelude` exposes both `eqDouble` (raw-bit,
 backing `Eq Double`) and `floatEq`, per the letter of the spec.
 
-## 11. §5.2 vs juxtaposition application: soft keywords after an expression are inherently ambiguous
+## 10. §5.2 vs juxtaposition application: soft keywords after an expression are inherently ambiguous
 
 §5.2 (normative) requires that implementations "permit their use as
 ordinary identifiers in contexts where a keyword is not syntactically
@@ -228,7 +203,7 @@ enumerated in SPEC_COVERAGE.md §5.2. Evidence:
 `Kappa.Parser` (`stopKeywords` vs `queryStopKeywords` /
 `isStopKeywordAt`).
 
-## 12. §21.6 vs §21.2: the convenience reflection queries are `Elab`-typed, but corpus programs use them as plain values
+## 11. §21.6 vs §21.2: the convenience reflection queries are `Elab`-typed, but corpus programs use them as plain values
 
 §21.6 types the convenience queries in `Elab`
 (`defEqSyntax : … -> Elab Bool`,
@@ -257,7 +232,7 @@ no generic meta-to-object coercion exists. Evidence:
 `Kappa.Check.elabReflQuery`,
 `tests/conformance/macros/reflection-queries.kp`.
 
-## 13. §5.4: multi-line operator continuations at constant deeper indentation are undefined
+## 12. §5.4: multi-line operator continuations at constant deeper indentation are undefined
 
 §5.4 says that lines indented deeper than a logical line's first token
 "form a continuation", but it never defines how *several* continuation
@@ -279,33 +254,7 @@ makes it an application continuation). A normative continuation rule —
 one logical line extends until a line at or below its starting column —
 would settle all three.
 
-## 14. §10.4: the strict-positivity fixed-point initialization direction is degenerate as written
-
-§10.4 specifies computing parameter-positivity signatures for a mutually
-recursive `data` group by fixed-point iteration and instructs:
-"initialize every parameter of every type in the group as non-positive;
-repeatedly recompute the signatures using the current signatures of the
-whole group until a fixed point is reached." The recompute operator is
-monotone in the *more-positive* direction — a parameter already known
-positive lets a recursive index `T … pi …` recurse strictly-positively
-rather than forcing `pi` to be absent — so iterating from the
-all-non-positive bottom yields the *least* fixed point, which is
-degenerate: it marks `a` in `data Tree a = Leaf | Branch (Tree a) a
-(Tree a)` as non-positive (when checking `Branch`'s first field `Tree a`
-with `Tree`'s still-non-positive signature, the index `a` is required to
-be absent, which fails), and the iteration is already stuck at the
-bottom. The signature the spec's own accepted examples require is the
-*greatest* fixed point: start every parameter positive and refine
-downward until stable. This implementation computes the greatest fixed
-point (`positivityPass`/`fixpoint` in `Kappa.Check`, `sig0 = all True`),
-which accepts §10.4's accepted examples (Tree, `Rose a = Node a (List
-(Rose a))`) and rejects its rejected ones (`Bad`, `Rose a = Node a
-((Rose a -> a) -> Rose a)`). The *rejection judgement* itself is then
-computed against the converged signatures exactly as §10.4 describes.
-Evidence: `Kappa.Check.positivityPass`,
-`tests/conformance/data_types/positivity-*.kp`.
-
-## 15. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
+## 13. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
 
 §3.1.5A defines a full `ProvenanceFrame` record (id, kind, step, query,
 inputs, inputObjects, output, generatedObject, explanation) and requires
@@ -332,7 +281,7 @@ chain-reconstruction query — `Kappa.Core.Term` carries no origin field.
 Evidence: `Kappa.Check` `EBang` (`desugared-from` related origin);
 `tests/conformance/diagnostics`.
 
-## 16. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
+## 14. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
 
 The `suppressed` field (§3.1.1, §3.1.10, §3.1.11) is implemented and is
 populated wherever this implementation drops a downstream diagnostic that
@@ -352,7 +301,7 @@ the upstream-collapse cases produce a single diagnostic with nothing to
 summarize. Evidence: `Kappa.Pipeline.attachSuppressed`,
 `tests/conformance/diagnostics/suppressed-cascade.kp`.
 
-## 17. §28.2.2: algebraic numeric law members are not modelled as proofs
+## 15. §28.2.2: algebraic numeric law members are not modelled as proofs
 
 §28.2.2 declares `AdditiveMonoid`, `AdditiveGroup`, `MultiplicativeMonoid`,
 `Semiring`, `Ring`, `EuclideanSemiring`, `FieldLike`, `OrderedAdditive`,
@@ -387,7 +336,7 @@ its equation in a later proof*. Evidence:
 `tests/conformance/prelude/algebraic_numeric_exclusions.kp`,
 `Kappa.Prelude` (the algebraic-trait block).
 
-## 18. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
+## 16. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
 
 * `Iterator` (§28.2) declares `next : (1 this : it) -> Option (item :
   Item, rest : it)`, referencing the associated member `Item` inside a
@@ -400,7 +349,7 @@ its equation in a later proof*. Evidence:
 * `IsContr`/`IsSubsingleton`/`IsProp`/`IsSet`/`IsGroupoid` (§28.2, §11.4)
   have proof-producing members (`center`/`contract`, `allEqual`,
   `pathIsProp`, `pathIsSet`) over propositional equality that, as in
-  issue 17, cannot be synthesised for neutral terms. They are surfaced as
+  issue 15, cannot be synthesised for neutral terms. They are surfaced as
   nameable markers preserving the `IsSubsingleton => IsProp` edge.
   `IsEmpty` keeps its `absurdT : t -> Void` eliminator.
 * `WellFoundedRelation` (§28.2/§15.11) exposes the associated `rel` member.
@@ -432,35 +381,28 @@ In every case the *name* is a resolvable prelude export, satisfying the
 §28.2 declaration MUSTs; only the proof-carrying members are omitted.
 Evidence: `Kappa.Prelude` (trait declarations near `Iterator`).
 
-## 19. §28.2: `sym`/`trans`/`cong`/`subst`/`pathInd` resolve but are usable only with determined endpoints
+## 17. §28.2: proof-helper bodies still use erased primitives instead of equality matching
 
 The §28.2 proof/equality helpers `absurd`, `subst`, `sym`, `trans`,
 `cong`, `pathInd`, `unsafeAssertProof`, and `witness` are all declared as
 prelude terms with their spec signatures and resolve by name. Their
 *bodies*, however, cannot be written by `match eq case refl -> ...`,
-because this implementation does not refine an equality's index `y := x`
-when matching `refl` — a direct consequence of the unpropagated `(=)`
-parameter/index split documented in issue 2. They are therefore realized
-through erased-proof primitives (`__transport`, identity on the runtime
-payload since the witness is erased; `__eqProof`, an inhabitant of the
-erased equality goal; `__absurd`).
+because this implementation does not yet propagate the branch-local
+family-argument equality forced by the `refl` result type. They are
+therefore realized through erased-proof primitives (`__transport`,
+identity on the runtime payload since the witness is erased; `__eqProof`,
+an inhabitant of the erased equality goal; `__absurd`).
 
-A second, more general consequence of issue 2 surfaces at *use* sites: a
-call like `sym eq` for `eq : x = y` cannot determine the helper's `@0 x`
-and `@0 y` implicits by unification, because the equality index is not
-propagated. The undetermined erased implicits then fall to scope search,
-which finds the two same-typed `@0` binders and reports
-`E_IMPLICIT_AMBIGUOUS` (§16.3.3) — note this is *general* behaviour for
-any function with two unconstrained same-typed `@0` binders, not specific
-to the proof helpers. Likewise `subst`/`pathInd` require an explicit
-motive annotation because the motive `p` is not inferable from the
-payload alone. Consequently these helpers are usable only when the
-equality endpoints (and motive, for transport) are concretely determined;
-the names and signatures are nonetheless present per §28.2. Evidence:
+Endpoint inference for ordinary uses of `sym`/`trans`/`cong` works by
+unifying the explicit equality proof argument with the helper's equality
+family domain (`tests/conformance/prelude/proof_helpers_use.kp`). The
+remaining limitation is equality-pattern refinement itself, plus the
+ordinary need to make motives explicit for `subst`/`pathInd` when they
+cannot be inferred from surrounding type information. Evidence:
 `Kappa.Prelude` (proof-helper block), `tests/conformance/prelude/`
-`proof_helpers_resolve.kp`.
+`proof_helpers_resolve.kp`, `tests/conformance/prelude/proof_helpers_use.kp`.
 
-## 20. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
+## 18. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
 
 The §4 unsafe/debug facilities are now recognized and gated by the §4.2
 build configuration (`UnsafeConfig` in `Kappa.Check`, all `allow_*`

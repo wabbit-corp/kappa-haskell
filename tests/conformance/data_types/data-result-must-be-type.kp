@@ -1,0 +1,9 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+module main
+
+-- §10.1.3: data-family arguments are written in the declaration header;
+-- the result classifier is Type, not an indexed family tail.
+
+data OldStyleEq (@0 a : Type) (x : a) : a -> Type --!! E_TYPE_EQUALITY_MISMATCH

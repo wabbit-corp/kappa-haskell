@@ -35,7 +35,7 @@ import Control.Monad (filterM, foldM, forM, forM_, unless, void, when, zipWithM)
 import Control.Monad.State.Strict
 import Data.Data (Data, cast, gmapQ)
 import Data.Graph (SCC (..), stronglyConnComp)
-import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
+import Data.List (elemIndex, find, intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
@@ -2098,8 +2098,8 @@ isTraitGoal v =
 isEqGoal :: Value -> CheckM Bool
 isEqGoal v =
   forceM v >>= \case
-    VGlobN (GName _ "=") _ -> pure True
-    VCtor (GName _ "=") _ -> pure True
+    VGlobN g _ | g == gPrel "=" -> pure True
+    VCtor g _ | g == gPrel "=" -> pure True
     _ -> pure False
 
 -- | Is the goal one of the §11.3.1A intrinsic row traits (solved by
@@ -2320,8 +2320,8 @@ propProof :: Value -> CheckM (Maybe Term)
 propProof goal = do
   g <- forceM goal
   case g of
-    VGlobN (GName _ "=") sp | [(_, l), (_, r)] <- drop (length sp - 2) sp -> tryRefl l r
-    VCtor (GName _ "=") [_, l, r] -> tryRefl l r
+    VGlobN eqG sp | eqG == gPrel "=", [(_, l), (_, r)] <- drop (length sp - 2) sp -> tryRefl l r
+    VCtor eqG [_, l, r] | eqG == gPrel "=" -> tryRefl l r
     _ -> pure Nothing
   where
     tryRefl l r = do
@@ -3643,7 +3643,7 @@ checkExplicitArg ctx q e dom = do
 -- argument expression checked against its (pre-solved) domain.
 data AppSlot
   = SlotKind Term
-  | SlotEvid Q Value Value
+  | SlotEvid Q Value Term Value
   | -- | An explicit argument slot, carrying the placeholder meta's id
     -- and value plus a 'Bool' that records whether the function's
     -- codomain actually depends on this argument. When 'False' (a
@@ -3692,7 +3692,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
           let slot =
                 if kindLike
                   then SlotKind m
-                  else SlotEvid q dom mV
+                  else SlotEvid q dom m mV
           peel ty' as0 (slot : acc)
         VPi Expl q _ dom clo@(Closure _ cloBody)
           | (ArgExplicit e : as) <- as0 -> do
@@ -3705,12 +3705,14 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
           | [] <- as0 -> pure (Just (reverse acc, tyF))
           | otherwise -> pure Nothing
     step tm (SlotKind m) = pure (CApp Impl tm m)
-    step tm (SlotEvid q dom mV) = do
+    step tm (SlotEvid q dom m mV) = do
       -- §3.2.3 proof obligations are postponed to the pending queue
       -- even when fully solved: the boolean branch facts they reduce
       -- under may themselves be stuck on evidence metas that only the
       -- end-of-declaration flush solves
       isEq <- isEqGoal dom
+      isTrait <- isTraitGoal dom
+      isRow <- isRowGoal dom
       ev <-
         if isEq
           then do
@@ -3718,6 +3720,8 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
             bfs <- gets csBoolFacts
             modify' $ \st -> st {csPending = (mid, dom, sp, ctx, bfs) : csPending st}
             pure (CMeta mid)
+          else if q == Q0 && not isTrait && not isRow
+            then pure m
           else resolveImplicitQ ctx sp q dom
       evV <- evalIn ctx ev
       _ <- unify ctx mV evV
@@ -10458,9 +10462,7 @@ elabAliasBody params rhs = do
       pure (CLam ic Q0 nm tm, CPi ic Q0 nm domTm innerK)
 
 headerData :: DataDecl -> Span -> CheckM ()
-headerData (DataDecl n params _mkind ctors) sp = do
-  -- the optional kind annotation is not validated: every data type
-  -- lives at 'Type' in this implementation (see SPEC_COVERAGE.md)
+headerData (DataDecl n params mkind ctors) sp = do
   g <- ownName n
   noteDefinition g sp
   forM_ (duplicatesOf [nameText cn | CtorDecl cn _ _ _ <- ctors]) $ \dn ->
@@ -10468,6 +10470,11 @@ headerData (DataDecl n params _mkind ctors) sp = do
       ("duplicate constructor '" <> dn <> "' in data declaration")
   -- data type constructor type: params -> Type
   paramTele <- elabTele emptyCtx params
+  forM_ mkind $ \kindExpr -> do
+    ctx <- teleCtx paramTele
+    (kindTm, _) <- inferType ctx kindExpr
+    kindV <- evalIn ctx kindTm
+    expectType ctx (exprSpan kindExpr) kindV (VSort 0)
   let sortT = CSort 0
   let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) sortT paramTele
   tyV <- evalIn emptyCtx tyTm
@@ -10588,7 +10595,9 @@ gatherPosData st (DataDecl n _ _ _, sp) = do
     Just di -> do
       let pc = diParamCount di
           ctorTys = [ciType ci | cg <- diCtors di, Just ci <- [Map.lookup cg (csCtors st)]]
-          flds = concatMap (posCtorFieldTypes pc) ctorTys
+          rawFlds = concatMap (posCtorFieldTypes pc) ctorTys
+      flds <- forM rawFlds $ \fld ->
+        PosField (pfDepth fld) <$> normalizeTermAt (pfDepth fld) (pfType fld)
       pure (Just (PosData g pc flds sp))
 
 -- | Peel 'pc' leading parameter binders, then collect each remaining
@@ -10660,7 +10669,7 @@ posWalk
 posWalk groupNames sig occurs isBareTarget = go
   where
     go shift t
-      -- the argument type itself (possibly with parameters/indices):
+      -- the argument type itself (possibly with family arguments):
       -- a bare occurrence of the target is a strictly positive position
       | isBareTarget shift t = True
       -- the target does not occur at all: trivially strictly positive
@@ -10675,7 +10684,7 @@ posWalk groupNames sig occurs isBareTarget = go
             case admissibleSig groupNames sig hd of
               Just flags ->
                 -- 'F' is admissible (a prior/built-in carrier, or the
-                -- defined type applied to parameters/indices, which is
+                -- defined type applied to family arguments, which is
                 -- itself a strictly positive position): the target may
                 -- occur strictly positively only in those 'Ai' whose
                 -- parameter is marked positive in F's signature, and not

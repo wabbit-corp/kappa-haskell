@@ -114,7 +114,7 @@ regionRef   ::= ident
 
 ### Propositional equality (§11.4.1)
 ```kappa
-data (=) (@0 a : Type) (x : a) : a -> Type =
+data (=) (@0 a : Type) (x : a) (y : a) : Type =
     refl : x = x
 ```
 `pathInd`, `subst` eliminators (expect terms). `pathInd base refl ⟶ base`; `subst refl v ⟶ v`. Intensional; no UIP. Equality matches needing K require `IsProp (x = y)`/`IsSet a` else `E_EQUALITY_MATCH_REQUIRES_ISSET`.

@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+-- §10.4: transparent aliases are unfolded before positivity reasoning.
+-- Box preserves positivity because it unfolds to List, whose element
+-- parameter is recorded positive.
+@PrivateByDefault module main
+
+type Box (a : Type) = List a
+
+data T : Type =
+    MkT (Box T)

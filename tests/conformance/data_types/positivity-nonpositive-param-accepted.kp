@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+-- §10.4: a final non-positive parameter in the converged parameter-
+-- positivity signature is not itself a rejection condition. 'a' occurs
+-- contravariantly, so Contra's parameter signature is non-positive, but no
+-- recursive occurrence is present.
+@PrivateByDefault module main
+
+data Contra (a : Type) : Type =
+    MkContra (a -> Integer)

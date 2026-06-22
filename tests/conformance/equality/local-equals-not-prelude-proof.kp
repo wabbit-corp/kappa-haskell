@@ -1,0 +1,16 @@
+--! mode check
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+-- §11.4.1: only std.prelude.(=) is the distinguished propositional
+-- equality family. A user-defined type-level operator named (=) is an
+-- ordinary data family and does not receive implicit refl synthesis.
+
+data (=) (@0 a : Type) (x : a) (y : a) : Type
+
+needsLocalEq : (@_ : (=) Integer 1 1) -> Integer
+let needsLocalEq = 42
+
+useIt : Integer
+let useIt = needsLocalEq --!! E_UNSOLVED_IMPLICIT

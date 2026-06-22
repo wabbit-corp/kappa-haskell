@@ -1,0 +1,10 @@
+--! mode check
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+-- §10.4: transparent aliases are unfolded before positivity reasoning, so
+-- BadBox T exposes T in a function domain and must be rejected.
+@PrivateByDefault module main
+
+type BadBox (a : Type) = a -> Integer
+
+data T : Type =
+    MkT (BadBox T)

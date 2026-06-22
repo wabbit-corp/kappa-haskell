@@ -1,0 +1,12 @@
+--! mode check
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+-- §10.4 final group judgment: after group signatures converge, a recursive
+-- occurrence through a parameter that converged to non-positive does not
+-- preserve strict positivity.
+@PrivateByDefault module main
+
+data Contra (a : Type) : Type =
+    MkContra (a -> Integer)
+
+data Bad : Type =
+    MkBad (Contra Bad)

@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+-- §10.1 grammar: a parenthesized operator token may name a data family
+-- in type position without introducing a term operator or fixity.
+
+data (~~) (@0 a : Type) (x : a) (y : a) : Type =
+    SameLike : (~~) a x x
+
+p : (~~) Integer 1 1
+let p = SameLike

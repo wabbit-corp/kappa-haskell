@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+-- §11.4.1 / §28.2: endpoint arguments of the equality family are
+-- ordinary family arguments, so helper calls infer them from the proof
+-- argument rather than searching same-typed erased locals.
+
+flipEq : forall (@0 a : Type) (@0 x : a) (@0 y : a). x = y -> y = x
+let flipEq eq = sym eq
+
+chainEq : forall (@0 a : Type) (@0 x : a) (@0 y : a) (@0 z : a). x = y -> y = z -> x = z
+let chainEq p q = trans p q
+
+congEq : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y
+let congEq f eq = cong f eq

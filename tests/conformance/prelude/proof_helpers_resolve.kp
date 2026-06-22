@@ -7,9 +7,10 @@
 -- requires `allow_unsafe_assert_proof`.
 -- §28.2: the proof/equality helper names resolve as prelude exports.
 -- 'absurd' and 'witness' are exercised at concrete types here; the
--- equality helpers subst/sym/trans/cong/pathInd resolve but are usable
--- only with determined endpoints (see KNOWN_SPEC_ISSUES.md), so they are
--- referenced by their declared signatures via eta-aliases below.
+-- equality helpers subst/sym/trans/cong/pathInd resolve at their declared
+-- signatures here. Ordinary sym/trans/cong use sites are covered in
+-- proof_helpers_use.kp; equality-match helper bodies are still tracked in
+-- KNOWN_SPEC_ISSUES.md.
 
 module main
 

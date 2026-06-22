@@ -143,7 +143,7 @@ builtinState =
       , (prel "composeProjector", GlobalDef composeProjectorTy (Just (VPrim "composeProjector" [])) False)
       , (prel "captureBorrow", GlobalDef captureBorrowTy (Just (VPrim "captureBorrow" [])) False)
       , (prel "withBorrowView", GlobalDef withBorrowViewTy (Just (VPrim "withBorrowView" [])) False)
-      , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) : a -> Type
+      , -- propositional equality (§11.4.1): (=) (@0 a) (x : a) (y : a) : Type
         (prel "=", opaqueTy (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tType))))
       , (prel "refl", GlobalDef reflTy Nothing False)
       , -- §21 metaprogramming: compile-time-only type families (the
@@ -1867,10 +1867,9 @@ preludeSource =
     , "let summon goal @ev = ev"
     , ""
     , -- §28.2 proof and equality helpers over propositional equality.
-      -- This implementation does not refine an equality's index when it
-      -- matches 'refl' (the (=) parameter/index split of §11.4.1 is not
-      -- propagated through 'match'; see KNOWN_SPEC_ISSUES.md), so these
-      -- helpers cannot be defined by 'match eq case refl -> ...'. They
+      -- This implementation does not yet propagate the branch-local endpoint
+      -- equality forced by matching 'refl' (see KNOWN_SPEC_ISSUES.md), so
+      -- these helpers cannot be defined by 'match eq case refl -> ...'. They
       -- are realized through primitives that respect the operational
       -- meaning of erased, proof-irrelevant equality: 'subst'/'pathInd'
       -- transport by the identity (the equality witness is erased), and

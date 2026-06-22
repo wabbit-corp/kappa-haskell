@@ -23,7 +23,7 @@ resolution + provider-collision detection not implemented); the asserted code
 is outside this implementation's §3.1.2A registry, so the directive cannot be
 type-checked and is classified harnessError per §T (NOT silently reconciled —
 §3.1.4 forbids reusing a portable alias for a different meaning; see
-KNOWN_SPEC_ISSUES #7). NOTE: the §18 scoped effect + handler mechanism IS
+KNOWN_SPEC_ISSUES.md #6). NOTE: the §18 scoped effect + handler mechanism IS
 implemented and tested (`tests/conformance/effects/`); only top-level `effect`
 declarations and `return@`/`defer@` are deterministic-unsupported. A full
 per-fixture re-triage of the grown corpus remains outstanding. -->

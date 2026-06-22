@@ -1,6 +1,6 @@
 --! mode check
 --! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
--- §10.4 "Examples rejected" (Spec L8691): 'Rose' occurs inside the
+-- §10.4 examples rejected: 'Rose' occurs inside the
 -- domain of a function type ('Rose a -> a' is the argument of the
 -- outer arrow), a negative occurrence, so the declaration MUST be
 -- rejected.
