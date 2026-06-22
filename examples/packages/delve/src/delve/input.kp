@@ -9,12 +9,19 @@ let keyToCommand key =
     case KeyChar "q" -> Move NorthWest
     case KeyChar "w" -> Move North
     case KeyChar "e" -> Move NorthEast
-    case KeyChar "a" -> Move West
     case KeyChar "s" -> Rest
     case KeyChar "d" -> Move East
     case KeyChar "z" -> Move SouthWest
     case KeyChar "x" -> Move South
     case KeyChar "c" -> Move SouthEast
+    case KeyChar "y" -> Move NorthWest
+    case KeyChar "k" -> Move North
+    case KeyChar "u" -> Move NorthEast
+    case KeyChar "h" -> Move West
+    case KeyChar "l" -> Move East
+    case KeyChar "b" -> Move SouthWest
+    case KeyChar "j" -> Move South
+    case KeyChar "n" -> Move SouthEast
     case KeyArrow dir -> Move dir
     case KeyChar "i" -> Inventory
     case KeyChar "@" -> Character
@@ -22,8 +29,10 @@ let keyToCommand key =
     case KeyChar "," -> PickUp
     case KeyChar "f" -> ThrowFirst
     case KeyChar "v" -> CycleTactic
+    case KeyChar "C" -> CycleTactic
     case KeyChar "o" -> ToggleDoor
     case KeyChar "r" -> Engrave
+    case KeyChar "E" -> Engrave
     case KeyChar "t" -> Talk
     case KeyChar "p" -> Pray
     case KeyChar ">" -> Descend
@@ -31,6 +40,7 @@ let keyToCommand key =
     case KeyChar "U" -> UseFirst
     case KeyChar "Z" -> ZapFirst
     case KeyChar "D" -> DropFirst
+    case KeyChar "a" -> TargetedAttack
     case KeyChar "A" -> TargetedAttack
     case KeyChar "m" -> ToggleAudio
     case KeyChar "M" -> ToggleAudio
@@ -43,15 +53,15 @@ let keyToCommand key =
 helpLines : List String
 let helpLines =
     [ "Delve keys"
-    , "move/attack:  q w e"
-    , "              a s d    (s = wait)"
-    , "              z x c    or the arrow keys"
+    , "move/attack:  y k u      q w e"
+    , "              h . l  or  . s d    (s/. = wait)"
+    , "              b j n      z x c    or the arrow keys"
     , "i: inventory (select, equip, use, drop, throw)"
     , "@: character    p: pray / offer corpse on altar"
     , "g or ,: pick up    f: throw at nearest foe"
-    , "o: open / close nearby door    r: engrave a ward"
-    , "v: cycle combat stance    t: talk to neighbor"
-    , "A: aimed attack    U/Z/D: quick use / zap / drop"
+    , "o: open / close nearby door    r/E: engrave a ward"
+    , "v/C: cycle combat stance    t: talk to neighbor"
+    , "a/A: aimed attack    U/Z/D: quick use / zap / drop"
     , ">/<: stairs and branch portals"
     , "m: mute / unmute sound    ?: help"
     , "S: save and quit    Q: quit without saving"
