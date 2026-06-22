@@ -1,0 +1,56 @@
+module delve.tactics
+
+import delve.core.*
+import delve.natutil.*
+
+findDef : ContentPack -> Tactic -> Option TacticDef
+let findDef pack tactic =
+    block
+        go : List TacticDef -> Option TacticDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.tactic == tactic then Some def else go rest
+        go pack.tactics
+
+fallback : Tactic -> TacticDef
+let fallback tactic =
+    match tactic
+    case Coward -> TacticDef Coward "coward" (-3) (-1) 3 0 "You keep your guard high and your distance careful."
+    case Defensive -> TacticDef Defensive "defensive" (-1) 0 2 1 "You settle into a guarded stance."
+    case Balanced -> TacticDef Balanced "balanced" 0 0 0 1 "You return to balanced tactics."
+    case Aggressive -> TacticDef Aggressive "aggressive" 2 2 (-1) 2 "You press the attack."
+    case Berserk -> TacticDef Berserk "berserk" 4 4 (-3) 3 "You commit fully to the attack."
+
+def : ContentPack -> Tactic -> TacticDef
+let def pack tactic =
+    match findDef pack tactic
+    case Some d -> d
+    case None -> fallback tactic
+
+tacticName : ContentPack -> Tactic -> String
+let tacticName pack tactic = (def pack tactic).name
+
+next : Tactic -> Tactic
+let next tactic =
+    match tactic
+    case Coward -> Defensive
+    case Defensive -> Balanced
+    case Balanced -> Aggressive
+    case Aggressive -> Berserk
+    case Berserk -> Coward
+
+attackBonus : ContentPack -> Tactic -> Int
+let attackBonus pack tactic = (def pack tactic).attackBonus
+
+damageBonus : ContentPack -> Tactic -> Int
+let damageBonus pack tactic = (def pack tactic).damageBonus
+
+defenseBonus : ContentPack -> Tactic -> Int
+let defenseBonus pack tactic = (def pack tactic).defenseBonus
+
+hungerCost : ContentPack -> Tactic -> Int
+let hungerCost pack tactic = (def pack tactic).hungerCost
+
+describe : ContentPack -> Tactic -> String
+let describe pack tactic = (def pack tactic).description

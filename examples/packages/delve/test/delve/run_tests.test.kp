@@ -1,0 +1,43 @@
+module delve.run_tests
+
+import delve.core.(GameError)
+import delve.config_save_test as c
+import delve.feature_smoke_test as f
+import delve.generation_test as g
+import delve.input_test as i
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : IO GameError Unit
+let main = do
+    let c1 = g.testStartsWithPetAndStarSign
+    let c2 = g.testRumorsSeeded
+    let c3 = i.testHjkl
+    let c4 = i.testFeatureKeys
+    let c5 = i.testMenuKeys
+    let c6 = c.testJsonProfileParsesObjects
+    let c7 = c.testEcsMirrorHasActors
+    let c8 = c.testSaveCarriesPackIdentity
+    let c9 = f.testTacticCycle
+    let c10 = f.testMutationNames
+    let c11 = f.testCorruptionResistance
+    c12 <- c.testLoadDefaultPackIO
+    c13 <- c.testSaveRoundTripIO
+    printlnString (line "gen.startsWithPetAndStarSign" c1)
+    printlnString (line "gen.rumorsSeeded" c2)
+    printlnString (line "input.hjkl" c3)
+    printlnString (line "input.featureKeys" c4)
+    printlnString (line "input.menuKeys" c5)
+    printlnString (line "config.jsonProfileParsesObjects" c6)
+    printlnString (line "ecs.mirrorHasActors" c7)
+    printlnString (line "save.carriesPackIdentity" c8)
+    printlnString (line "tactics.cycle" c9)
+    printlnString (line "content.mutationNames" c10)
+    printlnString (line "corruption.resistance" c11)
+    printlnString (line "config.loadDefaultPack" c12)
+    printlnString (line "save.roundTripNativeFiles" c13)
+    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 && c10 && c11 && c12 && c13 then
+        printlnString "DELVE TESTS: ALL PASS"
+    else
+        printlnString "DELVE TESTS: FAIL"

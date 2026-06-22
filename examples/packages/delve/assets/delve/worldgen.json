@@ -1,0 +1,28 @@
+{
+  "worldgen": {
+    "map": {
+      "min_width": 60,
+      "max_width": 96,
+      "min_height": 20,
+      "max_height": 32
+    },
+    "room": {
+      "min_size": 4,
+      "max_size": 10,
+      "attempts": 80
+    },
+    "spawn": {
+      "monster_base_chance": 35,
+      "monster_chance_per_depth": 5,
+      "item_chance": 48
+    },
+    "features": {
+      "altar_chance": 12,
+      "lore_stone_chance": 8,
+      "trap_base_chance": 18,
+      "trap_chance_per_depth": 1,
+      "chaos_vent_base_chance": 4,
+      "chaos_vent_chance_per_depth": 1
+    }
+  }
+}

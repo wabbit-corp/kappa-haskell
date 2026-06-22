@@ -1,0 +1,85 @@
+module delve.interact
+
+import delve.core.*
+import delve.natutil.*
+import delve.grid as grid
+import delve.rng as rand
+import delve.combat as combat
+import delve.content as content
+
+addCorpseFor : Actor -> GameState -> GameState
+let addCorpseFor victim game =
+    if victim.species == PlayerSpecies || victim.species == Hound then game
+    else game.{ level = game.level.{ items = (::) (GroundItem victim.pos (content.mkItem game.content Corpse)) game.level.items } }
+
+clearWardAt : Vec2 -> GameState -> GameState
+let clearWardAt pos game =
+    let t = grid.getTile game.level pos
+    in game.{ level = grid.setTile pos t.{ warded = False } game.level }
+
+engrave : GameState -> GameState
+let engrave game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let tile = grid.getTile game.level p.pos
+        let level2 = grid.setTile p.pos tile.{ warded = True } game.level
+        message "You engrave a ward into the floor." (game.{ level = level2 })
+
+adjacentActors : Actor -> List Actor -> List Actor
+let adjacentActors actor actors decreases listLength actors =
+    match actors
+    case Nil -> Nil
+    case a :: rest ->
+        if a.id != actor.id && a.alive && chebyshev a.pos actor.pos <= 1 then (::) a (adjacentActors actor rest)
+        else adjacentActors actor rest
+
+firstTalkable : Actor -> List Actor -> Option Actor
+let firstTalkable actor actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case a :: rest ->
+        if a.id != actor.id && a.alive && chebyshev a.pos actor.pos <= 1 && (a.attitude == Friendly || a.attitude == Neutral) then Some a
+        else firstTalkable actor rest
+
+talk : GameState -> GameState
+let talk game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match firstTalkable p game.level.actors
+        case None -> message "You address the dark. Water drips somewhere nearby." game
+        case Some a ->
+            match a.species
+            case Hound -> message "Moss wags once." game
+            case Pilgrim -> pilgrimRumor a game
+            case _ -> message (a.name ++ " has nothing useful to say.") game
+
+pilgrimRumor : Actor -> GameState -> GameState
+let pilgrimRumor a game =
+    let rumor = Rumor "Altars reveal curses; chaos vents buy power with your future."
+    let a2 = a.{ attitude = Friendly, faction = HeroFaction, loyalty = 30 }
+    message "The pilgrim joins you and whispers: altars reveal curses; chaos vents trade power for ruin." (game.{ player = game.player.{ reputation = game.player.reputation + 1 }, rumors = (::) rumor game.rumors, level = game.level.{ actors = replaceActor a2 game.level.actors } })
+
+firstAdjacentHostile : Actor -> List Actor -> Option Actor
+let firstAdjacentHostile actor actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case a :: rest ->
+        if a.id != actor.id && a.alive && hostileTo actor a && chebyshev actor.pos a.pos <= 1 then Some a
+        else firstAdjacentHostile actor rest
+
+targetedAttack : GameState -> GameState
+let targetedAttack game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match firstAdjacentHostile p game.level.actors
+        case None -> message "No adjacent target." game
+        case Some enemy ->
+            let game0 = clearWardAt p.pos game
+            let hit = combat.targetedStrike game.content p enemy (natToInt game0.rng)
+            let actors1 = replaceActor hit.attacker (replaceActor hit.defender game0.level.actors)
+            let g0 = game0.{ rng = intToNat hit.rng, level = game0.level.{ actors = removeDeadActors actors1 } }
+            let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
+            message hit.log g1

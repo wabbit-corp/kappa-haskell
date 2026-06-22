@@ -9,11 +9,14 @@
 #include "delve_terminal_adapter.h"
 #include "delve_terminal.h"
 
+#include <errno.h>
 #include <string.h>
 
-/* errno of the most recent failing adapter call (chiefly for the open path,
- * whose failure is signalled by a NULL return that cannot also carry errno). */
+/* errno of the most recent adapter call that needs an out-of-band status
+ * channel. The open path uses NULL for failure, and read_text returns String,
+ * so callers inspect this slot immediately after those calls. */
 static int g_last_errno = 0;
+static char *g_last_text = 0;
 
 void *delve_open_terminal2(void) {
     delve_terminal_handle *h = 0;
@@ -31,14 +34,14 @@ int delve_last_errno2(void) {
 }
 
 int delve_close_terminal2(void *handle) {
-    if (!handle) return 0;
+    if (!handle) { g_last_errno = EBADF; return EBADF; }
     int rc = delve_close_terminal((delve_terminal_handle *)handle);
     if (rc != 0) g_last_errno = rc;
     return rc;
 }
 
 int delve_read_key2(void *handle) {
-    if (!handle) return -1; /* -EPERM-ish: no handle */
+    if (!handle) { g_last_errno = EBADF; return -EBADF; }
     int code = 0;
     int rc = delve_read_key((delve_terminal_handle *)handle, &code);
     if (rc != 0) {
@@ -50,14 +53,14 @@ int delve_read_key2(void *handle) {
 }
 
 int delve_write_all2(void *handle, const char *text, int len) {
-    if (!handle) return -1;
+    if (!handle) { g_last_errno = EBADF; return -EBADF; }
     int rc = delve_write_all((delve_terminal_handle *)handle, text, len);
     if (rc != 0) g_last_errno = rc;
     return rc;
 }
 
 int delve_get_cols2(void *handle) {
-    if (!handle) return -1;
+    if (!handle) { g_last_errno = EBADF; return -EBADF; }
     delve_size sz;
     int rc = delve_get_size((delve_terminal_handle *)handle, &sz);
     if (rc != 0) {
@@ -68,7 +71,7 @@ int delve_get_cols2(void *handle) {
 }
 
 int delve_get_rows2(void *handle) {
-    if (!handle) return -1;
+    if (!handle) { g_last_errno = EBADF; return -EBADF; }
     delve_size sz;
     int rc = delve_get_size((delve_terminal_handle *)handle, &sz);
     if (rc != 0) {
@@ -85,4 +88,45 @@ uint64_t delve_monotonic_seed2(void) {
 const char *delve_describe_error2(int code) {
     int e = code < 0 ? -code : code;
     return delve_strerror(e);
+}
+
+const char *delve_read_text_file2(const char *path) {
+    char *text = 0;
+    int len = 0;
+    int rc = delve_read_text_file(path, &text, &len);
+    (void)len;
+    if (rc != 0) {
+        g_last_errno = rc;
+        return "";
+    }
+    if (g_last_text) {
+        delve_free_string(g_last_text);
+        g_last_text = 0;
+    }
+    g_last_text = text;
+    g_last_errno = 0;
+    return g_last_text ? g_last_text : "";
+}
+
+int delve_write_text_file2(const char *path, const char *text, int len) {
+    int rc = delve_write_text_file(path, text, len);
+    g_last_errno = rc;
+    return rc;
+}
+
+int delve_file_exists2(const char *path) {
+    int exists = 0;
+    int rc = delve_file_exists(path, &exists);
+    if (rc != 0) {
+        g_last_errno = rc;
+        return rc > 0 ? -rc : -1;
+    }
+    g_last_errno = 0;
+    return exists ? 1 : 0;
+}
+
+int delve_ensure_directory2(const char *path) {
+    int rc = delve_ensure_directory(path);
+    g_last_errno = rc;
+    return rc;
 }

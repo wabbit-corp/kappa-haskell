@@ -1,0 +1,20 @@
+module delve.feature_smoke_test
+
+import delve.core.*
+import delve.natutil.*
+import delve.tactics as tactics
+import delve.corruption as corruption
+import delve.content as content
+import delve.fixture as fixture
+
+testTacticCycle : Bool
+let testTacticCycle =
+    tactics.next Balanced == Aggressive && tactics.next Berserk == Coward
+
+testMutationNames : Bool
+let testMutationNames =
+    content.mutationName fixture.testPack Claws == "claws"
+
+testCorruptionResistance : Bool
+let testCorruptionResistance =
+    corruption.starSignResistance fixture.testPack Unicorn > corruption.starSignResistance fixture.testPack Raven

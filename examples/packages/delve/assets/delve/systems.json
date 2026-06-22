@@ -1,0 +1,302 @@
+{
+  "tactics": [
+    {
+      "id": "Coward",
+      "name": "coward",
+      "attack": -3,
+      "damage": -1,
+      "defense": 3,
+      "hunger": 0,
+      "description": "You keep your guard high and your distance careful."
+    },
+    {
+      "id": "Defensive",
+      "name": "defensive",
+      "attack": -1,
+      "damage": 0,
+      "defense": 2,
+      "hunger": 1,
+      "description": "You settle into a guarded stance."
+    },
+    {
+      "id": "Balanced",
+      "name": "balanced",
+      "attack": 0,
+      "damage": 0,
+      "defense": 0,
+      "hunger": 1,
+      "description": "You return to balanced tactics."
+    },
+    {
+      "id": "Aggressive",
+      "name": "aggressive",
+      "attack": 2,
+      "damage": 2,
+      "defense": -1,
+      "hunger": 2,
+      "description": "You press the attack."
+    },
+    {
+      "id": "Berserk",
+      "name": "berserk",
+      "attack": 4,
+      "damage": 4,
+      "defense": -3,
+      "hunger": 3,
+      "description": "You commit fully to the attack."
+    }
+  ],
+  "star_signs": [
+    {
+      "id": "Raven",
+      "name": "Raven",
+      "description": "Your dexterity increases.",
+      "corruption_resistance": 0,
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 1,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Book",
+      "name": "Book",
+      "description": "Your magic reserves increase.",
+      "corruption_resistance": 0,
+      "hp_bonus": 0,
+      "mp_bonus": 2,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Wand",
+      "name": "Wand",
+      "description": "Your magic reserves and corruption resistance increase.",
+      "corruption_resistance": 1,
+      "hp_bonus": 0,
+      "mp_bonus": 3,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Unicorn",
+      "name": "Unicorn",
+      "description": "Your health and corruption resistance increase.",
+      "corruption_resistance": 2,
+      "hp_bonus": 3,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Salamander",
+      "name": "Salamander",
+      "description": "Your strength increases.",
+      "corruption_resistance": 0,
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 1,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "DragonSign",
+      "name": "Dragon",
+      "description": "Your health, strength, and defense increase, but your hunger reserve falls.",
+      "corruption_resistance": 0,
+      "hp_bonus": 5,
+      "mp_bonus": 0,
+      "str_bonus": 1,
+      "dex_bonus": 0,
+      "def_bonus": 1,
+      "hunger_bonus": -50
+    },
+    {
+      "id": "SwordSign",
+      "name": "Sword",
+      "description": "Your strength increases.",
+      "corruption_resistance": 0,
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 2,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Falcon",
+      "name": "Falcon",
+      "description": "Your dexterity increases.",
+      "corruption_resistance": 0,
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 2,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Cup",
+      "name": "Cup",
+      "description": "Your hunger reserve increases.",
+      "corruption_resistance": 0,
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 200
+    },
+    {
+      "id": "Candle",
+      "name": "Candle",
+      "description": "Your health, magic reserves, and corruption resistance increase.",
+      "corruption_resistance": 1,
+      "hp_bonus": 1,
+      "mp_bonus": 1,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Wolf",
+      "name": "Wolf",
+      "description": "Your health and strength increase.",
+      "corruption_resistance": 0,
+      "hp_bonus": 2,
+      "mp_bonus": 0,
+      "str_bonus": 1,
+      "dex_bonus": 0,
+      "def_bonus": 0,
+      "hunger_bonus": 0
+    },
+    {
+      "id": "Tree",
+      "name": "Tree",
+      "description": "Your health, defense, corruption resistance, and hunger reserve increase.",
+      "corruption_resistance": 1,
+      "hp_bonus": 4,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 1,
+      "hunger_bonus": 100
+    }
+  ],
+  "mutations": [
+    {
+      "id": "Claws",
+      "name": "claws",
+      "hunger_tax": 1,
+      "description": "Your strength increases.",
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 1,
+      "dex_bonus": 0,
+      "def_bonus": 0
+    },
+    {
+      "id": "NightEyes",
+      "name": "night eyes",
+      "hunger_tax": 1,
+      "description": "Your dexterity increases.",
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 1,
+      "def_bonus": 0
+    },
+    {
+      "id": "StoneSkin",
+      "name": "stone skin",
+      "hunger_tax": 1,
+      "description": "Your defense increases and dexterity decreases.",
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": -1,
+      "def_bonus": 2
+    },
+    {
+      "id": "HollowBones",
+      "name": "hollow bones",
+      "hunger_tax": 0,
+      "description": "Your dexterity increases and defense decreases.",
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 2,
+      "def_bonus": -1
+    },
+    {
+      "id": "PoisonTouch",
+      "name": "poison touch",
+      "hunger_tax": 1,
+      "description": "Your strength increases, but hunger falls faster.",
+      "hp_bonus": 0,
+      "mp_bonus": 0,
+      "str_bonus": 1,
+      "dex_bonus": 0,
+      "def_bonus": 0
+    },
+    {
+      "id": "Ravenous",
+      "name": "ravenous metabolism",
+      "hunger_tax": 3,
+      "description": "Your health increases, but hunger falls faster.",
+      "hp_bonus": 3,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0
+    },
+    {
+      "id": "BurningBlood",
+      "name": "burning blood",
+      "hunger_tax": 2,
+      "description": "Your health increases, but hunger falls faster.",
+      "hp_bonus": 2,
+      "mp_bonus": 0,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0
+    },
+    {
+      "id": "WhisperingSkull",
+      "name": "whispering skull",
+      "hunger_tax": 1,
+      "description": "Your magic reserves increase.",
+      "hp_bonus": 0,
+      "mp_bonus": 1,
+      "str_bonus": 0,
+      "dex_bonus": 0,
+      "def_bonus": 0
+    }
+  ],
+  "faiths": [
+    {
+      "id": "EmberMother",
+      "name": "Ember Mother",
+      "alignment": "chaos"
+    },
+    {
+      "id": "RootFather",
+      "name": "Root-Father",
+      "alignment": "balance"
+    },
+    {
+      "id": "VeiledWitness",
+      "name": "Veiled Witness",
+      "alignment": "law"
+    }
+  ]
+}

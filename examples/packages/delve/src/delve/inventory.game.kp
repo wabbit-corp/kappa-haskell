@@ -3,22 +3,43 @@ module delve.inventory
 import delve.core.*
 import delve.natutil.*
 import delve.grid as grid
+import delve.knowledge as know
+import delve.corruption as corruption
+import delve.content as content
 
 itemsAt : Vec2 -> List GroundItem -> List GroundItem
 let itemsAt pos items decreases listLength items =
     match items
     case Nil -> Nil
-    case (::) gi rest -> if eqPos gi.pos pos then (::) gi (itemsAt pos rest) else itemsAt pos rest
+    case gi :: rest -> if eqPos gi.pos pos then (::) gi (itemsAt pos rest) else itemsAt pos rest
 
 removeOneAt : Vec2 -> List GroundItem -> (picked : Option Item, rest : List GroundItem)
 let removeOneAt pos items =
     match items
     case Nil -> (picked = None, rest = Nil)
-    case (::) gi rest ->
+    case gi :: rest ->
         if eqPos gi.pos pos then (picked = Some gi.item, rest = rest)
         else
             let r = removeOneAt pos rest
             in (picked = r.picked, rest = (::) gi r.rest)
+
+sameStack : Item -> Item -> Bool
+let sameStack a b =
+    a.stackable && b.stackable && a.kind == b.kind && a.beatitude == b.beatitude && a.beatitudeKnown == b.beatitudeKnown && a.identified == b.identified
+
+addToInventory : Item -> List Item -> List Item
+let addToInventory item items decreases listLength items =
+    match items
+    case Nil -> [item]
+    case h :: rest ->
+        if sameStack item h then (::) h.{ count = h.count + item.count } rest
+        else (::) h (addToInventory item rest)
+
+takeOneFromStack : Item -> List Item -> (picked : Item, rest : List Item)
+let takeOneFromStack item rest =
+    if item.stackable && item.count > 1 then
+        (picked = item.{ count = 1 }, rest = (::) item.{ count = item.count - 1 } rest)
+    else (picked = item, rest = rest)
 
 pickUp : GameState -> GameState
 let pickUp game =
@@ -29,9 +50,12 @@ let pickUp game =
         match found.picked
         case None -> message "There is nothing here." game
         case Some item ->
-            let p2 = withActorInventory ((::) item p.inventory) p
-            message ("You pick up " ++ item.name ++ ".")
-                (withLevel (withActorsItems (replaceActor p2 game.level.actors) found.rest game.level) game)
+            if item.kind == Gold then
+                let amount = item.power * item.count
+                message ("You pick up " ++ show amount ++ " gold.") (game.{ player = game.player.{ gold = game.player.gold + amount }, level = game.level.{ items = found.rest } })
+            else
+                let p2 = p.{ inventory = addToInventory item p.inventory }
+                message ("You pick up " ++ know.visibleName game.content game.player item ++ ".") (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors, items = found.rest } })
 
 dropFirst : GameState -> GameState
 let dropFirst game =
@@ -40,11 +64,11 @@ let dropFirst game =
     case Some p ->
         match p.inventory
         case Nil -> message "You have nothing to drop." game
-        case (::) item rest ->
-            let p2 = withActorInventory rest p
-            let gi = GroundItem p.pos item
-            message ("You drop " ++ item.name ++ ".")
-                (withLevel (withActorsItems (replaceActor p2 game.level.actors) ((::) gi game.level.items) game.level) game)
+        case item :: rest ->
+            let taken = takeOneFromStack item rest
+            let p2 = p.{ inventory = taken.rest }
+            let gi = GroundItem p.pos taken.picked
+            message ("You drop " ++ know.visibleName game.content game.player taken.picked ++ ".") (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors, items = (::) gi game.level.items } })
 
 healPlayer : Int -> GameState -> GameState
 let healPlayer amount game =
@@ -52,34 +76,134 @@ let healPlayer amount game =
     case None -> game
     case Some p ->
         let hp2 = min p.stats.maxHp (p.stats.hp + amount)
-        let p2 = withActorStats (withStatsHp hp2 p.stats) p
-        withLevel (withActors (replaceActor p2 game.level.actors) game.level) game
+        let p2 = p.{ stats = p.stats.{ hp = hp2 } }
+        game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+
+healPlayerAndWounds : Int -> GameState -> GameState
+let healPlayerAndWounds amount game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let hp2 = min p.stats.maxHp (p.stats.hp + amount)
+        let p2 = p.{ stats = p.stats.{ hp = hp2 }, wounds = Nil }
+        game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+
+damagePlayer : Int -> GameState -> GameState
+let damagePlayer amount game =
+    match playerActor game
+    case None -> game.{ mode = Dead }
+    case Some p ->
+        let hp2 = p.stats.hp - amount
+        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let mode2 = if hp2 > 0 then game.mode else Dead
+        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+
+revealMap : GameState -> GameState
+let revealMap game =
+    let level2 = revealTiles (grid.positions game.level.size) game.level
+    in game.{ level = level2 }
+
+revealTiles : List Vec2 -> Level -> Level
+let revealTiles ps level decreases listLength ps =
+    match ps
+    case Nil -> level
+    case p :: rest -> revealTiles rest (grid.mapTile p (\t -> t.{ seen = True }) level)
+
+wardCurrentTile : GameState -> GameState
+let wardCurrentTile game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let t = grid.getTile game.level p.pos
+        game.{ level = grid.setTile p.pos t.{ warded = True } game.level }
+
+identifyInventory : Actor -> GameState -> GameState
+let identifyInventory p game =
+    let r = know.identifyFirstUnknown game.content p.inventory game.player
+    let p2 = p.{ inventory = r.items }
+    message r.text (game.{ player = r.player, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+consumeFirst : Actor -> List Item -> Actor
+let consumeFirst p rest = p.{ inventory = rest }
+
+usePotion : Item -> List Item -> Actor -> GameState -> GameState
+let usePotion item rest p game =
+    let p2 = consumeFirst p rest
+    let g0 = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let known = g0.{ player = know.identifyKind item.kind g0.player }
+    match item.kind
+    case PotionHealing ->
+        if item.beatitude == Cursed then message "The potion burns." (damagePlayer 4 known)
+        else message "Your wounds close." (healPlayerAndWounds (if item.beatitude == Blessed then item.power + 8 else item.power) known)
+    case PotionMutation ->
+        if item.beatitude == Blessed then message "The mutation bends under your will." (corruption.gainMutation known)
+        else message "Your body twists under the mutation." (corruption.corrupt 80 known)
+    case PotionWater ->
+        if item.beatitude == Blessed then message "Holy water cleanses some of your corruption." (corruption.cleanseOne known)
+        elif item.beatitude == Cursed then message "Unholy water tastes like rust." (corruption.corrupt 40 known)
+        else message "It is water." known
+    case _ -> message "Nothing happens." known
+
+useScroll : Item -> List Item -> Actor -> GameState -> GameState
+let useScroll item rest p game =
+    let p2 = consumeFirst p rest
+    let g0 = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let known = g0.{ player = know.identifyKind item.kind g0.player }
+    match item.kind
+    case ScrollIdentify -> identifyInventory p2 known
+    case ScrollMapping -> message "The map unfolds in your mind." (revealMap known)
+    case ScrollWard -> message "A glowing ward appears on the floor." (wardCurrentTile known)
+    case _ -> message "The scroll crumbles." known
+
+useFood : Item -> List Item -> Actor -> GameState -> GameState
+let useFood item rest p game =
+    let p2 = consumeFirst p rest
+    message "You eat the ration." (game.{ player = game.player.{ hunger = game.player.hunger + item.power }, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+usableClass : ItemClass -> Bool
+let usableClass cls =
+    match cls
+    case PotionClass -> True
+    case ScrollClass -> True
+    case FoodClass -> True
+    case CorpseClass -> True
+    case _ -> False
+
+firstUsable : List Item -> Option (picked : Item, rest : List Item)
+let firstUsable items =
+    block
+        go : List Item -> List Item -> Option (picked : Item, rest : List Item)
+        let go before rest decreases listLength rest =
+            match rest
+            case Nil -> None
+            case item :: tail ->
+                if usableClass item.class then
+                    let taken = takeOneFromStack item tail
+                    in Some (picked = taken.picked, rest = listAppend (reverse before) taken.rest)
+                else go ((::) item before) tail
+        go Nil items
 
 useFirst : GameState -> GameState
 let useFirst game =
     match playerActor game
     case None -> game
     case Some p ->
-        match p.inventory
-        case Nil -> message "You have nothing usable." game
-        case (::) item rest ->
-            match item.kind
-            case PotionHealing ->
-                let p2 = withActorInventory rest p
-                let g1 = withLevel (withActors (replaceActor p2 game.level.actors) game.level) game
-                in message "You feel less like a cautionary tale." (healPlayer item.power g1)
-            case FoodRation ->
-                let p2 = withActorInventory rest p
-                message "You eat the ration. Blandness triumphs."
-                    (withPlayerLevel (withHunger (game.player.hunger + 800) game.player) (withActors (replaceActor p2 game.level.actors) game.level) game)
-            case _ -> message ("You cannot figure out how to use " ++ item.name ++ ".") game
+        match firstUsable p.inventory
+        case None -> message "You have nothing usable." game
+        case Some found ->
+            match found.picked.class
+            case PotionClass -> usePotion found.picked found.rest p game
+            case ScrollClass -> useScroll found.picked found.rest p game
+            case FoodClass -> useFood found.picked found.rest p game
+            case CorpseClass -> useFood found.picked found.rest p game
+            case _ -> message "You have nothing usable." game
 
-inventoryText : Actor -> List String
-let inventoryText actor =
+inventoryText : ContentPack -> PlayerState -> Actor -> List String
+let inventoryText pack player actor =
     block
         go : Int -> List Item -> List String -> List String
         let go i items acc decreases listLength items =
             match items
             case Nil -> reverse acc
-            case (::) item rest -> go (i + 1) rest ((::) (show i ++ ") " ++ item.name) acc)
+            case item :: rest -> go (i + 1) rest ((::) (show i ++ ") " ++ know.visibleName pack player item) acc)
         if listIsEmpty actor.inventory then ["Inventory is empty."] else go 1 actor.inventory Nil

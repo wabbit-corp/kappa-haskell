@@ -1,6 +1,7 @@
 module delve.input
 
 import delve.core.*
+import delve.natutil.*
 
 keyToCommand : Key -> Command
 let keyToCommand key =
@@ -18,6 +19,7 @@ let keyToCommand key =
     case KeyChar "g" -> PickUp
     case KeyChar "d" -> DropFirst
     case KeyChar "i" -> Inventory
+    case KeyChar "@" -> Character
     case KeyChar "q" -> QuitNoSave
     case KeyChar "S" -> SaveAndQuit
     case KeyChar ">" -> Descend
@@ -26,6 +28,13 @@ let keyToCommand key =
     case KeyChar "c" -> Close
     case KeyChar "?" -> Help
     case KeyChar "e" -> UseFirst
+    case KeyChar "z" -> ZapFirst
+    case KeyChar "t" -> ThrowFirst
+    case KeyChar "p" -> Pray
+    case KeyChar "E" -> Engrave
+    case KeyChar "C" -> CycleTactic
+    case KeyChar "a" -> TargetedAttack
+    case KeyChar "T" -> Talk
     case KeyArrow dir -> Move dir
     case KeyEscape -> NoCommand
     case _ -> NoCommand
@@ -33,13 +42,46 @@ let keyToCommand key =
 helpLines : List String
 let helpLines =
     [ "Delve keys"
-    , "h/j/k/l/y/u/b/n or arrows: move"
+    , "h/j/k/l/y/u/b/n or arrows: move/attack"
     , ".: wait"
+    , "a: aimed adjacent attack"
+    , "C: cycle tactics"
+    , "o/c: open / close nearby door"
     , "g or ,: pick up"
-    , "i: inventory"
-    , "e: use first item"
+    , "i: inventory    @: character"
+    , "e: use first item    z: zap first wand"
     , "d: drop first item"
+    , "p: pray / offer corpse on altar"
+    , "E: engrave a ward"
+    , "T: talk to adjacent friendly/neutral creature"
     , ">/<: stairs"
     , "?: help"
-    , "q: quit"
+    , "S: save and quit    q: quit"
+    ]
+
+menuKeyToCommand : Key -> Command
+let menuKeyToCommand key =
+    match key
+    case KeyChar "n" -> StartNewGame
+    case KeyChar "N" -> StartNewGame
+    case KeyChar "c" -> LoadGame
+    case KeyChar "C" -> LoadGame
+    case KeyChar "l" -> LoadGame
+    case KeyChar "L" -> LoadGame
+    case KeyEnter -> StartNewGame
+    case KeyChar "q" -> QuitNoSave
+    case KeyChar "Q" -> QuitNoSave
+    case KeyEscape -> QuitNoSave
+    case _ -> NoCommand
+
+menuLines : List String
+let menuLines =
+    [ "Delve"
+    , ""
+    , "n / Enter  New game"
+    , "c / l      Continue saved game"
+    , "q / Esc    Quit"
+    , ""
+    , "Configs are loaded from JSON assets under assets/delve/."
+    , "Saving writes the versioned JSON file configured by pack.json."
     ]

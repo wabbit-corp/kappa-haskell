@@ -515,7 +515,13 @@ trimStr :: String -> String
 trimStr = f . f where f = reverse . dropWhile isSpace
 
 systemIncludeDirs :: [FilePath]
-systemIncludeDirs = ["/usr/include", "/usr/local/include"]
+systemIncludeDirs =
+  [ "/usr/include"
+  , "/usr/local/include"
+  , "/opt/homebrew/include"
+  , "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include"
+  , "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include"
+  ]
 
 -- | Run @pkg-config --cflags@ for each package (best-effort: missing
 -- pkg-config / package contributes no flags here; discovery + fail-closed

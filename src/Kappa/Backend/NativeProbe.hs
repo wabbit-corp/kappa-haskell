@@ -226,6 +226,7 @@ pkgConfigStdDirs =
   [ "/usr/lib/pkgconfig", "/usr/lib/x86_64-linux-gnu/pkgconfig"
   , "/usr/lib64/pkgconfig", "/usr/share/pkgconfig"
   , "/usr/local/lib/pkgconfig", "/usr/local/share/pkgconfig"
+  , "/opt/homebrew/lib/pkgconfig", "/opt/homebrew/share/pkgconfig"
   ]
 
 -- ── headers ──────────────────────────────────────────────────────────
@@ -324,6 +325,7 @@ verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hd
   | otherwise = do
       let probePath = workDir </> "native-abi-probe.c"
           objPath = workDir </> "native-abi-probe.o"
+          undefs = ["#ifdef " <> n <> "\n#undef " <> n <> "\n#endif" | n <- verifiedNames]
           probe =
             T.unlines $
               [ "/* generated ABI verification probe (Kappa.Backend.NativeProbe). */"
@@ -331,6 +333,7 @@ verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hd
               , "#include <stddef.h>"
               ]
                 ++ ["#include <" <> h <> ">" | h <- hdrs]
+                ++ undefs
                 -- §26.1.5: author-declared real prototypes, AND the conservative
                 -- prototypes of all-scalar symbolDecls (extraExterns) — both are
                 -- checked against the real header, so a declared width/signedness
@@ -370,14 +373,14 @@ verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hd
       let idChar c = c == '_' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
           before = T.takeWhile (/= '(') d
        in T.takeWhileEnd idChar (T.dropWhileEnd (not . idChar) before)
+    verifiedNames = nub (filter (not . T.null) (map protoSym (decls ++ extraExterns)))
     coverageProbe = do
-      let names = nub (filter (not . T.null) (map protoSym decls))
-      if null names
+      if null verifiedNames
         then pure (Right ())
         else do
           let covPath = workDir </> "native-abi-coverage.c"
               covObj = workDir </> "native-abi-coverage.o"
-              refs = ["  syms[" <> T.pack (show i) <> "] = (void *)(&" <> n <> ");" | (i, n) <- zip [0 :: Int ..] names]
+              refs = ["  syms[" <> T.pack (show i) <> "] = (void *)(&" <> n <> ");" | (i, n) <- zip [0 :: Int ..] verifiedNames]
               cov =
                 T.unlines $
                   [ "/* generated header-coverage probe (Kappa.Backend.NativeProbe). */"
@@ -385,9 +388,10 @@ verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hd
                   , "#include <stddef.h>"
                   ]
                     ++ ["#include <" <> h <> ">" | h <- hdrs]
+                    ++ ["#ifdef " <> n <> "\n#undef " <> n <> "\n#endif" | n <- verifiedNames]
                     ++ [ "void *kappa_abi_coverage(void);"
                        , "void *kappa_abi_coverage(void) {"
-                       , "  void *syms[" <> T.pack (show (length names)) <> "];"
+                       , "  void *syms[" <> T.pack (show (length verifiedNames)) <> "];"
                        ]
                     ++ refs
                     ++ ["  return syms[0];", "}"]
@@ -405,7 +409,13 @@ verifyDecls ccExe ccLead tflags workDir baseDir searchDirs pkgCflags defFlags hd
 -- ── helpers ────────────────────────────────────────────────────────────
 
 systemIncludeDirs :: [FilePath]
-systemIncludeDirs = ["/usr/include", "/usr/local/include"]
+systemIncludeDirs =
+  [ "/usr/include"
+  , "/usr/local/include"
+  , "/opt/homebrew/include"
+  , "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include"
+  , "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include"
+  ]
 
 resolve :: FilePath -> Text -> FilePath
 resolve base t = base </> T.unpack t

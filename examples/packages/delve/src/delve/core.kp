@@ -1,13 +1,15 @@
 module delve.core
 
 import std.unicode.(utf8Bytes)
-import delve.natutil.*
 
--- Delve: a terminal-only Linux/native roguelike skeleton with enough meat on
--- its bones to be called a game without lying too loudly.
+-- Delve: native Linux terminal roguelike. Second pass: richer content,
+-- interacting systems, and data-driven game definitions.
 
 data GameError : Type =
     TerminalError (message : String)
+    ConfigError (message : String)
+    JsonError (message : String)
+    FileError (message : String)
     SaveError (message : String)
     InvalidWorld (message : String)
     QuitRequested
@@ -42,20 +44,6 @@ let moveDelta dir =
     case SouthEast -> Vec2 1 1
     case Wait -> Vec2 0 0
 
-instance Eq Direction =
-    let (==) a b =
-        match (a, b)
-        case (North, North) -> True
-        case (South, South) -> True
-        case (West, West) -> True
-        case (East, East) -> True
-        case (NorthWest, NorthWest) -> True
-        case (NorthEast, NorthEast) -> True
-        case (SouthWest, SouthWest) -> True
-        case (SouthEast, SouthEast) -> True
-        case (Wait, Wait) -> True
-        case _ -> False
-
 addPos : Vec2 -> Vec2 -> Vec2
 let addPos a b =
     Vec2 (a.x + b.x) (a.y + b.y)
@@ -66,11 +54,15 @@ let eqPos a b =
 
 manhattan : Vec2 -> Vec2 -> Int
 let manhattan a b =
-    abs (a.x - b.x) + abs (a.y - b.y)
+    let dx = if a.x >= b.x then a.x - b.x else b.x - a.x
+    let dy = if a.y >= b.y then a.y - b.y else b.y - a.y
+    in dx + dy
 
 chebyshev : Vec2 -> Vec2 -> Int
 let chebyshev a b =
-    max (abs (a.x - b.x)) (abs (a.y - b.y))
+    let dx = if a.x >= b.x then a.x - b.x else b.x - a.x
+    let dy = if a.y >= b.y then a.y - b.y else b.y - a.y
+    in if dx >= dy then dx else dy
 
 data TileKind : Type =
     VoidTile
@@ -83,31 +75,22 @@ data TileKind : Type =
     Water
     Lava
     Trap
+    Altar
+    LoreStone
+    ChaosVent
 
-instance Eq TileKind =
-    let (==) a b =
-        match (a, b)
-        case (VoidTile, VoidTile) -> True
-        case (Floor, Floor) -> True
-        case (Wall, Wall) -> True
-        case (ClosedDoor, ClosedDoor) -> True
-        case (OpenDoor, OpenDoor) -> True
-        case (Upstairs, Upstairs) -> True
-        case (Downstairs, Downstairs) -> True
-        case (Water, Water) -> True
-        case (Lava, Lava) -> True
-        case (Trap, Trap) -> True
-        case _ -> False
-
+-- `warded` is the tiny Delve version of NetHack's defensive engraving idea:
+-- a temporary inscription that makes many monsters hesitate unless you attack.
 data Tile : Type =
     Tile
         (kind : TileKind)
         (seen : Bool)
         (lit : Bool)
         (blood : Bool)
+        (warded : Bool)
 
 defaultTile : Tile
-let defaultTile = Tile Wall False False False
+let defaultTile = Tile Wall False False False False
 
 isTransparent : Tile -> Bool
 let isTransparent t =
@@ -127,12 +110,38 @@ let isWalkable t =
     case Downstairs -> True
     case Trap -> True
     case Water -> True
+    case Lava -> True
+    case Altar -> True
+    case LoreStone -> True
+    case ChaosVent -> True
     case _ -> False
+
+data Beatitude : Type =
+    Blessed
+    Uncursed
+    Cursed
+    UnknownBeatitude
+
+data ItemClass : Type =
+    CoinClass
+    PotionClass
+    ScrollClass
+    FoodClass
+    WeaponClass
+    ArmorClass
+    WandClass
+    ToolClass
+    CorpseClass
+    ArtifactClass
 
 data ItemKind : Type =
     Gold
     PotionHealing
+    PotionMutation
+    PotionWater
     ScrollIdentify
+    ScrollMapping
+    ScrollWard
     FoodRation
     Dagger
     Sword
@@ -140,6 +149,11 @@ data ItemKind : Type =
     LeatherArmor
     ChainMail
     WandFire
+    WandDigging
+    WandPolymorph
+    HolySymbol
+    Corpse
+    ChaosShard
     Amulet
 
 data Item : Type =
@@ -147,12 +161,18 @@ data Item : Type =
         (kind : ItemKind)
         (name : String)
         (glyph : String)
+        (class : ItemClass)
         (stackable : Bool)
         (power : Int)
         (count : Int)
+        (beatitude : Beatitude)
+        (beatitudeKnown : Bool)
+        (identified : Bool)
+        (charges : Int)
 
 data Species : Type =
     PlayerSpecies
+    Hound
     Goblin
     Orc
     Kobold
@@ -162,27 +182,77 @@ data Species : Type =
     Skeleton
     Wizard
     Dragon
+    ChaosSpawn
+    Pilgrim
 
-instance Eq Species =
-    let (==) a b =
-        match (a, b)
-        case (PlayerSpecies, PlayerSpecies) -> True
-        case (Goblin, Goblin) -> True
-        case (Orc, Orc) -> True
-        case (Kobold, Kobold) -> True
-        case (Rat, Rat) -> True
-        case (Bat, Bat) -> True
-        case (Troll, Troll) -> True
-        case (Skeleton, Skeleton) -> True
-        case (Wizard, Wizard) -> True
-        case (Dragon, Dragon) -> True
-        case _ -> False
+data Faction : Type =
+    HeroFaction
+    BeastFaction
+    CaveFaction
+    UndeadFaction
+    ChaosFaction
+    NeutralFaction
 
 data Attitude : Type =
     PlayerControlled
+    Friendly
+    Neutral
     Hostile
     Sleeping
     Fleeing
+
+data BodyPart : Type =
+    Head
+    Torso
+    LeftArm
+    RightArm
+    LeftLeg
+    RightLeg
+
+data Wound : Type =
+    Bruised (part : BodyPart) (severity : Int)
+    Bleeding (part : BodyPart) (severity : Int)
+    Crippled (part : BodyPart)
+    Stunned (turns : Int)
+
+data Tactic : Type =
+    Coward
+    Defensive
+    Balanced
+    Aggressive
+    Berserk
+
+data StarSign : Type =
+    Raven
+    Book
+    Wand
+    Unicorn
+    Salamander
+    DragonSign
+    SwordSign
+    Falcon
+    Cup
+    Candle
+    Wolf
+    Tree
+
+data Mutation : Type =
+    Claws
+    NightEyes
+    StoneSkin
+    HollowBones
+    PoisonTouch
+    Ravenous
+    BurningBlood
+    WhisperingSkull
+
+data Faith : Type =
+    EmberMother
+    RootFather
+    VeiledWitness
+
+data Rumor : Type =
+    Rumor (text : String)
 
 data Stats : Type =
     Stats
@@ -205,7 +275,11 @@ data Actor : Type =
         (pos : Vec2)
         (stats : Stats)
         (attitude : Attitude)
+        (faction : Faction)
         (inventory : List Item)
+        (wounds : List Wound)
+        (morale : Int)
+        (loyalty : Int)
         (alive : Bool)
 
 data GroundItem : Type =
@@ -241,25 +315,181 @@ data PlayerState : Type =
         (hunger : Int)
         (gold : Int)
         (identified : List ItemKind)
+        (tactic : Tactic)
+        (starSign : StarSign)
+        (corruption : Int)
+        (mutations : List Mutation)
+        (favor : Int)
+        (faith : Faith)
+        (reputation : Int)
+
+-- Data-driven content registry. These definitions are deliberately in core so
+-- gameplay, save/load, and JSON decoding agree on one schema. String IDs are
+-- authored content identities; enum fields are the typed compatibility bridge
+-- used by the existing game rules. That is not hardcoding gameplay, it is a
+-- schema contract. Truly dynamic IDs can be added by adding new component-only
+-- systems without changing these compatibility constructors.
+data ItemDef : Type =
+    ItemDef
+        (id : String)
+        (kind : ItemKind)
+        (displayName : String)
+        (trueName : String)
+        (glyph : String)
+        (class : ItemClass)
+        (stackable : Bool)
+        (power : Int)
+        (charges : Int)
+        (startsIdentified : Bool)
+        (beatitudeKnownByDefault : Bool)
+
+data ActorDef : Type =
+    ActorDef
+        (id : String)
+        (species : Species)
+        (name : String)
+        (glyph : String)
+        (stats : Stats)
+        (attitude : Attitude)
+        (faction : Faction)
+        (morale : Int)
+        (loyalty : Int)
+        (inventory : List ItemKind)
+        (tags : List String)
+
+data SpawnRule : Type =
+    SpawnRule
+        (id : String)
+        (minDepth : Int)
+        (maxDepth : Int)
+        (weight : Int)
+
+data TacticDef : Type =
+    TacticDef
+        (tactic : Tactic)
+        (name : String)
+        (attackBonus : Int)
+        (damageBonus : Int)
+        (defenseBonus : Int)
+        (hungerCost : Int)
+        (description : String)
+
+data StarSignDef : Type =
+    StarSignDef
+        (sign : StarSign)
+        (name : String)
+        (description : String)
+        (hpBonus : Int)
+        (mpBonus : Int)
+        (strBonus : Int)
+        (dexBonus : Int)
+        (defBonus : Int)
+        (hungerBonus : Int)
+        (corruptionResistance : Int)
+
+data MutationDef : Type =
+    MutationDef
+        (mutation : Mutation)
+        (name : String)
+        (hpBonus : Int)
+        (mpBonus : Int)
+        (strBonus : Int)
+        (dexBonus : Int)
+        (defBonus : Int)
+        (hungerTax : Int)
+        (description : String)
+
+data FaithDef : Type =
+    FaithDef
+        (faith : Faith)
+        (name : String)
+        (alignment : String)
+
+data WorldGenConfig : Type =
+    WorldGenConfig
+        (mapMinWidth : Int)
+        (mapMaxWidth : Int)
+        (mapMinHeight : Int)
+        (mapMaxHeight : Int)
+        (minRoomSize : Int)
+        (maxRoomSize : Int)
+        (roomAttempts : Int)
+        (baseMonsterChance : Int)
+        (monsterChancePerDepth : Int)
+        (itemChance : Int)
+        (altarChance : Int)
+        (loreStoneChance : Int)
+        (trapBaseChance : Int)
+        (trapChancePerDepth : Int)
+        (chaosVentBaseChance : Int)
+        (chaosVentChancePerDepth : Int)
+
+data SaveConfig : Type =
+    SaveConfig
+        (directory : String)
+        (path : String)
+        (formatVersion : Int)
+        (autosaveOnQuit : Bool)
+
+data RulesConfig : Type =
+    RulesConfig
+        (startingHunger : Int)
+        (messageLimit : Nat)
+
+data ContentPack : Type =
+    ContentPack
+        (packId : String)
+        (version : String)
+        (rules : RulesConfig)
+        (worldgen : WorldGenConfig)
+        (save : SaveConfig)
+        (items : List ItemDef)
+        (actors : List ActorDef)
+        (monsterSpawns : List SpawnRule)
+        (itemSpawns : List SpawnRule)
+        (tactics : List TacticDef)
+        (starSigns : List StarSignDef)
+        (mutations : List MutationDef)
+        (faiths : List FaithDef)
+        (rumors : List Rumor)
+
+-- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
+-- gameplay representation for this pass so no feature is lost; the ECS world is
+-- a normalized projection used by config, save files, and future systems.
+data Component : Type =
+    PositionC (pos : Vec2)
+    RenderC (glyph : String)
+    StatsC (stats : Stats)
+    ActorC (actor : Actor)
+    ItemC (item : Item)
+    InventoryC (items : List Item)
+    AIStateC (attitude : Attitude) (faction : Faction)
+    TagsC (tags : List String)
+
+data Entity : Type =
+    Entity
+        (id : Int)
+        (blueprintId : String)
+        (components : List Component)
+
+data EcsWorld : Type =
+    EcsWorld
+        (nextId : Int)
+        (entities : List Entity)
+
+emptyEcsWorld : EcsWorld
+let emptyEcsWorld = EcsWorld 1 Nil
+
 
 data GameMode : Type =
+    MainMenu
     Playing
     InventoryMode
     HelpMode
+    CharacterMode
     Dead
     Won
     Quit
-
-instance Eq GameMode =
-    let (==) a b =
-        match (a, b)
-        case (Playing, Playing) -> True
-        case (InventoryMode, InventoryMode) -> True
-        case (HelpMode, HelpMode) -> True
-        case (Dead, Dead) -> True
-        case (Won, Won) -> True
-        case (Quit, Quit) -> True
-        case _ -> False
 
 data GameState : Type =
     GameState
@@ -268,8 +498,14 @@ data GameState : Type =
         (level : Level)
         (mode : GameMode)
         (lastCommand : String)
+        (rumors : List Rumor)
+        (content : ContentPack)
+        (ecs : EcsWorld)
+        (savePath : String)
 
 data Command : Type =
+    StartNewGame
+    LoadGame
     Move (dir : Direction)
     Rest
     Open
@@ -278,33 +514,21 @@ data Command : Type =
     DropFirst
     Inventory
     UseFirst
+    ZapFirst
+    ThrowFirst
     Descend
     Ascend
     Look
     Help
+    Character
+    Pray
+    Engrave
+    Talk
+    CycleTactic
+    TargetedAttack
     SaveAndQuit
     QuitNoSave
     NoCommand
-
-instance Eq Command =
-    let (==) a b =
-        match (a, b)
-        case (Move d1, Move d2) -> d1 == d2
-        case (Rest, Rest) -> True
-        case (Open, Open) -> True
-        case (Close, Close) -> True
-        case (PickUp, PickUp) -> True
-        case (DropFirst, DropFirst) -> True
-        case (Inventory, Inventory) -> True
-        case (UseFirst, UseFirst) -> True
-        case (Descend, Descend) -> True
-        case (Ascend, Ascend) -> True
-        case (Look, Look) -> True
-        case (Help, Help) -> True
-        case (SaveAndQuit, SaveAndQuit) -> True
-        case (QuitNoSave, QuitNoSave) -> True
-        case (NoCommand, NoCommand) -> True
-        case _ -> False
 
 data Key : Type =
     KeyChar (text : String)
@@ -315,110 +539,285 @@ data Key : Type =
     KeyResize
     KeyUnknown
 
-withMessages : List String -> Level -> Level
-let withMessages msgs lv =
-    Level lv.depth lv.size lv.tiles lv.rooms lv.actors lv.items msgs lv.turn
+directionCode : Direction -> Int
+let directionCode d =
+    match d
+    case North -> 0
+    case South -> 1
+    case West -> 2
+    case East -> 3
+    case NorthWest -> 4
+    case NorthEast -> 5
+    case SouthWest -> 6
+    case SouthEast -> 7
+    case Wait -> 8
 
-withTiles : Array Tile -> Level -> Level
-let withTiles tiles lv =
-    Level lv.depth lv.size tiles lv.rooms lv.actors lv.items lv.messages lv.turn
+instance Eq Direction =
+    let (==) a b = directionCode a == directionCode b
 
-withContents : List Room -> List Actor -> List GroundItem -> Level -> Level
-let withContents rooms actors items lv =
-    Level lv.depth lv.size lv.tiles rooms actors items lv.messages lv.turn
+tileKindCode : TileKind -> Int
+let tileKindCode k =
+    match k
+    case VoidTile -> 0
+    case Floor -> 1
+    case Wall -> 2
+    case ClosedDoor -> 3
+    case OpenDoor -> 4
+    case Upstairs -> 5
+    case Downstairs -> 6
+    case Water -> 7
+    case Lava -> 8
+    case Trap -> 9
+    case Altar -> 10
+    case LoreStone -> 11
+    case ChaosVent -> 12
 
--- Reconstruction helpers (this front end's `.{ }` patch applies only to
--- anonymous records, not nominal `data`; these copy unchanged fields by
--- projection and set the updated ones — semantically identical to the patch).
+instance Eq TileKind =
+    let (==) a b = tileKindCode a == tileKindCode b
 
-withActors : List Actor -> Level -> Level
-let withActors actors lv =
-    Level lv.depth lv.size lv.tiles lv.rooms actors lv.items lv.messages lv.turn
+beatitudeCode : Beatitude -> Int
+let beatitudeCode b =
+    match b
+    case Blessed -> 0
+    case Uncursed -> 1
+    case Cursed -> 2
+    case UnknownBeatitude -> 3
 
-withActorsItems : List Actor -> List GroundItem -> Level -> Level
-let withActorsItems actors items lv =
-    Level lv.depth lv.size lv.tiles lv.rooms actors items lv.messages lv.turn
+instance Eq Beatitude =
+    let (==) a b = beatitudeCode a == beatitudeCode b
 
-withTurn : Nat -> Level -> Level
-let withTurn turn lv =
-    Level lv.depth lv.size lv.tiles lv.rooms lv.actors lv.items lv.messages turn
+itemClassCode : ItemClass -> Int
+let itemClassCode c =
+    match c
+    case CoinClass -> 0
+    case PotionClass -> 1
+    case ScrollClass -> 2
+    case FoodClass -> 3
+    case WeaponClass -> 4
+    case ArmorClass -> 5
+    case WandClass -> 6
+    case ToolClass -> 7
+    case CorpseClass -> 8
+    case ArtifactClass -> 9
 
-withTileKind : TileKind -> Tile -> Tile
-let withTileKind kind t =
-    Tile kind t.seen t.lit t.blood
+instance Eq ItemClass =
+    let (==) a b = itemClassCode a == itemClassCode b
 
-withTileLitSeen : Bool -> Bool -> Tile -> Tile
-let withTileLitSeen lit seen t =
-    Tile t.kind seen lit t.blood
+itemKindCode : ItemKind -> Int
+let itemKindCode k =
+    match k
+    case Gold -> 0
+    case PotionHealing -> 1
+    case PotionMutation -> 2
+    case PotionWater -> 3
+    case ScrollIdentify -> 4
+    case ScrollMapping -> 5
+    case ScrollWard -> 6
+    case FoodRation -> 7
+    case Dagger -> 8
+    case Sword -> 9
+    case Mace -> 10
+    case LeatherArmor -> 11
+    case ChainMail -> 12
+    case WandFire -> 13
+    case WandDigging -> 14
+    case WandPolymorph -> 15
+    case HolySymbol -> 16
+    case Corpse -> 17
+    case ChaosShard -> 18
+    case Amulet -> 19
 
-withStatsHp : Int -> Stats -> Stats
-let withStatsHp hp s =
-    Stats hp s.maxHp s.mp s.maxMp s.str s.dex s.def s.xp s.level
+instance Eq ItemKind =
+    let (==) a b = itemKindCode a == itemKindCode b
 
-withStatsXp : Int -> Stats -> Stats
-let withStatsXp xp s =
-    Stats s.hp s.maxHp s.mp s.maxMp s.str s.dex s.def xp s.level
+speciesCode : Species -> Int
+let speciesCode s =
+    match s
+    case PlayerSpecies -> 0
+    case Hound -> 1
+    case Goblin -> 2
+    case Orc -> 3
+    case Kobold -> 4
+    case Rat -> 5
+    case Bat -> 6
+    case Troll -> 7
+    case Skeleton -> 8
+    case Wizard -> 9
+    case Dragon -> 10
+    case ChaosSpawn -> 11
+    case Pilgrim -> 12
 
-withStatsLevelUp : Int -> Int -> Int -> Int -> Int -> Stats -> Stats
-let withStatsLevelUp xp level maxHp hp str s =
-    Stats hp maxHp s.mp s.maxMp str s.dex s.def xp level
+instance Eq Species =
+    let (==) a b = speciesCode a == speciesCode b
 
-withActorStats : Stats -> Actor -> Actor
-let withActorStats stats a =
-    Actor a.id a.species a.name a.glyph a.pos stats a.attitude a.inventory a.alive
+factionCode : Faction -> Int
+let factionCode f =
+    match f
+    case HeroFaction -> 0
+    case BeastFaction -> 1
+    case CaveFaction -> 2
+    case UndeadFaction -> 3
+    case ChaosFaction -> 4
+    case NeutralFaction -> 5
 
-withActorStatsAlive : Stats -> Bool -> Actor -> Actor
-let withActorStatsAlive stats alive a =
-    Actor a.id a.species a.name a.glyph a.pos stats a.attitude a.inventory alive
+instance Eq Faction =
+    let (==) a b = factionCode a == factionCode b
 
-withActorPos : Vec2 -> Actor -> Actor
-let withActorPos pos a =
-    Actor a.id a.species a.name a.glyph pos a.stats a.attitude a.inventory a.alive
+attitudeCode : Attitude -> Int
+let attitudeCode a =
+    match a
+    case PlayerControlled -> 0
+    case Friendly -> 1
+    case Neutral -> 2
+    case Hostile -> 3
+    case Sleeping -> 4
+    case Fleeing -> 5
 
-withActorInventory : List Item -> Actor -> Actor
-let withActorInventory inv a =
-    Actor a.id a.species a.name a.glyph a.pos a.stats a.attitude inv a.alive
+instance Eq Attitude =
+    let (==) a b = attitudeCode a == attitudeCode b
 
-withHunger : Int -> PlayerState -> PlayerState
-let withHunger hunger p =
-    PlayerState p.actorId hunger p.gold p.identified
+bodyPartCode : BodyPart -> Int
+let bodyPartCode p =
+    match p
+    case Head -> 0
+    case Torso -> 1
+    case LeftArm -> 2
+    case RightArm -> 3
+    case LeftLeg -> 4
+    case RightLeg -> 5
 
-withMode : GameMode -> GameState -> GameState
-let withMode mode game =
-    GameState game.rng game.player game.level mode game.lastCommand
+instance Eq BodyPart =
+    let (==) a b = bodyPartCode a == bodyPartCode b
 
-withRng : Nat -> GameState -> GameState
-let withRng rng game =
-    GameState rng game.player game.level game.mode game.lastCommand
+tacticCode : Tactic -> Int
+let tacticCode t =
+    match t
+    case Coward -> 0
+    case Defensive -> 1
+    case Balanced -> 2
+    case Aggressive -> 3
+    case Berserk -> 4
 
-withPlayer : PlayerState -> GameState -> GameState
-let withPlayer player game =
-    GameState game.rng player game.level game.mode game.lastCommand
+instance Eq Tactic =
+    let (==) a b = tacticCode a == tacticCode b
 
-withRngLevel : Nat -> Level -> GameState -> GameState
-let withRngLevel rng level game =
-    GameState rng game.player level game.mode game.lastCommand
+starSignCode : StarSign -> Int
+let starSignCode s =
+    match s
+    case Raven -> 0
+    case Book -> 1
+    case Wand -> 2
+    case Unicorn -> 3
+    case Salamander -> 4
+    case DragonSign -> 5
+    case SwordSign -> 6
+    case Falcon -> 7
+    case Cup -> 8
+    case Candle -> 9
+    case Wolf -> 10
+    case Tree -> 11
 
-withModeLevel : GameMode -> Level -> GameState -> GameState
-let withModeLevel mode level game =
-    GameState game.rng game.player level mode game.lastCommand
+instance Eq StarSign =
+    let (==) a b = starSignCode a == starSignCode b
 
-withRngModeLevel : Nat -> GameMode -> Level -> GameState -> GameState
-let withRngModeLevel rng mode level game =
-    GameState rng game.player level mode game.lastCommand
+mutationCode : Mutation -> Int
+let mutationCode m =
+    match m
+    case Claws -> 0
+    case NightEyes -> 1
+    case StoneSkin -> 2
+    case HollowBones -> 3
+    case PoisonTouch -> 4
+    case Ravenous -> 5
+    case BurningBlood -> 6
+    case WhisperingSkull -> 7
 
-withPlayerLevel : PlayerState -> Level -> GameState -> GameState
-let withPlayerLevel player level game =
-    GameState game.rng player level game.mode game.lastCommand
+instance Eq Mutation =
+    let (==) a b = mutationCode a == mutationCode b
 
-withLevel : Level -> GameState -> GameState
-let withLevel lv game =
-    GameState game.rng game.player lv game.mode game.lastCommand
+faithCode : Faith -> Int
+let faithCode f =
+    match f
+    case EmberMother -> 0
+    case RootFather -> 1
+    case VeiledWitness -> 2
+
+instance Eq Faith =
+    let (==) a b = faithCode a == faithCode b
+
+gameModeCode : GameMode -> Int
+let gameModeCode mode =
+    match mode
+    case MainMenu -> 0
+    case Playing -> 1
+    case InventoryMode -> 2
+    case HelpMode -> 3
+    case CharacterMode -> 4
+    case Dead -> 5
+    case Won -> 6
+    case Quit -> 7
+
+instance Eq GameMode =
+    let (==) a b = gameModeCode a == gameModeCode b
+
+commandTag : Command -> Int
+let commandTag c =
+    match c
+    case StartNewGame -> 0
+    case LoadGame -> 1
+    case Move _ -> 2
+    case Rest -> 3
+    case Open -> 4
+    case Close -> 5
+    case PickUp -> 6
+    case DropFirst -> 7
+    case Inventory -> 8
+    case UseFirst -> 9
+    case ZapFirst -> 10
+    case ThrowFirst -> 11
+    case Descend -> 12
+    case Ascend -> 13
+    case Look -> 14
+    case Help -> 15
+    case Character -> 16
+    case Pray -> 17
+    case Engrave -> 18
+    case Talk -> 19
+    case CycleTactic -> 20
+    case TargetedAttack -> 21
+    case SaveAndQuit -> 22
+    case QuitNoSave -> 23
+    case NoCommand -> 24
+
+instance Eq Command =
+    let (==) a b =
+        match (a, b)
+        case (Move da, Move db) -> da == db
+        case _ -> commandTag a == commandTag b
+
+instance Eq Key =
+    let (==) a b =
+        match (a, b)
+        case (KeyChar x, KeyChar y) -> x == y
+        case (KeyArrow dx, KeyArrow dy) -> dx == dy
+        case (KeyEscape, KeyEscape) -> True
+        case (KeyEnter, KeyEnter) -> True
+        case (KeyBackspace, KeyBackspace) -> True
+        case (KeyResize, KeyResize) -> True
+        case (KeyUnknown, KeyUnknown) -> True
+        case _ -> False
+
+takeMessages : Nat -> List String -> List String
+let takeMessages n xs decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case h :: t -> if n <= 0 then Nil else h :: takeMessages (natOfInt (subInt (natToInt n) 1)) t
 
 message : String -> GameState -> GameState
 let message text game =
-    let msgs = take 7 ((::) text game.level.messages)
-    in withLevel (withMessages msgs game.level) game
+    let msgs = takeMessages game.content.rules.messageLimit ((::) text game.level.messages)
+    let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn
+    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath
 
 playerActor : GameState -> Option Actor
 let playerActor game =
@@ -428,29 +827,44 @@ findActor : Int -> List Actor -> Option Actor
 let findActor id actors decreases listLength actors =
     match actors
     case Nil -> None
-    case (::) a rest ->
+    case a :: rest ->
         if a.id == id then Some a else findActor id rest
 
 replaceActor : Actor -> List Actor -> List Actor
 let replaceActor actor actors decreases listLength actors =
     match actors
     case Nil -> Nil
-    case (::) a rest ->
+    case a :: rest ->
         if a.id == actor.id then (::) actor rest else (::) a (replaceActor actor rest)
 
 removeDeadActors : List Actor -> List Actor
 let removeDeadActors actors decreases listLength actors =
     match actors
     case Nil -> Nil
-    case (::) a rest ->
+    case a :: rest ->
         if a.alive then (::) a (removeDeadActors rest) else removeDeadActors rest
 
 actorAt : Vec2 -> List Actor -> Option Actor
 let actorAt pos actors decreases listLength actors =
     match actors
     case Nil -> None
-    case (::) a rest ->
+    case a :: rest ->
         if a.alive && eqPos a.pos pos then Some a else actorAt pos rest
+
+hostileTo : Actor -> Actor -> Bool
+let hostileTo a b =
+    if a.faction == b.faction then False
+    elif a.attitude == Friendly && b.faction == HeroFaction then False
+    elif b.attitude == Friendly && a.faction == HeroFaction then False
+    elif a.attitude == Hostile then True
+    elif b.attitude == Hostile then True
+    elif a.faction == ChaosFaction && b.faction != ChaosFaction then True
+    elif b.faction == ChaosFaction && a.faction != ChaosFaction then True
+    else False
+
+isPlayerOrFriend : Actor -> Bool
+let isPlayerOrFriend a =
+    a.faction == HeroFaction
 
 bytes : String -> Bytes
 let bytes text = utf8Bytes text

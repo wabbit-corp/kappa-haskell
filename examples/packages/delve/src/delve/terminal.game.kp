@@ -1,27 +1,20 @@
 module delve.terminal
 
 import delve.core.*
+import delve.natutil.*
+import delve.natutil.*
 
 -- Terminal facade. The selected native/linux fragment supplies the definitions.
--- The rest of the game sees neither termios nor errno, which is how civilized
--- software avoids turning into a haunted basement.
---
--- The surface is UIO (no error channel): the native backend does not implement
--- the exception primitives (throwIO/catchIO), so the conservative overlay maps
--- errno failures to in-band defaults (open always yields a handle; readKey on
--- error yields KeyUnknown; size on error yields a sane 80x24) rather than
--- raising. Observable behaviour on a real TTY — the only environment that runs
--- the game — is unchanged; only the (process-terminating) raise-on-failure
--- path is replaced by a benign default, which never occurs in normal play.
+-- The rest of the game stays independent of termios and errno details.
 
 expect data Terminal : Type
 
-expect term open : UIO Terminal
-expect term close : (1 terminal : Terminal) -> UIO Unit
-expect term readKey : (& terminal : Terminal) -> UIO Key
-expect term write : (& terminal : Terminal) -> String -> UIO Unit
-expect term size : (& terminal : Terminal) -> UIO Size
+expect term open : IO GameError Terminal
+expect term close : (1 terminal : Terminal) -> IO GameError Unit
+expect term readKey : (& terminal : Terminal) -> IO GameError Key
+expect term write : (& terminal : Terminal) -> String -> IO GameError Unit
+expect term size : (& terminal : Terminal) -> IO GameError Size
 expect term monotonicSeed : UIO Nat
 
-instance Releasable (IO Void) Terminal =
+instance Releasable (IO GameError) Terminal =
     let release terminal = close terminal

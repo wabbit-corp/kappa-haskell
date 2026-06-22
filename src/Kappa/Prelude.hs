@@ -267,6 +267,7 @@ builtinState =
     entryT k v = CRecordT [("key", k), ("value", v)]
     forallE body = piI Q0 "e" tType body -- erased error param
     forallEA body = piI Q0 "e" tType (piI Q0 "a" tType body)
+    forallEFA body = piI Q0 "e" tType (piI Q0 "f" tType (piI Q0 "a" tType body))
 
     prims =
       [ prim "addInt" (tyV (tInt ~> tInt ~> tInt))
@@ -508,7 +509,11 @@ builtinState =
             (CApp Expl (tcon "FiberRef") (CVar 1) ~> CVar 2
               ~> io (CVar 4) (CVar 2) ~> io (CVar 5) (CVar 3))))))
       , prim "throwIO" (tyV (forallEA (CVar 1 ~> io (CVar 2) (CVar 1))))
-      , prim "catchIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> (CVar 2 ~> io (CVar 3) (CVar 2)) ~> io (CVar 3) (CVar 2))))
+      , prim "catchIO"
+          (tyV (forallEFA
+            (io (CVar 2) (CVar 0)
+              ~> (CVar 3 ~> io (CVar 3) (CVar 2))
+              ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
       , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
       , -- §28 IO carrier instances delegate to this bind primitive

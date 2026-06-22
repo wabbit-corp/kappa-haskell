@@ -1,0 +1,48 @@
+module delve.config_save_test
+
+import delve.core.*
+import delve.config as config
+import delve.natutil.*
+import delve.ecs as ecs
+import delve.gen as gen
+import delve.json as json
+import delve.json.*
+import delve.save as save
+import delve.fixture as fixture
+
+testJsonProfileParsesObjects : Bool
+let testJsonProfileParsesObjects =
+    match json.parse "{\"name\":\"rat\",\"hp\":4,\"tags\":[\"beast\"]}"
+    case Ok value ->
+        match json.objectField "name" value
+        case Some (JString "rat") -> True
+        case _ -> False
+    case Err _ -> False
+
+testEcsMirrorHasActors : Bool
+let testEcsMirrorHasActors =
+    let game = gen.newLevel fixture.testPack 1 (Size 80 24) 42
+    let synced = ecs.sync game
+    in listLength (ecs.query "actor" synced.ecs) >= 2
+
+testSaveCarriesPackIdentity : Bool
+let testSaveCarriesPackIdentity =
+    let game = gen.newLevel fixture.testPack 1 (Size 80 24) 42
+    let encoded = save.encodeGame game
+    match json.objectField "pack_id" encoded
+    case Some (JString id) -> id == fixture.testPack.packId
+    case _ -> False
+
+testLoadDefaultPackIO : IO GameError Bool
+let testLoadDefaultPackIO =
+    do
+        pack <- config.loadDefault
+        pure (pack.packId == "delve.base" && pack.version == "0.3.0" && listLength pack.items > 0 && listLength pack.actors > 0)
+
+testSaveRoundTripIO : IO GameError Bool
+let testSaveRoundTripIO =
+    do
+        let game = gen.newLevel fixture.testPack 1 (Size 80 24) 42
+        save.saveGame game
+        loaded <- save.loadGame fixture.testPack (Size 80 24)
+        pure (loaded.content.packId == fixture.testPack.packId && loaded.savePath == fixture.testPack.save.path)

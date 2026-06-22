@@ -302,7 +302,7 @@ collectLockClosure file bc mtgt = case mtgt of
             Nothing -> pure (Right (True, rxLockEntries rx)) -- no toolchain: build step reports it
             Just cc -> do
               let bindings =
-                    [ (nm', map renderSym ss ++ meta, ins, [externPrototype s | s <- ss, scalarOnly s])
+                    [ (nm', map renderSym ss ++ meta, ins, [externPrototype s | s <- ss, scalarOnly s, not (rnsShimProvided s)])
                     | (nm', ss, ins, meta) <- rxNativeBindings rx
                     ]
               r <- hostBindingLockEntries cc manifestDir (rxTargetTriple rx) bindings

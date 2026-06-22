@@ -1,0 +1,169 @@
+module delve.corruption
+
+import delve.core.*
+import delve.natutil.*
+import delve.content as content
+import delve.grid as grid
+import delve.rng as rand
+
+hasMutation : Mutation -> List Mutation -> Bool
+let hasMutation wanted ms decreases listLength ms =
+    match ms
+    case Nil -> False
+    case m :: rest -> if m == wanted then True else hasMutation wanted rest
+
+mutationCount : List Mutation -> Int
+let mutationCount ms = listLength ms
+
+availableMutations : List MutationDef -> List Mutation -> List Mutation
+let availableMutations defs current decreases listLength defs =
+    match defs
+    case Nil -> Nil
+    case def :: rest ->
+        let remaining = availableMutations rest current
+        in if hasMutation def.mutation current then remaining else (::) def.mutation remaining
+
+randomMutation : ContentPack -> List Mutation -> rand.Rng -> (mutation : Option Mutation, rng : rand.Rng)
+let randomMutation pack current r0 =
+    let pool = availableMutations pack.mutations current
+    let choice = rand.choose pool r0
+    match choice
+    case Some c -> (mutation = Some c.value, rng = c.rng)
+    case None -> (mutation = None, rng = r0)
+
+mutationMessage : ContentPack -> Mutation -> String
+let mutationMessage pack m =
+    match content.findMutationDef pack m
+    case Some def -> def.description
+    case None -> "A nameless corruption rewrites you."
+
+applyMutationToPlayerActor : ContentPack -> Mutation -> Actor -> Actor
+let applyMutationToPlayerActor pack mutation actor =
+    match content.findMutationDef pack mutation
+    case None -> actor
+    case Some def ->
+        let maxHp2 = max 1 (actor.stats.maxHp + def.hpBonus)
+        let hp2 = min maxHp2 (max 1 (actor.stats.hp + def.hpBonus))
+        let maxMp2 = max 0 (actor.stats.maxMp + def.mpBonus)
+        let mp2 = min maxMp2 (max 0 (actor.stats.mp + def.mpBonus))
+        in actor.{
+            stats = actor.stats.{
+                hp = hp2,
+                maxHp = maxHp2,
+                mp = mp2,
+                maxMp = maxMp2,
+                str = max 0 (actor.stats.str + def.strBonus),
+                dex = max 0 (actor.stats.dex + def.dexBonus),
+                def = max 0 (actor.stats.def + def.defBonus)
+            }
+        }
+
+removeMutationFromPlayerActor : ContentPack -> Mutation -> Actor -> Actor
+let removeMutationFromPlayerActor pack mutation actor =
+    match content.findMutationDef pack mutation
+    case None -> actor
+    case Some def ->
+        let maxHp2 = max 1 (actor.stats.maxHp - def.hpBonus)
+        let hp2 = min maxHp2 (max 1 (actor.stats.hp - def.hpBonus))
+        let maxMp2 = max 0 (actor.stats.maxMp - def.mpBonus)
+        let mp2 = min maxMp2 (max 0 (actor.stats.mp - def.mpBonus))
+        actor.{
+            stats = actor.stats.{
+                hp = hp2,
+                maxHp = maxHp2,
+                mp = mp2,
+                maxMp = maxMp2,
+                str = max 0 (actor.stats.str - def.strBonus),
+                dex = max 0 (actor.stats.dex - def.dexBonus),
+                def = max 0 (actor.stats.def - def.defBonus)
+            }
+        }
+
+gainMutation : GameState -> GameState
+let gainMutation game =
+    let roll = randomMutation game.content game.player.mutations (natToInt game.rng)
+    match roll.mutation
+    case None -> message "No new mutation takes hold." game.{ rng = intToNat roll.rng }
+    case Some mutation ->
+        let player2 = game.player.{ mutations = (::) mutation game.player.mutations }
+        let game1 = game.{ rng = intToNat roll.rng, player = player2 }
+        let game2 =
+            match playerActor game1
+            case None -> game1
+            case Some p -> game1.{ level = game1.level.{ actors = replaceActor (applyMutationToPlayerActor game1.content mutation p) game1.level.actors } }
+        in message (mutationMessage game.content mutation) game2
+
+corruptionGainAt : TileKind -> Int
+let corruptionGainAt kind =
+    match kind
+    case ChaosVent -> 7
+    case Lava -> 1
+    case _ -> 0
+
+starSignResistance : ContentPack -> StarSign -> Int
+let starSignResistance pack sign =
+    match content.findStarSignDef pack sign
+    case Some def -> def.corruptionResistance
+    case None -> 0
+
+mutationHungerTax : ContentPack -> List Mutation -> Int
+let mutationHungerTax pack ms =
+    block
+        go : List Mutation -> Int
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> 0
+            case m :: rest -> content.mutationHungerTax pack m + go rest
+        go ms
+
+corrupt : Int -> GameState -> GameState
+let corrupt amount game =
+    let resisted = max 0 (amount - starSignResistance game.content game.player.starSign)
+    let c0 = game.player.corruption
+    let c1 = c0 + resisted
+    let threshold = (mutationCount game.player.mutations + 1) * 100
+    let game1 = game.{ player = game.player.{ corruption = c1 } }
+    in if c1 >= threshold then gainMutation game1 else game1
+
+chaosBacklash : Int -> GameState -> GameState
+let chaosBacklash dmg game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let hp2 = p.stats.hp - dmg
+        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let mode2 = if hp2 > 0 then game.mode else Dead
+        in message "Chaos gnaws at your corrupted flesh." (game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+tick : GameState -> GameState
+let tick game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let tile = grid.getTile game.level p.pos
+        let base = if game.level.turn % 47 == 0 then 1 else 0
+        let local = corruptionGainAt tile.kind
+        let shard = if carryingChaosShard p.inventory then 2 else 0
+        let corrupted = corrupt (base + local + shard) game
+        let c = corrupted.player.corruption
+        in if corrupted.mode == Playing && c >= 100 && corrupted.level.turn % 10 == 0 then
+            chaosBacklash (c / 100) corrupted
+        else corrupted
+
+carryingChaosShard : List Item -> Bool
+let carryingChaosShard items decreases listLength items =
+    match items
+    case Nil -> False
+    case i :: rest -> if i.kind == ChaosShard then True else carryingChaosShard rest
+
+cleanseOne : GameState -> GameState
+let cleanseOne game =
+    match game.player.mutations
+    case Nil -> message "The cleansing fizzles. Your corruption recedes slightly." (game.{ player = game.player.{ corruption = max 0 (game.player.corruption - 40) } })
+    case m :: rest ->
+        let game1 = game.{ player = game.player.{ mutations = rest, corruption = max 0 (game.player.corruption - 80), favor = max 0 (game.player.favor - 10) } }
+        let game2 =
+            match playerActor game1
+            case None -> game1
+            case Some p -> game1.{ level = game1.level.{ actors = replaceActor (removeMutationFromPlayerActor game1.content m p) game1.level.actors } }
+        message ("The " ++ content.mutationName game.content m ++ " corruption recedes.") game2

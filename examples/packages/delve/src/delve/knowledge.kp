@@ -1,0 +1,64 @@
+module delve.knowledge
+
+import delve.core.*
+import delve.natutil.*
+import delve.content as content
+
+beatitudeText : Beatitude -> String
+let beatitudeText beatitude =
+    match beatitude
+    case Blessed -> "blessed "
+    case Uncursed -> "uncursed "
+    case Cursed -> "cursed "
+    case UnknownBeatitude -> ""
+
+classUsesMystery : ItemClass -> Bool
+let classUsesMystery cls =
+    match cls
+    case PotionClass -> True
+    case ScrollClass -> True
+    case WandClass -> True
+    case _ -> False
+
+knownByKind : ItemKind -> List ItemKind -> Bool
+let knownByKind kind known decreases listLength known =
+    match known
+    case Nil -> False
+    case k :: rest -> if k == kind then True else knownByKind kind rest
+
+identifyKind : ItemKind -> PlayerState -> PlayerState
+let identifyKind kind player =
+    if knownByKind kind player.identified then player
+    else player.{ identified = (::) kind player.identified }
+
+identifyItem : ContentPack -> Item -> PlayerState -> (item : Item, player : PlayerState)
+let identifyItem pack item player =
+    let item2 = item.{ identified = True, beatitudeKnown = True, name = content.trueName pack item.kind }
+    in (item = item2, player = identifyKind item.kind player)
+
+visibleName : ContentPack -> PlayerState -> Item -> String
+let visibleName pack player item =
+    let known = item.identified || knownByKind item.kind player.identified || not (classUsesMystery item.class)
+    let base = if known then content.trueName pack item.kind else item.name
+    let buc = if item.beatitudeKnown then beatitudeText item.beatitude else ""
+    let count = if item.count > 1 then show item.count ++ " " else ""
+    let charges = if known && item.class == WandClass then " (" ++ show item.charges ++ " charges)" else ""
+    in count ++ buc ++ base ++ charges
+
+identifyFirstUnknown : ContentPack -> List Item -> PlayerState -> (items : List Item, player : PlayerState, text : String)
+let identifyFirstUnknown pack items player =
+    match items
+    case Nil -> (items = Nil, player = player, text = "There is nothing to identify.")
+    case item :: rest ->
+        if item.identified || knownByKind item.kind player.identified then
+            let r = identifyFirstUnknown pack rest player
+            in (items = (::) item r.items, player = r.player, text = r.text)
+        else
+            let id = identifyItem pack item player
+            in (items = (::) id.item rest, player = id.player, text = "You identify " ++ content.trueName pack item.kind ++ ".")
+
+markBeatitudesKnown : List Item -> List Item
+let markBeatitudesKnown items decreases listLength items =
+    match items
+    case Nil -> Nil
+    case item :: rest -> (::) item.{ beatitudeKnown = item.beatitude != UnknownBeatitude } (markBeatitudesKnown rest)

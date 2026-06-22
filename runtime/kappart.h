@@ -50,6 +50,8 @@ typedef enum {
   K_IOFINALLY, /* a do-block tail IO action carrying §18.7 deferred actions */
              /* to run (LIFO) once it completes; krun_io accumulates them  */
              /* on a heap stack so the recursion stays C-stack-bounded.    */
+  K_FAIL,   /* internal typed IO failure: carries the thrown error value     */
+            /* and propagates through krun_io until catchIO handles it.      */
   K_NATIVE  /* §26/§27.1.1 native host-binding action: a CODEGEN-EMITTED   */
             /* direct C wrapper pointer + accumulated args.  Replaces the  */
             /* former string-named FFI primitive: there is NO runtime name */
@@ -114,6 +116,7 @@ struct KValue {
     struct { void *mpz; } big;   /* points to a GC-allocated __mpz_struct */
     struct { KValue *fn; KValue *arg; } bounce;
     struct { KValue *action; KValue **defers; int n; } iofin; /* K_IOFINALLY */
+    struct { KValue *err; } fail;
     unsigned char byte;
     struct { const unsigned char *p; size_t len; } bytes;
     /* K_NATIVE: `fn` is the codegen-emitted direct wrapper, `arity` the
@@ -155,6 +158,8 @@ KValue *krec(int n, const char **names, KValue **vals);
 KValue *kclo(KFn fn, KEnv *env);
 KValue *kprim(const char *name);                /* 0-ary; saturates via kapp */
 KValue *kio(KIOFn fn, KEnv *env);
+KValue *kfail(KValue *err);
+int     kis_fail(KValue *v);
 KValue *kref_new(KValue *init);
 KValue *kfgn(void *p, const char *kind);
 KValue *kinject(int tagid, const char *tag, KValue *payload); /* §13 variant injection */
@@ -252,6 +257,7 @@ KValue  *kref_set(KValue *r, KValue *v);         /* returns Unit          */
 
 /* ── IO execution ──────────────────────────────────────────────────── */
 KValue  *krun_io(KValue *action);    /* run an IO action to a result      */
+KValue  *krun_io_checked(KValue *action); /* run IO; abort on uncaught typed failure */
 
 /* list helpers for `for` loops and FFI glue (Cons "::" / Nil) */
 KValue  *knil(void);

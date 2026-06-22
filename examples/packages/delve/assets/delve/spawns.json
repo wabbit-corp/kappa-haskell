@@ -1,0 +1,35 @@
+{
+  "monster_spawns": [
+    { "id": "rat", "min_depth": 1, "max_depth": 3, "weight": 8 },
+    { "id": "bat", "min_depth": 1, "max_depth": 3, "weight": 7 },
+    { "id": "goblin", "min_depth": 1, "max_depth": 6, "weight": 8 },
+    { "id": "kobold", "min_depth": 1, "max_depth": 3, "weight": 7 },
+    { "id": "pilgrim", "min_depth": 2, "max_depth": 4, "weight": 2 },
+    { "id": "orc", "min_depth": 2, "max_depth": 99, "weight": 7 },
+    { "id": "skeleton", "min_depth": 2, "max_depth": 99, "weight": 6 },
+    { "id": "troll", "min_depth": 4, "max_depth": 99, "weight": 4 },
+    { "id": "wizard", "min_depth": 4, "max_depth": 99, "weight": 3 },
+    { "id": "chaos_spawn", "min_depth": 4, "max_depth": 99, "weight": 3 },
+    { "id": "dragon", "min_depth": 7, "max_depth": 99, "weight": 1 }
+  ],
+  "item_spawns": [
+    { "id": "gold", "min_depth": 1, "max_depth": 99, "weight": 12 },
+    { "id": "potion_healing", "min_depth": 1, "max_depth": 99, "weight": 8 },
+    { "id": "potion_water", "min_depth": 1, "max_depth": 2, "weight": 5 },
+    { "id": "food_ration", "min_depth": 1, "max_depth": 2, "weight": 6 },
+    { "id": "dagger", "min_depth": 1, "max_depth": 2, "weight": 4 },
+    { "id": "leather_armor", "min_depth": 1, "max_depth": 2, "weight": 3 },
+    { "id": "scroll_ward", "min_depth": 1, "max_depth": 2, "weight": 5 },
+    { "id": "potion_mutation", "min_depth": 3, "max_depth": 99, "weight": 5 },
+    { "id": "scroll_identify", "min_depth": 3, "max_depth": 99, "weight": 5 },
+    { "id": "scroll_mapping", "min_depth": 3, "max_depth": 99, "weight": 3 },
+    { "id": "sword", "min_depth": 3, "max_depth": 99, "weight": 5 },
+    { "id": "mace", "min_depth": 3, "max_depth": 99, "weight": 4 },
+    { "id": "chain_mail", "min_depth": 3, "max_depth": 99, "weight": 3 },
+    { "id": "wand_digging", "min_depth": 3, "max_depth": 5, "weight": 2 },
+    { "id": "wand_fire", "min_depth": 6, "max_depth": 99, "weight": 3 },
+    { "id": "wand_polymorph", "min_depth": 6, "max_depth": 99, "weight": 2 },
+    { "id": "chaos_shard", "min_depth": 6, "max_depth": 99, "weight": 2 },
+    { "id": "amulet", "min_depth": 7, "max_depth": 99, "weight": 1 }
+  ]
+}

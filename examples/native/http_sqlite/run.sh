@@ -15,6 +15,21 @@ EXE="/tmp/kserver"
 LOG="/tmp/kserver.log"
 
 cd "$ROOT"
+
+if ! command -v timeout >/dev/null 2>&1; then
+  timeout() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+seconds = float(sys.argv[1].removesuffix('s'))
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+  }
+fi
+
 rm -f "$DB" "$LOG" "$EXE"
 
 echo "== building the demo via its build manifest -> native executable =="
@@ -44,10 +59,22 @@ for n in 1 2 3; do
   sleep 0.2
 done
 
-wait "$SRV" 2>/dev/null || true
+if wait "$SRV" 2>/dev/null; then
+  srv_rc=0
+else
+  srv_rc=$?
+fi
 trap - EXIT
 echo "== server exited =="
 cat "$LOG" | sed 's/^/  /'
+if [ "$srv_rc" -ne 0 ]; then
+  echo "  MISMATCH: server exited with status $srv_rc"
+  ok=0
+fi
+if ! grep -q 'served 3 requests; exiting' "$LOG"; then
+  echo "  MISMATCH: server did not report graceful 3-request shutdown"
+  ok=0
+fi
 
 echo "== sqlite database state =="
 if command -v sqlite3 >/dev/null 2>&1; then

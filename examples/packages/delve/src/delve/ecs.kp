@@ -1,0 +1,92 @@
+module delve.ecs
+
+import delve.core.*
+import delve.natutil.*
+import delve.content as content
+
+-- ECS mirror for config/save/tooling. Gameplay still uses the legacy typed
+-- Actor/Item lists this pass. Each turn syncs this mirror from the authoritative
+-- level state, giving later systems a stable component surface.
+
+actorEntity : ContentPack -> Actor -> Entity
+let actorEntity pack actor =
+    let def = content.actorDefBySpecies pack actor.species
+    in Entity {
+        id = actor.id,
+        blueprintId = def.id,
+        components =
+            [ PositionC actor.pos
+            , RenderC actor.glyph
+            , StatsC actor.stats
+            , ActorC actor
+            , InventoryC actor.inventory
+            , AIStateC actor.attitude actor.faction
+            , TagsC def.tags
+            ]
+    }
+
+groundItemEntity : ContentPack -> Int -> GroundItem -> Entity
+let groundItemEntity pack id ground =
+    Entity {
+        id = id,
+        blueprintId = (content.itemDef pack ground.item.kind).id,
+        components =
+            [ PositionC ground.pos
+            , RenderC ground.item.glyph
+            , ItemC ground.item
+            , TagsC ["ground-item"]
+            ]
+    }
+
+fromLevel : ContentPack -> Level -> EcsWorld
+let fromLevel pack level =
+    let actorEntities = map (actorEntity pack) level.actors
+    let itemStart = nextEntityId actorEntities
+    let itemEntities = groundItemEntities pack itemStart level.items
+    let all = listAppend actorEntities itemEntities
+    in EcsWorld { nextId = nextEntityId all, entities = all }
+
+groundItemEntities : ContentPack -> Int -> List GroundItem -> List Entity
+let groundItemEntities pack next items decreases listLength items =
+    match items
+    case Nil -> Nil
+    case item :: rest -> (::) (groundItemEntity pack next item) (groundItemEntities pack (next + 1) rest)
+
+nextEntityId : List Entity -> Int
+let nextEntityId entities =
+    block
+        go : Int -> List Entity -> Int
+        let go hi xs decreases listLength xs =
+            match xs
+            case Nil -> hi + 1
+            case e :: rest -> go (max hi e.id) rest
+        go 0 entities
+
+sync : GameState -> GameState
+let sync game = game.{ ecs = fromLevel game.content game.level }
+
+componentName : Component -> String
+let componentName c =
+    match c
+    case PositionC _ -> "position"
+    case RenderC _ -> "render"
+    case StatsC _ -> "stats"
+    case ActorC _ -> "actor"
+    case ItemC _ -> "item"
+    case InventoryC _ -> "inventory"
+    case AIStateC _ _ -> "ai_state"
+    case TagsC _ -> "tags"
+
+hasComponent : String -> Entity -> Bool
+let hasComponent wanted entity =
+    block
+        go : List Component -> Bool
+        let go cs decreases listLength cs =
+            match cs
+            case Nil -> False
+            case c :: rest -> if componentName c == wanted then True else go rest
+        go entity.components
+
+query : String -> EcsWorld -> List Entity
+let query component world =
+    filter (hasComponent component) world.entities

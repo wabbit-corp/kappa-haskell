@@ -24,9 +24,7 @@ import std.ffi.(i64Value)
 -- socket after writing) lets the client read the body up to EOF.
 httpResponse : String -> String
 let httpResponse body =
-    stringAppend
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n"
-        body
+    stringAppend "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n" body
 
 dbPath : String
 let dbPath = "/tmp/kappa_http_demo.db"

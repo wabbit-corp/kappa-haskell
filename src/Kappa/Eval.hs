@@ -37,6 +37,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
 import Data.Word (Word64, Word8)
 import GHC.Float (castDoubleToWord64)
+import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import Kappa.Core
 import Kappa.Source (ModuleName (..))
 import Kappa.Unicode
@@ -90,15 +91,16 @@ lookupGlobal ctx g = Map.lookup g (globalsMap (ecGlobals ctx))
 
 -- | Checked de Bruijn lookup. An out-of-range index is an elaborator
 -- bug; fail with context instead of a bare 'Prelude.!!' pattern error.
-lookupEnv :: Int -> Env -> Value
+lookupEnv :: HasCallStack => Int -> Env -> Value
 lookupEnv i env = case drop i env of
   v : _ -> v
   [] ->
     error
       ("Kappa.Eval.lookupEnv: internal error: de Bruijn index " ++ show i
-         ++ " out of range (environment has " ++ show (length env) ++ " entries)")
+         ++ " out of range (environment has " ++ show (length env) ++ " entries)\n"
+         ++ prettyCallStack callStack)
 
-eval :: EvalCtx -> Env -> Term -> Value
+eval :: HasCallStack => EvalCtx -> Env -> Term -> Value
 eval ctx env = \case
   CVar i -> lookupEnv i env
   -- primitives quoted by 'quote' round-trip back to 'VPrim'

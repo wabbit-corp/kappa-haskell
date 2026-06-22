@@ -1,0 +1,12 @@
+module delve.files
+
+import delve.core.*
+import delve.natutil.*
+
+-- Portable file facade for Delve. The Linux/native fragment supplies the raw
+-- syscalls through the existing native shim. Keeping file I/O here prevents the
+-- save system and config loader from depending directly on host-native calls.
+expect term readText : String -> IO GameError String
+expect term writeText : String -> String -> IO GameError Unit
+expect term exists : String -> IO GameError Bool
+expect term ensureDirectory : String -> IO GameError Unit

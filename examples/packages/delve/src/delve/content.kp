@@ -1,95 +1,308 @@
 module delve.content
 
 import delve.core.*
+import delve.natutil.*
+import delve.rng as rand
 
-playerStats : Stats
-let playerStats =
-    Stats { hp = 24, maxHp = 24, mp = 4, maxMp = 4, str = 6, dex = 6, def = 2, xp = 0, level = 1 }
+-- All numeric/content values in this module come from ContentPack JSON. The
+-- pattern-matching functions are schema adapters between typed game enums and
+-- authored string IDs, not gameplay tuning hiding in source.
 
-monsterStats : Species -> Stats
-let monsterStats s =
-    match s
-    case Rat -> Stats 4 4 0 0 2 8 0 1 1
-    case Bat -> Stats 3 3 0 0 1 10 0 1 1
-    case Goblin -> Stats 7 7 0 0 3 6 1 2 1
-    case Kobold -> Stats 5 5 0 0 3 7 0 2 1
-    case Orc -> Stats 12 12 0 0 5 5 2 4 2
-    case Skeleton -> Stats 10 10 0 0 4 4 3 5 2
-    case Troll -> Stats 24 24 0 0 8 3 3 9 4
-    case Wizard -> Stats 15 15 8 8 3 6 1 12 5
-    case Dragon -> Stats 60 60 20 20 14 5 8 60 10
-    case PlayerSpecies -> playerStats
+findItemDef : ContentPack -> ItemKind -> Option ItemDef
+let findItemDef pack kind decreases listLength pack.items =
+    block
+        go : List ItemDef -> Option ItemDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.kind == kind then Some def else go rest
+        go pack.items
 
-speciesName : Species -> String
-let speciesName s =
-    match s
-    case PlayerSpecies -> "you"
-    case Goblin -> "goblin"
-    case Orc -> "orc"
-    case Kobold -> "kobold"
-    case Rat -> "giant rat"
-    case Bat -> "cave bat"
-    case Troll -> "troll"
-    case Skeleton -> "skeleton"
-    case Wizard -> "dark wizard"
-    case Dragon -> "ancient dragon"
+fallbackItemDef : ItemKind -> ItemDef
+let fallbackItemDef kind =
+    -- Should be unreachable after config validation. Keeping a visible fallback
+    -- makes accidental schema breakage noisy in-game rather than crashing the
+    -- renderer with a missing glyph.
+    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True
 
-speciesGlyph : Species -> String
-let speciesGlyph s =
-    match s
-    case PlayerSpecies -> "@"
-    case Rat -> "r"
-    case Bat -> "b"
-    case Goblin -> "g"
-    case Kobold -> "k"
-    case Orc -> "o"
-    case Skeleton -> "s"
-    case Troll -> "T"
-    case Wizard -> "W"
-    case Dragon -> "D"
+itemDef : ContentPack -> ItemKind -> ItemDef
+let itemDef pack kind =
+    match findItemDef pack kind
+    case Some def -> def
+    case None -> fallbackItemDef kind
 
-mkPlayer : Int -> Vec2 -> Actor
-let mkPlayer id pos =
-    Actor
-        { id = id
-        , species = PlayerSpecies
-        , name = "player"
-        , glyph = "@"
-        , pos = pos
-        , stats = playerStats
-        , attitude = PlayerControlled
-        , inventory = [mkItem Dagger, mkItem FoodRation]
-        , alive = True
+trueName : ContentPack -> ItemKind -> String
+let trueName pack kind = (itemDef pack kind).trueName
+
+baseName : ContentPack -> ItemKind -> String
+let baseName pack kind = (itemDef pack kind).displayName
+
+itemClass : ContentPack -> ItemKind -> ItemClass
+let itemClass pack kind = (itemDef pack kind).class
+
+basePower : ContentPack -> ItemKind -> Int
+let basePower pack kind = (itemDef pack kind).power
+
+itemGlyph : ContentPack -> ItemKind -> String
+let itemGlyph pack kind = (itemDef pack kind).glyph
+
+mkItem : ContentPack -> ItemKind -> Item
+let mkItem pack kind =
+    let def = itemDef pack kind
+    in
+        Item {
+            kind = kind,
+            name = def.displayName,
+            glyph = def.glyph,
+            class = def.class,
+            stackable = def.stackable,
+            power = def.power,
+            count = 1,
+            beatitude = Uncursed,
+            beatitudeKnown = def.beatitudeKnownByDefault,
+            identified = def.startsIdentified,
+            charges = def.charges
         }
 
-mkMonster : Int -> Species -> Vec2 -> Actor
-let mkMonster id s pos =
-    Actor id s (speciesName s) (speciesGlyph s) pos (monsterStats s) Hostile Nil True
+rollBeatitude : rand.Rng -> (beatitude : Beatitude, rng : rand.Rng)
+let rollBeatitude r0 =
+    let cursed = rand.chance 15 r0
+    in
+        if cursed.value then (beatitude = Cursed, rng = cursed.rng)
+        else
+            let blessed = rand.chance 10 cursed.rng
+            in
+                if blessed.value then (beatitude = Blessed, rng = blessed.rng)
+                else (beatitude = Uncursed, rng = blessed.rng)
 
-mkItem : ItemKind -> Item
-let mkItem k =
-    match k
-    case Gold -> Item Gold "gold pieces" "$" True 1 1
-    case PotionHealing -> Item PotionHealing "healing potion" "!" True 8 1
-    case ScrollIdentify -> Item ScrollIdentify "scroll of insight" "?" True 0 1
-    case FoodRation -> Item FoodRation "food ration" "%" True 0 1
-    case Dagger -> Item Dagger "dagger" ")" False 2 1
-    case Sword -> Item Sword "long sword" ")" False 5 1
-    case Mace -> Item Mace "iron mace" ")" False 4 1
-    case LeatherArmor -> Item LeatherArmor "leather armor" "[" False 2 1
-    case ChainMail -> Item ChainMail "chain mail" "[" False 4 1
-    case WandFire -> Item WandFire "wand of fire" "/" False 10 1
-    case Amulet -> Item Amulet "amulet of exit" "\"" False 0 1
+randomizedItem : ContentPack -> ItemKind -> rand.Rng -> (item : Item, rng : rand.Rng)
+let randomizedItem pack kind r0 =
+    let b = rollBeatitude r0
+    let item0 = mkItem pack kind
+    let fixedBeatitude =
+        match item0.class
+        case CoinClass -> Uncursed
+        case FoodClass -> Uncursed
+        case CorpseClass -> Uncursed
+        case _ -> b.beatitude
+    let identifiedByClass =
+        match item0.class
+        case WeaponClass -> True
+        case ArmorClass -> True
+        case FoodClass -> True
+        case CoinClass -> True
+        case ToolClass -> True
+        case CorpseClass -> True
+        case ArtifactClass -> True
+        case _ -> item0.identified
+    let knownBeatitude = item0.beatitudeKnown || item0.class == FoodClass || item0.class == CoinClass || item0.class == CorpseClass
+    let visibleName = if identifiedByClass then trueName pack kind else item0.name
+    in (item = item0.{ beatitude = fixedBeatitude, identified = identifiedByClass, beatitudeKnown = knownBeatitude, name = visibleName }, rng = b.rng)
 
-monsterTable : Int -> List Species
-let monsterTable depth =
-    if depth <= 1 then [Rat, Bat, Goblin, Kobold]
-    elif depth <= 3 then [Rat, Bat, Goblin, Kobold, Orc, Skeleton]
-    elif depth <= 6 then [Goblin, Orc, Skeleton, Troll, Wizard]
-    else [Orc, Skeleton, Troll, Wizard, Dragon]
+findActorDefBySpecies : ContentPack -> Species -> Option ActorDef
+let findActorDefBySpecies pack species =
+    block
+        go : List ActorDef -> Option ActorDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.species == species then Some def else go rest
+        go pack.actors
 
-itemTable : Int -> List ItemKind
-let itemTable depth =
-    if depth <= 2 then [Gold, PotionHealing, FoodRation, Dagger, LeatherArmor]
-    elif depth <= 5 then [Gold, PotionHealing, ScrollIdentify, Sword, Mace, ChainMail]
-    else [Gold, PotionHealing, Sword, ChainMail, WandFire, Amulet]
+findActorDefById : ContentPack -> String -> Option ActorDef
+let findActorDefById pack id =
+    block
+        go : List ActorDef -> Option ActorDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.id == id then Some def else go rest
+        go pack.actors
+
+fallbackActorDef : Species -> ActorDef
+let fallbackActorDef species =
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"]
+
+actorDefBySpecies : ContentPack -> Species -> ActorDef
+let actorDefBySpecies pack species =
+    match findActorDefBySpecies pack species
+    case Some def -> def
+    case None -> fallbackActorDef species
+
+actorDefById : ContentPack -> String -> ActorDef
+let actorDefById pack id =
+    match findActorDefById pack id
+    case Some def -> def
+    case None -> fallbackActorDef Rat
+
+actorBase : ContentPack -> Int -> ActorDef -> Vec2 -> Actor
+let actorBase pack id def pos =
+    Actor {
+        id = id,
+        species = def.species,
+        name = def.name,
+        glyph = def.glyph,
+        pos = pos,
+        stats = def.stats,
+        attitude = def.attitude,
+        faction = def.faction,
+        inventory = map (mkItem pack) def.inventory,
+        wounds = Nil,
+        morale = def.morale,
+        loyalty = def.loyalty,
+        alive = True
+    }
+
+mkPlayer : ContentPack -> Int -> Vec2 -> Actor
+let mkPlayer pack id pos = actorBase pack id (actorDefById pack "player") pos
+
+mkPet : ContentPack -> Int -> Vec2 -> Actor
+let mkPet pack id pos = actorBase pack id (actorDefById pack "hound") pos
+
+mkMonster : ContentPack -> Int -> Species -> Vec2 -> Actor
+let mkMonster pack id species pos = actorBase pack id (actorDefBySpecies pack species) pos
+
+speciesName : ContentPack -> Species -> String
+let speciesName pack species = (actorDefBySpecies pack species).name
+
+speciesGlyph : ContentPack -> Species -> String
+let speciesGlyph pack species = (actorDefBySpecies pack species).glyph
+
+speciesFaction : ContentPack -> Species -> Faction
+let speciesFaction pack species = (actorDefBySpecies pack species).faction
+
+speciesAttitude : ContentPack -> Species -> Attitude
+let speciesAttitude pack species = (actorDefBySpecies pack species).attitude
+
+ruleActive : Int -> SpawnRule -> Bool
+let ruleActive depth rule =
+    depth >= rule.minDepth && depth <= rule.maxDepth && rule.weight > 0
+
+repeatSpecies : Int -> Species -> List Species -> List Species
+let repeatSpecies count species acc decreases max 0 count =
+    if count <= 0 then acc else repeatSpecies (count - 1) species ((::) species acc)
+
+repeatItemKind : Int -> ItemKind -> List ItemKind -> List ItemKind
+let repeatItemKind count kind acc decreases max 0 count =
+    if count <= 0 then acc else repeatItemKind (count - 1) kind ((::) kind acc)
+
+monsterTable : ContentPack -> Int -> List Species
+let monsterTable pack depth =
+    block
+        go : List SpawnRule -> List Species -> List Species
+        let go rules acc decreases listLength rules =
+            match rules
+            case Nil -> reverse acc
+            case rule :: rest ->
+                if not (ruleActive depth rule) then go rest acc
+                else
+                    match findActorDefById pack rule.id
+                    case Some def -> go rest (repeatSpecies rule.weight def.species acc)
+                    case None -> go rest acc
+        go pack.monsterSpawns Nil
+
+itemTable : ContentPack -> Int -> List ItemKind
+let itemTable pack depth =
+    block
+        go : List SpawnRule -> List ItemKind -> List ItemKind
+        let go rules acc decreases listLength rules =
+            match rules
+            case Nil -> reverse acc
+            case rule :: rest ->
+                if not (ruleActive depth rule) then go rest acc
+                else
+                    match findItemDefById rule.id pack.items
+                    case Some def -> go rest (repeatItemKind rule.weight def.kind acc)
+                    case None -> go rest acc
+        go pack.itemSpawns Nil
+
+findItemDefById : String -> List ItemDef -> Option ItemDef
+let findItemDefById id items decreases listLength items =
+    match items
+    case Nil -> None
+    case def :: rest -> if def.id == id then Some def else findItemDefById id rest
+
+starSignName : ContentPack -> StarSign -> String
+let starSignName pack sign =
+    match findStarSignDef pack sign
+    case Some def -> def.name
+    case None -> "unknown star"
+
+findStarSignDef : ContentPack -> StarSign -> Option StarSignDef
+let findStarSignDef pack sign =
+    block
+        go : List StarSignDef -> Option StarSignDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.sign == sign then Some def else go rest
+        go pack.starSigns
+
+starSignDef : ContentPack -> StarSign -> StarSignDef
+let starSignDef pack sign =
+    match findStarSignDef pack sign
+    case Some def -> def
+    case None -> StarSignDef sign "unknown star" "missing star sign config" 0 0 0 0 0 0 0
+
+applyStarSign : ContentPack -> StarSign -> Actor -> Actor
+let applyStarSign pack sign actor =
+    let def = starSignDef pack sign
+    in actor.{
+        stats = actor.stats.{
+            hp = actor.stats.hp + def.hpBonus,
+            maxHp = actor.stats.maxHp + def.hpBonus,
+            mp = actor.stats.mp + def.mpBonus,
+            maxMp = actor.stats.maxMp + def.mpBonus,
+            str = actor.stats.str + def.strBonus,
+            dex = actor.stats.dex + def.dexBonus,
+            def = actor.stats.def + def.defBonus
+        }
+    }
+
+mutationName : ContentPack -> Mutation -> String
+let mutationName pack mutation =
+    match findMutationDef pack mutation
+    case Some def -> def.name
+    case None -> "unknown mutation"
+
+findMutationDef : ContentPack -> Mutation -> Option MutationDef
+let findMutationDef pack mutation =
+    block
+        go : List MutationDef -> Option MutationDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.mutation == mutation then Some def else go rest
+        go pack.mutations
+
+mutationHungerTax : ContentPack -> Mutation -> Int
+let mutationHungerTax pack mutation =
+    match findMutationDef pack mutation
+    case Some def -> def.hungerTax
+    case None -> 0
+
+rollStarSign : ContentPack -> rand.Rng -> (sign : StarSign, rng : rand.Rng)
+let rollStarSign pack r0 =
+    block
+        starSignOf : StarSignDef -> StarSign
+        let starSignOf def = def.sign
+        let signs = map starSignOf pack.starSigns
+        match rand.choose signs r0
+        case Some choice -> (sign = choice.value, rng = choice.rng)
+        case None -> (sign = Raven, rng = r0)
+
+findFaithDef : ContentPack -> Faith -> Option FaithDef
+let findFaithDef pack faith =
+    block
+        go : List FaithDef -> Option FaithDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case def :: rest -> if def.faith == faith then Some def else go rest
+        go pack.faiths
+
+faithName : ContentPack -> Faith -> String
+let faithName pack faith =
+    match findFaithDef pack faith
+    case Some def -> def.name
+    case None -> "unknown faith"

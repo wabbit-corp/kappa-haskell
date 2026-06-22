@@ -23,8 +23,9 @@
  *     marks "no result, see |value| as errno") -> generated as `Integer`;
  *   - sizes are returned as two separate `int` accessors (cols / rows);
  *   - the monotonic seed is a `uint64_t` (generated as std.ffi.U64);
- *   - `delve_describe_error2` returns a NUL-terminated C string (declared in
- *     the binding's `cstrings`, so it generates as `String`, not Option RawPtr).
+ *   - text payload functions return or accept NUL-terminated C strings
+ *     (declared in the binding's `cstrings`, so they generate as `String`,
+ *     not Option RawPtr).
  *
  * Every prototype here is conservatively representable (only int / void* /
  * const char* / uint64_t), so the broad generator binds all of them.
@@ -66,6 +67,21 @@ uint64_t delve_monotonic_seed2(void);
 
 /* Human-readable description of an errno code (NUL-terminated C string). */
 const char *delve_describe_error2(int code);
+
+/* Read an entire UTF-8 text file. Returns the text on success. On failure it
+ * returns the empty string and records errno in delve_last_errno2; callers
+ * check last_errno to distinguish a real empty file from a failed read. */
+const char *delve_read_text_file2(const char *path);
+
+/* Write exactly `len` bytes of `text`. Returns 0 on success or an errno. */
+int delve_write_text_file2(const char *path, const char *text, int len);
+
+/* Return 1 if the path exists, 0 if it does not, or a negative errno on an
+ * actual stat failure. */
+int delve_file_exists2(const char *path);
+
+/* Ensure a directory exists. Returns 0 on success or an errno. */
+int delve_ensure_directory2(const char *path);
 
 #ifdef __cplusplus
 }

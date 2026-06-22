@@ -1,0 +1,22 @@
+{
+  "pack_id": "delve.base",
+  "version": "0.3.0",
+  "files": {
+    "worldgen": "assets/delve/worldgen.json",
+    "items": "assets/delve/items.json",
+    "actors": "assets/delve/actors.json",
+    "systems": "assets/delve/systems.json",
+    "spawns": "assets/delve/spawns.json",
+    "lore": "assets/delve/lore.json"
+  },
+  "save": {
+    "path": "saves/delve-save.json",
+    "format_version": 1,
+    "autosave_on_quit": true,
+    "directory": "saves"
+  },
+  "rules": {
+    "starting_hunger": 1200,
+    "message_limit": 9
+  }
+}

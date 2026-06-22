@@ -48,7 +48,7 @@ import Kappa.Backend.NativeFfi
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
 
@@ -386,8 +386,10 @@ basePrims =
     , "__queryFromList", "__queryToList", "__setFromList", "__setToList"
     , "__arrayFromList", "__arrayToList", "__mapFromEntries", "__mapToList"
     , "__transport", "__arrayIndexUnsafe", "__rangeEnum", "unsafeConsume"
+      -- §28.2 proof helper
+    , "__absurd"
       -- IO
-    , "printString", "printlnString", "ioPure", "ioBind", "ioThen"
+    , "printString", "printlnString", "ioPure", "ioBind", "ioThen", "throwIO", "catchIO", "finallyIO"
     , "newRef", "readRef", "writeRef"
     ]
 
@@ -809,23 +811,68 @@ typeScalarKinds g n = do
   pure $ case Map.lookup g globals of
     Nothing -> Nothing
     Just gd -> do
-      (pks, ret) <- walkPi [] (quote ctx 0 (gdType gd))
+      (pks, ret) <- walkPiV ctx 0 [] (gdType gd)
       if length pks == n then Just (pks, ret) else Nothing
   where
-    -- a scalar domain is PScalar k; any other (record/ADT/function/…) is PBoxed.
-    paramKind dom = maybe PBoxed PScalar (scalarHeadKind dom)
-    walkPi acc (CPi ic q _ dom cod)
-      | ic == Expl && q /= Q0 = walkPi (paramKind dom : acc) cod
-      | otherwise = walkPi acc cod -- erased/implicit binder: no runtime param
-    walkPi acc t = do rk <- scalarHeadKind t; Just (reverse acc, rk) -- result must be scalar
+    paramKindV dom = maybe PBoxed PScalar (scalarHeadKindV dom)
+    walkPiV ctx lvl acc ty =
+      case force ctx ty of
+        VPi ic q _ dom clo@(Closure env body) -> do
+          if not (closureHasBoundEnv env body)
+            then Nothing
+            else do
+              let x = VRigid lvl []
+                  cod = closApplyV ctx x clo
+                  acc' = if ic == Expl && q /= Q0 then paramKindV dom : acc else acc
+              walkPiV ctx (lvl + 1) acc' cod
+        other -> do
+          rk <- scalarHeadKindV other
+          Just (reverse acc, rk)
+    closApplyV ctx v (Closure env body) = eval ctx (v : env) body
+    closureHasBoundEnv env body = maxVar body < length env + 1
+    maxVar = \case
+      CVar i -> i
+      CGlob _ -> -1
+      CLam _ _ _ b -> maxVar b - 1
+      CPi _ _ _ a b -> max (maxVar a) (maxVar b - 1)
+      CApp _ f a -> max (maxVar f) (maxVar a)
+      CSort _ -> -1
+      CLit _ -> -1
+      CCtor _ as -> maximum (-1 : map maxVar as)
+      CMatch s alts ->
+        maximum (-1 : maxVar s : [max (maybe (-1) (\guardTm -> maxVar guardTm - patBinders p) gd) (maxVar b - patBinders p) | CaseAlt p gd b <- alts])
+      CRecordT fs -> maximum (-1 : map (maxVar . snd) fs)
+      CRecordV fs -> maximum (-1 : map (maxVar . snd) fs)
+      CProj e _ -> maxVar e
+      CProjAt e _ _ -> maxVar e
+      CVariantT ms -> maximum (-1 : map maxVar ms)
+      CInject _ e -> maxVar e
+      CLet _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
+      CLetRec _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
+      CMeta _ -> -1
+      CDo _ _ -> -1
+      CSealE _ e -> maxVar e
+      CSigT _ e -> maxVar e
+      CThunkE e -> maxVar e
+      CLazyE e -> maxVar e
+      CForceE e -> maxVar e
+      CIf a b c -> maximum [maxVar a, maxVar b, maxVar c]
+      CQuote _ slots -> maximum (-1 : map maxVar slots)
+    patBinders = \case
+      CPWild -> 0
+      CPVar _ -> 1
+      CPLit _ -> 0
+      CPCtor _ ps -> sum (map patBinders ps)
+      CPTuple ps -> sum (map patBinders ps)
+      CPRecord fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr
+      CPInject _ p -> patBinders p
+      CPInjectRest _ -> 1
+      CPOr ps _ -> maximum (0 : map patBinders ps)
+      CPAs _ p -> 1 + patBinders p
 
--- | The scalar kind of a (bare) type head, or @Nothing@ for any non-scalar
--- type.  Mirrors the elaborator's numeric-literal type classification
--- (Check.hs: Int/Nat/Integer are the inline-int family, Float/Double the
--- @K_DBL@ family); an applied / aliased / user type head is non-scalar.
-scalarHeadKind :: Term -> Maybe ScalarKind
-scalarHeadKind = \case
-  CGlob (GName _ nm)
+scalarHeadKindV :: Value -> Maybe ScalarKind
+scalarHeadKindV = \case
+  VGlobN (GName _ nm) []
     | nm `elem` ["Int", "Nat", "Integer"] -> Just KInt64
     | nm `elem` ["Float", "Double"] -> Just KDouble
   _ -> Nothing
@@ -1191,8 +1238,8 @@ emitMain g =
         T.unlines
           [ "int main(void) {"
           , "  krt_init();"
-          , "  krun_io(" <> ident <> "());"
-          , "  return 0;" -- stdio buffers are flushed by the C runtime at exit
+          , "  KValue *kmain_result = krun_io(" <> ident <> "());"
+          , "  return kis_fail(kmain_result) ? 1 : 0;" -- stdio buffers are flushed by the C runtime at exit
           , "}"
           ]
    in modify' $ \st -> st {gsTop = fn : gsTop st}
@@ -1526,14 +1573,17 @@ isTypeGlob g = do
   datas <- gets gsDatas
   traits <- gets gsTraits
   globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
   let sortish = case Map.lookup g globals of
-        Just gd -> isSortValue (gdType gd)
+        Just gd -> isTypeKindTerm (quote ctx 0 (gdType gd))
         Nothing -> False
   pure (g `Set.member` datas || g `Set.member` traits || sortish)
 
-isSortValue :: Value -> Bool
-isSortValue (VSort _) = True
-isSortValue _ = False
+isTypeKindTerm :: Term -> Bool
+isTypeKindTerm = \case
+  CSort _ -> True
+  CPi _ _ _ _ body -> isTypeKindTerm body
+  _ -> False
 
 -- | Emit a reference to a runtime primitive, after confirming the linked
 -- runtime implements it; an unimplemented primitive is a compile-time
@@ -1618,6 +1668,7 @@ primEntries = Map.fromList
   [ ("__arrayFromList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__arrayIndexUnsafe", PrimEntry "kpf___arrayIndexUnsafe" 2 False)
   , ("__arrayToList", PrimEntry "kpf___queryFromList" 1 False)
+  , ("__absurd", PrimEntry "kpf___absurd" 1 False)
   , ("__atomicRepEq", PrimEntry "kpf___atomicRepEq" 2 False)
   , ("__byteLength", PrimEntry "kpf___byteLength" 1 False)
   , ("__byteToNat", PrimEntry "kpf___byteToNat" 1 False)
@@ -1716,6 +1767,9 @@ primEntries = Map.fromList
   , ("ioBind", PrimEntry "kpf_io_ioBind" 2 True)
   , ("ioPure", PrimEntry "kpf_io_ioPure" 1 True)
   , ("ioThen", PrimEntry "kpf_io_ioThen" 2 True)
+  , ("throwIO", PrimEntry "kpf_io_throwIO" 1 True)
+  , ("catchIO", PrimEntry "kpf_io_catchIO" 2 True)
+  , ("finallyIO", PrimEntry "kpf_io_finallyIO" 2 True)
   -- §12.4.3 first-class borrowed views (runtime borrow = value)
   , ("captureBorrow", PrimEntry "kpf_captureBorrow" 1 False)
   , ("withBorrowView", PrimEntry "kpf_withBorrowView" 2 False)
@@ -1906,7 +1960,7 @@ compileRunIO action = do
       pure ("kref_new(" <> ve <> ")")
     _ -> do
       ae <- compile action
-      pure ("krun_io(" <> ae <> ")")
+      pure ("krun_io_checked(" <> ae <> ")")
 
 -- | The worker arity of a function global @g@ — its leading-lambda count,
 -- if @g@ has a recorded core body that is lowered to a worker (≥ 1 binder
@@ -2706,10 +2760,10 @@ compileItems selfLabel mode items0 = do
               -- A tail statement-if branch: same, but the result is
               -- discarded (the do-block yields Unit).
               TailEffect -> emitTailIO True te
-              Nested -> emit ("krun_io(" <> te <> ");")
+              Nested -> emitRunIODiscard te
       KExpr t -> do
         te <- compile t
-        emit ("krun_io(" <> te <> ");") >> go rest
+        emitRunIODiscard te >> go rest
       -- A wildcard binding introduces no name: emit the right-hand side
       -- for its effect (a bind runs the IO action; a let just evaluates)
       -- without an unused C variable (keeps the generated C -Wall clean).
@@ -2724,12 +2778,11 @@ compileItems selfLabel mode items0 = do
         bindAndContinue sv pat
       KBind _ CPWild t -> do
         te <- compile t
-        emit ("krun_io(" <> te <> ");")
+        emitRunIODiscard te
         go rest
       KBind _ pat t -> do
         te <- compile t
-        sv <- freshN "bind_"
-        emit ("KValue *" <> sv <> " = krun_io(" <> te <> ");")
+        sv <- emitRunIOValue "bind_" te
         bindAndContinue sv pat
       -- §18 early non-local return: unwind every enclosing Nested scope
       -- (loop/if bodies) running their defers first, then return the value
@@ -2757,10 +2810,7 @@ compileItems selfLabel mode items0 = do
         rhs <- compile rhsT
         rhsv <-
           if monadic
-            then do
-              v <- freshN "rhs_"
-              emit ("KValue *" <> v <> " = krun_io(" <> rhs <> ");")
-              pure v
+            then emitRunIOValue "rhs_" rhs
             else pure rhs
         re <- compile refT
         emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
@@ -2775,15 +2825,19 @@ compileItems selfLabel mode items0 = do
         -- tail position, so compile them in 'TailEffect' (each path returns,
         -- deferring its tail IO action + finalizers via emitTailIO — stack
         -- safe and defer-correct).  A non-tail `if` runs for effect.
-        | null rest && (mode == Tail || mode == TailEffect) -> compileKIfTail alts mels
+        | null rest && (mode == Tail || mode == TailEffect) -> compileKIfTail mode alts mels
         | otherwise -> compileKIf alts mels >> go rest
       KWhile ml cond bdy mels -> compileLoop ml (LoopWhile cond) bdy mels >> go rest
       KFor ml pat src bdy mels -> compileLoop ml (LoopFor pat src) bdy mels >> go rest
-      -- §18.8.3.1: a transparent nested do-statement compiles as a Nested child
-      -- scope (its own §18.7 defer frame and label) that inherits the enclosing
-      -- loop/return targets, so break/continue/return inside it propagate
-      -- outward via the same gotoLoop / KReturn unwinding as an inline branch.
-      KSubDo subLbl subItems -> compileItems subLbl Nested subItems >> go rest
+      -- §18.8.3.1: a transparent nested do-statement compiles as a child scope
+      -- (its own §18.7 defer frame and label) that inherits the enclosing
+      -- loop/return targets.  If it is itself the tail item of a value-returning
+      -- do-block, preserve the enclosing tail mode: `else do ...` in a tail
+      -- branch must return the sub-do's final value, not discard it as an
+      -- effect-only nested statement.
+      KSubDo subLbl subItems
+        | null rest && (mode == Tail || mode == TailEffect) -> compileItems subLbl mode subItems
+        | otherwise -> compileItems subLbl Nested subItems >> go rest
       KBreak ml -> gotoLoop ml lcBreak
       KContinue ml -> gotoLoop ml lcContinue
       -- §18 let? : bind the pattern and continue, or run the else block
@@ -2866,8 +2920,7 @@ compileItems selfLabel mode items0 = do
       -- exit path), then bind `pat` (borrowed) for the rest of the scope.
       KUsing pat acquireT releaseT -> do
         ae <- compile acquireT
-        rv <- freshN "ures_"
-        emit ("KValue *" <> rv <> " = krun_io(" <> ae <> ");")
+        rv <- emitRunIOValue "ures_" ae
         re <- compile releaseT
         frame <- gets $ \g -> case mode of
           Nested -> head (gsScopeDefers g)
@@ -2956,8 +3009,38 @@ emitTailReturn e = do
 -- different control path is a no-op.
 flushFramesInline :: [(Text, Text)] -> Gen ()
 flushFramesInline frames =
+  forM_ frames $ \(arr, cnt) -> do
+    result <- freshN "defer_result"
+    emit ("while (" <> cnt <> " > 0) {")
+    emit ("  KValue *" <> result <> " = krun_io(" <> arr <> "[--" <> cnt <> "]);")
+    emit ("  if (kis_fail(" <> result <> ")) return " <> result <> ";")
+    emit "}"
+
+-- | Run an IO action in generated do-kernel code and propagate typed native
+-- failures immediately.  A failure exits the current generated scope after
+-- draining every active §18.7 defer frame, mirroring the interpreter's
+-- exception unwinding instead of binding the failure sentinel as an ordinary
+-- value.
+emitRunIOValue :: Text -> Text -> Gen Text
+emitRunIOValue prefix action = do
+  v <- freshN prefix
+  emit ("KValue *" <> v <> " = krun_io(" <> action <> ");")
+  emitPropagateFailure v
+  pure v
+
+emitRunIODiscard :: Text -> Gen ()
+emitRunIODiscard action = do
+  v <- emitRunIOValue "io_" action
+  emit ("(void)" <> v <> ";")
+
+emitPropagateFailure :: Text -> Gen ()
+emitPropagateFailure v = do
+  frames <- gets $ \g -> gsScopeDefers g ++ gsDefer g
+  emit ("if (kis_fail(" <> v <> ")) {")
   forM_ frames $ \(arr, cnt) ->
-    emit ("while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
+    emit ("  while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
+  emit ("  return " <> v <> ";")
+  emit "}"
 
 -- | Return a do-block's tail IO action, deferring its execution to the
 -- driving @krun_io@ loop so a sequenced IO tail-recursion runs in constant
@@ -3038,8 +3121,8 @@ compileKIf alts mels = go alts
 -- branch defers via @kio_effect@ rather than recursing through @krun_io@,
 -- §27.5A.3), and a missing/exhausted else yields Unit (§18.8 — the if's
 -- normal completion is discarded).
-compileKIfTail :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
-compileKIfTail alts mels = goAlts alts
+compileKIfTail :: ScopeMode -> [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
+compileKIfTail tailMode alts mels = goAlts alts
   where
     goAlts [] = case mels of
       Just els -> emitBranch els
@@ -3053,7 +3136,7 @@ compileKIfTail alts mels = goAlts alts
       emit "}"
     emitBranch items = do
       env <- gets gsEnv
-      (blk, ()) <- captured env (compileItems Nothing TailEffect items)
+      (blk, ()) <- captured env (compileItems Nothing tailMode items)
       forM_ blk (emit . ("  " <>))
 
 data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
@@ -3327,4 +3410,4 @@ compileLetQElse mode sv mElse = case mElse of
     case mode of
       Tail -> emitTailIO False fee
       TailEffect -> emitTailIO True fee
-      Nested -> emit ("krun_io(" <> fee <> ");")
+      Nested -> emitRunIODiscard fee

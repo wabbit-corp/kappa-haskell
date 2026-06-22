@@ -1,0 +1,58 @@
+module delve.faith
+
+import delve.core.*
+import delve.natutil.*
+import delve.natutil.*
+import delve.grid as grid
+import delve.inventory as inv
+import delve.knowledge as know
+import delve.corruption as corruption
+import delve.content as content
+
+faithName : GameState -> String
+let faithName game =
+    "the " ++ content.faithName game.content game.player.faith
+
+removeFirstCorpse : List Item -> (removed : Bool, rest : List Item)
+let removeFirstCorpse items decreases listLength items =
+    match items
+    case Nil -> (removed = False, rest = Nil)
+    case item :: rest ->
+        if item.kind == Corpse then (removed = True, rest = rest)
+        else
+            let r = removeFirstCorpse rest
+            in (removed = r.removed, rest = (::) item r.rest)
+
+pray : GameState -> GameState
+let pray game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let tile = grid.getTile game.level p.pos
+        in
+            match tile.kind
+            case Altar -> prayAtAltar p game
+            case _ -> prayInDust p game
+
+prayAtAltar : Actor -> GameState -> GameState
+let prayAtAltar p game =
+    let rc = removeFirstCorpse p.inventory
+    in if rc.removed then
+        let p2 = p.{ inventory = rc.rest }
+        let g1 = game.{ player = game.player.{ favor = game.player.favor + 12 }, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+        in message ("You offer the corpse to " ++ faithName game ++ ". Favor rises.") g1
+    elif game.player.favor >= 18 && game.player.corruption >= 80 then
+        corruption.cleanseOne game
+    elif game.player.favor >= 8 then
+        let healed = inv.healPlayer 8 game.{ player = game.player.{ favor = game.player.favor - 5 } }
+        in message (faithName game ++ " answers with warmth.") healed
+    else
+        let invKnown = know.markBeatitudesKnown p.inventory
+        let p2 = p.{ inventory = invKnown }
+        message "The altar reveals whether your items are blessed, uncursed, or cursed." (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+prayInDust : Actor -> GameState -> GameState
+let prayInDust p game =
+    if game.player.favor >= 14 then
+        message "You pray without an altar. A small spark answers." (inv.healPlayer 3 game.{ player = game.player.{ favor = game.player.favor - 7 } })
+    else message "You mutter a prayer. No answer comes." game

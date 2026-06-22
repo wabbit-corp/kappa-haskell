@@ -10,12 +10,12 @@ import acme.http.wire.(ReqLine)
 -- close header (the smoke server closes after each response).
 httpResponse : String -> String -> String
 let httpResponse status body =
-    let len = bytes.bytesLength (unicode.utf8Bytes body) in
-      stringAppend "HTTP/1.1 "
-          (stringAppend status
-              (stringAppend "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: "
-                  (stringAppend (showInt (natToInt len))
-                      (stringAppend "\r\nConnection: close\r\n\r\n" body))))
+    let len = bytes.bytesLength (unicode.utf8Bytes body)
+    let closeHeader = stringAppend "\r\nConnection: close\r\n\r\n" body
+    let lengthHeader = stringAppend (showInt (natToInt len)) closeHeader
+    let headers = stringAppend "\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: " lengthHeader
+    let statusAndHeaders = stringAppend status headers
+    in stringAppend "HTTP/1.1 " statusAndHeaders
 
 respond : ReqLine -> String
 let respond r =

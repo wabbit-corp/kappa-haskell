@@ -8,14 +8,108 @@ import delve.gen as gen
 import delve.input as input
 import delve.inventory as inventory
 import delve.combat as combat
+import delve.rng as rand
 import delve.ai as ai
 import delve.render as render
 import delve.terminal as term
+import delve.tactics as tactics
+import delve.faith as faith
+import delve.interact as interact
+import delve.corruption as corruption
+import delve.content as content
+import delve.knowledge as know
+import delve.config as config
+import delve.save as save
+import delve.ecs as ecs
+
+addCorpseFor : Actor -> GameState -> GameState
+let addCorpseFor victim game =
+    if victim.species == PlayerSpecies || victim.species == Hound then game
+    else game.{ level = game.level.{ items = (::) (GroundItem victim.pos (content.mkItem game.content Corpse)) game.level.items } }
+
+clearWardAt : Vec2 -> GameState -> GameState
+let clearWardAt pos game =
+    let t = grid.getTile game.level pos
+    in game.{ level = grid.setTile pos t.{ warded = False } game.level }
+
+hasItemKind : ItemKind -> List Item -> Bool
+let hasItemKind wanted items decreases listLength items =
+    match items
+    case Nil -> False
+    case item :: rest -> if item.kind == wanted then True else hasItemKind wanted rest
+
+maxActorId : List Actor -> Int
+let maxActorId actors decreases listLength actors =
+    match actors
+    case Nil -> 0
+    case actor :: rest -> max actor.id (maxActorId rest)
+
+livingFollower : Int -> Actor -> Bool
+let livingFollower playerId actor =
+    actor.alive && actor.id != playerId && actor.faction == HeroFaction
+
+followersFrom : Int -> List Actor -> List Actor
+let followersFrom playerId actors decreases listLength actors =
+    match actors
+    case Nil -> Nil
+    case actor :: rest ->
+        if livingFollower playerId actor then (::) actor (followersFrom playerId rest)
+        else followersFrom playerId rest
+
+stripGeneratedFollowers : Int -> List Actor -> List Actor
+let stripGeneratedFollowers playerId actors decreases listLength actors =
+    match actors
+    case Nil -> Nil
+    case actor :: rest ->
+        if livingFollower playerId actor then stripGeneratedFollowers playerId rest
+        else (::) actor (stripGeneratedFollowers playerId rest)
+
+followerOffset : Int -> Vec2
+let followerOffset index =
+    if index == 0 then Vec2 1 0
+    elif index == 1 then Vec2 (-1) 0
+    elif index == 2 then Vec2 0 1
+    elif index == 3 then Vec2 0 (-1)
+    elif index == 4 then Vec2 1 1
+    elif index == 5 then Vec2 (-1) 1
+    elif index == 6 then Vec2 1 (-1)
+    else Vec2 (-1) (-1)
+
+availableFollowerSpot : Vec2 -> Level -> List Actor -> Bool
+let availableFollowerSpot pos level actors =
+    if grid.inBounds level.size pos && isWalkable (grid.getTile level pos) then
+        match actorAt pos actors
+        case None -> True
+        case Some _ -> False
+    else False
+
+findFollowerSpot : Vec2 -> Level -> List Actor -> Option Vec2
+let findFollowerSpot origin level actors =
+    block
+        go : Int -> Option Vec2
+        let go index decreases max 0 (8 - index) =
+            if index >= 8 then None
+            else
+                let pos = addPos origin (followerOffset index)
+                in if availableFollowerSpot pos level actors then Some pos else go (index + 1)
+        go 0
+
+placeFollowers : Vec2 -> Int -> Level -> List Actor -> List Actor -> (actors : List Actor, nextId : Int)
+let placeFollowers origin nextId level blocked followers decreases listLength followers =
+    match followers
+    case Nil -> (actors = Nil, nextId = nextId)
+    case actor :: rest ->
+        match findFollowerSpot origin level blocked
+        case None -> placeFollowers origin nextId level blocked rest
+        case Some pos ->
+            let placed = actor.{ id = nextId, pos = pos, attitude = Friendly, faction = HeroFaction }
+            let placedRest = placeFollowers origin (nextId + 1) level ((::) placed blocked) rest
+            in (actors = (::) placed placedRest.actors, nextId = placedRest.nextId)
 
 movePlayer : Direction -> GameState -> GameState
 let movePlayer dir game =
     match playerActor game
-    case None -> withMode Dead game
+    case None -> game.{ mode = Dead }
     case Some p ->
         let target = addPos p.pos (moveDelta dir)
         let tile = grid.getTile game.level target
@@ -23,38 +117,62 @@ let movePlayer dir game =
             match actorAt target game.level.actors
             case Some enemy ->
                 if enemy.id == p.id then game
+                elif not (hostileTo p enemy) then message (enemy.name ++ " blocks your path.") game
                 else
-                    let hit = combat.strike p enemy game.rng
-                    let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
-                    let g = withRngLevel hit.rng (withActors (removeDeadActors actors1) game.level) game
-                    in message hit.log g
+                    let game0 = clearWardAt p.pos game
+                    let hit = combat.strikeWith game.content game.player.tactic Balanced p enemy (natToInt game0.rng)
+                    let actors1 = replaceActor hit.attacker (replaceActor hit.defender game0.level.actors)
+                    let g0 = game0.{ rng = intToNat hit.rng, level = game0.level.{ actors = removeDeadActors actors1 } }
+                    let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
+                    in message hit.log g1
             case None ->
                 if isWalkable tile then
-                    let p2 = withActorPos target p
+                    let p2 = p.{ pos = target }
                     let actors2 = replaceActor p2 game.level.actors
-                    let level2 = fov.refreshVisibility target (withActors actors2 game.level)
-                    let game2 = withLevel level2 game
-                    in
-                        match tile.kind
-                        case Trap -> damagePlayer 2 (message "A trap bites your ankle. Very original." game2)
-                        case Water -> message "You splash through dark water." game2
-                        case Lava -> damagePlayer 6 (message "Lava is still lava. Good experiment." game2)
-                        case _ -> game2
+                    let level2 = fov.refreshVisibility target game.level.{ actors = actors2 }
+                    let game2 = game.{ level = level2 }
+                    in onEnteredTile tile.kind game2
                 else
                     match tile.kind
                     case ClosedDoor -> openDoorAt target game
                     case Wall -> message "You bump into a wall." game
                     case _ -> message "You cannot move there." game
 
+onEnteredTile : TileKind -> GameState -> GameState
+let onEnteredTile kind game =
+    match kind
+    case Trap -> damagePlayer 2 (message "A trap bites your ankle." game)
+    case Water -> message "You splash through dark water." game
+    case Lava -> message "The lava burns you." game
+    case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt 12 game)
+    case LoreStone -> readLoreStone game
+    case Altar -> message "An altar waits here. Press p to pray or offer the first corpse in your pack." game
+    case _ -> game
+
+readLoreStone : GameState -> GameState
+let readLoreStone game =
+    match game.rumors
+    case Nil -> message "The lore-stone is blank." game
+    case r :: rest -> message ("The stone says: " ++ r.text) (game.{ rumors = rest })
+
 damagePlayer : Int -> GameState -> GameState
 let damagePlayer amount game =
     match playerActor game
-    case None -> withMode Dead game
+    case None -> game.{ mode = Dead }
     case Some p ->
         let hp2 = p.stats.hp - amount
-        let p2 = withActorStatsAlive (withStatsHp (max 0 hp2) p.stats) (hp2 > 0) p
+        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
         let mode2 = if hp2 > 0 then game.mode else Dead
-        withModeLevel mode2 (withActors (replaceActor p2 game.level.actors) game.level) game
+        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+
+tickPlayerWounds : GameState -> GameState
+let tickPlayerWounds game =
+    match playerActor game
+    case None -> game.{ mode = Dead }
+    case Some p ->
+        let p2 = combat.tickBleeding p
+        let mode2 = if p2.alive then game.mode else Dead
+        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
 
 openDoorAt : Vec2 -> GameState -> GameState
 let openDoorAt pos game =
@@ -62,8 +180,8 @@ let openDoorAt pos game =
     in
         match t.kind
         case ClosedDoor ->
-            let level2 = grid.setTile pos (withTileKind OpenDoor t) game.level
-            in message "You open the door." (withLevel level2 game)
+            let level2 = grid.setTile pos (t.{ kind = OpenDoor }) game.level
+            in message "You open the door." (game.{ level = level2 })
         case _ -> message "There is no closed door there." game
 
 openNearby : GameState -> GameState
@@ -79,8 +197,52 @@ findFirstClosed : List Vec2 -> Level -> Option Vec2
 let findFirstClosed ps level decreases listLength ps =
     match ps
     case Nil -> None
-    case (::) p rest ->
+    case p :: rest ->
         if (grid.getTile level p).kind == ClosedDoor then Some p else findFirstClosed rest level
+
+closeDoorAt : Vec2 -> GameState -> GameState
+let closeDoorAt pos game =
+    let t = grid.getTile game.level pos
+    in
+        match t.kind
+        case OpenDoor ->
+            match actorAt pos game.level.actors
+            case Some _ -> message "Something blocks the door." game
+            case None ->
+                let level2 = grid.setTile pos (t.{ kind = ClosedDoor }) game.level
+                in message "You close the door." (game.{ level = level2 })
+        case _ -> message "There is no open door there." game
+
+closeNearby : GameState -> GameState
+let closeNearby game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match findFirstOpen (grid.neighbors8 p.pos) game.level
+        case Some pos -> closeDoorAt pos game
+        case None -> message "No nearby open door." game
+
+findFirstOpen : List Vec2 -> Level -> Option Vec2
+let findFirstOpen ps level decreases listLength ps =
+    match ps
+    case Nil -> None
+    case p :: rest ->
+        if (grid.getTile level p).kind == OpenDoor then Some p else findFirstOpen rest level
+
+preservePlayerAcrossLevel : GameState -> GameState -> GameState
+let preservePlayerAcrossLevel old fresh =
+    match playerActor old
+    case None -> fresh
+    case Some oldP ->
+        match playerActor fresh
+        case None -> fresh.{ player = old.player }
+        case Some newP ->
+            let moved = oldP.{ pos = newP.pos }
+            let baseActors = stripGeneratedFollowers old.player.actorId fresh.level.actors
+            let followers = followersFrom old.player.actorId old.level.actors
+            let actorsWithPlayer = replaceActor moved baseActors
+            let placedFollowers = placeFollowers newP.pos (maxActorId actorsWithPlayer + 1) fresh.level actorsWithPlayer followers
+            fresh.{ player = old.player, level = fresh.level.{ actors = listAppend placedFollowers.actors actorsWithPlayer } }
 
 stairsCommand : Bool -> GameState -> GameState
 let stairsCommand goingDown game =
@@ -91,44 +253,199 @@ let stairsCommand goingDown game =
         in
             if goingDown && tile.kind == Downstairs then
                 let nextSeed = game.rng + 11400714819323198485
-                in message "You descend. The air gets worse. Naturally."
-                    (gen.newLevel (game.level.depth + 1) game.level.size nextSeed)
+                let fresh = gen.newLevel game.content (game.level.depth + 1) game.level.size nextSeed
+                in message "You descend. The air gets heavier." (preservePlayerAcrossLevel game fresh)
             elif not goingDown && tile.kind == Upstairs && game.level.depth > 1 then
                 let nextSeed = game.rng + 13787848793156543929
-                in message "You climb back toward slightly less doom."
-                    (gen.newLevel (game.level.depth - 1) game.level.size nextSeed)
+                let fresh = gen.newLevel game.content (game.level.depth - 1) game.level.size nextSeed
+                in message "You climb back toward the upper level." (preservePlayerAcrossLevel game fresh)
             elif not goingDown && tile.kind == Upstairs then
-                withMode Won game
+                if hasItemKind Amulet p.inventory then game.{ mode = Won }
+                else message "You need the amulet before you can leave." game
             else message "No stairs here." game
+
+cycleTactic : GameState -> GameState
+let cycleTactic game =
+    let t = tactics.next game.player.tactic
+    in message (tactics.describe game.content t) (game.{ player = game.player.{ tactic = t } })
+
+firstWand : List Item -> Option (wand : Item, before : List Item, after : List Item)
+let firstWand items =
+    block
+        go : List Item -> List Item -> Option (wand : Item, before : List Item, after : List Item)
+        let go before rest decreases listLength rest =
+            match rest
+            case Nil -> None
+            case item :: tail ->
+                if item.class == WandClass then Some (wand = item, before = reverse before, after = tail)
+                else go ((::) item before) tail
+        go Nil items
+
+rebuildWithWand : List Item -> Item -> List Item -> List Item
+let rebuildWithWand before wand after =
+    listAppend before ((::) wand after)
+
+spendWand : Item -> List Item -> List Item -> Actor -> GameState -> (charged : Item, state : GameState)
+let spendWand wand before after p game =
+    let wand2 = wand.{ charges = wand.charges - 1, identified = True, name = content.trueName game.content wand.kind }
+    let p2 = p.{ inventory = rebuildWithWand before wand2 after }
+    let game0 = game.{ player = know.identifyKind wand.kind game.player, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    in (charged = wand2, state = game0)
+
+firstVisibleHostile : Actor -> List Actor -> Level -> Option Actor
+let firstVisibleHostile p actors level decreases listLength actors =
+    match actors
+    case Nil -> None
+    case a :: rest ->
+        if a.id != p.id && a.alive && hostileTo p a && fov.visibleFrom level p.pos a.pos then Some a
+        else firstVisibleHostile p rest level
+
+firstAdjacentWall : List Vec2 -> Level -> Option Vec2
+let firstAdjacentWall ps level decreases listLength ps =
+    match ps
+    case Nil -> None
+    case p :: rest ->
+        if (grid.getTile level p).kind == Wall then Some p else firstAdjacentWall rest level
+
+zapDigging : Item -> List Item -> List Item -> Actor -> GameState -> GameState
+let zapDigging wand before after p game =
+    let spent = spendWand wand before after p game
+    let game0 = clearWardAt p.pos spent.state
+    match firstAdjacentWall (grid.neighbors8 p.pos) game0.level
+    case None -> message "The wand finds no stone to cut." game0
+    case Some target ->
+        let t = grid.getTile game0.level target
+        let level2 = grid.setTile target t.{ kind = Floor } game0.level
+        message "The wand cuts through the stone." game0.{ level = level2 }
+
+zapFirst : GameState -> GameState
+let zapFirst game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match firstWand p.inventory
+        case None -> message "No wand in your pack." game
+        case Some found ->
+            if found.wand.charges <= 0 then message "The wand is dry." game
+            elif found.wand.kind == WandDigging then zapDigging found.wand found.before found.after p game
+            else
+                match firstVisibleHostile p game.level.actors game.level
+                case None -> message "No visible hostile target." game
+                case Some enemy -> zapWand found.wand found.before found.after p enemy game
+
+zapWand : Item -> List Item -> List Item -> Actor -> Actor -> GameState -> GameState
+let zapWand wand before after p enemy game =
+    let spent = spendWand wand before after p game
+    let game0 = clearWardAt p.pos spent.state
+    match wand.kind
+    case WandFire ->
+        let hp2 = enemy.stats.hp - wand.power
+        let enemy2 = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let attacker0 =
+            match playerActor game0
+            case Some current -> current
+            case None -> p
+        let attacker2 = if enemy2.alive then attacker0 else combat.awardXp attacker0 enemy2
+        let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
+        let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
+        message ("A line of fire hits " ++ enemy.name ++ " for " ++ show wand.power ++ ".") g1
+    case WandPolymorph ->
+        let pool = content.monsterTable game.content game0.level.depth
+        let pick = rand.choose pool (natToInt game0.rng)
+        match pick
+        case None -> message "The wand sputters." game0
+        case Some chosen ->
+            let spawn = content.mkMonster game.content enemy.id chosen.value enemy.pos
+            message (enemy.name ++ " twists into " ++ spawn.name ++ ".") (game0.{ rng = intToNat chosen.rng, level = game0.level.{ actors = replaceActor spawn game0.level.actors } })
+    case WandDigging ->
+        match firstAdjacentWall (grid.neighbors8 p.pos) game0.level
+        case None -> message "The wand finds no stone to cut." game0
+        case Some target ->
+            let t = grid.getTile game0.level target
+            let level2 = grid.setTile target t.{ kind = Floor } game0.level
+            message "The wand cuts through the stone." game0.{ level = level2 }
+    case _ -> message "The wand sputters." game0
+
+nearestVisibleHostile : Actor -> List Actor -> Level -> Option Actor
+let nearestVisibleHostile p actors level =
+    block
+        go : List Actor -> Option Actor -> Option Actor
+        let go xs best decreases listLength xs =
+            match xs
+            case Nil -> best
+            case a :: rest ->
+                if a.id != p.id && a.alive && hostileTo p a && fov.visibleFrom level p.pos a.pos then
+                    let best2 =
+                        match best
+                        case None -> Some a
+                        case Some b -> if chebyshev p.pos a.pos < chebyshev p.pos b.pos then Some a else best
+                    in go rest best2
+                else go rest best
+        go actors None
+
+throwFirst : GameState -> GameState
+let throwFirst game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match p.inventory
+        case Nil -> message "You have nothing to throw." game
+        case item :: rest ->
+            let game0 = clearWardAt p.pos game
+            let taken = inventory.takeOneFromStack item rest
+            let thrown = taken.picked
+            match nearestVisibleHostile p game0.level.actors game0.level
+            case None -> message "You throw it into the dark." (game0.{ level = game0.level.{ actors = replaceActor p.{ inventory = taken.rest } game0.level.actors, items = (::) (GroundItem p.pos thrown) game0.level.items } })
+            case Some enemy ->
+                let armor = combat.bestClassPower ArmorClass enemy.inventory
+                let dmg = max 1 (thrown.power - enemy.stats.def - armor)
+                let hp2 = enemy.stats.hp - dmg
+                let enemy2 = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+                let p2 = p.{ inventory = taken.rest }
+                let p3 = if enemy2.alive then p2 else combat.awardXp p2 enemy2
+                let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor p3 game0.level.actors)), items = (::) (GroundItem enemy.pos thrown) game0.level.items } }
+                let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
+                message ("You throw " ++ know.visibleName game.content game.player thrown ++ " at " ++ enemy.name ++ " for " ++ show dmg ++ ".") g1
 
 applyCommand : Command -> GameState -> GameState
 let applyCommand cmd game =
     match game.mode
-    case HelpMode -> withMode Playing game
-    case InventoryMode -> withMode Playing game
+    case MainMenu -> game
+    case HelpMode -> game.{ mode = Playing }
+    case InventoryMode -> game.{ mode = Playing }
+    case CharacterMode -> game.{ mode = Playing }
     case Dead ->
         match cmd
-        case QuitNoSave -> withMode Quit game
+        case QuitNoSave -> game.{ mode = Quit }
         case _ -> game
     case Won ->
         match cmd
-        case QuitNoSave -> withMode Quit game
+        case QuitNoSave -> game.{ mode = Quit }
         case _ -> game
     case Quit -> game
     case Playing ->
         match cmd
         case Move dir -> movePlayer dir game
-        case Rest -> message "You wait. The dungeon appreciates the free turn." game
+        case Rest -> message "You wait." game
         case Open -> openNearby game
+        case Close -> closeNearby game
         case PickUp -> inventory.pickUp game
         case DropFirst -> inventory.dropFirst game
         case UseFirst -> inventory.useFirst game
-        case Inventory -> withMode InventoryMode game
+        case ZapFirst -> zapFirst game
+        case ThrowFirst -> throwFirst game
+        case Inventory -> game.{ mode = InventoryMode }
+        case Character -> game.{ mode = CharacterMode }
         case Descend -> stairsCommand True game
         case Ascend -> stairsCommand False game
-        case Help -> withMode HelpMode game
-        case SaveAndQuit -> message "Save is planned, not wired. The gods of persistence are on lunch." (withMode Quit game)
-        case QuitNoSave -> withMode Quit game
+        case Pray -> faith.pray game
+        case Engrave -> interact.engrave game
+        case Talk -> interact.talk game
+        case CycleTactic -> cycleTactic game
+        case TargetedAttack -> interact.targetedAttack game
+        case Help -> game.{ mode = HelpMode }
+        case SaveAndQuit -> message "Saving..." game
+        case QuitNoSave -> game.{ mode = Quit }
         case _ -> game
 
 costsTurn : Command -> Bool
@@ -137,62 +454,159 @@ let costsTurn cmd =
     case Move _ -> True
     case Rest -> True
     case Open -> True
+    case Close -> True
     case PickUp -> True
     case DropFirst -> True
     case UseFirst -> True
+    case ZapFirst -> True
+    case ThrowFirst -> True
     case Descend -> True
     case Ascend -> True
+    case Pray -> True
+    case Engrave -> True
+    case Talk -> True
+    case CycleTactic -> True
+    case TargetedAttack -> True
     case _ -> False
 
-tickWorld : Command -> GameState -> GameState
-let tickWorld cmd game =
-    if costsTurn cmd && game.mode == Playing then
-        let hungry = withPlayerLevel (withHunger (game.player.hunger - 1) game.player) (withTurn (game.level.turn + 1) game.level) game
-        let starving = if hungry.player.hunger <= 0 then damagePlayer 1 (message "You are starving." hungry) else hungry
-        ai.runMonsters starving
+actorVitality : List Actor -> Int
+let actorVitality actors decreases listLength actors =
+    match actors
+    case Nil -> 0
+    case a :: rest -> a.stats.hp + listLength a.inventory + actorVitality rest
+
+openDoorCount : Array Tile -> Int
+let openDoorCount tiles =
+    block
+        go : List Tile -> Int
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> 0
+            case t :: rest -> (if t.kind == OpenDoor then 1 else 0) + go rest
+        go (arrayToList tiles)
+
+playerMoved : GameState -> GameState -> Bool
+let playerMoved before after =
+    match (playerActor before, playerActor after)
+    case (Some a, Some b) -> not (eqPos a.pos b.pos)
+    case _ -> True
+
+commandActed : Command -> GameState -> GameState -> Bool
+let commandActed cmd before after =
+    match cmd
+    case Move _ ->
+        let combat = actorVitality before.level.actors != actorVitality after.level.actors
+        let killed = listLength before.level.actors != listLength after.level.actors
+        let itemsChanged = listLength before.level.items != listLength after.level.items
+        let doorsChanged = openDoorCount before.level.tiles != openDoorCount after.level.tiles
+        let rolled = natToInt before.rng != natToInt after.rng
+        playerMoved before after || combat || killed || itemsChanged || doorsChanged || rolled
+    case Ascend -> before.level.depth != after.level.depth || before.mode != after.mode
+    case Descend -> before.level.depth != after.level.depth || before.mode != after.mode
+    case Open -> openDoorCount before.level.tiles != openDoorCount after.level.tiles
+    case Close -> openDoorCount before.level.tiles != openDoorCount after.level.tiles
+    case _ -> costsTurn cmd
+
+hazardTick : GameState -> GameState
+let hazardTick game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match (grid.getTile game.level p.pos).kind
+        case Lava -> damagePlayer 6 (message "The lava sears you." game)
+        case _ -> game
+
+tickWorld : Command -> GameState -> GameState -> GameState
+let tickWorld cmd before game =
+    if commandActed cmd before game && game.mode == Playing then
+        let hungerCost = 1 + tactics.hungerCost game.content game.player.tactic + corruption.mutationHungerTax game.content game.player.mutations
+        let hungry = game.{ player = game.player.{ hunger = game.player.hunger - hungerCost }, level = game.level.{ turn = game.level.turn + 1 } }
+        let wounded = tickPlayerWounds hungry
+        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then damagePlayer 1 (message "You are starving." wounded) else wounded
+        let hazard = if starving.mode == Playing then hazardTick starving else starving
+        let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
+        if corrupted.mode == Playing then ai.runMonsters corrupted else corrupted
     else game
 
-step : Key -> GameState -> GameState
-let step key game =
-    let cmd = input.keyToCommand key
+commandFor : GameState -> Key -> Command
+let commandFor game key =
+    match game.mode
+    case MainMenu -> input.menuKeyToCommand key
+    case _ -> input.keyToCommand key
+
+stepPure : Command -> GameState -> GameState
+let stepPure cmd game =
     let afterPlayer = applyCommand cmd game
-    in tickWorld cmd afterPlayer
+    in ecs.sync (tickWorld cmd game afterPlayer)
 
-initialGame : Nat -> Size -> GameState
-let initialGame seed size =
-    gen.newLevel 1 size seed
-
--- The render/input loop. This front end treats a same-module recursive call
--- that borrows a path previously passed to an IMPORTED (`&`) function as a
--- use-after-consume (cross-module `&` borrows are not tracked the way local
--- borrows are), so the loop is expressed iteratively with a `while` + mutable
--- game state rather than by self-recursion; the terminal is borrowed
--- sequentially each frame, which the borrow checker accepts.
--- The render/input loop. This front end treats a same-module function that
--- borrows a path AFTER it was passed to an IMPORTED (`&`) function as a
--- use-after-consume (cross-module `&` borrows are not tracked the way local
--- borrows are). So ALL terminal borrows are kept inside this one function:
--- the size query, the per-frame render/read, and the loop. The loop itself is
--- iterative (`while` + mutable game state) rather than self-recursive, which
--- the borrow checker accepts for sequential same-function borrows.
-runLoop : (& terminal : term.Terminal) -> Nat -> UIO Unit
-let runLoop terminal seed =
-    do
-        screen <- term.size terminal
-        let mapSize = Size (min 96 (max 60 screen.width)) (min 32 (max 20 (screen.height - 6)))
-        var game = initialGame seed mapSize
-        var running = True
-        while running do
-            term.write terminal (render.renderGame game)
-            if game.mode == Quit then running = False
-            else
+stepIO : Size -> Command -> GameState -> IO GameError GameState
+let stepIO mapSize cmd game =
+    match game.mode
+    case MainMenu ->
+        match cmd
+        case StartNewGame -> pure (initialGame game.content (game.rng + 1) mapSize)
+        case LoadGame ->
+            catchError (save.loadGame game.content mapSize) (\_ -> pure (message "No save file found, or it could not be loaded." game))
+        case QuitNoSave -> pure game.{ mode = Quit }
+        case _ -> pure game
+    case Playing ->
+        match cmd
+        case SaveAndQuit ->
+            do
+                let saved = ecs.sync game
+                save.saveGame saved
+                pure saved.{ mode = Quit }
+        case QuitNoSave ->
+            if game.content.save.autosaveOnQuit then
                 do
-                    key <- term.readKey terminal
-                    game = step key game
+                    let saved = ecs.sync game
+                    save.saveGame saved
+                    pure saved.{ mode = Quit }
+            else pure (stepPure cmd game)
+        case _ -> pure (stepPure cmd game)
+    case _ -> pure (stepPure cmd game)
 
-main : UIO Unit
+initialGame : ContentPack -> Nat -> Size -> GameState
+let initialGame pack seed size =
+    gen.newLevel pack 1 size seed
+
+initialMenu : ContentPack -> Nat -> Size -> GameState
+let initialMenu pack seed size =
+    let g = initialGame pack seed size
+    in g.{ mode = MainMenu, level = g.level.{ messages = Nil } }
+
+mapSizeFor : ContentPack -> Size -> Size
+let mapSizeFor pack screen =
+    let width = min pack.worldgen.mapMaxWidth (max pack.worldgen.mapMinWidth screen.width)
+    let height = min pack.worldgen.mapMaxHeight (max pack.worldgen.mapMinHeight (screen.height - 6))
+    in Size width height
+
+liftUIO : forall (a : Type). UIO a -> IO GameError a
+let liftUIO action = catchIO action (\v -> raise (absurd v))
+
+runLoop : (& terminal : term.Terminal) -> Size -> GameState -> IO GameError Unit
+let runLoop terminal mapSize game =
+    do
+        term.write terminal (render.renderGame game)
+        match game.mode
+        case Quit -> pure ()
+        case _ ->
+            do
+                key <- term.readKey terminal
+                let cmd = commandFor game key
+                game2 <- stepIO mapSize cmd game
+                runLoop terminal mapSize game2
+
+main : IO GameError Unit
 let main =
     do
-        seed <- term.monotonicSeed
-        using terminal <- term.open
-        runLoop terminal seed
+        pack <- config.loadDefault
+        terminal <- term.open
+        let body =
+            do
+                seed <- liftUIO term.monotonicSeed
+                screen <- term.size terminal
+                let mapSize = mapSizeFor pack screen
+                let game = initialMenu pack seed mapSize
+                runLoop terminal mapSize game
+        finallyIO body (term.close terminal)

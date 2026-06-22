@@ -5,7 +5,11 @@ import delve.natutil.*
 import delve.grid as grid
 import delve.inventory as inv
 import delve.input as input
+import delve.tactics as tactics
+import delve.content as content
+import delve.knowledge as know
 
+-- ── ANSI helpers ────────────────────────────────────────────────────────
 ansiClear : String
 let ansiClear = "\x1b[2J\x1b[H"
 
@@ -15,63 +19,134 @@ let ansiHideCursor = "\x1b[?25l"
 ansiShowCursor : String
 let ansiShowCursor = "\x1b[?25h"
 
-fg : String -> String -> String
-let fg code text = "\x1b[" ++ code ++ "m" ++ text ++ "\x1b[0m"
+reset : String
+let reset = "\x1b[0m"
 
-tileGlyph : Tile -> String
-let tileGlyph t =
-    if not t.seen then " "
-    else
-        let glyph =
-            match t.kind
-            case VoidTile -> " "
-            case Floor -> "."
-            case Wall -> "#"
-            case ClosedDoor -> "+"
-            case OpenDoor -> "/"
-            case Upstairs -> "<"
-            case Downstairs -> ">"
-            case Water -> "~"
-            case Lava -> "~"
-            case Trap -> "^"
-        in if t.lit then glyph else fg "90" glyph
+-- 24-bit truecolor foreground; falls back gracefully on terminals that ignore it.
+tc : Int -> Int -> Int -> String -> String
+let tc r g b text = "\x1b[38;2;" ++ show r ++ ";" ++ show g ++ ";" ++ show b ++ "m" ++ text ++ reset
+
+tcb : Int -> Int -> Int -> String -> String
+let tcb r g b text = "\x1b[1;38;2;" ++ show r ++ ";" ++ show g ++ ";" ++ show b ++ "m" ++ text ++ reset
+
+repeatStr : Int -> String -> String
+let repeatStr n s decreases max 0 n =
+    if n <= 0 then "" else s ++ repeatStr (n - 1) s
+
+ruleLine : Int -> String
+let ruleLine width = tc 70 70 90 (repeatStr width "─") ++ "\r\n"
+
+-- ── Tiles ───────────────────────────────────────────────────────────────
+tileChar : Tile -> String
+let tileChar t =
+    if t.warded then ";"
+    else tileKindChar t.kind
+
+tileKindChar : TileKind -> String
+let tileKindChar k =
+    match k
+    case VoidTile -> " "
+    case Floor -> "."
+    case Wall -> "#"
+    case ClosedDoor -> "+"
+    case OpenDoor -> "/"
+    case Upstairs -> "<"
+    case Downstairs -> ">"
+    case Water -> "~"
+    case Lava -> "~"
+    case Trap -> "^"
+    case Altar -> "_"
+    case LoreStone -> "?"
+    case ChaosVent -> "*"
+
+-- Fully-lit tile: rich color.
+litTile : Tile -> String
+let litTile t =
+    if t.warded then tcb 90 230 130 ";"
+    else litKindGlyph t.kind
+
+litKindGlyph : TileKind -> String
+let litKindGlyph k =
+    match k
+    case VoidTile -> " "
+    case Floor -> tc 120 120 105 "."
+    case Wall -> tc 150 130 100 "#"
+    case ClosedDoor -> tc 190 135 70 "+"
+    case OpenDoor -> tc 190 135 70 "/"
+    case Upstairs -> tcb 235 235 250 "<"
+    case Downstairs -> tcb 235 235 250 ">"
+    case Water -> tc 80 130 220 "~"
+    case Lava -> tcb 240 110 40 "~"
+    case Trap -> tcb 225 80 80 "^"
+    case Altar -> tcb 235 205 95 "_"
+    case LoreStone -> tc 95 205 225 "?"
+    case ChaosVent -> tcb 210 95 220 "*"
+
+-- Remembered but unlit: dim monochrome.
+memTile : Tile -> String
+let memTile t = tc 75 75 80 (tileChar t)
+
+-- ── Entities ────────────────────────────────────────────────────────────
+actorGlyph : Actor -> String
+let actorGlyph a =
+    if a.species == PlayerSpecies then tcb 250 250 250 a.glyph
+    elif a.faction == HeroFaction then tc 95 220 125 a.glyph
+    elif a.faction == ChaosFaction then tcb 210 95 220 a.glyph
+    elif a.faction == UndeadFaction then tc 205 205 215 a.glyph
+    elif a.attitude == Neutral then tc 95 205 225 a.glyph
+    elif a.faction == BeastFaction then tc 200 150 95 a.glyph
+    else tc 220 120 95 a.glyph
+
+itemGlyphColored : Item -> String
+let itemGlyphColored item =
+    match item.class
+    case CoinClass -> tcb 235 205 95 item.glyph
+    case PotionClass -> tc 225 110 165 item.glyph
+    case ScrollClass -> tc 225 225 185 item.glyph
+    case WeaponClass -> tc 205 205 215 item.glyph
+    case ArmorClass -> tc 170 170 190 item.glyph
+    case WandClass -> tc 160 205 235 item.glyph
+    case ArtifactClass -> tcb 245 220 120 item.glyph
+    case FoodClass -> tc 200 160 95 item.glyph
+    case CorpseClass -> tc 170 110 110 item.glyph
+    case ToolClass -> tc 200 200 200 item.glyph
 
 itemAt : Vec2 -> List GroundItem -> Option Item
 let itemAt pos items decreases listLength items =
     match items
     case Nil -> None
-    case (::) gi rest -> if eqPos pos gi.pos then Some gi.item else itemAt pos rest
+    case gi :: rest -> if eqPos pos gi.pos then Some gi.item else itemAt pos rest
 
 actorGlyphAt : Vec2 -> List Actor -> Option String
 let actorGlyphAt pos actors decreases listLength actors =
     match actors
     case Nil -> None
-    case (::) a rest ->
-        if a.alive && eqPos a.pos pos then Some a.glyph else actorGlyphAt pos rest
+    case a :: rest ->
+        if a.alive && eqPos a.pos pos then Some (actorGlyph a) else actorGlyphAt pos rest
 
 cellGlyph : Level -> Vec2 -> String
 let cellGlyph level pos =
     let tile = grid.getTile level pos
-    in
-        if not tile.lit then tileGlyph tile
-        else
-            match actorGlyphAt pos level.actors
-            case Some g -> g
-            case None ->
-                match itemAt pos level.items
-                case Some item -> item.glyph
-                case None -> tileGlyph tile
+    if not tile.seen then " "
+    elif not tile.lit then memTile tile
+    else
+        match actorGlyphAt pos level.actors
+        case Some g -> g
+        case None ->
+            match itemAt pos level.items
+            case Some item -> itemGlyphColored item
+            case None -> litTile tile
 
 renderMap : Level -> String
 let renderMap level =
     block
-        rowLoop : Int -> Int -> String -> String
-        let rowLoop x y acc decreases max 0 (level.size.width - x) =
+        cells : Int -> Int -> String -> String
+        let cells x y acc decreases max 0 (level.size.width - x) =
             if x >= level.size.width then acc ++ "\r\n"
-            else rowLoop (x + 1) y (acc ++ cellGlyph level (Vec2 x y))
+            else cells (x + 1) y (acc ++ cellGlyph level (Vec2 x y))
 
         row : Int -> String
-        let row y = rowLoop 0 y ""
+        let row y = cells 0 y ""
 
         rows : Int -> String -> String
         let rows y acc decreases max 0 (level.size.height - y) =
@@ -80,28 +155,61 @@ let renderMap level =
 
         rows 0 ""
 
-hpBar : Actor -> String
-let hpBar p =
-    "HP " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++ "  Lv " ++ show p.stats.level ++ "  XP " ++ show p.stats.xp
+-- ── Meters / status ─────────────────────────────────────────────────────
+meter : Int -> Int -> Int -> String
+let meter width cur maxv =
+    let m = max 1 maxv
+    let c = max 0 (min cur m)
+    let filled = divInt (c * width) m
+    let empty = max 0 (width - filled)
+    repeatStr filled "█" ++ repeatStr empty "░"
 
-messages : List String -> String
-let messages ms =
+hpMeter : Int -> Int -> String
+let hpMeter cur maxv =
+    let bar = meter 12 cur maxv
+    let ratio = divInt (max 0 cur * 100) (max 1 maxv)
+    if ratio <= 25 then tcb 230 70 70 bar
+    elif ratio <= 50 then tc 230 180 70 bar
+    else tc 110 210 120 bar
+
+chaosMeter : PlayerState -> String
+let chaosMeter p =
+    let threshold = (listLength p.mutations + 1) * 100
+    tc 200 110 220 (meter 10 p.corruption threshold)
+
+hungerWord : Int -> String
+let hungerWord h =
+    if h <= 0 then tcb 230 70 70 "Starving"
+    elif h <= 150 then tc 230 180 70 "Hungry"
+    else tc 150 200 150 "Fed"
+
+statusLine : ContentPack -> PlayerState -> Actor -> String
+let statusLine pack player p =
+    tc 200 200 210 "HP " ++ hpMeter p.stats.hp p.stats.maxHp ++ " " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++
+    tc 200 200 210 "   Chaos " ++ chaosMeter player ++ " " ++ show player.corruption ++ "\r\n" ++
+    tc 180 180 195 "Lv " ++ show p.stats.level ++ "  XP " ++ show p.stats.xp ++ "  Gold " ++ tc 235 205 95 (show player.gold) ++
+    tc 180 180 195 "  Food " ++ hungerWord player.hunger ++ tc 180 180 195 "  Tactic " ++ tc 150 200 230 (tactics.tacticName pack player.tactic)
+
+-- ── Message log (recency fade: newest brightest, at the bottom) ──────────
+fade : Int -> String -> String
+let fade d m =
+    if d <= 0 then tcb 235 235 235 m
+    elif d <= 1 then tc 195 195 195 m
+    elif d <= 3 then tc 150 150 150 m
+    else tc 110 110 110 m
+
+renderMessages : List String -> String
+let renderMessages ms =
     block
-        go : List String -> String -> String
-        let go xs acc decreases listLength xs =
+        go : Int -> Int -> List String -> String
+        let go n i xs decreases listLength xs =
             match xs
-            case Nil -> acc
-            case (::) m rest -> go rest (acc ++ m ++ "\r\n")
-        go (reverse ms) ""
+            case Nil -> ""
+            case m :: rest -> fade (n - 1 - i) m ++ "\r\n" ++ go n (i + 1) rest
 
-renderInventory : Actor -> String
-let renderInventory actor =
-    let lines = inv.inventoryText actor
-    in renderBox "Inventory" lines
+        go (listLength ms) 0 (reverse ms)
 
-renderHelp : String
-let renderHelp = renderBox "Help" input.helpLines
-
+-- ── Framed panels (inventory / character / help) ────────────────────────
 renderBox : String -> List String -> String
 let renderBox title lines =
     block
@@ -109,23 +217,93 @@ let renderBox title lines =
         let go xs acc decreases listLength xs =
             match xs
             case Nil -> acc
-            case (::) l rest -> go rest (acc ++ "  " ++ l ++ "\r\n")
-        ansiClear ++ title ++ "\r\n" ++ "--------------------------------\r\n" ++ go lines "" ++ "\r\npress Esc or any movement key\r\n"
+            case l :: rest -> go rest (acc ++ tc 80 80 100 "│ " ++ l ++ "\r\n")
 
+        ansiClear ++ tc 80 80 100 "┌─ " ++ tcb 235 235 250 title ++ " " ++ tc 80 80 100 (repeatStr 30 "─") ++ "\r\n" ++ go lines "" ++ tc 80 80 100 ("└" ++ repeatStr 34 "─") ++ "\r\n\r\n" ++ tc 130 130 150 "press Esc or any movement key" ++ "\r\n"
+
+mutationList : ContentPack -> List Mutation -> String
+let mutationList pack ms =
+    match ms
+    case Nil -> "none"
+    case m :: Nil -> content.mutationName pack m
+    case m :: rest -> content.mutationName pack m ++ ", " ++ mutationList pack rest
+
+renderInventory : ContentPack -> PlayerState -> Actor -> String
+let renderInventory pack player actor =
+    let lines = inv.inventoryText pack player actor
+    renderBox "Inventory" lines
+
+faithLabel : ContentPack -> Faith -> String
+let faithLabel pack faith =
+    match content.findFaithDef pack faith
+    case Some def -> def.name
+    case None ->
+        match faith
+        case EmberMother -> "Ember Mother"
+        case RootFather -> "Root-Father"
+        case VeiledWitness -> "Veiled Witness"
+
+renderCharacter : GameState -> String
+let renderCharacter game =
+    match playerActor game
+    case None -> renderBox "Character" ["No player."]
+    case Some p ->
+        renderBox "Character" [ "Star sign: " ++ content.starSignName game.content game.player.starSign
+            , "Faith: " ++ faithLabel game.content game.player.faith ++ "  Favor: " ++ show game.player.favor
+            , "Gold: " ++ show game.player.gold
+            , "Tactic: " ++ tactics.tacticName game.content game.player.tactic
+            , "Corruption: " ++ show game.player.corruption
+            , "Mutations: " ++ mutationList game.content game.player.mutations
+            , "Reputation: " ++ show game.player.reputation
+            , "Stats: Str " ++ show p.stats.str ++ " Dex " ++ show p.stats.dex ++ " Def " ++ show p.stats.def
+            ]
+
+renderHelp : String
+let renderHelp = renderBox "Help" input.helpLines
+
+-- ── Title screen ────────────────────────────────────────────────────────
+menuMessages : List String -> String
+let menuMessages ms =
+    block
+        go : List String -> String
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> ""
+            case m :: rest -> tc 120 120 140 ("          " ++ m) ++ "\r\n" ++ go rest
+
+        go (reverse ms)
+
+renderMenu : GameState -> String
+let renderMenu game =
+    ansiClear ++ "\r\n\r\n" ++
+    tcb 210 95 220 "          ╶──────────────────────────────╴" ++ "\r\n\r\n" ++
+    tcb 235 235 250 "                    D E L V E" ++ "\r\n" ++
+    tc 150 150 175 "            a roguelike descent in Kappa" ++ "\r\n\r\n" ++
+    tcb 210 95 220 "          ╶──────────────────────────────╴" ++ "\r\n\r\n" ++
+    tc 205 205 215 "            " ++ tcb 235 235 250 "n" ++ tc 205 205 215 " / Enter   New game" ++ "\r\n" ++
+    tc 205 205 215 "            " ++ tcb 235 235 250 "c" ++ tc 205 205 215 " / l       Continue saved game" ++ "\r\n" ++
+    tc 205 205 215 "            " ++ tcb 235 235 250 "q" ++ tc 205 205 215 " / Esc     Quit" ++ "\r\n\r\n" ++
+    tc 120 120 140 ("          Pack: " ++ game.content.packId ++ " " ++ game.content.version) ++ "\r\n" ++
+    tc 120 120 140 ("          Save: " ++ game.savePath) ++ "\r\n\r\n" ++
+    menuMessages game.level.messages
+
+-- ── Top-level dispatch ──────────────────────────────────────────────────
 renderGame : GameState -> String
 let renderGame game =
     match game.mode
+    case MainMenu -> renderMenu game
     case HelpMode -> renderHelp
+    case CharacterMode -> renderCharacter game
     case InventoryMode ->
         match playerActor game
-        case Some p -> renderInventory p
-        case None -> renderBox "Inventory" ["No player. Philosophy wins, roguelike loses."]
-    case Dead -> ansiClear ++ "You died. The dungeon looks smug.\r\n\r\npress q to quit\r\n"
-    case Won -> ansiClear ++ "You escape with the amulet. Ridiculous, but allowed.\r\n\r\npress q to quit\r\n"
+        case Some p -> renderInventory game.content game.player p
+        case None -> renderBox "Inventory" ["No player."]
+    case Dead -> ansiClear ++ ansiShowCursor ++ "\r\n\r\n" ++ tcb 230 70 70 "    You died." ++ "\r\n\r\n" ++ tc 150 150 160 "    press q to quit" ++ "\r\n"
+    case Won -> ansiClear ++ ansiShowCursor ++ "\r\n\r\n" ++ tcb 235 205 95 "    You escape with the amulet." ++ "\r\n\r\n" ++ tc 150 150 160 "    press q to quit" ++ "\r\n"
     case Quit -> ansiClear ++ ansiShowCursor
     case Playing ->
-        let hud =
-            match playerActor game
-            case Some p -> hpBar p
-            case None -> "No player"
-        ansiClear ++ ansiHideCursor ++ renderMap game.level ++ hud ++ "\r\n" ++ messages game.level.messages
+        match playerActor game
+        case Some p ->
+            ansiClear ++ ansiHideCursor ++ renderMap game.level ++ ruleLine game.level.size.width ++
+            statusLine game.content game.player p ++ "\r\n" ++ ruleLine game.level.size.width ++ renderMessages game.level.messages
+        case None -> ansiClear ++ renderMap game.level ++ "No player"

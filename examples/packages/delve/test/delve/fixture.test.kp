@@ -1,0 +1,98 @@
+module delve.fixture
+
+import delve.core.*
+import delve.natutil.*
+
+stats : Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Int -> Stats
+let stats hp maxHp mp maxMp str dex def xp level =
+    Stats hp maxHp mp maxMp str dex def xp level
+
+testWorldgen : WorldGenConfig
+let testWorldgen =
+    WorldGenConfig {
+        mapMinWidth = 60,
+        mapMaxWidth = 96,
+        mapMinHeight = 20,
+        mapMaxHeight = 32,
+        minRoomSize = 4,
+        maxRoomSize = 10,
+        roomAttempts = 30,
+        baseMonsterChance = 35,
+        monsterChancePerDepth = 5,
+        itemChance = 48,
+        altarChance = 12,
+        loreStoneChance = 8,
+        trapBaseChance = 18,
+        trapChancePerDepth = 1,
+        chaosVentBaseChance = 4,
+        chaosVentChancePerDepth = 1
+    }
+
+testSave : SaveConfig
+let testSave = SaveConfig "saves" "saves/test-save.json" 1 False
+
+testRules : RulesConfig
+let testRules = RulesConfig 1200 9
+
+testItems : List ItemDef
+let testItems =
+    [ ItemDef "dagger" Dagger "dagger" "dagger" ")" WeaponClass False 2 0 True True
+    , ItemDef "food_ration" FoodRation "food ration" "food ration" "%" FoodClass True 800 0 True True
+    , ItemDef "holy_symbol" HolySymbol "plain holy symbol" "plain holy symbol" "_" ToolClass False 0 0 True True
+    , ItemDef "corpse" Corpse "fresh corpse" "fresh corpse" "%" CorpseClass False 250 0 True True
+    , ItemDef "gold" Gold "gold pieces" "gold pieces" "$" CoinClass True 1 0 True True
+    ]
+
+testActors : List ActorDef
+let testActors =
+    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"]
+    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"]
+    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"]
+    ]
+
+testTactics : List TacticDef
+let testTactics =
+    [ TacticDef Coward "coward" (-3) (-1) 3 0 "You keep your guard high and your distance careful."
+    , TacticDef Defensive "defensive" (-1) 0 2 1 "You settle into a guarded stance."
+    , TacticDef Balanced "balanced" 0 0 0 1 "You return to balanced tactics."
+    , TacticDef Aggressive "aggressive" 2 2 (-1) 2 "You press the attack."
+    , TacticDef Berserk "berserk" 4 4 (-3) 3 "You commit fully to the attack."
+    ]
+
+testStarSigns : List StarSignDef
+let testStarSigns =
+    [ StarSignDef Raven "Raven" "Your dexterity increases." 0 0 0 1 0 0 0
+    , StarSignDef Unicorn "Unicorn" "Your health and corruption resistance increase." 3 0 0 0 0 0 3
+    ]
+
+testMutations : List MutationDef
+let testMutations =
+    [ MutationDef Claws "claws" 0 0 1 0 0 1 "Your strength increases."
+    , MutationDef WhisperingSkull "whispering skull" 0 1 0 0 0 1 "Your magic reserves increase."
+    ]
+
+testFaiths : List FaithDef
+let testFaiths =
+    [ FaithDef EmberMother "Ember Mother" "warmth"
+    , FaithDef RootFather "Root-Father" "growth"
+    , FaithDef VeiledWitness "Veiled Witness" "secrets"
+    ]
+
+testPack : ContentPack
+let testPack =
+    ContentPack {
+        packId = "delve.test",
+        version = "test",
+        rules = testRules,
+        worldgen = testWorldgen,
+        save = testSave,
+        items = testItems,
+        actors = testActors,
+        monsterSpawns = [SpawnRule "rat" 1 99 10],
+        itemSpawns = [SpawnRule "gold" 1 99 10],
+        tactics = testTactics,
+        starSigns = testStarSigns,
+        mutations = testMutations,
+        faiths = testFaiths,
+        rumors = [Rumor "Tests are dull but useful."]
+    }

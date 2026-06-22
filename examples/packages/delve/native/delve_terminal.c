@@ -1,18 +1,16 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
 #define _POSIX_C_SOURCE 200809L
-#define _DEFAULT_SOURCE
 #include "delve_terminal.h"
 
 #include <errno.h>
 #include <poll.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 
 struct delve_terminal_handle {
     int in_fd;
@@ -125,17 +123,107 @@ int delve_get_size(delve_terminal_handle *h, delve_size *out_size) {
 }
 
 uint64_t delve_monotonic_seed(void) {
-    /* The native build force-`-include`s a generated prototype header (pulling
-     * in <stdint.h>/<features.h>) BEFORE this file's own feature-test macros
-     * take effect, so CLOCK_MONOTONIC / clock_gettime may not be visible. Use
-     * the always-available ISO C time() mixed with the pid for a process- and
-     * time-specific seed instead of the POSIX monotonic clock. */
-    uint64_t t = (uint64_t)time(NULL);
-    uint64_t pid = (uint64_t)getpid();
-    uint64_t mixed = (t * 6364136223846793005ULL) + (pid * 1442695040888963407ULL) + 1ULL;
-    return mixed ^ (mixed >> 31);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ (uint64_t)getpid();
 }
 
 const char *delve_strerror(int code) {
     return strerror(code);
+}
+
+
+int delve_read_text_file(const char *path, char **out_text, int *out_len) {
+    if (!path || !out_text || !out_len) return EINVAL;
+    *out_text = NULL;
+    *out_len = 0;
+
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return errno ? errno : EIO;
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        int rc = errno ? errno : EIO;
+        fclose(fp);
+        return rc;
+    }
+    long len = ftell(fp);
+    if (len < 0) {
+        int rc = errno ? errno : EIO;
+        fclose(fp);
+        return rc;
+    }
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        int rc = errno ? errno : EIO;
+        fclose(fp);
+        return rc;
+    }
+
+    char *buf = (char *)malloc((size_t)len + 1u);
+    if (!buf) {
+        fclose(fp);
+        return ENOMEM;
+    }
+
+    size_t got = fread(buf, 1, (size_t)len, fp);
+    if (got != (size_t)len) {
+        int rc = ferror(fp) ? (errno ? errno : EIO) : EIO;
+        free(buf);
+        fclose(fp);
+        return rc;
+    }
+    if (fclose(fp) != 0) {
+        int rc = errno ? errno : EIO;
+        free(buf);
+        return rc;
+    }
+
+    buf[len] = '\0';
+    *out_text = buf;
+    *out_len = (int)len;
+    return 0;
+}
+
+int delve_write_text_file(const char *path, const char *text, int len) {
+    if (!path || !text || len < 0) return EINVAL;
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return errno ? errno : EIO;
+
+    size_t written = fwrite(text, 1, (size_t)len, fp);
+    if (written != (size_t)len) {
+        int rc = errno ? errno : EIO;
+        fclose(fp);
+        return rc;
+    }
+    if (fclose(fp) != 0) return errno ? errno : EIO;
+    return 0;
+}
+
+int delve_file_exists(const char *path, int *out_exists) {
+    if (!path || !out_exists) return EINVAL;
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        *out_exists = 1;
+        return 0;
+    }
+    if (errno == ENOENT) {
+        *out_exists = 0;
+        return 0;
+    }
+    return errno ? errno : EIO;
+}
+
+int delve_ensure_directory(const char *path) {
+    if (!path) return EINVAL;
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode) ? 0 : ENOTDIR;
+    }
+    if (errno != ENOENT) return errno ? errno : EIO;
+    if (mkdir(path, 0775) == 0) return 0;
+    if (errno == EEXIST) return 0;
+    return errno ? errno : EIO;
+}
+
+void delve_free_string(char *text) {
+    free(text);
 }

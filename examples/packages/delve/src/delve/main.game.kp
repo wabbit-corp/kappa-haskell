@@ -1,7 +1,9 @@
 module delve.main
 
 import delve.core.*
+import delve.natutil.*
+import delve.natutil.*
 import delve.engine as engine
 
-main : UIO Unit
+main : IO GameError Unit
 let main = engine.main

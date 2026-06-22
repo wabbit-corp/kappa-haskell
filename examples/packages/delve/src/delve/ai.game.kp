@@ -5,7 +5,8 @@ import delve.natutil.*
 import delve.grid as grid
 import delve.fov as fov
 import delve.combat as combat
-import delve.rng as prng
+import delve.rng as rand
+import delve.content as content
 
 toward : Vec2 -> Vec2 -> Direction
 let toward from to =
@@ -22,9 +23,9 @@ let toward from to =
         elif dx > 0 && dy > 0 then SouthEast
         else Wait
 
-randomDir : prng.Rng -> (dir : Direction, rng : prng.Rng)
+randomDir : rand.Rng -> (dir : Direction, rng : rand.Rng)
 let randomDir r0 =
-    let r = prng.range 0 7 r0
+    let r = rand.range 0 7 r0
     let dir =
         match r.value
         case 0 -> North
@@ -41,40 +42,126 @@ tryMoveActor : Actor -> Vec2 -> Level -> Actor
 let tryMoveActor actor target level =
     if grid.inBounds level.size target && isWalkable (grid.getTile level target) then
         match actorAt target level.actors
-        case None -> withActorPos target actor
+        case None -> actor.{ pos = target }
         case Some _ -> actor
     else actor
 
-monsterTurn : Actor -> Actor -> GameState -> (game : GameState, rng : prng.Rng)
-let monsterTurn monster player game =
-    if not monster.alive then (game = game, rng = game.rng)
-    elif chebyshev monster.pos player.pos <= 1 then
-        let hit = combat.strike monster player game.rng
-        let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
-        let mode = if hit.defender.alive then game.mode else Dead
-        let g = withRngModeLevel hit.rng mode (withActors actors1 game.level) game
-        in (game = message hit.log g, rng = hit.rng)
+firstVisibleHostile : Actor -> Level -> Option Actor
+let firstVisibleHostile actor level =
+    block
+        go : List Actor -> Option Actor
+        let go actors decreases listLength actors =
+            match actors
+            case Nil -> None
+            case a :: rest ->
+                if a.id != actor.id && a.alive && hostileTo actor a && fov.visibleFrom level actor.pos a.pos then Some a
+                else go rest
+        go level.actors
+
+addCorpseFor : Actor -> GameState -> GameState
+let addCorpseFor victim game =
+    if victim.species == PlayerSpecies || victim.species == Hound then game
     else
-        let chase = fov.visibleFrom game.level monster.pos player.pos
-        let dirRoll = if chase then (dir = toward monster.pos player.pos, rng = game.rng) else randomDir game.rng
-        let target = addPos monster.pos (moveDelta dirRoll.dir)
-        let monster2 = tryMoveActor monster target game.level
-        let actors2 = replaceActor monster2 game.level.actors
-        in (game = withRngLevel dirRoll.rng (withActors actors2 game.level) game, rng = dirRoll.rng)
+        let corpse = content.mkItem game.content Corpse
+        game.{ level = game.level.{ items = (::) (GroundItem victim.pos corpse) game.level.items } }
+
+applyHit : (attacker : Actor, defender : Actor, log : String, rng : rand.Rng) -> GameState -> GameState
+let applyHit hit game =
+    let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
+    let g0 = game.{ rng = intToNat hit.rng, level = game.level.{ actors = removeDeadActors actors1 } }
+    let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
+    in message hit.log g1
+
+friendlyTurn : Actor -> Actor -> GameState -> GameState
+let friendlyTurn friend player game =
+    match firstVisibleHostile friend game.level
+    case Some enemy ->
+        if chebyshev friend.pos enemy.pos <= 1 then
+            let hit = combat.strike game.content friend enemy (natToInt game.rng)
+            applyHit hit game
+        else
+            let dir = toward friend.pos enemy.pos
+            let friend2 = tryMoveActor friend (addPos friend.pos (moveDelta dir)) game.level
+            game.{ level = game.level.{ actors = replaceActor friend2 game.level.actors } }
+    case None ->
+        if chebyshev friend.pos player.pos > 2 then
+            let dir = toward friend.pos player.pos
+            let friend2 = tryMoveActor friend (addPos friend.pos (moveDelta dir)) game.level
+            game.{ level = game.level.{ actors = replaceActor friend2 game.level.actors } }
+        else game
+
+spellDamage : Species -> Int
+let spellDamage s =
+    match s
+    case Wizard -> 6
+    case Dragon -> 10
+    case _ -> 0
+
+castSpell : Actor -> Actor -> GameState -> GameState
+let castSpell monster player game =
+    let dmg = spellDamage monster.species
+    let hp2 = player.stats.hp - dmg
+    let player2 = player.{ stats = player.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+    let monster2 = monster.{ stats = monster.stats.{ mp = max 0 (monster.stats.mp - 3) } }
+    let actors1 = replaceActor player2 (replaceActor monster2 game.level.actors)
+    let g = message (monster.name ++ " hurls chaos at you for " ++ show dmg ++ ".") (game.{ level = game.level.{ actors = actors1 } })
+    in if player2.alive then g else g.{ mode = Dead }
+
+hostileTurn : Actor -> Actor -> GameState -> GameState
+let hostileTurn monster player game =
+    let playerTile = grid.getTile game.level player.pos
+    in
+        if chebyshev monster.pos player.pos <= 1 then
+            if playerTile.warded && monster.species != Dragon && monster.species != ChaosSpawn then
+                let roll = rand.chance 25 (natToInt game.rng)
+                let game1 = game.{ rng = intToNat roll.rng }
+                in if roll.value then
+                    let t = grid.getTile game1.level player.pos
+                    let level2 = grid.setTile player.pos t.{ warded = False } game1.level
+                    in message (monster.name ++ " scuffs out the ward.") (game1.{ level = level2 })
+                else message (monster.name ++ " hesitates before the ward.") game1
+            else
+                let hit = combat.strikeWith game.content Balanced game.player.tactic monster player (natToInt game.rng)
+                let g = applyHit hit game
+                if hit.defender.alive then g else g.{ mode = Dead }
+        else
+            let chase = fov.visibleFrom game.level monster.pos player.pos
+            in if chase && spellDamage monster.species > 0 && monster.stats.mp >= 3 then
+                castSpell monster player game
+            else
+                let dirRoll = if chase then (dir = toward monster.pos player.pos, rng = natToInt game.rng) else randomDir (natToInt game.rng)
+                let target = addPos monster.pos (moveDelta dirRoll.dir)
+                let monster2 = tryMoveActor monster target game.level
+                in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+
+actorTurn : Actor -> GameState -> GameState
+let actorTurn actor game =
+    match playerActor game
+    case None -> game.{ mode = Dead }
+    case Some player ->
+        match findActor actor.id game.level.actors
+        case None -> game
+        case Some current ->
+            if not current.alive then game
+            elif current.id == game.player.actorId then game
+            else
+                let actor2 = combat.tickBleeding current
+                let game1 = game.{ level = game.level.{ actors = replaceActor actor2 game.level.actors } }
+                if not actor2.alive then addCorpseFor actor2 game1.{ level = game1.level.{ actors = removeDeadActors game1.level.actors } }
+                elif actor2.faction == HeroFaction then friendlyTurn actor2 player game1
+                elif actor2.attitude == Neutral then game1
+                else hostileTurn actor2 player game1
 
 runMonsters : GameState -> GameState
 let runMonsters game =
     match playerActor game
-    case None -> withMode Dead game
-    case Some player ->
+    case None -> game.{ mode = Dead }
+    case Some _ ->
         block
             go : List Actor -> GameState -> GameState
             let go actors g decreases listLength actors =
                 match actors
                 case Nil -> g
-                case (::) a rest ->
-                    if a.id == g.player.actorId then go rest g
-                    else
-                        let step = monsterTurn a player g
-                        go rest step.game
+                case a :: rest ->
+                    if g.mode != Playing then g else go rest (actorTurn a g)
             go game.level.actors game

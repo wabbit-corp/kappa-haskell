@@ -1,0 +1,23 @@
+module delve.input_test
+
+import delve.core.*
+import delve.natutil.*
+import delve.input as input
+
+testHjkl : Bool
+let testHjkl =
+    input.keyToCommand (KeyChar "h") == Move West &&
+    input.keyToCommand (KeyChar "l") == Move East
+
+testFeatureKeys : Bool
+let testFeatureKeys =
+    input.keyToCommand (KeyChar "p") == Pray &&
+    input.keyToCommand (KeyChar "E") == Engrave &&
+    input.keyToCommand (KeyChar "C") == CycleTactic &&
+    input.keyToCommand (KeyChar "a") == TargetedAttack
+
+testMenuKeys : Bool
+let testMenuKeys =
+    input.menuKeyToCommand (KeyChar "n") == StartNewGame &&
+    input.menuKeyToCommand (KeyChar "c") == LoadGame &&
+    input.menuKeyToCommand (KeyChar "l") == LoadGame

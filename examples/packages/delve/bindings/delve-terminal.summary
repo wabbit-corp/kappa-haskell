@@ -16,6 +16,10 @@ blocking-classification:
   delve_write_all: blocking
   delve_get_size: nonblocking
   delve_monotonic_seed: nonblocking
+  delve_read_text_file: blocking
+  delve_write_text_file: blocking
+  delve_file_exists: blocking
+  delve_ensure_directory: blocking
 error-contract:
   raw C functions return errno-compatible int status
   status 0 means success
@@ -24,7 +28,10 @@ ownership:
   delve_open_terminal returns an owned TerminalHandle
   delve_close_terminal consumes and releases the TerminalHandle
   terminal raw mode is restored by close
+  delve_read_text_file returns an owned NUL-terminated buffer; generated bindings must call delve_free_string
+  save/config file functions never retain caller buffers after returning
 callbacks: none
 notes:
   The raw host binding generator should expose Result TerminalError a wrappers rather
   than bare errno integers when this trusted summary is selected.
+  The refined delve.files facade maps this raw surface to typed GameError values.

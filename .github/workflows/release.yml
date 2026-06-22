@@ -60,10 +60,51 @@ jobs:
       - name: Test
         run: cabal test all --test-show-details=direct
 
+  native-gates:
+    name: Native backend and Delve gates
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libgc-dev libgmp-dev pkg-config sqlite3 libsqlite3-dev zlib1g-dev libuv1-dev curl
+
+      - name: Set up Haskell
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.6.7"
+          cabal-version: "3.10.3.0"
+
+      - name: Cache Cabal store
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cabal/store
+            dist-newstyle
+          key: ${{ runner.os }}-ghc-9.6.7-native-${{ hashFiles('kappa-haskell.cabal') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc-9.6.7-native-
+
+      - name: Run native gate suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cabal update
+          export KAPPA_CC="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+          test/native/run-native-tests.sh
+
   package-compiler:
     name: Package Haskell compiler (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs:
+      - test
+      - native-gates
     if: github.event_name != 'pull_request'
 
     strategy:
@@ -135,19 +176,43 @@ jobs:
           if-no-files-found: error
 
   package-delve:
-    name: Package Delve game (linux-x64)
-    runs-on: ubuntu-latest
-    needs: test
+    name: Package Delve game (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    needs:
+      - test
+      - native-gates
     if: github.event_name != 'pull_request'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            test-target: delve-tests-linux
+            game-target: delve-linux
+            exe-ext: ""
+          - os: macos-14
+            platform: macos-arm64
+            test-target: delve-tests-macos-arm64
+            game-target: delve-macos-arm64
+            exe-ext: ""
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install native dependencies
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential libgc-dev libgmp-dev pkg-config
+
+      - name: Install native dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install bdw-gc gmp pkg-config
 
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
@@ -162,41 +227,54 @@ jobs:
 
           cabal update
 
-          compiler_dir="$PWD/dist/release/kappa-haskell-linux-x64"
+          compiler_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
           mkdir -p "$compiler_dir/bin"
           cabal install exe:kappa \
             --install-method=copy \
             --installdir="$compiler_dir/bin" \
             --overwrite-policy=always
 
-          game_dir="$PWD/dist/release/delve-linux-x64"
+          game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
           mkdir -p "$game_dir/bin"
+          cc_cmd="cc"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+          fi
+          export KAPPA_CC="$cc_cmd"
 
           "$compiler_dir/bin/kappa" build \
+            --update \
             --manifest examples/packages/delve \
-            --target delve-tests \
-            -o "$game_dir/bin/delve-tests" \
-            --cc cc
+            --target "${{ matrix.test-target }}" \
+            -o "$game_dir/bin/delve-tests${{ matrix.exe-ext }}" \
+            --cc "$cc_cmd"
 
-          "$game_dir/bin/delve-tests"
+          cp -R examples/packages/delve/assets "$game_dir/assets"
+          mkdir -p "$game_dir/saves"
+          touch "$game_dir/saves/.gitkeep"
+
+          test_output="$(cd "$game_dir" && "bin/delve-tests${{ matrix.exe-ext }}")"
+          printf '%s\n' "$test_output"
+          grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
 
           "$compiler_dir/bin/kappa" build \
+            --update \
             --manifest examples/packages/delve \
-            --target delve \
-            -o "$game_dir/bin/delve" \
-            --cc cc
+            --target "${{ matrix.game-target }}" \
+            -o "$game_dir/bin/delve${{ matrix.exe-ext }}" \
+            --cc "$cc_cmd"
 
           cp LICENSE "$game_dir/LICENSE"
           cp examples/packages/delve/README.md "$game_dir/README.md"
           cp examples/packages/delve/DESIGN.md "$game_dir/DESIGN.md"
 
           mkdir -p "$PWD/dist/assets"
-          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/delve-linux-x64.tar.gz" "delve-linux-x64"
+          tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/delve-${{ matrix.platform }}.tar.gz" "delve-${{ matrix.platform }}"
 
       - name: Upload Delve package
         uses: actions/upload-artifact@v4
         with:
-          name: delve-linux-x64
+          name: delve-${{ matrix.platform }}
           path: dist/assets/*
           if-no-files-found: error
 

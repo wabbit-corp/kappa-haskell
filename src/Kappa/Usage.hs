@@ -46,7 +46,10 @@
 -- from same-module signatures, and a definition containing constructs
 -- outside the modelled subset is skipped entirely rather than misjudged.
 module Kappa.Usage
-  ( usageDiagnostics
+  ( PInfo
+  , coreFnParams
+  , moduleUsageSignatures
+  , usageDiagnostics
   ) where
 
 import Control.Monad (forM, forM_, unless, when)
@@ -57,6 +60,8 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Kappa.Core (Term)
+import qualified Kappa.Core as Core
 import Kappa.Diagnostic
 import Kappa.Source (Span)
 import Kappa.Syntax
@@ -334,8 +339,12 @@ flatR r = (rU r `seqU` rL r, rT r)
 -- | Analyze a resolved module; returns the §12.2–§12.4 usage
 -- diagnostics for its named definitions. The first argument carries the
 -- elaborator's §21.2 splice expansions (splice span ↦ expanded syntax).
-usageDiagnostics :: Map Span Expr -> Module -> [Diagnostic]
-usageDiagnostics expansions m = concatMap analyzeDecl lets
+-- The second argument carries checked callable types imported into this
+-- module; without it a qualified imported call such as @m.borrow x@ would
+-- be treated as an unknown consuming call even when its interface says the
+-- parameter is unrestricted or affine.
+usageDiagnostics :: Map Span Expr -> Map Text [PInfo] -> Module -> [Diagnostic]
+usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -395,13 +404,7 @@ usageDiagnostics expansions m = concatMap analyzeDecl lets
                 ]
         , c <- ddCtors dd
         ]
-    fns =
-      Map.fromList
-        [ (nameText n, fnParams (Map.lookup (nameText n) sigs) ld)
-        | ld <- lets
-        , Just n <- [ldName ld]
-        ]
-        `Map.union` builtinFns
+    fns = moduleUsageSignatures m `Map.union` importedFnParams `Map.union` builtinFns
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
@@ -418,6 +421,18 @@ builtinFns =
       -- is not a runtime use
       ("summon", [PInfo Nothing (Just QZero) False False True False])
     ]
+
+moduleUsageSignatures :: Module -> Map Text [PInfo]
+moduleUsageSignatures m =
+  Map.fromList
+    [ (nameText n, fnParams (Map.lookup (nameText n) sigs) ld)
+    | ld <- lets
+    , Just n <- [ldName ld]
+    ]
+  where
+    decls = modDecls m
+    sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
+    lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
 
 -- | Resolve a (possibly aliased) record type to its field list.
 resolveFields :: Map Text [(Text, Maybe Quantity)] -> Expr -> [(Text, Maybe Quantity)]
@@ -1489,11 +1504,7 @@ walkApp env f args
 walkApp env f args = do
   hr <- walkE env f
   let (hu, _ht) = flatR hr -- an application calls its head exactly once
-      params = case f of
-        EVar n
-          | not (Map.member (nameText n) (eVars env)) ->
-              Map.findWithDefault [] (nameText n) (eFns env)
-        _ -> []
+      params = maybe [] (\n -> Map.findWithDefault [] n (eFns env)) (calleeDemandName env f)
       ps = params ++ repeat defaultP
   rs <- sequence (zipWith (walkArg env params) args ps)
   -- §12.4: places borrowed and consumed by the same call must be disjoint
@@ -1542,10 +1553,17 @@ walkApp env f args = do
       -- anonymous-borrow binders in scope, keyed for taint-touch lookup
       -- and carrying the §3.1.1A borrow-introduction (binder) site
       anonIntro = Map.fromList [(vKey vi, vSpan vi) | vi <- Map.elems (eVars env), vAnonBorrow vi]
+      argNames = \case
+        ArgExplicit e -> surfaceVarNames e
+        ArgImplicit e -> surfaceVarNames e
+        ArgInout e _ -> surfaceVarNames e
+        ArgNamedBlock items _ -> concatMap (maybe [] surfaceVarNames . snd) items
   when (headName == Just "fork") $
     forM_ (zip args (map fst rs)) $ \(a, r) -> do
       let touched = Map.keys (Map.filter cTouch (rU r `seqU` rL r))
-          capturedIntros = [sp | k <- touched, Just sp <- [Map.lookup k anonIntro]]
+          usageIntros = [sp | k <- touched, Just sp <- [Map.lookup k anonIntro]]
+          syntaxIntros = [sp | n <- argNames a, Just sp <- [Map.lookup n anonIntro]]
+          capturedIntros = usageIntros ++ syntaxIntros
       case capturedIntros of
         [] -> pure ()
         -- §3.1.1A (line 602-603): cite the anonymous-borrow introduction
@@ -1731,6 +1749,32 @@ walkArg env params arg p = case arg of
     inoutish e isp = do
       (r, fs) <- borrowish e
       pure (r, [FInout k path isp | FBorrow k path _ <- fs])
+
+calleeDemandName :: Env -> Expr -> Maybe Text
+calleeDemandName env = \case
+  EVar n
+    | not (Map.member (nameText n) (eVars env)) -> Just (nameText n)
+  -- Module-qualified calls keep the alias spelling in the surface tree.
+  -- Preserve it as part of the demand key so @term.write x@ cannot
+  -- accidentally use another imported module's bare @write@ profile.
+  EDot (EVar alias) (DotName n)
+    | not (Map.member (nameText alias) (eVars env)) -> Just (nameText alias <> "." <> nameText n)
+  EAscription e _ _ -> calleeDemandName env e
+  _ -> Nothing
+
+coreFnParams :: Term -> [PInfo]
+coreFnParams = \case
+  Core.CPi Core.Expl q nm _ body -> coreP nm q : coreFnParams body
+  Core.CPi Core.Impl _ _ _ body -> coreFnParams body
+  _ -> []
+  where
+    coreP nm q = PInfo (Just nm) (coreQuantity q) False False True False
+    coreQuantity = \case
+      Core.Q0 -> Just QZero
+      Core.Q1 -> Just QOne
+      Core.QW -> Just QOmega
+      Core.QLe1 -> Just QAtMostOne
+      Core.QGe1 -> Just QAtLeastOne
 
 -- ── Bindings and do items ────────────────────────────────────────────
 

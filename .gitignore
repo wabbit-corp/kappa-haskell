@@ -5,6 +5,7 @@ dist-source/
 *.dyn_hi
 *.dyn_o
 .ghc.environment.*
+.DS_Store
 
 # Local native toolchain (zig); not committed
 .toolchain/

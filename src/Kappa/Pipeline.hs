@@ -39,7 +39,7 @@ import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
 import Kappa.Core (GName (..), Term, gnameText)
 import Kappa.Diagnostic
-import Kappa.Eval (EvalCtx (..), Globals (..), eval)
+import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
 import Kappa.Parser (parseModule)
 import Kappa.Prelude
   ( builtinState
@@ -62,7 +62,7 @@ import Kappa.Resolve (defaultFixities, fixitiesOf, multiFixityOps, resolveModule
 import Kappa.Source
 import Kappa.Syntax
 import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
-import Kappa.Usage (usageDiagnostics)
+import Kappa.Usage (PInfo, coreFnParams, moduleUsageSignatures, usageDiagnostics)
 
 -- | One §T.5.5 portable pipeline-trace step: @(event, subject)@.
 -- The prelude bootstrap is implementation machinery and contributes no
@@ -538,7 +538,7 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
               udiags =
                 if hasErrors preDiags
                   then []
-                  else usageDiagnostics (csExpansions st1) m'
+                  else usageDiagnostics (csExpansions st1) (usageImportedParams byName st1 ie) m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
               -- §8.4 re-exports: record where each aliased/selected
@@ -1071,6 +1071,40 @@ importScopeFor st m = ieScope (buildImports st m)
 importScopeForWithConfig :: UnsafeConfig -> CheckState -> Module -> Map.Map Text GName
 importScopeForWithConfig cfg st m =
   ieScope (buildImportsInWith [] (implicitPrelude cfg && not (moduleHasAttr "NoPrelude" m)) st m)
+
+usageImportedParams :: Map.Map ModuleName (Module, [Fragment]) -> CheckState -> ImportEnv -> Map.Map Text [PInfo]
+usageImportedParams byName st ie =
+  Map.mapMaybe paramsFor importedNames
+  where
+    ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+    sourceParams =
+      Map.fromList
+        [ ((mn, nm), ps)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, ps) <- Map.toList (moduleUsageSignatures sm)
+        ]
+    importedNames =
+      Map.fromListWith
+        const
+        ( Map.toList (ieScope ie)
+            ++ [ (alias <> "." <> nm, usageExportTarget st mn nm)
+               | (alias, mn) <- Map.toList (ieAliases ie)
+               , nm <- exportedMemberNames st mn
+            ]
+        )
+    paramsFor g@(GName mn nm) =
+      case Map.lookup (mn, nm) sourceParams of
+        Just ps -> Just ps
+        Nothing -> coreFnParams . quote ctx 0 . gdType <$> Map.lookup g (csGlobals st)
+
+usageExportTarget :: CheckState -> ModuleName -> Text -> GName
+usageExportTarget st mn nm =
+  Map.findWithDefault (GName mn nm) nm (Map.findWithDefault Map.empty mn (csReExports st))
+
+exportedMemberNames :: CheckState -> ModuleName -> [Text]
+exportedMemberNames st mn
+  | mn == preludeModule = preludeWildcardMemberNames st
+  | otherwise = fromMaybe [] (Map.lookup mn (csModuleExports st))
 
 -- | Path-derived module name (§8.1, simplified: basename only).
 moduleNameOf :: FilePath -> ModuleName

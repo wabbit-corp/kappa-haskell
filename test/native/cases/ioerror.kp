@@ -1,0 +1,14 @@
+-- Native backend conformance: typed IO failures propagate through do binds
+-- and are caught by catchError, matching the interpreter.
+module main
+
+risky : IO String Unit
+let risky = do
+    printlnString "before"
+    raise "boom"
+    printlnString "unreachable"
+
+main : UIO Unit
+let main = do
+    catchIO risky (\msg -> printlnString ("caught:" ++ msg))
+    printlnString "after"

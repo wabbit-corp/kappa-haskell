@@ -1,0 +1,609 @@
+module delve.config
+
+import delve.core.*
+import delve.natutil.*
+import delve.files as files
+import delve.json as json
+
+-- Delve content packs follow the Minecraft/Hytale lesson: gameplay content is
+-- authored as JSON data assets, then checked into typed Kappa definitions before
+-- the engine uses it.
+
+defaultPackFile : String
+let defaultPackFile = "assets/delve/pack.json"
+
+loadDefault : IO GameError ContentPack
+let loadDefault = loadPack defaultPackFile
+
+loadPack : String -> IO GameError ContentPack
+let loadPack packPath =
+    do
+        packJson <- readJsonFile packPath
+        filesObject <- objectField "files" packJson
+        saveObject <- objectField "save" packJson
+        rulesObject <- objectField "rules" packJson
+        packId <- stringField "pack_id" packJson
+        version <- stringField "version" packJson
+        worldPath <- filePath "worldgen" filesObject
+        itemPath <- filePath "items" filesObject
+        actorPath <- filePath "actors" filesObject
+        systemPath <- filePath "systems" filesObject
+        spawnPath <- filePath "spawns" filesObject
+        lorePath <- filePath "lore" filesObject
+        world <- loadWorldGen worldPath
+        items <- loadItems itemPath
+        actors <- loadActors actorPath
+        systems <- loadSystems systemPath
+        spawns <- loadSpawns spawnPath
+        lore <- loadLore lorePath
+        save <- decodeSave saveObject
+        rules <- decodeRules rulesObject
+        let pack =
+            ContentPack {
+                packId = packId,
+                version = version,
+                rules = rules,
+                worldgen = world,
+                save = save,
+                items = items,
+                actors = actors,
+                monsterSpawns = spawns.monsters,
+                itemSpawns = spawns.items,
+                tactics = systems.tactics,
+                starSigns = systems.starSigns,
+                mutations = systems.mutations,
+                faiths = systems.faiths,
+                rumors = lore
+            }
+        validateContentPack pack
+
+readJsonFile : String -> IO GameError json.JsonValue
+let readJsonFile path =
+    do
+        text <- files.readText path
+        match json.parse text
+        case Ok value -> pure value
+        case Err e -> raise e
+
+filePath : String -> json.JsonValue -> IO GameError String
+let filePath name obj =
+    match json.objectField name obj
+    case Some v ->
+        match json.asString v
+        case Ok s -> pure s
+        case Err e -> raise e
+    case None -> raise (ConfigError ("pack file missing path for " ++ name))
+
+stringField : String -> json.JsonValue -> IO GameError String
+let stringField name obj =
+    match json.require name obj
+    case Ok v ->
+        match json.asString v
+        case Ok s -> pure s
+        case Err e -> raise e
+    case Err e -> raise e
+
+intField : String -> json.JsonValue -> IO GameError Int
+let intField name obj =
+    match json.require name obj
+    case Ok v ->
+        match json.asInt v
+        case Ok n -> pure n
+        case Err e -> raise e
+    case Err e -> raise e
+
+optionalIntField : Int -> String -> json.JsonValue -> IO GameError Int
+let optionalIntField fallback name obj =
+    match json.objectField name obj
+    case None -> pure fallback
+    case Some v ->
+        match json.asInt v
+        case Ok n -> pure n
+        case Err e -> raise e
+
+boolField : String -> json.JsonValue -> IO GameError Bool
+let boolField name obj =
+    match json.require name obj
+    case Ok v ->
+        match json.asBool v
+        case Ok b -> pure b
+        case Err e -> raise e
+    case Err e -> raise e
+
+arrayField : String -> json.JsonValue -> IO GameError (List json.JsonValue)
+let arrayField name obj =
+    match json.require name obj
+    case Ok v ->
+        match json.asArray v
+        case Ok xs -> pure xs
+        case Err e -> raise e
+    case Err e -> raise e
+
+objectField : String -> json.JsonValue -> IO GameError json.JsonValue
+let objectField name obj =
+    match json.require name obj
+    case Ok v -> pure v
+    case Err e -> raise e
+
+loadWorldGen : String -> IO GameError WorldGenConfig
+let loadWorldGen path =
+    do
+        root <- readJsonFile path
+        wg <- objectField "worldgen" root
+        map <- objectField "map" wg
+        room <- objectField "room" wg
+        spawn <- objectField "spawn" wg
+        features <- objectField "features" wg
+        minWidth <- intField "min_width" map
+        maxWidth <- intField "max_width" map
+        minHeight <- intField "min_height" map
+        maxHeight <- intField "max_height" map
+        minSize <- intField "min_size" room
+        maxSize <- intField "max_size" room
+        attempts <- intField "attempts" room
+        monsterBase <- intField "monster_base_chance" spawn
+        monsterPerDepth <- intField "monster_chance_per_depth" spawn
+        itemChance <- intField "item_chance" spawn
+        altarChance <- intField "altar_chance" features
+        loreChance <- intField "lore_stone_chance" features
+        trapBase <- intField "trap_base_chance" features
+        trapDepth <- intField "trap_chance_per_depth" features
+        chaosBase <- intField "chaos_vent_base_chance" features
+        chaosDepth <- intField "chaos_vent_chance_per_depth" features
+        if minWidth < 20 || maxWidth < minWidth || minHeight < 10 || maxHeight < minHeight then
+            raise (ConfigError "worldgen map size limits are invalid")
+        elif minSize < 3 || maxSize < minSize then
+            raise (ConfigError "worldgen room sizes must satisfy 3 <= min <= max")
+        elif attempts < 2 then
+            raise (ConfigError "worldgen room attempts must be at least 2")
+        elif maxSize > minWidth - 6 || maxSize > minHeight - 6 then
+            raise (ConfigError "worldgen max room size does not fit inside the minimum map size")
+        else
+            pure (WorldGenConfig minWidth maxWidth minHeight maxHeight minSize maxSize attempts monsterBase monsterPerDepth itemChance altarChance loreChance trapBase trapDepth chaosBase chaosDepth)
+
+loadItems : String -> IO GameError (List ItemDef)
+let loadItems path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "items" root
+        traverse decodeItem xs
+
+decodeItem : json.JsonValue -> IO GameError ItemDef
+let decodeItem value =
+    do
+        id <- stringField "id" value
+        kindName <- stringField "kind" value
+        kind <- decodeItemKind kindName
+        name <- stringField "name" value
+        trueName <- stringField "true_name" value
+        glyph <- stringField "glyph" value
+        className <- stringField "class" value
+        cls <- decodeItemClass className
+        stackable <- boolField "stackable" value
+        power <- intField "power" value
+        charges <- intField "charges" value
+        identified <- boolField "starts_identified" value
+        beatitudeKnown <- boolField "beatitude_known" value
+        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown)
+
+loadActors : String -> IO GameError (List ActorDef)
+let loadActors path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "actors" root
+        traverse decodeActor xs
+
+decodeActor : json.JsonValue -> IO GameError ActorDef
+let decodeActor value =
+    do
+        id <- stringField "id" value
+        speciesName <- stringField "species" value
+        species <- decodeSpecies speciesName
+        name <- stringField "name" value
+        glyph <- stringField "glyph" value
+        factionName <- stringField "faction" value
+        faction <- decodeFaction factionName
+        attitudeName <- stringField "attitude" value
+        attitude <- decodeAttitude attitudeName
+        statsJson <- objectField "stats" value
+        stats <- decodeStats statsJson
+        morale <- intField "morale" value
+        loyalty <- intField "loyalty" value
+        invJson <- arrayField "inventory" value
+        inv <- traverse decodeItemKindFromJson invJson
+        tagJson <- arrayField "tags" value
+        tags <- traverse decodeStringFromJson tagJson
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags)
+
+decodeStats : json.JsonValue -> IO GameError Stats
+let decodeStats value =
+    do
+        hp <- intField "hp" value
+        maxHp <- intField "max_hp" value
+        mp <- intField "mp" value
+        maxMp <- intField "max_mp" value
+        strength <- intField "str" value
+        dex <- intField "dex" value
+        defense <- intField "def" value
+        xp <- intField "xp" value
+        level <- intField "level" value
+        pure (Stats hp maxHp mp maxMp strength dex defense xp level)
+
+loadSpawns : String -> IO GameError (monsters : List SpawnRule, items : List SpawnRule)
+let loadSpawns path =
+    do
+        root <- readJsonFile path
+        monsterJson <- arrayField "monster_spawns" root
+        itemJson <- arrayField "item_spawns" root
+        monsters <- traverse decodeSpawn monsterJson
+        items <- traverse decodeSpawn itemJson
+        pure (monsters = monsters, items = items)
+
+decodeSpawn : json.JsonValue -> IO GameError SpawnRule
+let decodeSpawn value =
+    do
+        id <- stringField "id" value
+        minDepth <- intField "min_depth" value
+        maxDepth <- intField "max_depth" value
+        weight <- intField "weight" value
+        if minDepth < 1 || maxDepth < minDepth || weight < 1 then
+            raise (ConfigError ("invalid spawn rule for " ++ id))
+        else pure (SpawnRule id minDepth maxDepth weight)
+
+loadSystems : String -> IO GameError (tactics : List TacticDef, starSigns : List StarSignDef, mutations : List MutationDef, faiths : List FaithDef)
+let loadSystems path =
+    do
+        root <- readJsonFile path
+        tacticJson <- arrayField "tactics" root
+        signJson <- arrayField "star_signs" root
+        mutationJson <- arrayField "mutations" root
+        faithJson <- arrayField "faiths" root
+        tactics <- traverse decodeTactic tacticJson
+        signs <- traverse decodeStarSign signJson
+        mutations <- traverse decodeMutation mutationJson
+        faiths <- traverse decodeFaith faithJson
+        pure (tactics = tactics, starSigns = signs, mutations = mutations, faiths = faiths)
+
+decodeTactic : json.JsonValue -> IO GameError TacticDef
+let decodeTactic value =
+    do
+        id <- stringField "id" value
+        tactic <- decodeTacticId id
+        name <- stringField "name" value
+        attack <- intField "attack" value
+        damage <- intField "damage" value
+        defense <- intField "defense" value
+        hunger <- intField "hunger" value
+        description <- stringField "description" value
+        pure (TacticDef tactic name attack damage defense hunger description)
+
+decodeStarSign : json.JsonValue -> IO GameError StarSignDef
+let decodeStarSign value =
+    do
+        id <- stringField "id" value
+        sign <- decodeStarSignId id
+        name <- stringField "name" value
+        description <- stringField "description" value
+        hp <- optionalIntField 0 "hp_bonus" value
+        mp <- optionalIntField 0 "mp_bonus" value
+        strength <- optionalIntField 0 "str_bonus" value
+        dex <- optionalIntField 0 "dex_bonus" value
+        defense <- optionalIntField 0 "def_bonus" value
+        hunger <- optionalIntField 0 "hunger_bonus" value
+        resistance <- intField "corruption_resistance" value
+        pure (StarSignDef sign name description hp mp strength dex defense hunger resistance)
+
+decodeMutation : json.JsonValue -> IO GameError MutationDef
+let decodeMutation value =
+    do
+        id <- stringField "id" value
+        mutation <- decodeMutationId id
+        name <- stringField "name" value
+        hp <- optionalIntField 0 "hp_bonus" value
+        mp <- optionalIntField 0 "mp_bonus" value
+        strength <- optionalIntField 0 "str_bonus" value
+        dex <- optionalIntField 0 "dex_bonus" value
+        defense <- optionalIntField 0 "def_bonus" value
+        hunger <- intField "hunger_tax" value
+        description <- stringField "description" value
+        pure (MutationDef mutation name hp mp strength dex defense hunger description)
+
+decodeFaith : json.JsonValue -> IO GameError FaithDef
+let decodeFaith value =
+    do
+        id <- stringField "id" value
+        faith <- decodeFaithId id
+        name <- stringField "name" value
+        alignment <- stringField "alignment" value
+        pure (FaithDef faith name alignment)
+
+loadLore : String -> IO GameError (List Rumor)
+let loadLore path =
+    do
+        root <- readJsonFile path
+        rumorJson <- arrayField "rumors" root
+        texts <- traverse decodeStringFromJson rumorJson
+        pure (map Rumor texts)
+
+decodeSave : json.JsonValue -> IO GameError SaveConfig
+let decodeSave value =
+    do
+        directory <- stringField "directory" value
+        path <- stringField "path" value
+        version <- intField "format_version" value
+        autosave <- boolField "autosave_on_quit" value
+        pure (SaveConfig directory path version autosave)
+
+
+decodeRules : json.JsonValue -> IO GameError RulesConfig
+let decodeRules value =
+    do
+        hunger <- intField "starting_hunger" value
+        limit <- intField "message_limit" value
+        if hunger <= 0 then raise (ConfigError "starting_hunger must be positive")
+        elif limit <= 0 then raise (ConfigError "message_limit must be positive")
+        else pure (RulesConfig hunger (intToNat limit))
+
+
+decodeStringFromJson : json.JsonValue -> IO GameError String
+let decodeStringFromJson value =
+    match json.asString value
+    case Ok s -> pure s
+    case Err e -> raise e
+
+decodeItemKindFromJson : json.JsonValue -> IO GameError ItemKind
+let decodeItemKindFromJson value =
+    do
+        text <- decodeStringFromJson value
+        decodeItemKind text
+
+decodeItemKind : String -> IO GameError ItemKind
+let decodeItemKind s =
+    if s == "Gold" then pure Gold
+    elif s == "PotionHealing" then pure PotionHealing
+    elif s == "PotionMutation" then pure PotionMutation
+    elif s == "PotionWater" then pure PotionWater
+    elif s == "ScrollIdentify" then pure ScrollIdentify
+    elif s == "ScrollMapping" then pure ScrollMapping
+    elif s == "ScrollWard" then pure ScrollWard
+    elif s == "FoodRation" then pure FoodRation
+    elif s == "Dagger" then pure Dagger
+    elif s == "Sword" then pure Sword
+    elif s == "Mace" then pure Mace
+    elif s == "LeatherArmor" then pure LeatherArmor
+    elif s == "ChainMail" then pure ChainMail
+    elif s == "WandFire" then pure WandFire
+    elif s == "WandDigging" then pure WandDigging
+    elif s == "WandPolymorph" then pure WandPolymorph
+    elif s == "HolySymbol" then pure HolySymbol
+    elif s == "Corpse" then pure Corpse
+    elif s == "ChaosShard" then pure ChaosShard
+    elif s == "Amulet" then pure Amulet
+    else raise (ConfigError ("unknown item kind: " ++ s))
+
+decodeItemClass : String -> IO GameError ItemClass
+let decodeItemClass s =
+    if s == "CoinClass" then pure CoinClass
+    elif s == "PotionClass" then pure PotionClass
+    elif s == "ScrollClass" then pure ScrollClass
+    elif s == "FoodClass" then pure FoodClass
+    elif s == "WeaponClass" then pure WeaponClass
+    elif s == "ArmorClass" then pure ArmorClass
+    elif s == "WandClass" then pure WandClass
+    elif s == "ToolClass" then pure ToolClass
+    elif s == "CorpseClass" then pure CorpseClass
+    elif s == "ArtifactClass" then pure ArtifactClass
+    else raise (ConfigError ("unknown item class: " ++ s))
+
+decodeSpecies : String -> IO GameError Species
+let decodeSpecies s =
+    if s == "PlayerSpecies" then pure PlayerSpecies
+    elif s == "Hound" then pure Hound
+    elif s == "Goblin" then pure Goblin
+    elif s == "Orc" then pure Orc
+    elif s == "Kobold" then pure Kobold
+    elif s == "Rat" then pure Rat
+    elif s == "Bat" then pure Bat
+    elif s == "Troll" then pure Troll
+    elif s == "Skeleton" then pure Skeleton
+    elif s == "Wizard" then pure Wizard
+    elif s == "Dragon" then pure Dragon
+    elif s == "ChaosSpawn" then pure ChaosSpawn
+    elif s == "Pilgrim" then pure Pilgrim
+    else raise (ConfigError ("unknown species: " ++ s))
+
+decodeFaction : String -> IO GameError Faction
+let decodeFaction s =
+    if s == "HeroFaction" then pure HeroFaction
+    elif s == "BeastFaction" then pure BeastFaction
+    elif s == "CaveFaction" then pure CaveFaction
+    elif s == "UndeadFaction" then pure UndeadFaction
+    elif s == "ChaosFaction" then pure ChaosFaction
+    elif s == "NeutralFaction" then pure NeutralFaction
+    else raise (ConfigError ("unknown faction: " ++ s))
+
+decodeAttitude : String -> IO GameError Attitude
+let decodeAttitude s =
+    if s == "PlayerControlled" then pure PlayerControlled
+    elif s == "Friendly" then pure Friendly
+    elif s == "Neutral" then pure Neutral
+    elif s == "Hostile" then pure Hostile
+    elif s == "Sleeping" then pure Sleeping
+    elif s == "Fleeing" then pure Fleeing
+    else raise (ConfigError ("unknown attitude: " ++ s))
+
+decodeTacticId : String -> IO GameError Tactic
+let decodeTacticId s =
+    if s == "Coward" then pure Coward
+    elif s == "Defensive" then pure Defensive
+    elif s == "Balanced" then pure Balanced
+    elif s == "Aggressive" then pure Aggressive
+    elif s == "Berserk" then pure Berserk
+    else raise (ConfigError ("unknown tactic: " ++ s))
+
+decodeStarSignId : String -> IO GameError StarSign
+let decodeStarSignId s =
+    if s == "Raven" then pure Raven
+    elif s == "Book" then pure Book
+    elif s == "Wand" then pure Wand
+    elif s == "Unicorn" then pure Unicorn
+    elif s == "Salamander" then pure Salamander
+    elif s == "DragonSign" then pure DragonSign
+    elif s == "SwordSign" then pure SwordSign
+    elif s == "Falcon" then pure Falcon
+    elif s == "Cup" then pure Cup
+    elif s == "Candle" then pure Candle
+    elif s == "Wolf" then pure Wolf
+    elif s == "Tree" then pure Tree
+    else raise (ConfigError ("unknown star sign: " ++ s))
+
+decodeMutationId : String -> IO GameError Mutation
+let decodeMutationId s =
+    if s == "Claws" then pure Claws
+    elif s == "NightEyes" then pure NightEyes
+    elif s == "StoneSkin" then pure StoneSkin
+    elif s == "HollowBones" then pure HollowBones
+    elif s == "PoisonTouch" then pure PoisonTouch
+    elif s == "Ravenous" then pure Ravenous
+    elif s == "BurningBlood" then pure BurningBlood
+    elif s == "WhisperingSkull" then pure WhisperingSkull
+    else raise (ConfigError ("unknown mutation: " ++ s))
+
+decodeFaithId : String -> IO GameError Faith
+let decodeFaithId s =
+    if s == "EmberMother" then pure EmberMother
+    elif s == "RootFather" then pure RootFather
+    elif s == "VeiledWitness" then pure VeiledWitness
+    else raise (ConfigError ("unknown faith: " ++ s))
+
+validateContentPack : ContentPack -> IO GameError ContentPack
+let validateContentPack pack =
+    do
+        requireActor "player" pack
+        requireActor "hound" pack
+        requireActorSpecies ChaosSpawn pack
+        requireItemKind Dagger pack
+        requireItemKind FoodRation pack
+        requireItemKind HolySymbol pack
+        requireItemKind Corpse pack
+        requireItemKind Amulet pack
+        requireFaith EmberMother pack
+        requireFaith RootFather pack
+        requireFaith VeiledWitness pack
+        requireActorInventoryRefs pack
+        requireMonsterSpawnRefs pack
+        requireItemSpawnRefs pack
+        if listLength pack.monsterSpawns == 0 then raise (ConfigError "content pack has no monster spawn rules")
+        elif listLength pack.itemSpawns == 0 then raise (ConfigError "content pack has no item spawn rules")
+        elif listLength pack.tactics == 0 then raise (ConfigError "content pack has no tactics")
+        elif listLength pack.starSigns == 0 then raise (ConfigError "content pack has no star signs")
+        elif listLength pack.mutations == 0 then raise (ConfigError "content pack has no mutations")
+        else pure pack
+
+requireActor : String -> ContentPack -> IO GameError Unit
+let requireActor id pack =
+    match findActorDefById id pack.actors
+    case Some _ -> pure ()
+    case None -> raise (ConfigError ("missing required actor definition: " ++ id))
+
+requireActorSpecies : Species -> ContentPack -> IO GameError Unit
+let requireActorSpecies species pack =
+    match findActorDefBySpecies species pack.actors
+    case Some _ -> pure ()
+    case None -> raise (ConfigError "missing required actor species definition")
+
+requireItemKind : ItemKind -> ContentPack -> IO GameError Unit
+let requireItemKind kind pack =
+    match findItemDef kind pack.items
+    case Some _ -> pure ()
+    case None -> raise (ConfigError "missing required item definition")
+
+requireFaith : Faith -> ContentPack -> IO GameError Unit
+let requireFaith faith pack =
+    match findFaithDef faith pack.faiths
+    case Some _ -> pure ()
+    case None -> raise (ConfigError "missing required faith definition")
+
+requireActorInventoryRefs : ContentPack -> IO GameError Unit
+let requireActorInventoryRefs pack =
+    match missingActorInventoryRef pack.actors pack.items
+    case None -> pure ()
+    case Some id -> raise (ConfigError ("actor inventory references missing item definition: " ++ id))
+
+requireMonsterSpawnRefs : ContentPack -> IO GameError Unit
+let requireMonsterSpawnRefs pack =
+    match missingMonsterSpawnRef pack.monsterSpawns pack
+    case None -> pure ()
+    case Some id -> raise (ConfigError ("monster spawn references missing actor: " ++ id))
+
+requireItemSpawnRefs : ContentPack -> IO GameError Unit
+let requireItemSpawnRefs pack =
+    match missingItemSpawnRef pack.itemSpawns pack
+    case None -> pure ()
+    case Some id -> raise (ConfigError ("item spawn references missing item: " ++ id))
+
+missingMonsterSpawnRef : List SpawnRule -> ContentPack -> Option String
+let missingMonsterSpawnRef rules pack decreases listLength rules =
+    match rules
+    case Nil -> None
+    case rule :: rest ->
+        match findActorDefById rule.id pack.actors
+        case Some _ -> missingMonsterSpawnRef rest pack
+        case None -> Some rule.id
+
+missingItemSpawnRef : List SpawnRule -> ContentPack -> Option String
+let missingItemSpawnRef rules pack decreases listLength rules =
+    match rules
+    case Nil -> None
+    case rule :: rest ->
+        match findItemDefById rule.id pack.items
+        case Some _ -> missingItemSpawnRef rest pack
+        case None -> Some rule.id
+
+missingActorInventoryRef : List ActorDef -> List ItemDef -> Option String
+let missingActorInventoryRef actors items decreases listLength actors =
+    match actors
+    case Nil -> None
+    case actor :: rest ->
+        match missingInventoryKind actor.inventory items
+        case None -> missingActorInventoryRef rest items
+        case Some _ -> Some actor.id
+
+missingInventoryKind : List ItemKind -> List ItemDef -> Option ItemKind
+let missingInventoryKind inventory items decreases listLength inventory =
+    match inventory
+    case Nil -> None
+    case kind :: rest ->
+        match findItemDef kind items
+        case Some _ -> missingInventoryKind rest items
+        case None -> Some kind
+
+findFaithDef : Faith -> List FaithDef -> Option FaithDef
+let findFaithDef faith faiths decreases listLength faiths =
+    match faiths
+    case Nil -> None
+    case f :: rest -> if f.faith == faith then Some f else findFaithDef faith rest
+
+findActorDefById : String -> List ActorDef -> Option ActorDef
+let findActorDefById id actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case a :: rest -> if a.id == id then Some a else findActorDefById id rest
+
+findActorDefBySpecies : Species -> List ActorDef -> Option ActorDef
+let findActorDefBySpecies species actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case a :: rest -> if a.species == species then Some a else findActorDefBySpecies species rest
+
+findItemDef : ItemKind -> List ItemDef -> Option ItemDef
+let findItemDef kind items decreases listLength items =
+    match items
+    case Nil -> None
+    case i :: rest -> if i.kind == kind then Some i else findItemDef kind rest
+
+findItemDefById : String -> List ItemDef -> Option ItemDef
+let findItemDefById id items decreases listLength items =
+    match items
+    case Nil -> None
+    case i :: rest -> if i.id == id then Some i else findItemDefById id rest

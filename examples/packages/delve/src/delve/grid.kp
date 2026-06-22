@@ -13,16 +13,16 @@ let inBounds size pos =
 
 getTile : Level -> Vec2 -> Tile
 let getTile level pos =
-    if not (inBounds level.size pos) then Tile VoidTile True False False
+    if not (inBounds level.size pos) then Tile VoidTile True False False False
     else
         match arrayGetI level.tiles (index level.size pos)
         case Some t -> t
-        case None -> Tile VoidTile True False False
+        case None -> Tile VoidTile True False False False
 
 setTile : Vec2 -> Tile -> Level -> Level
 let setTile pos tile level =
     if not (inBounds level.size pos) then level
-    else withTiles (arraySet level.tiles (index level.size pos) tile) level
+    else level.{ tiles = arraySet level.tiles (index level.size pos) tile }
 
 mapTile : Vec2 -> (Tile -> Tile) -> Level -> Level
 let mapTile pos f level =
@@ -74,13 +74,13 @@ let isBlocked level p =
 blankLevel : Int -> Size -> Level
 let blankLevel depth size =
     let count = size.width * size.height
-    in Level
-        { depth = depth
-        , size = size
-        , tiles = arrayReplicate count defaultTile
-        , rooms = Nil
-        , actors = Nil
-        , items = Nil
-        , messages = ["Welcome to Delve. The dungeon apologizes in advance."]
-        , turn = 0
-        }
+    in Level {
+        depth = depth,
+        size = size,
+        tiles = arrayReplicate count defaultTile,
+        rooms = Nil,
+        actors = Nil,
+        items = Nil,
+        messages = ["Welcome to Delve."],
+        turn = 0
+    }

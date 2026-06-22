@@ -17,6 +17,20 @@ fails=0
 
 cd "$ROOT"
 
+if ! command -v timeout >/dev/null 2>&1; then
+  timeout() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+seconds = float(sys.argv[1].removesuffix('s'))
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+  }
+fi
+
 # ── C driver detection (mirror the build driver's order) ──────────────
 have_driver() {
   [ -n "${KAPPA_CC:-}" ] && return 0
@@ -36,13 +50,19 @@ timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 run_diff_case() {
   local name="$1"; local src="$CASES/$name.kp"
   echo "-- case: $name (native output must match the interpreter)"
-  local interp native exe
-  interp="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"
+  local interp native exe irc nrc
+  interp="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?
+  if [ "$irc" -ne 0 ]; then
+    echo "   FAIL: interpreter exited with $irc"; fails=$((fails+1)); return
+  fi
   exe="$WORK/$name"
   if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$WORK/$name.build.log" 2>&1; then
     echo "   FAIL: native build failed"; cat "$WORK/$name.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
   fi
-  native="$(timeout 120 "$exe" 2>/dev/null)"
+  native="$(timeout 120 "$exe" 2>/dev/null)"; nrc=$?
+  if [ "$nrc" -ne 0 ]; then
+    echo "   FAIL: native executable exited with $nrc"; fails=$((fails+1)); return
+  fi
   if [ "$interp" = "$native" ]; then
     echo "   ok ($(printf '%s' "$native" | tr '\n' '|'))"
   else
@@ -53,8 +73,29 @@ run_diff_case() {
   fi
 }
 
+run_expected_fail_case() {
+  local name="$1"; local src="$CASES/$name.kp"
+  echo "-- case: $name (interpreter and native must both fail without stdout)"
+  local interp native exe irc nrc
+  interp="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?
+  exe="$WORK/$name"
+  if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$WORK/$name.build.log" 2>&1; then
+    echo "   FAIL: native build failed"; cat "$WORK/$name.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
+  fi
+  native="$(timeout 120 "$exe" 2>/dev/null)"; nrc=$?
+  if [ "$irc" -ne 0 ] && [ "$nrc" -ne 0 ] && [ -z "$interp" ] && [ -z "$native" ]; then
+    echo "   ok (interpreter rc=$irc, native rc=$nrc, no stdout)"
+  else
+    echo "   FAIL: expected both paths to fail without stdout"
+    echo "     interpreter rc=$irc stdout=$(printf '%s' "$interp" | tr '\n' '|')"
+    echo "     native      rc=$nrc stdout=$(printf '%s' "$native" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+}
+
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse letqmiss projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders flatclosure effects borrowview; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds flatframe flatbinders flatclosure effects borrowview ioerror; do run_diff_case "$c"; done
+run_expected_fail_case letqmiss
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -330,10 +371,11 @@ fi
 echo "== native bindings are driven by the manifest (host.native imports -> prims) =="
 # Build a program that imports a manifest-provided host.native module to
 # C (--emit-c, no toolchain/lib needed) and confirm codegen lowered the
-# provider's members to their runtime FFI prims.
+# provider's members to codegen-emitted direct native wrappers.
 if timeout 120 $KAPPA build --update --manifest "$ROOT/tests/build/native/ok-sqlite" --emit-c -o "$WORK/oksql" >"$WORK/oksql.log" 2>&1 \
-   && find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -exec grep -ql "__sqliteOpen" {} \; ; then
-  echo "   ok (manifest nativeBinding -> host.native.sqlite3 import -> __sqliteOpen prim)"
+   && grep -Rql --include='*.kappa.c' "kw_host_native_sqlite3_sqliteOpen" "$ROOT/tests/build/native/ok-sqlite" \
+   && grep -Rql --include='*.kappa.c' "knative_sat(kw_host_native_sqlite3_sqliteOpen" "$ROOT/tests/build/native/ok-sqlite"; then
+  echo "   ok (manifest nativeBinding -> host.native.sqlite3 import -> direct native sqliteOpen wrapper)"
   find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -delete 2>/dev/null
 else
   echo "   FAIL: manifest-driven native build did not emit the provider prim"
@@ -343,14 +385,29 @@ fi
 echo "== performance smoke (sum 1..1_000_000, bounded) =="
 exe="$WORK/perf"
 if timeout 240 $KAPPA build "$CASES/perf.kp" -o "$exe" >"$WORK/perf.build.log" 2>&1; then
-  start=$(date +%s.%N 2>/dev/null || date +%s)
+  start=$(python3 - <<'PY'
+import time
+print(f"{time.time():.6f}")
+PY
+)
   out="$(timeout 30 "$exe" 2>/dev/null)"
   rc=$?
-  end=$(date +%s.%N 2>/dev/null || date +%s)
+  end=$(python3 - <<'PY'
+import time
+print(f"{time.time():.6f}")
+PY
+)
   if [ "$rc" -ne 0 ]; then
     echo "   FAIL: perf run timed out or errored (rc=$rc)"; fails=$((fails+1))
   elif [ "$out" = "500000500000" ]; then
-    echo "   ok (result $out in $(awk "BEGIN{printf \"%.2f\", $end-$start}")s)"
+    elapsed="$(python3 - "$start" "$end" <<'PY'
+import sys
+start = float(sys.argv[1])
+end = float(sys.argv[2])
+print(f"{end - start:.2f}")
+PY
+)"
+    echo "   ok (result $out in ${elapsed}s)"
   else
     echo "   FAIL: wrong result: $out"; fails=$((fails+1))
   fi
@@ -480,12 +537,14 @@ fi
 
 echo "== exact-width ABI vocabulary (ctU32/ctUsize…) maps to real C widths + verifies (§26.1.1) =="
 WD="$WORK/widths"; rm -rf "$WD"; mkdir -p "$WD/src"
-printf 'module app\nimport host.native.netbyte as n\nimport std.ffi.(u32, u32Value)\nlet main = do\n  x <- n.htonl (u32 256)\n  printlnString (showInt (u32Value x))\n' > "$WD/src/app.kp"
-printf 'let buildConfig : BuildConfig = package { name="w", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="nb", provides=[module "host.native.netbyte"], surface=symbolList [symbolDecl "htonl" "htonl" [ctU32] ctU32], abi=cAbi, inputs=[headers ["arpa/inet.h"], verify ["uint32_t htonl(uint32_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["nb"] }] }' > "$WD/kappa.build.kp"
+printf 'module app\nimport host.native.widths as n\nimport std.ffi.(u32, u32Value)\nlet main = do\n  x <- n.id32 (u32 256)\n  printlnString (showInt (u32Value x))\n' > "$WD/src/app.kp"
+printf '#include <stdint.h>\nuint32_t id32(uint32_t x);\n' > "$WD/src/width.h"
+printf '#include "width.h"\nuint32_t id32(uint32_t x) { return x + 1; }\n' > "$WD/src/width.c"
+printf 'let buildConfig : BuildConfig = package { name="w", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="nb", provides=[module "host.native.widths"], surface=symbolList [symbolDecl "id32" "id32" [ctU32] ctU32], abi=cAbi, inputs=[headers ["src/width.h"], shim ["src/width.c"], verify ["uint32_t id32(uint32_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["nb"] }] }' > "$WD/kappa.build.kp"
 wout="$(timeout 200 $KAPPA build --update --manifest "$WD" --emit-c -o "$WORK/wbin" 2>&1)"; wrc=$?
 WC="$(find "$WD" -name '*.kappa.c' | head -1)"
-if [ "$wrc" -eq 0 ] && grep -q "extern uint32_t htonl(uint32_t);" "$WC" 2>/dev/null; then
-  echo "   ok (ctU32 -> 'uint32_t' extern prototype, verified against arpa/inet.h)"
+if [ "$wrc" -eq 0 ] && grep -q "extern uint32_t id32(uint32_t);" "$WC" 2>/dev/null; then
+  echo "   ok (ctU32 -> 'uint32_t' extern prototype, verified against a real header)"
 else
   echo "   FAIL: exact-width ctU32 did not map to uint32_t / verify"; echo "$wout" | sed 's/^/     /'; fails=$((fails+1))
 fi
@@ -507,8 +566,9 @@ rm -rf "$SB"
 echo "== U64 round-trips the full unsigned range incl. >= 2^63 (§26.1.1, N-35) =="
 U6="$WORK/u64"; rm -rf "$U6"; mkdir -p "$U6/src"
 printf 'module app\nimport host.native.u64x as n\nimport std.ffi.(u64, u64Value)\nlet main = do\n  x <- n.u64id (u64 18446744073709551615)\n  printlnString (showInt (u64Value x))\n' > "$U6/src/app.kp"
-printf '#include <stdint.h>\nuint64_t u64id(uint64_t x) { return x; }\n' > "$U6/src/shim.c"
-printf 'let buildConfig : BuildConfig = package { name="u", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="ub", provides=[module "host.native.u64x"], surface=symbolList [symbolDecl "u64id" "u64id" [ctU64] ctU64], abi=cAbi, inputs=[shim ["src/shim.c"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["ub"] }] }' > "$U6/kappa.build.kp"
+printf '#include <stdint.h>\nuint64_t u64id(uint64_t x);\n' > "$U6/src/u64id.h"
+printf '#include "u64id.h"\nuint64_t u64id(uint64_t x) { return x; }\n' > "$U6/src/shim.c"
+printf 'let buildConfig : BuildConfig = package { name="u", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="ub", provides=[module "host.native.u64x"], surface=symbolList [symbolDecl "u64id" "u64id" [ctU64] ctU64], abi=cAbi, inputs=[headers ["src/u64id.h"], shim ["src/shim.c"], verify ["uint64_t u64id(uint64_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["ub"] }] }' > "$U6/kappa.build.kp"
 if timeout 200 $KAPPA build --update --manifest "$U6" -o "$WORK/u64bin" >"$U6/b.log" 2>&1; then
   u6out="$("$WORK/u64bin" 2>&1)"
   if [ "$u6out" = "18446744073709551615" ]; then

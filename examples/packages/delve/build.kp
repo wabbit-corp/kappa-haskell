@@ -1,13 +1,14 @@
 -- Schematic Kappa build manifest for the native Linux target. The exact manifest
 -- schema is implementation-defined in the draft, but this records the semantic
 -- choices the compiler needs: native backend, linux fragment tag, host.native
--- terminal shim, and native deployment prerequisites.
+-- terminal/file shim, checked JSON resources, save directory, and native deployment prerequisites.
 
 let buildConfig : BuildConfig =
     package
         ( name = "delve"
-        , version = semver "0.1.0"
+        , version = semver "0.2.0"
         , sourceRoots = [ sourceRoot "src" ]
+        , resourceRoots = [ resourceRoot "assets", resourceRoot "saves" ]
         , fragmentAxes =
             [ axis "backend" [tag "native"]
             , axis "os" [tag "linux"]

@@ -5470,7 +5470,108 @@ elabPatchWith nested ctx e items sp = do
               errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
                 "record patch requires a record"
               anyHole ctx
+    -- Named single-constructor data values expose their constructor
+    -- fields through ordinary projection (§10.2). Treat updates over
+    -- those fields as a match-and-rebuild, mirroring a closed-record
+    -- update without requiring packages to model every entity as a
+    -- core row record.
+    VGlobN dataG _ -> elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp
     _ -> do
+      errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
+      anyHole ctx
+
+elabCtorFieldPatch :: Bool -> Ctx -> Expr -> Term -> Value -> GName -> [PatchItem] -> Span -> CheckM (Term, Value)
+elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp = do
+  st <- get
+  case Map.lookup dataG (csDatas st) of
+    Just di | [ctorG] <- diCtors di -> case Map.lookup ctorG (csCtors st) of
+      Just ci -> do
+        fieldTys <- ctorFieldTypes ctx ctorG ci ty1 sp
+        let fieldNames0 = map fst (ciFields ci)
+            namedFields =
+              [ (n, fty)
+              | (Just n, fty) <- zip fieldNames0 fieldTys
+              ]
+            namedNames = map fst namedFields
+        if length namedFields /= length fieldTys || null namedFields
+          then notCtorPatchable
+          else do
+            let updateNames = [nameText n | PatchUpdate [(False, n)] _ <- items]
+                nestedHeads =
+                  foldr (\n acc -> if nameText n `elem` map nameText acc then acc else n : acc) []
+                    [h | PatchUpdate ((False, h) : _ : _) _ <- items]
+            forM_ (duplicatesOf updateNames) $ \n ->
+              errAt sp "E_RECORD_PATCH_DUPLICATE_PATH" (Just "kappa-hs.record.patch-duplicate")
+                ("record patch updates field '" <> n <> "' more than once (§13.2.5)")
+            forM_ (duplicatesOf [nameText n | PatchExtend n _ <- items]) $ \n ->
+              errAt sp "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
+                ("constructor-field patch cannot extend field '" <> n <> "'; ':=' is only defined for row records (§13.2.6)")
+            forM_ [h | h <- nestedHeads, nameText h `elem` updateNames] $ \h ->
+              errAt (nameSpan h) "E_RECORD_PATCH_PREFIX_CONFLICT" (Just "kappa-hs.record.patch-prefix-conflict")
+                ("record patch both replaces '" <> nameText h <> "' and updates a path beneath it (§13.2.5)")
+            groupUps <- forM nestedHeads $ \h -> do
+              let subItems =
+                    [ PatchUpdate restPath v
+                    | PatchUpdate ((False, h0) : restPath@(_ : _)) v <- items
+                    , nameText h0 == nameText h
+                    ]
+              if nameText h `elem` namedNames
+                then do
+                  (htm, _) <- elabPatchWith True ctx (EDot e (DotName h)) subItems sp
+                  pure (Just (nameText h, htm))
+                else do
+                  errAt (nameSpan h) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.name.unresolved")
+                    ("record patch path starts at unknown field '" <> nameText h <> "' (§13.2.5)")
+                  pure Nothing
+            directUps <- forM items $ \case
+              PatchUpdate [(False, n)] (PatchValue v) -> do
+                case lookup (nameText n) namedFields of
+                  Just fty -> do
+                    vt <- check ctx v fty
+                    pure (Just (nameText n, vt))
+                  Nothing -> do
+                    if nested
+                      then
+                        errAt (nameSpan n) "E_RECORD_PATCH_UNKNOWN_PATH" (Just "kappa.name.unresolved")
+                          ("record patch path names unknown field '" <> nameText n <> "' (§13.2.5)")
+                      else
+                        errAt (nameSpan n) "E_UNKNOWN_FIELD" (Just "kappa.name.unresolved")
+                          ("constructor has no field '" <> nameText n <> "'")
+                    pure Nothing
+              PatchUpdate ((False, _) : _ : _) _ -> pure Nothing
+              PatchUpdate _ _ -> do
+                unsupportedAt sp "implicit patch paths are not supported by this implementation"
+                pure Nothing
+              PatchExtend n _ -> do
+                errAt (nameSpan n) "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
+                  ("constructor-field patch cannot extend field '" <> nameText n <> "'; ':=' is only defined for row records (§13.2.6)")
+                pure Nothing
+              PatchSection _ _ -> do
+                errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa-hs.projection.update")
+                  "a projection-section update must be the only item of its update (§13.2.5, §30.2.2.4)"
+                pure Nothing
+              PatchPun n -> do
+                errAt (nameSpan n) "E_RECORD_PATCH_INVALID_ITEM" (Just "kappa-hs.record.patch-invalid")
+                  ("a record update item must be written 'field = value'; punning '" <> nameText n <> "' is not admitted (§13.2.5)")
+                pure Nothing
+            let updates = Map.fromList (catMaybes (directUps ++ groupUps))
+                arity = length fieldTys
+                pats =
+                  [ case mn of
+                      Just n -> CPVar ("__patch_" <> n)
+                      Nothing -> CPWild
+                  | mn <- fieldNames0
+                  ]
+                argAt i mn =
+                  case mn >>= (`Map.lookup` updates) of
+                    Just updated -> shiftTerm arity 0 updated
+                    Nothing -> CVar (arity - 1 - i)
+                args = [argAt i mn | (i, mn) <- zip [0 ..] fieldNames0]
+            pure (CMatch tm1 [CaseAlt (CPCtor ctorG pats) Nothing (CCtor ctorG args)], ty1)
+      Nothing -> notCtorPatchable
+    _ -> notCtorPatchable
+  where
+    notCtorPatchable = do
       errAt sp "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch") "record patch requires a closed record"
       anyHole ctx
 
@@ -12202,29 +12303,14 @@ collectFunEdges funMap src =
     go :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
     go d sub ho esc facts boolFacts t = case t of
       CApp {} -> do
-        tNorm <- normalizeTermAt d t
-        if tNorm /= t
+        syntactic <- collectApplication d sub ho esc facts boolFacts t
+        if containsSccReference d ho esc t
           then do
-            let (f, args) = spineOfTerm t
-            -- The source application still evaluates its arguments before a
-            -- transparent helper can discard them.  Traverse those argument
-            -- terms under ordinary strict evaluation, then also inspect the
-            -- normalized helper body for the recursive edge it exposes.
-            rf <- go d sub ho esc facts boolFacts f
-            rs <- joinManyEdges <$> mapM (go d sub ho esc facts boolFacts . snd) args
-            rn <- go d sub ho esc facts boolFacts tNorm
-            pure (joinManyEdges [rf, rs, rn])
-          else
-            case partialCallOf d ho t of
-              Just pc | Set.member (pcTarget pc) sccNames -> do
-                argEdges <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) (pcArgs pc)
-                let edge = CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub
-                pure ((edge :) <$> argEdges)
-              _ -> case spineOfTerm t of
-                (f, args) -> do
-                  rf <- go d sub ho esc facts boolFacts f
-                  rs <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) args
-                  pure (joinEdges rf rs)
+            tNorm <- normalizeTermAt d t
+            if tNorm /= t
+              then joinEdges syntactic <$> go d sub ho esc facts boolFacts tNorm
+              else pure syntactic
+          else pure syntactic
       CGlob callee | Set.member callee sccNames -> pure Nothing
       CVar i
         | Set.member (d - 1 - i) esc -> pure Nothing
@@ -12237,7 +12323,10 @@ collectFunEdges funMap src =
       CPi _ _ _ a b -> joinEdges <$> go d sub ho esc facts boolFacts a <*> go (d + 1) sub ho esc facts boolFacts b
       CLet _ _ a b c -> do
         ra <- go d sub ho esc facts boolFacts a
-        bNorm <- normalizeTermAt d b
+        bNorm <-
+          if containsSccReference d ho esc b
+            then normalizeTermAt d b
+            else pure b
         let normalizedPartial =
               if bNorm /= b
                 then partialCallOf d ho bNorm
@@ -12315,6 +12404,18 @@ collectFunEdges funMap src =
       CDo _ items -> joinManyEdges <$> mapM (goK d sub ho esc facts boolFacts) items
       _ -> pure (Just [])
 
+    collectApplication d sub ho esc facts boolFacts t =
+      case partialCallOf d ho t of
+        Just pc | Set.member (pcTarget pc) sccNames -> do
+          argEdges <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) (pcArgs pc)
+          let edge = CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub
+          pure ((edge :) <$> argEdges)
+        _ -> case spineOfTerm t of
+          (f, args) -> do
+            rf <- go d sub ho esc facts boolFacts f
+            rs <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) args
+            pure (joinEdges rf rs)
+
     -- Traversal for syntactic positions that pass a value to an unknown
     -- consumer.  A partial recursive function may be returned directly or
     -- applied through a transparent helper, but it may not be hidden inside an
@@ -12322,10 +12423,16 @@ collectFunEdges funMap src =
     -- that would let unknown code call it at arbitrary measures.
     goArg :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
     goArg d sub ho esc facts boolFacts t = do
-      tNorm <- normalizeTermAt d t
-      if opaqueRecursiveEscape t || (tNorm /= t && opaqueRecursiveEscape tNorm)
+      if opaqueRecursiveEscape t
         then pure Nothing
-        else go d sub ho esc facts boolFacts t
+        else
+          if containsSccReference d ho esc t
+            then do
+              tNorm <- normalizeTermAt d t
+              if tNorm /= t && opaqueRecursiveEscape tNorm
+                then pure Nothing
+                else joinEdges <$> go d sub ho esc facts boolFacts t <*> go d sub ho esc facts boolFacts tNorm
+            else go d sub ho esc facts boolFacts t
       where
         opaqueRecursiveEscape x =
           case partialCallOf d ho x of
@@ -12886,9 +12993,50 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
 normalizeTermAt :: Int -> Term -> CheckM Term
 normalizeTermAt d t = do
   ec <- ec_
-  let env = [VRigid lvl [] | lvl <- [d - 1, d - 2 .. 0]]
-      v = force ec (eval ec env t)
-  pure (simplifyDecisionTerm (quote ec d v))
+  if maxFreeIndexTerm t >= d
+    then pure (simplifyDecisionTerm t)
+    else do
+      let env = [VRigid lvl [] | lvl <- [d - 1, d - 2 .. 0]]
+          v = force ec (eval ec env t)
+      pure (simplifyDecisionTerm (quote ec d v))
+
+maxFreeIndexTerm :: Term -> Int
+maxFreeIndexTerm = go 0
+  where
+    go depth = \case
+      CVar i -> if i >= depth then i - depth else -1
+      CGlob _ -> -1
+      CLam _ _ _ b -> go (depth + 1) b
+      CPi _ _ _ a b -> max (go depth a) (go (depth + 1) b)
+      CApp _ f a -> max (go depth f) (go depth a)
+      CSort _ -> -1
+      CLit _ -> -1
+      CCtor _ as -> maximum (-1 : map (go depth) as)
+      CMatch s alts ->
+        maximum
+          ( -1
+              : go depth s
+              : [ max (maybe (-1) (go (depth + patBindersC p)) gd) (go (depth + patBindersC p) b)
+                | CaseAlt p gd b <- alts
+                ]
+          )
+      CRecordT fs -> maximum (-1 : map (go depth . snd) fs)
+      CRecordV fs -> maximum (-1 : map (go depth . snd) fs)
+      CProj e _ -> go depth e
+      CProjAt e _ _ -> go depth e
+      CVariantT ms -> maximum (-1 : map (go depth) ms)
+      CInject _ e -> go depth e
+      CLet _ _ a b c -> maximum [go depth a, go depth b, go (depth + 1) c]
+      CLetRec _ _ a b c -> maximum [go depth a, go (depth + 1) b, go (depth + 1) c]
+      CMeta _ -> -1
+      CDo _ _ -> -1
+      CSealE _ e -> go depth e
+      CSigT _ e -> go depth e
+      CThunkE e -> go depth e
+      CLazyE e -> go depth e
+      CForceE e -> go depth e
+      CIf a b c -> maximum [go depth a, go depth b, go depth c]
+      CQuote _ slots -> maximum (-1 : map (go depth) slots)
 
 simplifyDecisionTerm :: Term -> Term
 simplifyDecisionTerm = go

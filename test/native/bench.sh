@@ -19,7 +19,7 @@
 # them, so an interpreter comparison is opt-in (--vs-interp) and best-effort.
 #
 # Usage: test/native/bench.sh [--vs-interp]
-set -u
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BENCH="$ROOT/test/native/bench"
@@ -29,6 +29,34 @@ VS_INTERP=0
 [ "${1:-}" = "--vs-interp" ] && VS_INTERP=1
 
 cd "$ROOT"
+
+if ! command -v timeout >/dev/null 2>&1; then
+  timeout() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+seconds = float(sys.argv[1].removesuffix('s'))
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+  }
+fi
+
+now() {
+  python3 - <<'PY'
+import time
+print(f"{time.time():.6f}")
+PY
+}
+
+elapsed_between() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+print(f"{float(sys.argv[2]) - float(sys.argv[1]):.2f}")
+PY
+}
 
 have_driver() {
   [ -n "${KAPPA_CC:-}" ] && return 0
@@ -82,22 +110,26 @@ for entry in "${BENCHES[@]}"; do
   if ! KAPPA_CC="$BENCHCC" timeout 240 $KAPPA build "$src" -o "$exe" >"$BWORK/$name.build.log" 2>&1; then
     echo "FAIL $name: native build failed"; sed 's/^/   /' "$BWORK/$name.build.log"; fails=$((fails+1)); continue
   fi
-  ns=$(date +%s.%N)
+  ns=$(now)
   out="$(KAPPA_GC_STATS=1 timeout 120 "$exe" 2>"$BWORK/$name.gc")"; rc=$?
-  ne=$(date +%s.%N)
-  ntime=$(awk "BEGIN{printf \"%.2f\", $ne-$ns}")
+  ne=$(now)
+  ntime=$(elapsed_between "$ns" "$ne")
   total=$(grep -oE 'total_bytes=[0-9]+' "$BWORK/$name.gc" | head -1 | cut -d= -f2)
   heap=$(grep -oE 'heap_size=[0-9]+' "$BWORK/$name.gc" | head -1 | cut -d= -f2)
   icol="(skipped)"
   if [ "$VS_INTERP" = 1 ]; then
-    is=$(date +%s.%N); iout="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?; ie=$(date +%s.%N)
-    if [ "$irc" = 0 ]; then icol="$(awk "BEGIN{printf \"%.2fs\", $ie-$is}")"; else icol="n/a(depth/timeout)"; fi
+    is=$(now); iout="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?; ie=$(now)
+    if [ "$irc" = 0 ]; then icol="$(elapsed_between "$is" "$ie")s"; else icol="n/a(depth/timeout)"; fi
   fi
   printf "%-10s | %-16s | %7ss | %12s | %12s | %10s | %s\n" "$name" "$out" "$ntime" "${total:-?}" "$totalbound" "${heap:-?}" "$icol"
   if [ "$rc" != 0 ]; then echo "   FAIL $name: native rc=$rc"; fails=$((fails+1)); continue; fi
   if [ "$out" != "$expect" ]; then echo "   FAIL $name: result $out != expected $expect"; fails=$((fails+1)); fi
-  if [ "$totalbound" != 0 ] && [ -n "$total" ] && [ "$total" -gt "$totalbound" ]; then
-    echo "   FAIL $name: total_bytes $total exceeds bound $totalbound (per-iteration allocation regression — e.g. reintroduced KEnv rebuild?)"; fails=$((fails+1))
+  if [ "$totalbound" != 0 ]; then
+    if [ -z "$total" ]; then
+      echo "   FAIL $name: missing total_bytes GC statistic, allocation gate cannot be evaluated"; fails=$((fails+1))
+    elif [ "$total" -gt "$totalbound" ]; then
+      echo "   FAIL $name: total_bytes $total exceeds bound $totalbound (per-iteration allocation regression — e.g. reintroduced KEnv rebuild?)"; fails=$((fails+1))
+    fi
   fi
 done
 
@@ -115,9 +147,9 @@ ratio_bench() {
   if ! $BENCHCC "$csrc" -o "$rexe" 2>"$BWORK/c_$name.log"; then
     echo "   FAIL ratio $name: raw-C build"; sed 's/^/     /' "$BWORK/c_$name.log"; fails=$((fails+1)); return; fi
   local ns ne rs re nt rt ratio
-  ns=$(date +%s.%N); "$nexe" >/dev/null 2>&1; ne=$(date +%s.%N)
-  rs=$(date +%s.%N); "$rexe" "$RATIO_N" >/dev/null 2>&1; re=$(date +%s.%N)
-  nt=$(awk "BEGIN{printf \"%.4f\", $ne-$ns}"); rt=$(awk "BEGIN{printf \"%.4f\", $re-$rs}")
+  ns=$(now); "$nexe" >/dev/null 2>&1; ne=$(now)
+  rs=$(now); "$rexe" "$RATIO_N" >/dev/null 2>&1; re=$(now)
+  nt=$(elapsed_between "$ns" "$ne"); rt=$(elapsed_between "$rs" "$re")
   ratio=$(awk "BEGIN{printf \"%.1f\", ($rt>0)?($nt/$rt):0}")
   printf "   %-10s native=%ss  rawC=%ss  ratio=%sx  %s\n" "$name" "$nt" "$rt" "$ratio" "$note"
   if [ "$gate" != 0 ]; then

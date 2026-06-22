@@ -1,0 +1,295 @@
+module delve.json
+
+import delve.natutil.*
+
+import delve.core.(GameError, JsonError, ConfigError)
+import std.bytes as bytes
+import std.unicode as unicode
+
+-- Small Delve JSON reader/writer. It accepts the Delve data-asset profile:
+-- objects, arrays, UTF-8 strings, integers, booleans, and null. Delve configs
+-- do not need floating point or comments. Unsupported escapes are rejected with
+-- typed JsonError values.
+
+data JsonValue : Type =
+    JNull
+    JBool (value : Bool)
+    JNumber (value : Int)
+    JString (value : String)
+    JArray (items : List JsonValue)
+    JObject (fields : List JsonField)
+
+data JsonField : Type =
+    JsonField (name : String) (value : JsonValue)
+
+data Cursor : Type =
+    Cursor (source : Bytes) (offset : Nat)
+
+data ParseResult (a : Type) : Type =
+    Parsed (value : a) (cursor : Cursor)
+
+parse : String -> Result GameError JsonValue
+let parse text =
+    let cursor = Cursor (unicode.utf8Bytes text) 0
+    match parseValue (skipWs cursor)
+    case Err e -> Err e
+    case Ok r ->
+        let end = skipWs r.cursor
+        if end.offset == bytes.bytesLength end.source then Ok r.value
+        else Err (JsonError "trailing data after JSON value")
+
+peek : Cursor -> Option Byte
+let peek c = bytes.bytesGet c.source c.offset
+
+advance : Cursor -> Cursor
+let advance c = Cursor c.source (c.offset + 1)
+
+skipWs : Cursor -> Cursor
+let skipWs c decreases max 0 (subInt (natToInt (bytes.bytesLength c.source)) (natToInt c.offset)) =
+    match peek c
+    case Some b ->
+        if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' then skipWs (advance c)
+        else c
+    case None -> c
+
+expectByte : Byte -> Cursor -> Result GameError Cursor
+let expectByte wanted c =
+    match peek c
+    case Some got -> if got == wanted then Ok (advance c) else Err (JsonError "unexpected JSON byte")
+    case None -> Err (JsonError "unexpected end of JSON")
+
+parseValue : Cursor -> Result GameError (ParseResult JsonValue)
+let parseValue c0 =
+    let c = skipWs c0
+    match peek c
+    case None -> Err (JsonError "expected JSON value")
+    case Some b ->
+        if b == b'{' then parseObject (advance c)
+        elif b == b'[' then parseArray (advance c)
+        elif b == b'"' then parseStringValue (advance c)
+        elif b == b't' then parseKeyword "true" (JBool True) c
+        elif b == b'f' then parseKeyword "false" (JBool False) c
+        elif b == b'n' then parseKeyword "null" JNull c
+        elif b == b'-' || (b >= b'0' && b <= b'9') then parseNumber c
+        else Err (JsonError "invalid JSON value")
+
+parseKeyword : String -> JsonValue -> Cursor -> Result GameError (ParseResult JsonValue)
+let parseKeyword word value c =
+    let raw = unicode.utf8Bytes word
+    let slice = bytes.bytesTake (bytes.bytesLength raw) (bytes.bytesDrop c.offset c.source)
+    in
+        if slice == raw then Ok (Parsed value (Cursor c.source (c.offset + bytes.bytesLength raw)))
+        else Err (JsonError ("expected keyword " ++ word))
+
+parseStringValue : Cursor -> Result GameError (ParseResult JsonValue)
+let parseStringValue c =
+    match parseStringBytes Nil c
+    case Err e -> Err e
+    case Ok r -> Ok (Parsed (JString r.value) r.cursor)
+
+parseStringBytes : List Byte -> Cursor -> Result GameError (ParseResult String)
+let parseStringBytes acc c decreases max 0 (subInt (natToInt (bytes.bytesLength c.source)) (natToInt c.offset)) =
+    match peek c
+    case None -> Err (JsonError "unterminated JSON string")
+    case Some b ->
+        if b == b'"' then
+            Ok (Parsed (unicode.decodeUtf8Lossy (bytes.bytesFromList (reverse acc))) (advance c))
+        elif b == b'\\' then parseEscape acc (advance c)
+        else parseStringBytes ((::) b acc) (advance c)
+
+parseEscape : List Byte -> Cursor -> Result GameError (ParseResult String)
+let parseEscape acc c =
+    match peek c
+    case None -> Err (JsonError "unterminated JSON escape")
+    case Some b ->
+        let escaped =
+            if b == b'"' then Some b'"'
+            elif b == b'\\' then Some b'\\'
+            elif b == b'/' then Some b'/'
+            elif b == b'b' then Some b'\b'
+            elif b == b'f' then Some b'\f'
+            elif b == b'n' then Some b'\n'
+            elif b == b'r' then Some b'\r'
+            elif b == b't' then Some b'\t'
+            else None
+        in
+            match escaped
+            case Some eb -> parseStringBytes ((::) eb acc) (advance c)
+            case None -> Err (JsonError "unsupported JSON escape")
+
+parseNumber : Cursor -> Result GameError (ParseResult JsonValue)
+let parseNumber c0 =
+    let sign =
+        match peek c0
+        case Some b -> if b == b'-' then -1 else 1
+        case None -> 1
+    let c = if sign < 0 then advance c0 else c0
+    match parseDigits False 0 c
+    case Err e -> Err e
+    case Ok r -> Ok (Parsed (JNumber (sign * r.value)) r.cursor)
+
+parseDigits : Bool -> Int -> Cursor -> Result GameError (ParseResult Int)
+let parseDigits seen acc c decreases max 0 (subInt (natToInt (bytes.bytesLength c.source)) (natToInt c.offset)) =
+    match peek c
+    case Some b ->
+        if b >= b'0' && b <= b'9' then
+            parseDigits True ((acc * 10) + byteDigit b) (advance c)
+        else if seen then Ok (Parsed acc c) else Err (JsonError "expected digit")
+    case None -> if seen then Ok (Parsed acc c) else Err (JsonError "expected digit")
+
+byteDigit : Byte -> Int
+let byteDigit b =
+    if b == b'0' then 0
+    elif b == b'1' then 1
+    elif b == b'2' then 2
+    elif b == b'3' then 3
+    elif b == b'4' then 4
+    elif b == b'5' then 5
+    elif b == b'6' then 6
+    elif b == b'7' then 7
+    elif b == b'8' then 8
+    else 9
+
+parseArray : Cursor -> Result GameError (ParseResult JsonValue)
+let parseArray c0 = parseArrayItems Nil (skipWs c0)
+
+parseArrayItems : List JsonValue -> Cursor -> Result GameError (ParseResult JsonValue)
+let parseArrayItems acc c0 decreases max 0 (subInt (natToInt (bytes.bytesLength c0.source)) (natToInt c0.offset)) =
+    let c = skipWs c0
+    match peek c
+    case Some b ->
+        if b == b']' then Ok (Parsed (JArray (reverse acc)) (advance c))
+        else
+            match parseValue c
+            case Err e -> Err e
+            case Ok item ->
+                let after = skipWs item.cursor
+                match peek after
+                case Some comma ->
+                    if comma == b',' then parseArrayItems ((::) item.value acc) (advance after)
+                    elif comma == b']' then Ok (Parsed (JArray (reverse ((::) item.value acc))) (advance after))
+                    else Err (JsonError "expected ',' or ']' in array")
+                case None -> Err (JsonError "unterminated JSON array")
+    case None -> Err (JsonError "unterminated JSON array")
+
+parseObject : Cursor -> Result GameError (ParseResult JsonValue)
+let parseObject c0 = parseObjectFields Nil (skipWs c0)
+
+parseObjectFields : List JsonField -> Cursor -> Result GameError (ParseResult JsonValue)
+let parseObjectFields acc c0 decreases max 0 (subInt (natToInt (bytes.bytesLength c0.source)) (natToInt c0.offset)) =
+    let c = skipWs c0
+    match peek c
+    case Some b ->
+        if b == b'}' then Ok (Parsed (JObject (reverse acc)) (advance c))
+        elif b == b'"' then
+            match parseStringBytes Nil (advance c)
+            case Err e -> Err e
+            case Ok key ->
+                match expectByte b':' (skipWs key.cursor)
+                case Err e -> Err e
+                case Ok afterColon ->
+                    match parseValue afterColon
+                    case Err e -> Err e
+                    case Ok value ->
+                        let after = skipWs value.cursor
+                        match peek after
+                        case Some sep ->
+                            let field = JsonField key.value value.value
+                            if sep == b',' then parseObjectFields ((::) field acc) (advance after)
+                            elif sep == b'}' then Ok (Parsed (JObject (reverse ((::) field acc))) (advance after))
+                            else Err (JsonError "expected ',' or '}' in object")
+                        case None -> Err (JsonError "unterminated JSON object")
+        else Err (JsonError "expected string key or '}'")
+    case None -> Err (JsonError "unterminated JSON object")
+
+field : String -> List JsonField -> Option JsonValue
+let field name fields decreases listLength fields =
+    match fields
+    case Nil -> None
+    case f :: rest -> if f.name == name then Some f.value else field name rest
+
+objectField : String -> JsonValue -> Option JsonValue
+let objectField name value =
+    match value
+    case JObject fields -> field name fields
+    case _ -> None
+
+require : String -> JsonValue -> Result GameError JsonValue
+let require name value =
+    match objectField name value
+    case Some v -> Ok v
+    case None -> Err (ConfigError ("missing JSON field: " ++ name))
+
+asString : JsonValue -> Result GameError String
+let asString value =
+    match value
+    case JString s -> Ok s
+    case _ -> Err (ConfigError "expected JSON string")
+
+asInt : JsonValue -> Result GameError Int
+let asInt value =
+    match value
+    case JNumber n -> Ok n
+    case _ -> Err (ConfigError "expected JSON integer")
+
+asBool : JsonValue -> Result GameError Bool
+let asBool value =
+    match value
+    case JBool b -> Ok b
+    case _ -> Err (ConfigError "expected JSON boolean")
+
+asArray : JsonValue -> Result GameError (List JsonValue)
+let asArray value =
+    match value
+    case JArray xs -> Ok xs
+    case _ -> Err (ConfigError "expected JSON array")
+
+asObject : JsonValue -> Result GameError (List JsonField)
+let asObject value =
+    match value
+    case JObject xs -> Ok xs
+    case _ -> Err (ConfigError "expected JSON object")
+
+stringify : JsonValue -> String
+let stringify value =
+    match value
+    case JNull -> "null"
+    case JBool True -> "true"
+    case JBool False -> "false"
+    case JNumber n -> show n
+    case JString s -> "\"" ++ escapeString s ++ "\""
+    case JArray xs -> "[" ++ joinValues xs ++ "]"
+    case JObject fields -> "{" ++ joinFields fields ++ "}"
+
+escapeString : String -> String
+let escapeString s =
+    -- This renderer emits printable UTF-8 plus simple escapes for the JSON
+    -- control characters Delve itself writes.
+    escapeBytes "" (unicode.utf8Bytes s)
+
+escapeBytes : String -> Bytes -> String
+let escapeBytes acc bs decreases bytes.bytesLength bs =
+    match bytes.bytesGet bs 0
+    case None -> acc
+    case Some b ->
+        let rest = bytes.bytesDrop 1 bs
+        if b == b'\\' then escapeBytes (acc ++ "\\\\") rest
+        elif b == b'"' then escapeBytes (acc ++ "\\\"") rest
+        elif b == b'\n' then escapeBytes (acc ++ "\\n") rest
+        elif b == b'\r' then escapeBytes (acc ++ "\\r") rest
+        elif b == b'\t' then escapeBytes (acc ++ "\\t") rest
+        else escapeBytes (acc ++ unicode.decodeUtf8Lossy (bytes.singletonByte b)) rest
+
+joinValues : List JsonValue -> String
+let joinValues xs decreases listLength xs =
+    match xs
+    case Nil -> ""
+    case x :: Nil -> stringify x
+    case x :: rest -> stringify x ++ "," ++ joinValues rest
+
+joinFields : List JsonField -> String
+let joinFields fields decreases listLength fields =
+    match fields
+    case Nil -> ""
+    case f :: Nil -> stringify (JString f.name) ++ ":" ++ stringify f.value
+    case f :: rest -> stringify (JString f.name) ++ ":" ++ stringify f.value ++ "," ++ joinFields rest

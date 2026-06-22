@@ -1,0 +1,676 @@
+module delve.save
+
+import delve.core.*
+import delve.natutil.*
+import delve.files as files
+import delve.json as js
+import delve.json.*
+import delve.config as config
+import delve.content as content
+import delve.ecs as ecs
+
+-- Versioned save format. Save files store authored content IDs and typed enum
+-- spellings, not raw host addresses or terminal state.
+
+saveGame : GameState -> IO GameError Unit
+let saveGame game =
+    do
+        files.ensureDirectory game.content.save.directory
+        files.writeText game.savePath (js.stringify (encodeGame game))
+
+loadGame : ContentPack -> Size -> IO GameError GameState
+let loadGame pack fallbackSize =
+    do
+        present <- files.exists pack.save.path
+        if not present then raise (SaveError "no save file exists")
+        else
+            do
+                text <- files.readText pack.save.path
+                value <- parseOrRaise text
+                decoded <- decodeGame pack fallbackSize value
+                pure (ecs.sync decoded.{ mode = Playing })
+
+parseOrRaise : String -> IO GameError JsonValue
+let parseOrRaise text =
+    match js.parse text
+    case Ok v -> pure v
+    case Err e -> raise e
+
+obj : List JsonField -> JsonValue
+let obj fields = JObject fields
+
+arr : List JsonValue -> JsonValue
+let arr xs = JArray xs
+
+str : String -> JsonValue
+let str s = JString s
+
+num : Int -> JsonValue
+let num n = JNumber n
+
+bool : Bool -> JsonValue
+let bool b = JBool b
+
+field : String -> JsonValue -> JsonField
+let field name value = JsonField name value
+
+encodeGame : GameState -> JsonValue
+let encodeGame game =
+    obj [ field "format_version" (num game.content.save.formatVersion)
+        , field "pack_id" (str game.content.packId)
+        , field "pack_version" (str game.content.version)
+        , field "rng" (num (natToInt game.rng))
+        , field "player" (encodePlayer game.player)
+        , field "level" (encodeLevel game.level)
+        , field "rumors" (arr (map encodeRumor game.rumors))
+        , field "ecs" (encodeEcs game.ecs)
+        ]
+
+encodeRumor : Rumor -> JsonValue
+let encodeRumor rumor =
+    match rumor
+    case Rumor text -> str text
+
+encodePlayer : PlayerState -> JsonValue
+let encodePlayer p =
+    obj [ field "actor_id" (num p.actorId)
+        , field "hunger" (num p.hunger)
+        , field "gold" (num p.gold)
+        , field "identified" (arr (map (\k -> str (itemKindName k)) p.identified))
+        , field "tactic" (str (tacticName p.tactic))
+        , field "star_sign" (str (starSignName p.starSign))
+        , field "corruption" (num p.corruption)
+        , field "mutations" (arr (map (\m -> str (mutationName m)) p.mutations))
+        , field "favor" (num p.favor)
+        , field "faith" (str (faithName p.faith))
+        , field "reputation" (num p.reputation)
+        ]
+
+encodeLevel : Level -> JsonValue
+let encodeLevel level =
+    obj [ field "depth" (num level.depth)
+        , field "size" (encodeSize level.size)
+        , field "tiles" (arr (map encodeTile (arrayToList level.tiles)))
+        , field "rooms" (arr (map encodeRoom level.rooms))
+        , field "actors" (arr (map encodeActor level.actors))
+        , field "items" (arr (map encodeGroundItem level.items))
+        , field "messages" (arr (map str level.messages))
+        , field "turn" (num (natToInt level.turn))
+        ]
+
+encodeSize : Size -> JsonValue
+let encodeSize size = obj [field "width" (num size.width), field "height" (num size.height)]
+
+encodeVec2 : Vec2 -> JsonValue
+let encodeVec2 pos = obj [field "x" (num pos.x), field "y" (num pos.y)]
+
+encodeRoom : Room -> JsonValue
+let encodeRoom room = obj [field "x" (num room.x), field "y" (num room.y), field "w" (num room.w), field "h" (num room.h)]
+
+encodeTile : Tile -> JsonValue
+let encodeTile tile =
+    obj [ field "kind" (str (tileKindName tile.kind))
+        , field "seen" (bool tile.seen)
+        , field "lit" (bool tile.lit)
+        , field "blood" (bool tile.blood)
+        , field "warded" (bool tile.warded)
+        ]
+
+encodeActor : Actor -> JsonValue
+let encodeActor a =
+    obj [ field "id" (num a.id)
+        , field "species" (str (speciesName a.species))
+        , field "name" (str a.name)
+        , field "glyph" (str a.glyph)
+        , field "pos" (encodeVec2 a.pos)
+        , field "stats" (encodeStats a.stats)
+        , field "attitude" (str (attitudeName a.attitude))
+        , field "faction" (str (factionName a.faction))
+        , field "inventory" (arr (map encodeItem a.inventory))
+        , field "wounds" (arr (map encodeWound a.wounds))
+        , field "morale" (num a.morale)
+        , field "loyalty" (num a.loyalty)
+        , field "alive" (bool a.alive)
+        ]
+
+encodeStats : Stats -> JsonValue
+let encodeStats s =
+    obj [ field "hp" (num s.hp), field "max_hp" (num s.maxHp)
+        , field "mp" (num s.mp), field "max_mp" (num s.maxMp)
+        , field "str" (num s.str), field "dex" (num s.dex), field "def" (num s.def)
+        , field "xp" (num s.xp), field "level" (num s.level)
+        ]
+
+encodeItem : Item -> JsonValue
+let encodeItem i =
+    obj [ field "kind" (str (itemKindName i.kind))
+        , field "name" (str i.name)
+        , field "glyph" (str i.glyph)
+        , field "class" (str (itemClassName i.class))
+        , field "stackable" (bool i.stackable)
+        , field "power" (num i.power)
+        , field "count" (num i.count)
+        , field "beatitude" (str (beatitudeName i.beatitude))
+        , field "beatitude_known" (bool i.beatitudeKnown)
+        , field "identified" (bool i.identified)
+        , field "charges" (num i.charges)
+        ]
+
+encodeGroundItem : GroundItem -> JsonValue
+let encodeGroundItem item = obj [field "pos" (encodeVec2 item.pos), field "item" (encodeItem item.item)]
+
+encodeWound : Wound -> JsonValue
+let encodeWound w =
+    match w
+    case Bruised part severity -> obj [field "type" (str "Bruised"), field "part" (str (bodyPartName part)), field "severity" (num severity)]
+    case Bleeding part severity -> obj [field "type" (str "Bleeding"), field "part" (str (bodyPartName part)), field "severity" (num severity)]
+    case Crippled part -> obj [field "type" (str "Crippled"), field "part" (str (bodyPartName part))]
+    case Stunned turns -> obj [field "type" (str "Stunned"), field "turns" (num turns)]
+
+encodeEcs : EcsWorld -> JsonValue
+let encodeEcs world =
+    obj [ field "next_id" (num world.nextId)
+        , field "entity_count" (num (listLength world.entities))
+        ]
+
+-- Decoding raises into IO so malformed save files are ordinary typed failures,
+-- not partially loaded game states.
+
+decodeGame : ContentPack -> Size -> JsonValue -> IO GameError GameState
+let decodeGame pack fallbackSize value =
+    do
+        format <- optIntField pack.save.formatVersion "format_version" value
+        savedPack <- optStringField pack.packId "pack_id" value
+        savedVersion <- optStringField pack.version "pack_version" value
+        if format != pack.save.formatVersion then
+            raise (SaveError "save format version does not match this content pack")
+        elif savedPack != pack.packId then
+            raise (SaveError "save file was written for a different content pack")
+        elif savedVersion != pack.version then
+            raise (SaveError "save file was written for a different content version")
+        else pure ()
+        rngValue <- optIntField 0 "rng" value
+        playerJson <- requireField "player" value
+        levelJson <- requireField "level" value
+        rumorJson <- requireArrayField "rumors" value
+        player <- decodePlayer pack playerJson
+        level <- decodeLevel fallbackSize levelJson
+        rumors <- traverse decodeRumor rumorJson
+        validateLoadedState player level
+        pure (GameState {
+                rng = intToNat rngValue,
+                player = player,
+                level = level,
+                mode = Playing,
+                lastCommand = "loaded",
+                rumors = rumors,
+                content = pack,
+                ecs = ecs.fromLevel pack level,
+                savePath = pack.save.path
+            })
+
+requireField : String -> JsonValue -> IO GameError JsonValue
+let requireField name value =
+    match js.require name value
+    case Ok v -> pure v
+    case Err e -> raise e
+
+optIntField : Int -> String -> JsonValue -> IO GameError Int
+let optIntField fallback name value =
+    match js.objectField name value
+    case None -> pure fallback
+    case Some v ->
+        match js.asInt v
+        case Ok n -> pure n
+        case Err e -> raise e
+
+optBoolField : Bool -> String -> JsonValue -> IO GameError Bool
+let optBoolField fallback name value =
+    match js.objectField name value
+    case None -> pure fallback
+    case Some v ->
+        match js.asBool v
+        case Ok b -> pure b
+        case Err e -> raise e
+
+optStringField : String -> String -> JsonValue -> IO GameError String
+let optStringField fallback name value =
+    match js.objectField name value
+    case None -> pure fallback
+    case Some v ->
+        match js.asString v
+        case Ok s -> pure s
+        case Err e -> raise e
+
+optArrayField : List JsonValue -> String -> JsonValue -> IO GameError (List JsonValue)
+let optArrayField fallback name value =
+    match js.objectField name value
+    case None -> pure fallback
+    case Some v ->
+        match js.asArray v
+        case Ok xs -> pure xs
+        case Err e -> raise e
+
+requireArrayField : String -> JsonValue -> IO GameError (List JsonValue)
+let requireArrayField name value =
+    do
+        fieldValue <- requireField name value
+        match js.asArray fieldValue
+        case Ok xs -> pure xs
+        case Err e -> raise e
+
+validateLoadedState : PlayerState -> Level -> IO GameError Unit
+let validateLoadedState player level =
+    let expectedTiles = level.size.width * level.size.height
+    if level.size.width <= 0 || level.size.height <= 0 then
+        raise (SaveError "save file has invalid map size")
+    elif listLength (arrayToList level.tiles) != expectedTiles then
+        raise (SaveError "save file tile count does not match map size")
+    else
+        match findActor player.actorId level.actors
+        case None -> raise (SaveError "save file is missing the player actor")
+        case Some p ->
+            if not p.alive then raise (SaveError "save file player actor is dead")
+            else pure ()
+
+decodeRumor : JsonValue -> IO GameError Rumor
+let decodeRumor value =
+    match js.asString value
+    case Ok s -> pure (Rumor s)
+    case Err e -> raise e
+
+decodePlayer : ContentPack -> JsonValue -> IO GameError PlayerState
+let decodePlayer pack value =
+    do
+        actorId <- optIntField 1 "actor_id" value
+        hunger <- optIntField pack.rules.startingHunger "hunger" value
+        gold <- optIntField 0 "gold" value
+        identifiedJson <- optArrayField Nil "identified" value
+        identified <- traverse decodeItemKindJson identifiedJson
+        tacticName0 <- optStringField "Balanced" "tactic" value
+        tactic <- decodeTacticString tacticName0
+        signName0 <- optStringField "Raven" "star_sign" value
+        sign <- decodeStarSignString signName0
+        corruption <- optIntField 0 "corruption" value
+        mutationJson <- optArrayField Nil "mutations" value
+        mutations <- traverse decodeMutationJson mutationJson
+        favor <- optIntField 0 "favor" value
+        faithName0 <- optStringField "EmberMother" "faith" value
+        faith <- decodeFaithString faithName0
+        reputation <- optIntField 0 "reputation" value
+        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation)
+
+decodeLevel : Size -> JsonValue -> IO GameError Level
+let decodeLevel fallbackSize value =
+    do
+        depth <- optIntField 1 "depth" value
+        sizeJson <- requireField "size" value
+        size <- decodeSize sizeJson
+        tileJson <- requireArrayField "tiles" value
+        tiles <- traverse decodeTile tileJson
+        roomJson <- requireArrayField "rooms" value
+        rooms <- traverse decodeRoom roomJson
+        actorJson <- requireArrayField "actors" value
+        actors <- traverse decodeActor actorJson
+        itemJson <- requireArrayField "items" value
+        items <- traverse decodeGroundItem itemJson
+        msgJson <- requireArrayField "messages" value
+        messages <- traverse decodeStringJson msgJson
+        turn <- optIntField 0 "turn" value
+        if listLength tiles == 0 then raise (SaveError "save file has no tiles")
+        elif listLength actors == 0 then raise (SaveError "save file has no actors")
+        else pure (Level depth size (arrayFromList tiles) rooms actors items messages (intToNat turn))
+
+decodeSize : JsonValue -> IO GameError Size
+let decodeSize value =
+    do
+        w <- optIntField 60 "width" value
+        h <- optIntField 25 "height" value
+        pure (Size w h)
+
+decodeVec2 : JsonValue -> IO GameError Vec2
+let decodeVec2 value =
+    do
+        x <- optIntField 0 "x" value
+        y <- optIntField 0 "y" value
+        pure (Vec2 x y)
+
+decodeRoom : JsonValue -> IO GameError Room
+let decodeRoom value =
+    do
+        x <- optIntField 0 "x" value
+        y <- optIntField 0 "y" value
+        w <- optIntField 1 "w" value
+        h <- optIntField 1 "h" value
+        pure (Room x y w h)
+
+decodeTile : JsonValue -> IO GameError Tile
+let decodeTile value =
+    do
+        kindName0 <- optStringField "Wall" "kind" value
+        kind <- decodeTileKindString kindName0
+        seen <- optBoolField False "seen" value
+        lit <- optBoolField False "lit" value
+        blood <- optBoolField False "blood" value
+        warded <- optBoolField False "warded" value
+        pure (Tile kind seen lit blood warded)
+
+decodeActor : JsonValue -> IO GameError Actor
+let decodeActor value =
+    do
+        id <- optIntField 0 "id" value
+        speciesName0 <- optStringField "Rat" "species" value
+        species <- decodeSpeciesString speciesName0
+        name <- optStringField "monster" "name" value
+        glyph <- optStringField "?" "glyph" value
+        posJson <- requireField "pos" value
+        pos <- decodeVec2 posJson
+        statsJson <- requireField "stats" value
+        stats <- decodeStats statsJson
+        attitudeName0 <- optStringField "Hostile" "attitude" value
+        attitude <- decodeAttitudeString attitudeName0
+        factionName0 <- optStringField "CaveFaction" "faction" value
+        faction <- decodeFactionString factionName0
+        inventoryJson <- optArrayField Nil "inventory" value
+        inventory <- traverse decodeItem inventoryJson
+        woundJson <- optArrayField Nil "wounds" value
+        wounds <- traverse decodeWound woundJson
+        morale <- optIntField 8 "morale" value
+        loyalty <- optIntField 0 "loyalty" value
+        alive <- optBoolField True "alive" value
+        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive)
+
+decodeStats : JsonValue -> IO GameError Stats
+let decodeStats value =
+    do
+        hp <- optIntField 1 "hp" value
+        maxHp <- optIntField hp "max_hp" value
+        mp <- optIntField 0 "mp" value
+        maxMp <- optIntField mp "max_mp" value
+        strength <- optIntField 1 "str" value
+        dex <- optIntField 1 "dex" value
+        defense <- optIntField 0 "def" value
+        xp <- optIntField 0 "xp" value
+        level <- optIntField 1 "level" value
+        pure (Stats hp maxHp mp maxMp strength dex defense xp level)
+
+decodeItem : JsonValue -> IO GameError Item
+let decodeItem value =
+    do
+        kindName0 <- optStringField "Gold" "kind" value
+        kind <- decodeItemKindString kindName0
+        name <- optStringField "item" "name" value
+        glyph <- optStringField "?" "glyph" value
+        className0 <- optStringField "ToolClass" "class" value
+        cls <- decodeItemClassString className0
+        stackable <- optBoolField False "stackable" value
+        power <- optIntField 0 "power" value
+        count <- optIntField 1 "count" value
+        beatitudeName0 <- optStringField "UnknownBeatitude" "beatitude" value
+        beatitude <- decodeBeatitudeString beatitudeName0
+        beatitudeKnown <- optBoolField False "beatitude_known" value
+        identified <- optBoolField False "identified" value
+        charges <- optIntField 0 "charges" value
+        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges)
+
+decodeGroundItem : JsonValue -> IO GameError GroundItem
+let decodeGroundItem value =
+    do
+        posJson <- requireField "pos" value
+        pos <- decodeVec2 posJson
+        itemJson0 <- requireField "item" value
+        item <- decodeItem itemJson0
+        pure (GroundItem pos item)
+
+decodeWound : JsonValue -> IO GameError Wound
+let decodeWound value =
+    do
+        typ <- optStringField "Bruised" "type" value
+        if typ == "Stunned" then
+            do
+                turns <- optIntField 1 "turns" value
+                pure (Stunned turns)
+        else
+            do
+                partName0 <- optStringField "Torso" "part" value
+                part <- decodeBodyPartString partName0
+                severity <- optIntField 1 "severity" value
+                if typ == "Bleeding" then pure (Bleeding part severity)
+                elif typ == "Crippled" then pure (Crippled part)
+                else pure (Bruised part severity)
+
+decodeStringJson : JsonValue -> IO GameError String
+let decodeStringJson value =
+    match js.asString value
+    case Ok s -> pure s
+    case Err e -> raise e
+
+decodeItemKindJson : JsonValue -> IO GameError ItemKind
+let decodeItemKindJson value =
+    do
+        text <- decodeStringJson value
+        decodeItemKindString text
+
+decodeMutationJson : JsonValue -> IO GameError Mutation
+let decodeMutationJson value =
+    do
+        text <- decodeStringJson value
+        decodeMutationString text
+
+-- Enum spellings are deliberately stable because save files are data contracts.
+-- Changing these names requires a versioned migration.
+itemKindName : ItemKind -> String
+let itemKindName k =
+    match k
+    case Gold -> "Gold"
+    case PotionHealing -> "PotionHealing"
+    case PotionMutation -> "PotionMutation"
+    case PotionWater -> "PotionWater"
+    case ScrollIdentify -> "ScrollIdentify"
+    case ScrollMapping -> "ScrollMapping"
+    case ScrollWard -> "ScrollWard"
+    case FoodRation -> "FoodRation"
+    case Dagger -> "Dagger"
+    case Sword -> "Sword"
+    case Mace -> "Mace"
+    case LeatherArmor -> "LeatherArmor"
+    case ChainMail -> "ChainMail"
+    case WandFire -> "WandFire"
+    case WandDigging -> "WandDigging"
+    case WandPolymorph -> "WandPolymorph"
+    case HolySymbol -> "HolySymbol"
+    case Corpse -> "Corpse"
+    case ChaosShard -> "ChaosShard"
+    case Amulet -> "Amulet"
+
+itemClassName : ItemClass -> String
+let itemClassName c =
+    match c
+    case CoinClass -> "CoinClass"
+    case PotionClass -> "PotionClass"
+    case ScrollClass -> "ScrollClass"
+    case FoodClass -> "FoodClass"
+    case WeaponClass -> "WeaponClass"
+    case ArmorClass -> "ArmorClass"
+    case WandClass -> "WandClass"
+    case ToolClass -> "ToolClass"
+    case CorpseClass -> "CorpseClass"
+    case ArtifactClass -> "ArtifactClass"
+
+tileKindName : TileKind -> String
+let tileKindName k =
+    match k
+    case VoidTile -> "VoidTile"
+    case Floor -> "Floor"
+    case Wall -> "Wall"
+    case ClosedDoor -> "ClosedDoor"
+    case OpenDoor -> "OpenDoor"
+    case Upstairs -> "Upstairs"
+    case Downstairs -> "Downstairs"
+    case Water -> "Water"
+    case Lava -> "Lava"
+    case Trap -> "Trap"
+    case Altar -> "Altar"
+    case LoreStone -> "LoreStone"
+    case ChaosVent -> "ChaosVent"
+
+speciesName : Species -> String
+let speciesName s =
+    match s
+    case PlayerSpecies -> "PlayerSpecies"
+    case Hound -> "Hound"
+    case Goblin -> "Goblin"
+    case Orc -> "Orc"
+    case Kobold -> "Kobold"
+    case Rat -> "Rat"
+    case Bat -> "Bat"
+    case Troll -> "Troll"
+    case Skeleton -> "Skeleton"
+    case Wizard -> "Wizard"
+    case Dragon -> "Dragon"
+    case ChaosSpawn -> "ChaosSpawn"
+    case Pilgrim -> "Pilgrim"
+
+factionName : Faction -> String
+let factionName f =
+    match f
+    case HeroFaction -> "HeroFaction"
+    case BeastFaction -> "BeastFaction"
+    case CaveFaction -> "CaveFaction"
+    case UndeadFaction -> "UndeadFaction"
+    case ChaosFaction -> "ChaosFaction"
+    case NeutralFaction -> "NeutralFaction"
+
+attitudeName : Attitude -> String
+let attitudeName a =
+    match a
+    case PlayerControlled -> "PlayerControlled"
+    case Friendly -> "Friendly"
+    case Neutral -> "Neutral"
+    case Hostile -> "Hostile"
+    case Sleeping -> "Sleeping"
+    case Fleeing -> "Fleeing"
+
+tacticName : Tactic -> String
+let tacticName t =
+    match t
+    case Coward -> "Coward"
+    case Defensive -> "Defensive"
+    case Balanced -> "Balanced"
+    case Aggressive -> "Aggressive"
+    case Berserk -> "Berserk"
+
+starSignName : StarSign -> String
+let starSignName s =
+    match s
+    case Raven -> "Raven"
+    case Book -> "Book"
+    case Wand -> "Wand"
+    case Unicorn -> "Unicorn"
+    case Salamander -> "Salamander"
+    case DragonSign -> "DragonSign"
+    case SwordSign -> "SwordSign"
+    case Falcon -> "Falcon"
+    case Cup -> "Cup"
+    case Candle -> "Candle"
+    case Wolf -> "Wolf"
+    case Tree -> "Tree"
+
+mutationName : Mutation -> String
+let mutationName m =
+    match m
+    case Claws -> "Claws"
+    case NightEyes -> "NightEyes"
+    case StoneSkin -> "StoneSkin"
+    case HollowBones -> "HollowBones"
+    case PoisonTouch -> "PoisonTouch"
+    case Ravenous -> "Ravenous"
+    case BurningBlood -> "BurningBlood"
+    case WhisperingSkull -> "WhisperingSkull"
+
+faithName : Faith -> String
+let faithName f =
+    match f
+    case EmberMother -> "EmberMother"
+    case RootFather -> "RootFather"
+    case VeiledWitness -> "VeiledWitness"
+
+bodyPartName : BodyPart -> String
+let bodyPartName p =
+    match p
+    case Head -> "Head"
+    case Torso -> "Torso"
+    case LeftArm -> "LeftArm"
+    case RightArm -> "RightArm"
+    case LeftLeg -> "LeftLeg"
+    case RightLeg -> "RightLeg"
+
+beatitudeName : Beatitude -> String
+let beatitudeName b =
+    match b
+    case Blessed -> "Blessed"
+    case Uncursed -> "Uncursed"
+    case Cursed -> "Cursed"
+    case UnknownBeatitude -> "UnknownBeatitude"
+
+decodeItemKindString : String -> IO GameError ItemKind
+let decodeItemKindString s = config.decodeItemKind s
+
+decodeItemClassString : String -> IO GameError ItemClass
+let decodeItemClassString s = config.decodeItemClass s
+
+decodeSpeciesString : String -> IO GameError Species
+let decodeSpeciesString s = config.decodeSpecies s
+
+decodeFactionString : String -> IO GameError Faction
+let decodeFactionString s = config.decodeFaction s
+
+decodeAttitudeString : String -> IO GameError Attitude
+let decodeAttitudeString s = config.decodeAttitude s
+
+decodeTacticString : String -> IO GameError Tactic
+let decodeTacticString s = config.decodeTacticId s
+
+decodeStarSignString : String -> IO GameError StarSign
+let decodeStarSignString s = config.decodeStarSignId s
+
+decodeMutationString : String -> IO GameError Mutation
+let decodeMutationString s = config.decodeMutationId s
+
+decodeFaithString : String -> IO GameError Faith
+let decodeFaithString s = config.decodeFaithId s
+
+decodeTileKindString : String -> IO GameError TileKind
+let decodeTileKindString s =
+    if s == "VoidTile" then pure VoidTile
+    elif s == "Floor" then pure Floor
+    elif s == "Wall" then pure Wall
+    elif s == "ClosedDoor" then pure ClosedDoor
+    elif s == "OpenDoor" then pure OpenDoor
+    elif s == "Upstairs" then pure Upstairs
+    elif s == "Downstairs" then pure Downstairs
+    elif s == "Water" then pure Water
+    elif s == "Lava" then pure Lava
+    elif s == "Trap" then pure Trap
+    elif s == "Altar" then pure Altar
+    elif s == "LoreStone" then pure LoreStone
+    elif s == "ChaosVent" then pure ChaosVent
+    else raise (SaveError ("unknown tile kind in save: " ++ s))
+
+decodeBeatitudeString : String -> IO GameError Beatitude
+let decodeBeatitudeString s =
+    if s == "Blessed" then pure Blessed
+    elif s == "Uncursed" then pure Uncursed
+    elif s == "Cursed" then pure Cursed
+    elif s == "UnknownBeatitude" then pure UnknownBeatitude
+    else raise (SaveError ("unknown beatitude in save: " ++ s))
+
+decodeBodyPartString : String -> IO GameError BodyPart
+let decodeBodyPartString s =
+    if s == "Head" then pure Head
+    elif s == "Torso" then pure Torso
+    elif s == "LeftArm" then pure LeftArm
+    elif s == "RightArm" then pure RightArm
+    elif s == "LeftLeg" then pure LeftLeg
+    elif s == "RightLeg" then pure RightLeg
+    else raise (SaveError ("unknown body part in save: " ++ s))

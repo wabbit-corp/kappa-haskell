@@ -7,6 +7,9 @@ import delve.grid as grid
 radius : Int
 let radius = 9
 
+sign : Int -> Int
+let sign n = if n < 0 then -1 elif n > 0 then 1 else 0
+
 lineStep : Vec2 -> Vec2 -> Vec2
 let lineStep a b =
     Vec2 (sign (b.x - a.x)) (sign (b.y - a.y))
@@ -34,12 +37,12 @@ let refreshVisibility origin level =
         mark : Vec2 -> Level -> Level
         let mark p lv =
             let v = visibleFrom level origin p
-            in grid.mapTile p (\t -> withTileLitSeen v (t.seen || v) t) lv
+            in grid.mapTile p (\t -> t.{ lit = v, seen = t.seen || v }) lv
 
         go : List Vec2 -> Level -> Level
         let go ps lv decreases listLength ps =
             match ps
             case Nil -> lv
-            case (::) p rest -> go rest (mark p lv)
+            case p :: rest -> go rest (mark p lv)
 
         go (grid.positions level.size) level

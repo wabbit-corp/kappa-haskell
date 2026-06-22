@@ -2,38 +2,156 @@ module delve.combat
 
 import delve.core.*
 import delve.natutil.*
-import delve.rng as prng
+import delve.natutil.*
+import delve.rng as rand
+import delve.tactics as tactics
 
-attackRoll : Actor -> Actor -> prng.Rng -> (hit : Bool, damage : Int, rng : prng.Rng)
-let attackRoll attacker defender r0 =
-    let roll = prng.range 1 20 r0
-    let hit = roll.value + attacker.stats.dex >= 8 + defender.stats.dex
-    let base = max 1 (attacker.stats.str - defender.stats.def)
-    let spread = prng.range 0 3 roll.rng
-    in (hit = hit, damage = if hit then base + spread.value else 0, rng = spread.rng)
+partName : BodyPart -> String
+let partName part =
+    match part
+    case Head -> "head"
+    case Torso -> "torso"
+    case LeftArm -> "left arm"
+    case RightArm -> "right arm"
+    case LeftLeg -> "left leg"
+    case RightLeg -> "right leg"
+
+randomPart : rand.Rng -> (part : BodyPart, rng : rand.Rng)
+let randomPart r0 =
+    let r = rand.range 0 5 r0
+    let p =
+        match r.value
+        case 0 -> Head
+        case 1 -> Torso
+        case 2 -> LeftArm
+        case 3 -> RightArm
+        case 4 -> LeftLeg
+        case _ -> RightLeg
+    in (part = p, rng = r.rng)
+
+woundPenalty : List Wound -> Int
+let woundPenalty wounds decreases listLength wounds =
+    match wounds
+    case Nil -> 0
+    case w :: rest ->
+        let here =
+            match w
+            case Bruised _ sev -> sev
+            case Bleeding _ sev -> sev + 1
+            case Crippled _ -> 3
+            case Stunned turns -> turns
+        in here + woundPenalty rest
+
+bleedDamage : Actor -> Int
+let bleedDamage actor = countBleeds actor.wounds
+
+countBleeds : List Wound -> Int
+let countBleeds wounds decreases listLength wounds =
+    match wounds
+    case Nil -> 0
+    case w :: rest ->
+        let n =
+            match w
+            case Bleeding _ sev -> max 1 sev
+            case _ -> 0
+        in n + countBleeds rest
+
+bestClassPower : ItemClass -> List Item -> Int
+let bestClassPower cls items decreases listLength items =
+    match items
+    case Nil -> 0
+    case item :: rest ->
+        let here = if item.class == cls then item.power else 0
+        in max here (bestClassPower cls rest)
+
+decayWounds : List Wound -> List Wound
+let decayWounds wounds decreases listLength wounds =
+    match wounds
+    case Nil -> Nil
+    case w :: rest ->
+        match w
+        case Stunned turns -> if turns <= 1 then decayWounds rest else (::) (Stunned (turns - 1)) (decayWounds rest)
+        case Bleeding part sev -> if sev <= 1 then (::) (Bruised part 1) (decayWounds rest) else (::) (Bleeding part (sev - 1)) (decayWounds rest)
+        case Bruised part sev -> if sev <= 1 then decayWounds rest else (::) (Bruised part (sev - 1)) (decayWounds rest)
+        case Crippled part -> (::) (Crippled part) (decayWounds rest)
+
+inflictWound : BodyPart -> Int -> Actor -> Actor
+let inflictWound part damage defender =
+    let wound =
+        if part == Head && damage >= 6 then Stunned 2
+        elif part == LeftLeg || part == RightLeg then Bleeding part 1
+        elif part == LeftArm || part == RightArm then Bruised part 2
+        else Bruised part 1
+    in defender.{ wounds = (::) wound defender.wounds }
+
+attackRoll : ContentPack -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (hit : Bool, damage : Int, rng : rand.Rng)
+let attackRoll pack attackTactic defenseTactic attacker defender r0 =
+    let roll = rand.range 1 20 r0
+    let weapon = bestClassPower WeaponClass attacker.inventory
+    let armor = bestClassPower ArmorClass defender.inventory
+    let attack = roll.value + attacker.stats.dex + tactics.attackBonus pack attackTactic - woundPenalty attacker.wounds
+    let defense = 8 + defender.stats.dex + defender.stats.def + armor - woundPenalty defender.wounds + tactics.defenseBonus pack defenseTactic
+    let hit = attack >= defense
+    let base = max 1 (attacker.stats.str + weapon + tactics.damageBonus pack attackTactic)
+    let spread = rand.range 0 3 roll.rng
+    in (hit = hit, damage = if hit then max 1 (base + spread.value) else 0, rng = spread.rng)
 
 awardXp : Actor -> Actor -> Actor
 let awardXp killer victim =
-    if killer.species != PlayerSpecies then killer
+    if killer.species != PlayerSpecies && killer.species != Hound then killer
     else
         let gained = killer.stats.xp + max 1 victim.stats.xp
         let nextLevel = killer.stats.level + 1
         if gained >= nextLevel * nextLevel * 10 then
-            withActorStats (withStatsLevelUp gained nextLevel (killer.stats.maxHp + 5) (killer.stats.hp + 5) (killer.stats.str + 1) killer.stats) killer
-        else withActorStats (withStatsXp gained killer.stats) killer
+            killer.{ stats = killer.stats.{ xp = gained, level = nextLevel, maxHp = killer.stats.maxHp + 5, hp = killer.stats.hp + 5, str = killer.stats.str + 1 }, loyalty = killer.loyalty + 2 }
+        else killer.{ stats = killer.stats.{ xp = gained } }
 
-strike : Actor -> Actor -> prng.Rng -> (attacker : Actor, defender : Actor, log : String, rng : prng.Rng)
-let strike attacker defender r0 =
-    let roll = attackRoll attacker defender r0
+strikeWith : ContentPack -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
+let strikeWith pack attackTactic defenseTactic attacker defender r0 =
+    let roll = attackRoll pack attackTactic defenseTactic attacker defender r0
     in
         if not roll.hit then
             (attacker = attacker, defender = defender, log = attacker.name ++ " misses " ++ defender.name ++ ".", rng = roll.rng)
         else
-            let hp2 = defender.stats.hp - roll.damage
+            let part = randomPart roll.rng
+            let defenderWounded = inflictWound part.part roll.damage defender
+            let hp2 = defenderWounded.stats.hp - roll.damage
             let alive = hp2 > 0
-            let defender2 = withActorStatsAlive (withStatsHp (max 0 hp2) defender.stats) alive defender
+            let defender2 = defenderWounded.{ stats = defenderWounded.stats.{ hp = max 0 hp2 }, alive = alive }
+            let attacker2 = if alive then attacker else awardXp attacker defender2
+            let woundText = " in the " ++ partName part.part
+            let text =
+                if alive then attacker.name ++ " hits " ++ defender.name ++ woundText ++ " for " ++ show roll.damage ++ "."
+                else attacker.name ++ " kills " ++ defender.name ++ "."
+            in (attacker = attacker2, defender = defender2, log = text, rng = part.rng)
+
+strike : ContentPack -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
+let strike pack attacker defender r0 =
+    strikeWith pack Balanced Balanced attacker defender r0
+
+targetedStrike : ContentPack -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
+let targetedStrike pack attacker defender r0 =
+    let part = randomPart r0
+    let roll = attackRoll pack Defensive Balanced attacker defender part.rng
+    in
+        if not roll.hit then
+            (attacker = attacker, defender = defender, log = attacker.name ++ " aims at " ++ defender.name ++ "'s " ++ partName part.part ++ " and misses.", rng = roll.rng)
+        else
+            let bonus = if part.part == Head then 2 else 0
+            let defenderWounded = inflictWound part.part (roll.damage + bonus) defender
+            let hp2 = defenderWounded.stats.hp - roll.damage - bonus
+            let alive = hp2 > 0
+            let defender2 = defenderWounded.{ stats = defenderWounded.stats.{ hp = max 0 hp2 }, alive = alive }
             let attacker2 = if alive then attacker else awardXp attacker defender2
             let text =
-                if alive then attacker.name ++ " hits " ++ defender.name ++ " for " ++ show roll.damage ++ "."
-                else attacker.name ++ " kills " ++ defender.name ++ "."
+                if alive then attacker.name ++ " maims " ++ defender.name ++ "'s " ++ partName part.part ++ " for " ++ show (roll.damage + bonus) ++ "."
+                else attacker.name ++ " drops " ++ defender.name ++ " with a targeted strike."
             in (attacker = attacker2, defender = defender2, log = text, rng = roll.rng)
+
+tickBleeding : Actor -> Actor
+let tickBleeding actor =
+    let b = bleedDamage actor
+    if b <= 0 then actor.{ wounds = decayWounds actor.wounds }
+    else
+        let hp2 = actor.stats.hp - b
+        actor.{ wounds = decayWounds actor.wounds, stats = actor.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }

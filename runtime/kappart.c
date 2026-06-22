@@ -283,6 +283,14 @@ KValue *kio(KIOFn fn, KEnv *env) {
   return r;
 }
 
+KValue *kfail(KValue *err) {
+  KValue *r = alloc_val(K_FAIL);
+  r->as.fail.err = err;
+  return r;
+}
+
+int kis_fail(KValue *v) { return v && v->tag == K_FAIL; }
+
 KValue *kref_new(KValue *init) {
   KValue *r = alloc_val(K_REF);
   KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
@@ -346,8 +354,29 @@ KValue *kpf_io_printlnString(KValue **a) {
   return kunit();
 }
 KValue *kpf_io_ioPure(KValue **a) { return a[0]; }
-KValue *kpf_io_ioBind(KValue **a) { KValue *r = krun_io(a[0]); return krun_io(kapp(a[1], r)); }
-KValue *kpf_io_ioThen(KValue **a) { (void)krun_io(a[0]); return krun_io(a[1]); }
+KValue *kpf_io_ioBind(KValue **a) {
+  KValue *r = krun_io(a[0]);
+  if (kis_fail(r)) return r;
+  return krun_io(kapp(a[1], r));
+}
+KValue *kpf_io_ioThen(KValue **a) {
+  KValue *r = krun_io(a[0]);
+  if (kis_fail(r)) return r;
+  return krun_io(a[1]);
+}
+KValue *kpf_io_throwIO(KValue **a) { return kfail(a[0]); }
+KValue *kpf_io_catchIO(KValue **a) {
+  KValue *r = krun_io(a[0]);
+  if (kis_fail(r)) return krun_io(kapp(a[1], r->as.fail.err));
+  return r;
+}
+KValue *kpf_io_finallyIO(KValue **a) {
+  KValue *r = krun_io(a[0]);
+  KValue *fr = krun_io(a[1]);
+  if (kis_fail(r)) return r;
+  if (kis_fail(fr)) return fr;
+  return r;
+}
 KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
 KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
 KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
@@ -359,6 +388,7 @@ KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
  * operation name.  Continuations are GC closures built with kclo/kpush. */
 KValue *kpf___effBind(KValue **a);
 KValue *kpf___handleEff(KValue **a);
+KValue *kpf___absurd(KValue **a);
 
 static KValue *eff_bind_k(KEnv *env, KValue *x) {
   /* env: kvar0 = f, kvar1 = cont.  \x -> __effBind (cont x) f */
@@ -378,6 +408,12 @@ KValue *kpf_withBorrowView(KValue **a) { return kapp(a[1], a[0]); }
 KValue *kpf_runPure(KValue **a) {
   if (kctor_tagid(a[0]) == KCT_EFFPURE) return kctor_arg(a[0], 0);
   krt_fail("runPure: computation is not fully handled (an operation escaped its handlers)");
+  return 0;
+}
+
+KValue *kpf___absurd(KValue **a) {
+  (void)a;
+  krt_fail("__absurd: attempted to eliminate a Void value");
   return 0;
 }
 
@@ -2147,6 +2183,7 @@ static KValue *prim_fire_pure(const char *p, KValue **a) {
   if (PRIM("__stringNextGrapheme")) return kpf___stringNextGrapheme(a);
   if (PRIM("__stringWords")) return kpf___stringWords(a);
   if (PRIM("__stringSentences")) return kpf___stringSentences(a);
+  if (PRIM("__absurd")) return kpf___absurd(a);
   krt_fail("internal: unknown pure primitive");
 }
 
@@ -2159,9 +2196,15 @@ struct kdefer_frame { KValue **defers; int n; struct kdefer_frame *next; };
  * registered first within a scope) once a tail recursion reaches a value,
  * then return that value (or Unit when a K_IOEFFECT discarded it). */
 static KValue *krun_finish(KValue *v, int discard, struct kdefer_frame *fr) {
-  for (; fr; fr = fr->next)
-    for (int i = fr->n - 1; i >= 0; i--) (void)krun_io(fr->defers[i]);
-  return discard ? kunit() : v;
+  KValue *result = v;
+  for (; fr; fr = fr->next) {
+    for (int i = fr->n - 1; i >= 0; i--) {
+      KValue *dr = krun_io(fr->defers[i]);
+      if (!kis_fail(result) && kis_fail(dr)) result = dr;
+    }
+  }
+  if (kis_fail(result)) return result;
+  return discard ? kunit() : result;
 }
 
 KValue *krun_io(KValue *action) {
@@ -2220,13 +2263,31 @@ KValue *krun_io(KValue *action) {
       if (PRIM("ioPure")) return krun_finish(a[0], discard, defers);
       if (PRIM("ioBind")) {
         KValue *r = krun_io(a[0]);
+        if (kis_fail(r)) return krun_finish(r, discard, defers);
         action = kapp(a[1], r);      /* tail: continue the loop */
         continue;
       }
       if (PRIM("ioThen")) {
-        (void)krun_io(a[0]);
+        KValue *r = krun_io(a[0]);
+        if (kis_fail(r)) return krun_finish(r, discard, defers);
         action = a[1];               /* tail: continue the loop */
         continue;
+      }
+      if (PRIM("throwIO")) return krun_finish(kfail(a[0]), discard, defers);
+      if (PRIM("catchIO")) {
+        KValue *r = krun_io(a[0]);
+        if (kis_fail(r)) {
+          action = kapp(a[1], r->as.fail.err);
+          continue;
+        }
+        return krun_finish(r, discard, defers);
+      }
+      if (PRIM("finallyIO")) {
+        KValue *r = krun_io(a[0]);
+        KValue *fr = krun_io(a[1]);
+        if (kis_fail(r)) return krun_finish(r, discard, defers);
+        if (kis_fail(fr)) return krun_finish(fr, discard, defers);
+        return krun_finish(r, discard, defers);
       }
       if (PRIM("newRef")) return krun_finish(kref_new(a[0]), discard, defers);
       if (PRIM("readRef")) return krun_finish(kref_get(a[0]), discard, defers);
@@ -2248,11 +2309,18 @@ KValue *krun_io(KValue *action) {
   }
 }
 
+KValue *krun_io_checked(KValue *action) {
+  KValue *result = krun_io(action);
+  if (kis_fail(result)) krt_fail("__runIO: uncaught typed IO failure");
+  return result;
+}
+
 /* ── primitive tables ──────────────────────────────────────────────── */
 
 static int prim_is_io(const char *p) {
   return PRIM("printString") || PRIM("printlnString") || PRIM("ioPure") ||
-         PRIM("ioBind") || PRIM("ioThen") || PRIM("newRef") ||
+         PRIM("ioBind") || PRIM("ioThen") || PRIM("throwIO") ||
+         PRIM("catchIO") || PRIM("finallyIO") || PRIM("newRef") ||
          PRIM("readRef") || PRIM("writeRef");
 }
 
@@ -2291,7 +2359,7 @@ static int prim_arity(const char *p) {
       PRIM("unsafeConsume") || /* {a} -> (x:a) -> Unit : one explicit arg */
       PRIM("__stringStart") || PRIM("__stringEnd") || PRIM("__finishStringBuilder") ||
       PRIM("__finishUtf8Decoder") ||
-      PRIM("ioPure") || PRIM("newRef") || PRIM("readRef") ||
+      PRIM("ioPure") || PRIM("throwIO") || PRIM("newRef") || PRIM("readRef") ||
       PRIM("printString") || PRIM("printlnString"))
     return 1;
   /* ternary */
@@ -2320,7 +2388,7 @@ static int prim_arity(const char *p) {
       PRIM("__decodeUtf8Chunk") ||
       PRIM("__normalize") || PRIM("__stringNextGrapheme") ||
       PRIM("__atomicRepEq") ||
-      PRIM("ioBind") || PRIM("ioThen") || PRIM("writeRef"))
+      PRIM("ioBind") || PRIM("ioThen") || PRIM("catchIO") || PRIM("finallyIO") || PRIM("writeRef"))
     return 2;
   krt_fail("internal: unknown primitive arity");
 }
