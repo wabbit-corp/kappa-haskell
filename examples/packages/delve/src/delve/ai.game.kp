@@ -109,41 +109,92 @@ let castSpell dmg monster player game =
     let g = message (monster.name ++ " hurls chaos at you for " ++ show dmg ++ ".") (game.{ level = game.level.{ actors = actors1 } })
     in if player2.alive then g else g.{ mode = Dead }
 
-hostileTurn : Actor -> Actor -> GameState -> GameState
-let hostileTurn monster player game =
-    if shouldFlee monster then
-        let dir = toward player.pos monster.pos
+-- Nearest visible actor this one is hostile to — could be the player OR a rival
+-- faction's monster. This is what turns the dungeon into a living ecosystem:
+-- beasts, cave-dwellers, undead, and chaos all fight each other, not just you.
+nearestHostile : Actor -> Level -> Option Actor
+let nearestHostile actor level =
+    block
+        go : List Actor -> Option Actor -> Option Actor
+        let go xs best decreases listLength xs =
+            match xs
+            case Nil -> best
+            case a :: rest ->
+                if a.id != actor.id && a.alive && hostileTo actor a && fov.visibleFrom level actor.pos a.pos then
+                    let best2 =
+                        match best
+                        case None -> Some a
+                        case Some b -> if chebyshev actor.pos a.pos < chebyshev actor.pos b.pos then Some a else best
+                    in go rest best2
+                else go rest best
+        go level.actors None
+
+wander : Actor -> GameState -> GameState
+let wander monster game =
+    let dirRoll = randomDir (natToInt game.rng)
+    let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta dirRoll.dir)) game.level
+    in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+
+fleeFrom : Actor -> GameState -> GameState
+let fleeFrom monster game =
+    match nearestHostile monster game.level
+    case None -> wander monster game
+    case Some t ->
+        let dir = toward t.pos monster.pos
         let fled = tryMoveActor monster (addPos monster.pos (moveDelta dir)) game.level
-        game.{ level = game.level.{ actors = replaceActor fled game.level.actors } }
-    else
-        let playerTile = grid.getTile game.level player.pos
+        in game.{ level = game.level.{ actors = replaceActor fled game.level.actors } }
+
+engageMonster : Actor -> Actor -> GameState -> GameState
+let engageMonster monster foe game =
+    if chebyshev monster.pos foe.pos <= 1 then
         let abil = content.abilitiesOf game.content monster.species
-        in
-            if chebyshev monster.pos player.pos <= 1 then
-                if playerTile.warded && monster.species != Dragon && monster.species != ChaosSpawn then
-                    let roll = rand.chance 25 (natToInt game.rng)
-                    let game1 = game.{ rng = intToNat roll.rng }
-                    in if roll.value then
-                        let t = grid.getTile game1.level player.pos
-                        let level2 = grid.setTile player.pos t.{ warded = False } game1.level
-                        in message (monster.name ++ " scuffs out the ward.") (game1.{ level = level2 })
-                    else message (monster.name ++ " hesitates before the ward.") game1
-                else
-                    let frenziedNow = content.hasFrenzy abil && monster.stats.hp * 2 < monster.stats.maxHp
-                    let tac = if frenziedNow then Berserk else Balanced
-                    let hit = combat.strikeWith game.content tac game.player.tactic monster player (natToInt game.rng)
-                    let g = applyHit hit game
-                    if hit.defender.alive then g else g.{ mode = Dead }
+        let frenziedNow = content.hasFrenzy abil && monster.stats.hp * 2 < monster.stats.maxHp
+        let tac = if frenziedNow then Berserk else Balanced
+        let hit = combat.strikeWith game.content tac Balanced monster foe (natToInt game.rng)
+        in applyHit hit game
+    else
+        let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta (toward monster.pos foe.pos))) game.level
+        in game.{ level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+
+engagePlayer : Actor -> Actor -> GameState -> GameState
+let engagePlayer monster player game =
+    let playerTile = grid.getTile game.level player.pos
+    let abil = content.abilitiesOf game.content monster.species
+    in
+        if chebyshev monster.pos player.pos <= 1 then
+            if playerTile.warded && monster.species != Dragon && monster.species != ChaosSpawn then
+                let roll = rand.chance 25 (natToInt game.rng)
+                let game1 = game.{ rng = intToNat roll.rng }
+                in if roll.value then
+                    let t = grid.getTile game1.level player.pos
+                    let level2 = grid.setTile player.pos t.{ warded = False } game1.level
+                    in message (monster.name ++ " scuffs out the ward.") (game1.{ level = level2 })
+                else message (monster.name ++ " hesitates before the ward.") game1
             else
-                let chase = fov.visibleFrom game.level monster.pos player.pos
-                let pwr = content.rangedPower abil
-                in if chase && pwr > 0 && monster.stats.mp >= 3 then
-                    castSpell pwr monster player game
-                else
-                    let dirRoll = if chase then (dir = toward monster.pos player.pos, rng = natToInt game.rng) else randomDir (natToInt game.rng)
-                    let target = addPos monster.pos (moveDelta dirRoll.dir)
-                    let monster2 = tryMoveActor monster target game.level
-                    in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+                let frenziedNow = content.hasFrenzy abil && monster.stats.hp * 2 < monster.stats.maxHp
+                let tac = if frenziedNow then Berserk else Balanced
+                let hit = combat.strikeWith game.content tac game.player.tactic monster player (natToInt game.rng)
+                let g = applyHit hit game
+                if hit.defender.alive then g else g.{ mode = Dead }
+        else
+            let chase = fov.visibleFrom game.level monster.pos player.pos
+            let pwr = content.rangedPower abil
+            in if chase && pwr > 0 && monster.stats.mp >= 3 then
+                castSpell pwr monster player game
+            else
+                let dirRoll = if chase then (dir = toward monster.pos player.pos, rng = natToInt game.rng) else randomDir (natToInt game.rng)
+                let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta dirRoll.dir)) game.level
+                in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+
+hostileTurn : Actor -> GameState -> GameState
+let hostileTurn monster game =
+    if shouldFlee monster then fleeFrom monster game
+    else
+        match nearestHostile monster game.level
+        case None -> wander monster game
+        case Some t ->
+            if t.id == game.player.actorId then engagePlayer monster t game
+            else engageMonster monster t game
 
 actorTurn : Actor -> GameState -> GameState
 let actorTurn actor game =
@@ -162,7 +213,7 @@ let actorTurn actor game =
                 if not actor2.alive then addCorpseFor actor2 game1.{ level = game1.level.{ actors = removeDeadActors game1.level.actors } }
                 elif actor2.faction == HeroFaction then friendlyTurn actor2 player game1
                 elif actor2.attitude == Neutral then game1
-                else hostileTurn actor2 player game1
+                else hostileTurn actor2 game1
 
 runMonsters : GameState -> GameState
 let runMonsters game =
