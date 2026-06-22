@@ -65,12 +65,19 @@ let addCorpseFor victim game =
         let corpse = content.mkItem game.content Corpse
         game.{ level = game.level.{ items = (::) (GroundItem victim.pos corpse) game.level.items } }
 
+-- Only narrate a blow the player could actually witness: a fight is "seen" if
+-- either combatant stands on a currently-lit tile. Off-screen monster duels
+-- still resolve (corpses, deaths) but stay silent, so the log isn't flooded.
+combatVisible : Actor -> Actor -> Level -> Bool
+let combatVisible a b level =
+    (grid.getTile level a.pos).lit || (grid.getTile level b.pos).lit
+
 applyHit : (attacker : Actor, defender : Actor, log : String, rng : rand.Rng) -> GameState -> GameState
 let applyHit hit game =
     let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
     let g0 = game.{ rng = intToNat hit.rng, level = game.level.{ actors = removeDeadActors actors1 } }
     let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
-    in message hit.log g1
+    in if combatVisible hit.attacker hit.defender g1.level then message hit.log g1 else g1
 
 friendlyTurn : Actor -> Actor -> GameState -> GameState
 let friendlyTurn friend player game =

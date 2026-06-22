@@ -1,17 +1,391 @@
 {
   "actors": [
-    { "id": "player", "species": "PlayerSpecies", "name": "player", "glyph": "@", "faction": "HeroFaction", "attitude": "PlayerControlled", "stats": { "hp": 26, "max_hp": 26, "mp": 6, "max_mp": 6, "str": 6, "dex": 6, "def": 2, "xp": 0, "level": 1 }, "morale": 12, "loyalty": 0, "inventory": ["Dagger", "FoodRation", "HolySymbol"], "tags": ["player"], "abilities": [] },
-    { "id": "hound", "species": "Hound", "name": "Moss", "glyph": "d", "faction": "HeroFaction", "attitude": "Friendly", "stats": { "hp": 12, "max_hp": 12, "mp": 0, "max_mp": 0, "str": 4, "dex": 8, "def": 1, "xp": 3, "level": 1 }, "morale": 12, "loyalty": 90, "inventory": [], "tags": ["companion", "animal"], "abilities": [] },
-    { "id": "rat", "species": "Rat", "name": "giant rat", "glyph": "r", "faction": "BeastFaction", "attitude": "Hostile", "stats": { "hp": 4, "max_hp": 4, "mp": 0, "max_mp": 0, "str": 2, "dex": 8, "def": 0, "xp": 1, "level": 1 }, "morale": 8, "loyalty": 0, "inventory": [], "tags": ["beast"], "abilities": [] },
-    { "id": "bat", "species": "Bat", "name": "cave bat", "glyph": "b", "faction": "BeastFaction", "attitude": "Hostile", "stats": { "hp": 3, "max_hp": 3, "mp": 0, "max_mp": 0, "str": 1, "dex": 10, "def": 0, "xp": 1, "level": 1 }, "morale": 8, "loyalty": 0, "inventory": [], "tags": ["beast", "flying"], "abilities": [] },
-    { "id": "goblin", "species": "Goblin", "name": "goblin", "glyph": "g", "faction": "CaveFaction", "attitude": "Hostile", "stats": { "hp": 7, "max_hp": 7, "mp": 0, "max_mp": 0, "str": 3, "dex": 6, "def": 1, "xp": 2, "level": 1 }, "morale": 8, "loyalty": 0, "inventory": [], "tags": ["cave"], "abilities": [] },
-    { "id": "kobold", "species": "Kobold", "name": "kobold", "glyph": "k", "faction": "CaveFaction", "attitude": "Hostile", "stats": { "hp": 5, "max_hp": 5, "mp": 0, "max_mp": 0, "str": 3, "dex": 7, "def": 0, "xp": 2, "level": 1 }, "morale": 8, "loyalty": 0, "inventory": [], "tags": ["cave"], "abilities": [] },
-    { "id": "orc", "species": "Orc", "name": "orc", "glyph": "o", "faction": "CaveFaction", "attitude": "Hostile", "stats": { "hp": 12, "max_hp": 12, "mp": 0, "max_mp": 0, "str": 5, "dex": 5, "def": 2, "xp": 4, "level": 2 }, "morale": 10, "loyalty": 0, "inventory": [], "tags": ["cave"], "abilities": [{ "kind": "Frenzy" }] },
-    { "id": "skeleton", "species": "Skeleton", "name": "skeleton", "glyph": "s", "faction": "UndeadFaction", "attitude": "Hostile", "stats": { "hp": 10, "max_hp": 10, "mp": 0, "max_mp": 0, "str": 4, "dex": 4, "def": 3, "xp": 5, "level": 2 }, "morale": 12, "loyalty": 0, "inventory": [], "tags": ["undead"], "abilities": [] },
-    { "id": "troll", "species": "Troll", "name": "troll", "glyph": "T", "faction": "CaveFaction", "attitude": "Hostile", "stats": { "hp": 24, "max_hp": 24, "mp": 0, "max_mp": 0, "str": 8, "dex": 3, "def": 3, "xp": 9, "level": 4 }, "morale": 10, "loyalty": 0, "inventory": [], "tags": ["cave", "large"], "abilities": [{ "kind": "Regenerate", "amount": 3 }] },
-    { "id": "wizard", "species": "Wizard", "name": "dark wizard", "glyph": "W", "faction": "ChaosFaction", "attitude": "Hostile", "stats": { "hp": 15, "max_hp": 15, "mp": 8, "max_mp": 8, "str": 3, "dex": 6, "def": 1, "xp": 12, "level": 5 }, "morale": 8, "loyalty": 0, "inventory": [], "tags": ["chaos", "caster"], "abilities": [{ "kind": "Ranged", "power": 6 }] },
-    { "id": "chaos_spawn", "species": "ChaosSpawn", "name": "chaos spawn", "glyph": "C", "faction": "ChaosFaction", "attitude": "Hostile", "stats": { "hp": 30, "max_hp": 30, "mp": 12, "max_mp": 12, "str": 9, "dex": 7, "def": 4, "xp": 30, "level": 7 }, "morale": 12, "loyalty": 0, "inventory": [], "tags": ["chaos"], "abilities": [{ "kind": "Frenzy" }] },
-    { "id": "dragon", "species": "Dragon", "name": "ancient dragon", "glyph": "D", "faction": "ChaosFaction", "attitude": "Hostile", "stats": { "hp": 60, "max_hp": 60, "mp": 20, "max_mp": 20, "str": 14, "dex": 5, "def": 8, "xp": 60, "level": 10 }, "morale": 15, "loyalty": 0, "inventory": [], "tags": ["chaos", "boss"], "abilities": [{ "kind": "Ranged", "power": 10 }, { "kind": "Frenzy" }] },
-    { "id": "pilgrim", "species": "Pilgrim", "name": "lost pilgrim", "glyph": "p", "faction": "NeutralFaction", "attitude": "Neutral", "stats": { "hp": 10, "max_hp": 10, "mp": 4, "max_mp": 4, "str": 2, "dex": 4, "def": 1, "xp": 1, "level": 1 }, "morale": 8, "loyalty": 0, "inventory": [], "tags": ["neutral", "talkative"], "abilities": [] }
+    {
+      "id": "player",
+      "species": "PlayerSpecies",
+      "name": "player",
+      "glyph": "@",
+      "faction": "HeroFaction",
+      "attitude": "PlayerControlled",
+      "stats": {
+        "hp": 26,
+        "max_hp": 26,
+        "mp": 6,
+        "max_mp": 6,
+        "str": 6,
+        "dex": 6,
+        "def": 2,
+        "xp": 0,
+        "level": 1
+      },
+      "morale": 12,
+      "loyalty": 0,
+      "inventory": [
+        "Dagger",
+        "FoodRation",
+        "HolySymbol"
+      ],
+      "tags": [
+        "player"
+      ],
+      "abilities": [],
+      "description": "You. A delver who walked down on purpose; the dark still hasn't decided what to make of that."
+    },
+    {
+      "id": "hound",
+      "species": "Hound",
+      "name": "Moss",
+      "glyph": "d",
+      "faction": "HeroFaction",
+      "attitude": "Friendly",
+      "stats": {
+        "hp": 12,
+        "max_hp": 12,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 4,
+        "dex": 8,
+        "def": 1,
+        "xp": 3,
+        "level": 1
+      },
+      "morale": 12,
+      "loyalty": 90,
+      "inventory": [],
+      "tags": [
+        "companion",
+        "animal"
+      ],
+      "abilities": [],
+      "description": "A shaggy hound with moss matted into its coat. It chose you on the threshold and has not reconsidered."
+    },
+    {
+      "id": "rat",
+      "species": "Rat",
+      "name": "giant rat",
+      "glyph": "r",
+      "faction": "BeastFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 4,
+        "max_hp": 4,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 2,
+        "dex": 8,
+        "def": 0,
+        "xp": 1,
+        "level": 1
+      },
+      "morale": 8,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "beast"
+      ],
+      "abilities": [],
+      "description": "A rat swollen dog-large on cave-leavings. Where there is one, the walls hold a hundred more."
+    },
+    {
+      "id": "bat",
+      "species": "Bat",
+      "name": "cave bat",
+      "glyph": "b",
+      "faction": "BeastFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 3,
+        "max_hp": 3,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 1,
+        "dex": 10,
+        "def": 0,
+        "xp": 1,
+        "level": 1
+      },
+      "morale": 8,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "beast",
+        "flying"
+      ],
+      "abilities": [],
+      "description": "A leather-winged bat that reads the dark by its echoes. It harries before it bites."
+    },
+    {
+      "id": "goblin",
+      "species": "Goblin",
+      "name": "goblin",
+      "glyph": "g",
+      "faction": "CaveFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 7,
+        "max_hp": 7,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 3,
+        "dex": 6,
+        "def": 1,
+        "xp": 2,
+        "level": 1
+      },
+      "morale": 8,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "cave"
+      ],
+      "abilities": [],
+      "description": "A wiry cave-goblin, quick to swarm and quicker to flee when the swarm thins."
+    },
+    {
+      "id": "kobold",
+      "species": "Kobold",
+      "name": "kobold",
+      "glyph": "k",
+      "faction": "CaveFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 5,
+        "max_hp": 5,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 3,
+        "dex": 7,
+        "def": 0,
+        "xp": 2,
+        "level": 1
+      },
+      "morale": 8,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "cave"
+      ],
+      "abilities": [],
+      "description": "A small scaled tunnel-dweller. It traps the corridors it cannot hold by force."
+    },
+    {
+      "id": "orc",
+      "species": "Orc",
+      "name": "orc",
+      "glyph": "o",
+      "faction": "CaveFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 12,
+        "max_hp": 12,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 5,
+        "dex": 5,
+        "def": 2,
+        "xp": 4,
+        "level": 2
+      },
+      "morale": 10,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "cave"
+      ],
+      "abilities": [
+        {
+          "kind": "Frenzy"
+        }
+      ],
+      "description": "A heavy-shouldered orc bred for the deep wars. It does not bluff and it does not tire."
+    },
+    {
+      "id": "skeleton",
+      "species": "Skeleton",
+      "name": "skeleton",
+      "glyph": "s",
+      "faction": "UndeadFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 10,
+        "max_hp": 10,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 4,
+        "dex": 4,
+        "def": 3,
+        "xp": 5,
+        "level": 2
+      },
+      "morale": 12,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "undead"
+      ],
+      "abilities": [],
+      "description": "Bones walking without breath, bound by some unfinished errand. Cut it down and it may simply rise again."
+    },
+    {
+      "id": "troll",
+      "species": "Troll",
+      "name": "troll",
+      "glyph": "T",
+      "faction": "CaveFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 24,
+        "max_hp": 24,
+        "mp": 0,
+        "max_mp": 0,
+        "str": 8,
+        "dex": 3,
+        "def": 3,
+        "xp": 9,
+        "level": 4
+      },
+      "morale": 10,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "cave",
+        "large"
+      ],
+      "abilities": [
+        {
+          "kind": "Regenerate",
+          "amount": 3
+        }
+      ],
+      "description": "A slab of grey muscle that knits its own wounds shut. Patience is the only thing that kills it."
+    },
+    {
+      "id": "wizard",
+      "species": "Wizard",
+      "name": "dark wizard",
+      "glyph": "W",
+      "faction": "ChaosFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 15,
+        "max_hp": 15,
+        "mp": 8,
+        "max_mp": 8,
+        "str": 3,
+        "dex": 6,
+        "def": 1,
+        "xp": 12,
+        "level": 5
+      },
+      "morale": 8,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "chaos",
+        "caster"
+      ],
+      "abilities": [
+        {
+          "kind": "Ranged",
+          "power": 6
+        }
+      ],
+      "description": "A robed adept who traded a name for a fistful of chaos, and flings that ruin from a safe distance."
+    },
+    {
+      "id": "chaos_spawn",
+      "species": "ChaosSpawn",
+      "name": "chaos spawn",
+      "glyph": "C",
+      "faction": "ChaosFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 30,
+        "max_hp": 30,
+        "mp": 12,
+        "max_mp": 12,
+        "str": 9,
+        "dex": 7,
+        "def": 4,
+        "xp": 30,
+        "level": 7
+      },
+      "morale": 12,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "chaos"
+      ],
+      "abilities": [
+        {
+          "kind": "Frenzy"
+        }
+      ],
+      "description": "A thing the Rift made and could not finish: too many limbs, none of them sorry. Wards mean nothing to it."
+    },
+    {
+      "id": "dragon",
+      "species": "Dragon",
+      "name": "ancient dragon",
+      "glyph": "D",
+      "faction": "ChaosFaction",
+      "attitude": "Hostile",
+      "stats": {
+        "hp": 60,
+        "max_hp": 60,
+        "mp": 20,
+        "max_mp": 20,
+        "str": 14,
+        "dex": 5,
+        "def": 8,
+        "xp": 60,
+        "level": 10
+      },
+      "morale": 15,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "chaos",
+        "boss"
+      ],
+      "abilities": [
+        {
+          "kind": "Ranged",
+          "power": 10
+        },
+        {
+          "kind": "Frenzy"
+        }
+      ],
+      "description": "An ancient dragon coiled at the root of the world, older than every faith that fears it. Its waking is an ending."
+    },
+    {
+      "id": "pilgrim",
+      "species": "Pilgrim",
+      "name": "lost pilgrim",
+      "glyph": "p",
+      "faction": "NeutralFaction",
+      "attitude": "Neutral",
+      "stats": {
+        "hp": 10,
+        "max_hp": 10,
+        "mp": 4,
+        "max_mp": 4,
+        "str": 2,
+        "dex": 4,
+        "def": 1,
+        "xp": 1,
+        "level": 1
+      },
+      "morale": 8,
+      "loyalty": 0,
+      "inventory": [],
+      "tags": [
+        "neutral",
+        "talkative"
+      ],
+      "abilities": [],
+      "description": "A pilgrim who came seeking and stayed lost. It will talk, if you let it, of things best left below."
+    }
   ]
 }

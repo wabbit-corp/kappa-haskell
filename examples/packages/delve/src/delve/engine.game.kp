@@ -586,6 +586,20 @@ let creationCommand cmd game =
     case QuitNoSave -> game.{ mode = MainMenu }
     case _ -> game
 
+enterLook : GameState -> GameState
+let enterLook game =
+    match playerActor game
+    case None -> game
+    case Some p -> game.{ mode = LookMode, lookPos = p.pos }
+
+lookCommand : Command -> GameState -> GameState
+let lookCommand cmd game =
+    match cmd
+    case Move dir ->
+        let np = addPos game.lookPos (moveDelta dir)
+        in if grid.inBounds game.level.size np then game.{ lookPos = np } else game
+    case _ -> game.{ mode = Playing }
+
 applyModeCommand : Command -> GameState -> GameState
 let applyModeCommand cmd game =
     match game.mode
@@ -594,6 +608,7 @@ let applyModeCommand cmd game =
     case InventoryMode -> inventoryCommand cmd game
     case CharacterMode -> game.{ mode = Playing }
     case CharacterCreation -> creationCommand cmd game
+    case LookMode -> lookCommand cmd game
     case Dead ->
         match cmd
         case QuitNoSave -> game.{ mode = Quit }
@@ -627,6 +642,7 @@ let applyModeCommand cmd game =
         case Help -> game.{ mode = HelpMode }
         case SaveAndQuit -> message "Saving..." game
         case QuitNoSave -> game.{ mode = Quit }
+        case Look -> enterLook game
         case _ -> game
 
 costsTurn : Command -> Bool
@@ -700,6 +716,79 @@ let hazardTick game =
         case Lava -> damagePlayer 6 (message "The lava sears you." game)
         case _ -> game
 
+isVentKind : TileKind -> Bool
+let isVentKind k =
+    match k
+    case ChaosVent -> True
+    case _ -> False
+
+isFloorKind : TileKind -> Bool
+let isFloorKind k =
+    match k
+    case Floor -> True
+    case _ -> False
+
+pickRandom : List Vec2 -> Int -> (value : Option Vec2, rng : Int)
+let pickRandom xs r0 =
+    let n = listLength xs
+    in
+        if n <= 0 then (value = None, rng = r0)
+        else
+            let roll = rand.range 0 (n - 1) r0
+            in (value = listGet xs roll.value, rng = roll.rng)
+
+ventPositions : Level -> List Vec2
+let ventPositions level =
+    block
+        go : Int -> Int -> List Tile -> List Vec2
+        let go x y tiles decreases listLength tiles =
+            match tiles
+            case Nil -> Nil
+            case t :: rest ->
+                let atEnd = x + 1 >= level.size.width
+                let x2 = if atEnd then 0 else x + 1
+                let y2 = if atEnd then y + 1 else y
+                let here = if isVentKind t.kind then [Vec2 x y] else Nil
+                in listAppend here (go x2 y2 rest)
+        go 0 0 (arrayToList level.tiles)
+
+floorNeighbors : Level -> Vec2 -> List Vec2
+let floorNeighbors level pos =
+    block
+        keep : List Vec2 -> List Vec2
+        let keep ps decreases listLength ps =
+            match ps
+            case Nil -> Nil
+            case p :: rest -> if grid.inBounds level.size p && isFloorKind (grid.getTile level p).kind then (::) p (keep rest) else keep rest
+        keep [addPos pos (Vec2 1 0), addPos pos (Vec2 (-1) 0), addPos pos (Vec2 0 1), addPos pos (Vec2 0 (-1)), addPos pos (Vec2 1 1), addPos pos (Vec2 (-1) 1), addPos pos (Vec2 1 (-1)), addPos pos (Vec2 (-1) (-1))]
+
+-- Chaos vents are alive: now and then a rift bleeds into an adjacent floor tile,
+-- so a chaos-touched level slowly eats itself. The rate is data-driven (worldgen).
+spreadChaos : GameState -> GameState
+let spreadChaos game =
+    let chance = game.content.worldgen.chaosVentSpreadChance
+    in
+        if chance <= 0 then game
+        else
+            let roll = rand.chance chance (natToInt game.rng)
+            in
+                if not roll.value then game.{ rng = intToNat roll.rng }
+                else
+                    let pv = pickRandom (ventPositions game.level) roll.rng
+                    in
+                        match pv.value
+                        case None -> game.{ rng = intToNat pv.rng }
+                        case Some vent ->
+                            let pf = pickRandom (floorNeighbors game.level vent) pv.rng
+                            in
+                                match pf.value
+                                case None -> game.{ rng = intToNat pf.rng }
+                                case Some fp ->
+                                    let t = grid.getTile game.level fp
+                                    let level2 = grid.setTile fp t.{ kind = ChaosVent } game.level
+                                    let g2 = game.{ rng = intToNat pf.rng, level = level2 }
+                                    in if t.lit then message "Chaos bleeds into the nearby stone." g2 else g2
+
 tickWorld : Command -> GameState -> GameState -> GameState
 let tickWorld cmd before game =
     if commandActed cmd before game && game.mode == Playing then
@@ -709,7 +798,8 @@ let tickWorld cmd before game =
         let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then damagePlayer 1 (message "You are starving." wounded) else wounded
         let hazard = if starving.mode == Playing then hazardTick starving else starving
         let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
-        if corrupted.mode == Playing then ai.runMonsters corrupted else corrupted
+        let spread = if corrupted.mode == Playing then spreadChaos corrupted else corrupted
+        if spread.mode == Playing then ai.runMonsters spread else spread
     else game
 
 commandFor : GameState -> Key -> Command

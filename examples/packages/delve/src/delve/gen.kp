@@ -283,5 +283,6 @@ let newLevel pack branch depth size seed0 =
         audioMuted = False,
         levels = Nil,
         invCursor = 0,
-        creationGod = 0
+        creationGod = 0,
+        lookPos = Vec2 0 0
     }

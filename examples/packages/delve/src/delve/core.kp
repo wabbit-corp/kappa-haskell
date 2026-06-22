@@ -374,6 +374,7 @@ data ActorDef : Type =
         (inventory : List ItemKind)
         (tags : List String)
         (abilities : List Ability)
+        (description : String)
 
 data SpawnRule : Type =
     SpawnRule
@@ -450,6 +451,7 @@ data WorldGenConfig : Type =
         (trapChancePerDepth : Int)
         (chaosVentBaseChance : Int)
         (chaosVentChancePerDepth : Int)
+        (chaosVentSpreadChance : Int)
 
 data SaveConfig : Type =
     SaveConfig
@@ -517,6 +519,7 @@ data GameMode : Type =
     HelpMode
     CharacterMode
     CharacterCreation
+    LookMode
     Dead
     Won
     Quit
@@ -536,6 +539,7 @@ data GameState : Type =
         (levels : List Level)
         (invCursor : Int)
         (creationGod : Int)
+        (lookPos : Vec2)
 
 data Command : Type =
     StartNewGame
@@ -804,6 +808,7 @@ let gameModeCode mode =
     case Won -> 6
     case Quit -> 7
     case CharacterCreation -> 8
+    case LookMode -> 9
 
 instance Eq GameMode =
     let (==) a b = gameModeCode a == gameModeCode b
@@ -877,7 +882,7 @@ message : String -> GameState -> GameState
 let message text game =
     let msgs = takeMessages game.content.rules.messageLimit ((::) text game.level.messages)
     let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn game.level.branch
-    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels game.invCursor game.creationGod
+    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels game.invCursor game.creationGod game.lookPos
 
 playerActor : GameState -> Option Actor
 let playerActor game =

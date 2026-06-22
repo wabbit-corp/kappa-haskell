@@ -154,6 +154,7 @@ let loadWorldGen path =
         trapDepth <- intField "trap_chance_per_depth" features
         chaosBase <- intField "chaos_vent_base_chance" features
         chaosDepth <- intField "chaos_vent_chance_per_depth" features
+        chaosSpread <- intField "chaos_vent_spread_chance" features
         if minWidth < 20 || maxWidth < minWidth || minHeight < 10 || maxHeight < minHeight then
             raise (ConfigError "worldgen map size limits are invalid")
         elif minSize < 3 || maxSize < minSize then
@@ -163,7 +164,7 @@ let loadWorldGen path =
         elif maxSize > minWidth - 6 || maxSize > minHeight - 6 then
             raise (ConfigError "worldgen max room size does not fit inside the minimum map size")
         else
-            pure (WorldGenConfig minWidth maxWidth minHeight maxHeight minSize maxSize attempts monsterBase monsterPerDepth itemChance altarChance loreChance trapBase trapDepth chaosBase chaosDepth)
+            pure (WorldGenConfig minWidth maxWidth minHeight maxHeight minSize maxSize attempts monsterBase monsterPerDepth itemChance altarChance loreChance trapBase trapDepth chaosBase chaosDepth chaosSpread)
 
 decodeBranch : json.JsonValue -> IO GameError BranchDef
 let decodeBranch value =
@@ -278,7 +279,8 @@ let decodeActor value =
         tags <- traverse decodeStringFromJson tagJson
         abilityJson <- arrayField "abilities" value
         abilities <- traverse decodeAbility abilityJson
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities)
+        description <- stringField "description" value
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =

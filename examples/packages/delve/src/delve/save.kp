@@ -217,7 +217,8 @@ let decodeGame pack fallbackSize value =
                 audioMuted = audioMuted,
                 levels = storedLevels,
                 invCursor = 0,
-                creationGod = 0
+                creationGod = 0,
+                lookPos = Vec2 0 0
             })
 
 requireField : String -> JsonValue -> IO GameError JsonValue

@@ -173,7 +173,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name."
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
@@ -183,6 +183,9 @@ let actorDefBySpecies pack species =
 
 abilitiesOf : ContentPack -> Species -> List Ability
 let abilitiesOf pack species = (actorDefBySpecies pack species).abilities
+
+descriptionOf : ContentPack -> Species -> String
+let descriptionOf pack species = (actorDefBySpecies pack species).description
 
 regenAmount : List Ability -> Int
 let regenAmount abil decreases listLength abil =

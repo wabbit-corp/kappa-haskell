@@ -22,12 +22,31 @@
       "trap_base_chance": 18,
       "trap_chance_per_depth": 1,
       "chaos_vent_base_chance": 4,
-      "chaos_vent_chance_per_depth": 1
+      "chaos_vent_chance_per_depth": 1,
+      "chaos_vent_spread_chance": 6
     }
   },
   "branches": [
-    { "id": 1, "name": "the Beast Warren", "entrance_depth": 2, "floors": 3, "boss": "Troll" },
-    { "id": 2, "name": "the Undead Crypt", "entrance_depth": 4, "floors": 3, "boss": "Skeleton" },
-    { "id": 3, "name": "the Chaos Rift", "entrance_depth": 6, "floors": 3, "boss": "Dragon" }
+    {
+      "id": 1,
+      "name": "the Beast Warren",
+      "entrance_depth": 2,
+      "floors": 3,
+      "boss": "Troll"
+    },
+    {
+      "id": 2,
+      "name": "the Undead Crypt",
+      "entrance_depth": 4,
+      "floors": 3,
+      "boss": "Skeleton"
+    },
+    {
+      "id": 3,
+      "name": "the Chaos Rift",
+      "entrance_depth": 6,
+      "floors": 3,
+      "boss": "Dragon"
+    }
   ]
 }

@@ -339,6 +339,86 @@ let renderMenu game =
     menuMessages game.level.messages
 
 -- ── Top-level dispatch ──────────────────────────────────────────────────
+-- ── Look mode (DF-style tile inspection) ────────────────────────────────
+terrainName : TileKind -> String
+let terrainName k =
+    match k
+    case Floor -> "rough stone floor"
+    case Wall -> "solid rock"
+    case ClosedDoor -> "a closed door"
+    case OpenDoor -> "an open doorway"
+    case Upstairs -> "stairs leading up"
+    case Downstairs -> "stairs leading down"
+    case BranchDown -> "a branching side-passage"
+    case Water -> "dark water"
+    case Lava -> "molten rock"
+    case Trap -> "a sprung trap"
+    case Altar -> "a worn altar"
+    case LoreStone -> "a lore-stone"
+    case ChaosVent -> "a venting chaos rift"
+    case VoidTile -> "the void"
+
+groundItemAt : Vec2 -> List GroundItem -> Option Item
+let groundItemAt pos items decreases listLength items =
+    match items
+    case Nil -> None
+    case gi :: rest -> if eqPos pos gi.pos then Some gi.item else groundItemAt pos rest
+
+lookActorLines : ContentPack -> Actor -> List String
+let lookActorLines pack a =
+    [ a.name ++ " — " ++ show a.stats.hp ++ "/" ++ show a.stats.maxHp ++ " hp"
+    , content.descriptionOf pack a.species
+    ]
+
+lookDescription : ContentPack -> PlayerState -> Level -> Vec2 -> List String
+let lookDescription pack player level pos =
+    let t = grid.getTile level pos
+    in
+        if not t.seen then ["You have not explored there yet."]
+        elif not t.lit then ["From memory: " ++ terrainName t.kind ++ ".", "You cannot see it clearly from here."]
+        else
+            match actorAt pos level.actors
+            case Some a -> listAppend (lookActorLines pack a) ["It stands on " ++ terrainName t.kind ++ "."]
+            case None ->
+                match groundItemAt pos level.items
+                case Some it -> [know.visibleName pack player it ++ " lies here.", "It rests on " ++ terrainName t.kind ++ "."]
+                case None -> ["You see " ++ terrainName t.kind ++ "."]
+
+lookPanelText : List String -> String
+let lookPanelText lines =
+    block
+        go : Int -> List String -> String
+        let go i xs decreases listLength xs =
+            match xs
+            case Nil -> ""
+            case l :: rest -> (if i == 0 then tcb 235 235 250 l else tc 170 170 185 l) ++ "\r\n" ++ go (i + 1) rest
+        go 0 lines
+
+lookHi : String
+let lookHi = "\x1b[7m"
+
+renderMapLook : Level -> Vec2 -> String
+let renderMapLook level cursor =
+    block
+        go : Int -> Int -> String -> List Tile -> String
+        let go x y cur tiles decreases listLength tiles =
+            match tiles
+            case Nil -> ""
+            case t :: rest ->
+                let s = cellStyle level (Vec2 x y) t
+                let here = x == cursor.x && y == cursor.y
+                let piece = if here then lookHi ++ s.color ++ s.glyph ++ reset else (if s.color == cur then s.glyph else s.color ++ s.glyph)
+                let nextCur = if here then "" else s.color
+                let x2 = x + 1
+                if x2 >= level.size.width then piece ++ reset ++ "\r\n" ++ go 0 (y + 1) "" rest
+                else piece ++ go x2 y nextCur rest
+        go 0 0 "" (arrayToList level.tiles)
+
+renderLook : GameState -> String
+let renderLook game =
+    let panel = lookDescription game.content game.player game.level game.lookPos
+    in ansiClear ++ ansiHideCursor ++ renderMapLook game.level game.lookPos ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "look: move the cursor with the movement keys; ; or Esc to stop"
+
 renderGame : GameState -> String
 let renderGame game =
     match game.mode
@@ -346,6 +426,7 @@ let renderGame game =
     case HelpMode -> renderHelp
     case CharacterMode -> renderCharacter game
     case CharacterCreation -> renderCreation game
+    case LookMode -> renderLook game
     case InventoryMode ->
         match playerActor game
         case Some p -> renderInventory game.content game.player p game.invCursor
