@@ -256,7 +256,8 @@ jobs:
           mkdir -p "$game_dir/bin"
           cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cc_cmd="clang $(pkg-config --cflags --libs bdw-gc gmp)"
+            msys_mingw_bin="/c/msys64/mingw64/bin"
+            cc_cmd="$msys_mingw_bin/clang $("$msys_mingw_bin/pkgconf" --cflags --libs bdw-gc gmp)"
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           fi
@@ -296,8 +297,8 @@ jobs:
             --cc "$cc_cmd"
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp "$(dirname "$(command -v pkg-config)")/libgc-1.dll" "$game_dir/"
-            cp "$(dirname "$(command -v pkg-config)")/libgmp-10.dll" "$game_dir/"
+            cp "/c/msys64/mingw64/bin/libgc-1.dll" "$game_dir/"
+            cp "/c/msys64/mingw64/bin/libgmp-10.dll" "$game_dir/"
           fi
 
           cp LICENSE "$game_dir/LICENSE"
