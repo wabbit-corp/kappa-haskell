@@ -6,61 +6,81 @@ import delve.natutil.*
 keyToCommand : Key -> Command
 let keyToCommand key =
     match key
-    case KeyChar "h" -> Move West
-    case KeyChar "j" -> Move South
-    case KeyChar "k" -> Move North
-    case KeyChar "l" -> Move East
-    case KeyChar "y" -> Move NorthWest
-    case KeyChar "u" -> Move NorthEast
-    case KeyChar "b" -> Move SouthWest
-    case KeyChar "n" -> Move SouthEast
-    case KeyChar "." -> Rest
-    case KeyChar "," -> PickUp
-    case KeyChar "g" -> PickUp
-    case KeyChar "d" -> DropFirst
+    case KeyChar "q" -> Move NorthWest
+    case KeyChar "w" -> Move North
+    case KeyChar "e" -> Move NorthEast
+    case KeyChar "a" -> Move West
+    case KeyChar "s" -> Rest
+    case KeyChar "d" -> Move East
+    case KeyChar "z" -> Move SouthWest
+    case KeyChar "x" -> Move South
+    case KeyChar "c" -> Move SouthEast
+    case KeyArrow dir -> Move dir
     case KeyChar "i" -> Inventory
     case KeyChar "@" -> Character
-    case KeyChar "q" -> QuitNoSave
-    case KeyChar "S" -> SaveAndQuit
+    case KeyChar "g" -> PickUp
+    case KeyChar "," -> PickUp
+    case KeyChar "f" -> ThrowFirst
+    case KeyChar "v" -> CycleTactic
+    case KeyChar "o" -> ToggleDoor
+    case KeyChar "r" -> Engrave
+    case KeyChar "t" -> Talk
+    case KeyChar "p" -> Pray
     case KeyChar ">" -> Descend
     case KeyChar "<" -> Ascend
-    case KeyChar "o" -> Open
-    case KeyChar "c" -> Close
-    case KeyChar "?" -> Help
+    case KeyChar "U" -> UseFirst
+    case KeyChar "Z" -> ZapFirst
+    case KeyChar "D" -> DropFirst
+    case KeyChar "A" -> TargetedAttack
     case KeyChar "m" -> ToggleAudio
     case KeyChar "M" -> ToggleAudio
-    case KeyChar "e" -> UseFirst
-    case KeyChar "z" -> ZapFirst
-    case KeyChar "t" -> ThrowFirst
-    case KeyChar "p" -> Pray
-    case KeyChar "E" -> Engrave
-    case KeyChar "C" -> CycleTactic
-    case KeyChar "a" -> TargetedAttack
-    case KeyChar "T" -> Talk
-    case KeyArrow dir -> Move dir
+    case KeyChar "?" -> Help
+    case KeyChar "S" -> SaveAndQuit
+    case KeyChar "Q" -> QuitNoSave
     case KeyEscape -> NoCommand
     case _ -> NoCommand
 
 helpLines : List String
 let helpLines =
     [ "Delve keys"
-    , "h/j/k/l/y/u/b/n or arrows: move/attack"
-    , ".: wait"
-    , "a: aimed adjacent attack"
-    , "C: cycle tactics"
-    , "o/c: open / close nearby door"
-    , "g or ,: pick up"
-    , "i: inventory    @: character"
-    , "m: mute / unmute sound"
-    , "e: use first item    z: zap first wand"
-    , "d: drop first item"
-    , "p: pray / offer corpse on altar"
-    , "E: engrave a ward"
-    , "T: talk to adjacent friendly/neutral creature"
-    , ">/<: stairs"
-    , "?: help"
-    , "S: save and quit    q: quit"
+    , "move/attack:  q w e"
+    , "              a s d    (s = wait)"
+    , "              z x c    or the arrow keys"
+    , "i: inventory (select, equip, use, drop, throw)"
+    , "@: character    p: pray / offer corpse on altar"
+    , "g or ,: pick up    f: throw at nearest foe"
+    , "o: open / close nearby door    r: engrave a ward"
+    , "v: cycle combat stance    t: talk to neighbor"
+    , "A: aimed attack    U/Z/D: quick use / zap / drop"
+    , ">/<: stairs and branch portals"
+    , "m: mute / unmute sound    ?: help"
+    , "S: save and quit    Q: quit without saving"
     ]
+
+inventoryKeyToCommand : Key -> Command
+let inventoryKeyToCommand key =
+    match key
+    case KeyChar "w" -> SelectUp
+    case KeyChar "x" -> SelectDown
+    case KeyArrow North -> SelectUp
+    case KeyArrow South -> SelectDown
+    case KeyChar "e" -> UseSelected
+    case KeyChar "q" -> DropSelected
+    case KeyEscape -> NoCommand
+    case _ -> NoCommand
+
+creationKeyToCommand : Key -> Command
+let creationKeyToCommand key =
+    match key
+    case KeyChar "a" -> GodPrev
+    case KeyChar "d" -> GodNext
+    case KeyArrow West -> GodPrev
+    case KeyArrow East -> GodNext
+    case KeyChar "r" -> RerollSign
+    case KeyEnter -> ConfirmCreation
+    case KeyChar " " -> ConfirmCreation
+    case KeyEscape -> QuitNoSave
+    case _ -> NoCommand
 
 menuKeyToCommand : Key -> Command
 let menuKeyToCommand key =

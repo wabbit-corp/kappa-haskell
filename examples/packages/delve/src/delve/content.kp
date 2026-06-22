@@ -81,7 +81,8 @@ let mkItem pack kind =
             beatitude = Uncursed,
             beatitudeKnown = def.beatitudeKnownByDefault,
             identified = def.startsIdentified,
-            charges = def.charges
+            charges = def.charges,
+            equipped = False
         }
 
 rollBeatitude : rand.Rng -> (beatitude : Beatitude, rng : rand.Rng)

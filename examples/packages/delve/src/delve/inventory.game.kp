@@ -41,6 +41,47 @@ let takeOneFromStack item rest =
         (picked = item.{ count = 1 }, rest = (::) item.{ count = item.count - 1 } rest)
     else (picked = item, rest = rest)
 
+removeAt : Int -> List Item -> (removed : Option Item, rest : List Item)
+let removeAt i items decreases listLength items =
+    match items
+    case Nil -> (removed = None, rest = Nil)
+    case h :: t ->
+        if i <= 0 then (removed = Some h, rest = t)
+        else
+            let r = removeAt (i - 1) t
+            in (removed = r.removed, rest = (::) h r.rest)
+
+equipClass : ItemClass -> Bool
+let equipClass cls =
+    match cls
+    case WeaponClass -> True
+    case ArmorClass -> True
+    case WandClass -> True
+    case _ -> False
+
+-- Toggle the item at `index` equipped; clear the equipped flag on any other
+-- item of the same class so only one weapon/armor/wand is active at a time.
+setEquipped : Int -> ItemClass -> List Item -> List Item
+let setEquipped index cls items =
+    block
+        go : Int -> List Item -> List Item
+        let go i xs decreases listLength xs =
+            match xs
+            case Nil -> Nil
+            case h :: t ->
+                let h2 = if i == index then h.{ equipped = not h.equipped } elif h.class == cls then h.{ equipped = False } else h
+                in (::) h2 (go (i + 1) t)
+        go 0 items
+
+applyUse : Item -> List Item -> Actor -> GameState -> GameState
+let applyUse item rest p game =
+    match item.class
+    case PotionClass -> usePotion item rest p game
+    case ScrollClass -> useScroll item rest p game
+    case FoodClass -> useFood item rest p game
+    case CorpseClass -> useFood item rest p game
+    case _ -> message "You cannot use that." game
+
 pickUp : GameState -> GameState
 let pickUp game =
     match playerActor game

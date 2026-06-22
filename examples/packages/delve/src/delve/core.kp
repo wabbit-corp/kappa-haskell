@@ -171,6 +171,7 @@ data Item : Type =
         (beatitudeKnown : Bool)
         (identified : Bool)
         (charges : Int)
+        (equipped : Bool)
 
 data Species : Type =
     PlayerSpecies
@@ -515,6 +516,7 @@ data GameMode : Type =
     InventoryMode
     HelpMode
     CharacterMode
+    CharacterCreation
     Dead
     Won
     Quit
@@ -532,6 +534,8 @@ data GameState : Type =
         (savePath : String)
         (audioMuted : Bool)
         (levels : List Level)
+        (invCursor : Int)
+        (creationGod : Int)
 
 data Command : Type =
     StartNewGame
@@ -540,6 +544,7 @@ data Command : Type =
     Rest
     Open
     Close
+    ToggleDoor
     PickUp
     DropFirst
     Inventory
@@ -559,6 +564,16 @@ data Command : Type =
     ToggleAudio
     SaveAndQuit
     QuitNoSave
+    SelectUp
+    SelectDown
+    UseSelected
+    DropSelected
+    ThrowSelected
+    ZapSelected
+    GodPrev
+    GodNext
+    RerollSign
+    ConfirmCreation
     NoCommand
 
 data Key : Type =
@@ -788,6 +803,7 @@ let gameModeCode mode =
     case Dead -> 5
     case Won -> 6
     case Quit -> 7
+    case CharacterCreation -> 8
 
 instance Eq GameMode =
     let (==) a b = gameModeCode a == gameModeCode b
@@ -821,6 +837,17 @@ let commandTag c =
     case SaveAndQuit -> 23
     case QuitNoSave -> 24
     case NoCommand -> 25
+    case ToggleDoor -> 26
+    case SelectUp -> 27
+    case SelectDown -> 28
+    case UseSelected -> 29
+    case DropSelected -> 30
+    case ThrowSelected -> 31
+    case ZapSelected -> 32
+    case GodPrev -> 33
+    case GodNext -> 34
+    case RerollSign -> 35
+    case ConfirmCreation -> 36
 
 instance Eq Command =
     let (==) a b =
@@ -850,7 +877,7 @@ message : String -> GameState -> GameState
 let message text game =
     let msgs = takeMessages game.content.rules.messageLimit ((::) text game.level.messages)
     let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn game.level.branch
-    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels
+    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels game.invCursor game.creationGod
 
 playerActor : GameState -> Option Actor
 let playerActor game =

@@ -157,6 +157,7 @@ let encodeItem i =
         , field "beatitude_known" (bool i.beatitudeKnown)
         , field "identified" (bool i.identified)
         , field "charges" (num i.charges)
+        , field "equipped" (bool i.equipped)
         ]
 
 encodeGroundItem : GroundItem -> JsonValue
@@ -214,7 +215,9 @@ let decodeGame pack fallbackSize value =
                 ecs = ecs.fromLevel pack level,
                 savePath = pack.save.path,
                 audioMuted = audioMuted,
-                levels = storedLevels
+                levels = storedLevels,
+                invCursor = 0,
+                creationGod = 0
             })
 
 requireField : String -> JsonValue -> IO GameError JsonValue
@@ -420,7 +423,8 @@ let decodeItem value =
         beatitudeKnown <- optBoolField False "beatitude_known" value
         identified <- optBoolField False "identified" value
         charges <- optIntField 0 "charges" value
-        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges)
+        equipped <- optBoolField False "equipped" value
+        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped)
 
 decodeGroundItem : JsonValue -> IO GameError GroundItem
 let decodeGroundItem value =

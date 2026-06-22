@@ -281,5 +281,7 @@ let newLevel pack branch depth size seed0 =
         ecs = ecs.fromLevel pack level,
         savePath = pack.save.path,
         audioMuted = False,
-        levels = Nil
+        levels = Nil,
+        invCursor = 0,
+        creationGod = 0
     }

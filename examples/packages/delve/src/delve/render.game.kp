@@ -241,10 +241,28 @@ let mutationList pack ms =
     case m :: Nil -> content.mutationName pack m
     case m :: rest -> content.mutationName pack m ++ ", " ++ mutationList pack rest
 
-renderInventory : ContentPack -> PlayerState -> Actor -> String
-let renderInventory pack player actor =
-    let lines = inv.inventoryText pack player actor
-    renderBox "Inventory" lines
+invMark : Int -> Int -> String
+let invMark cursor i = if i == cursor then "> " else "  "
+
+eqMark : Item -> String
+let eqMark item = if item.equipped then " [equipped]" else ""
+
+invLines : ContentPack -> PlayerState -> Int -> List Item -> List String
+let invLines pack player cursor items =
+    block
+        go : Int -> List Item -> List String -> List String
+        let go i xs acc decreases listLength xs =
+            match xs
+            case Nil -> reverse acc
+            case item :: rest -> go (i + 1) rest ((::) (invMark cursor i ++ show (i + 1) ++ ") " ++ know.visibleName pack player item ++ eqMark item) acc)
+        go 0 items Nil
+
+renderInventory : ContentPack -> PlayerState -> Actor -> Int -> String
+let renderInventory pack player actor cursor =
+    let lines =
+        if listIsEmpty actor.inventory then ["(your pack is empty)"]
+        else (::) "w/x: select   e: use/equip   q: drop   Esc: back" ((::) "" (invLines pack player cursor actor.inventory))
+    in renderBox "Inventory" lines
 
 faithLabel : ContentPack -> Faith -> String
 let faithLabel pack faith =
@@ -273,6 +291,25 @@ let renderCharacter game =
 
 renderHelp : String
 let renderHelp = renderBox "Help" input.helpLines
+
+godName : ContentPack -> Int -> String
+let godName pack idx =
+    match listGet pack.faiths idx
+    case Some def -> def.name
+    case None -> "a nameless power"
+
+renderCreation : GameState -> String
+let renderCreation game =
+    let sign = content.starSignName game.content game.player.starSign
+    in renderBox "New Delver" [ "Choose your patron god:"
+        , ""
+        , "      <  " ++ godName game.content game.creationGod ++ "  >"
+        , ""
+        , "Star sign: " ++ sign
+        , ""
+        , "a / d : change god      r : reroll star sign"
+        , "Enter : begin your descent"
+        ]
 
 -- ── Title screen ────────────────────────────────────────────────────────
 menuMessages : List String -> String
@@ -308,9 +345,10 @@ let renderGame game =
     case MainMenu -> renderMenu game
     case HelpMode -> renderHelp
     case CharacterMode -> renderCharacter game
+    case CharacterCreation -> renderCreation game
     case InventoryMode ->
         match playerActor game
-        case Some p -> renderInventory game.content game.player p
+        case Some p -> renderInventory game.content game.player p game.invCursor
         case None -> renderBox "Inventory" ["No player."]
     case Dead -> ansiClear ++ ansiShowCursor ++ "\r\n\r\n" ++ tcb 230 70 70 "    You died." ++ "\r\n\r\n" ++ tc 150 150 160 "    press q to quit" ++ "\r\n"
     case Won -> ansiClear ++ ansiShowCursor ++ "\r\n\r\n" ++ tcb 235 205 95 "    You escape with the amulet." ++ "\r\n\r\n" ++ tc 150 150 160 "    press q to quit" ++ "\r\n"

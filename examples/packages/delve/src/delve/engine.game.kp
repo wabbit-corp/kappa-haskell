@@ -476,6 +476,18 @@ let throwFirst game =
                 let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
                 message ("You throw " ++ know.visibleName game.content game.player thrown ++ " at " ++ enemy.name ++ " for " ++ show dmg ++ ".") g1
 
+toggleDoor : GameState -> GameState
+let toggleDoor game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match findFirstClosed (grid.neighbors8 p.pos) game.level
+        case Some pos -> openDoorAt pos game
+        case None ->
+            match findFirstOpen (grid.neighbors8 p.pos) game.level
+            case Some pos -> closeDoorAt pos game
+            case None -> message "No door to open or close nearby." game
+
 applyCommand : Command -> GameState -> GameState
 let applyCommand cmd game =
     match cmd
@@ -488,13 +500,100 @@ let toggleAudio game =
     let label = if muted then "Sound muted." else "Sound unmuted."
     in message label game.{ audioMuted = muted }
 
+invCount : GameState -> Int
+let invCount game =
+    match playerActor game
+    case Some p -> listLength p.inventory
+    case None -> 0
+
+equipSelected : Item -> Actor -> GameState -> GameState
+let equipSelected item p game =
+    let inv2 = inventory.setEquipped game.invCursor item.class p.inventory
+    let p2 = p.{ inventory = inv2 }
+    in message ("You ready " ++ know.visibleName game.content game.player item ++ ".") (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+useSelected : GameState -> GameState
+let useSelected game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some p ->
+        match listGet p.inventory game.invCursor
+        case None -> game.{ mode = Playing }
+        case Some item ->
+            if inventory.equipClass item.class then equipSelected item p game
+            else
+                let r = inventory.removeAt game.invCursor p.inventory
+                in
+                    match r.removed
+                    case None -> game.{ mode = Playing }
+                    case Some whole ->
+                        let taken = inventory.takeOneFromStack whole r.rest
+                        in (inventory.applyUse taken.picked taken.rest p game).{ mode = Playing }
+
+dropSelected : GameState -> GameState
+let dropSelected game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let r = inventory.removeAt game.invCursor p.inventory
+        in
+            match r.removed
+            case None -> game
+            case Some item ->
+                let taken = inventory.takeOneFromStack item r.rest
+                let p2 = p.{ inventory = taken.rest }
+                let dropped = taken.picked.{ equipped = False }
+                let newCursor = min game.invCursor (max 0 (listLength taken.rest - 1))
+                in message ("You drop " ++ know.visibleName game.content game.player dropped ++ ".") (game.{ invCursor = newCursor, level = game.level.{ actors = replaceActor p2 game.level.actors, items = (::) (GroundItem p.pos dropped) game.level.items } })
+
+inventoryCommand : Command -> GameState -> GameState
+let inventoryCommand cmd game =
+    match cmd
+    case SelectUp -> game.{ invCursor = max 0 (game.invCursor - 1) }
+    case SelectDown -> game.{ invCursor = min (max 0 (invCount game - 1)) (game.invCursor + 1) }
+    case UseSelected -> useSelected game
+    case DropSelected -> dropSelected game
+    case _ -> game.{ mode = Playing }
+
+faithCount : GameState -> Int
+let faithCount game = listLength game.content.faiths
+
+faithAtIndex : ContentPack -> Int -> Faith
+let faithAtIndex pack idx =
+    match listGet pack.faiths idx
+    case Some def -> def.faith
+    case None -> EmberMother
+
+modIndex : Int -> Int -> Int
+let modIndex i n =
+    if n <= 0 then 0
+    elif i < 0 then n - 1
+    elif i >= n then 0
+    else i
+
+confirmCreation : GameState -> GameState
+let confirmCreation game =
+    let chosen = faithAtIndex game.content game.creationGod
+    in game.{ player = game.player.{ faith = chosen }, mode = Playing }
+
+creationCommand : Command -> GameState -> GameState
+let creationCommand cmd game =
+    match cmd
+    case GodPrev -> game.{ creationGod = modIndex (game.creationGod - 1) (faithCount game) }
+    case GodNext -> game.{ creationGod = modIndex (game.creationGod + 1) (faithCount game) }
+    case RerollSign -> (initialGame game.content (game.rng + 2654435761) game.level.size).{ mode = CharacterCreation, creationGod = game.creationGod }
+    case ConfirmCreation -> confirmCreation game
+    case QuitNoSave -> game.{ mode = MainMenu }
+    case _ -> game
+
 applyModeCommand : Command -> GameState -> GameState
 let applyModeCommand cmd game =
     match game.mode
     case MainMenu -> game
     case HelpMode -> game.{ mode = Playing }
-    case InventoryMode -> game.{ mode = Playing }
+    case InventoryMode -> inventoryCommand cmd game
     case CharacterMode -> game.{ mode = Playing }
+    case CharacterCreation -> creationCommand cmd game
     case Dead ->
         match cmd
         case QuitNoSave -> game.{ mode = Quit }
@@ -510,6 +609,7 @@ let applyModeCommand cmd game =
         case Rest -> message "You wait." game
         case Open -> openNearby game
         case Close -> closeNearby game
+        case ToggleDoor -> toggleDoor game
         case PickUp -> inventory.pickUp game
         case DropFirst -> inventory.dropFirst game
         case UseFirst -> inventory.useFirst game
@@ -536,6 +636,7 @@ let costsTurn cmd =
     case Rest -> True
     case Open -> True
     case Close -> True
+    case ToggleDoor -> True
     case PickUp -> True
     case DropFirst -> True
     case UseFirst -> True
@@ -548,6 +649,7 @@ let costsTurn cmd =
     case Talk -> True
     case CycleTactic -> True
     case TargetedAttack -> True
+    case UseSelected -> True
     case _ -> False
 
 actorVitality : List Actor -> Int
@@ -586,6 +688,7 @@ let commandActed cmd before after =
     case Descend -> before.level.depth != after.level.depth || before.mode != after.mode
     case Open -> openDoorCount before.level.tiles != openDoorCount after.level.tiles
     case Close -> openDoorCount before.level.tiles != openDoorCount after.level.tiles
+    case ToggleDoor -> openDoorCount before.level.tiles != openDoorCount after.level.tiles
     case _ -> costsTurn cmd
 
 hazardTick : GameState -> GameState
@@ -613,6 +716,8 @@ commandFor : GameState -> Key -> Command
 let commandFor game key =
     match game.mode
     case MainMenu -> input.menuKeyToCommand key
+    case InventoryMode -> input.inventoryKeyToCommand key
+    case CharacterCreation -> input.creationKeyToCommand key
     case _ -> input.keyToCommand key
 
 stepPure : Command -> GameState -> GameState
@@ -628,7 +733,7 @@ let stepIO mapSize cmd game =
         case ToggleAudio -> pure (toggleAudio game)
         case StartNewGame ->
             let fresh = initialGame game.content (game.rng + 1) mapSize
-            in pure fresh.{ audioMuted = game.audioMuted }
+            in pure fresh.{ audioMuted = game.audioMuted, mode = CharacterCreation, creationGod = 0 }
         case LoadGame ->
             catchError (save.loadGame game.content mapSize) (\_ -> pure (message "No save file found, or it could not be loaded." game))
         case QuitNoSave -> pure game.{ mode = Quit }

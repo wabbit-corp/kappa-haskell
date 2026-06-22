@@ -14,6 +14,14 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+
+#ifndef DISABLE_NEWLINE_AUTO_RETURN
+#define DISABLE_NEWLINE_AUTO_RETURN 0x0008
+#endif
+
 #ifndef EOVERFLOW
 #define EOVERFLOW EFBIG
 #endif
@@ -33,6 +41,8 @@ struct delve_terminal_handle {
     HANDLE output;
     DWORD saved_input_mode;
     DWORD saved_output_mode;
+    UINT saved_output_cp;
+    int vt_output;
     int cols;
     int rows;
     int cursor_x;
@@ -120,15 +130,29 @@ int delve_open_terminal(delve_terminal_handle **out) {
         free(h);
         return rc;
     }
+    h->saved_output_cp = GetConsoleOutputCP();
 
     DWORD input_mode = ENABLE_WINDOW_INPUT | ENABLE_PROCESSED_INPUT;
     (void)SetConsoleMode(h->input, input_mode);
-    (void)SetConsoleMode(h->output, h->saved_output_mode | ENABLE_PROCESSED_OUTPUT);
+    (void)SetConsoleOutputCP(CP_UTF8);
+
+    DWORD vt_mode = h->saved_output_mode |
+        ENABLE_PROCESSED_OUTPUT |
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING |
+        DISABLE_NEWLINE_AUTO_RETURN;
+    h->vt_output = SetConsoleMode(h->output, vt_mode) ? 1 : 0;
+    if (!h->vt_output) {
+        (void)SetConsoleMode(h->output, h->saved_output_mode | ENABLE_PROCESSED_OUTPUT);
+    }
     h->attr = default_attr();
-    int rc = resize_cells(h);
-    if (rc != 0) {
-        free(h);
-        return rc;
+    if (h->vt_output) {
+        (void)query_size(h->output, &h->cols, &h->rows);
+    } else {
+        int rc = resize_cells(h);
+        if (rc != 0) {
+            free(h);
+            return rc;
+        }
     }
     set_cursor_visible(h->output, 0);
     *out = h;
@@ -140,6 +164,7 @@ int delve_close_terminal(delve_terminal_handle *h) {
     set_cursor_visible(h->output, 1);
     (void)SetConsoleMode(h->input, h->saved_input_mode);
     (void)SetConsoleMode(h->output, h->saved_output_mode);
+    if (h->saved_output_cp != 0) (void)SetConsoleOutputCP(h->saved_output_cp);
     free(h->cells);
     free(h);
     return 0;
@@ -363,6 +388,19 @@ static int flush_cells(delve_terminal_handle *h) {
 
 int delve_write_all(delve_terminal_handle *h, const char *text, int len) {
     if (!h || !text || len < 0) return EINVAL;
+    if (h->vt_output) {
+        int written_total = 0;
+        while (written_total < len) {
+            DWORD chunk = (DWORD)(len - written_total);
+            DWORD written = 0;
+            if (!WriteConsoleA(h->output, text + written_total, chunk, &written, NULL)) {
+                return win_error();
+            }
+            if (written == 0) return EIO;
+            written_total += (int)written;
+        }
+        return 0;
+    }
     int rc = resize_cells(h);
     if (rc != 0) return rc;
     int pos = 0;

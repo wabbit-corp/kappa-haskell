@@ -64,6 +64,21 @@ let bestClassPower cls items decreases listLength items =
         let here = if item.class == cls then item.power else 0
         in max here (bestClassPower cls rest)
 
+equippedItem : ItemClass -> List Item -> Option Item
+let equippedItem cls items decreases listLength items =
+    match items
+    case Nil -> None
+    case i :: rest -> if i.class == cls && i.equipped then Some i else equippedItem cls rest
+
+-- The equipped item of a class governs combat; if nothing is equipped we fall
+-- back to the strongest carried item (so monsters and not-yet-equipped players
+-- still fight with what they hold).
+equippedClassPower : ItemClass -> List Item -> Int
+let equippedClassPower cls items =
+    match equippedItem cls items
+    case Some i -> i.power
+    case None -> bestClassPower cls items
+
 decayWounds : List Wound -> List Wound
 let decayWounds wounds decreases listLength wounds =
     match wounds
@@ -87,8 +102,8 @@ let inflictWound part damage defender =
 attackRoll : ContentPack -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (hit : Bool, damage : Int, rng : rand.Rng)
 let attackRoll pack attackTactic defenseTactic attacker defender r0 =
     let roll = rand.range 1 20 r0
-    let weapon = bestClassPower WeaponClass attacker.inventory
-    let armor = bestClassPower ArmorClass defender.inventory
+    let weapon = equippedClassPower WeaponClass attacker.inventory
+    let armor = equippedClassPower ArmorClass defender.inventory
     let attack = roll.value + attacker.stats.dex + tactics.attackBonus pack attackTactic - woundPenalty attacker.wounds
     let defense = 8 + defender.stats.dex + defender.stats.def + armor - woundPenalty defender.wounds + tactics.defenseBonus pack defenseTactic
     let hit = attack >= defense
