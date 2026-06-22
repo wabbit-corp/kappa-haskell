@@ -254,11 +254,13 @@ jobs:
 
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
           mkdir -p "$game_dir/bin"
-          cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+          cc_cmd=""
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             msys_mingw_bin="/c/msys64/mingw64/bin"
             cc_cmd="$msys_mingw_bin/clang $("$msys_mingw_bin/pkgconf" --cflags --libs bdw-gc gmp)"
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+          else
             cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           fi
           export KAPPA_CC="$cc_cmd"
