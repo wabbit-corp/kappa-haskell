@@ -7,7 +7,7 @@ let buildConfig : BuildConfig = package
     , sourceRoots = [sourceRoot "src", sourceRoot "test"]
     , fragmentAxes =
         [ axis "backend" [tag "native"]
-        , axis "os" [tag "linux", tag "macos"]
+        , axis "os" [tag "linux", tag "macos", tag "windows"]
         , axis "role" [tag "game", tag "test"]
         ]
     , dependencies = []
@@ -20,6 +20,27 @@ let buildConfig : BuildConfig = package
             , inputs =
                 [ headers ["native/delve_terminal_adapter.h"]
                 , shim ["native/delve_terminal_adapter.c", "native/delve_terminal.c"]
+                , cstrings
+                    [ "delve_describe_error2"
+                    , "delve_write_all2"
+                    , "delve_read_text_file2"
+                    , "delve_write_text_file2"
+                    , "delve_file_exists2"
+                    , "delve_ensure_directory2"
+                    ]
+                , classify blocking
+                ]
+            , link = noLink
+            , load = systemLoader
+            }
+        , nativeBinding
+            { name = "delve-terminal-windows"
+            , provides = [module "host.native.delve_terminal.Raw"]
+            , surface = generateAllFromHeader "native/delve_terminal_adapter.h" "delve_"
+            , abi = cAbi
+            , inputs =
+                [ headers ["native/delve_terminal_adapter.h"]
+                , shim ["native/delve_terminal_adapter.c", "native/delve_terminal_windows.c"]
                 , cstrings
                     [ "delve_describe_error2"
                     , "delve_write_all2"
@@ -60,6 +81,25 @@ let buildConfig : BuildConfig = package
             , link = dynamicLink ["pthread", "m", "dl"]
             , load = systemLoader
             }
+        , nativeBinding
+            { name = "delve-audio-windows"
+            , provides = [module "host.native.delve_audio.Raw"]
+            , surface = generateFromHeader "native/delve_audio_adapter.h"
+                [ "delve_audio_init"
+                , "delve_audio_play_sfx"
+                , "delve_audio_play_music"
+                , "delve_audio_stop_music"
+                , "delve_audio_shutdown"
+                ]
+            , abi = cAbi
+            , inputs =
+                [ headers ["native/delve_audio_adapter.h"]
+                , includeDir "native"
+                , shim ["native/delve_audio.c"]
+                ]
+            , link = dynamicLink ["ole32", "uuid", "avrt"]
+            , load = systemLoader
+            }
         ]
     , targets =
         [ executable
@@ -97,6 +137,24 @@ let buildConfig : BuildConfig = package
             , modules = modulesUnder "delve"
             , dependencies = []
             , hostBindings = ["delve-terminal", "delve-audio"]
+            }
+        , executable
+            { name = "delve-tests-windows-x64"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags ["native", "windows", "test"]
+            , main = module "delve.run_tests"
+            , modules = modulesUnder "delve"
+            , dependencies = []
+            , hostBindings = ["delve-terminal-windows"]
+            }
+        , executable
+            { name = "delve-windows-x64"
+            , backend = native { toolchain = "cc", targetTriple = "" }
+            , fragments = tags ["native", "windows", "game"]
+            , main = module "delve.main"
+            , modules = modulesUnder "delve"
+            , dependencies = []
+            , hostBindings = ["delve-terminal-windows", "delve-audio-windows"]
             }
         ]
     }

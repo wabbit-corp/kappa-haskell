@@ -24,7 +24,7 @@ module Kappa.Pipeline
 import Control.Monad.State.Strict (evalState)
 import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
-import Data.List (nub, partition, sortOn)
+import Data.List (foldl', nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)

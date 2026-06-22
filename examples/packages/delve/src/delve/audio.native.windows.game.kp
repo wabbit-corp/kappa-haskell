@@ -1,0 +1,38 @@
+module delve.audio
+
+import delve.core.*
+import delve.natutil.*
+import host.native.delve_audio.Raw as Raw
+
+liftUIO : forall (a : Type). UIO a -> IO GameError a
+let liftUIO action = catchIO action (\v -> raise (absurd v))
+
+init : IO GameError Unit
+let init =
+    do
+        _ <- liftUIO Raw.delve_audio_init
+        pure ()
+
+playSfx : Int -> IO GameError Unit
+let playSfx id =
+    do
+        _ <- liftUIO (Raw.delve_audio_play_sfx id)
+        pure ()
+
+playMusic : Int -> IO GameError Unit
+let playMusic id =
+    do
+        _ <- liftUIO (Raw.delve_audio_play_music id)
+        pure ()
+
+stopMusic : IO GameError Unit
+let stopMusic =
+    do
+        _ <- liftUIO Raw.delve_audio_stop_music
+        pure ()
+
+shutdown : IO GameError Unit
+let shutdown =
+    do
+        _ <- liftUIO Raw.delve_audio_shutdown
+        pure ()

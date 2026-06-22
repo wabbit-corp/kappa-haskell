@@ -35,7 +35,7 @@ import Control.Monad (filterM, foldM, forM, forM_, unless, void, when, zipWithM)
 import Control.Monad.State.Strict
 import Data.Data (Data, cast, gmapQ)
 import Data.Graph (SCC (..), stronglyConnComp)
-import Data.List (elemIndex, find, intersect, nub, sort, sortOn, (\\))
+import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)

@@ -1,0 +1,98 @@
+module delve.terminal
+
+import delve.core.*
+import delve.natutil.*
+import delve.natutil.*
+import host.native.delve_terminal.Raw as Raw
+import std.ffi as ffi
+import std.unicode as uni
+
+opaque data Terminal : Type =
+    Terminal (handle : Option ffi.RawPtr)
+
+liftUIO : forall (a : Type). UIO a -> IO GameError a
+let liftUIO action = catchIO action (\v -> raise (absurd v))
+
+terminalFailure : forall (a : Type). Int -> IO GameError a
+let terminalFailure code =
+    do
+        message <- liftUIO (Raw.delve_describe_error2 code)
+        raise (TerminalError message)
+
+checkUnit : Int -> IO GameError Unit
+let checkUnit code =
+    if code == 0 then pure () else terminalFailure code
+
+checkNonNegative : Int -> IO GameError Int
+let checkNonNegative code =
+    if code < 0 then terminalFailure (0 - code) else pure code
+
+open : IO GameError Terminal
+let open =
+    do
+        handle <- liftUIO Raw.delve_open_terminal2
+        match handle
+        case Some _ -> pure (Terminal handle)
+        case None ->
+            do
+                code <- liftUIO Raw.delve_last_errno2
+                terminalFailure code
+
+close : (1 terminal : Terminal) -> IO GameError Unit
+let close terminal =
+    match terminal
+    case Terminal handle ->
+        do
+            code <- liftUIO (Raw.delve_close_terminal2 handle)
+            checkUnit code
+
+readKey : (& terminal : Terminal) -> IO GameError Key
+let readKey terminal =
+    match terminal
+    case Terminal handle ->
+        do
+            code <- liftUIO (Raw.delve_read_key2 handle)
+            decoded <- checkNonNegative code
+            pure (decodeKey decoded)
+
+write : (& terminal : Terminal) -> String -> IO GameError Unit
+let write terminal text =
+    match terminal
+    case Terminal handle ->
+        do
+            code <- liftUIO (Raw.delve_write_all2 handle text (natToInt (uni.byteLength text)))
+            checkUnit code
+
+size : (& terminal : Terminal) -> IO GameError Size
+let size terminal =
+    match terminal
+    case Terminal handle ->
+        do
+            cols0 <- liftUIO (Raw.delve_get_cols2 handle)
+            rows0 <- liftUIO (Raw.delve_get_rows2 handle)
+            cols <- checkNonNegative cols0
+            rows <- checkNonNegative rows0
+            pure (Size cols rows)
+
+monotonicSeed : UIO Nat
+let monotonicSeed =
+    bindIO Raw.delve_monotonic_seed2 (\raw -> pure (natOfInt (ffi.u64Value raw)))
+
+charFromAscii : Int -> String
+let charFromAscii code =
+    match uni.unicodeScalarFromValue (natOfInt code)
+    case Some scalar -> uni.scalarToString scalar
+    case None -> ""
+
+decodeKey : Int -> Key
+let decodeKey code =
+    if code == 1000 then KeyArrow North
+    elif code == 1001 then KeyArrow South
+    elif code == 1002 then KeyArrow West
+    elif code == 1003 then KeyArrow East
+    elif code == 1004 then KeyResize
+    elif code == 27 then KeyEscape
+    elif code == 10 || code == 13 then KeyEnter
+    elif code == 127 then KeyBackspace
+    elif code >= 32 && code < 127 then KeyChar (charFromAscii code)
+    else KeyUnknown

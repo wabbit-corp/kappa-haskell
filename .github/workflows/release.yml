@@ -197,6 +197,11 @@ jobs:
             test-target: delve-tests-macos-arm64
             game-target: delve-macos-arm64
             exe-ext: ""
+          - os: windows-latest
+            platform: windows-x64
+            test-target: delve-tests-windows-x64
+            game-target: delve-windows-x64
+            exe-ext: ".exe"
 
     steps:
       - name: Check out repository
@@ -213,6 +218,19 @@ jobs:
         run: |
           brew update
           brew install bdw-gc gmp pkg-config
+
+      - name: Install native dependencies (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: prepend
+          install: >-
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-gc
+            mingw-w64-x86_64-gmp
+            mingw-w64-x86_64-pkgconf
 
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
@@ -238,11 +256,15 @@ jobs:
           mkdir -p "$game_dir/bin"
           cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cc_cmd="cc"
+            cc_cmd="clang $(pkg-config --cflags --libs bdw-gc gmp)"
           elif [[ "${{ runner.os }}" == "macOS" ]]; then
             cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
           fi
           export KAPPA_CC="$cc_cmd"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            chcp.com 65001 >/dev/null || true
+          fi
 
           "$compiler_dir/bin/kappa" build \
             --update \
@@ -268,6 +290,11 @@ jobs:
             --target "${{ matrix.game-target }}" \
             -o "$game_dir/bin/delve${{ matrix.exe-ext }}" \
             --cc "$cc_cmd"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "$(dirname "$(command -v pkg-config)")/libgc-1.dll" "$game_dir/bin/"
+            cp "$(dirname "$(command -v pkg-config)")/libgmp-10.dll" "$game_dir/bin/"
+          fi
 
           cp LICENSE "$game_dir/LICENSE"
           cp examples/packages/delve/README.md "$game_dir/README.md"

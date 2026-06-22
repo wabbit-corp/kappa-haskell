@@ -33,6 +33,8 @@ __asm__(".linker_option \"-framework\", \"AudioToolbox\"");
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
 #if defined(__APPLE__)
 #define MA_ENABLE_COREAUDIO
+#elif defined(_WIN32)
+#define MA_ENABLE_WASAPI
 #else
 #define MA_ENABLE_ALSA
 #define MA_ENABLE_PULSEAUDIO

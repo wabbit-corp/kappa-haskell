@@ -31,7 +31,7 @@ module Kappa.TestHarness
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Data.Char (isDigit)
-import Data.List (isPrefixOf, isSuffixOf, sort, sortOn)
+import Data.List (foldl', isPrefixOf, isSuffixOf, sort, sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T

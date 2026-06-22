@@ -110,8 +110,57 @@ KValue *kint(int64_t v) {
 
 /* ── arbitrary-precision integers (GMP, §6) ────────────────────────── */
 /* Representation: small values stay inline in K_INT (int64); a value that
- * does not fit int64 is a K_BIGINT pointing at a GC-allocated mpz.  Assumes
- * an LP64 target (long == int64), which the zig profile pins. */
+ * does not fit int64 is a K_BIGINT pointing at a GC-allocated mpz.  Do not use
+ * GMP's signed-long conversion helpers here: Windows is LLP64, so `long` is
+ * only 32 bits even in a 64-bit process.  The runtime boundary is explicitly
+ * signed 64-bit on every target. */
+
+static void kmpz_i64_bounds(mpz_t min_out, mpz_t max_out) {
+  static int ready = 0;
+  static mpz_t min_i64;
+  static mpz_t max_i64;
+  if (!ready) {
+    mpz_init_set_str(min_i64, "-9223372036854775808", 10);
+    mpz_init_set_str(max_i64, "9223372036854775807", 10);
+    ready = 1;
+  }
+  mpz_set(min_out, min_i64);
+  mpz_set(max_out, max_i64);
+}
+
+static int kmpz_fits_i64_p(const mpz_t z) {
+  mpz_t lo, hi;
+  mpz_inits(lo, hi, NULL);
+  kmpz_i64_bounds(lo, hi);
+  int ok = mpz_cmp(z, lo) >= 0 && mpz_cmp(z, hi) <= 0;
+  mpz_clears(lo, hi, NULL);
+  return ok;
+}
+
+static int64_t kmpz_get_i64(const mpz_t z) {
+  if (!kmpz_fits_i64_p(z)) krt_fail("Integer too large for signed 64-bit");
+  int neg = mpz_sgn(z) < 0;
+  mpz_t mag_z;
+  mpz_init(mag_z);
+  mpz_abs(mag_z, z);
+  uint64_t mag = 0;
+  size_t count = 0;
+  mpz_export(&mag, &count, -1, sizeof(uint64_t), 0, 0, mag_z);
+  mpz_clear(mag_z);
+  if (!neg) return (int64_t)mag;
+  if (mag == ((uint64_t)1 << 63)) return INT64_MIN;
+  return -(int64_t)mag;
+}
+
+static void kmpz_set_i64(mpz_t out, int64_t v) {
+  uint64_t mag;
+  int neg = v < 0;
+  if (v == INT64_MIN) mag = ((uint64_t)1 << 63);
+  else if (neg) mag = (uint64_t)(-v);
+  else mag = (uint64_t)v;
+  mpz_import(out, 1, -1, sizeof(uint64_t), 0, 0, &mag);
+  if (neg) mpz_neg(out, out);
+}
 
 static KValue *kbig_from_mpz(const mpz_t z) {
   KValue *r = alloc_val(K_BIGINT);
@@ -123,13 +172,13 @@ static KValue *kbig_from_mpz(const mpz_t z) {
 
 /* Demote to K_INT when the result fits int64, else keep a K_BIGINT. */
 static KValue *kfrom_mpz(const mpz_t z) {
-  if (mpz_fits_slong_p(z)) return kint((int64_t)mpz_get_si(z));
+  if (kmpz_fits_i64_p(z)) return kint(kmpz_get_i64(z));
   return kbig_from_mpz(z);
 }
 
 /* Load a K_INT/K_BIGINT into an mpz for a bignum operation. */
 static void kload_mpz(KValue *v, mpz_t out) {
-  if (v->tag == K_INT) mpz_set_si(out, (long)v->as.i);
+  if (v->tag == K_INT) kmpz_set_i64(out, v->as.i);
   else if (v->tag == K_BIGINT) mpz_set(out, (const __mpz_struct *)v->as.big.mpz);
   else krt_fail("integer operation on a non-integer value");
 }
@@ -810,8 +859,8 @@ int64_t kas_int(KValue *v) {
   if (v->tag == K_INT) return v->as.i;
   if (v->tag == K_BIGINT) {
     const __mpz_struct *z = (const __mpz_struct *)v->as.big.mpz;
-    if (!mpz_fits_slong_p(z)) krt_fail("kas_int: Integer too large for a machine word");
-    return (int64_t)mpz_get_si(z);
+    if (!kmpz_fits_i64_p(z)) krt_fail("kas_int: Integer too large for a machine word");
+    return kmpz_get_i64(z);
   }
   krt_fail("kas_int: not an Int");
 }
@@ -1674,7 +1723,7 @@ KValue *kpf_ratOfDouble(KValue **a) {
     int e2; double frac = frexp(x, &e2);            /* x = frac * 2^e2, 0.5<=|frac|<1 */
     long long mant = (long long)ldexp(frac, 53);    /* exact integer significand */
     int sh = e2 - 53;
-    mpz_t n, d; mpz_init_set_si(n, (long)mant); mpz_init_set_ui(d, 1);
+    mpz_t n, d; mpz_init(n); kmpz_set_i64(n, (int64_t)mant); mpz_init_set_ui(d, 1);
     if (sh >= 0) mpz_mul_2exp(n, n, (unsigned)sh); else mpz_mul_2exp(d, d, (unsigned)(-sh));
     return krat(n, d);
 }

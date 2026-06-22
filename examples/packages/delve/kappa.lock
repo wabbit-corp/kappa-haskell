@@ -1,5 +1,7 @@
 # kappa.lock v1 (generated) — entry kinds: path/git/registry/url/host-binding; digest: fnv1a-64 (length-prefixed, sorted; §36.6A change-detection identity)
-host-binding 49e2ed231e84f297 delve-audio
-host-binding 401a18ceb0e5a204 delve-audio
+host-binding 2a1b9cd8bdd01ef9 delve-audio
+host-binding 9bc604c96d7acd6e delve-audio
+host-binding 786ab19d7e71bfeb delve-audio-windows
 host-binding a934b141982d6338 delve-terminal
 host-binding cd54d16a123afa4f delve-terminal
+host-binding 3aa603d6577d4eef delve-terminal-windows
