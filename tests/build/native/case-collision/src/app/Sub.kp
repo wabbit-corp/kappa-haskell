@@ -1,2 +1,2 @@
-module app.Sub
-let b = 2
+module app.sub
+let a = 1
