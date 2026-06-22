@@ -62,6 +62,7 @@ let encodeGame game =
         , field "rng" (num (natToInt game.rng))
         , field "player" (encodePlayer game.player)
         , field "level" (encodeLevel game.level)
+        , field "levels" (arr (map encodeLevel game.levels))
         , field "rumors" (arr (map encodeRumor game.rumors))
         , field "audio_muted" (bool game.audioMuted)
         , field "ecs" (encodeEcs game.ecs)
@@ -97,6 +98,7 @@ let encodeLevel level =
         , field "items" (arr (map encodeGroundItem level.items))
         , field "messages" (arr (map str level.messages))
         , field "turn" (num (natToInt level.turn))
+        , field "branch" (num level.branch)
         ]
 
 encodeSize : Size -> JsonValue
@@ -198,6 +200,8 @@ let decodeGame pack fallbackSize value =
         player <- decodePlayer pack playerJson
         level <- decodeLevel fallbackSize levelJson
         rumors <- traverse decodeRumor rumorJson
+        levelsJson <- optArrayField Nil "levels" value
+        storedLevels <- traverse (decodeLevel fallbackSize) levelsJson
         validateLoadedState player level
         pure (GameState {
                 rng = intToNat rngValue,
@@ -209,7 +213,8 @@ let decodeGame pack fallbackSize value =
                 content = pack,
                 ecs = ecs.fromLevel pack level,
                 savePath = pack.save.path,
-                audioMuted = audioMuted
+                audioMuted = audioMuted,
+                levels = storedLevels
             })
 
 requireField : String -> JsonValue -> IO GameError JsonValue
@@ -320,9 +325,10 @@ let decodeLevel fallbackSize value =
         msgJson <- requireArrayField "messages" value
         messages <- traverse decodeStringJson msgJson
         turn <- optIntField 0 "turn" value
+        branch <- optIntField 0 "branch" value
         if listLength tiles == 0 then raise (SaveError "save file has no tiles")
         elif listLength actors == 0 then raise (SaveError "save file has no actors")
-        else pure (Level depth size (arrayFromList tiles) rooms actors items messages (intToNat turn))
+        else pure (Level depth size (arrayFromList tiles) rooms actors items messages (intToNat turn) branch)
 
 decodeSize : JsonValue -> IO GameError Size
 let decodeSize value =
@@ -516,6 +522,7 @@ let tileKindName k =
     case Altar -> "Altar"
     case LoreStone -> "LoreStone"
     case ChaosVent -> "ChaosVent"
+    case BranchDown -> "BranchDown"
 
 speciesName : Species -> String
 let speciesName s =
@@ -658,6 +665,7 @@ let decodeTileKindString s =
     elif s == "Altar" then pure Altar
     elif s == "LoreStone" then pure LoreStone
     elif s == "ChaosVent" then pure ChaosVent
+    elif s == "BranchDown" then pure BranchDown
     else raise (SaveError ("unknown tile kind in save: " ++ s))
 
 decodeBeatitudeString : String -> IO GameError Beatitude

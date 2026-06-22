@@ -45,9 +45,9 @@ let testItems =
 
 testActors : List ActorDef
 let testActors =
-    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"]
-    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"]
-    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"]
+    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil
+    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil
+    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil
     ]
 
 testTactics : List TacticDef
@@ -88,11 +88,13 @@ let testPack =
         save = testSave,
         items = testItems,
         actors = testActors,
-        monsterSpawns = [SpawnRule "rat" 1 99 10],
-        itemSpawns = [SpawnRule "gold" 1 99 10],
+        monsterSpawns = [SpawnRule "rat" 1 99 10 0],
+        itemSpawns = [SpawnRule "gold" 1 99 10 0],
         tactics = testTactics,
         starSigns = testStarSigns,
         mutations = testMutations,
         faiths = testFaiths,
-        rumors = [Rumor "Tests are dull but useful."]
+        rumors = [Rumor "Tests are dull but useful."],
+        affixes = Nil,
+        branches = Nil
     }

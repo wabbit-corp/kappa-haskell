@@ -78,6 +78,7 @@ data TileKind : Type =
     Altar
     LoreStone
     ChaosVent
+    BranchDown
 
 -- `warded` is the tiny Delve version of NetHack's defensive engraving idea:
 -- a temporary inscription that makes many monsters hesitate unless you attack.
@@ -114,6 +115,7 @@ let isWalkable t =
     case Altar -> True
     case LoreStone -> True
     case ChaosVent -> True
+    case BranchDown -> True
     case _ -> False
 
 data Beatitude : Type =
@@ -254,6 +256,11 @@ data Faith : Type =
 data Rumor : Type =
     Rumor (text : String)
 
+data Ability : Type =
+    Regenerate (amount : Int)
+    Ranged (power : Int)
+    Frenzy
+
 data Stats : Type =
     Stats
         (hp : Int)
@@ -308,6 +315,7 @@ data Level : Type =
         (items : List GroundItem)
         (messages : List String)
         (turn : Nat)
+        (branch : Int)
 
 data PlayerState : Type =
     PlayerState
@@ -343,6 +351,14 @@ data ItemDef : Type =
         (startsIdentified : Bool)
         (beatitudeKnownByDefault : Bool)
 
+data ItemAffix : Type =
+    ItemAffix
+        (id : String)
+        (name : String)
+        (class : ItemClass)
+        (powerBonus : Int)
+        (weight : Int)
+
 data ActorDef : Type =
     ActorDef
         (id : String)
@@ -356,6 +372,7 @@ data ActorDef : Type =
         (loyalty : Int)
         (inventory : List ItemKind)
         (tags : List String)
+        (abilities : List Ability)
 
 data SpawnRule : Type =
     SpawnRule
@@ -363,6 +380,15 @@ data SpawnRule : Type =
         (minDepth : Int)
         (maxDepth : Int)
         (weight : Int)
+        (branch : Int)
+
+data BranchDef : Type =
+    BranchDef
+        (id : Int)
+        (name : String)
+        (entranceDepth : Int)
+        (floors : Int)
+        (boss : Species)
 
 data TacticDef : Type =
     TacticDef
@@ -452,6 +478,8 @@ data ContentPack : Type =
         (mutations : List MutationDef)
         (faiths : List FaithDef)
         (rumors : List Rumor)
+        (affixes : List ItemAffix)
+        (branches : List BranchDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is
@@ -503,6 +531,7 @@ data GameState : Type =
         (ecs : EcsWorld)
         (savePath : String)
         (audioMuted : Bool)
+        (levels : List Level)
 
 data Command : Type =
     StartNewGame
@@ -573,6 +602,7 @@ let tileKindCode k =
     case Altar -> 10
     case LoreStone -> 11
     case ChaosVent -> 12
+    case BranchDown -> 13
 
 instance Eq TileKind =
     let (==) a b = tileKindCode a == tileKindCode b
@@ -819,8 +849,8 @@ let takeMessages n xs decreases listLength xs =
 message : String -> GameState -> GameState
 let message text game =
     let msgs = takeMessages game.content.rules.messageLimit ((::) text game.level.messages)
-    let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn
-    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted
+    let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn game.level.branch
+    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels
 
 playerActor : GameState -> Option Actor
 let playerActor game =
@@ -846,6 +876,29 @@ let removeDeadActors actors decreases listLength actors =
     case Nil -> Nil
     case a :: rest ->
         if a.alive then (::) a (removeDeadActors rest) else removeDeadActors rest
+
+-- Persistent-level store: visited levels are kept (keyed by depth for now;
+-- branch identity is added when themed branches land) so stairs restore the
+-- level you left rather than regenerating it.
+sameLevelKey : Int -> Int -> Level -> Bool
+let sameLevelKey branch depth lvl = lvl.branch == branch && lvl.depth == depth
+
+storeLevel : Level -> List Level -> List Level
+let storeLevel lvl levels decreases listLength levels =
+    match levels
+    case Nil -> [lvl]
+    case h :: rest -> if sameLevelKey lvl.branch lvl.depth h then (::) lvl rest else (::) h (storeLevel lvl rest)
+
+takeLevel : Int -> Int -> List Level -> Option (value : Level, rest : List Level)
+let takeLevel branch depth levels decreases listLength levels =
+    match levels
+    case Nil -> None
+    case h :: rest ->
+        if sameLevelKey branch depth h then Some (value = h, rest = rest)
+        else
+            match takeLevel branch depth rest
+            case None -> None
+            case Some r -> Some (value = r.value, rest = (::) h r.rest)
 
 actorAt : Vec2 -> List Actor -> Option Actor
 let actorAt pos actors decreases listLength actors =

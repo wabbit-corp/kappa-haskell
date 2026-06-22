@@ -10,7 +10,15 @@
     { "id": "troll", "min_depth": 4, "max_depth": 99, "weight": 4 },
     { "id": "wizard", "min_depth": 4, "max_depth": 99, "weight": 3 },
     { "id": "chaos_spawn", "min_depth": 4, "max_depth": 99, "weight": 3 },
-    { "id": "dragon", "min_depth": 7, "max_depth": 99, "weight": 1 }
+    { "id": "dragon", "min_depth": 7, "max_depth": 99, "weight": 1 },
+    { "id": "rat", "min_depth": 1, "max_depth": 99, "weight": 8, "branch": 1 },
+    { "id": "bat", "min_depth": 1, "max_depth": 99, "weight": 8, "branch": 1 },
+    { "id": "goblin", "min_depth": 1, "max_depth": 99, "weight": 5, "branch": 1 },
+    { "id": "skeleton", "min_depth": 1, "max_depth": 99, "weight": 12, "branch": 2 },
+    { "id": "bat", "min_depth": 1, "max_depth": 99, "weight": 4, "branch": 2 },
+    { "id": "chaos_spawn", "min_depth": 1, "max_depth": 99, "weight": 8, "branch": 3 },
+    { "id": "wizard", "min_depth": 1, "max_depth": 99, "weight": 5, "branch": 3 },
+    { "id": "kobold", "min_depth": 1, "max_depth": 99, "weight": 4, "branch": 3 }
   ],
   "item_spawns": [
     { "id": "gold", "min_depth": 1, "max_depth": 99, "weight": 12 },

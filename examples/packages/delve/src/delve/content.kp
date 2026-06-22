@@ -18,6 +18,26 @@ let findItemDef pack kind decreases listLength pack.items =
             case def :: rest -> if def.kind == kind then Some def else go rest
         go pack.items
 
+findBranchByEntrance : ContentPack -> Int -> Option BranchDef
+let findBranchByEntrance pack depth =
+    block
+        go : List BranchDef -> Option BranchDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case b :: rest -> if b.entranceDepth == depth then Some b else go rest
+        go pack.branches
+
+findBranchById : ContentPack -> Int -> Option BranchDef
+let findBranchById pack bid =
+    block
+        go : List BranchDef -> Option BranchDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case b :: rest -> if b.id == bid then Some b else go rest
+        go pack.branches
+
 fallbackItemDef : ItemKind -> ItemDef
 let fallbackItemDef kind =
     -- Should be unreachable after config validation. Keeping a visible fallback
@@ -75,6 +95,32 @@ let rollBeatitude r0 =
                 if blessed.value then (beatitude = Blessed, rng = blessed.rng)
                 else (beatitude = Uncursed, rng = blessed.rng)
 
+affixesForClass : ItemClass -> List ItemAffix -> List ItemAffix
+let affixesForClass cls affs decreases listLength affs =
+    match affs
+    case Nil -> Nil
+    case a :: rest -> if a.class == cls then (::) a (affixesForClass cls rest) else affixesForClass cls rest
+
+repeatAffix : Int -> ItemAffix -> List ItemAffix -> List ItemAffix
+let repeatAffix n a acc decreases max 0 n =
+    if n <= 0 then acc else repeatAffix (n - 1) a ((::) a acc)
+
+weightedAffixes : List ItemAffix -> List ItemAffix
+let weightedAffixes affs decreases listLength affs =
+    match affs
+    case Nil -> Nil
+    case a :: rest -> repeatAffix a.weight a (weightedAffixes rest)
+
+maybeAffix : ContentPack -> ItemClass -> rand.Rng -> (affix : Option ItemAffix, rng : rand.Rng)
+let maybeAffix pack cls r0 =
+    let pool = weightedAffixes (affixesForClass cls pack.affixes)
+    let roll = rand.chance 25 r0
+    if not roll.value then (affix = None, rng = roll.rng)
+    else
+        match rand.choose pool roll.rng
+        case Some c -> (affix = Some c.value, rng = c.rng)
+        case None -> (affix = None, rng = roll.rng)
+
 randomizedItem : ContentPack -> ItemKind -> rand.Rng -> (item : Item, rng : rand.Rng)
 let randomizedItem pack kind r0 =
     let b = rollBeatitude r0
@@ -96,8 +142,13 @@ let randomizedItem pack kind r0 =
         case ArtifactClass -> True
         case _ -> item0.identified
     let knownBeatitude = item0.beatitudeKnown || item0.class == FoodClass || item0.class == CoinClass || item0.class == CorpseClass
-    let visibleName = if identifiedByClass then trueName pack kind else item0.name
-    in (item = item0.{ beatitude = fixedBeatitude, identified = identifiedByClass, beatitudeKnown = knownBeatitude, name = visibleName }, rng = b.rng)
+    let baseName = if identifiedByClass then trueName pack kind else item0.name
+    let base = item0.{ beatitude = fixedBeatitude, identified = identifiedByClass, beatitudeKnown = knownBeatitude, name = baseName }
+    let aff = maybeAffix pack item0.class b.rng
+    in
+        match aff.affix
+        case None -> (item = base, rng = aff.rng)
+        case Some a -> (item = base.{ power = base.power + a.powerBonus, name = a.name ++ " " ++ base.name }, rng = aff.rng)
 
 findActorDefBySpecies : ContentPack -> Species -> Option ActorDef
 let findActorDefBySpecies pack species =
@@ -121,13 +172,43 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"]
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
     match findActorDefBySpecies pack species
     case Some def -> def
     case None -> fallbackActorDef species
+
+abilitiesOf : ContentPack -> Species -> List Ability
+let abilitiesOf pack species = (actorDefBySpecies pack species).abilities
+
+regenAmount : List Ability -> Int
+let regenAmount abil decreases listLength abil =
+    match abil
+    case Nil -> 0
+    case a :: rest ->
+        match a
+        case Regenerate n -> max n (regenAmount rest)
+        case _ -> regenAmount rest
+
+rangedPower : List Ability -> Int
+let rangedPower abil decreases listLength abil =
+    match abil
+    case Nil -> 0
+    case a :: rest ->
+        match a
+        case Ranged n -> max n (rangedPower rest)
+        case _ -> rangedPower rest
+
+hasFrenzy : List Ability -> Bool
+let hasFrenzy abil decreases listLength abil =
+    match abil
+    case Nil -> False
+    case a :: rest ->
+        match a
+        case Frenzy -> True
+        case _ -> hasFrenzy rest
 
 actorDefById : ContentPack -> String -> ActorDef
 let actorDefById pack id =
@@ -174,9 +255,9 @@ let speciesFaction pack species = (actorDefBySpecies pack species).faction
 speciesAttitude : ContentPack -> Species -> Attitude
 let speciesAttitude pack species = (actorDefBySpecies pack species).attitude
 
-ruleActive : Int -> SpawnRule -> Bool
-let ruleActive depth rule =
-    depth >= rule.minDepth && depth <= rule.maxDepth && rule.weight > 0
+ruleActive : Int -> Int -> SpawnRule -> Bool
+let ruleActive branch depth rule =
+    (rule.branch == 0 || rule.branch == branch) && depth >= rule.minDepth && depth <= rule.maxDepth && rule.weight > 0
 
 repeatSpecies : Int -> Species -> List Species -> List Species
 let repeatSpecies count species acc decreases max 0 count =
@@ -186,30 +267,30 @@ repeatItemKind : Int -> ItemKind -> List ItemKind -> List ItemKind
 let repeatItemKind count kind acc decreases max 0 count =
     if count <= 0 then acc else repeatItemKind (count - 1) kind ((::) kind acc)
 
-monsterTable : ContentPack -> Int -> List Species
-let monsterTable pack depth =
+monsterTable : ContentPack -> Int -> Int -> List Species
+let monsterTable pack branch depth =
     block
         go : List SpawnRule -> List Species -> List Species
         let go rules acc decreases listLength rules =
             match rules
             case Nil -> reverse acc
             case rule :: rest ->
-                if not (ruleActive depth rule) then go rest acc
+                if not (ruleActive branch depth rule) then go rest acc
                 else
                     match findActorDefById pack rule.id
                     case Some def -> go rest (repeatSpecies rule.weight def.species acc)
                     case None -> go rest acc
         go pack.monsterSpawns Nil
 
-itemTable : ContentPack -> Int -> List ItemKind
-let itemTable pack depth =
+itemTable : ContentPack -> Int -> Int -> List ItemKind
+let itemTable pack branch depth =
     block
         go : List SpawnRule -> List ItemKind -> List ItemKind
         let go rules acc decreases listLength rules =
             match rules
             case Nil -> reverse acc
             case rule :: rest ->
-                if not (ruleActive depth rule) then go rest acc
+                if not (ruleActive branch depth rule) then go rest acc
                 else
                     match findItemDefById rule.id pack.items
                     case Some def -> go rest (repeatItemKind rule.weight def.kind acc)

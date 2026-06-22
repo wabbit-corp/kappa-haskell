@@ -20,5 +20,14 @@
     { "id": "corpse", "kind": "Corpse", "name": "fresh corpse", "true_name": "fresh corpse", "glyph": "%", "class": "CorpseClass", "stackable": false, "power": 1, "charges": 0, "starts_identified": true, "beatitude_known": true },
     { "id": "chaos_shard", "kind": "ChaosShard", "name": "chaos shard", "true_name": "chaos shard", "glyph": "\"", "class": "ArtifactClass", "stackable": false, "power": 3, "charges": 0, "starts_identified": true, "beatitude_known": false },
     { "id": "amulet", "kind": "Amulet", "name": "amulet of exit", "true_name": "amulet of exit", "glyph": "\"", "class": "ArtifactClass", "stackable": false, "power": 0, "charges": 0, "starts_identified": true, "beatitude_known": false }
+  ],
+  "affixes": [
+    { "id": "fine", "name": "fine", "class": "WeaponClass", "power_bonus": 1, "weight": 8 },
+    { "id": "heavy", "name": "heavy", "class": "WeaponClass", "power_bonus": 2, "weight": 4 },
+    { "id": "vicious", "name": "vicious", "class": "WeaponClass", "power_bonus": 3, "weight": 3 },
+    { "id": "rune_etched", "name": "rune-etched", "class": "WeaponClass", "power_bonus": 4, "weight": 1 },
+    { "id": "sturdy", "name": "sturdy", "class": "ArmorClass", "power_bonus": 1, "weight": 8 },
+    { "id": "reinforced", "name": "reinforced", "class": "ArmorClass", "power_bonus": 2, "weight": 4 },
+    { "id": "masterwork", "name": "masterwork", "class": "ArmorClass", "power_bonus": 3, "weight": 2 }
   ]
 }

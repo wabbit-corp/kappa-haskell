@@ -69,6 +69,7 @@ let tileKindChar k =
     case Altar -> "_"
     case LoreStone -> "?"
     case ChaosVent -> "*"
+    case BranchDown -> ">"
 
 litTileStyle : Tile -> (color : String, glyph : String)
 let litTileStyle t =
@@ -91,6 +92,7 @@ let litKindStyle k =
     case Altar -> (color = sgrb 235 205 95, glyph = "_")
     case LoreStone -> (color = sgr 95 205 225, glyph = "?")
     case ChaosVent -> (color = sgrb 210 95 220, glyph = "*")
+    case BranchDown -> (color = sgrb 210 95 220, glyph = ">")
 
 -- ── Entities ────────────────────────────────────────────────────────────
 actorStyle : Actor -> (color : String, glyph : String)

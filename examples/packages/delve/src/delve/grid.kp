@@ -82,5 +82,16 @@ let blankLevel depth size =
         actors = Nil,
         items = Nil,
         messages = ["Welcome to Delve."],
-        turn = 0
+        turn = 0,
+        branch = 0
     }
+
+findTileKind : TileKind -> Level -> Option Vec2
+let findTileKind kind level =
+    block
+        go : List Vec2 -> Option Vec2
+        let go ps decreases listLength ps =
+            match ps
+            case Nil -> None
+            case p :: rest -> if (getTile level p).kind == kind then Some p else go rest
+        go (positions level.size)

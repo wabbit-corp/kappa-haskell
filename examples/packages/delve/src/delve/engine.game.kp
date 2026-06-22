@@ -148,6 +148,7 @@ let onEnteredTile kind game =
     case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt 12 game)
     case LoreStone -> readLoreStone game
     case Altar -> message "An altar waits here. Press p to pray or offer the first corpse in your pack." game
+    case BranchDown -> message "A side-passage branches off here. Press > to descend into it." game
     case _ -> game
 
 readLoreStone : GameState -> GameState
@@ -230,20 +231,90 @@ let findFirstOpen ps level decreases listLength ps =
     case p :: rest ->
         if (grid.getTile level p).kind == OpenDoor then Some p else findFirstOpen rest level
 
-preservePlayerAcrossLevel : GameState -> GameState -> GameState
-let preservePlayerAcrossLevel old fresh =
-    match playerActor old
-    case None -> fresh
+-- Remove the player and every follower (HeroFaction) from an actor list: these
+-- "travelers" move with you across levels and must not be left behind in (or
+-- duplicated by) a stored/regenerated level.
+stripTravelers : Int -> List Actor -> List Actor
+let stripTravelers playerId actors decreases listLength actors =
+    match actors
+    case Nil -> Nil
+    case a :: rest ->
+        if a.id == playerId || a.faction == HeroFaction then stripTravelers playerId rest
+        else (::) a (stripTravelers playerId rest)
+
+fallbackArrival : Level -> Vec2
+let fallbackArrival level =
+    match level.rooms
+    case Nil -> Vec2 2 2
+    case r :: _ -> roomCenter r
+
+arrivalAt : TileKind -> Level -> Vec2
+let arrivalAt kind level =
+    match grid.findTileKind kind level
+    case Some pos -> pos
+    case None -> fallbackArrival level
+
+-- Place the current player + followers into a target level at the arrival
+-- stairs. Any generated/stale travelers already in the target are stripped
+-- first, so a fresh-generated level's placeholder player/pet are replaced.
+enterLevel : Vec2 -> GameState -> Level -> Level
+let enterLevel arrival game target =
+    match playerActor game
+    case None -> target
     case Some oldP ->
-        match playerActor fresh
-        case None -> fresh.{ player = old.player }
-        case Some newP ->
-            let moved = oldP.{ pos = newP.pos }
-            let baseActors = stripGeneratedFollowers old.player.actorId fresh.level.actors
-            let followers = followersFrom old.player.actorId old.level.actors
-            let actorsWithPlayer = replaceActor moved baseActors
-            let placedFollowers = placeFollowers newP.pos (maxActorId actorsWithPlayer + 1) fresh.level actorsWithPlayer followers
-            fresh.{ player = old.player, level = fresh.level.{ actors = listAppend placedFollowers.actors actorsWithPlayer } }
+        let movedPlayer = oldP.{ pos = arrival }
+        let baseActors = stripTravelers game.player.actorId target.actors
+        let withPlayer = (::) movedPlayer baseActors
+        let followers = followersFrom game.player.actorId game.level.actors
+        let placed = placeFollowers arrival (maxActorId withPlayer + 1) target withPlayer followers
+        in target.{ actors = listAppend placed.actors withPlayer }
+
+-- Stash the current level (travelers removed), then restore the target depth
+-- from the store if we have been there, else generate it fresh.
+travelTo : Int -> Int -> TileKind -> Nat -> String -> GameState -> GameState
+let travelTo targetBranch targetDepth arriveKind nextSeed logText game =
+    let stored = storeLevel (game.level.{ actors = stripTravelers game.player.actorId game.level.actors }) game.levels
+    in
+        match takeLevel targetBranch targetDepth stored
+        case Some r ->
+            let entered = enterLevel (arrivalAt arriveKind r.value) game r.value
+            in message logText (game.{ level = entered, levels = r.rest })
+        case None ->
+            let freshG = gen.newLevel game.content targetBranch targetDepth game.level.size nextSeed
+            let entered = enterLevel (arrivalAt arriveKind freshG.level) game freshG.level
+            in message logText (game.{ level = entered, levels = stored, rng = freshG.rng })
+
+enterBranchAt : GameState -> GameState
+let enterBranchAt game =
+    match content.findBranchByEntrance game.content game.level.depth
+    case None -> message "The portal flickers and fades." game
+    case Some bd -> travelTo bd.id 1 Upstairs (game.rng + 11400714819323198485) ("You step into " ++ bd.name ++ ".") game
+
+descendDeeper : GameState -> GameState
+let descendDeeper game =
+    let cur = game.level.branch
+    let depth = game.level.depth
+    if cur == 0 then travelTo 0 (depth + 1) Upstairs (game.rng + 11400714819323198485) "You descend into the deeper dark." game
+    else
+        match content.findBranchById game.content cur
+        case None -> travelTo cur (depth + 1) Upstairs (game.rng + 11400714819323198485) "You descend." game
+        case Some bd -> if depth < bd.floors then travelTo cur (depth + 1) Upstairs (game.rng + 11400714819323198485) "You press deeper into the branch." game else message "The branch bottoms out here." game
+
+climbMain : Actor -> GameState -> GameState
+let climbMain p game =
+    if game.level.depth > 1 then travelTo 0 (game.level.depth - 1) Downstairs (game.rng + 13787848793156543929) "You climb toward the upper level." game
+    elif hasItemKind Amulet p.inventory then game.{ mode = Won }
+    else message "You need the amulet before you can leave." game
+
+climbBranch : GameState -> GameState
+let climbBranch game =
+    let cur = game.level.branch
+    let depth = game.level.depth
+    if depth > 1 then travelTo cur (depth - 1) Downstairs (game.rng + 13787848793156543929) "You climb back up the branch." game
+    else
+        match content.findBranchById game.content cur
+        case None -> travelTo 0 1 Downstairs (game.rng + 13787848793156543929) "You leave the branch." game
+        case Some bd -> travelTo 0 bd.entranceDepth BranchDown (game.rng + 13787848793156543929) ("You leave " ++ bd.name ++ ".") game
 
 stairsCommand : Bool -> GameState -> GameState
 let stairsCommand goingDown game =
@@ -252,17 +323,14 @@ let stairsCommand goingDown game =
     case Some p ->
         let tile = grid.getTile game.level p.pos
         in
-            if goingDown && tile.kind == Downstairs then
-                let nextSeed = game.rng + 11400714819323198485
-                let fresh = gen.newLevel game.content (game.level.depth + 1) game.level.size nextSeed
-                in message "You descend. The air gets heavier." (preservePlayerAcrossLevel game fresh)
-            elif not goingDown && tile.kind == Upstairs && game.level.depth > 1 then
-                let nextSeed = game.rng + 13787848793156543929
-                let fresh = gen.newLevel game.content (game.level.depth - 1) game.level.size nextSeed
-                in message "You climb back toward the upper level." (preservePlayerAcrossLevel game fresh)
+            if goingDown && tile.kind == BranchDown then
+                enterBranchAt game
+            elif goingDown && tile.kind == Downstairs then
+                descendDeeper game
+            elif not goingDown && tile.kind == Upstairs && game.level.branch == 0 then
+                climbMain p game
             elif not goingDown && tile.kind == Upstairs then
-                if hasItemKind Amulet p.inventory then game.{ mode = Won }
-                else message "You need the amulet before you can leave." game
+                climbBranch game
             else message "No stairs here." game
 
 cycleTactic : GameState -> GameState
@@ -351,7 +419,7 @@ let zapWand wand before after p enemy game =
         let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
         message ("A line of fire hits " ++ enemy.name ++ " for " ++ show wand.power ++ ".") g1
     case WandPolymorph ->
-        let pool = content.monsterTable game.content game0.level.depth
+        let pool = content.monsterTable game.content game0.level.branch game0.level.depth
         let pick = rand.choose pool (natToInt game0.rng)
         match pick
         case None -> message "The wand sputters." game0
@@ -584,7 +652,7 @@ let stepIO mapSize cmd game =
 
 initialGame : ContentPack -> Nat -> Size -> GameState
 let initialGame pack seed size =
-    gen.newLevel pack 1 size seed
+    gen.newLevel pack 0 1 size seed
 
 initialMenu : ContentPack -> Nat -> Size -> GameState
 let initialMenu pack seed size =
@@ -721,7 +789,7 @@ let updateMusic last want =
             audio.playMusic want
             pure want
 
-runLoop : (& terminal : term.Terminal) -> Size -> Int -> GameState -> IO GameError Unit
+runLoop : term.Terminal -> Size -> Int -> GameState -> IO GameError Unit
 let runLoop terminal mapSize lastMusic game =
     do
         term.write terminal (render.renderGame game)

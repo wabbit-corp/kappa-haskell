@@ -7,10 +7,10 @@ import delve.fixture as fixture
 
 testStartsWithPetAndStarSign : Bool
 let testStartsWithPetAndStarSign =
-    let game = gen.newLevel fixture.testPack 1 (Size 80 24) 12345
+    let game = gen.newLevel fixture.testPack 0 1 (Size 80 24) 12345
     in listLength game.level.actors >= 2
 
 testRumorsSeeded : Bool
 let testRumorsSeeded =
-    let game = gen.newLevel fixture.testPack 1 (Size 80 24) 12345
+    let game = gen.newLevel fixture.testPack 0 1 (Size 80 24) 12345
     in listLength game.rumors > 0

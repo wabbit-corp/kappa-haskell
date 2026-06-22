@@ -165,43 +165,82 @@ let freeSpawnPos level room actors attempts r decreases max 0 attempts =
         if free then (pos = Some p.pos, rng = p.rng)
         else freeSpawnPos level room actors (attempts - 1) p.rng
 
-spawnMonsters : ContentPack -> Level -> Int -> List Room -> Int -> List Actor -> rand.Rng -> (actors : List Actor, rng : rand.Rng)
-let spawnMonsters pack level depth rooms nextId actors r decreases listLength rooms =
+spawnMonsters : ContentPack -> Level -> Int -> Int -> List Room -> Int -> List Actor -> rand.Rng -> (actors : List Actor, rng : rand.Rng)
+let spawnMonsters pack level branch depth rooms nextId actors r decreases listLength rooms =
     match rooms
     case Nil -> (actors = actors, rng = r)
     case room :: rest ->
         let roll = rand.chance (pack.worldgen.baseMonsterChance + min 30 (depth * pack.worldgen.monsterChancePerDepth)) r
-        if not roll.value then spawnMonsters pack level depth rest nextId actors roll.rng
+        if not roll.value then spawnMonsters pack level branch depth rest nextId actors roll.rng
         else
-            let speciesChoice = rand.choose (content.monsterTable pack depth) roll.rng
+            let speciesChoice = rand.choose (content.monsterTable pack branch depth) roll.rng
             match speciesChoice
-            case None -> spawnMonsters pack level depth rest nextId actors roll.rng
+            case None -> spawnMonsters pack level branch depth rest nextId actors roll.rng
             case Some chosen ->
                 let spot = freeSpawnPos level room actors 8 chosen.rng
                 match spot.pos
-                case None -> spawnMonsters pack level depth rest nextId actors spot.rng
+                case None -> spawnMonsters pack level branch depth rest nextId actors spot.rng
                 case Some pos ->
                     let m = content.mkMonster pack nextId chosen.value pos
-                    spawnMonsters pack level depth rest (nextId + 1) ((::) m actors) spot.rng
+                    spawnMonsters pack level branch depth rest (nextId + 1) ((::) m actors) spot.rng
 
-spawnItems : ContentPack -> Int -> List Room -> List GroundItem -> rand.Rng -> (items : List GroundItem, rng : rand.Rng)
-let spawnItems pack depth rooms items r decreases listLength rooms =
+spawnItems : ContentPack -> Int -> Int -> List Room -> List GroundItem -> rand.Rng -> (items : List GroundItem, rng : rand.Rng)
+let spawnItems pack branch depth rooms items r decreases listLength rooms =
     match rooms
     case Nil -> (items = items, rng = r)
     case room :: rest ->
         let roll = rand.chance pack.worldgen.itemChance r
-        if not roll.value then spawnItems pack depth rest items roll.rng
+        if not roll.value then spawnItems pack branch depth rest items roll.rng
         else
-            let kind = rand.choose (content.itemTable pack depth) roll.rng
+            let kind = rand.choose (content.itemTable pack branch depth) roll.rng
             match kind
-            case None -> spawnItems pack depth rest items roll.rng
+            case None -> spawnItems pack branch depth rest items roll.rng
             case Some k ->
                 let p = randomFloorInRoom room k.rng
                 let item = content.randomizedItem pack k.value p.rng
-                spawnItems pack depth rest ((::) (GroundItem p.pos item.item) items) item.rng
+                spawnItems pack branch depth rest ((::) (GroundItem p.pos item.item) items) item.rng
 
-newLevel : ContentPack -> Int -> Size -> Nat -> GameState
-let newLevel pack depth size seed0 =
+firstFloorNeighbor : Level -> Vec2 -> Option Vec2
+let firstFloorNeighbor level p =
+    block
+        go : List Vec2 -> Option Vec2
+        let go ps decreases listLength ps =
+            match ps
+            case Nil -> None
+            case q :: rest -> if (grid.getTile level q).kind == Floor then Some q else go rest
+        go (grid.neighbors8 p)
+
+-- On a main-line floor whose depth matches a branch entrance, drop a BranchDown
+-- portal beside the downstairs so the player meets both ways down together.
+placeBranchEntrance : ContentPack -> Int -> Level -> Level
+let placeBranchEntrance pack depth level =
+    match content.findBranchByEntrance pack depth
+    case None -> level
+    case Some bd ->
+        match grid.findTileKind Downstairs level
+        case None -> level
+        case Some downPos ->
+            match firstFloorNeighbor level downPos
+            case None -> level
+            case Some spot -> grid.setTile spot ((grid.getTile level spot).{ kind = BranchDown }) level
+
+bossActorId : Int
+let bossActorId = 999
+
+-- On a branch's deepest floor, place its boss guarding the downstairs.
+maybeAddBoss : ContentPack -> Int -> Int -> Level -> List Actor -> List Actor
+let maybeAddBoss pack branch depth level actors =
+    match content.findBranchById pack branch
+    case None -> actors
+    case Some bd ->
+        if depth != bd.floors then actors
+        else
+            match grid.findTileKind Downstairs level
+            case None -> actors
+            case Some pos -> (::) (content.mkMonster pack bossActorId bd.boss pos) actors
+
+newLevel : ContentPack -> Int -> Int -> Size -> Nat -> GameState
+let newLevel pack branch depth size seed0 =
     let r0 = rand.seed seed0
     let sign = content.rollStarSign pack r0
     let base = grid.blankLevel depth size
@@ -217,6 +256,7 @@ let newLevel pack depth size seed0 =
         case _ -> built.level
     let features = sprinkleFeatures pack.worldgen depth (drop 1 rooms) builtLevel built.rng
     let levelWithStairs = placeStairs rooms features.level
+    let withEntrance = if branch == 0 then placeBranchEntrance pack depth levelWithStairs else levelWithStairs
     let startRoom =
         match rooms
         case Nil -> fallbackStartRoom pack.worldgen
@@ -225,9 +265,10 @@ let newLevel pack depth size seed0 =
     let petPos = addPos start (Vec2 1 0)
     let player = content.applyStarSign pack sign.sign (content.mkPlayer pack playerActorId start)
     let pet = content.mkPet pack petActorId petPos
-    let monsters = spawnMonsters pack levelWithStairs depth (drop 1 rooms) firstGeneratedActorId [pet, player] features.rng
-    let items = spawnItems pack depth rooms Nil monsters.rng
-    let level0 = levelWithStairs.{ rooms = rooms, actors = reverse monsters.actors, items = items.items }
+    let monsters = spawnMonsters pack withEntrance branch depth (drop 1 rooms) firstGeneratedActorId [pet, player] features.rng
+    let items = spawnItems pack branch depth rooms Nil monsters.rng
+    let actorsWithBoss = maybeAddBoss pack branch depth withEntrance (reverse monsters.actors)
+    let level0 = withEntrance.{ rooms = rooms, actors = actorsWithBoss, items = items.items, branch = branch }
     let level = fov.refreshVisibility start level0
     in GameState {
         rng = intToNat items.rng,
@@ -239,5 +280,6 @@ let newLevel pack depth size seed0 =
         content = pack,
         ecs = ecs.fromLevel pack level,
         savePath = pack.save.path,
-        audioMuted = False
+        audioMuted = False,
+        levels = Nil
     }

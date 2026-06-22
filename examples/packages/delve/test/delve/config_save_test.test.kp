@@ -21,13 +21,13 @@ let testJsonProfileParsesObjects =
 
 testEcsMirrorHasActors : Bool
 let testEcsMirrorHasActors =
-    let game = gen.newLevel fixture.testPack 1 (Size 80 24) 42
+    let game = gen.newLevel fixture.testPack 0 1 (Size 80 24) 42
     let synced = ecs.sync game
     in listLength (ecs.query "actor" synced.ecs) >= 2
 
 testSaveCarriesPackIdentity : Bool
 let testSaveCarriesPackIdentity =
-    let game = gen.newLevel fixture.testPack 1 (Size 80 24) 42
+    let game = gen.newLevel fixture.testPack 0 1 (Size 80 24) 42
     let encoded = save.encodeGame game
     match json.objectField "pack_id" encoded
     case Some (JString id) -> id == fixture.testPack.packId
@@ -42,7 +42,7 @@ let testLoadDefaultPackIO =
 testSaveRoundTripIO : IO GameError Bool
 let testSaveRoundTripIO =
     do
-        let game = gen.newLevel fixture.testPack 1 (Size 80 24) 42
+        let game = gen.newLevel fixture.testPack 0 1 (Size 80 24) 42
         save.saveGame game
         loaded <- save.loadGame fixture.testPack (Size 80 24)
         pure (loaded.content.packId == fixture.testPack.packId && loaded.savePath == fixture.testPack.save.path)

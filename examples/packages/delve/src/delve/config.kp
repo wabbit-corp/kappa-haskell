@@ -31,7 +31,9 @@ let loadPack packPath =
         spawnPath <- filePath "spawns" filesObject
         lorePath <- filePath "lore" filesObject
         world <- loadWorldGen worldPath
+        branches <- loadBranches worldPath
         items <- loadItems itemPath
+        affixes <- loadAffixes itemPath
         actors <- loadActors actorPath
         systems <- loadSystems systemPath
         spawns <- loadSpawns spawnPath
@@ -53,7 +55,9 @@ let loadPack packPath =
                 starSigns = systems.starSigns,
                 mutations = systems.mutations,
                 faiths = systems.faiths,
-                rumors = lore
+                rumors = lore,
+                affixes = affixes,
+                branches = branches
             }
         validateContentPack pack
 
@@ -161,6 +165,28 @@ let loadWorldGen path =
         else
             pure (WorldGenConfig minWidth maxWidth minHeight maxHeight minSize maxSize attempts monsterBase monsterPerDepth itemChance altarChance loreChance trapBase trapDepth chaosBase chaosDepth)
 
+decodeBranch : json.JsonValue -> IO GameError BranchDef
+let decodeBranch value =
+    do
+        id <- intField "id" value
+        name <- stringField "name" value
+        entranceDepth <- intField "entrance_depth" value
+        floors <- intField "floors" value
+        bossName <- stringField "boss" value
+        boss <- decodeSpecies bossName
+        pure (BranchDef id name entranceDepth floors boss)
+
+loadBranches : String -> IO GameError (List BranchDef)
+let loadBranches path =
+    do
+        root <- readJsonFile path
+        match json.objectField "branches" root
+        case None -> pure Nil
+        case Some arrv ->
+            match json.asArray arrv
+            case Ok xs -> traverse decodeBranch xs
+            case Err e -> raise e
+
 loadItems : String -> IO GameError (List ItemDef)
 let loadItems path =
     do
@@ -186,12 +212,49 @@ let decodeItem value =
         beatitudeKnown <- boolField "beatitude_known" value
         pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown)
 
+decodeAffix : json.JsonValue -> IO GameError ItemAffix
+let decodeAffix value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        className <- stringField "class" value
+        cls <- decodeItemClass className
+        powerBonus <- intField "power_bonus" value
+        weight <- intField "weight" value
+        pure (ItemAffix id name cls powerBonus weight)
+
+loadAffixes : String -> IO GameError (List ItemAffix)
+let loadAffixes path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "affixes" root
+        traverse decodeAffix xs
+
 loadActors : String -> IO GameError (List ActorDef)
 let loadActors path =
     do
         root <- readJsonFile path
         xs <- arrayField "actors" root
         traverse decodeActor xs
+
+abilityWith : (Int -> Ability) -> String -> json.JsonValue -> IO GameError Ability
+let abilityWith mk fieldName value =
+    do
+        n <- intField fieldName value
+        pure (mk n)
+
+decodeAbilityKind : String -> json.JsonValue -> IO GameError Ability
+let decodeAbilityKind kind value =
+    if kind == "Regenerate" then abilityWith Regenerate "amount" value
+    elif kind == "Ranged" then abilityWith Ranged "power" value
+    elif kind == "Frenzy" then pure Frenzy
+    else raise (ConfigError ("unknown ability kind: " ++ kind))
+
+decodeAbility : json.JsonValue -> IO GameError Ability
+let decodeAbility value =
+    do
+        kind <- stringField "kind" value
+        decodeAbilityKind kind value
 
 decodeActor : json.JsonValue -> IO GameError ActorDef
 let decodeActor value =
@@ -213,7 +276,9 @@ let decodeActor value =
         inv <- traverse decodeItemKindFromJson invJson
         tagJson <- arrayField "tags" value
         tags <- traverse decodeStringFromJson tagJson
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags)
+        abilityJson <- arrayField "abilities" value
+        abilities <- traverse decodeAbility abilityJson
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =
@@ -246,9 +311,10 @@ let decodeSpawn value =
         minDepth <- intField "min_depth" value
         maxDepth <- intField "max_depth" value
         weight <- intField "weight" value
+        branch <- optionalIntField 0 "branch" value
         if minDepth < 1 || maxDepth < minDepth || weight < 1 then
             raise (ConfigError ("invalid spawn rule for " ++ id))
-        else pure (SpawnRule id minDepth maxDepth weight)
+        else pure (SpawnRule id minDepth maxDepth weight branch)
 
 loadSystems : String -> IO GameError (tactics : List TacticDef, starSigns : List StarSignDef, mutations : List MutationDef, faiths : List FaithDef)
 let loadSystems path =
