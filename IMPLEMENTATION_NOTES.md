@@ -166,10 +166,17 @@ PERFORMANCE.md).
 
 **Recursion needs a preceding signature.** Per §9.2/§15.16, bodies are
 checked in a second pass against header types; direct recursion without
-a signature is `E_RECURSION_NO_SIGNATURE`. Structural descent (some
-explicit parameter strictly decreases at every direct self-call, via
-constructor sub-patterns) certifies termination; otherwise the
-definition gets `W_TERMINATION_UNVERIFIED` and is conversion-opaque.
+a signature is `E_RECURSION_REQUIRES_SIGNATURE`. Termination certificates are
+checked for signature-governed direct recursion by first honoring an
+explicit `decreases` clause, then falling back to structural descent.
+Structural descent covers constructor sub-patterns; arithmetic measures
+cover Nat/Int ranking functions, including lexicographic tuple records,
+branch facts from exact prelude integer predicates such as `leInt n 0`,
+and exact prelude integer primitives such as `subInt n 1`. User helpers,
+overloaded operators, and arbitrary `by R using p` witnesses are not
+trusted by name; accepting them requires semantic evidence rather than
+spelling matches. Uncertified definitions get `W_TERMINATION_UNVERIFIED`
+and are conversion-opaque.
 
 **Error tolerance boundaries.** The parser recovers at declaration
 boundaries (§3.1.14A) and the checker continues past errors using holes

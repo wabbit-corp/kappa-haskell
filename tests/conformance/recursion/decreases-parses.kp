@@ -1,6 +1,6 @@
 -- §15.11: explicit decreases clauses parse in all portable forms.
--- Measures are recorded but not verified by this implementation
--- (SPEC_COVERAGE.md §15); this fixture locks the parse behavior.
+-- This fixture locks the surface forms; recursive measure checking is
+-- covered by decreases-measure-int.kp.
 module main
 
 count : Integer -> Integer

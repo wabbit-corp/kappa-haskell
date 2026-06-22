@@ -40,6 +40,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
+import Text.Read (readMaybe)
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval
@@ -11470,9 +11471,9 @@ registerProjection g coreTy defTm pj = do
   modify' $ \st -> st {csProjections = Map.insert g pj (csProjections st)}
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
--- the parsed decreases clause is not consulted: termination is verified
--- by the structural analysis below (see IMPLEMENTATION_NOTES.md)
-elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
+-- Signature-governed recursive definitions are checked by explicit
+-- decreases clauses first, with structural descent as a conservative fallback.
+elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   -- resolve any goals postponed from signature elaboration first, so the
   -- signature's value is canonical while checking the body
   flushPending
@@ -11555,17 +11556,17 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy _mdec body) sp = do
             -- abstraction) is a definitional cycle (§15.3, §16.4)
             errAt sp "E_RECURSIVE_VALUE_CYCLE" (Just "kappa.termination.failure")
               ("recursive value cycle: '" <> nameText n
-                 <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15.3)")
+                 <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15)")
             pure False
           else if recursive
             then do
-              let okStructural = structuralOK g binders tm
-              unless okStructural $
+              okTerm <- terminationOK g sigTy binders mdec tm
+              unless okTerm $
                 report $
                   withNote "the definition is accepted but not conversion-reducible (§15.1)" $
                     diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.failure") sp
-                      ("could not verify structural termination of '" <> nameText n <> "' (§15.3)")
-              pure okStructural
+                      ("could not verify termination of '" <> nameText n <> "' (§15)")
+              pure okTerm
             else pure True
       markManifestIfShaped tm
       recordCoreBody g tm
@@ -11664,30 +11665,153 @@ occursGlobal g = go
       KSubDo _ b -> any goK b
       _ -> False
 
+-- Termination verification (§15.3/§15.11, direct recursion).
+--
+-- The fallback structural checker is deliberately small: it certifies the
+-- classic constructor-subpattern descent used by primitive recursive
+-- functions over ADTs.  Explicit @decreases@ clauses add the missing,
+-- well-founded ranking-function path: elaborate the user measure under the
+-- function telescope, instantiate it at every direct self-call, and prove a
+-- lexicographic decrease in a conservative integer/Nat abstraction.  Failure
+-- means "not certified", never "definitely diverges".
+terminationOK :: GName -> Value -> [Binder] -> Maybe Decreases -> Term -> CheckM Bool
+terminationOK g sigTy binders mdec tm = do
+  decOK <- case mdec of
+    Nothing -> pure False
+    Just dec -> decreasesOK g sigTy binders dec tm
+  pure (decOK || structuralOK g binders tm)
+
+decreasesOK :: GName -> Value -> [Binder] -> Decreases -> Term -> CheckM Bool
+decreasesOK g sigTy binders dec tm = case dec of
+  DecStructural ns -> pure (structuralNamedOK g (map nameText ns) binders tm)
+  DecMeasure measure byRel usingProof -> do
+    relOK <- measureRelationSupported byRel usingProof
+    if not relOK
+      then pure False
+      else do
+        ctx <- measureCtxFromSig sigTy binders
+        natLvls <- ctxNatLevels ctx
+        (m0, mTy0) <- infer ctx measure
+        (mTm, _) <- insertAllImplicits ctx (exprSpan measure) m0 mTy0
+        pure (measureOK g (ctxLen ctx) natLvls mTm tm)
+  where
+    -- This implementation can decide the built-in strict order on integer-like
+    -- measures.  Arbitrary @by R using p@ is intentionally not trusted here:
+    -- accepting it soundly requires proving that R is well-founded and that p
+    -- witnesses every call edge.
+    measureRelationSupported Nothing Nothing = pure True
+    measureRelationSupported (Just r) Nothing = do
+      (rTm0, rTy0) <- infer emptyCtx r
+      (rTm, _) <- insertAllImplicits emptyCtx (exprSpan r) rTm0 rTy0
+      pure (relationTermSupported rTm)
+    measureRelationSupported _ _ = pure False
+
+relationTermSupported :: Term -> Bool
+relationTermSupported t =
+  case spineOfTerm t of
+    (CGlob g, _) -> isTrustedPreludeName ["ltInt"] g
+    _ -> False
+
+isTrustedPreludeName :: [Text] -> GName -> Bool
+isTrustedPreludeName names g = any (\nm -> g == gPrel nm) names
+
+-- | Build the measure-elaboration context for a top-level function telescope.
+-- This mirrors the binder consumption path used by 'checkAgainstSig' for
+-- direct-recursion measures, without claiming to be the canonical body
+-- checker. Keep it in sync when new binder-claiming forms are added.
+measureCtxFromSig :: Value -> [Binder] -> CheckM Ctx
+measureCtxFromSig sigTy binders = go emptyCtx sigTy binders
+  where
+    go ctx _ [] = pure ctx
+    go ctx ty0 (b : rest) = do
+      ty <- forceM ty0
+      case ty of
+        VPi Impl q nm dom clo
+          | not (bImplicit b)
+          , (nameText <$> bName b) /= Just nm ->
+              skipImplicit ctx q nm dom clo (b : rest)
+        VPi Impl q nm dom clo
+          | bImplicit b
+          , nm /= "_"
+          , (nameText <$> bName b) /= Just nm
+          , Just tyE <- binderTypeExpr b -> do
+              st0 <- get
+              nBefore <- gets (length . csDiags)
+              ok <- do
+                (tyTm, _) <- inferType ctx tyE
+                tyV <- evalIn ctx tyTm
+                unify ctx dom tyV
+              nAfter <- gets (length . csDiags)
+              put st0
+              if ok && nAfter == nBefore
+                then claim ctx Impl nm dom clo b rest
+                else skipImplicit ctx q nm dom clo (b : rest)
+        VPi ic _ nm dom clo -> claim ctx ic nm dom clo b rest
+        _ -> do
+          dom <- case binderTypeExpr b of
+            Just tyE -> do
+              (tyTm, _) <- inferType ctx tyE
+              evalIn ctx tyTm
+            Nothing -> freshMetaV ctx
+          let bn = fromMaybe "_" (nameText <$> bName b)
+          go (bindCtx bn (bImplicit b) dom ctx) ty0 rest
+
+    skipImplicit ctx _ nm dom clo bs = do
+      let ctx' = bindCtx nm True dom ctx
+      cod <- clApp clo (VRigid (ctxLen ctx) [])
+      go ctx' cod bs
+
+    claim ctx _ nm dom clo b rest = do
+      let bn = fromMaybe nm (nameText <$> bName b)
+      let ctx' = bindCtx bn (bImplicit b) dom ctx
+      cod <- clApp clo (VRigid (ctxLen ctx) [])
+      go ctx' cod rest
+
+ctxNatLevels :: Ctx -> CheckM (Set Int)
+ctxNatLevels ctx = do
+  let n = ctxLen ctx
+  fmap (Set.fromList . catMaybes) $
+    forM (zip [0 :: Int ..] (ctxEntries ctx)) $ \(ix, entry) -> do
+      ty <- forceM (ceType entry)
+      pure $
+        if isNatTy ty
+          then Just (n - 1 - ix)
+          else Nothing
+  where
+    isNatTy = \case
+      VGlobN g [] -> gnameText g == "Nat"
+      _ -> False
+
 -- Structural-descent verification (§15.3 minimum, direct recursion):
--- accepted iff some explicit parameter position strictly decreases at
--- every direct self-call, where "decreases" means the argument is a
--- variable bound by a constructor sub-pattern of a match on that
--- parameter (or a variable transitively below it).
+-- accepted iff some explicit parameter position strictly decreases at every
+-- direct self-call, where "decreases" means the argument is a variable bound
+-- by a constructor sub-pattern of a match on that parameter (or a variable
+-- transitively below it).
 structuralOK :: GName -> [Binder] -> Term -> Bool
-structuralOK g _ tm0 =
+structuralOK g binders = structuralOKOn g Nothing binders
+
+structuralNamedOK :: GName -> [Text] -> [Binder] -> Term -> Bool
+structuralNamedOK g names binders = structuralOKOn g (Just wanted) binders
+  where
+    explicitNames = [nameText n | b <- binders, not (bImplicit b), Just n <- [bName b]]
+    wanted = [i | nm <- names, Just i <- [elemIndex nm explicitNames]]
+
+structuralOKOn :: GName -> Maybe [Int] -> [Binder] -> Term -> Bool
+structuralOKOn g mwanted _ tm0 =
   let (params, body, depth0) = peel [] tm0 0
+      candidates = maybe [0 .. length params - 1] (filter (< length params)) mwanted
    in case params of
         [] -> False
+        _ | null candidates -> False
         _ ->
           let calls = collect depth0 Map.empty body
            in case calls of
                 Nothing -> False -- a self-call escaped spine position
-                Just cs ->
-                  any
-                    (\i -> all (decreasingAt i) cs)
-                    [0 .. length params - 1]
+                Just cs -> any (\i -> all (decreasingAt i) cs) candidates
   where
     -- peel leading lambdas; record levels of explicit params
     peel acc (CLam ic _ _ b) d = peel (acc ++ [(ic, d)]) b (d + 1)
     peel acc t d = ([lvl | (Expl, lvl) <- acc], t, d)
-      where
-        _params = acc
 
     paramLevels = let (ps, _, _) = peel [] tm0 0 in ps
 
@@ -11697,7 +11821,7 @@ structuralOK g _ tm0 =
     collect :: Int -> Map.Map Int Int -> Term -> Maybe [[(Int, Maybe Int)]]
     collect d sub t = case t of
       CApp {} ->
-        case spineOf t of
+        case spineOfTerm t of
           (CGlob g', args) | g' == g ->
               Just [zipWith (\i a -> (i, argRoot d sub a)) [0 ..] [a | (Expl, a) <- args]]
           (f, args) -> do
@@ -11747,6 +11871,7 @@ structuralOK g _ tm0 =
       CLazyE e -> collect d sub e
       CForceE e -> collect d sub e
       CDo _ _ -> Just [] -- loops handle their own progress; no self-calls expected
+      CQuote _ slots -> concat <$> mapM (collect d sub) slots
       _ -> Just []
       where
         concat3 a b c = a ++ b ++ c
@@ -11758,12 +11883,6 @@ structuralOK g _ tm0 =
       CPAs _ p -> ctorBinds p
       _ -> False
 
-    spineOf :: Term -> (Term, [(Icit, Term)])
-    spineOf = go []
-      where
-        go acc (CApp ic f a) = go ((ic, a) : acc) f
-        go acc f = (f, acc)
-
     -- the root param level an argument descends from, if any
     argRoot d sub = \case
       CVar i ->
@@ -11773,8 +11892,447 @@ structuralOK g _ tm0 =
 
     decreasingAt i call =
       case lookup i call of
-        Just (Just root) -> root `elem` take (i + 1) paramLevels || root `elem` paramLevels
+        Just (Just root) -> root `elem` paramLevels
         _ -> False
+
+-- ── Explicit measure checking ────────────────────────────────────────
+
+data MeasureCall = MeasureCall !Int ![AFact] !Term !Term
+  deriving stock (Show)
+
+data AExpr
+  = AConst !Integer
+  | AVar !Int
+  | AScale !Integer !AExpr
+  | AAdd !AExpr !AExpr
+  | ASub !AExpr !AExpr
+  | ANeg !AExpr
+  | AMax !AExpr !AExpr
+  | AMin !AExpr !AExpr
+  deriving stock (Eq, Ord, Show)
+
+data ACmp = ACmpLt | ACmpLe | ACmpEq
+  deriving stock (Eq, Ord, Show)
+
+data AFact = AFact !ACmp !AExpr !AExpr
+  deriving stock (Eq, Ord, Show)
+
+data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
+  deriving stock (Eq, Show)
+
+data ALin = ALin !Integer !(Map.Map Int Integer)
+  deriving stock (Eq, Show)
+
+measureOK :: GName -> Int -> Set Int -> Term -> Term -> Bool
+measureOK g oldDepth natLvls measureTm tm0 =
+  let (params, body, depth0) = peel [] tm0 0
+   in not (null params)
+        && case collectMeasureCalls g params oldDepth measureTm depth0 [] body of
+          Nothing -> False
+          Just calls -> not (null calls) && all (measureCallOK natLvls) calls
+  where
+    peel acc (CLam ic _ _ b) d = peel (acc ++ [(ic, d)]) b (d + 1)
+    peel acc t d = (acc, t, d)
+
+measureCallOK :: Set Int -> MeasureCall -> Bool
+measureCallOK natLvls (MeasureCall d facts oldM newM) =
+  let oldCs = rankComponents oldM
+      newCs = rankComponents newM
+   in length oldCs == length newCs
+        && all componentNonNegative oldCs
+        && all componentNonNegative newCs
+        && lexDecreases (zip oldCs newCs)
+  where
+    lexDecreases [] = False
+    lexDecreases ((oldC, newC) : rest) =
+      proveLt natLvls facts d newC oldC
+        || (proveEq natLvls facts d newC oldC && lexDecreases rest)
+
+    componentNonNegative t = proveNonNeg natLvls facts d t
+
+rankComponents :: Term -> [Term]
+rankComponents = \case
+  CRecordV fs
+    | Just components <- tupleComponents fs -> map snd components
+  t -> [t]
+  where
+    tupleComponents fs = do
+      indexed <- traverse tupleField fs
+      let sorted = sortOn fst indexed
+      if map fst sorted == [1 .. length sorted]
+        then Just sorted
+        else Nothing
+
+    tupleField (nm, tm) = do
+      raw <- T.stripPrefix "_" nm
+      ix <- readMaybe (T.unpack raw)
+      if ix >= (1 :: Int)
+        then Just (ix, tm)
+        else Nothing
+
+collectMeasureCalls :: GName -> [(Icit, Int)] -> Int -> Term -> Int -> [AFact] -> Term -> Maybe [MeasureCall]
+collectMeasureCalls g params oldDepth measureTm = go
+  where
+    go d facts t = case t of
+      CApp {} ->
+        case spineOfTerm t of
+          (CGlob g', args) | g' == g -> do
+            let formalLvls = map snd params
+                callArgs = take (length formalLvls) args
+            if length callArgs /= length formalLvls || d < oldDepth
+              then Nothing
+              else do
+                argCalls <- concat <$> mapM (go d facts . snd) args
+                let subst = Map.fromList (zip formalLvls (map snd callArgs))
+                    oldHere = shiftTerm (d - oldDepth) 0 measureTm
+                    newHere = instantiateByLevel oldDepth d subst measureTm
+                pure (MeasureCall d facts oldHere newHere : argCalls)
+          (f, args) -> do
+            rf <- go d facts f
+            rs <- concat <$> mapM (go d facts . snd) args
+            pure (rf ++ rs)
+      CGlob g' | g' == g -> Nothing -- bare self-reference: not a checkable call edge
+      CLam _ _ _ b -> go (d + 1) facts b
+      CPi _ _ _ a b -> (++) <$> go d facts a <*> go (d + 1) facts b
+      CLet _ _ a b c -> concat3 <$> go d facts a <*> go d facts b <*> go (d + 1) facts c
+      CLetRec _ _ a b c -> concat3 <$> go d facts a <*> go (d + 1) facts b <*> go (d + 1) facts c
+      CIf c th el -> do
+        rc <- go d facts c
+        rt <- go d (assumeBool d True c ++ facts) th
+        re <- go d (assumeBool d False c ++ facts) el
+        pure (rc ++ rt ++ re)
+      CMatch scrut alts -> do
+        rs <- go d facts scrut
+        ralts <- forM alts $ \(CaseAlt pat gd b) -> do
+          let nb = patBindersC pat
+              d' = d + nb
+          rg <- maybe (Just []) (go d' facts) gd
+          let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd
+          rb <- go d' facts' b
+          pure (rg ++ rb)
+        pure (rs ++ concat ralts)
+      CCtor _ as -> concat <$> mapM (go d facts) as
+      CRecordT fs -> concat <$> mapM (go d facts . snd) fs
+      CRecordV fs -> concat <$> mapM (go d facts . snd) fs
+      CProj e _ -> go d facts e
+      CProjAt e _ _ -> go d facts e
+      CVariantT ms -> concat <$> mapM (go d facts) ms
+      CInject _ e -> go d facts e
+      CThunkE e -> go d facts e
+      CLazyE e -> go d facts e
+      CForceE e -> go d facts e
+      CSealE _ e -> go d facts e
+      CSigT _ e -> go d facts e
+      CQuote _ slots -> concat <$> mapM (go d facts) slots
+      CDo _ _ -> Just []
+      _ -> Just []
+
+    concat3 a b c = a ++ b ++ c
+
+instantiateByLevel :: Int -> Int -> Map.Map Int Term -> Term -> Term
+instantiateByLevel oldDepth callDepth subst = go oldDepth
+  where
+    go curDepth t = case t of
+      CVar i ->
+        let lvl = curDepth - 1 - i
+         in if lvl >= oldDepth
+              then CVar i
+              else case Map.lookup lvl subst of
+                Just arg -> shiftTerm (curDepth - oldDepth) 0 arg
+                Nothing -> CVar (i + callDepth - oldDepth)
+      CGlob x -> CGlob x
+      CLam ic q n b -> CLam ic q n (go (curDepth + 1) b)
+      CPi ic q n a b -> CPi ic q n (go curDepth a) (go (curDepth + 1) b)
+      CApp ic f a -> CApp ic (go curDepth f) (go curDepth a)
+      CSort u -> CSort u
+      CLit l -> CLit l
+      CCtor cg as -> CCtor cg (map (go curDepth) as)
+      CMatch s alts ->
+        CMatch (go curDepth s)
+          [ CaseAlt p (fmap (go (curDepth + patBindersC p)) gd) (go (curDepth + patBindersC p) b)
+          | CaseAlt p gd b <- alts
+          ]
+      CRecordT fs -> CRecordT [(n, go curDepth x) | (n, x) <- fs]
+      CRecordV fs -> CRecordV [(n, go curDepth x) | (n, x) <- fs]
+      CProj e f -> CProj (go curDepth e) f
+      CProjAt e f i -> CProjAt (go curDepth e) f i
+      CVariantT ms -> CVariantT (map (go curDepth) ms)
+      CInject tag e -> CInject tag (go curDepth e)
+      CLet q n a b c -> CLet q n (go curDepth a) (go curDepth b) (go (curDepth + 1) c)
+      CLetRec q n a b c -> CLetRec q n (go curDepth a) (go (curDepth + 1) b) (go (curDepth + 1) c)
+      CMeta m -> CMeta m
+      CDo lbl items -> CDo lbl items
+      CSealE ls e -> CSealE ls (go curDepth e)
+      CSigT ls e -> CSigT ls (go curDepth e)
+      CThunkE e -> CThunkE (go curDepth e)
+      CLazyE e -> CLazyE (go curDepth e)
+      CForceE e -> CForceE (go curDepth e)
+      CIf a b c -> CIf (go curDepth a) (go curDepth b) (go curDepth c)
+      CQuote qs slots -> CQuote qs (map (go curDepth) slots)
+
+assumeBool :: Int -> Bool -> Term -> [AFact]
+assumeBool d truth t = case t of
+  CApp {}
+    | (CGlob ng, args) <- spineOfTerm t
+    , gnameText ng == "not"
+    , [arg] <- [a | (_, a) <- args] -> assumeBool d (not truth) arg
+  _ -> case boolRel d t of
+    Nothing -> []
+    Just fact -> [if truth then fact else negateFact fact]
+
+negateFact :: AFact -> AFact
+negateFact = \case
+  AFact ACmpLt a b -> AFact ACmpLe b a -- not (a < b)  ==> b <= a
+  AFact ACmpLe a b -> AFact ACmpLt b a -- not (a <= b) ==> b < a
+  AFact ACmpEq _ _ -> AFact ACmpEq (AConst 0) (AConst 1) -- unusable contradiction marker
+
+boolRel :: Int -> Term -> Maybe AFact
+boolRel d t = case spineOfTerm t of
+  (CGlob rg, args) -> do
+    let ex = [a | (Expl, a) <- args]
+    (a, b) <- last2 ex
+    aa <- arithOf d a
+    bb <- arithOf d b
+    case () of
+      _
+        | isTrustedPreludeName ["ltInt"] rg -> pure (AFact ACmpLt aa bb)
+        | isTrustedPreludeName ["leInt"] rg -> pure (AFact ACmpLe aa bb)
+        | isTrustedPreludeName ["eqInt"] rg -> pure (AFact ACmpEq aa bb)
+        | otherwise -> Nothing
+  _ -> Nothing
+
+arithOf :: Int -> Term -> Maybe AExpr
+arithOf d = \case
+  CLit (LitInt n) -> Just (AConst n)
+  CVar i -> Just (AVar (d - 1 - i))
+  t@CApp {} -> arithApp t
+  _ -> Nothing
+  where
+    arithApp t = case spineOfTerm t of
+      (CGlob fg, args) -> do
+        let ex = [a | (Expl, a) <- args]
+            bin f = do
+              (a, b) <- last2 ex
+              f <$> arithOf d a <*> arithOf d b
+            un f = do
+              a <- lastMaybe ex
+              f <$> arithOf d a
+        case () of
+          _
+            | isTrustedPreludeName ["addInt"] fg -> bin AAdd
+            | isTrustedPreludeName ["subInt"] fg -> bin ASub
+            | isTrustedPreludeName ["mulInt"] fg -> mulExpr ex
+            | isTrustedPreludeName ["negInt"] fg -> un ANeg
+            | isTrustedPreludeName ["natToInt", "natOfInt", "intToNat"] fg -> un id
+            | otherwise -> Nothing
+      _ -> Nothing
+
+    mulExpr ex = do
+      (a, b) <- last2 ex
+      aa <- arithOf d a
+      bb <- arithOf d b
+      case (aa, bb) of
+        (AConst k, x) -> Just (scaleA k x)
+        (x, AConst k) -> Just (scaleA k x)
+        _ -> Nothing
+
+proveLt :: Set Int -> [AFact] -> Int -> Term -> Term -> Bool
+proveLt natLvls facts d lhs rhs =
+  case (arithOf d lhs, arithOf d rhs) of
+    (Just l, Just r) ->
+      let diff = simplifyA natLvls facts (ASub r l)
+       in case lowerBoundExpr natLvls facts diff of
+            Just lb -> lb >= 1
+            Nothing -> False
+    _ -> False
+
+proveEq :: Set Int -> [AFact] -> Int -> Term -> Term -> Bool
+proveEq natLvls facts d lhs rhs
+  | lhs == rhs = True
+  | otherwise = case (arithOf d lhs, arithOf d rhs) of
+      (Just l, Just r) ->
+        case linOf (simplifyA natLvls facts (ASub l r)) of
+          Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
+          Nothing -> False
+      _ -> False
+
+proveNonNeg :: Set Int -> [AFact] -> Int -> Term -> Bool
+proveNonNeg natLvls facts d t = case arithOf d t of
+  Just a -> case lowerBoundExpr natLvls facts (simplifyA natLvls facts a) of
+    Just lb -> lb >= 0
+    Nothing -> False
+  Nothing -> False
+
+simplifyA :: Set Int -> [AFact] -> AExpr -> AExpr
+simplifyA natLvls facts = go
+  where
+    go = \case
+      AScale k a -> case go a of
+        AConst n -> AConst (k * n)
+        a'
+          | k == 0 -> AConst 0
+          | k == 1 -> a'
+          | k == -1 -> ANeg a'
+          | otherwise -> AScale k a'
+      AAdd a b -> foldConst AAdd (+) (go a) (go b)
+      ASub a b -> foldConst ASub (-) (go a) (go b)
+      ANeg a -> case go a of
+        AConst k -> AConst (negate k)
+        a' -> ANeg a'
+      AMax a b -> simplifyMax (go a) (go b)
+      AMin a b -> simplifyMin (go a) (go b)
+      other -> other
+
+    simplifyMax a b = case (a, b) of
+      (AConst x, AConst y) -> AConst (max x y)
+      (AConst 0, x)
+        | Just lb <- lowerBoundRaw natLvls facts x, lb >= 0 -> x
+        | Just ub <- upperBoundRaw natLvls facts x, ub <= 0 -> AConst 0
+      (x, AConst 0)
+        | Just lb <- lowerBoundRaw natLvls facts x, lb >= 0 -> x
+        | Just ub <- upperBoundRaw natLvls facts x, ub <= 0 -> AConst 0
+      _ -> AMax a b
+
+    simplifyMin a b = case (a, b) of
+      (AConst x, AConst y) -> AConst (min x y)
+      _ -> AMin a b
+
+    foldConst ctor op a b = case (a, b) of
+      (AConst x, AConst y) -> AConst (op x y)
+      _ -> ctor a b
+
+scaleA :: Integer -> AExpr -> AExpr
+scaleA k a
+  | k == 0 = AConst 0
+  | k == 1 = a
+  | k == -1 = ANeg a
+  | otherwise = AScale k a
+
+lowerBoundExpr :: Set Int -> [AFact] -> AExpr -> Maybe Integer
+lowerBoundExpr natLvls facts expr =
+  case linOf expr >>= lowerBoundLin natLvls facts of
+    Just lb -> Just lb
+    Nothing -> lowerBound natLvls facts expr
+
+lowerBoundLin :: Set Int -> [AFact] -> ALin -> Maybe Integer
+lowerBoundLin natLvls facts (ALin c coeffs) =
+  foldM addCoeff c (Map.toList coeffs)
+  where
+    addCoeff acc (v, k)
+      | k == 0 = Just acc
+      | k > 0 = (+ acc) . (* k) <$> lowerOf (varBounds natLvls facts v)
+      | otherwise = (+ acc) . (* k) <$> upperOf (varBounds natLvls facts v)
+
+lowerBound :: Set Int -> [AFact] -> AExpr -> Maybe Integer
+lowerBound natLvls facts = lowerOf . boundsA natLvls facts
+
+lowerBoundRaw :: Set Int -> [AFact] -> AExpr -> Maybe Integer
+lowerBoundRaw natLvls facts = lowerOf . boundsRaw natLvls facts
+
+upperBoundRaw :: Set Int -> [AFact] -> AExpr -> Maybe Integer
+upperBoundRaw natLvls facts = upperOf . boundsRaw natLvls facts
+
+boundsA :: Set Int -> [AFact] -> AExpr -> ABounds
+boundsA natLvls facts = boundsRaw natLvls facts . simplifyA natLvls facts
+
+boundsRaw :: Set Int -> [AFact] -> AExpr -> ABounds
+boundsRaw natLvls facts expr = case expr of
+  AConst k -> ABounds (Just k) (Just k)
+  AVar v -> varBounds natLvls facts v
+  AScale k a -> scaleBounds k (boundsRaw natLvls facts a)
+  AAdd a b -> addBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
+  ASub a b -> subBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
+  ANeg a -> negBounds (boundsRaw natLvls facts a)
+  AMax a b -> maxBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
+  AMin a b -> minBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
+
+varBounds :: Set Int -> [AFact] -> Int -> ABounds
+varBounds natLvls facts v =
+  let start = ABounds (if Set.member v natLvls then Just 0 else Nothing) Nothing
+   in foldl' addFact start facts
+  where
+    addFact b = \case
+      AFact ACmpLe (AVar x) (AConst c) | x == v -> tightenUpper c b
+      AFact ACmpLe (AConst c) (AVar x) | x == v -> tightenLower c b
+      AFact ACmpLt (AVar x) (AConst c) | x == v -> tightenUpper (c - 1) b
+      AFact ACmpLt (AConst c) (AVar x) | x == v -> tightenLower (c + 1) b
+      AFact ACmpEq (AVar x) (AConst c) | x == v -> tightenUpper c (tightenLower c b)
+      AFact ACmpEq (AConst c) (AVar x) | x == v -> tightenUpper c (tightenLower c b)
+      _ -> b
+
+addBounds, subBounds :: ABounds -> ABounds -> ABounds
+addBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds ((+) <$> l1 <*> l2) ((+) <$> u1 <*> u2)
+subBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds ((-) <$> l1 <*> u2) ((-) <$> u1 <*> l2)
+
+negBounds :: ABounds -> ABounds
+negBounds (ABounds l u) = ABounds (negate <$> u) (negate <$> l)
+
+scaleBounds :: Integer -> ABounds -> ABounds
+scaleBounds k b@(ABounds l u)
+  | k == 0 = ABounds (Just 0) (Just 0)
+  | k > 0 = ABounds ((* k) <$> l) ((* k) <$> u)
+  | otherwise = scaleBounds (negate k) (negBounds b)
+
+maxBounds, minBounds :: ABounds -> ABounds -> ABounds
+maxBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds (maxKnown l1 l2) (maxBoth u1 u2)
+minBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds (minBoth l1 l2) (minKnown u1 u2)
+
+lowerOf, upperOf :: ABounds -> Maybe Integer
+lowerOf (ABounds l _) = l
+upperOf (ABounds _ u) = u
+
+tightenLower :: Integer -> ABounds -> ABounds
+tightenLower x (ABounds l u) = ABounds (maxKnown l (Just x)) u
+
+tightenUpper :: Integer -> ABounds -> ABounds
+tightenUpper x (ABounds l u) = ABounds l (minKnown u (Just x))
+
+maxKnown, minKnown, maxBoth, minBoth :: Maybe Integer -> Maybe Integer -> Maybe Integer
+maxKnown (Just a) (Just b) = Just (max a b)
+maxKnown a Nothing = a
+maxKnown Nothing b = b
+
+minKnown (Just a) (Just b) = Just (min a b)
+minKnown a Nothing = a
+minKnown Nothing b = b
+
+maxBoth (Just a) (Just b) = Just (max a b)
+maxBoth _ _ = Nothing
+
+minBoth (Just a) (Just b) = Just (min a b)
+minBoth _ _ = Nothing
+
+linOf :: AExpr -> Maybe ALin
+linOf = \case
+  AConst k -> Just (ALin k Map.empty)
+  AVar v -> Just (ALin 0 (Map.singleton v 1))
+  AScale k a -> scaleLin k <$> linOf a
+  AAdd a b -> addLin <$> linOf a <*> linOf b
+  ASub a b -> subLin <$> linOf a <*> linOf b
+  ANeg a -> scaleLin (-1) <$> linOf a
+  _ -> Nothing
+
+addLin, subLin :: ALin -> ALin -> ALin
+addLin (ALin c1 m1) (ALin c2 m2) = ALin (c1 + c2) (Map.filter (/= 0) (Map.unionWith (+) m1 m2))
+subLin x y = addLin x (scaleLin (-1) y)
+
+scaleLin :: Integer -> ALin -> ALin
+scaleLin k (ALin c m) = ALin (k * c) (Map.filter (/= 0) (Map.map (k *) m))
+
+lastMaybe :: [a] -> Maybe a
+lastMaybe [] = Nothing
+lastMaybe xs = Just (last xs)
+
+last2 :: [a] -> Maybe (a, a)
+last2 xs = case reverse xs of
+  b : a : _ -> Just (a, b)
+  _ -> Nothing
+
+spineOfTerm :: Term -> (Term, [(Icit, Term)])
+spineOfTerm = go []
+  where
+    go acc (CApp ic f a) = go ((ic, a) : acc) f
+    go acc f = (f, acc)
 
 checkAgainstSig :: Maybe Text -> Value -> [Binder] -> Expr -> Span -> CheckM Term
 checkAgainstSig retName sigTy binders body sp = do

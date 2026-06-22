@@ -1,0 +1,18 @@
+-- §15.11: explicit arithmetic measures certify non-structural Int loops.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+replicateStyle : Int -> Int
+let replicateStyle n decreases n =
+    if leInt n 0 then 0 else replicateStyle (subInt n 1)
+
+roomsStyle : Int -> Int
+let roomsStyle tries decreases tries by ltInt =
+    if leInt tries 0 then 0 else roomsStyle (subInt tries 1)
+
+lexStyle : Int -> Int -> Int
+let lexStyle fuel n decreases (fuel, n) =
+    if leInt fuel 0 then 0
+    else if leInt n 0 then 0
+    else lexStyle fuel (subInt n 1)

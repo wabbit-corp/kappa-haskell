@@ -1,0 +1,19 @@
+-- §15.11: user helpers and custom relations are not trusted merely by shape.
+--! assertNoErrors
+--! assertWarningCount 2
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+fakeSub : Int -> Int -> Int
+let fakeSub x y = x
+
+fakeLt : Int -> Int -> Bool
+let fakeLt x y = True
+
+badHelper : Int -> Int
+let badHelper n decreases n =
+    if leInt n 0 then 0 else badHelper (fakeSub n 1)
+
+badRelation : Int -> Int
+let badRelation n decreases n by fakeLt =
+    if leInt n 0 then 0 else badRelation (subInt n 1)
