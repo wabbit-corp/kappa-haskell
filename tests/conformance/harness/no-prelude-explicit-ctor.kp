@@ -1,0 +1,8 @@
+--! assertNoErrors
+
+@NoPrelude module no_prelude_explicit_ctor
+
+import std.prelude.(type Option(..), type Integer)
+
+x : Option Integer
+let x = Some 1

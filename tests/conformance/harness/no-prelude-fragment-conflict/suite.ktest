@@ -1,0 +1,3 @@
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_MODULE_ATTRIBUTE_CONFLICT

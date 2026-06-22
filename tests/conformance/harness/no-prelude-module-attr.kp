@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticMatch implicit prelude is disabled
+
+@NoPrelude module no_prelude_module_attr
+
+x : Bool
+let x = True

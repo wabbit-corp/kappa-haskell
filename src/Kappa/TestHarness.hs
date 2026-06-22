@@ -31,7 +31,7 @@ module Kappa.TestHarness
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM)
 import Data.Char (isDigit)
-import Data.List (foldl', isSuffixOf, sort, sortOn)
+import Data.List (isPrefixOf, isSuffixOf, sort, sortOn)
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -47,7 +47,7 @@ import Kappa.Explain (codeNames, explainExists)
 import Kappa.Interp (RunResult (..), runMainCapturedValue)
 import Kappa.Lexer (lexSource)
 import Kappa.Parser (parseModule)
-import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, compileFilesWithConfig, importScopeFor, loadSourceFile, moduleNameRelTo)
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileFilesIn, compileFilesWithConfig, importScopeForWithConfig, loadSourceFile, moduleNameRelTo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Regex (Regex, compileRegex, regexSearch)
 import Kappa.Resolve (FixityEnv, defaultFixities, fixitiesOf, resolveModule)
@@ -55,7 +55,7 @@ import Kappa.Source (ModuleName (..), Pos (..), Span (..))
 import Kappa.Syntax
 import Kappa.Token (Located (..), StrFragment (..), StringLit (..), Token (..))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (makeRelative, takeDirectory, (</>))
 import System.Timeout (timeout)
 
 -- ── Public types ─────────────────────────────────────────────────────
@@ -305,6 +305,8 @@ parseDirective allLines lno body =
         -- is decided once the effective mode is known
         [p] -> cfg "backend" p (SBackend p)
         _ -> bad "malformed 'backend' directive"
+      "noPrelude" | null args ->
+        cfg "implicit_prelude" "false" (SUnsafeConfig (\c -> c {implicitPrelude = False}))
       "entry" -> case args of
         [q] -> cfg "entry" q (SEntry q)
         _ -> bad "malformed 'entry' directive"
@@ -780,40 +782,7 @@ runSuiteDir dir = guardExceptions dir $ do
     if hasKtest
       then Just . (,) ktestPath <$> readSourceFile ktestPath
       else pure Nothing
-  runSuite dir dir (orderByImports (zip files srcs)) mktest preDiags
-
--- | Order suite files so that imported modules compile first (light
--- textual scan of @module@ headers and @import@ lines; cycles keep the
--- original order).
-orderByImports :: [(FilePath, Text)] -> [(FilePath, Text)]
-orderByImports files
-  | length files < 2 = files
-  | otherwise = go [] (map describe files)
-  where
-    describe f@(_, src) = (headerModule src, importedModules src, f)
-    allMods = mapMaybe (\(m, _, _) -> m) (map describe files)
-    go _ [] = []
-    go done rest =
-      case break ready rest of
-        (_, []) -> [f | (_, _, f) <- rest] -- cyclic or unresolvable: keep order
-        (pre, (m, _, f) : post) ->
-          f : go (maybe done (: done) m) (pre ++ post)
-      where
-        ready (_, imps, _) =
-          all (\i -> i `elem` done || i `notElem` allMods) imps
-    headerModule src =
-      case [ws | l <- take 10 (T.lines src), let ws = T.words l, "module" `elem` ws] of
-        (ws : _) -> case drop 1 (dropWhile (/= "module") ws) of
-          (m : _) -> Just m
-          [] -> Nothing
-        [] -> Nothing
-    importedModules src =
-      [ T.dropWhileEnd (== '.') (T.takeWhile (\c -> c /= '*' && c /= '(' && c /= ' ') m)
-      | l <- T.lines src
-      , Just rest0 <- [T.stripPrefix "import " (T.stripStart l)]
-      , let m = T.strip rest0
-      , not (T.null m)
-      ]
+  runSuite dir dir (zip files srcs) mktest preDiags
 
 guardExceptions :: FilePath -> IO TestReport -> IO TestReport
 guardExceptions label act = do
@@ -860,39 +829,48 @@ runSuiteWith packageMode label root files mktest preDiags = do
                   | k <- dedup (map fst configPairs)
                   , length (dedup [v | (k', v) <- configPairs, k' == k]) > 1
                   ]
+              runArgsConfigured = any ((== "runArgs") . fst) configPairs
               -- §4.2: package mode defaults all unsafe/debug settings to
               -- false; script mode MAY default them to true (this
               -- implementation does). Explicit allow_* directives then
               -- layer on top of that base.
               unsafeBase = if scripted then scriptUnsafeConfig else defaultUnsafeConfig
               unsafeCfg = foldl' (\c f -> f c) unsafeBase [f | (_, _, SUnsafeConfig f) <- scanned]
+              mode = case modes of m : _ -> m; [] -> "check"
           -- §T.4: a stdinFile path must name a readable suite-relative
           -- file (§T.8: an unreadable required file is a harness error).
-          missingStdin <- filterM (fmap not . doesFileExist . (root </>) . T.unpack) stdinFiles
+          missingStdin <-
+            if mode == "run"
+              then filterM (fmap not . doesFileExist . (root </>) . T.unpack) stdinFiles
+              else pure []
           case () of
             _ | Just k <- configConflict ->
                   pure (TestReport label HarnessError ("configuration key '" <> k <> "' is specified more than once with conflicting values; the suite is ill-formed (§T.6)"))
               | length (dedup modes) > 1 ->
                   pure (TestReport label HarnessError "conflicting 'mode' directives (§T.6)")
+              | runArgsConfigured && mode /= "run" ->
+                  pure (TestReport label HarnessError "'runArgs' is valid only for mode run (§T.4)")
+              | not (null stdinFiles) && mode /= "run" ->
+                  pure (TestReport label HarnessError "'stdinFile' is valid only for mode run (§T.4)")
               | (p : _) <- missingStdin ->
                   pure (TestReport label HarnessError ("stdinFile '" <> p <> "' is not a readable suite file (§T.4, §T.8)"))
               -- a 'requires capability stageDumps' gate (an SUnsupported)
               -- is honored first, so a *gated* assertStageDump is
               -- unsupported; an *un-gated* one names a checkpoint this
               -- implementation cannot serve and is ill-formed (§T.5.3).
-              | not (null unsups) ->
-                  pure (TestReport label Unsupported (head unsups))
+              | (u : _) <- unsups ->
+                  pure (TestReport label Unsupported u)
               | (c : _) <- stageDumps ->
                   pure (TestReport label HarnessError ("assertStageDump names checkpoint '" <> c <> "', which this implementation does not provide; gate with 'requires capability stageDumps' for an unsupported result (§T.5.3, §T.8)"))
               | otherwise -> do
-                  let mode = case modes of m : _ -> m; [] -> "check"
                   -- §T.4: 'backend <profile>' selects the backend for
                   -- 'compile' and 'run' tests; a foreign profile makes
                   -- those tests unsupported, while a default-mode
                   -- 'check' test is unaffected by backend selection
-                  if not (null backends) && mode `elem` ["compile", "run"]
-                    then pure (TestReport label Unsupported ("backend " <> head backends <> " is not provided"))
-                    else
+                  case backends of
+                    (b : _) | mode `elem` ["compile", "run"] ->
+                      pure (TestReport label Unsupported ("backend " <> b <> " is not provided"))
+                    _ ->
                       if not (null entries) && mode /= "run"
                         then pure (TestReport label HarnessError "'entry' is valid only for mode run (§T.4)")
                         else executeSuite unsafeCfg (packageMode && not scripted) label root files mode entries asserts preDiags
@@ -904,6 +882,11 @@ data RunInfo = RunInfo
   , riStderr :: !Text
   , riExitCode :: !Int
   }
+
+isPreludeInternalDiagnostic :: Diagnostic -> Bool
+isPreludeInternalDiagnostic d =
+  let f = spanFile (dPrimary d)
+   in f == "<std.prelude>" || "<std." `isPrefixOf` f
 
 executeSuite ::
   UnsafeConfig -> Bool -> FilePath -> FilePath -> [(FilePath, Text)] -> Text -> [Text] ->
@@ -926,10 +909,9 @@ executeSuite unsafeCfg packageMode label root files mode entries asserts preDiag
         if mode == "compile"
           then cu0 {cuTrace = cuTrace cu0 ++ [("lowerKBackendIR", "module") | ("lowerKCore", "module") <- cuTrace cu0]}
           else cu0
-      filePaths = map fst files
       allDiags = preDiags ++ cuDiags cu
-      preludeErrs = [d | d <- allDiags, isError d, spanFile (dPrimary d) `notElem` filePaths]
-      diags = [d | d <- allDiags, spanFile (dPrimary d) `elem` filePaths]
+      preludeErrs = [d | d <- allDiags, isError d, isPreludeInternalDiagnostic d]
+      diags = [d | d <- allDiags, not (isPreludeInternalDiagnostic d)]
   if not (null preludeErrs)
     then pure (TestReport label HarnessError "prelude failed to compile (implementation bug)")
     else do
@@ -1149,8 +1131,7 @@ checkAssertion compileWith root path src files cu diags mRun = \case
           Left err -> pure (AssertHarnessError ("assertDiagnosticFixCompiles: " <> err))
           Right files' ->
             let cu' = compileWith files'
-                fps = map fst files'
-                ds' = [d | d <- cuDiags cu', spanFile (dPrimary d) `elem` fps]
+                ds' = [d | d <- cuDiags cu', not (isPreludeInternalDiagnostic d)]
              in require
                   (not (hasErrors ds'))
                   ( "applying fix " <> tshow (dfTitle fix) <> " still leaves errors: "
@@ -1620,7 +1601,7 @@ assertType path src cu nm tyExpr =
     -- The probe sees the same unqualified scope as the origin file:
     -- prelude plus that file's imports over the accumulated state.
     probeScope = case originParse of
-      Right (m, _) -> importScopeFor st m
+      Right (m, _) -> importScopeForWithConfig (csUnsafe st) st m
       Left _ -> csScope st
     elabExpected =
       case parseModule "<assertType>" (probeName <> " : " <> tyExpr <> "\n") of
@@ -1999,19 +1980,40 @@ applyFixToFiles files edits = foldl' step (Right files) (byFile edits)
           Right [(fp, if fp == f then src' else s) | (fp, s) <- fs]
     applyEdits src es = do
       spans <- mapM (\e -> (,) <$> offsetsOf src (seRange e) <*> pure (seReplacement e)) es
+      let ascending = sortOn (\((s, _), _) -> s) spans
+      validateNonOverlapping ascending
       -- descending by start offset, so splices keep earlier indices valid
-      let ordered = reverse (sortOn (\((s, _), _) -> s) spans)
+      let ordered = reverse ascending
       pure (foldl' splice src ordered)
     splice s ((a, b), repl) = T.take a s <> repl <> T.drop b s
+    validateNonOverlapping [] = Right ()
+    validateNonOverlapping [((a, b), _)]
+      | a <= b = Right ()
+      | otherwise = Left "fix edit range end precedes start"
+    validateNonOverlapping (((a, b), _) : rest@(((c, _), _) : _))
+      | a > b = Left "fix edit range end precedes start"
+      | c < b = Left "fix contains overlapping edits"
+      | otherwise = validateNonOverlapping rest
     -- 1-based (line, col) span → (startOffset, endOffset) char indices.
     offsetsOf src sp =
       let Pos sl sc = spanStart sp
           Pos el ec = spanEnd sp
-       in (,) <$> offsetOf src sl sc <*> offsetOf src el ec
+       in do
+            a <- offsetOf src sl sc
+            b <- offsetOf src el ec
+            if a <= b
+              then Right (a, b)
+              else Left "fix edit range end precedes start"
     offsetOf src ln col =
       let ls = T.splitOn "\n" src
        in if ln >= 1 && ln <= length ls
-            then Right (sum (map ((+ 1) . T.length) (take (ln - 1) ls)) + (col - 1))
+            then
+              case drop (ln - 1) ls of
+                (line : _) ->
+                  if col >= 1 && col <= T.length line + 1
+                    then Right (sum (map ((+ 1) . T.length) (take (ln - 1) ls)) + (col - 1))
+                    else Left "fix edit range falls outside the source file"
+                [] -> Left "fix edit range falls outside the source file"
             else Left "fix edit range falls outside the source file"
 
 -- | @x-assertTraitMembers Trait m1, m2@ (compatibility extension):
@@ -2244,13 +2246,16 @@ isSuiteRoot topLevel dir = do
   pure (hasKtest || hasMain || direct)
 
 collectKp :: FilePath -> IO [FilePath]
-collectKp dir = do
-  entries <- sort <$> listDirectory dir
-  let paths = [dir </> e | e <- entries]
-  dirs <- filterM doesDirectoryExist paths
-  let files = [p | p <- paths, ".kp" `isSuffixOf` p, p `notElem` dirs]
-  rest <- concat <$> mapM collectKp dirs
-  pure (files ++ rest)
+collectKp root = sortOn relKey <$> go root
+  where
+    relKey = map (\c -> if c == '\\' then '/' else c) . makeRelative root
+    go dir = do
+      entries <- sort <$> listDirectory dir
+      let paths = [dir </> e | e <- entries]
+      dirs <- filterM doesDirectoryExist paths
+      let files = [p | p <- paths, ".kp" `isSuffixOf` p, p `notElem` dirs]
+      rest <- concat <$> mapM go dirs
+      pure (files ++ rest)
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show

@@ -5,28 +5,7 @@ Genuine ambiguities, contradictions, and implementation burdens found in
 Citations are to spec sections; "evidence" points at code or fixtures in
 this repository where the issue had to be confronted.
 
-## 1. §28.1: the prelude cannot be disabled, but black-box testing wants bare environments
-
-§28.1 mandates that *every* source file is processed as if it imports
-`std.prelude.*` plus a fixed unqualified constructor subset, and offers
-no opt-out. Appendix T (§T.4) likewise defines no configuration
-directive to suppress the prelude. Consequences:
-
-* fixtures that probe pure name-resolution or duplicate-declaration
-  behaviour always race against ~100 ambient prelude names (a fixture
-  defining `map` or `(==)` is testing shadowing whether it wants to or
-  not);
-* a conforming implementation cannot even be *asked* to present a bare
-  environment, although several §T.10 hygiene tests are most meaningful
-  in one.
-
-Evidence: `tests/conformance/names/duplicate.kp` must use names not
-exported by the prelude for its `assertErrorCount`-style expectations
-to be portable, because whether a *user* redefinition of a prelude name
-is a duplicate, a shadow, or an ambiguity at use sites is decided by
-§7/§8 scope rules that never address the implicit import specifically.
-
-## 2. §5.5.1: longest-match-first makes `[1]>x` lex as `]>`
+## 1. §5.5.1: longest-match-first makes `[1]>x` lex as `]>`
 
 §5.5.1 reserves `<[` and `]>` as single tokens and states they are
 recognized "in preference to `<` plus `[` and `]` plus `>`"
@@ -39,7 +18,7 @@ this nor requires a tailored diagnostic. Evidence: the lexer here
 follows the rule literally (`Kappa.Lexer` longest-match table) and the
 misparse reproduces.
 
-## 3. §6.3.5 / §7.1.1 / §9: the soft keyword `type` needs unbounded lookahead
+## 2. §6.3.5 / §7.1.1 / §9: the soft keyword `type` needs unbounded lookahead
 
 `type` is simultaneously:
 
@@ -64,7 +43,7 @@ SPEC_COVERAGE.md §6.3.5). The remaining lookahead observation about the
 three roles of `type` stands as a spec-ergonomics note, but no
 normative form is unsupported on its account.
 
-## 4. §16.1.3 vs §16.4.2: short-circuit operators are "ordinary terms", yet flow typing must see through them
+## 3. §16.1.3 vs §16.4.2: short-circuit operators are "ordinary terms", yet flow typing must see through them
 
 §16.1.3 defines `(&&)` and `(||)` as ordinary prelude functions over
 `Thunk Bool` — first-class values, shadowable, passable. §16.4.2 then
@@ -79,7 +58,7 @@ read as if written under different assumptions. (This implementation
 sidesteps it only because flow typing is unimplemented —
 SPEC_COVERAGE.md §16.4.)
 
-## 5. §28.2.1 + §16.4.4: checked subtraction makes ordinary `x - y` unwritable without flow facts
+## 4. §28.2.1 + §16.4.4: checked subtraction makes ordinary `x - y` unwritable without flow facts
 
 `(-)` requires an implicit proof `(@_ : subDefined x y = True)`
 (§28.2.1). For `Integer`, `subDefined x y = True` definitionally, so
@@ -117,7 +96,7 @@ convertibility tweak. Total saturating
 `natOfInt (subInt (natToInt a) (natToInt b))` compiles today but changes
 checked-subtraction semantics.
 
-## 6. §3.1.2 / §3.1.4: diagnostic code names are implementation-defined, so black-box suites do not transfer
+## 5. §3.1.2 / §3.1.4: diagnostic code names are implementation-defined, so black-box suites do not transfer
 
 §3.1.2 makes codes stable but implementation-chosen; §3.1.4 pins only a
 small table of portable aliases. Everything else (`E_UNRESOLVED_NAME`
@@ -130,7 +109,7 @@ Evidence: a large slice of the 509 external-corpus failures
 (`tests/external-results.md`, "foreign diagnostic-code naming") match
 behaviour but fail purely on the asserted code name.
 
-## 7. §31.3: variant member identity by "canonical rendering" is not pinned enough for interop
+## 6. §31.3: variant member identity by "canonical rendering" is not pinned enough for interop
 
 §31.3 keys variant runtime representation to stable member identities
 derived from the member *type*, with alias-transparent identity. But
@@ -144,23 +123,7 @@ tag. Evidence: this implementation had to invent a rendering
 variant tags") and external fixtures still cannot check it
 portably.
 
-## 8. §T.2/§T.6: directory suites leave compilation order and failure scope unspecified
-
-§T.2 says a directory suite's "compilation roots are all `.kp` files
-under the suite root", and §T.6 distributes assertions over files — but
-nothing specifies (a) the order in which roots are compiled, (b)
-whether they form one program or independent compilations, or (c)
-whether a diagnostic in one file should count against suite-level
-`assertErrorCount` totals from another file's perspective. With
-intra-suite imports the order is forced topologically, but for
-non-importing files assertion semantics differ between "compile all
-together" and "compile sequentially". Evidence: this harness had to
-invent a policy — single program, import-order topological compile,
-suite-level directive merge (`Kappa.TestHarness`, TESTING.md, commit
-`dd427f0`) — with no spec text to appeal to, and external directory
-suites only began passing once that particular policy was chosen.
-
-## 9. §6.1.3 / §28.2: two float equalities with the surprising one on `(==)`
+## 7. §6.1.3 / §28.2: two float equalities with the surprising one on `(==)`
 
 §6.1.3 fixes `Double`'s `Eq` instance to raw-bit equality and provides
 IEEE numeric equality separately as `floatEq` (§28.2). So in Kappa,
@@ -174,7 +137,7 @@ float equality portably will silently encode one convention or the
 other. Evidence: `Kappa.Prelude` exposes both `eqDouble` (raw-bit,
 backing `Eq Double`) and `floatEq`, per the letter of the spec.
 
-## 10. §5.2 vs juxtaposition application: soft keywords after an expression are inherently ambiguous
+## 8. §5.2 vs juxtaposition application: soft keywords after an expression are inherently ambiguous
 
 §5.2 (normative) requires that implementations "permit their use as
 ordinary identifiers in contexts where a keyword is not syntactically
@@ -203,7 +166,7 @@ enumerated in SPEC_COVERAGE.md §5.2. Evidence:
 `Kappa.Parser` (`stopKeywords` vs `queryStopKeywords` /
 `isStopKeywordAt`).
 
-## 11. §21.6 vs §21.2: the convenience reflection queries are `Elab`-typed, but corpus programs use them as plain values
+## 9. §21.6 vs §21.2: the convenience reflection queries are `Elab`-typed, but corpus programs use them as plain values
 
 §21.6 types the convenience queries in `Elab`
 (`defEqSyntax : … -> Elab Bool`,
@@ -232,7 +195,7 @@ no generic meta-to-object coercion exists. Evidence:
 `Kappa.Check.elabReflQuery`,
 `tests/conformance/macros/reflection-queries.kp`.
 
-## 12. §5.4: multi-line operator continuations at constant deeper indentation are undefined
+## 10. §5.4: multi-line operator continuations at constant deeper indentation are undefined
 
 §5.4 says that lines indented deeper than a logical line's first token
 "form a continuation", but it never defines how *several* continuation
@@ -254,7 +217,7 @@ makes it an application continuation). A normative continuation rule —
 one logical line extends until a line at or below its starting column —
 would settle all three.
 
-## 13. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
+## 11. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
 
 §3.1.5A defines a full `ProvenanceFrame` record (id, kind, step, query,
 inputs, inputObjects, output, generatedObject, explanation) and requires
@@ -281,7 +244,7 @@ chain-reconstruction query — `Kappa.Core.Term` carries no origin field.
 Evidence: `Kappa.Check` `EBang` (`desugared-from` related origin);
 `tests/conformance/diagnostics`.
 
-## 14. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
+## 12. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
 
 The `suppressed` field (§3.1.1, §3.1.10, §3.1.11) is implemented and is
 populated wherever this implementation drops a downstream diagnostic that
@@ -301,7 +264,7 @@ the upstream-collapse cases produce a single diagnostic with nothing to
 summarize. Evidence: `Kappa.Pipeline.attachSuppressed`,
 `tests/conformance/diagnostics/suppressed-cascade.kp`.
 
-## 15. §28.2.2: algebraic numeric law members are not modelled as proofs
+## 13. §28.2.2: algebraic numeric law members are not modelled as proofs
 
 §28.2.2 declares `AdditiveMonoid`, `AdditiveGroup`, `MultiplicativeMonoid`,
 `Semiring`, `Ring`, `EuclideanSemiring`, `FieldLike`, `OrderedAdditive`,
@@ -336,7 +299,7 @@ its equation in a later proof*. Evidence:
 `tests/conformance/prelude/algebraic_numeric_exclusions.kp`,
 `Kappa.Prelude` (the algebraic-trait block).
 
-## 16. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
+## 14. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
 
 * `Iterator` (§28.2) declares `next : (1 this : it) -> Option (item :
   Item, rest : it)`, referencing the associated member `Item` inside a
@@ -385,7 +348,7 @@ In every case the *name* is a resolvable prelude export, satisfying the
 §28.2 declaration MUSTs; only the proof-carrying members are omitted.
 Evidence: `Kappa.Prelude` (trait declarations near `Iterator`).
 
-## 17. §28.2: proof-helper bodies still use erased primitives instead of equality matching
+## 15. §28.2: proof-helper bodies still use erased primitives instead of equality matching
 
 The §28.2 proof/equality helpers `absurd`, `subst`, `sym`, `trans`,
 `cong`, `pathInd`, `unsafeAssertProof`, and `witness` are all declared as
@@ -406,7 +369,7 @@ cannot be inferred from surrounding type information. Evidence:
 `Kappa.Prelude` (proof-helper block), `tests/conformance/prelude/`
 `proof_helpers_resolve.kp`, `tests/conformance/prelude/proof_helpers_use.kp`.
 
-## 18. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
+## 16. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
 
 The §4 unsafe/debug facilities are now recognized and gated by the §4.2
 build configuration (`UnsafeConfig` in `Kappa.Check`, all `allow_*`

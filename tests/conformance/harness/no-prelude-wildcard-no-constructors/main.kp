@@ -1,0 +1,6 @@
+@NoPrelude module main
+
+import std.prelude.*
+
+x : Option Integer
+let x = Some 1

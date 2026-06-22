@@ -19,7 +19,7 @@ import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
 import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
-import Kappa.Check (AuditRecord (..), CheckState (..), defaultUnsafeConfig)
+import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), defaultUnsafeConfig)
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
 import Kappa.Eval (Globals (..))
@@ -38,10 +38,16 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    ["check", path] -> cmdCheck Human path
-    ["check", "--json", path] -> cmdCheck Json path
-    ["run", path] -> cmdRun Human path
-    ["run", "--json", path] -> cmdRun Json path
+    ["check", path] -> cmdCheck defaultUnsafeConfig Human path
+    ["check", "--json", path] -> cmdCheck defaultUnsafeConfig Json path
+    ["check", "--no-implicit-prelude", path] -> cmdCheck noImplicitPreludeConfig Human path
+    ["check", "--json", "--no-implicit-prelude", path] -> cmdCheck noImplicitPreludeConfig Json path
+    ["check", "--no-implicit-prelude", "--json", path] -> cmdCheck noImplicitPreludeConfig Json path
+    ["run", path] -> cmdRun defaultUnsafeConfig Human path
+    ["run", "--json", path] -> cmdRun defaultUnsafeConfig Json path
+    ["run", "--no-implicit-prelude", path] -> cmdRun noImplicitPreludeConfig Human path
+    ["run", "--json", "--no-implicit-prelude", path] -> cmdRun noImplicitPreludeConfig Json path
+    ["run", "--no-implicit-prelude", "--json", path] -> cmdRun noImplicitPreludeConfig Json path
     ["test", path] -> cmdTest runTestPath path
     ["test", "--suite", path] -> cmdTest runTestSuitePath path
     ["explain", code] -> cmdExplain (T.pack code)
@@ -50,8 +56,9 @@ main = do
     _ -> do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
-          <> " | kappa build [--emit-c] [-o OUT] [--cc DRIVER] FILE"
-          <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--update] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
+          <> " | kappa (check|run) [--json] [--no-implicit-prelude] PATH"
+          <> " | kappa build [--emit-c] [--no-implicit-prelude] [-o OUT] [--cc DRIVER] FILE"
+          <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--update] [--no-implicit-prelude] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
       exitFailure
 
@@ -59,6 +66,9 @@ main = do
 -- default surface (§3.1.8); @--json@ selects the machine-readable
 -- producer (§3.1.1).
 data DiagFormat = Human | Json
+
+noImplicitPreludeConfig :: UnsafeConfig
+noImplicitPreludeConfig = defaultUnsafeConfig {implicitPrelude = False}
 
 -- | Emit one compilation unit's diagnostics in the selected format.
 -- §3.1.1: in JSON mode the whole batch is one JSON array (one object per
@@ -79,18 +89,18 @@ cmdExplain cf = case lookupCode cf of
       TIO.hPutStrLn stderr ("error: unknown diagnostic code or family '" <> cf <> "'")
       exitFailure
 
-cmdCheck :: DiagFormat -> FilePath -> IO ()
-cmdCheck fmt path = do
+cmdCheck :: UnsafeConfig -> DiagFormat -> FilePath -> IO ()
+cmdCheck cfg fmt path = do
   (src, preDiags) <- loadSourceFile path
-  let cu0 = compileSourceWithPrelude path src
+  let cu0 = compileFilesWithConfig cfg False "." [(path, src)]
       cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
   emitDiags fmt (cuDiags cu)
   if hasErrors (cuDiags cu) then exitFailure else exitSuccess
 
-cmdRun :: DiagFormat -> FilePath -> IO ()
-cmdRun fmt path = do
+cmdRun :: UnsafeConfig -> DiagFormat -> FilePath -> IO ()
+cmdRun cfg fmt path = do
   (src, preDiags) <- loadSourceFile path
-  let cu0 = compileSourceWithPrelude path src
+  let cu0 = compileFilesWithConfig cfg False "." [(path, src)]
       cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
   emitDiags fmt (cuDiags cu)
   when (hasErrors (cuDiags cu)) exitFailure
@@ -123,10 +133,15 @@ data ManifestArgs = ManifestArgs
   , maLocked :: !Bool -- ^ --locked: explicit verify-only (now the package-mode default; accepted as an alias)
   , maProvenance :: !Bool -- ^ --provenance: print buildConfig value provenance (§35.7)
   , maUpdate :: !Bool -- ^ --update: permit rewriting kappa.lock (the only mode that may write; §36.7 update-all)
+  , maNoImplicitPrelude :: !Bool -- ^ --no-implicit-prelude: compile selected source roots without implicit prelude insertion
   }
 
 defaultManifestArgs :: ManifestArgs
-defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False False False
+defaultManifestArgs = ManifestArgs Nothing False Nothing Nothing False Nothing False False False False
+
+manifestUnsafeConfig :: ManifestArgs -> UnsafeConfig
+manifestUnsafeConfig ma =
+  defaultUnsafeConfig {implicitPrelude = not (maNoImplicitPrelude ma)}
 
 -- | Dispatch a @build@ invocation to manifest mode (§35.13/§36) or the
 -- legacy single-file native build.
@@ -157,6 +172,7 @@ parseManifestArgs = go defaultManifestArgs
     go ma ("--lockfile-update" : xs) = go ma {maUpdate = True} xs
     go ma ("--provenance" : xs) = go ma {maProvenance = True} xs
     go ma ("--emit-c" : xs) = go ma {maEmitC = True} xs
+    go ma ("--no-implicit-prelude" : xs) = go ma {maNoImplicitPrelude = True} xs
     go ma ("--target" : t : xs) = go ma {maTarget = Just (T.pack t)} xs
     go ma ("-o" : o : xs) = go ma {maOut = Just o} xs
     go ma ("--cc" : c : xs) = go ma {maCC = Just c} xs
@@ -340,7 +356,7 @@ runNamedTarget file bc ma visited nm
           and <$> mapM (runNamedTarget file bc ma (Set.insert nm visited)) members
         B.AliasTarget _ aliased ->
           runNamedTarget file bc ma (Set.insert nm visited) aliased
-        B.BenchmarkTarget {} -> runBenchmark file bc nm
+        B.BenchmarkTarget {} -> runBenchmark file bc ma nm
         B.LibraryTarget {} -> do
           hPutStrLn stderr
             ("note: library target '" <> T.unpack nm <> "' is consumed as a dependency, not built directly; skipping")
@@ -368,8 +384,8 @@ runTest manifestFile bc nm = do
 -- invocation by 'runInvocation', not here.)
 -- Returns the checked state, the @main@ GName, the gname→prim map, and the
 -- resolved plan — or 'Nothing' (diagnostics already emitted) on any error.
-prepareUnit :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName ResolvedNativeSymbol, ResolvedExe))
-prepareUnit manifestFile bc mname = do
+prepareUnit :: UnsafeConfig -> FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName ResolvedNativeSymbol, ResolvedExe))
+prepareUnit cfg manifestFile bc mname = do
   let manifestDir = takeDirectory manifestFile
   resolved <- resolveExecutable manifestDir bc mname
   case resolved of
@@ -381,7 +397,7 @@ prepareUnit manifestFile bc mname = do
           files = [(p, s) | (p, s, _) <- loaded]
           preDiags = concat [d | (_, _, d) <- loaded]
           (cu, hostSyms) =
-            compileProgramWithNative (rxNativeSymbols rx) defaultUnsafeConfig True nameOf files
+            compileProgramWithNative (rxNativeSymbols rx) cfg True nameOf files
           cuDs = preDiags ++ cuDiags cu
       emitDiags Human cuDs
       let st = cuState cu
@@ -396,7 +412,7 @@ prepareUnit manifestFile bc mname = do
 -- | Native build of an executable target. Returns whether it succeeded.
 runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
 runExecutable manifestFile bc ma mname = do
-  prep <- prepareUnit manifestFile bc mname
+  prep <- prepareUnit (manifestUnsafeConfig ma) manifestFile bc mname
   case prep of
     Nothing -> pure False
     Just (st, mainG, hostSyms, rx) -> do
@@ -424,9 +440,9 @@ runExecutable manifestFile bc ma mname = do
 -- toolchain needed) and reports completion. Benchmarks are pure-compute
 -- (no host.native bindings); a benchmark that imports a host.native module
 -- fails honestly since the interpreter supplies no foreign operations.
-runBenchmark :: FilePath -> B.BuildConfig -> T.Text -> IO Bool
-runBenchmark manifestFile bc nm = do
-  prep <- prepareUnit manifestFile bc (Just nm)
+runBenchmark :: FilePath -> B.BuildConfig -> ManifestArgs -> T.Text -> IO Bool
+runBenchmark manifestFile bc ma nm = do
+  prep <- prepareUnit (manifestUnsafeConfig ma) manifestFile bc (Just nm)
   case prep of
     Nothing -> pure False
     Just (st, mainG, _, _) -> do
@@ -596,11 +612,11 @@ renderBuildConfig bc =
 -- provider). Native bindings are obtained only through the manifest/
 -- package mechanism (@kappa build --manifest@); there is no @--ffi-full@.
 cmdBuildNative :: [String] -> IO ()
-cmdBuildNative rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
+cmdBuildNative rawArgs = case parseBuildArgs rawArgs defaultBuildOptions defaultUnsafeConfig of
   Left msg -> hPutStrLn stderr ("error: " <> msg) >> exitFailure
-  Right (opts, path) -> do
+  Right (opts, cfg, path) -> do
     (src, preDiags) <- loadSourceFile path
-    let cu0 = compileSourceWithPrelude path src
+    let cu0 = compileFilesWithConfig cfg False "." [(path, src)]
         cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
     emitDiags Human (cuDiags cu)
     when (hasErrors (cuDiags cu)) exitFailure
@@ -622,17 +638,18 @@ cmdBuildNative rawArgs = case parseBuildArgs rawArgs defaultBuildOptions of
 -- the source path; unknown flags are an error (no silent acceptance).
 -- Native host bindings come from the manifest path, so there is no
 -- @--ffi-full@/@--lib@ here.
-parseBuildArgs :: [String] -> BuildOptions -> Either String (BuildOptions, FilePath)
-parseBuildArgs args opts0 = go args opts0 Nothing
+parseBuildArgs :: [String] -> BuildOptions -> UnsafeConfig -> Either String (BuildOptions, UnsafeConfig, FilePath)
+parseBuildArgs args opts0 cfg0 = go args opts0 cfg0 Nothing
   where
-    go [] opts (Just p) = Right (opts, p)
-    go [] _ Nothing = Left "kappa build: missing source path"
-    go ("--emit-c" : xs) opts mp = go xs opts {boEmitCOnly = True} mp
-    go ("-o" : o : xs) opts mp = go xs opts {boOutput = Just o} mp
-    go ("--cc" : c : xs) opts mp = go xs opts {boCC = Just c} mp
-    go (x : xs) opts Nothing
-      | take 1 x /= "-" = go xs opts (Just x)
-    go (x : _) _ _ = Left ("kappa build: unexpected argument '" <> x <> "'")
+    go [] opts cfg (Just p) = Right (opts, cfg, p)
+    go [] _ _ Nothing = Left "kappa build: missing source path"
+    go ("--emit-c" : xs) opts cfg mp = go xs opts {boEmitCOnly = True} cfg mp
+    go ("--no-implicit-prelude" : xs) opts cfg mp = go xs opts cfg {implicitPrelude = False} mp
+    go ("-o" : o : xs) opts cfg mp = go xs opts {boOutput = Just o} cfg mp
+    go ("--cc" : c : xs) opts cfg mp = go xs opts {boCC = Just c} cfg mp
+    go (x : xs) opts cfg Nothing
+      | take 1 x /= "-" = go xs opts cfg (Just x)
+    go (x : _) _ _ _ = Left ("kappa build: unexpected argument '" <> x <> "'")
 
 -- | §4.7 unsafe/debug audit query (the @auditModule@ surface). Emits the
 -- compilation unit's audit ledger as machine-readable JSON, never as

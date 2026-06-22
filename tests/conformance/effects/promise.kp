@@ -7,6 +7,8 @@
 -- complete a promise the parent awaits.
 module main
 
+import std.prelude.(type Cause(..), type Exit(..))
+
 worker : Promise Void Int -> UIO Unit
 let worker p = do
     done <- completePromise p (Success 21)

@@ -461,6 +461,8 @@ registry =
       "A module path segment does not derive a valid module name, or a module reference does not resolve (§8.1)."
   , ent "E_MODULE_PATH_MISMATCH" (Just "kappa-hs.module.path-mismatch")
       "A module's declared name does not match the file path it was loaded from (§8.1)."
+  , ent "E_MODULE_ATTRIBUTE_CONFLICT" (Just "kappa-hs.module.attribute-conflict")
+      "Fragments of one effective module specify incompatible module-wide attributes (§8.1, §28.1)."
   , ent "E_NAME_AMBIGUOUS" (Just "kappa.name.ambiguous")
       "A name resolves to more than one declaration with no disambiguating rule (§7.1)."
   , ent "E_STATIC_OBJECT_UNRESOLVED" (Just "kappa.name.unresolved")

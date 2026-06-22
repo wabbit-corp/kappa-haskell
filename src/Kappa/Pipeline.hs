@@ -12,6 +12,7 @@ module Kappa.Pipeline
   , moduleNameRelTo
   , compileSourceWithPrelude
   , importScopeFor
+  , importScopeForWithConfig
   , loadSourceFile
   , compileManifest
   , manifestModuleName
@@ -23,7 +24,7 @@ module Kappa.Pipeline
 import Control.Monad.State.Strict (evalState)
 import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
-import Data.List (foldl', nub, partition)
+import Data.List (nub, partition, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
@@ -121,7 +122,7 @@ stdModule mn path src st0 =
     Left ds -> (st0, ds)
     Right (m, recovered) ->
       let (m', rdiags) = resolveModule defaultFixities m
-          ie = buildImports st0 m'
+          ie = buildImportsInWithScope [] (preludeAllMemberScope st0) st0 m'
           stIn =
             st0
               { csModule = mn
@@ -137,15 +138,52 @@ stdModule mn path src st0 =
           st2 = st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
        in (st2, recovered ++ rdiags ++ ieDiags ie ++ diags)
 
--- | Scope with every prelude global visible unqualified (§28.1).
+implicitPreludeCtorNames :: [Text]
+implicitPreludeCtorNames =
+  ["True", "False", "None", "Some", "Ok", "Err", "Nil", "::", "LT", "EQ", "GT", "refl"]
+
+-- | Scope with prelude globals plus the fixed unqualified constructor
+-- subset visible unqualified (§28.1). This is only for the implicit
+-- prelude insertion; an explicit @import std.prelude.*@ uses ordinary
+-- wildcard-import rules and does not import constructors through this
+-- exception.
 preludeScope :: CheckState -> Map.Map Text GName
 preludeScope st =
+  Map.fromList
+    [ (gnameText g, g)
+    | g@(GName m _) <- Map.keys (csGlobals st)
+    , m == preludeModule
+    , not ("__inst_" `T.isPrefixOf` gnameText g)
+    , not (constructorOnlyGlobal st g)
+    ]
+    <> Map.fromList
+      [ (gnameText g, g)
+      | g@(GName m n) <- Map.keys (csCtors st)
+      , m == preludeModule
+      , n `elem` implicitPreludeCtorNames
+      ]
+
+preludeAllMemberScope :: CheckState -> Map.Map Text GName
+preludeAllMemberScope st =
   Map.fromList
     [ (gnameText g, g)
     | g@(GName m _) <- Map.keys (csGlobals st) ++ Map.keys (csCtors st)
     , m == preludeModule
     , not ("__inst_" `T.isPrefixOf` gnameText g)
     ]
+
+preludeWildcardMemberNames :: CheckState -> [Text]
+preludeWildcardMemberNames st =
+  [ gnameText g
+  | g@(GName m _) <- Map.keys (csGlobals st)
+  , m == preludeModule
+  , not ("__inst_" `T.isPrefixOf` gnameText g)
+  , not (constructorOnlyGlobal st g)
+  ]
+
+constructorOnlyGlobal :: CheckState -> GName -> Bool
+constructorOnlyGlobal st g =
+  Map.member g (csCtors st) && not (Map.member g (csDatas st))
 
 -- | Per-file trace: parse always happens; KFrontIR construction happens
 -- only when the file parses; the KCore lowering happens once per module.
@@ -357,34 +395,71 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
         , Just d <- [reservedHostRootDiag mn (Span (frPath fr) (Pos 1 1) (Pos 1 1))]
         ]
       goodFrags = [(mn, fr) | (mn, fr) <- frags0, not (badName mn)]
-      -- merge same-module fragments (§8.1) in first-appearance order
-      moduleOrder = nub [mn | (mn, _) <- goodFrags]
+      normPath = T.pack . map (\c -> if c == '\\' then '/' else c)
+      firstFragmentPath mn = case [normPath (frPath fr) | (mn', fr) <- goodFrags, mn' == mn] of
+        [] -> ""
+        paths -> minimum paths
+      moduleKey mn = (renderModuleName mn, firstFragmentPath mn)
+      -- merge same-module fragments (§8.1) in deterministic canonical
+      -- module order; the first fragment path is the Appendix T
+      -- tie-breaker for directory-suite requests.
+      moduleOrder = sortOn moduleKey (nub [mn | (mn, _) <- goodFrags])
       merged =
         [ (mn, mergedOf frs, frs)
         | mn <- moduleOrder
         , let frs = [fr | (mn', fr) <- goodFrags, mn' == mn]
         , not (null frs)
         ]
-      mergedOf frs =
+      mergedOf [] = Module [] Nothing []
+      mergedOf frs@(fr0 : _) =
         Module
           (nub (concatMap (modAttrs . frModule) frs))
-          (modHeader (frModule (head frs)))
+          (modHeader (frModule fr0))
           (concatMap (modDecls . frModule) frs)
       unitModules = [mn | (mn, _, _) <- merged]
+      noPreludeConflictDiags =
+        [ diag SevError StageImports "E_MODULE_ATTRIBUTE_CONFLICT" (Just "kappa-hs.module.attribute-conflict")
+            (Span (frPath fr) (Pos 1 1) (Pos 1 1))
+            ( "fragments of module '" <> renderModuleName mn
+                <> "' disagree on @NoPrelude; explicit module headers in a multi-fragment module must agree (Spec §28.1)"
+            )
+        | (mn, _, frs) <- merged
+        , let explicit =
+                [ (fr, moduleHasAttr "NoPrelude" (frModule fr))
+                | fr <- frs
+                , isJust (modHeader (frModule fr))
+                ]
+        , any snd explicit
+        , any (not . snd) explicit
+        , (fr, _) <- take 1 explicit
+        ]
+      noPreludeConflictModules =
+        [ mn
+        | (mn, _, frs) <- merged
+        , let explicit =
+                [ moduleHasAttr "NoPrelude" (frModule fr)
+                | fr <- frs
+                , isJust (modHeader (frModule fr))
+                ]
+        , any id explicit
+        , any not explicit
+        ]
       -- §8.2: dependency order over import/export references, with
       -- cycle detection
       depMap =
         Map.fromList
           [ ( mn
-            , [ (dep, sp)
-              | (ref, sp) <- moduleRefsOf m
-              , dep <- refModuleCandidates unitModules ref
-              , dep /= mn
-              ]
+            , sortOn
+                (moduleKey . fst)
+                [ (dep, sp)
+                | (ref, sp) <- moduleRefsOf m
+                , dep <- refModuleCandidates unitModules ref
+                , dep /= mn
+                ]
             )
           | (mn, m, _) <- merged
           ]
-      (order, cycleDiags) = topoOrder unitModules depMap
+      (order, cycleDiags) = topoOrder (sortOn moduleKey unitModules) depMap
       byName = Map.fromList [(mn, (m, frs)) | (mn, m, frs) <- merged]
       step (st, chunks, trc) mn = case Map.lookup mn byName of
         Nothing -> (st, chunks, trc)
@@ -395,13 +470,18 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
               effFixities = Map.unionWith (++) importedFix defaultFixities
               fullFixities = Map.unionWith (++) (fixitiesOf (modDecls m)) effFixities
               (m', rdiags) = resolveModule effFixities m
-              ie = buildImportsIn unitModules st m'
+              attrDisablesPrelude =
+                moduleHasAttr "NoPrelude" m'
+                  && mn `notElem` noPreludeConflictModules
+              preludeEnabled = implicitPrelude unsafeCfg && not attrDisablesPrelude
+              ie = buildImportsInWith unitModules preludeEnabled st m'
               st0 =
                 st
                   { csModule = mn
                   , csScope = ieScope ie
                   , csScopeAmbig = ieAmbig ie
                   , csModuleAliases = ieAliases ie
+                  , csPreludeDisabled = not preludeEnabled
                   , csDiags = []
                   , -- §5.5.1: bare `(op)` is ambiguous when more than one
                     -- callable fixity for `op` is in scope (e.g. `-`)
@@ -513,6 +593,7 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           ++ pathDiags
           ++ reservedRootDiags
           ++ headerMismatchDiags
+          ++ noPreludeConflictDiags
           ++ cycleDiags
           ++ concat (reverse diagChunks)
           ++ expectUnsatisfiedDiags finalSt
@@ -637,6 +718,9 @@ topoOrder mods deps = (reverse outRev, reverse diagsRev)
 
 -- ── Exports (§8.5) ───────────────────────────────────────────────────
 
+moduleHasAttr :: Text -> Module -> Bool
+moduleHasAttr attr m = attr `elem` map nameText (modAttrs m)
+
 moduleExportNames :: Module -> [Text]
 moduleExportNames m =
   -- §5902/§8.5.1: a lexical scope maps each name to a binding group that
@@ -651,7 +735,7 @@ moduleExportNames m =
   -- unmarked, and vice versa).
   nub (groupedNames ++ otherNames)
   where
-    pbd = "PrivateByDefault" `elem` map nameText (modAttrs m)
+    pbd = moduleHasAttr "PrivateByDefault" m
     vis mods = case dmVisibility mods of
       VisPublic -> True
       VisPrivate -> False
@@ -730,9 +814,17 @@ buildImports :: CheckState -> Module -> ImportEnv
 buildImports = buildImportsIn []
 
 buildImportsIn :: [ModuleName] -> CheckState -> Module -> ImportEnv
-buildImportsIn unitMods st m = foldl' addSpec ie0 specs
+buildImportsIn unitMods st m =
+  buildImportsInWith unitMods (not (moduleHasAttr "NoPrelude" m)) st m
+
+buildImportsInWith :: [ModuleName] -> Bool -> CheckState -> Module -> ImportEnv
+buildImportsInWith unitMods preludeEnabled st m =
+  buildImportsInWithScope unitMods (if preludeEnabled then preludeScope st else Map.empty) st m
+
+buildImportsInWithScope :: [ModuleName] -> Map.Map Text GName -> CheckState -> Module -> ImportEnv
+buildImportsInWithScope unitMods baseScope st m = foldl' addSpec ie0 specs
   where
-    ie0 = ImportEnv (preludeScope st) Map.empty Map.empty [] [] [] []
+    ie0 = ImportEnv baseScope Map.empty Map.empty [] [] [] []
     -- URL pinning applies to re-exports as well (§8.3.2/§8.4)
     specs =
       [(spec, sp) | DImport ss sp <- modDecls m, spec <- ss]
@@ -753,7 +845,7 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
         || Map.member mn (csModuleExports st)
         || mn `elem` unitMods
     memberNames mn
-      | mn == preludeModule = Map.keys (preludeScope st)
+      | mn == preludeModule = Map.keys (preludeAllMemberScope st)
       | otherwise = fromMaybe [] (exportsOf mn)
     hasGlobal g = Map.member g (csGlobals st) || Map.member g (csCtors st)
     ctorsOfType tyG =
@@ -867,7 +959,9 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
                       then itemNotFound ie sp mn (nameText n)
                       else unknownModule ie sp mn
     pathModule mp = ModuleName (modPathName mp)
-    wildMembers = memberNames
+    wildMembers mn
+      | mn == preludeModule = preludeWildcardMemberNames st
+      | otherwise = memberNames mn
     addItem mn sp ie0' it =
       let nm = nameText (iiName it)
           alias = maybe nm nameText (iiAlias it)
@@ -973,6 +1067,10 @@ buildImportsIn unitMods st m = foldl' addSpec ie0 specs
 -- harness uses this for §T.5.2 probe elaboration.
 importScopeFor :: CheckState -> Module -> Map.Map Text GName
 importScopeFor st m = ieScope (buildImports st m)
+
+importScopeForWithConfig :: UnsafeConfig -> CheckState -> Module -> Map.Map Text GName
+importScopeForWithConfig cfg st m =
+  ieScope (buildImportsInWith [] (implicitPrelude cfg && not (moduleHasAttr "NoPrelude" m)) st m)
 
 -- | Path-derived module name (§8.1, simplified: basename only).
 moduleNameOf :: FilePath -> ModuleName

@@ -1,0 +1,3 @@
+--! noPrelude
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticMatch implicit prelude is disabled

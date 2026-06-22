@@ -214,6 +214,10 @@ data CheckState = CheckState
   , csUnsafe :: !UnsafeConfig
   -- ^ §4.2 build-level gating: which unsafe/debug facilities the build
   -- configuration permits. Defaults to all-disabled (package mode).
+  , csPreludeDisabled :: !Bool
+  -- ^ §28.1 effective module setting: the implicit prelude import and
+  -- fixed constructor subset are disabled for the module currently being
+  -- checked, either by build configuration or @NoPrelude.
   , csAuditLedger :: ![AuditRecord]
   -- ^ §4.7 unsafe/debug audit ledger: one record per accepted use of an
   -- unsafe/debug facility, in source order.
@@ -267,19 +271,20 @@ data UnsafeConfig = UnsafeConfig
   , allowAssertReducible :: !Bool
   , allowUnsafeAssertProof :: !Bool
   , allowDebugIntrospection :: !Bool
+  , implicitPrelude :: !Bool
   }
   deriving stock (Eq, Show)
 
 -- | The default build configuration: every unsafe/debug facility is
 -- disabled (§4.2 package-mode defaults).
 defaultUnsafeConfig :: UnsafeConfig
-defaultUnsafeConfig = UnsafeConfig False False False False False False
+defaultUnsafeConfig = UnsafeConfig False False False False False False True
 
 -- | §4.2: in script mode implementations MAY default the unsafe/debug
 -- settings to @true@ for experimentation. This implementation does so,
 -- so scripts can use the escapes without per-build flags.
 scriptUnsafeConfig :: UnsafeConfig
-scriptUnsafeConfig = UnsafeConfig True True True True True True
+scriptUnsafeConfig = UnsafeConfig True True True True True True True
 
 -- | §4.7 one audit-ledger entry: the facility used, the module and origin
 -- it occurred in, the build setting that permitted it, and an optional
@@ -332,7 +337,7 @@ initCheckState =
     (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
-    Map.empty Map.empty Set.empty defaultUnsafeConfig [] Nothing
+    Map.empty Map.empty Set.empty defaultUnsafeConfig False [] Nothing
     Map.empty Map.empty Set.empty Map.empty Map.empty Set.empty
 
 preludeModule :: ModuleName
@@ -1436,11 +1441,21 @@ resolveName ctx (Name n sp) =
   where
     renderMod (ModuleName segs) = "module " <> T.intercalate "." segs
     failUnresolved = do
+      st0 <- get
       cands <- nearScopeNames
       -- §3.2.2: if a close spelling exists, suggest it. The fix is
       -- 'maybe-applicable' — the renamed reference type-checks only if
       -- the candidate happens to fit, so it is not 'machine-applicable'.
       let near = take 1 (closeSpellings n cands)
+          preludeWouldResolve =
+            Map.member (GName preludeModule n) (csGlobals st0)
+              || Map.member (GName preludeModule n) (csCtors st0)
+          unresolvedMessage =
+            if csPreludeDisabled st0 && preludeWouldResolve
+              then
+                "unresolved name '" <> n
+                  <> "' (implicit prelude is disabled; add an explicit import from std.prelude if this name is intended)"
+              else "unresolved name '" <> n <> "' (not in scope)"
           base =
             withPayload
               ( withPayloadField "name" n $
@@ -1450,7 +1465,7 @@ resolveName ctx (Name n sp) =
               )
               $ withRelated (related RoleUseSite sp ("'" <> n <> "' used here"))
               $ diag SevError StageElaborate "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved") sp
-                  ("unresolved name '" <> n <> "' (not in scope)")
+                  unresolvedMessage
           withFixIt d = case near of
             (cand : _) ->
               withHelp ("did you mean '" <> cand <> "'?") $
@@ -1462,7 +1477,11 @@ resolveName ctx (Name n sp) =
                   )
                   d
             [] -> d
-      report (withFixIt base)
+          withPreludeHint d =
+            if csPreludeDisabled st0 && preludeWouldResolve
+              then withHelp ("implicit prelude is disabled; import std.prelude." <> n <> " explicitly or enable the prelude") d
+              else d
+      report (withPreludeHint (withFixIt base))
       anyHole emptyCtxDummy
     -- §3.2.2 candidate spellings for this unresolved name: only the
     -- length-compatible module-level names (from the cached length-bucket

@@ -6476,6 +6476,8 @@ Rules:
 Standard module attributes:
 
 * `@PrivateByDefault`: all top-level named items are private unless explicitly marked `public`.
+* `@NoPrelude`: disables the implicit prelude import and the fixed unqualified prelude-constructor import for the
+  effective module, as specified by §28.1.
 
 <!-- modules.acyclic_imports -->
 ### 8.2 Acyclic imports
@@ -28662,6 +28664,36 @@ Normative rule:
   This has the effect of an implicit prelude constructor import for that exact subset only. It is the only exception to
   the rule that `*` does not import constructors unqualified.
 
+* The standard module attribute `@NoPrelude` disables both implicit insertions for the effective module.
+  When `@NoPrelude` is active, the implementation MUST NOT insert:
+
+  ```kappa
+  import std.prelude.*
+  ```
+
+  and MUST NOT insert the fixed unqualified constructor subset:
+
+  ```text
+  True, False,
+  None, Some,
+  Ok, Err,
+  Nil, (::),
+  LT, EQ, GT,
+  refl
+  ```
+
+  The module may still explicitly import `std.prelude` or any of its members.
+
+* If a selected multi-fragment module contains one or more module headers, the effective `@NoPrelude` setting is
+  module-wide. All selected fragments with explicit module headers MUST agree on the `@NoPrelude` setting. A conflict
+  is a compile-time error. Fragments without an explicit module header inherit the effective module setting.
+
+* The compiler flag `--no-implicit-prelude` selects a build configuration whose `implicit_prelude` field is `false`.
+  This disables the implicit prelude import and fixed constructor subset for the whole compilation request.
+
+* If a name would have resolved only through the implicit prelude but the implicit prelude is disabled, unresolved-name
+  diagnostics SHOULD report that the prelude is disabled and suggest an explicit import when known.
+
 * `std.prelude` is an ordinary module for language-semantics purposes.
   In particular:
   * its exported names participate in name resolution exactly like those of any other imported module;
@@ -28683,8 +28715,8 @@ The prelude provides conventional prefixed-literal handlers for `g` and `b` when
 <!-- modules.prelude.contents -->
 ### 28.2 Normative minimum contents
 
-Implementations MUST provide a prelude module `std.prelude` that is implicitly imported (§28) and exports at least the
-following:
+Implementations MUST provide a prelude module `std.prelude` that is implicitly imported when the implicit prelude is
+enabled (§28) and exports at least the following:
 
 In addition to the ordinary exports listed below, implementations MUST provide the intrinsic compile-time classifier
 names referenced by §11.1.4, §11.3.1, and §11.3.2 whenever those names are user-nameable in source programs:
@@ -45844,6 +45876,24 @@ to that suite root as the source root for module-path derivation.
 In an incremental step suite, each step directory is compiled as a complete suite root in numeric order, and the
 harness preserves any compiler caches or reusable session state permitted by Chapter 34 across those steps.
 
+Directory suite compilation model:
+
+* A directory suite is one compilation request.
+* All `.kp` files under the suite root, recursively, are selected source inputs for that request. The suite root is the
+  source root for module-path derivation.
+* The harness MUST discover source files in deterministic order by normalized relative path, where path separators are
+  normalized to `/` and ordering is Unicode scalar-value lexicographic order.
+* Files with the same effective module name are fragments of the same module, as specified by §8.1. In package mode the
+  effective module name is path-derived; in script mode an explicit module header may determine the effective module
+  name.
+* The harness constructs the module dependency graph induced by imports and exports among the selected roots and their
+  resolved dependencies.
+* The harness compiles modules in dependency-topological order. When several modules are independent, the deterministic
+  tie-breaker is canonical module name, then normalized relative path of the lexicographically first fragment.
+* A parse or check failure in one source file does not remove the other selected source files from the suite request. The
+  implementation SHOULD continue analysis according to the ordinary recovery rules, but the suite result is determined
+  only after evaluating assertions against the complete diagnostic multiset produced by the request.
+
 <!-- appendices.test_harness.directive_syntax -->
 ### T.3 Directive syntax
 
@@ -45903,6 +45953,7 @@ packageMode
 scriptMode
 
 backend <profile>
+noPrelude
 
 entry <qualifiedName>
 runArgs <stringLiteral>...
@@ -45919,10 +45970,19 @@ requires capability <name>
 
 Rules:
 
+* The harness MUST collect and validate all configuration directives before compilation begins.
+* Configuration directives in `suite.ktest` apply to the whole suite.
+  Inline configuration directives in `.kp` files also apply to the whole suite.
+  If the same configuration key is specified more than once with different values, the suite is ill-formed.
 * If no `mode` is specified, the default is `check`.
 * If neither `packageMode` nor `scriptMode` is specified, the default is `packageMode`.
 * `backend <profile>` selects the backend profile for `compile` and `run` tests.
 * Portable tests using `mode compile` or `mode run` SHOULD specify `backend <profile>`.
+* `noPrelude` disables the implicit prelude import and the fixed implicit prelude constructor import for the entire test
+  suite.
+  This directive is equivalent to selecting a build configuration whose `implicit_prelude` field is `false`.
+  The setting is part of the build configuration and therefore participates in query keys, stage dumps, diagnostic
+  behavior, and reproducibility.
 * `entry <qualifiedName>` is valid only for `mode run`.
   It names the program entrypoint to execute.
 * `runArgs <stringLiteral>...` is valid only for `mode run`.
@@ -45956,6 +46016,22 @@ If the selected `mode`, backend profile, or requirements are mutually inconsiste
 Unless otherwise stated, assertions are evaluated after the selected test mode has completed.
 
 A test fails if any standard assertion is unsatisfied.
+
+A directory suite produces one suite diagnostic multiset.
+
+`assertErrorCount`, `assertWarningCount`, `assertNoErrors`, `assertNoWarnings`, `assertDiagnostic`,
+`assertDiagnosticFamily`, and other suite-wide diagnostic assertions are evaluated against that suite diagnostic multiset
+unless the directive explicitly says it is file-relative.
+
+Inline diagnostic markers and `assertDiagnosticNext` are file-relative: they match only diagnostics whose primary origin
+is in the containing file.
+
+`assertDiagnosticAt <path> ...` is path-relative to the suite root and matches diagnostics whose primary origin is in
+that file.
+
+A diagnostic produced while resolving a module dependency, imported interface, package configuration, backend profile,
+or whole-suite build condition participates in the suite diagnostic multiset even when it has no single `.kp` primary
+origin.
 
 <!-- appendices.test_harness.assertion_directives.diagnostic_assertions -->
 #### T.5.1 Diagnostic assertions
