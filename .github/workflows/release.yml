@@ -239,6 +239,20 @@ jobs:
           ghc-version: "9.6.7"
           cabal-version: "3.10.3.0"
 
+      - name: Install Kappa compiler for Delve (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cabal update
+          compiler_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
+          mkdir -p "$compiler_dir/bin"
+          cabal install exe:kappa \
+            --install-method=copy \
+            --installdir="$compiler_dir/bin" \
+            --overwrite-policy=always
+
       - name: Build compiler and Delve (Unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -305,15 +319,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          cabal update
-
           compiler_dir="$PWD/dist/release/kappa-haskell-${{ matrix.platform }}"
-          mkdir -p "$compiler_dir/bin"
-          cabal install exe:kappa \
-            --install-method=copy \
-            --installdir="$compiler_dir/bin" \
-            --overwrite-policy=always
-
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
           mkdir -p "$game_dir/bin"
 
