@@ -357,8 +357,12 @@ its equation in a later proof*. Evidence:
   for arbitrary user relations, so the termination checker does not treat a
   `WellFoundedRelation` dictionary as proof that a `by` relation is safe.
   Well-foundedness is currently accepted only for compiler-recognized
-  primitive orders such as the non-negative `ltInt` subset rule. Evidence:
-  `tests/conformance/prelude/wf-relation-combinators.kp`.
+  primitive orders such as the non-negative `ltInt` subset rule; the associated
+  side conditions may use normalized helpers and nonlinear polynomial
+  arithmetic. Evidence:
+  `tests/conformance/prelude/wf-relation-combinators.kp`,
+  `tests/conformance/recursion/decreases-nonlinear-int.kp`,
+  `tests/conformance/recursion/decreases-measure-normalizes-helpers.kp`.
 * `IntoQuery` (§18.6/§20.2/§23.7) declares the associated members
   `Mode`/`ItemQuantity`/`Item`/`SourceDemand` and `toQuery`'s result
   `QueryCore Mode ItemQuantity Item` references them. As above, this

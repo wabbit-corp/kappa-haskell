@@ -14963,11 +14963,25 @@ recursive call strictly decreases the chosen structural parameter tuple under th
 
 Without an explicit relation or proof in the `decreases` clause, the portable user-visible measure forms of v1 are:
 
-* a term of type `Nat`; or
-* a tuple whose components are all of type `Nat`.
+* a term of type `Nat`;
+* a term of type `Int` or `Integer`, interpreted through the non-negative subset rule below; or
+* a tuple whose components are any mixture of the preceding measure types.
 
-A bare `Nat` measure is treated as a 1-tuple. Tuples are ordered lexicographically by the ordinary `<` relation on
-`Nat`.
+A bare measure is treated as a 1-tuple. Tuples are ordered lexicographically componentwise.
+
+For a `Nat` component, the component order is the ordinary `<` relation on `Nat`.
+
+For an `Int` or `Integer` component, the component order is ordinary integer `<` restricted to values proved
+non-negative at the recursive edge being checked. Therefore a recursive edge may use an integer component as its strict
+lexicographic decrease only when the checker proves both:
+
+* the caller component value is `>= 0`; and
+* the callee component value is `>= 0`.
+
+This restriction is semantic, not syntactic: an expression such as `max 0 n` may prove the non-negativity side condition,
+and a guarded recursive branch such as `if n <= 0 then ... else f (n - 1)` may prove the side condition for both caller
+and callee on that branch. The unrestricted integer `<` relation is not well-founded and MUST NOT be used as a default
+termination order without this non-negative-subset evidence.
 
 A recursive SCC is accepted by this default measure-based termination argument only if every member of the SCC is checked
 against a visible measure of the same tuple arity and every recursive call strictly decreases that visible measure.
@@ -14984,8 +14998,10 @@ written:
 * semantic structural descent after simplification of transparent local aliases and transparent projections;
 * inference of `Nat`-valued or lexicographic `Nat`-tuple measures;
 * the canonical hidden-phase scheme of §15.10 for mutually recursive SCCs;
-* size-change termination over the SCC call graph; and
-* synthesis of linear-lexicographic combinations of primitive `Nat`-valued measures.
+* size-change termination over the SCC call graph;
+* synthesis of linear-lexicographic combinations of primitive `Nat`-valued measures;
+* synthesis or checking of polynomial ranking functions over the permitted measure types; and
+* exposure of higher-order or partial recursive call edges through transparent helper functions.
 
 These are implementation techniques, not additional portable conformance requirements, except where §§15.6, 15.7, and
 15.8 define portable fragments for accepted certificates.
@@ -15015,77 +15031,147 @@ The portable SCT fragment may use only:
 * structural-subterm facts from §15.3;
 * definitional equality;
 * branch facts already available from pattern matching and boolean refinement; and
-* `Nat` predecessor facts required by §15.11 minimum acceptance.
+* predecessor facts required by §15.11 minimum acceptance.
+
+Higher-order and partial recursive calls are handled by call-edge exposure, not by assuming that function values are
+benign.
+
+A use of a member of the current recursive SCC is a recursive call edge when elaboration, β-reduction, transparent local
+alias expansion, transparent helper unfolding, and projection reduction expose that member applied to enough arguments to
+compute the selected measure at the callee entry point.
+
+A partial application of an SCC member may be accepted in either of two cases:
+
+1. the closure is fully applied in a transparent context whose uses are visible to the termination checker; or
+2. the selected callee measure is already computable from the supplied arguments, the checker emits the corresponding
+   recursive call edge at the closure-creation or closure-return site, and every missing argument is irrelevant to that
+   selected measure.
+
+Case 2 permits returning a partially applied recursive closure whose captured measure is already certified smaller. It
+does not permit arbitrary escape: passing such a closure to an opaque function, storing it in an unknown data structure,
+hiding it in a thunk/lazy value, quoting it, sealing it behind an abstraction, or otherwise making it callable at sites
+whose measure behavior is not accounted for prevents certification by this fragment, unless an implementation provides a
+separately checked higher-order termination contract for that boundary.
+
+Transparent higher-order routing and measure-determined partial returns are therefore allowed. Opaque higher-order escape
+is not silently trusted.
 
 <!-- declarations.totality.primitive_measure_language -->
-### 15.7 Primitive measure language and linear-lexicographic synthesis
+### 15.7 Primitive and polynomial measure language
 
-Primitive measure expressions are:
+Primitive measure recognition is performed on elaborated core terms after β-reduction, ι-reduction for pattern matches
+whose scrutinee is known, δ-reduction of transparent definitions, transparent local alias expansion, projection
+reduction, and intrinsic arithmetic normalization.
+
+The surface name of a helper function or operator is not termination evidence. A user-defined helper participates in a
+termination proof only to the extent that transparent normalization exposes one of the permitted core forms below.
+Conversely, an implementation MUST NOT require a particular source spelling such as a prelude helper name when the
+normalized term has the same core meaning.
+
+Portable linear measure expressions are:
 
 ```text
 M ::=
     structuralSize(x)
   | projection M . field
-  | Nat parameter or local alias
+  | Nat, Int, or Integer parameter or transparent local alias
+  | integer or natural literal
   | M + k
   | M - k
   | k * M
   | M1 + M2
+  | M1 - M2
+  | max(M1, M2)
+  | min(M1, M2)
 ```
 
-where `k` is a natural literal and multiplication is allowed only by a natural literal.
+where `k` is an integer or natural literal and multiplication in the portable linear fragment is allowed only by a
+literal.
 
-A linear measure is a finite non-negative integer linear combination of primitive measures.
+A linear measure is a finite integer linear combination of primitive measures, together with the non-negativity side
+conditions required by §15.4 for integer-valued components.
 
-A linear-lexicographic certificate is a tuple of linear measures such that every recursive call decreases
-lexicographically under `Nat` `<`, using only obligations discharged by definitional equality, branch facts, and the
-arithmetic solver permitted by §15.8.
+An implementation MAY additionally support polynomial measure expressions:
+
+```text
+P ::= M | P1 + P2 | P1 - P2 | P1 * P2
+```
+
+provided every generated arithmetic obligation is discharged under §15.8 or by a certificate accepted under §15.9.
+Symbolic division, remainder, bitwise operations, machine overflow, and partial arithmetic operators are not part of the
+portable measure language unless their exact mathematical semantics are specified and their obligations are checked by a
+sound certificate.
+
+A lexicographic certificate is a tuple of measures such that every recursive call decreases lexicographically under the
+component orders of §15.4 or under an explicit relation supplied by §15.11.
 
 <!-- declarations.totality.arithmetic_solver_for_termination -->
 ### 15.8 Arithmetic solver for termination obligations
 
-Arithmetic obligations generated by the portable termination checker are limited to quantifier-free Presburger
-arithmetic over `Nat`, with subtraction interpreted as saturating `Nat` subtraction.
+Arithmetic obligations generated by the portable termination checker are divided into a required linear fragment and an
+optional nonlinear fragment.
 
-The solver may use:
+The required portable fragment is quantifier-free linear integer arithmetic over `Nat`, `Int`, and `Integer` measure
+components, with the non-negative-subset rule of §15.4 for integer-valued default measures. For `Nat`, subtraction in the
+portable source language is interpreted according to the language definition of the operator being reduced; saturating
+`Nat` subtraction and integer subtraction are not interchangeable unless normalization has made the coercion explicit.
+
+The portable solver may use:
 
 * definitional equality;
 * branch facts already available from pattern matching and boolean refinement;
-* linear equalities and inequalities over natural literals, addition, subtraction by natural literals, and multiplication
-  by natural literals; and
-* `Nat` predecessor facts required by §15.11 minimum acceptance.
+* linear equalities and inequalities over literals, addition, subtraction, and multiplication by literals;
+* non-negative side conditions for integer-valued measure components; and
+* predecessor facts required by §15.11 minimum acceptance.
 
 A conforming implementation MUST decide the portable arithmetic fragment needed for:
 
 * `n - 1 < n` under `0 < n`;
-* `a - (b + 1) < a - b` under `b < a`;
-* lexicographic comparison of `Nat` tuples; and
+* `max 0 (n - 1) < max 0 n` under `0 < n`;
+* `a - (b + 1) < a - b` under `0 <= b` and `b < a`;
+* lexicographic comparison of accepted measure tuples; and
 * non-negative affine combinations of accepted inequalities.
 
-Implementations MAY use SMT or another solver internally, but acceptance in the portable arithmetic fragment must be
+Implementations MAY use SMT or another solver internally, but acceptance in the required portable fragment must be
 reproducible and independent of solver heuristics.
+
+The optional nonlinear fragment may generate quantifier-free nonlinear integer arithmetic obligations, including
+polynomial equalities and inequalities produced by the polynomial measure language of §15.7. This fragment is not a
+complete decision procedure requirement: an implementation may return `unknown` or fail to discharge such an obligation.
+Only a proved-valid obligation may contribute to termination certification.
+
+An SMT-backed nonlinear obligation is valid only when the implementation proves unsatisfiability of the negated goal
+under the collected branch and typing facts. The solver interface MUST fail closed: `sat`, `unknown`, timeout, crash,
+unsupported operator, parse failure, or missing solver all mean that the obligation was not discharged.
 
 The arithmetic solver MUST be sound.
 It MAY be incomplete.
 Failure to discharge an arithmetic obligation rejects that certificate; it is not proof that the recursive SCC is
 non-terminating.
 
-Nonlinear or polynomial ranking proofs are outside the portable arithmetic fragment.
-They require checked certificates under §15.9 rather than raw solver trust.
-
 <!-- declarations.totality.external_termination_prover_boundary -->
 ### 15.9 External termination prover boundary
 
 An implementation MAY use external termination provers, SMT solvers, ranking-function synthesizers, or rewriting-based
-analyzers to discover termination arguments.
+analyzers to discover or discharge termination arguments.
 
-Such a result may be used to mark a definition total-certified only if either:
+Such a result may be used to mark a definition total-certified only if at least one of the following holds:
 
-1. the solver result is reconstructed as an ordinary Kappa proof term checked by the core elaborator; or
-2. the result is emitted in a standard certificate format whose checker is part of the trusted implementation contract.
+1. the result is reconstructed as an ordinary Kappa proof term checked by the core elaborator;
+2. the result is emitted in a standard certificate format whose checker is part of the trusted implementation contract;
+   or
+3. the external solver is explicitly admitted as a trusted termination-certification oracle by the implementation or by a
+   build configuration that records this trust boundary.
 
-External solver success without checked reconstruction MAY be used for diagnostics and suggestions, but MUST NOT by
-itself mark a transparent definition conversion-reducible.
+Case 3 is outside the portable reproducible subset unless the package records enough information to replay the same
+trusted obligation, including solver identity, solver version or digest when available, solver options, logic, normalized
+SMT input, and the checker version that generated the obligation. A package mode that requires solver-independent
+reproducibility MUST reject case 3 unless it is converted into case 1 or case 2.
+
+External solver success without checked reconstruction or an explicitly trusted oracle boundary MAY be used for
+diagnostics and suggestions, but MUST NOT by itself mark a definition total-certified.
+
+Definitions certified through an external solver boundary are not conversion-reducible by default under §15.1.
 
 <!-- declarations.totality.hidden_phase_components -->
 ### 15.10 Hidden phase components
@@ -15141,18 +15227,21 @@ termMeasure ::=
 
 Rules:
 
-* `decreases e` keeps the §15.4 behavior: `e` is well-formed only when it elaborates to `Nat` or to a tuple whose
-  components are all `Nat`.
+* `decreases e` keeps the §15.4 behavior: `e` is well-formed only when it elaborates to a default measure shape
+  accepted by §15.4.
 * `decreases structural x` is well-formed only when `x` names an explicit parameter of inductive type.
 * `decreases structural (x, y)` and the corresponding larger tuple form select a structural tuple under the
   lexicographic lifting of `<ₛ`.
-* `decreases e by R` requires `R` to elaborate to a relation on the type of `e`. If `e : A`, then `R` must elaborate to
-  `A -> A -> Type`, and erased well-foundedness evidence `WellFounded A R` must be available.
+* `decreases e by R` requires `R` to elaborate to a relation on the type of `e`. If `e : A`, then `R` must elaborate
+  either to `A -> A -> Type` or to `A -> A -> Bool`. For a `Type`-valued relation, erased well-foundedness evidence
+  `WellFounded A R` must be available. For a `Bool`-valued relation, erased well-foundedness evidence is required for
+  the proposition-valued lifting `\x y -> R x y == True`, unless the relation is one of the default measure relations
+  of §15.4.
 * `decreases e by R using proof` uses the same measure and relation as `decreases e by R`, and additionally supplies an
   erased proof function for the recursive-call decrease obligations generated by the checker.
-* `decreases e using proof` is shorthand for `decreases e by R using proof`, where `R` is the default relation selected
-  by §15.4: ordinary `<` on `Nat`, or lexicographic `<` on a tuple whose components are all `Nat`. This shorthand is
-  ill-formed when `e` does not elaborate to one of those default measure shapes.
+* `decreases e using proof` is shorthand for `decreases e by R using proof`, where `R` is the default relation
+  selected by §15.4 for the measure shape of `e`. This shorthand is ill-formed when `e` does not elaborate to one of
+  those default measure shapes.
 
 For proof-directed clauses, the checker behaves as if each recursive call site in the current SCC introduces an erased
 proof goal:
@@ -15161,8 +15250,14 @@ proof goal:
 R calleeMeasure callerMeasure
 ```
 
-where `callerMeasure` is the selected measure at the caller entry point and `calleeMeasure` is the selected measure at
-the recursive call.
+for a `Type`-valued relation, or:
+
+```text
+R calleeMeasure callerMeasure == True
+```
+
+for a `Bool`-valued relation, where `callerMeasure` is the selected measure at the caller entry point and
+`calleeMeasure` is the selected measure at the recursive call.
 
 The `terminationProof` expression must elaborate at ambient demand `0` to a value that can discharge every such
 generated goal. A conforming implementation MAY represent these goals with compiler-generated erased singleton

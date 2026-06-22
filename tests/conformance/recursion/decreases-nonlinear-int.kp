@@ -1,0 +1,12 @@
+-- §15.11: nonlinear integer measures are certified by polynomial arithmetic,
+-- not by the old constant-multiplication shortcut.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+square : Int -> Int
+let square x = mulInt x x
+
+squareDown : Int -> Int
+let squareDown n decreases square n =
+    if leInt n 0 then 0 else squareDown (subInt n 1)

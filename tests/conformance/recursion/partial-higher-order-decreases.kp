@@ -1,0 +1,21 @@
+-- §15.11: partial SCC applications may be certified when the supplied
+-- arguments determine the target measure; transparent higher-order helpers are
+-- normalized before call-edge collection.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+applyInt : (Int -> Int) -> Int -> Int
+let applyInt f x = f x
+
+partialAlias : Int -> Int -> Int
+let partialAlias n x decreases n =
+    if leInt n 0 then x
+    else
+        let next = partialAlias (subInt n 1)
+        next x
+
+higherOrderKnown : Int -> Int -> Int
+let higherOrderKnown n x decreases n =
+    if leInt n 0 then x
+    else applyInt (higherOrderKnown (subInt n 1)) x

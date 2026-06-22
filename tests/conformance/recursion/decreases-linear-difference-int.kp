@@ -1,0 +1,11 @@
+-- §15.8: the portable linear fragment must decide
+-- a - (b + 1) < a - b under 0 <= b and b < a.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+closeGap : Int -> Int -> Int
+let closeGap a b decreases subInt a b =
+    if ltInt b 0 then 0
+    else if leInt a b then 0
+    else closeGap a (addInt b 1)

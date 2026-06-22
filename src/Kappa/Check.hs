@@ -11627,8 +11627,8 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
       flushPending
       tm <- zonkTermM 0 tm0
       tmV <- evalIn emptyCtx tm
-      let deps = globalsOfTerm tm
-          recursive = Set.member g deps
+      deps <- expandedGlobalsOfTermM tm
+      let recursive = Set.member g deps
           isFunction = case tm of
             CLam {} -> True
             _ -> not (null binders)
@@ -11636,15 +11636,15 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
       let termDecl = TerminationDecl g sigTy binders mdec tm sp
       when (participates && isFunction) $
         recordTerminationDecl termDecl
-      earlyTerminationOk <-
+      earlyTerminationResult <-
         if participates && isFunction && recursive
           then do
             termNames <- gets csTerminationNames
             let termDeps = Set.intersection deps termNames
             if termDeps == Set.singleton g
               then withSccOpaque [g] (verifyTerminationScc [termDecl])
-              else pure False
-          else pure False
+              else pure TerminationUnverified
+          else pure TerminationUnverified
       reducible <-
         if recursive && not isFunction
           then do
@@ -11655,7 +11655,11 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
                  <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15)")
             pure False
           else if participates && isFunction
-            then if earlyTerminationOk then pure True else not <$> shouldDeferTermination g deps
+            then
+              case earlyTerminationResult of
+                TerminationConversionSafe -> pure True
+                TerminationTotalOnly -> pure False
+                TerminationUnverified -> not <$> shouldDeferTermination g deps
             else pure True
       markManifestIfShaped tm
       recordCoreBody g tm
@@ -11717,6 +11721,26 @@ elabLetDecl _ _ sp =
 occursGlobal :: GName -> Term -> Bool
 occursGlobal g = Set.member g . globalsOfTerm
 
+expandedGlobalsOfTermM :: Term -> CheckM (Set GName)
+expandedGlobalsOfTermM tm = do
+  st <- get
+  pure (expandedGlobalsOfTerm st tm)
+
+expandedGlobalsOfTerm :: CheckState -> Term -> Set GName
+expandedGlobalsOfTerm st = go Set.empty
+  where
+    go seen tm =
+      Set.unions [expand seen g | g <- Set.toList (globalsOfTerm tm)]
+
+    expand seen g
+      | Set.member g seen = Set.singleton g
+      | otherwise =
+          Set.insert g $
+            case (Map.lookup g (csGlobals st), Map.lookup g (csCoreBodies st)) of
+              (Just gd, Just body) | gdReducible gd ->
+                go (Set.insert g seen) body
+              _ -> Set.empty
+
 globalsOfTerm :: Term -> Set GName
 globalsOfTerm = go
   where
@@ -11775,16 +11799,18 @@ globalsOfTerm = go
 -- Surface helper names are not trusted by spelling.  Terms are normalized
 -- through already-reducible globals, beta/iota/projection reduction, and then
 -- classified only when primitive arithmetic semantics remain inspectable.
--- Helper-heavy measures that do not expose primitive shapes stay opaque.
+-- External solver results are not used to make definitions
+-- conversion-reducible until there is an explicit trusted-boundary artifact
+-- that records the replay data required by §15.9.
 terminationSccPass :: CheckM ()
 terminationSccPass = do
   st <- get
   let decls = Map.filterWithKey (\g _ -> Set.member g (csTerminationNames st)) (csTerminationDecls st)
       declKeys = Map.keysSet decls
-      depsOf td = Set.toList (Set.intersection declKeys (globalsOfTerm (tdCoreBody td)))
+      depsOf td = Set.toList (Set.intersection declKeys (expandedGlobalsOfTerm st (tdCoreBody td)))
       nodes = [(td, tdName td, depsOf td) | td <- Map.elems decls]
       sccs = stronglyConnComp nodes
-      selfCycle td = tdName td `Set.member` Set.intersection declKeys (globalsOfTerm (tdCoreBody td))
+      selfCycle td = tdName td `Set.member` Set.intersection declKeys (expandedGlobalsOfTerm st (tdCoreBody td))
       recursiveGroups =
         [ group
         | scc <- sccs
@@ -11809,11 +11835,14 @@ terminationSccPass = do
           results <- forM pending $ \tds -> do
             overrides <- gets csAssertReducible
             let forced = all (`Set.member` overrides) (map tdName tds)
-            ok <- if forced then pure True else withSccOpaque (map tdName tds) (verifyTerminationScc tds)
-            when ok $ forM_ tds (\td -> setGlobalReducible (tdName td) True)
-            pure (tds, ok)
-          let failed = [tds | (tds, False) <- results]
-              madeProgress = any snd results
+            result <- if forced then pure TerminationConversionSafe else withSccOpaque (map tdName tds) (verifyTerminationScc tds)
+            case result of
+              TerminationConversionSafe -> forM_ tds (\td -> setGlobalReducible (tdName td) True)
+              TerminationTotalOnly -> forM_ tds (\td -> setGlobalReducible (tdName td) False)
+              TerminationUnverified -> pure ()
+            pure (tds, result)
+          let failed = [tds | (tds, TerminationUnverified) <- results]
+              madeProgress = any ((/= TerminationUnverified) . snd) results
           if null failed
             then pure ()
             else if madeProgress
@@ -11848,22 +11877,29 @@ setGlobalReducible :: GName -> Bool -> CheckM ()
 setGlobalReducible g ok =
   modify' $ \st -> st {csGlobals = Map.adjust (\gd -> gd {gdReducible = ok}) g (csGlobals st)}
 
-verifyTerminationScc :: [TerminationDecl] -> CheckM Bool
+data TerminationResult
+  = TerminationUnverified
+  | TerminationTotalOnly
+  | TerminationConversionSafe
+  deriving stock (Eq, Show)
+
+verifyTerminationScc :: [TerminationDecl] -> CheckM TerminationResult
 verifyTerminationScc tds = do
   funs <- mapM prepareTermFun tds
   let funMap = Map.fromList [(tfName f, f) | f <- funs]
       explicit = [tdDecreases (tfDecl f) | f <- funs]
   case explicit of
-    _ | all isNothing explicit -> structuralSccOK funMap Nothing
-      | any isNothing explicit -> pure False
+    _ | all isNothing explicit -> boolCert TerminationConversionSafe <$> structuralSccOK funMap Nothing
+      | any isNothing explicit -> pure TerminationUnverified
       | all isStructuralDec explicit -> do
           valid <- validateStructuralSelections funs
           if valid
-            then structuralSccOK funMap (Just (structuralSelections funs))
-            else pure False
-      | all isMeasureDec explicit -> measureSccOK funMap
-      | otherwise -> pure False
+            then boolCert TerminationConversionSafe <$> structuralSccOK funMap (Just (structuralSelections funs))
+            else pure TerminationUnverified
+      | all isMeasureDec explicit -> boolCert TerminationTotalOnly <$> measureSccOK funMap
+      | otherwise -> pure TerminationUnverified
   where
+    boolCert yes ok = if ok then yes else TerminationUnverified
     isStructuralDec = \case
       Just DecStructural {} -> True
       _ -> False
@@ -11901,7 +11937,7 @@ verifyTerminationScc tds = do
 -- direct-recursion special case, not a separate algorithm.
 terminationOK :: GName -> Value -> [Binder] -> Maybe Decreases -> Term -> CheckM Bool
 terminationOK g sigTy binders mdec tm =
-  verifyTerminationScc [TerminationDecl g sigTy binders mdec tm noSpan]
+  (/= TerminationUnverified) <$> verifyTerminationScc [TerminationDecl g sigTy binders mdec tm noSpan]
 
 data TermFun = TermFun
   { tfDecl :: !TerminationDecl
@@ -11979,10 +12015,13 @@ prepareTermFun td = do
     Just (DecMeasure measure byRel usingProof) -> do
       (m0, mTy0) <- infer ctx measure
       (mTm0, mTy) <- insertAllImplicits ctx (exprSpan measure) m0 mTy0
-      mTm <- normalizeTermAt (ctxLen ctx) mTm0
       mTyKey <- quoteIn ctx mTy >>= normalizeTermAt (ctxLen ctx)
       relSpec <- traverse (prepareRelationSpec ctx (ctxLen ctx) mTy) byRel
-      pure (Just (MeasureSpec mTm mTyKey relSpec usingProof (ctxLen ctx)))
+      -- Store the elaborated measure itself.  Recursive-call checking
+      -- normalizes it after the SCC pass has marked acyclic helpers
+      -- reducible, so transparent helper arithmetic is exposed without
+      -- trusting helper names during initial declaration checking.
+      pure (Just (MeasureSpec mTm0 mTyKey relSpec usingProof (ctxLen ctx)))
     _ -> pure Nothing
   pure
     TermFun
@@ -12044,14 +12083,15 @@ relationIsPrimitiveLtInt d relTm = do
           applied = CApp Expl (CApp Expl relUnderBinders x) y
       appliedNorm <- normalizeTermAt (d + 2) applied
       pure $ case spineOfTerm appliedNorm of
-        (CGlob (GName m "ltInt"), args) | m == primModule ->
-          case last2 [a | (Expl, a) <- args] of
-            Just (a, b) -> a == x && b == y
-            Nothing -> False
+        (CGlob g, args)
+          | intCmpPrim g == Just PrimLtInt ->
+              case last2 [a | (Expl, a) <- args] of
+                Just (a, b) -> a == x && b == y
+                Nothing -> False
         _ -> False
   where
     directLt = \case
-      CGlob (GName m "ltInt") -> m == primModule
+      CGlob g -> intCmpPrim g == Just PrimLtInt
       _ -> False
 
 tryRelationCheck :: Ctx -> Value -> Expr -> RelationFlavor -> CheckM (Maybe (Term, Value, RelationFlavor))
@@ -12124,46 +12164,97 @@ collectSccEdges funMap = do
   edges <- mapM (collectFunEdges funMap) (Map.elems funMap)
   pure (concat <$> sequence edges)
 
+data PartialCall = PartialCall
+  { pcTarget :: !GName
+  , pcDepth :: !Int
+  , pcArgs :: ![(Icit, Term)]
+  }
+  deriving stock (Show)
+
 collectFunEdges :: Map GName TermFun -> TermFun -> CheckM (Maybe [CallEdge])
-collectFunEdges funMap src = go (tfDepth src) Map.empty [] [] (tfBody src)
+collectFunEdges funMap src =
+  go (tfDepth src) Map.empty Map.empty Set.empty [] [] (tfBody src)
   where
     sccNames = Map.keysSet funMap
     paramRoot = Map.fromList [(lvl, ix) | (ix, lvl) <- zip [0 :: Int ..] (tfExplParams src)]
 
     rootOf lvl sub = Map.lookup lvl sub <|> Map.lookup lvl paramRoot
 
-    go :: Int -> Map Int Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
-    go d sub facts boolFacts t = case t of
-      CApp {} ->
-        case spineOfTerm t of
-          (CGlob callee, args) | Set.member callee sccNames -> do
-            argEdges <- joinManyEdges <$> mapM (go d sub facts boolFacts . snd) args
-            pure ((CallEdge (tfName src) callee d facts boolFacts args sub :) <$> argEdges)
-          (f, args) -> do
-            rf <- go d sub facts boolFacts f
-            rs <- joinManyEdges <$> mapM (go d sub facts boolFacts . snd) args
-            pure (joinEdges rf rs)
+    go :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
+    go d sub ho esc facts boolFacts t = case t of
+      CApp {} -> do
+        tNorm <- normalizeTermAt d t
+        if tNorm /= t
+          then do
+            let (f, args) = spineOfTerm t
+            -- The source application still evaluates its arguments before a
+            -- transparent helper can discard them.  Traverse those argument
+            -- terms under ordinary strict evaluation, then also inspect the
+            -- normalized helper body for the recursive edge it exposes.
+            rf <- go d sub ho esc facts boolFacts f
+            rs <- joinManyEdges <$> mapM (go d sub ho esc facts boolFacts . snd) args
+            rn <- go d sub ho esc facts boolFacts tNorm
+            pure (joinManyEdges [rf, rs, rn])
+          else
+            case partialCallOf d ho t of
+              Just pc | Set.member (pcTarget pc) sccNames -> do
+                argEdges <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) (pcArgs pc)
+                let edge = CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub
+                pure ((edge :) <$> argEdges)
+              _ -> case spineOfTerm t of
+                (f, args) -> do
+                  rf <- go d sub ho esc facts boolFacts f
+                  rs <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) args
+                  pure (joinEdges rf rs)
       CGlob callee | Set.member callee sccNames -> pure Nothing
-      CLam _ _ _ b -> go (d + 1) sub facts boolFacts b
-      CPi _ _ _ a b -> joinEdges <$> go d sub facts boolFacts a <*> go (d + 1) sub facts boolFacts b
-      CLet _ _ a b c ->
-        join3Edges
-          <$> go d sub facts boolFacts a
-          <*> go d sub facts boolFacts b
-          <*> go (d + 1) sub facts boolFacts c
+      CVar i
+        | Set.member (d - 1 - i) esc -> pure Nothing
+      CVar i
+        | Just pc0 <- Map.lookup (d - 1 - i) ho -> do
+            let pc = instantiatePartialCall d pc0
+                edge = CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub
+            pure (Just [edge])
+      CLam _ _ _ b -> go (d + 1) sub ho esc facts boolFacts b
+      CPi _ _ _ a b -> joinEdges <$> go d sub ho esc facts boolFacts a <*> go (d + 1) sub ho esc facts boolFacts b
+      CLet _ _ a b c -> do
+        ra <- go d sub ho esc facts boolFacts a
+        bNorm <- normalizeTermAt d b
+        let normalizedPartial =
+              if bNorm /= b
+                then partialCallOf d ho bNorm
+                else Nothing
+        case partialCallOf d ho b <|> normalizedPartial of
+          Just pc | not (partialCallComplete pc) -> do
+            -- A let-bound partial SCC application is a first-class closure;
+            -- track the closure and charge the recursive edge at each use.
+            -- Its captured arguments are still checked for nested recursive
+            -- calls, and any later escape as an opaque higher-order argument is
+            -- rejected by 'goArg'.
+            rbArgs <- joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) (pcArgs pc)
+            rc <- go (d + 1) sub (Map.insert d pc ho) esc facts boolFacts c
+            pure (joinManyEdges [ra, rbArgs, rc])
+          _ -> do
+            let closureAlias =
+                  recursiveClosureEscapes d ho esc b
+                    || (bNorm /= b && recursiveClosureEscapes d ho esc bNorm)
+                esc' = if closureAlias then Set.insert d esc else esc
+            join3Edges
+              <$> pure ra
+              <*> go d sub ho esc facts boolFacts b
+              <*> go (d + 1) sub ho esc' facts boolFacts c
       CLetRec _ _ a b c ->
         join3Edges
-          <$> go d sub facts boolFacts a
-          <*> go (d + 1) sub facts boolFacts b
-          <*> go (d + 1) sub facts boolFacts c
+          <$> go d sub ho esc facts boolFacts a
+          <*> go (d + 1) sub ho esc facts boolFacts b
+          <*> go (d + 1) sub ho esc facts boolFacts c
       CIf c th el -> do
-        rc <- go d sub facts boolFacts c
+        rc <- go d sub ho esc facts boolFacts c
         c' <- normalizeTermAt d c
-        rt <- go d sub (assumeBool d True c' ++ facts) ((c', True) : boolFacts) th
-        re <- go d sub (assumeBool d False c' ++ facts) ((c', False) : boolFacts) el
+        rt <- go d sub ho esc (assumeBool d True c' ++ facts) ((c', True) : boolFacts) th
+        re <- go d sub ho esc (assumeBool d False c' ++ facts) ((c', False) : boolFacts) el
         pure (joinManyEdges [rc, rt, re])
       CMatch scrut alts -> do
-        rs <- go d sub facts boolFacts scrut
+        rs <- go d sub ho esc facts boolFacts scrut
         let scrutRoot = case scrut of
               CVar i -> rootOf (d - 1 - i) sub
               CProj e _ -> structuralArgRoot src d sub e
@@ -12181,58 +12272,164 @@ collectFunEdges funMap src = go (tfDepth src) Map.empty [] [] (tfBody src)
                     sub
                     (zip newLvls flags)
                 Nothing -> sub
-          rg <- maybe (pure (Just [])) (go d' sub' facts boolFacts) gd
+              ho' = ho
+          rg <- maybe (pure (Just [])) (go d' sub' ho' esc facts boolFacts) gd
           gd' <- traverse (normalizeTermAt d') gd
           let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd'
               boolFacts' = maybe boolFacts (\guardTm -> (guardTm, True) : boolFacts) gd'
-          rb <- go d' sub' facts' boolFacts' b
+          rb <- go d' sub' ho' esc facts' boolFacts' b
           pure (joinEdges rg rb)
         pure (joinManyEdges (rs : ralts))
-      CCtor _ as -> joinManyEdges <$> mapM (go d sub facts boolFacts) as
-      CRecordT fs -> joinManyEdges <$> mapM (go d sub facts boolFacts . snd) fs
-      CRecordV fs -> joinManyEdges <$> mapM (go d sub facts boolFacts . snd) fs
-      CProj e _ -> go d sub facts boolFacts e
-      CProjAt e _ _ -> go d sub facts boolFacts e
-      CVariantT ms -> joinManyEdges <$> mapM (go d sub facts boolFacts) ms
-      CInject _ e -> go d sub facts boolFacts e
-      CThunkE e -> go d sub facts boolFacts e
-      CLazyE e -> go d sub facts boolFacts e
-      CForceE e -> go d sub facts boolFacts e
-      CSealE _ e -> go d sub facts boolFacts e
-      CSigT _ e -> go d sub facts boolFacts e
-      CQuote _ slots -> joinManyEdges <$> mapM (go d sub facts boolFacts) slots
-      CDo _ items -> joinManyEdges <$> mapM (goK d sub facts boolFacts) items
+      CCtor _ as -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts) as
+      CRecordT fs -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) fs
+      CRecordV fs -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) fs
+      CProj e _ -> go d sub ho esc facts boolFacts e
+      CProjAt e _ _ -> go d sub ho esc facts boolFacts e
+      CVariantT ms -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts) ms
+      CInject _ e -> goArg d sub ho esc facts boolFacts e
+      CThunkE e -> goArg d sub ho esc facts boolFacts e
+      CLazyE e -> goArg d sub ho esc facts boolFacts e
+      CForceE e -> go d sub ho esc facts boolFacts e
+      CSealE _ e -> goArg d sub ho esc facts boolFacts e
+      CSigT _ e -> goArg d sub ho esc facts boolFacts e
+      CQuote _ slots -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts) slots
+      CDo _ items -> joinManyEdges <$> mapM (goK d sub ho esc facts boolFacts) items
       _ -> pure (Just [])
 
-    goK :: Int -> Map Int Int -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
-    goK d sub facts boolFacts = \case
-      KBind _ _ t -> go d sub facts boolFacts t
-      KLet _ _ t -> go d sub facts boolFacts t
+    -- Traversal for syntactic positions that pass a value to an unknown
+    -- consumer.  A partial recursive function may be returned directly or
+    -- applied through a transparent helper, but it may not be hidden inside an
+    -- opaque higher-order argument, record, constructor, thunk, or quote slot:
+    -- that would let unknown code call it at arbitrary measures.
+    goArg :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
+    goArg d sub ho esc facts boolFacts t = do
+      tNorm <- normalizeTermAt d t
+      if opaqueRecursiveEscape t || (tNorm /= t && opaqueRecursiveEscape tNorm)
+        then pure Nothing
+        else go d sub ho esc facts boolFacts t
+      where
+        opaqueRecursiveEscape x =
+          case partialCallOf d ho x of
+            Just pc | Set.member (pcTarget pc) sccNames, not (partialCallComplete pc) -> True
+            _ -> case x of
+              CVar i -> Set.member (d - 1 - i) esc
+              _ -> recursiveClosureEscapes d ho esc x
+
+    recursiveClosureEscapes :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
+    recursiveClosureEscapes d ho esc = \case
+      CLam _ _ _ b -> containsSccReference (d + 1) ho esc b
+      CThunkE t -> containsSccReference d ho esc t
+      CLazyE t -> containsSccReference d ho esc t
+      _ -> False
+
+    containsSccReference :: Int -> Map Int PartialCall -> Set Int -> Term -> Bool
+    containsSccReference d ho esc = \case
+      CGlob g -> Set.member g sccNames
+      CVar i -> Map.member (d - 1 - i) ho || Set.member (d - 1 - i) esc
+      CLam _ _ _ b -> containsSccReference (d + 1) ho esc b
+      CPi _ _ _ a b -> containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b
+      CApp _ f a -> containsSccReference d ho esc f || containsSccReference d ho esc a
+      CCtor _ as -> any (containsSccReference d ho esc) as
+      CMatch s alts ->
+        containsSccReference d ho esc s
+          || any
+            ( \(CaseAlt pat gd b) ->
+                let d' = d + patBindersC pat
+                 in maybe False (containsSccReference d' ho esc) gd || containsSccReference d' ho esc b
+            )
+            alts
+      CRecordT fs -> any (containsSccReference d ho esc . snd) fs
+      CRecordV fs -> any (containsSccReference d ho esc . snd) fs
+      CProj e _ -> containsSccReference d ho esc e
+      CProjAt e _ _ -> containsSccReference d ho esc e
+      CVariantT ms -> any (containsSccReference d ho esc) ms
+      CInject _ e -> containsSccReference d ho esc e
+      CLet _ _ a b c ->
+        containsSccReference d ho esc a || containsSccReference d ho esc b || containsSccReference (d + 1) ho esc c
+      CLetRec _ _ a b c ->
+        containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b || containsSccReference (d + 1) ho esc c
+      CDo _ items -> any (containsSccReferenceK d ho esc) items
+      CSealE _ e -> containsSccReference d ho esc e
+      CSigT _ e -> containsSccReference d ho esc e
+      CThunkE e -> containsSccReference d ho esc e
+      CLazyE e -> containsSccReference d ho esc e
+      CForceE e -> containsSccReference d ho esc e
+      CIf a b c -> any (containsSccReference d ho esc) [a, b, c]
+      CQuote _ slots -> any (containsSccReference d ho esc) slots
+      _ -> False
+
+    containsSccReferenceK :: Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
+    containsSccReferenceK d ho esc = \case
+      KBind _ _ t -> containsSccReference d ho esc t
+      KLet _ _ t -> containsSccReference d ho esc t
+      KLetQ _ t m -> containsSccReference d ho esc t || maybe False (containsSccReference d ho esc . snd) m
+      KExpr t -> containsSccReference d ho esc t
+      KVarItem _ t -> containsSccReference d ho esc t
+      KAssign lhs _ rhs -> containsSccReference d ho esc lhs || containsSccReference d ho esc rhs
+      KReturn t -> containsSccReference d ho esc t
+      KWhile _ c b e ->
+        containsSccReference d ho esc c || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
+      KFor _ _ s b e ->
+        containsSccReference d ho esc s || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
+      KIf alts e ->
+        any (\(c, b) -> containsSccReference d ho esc c || any (containsSccReferenceK d ho esc) b) alts
+          || maybe False (any (containsSccReferenceK d ho esc)) e
+      KDefer _ t -> containsSccReference d ho esc t
+      KUsing _ a r -> containsSccReference d ho esc a || containsSccReference d ho esc r
+      KSubDo _ b -> any (containsSccReferenceK d ho esc) b
+      _ -> False
+
+    partialCallOf :: Int -> Map Int PartialCall -> Term -> Maybe PartialCall
+    partialCallOf d ho t = case spineOfTerm t of
+      (CGlob callee, args) | Set.member callee sccNames -> Just (PartialCall callee d args)
+      (CVar i, args) -> do
+        pc0 <- Map.lookup (d - 1 - i) ho
+        let pc = instantiatePartialCall d pc0
+        pure pc {pcArgs = pcArgs pc ++ args}
+      _ -> Nothing
+
+    instantiatePartialCall :: Int -> PartialCall -> PartialCall
+    instantiatePartialCall d pc =
+      pc
+        { pcDepth = d
+        , pcArgs = [(ic, shiftTerm (d - pcDepth pc) 0 a) | (ic, a) <- pcArgs pc]
+        }
+
+    partialCallComplete :: PartialCall -> Bool
+    partialCallComplete pc =
+      case Map.lookup (pcTarget pc) funMap of
+        Nothing -> False
+        Just target -> length (pcArgs pc) >= length (tfParams target)
+
+    goK :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
+    goK d sub ho esc facts boolFacts = \case
+      KBind _ _ t -> goArg d sub ho esc facts boolFacts t
+      KLet _ _ t -> goArg d sub ho esc facts boolFacts t
       KLetQ _ t m -> do
-        rt <- go d sub facts boolFacts t
-        rm <- maybe (pure (Just [])) (go d sub facts boolFacts . snd) m
+        rt <- goArg d sub ho esc facts boolFacts t
+        rm <- maybe (pure (Just [])) (goArg d sub ho esc facts boolFacts . snd) m
         pure (joinEdges rt rm)
-      KExpr t -> go d sub facts boolFacts t
-      KVarItem _ t -> go d sub facts boolFacts t
-      KAssign lhs _ rhs -> joinEdges <$> go d sub facts boolFacts lhs <*> go d sub facts boolFacts rhs
-      KReturn t -> go d sub facts boolFacts t
+      KExpr t -> goArg d sub ho esc facts boolFacts t
+      KVarItem _ t -> goArg d sub ho esc facts boolFacts t
+      KAssign lhs _ rhs -> joinEdges <$> goArg d sub ho esc facts boolFacts lhs <*> goArg d sub ho esc facts boolFacts rhs
+      KReturn t -> go d sub ho esc facts boolFacts t
       KWhile _ c b e ->
         joinManyEdges <$>
-          sequence (go d sub facts boolFacts c : map (goK d sub facts boolFacts) b ++ maybe [] (map (goK d sub facts boolFacts)) e)
+          sequence (go d sub ho esc facts boolFacts c : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
       KFor _ _ s b e ->
         joinManyEdges <$>
-          sequence (go d sub facts boolFacts s : map (goK d sub facts boolFacts) b ++ maybe [] (map (goK d sub facts boolFacts)) e)
+          sequence (goArg d sub ho esc facts boolFacts s : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
       KIf alts e -> do
         ralts <- forM alts $ \(c, b) -> do
-          rc <- go d sub facts boolFacts c
+          rc <- go d sub ho esc facts boolFacts c
           c' <- normalizeTermAt d c
-          rb <- joinManyEdges <$> mapM (goK d sub (assumeBool d True c' ++ facts) ((c', True) : boolFacts)) b
+          rb <- joinManyEdges <$> mapM (goK d sub ho esc (assumeBool d True c' ++ facts) ((c', True) : boolFacts)) b
           pure (joinEdges rc rb)
-        relse <- maybe (pure []) (mapM (goK d sub facts boolFacts)) e
+        relse <- maybe (pure []) (mapM (goK d sub ho esc facts boolFacts)) e
         pure (joinManyEdges (ralts ++ relse))
-      KDefer _ t -> go d sub facts boolFacts t
-      KUsing _ a r -> joinEdges <$> go d sub facts boolFacts a <*> go d sub facts boolFacts r
-      KSubDo _ b -> joinManyEdges <$> mapM (goK d sub facts boolFacts) b
+      KDefer _ t -> goArg d sub ho esc facts boolFacts t
+      KUsing _ a r -> joinEdges <$> goArg d sub ho esc facts boolFacts a <*> goArg d sub ho esc facts boolFacts r
+      KSubDo _ b -> joinManyEdges <$> mapM (goK d sub ho esc facts boolFacts) b
       _ -> pure (Just [])
 
     joinEdges :: Maybe [CallEdge] -> Maybe [CallEdge] -> Maybe [CallEdge]
@@ -12288,11 +12485,13 @@ edgeStructuralGraph :: Map GName TermFun -> Maybe (Map GName [Text]) -> CallEdge
 edgeStructuralGraph funMap selectedNames edge = do
   src <- Map.lookup (edgeFrom edge) funMap
   tgt <- Map.lookup (edgeTo edge) funMap
-  let srcParams = selectedParamLevels src selectedNames
-      tgtParams = selectedParamLevels tgt selectedNames
+  let srcRefs = selectedParamRefs src selectedNames
+      tgtRefs = selectedParamRefs tgt selectedNames
+      srcParams = map snd srcRefs
+      tgtParams = map snd tgtRefs
       explArgs = [a | (Expl, a) <- edgeArgs edge]
-      tgtArgs = take (length tgtParams) explArgs
-  if null srcParams || length tgtArgs /= length tgtParams
+  tgtArgs <- traverse (\(argIx, _) -> nthMaybe argIx explArgs) tgtRefs
+  if null srcParams || null tgtParams
     then Nothing
     else
       let entries =
@@ -12310,13 +12509,13 @@ edgeStructuralGraph funMap selectedNames edge = do
                 }
             )
 
-selectedParamLevels :: TermFun -> Maybe (Map GName [Text]) -> [Int]
-selectedParamLevels f Nothing = tfExplParams f
-selectedParamLevels f (Just byName) =
+selectedParamRefs :: TermFun -> Maybe (Map GName [Text]) -> [(Int, Int)]
+selectedParamRefs f Nothing = zip [0 :: Int ..] (tfExplParams f)
+selectedParamRefs f (Just byName) =
   case Map.lookup (tfName f) byName of
     Nothing -> []
     Just names ->
-      [ lvl
+      [ (ix, lvl)
       | wanted <- names
       , Just ix <- [elemIndex wanted (tfParamNames f)]
       , Just lvl <- [nthMaybe ix (tfExplParams f)]
@@ -12435,6 +12634,9 @@ data AExpr
   | AScale !Integer !AExpr
   | AAdd !AExpr !AExpr
   | ASub !AExpr !AExpr
+  | AMul !AExpr !AExpr
+  | ADiv !AExpr !AExpr
+  | AMod !AExpr !AExpr
   | ANeg !AExpr
   | AMax !AExpr !AExpr
   | AMin !AExpr !AExpr
@@ -12452,28 +12654,44 @@ data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
 data ALin = ALin !Integer !(Map.Map Int Integer)
   deriving stock (Eq, Show)
 
+newtype Monomial = Monomial (Map.Map Int Int)
+  deriving stock (Eq, Ord, Show)
+
+newtype Poly = Poly (Map.Map Monomial Integer)
+  deriving stock (Eq, Show)
+
 measureSccOK :: Map GName TermFun -> CheckM Bool
 measureSccOK funMap = do
   let specs = map tfMeasure (Map.elems funMap)
-  if any isNothing specs || not (measureSpecsCompatible (catMaybes specs))
+  if any isNothing specs
     then pure False
     else do
-      mEdges <- collectSccEdges funMap
-      case mEdges of
-        Nothing -> pure False
-        Just edges -> case traverse (measureCallOfEdge funMap) edges of
-          Nothing -> pure False
-          Just calls -> do
-            oks <- mapM measureCallOK calls
-            pure (not (null calls) && and oks)
+      compatible <- measureSpecsCompatible (catMaybes specs)
+      if not compatible
+        then pure False
+        else do
+          mEdges <- collectSccEdges funMap
+          case mEdges of
+            Nothing -> pure False
+            Just edges -> case traverse (measureCallOfEdge funMap) edges of
+              Nothing -> pure False
+              Just calls -> do
+                oks <- mapM measureCallOK calls
+                pure (not (null calls) && and oks)
 
-measureSpecsCompatible :: [MeasureSpec] -> Bool
-measureSpecsCompatible [] = False
+measureSpecsCompatible :: [MeasureSpec] -> CheckM Bool
+measureSpecsCompatible [] = pure False
 measureSpecsCompatible specs@(s0 : _) =
-  sameArity && sameMeasureType && sameRelationShape
+  do
+    normalizedMeasures <- traverse (\s -> normalizeTermAt (msDepth s) (msMeasureTerm s)) specs
+    case normalizedMeasures of
+      [] -> pure False
+      firstMeasure : restMeasures -> do
+        let arity t = length (rankComponents t)
+            expectedArity = arity firstMeasure
+            sameArity = all (\t -> arity t == expectedArity) restMeasures
+        pure (sameArity && sameMeasureType && sameRelationShape)
   where
-    arity s = length (rankComponents (msMeasureTerm s))
-    sameArity = all (\s -> arity s == arity s0) specs
     sameMeasureType = all (\s -> msMeasureTypeKey s == msMeasureTypeKey s0) specs
     relKey = fmap rsKey . msRelation
     relType = fmap rsTypeKey . msRelation
@@ -12489,23 +12707,23 @@ measureCallOfEdge funMap edge = do
   srcSpec <- tfMeasure src
   tgtSpec <- tfMeasure tgt
   let tgtFormalLvls = map snd (tfParams tgt)
-      callArgs = take (length tgtFormalLvls) (edgeArgs edge)
-  if length callArgs /= length tgtFormalLvls || edgeDepth edge < msDepth srcSpec
+      supplied = take (length tgtFormalLvls) (edgeArgs edge)
+      subst = Map.fromList (zip tgtFormalLvls (map snd supplied))
+  if edgeDepth edge < msDepth srcSpec
     then Nothing
-    else
-      let subst = Map.fromList (zip tgtFormalLvls (map snd callArgs))
-          oldHere = shiftTerm (edgeDepth edge - msDepth srcSpec) 0 (msMeasureTerm srcSpec)
-          newHere = instantiateByLevel (msDepth tgtSpec) (edgeDepth edge) subst (msMeasureTerm tgtSpec)
-       in Just
-            MeasureCall
-              { mcDepth = edgeDepth edge
-              , mcFacts = edgeFacts edge
-              , mcOldMeasure = oldHere
-              , mcNewMeasure = newHere
-              , mcRelation = msRelation srcSpec
-              , mcProof = msProof srcSpec
-              , mcSource = src
-              }
+    else do
+      newHere <- instantiateByLevelMaybe (msDepth tgtSpec) (edgeDepth edge) subst (msMeasureTerm tgtSpec)
+      let oldHere = shiftTerm (edgeDepth edge - msDepth srcSpec) 0 (msMeasureTerm srcSpec)
+      Just
+        MeasureCall
+          { mcDepth = edgeDepth edge
+          , mcFacts = edgeFacts edge
+          , mcOldMeasure = oldHere
+          , mcNewMeasure = newHere
+          , mcRelation = msRelation srcSpec
+          , mcProof = msProof srcSpec
+          , mcSource = src
+          }
 
 measureCallOK :: MeasureCall -> CheckM Bool
 measureCallOK call = do
@@ -12599,46 +12817,50 @@ rankComponents = \case
         then Just (ix, tm)
         else Nothing
 
-instantiateByLevel :: Int -> Int -> Map.Map Int Term -> Term -> Term
-instantiateByLevel oldDepth callDepth subst = go oldDepth
+instantiateByLevelMaybe :: Int -> Int -> Map.Map Int Term -> Term -> Maybe Term
+instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
   where
-    go curDepth t = case t of
+    go curDepth = \case
       CVar i ->
         let lvl = curDepth - 1 - i
          in if lvl >= oldDepth
-              then CVar i
+              then Just (CVar i)
               else case Map.lookup lvl subst of
-                Just arg -> shiftTerm (curDepth - oldDepth) 0 arg
-                Nothing -> CVar (i + callDepth - oldDepth)
-      CGlob x -> CGlob x
-      CLam ic q n b -> CLam ic q n (go (curDepth + 1) b)
-      CPi ic q n a b -> CPi ic q n (go curDepth a) (go (curDepth + 1) b)
-      CApp ic f a -> CApp ic (go curDepth f) (go curDepth a)
-      CSort u -> CSort u
-      CLit l -> CLit l
-      CCtor cg as -> CCtor cg (map (go curDepth) as)
+                Just arg -> Just (shiftTerm (curDepth - oldDepth) 0 arg)
+                Nothing -> Nothing
+      CGlob x -> Just (CGlob x)
+      CLam ic q n b -> CLam ic q n <$> go (curDepth + 1) b
+      CPi ic q n a b -> CPi ic q n <$> go curDepth a <*> go (curDepth + 1) b
+      CApp ic f a -> CApp ic <$> go curDepth f <*> go curDepth a
+      CSort u -> Just (CSort u)
+      CLit l -> Just (CLit l)
+      CCtor cg as -> CCtor cg <$> traverse (go curDepth) as
       CMatch s alts ->
-        CMatch (go curDepth s)
-          [ CaseAlt p (fmap (go (curDepth + patBindersC p)) gd) (go (curDepth + patBindersC p) b)
-          | CaseAlt p gd b <- alts
-          ]
-      CRecordT fs -> CRecordT [(n, go curDepth x) | (n, x) <- fs]
-      CRecordV fs -> CRecordV [(n, go curDepth x) | (n, x) <- fs]
-      CProj e f -> CProj (go curDepth e) f
-      CProjAt e f i -> CProjAt (go curDepth e) f i
-      CVariantT ms -> CVariantT (map (go curDepth) ms)
-      CInject tag e -> CInject tag (go curDepth e)
-      CLet q n a b c -> CLet q n (go curDepth a) (go curDepth b) (go (curDepth + 1) c)
-      CLetRec q n a b c -> CLetRec q n (go curDepth a) (go (curDepth + 1) b) (go (curDepth + 1) c)
-      CMeta m -> CMeta m
-      CDo lbl items -> CDo lbl items
-      CSealE ls e -> CSealE ls (go curDepth e)
-      CSigT ls e -> CSigT ls (go curDepth e)
-      CThunkE e -> CThunkE (go curDepth e)
-      CLazyE e -> CLazyE (go curDepth e)
-      CForceE e -> CForceE (go curDepth e)
-      CIf a b c -> CIf (go curDepth a) (go curDepth b) (go curDepth c)
-      CQuote qs slots -> CQuote qs (map (go curDepth) slots)
+        CMatch <$> go curDepth s <*> traverse goAlt alts
+        where
+          goAlt (CaseAlt pat gd b) =
+            CaseAlt pat
+              <$> traverse (go (curDepth + patBindersC pat)) gd
+              <*> go (curDepth + patBindersC pat) b
+      CRecordT fs -> CRecordT <$> traverseField curDepth fs
+      CRecordV fs -> CRecordV <$> traverseField curDepth fs
+      CProj e f -> CProj <$> go curDepth e <*> pure f
+      CProjAt e f i -> CProjAt <$> go curDepth e <*> pure f <*> pure i
+      CVariantT ms -> CVariantT <$> traverse (go curDepth) ms
+      CInject tag e -> CInject tag <$> go curDepth e
+      CLet q n a b c -> CLet q n <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
+      CLetRec q n a b c -> CLetRec q n <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
+      CMeta m -> Just (CMeta m)
+      CDo {} -> Nothing
+      CSealE ls e -> CSealE ls <$> go curDepth e
+      CSigT ls e -> CSigT ls <$> go curDepth e
+      CThunkE e -> CThunkE <$> go curDepth e
+      CLazyE e -> CLazyE <$> go curDepth e
+      CForceE e -> CForceE <$> go curDepth e
+      CIf a b c -> CIf <$> go curDepth a <*> go curDepth b <*> go curDepth c
+      CQuote qs slots -> CQuote qs <$> traverse (go curDepth) slots
+
+    traverseField curDepth fs = traverse (\(n, x) -> (,) n <$> go curDepth x) fs
 
 -- ── Normalization and arithmetic evidence ────────────────────────────
 
@@ -12711,19 +12933,70 @@ simplifyDecisionTerm = go
 assumeBool :: Int -> Bool -> Term -> [AFact]
 assumeBool d truth t = case boolRel d t of
   Nothing -> []
-  Just fact -> [if truth then fact else negateFact fact]
+  Just fact -> case if truth then Just fact else negateFact fact of
+    Just assumed -> [assumed]
+    Nothing -> []
 
-negateFact :: AFact -> AFact
+negateFact :: AFact -> Maybe AFact
 negateFact = \case
-  AFact ACmpLt a b -> AFact ACmpLe b a -- not (a < b)  ==> b <= a
-  AFact ACmpLe a b -> AFact ACmpLt b a -- not (a <= b) ==> b < a
-  AFact ACmpEq _ _ -> AFact ACmpEq (AConst 0) (AConst 1) -- unusable contradiction marker
+  AFact ACmpLt a b -> Just (AFact ACmpLe b a) -- not (a < b)  ==> b <= a
+  AFact ACmpLe a b -> Just (AFact ACmpLt b a) -- not (a <= b) ==> b < a
+  -- Disequality is useful, but not in the one-sided arithmetic fact language
+  -- used here.  Do not encode it as contradiction; an SMT backend would then
+  -- prove arbitrary goals on reachable `else` branches.
+  AFact ACmpEq _ _ -> Nothing
+
+data IntArithPrim
+  = PrimAddInt
+  | PrimSubInt
+  | PrimMulInt
+  | PrimDivInt
+  | PrimModInt
+  | PrimNegInt
+  | PrimNatToInt
+  | PrimNatOfInt
+  | PrimIntToNat
+  deriving stock (Eq, Show)
+
+data IntCmpPrim = PrimLtInt | PrimLeInt | PrimEqInt
+  deriving stock (Eq, Show)
+
+-- | Trusted arithmetic semantics are attached only to kernel primitives and
+-- their standard prelude primitive aliases. User helpers and overloaded
+-- operators become visible to this table only by normalizing through their
+-- definitions; their surface spelling is irrelevant.
+intArithPrim :: GName -> Maybe IntArithPrim
+intArithPrim (GName m p)
+  | not (trustedIntPrimModule m) = Nothing
+  | otherwise = case p of
+      "addInt" -> Just PrimAddInt
+      "subInt" -> Just PrimSubInt
+      "mulInt" -> Just PrimMulInt
+      "divInt" -> Just PrimDivInt
+      "modInt" -> Just PrimModInt
+      "negInt" -> Just PrimNegInt
+      "natToInt" -> Just PrimNatToInt
+      "natOfInt" -> Just PrimNatOfInt
+      "intToNat" -> Just PrimIntToNat
+      _ -> Nothing
+
+intCmpPrim :: GName -> Maybe IntCmpPrim
+intCmpPrim (GName m p)
+  | not (trustedIntPrimModule m) = Nothing
+  | otherwise = case p of
+      "ltInt" -> Just PrimLtInt
+      "leInt" -> Just PrimLeInt
+      "eqInt" -> Just PrimEqInt
+      _ -> Nothing
+
+trustedIntPrimModule :: ModuleName -> Bool
+trustedIntPrimModule m = m == primModule || m == preludeModule
 
 boolRel :: Int -> Term -> Maybe AFact
 boolRel d t0 = case simplifyDecisionTerm t0 of
   CIf c th el
     | isTrueTm th, isFalseTm el -> boolRel d c
-    | isFalseTm th, isTrueTm el -> negateFact <$> boolRel d c
+    | isFalseTm th, isTrueTm el -> boolRel d c >>= negateFact
     | isTrueTm th -> do
         cFact <- boolRel d c
         elFact <- boolRel d el
@@ -12734,11 +13007,11 @@ boolRel d t0 = case simplifyDecisionTerm t0 of
       (a, b) <- last2 ex
       aa <- arithOf d a
       bb <- arithOf d b
-      case primName rg of
-        Just "ltInt" -> pure (AFact ACmpLt aa bb)
-        Just "leInt" -> pure (AFact ACmpLe aa bb)
-        Just "eqInt" -> pure (AFact ACmpEq aa bb)
-        _ -> Nothing
+      case intCmpPrim rg of
+        Just PrimLtInt -> pure (AFact ACmpLt aa bb)
+        Just PrimLeInt -> pure (AFact ACmpLe aa bb)
+        Just PrimEqInt -> pure (AFact ACmpEq aa bb)
+        Nothing -> Nothing
     _ -> Nothing
   where
     isTrueTm = \case CCtor g [] -> g == gPrel "True"; _ -> False
@@ -12777,73 +13050,52 @@ arithOf d t0 = case simplifyDecisionTerm t0 of
             un f = do
               a <- lastMaybe ex
               f <$> arithOf d a
-        case primName fg of
-          Just "addInt" -> bin AAdd
-          Just "subInt" -> bin ASub
-          Just "mulInt" -> mulExpr ex
-          Just "negInt" -> un ANeg
-          Just "natToInt" -> un id
-          Just "natOfInt" -> un id
-          Just "intToNat" -> un id
-          _ -> Nothing
+        case intArithPrim fg of
+          Just PrimAddInt -> bin AAdd
+          Just PrimSubInt -> bin ASub
+          Just PrimMulInt -> bin AMul
+          Just PrimDivInt -> bin ADiv
+          Just PrimModInt -> bin AMod
+          Just PrimNegInt -> un ANeg
+          Just PrimNatToInt -> un id
+          Just PrimNatOfInt -> un id
+          Just PrimIntToNat -> un id
+          Nothing -> Nothing
       _ -> Nothing
-
-    mulExpr ex = do
-      (a, b) <- last2 ex
-      aa <- arithOf d a
-      bb <- arithOf d b
-      case (aa, bb) of
-        (AConst k, x) -> Just (scaleA k x)
-        (x, AConst k) -> Just (scaleA k x)
-        _ -> Nothing
-
-primName :: GName -> Maybe Text
-primName (GName m p)
-  | m == primModule = Just p
-  | otherwise = Nothing
 
 proveLt :: Set Int -> [AFact] -> Int -> Term -> Term -> CheckM Bool
 proveLt natLvls facts d lhs rhs = do
   lhs' <- normalizeTermAt d lhs
   rhs' <- normalizeTermAt d rhs
-  pure $ case (arithOf d lhs', arithOf d rhs') of
-    (Just l, Just r) ->
-      let diff = simplifyA natLvls facts (ASub r l)
-       in case lowerBoundExpr natLvls facts diff of
-            Just lb -> lb >= 1
-            Nothing -> False
-    _ -> False
+  case (arithOf d lhs', arithOf d rhs') of
+    (Just l, Just r) -> proveFact natLvls facts (AFact ACmpLt l r)
+    _ -> pure False
 
 proveEq :: Set Int -> [AFact] -> Int -> Term -> Term -> CheckM Bool
 proveEq natLvls facts d lhs rhs = do
   lhs' <- normalizeTermAt d lhs
   rhs' <- normalizeTermAt d rhs
-  pure $
-    lhs' == rhs'
-      || case (arithOf d lhs', arithOf d rhs') of
-        (Just l, Just r) ->
-          case linOf (simplifyA natLvls facts (ASub l r)) of
-            Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
-            Nothing -> False
-        _ -> False
+  if lhs' == rhs'
+    then pure True
+    else case (arithOf d lhs', arithOf d rhs') of
+      (Just l, Just r) -> proveFact natLvls facts (AFact ACmpEq l r)
+      _ -> pure False
 
 proveNonNeg :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
 proveNonNeg natLvls facts d t = do
   t' <- normalizeTermAt d t
-  pure $ case arithOf d t' of
-    Just a -> case lowerBoundExpr natLvls facts (simplifyA natLvls facts a) of
-      Just lb -> lb >= 0
-      Nothing -> False
-    Nothing -> False
+  case arithOf d t' of
+    Just a -> proveFact natLvls facts (AFact ACmpLe (AConst 0) a)
+    Nothing -> pure False
 
 proveBoolTrue :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
 proveBoolTrue natLvls facts d t = do
   t' <- normalizeTermAt d t
   case t' of
     CCtor g [] | g == gPrel "True" -> pure True
-    _ -> pure $ case boolRel d t' of
-      Just fact -> proveFactExpr natLvls facts fact
-      Nothing -> False
+    _ -> case boolRel d t' of
+      Just fact -> proveFact natLvls facts fact
+      Nothing -> pure False
 
 -- | A Type-valued relation often encodes a decidable order as
 -- `(p = True)`.  When normalization exposes that shape, the same arithmetic
@@ -12869,13 +13121,25 @@ boolEqualityTruePayload t = case spineOfTerm t of
           _ -> Nothing
   _ -> Nothing
 
-proveFactExpr :: Set Int -> [AFact] -> AFact -> Bool
-proveFactExpr natLvls facts = \case
+proveFact :: Set Int -> [AFact] -> AFact -> CheckM Bool
+proveFact natLvls facts goal =
+  if proveFactByBounds natLvls facts goal
+    then pure True
+    else pure False
+
+proveFactByBounds :: Set Int -> [AFact] -> AFact -> Bool
+proveFactByBounds natLvls facts = \case
   AFact ACmpLt a b -> lowerBoundExpr natLvls facts (simplifyA natLvls facts (ASub b a)) >= Just 1
   AFact ACmpLe a b -> lowerBoundExpr natLvls facts (simplifyA natLvls facts (ASub b a)) >= Just 0
-  AFact ACmpEq a b -> case linOf (simplifyA natLvls facts (ASub a b)) of
-    Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
-    Nothing -> False
+  AFact ACmpEq a b -> isZeroArithmetic (simplifyA natLvls facts (ASub a b))
+
+isZeroArithmetic :: AExpr -> Bool
+isZeroArithmetic expr =
+  case polyOf expr of
+    Just p -> polyIsZero p
+    Nothing -> case linOf expr of
+      Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
+      Nothing -> False
 
 simplifyA :: Set Int -> [AFact] -> AExpr -> AExpr
 simplifyA natLvls facts = go
@@ -12890,12 +13154,37 @@ simplifyA natLvls facts = go
           | otherwise -> AScale k a'
       AAdd a b -> foldConst AAdd (+) (go a) (go b)
       ASub a b -> foldConst ASub (-) (go a) (go b)
+      AMul a b -> simplifyMul (go a) (go b)
+      ADiv a b -> simplifyDiv (go a) (go b)
+      AMod a b -> simplifyMod (go a) (go b)
       ANeg a -> case go a of
         AConst k -> AConst (negate k)
         a' -> ANeg a'
       AMax a b -> simplifyMax (go a) (go b)
       AMin a b -> simplifyMin (go a) (go b)
       other -> other
+
+    simplifyMul a b = case (a, b) of
+      (AConst x, AConst y) -> AConst (x * y)
+      (AConst 0, _) -> AConst 0
+      (_, AConst 0) -> AConst 0
+      (AConst 1, x) -> x
+      (x, AConst 1) -> x
+      (AConst (-1), x) -> ANeg x
+      (x, AConst (-1)) -> ANeg x
+      (AConst k, x) -> AScale k x
+      (x, AConst k) -> AScale k x
+      _ -> AMul a b
+
+    simplifyDiv a b = case (a, b) of
+      (AConst x, AConst y) | y /= 0 -> AConst (x `quot` y)
+      (x, AConst 1) -> x
+      _ -> ADiv a b
+
+    simplifyMod a b = case (a, b) of
+      (AConst x, AConst y) | y /= 0 -> AConst (x `rem` y)
+      (_, AConst 1) -> AConst 0
+      _ -> AMod a b
 
     simplifyMax a b = case (a, b) of
       (AConst x, AConst y) -> AConst (max x y)
@@ -12915,27 +13204,43 @@ simplifyA natLvls facts = go
       (AConst x, AConst y) -> AConst (op x y)
       _ -> ctor a b
 
-scaleA :: Integer -> AExpr -> AExpr
-scaleA k a
-  | k == 0 = AConst 0
-  | k == 1 = a
-  | k == -1 = ANeg a
-  | otherwise = AScale k a
-
 lowerBoundExpr :: Set Int -> [AFact] -> AExpr -> Maybe Integer
 lowerBoundExpr natLvls facts expr =
   case linOf expr >>= lowerBoundLin natLvls facts of
     Just lb -> Just lb
-    Nothing -> lowerBound natLvls facts expr
+    Nothing -> case polyOf expr >>= lowerBoundPoly natLvls facts of
+      Just lb -> Just lb
+      Nothing -> lowerBound natLvls facts expr
 
 lowerBoundLin :: Set Int -> [AFact] -> ALin -> Maybe Integer
-lowerBoundLin natLvls facts (ALin c coeffs) =
-  foldM addCoeff c (Map.toList coeffs)
+lowerBoundLin natLvls facts lin@(ALin c coeffs) =
+  bestMaybe $
+    foldM addCoeff c (Map.toList coeffs)
+      : map (factLowerBound lin) facts
   where
     addCoeff acc (v, k)
       | k == 0 = Just acc
       | k > 0 = (+ acc) . (* k) <$> lowerOf (varBounds natLvls facts v)
       | otherwise = (+ acc) . (* k) <$> upperOf (varBounds natLvls facts v)
+
+    bestMaybe xs = case catMaybes xs of
+      [] -> Nothing
+      ys -> Just (maximum ys)
+
+    factLowerBound query fact =
+      case fact of
+        AFact ACmpLt a b -> affineDiffLower 1 query a b
+        AFact ACmpLe a b -> affineDiffLower 0 query a b
+        AFact ACmpEq a b ->
+          affineDiffLower 0 query a b <|> affineDiffLower 0 query b a
+
+    affineDiffLower base query smaller larger = do
+      diff <- linOf (ASub larger smaller)
+      queryAsDiffPlusConst base query diff
+
+    queryAsDiffPlusConst base (ALin qc qm) (ALin dc dm)
+      | qm == dm = Just (base + qc - dc)
+      | otherwise = Nothing
 
 lowerBound :: Set Int -> [AFact] -> AExpr -> Maybe Integer
 lowerBound natLvls facts = lowerOf . boundsA natLvls facts
@@ -12956,6 +13261,9 @@ boundsRaw natLvls facts expr = case expr of
   AScale k a -> scaleBounds k (boundsRaw natLvls facts a)
   AAdd a b -> addBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
   ASub a b -> subBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
+  AMul a b -> mulBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
+  ADiv {} -> ABounds Nothing Nothing
+  AMod {} -> ABounds Nothing Nothing
   ANeg a -> negBounds (boundsRaw natLvls facts a)
   AMax a b -> maxBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
   AMin a b -> minBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
@@ -12986,6 +13294,21 @@ scaleBounds k b@(ABounds l u)
   | k == 0 = ABounds (Just 0) (Just 0)
   | k > 0 = ABounds ((* k) <$> l) ((* k) <$> u)
   | otherwise = scaleBounds (negate k) (negBounds b)
+
+mulBounds :: ABounds -> ABounds -> ABounds
+mulBounds b1@(ABounds l1 u1) b2@(ABounds l2 u2)
+  | Just xs <- sequence [l1, u1, l2, u2] =
+      let products = [x * y | x <- take 2 xs, y <- drop 2 xs]
+       in ABounds (Just (minimum products)) (Just (maximum products))
+  | Just lo1 <- l1
+  , Just lo2 <- l2
+  , lo1 >= 0
+  , lo2 >= 0 = ABounds (Just (lo1 * lo2)) ((*) <$> u1 <*> u2)
+  | otherwise = conservativeMul b1 b2
+  where
+    conservativeMul (ABounds (Just 0) (Just 0)) _ = ABounds (Just 0) (Just 0)
+    conservativeMul _ (ABounds (Just 0) (Just 0)) = ABounds (Just 0) (Just 0)
+    conservativeMul _ _ = ABounds Nothing Nothing
 
 maxBounds, minBounds :: ABounds -> ABounds -> ABounds
 maxBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds (maxKnown l1 l2) (maxBoth u1 u2)
@@ -13023,6 +13346,8 @@ linOf = \case
   AScale k a -> scaleLin k <$> linOf a
   AAdd a b -> addLin <$> linOf a <*> linOf b
   ASub a b -> subLin <$> linOf a <*> linOf b
+  AMul (AConst k) a -> scaleLin k <$> linOf a
+  AMul a (AConst k) -> scaleLin k <$> linOf a
   ANeg a -> scaleLin (-1) <$> linOf a
   _ -> Nothing
 
@@ -13032,6 +13357,95 @@ subLin x y = addLin x (scaleLin (-1) y)
 
 scaleLin :: Integer -> ALin -> ALin
 scaleLin k (ALin c m) = ALin (k * c) (Map.filter (/= 0) (Map.map (k *) m))
+
+polyOf :: AExpr -> Maybe Poly
+polyOf = \case
+  AConst k -> Just (polyConst k)
+  AVar v -> Just (polyVar v)
+  AScale k a -> polyScale k <$> polyOf a
+  AAdd a b -> polyAdd <$> polyOf a <*> polyOf b
+  ASub a b -> polySub <$> polyOf a <*> polyOf b
+  AMul a b -> polyMul <$> polyOf a <*> polyOf b
+  ANeg a -> polyScale (-1) <$> polyOf a
+  -- Max/min are piecewise arithmetic and division/remainder in Kappa use
+  -- host quot/rem semantics.  They are left to interval reasoning or rejected
+  -- by the SMT backend rather than silently assigned different mathematics.
+  AMax {} -> Nothing
+  AMin {} -> Nothing
+  ADiv {} -> Nothing
+  AMod {} -> Nothing
+
+polyConst :: Integer -> Poly
+polyConst 0 = Poly Map.empty
+polyConst k = Poly (Map.singleton (Monomial Map.empty) k)
+
+polyVar :: Int -> Poly
+polyVar v = Poly (Map.singleton (Monomial (Map.singleton v 1)) 1)
+
+polyAdd, polySub, polyMul :: Poly -> Poly -> Poly
+polyAdd (Poly a) (Poly b) = normalizePoly (Poly (Map.unionWith (+) a b))
+polySub p q = polyAdd p (polyScale (-1) q)
+polyMul (Poly a) (Poly b) =
+  normalizePoly $
+    Poly $
+      Map.fromListWith (+)
+        [ (mulMonomial ma mb, ca * cb)
+        | (ma, ca) <- Map.toList a
+        , (mb, cb) <- Map.toList b
+        ]
+
+polyScale :: Integer -> Poly -> Poly
+polyScale k (Poly p)
+  | k == 0 = Poly Map.empty
+  | otherwise = normalizePoly (Poly (Map.map (k *) p))
+
+normalizePoly :: Poly -> Poly
+normalizePoly (Poly p) = Poly (Map.filter (/= 0) p)
+
+polyIsZero :: Poly -> Bool
+polyIsZero (Poly p) = Map.null p
+
+mulMonomial :: Monomial -> Monomial -> Monomial
+mulMonomial (Monomial a) (Monomial b) = Monomial (Map.filter (> 0) (Map.unionWith (+) a b))
+
+lowerBoundPoly :: Set Int -> [AFact] -> Poly -> Maybe Integer
+lowerBoundPoly natLvls facts (Poly p) = foldM addTerm 0 (Map.toList p)
+  where
+    addTerm acc (mono, coeff)
+      | coeff == 0 = Just acc
+      | coeff > 0 = do
+          lb <- lowerOf (boundsMonomial natLvls facts mono)
+          pure (acc + coeff * lb)
+      | otherwise = do
+          ub <- upperOf (boundsMonomial natLvls facts mono)
+          pure (acc + coeff * ub)
+
+boundsMonomial :: Set Int -> [AFact] -> Monomial -> ABounds
+boundsMonomial natLvls facts (Monomial powers) =
+  foldl' mulBounds (ABounds (Just 1) (Just 1))
+    [ powBounds power (varBounds natLvls facts v)
+    | (v, pow) <- Map.toList powers
+    , let power = pow
+    ]
+
+powBounds :: Int -> ABounds -> ABounds
+powBounds e b
+  | e <= 0 = ABounds (Just 1) (Just 1)
+  | e == 1 = b
+powBounds e (ABounds (Just l) (Just u))
+  | l >= 0 = ABounds (Just (l ^ e)) (Just (u ^ e))
+  | u <= 0 =
+      let lo = if even e then min (l ^ e) (u ^ e) else l ^ e
+          hi = if even e then max (l ^ e) (u ^ e) else u ^ e
+       in ABounds (Just lo) (Just hi)
+  | even e = ABounds (Just 0) (Just (max (abs l) (abs u) ^ e))
+  | otherwise = ABounds (Just (l ^ e)) (Just (u ^ e))
+powBounds e (ABounds (Just l) Nothing)
+  | l >= 0 = ABounds (Just (l ^ e)) Nothing
+powBounds e (ABounds Nothing (Just u))
+  | u <= 0 && odd e = ABounds Nothing (Just (u ^ e))
+  | u <= 0 && even e = ABounds (Just 0) Nothing
+powBounds _ _ = ABounds Nothing Nothing
 
 lastMaybe :: [a] -> Maybe a
 lastMaybe [] = Nothing

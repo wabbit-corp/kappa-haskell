@@ -173,12 +173,29 @@ descent covers constructor sub-patterns, including mutual recursion.
 Arithmetic measures cover Nat/Int ranking functions, lexicographic tuple
 records, and branch facts from guards. The checker normalizes before proof
 search and trusts only the primitive arithmetic/ordering shapes it can inspect
-after reduction. `decreases m by R using p` parses the relation/proof syntax,
-but erased proof terms and arbitrary `WellFoundedRelation` dictionaries are
-not used as termination oracles. A `by` relation is accepted only when the
-checker can both recognize its well-founded primitive order and prove every
-SCC call edge internally. Uncertified definitions get
-`W_TERMINATION_UNVERIFIED` and are conversion-opaque.
+after reduction, so local helpers and overloaded operators contribute evidence
+by reducing to kernel primitives rather than by name. The arithmetic prover has
+two conservative layers: interval/linear reasoning and polynomial
+normalization for nonlinear `+`/`-`/`*`. External SMT/ranking solvers are not
+used to mark definitions conversion-reducible until the implementation records
+the trusted-boundary/replay artifact required by §15.9. Symbolic `divInt` and
+`modInt` side conditions are not used as bounds or polynomial proof evidence:
+Kappa currently follows host `quot`/`rem` behavior, which does not match
+SMT-LIB integer division on negative values.
+
+Higher-order recursive calls are analyzed by tracking saturated and partial
+applications of functions in the current SCC. A partial recursive closure may be
+returned or applied through transparent code only when the supplied arguments
+are enough to instantiate the callee's measure; hiding such a closure inside an
+opaque higher-order argument, record, constructor, thunk, or quote is rejected as
+uncertified. Explicit measure/polynomial certificates are accepted as
+termination evidence but stay conversion-opaque unless a structural or
+conversion-safe certificate is available. `decreases m by R using p` parses the
+relation/proof syntax, but erased proof terms and arbitrary
+`WellFoundedRelation` dictionaries are not used as termination oracles. A `by`
+relation is accepted only when the checker can both recognize its well-founded
+primitive order and prove every SCC call edge internally. Uncertified
+definitions get `W_TERMINATION_UNVERIFIED` and are conversion-opaque.
 
 **Error tolerance boundaries.** The parser recovers at declaration
 boundaries (§3.1.14A) and the checker continues past errors using holes

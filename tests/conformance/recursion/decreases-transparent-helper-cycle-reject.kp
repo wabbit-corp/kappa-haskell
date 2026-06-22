@@ -1,0 +1,14 @@
+-- §15.6: transparent helper unfolding must participate in SCC discovery.
+-- A no-signature helper may not hide a non-decreasing self-call from the
+-- signature-governed function that calls it.
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+badViaTransparentHelper : Int -> Int
+
+let helper n = badViaTransparentHelper n
+
+let badViaTransparentHelper n decreases n =
+    helper n

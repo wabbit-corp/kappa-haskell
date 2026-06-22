@@ -1,0 +1,38 @@
+-- §15.11: a partial recursive closure may not be hidden inside an opaque
+-- higher-order argument; unknown code could call it at unrelated measures.
+--! assertNoErrors
+--! assertWarningCount 5
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+idFun : (Int -> Int) -> (Int -> Int)
+let idFun f = f
+
+opaqueHigherOrder : ((Int -> Int) -> Int -> Int) -> Int -> Int -> Int
+let opaqueHigherOrder h n x decreases n =
+    if leInt n 0 then x
+    else h (opaqueHigherOrder h (subInt n 1)) x
+
+opaqueHigherOrderWrapped : ((Int -> Int) -> Int -> Int) -> Int -> Int -> Int
+let opaqueHigherOrderWrapped h n x decreases n =
+    if leInt n 0 then x
+    else h (idFun (opaqueHigherOrderWrapped h (subInt n 1))) x
+
+opaqueHigherOrderEta : ((Int -> Int) -> Int -> Int) -> Int -> Int -> Int
+let opaqueHigherOrderEta h n x decreases n =
+    if leInt n 0 then x
+    else h (\y -> opaqueHigherOrderEta h (subInt n 1) y) x
+
+opaqueHigherOrderLetWrapped : ((Int -> Int) -> Int -> Int) -> Int -> Int -> Int
+let opaqueHigherOrderLetWrapped h n x decreases n =
+    if leInt n 0 then x
+    else
+        let k = idFun (opaqueHigherOrderLetWrapped h (subInt n 1))
+        h k x
+
+opaqueHigherOrderLetEta : ((Int -> Int) -> Int -> Int) -> Int -> Int -> Int
+let opaqueHigherOrderLetEta h n x decreases n =
+    if leInt n 0 then x
+    else
+        let k = \y -> opaqueHigherOrderLetEta h (subInt n 1) y
+        h k x

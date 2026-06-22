@@ -1,11 +1,9 @@
 --! assertNoErrors
---! assertWarningCount 1
---! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertNoWarnings
 module main
 
--- Current limitation: local helper measures are not trusted merely because
--- their bodies could reduce to primitive arithmetic.  Until helper unfolding is
--- proved sound for the SCC pass, this stays conversion-opaque.
+-- Transparent helper measures are accepted only because the helper normalizes
+-- to primitive arithmetic; the helper spelling itself is not trusted.
 maxInt : Integer -> Integer -> Integer
 let maxInt a b =
     if leInt a b then b else a

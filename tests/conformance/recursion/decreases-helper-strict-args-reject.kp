@@ -1,0 +1,15 @@
+-- §15.6/§15.7: transparent helper normalization may expose useful recursive
+-- edges, but it must not erase recursive calls that occur in strict helper
+-- arguments before edge collection sees them.
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+ignore : Int -> Int
+let ignore x = 0
+
+badStrictHelperArg : Int -> Int
+let badStrictHelperArg n decreases n =
+    if leInt n 0 then 0
+    else addInt (badStrictHelperArg (subInt n 1)) (ignore (badStrictHelperArg n))
