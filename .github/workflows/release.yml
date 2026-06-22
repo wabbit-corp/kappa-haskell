@@ -284,6 +284,9 @@ jobs:
           printf '%s\n' "$test_output"
           grep -q '^DELVE TESTS: ALL PASS$' <<<"$test_output"
           rm -rf "$game_dir/bin"
+          rm -rf "$game_dir/saves"
+          mkdir -p "$game_dir/saves"
+          touch "$game_dir/saves/.gitkeep"
 
           "$compiler_dir/bin/kappa" build \
             --update \
