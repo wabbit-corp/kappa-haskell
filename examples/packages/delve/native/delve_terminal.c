@@ -123,9 +123,13 @@ int delve_get_size(delve_terminal_handle *h, delve_size *out_size) {
 }
 
 uint64_t delve_monotonic_seed(void) {
+#ifdef CLOCK_MONOTONIC
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ((uint64_t)ts.tv_sec << 32) ^ (uint64_t)ts.tv_nsec ^ (uint64_t)getpid();
+#else
+    return ((uint64_t)time(NULL) << 32) ^ (uint64_t)getpid();
+#endif
 }
 
 const char *delve_strerror(int code) {
