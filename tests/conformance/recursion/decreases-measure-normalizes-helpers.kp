@@ -1,0 +1,15 @@
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+-- Current limitation: local helper measures are not trusted merely because
+-- their bodies could reduce to primitive arithmetic.  Until helper unfolding is
+-- proved sound for the SCC pass, this stays conversion-opaque.
+maxInt : Integer -> Integer -> Integer
+let maxInt a b =
+    if leInt a b then b else a
+
+countdownViaHelpers : Integer -> Integer
+let countdownViaHelpers n decreases maxInt 0 n =
+    if leInt n 0 then 0 else countdownViaHelpers (subInt n 1)

@@ -1,0 +1,19 @@
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+-- Bool-valued primitive relation: the checker proves the call-site fact.
+-- The `using` proof syntax parses here but is not trusted when the internal
+-- arithmetic proof cannot already establish the call edge.
+downByBool : Integer -> Integer
+let downByBool n decreases n by ltInt using refl =
+    if leInt n 0 then 0 else downByBool (subInt n 1)
+
+-- Relation helpers are normalized extensionally; their surface spelling is not
+-- part of the trusted base.
+lessThan : Integer -> Integer -> Bool
+let lessThan x y = ltInt x y
+
+downByRelationHelper : Integer -> Integer
+let downByRelationHelper n decreases n by lessThan =
+    if leInt n 0 then 0 else downByRelationHelper (subInt n 1)

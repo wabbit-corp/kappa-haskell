@@ -17,6 +17,7 @@ module Kappa.Check
   , CtorInfo (..)
   , TraitInfo (..)
   , InstanceEntry (..)
+  , TerminationDecl (..)
   , GlobalDef (..)
   , UnsafeConfig (..)
   , defaultUnsafeConfig
@@ -29,9 +30,11 @@ module Kappa.Check
   , shapeModule
   ) where
 
+import Control.Applicative ((<|>))
 import Control.Monad (filterM, foldM, forM, forM_, unless, void, when, zipWithM)
 import Control.Monad.State.Strict
 import Data.Data (Data, cast, gmapQ)
+import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -102,6 +105,20 @@ data PreInstance = PreInstance
   , piPremTms :: ![Term] -- ^ premise types, elaborated under 'piFvs'
   , piArgTms :: ![Term] -- ^ head arguments, under 'piFvs' + premises
   , piDictG :: !GName -- ^ the dictionary global (type already registered)
+  }
+
+-- | The source metadata needed for the whole-module termination pass.
+-- Recursive SCCs cannot be checked soundly one declaration at a time:
+-- a later definition may close a cycle through an earlier one.  Bodies are
+-- therefore installed conservatively and this record lets the final SCC pass
+-- decide which definitions may be conversion-reducible (§15.1/§15.11).
+data TerminationDecl = TerminationDecl
+  { tdName :: !GName
+  , tdSigType :: !Value
+  , tdBinders :: ![Binder]
+  , tdDecreases :: !(Maybe Decreases)
+  , tdCoreBody :: !Term
+  , tdSpan :: !Span
   }
 
 data CheckState = CheckState
@@ -223,19 +240,22 @@ data CheckState = CheckState
   -- 'let'/argument bindings (quote drops the captured environment), so we
   -- keep the real elaborator output. Used only by the native backend; the
   -- interpreter path ignores it.
-  -- The index is built once (lazily, on the first unresolved name) and
-  -- then extended in 'addGlobal' as new module globals appear, so the
-  -- build is paid once. Because Levenshtein distance is at least the
-  -- length difference, an unresolved name of length L need only consult
-  -- the buckets within the suggestion threshold of L, bounding the
-  -- per-error scan to the length-compatible names rather than all of
-  -- scope. 'Nothing' means "not yet built"; entering a new module clears
-  -- it (Pipeline / TestHarness), since the import scope and module change.
+  , csTerminationNames :: !(Set GName)
+  -- ^ Signature-governed top-level functions in the current module.  An
+  -- edge to one of these names is potentially part of a recursive SCC until
+  -- the whole body pass has seen every definition.
+  , csTerminationDecls :: !(Map GName TerminationDecl)
+  -- ^ Checked, zonked bodies awaiting the SCC-level termination pass.
   , csModEffLabels :: !(Map Text EffLabelInfo)
   -- ^ §18.1: module-level (top-level) @effect@ declarations, keyed by name.
   -- Unlike §9.3.1.1 @scoped effect@ (which lives in 'ctxEffLabels'), a
   -- top-level effect is visible to every definition in the module; effect
   -- resolution consults this as a fallback to 'ctxEffLabels'.
+  , csAssertReducible :: !(Set GName)
+  -- ^ §4.4 definitions explicitly wrapped in a gated `assertReducible`.
+  -- The override is consumed only by the SCC termination pass.  It is not
+  -- consulted by runtime evaluation and does not make `assertTerminates`
+  -- conversion-reducible.
   }
 
 -- | §4.2 build-level gating record. Each flag enables exactly one
@@ -313,7 +333,7 @@ initCheckState =
     Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
     Map.empty Map.empty Map.empty Map.empty [] False Map.empty
     Map.empty Map.empty Set.empty defaultUnsafeConfig [] Nothing
-    Map.empty Map.empty Map.empty
+    Map.empty Map.empty Set.empty Map.empty Map.empty Set.empty
 
 preludeModule :: ModuleName
 preludeModule = ModuleName ["std", "prelude"]
@@ -796,6 +816,28 @@ insertScopeName nm = Map.insertWith Set.union (T.length nm) (Set.singleton nm)
 recordCoreBody :: GName -> Term -> CheckM ()
 recordCoreBody g tm =
   modify' $ \st -> st {csCoreBodies = Map.insert g tm (csCoreBodies st)}
+
+recordTerminationDecl :: TerminationDecl -> CheckM ()
+recordTerminationDecl td =
+  modify' $ \st -> st {csTerminationDecls = Map.insert (tdName td) td (csTerminationDecls st)}
+
+-- | Keep a definition opaque until the SCC pass when a later declaration may
+-- still close a cycle through it.  Acyclic dependencies on already-reducible
+-- functions stay reducible immediately, preserving the existing conversion
+-- behavior for ordinary helper definitions.
+shouldDeferTermination :: GName -> Set GName -> CheckM Bool
+shouldDeferTermination g deps = do
+  st <- get
+  let termDeps = Set.intersection deps (csTerminationNames st)
+      pendingDeps = Set.intersection termDeps (Map.keysSet (csSigPending st))
+      deferredDeps =
+        Set.filter
+          (\h ->
+             Map.member h (csTerminationDecls st)
+               && maybe False (not . gdReducible) (Map.lookup h (csGlobals st))
+          )
+          termDeps
+  pure (Set.member g deps || not (Set.null pendingDeps) || not (Set.null deferredDeps))
 
 -- | §3.1.1A: record the first declaration site of a module-scope name
 -- (later occurrences keep the earliest span). Consulted by the
@@ -10163,6 +10205,7 @@ checkModule st0 m =
           | DLet _ (LetDef (Just n) _ _ _ _ _ _ _) _ <- modDecls m
           , not (nameText n `Set.member` sigNames)
           ]
+      termNames = Set.fromList [GName (csModule st0) nm | nm <- signedLetNames sigNames (modDecls m)]
       passes = do
         mapM_ predeclarePass (modDecls m)
         mapM_ (headerPassIn siglessLets) (modDecls m)
@@ -10176,11 +10219,37 @@ checkModule st0 m =
         -- does not depend on declaration order
         mapM_ instanceHeadPass (modDecls m)
         mapM_ (bodyPassIn siglessLets) (modDecls m)
+        terminationSccPass
         flushPendingFinal
         sigSatisfactionPass
-      (_, st1) = runState passes (st0 {csSigPending = Map.empty, csPreInstances = Map.empty})
+      (_, st1) =
+        runState
+          passes
+          ( st0
+              { csSigPending = Map.empty
+              , csPreInstances = Map.empty
+              , csTerminationNames = termNames
+              , csTerminationDecls = Map.empty
+              , csAssertReducible = Set.empty
+              }
+          )
    in -- 'report' prepends; restore emission (source) order here
       (st1 {csDiags = []}, reverse (csDiags st1))
+
+
+-- | Names of signature-governed term definitions in this module.  The SCC
+-- termination pass is concerned with definitions, not standalone signatures,
+-- so an unsatisfied signature is still reported by 'sigSatisfactionPass'.
+signedLetNames :: Set Text -> [Decl] -> [Text]
+signedLetNames sigNames = concatMap go
+  where
+    go = \case
+      DLet _ (LetDef (Just n) _ Nothing _ _ _ _ _) _
+        | nameText n `Set.member` sigNames -> [nameText n]
+      DPattern _ (LetDef (Just n) _ Nothing _ _ _ _ _) _
+        | nameText n `Set.member` sigNames -> [nameText n]
+      DUnsafeAssert _ inner _ -> go inner
+      _ -> []
 
 -- §9.1: a non-expect top-level term signature must be satisfied by
 -- exactly one matching definition in the same source file.
@@ -11139,9 +11208,9 @@ bodyPass = \case
 -- §4.2 build configuration: rejected by default (kappa.feature.gated)
 -- with a diagnostic naming both the offending form and the build setting
 -- that disallows it. When permitted, the use is recorded in the §4.7
--- audit ledger and the wrapped definition is elaborated normally — these
--- forms never change runtime semantics (§4.4), and this implementation
--- does not run a termination checker, so suppression is accept-only.
+-- audit ledger and the wrapped definition is elaborated normally. Only
+-- `assertReducible` records a conversion-reducibility override for the SCC
+-- termination pass; `assertTerminates` remains an audited acceptance escape.
 elabUnsafeAssert :: UnsafeAssertKind -> Decl -> Span -> CheckM ()
 elabUnsafeAssert akind inner sp = do
   cfg <- gets csUnsafe
@@ -11153,13 +11222,17 @@ elabUnsafeAssert akind inner sp = do
         DLet _ ld _ -> maybe "<anonymous>" nameText (ldName ld)
         _ -> "<definition>"
   if allowed
-    then recordAudit facility affected setting sp Nothing
+    then do
+      recordAudit facility affected setting sp Nothing
+      case (akind, inner) of
+        (AssertReducible, DLet _ ld _) | Just n <- ldName ld -> do
+          g <- ownName n
+          modify' $ \st -> st {csAssertReducible = Set.insert g (csAssertReducible st)}
+        _ -> pure ()
     else gateUnsafe facility setting sp affected
   -- Elaborate the wrapped definition regardless of gating: these forms
-  -- never change runtime semantics (§4.4) and registering the binding
-  -- avoids a spurious §9.1 signature-unsatisfied cascade on top of the
-  -- gate error. This implementation runs no termination checker, so the
-  -- assertion's only effect here is gating + the §4.7 audit record.
+  -- never change runtime semantics (§4.4) and registering the binding avoids
+  -- a spurious §9.1 signature-unsatisfied cascade on top of the gate error.
   bodyPass inner
 
 -- | §4.2: reject an unsafe/debug facility that the build configuration
@@ -11471,8 +11544,8 @@ registerProjection g coreTy defTm pj = do
   modify' $ \st -> st {csProjections = Map.insert g pj (csProjections st)}
 
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
--- Signature-governed recursive definitions are checked by explicit
--- decreases clauses first, with structural descent as a conservative fallback.
+-- Signature-governed functions are recorded for the SCC termination pass;
+-- non-recursive values still become reducible immediately.
 elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   -- resolve any goals postponed from signature elaboration first, so the
   -- signature's value is canonical while checking the body
@@ -11545,10 +11618,24 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
       flushPending
       tm <- zonkTermM 0 tm0
       tmV <- evalIn emptyCtx tm
-      let recursive = occursGlobal g tm
+      let deps = globalsOfTerm tm
+          recursive = Set.member g deps
           isFunction = case tm of
             CLam {} -> True
             _ -> not (null binders)
+      participates <- gets (Set.member g . csTerminationNames)
+      let termDecl = TerminationDecl g sigTy binders mdec tm sp
+      when (participates && isFunction) $
+        recordTerminationDecl termDecl
+      earlyTerminationOk <-
+        if participates && isFunction && recursive
+          then do
+            termNames <- gets csTerminationNames
+            let termDeps = Set.intersection deps termNames
+            if termDeps == Set.singleton g
+              then withSccOpaque [g] (verifyTerminationScc [termDecl])
+              else pure False
+          else pure False
       reducible <-
         if recursive && not isFunction
           then do
@@ -11558,15 +11645,8 @@ elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
               ("recursive value cycle: '" <> nameText n
                  <> "' refers to itself without an intervening function abstraction, so its evaluation cannot terminate (§15)")
             pure False
-          else if recursive
-            then do
-              okTerm <- terminationOK g sigTy binders mdec tm
-              unless okTerm $
-                report $
-                  withNote "the definition is accepted but not conversion-reducible (§15.1)" $
-                    diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.failure") sp
-                      ("could not verify termination of '" <> nameText n <> "' (§15)")
-              pure okTerm
+          else if participates && isFunction
+            then if earlyTerminationOk then pure True else not <$> shouldDeferTermination g deps
             else pure True
       markManifestIfShaped tm
       recordCoreBody g tm
@@ -11626,279 +11706,719 @@ elabLetDecl _ _ sp =
   unsupportedAt sp "this let-definition form is not supported at top level"
 
 occursGlobal :: GName -> Term -> Bool
-occursGlobal g = go
+occursGlobal g = Set.member g . globalsOfTerm
+
+globalsOfTerm :: Term -> Set GName
+globalsOfTerm = go
   where
     go = \case
-      CGlob g' -> g == g'
-      CApp _ f a -> go f || go a
+      CGlob g -> Set.singleton g
+      CApp _ f a -> go f `Set.union` go a
       CLam _ _ _ b -> go b
-      CPi _ _ _ a b -> go a || go b
-      CCtor _ as -> any go as
-      CMatch s alts -> go s || any (\(CaseAlt _ gd b) -> maybe False go gd || go b) alts
-      CRecordT fs -> any (go . snd) fs
-      CRecordV fs -> any (go . snd) fs
+      CPi _ _ _ a b -> go a `Set.union` go b
+      CCtor g as -> Set.insert g (Set.unions (map go as))
+      CMatch s alts ->
+        Set.unions (go s : [maybe Set.empty go gd `Set.union` go b | CaseAlt _ gd b <- alts])
+      CRecordT fs -> Set.unions (map (go . snd) fs)
+      CRecordV fs -> Set.unions (map (go . snd) fs)
       CProj e _ -> go e
       CProjAt e _ _ -> go e
-      CVariantT ms -> any go ms
+      CVariantT ms -> Set.unions (map go ms)
       CInject _ e -> go e
-      CLet _ _ a b c -> go a || go b || go c
-      CLetRec _ _ a b c -> go a || go b || go c
-      CIf a b c -> go a || go b || go c
+      CLet _ _ a b c -> Set.unions [go a, go b, go c]
+      CLetRec _ _ a b c -> Set.unions [go a, go b, go c]
+      CIf a b c -> Set.unions [go a, go b, go c]
       CThunkE e -> go e
       CLazyE e -> go e
       CForceE e -> go e
-      CDo _ items -> any goK items
-      _ -> False
+      CSealE _ e -> go e
+      CSigT _ e -> go e
+      CQuote _ slots -> Set.unions (map go slots)
+      CDo _ items -> Set.unions (map goK items)
+      _ -> Set.empty
     goK = \case
       KBind _ _ t -> go t
       KLet _ _ t -> go t
-      KLetQ _ t m -> go t || maybe False (go . snd) m
+      KLetQ _ t m -> go t `Set.union` maybe Set.empty (go . snd) m
       KExpr t -> go t
       KVarItem _ t -> go t
-      KAssign _ _ t -> go t
+      KAssign lhs _ rhs -> go lhs `Set.union` go rhs
       KReturn t -> go t
-      KWhile _ c b e -> go c || any goK b || maybe False (any goK) e
-      KFor _ _ s b e -> go s || any goK b || maybe False (any goK) e
-      KIf alts e -> any (\(c, b) -> go c || any goK b) alts || maybe False (any goK) e
+      KWhile _ c b e -> Set.unions (go c : map goK b ++ maybe [] (map goK) e)
+      KFor _ _ s b e -> Set.unions (go s : map goK b ++ maybe [] (map goK) e)
+      KIf alts e ->
+        Set.unions ([go c `Set.union` Set.unions (map goK b) | (c, b) <- alts] ++ maybe [] (map goK) e)
       KDefer _ t -> go t
-      KUsing _ a r -> go a || go r
-      KSubDo _ b -> any goK b
-      _ -> False
+      KUsing _ a r -> go a `Set.union` go r
+      KSubDo _ b -> Set.unions (map goK b)
+      _ -> Set.empty
 
--- Termination verification (§15.3/§15.11, direct recursion).
+-- Termination verification (§15.3/§15.11, SCC-level).
 --
--- The fallback structural checker is deliberately small: it certifies the
--- classic constructor-subpattern descent used by primitive recursive
--- functions over ADTs.  Explicit @decreases@ clauses add the missing,
--- well-founded ranking-function path: elaborate the user measure under the
--- function telescope, instantiate it at every direct self-call, and prove a
--- lexicographic decrease in a conservative integer/Nat abstraction.  Failure
--- means "not certified", never "definitely diverges".
-terminationOK :: GName -> Value -> [Binder] -> Maybe Decreases -> Term -> CheckM Bool
-terminationOK g sigTy binders mdec tm = do
-  decOK <- case mdec of
-    Nothing -> pure False
-    Just dec -> decreasesOK g sigTy binders dec tm
-  pure (decOK || structuralOK g binders tm)
-
-decreasesOK :: GName -> Value -> [Binder] -> Decreases -> Term -> CheckM Bool
-decreasesOK g sigTy binders dec tm = case dec of
-  DecStructural ns -> pure (structuralNamedOK g (map nameText ns) binders tm)
-  DecMeasure measure byRel usingProof -> do
-    relOK <- measureRelationSupported byRel usingProof
-    if not relOK
-      then pure False
-      else do
-        ctx <- measureCtxFromSig sigTy binders
-        natLvls <- ctxNatLevels ctx
-        (m0, mTy0) <- infer ctx measure
-        (mTm, _) <- insertAllImplicits ctx (exprSpan measure) m0 mTy0
-        pure (measureOK g (ctxLen ctx) natLvls mTm tm)
+-- A recursive definition is conversion-reducible only after this pass proves
+-- that its whole strongly-connected component terminates.  The checker uses
+-- two independent certificates:
+--
+--   * explicit ranking functions from `decreases`, checked on every call edge
+--     f -> g by comparing g's measure at the call with f's measure at entry;
+--   * size-change graphs for structural recursion, including mutual SCCs.
+--
+-- Surface helper names are not trusted by spelling.  Terms are normalized
+-- through already-reducible globals, beta/iota/projection reduction, and then
+-- classified only when primitive arithmetic semantics remain inspectable.
+-- Helper-heavy measures that do not expose primitive shapes stay opaque.
+terminationSccPass :: CheckM ()
+terminationSccPass = do
+  st <- get
+  let decls = Map.filterWithKey (\g _ -> Set.member g (csTerminationNames st)) (csTerminationDecls st)
+      declKeys = Map.keysSet decls
+      depsOf td = Set.toList (Set.intersection declKeys (globalsOfTerm (tdCoreBody td)))
+      nodes = [(td, tdName td, depsOf td) | td <- Map.elems decls]
+      sccs = stronglyConnComp nodes
+      selfCycle td = tdName td `Set.member` Set.intersection declKeys (globalsOfTerm (tdCoreBody td))
+      recursiveGroups =
+        [ group
+        | scc <- sccs
+        , group <- case scc of
+            AcyclicSCC td | selfCycle td -> [[td]]
+            CyclicSCC tds -> [tds]
+            _ -> []
+        ]
+  -- Acyclic definitions may be unfolded while checking recursive SCCs.  This
+  -- is safe even when such a helper mentions an unverified recursive function:
+  -- unfolding the helper exposes that opaque function but cannot create a new
+  -- conversion cycle through the helper itself.
+  forM_ sccs $ \case
+    AcyclicSCC td | not (selfCycle td) -> setGlobalReducible (tdName td) True
+    _ -> pure ()
+  verifyRecursiveGroups recursiveGroups
   where
-    -- This implementation can decide the built-in strict order on integer-like
-    -- measures.  Arbitrary @by R using p@ is intentionally not trusted here:
-    -- accepting it soundly requires proving that R is well-founded and that p
-    -- witnesses every call edge.
-    measureRelationSupported Nothing Nothing = pure True
-    measureRelationSupported (Just r) Nothing = do
-      (rTm0, rTy0) <- infer emptyCtx r
-      (rTm, _) <- insertAllImplicits emptyCtx (exprSpan r) rTm0 rTy0
-      pure (relationTermSupported rTm)
-    measureRelationSupported _ _ = pure False
+    verifyRecursiveGroups [] = pure ()
+    verifyRecursiveGroups groups = go groups
+      where
+        go pending = do
+          results <- forM pending $ \tds -> do
+            overrides <- gets csAssertReducible
+            let forced = all (`Set.member` overrides) (map tdName tds)
+            ok <- if forced then pure True else withSccOpaque (map tdName tds) (verifyTerminationScc tds)
+            when ok $ forM_ tds (\td -> setGlobalReducible (tdName td) True)
+            pure (tds, ok)
+          let failed = [tds | (tds, False) <- results]
+              madeProgress = any snd results
+          if null failed
+            then pure ()
+            else if madeProgress
+              then go failed
+              else forM_ failed warnAndKeepOpaque
 
-relationTermSupported :: Term -> Bool
-relationTermSupported t =
-  case spineOfTerm t of
-    (CGlob g, _) -> isTrustedPreludeName ["ltInt"] g
-    _ -> False
+    warnAndKeepOpaque tds = do
+      overrides <- gets csAssertReducible
+      let forced = all (`Set.member` overrides) (map tdName tds)
+      if forced
+        then forM_ tds $ \td -> setGlobalReducible (tdName td) True
+        else do
+          forM_ tds $ \td -> setGlobalReducible (tdName td) False
+          forM_ tds $ \td ->
+            report $
+              withNote "the definition is accepted but not conversion-reducible (§15.1)" $
+                diag SevWarning StageElaborate "W_TERMINATION_UNVERIFIED" (Just "kappa.termination.failure") (tdSpan td)
+                  ("could not verify termination of '" <> gnameText (tdName td) <> "' (§15)")
 
-isTrustedPreludeName :: [Text] -> GName -> Bool
-isTrustedPreludeName names g = any (\nm -> g == gPrel nm) names
+withSccOpaque :: [GName] -> CheckM a -> CheckM a
+withSccOpaque gs act = do
+  saved <- gets csGlobals
+  let restore acc g = case Map.lookup g saved of
+        Just gd -> Map.insert g gd acc
+        Nothing -> acc
+  modify' $ \st -> st {csGlobals = foldr (Map.adjust (\gd -> gd {gdReducible = False})) (csGlobals st) gs}
+  r <- act
+  modify' $ \st -> st {csGlobals = foldl' restore (csGlobals st) gs}
+  pure r
 
--- | Build the measure-elaboration context for a top-level function telescope.
--- This mirrors the binder consumption path used by 'checkAgainstSig' for
--- direct-recursion measures, without claiming to be the canonical body
--- checker. Keep it in sync when new binder-claiming forms are added.
+setGlobalReducible :: GName -> Bool -> CheckM ()
+setGlobalReducible g ok =
+  modify' $ \st -> st {csGlobals = Map.adjust (\gd -> gd {gdReducible = ok}) g (csGlobals st)}
+
+verifyTerminationScc :: [TerminationDecl] -> CheckM Bool
+verifyTerminationScc tds = do
+  funs <- mapM prepareTermFun tds
+  let funMap = Map.fromList [(tfName f, f) | f <- funs]
+      explicit = [tdDecreases (tfDecl f) | f <- funs]
+  case explicit of
+    _ | all isNothing explicit -> structuralSccOK funMap Nothing
+      | any isNothing explicit -> pure False
+      | all isStructuralDec explicit -> do
+          valid <- validateStructuralSelections funs
+          if valid
+            then structuralSccOK funMap (Just (structuralSelections funs))
+            else pure False
+      | all isMeasureDec explicit -> measureSccOK funMap
+      | otherwise -> pure False
+  where
+    isStructuralDec = \case
+      Just DecStructural {} -> True
+      _ -> False
+    isMeasureDec = \case
+      Just DecMeasure {} -> True
+      _ -> False
+    structuralSelections funs =
+      Map.fromList
+        [ (tfName f, ns)
+        | f <- funs
+        , Just (DecStructural xs) <- [tdDecreases (tfDecl f)]
+        , let ns = map nameText xs
+        ]
+    validateStructuralSelections funs = and <$> mapM validateOne funs
+    validateOne f =
+      case tdDecreases (tfDecl f) of
+        Just (DecStructural xs) -> do
+          oks <- forM xs $ \x -> do
+            let nm = nameText x
+            if nm `elem` tfParamNames f
+              then pure True
+              else do
+                report $
+                  diag SevError StageElaborate "E_TERMINATION_INVALID_STRUCTURAL_TARGET" (Just "kappa.termination.invalid_structural_target") (nameSpan x)
+                    ( "decreases structural target '" <> nm <> "' is not an explicit parameter of '"
+                        <> gnameText (tfName f)
+                        <> "' (§15.3)"
+                    )
+                pure False
+          pure (and oks)
+        _ -> pure True
+
+-- Compatibility wrapper used by a few older call sites and useful in ghci.
+-- The real implementation above works over SCCs; a singleton self-SCC is the
+-- direct-recursion special case, not a separate algorithm.
+terminationOK :: GName -> Value -> [Binder] -> Maybe Decreases -> Term -> CheckM Bool
+terminationOK g sigTy binders mdec tm =
+  verifyTerminationScc [TerminationDecl g sigTy binders mdec tm noSpan]
+
+data TermFun = TermFun
+  { tfDecl :: !TerminationDecl
+  , tfName :: !GName
+  , tfCtx :: !Ctx
+  , tfNatLvls :: !(Set Int)
+  , tfParams :: ![(Icit, Int)]
+  , tfExplParams :: ![Int]
+  , tfParamNames :: ![Text]
+  , tfBody :: !Term
+  , tfDepth :: !Int
+  , tfMeasure :: !(Maybe MeasureSpec)
+  }
+
+data MeasureSpec = MeasureSpec
+  { msMeasureTerm :: !Term
+  , msMeasureTypeKey :: !Term
+  , msRelation :: !(Maybe RelationSpec)
+  , msProof :: !(Maybe Expr)
+  , msDepth :: !Int
+  }
+
+data RelationSpec = RelationSpec
+  { rsTerm :: !Term
+  , rsTypeKey :: !Term
+  , rsFlavor :: !RelationFlavor
+  , rsKey :: !Term
+  , rsDepth :: !Int
+  , rsWellFounded :: !Bool
+  }
+
+data RelationFlavor = RelationReturnsType | RelationReturnsBool | RelationUnknown
+  deriving stock (Eq, Show)
+
+-- | Reconstruct the source telescope used when elaborating a decreases
+-- expression.  This mirrors the signature-driven lambda elaborator: implicit
+-- binders present in the signature but absent from the source are still placed
+-- in the context, while explicit source binders keep their written names.
 measureCtxFromSig :: Value -> [Binder] -> CheckM Ctx
 measureCtxFromSig sigTy binders = go emptyCtx sigTy binders
   where
     go ctx _ [] = pure ctx
-    go ctx ty0 (b : rest) = do
+    go ctx ty0 bs@(b : rest) = do
       ty <- forceM ty0
       case ty of
-        VPi Impl q nm dom clo
+        VPi Impl _ nm dom clo
           | not (bImplicit b)
-          , (nameText <$> bName b) /= Just nm ->
-              skipImplicit ctx q nm dom clo (b : rest)
-        VPi Impl q nm dom clo
-          | bImplicit b
-          , nm /= "_"
-          , (nameText <$> bName b) /= Just nm
-          , Just tyE <- binderTypeExpr b -> do
-              st0 <- get
-              nBefore <- gets (length . csDiags)
-              ok <- do
-                (tyTm, _) <- inferType ctx tyE
-                tyV <- evalIn ctx tyTm
-                unify ctx dom tyV
-              nAfter <- gets (length . csDiags)
-              put st0
-              if ok && nAfter == nBefore
-                then claim ctx Impl nm dom clo b rest
-                else skipImplicit ctx q nm dom clo (b : rest)
-        VPi ic _ nm dom clo -> claim ctx ic nm dom clo b rest
-        _ -> do
-          dom <- case binderTypeExpr b of
-            Just tyE -> do
-              (tyTm, _) <- inferType ctx tyE
-              evalIn ctx tyTm
-            Nothing -> freshMetaV ctx
-          let bn = fromMaybe "_" (nameText <$> bName b)
-          go (bindCtx bn (bImplicit b) dom ctx) ty0 rest
-
-    skipImplicit ctx _ nm dom clo bs = do
-      let ctx' = bindCtx nm True dom ctx
-      cod <- clApp clo (VRigid (ctxLen ctx) [])
-      go ctx' cod bs
-
-    claim ctx _ nm dom clo b rest = do
-      let bn = fromMaybe nm (nameText <$> bName b)
-      let ctx' = bindCtx bn (bImplicit b) dom ctx
-      cod <- clApp clo (VRigid (ctxLen ctx) [])
-      go ctx' cod rest
+          , (nameText <$> bName b) /= Just nm -> do
+              cod <- clApp clo (VRigid (ctxLen ctx) [])
+              go (bindCtx nm True dom ctx) cod bs
+        VPi _ _ nm dom clo -> do
+          let bn = fromMaybe nm (nameText <$> bName b)
+          cod <- clApp clo (VRigid (ctxLen ctx) [])
+          go (bindCtx bn (bImplicit b) dom ctx) cod rest
+        _ -> pure ctx
 
 ctxNatLevels :: Ctx -> CheckM (Set Int)
-ctxNatLevels ctx = do
-  let n = ctxLen ctx
-  fmap (Set.fromList . catMaybes) $
-    forM (zip [0 :: Int ..] (ctxEntries ctx)) $ \(ix, entry) -> do
-      ty <- forceM (ceType entry)
-      pure $
-        if isNatTy ty
-          then Just (n - 1 - ix)
-          else Nothing
+ctxNatLevels ctx =
+  Set.fromList . catMaybes <$>
+    forM (zip [0 :: Int ..] (ctxEntries ctx)) (\(i, e) -> do
+      ty <- forceM (ceType e)
+      let lvl = ctxLen ctx - 1 - i
+      pure $ case ty of
+        VGlobN g [] | g == gPrel "Nat" -> Just lvl
+        _ -> Nothing)
+
+prepareTermFun :: TerminationDecl -> CheckM TermFun
+prepareTermFun td = do
+  ctx <- measureCtxFromSig (tdSigType td) (tdBinders td)
+  natLvls <- ctxNatLevels ctx
+  let (params, body, depth0) = peelTermParams (tdCoreBody td)
+      explParams = [lvl | (Expl, lvl) <- params]
+      explNames = [nameText n | b <- tdBinders td, not (bImplicit b), Just n <- [bName b]]
+  mSpec <- case tdDecreases td of
+    Just (DecMeasure measure byRel usingProof) -> do
+      (m0, mTy0) <- infer ctx measure
+      (mTm0, mTy) <- insertAllImplicits ctx (exprSpan measure) m0 mTy0
+      mTm <- normalizeTermAt (ctxLen ctx) mTm0
+      mTyKey <- quoteIn ctx mTy >>= normalizeTermAt (ctxLen ctx)
+      relSpec <- traverse (prepareRelationSpec ctx (ctxLen ctx) mTy) byRel
+      pure (Just (MeasureSpec mTm mTyKey relSpec usingProof (ctxLen ctx)))
+    _ -> pure Nothing
+  pure
+    TermFun
+      { tfDecl = td
+      , tfName = tdName td
+      , tfCtx = ctx
+      , tfNatLvls = natLvls
+      , tfParams = params
+      , tfExplParams = explParams
+      , tfParamNames = explNames
+      , tfBody = body
+      , tfDepth = depth0
+      , tfMeasure = mSpec
+      }
+
+prepareRelationSpec :: Ctx -> Int -> Value -> Expr -> CheckM RelationSpec
+prepareRelationSpec ctx d measureTy relE = do
+  checkedType <- tryRelationCheck ctx measureTy relE RelationReturnsType
+  checked <- case checkedType of
+    Just ok -> pure (Just ok)
+    Nothing -> tryRelationCheck ctx measureTy relE RelationReturnsBool
+  case checked of
+    Just (rTm0, rTy, flavor) -> do
+      rTm <- normalizeTermAt d rTm0
+      rTyKey <- quoteIn ctx rTy >>= normalizeTermAt d
+      rKey <- relationCanonicalKey d flavor rTm
+      wf <- relationWellFoundedEvidence ctx d measureTy rTm flavor
+      pure (RelationSpec rTm rTyKey flavor rKey d wf)
+    Nothing -> do
+      -- Keep the relation syntactically available for diagnostics and keys,
+      -- but classify it as unusable for termination.  This path is reached
+      -- only after the expression failed to check as either
+      -- m -> m -> Type or m -> m -> Bool.
+      (r0, rTy0) <- infer ctx relE
+      (rTm0, rTy) <- insertAllImplicits ctx (exprSpan relE) r0 rTy0
+      rTm <- normalizeTermAt d rTm0
+      rTyKey <- quoteIn ctx rTy >>= normalizeTermAt d
+      rKey <- relationCanonicalKey d RelationUnknown rTm
+      pure (RelationSpec rTm rTyKey RelationUnknown rKey d False)
+
+relationCanonicalKey :: Int -> RelationFlavor -> Term -> CheckM Term
+relationCanonicalKey d flavor relTm = do
+  isLt <- case flavor of
+    RelationReturnsBool -> relationIsPrimitiveLtInt d relTm
+    _ -> pure False
+  if isLt
+    then pure (CGlob (GName primModule "ltInt"))
+    else normalizeTermAt d relTm
+
+relationIsPrimitiveLtInt :: Int -> Term -> CheckM Bool
+relationIsPrimitiveLtInt d relTm = do
+  relNorm <- normalizeTermAt d relTm
+  if directLt relNorm
+    then pure True
+    else do
+      let x = CVar 1
+          y = CVar 0
+          relUnderBinders = shiftTerm 2 0 relNorm
+          applied = CApp Expl (CApp Expl relUnderBinders x) y
+      appliedNorm <- normalizeTermAt (d + 2) applied
+      pure $ case spineOfTerm appliedNorm of
+        (CGlob (GName m "ltInt"), args) | m == primModule ->
+          case last2 [a | (Expl, a) <- args] of
+            Just (a, b) -> a == x && b == y
+            Nothing -> False
+        _ -> False
   where
-    isNatTy = \case
-      VGlobN g [] -> gnameText g == "Nat"
+    directLt = \case
+      CGlob (GName m "ltInt") -> m == primModule
       _ -> False
 
--- Structural-descent verification (§15.3 minimum, direct recursion):
--- accepted iff some explicit parameter position strictly decreases at every
--- direct self-call, where "decreases" means the argument is a variable bound
--- by a constructor sub-pattern of a match on that parameter (or a variable
--- transitively below it).
-structuralOK :: GName -> [Binder] -> Term -> Bool
-structuralOK g binders = structuralOKOn g Nothing binders
+tryRelationCheck :: Ctx -> Value -> Expr -> RelationFlavor -> CheckM (Maybe (Term, Value, RelationFlavor))
+tryRelationCheck ctx measureTy relE flavor = do
+  expected <- relationExpectedType ctx measureTy flavor
+  saved <- get
+  let diagCount0 = length (csDiags saved)
+  r0 <- withDemand DemandRead (check ctx relE expected)
+  diagCount1 <- gets (length . csDiags)
+  if diagCount1 == diagCount0
+    then do
+      rTm <- zonkTermM (ctxLen ctx) r0
+      pure (Just (rTm, expected, flavor))
+    else put saved >> pure Nothing
 
-structuralNamedOK :: GName -> [Text] -> [Binder] -> Term -> Bool
-structuralNamedOK g names binders = structuralOKOn g (Just wanted) binders
+relationExpectedType :: Ctx -> Value -> RelationFlavor -> CheckM Value
+relationExpectedType ctx measureTy flavor = do
+  mTyTm <- quoteIn ctx measureTy
+  let cod = case flavor of
+        RelationReturnsType -> CSort 0
+        RelationReturnsBool -> CGlob (gPrel "Bool")
+        RelationUnknown -> CSort 0
+      tyTm = CPi Expl QW "_x" mTyTm (CPi Expl QW "_y" (shiftTerm 1 0 mTyTm) cod)
+  evalIn ctx tyTm
+
+-- | Evidence that an explicit `by R` relation is well-founded.  The current
+-- surface language exposes well-foundedness through `WellFoundedRelation A`:
+-- if instance search can synthesize such a dictionary and its `rel` member is
+-- definitionally equal to R, then R carries the same well-founded order.  This
+-- keeps proof-directed decreases conservative: a per-call proof proves only
+-- the local descent fact; the relation itself still needs a well-founded
+-- source.
+relationWellFoundedEvidence :: Ctx -> Int -> Value -> Term -> RelationFlavor -> CheckM Bool
+relationWellFoundedEvidence _ctx _d _measureTy _relTm flavor = do
+  case flavor of
+    -- The current prelude exposes `WellFoundedRelation.rel`, but not a real
+    -- inspectable accessibility proof.  Treating erased placeholders as
+    -- well-foundedness would make arbitrary user relations acceptable, so
+    -- Type-valued relations remain uncertified here.
+    RelationReturnsType -> pure False
+    -- Bool-valued relations are a compiler convenience for primitive orders.
+    -- They are accepted without an explicit WF dictionary only when the
+    -- arithmetic/normalization prover can decide the call-site fact itself.
+    -- A user proof for an arbitrary Bool relation does not make the relation
+    -- well-founded.
+    _ -> pure False
+
+peelTermParams :: Term -> ([(Icit, Int)], Term, Int)
+peelTermParams = go [] 0
   where
-    explicitNames = [nameText n | b <- binders, not (bImplicit b), Just n <- [bName b]]
-    wanted = [i | nm <- names, Just i <- [elemIndex nm explicitNames]]
+    go acc d = \case
+      CLam ic _ _ b -> go (acc ++ [(ic, d)]) (d + 1) b
+      t -> (acc, t, d)
 
-structuralOKOn :: GName -> Maybe [Int] -> [Binder] -> Term -> Bool
-structuralOKOn g mwanted _ tm0 =
-  let (params, body, depth0) = peel [] tm0 0
-      candidates = maybe [0 .. length params - 1] (filter (< length params)) mwanted
-   in case params of
-        [] -> False
-        _ | null candidates -> False
-        _ ->
-          let calls = collect depth0 Map.empty body
-           in case calls of
-                Nothing -> False -- a self-call escaped spine position
-                Just cs -> any (\i -> all (decreasingAt i) cs) candidates
+-- ── SCC call-edge collection ─────────────────────────────────────────
+
+data CallEdge = CallEdge
+  { edgeFrom :: !GName
+  , edgeTo :: !GName
+  , edgeDepth :: !Int
+  , edgeFacts :: ![AFact]
+  , edgeBoolFacts :: ![(Term, Bool)]
+  , edgeArgs :: ![(Icit, Term)]
+  , edgeStrictRoots :: !(Map Int Int)
+  }
+  deriving stock (Show)
+
+collectSccEdges :: Map GName TermFun -> CheckM (Maybe [CallEdge])
+collectSccEdges funMap = do
+  edges <- mapM (collectFunEdges funMap) (Map.elems funMap)
+  pure (concat <$> sequence edges)
+
+collectFunEdges :: Map GName TermFun -> TermFun -> CheckM (Maybe [CallEdge])
+collectFunEdges funMap src = go (tfDepth src) Map.empty [] [] (tfBody src)
   where
-    -- peel leading lambdas; record levels of explicit params
-    peel acc (CLam ic _ _ b) d = peel (acc ++ [(ic, d)]) b (d + 1)
-    peel acc t d = ([lvl | (Expl, lvl) <- acc], t, d)
+    sccNames = Map.keysSet funMap
+    paramRoot = Map.fromList [(lvl, ix) | (ix, lvl) <- zip [0 :: Int ..] (tfExplParams src)]
 
-    paramLevels = let (ps, _, _) = peel [] tm0 0 in ps
+    rootOf lvl sub = Map.lookup lvl sub <|> Map.lookup lvl paramRoot
 
-    -- collect self-calls: depth and per-call explicit args as
-    -- (argIndex, Maybe boundLevelSubOfParam)
-    -- subMap: level -> root param level it descends from
-    collect :: Int -> Map.Map Int Int -> Term -> Maybe [[(Int, Maybe Int)]]
-    collect d sub t = case t of
+    go :: Int -> Map Int Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
+    go d sub facts boolFacts t = case t of
       CApp {} ->
         case spineOfTerm t of
-          (CGlob g', args) | g' == g ->
-              Just [zipWith (\i a -> (i, argRoot d sub a)) [0 ..] [a | (Expl, a) <- args]]
+          (CGlob callee, args) | Set.member callee sccNames -> do
+            argEdges <- joinManyEdges <$> mapM (go d sub facts boolFacts . snd) args
+            pure ((CallEdge (tfName src) callee d facts boolFacts args sub :) <$> argEdges)
           (f, args) -> do
-            rs <- mapM (collect d sub . snd) args
-            r0 <- collect d sub f
-            pure (r0 ++ concat rs)
-      CGlob g' | g' == g -> Nothing -- bare self-reference (escapes analysis)
-      CLam _ _ _ b -> collect (d + 1) sub b
-      CPi _ _ _ a b -> (++) <$> collect d sub a <*> collect (d + 1) sub b
-      CLet _ _ a b c -> do
-        ra <- collect d sub a
-        rb <- collect d sub b
-        rc <- collect (d + 1) sub c
-        pure (ra ++ rb ++ rc)
-      CLetRec _ _ a b c -> do
-        ra <- collect d sub a
-        rb <- collect (d + 1) sub b
-        rc <- collect (d + 1) sub c
-        pure (ra ++ rb ++ rc)
-      CIf a b c -> concat3 <$> collect d sub a <*> collect d sub b <*> collect d sub c
+            rf <- go d sub facts boolFacts f
+            rs <- joinManyEdges <$> mapM (go d sub facts boolFacts . snd) args
+            pure (joinEdges rf rs)
+      CGlob callee | Set.member callee sccNames -> pure Nothing
+      CLam _ _ _ b -> go (d + 1) sub facts boolFacts b
+      CPi _ _ _ a b -> joinEdges <$> go d sub facts boolFacts a <*> go (d + 1) sub facts boolFacts b
+      CLet _ _ a b c ->
+        join3Edges
+          <$> go d sub facts boolFacts a
+          <*> go d sub facts boolFacts b
+          <*> go (d + 1) sub facts boolFacts c
+      CLetRec _ _ a b c ->
+        join3Edges
+          <$> go d sub facts boolFacts a
+          <*> go (d + 1) sub facts boolFacts b
+          <*> go (d + 1) sub facts boolFacts c
+      CIf c th el -> do
+        rc <- go d sub facts boolFacts c
+        c' <- normalizeTermAt d c
+        rt <- go d sub (assumeBool d True c' ++ facts) ((c', True) : boolFacts) th
+        re <- go d sub (assumeBool d False c' ++ facts) ((c', False) : boolFacts) el
+        pure (joinManyEdges [rc, rt, re])
       CMatch scrut alts -> do
-        rs <- collect d sub scrut
-        let scrutLvl = case scrut of
-              CVar i -> rootOf (d - 1 - i)
+        rs <- go d sub facts boolFacts scrut
+        let scrutRoot = case scrut of
+              CVar i -> rootOf (d - 1 - i) sub
+              CProj e _ -> structuralArgRoot src d sub e
+              CProjAt e _ _ -> structuralArgRoot src d sub e
               _ -> Nothing
-            rootOf lvl
-              | lvl `elem` paramLevels = Just lvl
-              | otherwise = Map.lookup lvl sub
         ralts <- forM alts $ \(CaseAlt pat gd b) -> do
           let nb = patBindersC pat
+              d' = d + nb
+              flags = patStrictBinderFlags pat
               newLvls = [d .. d + nb - 1]
-              sub' = case scrutLvl of
-                Just root | ctorBinds pat -> foldr (\l m -> Map.insert l root m) sub newLvls
-                _ -> sub
-          rg <- maybe (Just []) (collect (d + nb) sub') gd
-          rb <- collect (d + nb) sub' b
-          pure (rg ++ rb)
-        pure (rs ++ concat ralts)
-      CCtor _ as -> concat <$> mapM (collect d sub) as
-      CRecordT fs -> concat <$> mapM (collect d sub . snd) fs
-      CRecordV fs -> concat <$> mapM (collect d sub . snd) fs
-      CProj e _ -> collect d sub e
-      CProjAt e _ _ -> collect d sub e
-      CVariantT ms -> concat <$> mapM (collect d sub) ms
-      CInject _ e -> collect d sub e
-      CThunkE e -> collect d sub e
-      CLazyE e -> collect d sub e
-      CForceE e -> collect d sub e
-      CDo _ _ -> Just [] -- loops handle their own progress; no self-calls expected
-      CQuote _ slots -> concat <$> mapM (collect d sub) slots
-      _ -> Just []
-      where
-        concat3 a b c = a ++ b ++ c
+              sub' = case scrutRoot of
+                Just root ->
+                  foldr
+                    (\(lvl, strict) acc -> if strict then Map.insert lvl root acc else acc)
+                    sub
+                    (zip newLvls flags)
+                Nothing -> sub
+          rg <- maybe (pure (Just [])) (go d' sub' facts boolFacts) gd
+          gd' <- traverse (normalizeTermAt d') gd
+          let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd'
+              boolFacts' = maybe boolFacts (\guardTm -> (guardTm, True) : boolFacts) gd'
+          rb <- go d' sub' facts' boolFacts' b
+          pure (joinEdges rg rb)
+        pure (joinManyEdges (rs : ralts))
+      CCtor _ as -> joinManyEdges <$> mapM (go d sub facts boolFacts) as
+      CRecordT fs -> joinManyEdges <$> mapM (go d sub facts boolFacts . snd) fs
+      CRecordV fs -> joinManyEdges <$> mapM (go d sub facts boolFacts . snd) fs
+      CProj e _ -> go d sub facts boolFacts e
+      CProjAt e _ _ -> go d sub facts boolFacts e
+      CVariantT ms -> joinManyEdges <$> mapM (go d sub facts boolFacts) ms
+      CInject _ e -> go d sub facts boolFacts e
+      CThunkE e -> go d sub facts boolFacts e
+      CLazyE e -> go d sub facts boolFacts e
+      CForceE e -> go d sub facts boolFacts e
+      CSealE _ e -> go d sub facts boolFacts e
+      CSigT _ e -> go d sub facts boolFacts e
+      CQuote _ slots -> joinManyEdges <$> mapM (go d sub facts boolFacts) slots
+      CDo _ items -> joinManyEdges <$> mapM (goK d sub facts boolFacts) items
+      _ -> pure (Just [])
 
-    ctorBinds = \case
-      CPCtor _ _ -> True
-      CPInject _ _ -> True
-      CPOr ps _ -> all ctorBinds ps
-      CPAs _ p -> ctorBinds p
-      _ -> False
+    goK :: Int -> Map Int Int -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
+    goK d sub facts boolFacts = \case
+      KBind _ _ t -> go d sub facts boolFacts t
+      KLet _ _ t -> go d sub facts boolFacts t
+      KLetQ _ t m -> do
+        rt <- go d sub facts boolFacts t
+        rm <- maybe (pure (Just [])) (go d sub facts boolFacts . snd) m
+        pure (joinEdges rt rm)
+      KExpr t -> go d sub facts boolFacts t
+      KVarItem _ t -> go d sub facts boolFacts t
+      KAssign lhs _ rhs -> joinEdges <$> go d sub facts boolFacts lhs <*> go d sub facts boolFacts rhs
+      KReturn t -> go d sub facts boolFacts t
+      KWhile _ c b e ->
+        joinManyEdges <$>
+          sequence (go d sub facts boolFacts c : map (goK d sub facts boolFacts) b ++ maybe [] (map (goK d sub facts boolFacts)) e)
+      KFor _ _ s b e ->
+        joinManyEdges <$>
+          sequence (go d sub facts boolFacts s : map (goK d sub facts boolFacts) b ++ maybe [] (map (goK d sub facts boolFacts)) e)
+      KIf alts e -> do
+        ralts <- forM alts $ \(c, b) -> do
+          rc <- go d sub facts boolFacts c
+          c' <- normalizeTermAt d c
+          rb <- joinManyEdges <$> mapM (goK d sub (assumeBool d True c' ++ facts) ((c', True) : boolFacts)) b
+          pure (joinEdges rc rb)
+        relse <- maybe (pure []) (mapM (goK d sub facts boolFacts)) e
+        pure (joinManyEdges (ralts ++ relse))
+      KDefer _ t -> go d sub facts boolFacts t
+      KUsing _ a r -> joinEdges <$> go d sub facts boolFacts a <*> go d sub facts boolFacts r
+      KSubDo _ b -> joinManyEdges <$> mapM (goK d sub facts boolFacts) b
+      _ -> pure (Just [])
 
-    -- the root param level an argument descends from, if any
-    argRoot d sub = \case
+    joinEdges :: Maybe [CallEdge] -> Maybe [CallEdge] -> Maybe [CallEdge]
+    joinEdges (Just a) (Just b) = Just (a ++ b)
+    joinEdges _ _ = Nothing
+
+    join3Edges :: Maybe [CallEdge] -> Maybe [CallEdge] -> Maybe [CallEdge] -> Maybe [CallEdge]
+    join3Edges a b c = joinManyEdges [a, b, c]
+
+    joinManyEdges :: [Maybe [CallEdge]] -> Maybe [CallEdge]
+    joinManyEdges xs = concat <$> sequence xs
+
+patStrictBinderFlags :: CorePat -> [Bool]
+patStrictBinderFlags = \case
+  CPWild -> []
+  CPVar _ -> [False]
+  CPLit _ -> []
+  CPCtor _ ps -> concatMap (map (const True) . patAllBinderFlags) ps
+  CPTuple ps -> concatMap (map (const True) . patAllBinderFlags) ps
+  CPRecord fs mr -> concatMap (map (const True) . patAllBinderFlags . snd) fs ++ maybe [] (const [False]) mr
+  CPInject _ p -> map (const True) (patAllBinderFlags p)
+  CPInjectRest _ -> [False]
+  CPOr ps _ -> maybe [] patStrictBinderFlags (listToMaybe ps)
+  CPAs _ p -> False : patStrictBinderFlags p
+
+patAllBinderFlags :: CorePat -> [Bool]
+patAllBinderFlags p = replicate (patBindersC p) False
+
+-- ── Structural size-change checking ──────────────────────────────────
+
+data Change = ChWeak | ChStrict
+  deriving stock (Eq, Ord, Show)
+
+data SCGraph = SCGraph
+  { scFrom :: !GName
+  , scTo :: !GName
+  , scRows :: !Int
+  , scCols :: !Int
+  , scMat :: !(Map (Int, Int) Change)
+  }
+  deriving stock (Eq, Ord, Show)
+
+structuralSccOK :: Map GName TermFun -> Maybe (Map GName [Text]) -> CheckM Bool
+structuralSccOK funMap selectedNames = do
+  mEdges <- collectSccEdges funMap
+  case mEdges of
+    Nothing -> pure False
+    Just edges -> case traverse (edgeStructuralGraph funMap selectedNames) edges of
+      Nothing -> pure False
+      Just graphs -> pure (not (null graphs) && sizeChangeTerminates graphs)
+
+edgeStructuralGraph :: Map GName TermFun -> Maybe (Map GName [Text]) -> CallEdge -> Maybe SCGraph
+edgeStructuralGraph funMap selectedNames edge = do
+  src <- Map.lookup (edgeFrom edge) funMap
+  tgt <- Map.lookup (edgeTo edge) funMap
+  let srcParams = selectedParamLevels src selectedNames
+      tgtParams = selectedParamLevels tgt selectedNames
+      explArgs = [a | (Expl, a) <- edgeArgs edge]
+      tgtArgs = take (length tgtParams) explArgs
+  if null srcParams || length tgtArgs /= length tgtParams
+    then Nothing
+    else
+      let entries =
+            [ ((i, j), ch)
+            | (j, arg) <- zip [0 :: Int ..] tgtArgs
+            , Just (i, ch) <- [structuralArgChange src srcParams (edgeDepth edge) (edgeStrictRoots edge) arg]
+            ]
+       in Just
+            ( SCGraph
+                { scFrom = edgeFrom edge
+                , scTo = edgeTo edge
+                , scRows = length srcParams
+                , scCols = length tgtParams
+                , scMat = Map.fromListWith strongerChange entries
+                }
+            )
+
+selectedParamLevels :: TermFun -> Maybe (Map GName [Text]) -> [Int]
+selectedParamLevels f Nothing = tfExplParams f
+selectedParamLevels f (Just byName) =
+  case Map.lookup (tfName f) byName of
+    Nothing -> []
+    Just names ->
+      [ lvl
+      | wanted <- names
+      , Just ix <- [elemIndex wanted (tfParamNames f)]
+      , Just lvl <- [nthMaybe ix (tfExplParams f)]
+      ]
+
+structuralArgChange :: TermFun -> [Int] -> Int -> Map Int Int -> Term -> Maybe (Int, Change)
+structuralArgChange _src selected d sub = go
+  where
+    selectedIx = Map.fromList (zip selected [0 :: Int ..])
+    go = \case
       CVar i ->
         let lvl = d - 1 - i
-         in Map.lookup lvl sub
+         in case Map.lookup lvl selectedIx of
+              Just ix -> Just (ix, ChWeak)
+              Nothing -> do
+                root <- Map.lookup lvl sub
+                ix <- Map.lookup root selectedIx
+                pure (ix, ChStrict)
+      CProj e _ -> strictRoot e
+      CProjAt e _ _ -> strictRoot e
       _ -> Nothing
+    strictRoot e = do
+      lvl <- structuralArgRootLevel d e
+      root <- Map.lookup lvl sub <|> Just lvl
+      ix <- Map.lookup root selectedIx
+      pure (ix, ChStrict)
 
-    decreasingAt i call =
-      case lookup i call of
-        Just (Just root) -> root `elem` paramLevels
-        _ -> False
+structuralArgRoot :: TermFun -> Int -> Map Int Int -> Term -> Maybe Int
+structuralArgRoot src d sub t = do
+  lvl <- structuralArgRootLevel d t
+  let paramRoot = Map.fromList [(lvl0, ix) | (ix, lvl0) <- zip [0 :: Int ..] (tfExplParams src)]
+  Map.lookup lvl sub <|> Map.lookup lvl paramRoot
+
+structuralArgRootLevel :: Int -> Term -> Maybe Int
+structuralArgRootLevel d = \case
+  CVar i -> Just (d - 1 - i)
+  CProj e _ -> structuralArgRootLevel d e
+  CProjAt e _ _ -> structuralArgRootLevel d e
+  _ -> Nothing
+
+sizeChangeTerminates :: [SCGraph] -> Bool
+sizeChangeTerminates initial = go (Set.fromList initial) initial (0 :: Int)
+  where
+    graphCap = 4096 :: Int
+    go allGraphs work fuel
+      | Set.size allGraphs > graphCap = False
+      | fuel > graphCap = False
+      | null work = all idempotentCycleHasStrictDiagonal (Set.toList allGraphs)
+      | otherwise =
+          let newComps =
+                nub
+                  [ comp
+                  | g1 <- work
+                  , g2 <- Set.toList allGraphs
+                  , comp <- catMaybes [composeSC g1 g2, composeSC g2 g1]
+                  , not (Set.member comp allGraphs)
+                  ]
+              all' = foldr Set.insert allGraphs newComps
+           in go all' newComps (fuel + 1)
+
+    idempotentCycleHasStrictDiagonal g
+      | scFrom g /= scTo g = True
+      | Just gg <- composeSC g g
+      , gg == g = hasStrictDiagonal g
+      | otherwise = True
+
+    hasStrictDiagonal g =
+      let n = min (scRows g) (scCols g)
+       in any (\i -> Map.lookup (i, i) (scMat g) == Just ChStrict) [0 .. n - 1]
+
+composeSC :: SCGraph -> SCGraph -> Maybe SCGraph
+composeSC g1 g2
+  | scTo g1 /= scFrom g2 = Nothing
+  | otherwise =
+      Just
+        SCGraph
+          { scFrom = scFrom g1
+          , scTo = scTo g2
+          , scRows = scRows g1
+          , scCols = scCols g2
+          , scMat = Map.fromListWith strongerChange entries
+          }
+  where
+    entries =
+      [ ((i, k), composeChange c1 c2)
+      | ((i, j), c1) <- Map.toList (scMat g1)
+      , ((j', k), c2) <- Map.toList (scMat g2)
+      , j == j'
+      ]
+
+composeChange :: Change -> Change -> Change
+composeChange ChStrict _ = ChStrict
+composeChange _ ChStrict = ChStrict
+composeChange ChWeak ChWeak = ChWeak
+
+strongerChange :: Change -> Change -> Change
+strongerChange ChStrict _ = ChStrict
+strongerChange _ ChStrict = ChStrict
+strongerChange ChWeak ChWeak = ChWeak
 
 -- ── Explicit measure checking ────────────────────────────────────────
 
-data MeasureCall = MeasureCall !Int ![AFact] !Term !Term
-  deriving stock (Show)
+data MeasureCall = MeasureCall
+  { mcDepth :: !Int
+  , mcFacts :: ![AFact]
+  , mcOldMeasure :: !Term
+  , mcNewMeasure :: !Term
+  , mcRelation :: !(Maybe RelationSpec)
+  , mcProof :: !(Maybe Expr)
+  , mcSource :: !TermFun
+  }
 
 data AExpr
   = AConst !Integer
@@ -11923,32 +12443,132 @@ data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
 data ALin = ALin !Integer !(Map.Map Int Integer)
   deriving stock (Eq, Show)
 
-measureOK :: GName -> Int -> Set Int -> Term -> Term -> Bool
-measureOK g oldDepth natLvls measureTm tm0 =
-  let (params, body, depth0) = peel [] tm0 0
-   in not (null params)
-        && case collectMeasureCalls g params oldDepth measureTm depth0 [] body of
-          Nothing -> False
-          Just calls -> not (null calls) && all (measureCallOK natLvls) calls
-  where
-    peel acc (CLam ic _ _ b) d = peel (acc ++ [(ic, d)]) b (d + 1)
-    peel acc t d = (acc, t, d)
+measureSccOK :: Map GName TermFun -> CheckM Bool
+measureSccOK funMap = do
+  let specs = map tfMeasure (Map.elems funMap)
+  if any isNothing specs || not (measureSpecsCompatible (catMaybes specs))
+    then pure False
+    else do
+      mEdges <- collectSccEdges funMap
+      case mEdges of
+        Nothing -> pure False
+        Just edges -> case traverse (measureCallOfEdge funMap) edges of
+          Nothing -> pure False
+          Just calls -> do
+            oks <- mapM measureCallOK calls
+            pure (not (null calls) && and oks)
 
-measureCallOK :: Set Int -> MeasureCall -> Bool
-measureCallOK natLvls (MeasureCall d facts oldM newM) =
+measureSpecsCompatible :: [MeasureSpec] -> Bool
+measureSpecsCompatible [] = False
+measureSpecsCompatible specs@(s0 : _) =
+  sameArity && sameMeasureType && sameRelationShape
+  where
+    arity s = length (rankComponents (msMeasureTerm s))
+    sameArity = all (\s -> arity s == arity s0) specs
+    sameMeasureType = all (\s -> msMeasureTypeKey s == msMeasureTypeKey s0) specs
+    relKey = fmap rsKey . msRelation
+    relType = fmap rsTypeKey . msRelation
+    sameRelationShape =
+      all (\s -> fmap rsFlavor (msRelation s) == fmap rsFlavor (msRelation s0)) specs
+        && all (\s -> relKey s == relKey s0) specs
+        && all (\s -> relType s == relType s0) specs
+
+measureCallOfEdge :: Map GName TermFun -> CallEdge -> Maybe MeasureCall
+measureCallOfEdge funMap edge = do
+  src <- Map.lookup (edgeFrom edge) funMap
+  tgt <- Map.lookup (edgeTo edge) funMap
+  srcSpec <- tfMeasure src
+  tgtSpec <- tfMeasure tgt
+  let tgtFormalLvls = map snd (tfParams tgt)
+      callArgs = take (length tgtFormalLvls) (edgeArgs edge)
+  if length callArgs /= length tgtFormalLvls || edgeDepth edge < msDepth srcSpec
+    then Nothing
+    else
+      let subst = Map.fromList (zip tgtFormalLvls (map snd callArgs))
+          oldHere = shiftTerm (edgeDepth edge - msDepth srcSpec) 0 (msMeasureTerm srcSpec)
+          newHere = instantiateByLevel (msDepth tgtSpec) (edgeDepth edge) subst (msMeasureTerm tgtSpec)
+       in Just
+            MeasureCall
+              { mcDepth = edgeDepth edge
+              , mcFacts = edgeFacts edge
+              , mcOldMeasure = oldHere
+              , mcNewMeasure = newHere
+              , mcRelation = msRelation srcSpec
+              , mcProof = msProof srcSpec
+              , mcSource = src
+              }
+
+measureCallOK :: MeasureCall -> CheckM Bool
+measureCallOK call = do
+  let d = mcDepth call
+      facts = mcFacts call
+      oldM0 = mcOldMeasure call
+      newM0 = mcNewMeasure call
+      mRel = mcRelation call
+      mProof = mcProof call
+      src = mcSource call
+  oldM <- normalizeTermAt d oldM0
+  newM <- normalizeTermAt d newM0
+  case (mRel, mProof) of
+    (Nothing, Nothing) -> defaultMeasureCallOK (tfNatLvls src) d facts oldM newM
+    (Nothing, Just _proofE) ->
+      -- `using` is parsed and retained, but erased proof terms are not a
+      -- termination oracle. Until proof checking produces inspectable descent
+      -- evidence, a proof annotation can only accompany an internally proved
+      -- measure decrease.
+      defaultMeasureCallOK (tfNatLvls src) d facts oldM newM
+    (Just rel, Nothing) -> do
+      wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
+      holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
+      pure (wf && holds)
+    (Just rel, Just _proofE) -> do
+      wf <- relationWellFoundedAtCall (tfNatLvls src) d facts rel oldM newM
+      holds <- relationCallHolds (tfNatLvls src) d facts rel oldM newM
+      pure (wf && holds)
+
+defaultMeasureCallOK :: Set Int -> Int -> [AFact] -> Term -> Term -> CheckM Bool
+defaultMeasureCallOK natLvls d facts oldM newM = do
   let oldCs = rankComponents oldM
       newCs = rankComponents newM
-   in length oldCs == length newCs
-        && all componentNonNegative oldCs
-        && all componentNonNegative newCs
-        && lexDecreases (zip oldCs newCs)
+  if length oldCs /= length newCs
+    then pure False
+    else do
+      nonNegOld <- mapM (componentNonNegative oldCs) oldCs
+      nonNegNew <- mapM (componentNonNegative newCs) newCs
+      dec <- lexDecreases (zip oldCs newCs)
+      pure (and nonNegOld && and nonNegNew && dec)
   where
-    lexDecreases [] = False
-    lexDecreases ((oldC, newC) : rest) =
-      proveLt natLvls facts d newC oldC
-        || (proveEq natLvls facts d newC oldC && lexDecreases rest)
+    componentNonNegative _ t = proveNonNeg natLvls facts d t
+    lexDecreases [] = pure False
+    lexDecreases ((oldC, newC) : rest) = do
+      lt <- proveLt natLvls facts d newC oldC
+      if lt
+        then pure True
+        else do
+          eq <- proveEq natLvls facts d newC oldC
+          if eq then lexDecreases rest else pure False
 
-    componentNonNegative t = proveNonNeg natLvls facts d t
+relationWellFoundedAtCall :: Set Int -> Int -> [AFact] -> RelationSpec -> Term -> Term -> CheckM Bool
+relationWellFoundedAtCall natLvls d facts rel oldM newM
+  | rsWellFounded rel = pure True
+  | otherwise = do
+      relHere <- normalizeTermAt d (shiftTerm (d - rsDepth rel) 0 (rsTerm rel))
+      isLt <- relationIsPrimitiveLtInt d relHere
+      if isLt
+        then do
+          oldOK <- and <$> mapM (proveNonNeg natLvls facts d) (rankComponents oldM)
+          newOK <- and <$> mapM (proveNonNeg natLvls facts d) (rankComponents newM)
+          pure (oldOK && newOK)
+        else pure False
+
+relationCallHolds :: Set Int -> Int -> [AFact] -> RelationSpec -> Term -> Term -> CheckM Bool
+relationCallHolds natLvls d facts rel oldM newM = do
+  relHere <- normalizeTermAt d (shiftTerm (d - rsDepth rel) 0 (rsTerm rel))
+  goal <- normalizeTermAt d (CApp Expl (CApp Expl relHere newM) oldM)
+  case rsFlavor rel of
+    RelationReturnsBool -> proveBoolTrue natLvls facts d goal
+    RelationReturnsType -> proveTypeRelationTrue natLvls facts d goal
+    RelationUnknown -> pure False
 
 rankComponents :: Term -> [Term]
 rankComponents = \case
@@ -11969,65 +12589,6 @@ rankComponents = \case
       if ix >= (1 :: Int)
         then Just (ix, tm)
         else Nothing
-
-collectMeasureCalls :: GName -> [(Icit, Int)] -> Int -> Term -> Int -> [AFact] -> Term -> Maybe [MeasureCall]
-collectMeasureCalls g params oldDepth measureTm = go
-  where
-    go d facts t = case t of
-      CApp {} ->
-        case spineOfTerm t of
-          (CGlob g', args) | g' == g -> do
-            let formalLvls = map snd params
-                callArgs = take (length formalLvls) args
-            if length callArgs /= length formalLvls || d < oldDepth
-              then Nothing
-              else do
-                argCalls <- concat <$> mapM (go d facts . snd) args
-                let subst = Map.fromList (zip formalLvls (map snd callArgs))
-                    oldHere = shiftTerm (d - oldDepth) 0 measureTm
-                    newHere = instantiateByLevel oldDepth d subst measureTm
-                pure (MeasureCall d facts oldHere newHere : argCalls)
-          (f, args) -> do
-            rf <- go d facts f
-            rs <- concat <$> mapM (go d facts . snd) args
-            pure (rf ++ rs)
-      CGlob g' | g' == g -> Nothing -- bare self-reference: not a checkable call edge
-      CLam _ _ _ b -> go (d + 1) facts b
-      CPi _ _ _ a b -> (++) <$> go d facts a <*> go (d + 1) facts b
-      CLet _ _ a b c -> concat3 <$> go d facts a <*> go d facts b <*> go (d + 1) facts c
-      CLetRec _ _ a b c -> concat3 <$> go d facts a <*> go (d + 1) facts b <*> go (d + 1) facts c
-      CIf c th el -> do
-        rc <- go d facts c
-        rt <- go d (assumeBool d True c ++ facts) th
-        re <- go d (assumeBool d False c ++ facts) el
-        pure (rc ++ rt ++ re)
-      CMatch scrut alts -> do
-        rs <- go d facts scrut
-        ralts <- forM alts $ \(CaseAlt pat gd b) -> do
-          let nb = patBindersC pat
-              d' = d + nb
-          rg <- maybe (Just []) (go d' facts) gd
-          let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd
-          rb <- go d' facts' b
-          pure (rg ++ rb)
-        pure (rs ++ concat ralts)
-      CCtor _ as -> concat <$> mapM (go d facts) as
-      CRecordT fs -> concat <$> mapM (go d facts . snd) fs
-      CRecordV fs -> concat <$> mapM (go d facts . snd) fs
-      CProj e _ -> go d facts e
-      CProjAt e _ _ -> go d facts e
-      CVariantT ms -> concat <$> mapM (go d facts) ms
-      CInject _ e -> go d facts e
-      CThunkE e -> go d facts e
-      CLazyE e -> go d facts e
-      CForceE e -> go d facts e
-      CSealE _ e -> go d facts e
-      CSigT _ e -> go d facts e
-      CQuote _ slots -> concat <$> mapM (go d facts) slots
-      CDo _ _ -> Just []
-      _ -> Just []
-
-    concat3 a b c = a ++ b ++ c
 
 instantiateByLevel :: Int -> Int -> Map.Map Int Term -> Term -> Term
 instantiateByLevel oldDepth callDepth subst = go oldDepth
@@ -12070,15 +12631,78 @@ instantiateByLevel oldDepth callDepth subst = go oldDepth
       CIf a b c -> CIf (go curDepth a) (go curDepth b) (go curDepth c)
       CQuote qs slots -> CQuote qs (map (go curDepth) slots)
 
+-- ── Normalization and arithmetic evidence ────────────────────────────
+
+normalizeTermAt :: Int -> Term -> CheckM Term
+normalizeTermAt d t = do
+  ec <- ec_
+  let env = [VRigid lvl [] | lvl <- [d - 1, d - 2 .. 0]]
+      v = force ec (eval ec env t)
+  pure (simplifyDecisionTerm (quote ec d v))
+
+simplifyDecisionTerm :: Term -> Term
+simplifyDecisionTerm = go
+  where
+    go = \case
+      CIf c t e ->
+        let c' = go c
+            t' = go t
+            e' = go e
+         in case (c', t', e') of
+              (CCtor g [], _, _) | g == gPrel "True" -> t'
+              (CCtor g [], _, _) | g == gPrel "False" -> e'
+              (_, CCtor gt [], CCtor gf []) | gt == gPrel "True", gf == gPrel "False" -> c'
+              _ -> CIf c' t' e'
+      CMatch (CIf c t e) alts | all ((== 0) . patBindersC . caPat) alts ->
+        go (CIf c (CMatch t alts) (CMatch e alts))
+      CMatch s alts ->
+        let s' = go s
+            alts' = [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
+         in fromMaybe (CMatch s' alts') (reduceSimpleMatch s' alts')
+      CApp ic f a -> CApp ic (go f) (go a)
+      CLam ic q n b -> CLam ic q n (go b)
+      CPi ic q n a b -> CPi ic q n (go a) (go b)
+      CCtor g as -> CCtor g (map go as)
+      CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
+      CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
+      CProj e f -> CProj (go e) f
+      CProjAt e f i -> CProjAt (go e) f i
+      CVariantT ms -> CVariantT (map go ms)
+      CInject tag e -> CInject tag (go e)
+      CLet q n a b c -> CLet q n (go a) (go b) (go c)
+      CLetRec q n a b c -> CLetRec q n (go a) (go b) (go c)
+      CThunkE e -> CThunkE (go e)
+      CLazyE e -> CLazyE (go e)
+      CForceE e -> CForceE (go e)
+      CSealE ls e -> CSealE ls (go e)
+      CSigT ls e -> CSigT ls (go e)
+      CQuote qs slots -> CQuote qs (map go slots)
+      other -> other
+
+    reduceSimpleMatch s alts = firstJust (map fire alts)
+      where
+        fire (CaseAlt p Nothing b)
+          | patBindersC p == 0
+          , simplePatMatches p s = Just b
+        fire _ = Nothing
+
+    simplePatMatches p s = case (p, s) of
+      (CPWild, _) -> True
+      (CPLit l, CLit l') -> l == l'
+      (CPCtor g [], CCtor g' []) -> g == g'
+      (CPInject tag CPWild, CInject tag' _) -> tag == tag'
+      (CPOr ps _, _) -> any (`simplePatMatches` s) ps
+      (CPAs _ p', _) -> simplePatMatches p' s
+      _ -> False
+
+    firstJust [] = Nothing
+    firstJust (Just x : _) = Just x
+    firstJust (Nothing : xs) = firstJust xs
+
 assumeBool :: Int -> Bool -> Term -> [AFact]
-assumeBool d truth t = case t of
-  CApp {}
-    | (CGlob ng, args) <- spineOfTerm t
-    , gnameText ng == "not"
-    , [arg] <- [a | (_, a) <- args] -> assumeBool d (not truth) arg
-  _ -> case boolRel d t of
-    Nothing -> []
-    Just fact -> [if truth then fact else negateFact fact]
+assumeBool d truth t = case boolRel d t of
+  Nothing -> []
+  Just fact -> [if truth then fact else negateFact fact]
 
 negateFact :: AFact -> AFact
 negateFact = \case
@@ -12087,27 +12711,54 @@ negateFact = \case
   AFact ACmpEq _ _ -> AFact ACmpEq (AConst 0) (AConst 1) -- unusable contradiction marker
 
 boolRel :: Int -> Term -> Maybe AFact
-boolRel d t = case spineOfTerm t of
-  (CGlob rg, args) -> do
-    let ex = [a | (Expl, a) <- args]
-    (a, b) <- last2 ex
-    aa <- arithOf d a
-    bb <- arithOf d b
-    case () of
-      _
-        | isTrustedPreludeName ["ltInt"] rg -> pure (AFact ACmpLt aa bb)
-        | isTrustedPreludeName ["leInt"] rg -> pure (AFact ACmpLe aa bb)
-        | isTrustedPreludeName ["eqInt"] rg -> pure (AFact ACmpEq aa bb)
-        | otherwise -> Nothing
-  _ -> Nothing
+boolRel d t0 = case simplifyDecisionTerm t0 of
+  CIf c th el
+    | isTrueTm th, isFalseTm el -> boolRel d c
+    | isFalseTm th, isTrueTm el -> negateFact <$> boolRel d c
+    | isTrueTm th -> do
+        cFact <- boolRel d c
+        elFact <- boolRel d el
+        combineOr cFact elFact
+  t -> case spineOfTerm t of
+    (CGlob rg, args) -> do
+      let ex = [a | (Expl, a) <- args]
+      (a, b) <- last2 ex
+      aa <- arithOf d a
+      bb <- arithOf d b
+      case primName rg of
+        Just "ltInt" -> pure (AFact ACmpLt aa bb)
+        Just "leInt" -> pure (AFact ACmpLe aa bb)
+        Just "eqInt" -> pure (AFact ACmpEq aa bb)
+        _ -> Nothing
+    _ -> Nothing
+  where
+    isTrueTm = \case CCtor g [] -> g == gPrel "True"; _ -> False
+    isFalseTm = \case CCtor g [] -> g == gPrel "False"; _ -> False
+    combineOr (AFact ACmpLt a b) (AFact ACmpEq a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
+    combineOr (AFact ACmpEq a b) (AFact ACmpLt a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
+    combineOr _ _ = Nothing
 
 arithOf :: Int -> Term -> Maybe AExpr
-arithOf d = \case
+arithOf d t0 = case simplifyDecisionTerm t0 of
   CLit (LitInt n) -> Just (AConst n)
   CVar i -> Just (AVar (d - 1 - i))
+  CIf c th el -> arithIf c th el
   t@CApp {} -> arithApp t
   _ -> Nothing
   where
+    arithIf c th el = do
+      fact <- boolRel d c
+      aThen <- arithOf d th
+      aElse <- arithOf d el
+      case fact of
+        AFact cmp x y | cmp == ACmpLe || cmp == ACmpLt ->
+          if aThen == y && aElse == x
+            then Just (AMax x y)
+            else if aThen == x && aElse == y
+              then Just (AMin x y)
+              else Nothing
+        _ -> Nothing
+
     arithApp t = case spineOfTerm t of
       (CGlob fg, args) -> do
         let ex = [a | (Expl, a) <- args]
@@ -12117,14 +12768,15 @@ arithOf d = \case
             un f = do
               a <- lastMaybe ex
               f <$> arithOf d a
-        case () of
-          _
-            | isTrustedPreludeName ["addInt"] fg -> bin AAdd
-            | isTrustedPreludeName ["subInt"] fg -> bin ASub
-            | isTrustedPreludeName ["mulInt"] fg -> mulExpr ex
-            | isTrustedPreludeName ["negInt"] fg -> un ANeg
-            | isTrustedPreludeName ["natToInt", "natOfInt", "intToNat"] fg -> un id
-            | otherwise -> Nothing
+        case primName fg of
+          Just "addInt" -> bin AAdd
+          Just "subInt" -> bin ASub
+          Just "mulInt" -> mulExpr ex
+          Just "negInt" -> un ANeg
+          Just "natToInt" -> un id
+          Just "natOfInt" -> un id
+          Just "intToNat" -> un id
+          _ -> Nothing
       _ -> Nothing
 
     mulExpr ex = do
@@ -12136,9 +12788,16 @@ arithOf d = \case
         (x, AConst k) -> Just (scaleA k x)
         _ -> Nothing
 
-proveLt :: Set Int -> [AFact] -> Int -> Term -> Term -> Bool
-proveLt natLvls facts d lhs rhs =
-  case (arithOf d lhs, arithOf d rhs) of
+primName :: GName -> Maybe Text
+primName (GName m p)
+  | m == primModule = Just p
+  | otherwise = Nothing
+
+proveLt :: Set Int -> [AFact] -> Int -> Term -> Term -> CheckM Bool
+proveLt natLvls facts d lhs rhs = do
+  lhs' <- normalizeTermAt d lhs
+  rhs' <- normalizeTermAt d rhs
+  pure $ case (arithOf d lhs', arithOf d rhs') of
     (Just l, Just r) ->
       let diff = simplifyA natLvls facts (ASub r l)
        in case lowerBoundExpr natLvls facts diff of
@@ -12146,22 +12805,68 @@ proveLt natLvls facts d lhs rhs =
             Nothing -> False
     _ -> False
 
-proveEq :: Set Int -> [AFact] -> Int -> Term -> Term -> Bool
-proveEq natLvls facts d lhs rhs
-  | lhs == rhs = True
-  | otherwise = case (arithOf d lhs, arithOf d rhs) of
-      (Just l, Just r) ->
-        case linOf (simplifyA natLvls facts (ASub l r)) of
-          Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
-          Nothing -> False
-      _ -> False
+proveEq :: Set Int -> [AFact] -> Int -> Term -> Term -> CheckM Bool
+proveEq natLvls facts d lhs rhs = do
+  lhs' <- normalizeTermAt d lhs
+  rhs' <- normalizeTermAt d rhs
+  pure $
+    lhs' == rhs'
+      || case (arithOf d lhs', arithOf d rhs') of
+        (Just l, Just r) ->
+          case linOf (simplifyA natLvls facts (ASub l r)) of
+            Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
+            Nothing -> False
+        _ -> False
 
-proveNonNeg :: Set Int -> [AFact] -> Int -> Term -> Bool
-proveNonNeg natLvls facts d t = case arithOf d t of
-  Just a -> case lowerBoundExpr natLvls facts (simplifyA natLvls facts a) of
-    Just lb -> lb >= 0
+proveNonNeg :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
+proveNonNeg natLvls facts d t = do
+  t' <- normalizeTermAt d t
+  pure $ case arithOf d t' of
+    Just a -> case lowerBoundExpr natLvls facts (simplifyA natLvls facts a) of
+      Just lb -> lb >= 0
+      Nothing -> False
     Nothing -> False
-  Nothing -> False
+
+proveBoolTrue :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
+proveBoolTrue natLvls facts d t = do
+  t' <- normalizeTermAt d t
+  case t' of
+    CCtor g [] | g == gPrel "True" -> pure True
+    _ -> pure $ case boolRel d t' of
+      Just fact -> proveFactExpr natLvls facts fact
+      Nothing -> False
+
+-- | A Type-valued relation often encodes a decidable order as
+-- `(p = True)`.  When normalization exposes that shape, the same arithmetic
+-- evidence used for Bool-valued primitive orders can discharge the Type
+-- proposition.  This is still conservative: arbitrary inhabited propositions
+-- are not guessed.
+proveTypeRelationTrue :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
+proveTypeRelationTrue natLvls facts d t = do
+  t' <- normalizeTermAt d t
+  case boolEqualityTruePayload t' of
+    Just b -> proveBoolTrue natLvls facts d b
+    Nothing -> pure False
+
+boolEqualityTruePayload :: Term -> Maybe Term
+boolEqualityTruePayload t = case spineOfTerm t of
+  (CGlob eqG, args)
+    | eqG == gPrel "=" -> do
+        let ex = [a | (Expl, a) <- args]
+        (lhs, rhs) <- last2 ex
+        case (lhs, rhs) of
+          (_, CCtor g []) | g == gPrel "True" -> Just lhs
+          (CCtor g [], _) | g == gPrel "True" -> Just rhs
+          _ -> Nothing
+  _ -> Nothing
+
+proveFactExpr :: Set Int -> [AFact] -> AFact -> Bool
+proveFactExpr natLvls facts = \case
+  AFact ACmpLt a b -> lowerBoundExpr natLvls facts (simplifyA natLvls facts (ASub b a)) >= Just 1
+  AFact ACmpLe a b -> lowerBoundExpr natLvls facts (simplifyA natLvls facts (ASub b a)) >= Just 0
+  AFact ACmpEq a b -> case linOf (simplifyA natLvls facts (ASub a b)) of
+    Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
+    Nothing -> False
 
 simplifyA :: Set Int -> [AFact] -> AExpr -> AExpr
 simplifyA natLvls facts = go
@@ -12327,6 +13032,13 @@ last2 :: [a] -> Maybe (a, a)
 last2 xs = case reverse xs of
   b : a : _ -> Just (a, b)
   _ -> Nothing
+
+nthMaybe :: Int -> [a] -> Maybe a
+nthMaybe i xs
+  | i < 0 = Nothing
+  | otherwise = case drop i xs of
+      x : _ -> Just x
+      [] -> Nothing
 
 spineOfTerm :: Term -> (Term, [(Icit, Term)])
 spineOfTerm = go []

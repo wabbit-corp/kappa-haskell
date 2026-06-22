@@ -1,0 +1,9 @@
+module main
+
+badStructural : List Integer -> Integer
+let badStructural xs decreases structural missing =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> badStructural rest
+
+--! assertDiagnostic error E_TERMINATION_INVALID_STRUCTURAL_TARGET

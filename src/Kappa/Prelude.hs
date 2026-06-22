@@ -939,8 +939,8 @@ preludeSource =
     , "trait IsGroupoid (a : Type)"
     , ""
     , -- §28.2/§15.11 termination: WellFounded/Acc carriers and the
-      -- well-founded-relation trait (the well-foundedness witness is an
-      -- erased proof and is not modelled; see KNOWN_SPEC_ISSUES.md).
+      -- well-founded-relation trait.  The well-foundedness witness is an
+      -- erased proof and is not modelled; see KNOWN_SPEC_ISSUES.md.
       "data WellFounded (a : Type) (rel : a -> a -> Type) : Type ="
     , "    MkWellFounded"
     , ""
@@ -952,12 +952,9 @@ preludeSource =
       -- well-founded-relation combinators. 'measureRelation' lifts a
       -- WellFoundedRelation on the codomain 'b' to a relation on 'a' via a
       -- measure function; its body is the natural pullback of 'rel'.
-      -- 'lexRelation' is the lexicographic product of two
-      -- WellFoundedRelations; its witness is an erased proof-irrelevant
-      -- value, so it is realized opaquely through the universal erased
-      -- inhabitant '__eqProof' (the same mechanism as sym/trans/cong), as
-      -- this implementation does not synthesize the well-foundedness
-      -- proof. The exported signatures are exactly as in §28.2.
+      -- 'lexRelation' is exported at the spec surface, but the current
+      -- checker does not inspect arbitrary WellFoundedRelation dictionaries
+      -- as termination evidence; see KNOWN_SPEC_ISSUES.md.
       "measureRelation : forall (a b : Type). (@_ : WellFoundedRelation b) -> (a -> b) -> a -> a -> Type"
     , "let measureRelation f x y = rel (f x) (f y)"
     , ""

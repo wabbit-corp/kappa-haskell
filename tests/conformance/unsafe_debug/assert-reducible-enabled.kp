@@ -1,0 +1,14 @@
+module main
+
+-- §4.4: when explicitly enabled, `assertReducible` records an audited
+-- conversion-reducibility override for the asserted recursive SCC.
+spin : Integer -> Integer
+assertReducible let spin n = spin n
+
+aliasSpin : Integer -> Integer
+let aliasSpin = spin
+
+--! allow_assert_reducible
+--! assertNoErrors
+--! assertNoWarnings
+--! assertAuditLedger assertReducible

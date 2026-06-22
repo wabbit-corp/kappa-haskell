@@ -387,7 +387,7 @@ its equation in a later proof*. Evidence:
 `tests/conformance/prelude/algebraic_numeric_exclusions.kp`,
 `Kappa.Prelude` (the algebraic-trait block).
 
-## 18. §28.2: `Iterator.next`, the h-level proof traits, and `WellFoundedRelation.wf` reference content this implementation cannot express
+## 18. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
 
 * `Iterator` (§28.2) declares `next : (1 this : it) -> Option (item :
   Item, rest : it)`, referencing the associated member `Item` inside a
@@ -403,22 +403,13 @@ its equation in a later proof*. Evidence:
   issue 17, cannot be synthesised for neutral terms. They are surfaced as
   nameable markers preserving the `IsSubsingleton => IsProp` edge.
   `IsEmpty` keeps its `absurdT : t -> Void` eliminator.
-* `WellFoundedRelation` (§28.2/§15.11) is surfaced with its `rel` member
-  but not the `wf : WellFounded a rel` accessibility witness, which is an
-  erased proof with no closed inhabitant this implementation can build.
-  The §28.2 well-founded-relation combinators `measureRelation` and
-  `lexRelation` (export item Spec.md line 28648; normative signatures at
-  the §15 `expect term` block, Spec.md line 29108-29119) are declared as
-  prelude terms with their **exact** §28.2 signatures and resolve in term
-  position. `measureRelation` has its natural body (the pullback `rel (f
-  x) (f y)`). `lexRelation` must produce a `WellFoundedRelation (a, b)`
-  evidence value whose lexicographic-product well-foundedness witness is
-  the omitted `wf` proof above; as that proof has no closed inhabitant,
-  its body is realized opaquely through the universal erased inhabitant
-  `__eqProof` (the same erased-proof mechanism as `sym`/`trans`/`cong`,
-  issue 19). This is not a signature deviation — both names resolve at
-  the kind §28.2 mandates; only `lexRelation`'s proof content is opaque.
-  Evidence: `tests/conformance/prelude/wf-relation-combinators.kp`.
+* `WellFoundedRelation` (§28.2/§15.11) exposes the associated `rel` member.
+  The implementation does not expose or inspect a real accessibility witness
+  for arbitrary user relations, so the termination checker does not treat a
+  `WellFoundedRelation` dictionary as proof that a `by` relation is safe.
+  Well-foundedness is currently accepted only for compiler-recognized
+  primitive orders such as the non-negative `ltInt` subset rule. Evidence:
+  `tests/conformance/prelude/wf-relation-combinators.kp`.
 * `IntoQuery` (§18.6/§20.2/§23.7) declares the associated members
   `Mode`/`ItemQuantity`/`Item`/`SourceDemand` and `toQuery`'s result
   `QueryCore Mode ItemQuantity Item` references them. As above, this
@@ -497,13 +488,12 @@ Two scope limitations remain, neither weakening the gating MUST:
   therefore exercised on ordinary public names. Full visibility-escape
   semantics are out of scope for the interpreter.
 
-* **Assertion effect is accept-only.** This implementation runs no
-  termination checker beyond the §15.3 structural heuristic, so
-  `assertTerminates`/`assertReducible` only gate + audit + (for the latter)
-  would mark conversion-reducibility in an artifact were one produced;
-  they never change runtime semantics (§4.4), and the wrapped definition
-  is elaborated normally so no spurious §9.1 cascade piles onto the gate
-  error. The §4.7 ledger records the core fields §4.7 enumerates
+* **Assertion effect is deliberately narrow.** `assertTerminates` is gating +
+  audit only. Gated `assertReducible` records a conversion-reducibility
+  override for the whole asserted recursive SCC, but it never changes runtime
+  semantics (§4.4), and the wrapped definition is elaborated normally so no
+  spurious §9.1 cascade piles onto the gate error. The §4.7 ledger records
+  the core fields §4.7 enumerates
   (facility, module, origin, affected declaration, permitting build
   setting, reason); the hash/ABI/coherence-identity fields are
   separate-compilation-scoped and not modelled. Evidence:

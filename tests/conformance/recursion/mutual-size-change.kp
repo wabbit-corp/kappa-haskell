@@ -1,0 +1,16 @@
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+evenLen : List Integer -> Bool
+oddLen : List Integer -> Bool
+
+let evenLen xs =
+    match xs
+    case Nil -> True
+    case _ :: rest -> oddLen rest
+
+let oddLen xs =
+    match xs
+    case Nil -> False
+    case _ :: rest -> evenLen rest

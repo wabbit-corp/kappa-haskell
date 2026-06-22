@@ -596,13 +596,14 @@ pDecreases = do
       token TokRParen
       pure ns
     measure = do
-      -- `by` separates the measure from its ordering relation here, so
-      -- it is an active stop keyword within the measure expression only.
-      -- The measure must stop at `=` (the definition body follows), so
+      -- `by` and `using` separate the measure from the optional ordering
+      -- relation and proof.  They must therefore stop the measure parser;
+      -- otherwise `decreases e using p` is parsed as part of `e`.  The
+      -- measure must also stop at `=` (the definition body follows), so
       -- propositional-equality chains are disabled (§9.1 vs §11.4.1).
-      m <- withExtraStops ["by"] (noEq pExpr)
-      by <- optionMaybe (pKeyword "by" *> noEq pExpr)
-      us <- optionMaybe (pKeyword "using" *> pExpr)
+      m <- withExtraStops ["by", "using"] (noEq pExpr)
+      by <- optionMaybe (pKeyword "by" *> withExtraStops ["using"] (noEq pExpr))
+      us <- optionMaybe (pKeyword "using" *> noEq pExpr)
       pure (DecMeasure m by us)
 
 -- A definition body: inline expression or indented suite (§9.3.1 sugar).

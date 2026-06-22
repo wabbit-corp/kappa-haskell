@@ -356,6 +356,8 @@ registry =
       "A horizontal tab appears in source text where the active source profile forbids it."
   , ent "E_TYPE_EQUALITY_MISMATCH" (Just "kappa.type.mismatch")
       "The inferred type of an expression is not definitionally equal to (or coercible to) the expected type."
+  , ent "E_TERMINATION_INVALID_STRUCTURAL_TARGET" (Just "kappa.termination.invalid_structural_target")
+      "A 'decreases structural' certificate names something that is not an explicit parameter of the recursive definition."
   , ent "E_UNEXPECTED_CHARACTER" Nothing
       "The lexer encountered a character that cannot begin any token."
   , ent "E_UNKNOWN_FIELD" (Just "kappa.name.unresolved")

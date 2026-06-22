@@ -165,18 +165,20 @@ elaborator it bootstraps, and prelude names resolve like any module's
 PERFORMANCE.md).
 
 **Recursion needs a preceding signature.** Per §9.2/§15.16, bodies are
-checked in a second pass against header types; direct recursion without
-a signature is `E_RECURSION_REQUIRES_SIGNATURE`. Termination certificates are
-checked for signature-governed direct recursion by first honoring an
-explicit `decreases` clause, then falling back to structural descent.
-Structural descent covers constructor sub-patterns; arithmetic measures
-cover Nat/Int ranking functions, including lexicographic tuple records,
-branch facts from exact prelude integer predicates such as `leInt n 0`,
-and exact prelude integer primitives such as `subInt n 1`. User helpers,
-overloaded operators, and arbitrary `by R using p` witnesses are not
-trusted by name; accepting them requires semantic evidence rather than
-spelling matches. Uncertified definitions get `W_TERMINATION_UNVERIFIED`
-and are conversion-opaque.
+checked in a second pass against header types; recursion without a signature
+is `E_RECURSION_REQUIRES_SIGNATURE`. Termination certificates are checked for
+signature-governed recursive SCCs by first honoring explicit `decreases`
+clauses, then falling back to structural size-change descent. Structural
+descent covers constructor sub-patterns, including mutual recursion.
+Arithmetic measures cover Nat/Int ranking functions, lexicographic tuple
+records, and branch facts from guards. The checker normalizes before proof
+search and trusts only the primitive arithmetic/ordering shapes it can inspect
+after reduction. `decreases m by R using p` parses the relation/proof syntax,
+but erased proof terms and arbitrary `WellFoundedRelation` dictionaries are
+not used as termination oracles. A `by` relation is accepted only when the
+checker can both recognize its well-founded primitive order and prove every
+SCC call edge internally. Uncertified definitions get
+`W_TERMINATION_UNVERIFIED` and are conversion-opaque.
 
 **Error tolerance boundaries.** The parser recovers at declaration
 boundaries (§3.1.14A) and the checker continues past errors using holes
