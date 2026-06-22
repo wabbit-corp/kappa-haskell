@@ -4,17 +4,21 @@ import delve.core.*
 import delve.natutil.*
 import delve.input as input
 
-testHjkl : Bool
-let testHjkl =
-    input.keyToCommand (KeyChar "h") == Move West &&
-    input.keyToCommand (KeyChar "l") == Move East
+testMovementKeys : Bool
+let testMovementKeys =
+    input.keyToCommand (KeyChar "a") == Move West &&
+    input.keyToCommand (KeyChar "d") == Move East &&
+    input.keyToCommand (KeyChar "w") == Move North &&
+    input.keyToCommand (KeyChar "x") == Move South &&
+    input.keyToCommand (KeyChar "s") == Rest
 
 testFeatureKeys : Bool
 let testFeatureKeys =
     input.keyToCommand (KeyChar "p") == Pray &&
-    input.keyToCommand (KeyChar "E") == Engrave &&
-    input.keyToCommand (KeyChar "C") == CycleTactic &&
-    input.keyToCommand (KeyChar "a") == TargetedAttack &&
+    input.keyToCommand (KeyChar "r") == Engrave &&
+    input.keyToCommand (KeyChar "v") == CycleTactic &&
+    input.keyToCommand (KeyChar "A") == TargetedAttack &&
+    input.keyToCommand (KeyChar ";") == Look &&
     input.keyToCommand (KeyChar "m") == ToggleAudio
 
 testMenuKeys : Bool

@@ -13,7 +13,7 @@ main : IO GameError Unit
 let main = do
     let c1 = g.testStartsWithPetAndStarSign
     let c2 = g.testRumorsSeeded
-    let c3 = i.testHjkl
+    let c3 = i.testMovementKeys
     let c4 = i.testFeatureKeys
     let c5 = i.testMenuKeys
     let c6 = c.testJsonProfileParsesObjects
@@ -26,7 +26,7 @@ let main = do
     c13 <- c.testSaveRoundTripIO
     printlnString (line "gen.startsWithPetAndStarSign" c1)
     printlnString (line "gen.rumorsSeeded" c2)
-    printlnString (line "input.hjkl" c3)
+    printlnString (line "input.movement" c3)
     printlnString (line "input.featureKeys" c4)
     printlnString (line "input.menuKeys" c5)
     printlnString (line "config.jsonProfileParsesObjects" c6)
