@@ -3,6 +3,7 @@ module delve.render
 import delve.core.*
 import delve.natutil.*
 import delve.grid as grid
+import delve.fov as fov
 import delve.inventory as inv
 import delve.input as input
 import delve.tactics as tactics
@@ -397,8 +398,17 @@ let lookPanelText lines =
 lookHi : String
 let lookHi = "\x1b[7m"
 
-renderMapLook : Level -> Vec2 -> String
-let renderMapLook level cursor =
+coneBg : String
+let coneBg = "\x1b[48;2;48;36;66m"
+
+memberPos : Vec2 -> List Vec2 -> Bool
+let memberPos p ps decreases listLength ps =
+    match ps
+    case Nil -> False
+    case q :: rest -> if eqPos p q then True else memberPos p rest
+
+renderMapLook : Level -> Vec2 -> List Vec2 -> String
+let renderMapLook level cursor cone =
     block
         go : Int -> Int -> String -> List Tile -> String
         let go x y cur tiles decreases listLength tiles =
@@ -407,8 +417,12 @@ let renderMapLook level cursor =
             case t :: rest ->
                 let s = cellStyle level (Vec2 x y) t
                 let here = x == cursor.x && y == cursor.y
-                let piece = if here then lookHi ++ s.color ++ s.glyph ++ reset else (if s.color == cur then s.glyph else s.color ++ s.glyph)
-                let nextCur = if here then "" else s.color
+                let lit = memberPos (Vec2 x y) cone
+                let piece =
+                    if here then lookHi ++ s.color ++ s.glyph ++ reset
+                    elif lit then coneBg ++ s.color ++ s.glyph ++ reset
+                    else (if s.color == cur then s.glyph else s.color ++ s.glyph)
+                let nextCur = if here || lit then "" else s.color
                 let x2 = x + 1
                 if x2 >= level.size.width then piece ++ reset ++ "\r\n" ++ go 0 (y + 1) "" rest
                 else piece ++ go x2 y nextCur rest
@@ -416,8 +430,12 @@ let renderMapLook level cursor =
 
 renderLook : GameState -> String
 let renderLook game =
+    let cone =
+        match actorAt game.lookPos game.level.actors
+        case Some a -> fov.coneCells game.level a (content.sightRangeOf game.content a.species)
+        case None -> Nil
     let panel = lookDescription game.content game.player game.level game.lookPos
-    in ansiClear ++ ansiHideCursor ++ renderMapLook game.level game.lookPos ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "look: move the cursor with the movement keys; ; or Esc to stop"
+    in ansiClear ++ ansiHideCursor ++ renderMapLook game.level game.lookPos cone ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "look: move the cursor with the movement keys; ; or Esc to stop"
 
 renderGame : GameState -> String
 let renderGame game =

@@ -125,6 +125,14 @@ let corrupt amount game =
     let game1 = game.{ player = game.player.{ corruption = c1 } }
     in if c1 >= threshold then gainMutation game1 else game1
 
+-- Raise corruption (respecting star-sign resistance) WITHOUT the threshold
+-- auto-mutation or any message. Used when something grants a mutation directly
+-- and just wants to pile on extra taint as a side effect.
+addCorruption : Int -> GameState -> GameState
+let addCorruption amount game =
+    let resisted = max 0 (amount - starSignResistance game.content game.player.starSign)
+    in game.{ player = game.player.{ corruption = game.player.corruption + resisted } }
+
 chaosBacklash : Int -> GameState -> GameState
 let chaosBacklash dmg game =
     match playerActor game

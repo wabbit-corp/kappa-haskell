@@ -46,9 +46,9 @@ let testItems =
 
 testActors : List ActorDef
 let testActors =
-    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil "A delver who came down by choice."
-    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil "A shaggy hound, loyal past reason."
-    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil "A rat grown dog-large on cave-leavings."
+    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil "A delver who came down by choice." 9
+    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil "A shaggy hound, loyal past reason." 7
+    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil "A rat grown dog-large on cave-leavings." 5
     ]
 
 testTactics : List TacticDef

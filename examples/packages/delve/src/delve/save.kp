@@ -391,7 +391,7 @@ let decodeActor value =
         morale <- optIntField 8 "morale" value
         loyalty <- optIntField 0 "loyalty" value
         alive <- optBoolField True "alive" value
-        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive)
+        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive South)
 
 decodeStats : JsonValue -> IO GameError Stats
 let decodeStats value =

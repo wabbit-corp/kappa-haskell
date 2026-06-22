@@ -280,7 +280,8 @@ let decodeActor value =
         abilityJson <- arrayField "abilities" value
         abilities <- traverse decodeAbility abilityJson
         description <- stringField "description" value
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description)
+        sightRange <- intField "sight_range" value
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =

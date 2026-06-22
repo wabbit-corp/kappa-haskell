@@ -5,6 +5,7 @@ import delve.natutil.*
 import delve.tactics as tactics
 import delve.corruption as corruption
 import delve.content as content
+import delve.gen as gen
 import delve.fixture as fixture
 
 testTacticCycle : Bool
@@ -18,3 +19,13 @@ let testMutationNames =
 testCorruptionResistance : Bool
 let testCorruptionResistance =
     corruption.starSignResistance fixture.testPack Unicorn > corruption.starSignResistance fixture.testPack Raven
+
+-- Regression: a fresh delver has no mutations, and BOTH mutation paths must
+-- actually grant one — gainMutation directly (what a mutation potion now calls)
+-- and corrupt past the threshold (the environmental/chaos-vent path).
+testMutationGain : Bool
+let testMutationGain =
+    let before = gen.newLevel fixture.testPack 0 1 (Size 80 24) 7
+    let viaPotion = corruption.gainMutation before
+    let viaThreshold = corruption.corrupt 150 before
+    in listLength before.player.mutations == 0 && listLength viaPotion.player.mutations == 1 && listLength viaThreshold.player.mutations == 1

@@ -22,6 +22,7 @@ let main = do
     let c9 = f.testTacticCycle
     let c10 = f.testMutationNames
     let c11 = f.testCorruptionResistance
+    let c14 = f.testMutationGain
     c12 <- c.testLoadDefaultPackIO
     c13 <- c.testSaveRoundTripIO
     printlnString (line "gen.startsWithPetAndStarSign" c1)
@@ -35,9 +36,10 @@ let main = do
     printlnString (line "tactics.cycle" c9)
     printlnString (line "content.mutationNames" c10)
     printlnString (line "corruption.resistance" c11)
+    printlnString (line "corruption.mutationGain" c14)
     printlnString (line "config.loadDefaultPack" c12)
     printlnString (line "save.roundTripNativeFiles" c13)
-    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 && c10 && c11 && c12 && c13 then
+    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 && c10 && c11 && c14 && c12 && c13 then
         printlnString "DELVE TESTS: ALL PASS"
     else
         printlnString "DELVE TESTS: FAIL"

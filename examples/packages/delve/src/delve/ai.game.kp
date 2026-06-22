@@ -40,11 +40,12 @@ let randomDir r0 =
 
 tryMoveActor : Actor -> Vec2 -> Level -> Actor
 let tryMoveActor actor target level =
-    if grid.inBounds level.size target && isWalkable (grid.getTile level target) then
+    let faced = if eqPos target actor.pos then actor else actor.{ facing = fov.dirToward actor.pos target }
+    in if grid.inBounds level.size target && isWalkable (grid.getTile level target) then
         match actorAt target level.actors
-        case None -> actor.{ pos = target }
-        case Some _ -> actor
-    else actor
+        case None -> faced.{ pos = target }
+        case Some _ -> faced
+    else faced
 
 firstVisibleHostile : Actor -> Level -> Option Actor
 let firstVisibleHostile actor level =
@@ -119,15 +120,15 @@ let castSpell dmg monster player game =
 -- Nearest visible actor this one is hostile to — could be the player OR a rival
 -- faction's monster. This is what turns the dungeon into a living ecosystem:
 -- beasts, cave-dwellers, undead, and chaos all fight each other, not just you.
-nearestHostile : Actor -> Level -> Option Actor
-let nearestHostile actor level =
+nearestHostile : ContentPack -> Actor -> Level -> Option Actor
+let nearestHostile pack actor level =
     block
         go : List Actor -> Option Actor -> Option Actor
         let go xs best decreases listLength xs =
             match xs
             case Nil -> best
             case a :: rest ->
-                if a.id != actor.id && a.alive && hostileTo actor a && fov.visibleFrom level actor.pos a.pos then
+                if a.id != actor.id && a.alive && hostileTo actor a && fov.canSee level actor.facing (content.sightRangeOf pack actor.species) actor.pos a.pos then
                     let best2 =
                         match best
                         case None -> Some a
@@ -142,9 +143,9 @@ let wander monster game =
     let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta dirRoll.dir)) game.level
     in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
 
-fleeFrom : Actor -> GameState -> GameState
-let fleeFrom monster game =
-    match nearestHostile monster game.level
+fleeFrom : ContentPack -> Actor -> GameState -> GameState
+let fleeFrom pack monster game =
+    match nearestHostile pack monster game.level
     case None -> wander monster game
     case Some t ->
         let dir = toward t.pos monster.pos
@@ -195,13 +196,14 @@ let engagePlayer monster player game =
 
 hostileTurn : Actor -> GameState -> GameState
 let hostileTurn monster game =
-    if shouldFlee monster then fleeFrom monster game
+    if shouldFlee monster then fleeFrom game.content monster game
     else
-        match nearestHostile monster game.level
+        match nearestHostile game.content monster game.level
         case None -> wander monster game
         case Some t ->
-            if t.id == game.player.actorId then engagePlayer monster t game
-            else engageMonster monster t game
+            let faced = monster.{ facing = fov.dirToward monster.pos t.pos }
+            in if t.id == game.player.actorId then engagePlayer faced t game
+            else engageMonster faced t game
 
 actorTurn : Actor -> GameState -> GameState
 let actorTurn actor game =

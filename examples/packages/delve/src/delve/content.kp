@@ -173,7 +173,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name."
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
@@ -186,6 +186,9 @@ let abilitiesOf pack species = (actorDefBySpecies pack species).abilities
 
 descriptionOf : ContentPack -> Species -> String
 let descriptionOf pack species = (actorDefBySpecies pack species).description
+
+sightRangeOf : ContentPack -> Species -> Int
+let sightRangeOf pack species = (actorDefBySpecies pack species).sightRange
 
 regenAmount : List Ability -> Int
 let regenAmount abil decreases listLength abil =
@@ -235,7 +238,8 @@ let actorBase pack id def pos =
         wounds = Nil,
         morale = def.morale,
         loyalty = def.loyalty,
-        alive = True
+        alive = True,
+        facing = South
     }
 
 mkPlayer : ContentPack -> Int -> Vec2 -> Actor

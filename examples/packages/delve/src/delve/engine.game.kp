@@ -128,7 +128,7 @@ let movePlayer dir game =
                     in message hit.log g1
             case None ->
                 if isWalkable tile then
-                    let p2 = p.{ pos = target }
+                    let p2 = p.{ pos = target, facing = dir }
                     let actors2 = replaceActor p2 game.level.actors
                     let level2 = fov.refreshVisibility target game.level.{ actors = actors2 }
                     let game2 = game.{ level = level2 }

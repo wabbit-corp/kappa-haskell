@@ -29,7 +29,8 @@
         "player"
       ],
       "abilities": [],
-      "description": "You. A delver who walked down on purpose; the dark still hasn't decided what to make of that."
+      "description": "You. A delver who walked down on purpose; the dark still hasn't decided what to make of that.",
+      "sight_range": 9
     },
     {
       "id": "hound",
@@ -57,7 +58,8 @@
         "animal"
       ],
       "abilities": [],
-      "description": "A shaggy hound with moss matted into its coat. It chose you on the threshold and has not reconsidered."
+      "description": "A shaggy hound with moss matted into its coat. It chose you on the threshold and has not reconsidered.",
+      "sight_range": 7
     },
     {
       "id": "rat",
@@ -84,7 +86,8 @@
         "beast"
       ],
       "abilities": [],
-      "description": "A rat swollen dog-large on cave-leavings. Where there is one, the walls hold a hundred more."
+      "description": "A rat swollen dog-large on cave-leavings. Where there is one, the walls hold a hundred more.",
+      "sight_range": 5
     },
     {
       "id": "bat",
@@ -112,7 +115,8 @@
         "flying"
       ],
       "abilities": [],
-      "description": "A leather-winged bat that reads the dark by its echoes. It harries before it bites."
+      "description": "A leather-winged bat that reads the dark by its echoes. It harries before it bites.",
+      "sight_range": 6
     },
     {
       "id": "goblin",
@@ -139,7 +143,8 @@
         "cave"
       ],
       "abilities": [],
-      "description": "A wiry cave-goblin, quick to swarm and quicker to flee when the swarm thins."
+      "description": "A wiry cave-goblin, quick to swarm and quicker to flee when the swarm thins.",
+      "sight_range": 7
     },
     {
       "id": "kobold",
@@ -166,7 +171,8 @@
         "cave"
       ],
       "abilities": [],
-      "description": "A small scaled tunnel-dweller. It traps the corridors it cannot hold by force."
+      "description": "A small scaled tunnel-dweller. It traps the corridors it cannot hold by force.",
+      "sight_range": 7
     },
     {
       "id": "orc",
@@ -197,7 +203,8 @@
           "kind": "Frenzy"
         }
       ],
-      "description": "A heavy-shouldered orc bred for the deep wars. It does not bluff and it does not tire."
+      "description": "A heavy-shouldered orc bred for the deep wars. It does not bluff and it does not tire.",
+      "sight_range": 7
     },
     {
       "id": "skeleton",
@@ -224,7 +231,8 @@
         "undead"
       ],
       "abilities": [],
-      "description": "Bones walking without breath, bound by some unfinished errand. Cut it down and it may simply rise again."
+      "description": "Bones walking without breath, bound by some unfinished errand. Cut it down and it may simply rise again.",
+      "sight_range": 6
     },
     {
       "id": "troll",
@@ -257,7 +265,8 @@
           "amount": 3
         }
       ],
-      "description": "A slab of grey muscle that knits its own wounds shut. Patience is the only thing that kills it."
+      "description": "A slab of grey muscle that knits its own wounds shut. Patience is the only thing that kills it.",
+      "sight_range": 6
     },
     {
       "id": "wizard",
@@ -290,7 +299,8 @@
           "power": 6
         }
       ],
-      "description": "A robed adept who traded a name for a fistful of chaos, and flings that ruin from a safe distance."
+      "description": "A robed adept who traded a name for a fistful of chaos, and flings that ruin from a safe distance.",
+      "sight_range": 8
     },
     {
       "id": "chaos_spawn",
@@ -321,7 +331,8 @@
           "kind": "Frenzy"
         }
       ],
-      "description": "A thing the Rift made and could not finish: too many limbs, none of them sorry. Wards mean nothing to it."
+      "description": "A thing the Rift made and could not finish: too many limbs, none of them sorry. Wards mean nothing to it.",
+      "sight_range": 7
     },
     {
       "id": "dragon",
@@ -357,7 +368,8 @@
           "kind": "Frenzy"
         }
       ],
-      "description": "An ancient dragon coiled at the root of the world, older than every faith that fears it. Its waking is an ending."
+      "description": "An ancient dragon coiled at the root of the world, older than every faith that fears it. Its waking is an ending.",
+      "sight_range": 10
     },
     {
       "id": "pilgrim",
@@ -385,7 +397,8 @@
         "talkative"
       ],
       "abilities": [],
-      "description": "A pilgrim who came seeking and stayed lost. It will talk, if you let it, of things best left below."
+      "description": "A pilgrim who came seeking and stayed lost. It will talk, if you let it, of things best left below.",
+      "sight_range": 7
     }
   ]
 }

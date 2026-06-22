@@ -31,6 +31,71 @@ visibleFrom : Level -> Vec2 -> Vec2 -> Bool
 let visibleFrom level origin p =
     grid.inBounds level.size p && chebyshev origin p <= radius && clearLine level origin p
 
+-- ── Directional vision cones (for monster perception / look mode) ─────────
+dirToward : Vec2 -> Vec2 -> Direction
+let dirToward from to =
+    let dx = sign (to.x - from.x)
+    let dy = sign (to.y - from.y)
+    in
+        if dx == 0 && dy < 0 then North
+        elif dx == 0 && dy > 0 then South
+        elif dx < 0 && dy == 0 then West
+        elif dx > 0 && dy == 0 then East
+        elif dx < 0 && dy < 0 then NorthWest
+        elif dx > 0 && dy < 0 then NorthEast
+        elif dx < 0 && dy > 0 then SouthWest
+        elif dx > 0 && dy > 0 then SouthEast
+        else Wait
+
+dirIndex : Direction -> Int
+let dirIndex d =
+    match d
+    case North -> 0
+    case NorthEast -> 1
+    case East -> 2
+    case SouthEast -> 3
+    case South -> 4
+    case SouthWest -> 5
+    case West -> 6
+    case NorthWest -> 7
+    case Wait -> -1
+
+compassDiff : Int -> Int -> Int
+let compassDiff a b =
+    let raw = abs (a - b)
+    in min raw (8 - raw)
+
+-- A 225° forward arc: the target is in view unless it lies in the rear three
+-- octants. A creature with no orientation (Wait) sees all around.
+inCone : Direction -> Int -> Vec2 -> Vec2 -> Bool
+let inCone facing range origin target =
+    let d = chebyshev origin target
+    in
+        if d == 0 then True
+        elif d > range then False
+        else
+            let fi = dirIndex facing
+            in if fi < 0 then True else compassDiff fi (dirIndex (dirToward origin target)) <= 2
+
+-- Full perception test: inside the cone, in range, and with a clear line of sight.
+canSee : Level -> Direction -> Int -> Vec2 -> Vec2 -> Bool
+let canSee level facing range origin target =
+    grid.inBounds level.size target && inCone facing range origin target && clearLine level origin target
+
+-- Every explored tile this actor can currently see — used to paint its cone in look mode.
+coneCells : Level -> Actor -> Int -> List Vec2
+let coneCells level a range =
+    block
+        go : Int -> List Tile -> List Vec2
+        let go i tiles decreases listLength tiles =
+            match tiles
+            case Nil -> Nil
+            case t :: rest ->
+                let p = Vec2 (modInt i level.size.width) (divInt i level.size.width)
+                let here = if t.seen && canSee level a.facing range a.pos p then [p] else Nil
+                in listAppend here (go (i + 1) rest)
+        go 0 (arrayToList level.tiles)
+
 -- One linear pass over the tile list (Array is cons-list backed at runtime, so
 -- per-cell setTile is O(index) and folding it over every cell was O(n^2) with
 -- O(n^2) allocation). arrayToList/arrayFromList are identity at runtime, so this

@@ -289,6 +289,7 @@ data Actor : Type =
         (morale : Int)
         (loyalty : Int)
         (alive : Bool)
+        (facing : Direction)
 
 data GroundItem : Type =
     GroundItem
@@ -375,6 +376,7 @@ data ActorDef : Type =
         (tags : List String)
         (abilities : List Ability)
         (description : String)
+        (sightRange : Int)
 
 data SpawnRule : Type =
     SpawnRule

@@ -177,8 +177,9 @@ let usePotion item rest p game =
         if item.beatitude == Cursed then message "The potion burns." (damagePlayer 4 known)
         else message "Your wounds close." (healPlayerAndWounds (if item.beatitude == Blessed then item.power + 8 else item.power) known)
     case PotionMutation ->
-        if item.beatitude == Blessed then message "The mutation bends under your will." (corruption.gainMutation known)
-        else message "Your body twists under the mutation." (corruption.corrupt 80 known)
+        if item.beatitude == Blessed then corruption.gainMutation known
+        elif item.beatitude == Cursed then corruption.gainMutation (corruption.addCorruption 60 known)
+        else corruption.gainMutation (corruption.addCorruption 20 known)
     case PotionWater ->
         if item.beatitude == Blessed then message "Holy water cleanses some of your corruption." (corruption.cleanseOne known)
         elif item.beatitude == Cursed then message "Unholy water tastes like rust." (corruption.corrupt 40 known)
