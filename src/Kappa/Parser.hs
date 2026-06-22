@@ -682,10 +682,49 @@ sepEndByNewlines :: P a -> () -> P [a]
 sepEndByNewlines p () = do
   x <- p
   void (many pNewline)
-  done <- suiteEnds
-  if done
-    then pure [x]
-    else (x :) <$> sepEndByNewlines p ()
+  unexpected <- lookAheadIs (token TokIndent)
+  if unexpected
+    then do
+      reportUnexpectedIndentation
+      void (many pNewline)
+      done <- suiteEnds
+      if done
+        then pure [x]
+        else (x :) <$> sepEndByNewlines p ()
+    else do
+      done <- suiteEnds
+      if done
+        then pure [x]
+        else (x :) <$> sepEndByNewlines p ()
+
+reportUnexpectedIndentation :: P ()
+reportUnexpectedIndentation = do
+  sp <- currentSpan
+  token TokIndent
+  skipIndentedBlock (0 :: Int)
+  recordRecovered $
+    recoveryDiag
+      RecoveryNode
+        { rnSite = "suite-layout"
+        , rnExpected = "block-introducer-or-continuation-context"
+        , rnConfidence = RecCertain
+        , rnCode = "E_UNEXPECTED_INDENTATION"
+        , rnOrigin = sp
+        , rnSkipped = Just sp
+        , rnMessage =
+            "unexpected indentation: no block introducer or continuation context is active; "
+              <> "consider a comma, operator, explicit parentheses, or dedent (Spec §5.4)"
+        }
+  where
+    skipIndentedBlock depth = do
+      t <- peekToken
+      case t of
+        TokEOF -> pure ()
+        TokIndent -> anyToken >> skipIndentedBlock (depth + 1)
+        TokDedent
+          | depth == 0 -> void anyToken
+          | otherwise -> anyToken >> skipIndentedBlock (depth - 1)
+        _ -> anyToken >> skipIndentedBlock depth
 
 -- | Does the suite end here? Either a dedent, or — inside a
 -- layout-transparent '$( ... )' splice (§21.2) — the closing bracket
@@ -1743,16 +1782,22 @@ pChainElems = do
         -- (e.g. the double postfix `5 ? ?`).
         ChainEndMoreOps -> (ChainOp opN :) <$> pChainRest
         ChainEndOperand -> do
-          -- operator may be followed by newline+indent continuation (§5.4)
-          void (optional (try (pNewline *> token TokIndent)))
+          -- An operator may be followed by a §5.4 continuation region.
+          -- Same-level continuation lines remain in the same expression;
+          -- layout tokens caused only by stricter continuation indentation
+          -- are ignored here, as for parenthesized continuations.
+          openedContinuationIndent <- consumeOperatorContinuationLayout
           -- an open expression (let-in, if, match, lambda, …) may close the
           -- chain as its final operand (§16.1.8)
           mOpen <- optionMaybe pOpenTailOperand
           case mOpen of
-            Just e -> pure [ChainOp opN, ChainOperand e]
+            Just e -> do
+              consumeClosingContinuationLayout openedContinuationIndent
+              pure [ChainOp opN, ChainOperand e]
             Nothing -> do
               pre <- many (ChainOp <$> pPrefixOp)
               nxt <- ChainOperand <$> pAppExpr
+              consumeClosingContinuationLayout openedContinuationIndent
               rest <- pChainRest
               pure (ChainOp opN : pre ++ nxt : rest)
     -- §5.5.1.1/§5.5.3: classify what follows an operator that has already
@@ -1763,20 +1808,16 @@ pChainElems = do
     -- chain, another operator keeps it going, anything else is an operand.
     chainEndKind = do
       t <- peekToken
-      -- §5.4: an operator at end of line whose operand is on a
-      -- deeper-indented continuation line (newline + indent) is NOT a
-      -- trailing postfix — the operand follows on the next line.
-      nxt <- peekTokenAt 1
-      pure $ case t of
-        TokNewline _
-          | nxt == TokIndent -> ChainEndOperand
-          | otherwise -> ChainEndStop
-        TokDedent -> ChainEndStop
-        TokRParen -> ChainEndStop
-        TokRBracket -> ChainEndStop
-        TokRBrace -> ChainEndStop
-        TokComma -> ChainEndStop
-        TokEOF -> ChainEndStop
+      case t of
+        TokNewline _ -> do
+          continues <- operatorNewlineContinues
+          pure (if continues then ChainEndOperand else ChainEndStop)
+        TokDedent -> pure ChainEndStop
+        TokRParen -> pure ChainEndStop
+        TokRBracket -> pure ChainEndStop
+        TokRBrace -> pure ChainEndStop
+        TokComma -> pure ChainEndStop
+        TokEOF -> pure ChainEndStop
         -- §23.2 staging punctuation is operand syntax, not a chain
         -- operator: '.<' and '.~' begin operands, '>.' closes a code
         -- quote. None of them continue or end the chain as a postfix op,
@@ -1784,9 +1825,59 @@ pChainElems = do
         -- 'pAtom'); only genuine operator tokens collect as further
         -- (postfix/infix) chain operators.
         TokOperator op
-          | op `notElem` ["=>", ".<", ">.", ".~"] -> ChainEndMoreOps
-          | otherwise -> ChainEndOperand
-        _ -> ChainEndOperand
+          | op `notElem` ["=>", ".<", ">.", ".~"] -> pure ChainEndMoreOps
+          | otherwise -> pure ChainEndOperand
+        _ -> pure ChainEndOperand
+
+    consumeOperatorContinuationLayout = fmap (maybe False id) $ optional $ try $ do
+      pNewline
+      layouts <- many continuationLayoutToken
+      pure (any (== TokIndent) layouts)
+
+    continuationLayoutToken =
+      (token TokIndent >> pure TokIndent) <|> (token TokDedent >> pure TokDedent)
+
+    consumeClosingContinuationLayout opened =
+      when opened $
+        void $
+          optional $
+            try $ do
+              pNewline
+              token TokDedent
+
+    operatorNewlineContinues = do
+      sameIndentOk <- sameIndentContinuationAllowed
+      toks <- pendingTokens
+      pure $ case toks of
+        Located (TokNewline _) _ : rest ->
+          maybe False (validContinuedOperand sameIndentOk) (firstNonLayout rest)
+        _ -> False
+
+    validContinuedOperand sameIndentOk (sawContinuationIndent, t, sp) =
+      tokenCanStartContinuedOperand t
+        && (sawContinuationIndent || (sameIndentOk && tokenColumn sp > 1))
+
+    firstNonLayout = \case
+      [] -> Nothing
+      Located TokIndent _ : rest -> markContinuationIndent (firstNonLayout rest)
+      Located TokDedent _ : rest -> firstNonLayout rest
+      Located (TokNewline _) _ : rest -> firstNonLayout rest
+      Located t sp : _ -> Just (False, t, sp)
+
+    markContinuationIndent = fmap (\(_, t, sp) -> (True, t, sp))
+
+    tokenColumn sp =
+      let Pos _ col = spanStart sp
+       in col
+
+    tokenCanStartContinuedOperand = \case
+      TokEOF -> False
+      TokDedent -> False
+      TokRParen -> False
+      TokRBracket -> False
+      TokRBrace -> False
+      TokComma -> False
+      _ -> True
 
 -- An open expression (let-in, if, match, lambda, …) as the final
 -- operand of an operator chain (§16.1.8).
@@ -1816,10 +1907,7 @@ pAppExpr = do
   -- record construction under layout §5.4):
   inb <- pIndentedNamedBlock <|> pure []
   mlam <- trailingLambda
-  -- the indented named block is the spine's final argument; don't also try
-  -- general trailing block args after it
-  targs <- if null inb then pTrailingBlockArgs else pure []
-  pure $ case args ++ inb ++ maybe [] (: []) mlam ++ targs of
+  pure $ case args ++ inb ++ maybe [] (: []) mlam of
     [] -> f
     allArgs -> EApp f allArgs
   where
@@ -1830,28 +1918,6 @@ pAppExpr = do
       case t of
         TokBackslash -> Just . ArgExplicit <$> pLambda Nothing
         _ -> pure Nothing
-
--- Deeper-indented continuation lines supply the final (block-shaped)
--- arguments of the application: `f\n    do ...`, or one argument per
--- continuation line, e.g. `f x\n    (\a -> ...)\n    (\b -> ...)`
--- (§16.1.7, layout §5.4).
-pTrailingBlockArgs :: P [Arg]
-pTrailingBlockArgs = fmap (fromMaybe []) $ optionMaybe $ try $ do
-  pNewline
-  token TokIndent
-  stop <- pAtStopKeyword
-  open <- (`elem` [Just "do", Just "match", Just "block", Just "if"]) <$> peekIdent
-  if stop && not open
-    then parseFail "stop keyword cannot begin a trailing argument"
-    else argLines
-  where
-    argLines = do
-      e <- pExpr
-      void (many pNewline)
-      done <- suiteEnds
-      if done
-        then suiteDedent >> pure [ArgExplicit e]
-        else (ArgExplicit e :) <$> argLines
 
 pAppArg :: P Arg
 pAppArg = implicitArg <|> inoutArg <|> namedBlock <|> bangArg <|> plainArg
@@ -2751,15 +2817,21 @@ pBlockItems = go []
           item <-
             (Right <$> try letInExpr)
               <|> (Left <$> try pLocalDecl)
-              <|> (Right <$> pExpr)
+              <|> (Right <$> withSameIndentContinuation pExpr)
           case item of
             Left d -> go (d : acc)
             Right e -> do
               void (many pNewline)
-              isEnd <- lookAheadIs (token TokDedent)
-              if isEnd
-                then pure (reverse acc, Just e)
-                else parseFail "only the final item of a block may be an expression"
+              unexpected <- lookAheadIs (token TokIndent)
+              if unexpected
+                then do
+                  reportUnexpectedIndentation
+                  pure (reverse acc, Just e)
+                else do
+                  isEnd <- lookAheadIs (token TokDedent)
+                  if isEnd
+                    then pure (reverse acc, Just e)
+                    else parseFail "only the final item of a block may be an expression"
     letInExpr = do
       ok <- lookAheadIs (pKeyword "let")
       if ok then pLetIn else parseFail "not a let-in expression"
@@ -3186,7 +3258,7 @@ pExprIndented = contForm <|> pExpr
     contForm = try $ do
       pNewline
       token TokIndent
-      e <- pExpr
+      e <- withSameIndentContinuation pExpr
       void (many pNewline)
       token TokDedent
       pure e

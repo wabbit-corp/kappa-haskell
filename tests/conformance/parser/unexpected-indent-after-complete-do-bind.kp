@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_UNEXPECTED_INDENTATION
+--! assertDiagnosticCodes E_UNEXPECTED_INDENTATION
+--! assertDiagnosticMatch comma, operator, explicit parentheses, or dedent
+
+main : UIO Unit
+let main = do
+    let x <- pure 1
+        y
+    pure ()

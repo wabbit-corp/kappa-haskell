@@ -1,0 +1,6 @@
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+
+main : UIO Unit
+let main = do
+    let x = 1 +
+pure ()

@@ -195,29 +195,7 @@ no generic meta-to-object coercion exists. Evidence:
 `Kappa.Check.elabReflQuery`,
 `tests/conformance/macros/reflection-queries.kp`.
 
-## 10. §5.4: multi-line operator continuations at constant deeper indentation are undefined
-
-§5.4 says that lines indented deeper than a logical line's first token
-"form a continuation", but it never defines how *several* continuation
-lines at the *same* deeper level relate to each other. This
-implementation's Python-style layout opens an indented block at the
-first deeper line, so each further line at that same level begins a new
-statement: `a +` / `    b +` / `    c` (one constant continuation
-level) fails to parse, while a single continuation line and
-strictly-increasing indentation (`a +` / `    b +` / `        c`) both
-work. The corpus's source implementation accepts the constant-level
-form; both behaviors are defensible under §5.4's non-exhaustive text.
-Same family as the two layout tracked gaps in
-`tests/external-blocked.md`
-(`fuzz.pending.reject_invalid_do_bind_indented_continuation`,
-`fuzz.pending.reject_invalid_indented_expression_continuation`), where
-the corpus expects the *opposite* (a syntax error on an indented
-continuation after a complete do-bind RHS, where §5.4's reading here
-makes it an application continuation). A normative continuation rule —
-one logical line extends until a line at or below its starting column —
-would settle all three.
-
-## 11. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
+## 10. §3.1.5A / §30.2.3: KCore-node provenance frames vs diagnostic-facing provenance
 
 §3.1.5A defines a full `ProvenanceFrame` record (id, kind, step, query,
 inputs, inputObjects, output, generatedObject, explanation) and requires
@@ -244,7 +222,7 @@ chain-reconstruction query — `Kappa.Core.Term` carries no origin field.
 Evidence: `Kappa.Check` `EBang` (`desugared-from` related origin);
 `tests/conformance/diagnostics`.
 
-## 12. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
+## 11. §3.1.10/§3.1.11: cascade-suppression summaries are only populated where a surviving root diagnostic exists
 
 The `suppressed` field (§3.1.1, §3.1.10, §3.1.11) is implemented and is
 populated wherever this implementation drops a downstream diagnostic that
@@ -264,7 +242,7 @@ the upstream-collapse cases produce a single diagnostic with nothing to
 summarize. Evidence: `Kappa.Pipeline.attachSuppressed`,
 `tests/conformance/diagnostics/suppressed-cascade.kp`.
 
-## 13. §28.2.2: algebraic numeric law members are not modelled as proofs
+## 12. §28.2.2: algebraic numeric law members are not modelled as proofs
 
 §28.2.2 declares `AdditiveMonoid`, `AdditiveGroup`, `MultiplicativeMonoid`,
 `Semiring`, `Ring`, `EuclideanSemiring`, `FieldLike`, `OrderedAdditive`,
@@ -299,7 +277,7 @@ its equation in a later proof*. Evidence:
 `tests/conformance/prelude/algebraic_numeric_exclusions.kp`,
 `Kappa.Prelude` (the algebraic-trait block).
 
-## 14. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
+## 13. §28.2: `Iterator.next` and h-level proof trait reference content this implementation cannot express
 
 * `Iterator` (§28.2) declares `next : (1 this : it) -> Option (item :
   Item, rest : it)`, referencing the associated member `Item` inside a
@@ -348,7 +326,7 @@ In every case the *name* is a resolvable prelude export, satisfying the
 §28.2 declaration MUSTs; only the proof-carrying members are omitted.
 Evidence: `Kappa.Prelude` (trait declarations near `Iterator`).
 
-## 15. §28.2: proof-helper bodies still use erased primitives instead of equality matching
+## 14. §28.2: proof-helper bodies still use erased primitives instead of equality matching
 
 The §28.2 proof/equality helpers `absurd`, `subst`, `sym`, `trans`,
 `cong`, `pathInd`, `unsafeAssertProof`, and `witness` are all declared as
@@ -369,7 +347,7 @@ cannot be inferred from surrounding type information. Evidence:
 `Kappa.Prelude` (proof-helper block), `tests/conformance/prelude/`
 `proof_helpers_resolve.kp`, `tests/conformance/prelude/proof_helpers_use.kp`.
 
-## 16. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
+## 15. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
 
 The §4 unsafe/debug facilities are now recognized and gated by the §4.2
 build configuration (`UnsafeConfig` in `Kappa.Check`, all `allow_*`

@@ -1,0 +1,12 @@
+--! assertNoErrors
+
+postfix 90 (?)
+
+(?) : Int -> Int
+let (?) x = addInt x 1
+
+main : UIO Unit
+let main = do
+    let a = 5 ?
+    let b = 6
+    pure ()

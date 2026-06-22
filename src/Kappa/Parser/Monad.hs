@@ -31,6 +31,8 @@ module Kappa.Parser.Monad
   , withExtraStops
   , clearExtraStops
   , extraStops
+  , withSameIndentContinuation
+  , sameIndentContinuationAllowed
   , noEq
   , eqAllowed
   , recordRecovered
@@ -52,6 +54,10 @@ data PState = PState
   , psSoftNL :: !Bool -- ^ True = soft newlines are significant
   , psEqOk :: !Bool -- ^ may '=' join an operator chain here? (§11.4.1)
   , psStopExtra :: ![Text] -- ^ context-sensitive stop keywords (§5.2)
+  , psSameIndentContinuation :: !Bool
+  -- ^ True when an indented expression suite is parsing one logical
+  -- expression whose same-indentation physical lines may belong to a
+  -- §5.4 continuation region.
   , psNoNamedBlock :: !Bool -- ^ suppress named-block arguments (§20.7 group keys)
   , psRecovered :: ![Diagnostic]
   }
@@ -98,7 +104,7 @@ mergeErr e1 e2
 
 runP :: P a -> [Located] -> Either PErr (a, [Diagnostic])
 runP (P f) toks =
-  case f (PState toks startSpan False True [] False []) of
+  case f (PState toks startSpan False True [] False False []) of
     Left e -> Left e
     Right (a, s) -> Right (a, reverse (psRecovered s))
   where
@@ -230,6 +236,18 @@ clearExtraStops (P f) = P $ \s -> do
 -- | The currently active context-sensitive stop keywords.
 extraStops :: P [Text]
 extraStops = P $ \s -> Right (psStopExtra s, s)
+
+-- | Allow same-indentation physical lines to continue one expression
+-- after an operator. This is used inside expression suites such as
+-- @let x =\n    a +\n    b@; statement suites leave it disabled so
+-- @let x <- action\n    y@ remains an unexpected indentation error.
+withSameIndentContinuation :: P a -> P a
+withSameIndentContinuation (P f) = P $ \s -> do
+  (a, s') <- f s {psSameIndentContinuation = True}
+  pure (a, s' {psSameIndentContinuation = psSameIndentContinuation s})
+
+sameIndentContinuationAllowed :: P Bool
+sameIndentContinuationAllowed = P $ \s -> Right (psSameIndentContinuation s, s)
 
 -- | Parse with '=' excluded from operator chains: used for annotation
 -- positions where '=' terminates the enclosing binding instead of

@@ -4741,6 +4741,71 @@ after a token that syntactically requires a following expression, including (non
 
 In these cases, the indented lines form a continuation of the expression rather than starting a new statement.
 
+Continuation regions:
+
+When a `NEWLINE` occurs in a continuation context outside explicit grouping delimiters, the parser enters a
+continuation region.
+
+The continuation region has an anchor indentation equal to the indentation of the first token of the logical construct
+being continued.
+
+The first significant physical line after the `NEWLINE` MUST have indentation strictly greater than the anchor
+indentation.
+
+While inside the continuation region:
+
+* significant physical lines whose indentation is strictly greater than the anchor indentation belong to the same
+  continued syntactic construct;
+* such lines do not begin new statements merely because they have the same indentation as one another;
+* layout `INDENT` / `DEDENT` tokens caused only by the continuation indentation are suppressed, or ignored by the
+  parser, exactly as for parenthesized continuation;
+* ordinary expression parsing determines whether the sequence of continued lines is a well-formed expression.
+
+The continuation region ends immediately before the first significant physical line whose indentation is less than or
+equal to the anchor indentation.
+
+Examples:
+
+```kappa
+let x =
+    a +
+    b +
+    c
+```
+
+parses as:
+
+```kappa
+let x = a + b + c
+```
+
+And:
+
+```kappa
+let x =
+    a +
+        b +
+    c
+```
+
+also belongs to the same continuation region; the stricter indentation on `b` does not create a nested statement block.
+
+But:
+
+```kappa
+do
+    let x <- action
+        y
+```
+
+is not a continuation unless the line ending after `action` is itself in a continuation context. Since `action` is a
+complete RHS and no operator or delimiter requires a following expression, the deeper `y` line is an unexpected
+indentation error, not an application continuation.
+
+If an indented line appears where neither a block introducer nor a continuation context is active, the implementation
+MUST reject it as an unexpected indentation diagnostic. The diagnostic SHOULD say whether a comma, operator, explicit
+parentheses, or dedent is the likely repair.
+
 Block introducers:
 
 Certain keywords introduce blocks, meaning they require one or more statements at a greater indentation level,

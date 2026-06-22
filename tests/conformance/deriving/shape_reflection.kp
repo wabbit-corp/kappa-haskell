@@ -20,9 +20,7 @@ let deriveTag @a target value = do
 deriveSame : forall (@0 a : Type). Syntax Type -> Syntax a -> Syntax a -> Elab (Syntax Bool)
 let deriveSame @a target left right = do
     shape <- inspectAdt @a target
-    matchAdt2 shape left right
-        (\ctor fieldPairs -> boolSyntax True)
-        (\leftCtor rightCtor -> boolSyntax False)
+    matchAdt2 shape left right (\ctor fieldPairs -> boolSyntax True) (\leftCtor rightCtor -> boolSyntax False)
 
 tagName : Expr -> String
 let tagName value =

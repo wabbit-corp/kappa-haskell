@@ -1,0 +1,8 @@
+--! assertDiagnostic error E_UNEXPECTED_INDENTATION
+--! assertDiagnosticCodes E_UNEXPECTED_INDENTATION
+--! assertDiagnosticMatch comma, operator, explicit parentheses, or dedent
+
+x : Int
+let x =
+    1
+        2

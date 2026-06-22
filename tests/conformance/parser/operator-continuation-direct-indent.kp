@@ -1,0 +1,8 @@
+--! assertNoErrors
+
+x : Int
+let x = 1 +
+    2
+
+y : Int
+let y = 3
