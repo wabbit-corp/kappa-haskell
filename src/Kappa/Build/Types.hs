@@ -1,7 +1,6 @@
--- @Target@ shares some field labels across its two constructors (the
--- accessors are only ever reached by constructor pattern match, never as
--- partial functions), so the partial-field warning is not meaningful here.
-{-# OPTIONS_GHC -Wno-partial-fields #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 -- | Haskell mirror of the increment-1 @std.build@ schema (§29.8). These
 -- records hold the *semantic* build configuration only: they carry no
@@ -10,6 +9,12 @@
 -- tracked separately by the loader and never participates in this
 -- identity). A value of 'BuildConfig' is the reified normal form of a
 -- manifest's @buildConfig@ binding (see "Kappa.Build.Reify").
+--
+-- Records here use the dot-syntax house style: fields are /unprefixed/ and
+-- read as @bc.name@ \/ @target.spec@ ('OverloadedRecordDot' +
+-- 'NoFieldSelectors'). 'Target' is a product (@name@ + a 'TargetSpec' sum
+-- whose variants each carry a single-constructor spec record), so every
+-- field is total — there are no partial fields to dot-access unsafely.
 module Kappa.Build.Types
   ( BuildConfig (..)
   , PackageVersion (..)
@@ -28,30 +33,37 @@ module Kappa.Build.Types
   , NativeLoadSpec (..)
   , HostBinding (..)
   , Target (..)
+  , TargetSpec (..)
+  , ExecutableSpec (..)
+  , LibrarySpec (..)
+  , TestSpec (..)
+  , AggregateSpec (..)
+  , AliasSpec (..)
+  , BenchmarkSpec (..)
   ) where
 
 import Data.Text (Text)
 
 data BuildConfig = BuildConfig
-  { bcName :: !Text
-  , bcVersion :: !PackageVersion
-  , bcSourceRoots :: ![SourceRoot]
-  , bcFragmentAxes :: ![FragmentAxis]
-  , bcDependencies :: ![Dependency]
-  , bcHostBindings :: ![HostBinding]
-  , bcTargets :: ![Target]
+  { name :: !Text
+  , version :: !PackageVersion
+  , sourceRoots :: ![SourceRoot]
+  , fragmentAxes :: ![FragmentAxis]
+  , dependencies :: ![Dependency]
+  , hostBindings :: ![HostBinding]
+  , targets :: ![Target]
   }
   deriving stock (Eq, Show)
 
-newtype PackageVersion = PackageVersion {pvRaw :: Text}
+newtype PackageVersion = PackageVersion {raw :: Text}
   deriving stock (Eq, Show)
 
-newtype SourceRoot = SourceRoot {srPath :: Text}
+newtype SourceRoot = SourceRoot {path :: Text}
   deriving stock (Eq, Show)
 
 data FragmentAxis = FragmentAxis
-  { faName :: !Text
-  , faTags :: ![Text]
+  { name :: !Text
+  , tags :: ![Text]
   }
   deriving stock (Eq, Show)
 
@@ -107,10 +119,10 @@ data FfiClass
 -- | §36.28: one exported native symbol — the Kappa member spelling, the C
 -- symbol it calls, and its ABI signature (parameter types + result type).
 data SymbolDecl = SymbolDecl
-  { sdMember :: !Text
-  , sdSymbol :: !Text
-  , sdParams :: ![CType]
-  , sdResult :: !CType
+  { member :: !Text
+  , symbol :: !Text
+  , params :: ![CType]
+  , result :: !CType
   }
   deriving stock (Eq, Show)
 
@@ -195,51 +207,69 @@ data NativeLoadSpec
   deriving stock (Eq, Show)
 
 data HostBinding = NativeBinding
-  { nbName :: !Text
-  , nbProvides :: ![ModuleSelector]
-  , nbSurface :: !NativeSurface
-  , nbAbi :: !NativeAbi
-  , nbInputs :: ![NativeInput]
-  , nbLink :: !NativeLinkSpec
-  , nbLoad :: !NativeLoadSpec
+  { name :: !Text
+  , provides :: ![ModuleSelector]
+  , surface :: !NativeSurface
+  , abi :: !NativeAbi
+  , inputs :: ![NativeInput]
+  , link :: !NativeLinkSpec
+  , load :: !NativeLoadSpec
   }
   deriving stock (Eq, Show)
 
-data Target
-  = ExecutableTarget
-      { tName :: !Text
-      , tBackend :: !BackendProfile
-      , tFragments :: ![Text]
-      , tMain :: !ModuleSelector
-      , tModules :: !ModuleSelector
-      , tDependencies :: ![Text]
-      , tHostBindings :: ![Text]
-      }
-  | LibraryTarget
-      { tName :: !Text
-      , tBackend :: !BackendProfile
-      , tFragments :: ![Text]
-      , tModules :: !ModuleSelector
-      , tDependencies :: ![Text]
-      }
-  | TestTarget
-      { tName :: !Text
-      , tModules :: !ModuleSelector
-      }
-  | AggregateTarget
-      { tName :: !Text
-      , tMembers :: ![Text] -- ^ names of the member targets it groups
-      }
-  | AliasTarget
-      { tName :: !Text
-      , tAlias :: !Text -- ^ the name of the target this aliases
-      }
-  | BenchmarkTarget
-      { tName :: !Text
-      , tBackend :: !BackendProfile
-      , tFragments :: ![Text]
-      , tMain :: !ModuleSelector
-      , tModules :: !ModuleSelector
-      , tDependencies :: ![Text]
-      }
+-- | A build target: a name plus its kind-specific configuration. Splitting
+-- the common @name@ from the per-kind 'TargetSpec' keeps every record
+-- single-constructor, so every field is total and @target.name@ \/
+-- @spec.backend@ dot access is always sound (no partial fields).
+data Target = Target
+  { name :: !Text
+  , spec :: !TargetSpec
+  }
+  deriving stock (Eq, Show)
+
+-- | The kind-specific half of a 'Target'. Each variant wraps a
+-- single-constructor spec record.
+data TargetSpec
+  = Executable !ExecutableSpec
+  | Library !LibrarySpec
+  | Test !TestSpec
+  | Aggregate !AggregateSpec
+  | Alias !AliasSpec
+  | Benchmark !BenchmarkSpec
+  deriving stock (Eq, Show)
+
+data ExecutableSpec = ExecutableSpec
+  { backend :: !BackendProfile
+  , fragments :: ![Text]
+  , main :: !ModuleSelector
+  , modules :: !ModuleSelector
+  , dependencies :: ![Text]
+  , hostBindings :: ![Text]
+  }
+  deriving stock (Eq, Show)
+
+data LibrarySpec = LibrarySpec
+  { backend :: !BackendProfile
+  , fragments :: ![Text]
+  , modules :: !ModuleSelector
+  , dependencies :: ![Text]
+  }
+  deriving stock (Eq, Show)
+
+newtype TestSpec = TestSpec {modules :: ModuleSelector}
+  deriving stock (Eq, Show)
+
+newtype AggregateSpec = AggregateSpec {members :: [Text]} -- ^ names of the member targets it groups
+  deriving stock (Eq, Show)
+
+newtype AliasSpec = AliasSpec {alias :: Text} -- ^ the name of the target this aliases
+  deriving stock (Eq, Show)
+
+data BenchmarkSpec = BenchmarkSpec
+  { backend :: !BackendProfile
+  , fragments :: ![Text]
+  , main :: !ModuleSelector
+  , modules :: !ModuleSelector
+  , dependencies :: ![Text]
+  }
   deriving stock (Eq, Show)

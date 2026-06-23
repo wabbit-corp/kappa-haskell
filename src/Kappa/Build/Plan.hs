@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | A build-plan resolution slice (§36.4) sufficient to build one
 -- executable target from a reified manifest: select the target, resolve
 -- its host-binding providers (§36.28) against the native catalog with
@@ -19,7 +21,7 @@ import Control.Exception (SomeException, catch)
 import Control.Monad (filterM, forM)
 import qualified Data.ByteString as BS
 import Data.Char (isDigit)
-import Data.List (foldl', maximumBy, sortOn)
+import Data.List (maximumBy, sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -101,12 +103,12 @@ resolveExecutable manifestDir bc mTarget =
       -- §34.5.3/§36.4: this implementation provides only the native (zig)
       -- backend profile. A target selecting jvm/dotnet must be rejected
       -- honestly rather than silently coerced into a native build.
-      | not (isNativeBackend (tBackend tgt)) -> pure (Left [backendUnrealized tgt])
+      | not (isNativeBackend (targetBackend tgt)) -> pure (Left [backendUnrealized tgt])
       | otherwise -> genThen tgt $ \genMap shimDefs -> case resolveProviders genMap shimDefs tgt of
       Left ds -> pure (Left ds)
       Right (nativeSyms, linkSpecs, nativeInputs, nativeBindings, _anyNative) ->
-        case tMain tgt of
-          SelModulesUnder _ -> pure (Left [mainNotConcrete (tName tgt)])
+        case targetMainSel tgt of
+          SelModulesUnder _ -> pure (Left [mainNotConcrete (tgt.name)])
           SelModule modName -> do
             let entryMod = ModuleName (T.splitOn "." modName)
             allFiles <- packageModules manifestDir bc
@@ -120,7 +122,7 @@ resolveExecutable manifestDir bc mTarget =
             -- one of its fragment suffixes is enabled (a no-suffix file always);
             -- unselected fragments (e.g. runtime.jvm.kp under the native target)
             -- do not participate at all.
-            let enabled = tFragments tgt
+            let enabled = targetFragments tgt
                 fragSelected (f, _) = fragmentSelected enabled f
                 selectedAll = filter fragSelected allFiles
                 reservedDiags =
@@ -130,19 +132,19 @@ resolveExecutable manifestDir bc mTarget =
                   ]
                 -- §36.12 MUST: target / selected-file axis-exclusivity.
                 fragDiags =
-                  maybe [] pure (fragmentTargetDiag (manifestDir </> manifestBasename) (bcFragmentAxes bc) (tName tgt) enabled)
-                    ++ [d | (f, _) <- selectedAll, Just d <- [fragmentFileDiag (bcFragmentAxes bc) f]]
+                  maybe [] pure (fragmentTargetDiag (manifestDir </> manifestBasename) (bc.fragmentAxes) (tgt.name) enabled)
+                    ++ [d | (f, _) <- selectedAll, Just d <- [fragmentFileDiag (bc.fragmentAxes) f]]
                 selected =
                   [ (f, mn)
                   | (f, mn) <- selectedAll
-                  , mn == entryMod || matchesSelector (tModules tgt) mn
+                  , mn == entryMod || matchesSelector (targetModules tgt) mn
                   ]
             if not (null fragDiags)
               then pure (Left fragDiags)
               else if not (null reservedDiags)
               then pure (Left reservedDiags)
               else if not (any ((== entryMod) . snd) selectedAll)
-              then pure (Left [entryNotFound (tName tgt) modName])
+              then pure (Left [entryNotFound (tgt.name) modName])
               else do
                 -- §36.23: resolve the target's dependencies and bring each
                 -- resolved package's library modules into the unit. Files
@@ -164,7 +166,7 @@ resolveExecutable manifestDir bc mTarget =
                             Nothing ->
                               Right
                                 ResolvedExe
-                                  { rxName = tName tgt
+                                  { rxName = tgt.name
                                   , rxEntryModule = entryMod
                                   , rxSourceFiles = unit
                                   , rxProvidedModules = dedup (map rnsModule nativeSyms)
@@ -172,21 +174,21 @@ resolveExecutable manifestDir bc mTarget =
                                   , rxLinkSpecs = linkSpecs
                                   , rxNativeInputs = nativeInputs
                                   , rxNativeBindings = nativeBindings
-                                  , rxTargetTriple = backendTriple (tBackend tgt)
+                                  , rxTargetTriple = backendTriple (targetBackend tgt)
                                   , rxLockEntries = lockEntries
                                   }
   where
     sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
 
-    executables = [t | t@ExecutableTarget {} <- bcTargets bc]
+    executables = [t | t <- bc.targets, Executable {} <- [t.spec]]
     -- executables and benchmarks share this resolution (both have a main +
     -- modules + dependencies); a benchmark carries no host bindings.
-    isExeOrBench t = case t of ExecutableTarget {} -> True; BenchmarkTarget {} -> True; _ -> False
+    isExeOrBench t = case t.spec of Executable {} -> True; Benchmark {} -> True; _ -> False
 
     isNativeBackend b = case b of NativeBackend {} -> True; _ -> False
     backendUnrealized tgt =
       buildErr "E_BACKEND_PROFILE_UNREALIZED" "kappa-hs.backend.profile"
-        ( "target '" <> tName tgt <> "' selects the '" <> backendName (tBackend tgt)
+        ( "target '" <> tgt.name <> "' selects the '" <> backendName (targetBackend tgt)
             <> "' backend profile, which this implementation does not provide; it "
             <> "realizes only the native profile (Spec §34.5.3, §36.4)"
         )
@@ -200,7 +202,7 @@ resolveExecutable manifestDir bc mTarget =
 
     selectTarget :: Either Diagnostics Target
     selectTarget = case mTarget of
-      Just nm -> case [t | t <- bcTargets bc, tName t == nm, isExeOrBench t] of
+      Just nm -> case [t | t <- bc.targets, t.name == nm, isExeOrBench t] of
         (t : _) -> Right t
         [] ->
           Left
@@ -229,9 +231,9 @@ resolveExecutable manifestDir bc mTarget =
     genThen :: Target -> (Map.Map Text [SymbolDecl] -> Map.Map Text (Set.Set Text) -> IO (Either Diagnostics a)) -> IO (Either Diagnostics a)
     genThen tgt k = do
       let wanted = targetHostBindings tgt
-          selected = [hb | nm <- wanted, hb <- bcHostBindings bc, nbName hb == nm]
-          gens = [hb | hb <- selected, isGenerated (nbSurface hb)]
-          tgtTriple = backendTriple (tBackend tgt)
+          selected = [hb | nm <- wanted, hb <- bc.hostBindings, hb.name == nm]
+          gens = [hb | hb <- selected, isGenerated (hb.surface)]
+          tgtTriple = backendTriple (targetBackend tgt)
       -- §36.11: validate every package-relative native input path of every
       -- selected binding (shim sources, prebuilt artifacts, include dirs,
       -- module maps) stays within the package root — no `..`, absolute, or
@@ -254,7 +256,7 @@ resolveExecutable manifestDir bc mTarget =
               else do
                 mcc <- detectCC Nothing
                 case mcc of
-                  Nothing -> pure (Left [genNeedsCc (nbName (head gens))])
+                  Nothing -> pure (Left [genNeedsCc (head gens).name])
                   Just cc -> do
                     eMap <- goGen cc Map.empty gens
                     either (pure . Left) (\m -> k m shimDefMap) eMap
@@ -262,23 +264,23 @@ resolveExecutable manifestDir bc mTarget =
         isGenerated SymbolListSurface {} = False
         isGenerated GeneratedSurface {} = True
         isGenerated GeneratedPrefixSurface {} = True
-        triple = backendTriple (tBackend tgt)
+        triple = backendTriple (targetBackend tgt)
         buildShimDefMap hbs =
-          Map.fromList <$> mapM (\hb -> (,) (nbName hb) <$> shimDefsFor hb) hbs
+          Map.fromList <$> mapM (\hb -> (,) (hb.name) <$> shimDefsFor hb) hbs
         shimDefsFor hb = do
-          let srcs = [manifestDir </> T.unpack s | ShimInput ss <- nbInputs hb, s <- ss]
+          let srcs = [manifestDir </> T.unpack s | ShimInput ss <- hb.inputs, s <- ss]
           defs <- concat <$> mapM readDefs srcs
           pure (Set.fromList (map T.pack defs))
         readDefs p = (definedSymbols <$> readFile p) `catch` \(_ :: SomeException) -> pure []
         goGen _ acc [] = pure (Right acc)
-        goGen cc acc (hb : rest) = case nbSurface hb of
+        goGen cc acc (hb : rest) = case hb.surface of
           GeneratedSurface h ss -> do
-            r <- generateSurfaceDecls cc triple manifestDir manifestDir (nbInputs hb) h ss
+            r <- generateSurfaceDecls cc triple manifestDir manifestDir (hb.inputs) h ss
             case r of
               Left ds -> pure (Left ds)
-              Right decls -> goGen cc (Map.insert (nbName hb) decls acc) rest
+              Right decls -> goGen cc (Map.insert (hb.name) decls acc) rest
           GeneratedPrefixSurface h pfx -> do
-            r <- generatePrefixSurfaceDecls cc triple manifestDir manifestDir (nbInputs hb) h pfx
+            r <- generatePrefixSurfaceDecls cc triple manifestDir manifestDir (hb.inputs) h pfx
             case r of
               Left ds -> pure (Left ds)
               Right (decls, skipped) -> do
@@ -286,12 +288,12 @@ resolveExecutable manifestDir bc mTarget =
                 -- from the broad surface because the conservative ABI cannot
                 -- represent them (callbacks/structs/variadics).
                 hPutStrLn stderr
-                  ( "note: host binding '" <> T.unpack (nbName hb) <> "': generated "
+                  ( "note: host binding '" <> T.unpack (hb.name) <> "': generated "
                       <> show (length decls) <> " function(s) from " <> T.unpack h
                       <> " (prefix '" <> T.unpack pfx <> "'); skipped " <> show (length skipped)
                       <> " requiring callbacks/structs/variadics (rejected, not guessed)"
                   )
-                goGen cc (Map.insert (nbName hb) decls acc) rest
+                goGen cc (Map.insert (hb.name) decls acc) rest
           SymbolListSurface {} -> goGen cc acc rest
 
     -- §26.1.3: data models the header-derived width mapping does not model are
@@ -322,7 +324,7 @@ resolveExecutable manifestDir bc mTarget =
     validateNativePaths :: FilePath -> [HostBinding] -> IO (Either Diagnostics ())
     validateNativePaths baseDir hbs = goV (concatMap binp hbs)
       where
-        binp hb = concatMap one (nbInputs hb)
+        binp hb = concatMap one (hb.inputs)
         one (ShimInput ss) = [(True, s) | s <- ss]
         one (PrebuiltInput a _) = [(True, a)]
         one (IncludeDirInput d) = [(True, d)]
@@ -361,13 +363,13 @@ resolveExecutable manifestDir bc mTarget =
     resolveProviders :: Map.Map Text [SymbolDecl] -> Map.Map Text (Set.Set Text) -> Target -> Either Diagnostics ([ResolvedNativeSymbol], [NativeLinkSpec], [NativeInput], [(Text, [ResolvedNativeSymbol], [NativeInput], [Text])], Bool)
     resolveProviders genMap shimDefs tgt =
       let wanted = targetHostBindings tgt
-          lookupBinding nm = [hb | hb <- bcHostBindings bc, nbName hb == nm]
+          lookupBinding nm = [hb | hb <- bc.hostBindings, hb.name == nm]
        in do
             selected <-
               traverse
                 ( \nm -> case lookupBinding nm of
                     (hb : _) -> Right hb
-                    [] -> Left [bindingNotFound (tName tgt) nm]
+                    [] -> Left [bindingNotFound (tgt.name) nm]
                 )
                 wanted
             -- realizability: this backend realizes only the load modes it
@@ -394,9 +396,9 @@ resolveExecutable manifestDir bc mTarget =
             -- (force-include ABI check) — else it is an unverified escape hatch.
             -- Header-generated surfaces are exempt (parsed from the real header).
             mapM_ (uncurry checkSymbolListAbi) (zip selected (map snd perBinding))
-            let linkSpecs = map nbLink selected
-                inputs = concatMap nbInputs selected
-                perBindingFull = [(nbName hb, ss, nbInputs hb, [linkText (nbLink hb), loadText (nbLoad hb)]) | (hb, (_, ss)) <- zip selected perBinding]
+            let linkSpecs = map (.link) selected
+                inputs = concatMap (.inputs) selected
+                perBindingFull = [(hb.name, ss, hb.inputs, [linkText (hb.link), loadText (hb.load)]) | (hb, (_, ss)) <- zip selected perBinding]
             Right (allSyms, linkSpecs, inputs, perBindingFull, not (null selected))
 
     -- §26.1.4/§27.6: every binding's foreign-call classification (default
@@ -405,7 +407,7 @@ resolveExecutable manifestDir bc mTarget =
     -- safe-cancellation capability the native runtime does not provide).
     checkClassificationCapability :: HostBinding -> Either Diagnostics ()
     checkClassificationCapability hb =
-      let cls = case [c | ClassifyInput c <- nbInputs hb] of
+      let cls = case [c | ClassifyInput c <- hb.inputs] of
                   [] -> FfiNonblocking
                   cs -> last cs
           missing = [c | c <- ffiRequiredCapabilities cls, c `notElem` nativeRuntimeCapabilities]
@@ -414,7 +416,7 @@ resolveExecutable manifestDir bc mTarget =
             ms ->
               Left
                 [ buildErr "E_BACKEND_CAPABILITY_UNREALIZED" "kappa-hs.backend.capability"
-                    ( "native binding '" <> nbName hb <> "' is classified '" <> classText cls
+                    ( "native binding '" <> hb.name <> "' is classified '" <> classText cls
                         <> "', which requires runtime capabilit" <> (if length ms == 1 then "y " else "ies ")
                         <> T.intercalate ", " ms <> " that the native profile does not advertise (it advertises "
                         <> T.intercalate ", " nativeRuntimeCapabilities <> "); reject rather than weaken semantics "
@@ -432,12 +434,12 @@ resolveExecutable manifestDir bc mTarget =
     -- symbols, so it MUST reject those modes rather than silently treat
     -- them as systemLoader.
     checkRealizable :: HostBinding -> Either Diagnostics ()
-    checkRealizable hb = case nbLoad hb of
+    checkRealizable hb = case hb.load of
       SystemLoader -> Right ()
       other ->
         Left
           [ buildErr "E_BACKEND_HOST_LINK_UNREALIZABLE" "kappa-hs.backend.host-link"
-              ( "native binding '" <> nbName hb <> "' requests the '" <> loadName other
+              ( "native binding '" <> hb.name <> "' requests the '" <> loadName other
                   <> "' load mode, which the zig native profile does not realize; it "
                   <> "realizes only 'systemLoader' (Spec §34.5.3, §36.28)"
               )
@@ -462,25 +464,25 @@ resolveExecutable manifestDir bc mTarget =
     -- authoritative — there is no catalog to validate against.
     resolveBinding :: Map.Map Text [SymbolDecl] -> Map.Map Text (Set.Set Text) -> HostBinding -> Either Diagnostics (Text, [ResolvedNativeSymbol])
     resolveBinding genMap shimDefs hb = do
-      mods <- concat <$> traverse (expandSelector hb) (nbProvides hb)
+      mods <- concat <$> traverse (expandSelector hb) (hb.provides)
       decls <- surfaceDecls genMap hb
       -- §26.1.5: a symbol is shim-provided only if a shim TU of this binding
       -- actually DEFINES it (symbol-granular) — a non-shim-defined library
       -- symbol cannot ride the binding's shim past the ABI proof.
-      let defined = Map.findWithDefault Set.empty (nbName hb) shimDefs
+      let defined = Map.findWithDefault Set.empty (hb.name) shimDefs
           syms =
             [ ResolvedNativeSymbol
                 { rnsModule = mn
-                , rnsMember = sdMember d
-                , rnsCSymbol = sdSymbol d
-                , rnsParams = sdParams d
-                , rnsResult = sdResult d
-                , rnsShimProvided = sdSymbol d `Set.member` defined
+                , rnsMember = d.member
+                , rnsCSymbol = d.symbol
+                , rnsParams = d.params
+                , rnsResult = d.result
+                , rnsShimProvided = d.symbol `Set.member` defined
                 }
             | mn <- mods
             , d <- decls
             ]
-      Right (nbName hb, syms)
+      Right (hb.name, syms)
 
     -- §26.1.5/§36.28: an explicit-symbolList symbol with a pointer/string/handle
     -- signature has no all-scalar conservative prototype the probe can check;
@@ -492,11 +494,11 @@ resolveExecutable manifestDir bc mTarget =
     -- declared surface could lie about the real ABI. Generated surfaces are
     -- exempt (their signatures are parsed from the header).
     checkSymbolListAbi :: HostBinding -> [ResolvedNativeSymbol] -> Either Diagnostics ()
-    checkSymbolListAbi hb syms = case nbSurface hb of
+    checkSymbolListAbi hb syms = case hb.surface of
       SymbolListSurface _ -> mapM_ checkOne syms
       _ -> Right ()
       where
-        verifyByName = [(verifyDeclName d, d) | VerifyInput ds <- nbInputs hb, d <- ds]
+        verifyByName = [(verifyDeclName d, d) | VerifyInput ds <- hb.inputs, d <- ds]
         checkOne s
           | rnsShimProvided s = Right () -- shim-defined → force-include ABI-checked
           | otherwise = case lookup (rnsCSymbol s) verifyByName of
@@ -520,7 +522,7 @@ resolveExecutable manifestDir bc mTarget =
     abiMismatch :: HostBinding -> ResolvedNativeSymbol -> Text -> Diagnostic
     abiMismatch hb s d =
       buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
-        ( "native binding '" <> nbName hb <> "' symbolList declares '" <> rnsMember s
+        ( "native binding '" <> hb.name <> "' symbolList declares '" <> rnsMember s
             <> "' (C symbol '" <> rnsCSymbol s <> "') with an ABI signature that is NOT consistent with its "
             <> "'verify' prototype \"" <> d <> "\" (arity or pointer/scalar/float class disagree); the declared "
             <> "surface would misrepresent the real ABI. Make the symbolList signature match the verify prototype, "
@@ -530,7 +532,7 @@ resolveExecutable manifestDir bc mTarget =
     unverifiedAbi :: HostBinding -> ResolvedNativeSymbol -> Diagnostic
     unverifiedAbi hb s =
       buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
-        ( "native binding '" <> nbName hb <> "' symbolList declares '" <> rnsMember s
+        ( "native binding '" <> hb.name <> "' symbolList declares '" <> rnsMember s
             <> "' (C symbol '" <> rnsCSymbol s <> "') whose ABI is not verified: it is not shim-defined and has "
             <> "no matching 'verify' declaration. A `headers` input alone is insufficient (a header that does not "
             <> "declare the symbol proves nothing). Add a 'verify' prototype for '" <> rnsCSymbol s
@@ -543,13 +545,13 @@ resolveExecutable manifestDir bc mTarget =
     -- genMap, which 'genThen' populated). A binding that provides modules but
     -- resolves to no surface is rejected: nothing to make importable or call.
     surfaceDecls :: Map.Map Text [SymbolDecl] -> HostBinding -> Either Diagnostics [SymbolDecl]
-    surfaceDecls genMap hb = case nbSurface hb of
+    surfaceDecls genMap hb = case hb.surface of
       SymbolListSurface [] -> Left [emptySurface hb]
       SymbolListSurface ds -> Right ds
       GeneratedSurface _ _ -> fromGen
       GeneratedPrefixSurface _ _ -> fromGen
       where
-        fromGen = case Map.lookup (nbName hb) genMap of
+        fromGen = case Map.lookup (hb.name) genMap of
           Just ds@(_ : _) -> Right ds
           _ -> Left [emptySurface hb]
 
@@ -627,14 +629,14 @@ resolveExecutable manifestDir bc mTarget =
         )
     unsupportedModule hb m =
       buildErr "E_NATIVE_BINDING_UNSUPPORTED" "kappa-hs.build.native-unsupported"
-        ( "native binding '" <> nbName hb <> "' provides '" <> m
+        ( "native binding '" <> hb.name <> "' provides '" <> m
             <> "', which is not a concrete module under the 'host.native' root; "
             <> "the zig native profile realizes only host.native.* modules "
             <> "(Spec §27.1.1, §34.5.3, §36.28)"
         )
     emptySurface hb =
       buildErr "E_NATIVE_BINDING_UNSUPPORTED" "kappa-hs.build.native-unsupported"
-        ( "native binding '" <> nbName hb <> "' declares no symbol surface; a "
+        ( "native binding '" <> hb.name <> "' declares no symbol surface; a "
             <> "native binding must describe its exported symbols with their ABI "
             <> "signatures via symbolList (Spec §27.1.1, §36.28)"
         )
@@ -648,7 +650,7 @@ resolveExecutable manifestDir bc mTarget =
       buildErr "E_BUILD_ENTRY_NOT_FOUND" "kappa-hs.build.entry-not-found"
         ( "could not locate the entry module '" <> modName <> "' of target '" <> tn
             <> "' under the package source roots ("
-            <> T.intercalate ", " (map srPath (bcSourceRoots bc)) <> ") (Spec §36.3, §36.4)"
+            <> T.intercalate ", " (map (.path) (bc.sourceRoots)) <> ") (Spec §36.3, §36.4)"
         )
     mainNotConcrete tn =
       buildErr "E_BUILD_ENTRY_NOT_FOUND" "kappa-hs.build.entry-not-found"
@@ -728,8 +730,8 @@ deriveModule root file =
 -- @dir@), manifest excluded, sorted by path (§8.1 determinism).
 packageModules :: FilePath -> BuildConfig -> IO [(FilePath, ModuleName)]
 packageModules dir bc = do
-  perRoot <- forM (bcSourceRoots bc) $ \r -> do
-    let rootDir = dir </> T.unpack (srPath r)
+  perRoot <- forM (bc.sourceRoots) $ \r -> do
+    let rootDir = dir </> T.unpack (r.path)
     fs <- listKpFiles rootDir
     pure [(f, deriveModule rootDir f) | f <- fs]
   pure (sortOn fst (concat perRoot))
@@ -762,7 +764,7 @@ fragmentSelected enabled file = all (`elem` enabled) (fragmentSuffixes file)
 fragmentFileDiag :: [FragmentAxis] -> FilePath -> Maybe Diagnostic
 fragmentFileDiag axes file =
   let sufs = fragmentSuffixes file
-      axisOf t = [faName a | a <- axes, t `elem` faTags a]
+      axisOf t = [a.name | a <- axes, t `elem` a.tags]
       perAxis = Map.toList (foldl' (\m t -> foldl' (\m' an -> Map.insertWith (+) an (1 :: Int) m') m (axisOf t)) Map.empty sufs)
       doubled = [an | (an, c) <- perAxis, c > 1]
       sp = Span file (Pos 1 1) (Pos 1 1)
@@ -779,7 +781,7 @@ fragmentFileDiag axes file =
 -- axis. Returns a diagnostic on violation.
 fragmentTargetDiag :: FilePath -> [FragmentAxis] -> Text -> [Text] -> Maybe Diagnostic
 fragmentTargetDiag manifestFile axes tgtName enabled =
-  let axisOf t = [faName a | a <- axes, t `elem` faTags a]
+  let axisOf t = [a.name | a <- axes, t `elem` a.tags]
       perAxis = Map.toList (foldl' (\m t -> foldl' (\m' an -> Map.insertWith (+) an (1 :: Int) m') m (axisOf t)) Map.empty enabled)
       doubled = [an | (an, c) <- perAxis, c > 1]
       sp = Span manifestFile (Pos 1 1) (Pos 1 1)
@@ -808,7 +810,7 @@ resolveDepClosure rootDir rootBc rootNames = do
   where
     go _ _ acc locks [] = pure (Right (concat (reverse acc), reverse locks))
     go canonRoot visited acc locks ((depDir0, depBc0, nm) : rest) =
-      case [d | d <- bcDependencies depBc0, depName d == nm] of
+      case [d | d <- depBc0.dependencies, depName d == nm] of
         [] ->
           pure . Left $
             [ depErr sp "E_DEPENDENCY_NOT_FOUND" "kappa-hs.build.dependency-not-found"
@@ -1067,10 +1069,10 @@ loadDepPackage manifest = do
 depLibraryModules :: FilePath -> BuildConfig -> IO [(FilePath, ModuleName)]
 depLibraryModules pkgDir depBc = do
   mods <- packageModules pkgDir depBc
-  let libSelectors = [tModules t | t@LibraryTarget {} <- bcTargets depBc]
+  let libSelectors = [targetModules t | t <- depBc.targets, isLibraryT t]
       exeMains =
         [ ModuleName (T.splitOn "." nm')
-        | ExecutableTarget {tMain = SelModule nm'} <- bcTargets depBc
+        | t <- depBc.targets, Executable s <- [t.spec], SelModule nm' <- [s.main]
         ]
   pure $
     if null libSelectors
@@ -1080,7 +1082,7 @@ depLibraryModules pkgDir depBc = do
 -- | The dependency names a package's library targets declare — followed
 -- transitively when resolving a path dependency's own dependencies.
 libraryDeps :: BuildConfig -> [Text]
-libraryDeps depBc = concat [tDependencies t | t@LibraryTarget {} <- bcTargets depBc]
+libraryDeps depBc = concat [targetDependencies t | t <- depBc.targets, isLibraryT t]
 
 -- | A package's source bytes for content identity (§36.23.2): its build
 -- manifest plus every .kp under its source roots, each keyed by its path
@@ -1188,21 +1190,59 @@ depErr sp code fam = diag SevError StageImports code (Just fam) sp
 
 -- | A target's dependency names.
 targetDependencies :: Target -> [Text]
-targetDependencies ExecutableTarget {tDependencies = ds} = ds
-targetDependencies LibraryTarget {tDependencies = ds} = ds
-targetDependencies TestTarget {} = []
-targetDependencies AggregateTarget {} = []
-targetDependencies AliasTarget {} = []
-targetDependencies BenchmarkTarget {tDependencies = ds} = ds
+targetDependencies t = case t.spec of
+  Executable s -> s.dependencies
+  Library s -> s.dependencies
+  Benchmark s -> s.dependencies
+  Test {} -> []
+  Aggregate {} -> []
+  Alias {} -> []
 
 -- | A target's referenced host-binding names (executables only carry them).
 targetHostBindings :: Target -> [Text]
-targetHostBindings ExecutableTarget {tHostBindings = hs} = hs
-targetHostBindings LibraryTarget {} = []
-targetHostBindings TestTarget {} = []
-targetHostBindings AggregateTarget {} = []
-targetHostBindings AliasTarget {} = []
-targetHostBindings BenchmarkTarget {} = []
+targetHostBindings t = case t.spec of
+  Executable s -> s.hostBindings
+  _ -> []
+
+-- | The backend a buildable target compiles with. Only ever asked of the
+-- buildable kinds (executable\/library\/benchmark); the catch-all is
+-- unreachable for the others (which carry no backend).
+targetBackend :: Target -> BackendProfile
+targetBackend t = case t.spec of
+  Executable s -> s.backend
+  Library s -> s.backend
+  Benchmark s -> s.backend
+  _ -> JvmBackend
+
+-- | The entry-module selector of an executable\/benchmark target.
+targetMainSel :: Target -> ModuleSelector
+targetMainSel t = case t.spec of
+  Executable s -> s.main
+  Benchmark s -> s.main
+  _ -> SelModulesUnder ""
+
+-- | The enabled fragment tags of a buildable target.
+targetFragments :: Target -> [Text]
+targetFragments t = case t.spec of
+  Executable s -> s.fragments
+  Library s -> s.fragments
+  Benchmark s -> s.fragments
+  _ -> []
+
+-- | The @modules@ selector of any target that has one (all but aggregate\/alias).
+targetModules :: Target -> ModuleSelector
+targetModules t = case t.spec of
+  Executable s -> s.modules
+  Library s -> s.modules
+  Test s -> s.modules
+  Benchmark s -> s.modules
+  _ -> SelModulesUnder ""
+
+isLibraryT :: Target -> Bool
+isLibraryT t = case t.spec of Library {} -> True; _ -> False
+
+isTestT :: Target -> Bool
+isTestT t = case t.spec of Test {} -> True; _ -> False
 
 -- | Select and resolve a @test@ target (§36.31) to the set of source
 -- files to run through the Appendix-T harness: the package modules whose
@@ -1214,14 +1254,14 @@ resolveTestTarget manifestDir bc mTarget =
     Left ds -> pure (Left ds)
     Right tgt -> do
       allFiles <- packageModules manifestDir bc
-      let files = [f | (f, mn) <- allFiles, matchesSelector (tModules tgt) mn]
-      pure (Right (tName tgt, files))
+      let files = [f | (f, mn) <- allFiles, matchesSelector (targetModules tgt) mn]
+      pure (Right (tgt.name, files))
   where
     sp = Span (manifestDir </> manifestBasename) (Pos 1 1) (Pos 1 1)
-    tests = [t | t@TestTarget {} <- bcTargets bc]
+    tests = [t | t <- bc.targets, isTestT t]
     notFound msg = Left [diag SevError StageImports "E_BUILD_TARGET_NOT_FOUND" (Just "kappa-hs.build.target-not-found") sp msg]
     selectTest = case mTarget of
-      Just nm -> case [t | t <- tests, tName t == nm] of
+      Just nm -> case [t | t <- tests, t.name == nm] of
         (t : _) -> Right t
         [] -> notFound ("no test target named '" <> nm <> "' in the manifest (Spec §36.3, §36.31)")
       Nothing -> case tests of

@@ -256,11 +256,11 @@ runInvocation file bc ma mtgt = do
 -- native-binding pin propagates (fail-closed).
 collectPackageLockClosure :: FilePath -> B.BuildConfig -> IO (Either Diagnostics (Bool, [LockEntry]))
 collectPackageLockClosure file bc = do
-  let isExeBench t = case t of
-        B.ExecutableTarget {} -> True
-        B.BenchmarkTarget {} -> True
+  let isExeBench t = case t.spec of
+        B.Executable {} -> True
+        B.Benchmark {} -> True
         _ -> False
-      names = [B.tName t | t <- B.bcTargets bc, isExeBench t]
+      names = [t.name | t <- bc.targets, isExeBench t]
   results <- mapM (\nm -> collectLockClosure file bc (Just nm)) names
   case sequence results of
     Left ds -> pure (Left ds)
@@ -316,15 +316,15 @@ collectLockClosure file bc mtgt = case mtgt of
         <> T.pack (show (rnsParams s)) <> "->" <> T.pack (show (rnsResult s))
     go visited nm
       | nm `Set.member` visited = pure (Right (False, []))
-      | otherwise = case [t | t <- B.bcTargets bc, B.tName t == nm] of
+      | otherwise = case [t | t <- bc.targets, t.name == nm] of
           [] -> pure (Right (False, []))
-          (t : _) -> case t of
-            B.ExecutableTarget {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
-            B.BenchmarkTarget {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
-            B.TestTarget {} -> pure (Right (False, []))
-            B.LibraryTarget {} -> pure (Right (False, []))
-            B.AliasTarget _ aliased -> go (Set.insert nm visited) aliased
-            B.AggregateTarget _ members -> do
+          (t : _) -> case t.spec of
+            B.Executable {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
+            B.Benchmark {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
+            B.Test {} -> pure (Right (False, []))
+            B.Library {} -> pure (Right (False, []))
+            B.Alias (B.AliasSpec aliased) -> go (Set.insert nm visited) aliased
+            B.Aggregate (B.AggregateSpec members) -> do
               rs <- mapM (go (Set.insert nm visited)) members
               pure $ case sequence rs of
                 Left ds -> Left ds
@@ -343,7 +343,7 @@ runNamedTarget file bc ma visited nm
             ("aggregate target membership is cyclic through '" <> nm <> "' (Spec §36.3)")
         ]
         >> pure False
-  | otherwise = case [t | t <- B.bcTargets bc, B.tName t == nm] of
+  | otherwise = case [t | t <- bc.targets, t.name == nm] of
       [] ->
         emitDiags Human
           [ diag SevError StageImports "E_BUILD_TARGET_NOT_FOUND" (Just "kappa-hs.build.target-not-found")
@@ -351,15 +351,15 @@ runNamedTarget file bc ma visited nm
               ("no target named '" <> nm <> "' in the manifest (Spec §36.3)")
           ]
           >> pure False
-      (t : _) -> case t of
-        B.TestTarget {} -> runTest file bc nm
-        B.ExecutableTarget {} -> runExecutable file bc ma (Just nm)
-        B.AggregateTarget _ members ->
+      (t : _) -> case t.spec of
+        B.Test {} -> runTest file bc nm
+        B.Executable {} -> runExecutable file bc ma (Just nm)
+        B.Aggregate (B.AggregateSpec members) ->
           and <$> mapM (runNamedTarget file bc ma (Set.insert nm visited)) members
-        B.AliasTarget _ aliased ->
+        B.Alias (B.AliasSpec aliased) ->
           runNamedTarget file bc ma (Set.insert nm visited) aliased
-        B.BenchmarkTarget {} -> runBenchmark file bc ma nm
-        B.LibraryTarget {} -> do
+        B.Benchmark {} -> runBenchmark file bc ma nm
+        B.Library {} -> do
           hPutStrLn stderr
             ("note: library target '" <> T.unpack nm <> "' is consumed as a dependency, not built directly; skipping")
           pure True
@@ -572,28 +572,29 @@ resolveManifestPath marg = case marg of
 renderBuildConfig :: B.BuildConfig -> T.Text
 renderBuildConfig bc =
   T.unlines $
-    [ "package " <> B.bcName bc <> " " <> B.pvRaw (B.bcVersion bc)
-    , "  source roots: " <> T.intercalate ", " (map B.srPath (B.bcSourceRoots bc))
+    [ "package " <> bc.name <> " " <> bc.version.raw
+    , "  source roots: " <> T.intercalate ", " (map (.path) bc.sourceRoots)
     ]
-      ++ [ "  fragment axis " <> B.faName ax <> ": " <> T.intercalate ", " (B.faTags ax)
-         | ax <- B.bcFragmentAxes bc
+      ++ [ "  fragment axis " <> ax.name <> ": " <> T.intercalate ", " (ax.tags)
+         | ax <- bc.fragmentAxes
          ]
-      ++ [ "  dependency " <> renderDep d | d <- B.bcDependencies bc]
-      ++ [ "  native binding " <> B.nbName hb <> " -> "
-             <> T.intercalate ", " (map renderSel (B.nbProvides hb))
-             <> " [" <> renderLink (B.nbLink hb) <> "]"
-         | hb <- B.bcHostBindings bc
+      ++ [ "  dependency " <> renderDep d | d <- bc.dependencies]
+      ++ [ "  native binding " <> hb.name <> " -> "
+             <> T.intercalate ", " (map renderSel (hb.provides))
+             <> " [" <> renderLink (hb.link) <> "]"
+         | hb <- bc.hostBindings
          ]
-      ++ [ "  target " <> B.tName t <> " (" <> renderTargetKind t <> ")"
-         | t <- B.bcTargets bc
+      ++ [ "  target " <> t.name <> " (" <> renderTargetKind t <> ")"
+         | t <- bc.targets
          ]
   where
-    renderTargetKind t = case t of
-      B.TestTarget {} -> "test"
-      B.AggregateTarget _ ms -> "aggregate of " <> T.intercalate ", " ms
-      B.AliasTarget _ a -> "alias of " <> a
-      B.BenchmarkTarget {} -> "benchmark " <> renderBackend (B.tBackend t)
-      _ -> renderBackend (B.tBackend t)
+    renderTargetKind t = case t.spec of
+      B.Test {} -> "test"
+      B.Aggregate (B.AggregateSpec ms) -> "aggregate of " <> T.intercalate ", " ms
+      B.Alias (B.AliasSpec a) -> "alias of " <> a
+      B.Benchmark s -> "benchmark " <> renderBackend s.backend
+      B.Executable s -> renderBackend s.backend
+      B.Library s -> renderBackend s.backend
     renderDep (B.RegistryDep n v) = "registry " <> n <> " " <> v
     renderDep (B.GitDep n u r) = "git " <> n <> " " <> u <> "@" <> r
     renderDep (B.PathDep n p) = "path " <> n <> " " <> p

@@ -298,7 +298,7 @@ decTarget ctx v = do
   (c, args) <- asCtor ctx v
   case (c, args) of
     ("ExecutableTarget", [nm, be, fr, mn, mods, deps, hbs]) ->
-      ExecutableTarget
+      (\n b f m mo d h -> Target n (Executable (ExecutableSpec b f m mo d h)))
         <$> asStr ctx nm
         <*> decBackend ctx be
         <*> decFragments ctx fr
@@ -307,20 +307,20 @@ decTarget ctx v = do
         <*> asStrList ctx deps
         <*> asStrList ctx hbs
     ("LibraryTarget", [nm, be, fr, mods, deps]) ->
-      LibraryTarget
+      (\n b f mo d -> Target n (Library (LibrarySpec b f mo d)))
         <$> asStr ctx nm
         <*> decBackend ctx be
         <*> decFragments ctx fr
         <*> decModuleSelector ctx mods
         <*> asStrList ctx deps
     ("TestTarget", [nm, mods]) ->
-      TestTarget <$> asStr ctx nm <*> decModuleSelector ctx mods
+      (\n mo -> Target n (Test (TestSpec mo))) <$> asStr ctx nm <*> decModuleSelector ctx mods
     ("AggregateTarget", [nm, members]) ->
-      AggregateTarget <$> asStr ctx nm <*> asStrList ctx members
+      (\n ms -> Target n (Aggregate (AggregateSpec ms))) <$> asStr ctx nm <*> asStrList ctx members
     ("AliasTarget", [nm, aliased]) ->
-      AliasTarget <$> asStr ctx nm <*> asStr ctx aliased
+      (\n a -> Target n (Alias (AliasSpec a))) <$> asStr ctx nm <*> asStr ctx aliased
     ("BenchmarkTarget", [nm, be, fr, mn, mods, deps]) ->
-      BenchmarkTarget
+      (\n b f m mo d -> Target n (Benchmark (BenchmarkSpec b f m mo d)))
         <$> asStr ctx nm
         <*> decBackend ctx be
         <*> decFragments ctx fr
