@@ -157,13 +157,23 @@ Recommendation: a full migration is large, but it can proceed
 record-by-record (single-constructor records first), each contained. Do NOT
 migrate sum types with partial fields to dot access (see the hard rule).
 
-## `Build.Types.Target` partial fields (structural, independent of dot syntax)
+### Phase 1 — Build subsystem: DONE
+`Build.Types` (incl. the `Target` restructure below), `Build.Reify`,
+`Build.Plan`, `Build.Lock`, and the build commands in `app/Main.hs` all use the
+dot-syntax house style now. `Target` was restructured to total-by-design:
+`Target {name, spec}` with `spec :: TargetSpec` a sum whose variants each carry
+a single-constructor spec record — so the partial-field footgun is gone and all
+dot access is sound. Verified: build clean, conformance 1342/1342, manifest
+`--check` renders all targets. This is the reference implementation of the style.
 
-`Target` has fields that exist in only some constructors (`tBackend`, `tMain`,
-`tModules`, `tMembers`, `tAlias`) — hence its `-Wno-partial-fields`. `Build.Plan`
-reaches several of them through partial selectors (`tBackend t`, `tMain t`),
-which crash if the target is the wrong kind; they're "safe" only by the caller's
-convention. Worth restructuring so the partiality is in the types, e.g.
-`data Target = Target { name :: Text, kind :: TargetKind }` with a `TargetKind`
-sum carrying each kind's payload — then every access is total and pattern-matched.
-Size: medium. (This is why `Build.Types` was *not* chosen for the dot pilot.)
+### Remaining phases (single-constructor records, smallest blast radius first)
+- `Backend.*` records (e.g. `ResolvedNativeSymbol`, `BuildOptions`) — consumers:
+  `Build.Plan`, `app/Main.hs`, `Pipeline`.
+- Front-end record types (`Binder`, `LetDef`, …) — consumers include `Parser`,
+  `Resolve`, `Check` (coordinate with parallel Check work).
+- The widely-consumed core types (`Span`/`Pos`/`GName`, `Ctx`, the `Eval`/`Check`
+  records) are LAST: migrating `Source` (Span/Pos) ripples to nearly every
+  module via `NoFieldSelectors`, so it's the biggest single step.
+
+`Build.Types.Target` partial-field smell: RESOLVED by the Phase-1 restructure
+(was: partial selectors `tBackend t`/`tMain t` guarded by `-Wno-partial-fields`).
