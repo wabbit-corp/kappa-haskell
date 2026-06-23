@@ -1,0 +1,13 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_ASSOCIATED_MEMBER_UNDECLARED
+
+-- §14.3.4: an instance may not define a member the trait does not declare;
+-- an associated static member must be declared in the trait body first.
+module main
+
+trait Container (c : Type) =
+    Elem : Type
+
+instance Container (List Int) =
+    Elem = Int
+    Bogus = Int

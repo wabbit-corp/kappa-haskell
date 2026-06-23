@@ -14216,6 +14216,15 @@ elabInstance (InstanceDecl premises hd members) sp = do
                   pure Nothing
             goFields (maybe done (: done) mfield) rest
       dictFields <- goFields [] (tiMembers ti)
+      -- §14.3.4: an instance member the trait does not declare is
+      -- undeclared — an associated static member must be declared in the
+      -- trait body before an instance may define it.
+      forM_ [(nameText dn, dsp) | DLet _ (LetDef (Just dn) _ _ _ _ _ _ _) dsp <- members] $ \(inm, dsp) ->
+        unless (inm `elem` tiMembers ti) $
+          errAt dsp "E_ASSOCIATED_MEMBER_UNDECLARED" (Just "kappa.associated.member-undeclared")
+            ( "instance defines '" <> inm <> "', which trait '" <> gnameText g
+                <> "' does not declare; an associated static member must first be declared in the trait body (§14.3.4)"
+            )
       flushPending
       let fields = sortOn fst (catMaybes superFields ++ dictFields)
           dictBody = CRecordV fields

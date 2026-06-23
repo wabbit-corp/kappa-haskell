@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! assertEval r 5
+
+-- §14.2.1/§14.3.4: a trait may declare an associated static member
+-- (`Content : Type`, a member whose type is a compile-time type). An
+-- instance DEFINES it (`Content = Int`), and the checker checks that
+-- definition against the instantiated trait declaration. The member is
+-- projectable from trait evidence (`d.Content`), and ordinary term members
+-- coexist with it.
+module main
+
+trait Box (a : Type) =
+    Content : Type
+    wrap : a -> a
+
+instance Box Int =
+    Content = Int
+    let wrap x = x
+
+contentOf : forall (a : Type). (@d : Box a) -> Type
+let contentOf = d.Content
+
+r : Int
+let r = wrap 5

@@ -1,0 +1,13 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §14.3.4: an associated static member definition is checked against the
+-- instantiated trait declaration — `Elem : Type`, but `5 : Int`, so the
+-- definition is rejected (not accepted merely because syntax resembles it).
+module main
+
+trait Container (c : Type) =
+    Elem : Type
+
+instance Container (List Int) =
+    Elem = 5

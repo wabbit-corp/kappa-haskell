@@ -262,6 +262,8 @@ registry =
       "Two visible instances of the same trait overlap for the same type, so instance resolution is incoherent."
   , ent "E_INSTANCE_MEMBER_MISSING" (Just "kappa-hs.trait.member-missing")
       "A trait instance does not define a required member that has no default in the trait declaration."
+  , ent "E_ASSOCIATED_MEMBER_UNDECLARED" (Just "kappa.associated.member-undeclared")
+      "An instance body defines a member name that the governing trait does not declare; an associated static member must first be declared in the trait body (§14.3.4)."
   , ent "KAPPA_DERIVING_SHAPE_NOT_DATA" (Just "kappa.deriving.shape")
       "A §22 derivation-shape reflection action ('inspectAdt' and relatives) was applied to a type that is not a data declaration."
   , ent "KAPPA_DERIVING_SHAPE_NOT_CLOSED_RECORD" (Just "kappa.deriving.shape")

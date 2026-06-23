@@ -929,10 +929,19 @@ pInstanceMembers = do
 pInstanceMember :: P Decl
 pInstanceMember = do
   start <- currentSpan
-  letMember start <|> sigMember start
+  letMember start <|> try (defMember start) <|> sigMember start
   where
     letMember start = do
       pKeyword "let"
+      d <- pLetDef
+      DLet noMods d <$> spanFrom start
+    -- §14.3.4: an associated static member is DEFINED in an instance as
+    -- `Name = expr` (no `let`, no trait-specific form) — e.g.
+    -- `instance Container (List a) = Elem = a`. It parses with the same
+    -- machinery as a `let` body (a no-parameter definition) and is checked
+    -- against the trait's associated-member declaration in 'elabInstance'.
+    -- (A bare `name args = body` method without `let` parses here too.)
+    defMember start = do
       d <- pLetDef
       DLet noMods d <$> spanFrom start
     sigMember start = do

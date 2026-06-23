@@ -62,7 +62,6 @@ No unsound "assume the callee uses its argument" defaulting remains.
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§14.3.4** *(SHALL)* | Instances cannot **define** associated static members: `instance Container (List a) = Elem = a` fails to parse the member and then `E_INSTANCE_MEMBER_MISSING`. Trait-side declaration parses; instance-side definition + per-member checking (`kappa.associated.*`) is absent. | parser member path + instance member check (`E_INSTANCE_MEMBER_MISSING` site) | large |
 | **§11.3.3** | Free lowercase type variables are **not** universalized in **block-local** named `let` signatures (only top-level). Local `let idf : a -> a = \x -> x` → `E_NAME_UNRESOLVED 'a'`. | universalization pass (currently top-level/instance-head only) | medium |
 | **§11.4.2** | **Boolean→type coercion** `b ⟼ (b = True)` is unimplemented in all three forms: implicit binder `(@x : b)`, left of `b => T`, and a record/tuple field with a bare-boolean declared type (`ok : id == 1`). All three → `E_NOT_A_TYPE`. | `Check.hs` type-position elaboration (no `= True` coercion path) | medium |
 | **§16.3.2** | **Named holes** don't share: every `?h` makes a fresh independent meta (`anyHole` ignores the name), so two `?h` at incompatible types aren't rejected. Also the unsolved-hole diagnostic doesn't report the expected type (no `EHole` case in the `check` direction). | `Check.hs:1889-1893` (`anyHole`), `Check.hs:3098-3115` (only-`infer` `EHole`) | medium |
@@ -217,6 +216,16 @@ The 9-group re-audit verified **~59** items the old docs listed as gaps/Partial/
 MISSING are now **implemented** (dropped from the plan), and corrected **~46**
 stale claims. The headline removals:
 
+- **§14.3.4 associated static members in instances — FIXED.** An instance now
+  *defines* an associated static member with `Name = expr` (no `let`; parsed by
+  the bare-`pLetDef` path in `pInstanceMember`). `elabInstance` already checked
+  each trait member against its instantiated declaration, so the definition is
+  checked against the trait's `Member : Type` declaration: `Elem = a` is
+  accepted, `Elem = 5` is rejected (`E_TYPE_EQUALITY_MISMATCH`), and a member
+  the trait does not declare is rejected with the new
+  `E_ASSOCIATED_MEMBER_UNDECLARED` / `kappa.associated.member-undeclared`. The
+  member is projectable from evidence (`d.Elem`, §14.2.1) and coexists with term
+  members. Tests: `traits/associated-member-{accept,undeclared-reject,malformed-reject}.kp`.
 - **§16.4.4 / §17.1.10 positive-lower-bound false rejects — FIXED (soundly, via
   borrowing).** The arithmetic operators now **borrow** their operands
   (`(+) : … -> (& x : a) -> (& y : a) -> a`, likewise `(*)`), so `x + 1` *reads*
