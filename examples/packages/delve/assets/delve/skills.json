@@ -1,7 +1,24 @@
 {
   "skills": [
-    { "id": "crafting", "name": "Crafting", "max_level": 6 },
-    { "id": "lore",     "name": "Lore",     "max_level": 5 },
-    { "id": "survival", "name": "Survival", "max_level": 5 }
+    {
+      "id": "crafting",
+      "name": "Crafting",
+      "max_level": 6
+    },
+    {
+      "id": "lore",
+      "name": "Lore",
+      "max_level": 5
+    },
+    {
+      "id": "survival",
+      "name": "Survival",
+      "max_level": 5
+    },
+    {
+      "id": "spellcraft",
+      "name": "Spellcraft",
+      "max_level": 5
+    }
   ]
 }

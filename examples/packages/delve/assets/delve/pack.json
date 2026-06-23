@@ -11,7 +11,8 @@
     "recipes": "assets/delve/recipes.json",
     "rarities": "assets/delve/rarities.json",
     "colors": "assets/delve/colors.json",
-    "skills": "assets/delve/skills.json"
+    "skills": "assets/delve/skills.json",
+    "spells": "assets/delve/spells.json"
   },
   "save": {
     "path": "saves/delve-save.json",

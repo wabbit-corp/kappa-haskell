@@ -50,6 +50,26 @@ setSkill : ContentPack -> String -> Int -> PlayerState -> PlayerState
 let setSkill pack id level player =
     player.{ skills = raiseSkill id (min (maxLevelOf pack id) level) player.skills }
 
+-- ── Spells (learned from tomes) ──────────────────────────────────────────
+
+knownSpell : String -> PlayerState -> Bool
+let knownSpell id player =
+    block
+        go : List String -> Bool
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> False
+            case s :: rest -> if s == id then True else go rest
+        go player.knownSpells
+
+-- Reading a spell tome teaches the spell (idempotent) and raises spellcraft to
+-- at least what the spell needs — finding the rare tome IS the gate, so a learned
+-- spell is always castable. Casting it later trains spellcraft further.
+learnSpell : ContentPack -> String -> Int -> PlayerState -> PlayerState
+let learnSpell pack id minLevel player =
+    let p2 = if knownSpell id player then player else player.{ knownSpells = (::) id player.knownSpells }
+    in setSkill pack "spellcraft" (max 1 minLevel) p2
+
 -- ── Per-species knowledge (lite Codex) ───────────────────────────────────
 
 memberDamage : DamageType -> List DamageType -> Bool

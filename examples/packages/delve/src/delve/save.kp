@@ -94,6 +94,7 @@ let encodePlayer p =
         , field "reputation" (num p.reputation)
         , field "skills" (arr (map encodeSkillEntry p.skills))
         , field "knowledge" (arr (map encodeKnowledge p.knowledge))
+        , field "known_spells" (arr (map str p.knownSpells))
         ]
 
 encodeLevel : Level -> JsonValue
@@ -171,6 +172,7 @@ let encodeItem i =
         , field "source" (str (speciesName i.source))
         , field "cooked" (bool i.cooked)
         , field "rarity" (str i.rarity)
+        , field "teaches" (str i.teaches)
         ]
 
 encodeGroundItem : GroundItem -> JsonValue
@@ -183,6 +185,7 @@ let encodeWound w =
     case Bleeding part severity -> obj [field "type" (str "Bleeding"), field "part" (str (bodyPartName part)), field "severity" (num severity)]
     case Crippled part -> obj [field "type" (str "Crippled"), field "part" (str (bodyPartName part))]
     case Stunned turns -> obj [field "type" (str "Stunned"), field "turns" (num turns)]
+    case Fading turns -> obj [field "type" (str "Fading"), field "turns" (num turns)]
 
 encodeEcs : EcsWorld -> JsonValue
 let encodeEcs world =
@@ -351,7 +354,9 @@ let decodePlayer pack value =
         let skills = if listLength skills0 == 0 then [SkillEntry "crafting" legacyCrafting] else skills0
         knowledgeJson <- optArrayField Nil "knowledge" value
         knowledge <- traverse decodeKnowledge knowledgeJson
-        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False skills knowledge)
+        spellsJson <- optArrayField Nil "known_spells" value
+        knownSpells <- traverse decodeStringJson spellsJson
+        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False skills knowledge knownSpells)
 
 decodeLevel : Size -> JsonValue -> IO GameError Level
 let decodeLevel fallbackSize value =
@@ -474,7 +479,8 @@ let decodeItem value =
         source <- decodeSpeciesString sourceName0
         cooked <- optBoolField False "cooked" value
         rarity <- optStringField "common" "rarity" value
-        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped source cooked rarity)
+        teaches <- optStringField "" "teaches" value
+        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped source cooked rarity teaches)
 
 decodeGroundItem : JsonValue -> IO GameError GroundItem
 let decodeGroundItem value =
@@ -489,10 +495,10 @@ decodeWound : JsonValue -> IO GameError Wound
 let decodeWound value =
     do
         typ <- optStringField "Bruised" "type" value
-        if typ == "Stunned" then
+        if typ == "Stunned" || typ == "Fading" then
             do
                 turns <- optIntField 1 "turns" value
-                pure (Stunned turns)
+                pure (if typ == "Fading" then Fading turns else Stunned turns)
         else
             do
                 partName0 <- optStringField "Torso" "part" value
@@ -598,6 +604,7 @@ let tileKindName k =
     case BranchDown -> "BranchDown"
     case Campfire -> "Campfire"
     case Pool -> "Pool"
+    case Ashes -> "Ashes"
 
 speciesName : Species -> String
 let speciesName s =
@@ -743,6 +750,7 @@ let decodeTileKindString s =
     elif s == "BranchDown" then pure BranchDown
     elif s == "Campfire" then pure Campfire
     elif s == "Pool" then pure Pool
+    elif s == "Ashes" then pure Ashes
     else raise (SaveError ("unknown tile kind in save: " ++ s))
 
 decodeBeatitudeString : String -> IO GameError Beatitude

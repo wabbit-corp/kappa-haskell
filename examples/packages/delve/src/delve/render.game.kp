@@ -74,6 +74,7 @@ let tileKindChar k =
     case BranchDown -> ">"
     case Campfire -> "▲"
     case Pool -> "≈"
+    case Ashes -> "."
 
 litTileStyle : Tile -> (color : String, glyph : String)
 let litTileStyle t =
@@ -99,6 +100,7 @@ let litKindStyle k =
     case BranchDown -> (color = sgrb 210 95 220, glyph = ">")
     case Campfire -> (color = sgrb 230 140 40, glyph = "▲")
     case Pool -> (color = sgr 80 150 225, glyph = "≈")
+    case Ashes -> (color = sgr 95 90 85, glyph = ".")
 
 -- ── Entities ────────────────────────────────────────────────────────────
 actorStyle : Actor -> (color : String, glyph : String)
@@ -420,6 +422,7 @@ let terrainName k =
     case ChaosVent -> "a venting chaos rift"
     case Campfire -> "a crackling campfire"
     case Pool -> "a still, dark pool"
+    case Ashes -> "cold ashes"
     case VoidTile -> "the void"
 
 groundItemAt : Vec2 -> List GroundItem -> Option Item
@@ -533,6 +536,37 @@ let renderActionMenu game =
             let verbs = content.itemVerbs game.content game.player p item
             in renderBox ("Actions — " ++ know.visibleName game.content game.player item) (listAppend (verbLines verbs) ["", "press a letter, or Esc to go back"])
 
+-- ── Spell cast menu + aiming ─────────────────────────────────────────────
+spellLabel : ContentPack -> String -> String
+let spellLabel pack id =
+    match content.findSpellDef pack id
+    case None -> id
+    case Some s -> s.name ++ "  (" ++ show s.manaCost ++ " mp, " ++ s.skillRequired ++ " " ++ show s.skillMinLevel ++ ")"
+
+spellLines : ContentPack -> List String -> List String
+let spellLines pack ids =
+    block
+        go : Int -> List String -> List String -> List String
+        let go i xs acc decreases listLength xs =
+            match xs
+            case Nil -> reverse acc
+            case id :: rest -> go (i + 1) rest ((::) (letterFor i ++ ") " ++ spellLabel pack id) acc)
+        go 0 ids Nil
+
+renderCastMenu : GameState -> String
+let renderCastMenu game =
+    match playerActor game
+    case None -> renderBox "Cast" ["No player."]
+    case Some p ->
+        let head = "Mana " ++ show p.stats.mp ++ "/" ++ show p.stats.maxMp
+        let body = (::) head ((::) "" (spellLines game.content game.player.knownSpells))
+        in renderBox "Cast a spell" (listAppend body ["", "press a letter, or Esc to go back"])
+
+renderAimMenu : GameState -> String
+let renderAimMenu game =
+    let panel = lookDescription game.content game.player game.level game.lookPos
+    in ansiClear ++ ansiHideCursor ++ renderMapLook game.content game.level game.lookPos Nil ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "aim: move the cursor; Enter or space to cast, Esc to cancel"
+
 -- ── Fire interaction menu (take cooked/cooking items, add items to cook/burn) ──
 letterList : List String -> List String
 let letterList labels =
@@ -617,6 +651,8 @@ let renderGame game =
     case ActionMenu -> renderActionMenu game
     case FireMenu -> renderFireMenu game
     case CodexMode -> renderCodex game
+    case CastMenu -> renderCastMenu game
+    case AimSpell -> renderAimMenu game
     case InventoryMode ->
         match playerActor game
         case Some p -> renderInventory game.content game.player p game.invCursor

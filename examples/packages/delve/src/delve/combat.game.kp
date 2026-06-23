@@ -41,6 +41,7 @@ let woundPenalty wounds decreases listLength wounds =
             case Bleeding _ sev -> sev + 1
             case Crippled _ -> 3
             case Stunned turns -> turns
+            case Fading _ -> 0
         in here + woundPenalty rest
 
 bleedDamage : Actor -> Int
@@ -87,9 +88,20 @@ let decayWounds wounds decreases listLength wounds =
     case w :: rest ->
         match w
         case Stunned turns -> if turns <= 1 then decayWounds rest else (::) (Stunned (turns - 1)) (decayWounds rest)
+        case Fading turns -> if turns <= 1 then decayWounds rest else (::) (Fading (turns - 1)) (decayWounds rest)
         case Bleeding part sev -> if sev <= 1 then (::) (Bruised part 1) (decayWounds rest) else (::) (Bleeding part (sev - 1)) (decayWounds rest)
         case Bruised part sev -> if sev <= 1 then decayWounds rest else (::) (Bruised part (sev - 1)) (decayWounds rest)
         case Crippled part -> (::) (Crippled part) (decayWounds rest)
+
+-- True when a Fading wound is on its last turn — a conjured phantom expiring.
+fadingExpiring : List Wound -> Bool
+let fadingExpiring ws decreases listLength ws =
+    match ws
+    case Nil -> False
+    case w :: rest ->
+        match w
+        case Fading t -> if t <= 1 then True else fadingExpiring rest
+        case _ -> fadingExpiring rest
 
 inflictWound : BodyPart -> Int -> Actor -> Actor
 let inflictWound part damage defender =

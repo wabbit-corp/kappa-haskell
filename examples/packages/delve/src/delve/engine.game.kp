@@ -383,7 +383,8 @@ spendWand : Item -> List Item -> List Item -> Actor -> GameState -> (charged : I
 let spendWand wand before after p game =
     let wand2 = wand.{ charges = wand.charges - 1, identified = True, name = content.trueName game.content wand.kind }
     let p2 = p.{ inventory = rebuildWithWand before wand2 after }
-    let game0 = game.{ player = know.identifyKind wand.kind game.player, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let withActor = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let game0 = inventory.identifyAndAnnounce wand withActor
     in (charged = wand2, state = game0)
 
 firstVisibleHostile : Actor -> List Actor -> Level -> Option Actor
@@ -882,6 +883,141 @@ let lookCommand cmd game =
         in if grid.inBounds game.level.size np then game.{ lookPos = np } else game
     case _ -> game.{ mode = Playing }
 
+-- ── Spellcasting ─────────────────────────────────────────────────────────
+-- Magic is situational, not a damage firehose: utility spells are cheap, the one
+-- bolt (Emberlance) drains the pool, and mana trickles back at +1/turn.
+
+regenMana : GameState -> GameState
+let regenMana game =
+    match playerActor game
+    case None -> game
+    case Some pl -> game.{ level = game.level.{ actors = replaceActor (pl.{ stats = pl.stats.{ mp = min pl.stats.maxMp (pl.stats.mp + 1) } }) game.level.actors } }
+
+freeAdjacent : Vec2 -> Level -> Option Vec2
+let freeAdjacent center level =
+    block
+        go : List Vec2 -> Option Vec2
+        let go offs decreases listLength offs =
+            match offs
+            case Nil -> None
+            case o :: rest ->
+                let p = addPos center o
+                in if grid.inBounds level.size p && isWalkable (grid.getTile level p) && actorClearAt p level.actors then Some p else go rest
+        let offs = [Vec2 (-1) (-1), Vec2 0 (-1), Vec2 1 (-1), Vec2 (-1) 0, Vec2 1 0, Vec2 (-1) 1, Vec2 0 1, Vec2 1 1]
+        go offs
+
+-- Snuff a campfire (-> Ashes) and recompute sight: its room falls dark.
+douseSpell : Vec2 -> GameState -> GameState
+let douseSpell target game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some pl ->
+        let t = grid.getTile game.level target
+        in
+            match t.kind
+            case Campfire ->
+                let level2 = grid.setTile target t.{ kind = Ashes } game.level
+                in message "You snuff the fire, and darkness rushes in." (game.{ level = fov.refreshVisibility pl.pos level2, mode = Playing })
+            case _ -> message "There is no fire there to douse." (game.{ mode = Playing })
+
+revealCells : Vec2 -> List Vec2 -> Level -> Level
+let revealCells center offs level decreases listLength offs =
+    match offs
+    case Nil -> level
+    case o :: rest ->
+        let p = addPos center o
+        let level2 = if grid.inBounds level.size p then grid.setTile p (grid.getTile level p).{ seen = True, lit = True } level else level
+        in revealCells center rest level2
+
+glimmerSpell : Vec2 -> GameState -> GameState
+let glimmerSpell target game =
+    let offs = [Vec2 (-1) (-1), Vec2 0 (-1), Vec2 1 (-1), Vec2 (-1) 0, Vec2 0 0, Vec2 1 0, Vec2 (-1) 1, Vec2 0 1, Vec2 1 1]
+    let level2 = revealCells target offs game.level
+    in message "A spectral glow blooms where you point." (game.{ level = level2, mode = Playing })
+
+lureSpell : Vec2 -> GameState -> GameState
+let lureSpell target game = message "A phantom clamor erupts where you point." (game.{ noise = Sound target fov.shoutLoudness, mode = Playing })
+
+phantomSpell : GameState -> GameState
+let phantomSpell game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some pl ->
+        match freeAdjacent pl.pos game.level
+        case None -> message "There is no room for a phantom." (game.{ mode = Playing })
+        case Some pos -> message "A shimmering double steps out of the air." (game.{ level = game.level.{ actors = (::) (content.mkPhantom (maxActorId game.level.actors + 1) pos) game.level.actors }, mode = Playing })
+
+emberlanceSpell : Vec2 -> GameState -> GameState
+let emberlanceSpell target game =
+    match actorAt target game.level.actors
+    case None -> message "The lance of flame gutters against bare stone." (game.{ mode = Playing })
+    case Some victim ->
+        let dmg = combat.scaleDamage Fire 12 victim
+        let victim2 = victim.{ stats = victim.stats.{ hp = max 0 (victim.stats.hp - dmg) }, alive = victim.stats.hp - dmg > 0 }
+        let g1 = game.{ level = game.level.{ actors = removeDeadActors (replaceActor victim2 game.level.actors) }, mode = Playing }
+        let g2 = if victim2.alive then g1 else addCorpseFor victim2 g1
+        in message ("Searing flame engulfs the " ++ victim.name ++ " for " ++ show dmg ++ "!") g2
+
+castEffect : String -> Vec2 -> GameState -> GameState
+let castEffect eff target game =
+    if eff == "douse" then douseSpell target game
+    elif eff == "phantom" then phantomSpell game
+    elif eff == "glimmer" then glimmerSpell target game
+    elif eff == "lure" then lureSpell target game
+    elif eff == "emberlance" then emberlanceSpell target game
+    else message "The spell sputters and dies." (game.{ mode = Playing })
+
+executeCast : SpellDef -> Vec2 -> GameState -> GameState
+let executeCast spell target game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some pl ->
+        let spent = pl.{ stats = pl.stats.{ mp = max 0 (pl.stats.mp - spell.manaCost) } }
+        let g1 = game.{ level = game.level.{ actors = replaceActor spent game.level.actors }, player = skill.trainSkill game.content "spellcraft" game.player }
+        in castEffect spell.effect target g1
+
+nthSpell : ContentPack -> List String -> Int -> Option SpellDef
+let nthSpell pack ids n =
+    match listGet ids n
+    case None -> None
+    case Some id -> content.findSpellDef pack id
+
+enterCastMenu : GameState -> GameState
+let enterCastMenu game =
+    if listLength game.player.knownSpells == 0 then message "You know no spells." game
+    else game.{ mode = CastMenu, invCursor = 0 }
+
+selectSpell : Int -> GameState -> GameState
+let selectSpell n game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some pl ->
+        match nthSpell game.content game.player.knownSpells n
+        case None -> game.{ mode = Playing }
+        case Some spell ->
+            if pl.stats.mp < spell.manaCost then message "You lack the mana to cast it." (game.{ mode = Playing })
+            elif skill.skillLevel spell.skillRequired game.player < spell.skillMinLevel then message "You lack the skill to wield it." (game.{ mode = Playing })
+            elif spell.needsTarget then game.{ mode = AimSpell, lookPos = pl.pos, invCursor = n }
+            else executeCast spell pl.pos game
+
+castCommand : Command -> GameState -> GameState
+let castCommand cmd game =
+    match cmd
+    case Choose n -> selectSpell n game
+    case _ -> game.{ mode = Playing }
+
+aimCommand : Command -> GameState -> GameState
+let aimCommand cmd game =
+    match cmd
+    case Move dir ->
+        let np = addPos game.lookPos (moveDelta dir)
+        in if grid.inBounds game.level.size np then game.{ lookPos = np } else game
+    case CastSpell ->
+        match nthSpell game.content game.player.knownSpells game.invCursor
+        case None -> game.{ mode = Playing }
+        case Some spell -> executeCast spell game.lookPos game
+    case _ -> game.{ mode = Playing }
+
 applyModeCommand : Command -> GameState -> GameState
 let applyModeCommand cmd game =
     match game.mode
@@ -894,6 +1030,8 @@ let applyModeCommand cmd game =
     case ActionMenu -> actionCommand cmd game
     case FireMenu -> fireCommand cmd game
     case CodexMode -> codexCommand cmd game
+    case CastMenu -> castCommand cmd game
+    case AimSpell -> aimCommand cmd game
     case Dead ->
         match cmd
         case QuitNoSave -> game.{ mode = Quit }
@@ -918,6 +1056,7 @@ let applyModeCommand cmd game =
         case Inventory -> game.{ mode = InventoryMode }
         case Character -> game.{ mode = CharacterMode }
         case OpenCodex -> game.{ mode = CodexMode, invCursor = 0 }
+        case OpenCast -> enterCastMenu game
         case Descend -> stairsCommand True game
         case Ascend -> stairsCommand False game
         case Pray -> faith.pray game
@@ -954,6 +1093,7 @@ let costsTurn cmd =
     case TargetedAttack -> True
     case UseSelected -> True
     case Choose _ -> True
+    case CastSpell -> True
     case _ -> False
 
 actorVitality : List Actor -> Int
@@ -1111,7 +1251,8 @@ let tickWorld cmd before game =
         let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
         let spread = if corrupted.mode == Playing then spreadChaos corrupted else corrupted
         let cooked = if spread.mode == Playing then fireTick spread else spread
-        if cooked.mode == Playing then ai.runMonsters cooked else cooked
+        let regen = if cooked.mode == Playing then regenMana cooked else cooked
+        if regen.mode == Playing then ai.runMonsters regen else regen
     else game
 
 commandFor : GameState -> Key -> Command
@@ -1123,6 +1264,8 @@ let commandFor game key =
     case ActionMenu -> input.actionKeyToCommand key
     case FireMenu -> input.actionKeyToCommand key
     case CodexMode -> input.codexKeyToCommand key
+    case CastMenu -> input.actionKeyToCommand key
+    case AimSpell -> input.aimKeyToCommand key
     case _ -> input.keyToCommand key
 
 stepPure : Command -> GameState -> GameState

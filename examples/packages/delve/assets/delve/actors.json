@@ -10,8 +10,8 @@
       "stats": {
         "hp": 26,
         "max_hp": 26,
-        "mp": 6,
-        "max_mp": 6,
+        "mp": 10,
+        "max_mp": 10,
         "str": 6,
         "dex": 6,
         "def": 2,

@@ -7,6 +7,21 @@ import delve.grid as grid
 radius : Int
 let radius = 9
 
+-- You always see a small bubble around yourself (dark-adapted eyes); beyond it,
+-- you only see tiles lit by a light source you can see. Fires extend sight.
+innateRadius : Int
+let innateRadius = 5
+
+lightRadius : Int
+let lightRadius = 6
+
+emitsLight : TileKind -> Bool
+let emitsLight k =
+    match k
+    case Campfire -> True
+    case Lava -> True
+    case _ -> False
+
 sign : Int -> Int
 let sign n = if n < 0 then -1 elif n > 0 then 1 else 0
 
@@ -27,9 +42,37 @@ let clearLine level from to =
                 else False
         go from
 
+-- Positions of light-emitting tiles (a handful per level) — precomputed once per
+-- visibility refresh so the per-cell light test stays cheap.
+emitterCells : Level -> List Vec2
+let emitterCells level =
+    block
+        go : Int -> List Tile -> List Vec2
+        let go i tiles decreases listLength tiles =
+            match tiles
+            case Nil -> Nil
+            case t :: rest ->
+                if emitsLight t.kind then (::) (Vec2 (modInt i level.size.width) (divInt i level.size.width)) (go (i + 1) rest)
+                else go (i + 1) rest
+        go 0 (arrayToList level.tiles)
+
+litByEmitter : Level -> List Vec2 -> Vec2 -> Vec2 -> Bool
+let litByEmitter level emitters origin p decreases listLength emitters =
+    match emitters
+    case Nil -> False
+    case e :: rest -> if chebyshev e p <= lightRadius && clearLine level origin e && clearLine level e p then True else litByEmitter level rest origin p
+
+lightedFrom : Level -> List Vec2 -> Vec2 -> Vec2 -> Bool
+let lightedFrom level emitters origin p =
+    if chebyshev origin p <= innateRadius then True
+    else litByEmitter level emitters origin p
+
+visibleWith : Level -> List Vec2 -> Vec2 -> Vec2 -> Bool
+let visibleWith level emitters origin p =
+    grid.inBounds level.size p && chebyshev origin p <= radius && clearLine level origin p && lightedFrom level emitters origin p
+
 visibleFrom : Level -> Vec2 -> Vec2 -> Bool
-let visibleFrom level origin p =
-    grid.inBounds level.size p && chebyshev origin p <= radius && clearLine level origin p
+let visibleFrom level origin p = visibleWith level (emitterCells level) origin p
 
 -- ── Directional vision cones (for monster perception / look mode) ─────────
 dirToward : Vec2 -> Vec2 -> Direction
@@ -82,6 +125,12 @@ canSee : Level -> Direction -> Int -> Vec2 -> Vec2 -> Bool
 let canSee level facing range origin target =
     grid.inBounds level.size target && inCone facing range origin target && clearLine level origin target
 
+-- Like canSee, but the target must also be lit: a creature only notices what is
+-- within its own bubble or standing in light it can see. Hiding in the dark works.
+canSeeLit : Level -> Direction -> Int -> Vec2 -> Vec2 -> Bool
+let canSeeLit level facing range origin target =
+    canSee level facing range origin target && lightedFrom level (emitterCells level) origin target
+
 -- Every explored tile this actor can currently see — used to paint its cone in look mode.
 coneCells : Level -> Actor -> Int -> List Vec2
 let coneCells level a range =
@@ -103,20 +152,21 @@ let coneCells level a range =
 refreshVisibility : Vec2 -> Level -> Level
 let refreshVisibility origin level =
     let w = level.size.width
-    let newTiles = markTiles origin level w 0 (arrayToList level.tiles)
+    let emitters = emitterCells level
+    let newTiles = markTiles origin level emitters w 0 (arrayToList level.tiles)
     in level.{ tiles = arrayFromList newTiles }
 
-markTiles : Vec2 -> Level -> Int -> Int -> List Tile -> List Tile
-let markTiles origin level w i tiles decreases listLength tiles =
+markTiles : Vec2 -> Level -> List Vec2 -> Int -> Int -> List Tile -> List Tile
+let markTiles origin level emitters w i tiles decreases listLength tiles =
     match tiles
     case Nil -> Nil
     case t :: rest ->
         let p = Vec2 (modInt i w) (divInt i w)
-        let v = visibleFrom level origin p
+        let v = visibleWith level emitters origin p
         -- Reuse the existing tile record when its visibility is unchanged (true of
         -- almost every tile each step); only the FOV-edge tiles allocate.
         let nt = if t.lit == v && (not v || t.seen) then t else t.{ lit = v, seen = t.seen || v }
-        in (::) nt (markTiles origin level w (i + 1) rest)
+        in (::) nt (markTiles origin level emitters w (i + 1) rest)
 
 -- ── Sound propagation (path-distance attenuation, à la LocalChat dB dropoff) ──
 hearFloor : Int

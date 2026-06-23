@@ -1,0 +1,54 @@
+{
+  "spells": [
+    {
+      "id": "douse",
+      "name": "Douse",
+      "mana_cost": 3,
+      "skill_required": "spellcraft",
+      "skill_min_level": 1,
+      "needs_target": true,
+      "effect": "douse",
+      "flavor": "Snuff a fire to its embers; the dark floods back in."
+    },
+    {
+      "id": "glimmer",
+      "name": "Glimmer",
+      "mana_cost": 2,
+      "skill_required": "spellcraft",
+      "skill_min_level": 1,
+      "needs_target": true,
+      "effect": "glimmer",
+      "flavor": "A cold light blooms where you point, fixing the place in memory."
+    },
+    {
+      "id": "lure",
+      "name": "Phantom Clamor",
+      "mana_cost": 4,
+      "skill_required": "spellcraft",
+      "skill_min_level": 2,
+      "needs_target": true,
+      "effect": "lure",
+      "flavor": "A din erupts elsewhere; curious ears turn from you."
+    },
+    {
+      "id": "phantom",
+      "name": "Phantom Double",
+      "mana_cost": 5,
+      "skill_required": "spellcraft",
+      "skill_min_level": 2,
+      "needs_target": false,
+      "effect": "phantom",
+      "flavor": "A double of yourself steps from the air to draw the blade meant for you."
+    },
+    {
+      "id": "emberlance",
+      "name": "Ember Lance",
+      "mana_cost": 8,
+      "skill_required": "spellcraft",
+      "skill_min_level": 4,
+      "needs_target": true,
+      "effect": "emberlance",
+      "flavor": "A lance of fire, and most of your strength with it."
+    }
+  ]
+}

@@ -73,6 +73,7 @@ let loadPack packPath =
         rarityPath <- filePath "rarities" filesObject
         colorPath <- filePath "colors" filesObject
         skillsPath <- filePath "skills" filesObject
+        spellsPath <- filePath "spells" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -85,6 +86,7 @@ let loadPack packPath =
         rarities <- loadRarities rarityPath
         colors <- loadColors colorPath
         skills <- loadSkills skillsPath
+        spells <- loadSpells spellsPath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
         reveal <- decodeReveal revealObject
@@ -112,7 +114,8 @@ let loadPack packPath =
                 rarities = rarities,
                 colors = colors,
                 skills = skills,
-                reveal = reveal
+                reveal = reveal,
+                spells = spells
             }
         validateContentPack pack
 
@@ -251,6 +254,26 @@ let loadColors path =
         root <- readJsonFile path
         xs <- arrayField "colors" root
         traverse decodeColor xs
+
+decodeSpell : json.JsonValue -> IO GameError SpellDef
+let decodeSpell value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        manaCost <- intField "mana_cost" value
+        skillRequired <- stringField "skill_required" value
+        skillMinLevel <- intField "skill_min_level" value
+        needsTarget <- boolField "needs_target" value
+        eff <- stringField "effect" value
+        flavor <- optStringField "" "flavor" value
+        pure (SpellDef id name manaCost skillRequired skillMinLevel needsTarget eff flavor)
+
+loadSpells : String -> IO GameError (List SpellDef)
+let loadSpells path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "spells" root
+        traverse decodeSpell xs
 
 decodeSkill : json.JsonValue -> IO GameError SkillDef
 let decodeSkill value =

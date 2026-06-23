@@ -239,10 +239,10 @@
       "weight": 7
     },
     {
-      "id": "tome_lore",
+      "id": "tome",
       "min_depth": 2,
       "max_depth": 99,
-      "weight": 1
+      "weight": 2
     }
   ],
   "structures": [

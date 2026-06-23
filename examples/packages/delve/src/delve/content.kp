@@ -146,7 +146,8 @@ let mkItem pack kind =
             equipped = False,
             source = PlayerSpecies,
             cooked = False,
-            rarity = "common"
+            rarity = "common",
+            teaches = ""
         }
 
 rollBeatitude : rand.Rng -> (beatitude : Beatitude, rng : rand.Rng)
@@ -263,6 +264,13 @@ let applyAffixes pack cls n item r0 decreases max 0 n =
             case None -> (item = item, rng = aff.rng)
             case Some a -> applyAffixes pack cls (n - 1) (item.{ power = item.power + a.powerBonus, name = a.name ++ " " ++ item.name }) aff.rng
 
+-- A spell tome holds one randomly-chosen spell; which one is a discovery.
+assignTome : ContentPack -> Item -> rand.Rng -> (item : Item, rng : rand.Rng)
+let assignTome pack item r0 =
+    match rand.choose pack.spells r0
+    case Some c -> (item = item.{ teaches = c.value.id }, rng = c.rng)
+    case None -> (item = item, rng = r0)
+
 applyRarity : ContentPack -> ItemClass -> Item -> rand.Rng -> (item : Item, rng : rand.Rng)
 let applyRarity pack cls base r0 =
     if not (rarityEligible cls) then (item = base, rng = r0)
@@ -294,7 +302,10 @@ let randomizedItem pack kind r0 =
     let knownBeatitude = item0.beatitudeKnown || item0.class == FoodClass || item0.class == CoinClass || item0.class == CorpseClass
     let baseName = if identifiedByClass then trueName pack kind else item0.name
     let base = item0.{ beatitude = fixedBeatitude, identified = identifiedByClass, beatitudeKnown = knownBeatitude, name = baseName }
-    in applyRarity pack item0.class base b.rng
+    let r = applyRarity pack item0.class base b.rng
+    in
+        if kind == Tome then assignTome pack r.item r.rng
+        else (item = r.item, rng = r.rng)
 
 findActorDefBySpecies : ContentPack -> Species -> Option ActorDef
 let findActorDefBySpecies pack species =
@@ -393,6 +404,16 @@ let speciesVulnerabilities pack species = (actorDefBySpecies pack species).vulne
 -- What a slain creature leaves behind: skeletons leave bones, others a corpse.
 remainsKind : Species -> ItemKind
 let remainsKind species = if species == Skeleton then Bones else Corpse
+
+findSpellDef : ContentPack -> String -> Option SpellDef
+let findSpellDef pack id =
+    block
+        go : List SpellDef -> Option SpellDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case s :: rest -> if s.id == id then Some s else go rest
+        go pack.spells
 
 -- The element a mutation rides on hit (e.g. BurningBlood -> Fire), if any.
 mutationDamageType : ContentPack -> Mutation -> Option DamageType
@@ -606,6 +627,30 @@ let mkPet pack id pos = actorBase pack id (actorDefById pack "hound") pos
 
 mkMonster : ContentPack -> Int -> Species -> Vec2 -> Actor
 let mkMonster pack id species pos = actorBase pack id (actorDefBySpecies pack species) pos
+
+-- A conjured decoy that wears the player's shape. Neutral (never attacks), but
+-- hostile monsters target it; it has 1 hp and a Fading timer so it is a one-hit,
+-- few-turn distraction, not a bodyguard.
+mkPhantom : Int -> Vec2 -> Actor
+let mkPhantom id pos =
+    Actor {
+        id = id,
+        species = PlayerSpecies,
+        name = "phantom",
+        glyph = "@",
+        pos = pos,
+        stats = Stats 1 1 0 0 1 1 0 0 1,
+        attitude = Neutral,
+        faction = NeutralFaction,
+        inventory = Nil,
+        wounds = [Fading 5],
+        morale = 0,
+        loyalty = 0,
+        alive = True,
+        facing = South,
+        resistances = Nil,
+        vulnerabilities = Nil
+    }
 
 speciesName : ContentPack -> Species -> String
 let speciesName pack species = (actorDefBySpecies pack species).name

@@ -134,7 +134,7 @@ let nearestHostile pack stealthId stealthCut actor level =
             case a :: rest ->
                 let range = if a.id == stealthId then max 1 (content.sightRangeOf pack actor.species - stealthCut) else content.sightRangeOf pack actor.species
                 in
-                    if a.id != actor.id && a.alive && hostileTo actor a && fov.canSee level actor.facing range actor.pos a.pos then
+                    if a.id != actor.id && a.alive && hostileTo actor a && fov.canSeeLit level actor.facing range actor.pos a.pos then
                         let best2 =
                             match best
                             case None -> Some a
@@ -396,6 +396,7 @@ let actorTurn actor game =
         case Some current ->
             if not current.alive then game
             elif current.id == game.player.actorId then game
+            elif combat.fadingExpiring current.wounds then game.{ level = game.level.{ actors = removeDeadActors (replaceActor (current.{ alive = False }) game.level.actors) } }
             else
                 let bled = combat.tickBleeding current
                 let actor2 = if bled.alive then applyRegen game.content bled else bled

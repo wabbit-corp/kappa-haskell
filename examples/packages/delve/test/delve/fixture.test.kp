@@ -110,5 +110,6 @@ let testPack =
         rarities = Nil,
         colors = [ ColorDef "white" "White" 225 225 225, ColorDef "physical" "Physical" 200 200 200, ColorDef "fire" "Fire" 240 104 43, ColorDef "cold" "Cold" 80 162 224, ColorDef "poison" "Poison" 123 192 67, ColorDef "chaos" "Chaos" 200 90 210 ],
         skills = [ SkillDef "crafting" "Crafting" 6, SkillDef "lore" "Lore" 5, SkillDef "survival" "Survival" 5 ],
-        reveal = RevealConfig 2 5 9 "It seems hardy." "It looks frail." "You can't read it yet."
+        reveal = RevealConfig 2 5 9 "It seems hardy." "It looks frail." "You can't read it yet.",
+        spells = Nil
     }

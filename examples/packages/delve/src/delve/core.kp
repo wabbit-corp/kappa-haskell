@@ -80,6 +80,7 @@ data TileKind : Type =
     ChaosVent
     BranchDown
     Campfire
+    Ashes
     Pool
 
 -- `warded` is the tiny Delve version of NetHack's defensive engraving idea:
@@ -118,6 +119,7 @@ let isWalkable t =
     case LoreStone -> True
     case ChaosVent -> True
     case BranchDown -> True
+    case Ashes -> True
     case _ -> False
 
 data Beatitude : Type =
@@ -205,6 +207,7 @@ data Item : Type =
         (source : Species)
         (cooked : Bool)
         (rarity : String)
+        (teaches : String)
 
 data Faction : Type =
     HeroFaction
@@ -235,6 +238,7 @@ data Wound : Type =
     Bleeding (part : BodyPart) (severity : Int)
     Crippled (part : BodyPart)
     Stunned (turns : Int)
+    Fading (turns : Int)
 
 data Tactic : Type =
     Coward
@@ -352,6 +356,19 @@ data SkillDef : Type =
         (name : String)
         (maxLevel : Int)
 
+-- An authored spell (spells.json). Learned by reading its tome; gated by a skill
+-- at a minimum level; some need an aimed target. `effect` selects the code path.
+data SpellDef : Type =
+    SpellDef
+        (id : String)
+        (name : String)
+        (manaCost : Int)
+        (skillRequired : String)
+        (skillMinLevel : Int)
+        (needsTarget : Bool)
+        (effect : String)
+        (flavor : String)
+
 -- Per-species knowledge earned by encountering a creature. `damageSeen` records
 -- which elements the player has actually tested it with — so a weakness is only
 -- "known" once you've hit it with that element (or studied it enough).
@@ -390,6 +407,7 @@ data PlayerState : Type =
         (crouching : Bool)
         (skills : List SkillEntry)
         (knowledge : List SpeciesKnowledge)
+        (knownSpells : List String)
 
 -- Data-driven content registry. These definitions are deliberately in core so
 -- gameplay, save/load, and JSON decoding agree on one schema. String IDs are
@@ -634,6 +652,7 @@ data ContentPack : Type =
         (colors : List ColorDef)
         (skills : List SkillDef)
         (reveal : RevealConfig)
+        (spells : List SpellDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is
@@ -674,6 +693,8 @@ data GameMode : Type =
     ActionMenu
     FireMenu
     CodexMode
+    CastMenu
+    AimSpell
     Dead
     Won
     Quit
@@ -745,6 +766,8 @@ data Command : Type =
     OpenActions
     Choose (n : Int)
     OpenCodex
+    OpenCast
+    CastSpell
 
 data Key : Type =
     KeyChar (text : String)
@@ -790,6 +813,7 @@ let tileKindCode k =
     case BranchDown -> 13
     case Campfire -> 14
     case Pool -> 15
+    case Ashes -> 16
 
 instance Eq TileKind =
     let (==) a b = tileKindCode a == tileKindCode b
@@ -996,6 +1020,8 @@ let gameModeCode mode =
     case ActionMenu -> 10
     case FireMenu -> 11
     case CodexMode -> 12
+    case CastMenu -> 13
+    case AimSpell -> 14
 
 instance Eq GameMode =
     let (==) a b = gameModeCode a == gameModeCode b
@@ -1044,6 +1070,8 @@ let commandTag c =
     case OpenActions -> 38
     case Choose _ -> 39
     case OpenCodex -> 40
+    case OpenCast -> 41
+    case CastSpell -> 42
 
 instance Eq Command =
     let (==) a b =

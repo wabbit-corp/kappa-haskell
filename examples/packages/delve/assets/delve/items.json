@@ -324,10 +324,10 @@
       "flammable": false
     },
     {
-      "id": "tome_lore",
+      "id": "tome",
       "kind": "Tome",
       "name": "dusty tome",
-      "true_name": "tome of beasts",
+      "true_name": "spellbook",
       "glyph": "+",
       "class": "ScrollClass",
       "stackable": false,

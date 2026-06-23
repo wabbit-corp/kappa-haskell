@@ -32,6 +32,7 @@ let keyToCommand key =
     case KeyChar "<" -> Ascend
     case KeyChar "U" -> UseFirst
     case KeyChar "Z" -> ZapFirst
+    case KeyChar "k" -> OpenCast
     case KeyChar "D" -> DropFirst
     case KeyChar "A" -> TargetedAttack
     case KeyChar "C" -> ToggleCrouch
@@ -56,7 +57,7 @@ let helpLines =
     , "v: cycle combat stance    t: talk to neighbor"
     , ";: look around    A: aimed attack    C: crouch / sneak"
     , "@: character    B: codex of creatures"
-    , "U/Z/D: quick use / zap / drop"
+    , "k: cast a known spell    U/Z/D: quick use / zap / drop"
     , ">/<: stairs and branch portals"
     , "m: mute / unmute sound    ?: help"
     , "S: save and quit    Q: quit without saving"
@@ -83,6 +84,24 @@ let codexKeyToCommand key =
     case KeyChar "x" -> SelectDown
     case KeyArrow North -> SelectUp
     case KeyArrow South -> SelectDown
+    case KeyEscape -> NoCommand
+    case _ -> NoCommand
+
+-- Aiming a targeted spell: move the cursor like look mode, Enter/space to cast.
+aimKeyToCommand : Key -> Command
+let aimKeyToCommand key =
+    match key
+    case KeyChar "q" -> Move NorthWest
+    case KeyChar "w" -> Move North
+    case KeyChar "e" -> Move NorthEast
+    case KeyChar "a" -> Move West
+    case KeyChar "d" -> Move East
+    case KeyChar "z" -> Move SouthWest
+    case KeyChar "x" -> Move South
+    case KeyChar "c" -> Move SouthEast
+    case KeyArrow dir -> Move dir
+    case KeyChar " " -> CastSpell
+    case KeyEnter -> CastSpell
     case KeyEscape -> NoCommand
     case _ -> NoCommand
 

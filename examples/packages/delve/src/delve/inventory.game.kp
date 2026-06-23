@@ -175,11 +175,19 @@ let identifyInventory p game =
 consumeFirst : Actor -> List Item -> Actor
 let consumeFirst p rest = p.{ inventory = rest }
 
+-- Identify an item kind on first use and announce the reveal (e.g. "crimson
+-- potion" → "potion of healing") so the player knows what they just learned.
+identifyAndAnnounce : Item -> GameState -> GameState
+let identifyAndAnnounce item game =
+    let newly = know.classUsesMystery item.class && not (know.knownByKind item.kind game.player.identified)
+    let g = game.{ player = know.identifyKind item.kind game.player }
+    in if newly then message ("You recognise the " ++ item.name ++ " — it was " ++ content.trueName game.content item.kind ++ ".") g else g
+
 usePotion : Item -> List Item -> Actor -> GameState -> GameState
 let usePotion item rest p game =
     let p2 = consumeFirst p rest
     let g0 = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
-    let known = g0.{ player = know.identifyKind item.kind g0.player }
+    let known = identifyAndAnnounce item g0
     match item.kind
     case PotionHealing ->
         if item.beatitude == Cursed then message "The potion burns." (damagePlayer Poison 4 known)
@@ -198,12 +206,24 @@ useScroll : Item -> List Item -> Actor -> GameState -> GameState
 let useScroll item rest p game =
     let p2 = consumeFirst p rest
     let g0 = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
-    let known = g0.{ player = know.identifyKind item.kind g0.player }
+    let known = identifyAndAnnounce item g0
     match item.kind
     case ScrollIdentify -> identifyInventory p2 known
     case ScrollMapping -> message "The map unfolds in your mind." (revealMap known)
     case ScrollWard -> message "A glowing ward appears on the floor." (wardCurrentTile known)
-    case Tome -> message "You pore over the tome; the ways of beasts settle into you." (known.{ player = skill.setSkill game.content "lore" 3 known.player })
+    case Tome ->
+        if item.teaches == "" then message "The tome's script writhes illegibly and tells you nothing." known
+        else
+            let sd = content.findSpellDef game.content item.teaches
+            let nm =
+                match sd
+                case Some s -> s.name
+                case None -> "a strange art"
+            let lvl =
+                match sd
+                case Some s -> s.skillMinLevel
+                case None -> 1
+            in message ("You pore over the tome and learn " ++ nm ++ ".") (known.{ player = skill.learnSpell game.content item.teaches lvl known.player })
     case _ -> message "The scroll crumbles." known
 
 boostStrength : GameState -> GameState
