@@ -23,8 +23,10 @@ let main = do
     let c10 = f.testMutationNames
     let c11 = f.testCorruptionResistance
     let c14 = f.testMutationGain
+    let c15 = f.testSpeech
     c12 <- c.testLoadDefaultPackIO
     c13 <- c.testSaveRoundTripIO
+    c16 <- c.testStructuresSpawnIO
     printlnString (line "gen.startsWithPetAndStarSign" c1)
     printlnString (line "gen.rumorsSeeded" c2)
     printlnString (line "input.movement" c3)
@@ -37,9 +39,11 @@ let main = do
     printlnString (line "content.mutationNames" c10)
     printlnString (line "corruption.resistance" c11)
     printlnString (line "corruption.mutationGain" c14)
+    printlnString (line "speech.phraseAndAttenuation" c15)
     printlnString (line "config.loadDefaultPack" c12)
     printlnString (line "save.roundTripNativeFiles" c13)
-    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 && c10 && c11 && c14 && c12 && c13 then
+    printlnString (line "gen.structuresSpawn" c16)
+    if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 && c10 && c11 && c14 && c15 && c12 && c13 && c16 then
         printlnString "DELVE TESTS: ALL PASS"
     else
         printlnString "DELVE TESTS: FAIL"

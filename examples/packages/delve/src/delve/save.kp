@@ -218,7 +218,8 @@ let decodeGame pack fallbackSize value =
                 levels = storedLevels,
                 invCursor = 0,
                 creationGod = 0,
-                lookPos = Vec2 0 0
+                lookPos = Vec2 0 0,
+                noise = Sound (Vec2 0 0) 0
             })
 
 requireField : String -> JsonValue -> IO GameError JsonValue
@@ -310,7 +311,7 @@ let decodePlayer pack value =
         faithName0 <- optStringField "EmberMother" "faith" value
         faith <- decodeFaithString faithName0
         reputation <- optIntField 0 "reputation" value
-        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation)
+        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False)
 
 decodeLevel : Size -> JsonValue -> IO GameError Level
 let decodeLevel fallbackSize value =
@@ -528,6 +529,7 @@ let tileKindName k =
     case LoreStone -> "LoreStone"
     case ChaosVent -> "ChaosVent"
     case BranchDown -> "BranchDown"
+    case Campfire -> "Campfire"
 
 speciesName : Species -> String
 let speciesName s =
@@ -671,6 +673,7 @@ let decodeTileKindString s =
     elif s == "LoreStone" then pure LoreStone
     elif s == "ChaosVent" then pure ChaosVent
     elif s == "BranchDown" then pure BranchDown
+    elif s == "Campfire" then pure Campfire
     else raise (SaveError ("unknown tile kind in save: " ++ s))
 
 decodeBeatitudeString : String -> IO GameError Beatitude

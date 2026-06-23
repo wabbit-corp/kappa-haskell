@@ -298,5 +298,251 @@
       "name": "Veiled Witness",
       "alignment": "law"
     }
+  ],
+  "languages": [
+    {
+      "id": "goblin",
+      "name": "Goblin",
+      "syllables": [
+        "grik",
+        "zhak",
+        "nub",
+        "skra",
+        "gor",
+        "yip",
+        "kza",
+        "rek",
+        "ssk"
+      ],
+      "lexicon": [
+        {
+          "key": "delver",
+          "word": "grukk"
+        },
+        {
+          "key": "vermin",
+          "word": "skri"
+        },
+        {
+          "key": "beast",
+          "word": "wuff"
+        },
+        {
+          "key": "kin",
+          "word": "kuz"
+        },
+        {
+          "key": "foe",
+          "word": "zagra"
+        },
+        {
+          "key": "alarm",
+          "word": "oi"
+        },
+        {
+          "key": "kill",
+          "word": "krak"
+        },
+        {
+          "key": "here",
+          "word": "hya"
+        }
+      ]
+    },
+    {
+      "id": "orcish",
+      "name": "Orcish",
+      "syllables": [
+        "gruum",
+        "thok",
+        "rash",
+        "dur",
+        "mog",
+        "brakh",
+        "zug",
+        "hark",
+        "nok"
+      ],
+      "lexicon": [
+        {
+          "key": "delver",
+          "word": "manskar"
+        },
+        {
+          "key": "vermin",
+          "word": "grik"
+        },
+        {
+          "key": "beast",
+          "word": "hroth"
+        },
+        {
+          "key": "kin",
+          "word": "brakka"
+        },
+        {
+          "key": "foe",
+          "word": "thurgan"
+        },
+        {
+          "key": "alarm",
+          "word": "hark"
+        },
+        {
+          "key": "kill",
+          "word": "gur"
+        },
+        {
+          "key": "here",
+          "word": "dum"
+        }
+      ]
+    },
+    {
+      "id": "chaos",
+      "name": "the chaos-tongue",
+      "syllables": [
+        "ya",
+        "xul",
+        "qheth",
+        "vorr",
+        "sha",
+        "glib",
+        "uth",
+        "nei",
+        "wll"
+      ],
+      "lexicon": [
+        {
+          "key": "delver",
+          "word": "ysha"
+        },
+        {
+          "key": "vermin",
+          "word": "xil"
+        },
+        {
+          "key": "beast",
+          "word": "qhul"
+        },
+        {
+          "key": "kin",
+          "word": "vorrkin"
+        },
+        {
+          "key": "foe",
+          "word": "ansha"
+        },
+        {
+          "key": "alarm",
+          "word": "ia"
+        },
+        {
+          "key": "kill",
+          "word": "qheth"
+        },
+        {
+          "key": "here",
+          "word": "wll"
+        }
+      ]
+    },
+    {
+      "id": "draconic",
+      "name": "Draconic",
+      "syllables": [
+        "ssa",
+        "vhel",
+        "rrkh",
+        "thar",
+        "ixu",
+        "mor",
+        "zss",
+        "aoth"
+      ],
+      "lexicon": [
+        {
+          "key": "delver",
+          "word": "ssassk"
+        },
+        {
+          "key": "vermin",
+          "word": "ixu"
+        },
+        {
+          "key": "beast",
+          "word": "vhel"
+        },
+        {
+          "key": "kin",
+          "word": "mortha"
+        },
+        {
+          "key": "foe",
+          "word": "rrkhan"
+        },
+        {
+          "key": "alarm",
+          "word": "hsss"
+        },
+        {
+          "key": "kill",
+          "word": "thar"
+        },
+        {
+          "key": "here",
+          "word": "aoth"
+        }
+      ]
+    },
+    {
+      "id": "common",
+      "name": "the common tongue",
+      "syllables": [
+        "turn",
+        "back",
+        "flesh",
+        "cold",
+        "below",
+        "ours",
+        "sleep",
+        "run",
+        "come"
+      ],
+      "lexicon": [
+        {
+          "key": "delver",
+          "word": "delver"
+        },
+        {
+          "key": "vermin",
+          "word": "vermin"
+        },
+        {
+          "key": "beast",
+          "word": "hound"
+        },
+        {
+          "key": "kin",
+          "word": "brother"
+        },
+        {
+          "key": "foe",
+          "word": "enemy"
+        },
+        {
+          "key": "alarm",
+          "word": "ware"
+        },
+        {
+          "key": "kill",
+          "word": "slay"
+        },
+        {
+          "key": "here",
+          "word": "here"
+        }
+      ]
+    }
   ]
 }

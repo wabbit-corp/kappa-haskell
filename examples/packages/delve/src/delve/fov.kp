@@ -113,4 +113,133 @@ let markTiles origin level w i tiles decreases listLength tiles =
     case t :: rest ->
         let p = Vec2 (modInt i w) (divInt i w)
         let v = visibleFrom level origin p
-        in (::) (t.{ lit = v, seen = t.seen || v }) (markTiles origin level w (i + 1) rest)
+        -- Reuse the existing tile record when its visibility is unchanged (true of
+        -- almost every tile each step); only the FOV-edge tiles allocate.
+        let nt = if t.lit == v && (not v || t.seen) then t else t.{ lit = v, seen = t.seen || v }
+        in (::) nt (markTiles origin level w (i + 1) rest)
+
+-- ── Sound propagation (path-distance attenuation, à la LocalChat dB dropoff) ──
+hearFloor : Int
+let hearFloor = 50
+
+footstepLoudness : Int
+let footstepLoudness = 62
+
+crouchLoudness : Int
+let crouchLoudness = 48
+
+combatLoudness : Int
+let combatLoudness = 80
+
+shoutLoudness : Int
+let shoutLoudness = 78
+
+chatterLoudness : Int
+let chatterLoudness = 60
+
+soundMaxRange : Int
+let soundMaxRange = 12
+
+-- Non-recursive so the termination checker has nothing to prove (sound range is
+-- small, so the ladder covers every distance we ever feed it).
+floorLog2 : Int -> Int
+let floorLog2 n =
+    if n < 2 then 0
+    elif n < 4 then 1
+    elif n < 8 then 2
+    elif n < 16 then 3
+    elif n < 32 then 4
+    elif n < 64 then 5
+    else 6
+
+-- For every doubling of path distance the sound drops ~6 dB (the LocalChat model).
+dropoff : Int -> Int
+let dropoff steps = 6 * floorLog2 (max 1 steps)
+
+memberPos : Vec2 -> List Vec2 -> Bool
+let memberPos p ps decreases listLength ps =
+    match ps
+    case Nil -> False
+    case q :: rest -> if eqPos p q then True else memberPos p rest
+
+soundOpen : Level -> Vec2 -> Bool
+let soundOpen level p = grid.inBounds level.size p && isWalkable (grid.getTile level p)
+
+neighbors8 : Vec2 -> List Vec2
+let neighbors8 p =
+    [ Vec2 (p.x + 1) p.y, Vec2 (p.x - 1) p.y, Vec2 p.x (p.y + 1), Vec2 p.x (p.y - 1)
+    , Vec2 (p.x + 1) (p.y + 1), Vec2 (p.x - 1) (p.y + 1), Vec2 (p.x + 1) (p.y - 1), Vec2 (p.x - 1) (p.y - 1) ]
+
+addCellNeighbors : Level -> List Vec2 -> List Vec2 -> Vec2 -> List Vec2
+let addCellNeighbors level seen acc cell =
+    block
+        go : List Vec2 -> List Vec2 -> List Vec2
+        let go ns a decreases listLength ns =
+            match ns
+            case Nil -> a
+            case n :: rest ->
+                if soundOpen level n && not (memberPos n seen) && not (memberPos n a) then go rest ((::) n a)
+                else go rest a
+        go (neighbors8 cell) acc
+
+nextFrontier : Level -> List Vec2 -> List Vec2 -> List Vec2
+let nextFrontier level frontier seen =
+    block
+        go : List Vec2 -> List Vec2 -> List Vec2
+        let go fs acc decreases listLength fs =
+            match fs
+            case Nil -> acc
+            case c :: rest -> go rest (addCellNeighbors level seen acc c)
+        go frontier Nil
+
+-- Breadth-first flood from source over open tiles (walls / closed doors block, so
+-- sound bends around corners). Returns the path-step distance to target, or -1 if
+-- it cannot be reached within maxR. This is the "simplified A*" for sound.
+pathSteps : Level -> Vec2 -> Vec2 -> Int -> Int
+let pathSteps level source target maxR =
+    block
+        expand : Int -> Int -> List Vec2 -> List Vec2 -> Int
+        let expand fuel r frontier seen decreases fuel =
+            if memberPos target frontier then r
+            elif fuel <= 0 then -1
+            else
+                match frontier
+                case Nil -> -1
+                case _ ->
+                    let nf = nextFrontier level frontier seen
+                    in expand (fuel - 1) (r + 1) nf (listAppend nf seen)
+        if eqPos source target then 0
+        elif not (soundOpen level target) then -1
+        else expand maxR 0 [source] [source]
+
+detourPenalty : Int
+let detourPenalty = 3
+
+-- Sound that bends around corners loses far more energy than a straight shot.
+-- We approximate diffraction loss by the "detour": how much longer the actual
+-- path is than the straight-line (chebyshev) distance. A clear corridor
+-- (path ≈ line-of-sight) only pays the distance dropoff; a sound forced around
+-- corners (path ≫ line) is muffled hard — a few dB per extra step of detour.
+-- (Real caves would add echo and waveguide propagation down long tunnels; we
+-- cheerfully ignore that.)
+heardLoudness : Level -> Vec2 -> Int -> Vec2 -> Int
+let heardLoudness level source loud listener =
+    if chebyshev source listener > soundMaxRange then 0
+    elif clearLine level source listener then
+        -- Clear line of sound: travels straight, no corner loss. This cheap
+        -- check (O(distance)) handles the common in-room case so we only pay for
+        -- a path-distance flood when the sound actually has to bend around a wall.
+        max 0 (loud - dropoff (chebyshev source listener))
+    else
+        let steps = pathSteps level source listener soundMaxRange
+        in
+            if steps < 0 then 0
+            else
+                let detour = max 0 (steps - chebyshev source listener)
+                in max 0 (loud - dropoff steps - detourPenalty * detour)
+
+-- Can a listener with the given hearing acuity (higher = keener) make out a sound
+-- of loudness `loud` emitted at `source`?
+audible : Level -> Vec2 -> Int -> Vec2 -> Int -> Bool
+let audible level source loud listener hearingBonus =
+    heardLoudness level source loud listener + hearingBonus >= hearFloor

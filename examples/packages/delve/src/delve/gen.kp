@@ -239,6 +239,82 @@ let maybeAddBoss pack branch depth level actors =
             case None -> actors
             case Some pos -> (::) (content.mkMonster pack bossActorId bd.boss pos) actors
 
+-- ── Structure set-pieces (clustered bands, optionally around a campfire) ──
+structureChance : Int
+let structureChance = 42
+
+structValid : Int -> Int -> StructureDef -> Bool
+let structValid branch depth s =
+    (s.branch == 0 || s.branch == branch) && depth >= s.minDepth && depth <= s.maxDepth && s.weight > 0
+
+repeatStruct : Int -> StructureDef -> List StructureDef -> List StructureDef
+let repeatStruct n s acc decreases max 0 n =
+    if n <= 0 then acc else repeatStruct (n - 1) s ((::) s acc)
+
+weightedStructures : Int -> Int -> List StructureDef -> List StructureDef
+let weightedStructures branch depth defs decreases listLength defs =
+    match defs
+    case Nil -> Nil
+    case s :: rest ->
+        if structValid branch depth s then repeatStruct s.weight s (weightedStructures branch depth rest)
+        else weightedStructures branch depth rest
+
+appendSpecies : Species -> Int -> List Species -> List Species
+let appendSpecies sp n acc decreases max 0 n =
+    if n <= 0 then acc else appendSpecies sp (n - 1) ((::) sp acc)
+
+expandMembers : List StructureMember -> List Species -> rand.Rng -> (species : List Species, rng : rand.Rng)
+let expandMembers members acc r decreases listLength members =
+    match members
+    case Nil -> (species = acc, rng = r)
+    case m :: rest ->
+        let cnt = rand.range m.minCount m.maxCount r
+        in expandMembers rest (appendSpecies m.species cnt.value acc) cnt.rng
+
+placeSpeciesList : ContentPack -> Level -> Room -> List Species -> Int -> List Actor -> rand.Rng -> (actors : List Actor, nextId : Int, rng : rand.Rng)
+let placeSpeciesList pack level room sps nextId actors r decreases listLength sps =
+    match sps
+    case Nil -> (actors = actors, nextId = nextId, rng = r)
+    case sp :: rest ->
+        let spot = freeSpawnPos level room actors 8 r
+        match spot.pos
+        case None -> placeSpeciesList pack level room rest nextId actors spot.rng
+        case Some pos ->
+            let m = content.mkMonster pack nextId sp pos
+            in placeSpeciesList pack level room rest (nextId + 1) ((::) m actors) spot.rng
+
+placeLootList : ContentPack -> Room -> List ItemKind -> List GroundItem -> rand.Rng -> (loot : List GroundItem, rng : rand.Rng)
+let placeLootList pack room kinds loot r decreases listLength kinds =
+    match kinds
+    case Nil -> (loot = loot, rng = r)
+    case k :: rest ->
+        let p = randomFloorInRoom room r
+        let item = content.mkItem pack k
+        in placeLootList pack room rest ((::) (GroundItem p.pos item) loot) p.rng
+
+placeStructure : ContentPack -> Level -> Room -> StructureDef -> Int -> List Actor -> rand.Rng -> (level : Level, actors : List Actor, nextId : Int, loot : List GroundItem, rng : rand.Rng)
+let placeStructure pack level room def nextId actors r =
+    let center = roomCenter room
+    let level1 = if def.fire then grid.setTile center ((grid.getTile level center).{ kind = Campfire }) level else level
+    let expanded = expandMembers def.members Nil r
+    let placed = placeSpeciesList pack level1 room expanded.species nextId actors expanded.rng
+    let looted = placeLootList pack room def.loot Nil placed.rng
+    in (level = level1, actors = placed.actors, nextId = placed.nextId, loot = looted.loot, rng = looted.rng)
+
+-- At most one structure per level: roll, pick a weighted valid one, drop it in a room.
+placeStructures : ContentPack -> Level -> Int -> Int -> List Room -> Int -> List Actor -> rand.Rng -> (level : Level, actors : List Actor, nextId : Int, loot : List GroundItem, rng : rand.Rng)
+let placeStructures pack level branch depth rooms nextId actors r =
+    let roll = rand.chance structureChance r
+    in
+        if not roll.value then (level = level, actors = actors, nextId = nextId, loot = Nil, rng = roll.rng)
+        else
+            match rand.choose (weightedStructures branch depth pack.structures) roll.rng
+            case None -> (level = level, actors = actors, nextId = nextId, loot = Nil, rng = roll.rng)
+            case Some sc ->
+                match rand.choose rooms sc.rng
+                case None -> (level = level, actors = actors, nextId = nextId, loot = Nil, rng = sc.rng)
+                case Some rc -> placeStructure pack level rc.value sc.value nextId actors rc.rng
+
 newLevel : ContentPack -> Int -> Int -> Size -> Nat -> GameState
 let newLevel pack branch depth size seed0 =
     let r0 = rand.seed seed0
@@ -265,14 +341,15 @@ let newLevel pack branch depth size seed0 =
     let petPos = addPos start (Vec2 1 0)
     let player = content.applyStarSign pack sign.sign (content.mkPlayer pack playerActorId start)
     let pet = content.mkPet pack petActorId petPos
-    let monsters = spawnMonsters pack withEntrance branch depth (drop 1 rooms) firstGeneratedActorId [pet, player] features.rng
-    let items = spawnItems pack branch depth rooms Nil monsters.rng
-    let actorsWithBoss = maybeAddBoss pack branch depth withEntrance (reverse monsters.actors)
-    let level0 = withEntrance.{ rooms = rooms, actors = actorsWithBoss, items = items.items, branch = branch }
+    let structs = placeStructures pack withEntrance branch depth (drop 1 rooms) firstGeneratedActorId [pet, player] features.rng
+    let monsters = spawnMonsters pack structs.level branch depth (drop 1 rooms) structs.nextId structs.actors structs.rng
+    let items = spawnItems pack branch depth rooms structs.loot monsters.rng
+    let actorsWithBoss = maybeAddBoss pack branch depth structs.level (reverse monsters.actors)
+    let level0 = structs.level.{ rooms = rooms, actors = actorsWithBoss, items = items.items, branch = branch }
     let level = fov.refreshVisibility start level0
     in GameState {
         rng = intToNat items.rng,
-        player = PlayerState playerActorId (pack.rules.startingHunger + (content.starSignDef pack sign.sign).hungerBonus) 0 Nil Balanced sign.sign 0 Nil 0 EmberMother 0,
+        player = PlayerState playerActorId (pack.rules.startingHunger + (content.starSignDef pack sign.sign).hungerBonus) 0 Nil Balanced sign.sign 0 Nil 0 EmberMother 0 False,
         level = level,
         mode = Playing,
         lastCommand = "",
@@ -284,5 +361,6 @@ let newLevel pack branch depth size seed0 =
         levels = Nil,
         invCursor = 0,
         creationGod = 0,
-        lookPos = Vec2 0 0
+        lookPos = Vec2 0 0,
+        noise = Sound (Vec2 0 0) 0
     }

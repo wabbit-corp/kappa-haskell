@@ -3,6 +3,7 @@ module delve.content
 import delve.core.*
 import delve.natutil.*
 import delve.rng as rand
+import std.unicode as uni
 
 -- All numeric/content values in this module come from ContentPack JSON. The
 -- pattern-matching functions are schema adapters between typed game enums and
@@ -173,7 +174,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 ""
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
@@ -189,6 +190,103 @@ let descriptionOf pack species = (actorDefBySpecies pack species).description
 
 sightRangeOf : ContentPack -> Species -> Int
 let sightRangeOf pack species = (actorDefBySpecies pack species).sightRange
+
+hearingOf : ContentPack -> Species -> Int
+let hearingOf pack species = (actorDefBySpecies pack species).hearing
+
+languageOf : ContentPack -> Species -> String
+let languageOf pack species = (actorDefBySpecies pack species).language
+
+findLanguageDef : ContentPack -> String -> Option LanguageDef
+let findLanguageDef pack id =
+    block
+        go : List LanguageDef -> Option LanguageDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case d :: rest -> if d.id == id then Some d else go rest
+        go pack.languages
+
+languageName : ContentPack -> String -> String
+let languageName pack id =
+    match findLanguageDef pack id
+    case Some d -> d.name
+    case None -> "a harsh tongue"
+
+syllablesFor : ContentPack -> String -> List String
+let syllablesFor pack id =
+    match findLanguageDef pack id
+    case Some d -> d.syllables
+    case None -> Nil
+
+-- ── Monster tongues: words are looked up by concept, so they stay consistent ──
+lexLookup : String -> List String -> List LexEntry -> String
+let lexLookup concept syl entries decreases listLength entries =
+    match entries
+    case Nil ->
+        match syl
+        case Nil -> "..."
+        case s :: _ -> s
+    case e :: rest -> if e.key == concept then e.word else lexLookup concept syl rest
+
+-- The word a tongue uses for a concept (e.g. "delver", "vermin"). The same
+-- concept always yields the same word, so the player can learn the language.
+wordFor : ContentPack -> String -> String -> String
+let wordFor pack lang concept =
+    match findLanguageDef pack lang
+    case None -> "..."
+    case Some d -> lexLookup concept d.syllables d.lexicon
+
+-- A short, meaningful shout about `concept`, with a little template variety.
+shoutWords : ContentPack -> String -> String -> Int -> (words : List String, rng : Int)
+let shoutWords pack lang concept r0 =
+    let pick = rand.range 0 3 r0
+    let ws =
+        match pick.value
+        case 0 -> [wordFor pack lang concept]
+        case 1 -> [wordFor pack lang "alarm", wordFor pack lang concept]
+        case 2 -> [wordFor pack lang concept, wordFor pack lang "kill"]
+        case _ -> [wordFor pack lang "here", wordFor pack lang concept]
+    in (words = ws, rng = pick.rng)
+
+-- Higher SNR → you make out more of the words (LocalChat word-recognition idea).
+recognitionPct : Int -> Int
+let recognitionPct snr = min 100 (max 5 (55 + snr * 4))
+
+-- Garble a single word character-by-character: each scalar survives with the
+-- recognition probability, otherwise it drops to "." — the LocalChat model, so
+-- a faint shout reads like "g.uk." and a clear one stays intact.
+distortWord : String -> Int -> Int -> (text : String, rng : Int)
+let distortWord word snr r0 =
+    block
+        go : StringCursor -> Int -> Int -> String -> (text : String, rng : Int)
+        let go cur fuel r acc decreases fuel =
+            if fuel <= 0 then (text = acc, rng = r)
+            else
+                match uni.stringNextScalar word cur
+                case None -> (text = acc, rng = r)
+                case Some step ->
+                    let piece =
+                        match uni.stringSpan word cur step.next
+                        case Some s -> s
+                        case None -> "."
+                    let roll = rand.range 0 99 r
+                    let shown = if roll.value < recognitionPct snr then piece else "."
+                    in go step.next (fuel - 1) roll.rng (acc ++ shown)
+        go (uni.stringStart word) (natToInt (uni.scalarCount word)) r0 ""
+
+distortPhrase : List String -> Int -> Int -> (text : String, rng : Int)
+let distortPhrase words snr r0 =
+    block
+        go : List String -> Int -> String -> Bool -> (text : String, rng : Int)
+        let go ws r acc first decreases listLength ws =
+            match ws
+            case Nil -> (text = acc, rng = r)
+            case w :: rest ->
+                let dw = distortWord w snr r
+                let sep = if first then "" else " "
+                in go rest dw.rng (acc ++ sep ++ dw.text) False
+        go words r0 "" True
 
 regenAmount : List Ability -> Int
 let regenAmount abil decreases listLength abil =

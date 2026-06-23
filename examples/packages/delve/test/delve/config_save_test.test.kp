@@ -5,6 +5,7 @@ import delve.config as config
 import delve.natutil.*
 import delve.ecs as ecs
 import delve.gen as gen
+import delve.grid as grid
 import delve.json as json
 import delve.json.*
 import delve.save as save
@@ -46,3 +47,25 @@ let testSaveRoundTripIO =
         save.saveGame game
         loaded <- save.loadGame fixture.testPack (Size 80 24)
         pure (loaded.content.packId == fixture.testPack.packId && loaded.savePath == fixture.testPack.save.path)
+
+-- A generated level should sometimes hold a structure set-piece (the goblin
+-- warband's campfire). Over many seeds at least one must, proving placement.
+hasCampfire : ContentPack -> Nat -> Bool
+let hasCampfire pack seed =
+    let g = gen.newLevel pack 0 1 (Size 80 24) seed
+    in
+        match grid.findTileKind Campfire g.level
+        case Some _ -> True
+        case None -> False
+
+anyCampfire : ContentPack -> Int -> Bool
+let anyCampfire pack n decreases max 0 n =
+    if n <= 0 then False
+    elif hasCampfire pack (intToNat n) then True
+    else anyCampfire pack (n - 1)
+
+testStructuresSpawnIO : IO GameError Bool
+let testStructuresSpawnIO =
+    do
+        pack <- config.loadDefault
+        pure (anyCampfire pack 24)

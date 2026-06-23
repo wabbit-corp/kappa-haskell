@@ -29,3 +29,11 @@ let testMutationGain =
     let viaPotion = corruption.gainMutation before
     let viaThreshold = corruption.corrupt 150 before
     in listLength before.player.mutations == 0 && listLength viaPotion.player.mutations == 1 && listLength viaThreshold.player.mutations == 1
+
+-- Monster speech: phrases are built from the language's syllable pool, and the
+-- recognition curve (LocalChat attenuation) clamps and keeps words when clear.
+testSpeech : Bool
+let testSpeech =
+    let phrase = content.shoutWords fixture.testPack "goblin" "vermin" 4242
+    let clear = content.distortPhrase ["grik"] 40 7
+    in content.wordFor fixture.testPack "goblin" "delver" == "grukk" && listLength phrase.words >= 1 && content.recognitionPct 40 == 100 && content.recognitionPct (0 - 99) == 5 && clear.text == "grik"

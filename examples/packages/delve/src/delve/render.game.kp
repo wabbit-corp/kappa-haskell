@@ -71,6 +71,7 @@ let tileKindChar k =
     case LoreStone -> "?"
     case ChaosVent -> "*"
     case BranchDown -> ">"
+    case Campfire -> "▲"
 
 litTileStyle : Tile -> (color : String, glyph : String)
 let litTileStyle t =
@@ -94,6 +95,7 @@ let litKindStyle k =
     case LoreStone -> (color = sgr 95 205 225, glyph = "?")
     case ChaosVent -> (color = sgrb 210 95 220, glyph = "*")
     case BranchDown -> (color = sgrb 210 95 220, glyph = ">")
+    case Campfire -> (color = sgrb 230 140 40, glyph = "▲")
 
 -- ── Entities ────────────────────────────────────────────────────────────
 actorStyle : Actor -> (color : String, glyph : String)
@@ -196,12 +198,15 @@ let hungerWord h =
 soundLabel : Bool -> String
 let soundLabel muted = if muted then tcb 230 180 70 "Muted" else tc 150 200 150 "On"
 
+stanceTag : PlayerState -> String
+let stanceTag player = if player.crouching then tcb 150 210 150 "  [sneaking]" else ""
+
 statusLine : ContentPack -> PlayerState -> Actor -> Bool -> String
 let statusLine pack player p muted =
     tc 200 200 210 "HP " ++ hpMeter p.stats.hp p.stats.maxHp ++ " " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++
     tc 200 200 210 "   Chaos " ++ chaosMeter player ++ " " ++ show player.corruption ++ "\r\n" ++
     tc 180 180 195 "Lv " ++ show p.stats.level ++ "  XP " ++ show p.stats.xp ++ "  Gold " ++ tc 235 205 95 (show player.gold) ++
-    tc 180 180 195 "  Food " ++ hungerWord player.hunger ++ tc 180 180 195 "  Tactic " ++ tc 150 200 230 (tactics.tacticName pack player.tactic) ++
+    tc 180 180 195 "  Food " ++ hungerWord player.hunger ++ tc 180 180 195 "  Tactic " ++ tc 150 200 230 (tactics.tacticName pack player.tactic) ++ stanceTag player ++
     tc 180 180 195 "  Sound " ++ soundLabel muted ++ tc 120 120 140 " (m)"
 
 -- ── Message log (recency fade: newest brightest, at the bottom) ──────────
@@ -357,6 +362,7 @@ let terrainName k =
     case Altar -> "a worn altar"
     case LoreStone -> "a lore-stone"
     case ChaosVent -> "a venting chaos rift"
+    case Campfire -> "a crackling campfire"
     case VoidTile -> "the void"
 
 groundItemAt : Vec2 -> List GroundItem -> Option Item

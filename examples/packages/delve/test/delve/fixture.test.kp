@@ -46,9 +46,9 @@ let testItems =
 
 testActors : List ActorDef
 let testActors =
-    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil "A delver who came down by choice." 9
-    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil "A shaggy hound, loyal past reason." 7
-    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil "A rat grown dog-large on cave-leavings." 5
+    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil "A delver who came down by choice." 9 0 ""
+    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil "A shaggy hound, loyal past reason." 7 6 ""
+    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil "A rat grown dog-large on cave-leavings." 5 2 ""
     ]
 
 testTactics : List TacticDef
@@ -79,6 +79,11 @@ let testFaiths =
     , FaithDef VeiledWitness "Veiled Witness" "secrets"
     ]
 
+testLanguages : List LanguageDef
+let testLanguages =
+    [ LanguageDef "goblin" "Goblin" ["grik", "zhak", "nub", "skra"] [LexEntry "delver" "grukk", LexEntry "vermin" "skri", LexEntry "alarm" "oi"]
+    ]
+
 testPack : ContentPack
 let testPack =
     ContentPack {
@@ -97,5 +102,7 @@ let testPack =
         faiths = testFaiths,
         rumors = [Rumor "Tests are dull but useful."],
         affixes = Nil,
-        branches = Nil
+        branches = Nil,
+        languages = testLanguages,
+        structures = Nil
     }

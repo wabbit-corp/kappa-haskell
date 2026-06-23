@@ -1,43 +1,359 @@
 {
   "monster_spawns": [
-    { "id": "rat", "min_depth": 1, "max_depth": 3, "weight": 8 },
-    { "id": "bat", "min_depth": 1, "max_depth": 3, "weight": 7 },
-    { "id": "goblin", "min_depth": 1, "max_depth": 6, "weight": 8 },
-    { "id": "kobold", "min_depth": 1, "max_depth": 3, "weight": 7 },
-    { "id": "pilgrim", "min_depth": 2, "max_depth": 4, "weight": 2 },
-    { "id": "orc", "min_depth": 2, "max_depth": 99, "weight": 7 },
-    { "id": "skeleton", "min_depth": 2, "max_depth": 99, "weight": 6 },
-    { "id": "troll", "min_depth": 4, "max_depth": 99, "weight": 4 },
-    { "id": "wizard", "min_depth": 4, "max_depth": 99, "weight": 3 },
-    { "id": "chaos_spawn", "min_depth": 4, "max_depth": 99, "weight": 3 },
-    { "id": "dragon", "min_depth": 7, "max_depth": 99, "weight": 1 },
-    { "id": "rat", "min_depth": 1, "max_depth": 99, "weight": 8, "branch": 1 },
-    { "id": "bat", "min_depth": 1, "max_depth": 99, "weight": 8, "branch": 1 },
-    { "id": "goblin", "min_depth": 1, "max_depth": 99, "weight": 5, "branch": 1 },
-    { "id": "skeleton", "min_depth": 1, "max_depth": 99, "weight": 12, "branch": 2 },
-    { "id": "bat", "min_depth": 1, "max_depth": 99, "weight": 4, "branch": 2 },
-    { "id": "chaos_spawn", "min_depth": 1, "max_depth": 99, "weight": 8, "branch": 3 },
-    { "id": "wizard", "min_depth": 1, "max_depth": 99, "weight": 5, "branch": 3 },
-    { "id": "kobold", "min_depth": 1, "max_depth": 99, "weight": 4, "branch": 3 }
+    {
+      "id": "rat",
+      "min_depth": 1,
+      "max_depth": 3,
+      "weight": 8
+    },
+    {
+      "id": "bat",
+      "min_depth": 1,
+      "max_depth": 3,
+      "weight": 7
+    },
+    {
+      "id": "goblin",
+      "min_depth": 1,
+      "max_depth": 6,
+      "weight": 8
+    },
+    {
+      "id": "kobold",
+      "min_depth": 1,
+      "max_depth": 3,
+      "weight": 7
+    },
+    {
+      "id": "pilgrim",
+      "min_depth": 2,
+      "max_depth": 4,
+      "weight": 2
+    },
+    {
+      "id": "orc",
+      "min_depth": 2,
+      "max_depth": 99,
+      "weight": 7
+    },
+    {
+      "id": "skeleton",
+      "min_depth": 2,
+      "max_depth": 99,
+      "weight": 6
+    },
+    {
+      "id": "troll",
+      "min_depth": 4,
+      "max_depth": 99,
+      "weight": 4
+    },
+    {
+      "id": "wizard",
+      "min_depth": 4,
+      "max_depth": 99,
+      "weight": 3
+    },
+    {
+      "id": "chaos_spawn",
+      "min_depth": 4,
+      "max_depth": 99,
+      "weight": 3
+    },
+    {
+      "id": "dragon",
+      "min_depth": 7,
+      "max_depth": 99,
+      "weight": 1
+    },
+    {
+      "id": "rat",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 8,
+      "branch": 1
+    },
+    {
+      "id": "bat",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 8,
+      "branch": 1
+    },
+    {
+      "id": "goblin",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 5,
+      "branch": 1
+    },
+    {
+      "id": "skeleton",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 12,
+      "branch": 2
+    },
+    {
+      "id": "bat",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 4,
+      "branch": 2
+    },
+    {
+      "id": "chaos_spawn",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 8,
+      "branch": 3
+    },
+    {
+      "id": "wizard",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 5,
+      "branch": 3
+    },
+    {
+      "id": "kobold",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 4,
+      "branch": 3
+    }
   ],
   "item_spawns": [
-    { "id": "gold", "min_depth": 1, "max_depth": 99, "weight": 12 },
-    { "id": "potion_healing", "min_depth": 1, "max_depth": 99, "weight": 8 },
-    { "id": "potion_water", "min_depth": 1, "max_depth": 2, "weight": 5 },
-    { "id": "food_ration", "min_depth": 1, "max_depth": 2, "weight": 6 },
-    { "id": "dagger", "min_depth": 1, "max_depth": 2, "weight": 4 },
-    { "id": "leather_armor", "min_depth": 1, "max_depth": 2, "weight": 3 },
-    { "id": "scroll_ward", "min_depth": 1, "max_depth": 2, "weight": 5 },
-    { "id": "potion_mutation", "min_depth": 3, "max_depth": 99, "weight": 5 },
-    { "id": "scroll_identify", "min_depth": 3, "max_depth": 99, "weight": 5 },
-    { "id": "scroll_mapping", "min_depth": 3, "max_depth": 99, "weight": 3 },
-    { "id": "sword", "min_depth": 3, "max_depth": 99, "weight": 5 },
-    { "id": "mace", "min_depth": 3, "max_depth": 99, "weight": 4 },
-    { "id": "chain_mail", "min_depth": 3, "max_depth": 99, "weight": 3 },
-    { "id": "wand_digging", "min_depth": 3, "max_depth": 5, "weight": 2 },
-    { "id": "wand_fire", "min_depth": 6, "max_depth": 99, "weight": 3 },
-    { "id": "wand_polymorph", "min_depth": 6, "max_depth": 99, "weight": 2 },
-    { "id": "chaos_shard", "min_depth": 6, "max_depth": 99, "weight": 2 },
-    { "id": "amulet", "min_depth": 7, "max_depth": 99, "weight": 1 }
+    {
+      "id": "gold",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 12
+    },
+    {
+      "id": "potion_healing",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 8
+    },
+    {
+      "id": "potion_water",
+      "min_depth": 1,
+      "max_depth": 2,
+      "weight": 5
+    },
+    {
+      "id": "food_ration",
+      "min_depth": 1,
+      "max_depth": 2,
+      "weight": 6
+    },
+    {
+      "id": "dagger",
+      "min_depth": 1,
+      "max_depth": 2,
+      "weight": 4
+    },
+    {
+      "id": "leather_armor",
+      "min_depth": 1,
+      "max_depth": 2,
+      "weight": 3
+    },
+    {
+      "id": "scroll_ward",
+      "min_depth": 1,
+      "max_depth": 2,
+      "weight": 5
+    },
+    {
+      "id": "potion_mutation",
+      "min_depth": 3,
+      "max_depth": 99,
+      "weight": 5
+    },
+    {
+      "id": "scroll_identify",
+      "min_depth": 3,
+      "max_depth": 99,
+      "weight": 5
+    },
+    {
+      "id": "scroll_mapping",
+      "min_depth": 3,
+      "max_depth": 99,
+      "weight": 3
+    },
+    {
+      "id": "sword",
+      "min_depth": 3,
+      "max_depth": 99,
+      "weight": 5
+    },
+    {
+      "id": "mace",
+      "min_depth": 3,
+      "max_depth": 99,
+      "weight": 4
+    },
+    {
+      "id": "chain_mail",
+      "min_depth": 3,
+      "max_depth": 99,
+      "weight": 3
+    },
+    {
+      "id": "wand_digging",
+      "min_depth": 3,
+      "max_depth": 5,
+      "weight": 2
+    },
+    {
+      "id": "wand_fire",
+      "min_depth": 6,
+      "max_depth": 99,
+      "weight": 3
+    },
+    {
+      "id": "wand_polymorph",
+      "min_depth": 6,
+      "max_depth": 99,
+      "weight": 2
+    },
+    {
+      "id": "chaos_shard",
+      "min_depth": 6,
+      "max_depth": 99,
+      "weight": 2
+    },
+    {
+      "id": "amulet",
+      "min_depth": 7,
+      "max_depth": 99,
+      "weight": 1
+    }
+  ],
+  "structures": [
+    {
+      "id": "goblin_warband",
+      "name": "a goblin warband",
+      "branch": 0,
+      "min_depth": 1,
+      "max_depth": 5,
+      "weight": 10,
+      "fire": true,
+      "members": [
+        {
+          "species": "Goblin",
+          "min": 2,
+          "max": 4
+        },
+        {
+          "species": "Kobold",
+          "min": 0,
+          "max": 2
+        }
+      ],
+      "loot": [
+        "Corpse",
+        "Corpse",
+        "FoodRation"
+      ]
+    },
+    {
+      "id": "orc_warcamp",
+      "name": "an orcish war-camp",
+      "branch": 0,
+      "min_depth": 4,
+      "max_depth": 9,
+      "weight": 8,
+      "fire": true,
+      "members": [
+        {
+          "species": "Orc",
+          "min": 2,
+          "max": 3
+        },
+        {
+          "species": "Goblin",
+          "min": 1,
+          "max": 3
+        }
+      ],
+      "loot": [
+        "Corpse",
+        "FoodRation",
+        "Gold"
+      ]
+    },
+    {
+      "id": "warren_pack",
+      "name": "a beast den",
+      "branch": 1,
+      "min_depth": 1,
+      "max_depth": 9,
+      "weight": 10,
+      "fire": false,
+      "members": [
+        {
+          "species": "Rat",
+          "min": 3,
+          "max": 5
+        },
+        {
+          "species": "Bat",
+          "min": 1,
+          "max": 3
+        }
+      ],
+      "loot": [
+        "Corpse",
+        "Corpse"
+      ]
+    },
+    {
+      "id": "bone_circle",
+      "name": "a circle of bones",
+      "branch": 2,
+      "min_depth": 1,
+      "max_depth": 9,
+      "weight": 9,
+      "fire": true,
+      "members": [
+        {
+          "species": "Skeleton",
+          "min": 2,
+          "max": 4
+        }
+      ],
+      "loot": [
+        "Corpse"
+      ]
+    },
+    {
+      "id": "chaos_coven",
+      "name": "a chaos coven",
+      "branch": 3,
+      "min_depth": 1,
+      "max_depth": 9,
+      "weight": 8,
+      "fire": true,
+      "members": [
+        {
+          "species": "Wizard",
+          "min": 1,
+          "max": 1
+        },
+        {
+          "species": "ChaosSpawn",
+          "min": 1,
+          "max": 3
+        }
+      ],
+      "loot": [
+        "ChaosShard",
+        "Corpse"
+      ]
+    }
   ]
 }

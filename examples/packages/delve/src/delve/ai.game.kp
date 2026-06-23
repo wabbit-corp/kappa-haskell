@@ -78,7 +78,8 @@ let applyHit hit game =
     let actors1 = replaceActor hit.attacker (replaceActor hit.defender game.level.actors)
     let g0 = game.{ rng = intToNat hit.rng, level = game.level.{ actors = removeDeadActors actors1 } }
     let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
-    in if combatVisible hit.attacker hit.defender g1.level then message hit.log g1 else g1
+    let g2 = g1.{ noise = Sound hit.defender.pos fov.combatLoudness }
+    in if combatVisible hit.attacker hit.defender g2.level then message hit.log g2 else g2
 
 friendlyTurn : Actor -> Actor -> GameState -> GameState
 let friendlyTurn friend player game =
@@ -120,22 +121,30 @@ let castSpell dmg monster player game =
 -- Nearest visible actor this one is hostile to — could be the player OR a rival
 -- faction's monster. This is what turns the dungeon into a living ecosystem:
 -- beasts, cave-dwellers, undead, and chaos all fight each other, not just you.
-nearestHostile : ContentPack -> Actor -> Level -> Option Actor
-let nearestHostile pack actor level =
+-- stealthId/stealthCut let a crouching player shrink the range at which others'
+-- cones pick them up: when the candidate is that actor, its detection range is cut.
+nearestHostile : ContentPack -> Int -> Int -> Actor -> Level -> Option Actor
+let nearestHostile pack stealthId stealthCut actor level =
     block
         go : List Actor -> Option Actor -> Option Actor
         let go xs best decreases listLength xs =
             match xs
             case Nil -> best
             case a :: rest ->
-                if a.id != actor.id && a.alive && hostileTo actor a && fov.canSee level actor.facing (content.sightRangeOf pack actor.species) actor.pos a.pos then
-                    let best2 =
-                        match best
-                        case None -> Some a
-                        case Some b -> if chebyshev actor.pos a.pos < chebyshev actor.pos b.pos then Some a else best
-                    in go rest best2
-                else go rest best
+                let range = if a.id == stealthId then max 1 (content.sightRangeOf pack actor.species - stealthCut) else content.sightRangeOf pack actor.species
+                in
+                    if a.id != actor.id && a.alive && hostileTo actor a && fov.canSee level actor.facing range actor.pos a.pos then
+                        let best2 =
+                            match best
+                            case None -> Some a
+                            case Some b -> if chebyshev actor.pos a.pos < chebyshev actor.pos b.pos then Some a else best
+                        in go rest best2
+                    else go rest best
         go level.actors None
+
+-- How much a crouching player's footprint shrinks against watchers' cones.
+playerStealthCut : GameState -> Int
+let playerStealthCut game = if game.player.crouching then 4 else 0
 
 wander : Actor -> GameState -> GameState
 let wander monster game =
@@ -145,12 +154,45 @@ let wander monster game =
 
 fleeFrom : ContentPack -> Actor -> GameState -> GameState
 let fleeFrom pack monster game =
-    match nearestHostile pack monster game.level
+    match nearestHostile pack game.player.actorId (playerStealthCut game) monster game.level
     case None -> wander monster game
     case Some t ->
         let dir = toward t.pos monster.pos
         let fled = tryMoveActor monster (addPos monster.pos (moveDelta dir)) game.level
         in game.{ level = game.level.{ actors = replaceActor fled game.level.actors } }
+
+actorIsClear : Vec2 -> List Actor -> Bool
+let actorIsClear pos actors =
+    match actorAt pos actors
+    case None -> True
+    case Some _ -> False
+
+crowdAt : Actor -> Vec2 -> List Actor -> Int
+let crowdAt self tile actors decreases listLength actors =
+    match actors
+    case Nil -> 0
+    case a :: rest ->
+        let here = if a.id != self.id && a.alive && a.faction == self.faction && chebyshev tile a.pos <= 1 then 1 else 0
+        in here + crowdAt self tile rest
+
+stepScore : Actor -> Vec2 -> Vec2 -> Level -> Int
+let stepScore mover goal tile level = 2 * chebyshev tile goal + crowdAt mover tile level.actors
+
+-- Advance one tile toward the goal, preferring open tiles that aren't crowded
+-- with allies — so a pack fans out and flanks instead of forming a single-file
+-- conga line, and detours around blocking allies/walls instead of stalling.
+chaseStep : Actor -> Vec2 -> Level -> Vec2
+let chaseStep mover goal level =
+    block
+        go : List Vec2 -> Vec2 -> Int -> Vec2
+        let go cands best bestScore decreases listLength cands =
+            match cands
+            case Nil -> best
+            case c :: rest ->
+                let ok = grid.inBounds level.size c && isWalkable (grid.getTile level c) && actorIsClear c level.actors
+                let sc = stepScore mover goal c level
+                in if ok && sc < bestScore then go rest c sc else go rest best bestScore
+        go (fov.neighbors8 mover.pos) mover.pos (stepScore mover goal mover.pos level)
 
 engageMonster : Actor -> Actor -> GameState -> GameState
 let engageMonster monster foe game =
@@ -161,7 +203,7 @@ let engageMonster monster foe game =
         let hit = combat.strikeWith game.content tac Balanced monster foe (natToInt game.rng)
         in applyHit hit game
     else
-        let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta (toward monster.pos foe.pos))) game.level
+        let monster2 = tryMoveActor monster (chaseStep monster foe.pos game.level) game.level
         in game.{ level = game.level.{ actors = replaceActor monster2 game.level.actors } }
 
 engagePlayer : Actor -> Actor -> GameState -> GameState
@@ -190,20 +232,158 @@ let engagePlayer monster player game =
             in if chase && pwr > 0 && monster.stats.mp >= 3 then
                 castSpell pwr monster player game
             else
-                let dirRoll = if chase then (dir = toward monster.pos player.pos, rng = natToInt game.rng) else randomDir (natToInt game.rng)
-                let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta dirRoll.dir)) game.level
-                in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+                if chase then
+                    let monster2 = tryMoveActor monster (chaseStep monster player.pos game.level) game.level
+                    in game.{ level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+                else
+                    let dirRoll = randomDir (natToInt game.rng)
+                    let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta dirRoll.dir)) game.level
+                    in game.{ rng = intToNat dirRoll.rng, level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+
+-- No visible target: if a sound carries to this monster (the player's footsteps,
+-- a distant brawl, an ally's shout), move toward it; otherwise drift aimlessly.
+allyRange : Int
+let allyRange = 8
+
+chatterChance : Int
+let chatterChance = 32
+
+-- Nearest living same-faction actor within earshot — a packmate to cluster with
+-- or mutter to.
+nearestAlly : Actor -> Level -> Option Actor
+let nearestAlly self level =
+    block
+        go : List Actor -> Option Actor -> Option Actor
+        let go xs best decreases listLength xs =
+            match xs
+            case Nil -> best
+            case a :: rest ->
+                if a.id != self.id && a.alive && a.faction == self.faction && chebyshev self.pos a.pos <= allyRange then
+                    let best2 =
+                        match best
+                        case None -> Some a
+                        case Some b -> if chebyshev self.pos a.pos < chebyshev self.pos b.pos then Some a else best
+                    in go rest best2
+                else go rest best
+        go level.actors None
+
+-- Idle banter: now and then a monster mutters to a nearby packmate in its tongue.
+-- It carries only a short way and garbles with distance, so the player overhears
+-- fragments while approaching a warband. It raises no alarm (sets no noise).
+chatterMessage : Actor -> Actor -> String -> List String -> GameState -> GameState
+let chatterMessage monster ally lang words game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let remaining = fov.heardLoudness game.level monster.pos fov.chatterLoudness p.pos
+        in
+            if remaining < fov.hearFloor then game
+            else
+                let garbled = content.distortPhrase words (remaining - fov.hearFloor) (natToInt game.rng)
+                in message (monster.name ++ " mutters to " ++ ally.name ++ " in " ++ content.languageName game.content lang ++ ": «" ++ garbled.text ++ "»") (game.{ rng = intToNat garbled.rng })
+
+maybeChatter : Actor -> Actor -> GameState -> GameState
+let maybeChatter monster ally game =
+    let lang = content.languageOf game.content monster.species
+    in
+        if lang == "" then game
+        else
+            let roll = rand.chance chatterChance (natToInt game.rng)
+            let g1 = game.{ rng = intToNat roll.rng }
+            in if roll.value then
+                let phrase = content.shoutWords g1.content lang "kin" (natToInt g1.rng)
+                in chatterMessage monster ally lang phrase.words (g1.{ rng = intToNat phrase.rng })
+            else g1
+
+-- Mill near the group: occasionally chatter, occasionally shuffle a step.
+restNearGroup : Actor -> Actor -> GameState -> GameState
+let restNearGroup monster ally game =
+    let chatted = maybeChatter monster ally game
+    let roll = rand.chance 25 (natToInt chatted.rng)
+    let g1 = chatted.{ rng = intToNat roll.rng }
+    in if roll.value then wander monster g1 else g1
+
+-- Idle monsters cluster with the nearest packmate. A band spawned around its
+-- campfire therefore stays loosely gathered there — and this costs one O(actors)
+-- pass, not a whole-map scan per monster per turn.
+idleBehavior : Actor -> GameState -> GameState
+let idleBehavior monster game =
+    match nearestAlly monster game.level
+    case None -> wander monster game
+    case Some ally ->
+        if chebyshev monster.pos ally.pos <= 2 then restNearGroup monster ally game
+        else
+            let monster2 = tryMoveActor monster (chaseStep monster ally.pos game.level) game.level
+            in game.{ level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+
+investigateOrWander : Actor -> GameState -> GameState
+let investigateOrWander monster game =
+    if game.noise.loudness > 0 && fov.audible game.level game.noise.pos game.noise.loudness monster.pos (content.hearingOf game.content monster.species) then
+        let monster2 = tryMoveActor monster (addPos monster.pos (moveDelta (fov.dirToward monster.pos game.noise.pos))) game.level
+        in game.{ level = game.level.{ actors = replaceActor monster2 game.level.actors } }
+    else idleBehavior monster game
+
+-- ── Speech: sentient monsters bark in their own tongue when they spot prey ──
+shoutChance : Int
+let shoutChance = 30
+
+-- What a speaker calls the thing it has noticed (a stable concept key, so the
+-- chosen word is always the same for that kind of creature).
+speechConcept : Actor -> Actor -> String
+let speechConcept speaker target =
+    if target.species == PlayerSpecies then "delver"
+    elif target.species == Rat || target.species == Bat then "vermin"
+    elif target.species == Hound then "beast"
+    elif target.faction == speaker.faction then "kin"
+    else "foe"
+
+-- Show the shout to the player only if it carries to them; the words garble with
+-- distance and around corners (speech attenuation from LocalChat). The framing
+-- ("spots you" / "spots the giant rat") makes clear what prompted the cry, while
+-- the words themselves stay in the monster's own tongue.
+shoutMessage : Actor -> Actor -> String -> List String -> GameState -> GameState
+let shoutMessage speaker target lang words game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let remaining = fov.heardLoudness game.level speaker.pos fov.shoutLoudness p.pos
+        in
+            if remaining < fov.hearFloor then game
+            else
+                let sees = if target.id != game.player.actorId then " spots " ++ target.name elif chebyshev speaker.pos target.pos <= 1 then " snarls at you" else " spots you"
+                let garbled = content.distortPhrase words (remaining - fov.hearFloor) (natToInt game.rng)
+                in message (speaker.name ++ sees ++ " and cries in " ++ content.languageName game.content lang ++ ": «" ++ garbled.text ++ "»") (game.{ rng = intToNat garbled.rng })
+
+emitShout : Actor -> Actor -> GameState -> GameState
+let emitShout speaker target game =
+    let lang = content.languageOf game.content speaker.species
+    let phrase = content.shoutWords game.content lang (speechConcept speaker target) (natToInt game.rng)
+    let g1 = game.{ rng = intToNat phrase.rng, noise = Sound speaker.pos fov.shoutLoudness }
+    in shoutMessage speaker target lang phrase.words g1
+
+-- A speaking monster that notices something at range cries out, naming it in its
+-- tongue. The cry carries as sound, so packmates within earshot converge.
+maybeShout : Actor -> Actor -> GameState -> GameState
+let maybeShout speaker target game =
+    let lang = content.languageOf game.content speaker.species
+    in
+        if lang == "" then game
+        else
+            let roll = rand.chance shoutChance (natToInt game.rng)
+            let g1 = game.{ rng = intToNat roll.rng }
+            in if roll.value then emitShout speaker target g1 else g1
 
 hostileTurn : Actor -> GameState -> GameState
 let hostileTurn monster game =
     if shouldFlee monster then fleeFrom game.content monster game
     else
-        match nearestHostile game.content monster game.level
-        case None -> wander monster game
+        match nearestHostile game.content game.player.actorId (playerStealthCut game) monster game.level
+        case None -> investigateOrWander monster game
         case Some t ->
             let faced = monster.{ facing = fov.dirToward monster.pos t.pos }
-            in if t.id == game.player.actorId then engagePlayer faced t game
-            else engageMonster faced t game
+            let announced = maybeShout faced t game
+            in if t.id == game.player.actorId then engagePlayer faced t announced
+            else engageMonster faced t announced
 
 actorTurn : Actor -> GameState -> GameState
 let actorTurn actor game =

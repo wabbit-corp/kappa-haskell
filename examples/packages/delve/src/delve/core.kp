@@ -79,6 +79,7 @@ data TileKind : Type =
     LoreStone
     ChaosVent
     BranchDown
+    Campfire
 
 -- `warded` is the tiny Delve version of NetHack's defensive engraving idea:
 -- a temporary inscription that makes many monsters hesitate unless you attack.
@@ -332,6 +333,7 @@ data PlayerState : Type =
         (favor : Int)
         (faith : Faith)
         (reputation : Int)
+        (crouching : Bool)
 
 -- Data-driven content registry. These definitions are deliberately in core so
 -- gameplay, save/load, and JSON decoding agree on one schema. String IDs are
@@ -377,6 +379,8 @@ data ActorDef : Type =
         (abilities : List Ability)
         (description : String)
         (sightRange : Int)
+        (hearing : Int)
+        (language : String)
 
 data SpawnRule : Type =
     SpawnRule
@@ -393,6 +397,26 @@ data BranchDef : Type =
         (entranceDepth : Int)
         (floors : Int)
         (boss : Species)
+
+-- A clustered set-piece spawn: a band of monsters placed together (optionally
+-- around a campfire, with loot scattered nearby) instead of lone wanderers.
+data StructureMember : Type =
+    StructureMember
+        (species : Species)
+        (minCount : Int)
+        (maxCount : Int)
+
+data StructureDef : Type =
+    StructureDef
+        (id : String)
+        (name : String)
+        (branch : Int)
+        (minDepth : Int)
+        (maxDepth : Int)
+        (weight : Int)
+        (fire : Bool)
+        (members : List StructureMember)
+        (loot : List ItemKind)
 
 data TacticDef : Type =
     TacticDef
@@ -428,6 +452,18 @@ data MutationDef : Type =
         (defBonus : Int)
         (hungerTax : Int)
         (description : String)
+
+data LexEntry : Type =
+    LexEntry
+        (key : String)
+        (word : String)
+
+data LanguageDef : Type =
+    LanguageDef
+        (id : String)
+        (name : String)
+        (syllables : List String)
+        (lexicon : List LexEntry)
 
 data FaithDef : Type =
     FaithDef
@@ -485,6 +521,8 @@ data ContentPack : Type =
         (rumors : List Rumor)
         (affixes : List ItemAffix)
         (branches : List BranchDef)
+        (languages : List LanguageDef)
+        (structures : List StructureDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is
@@ -526,6 +564,13 @@ data GameMode : Type =
     Won
     Quit
 
+-- A sound event on the map: where it came from and how loud (dB-ish). loudness 0
+-- means silence. Propagation/attenuation lives in fov (path-distance + dropoff).
+data Sound : Type =
+    Sound
+        (pos : Vec2)
+        (loudness : Int)
+
 data GameState : Type =
     GameState
         (rng : Nat)
@@ -542,6 +587,7 @@ data GameState : Type =
         (invCursor : Int)
         (creationGod : Int)
         (lookPos : Vec2)
+        (noise : Sound)
 
 data Command : Type =
     StartNewGame
@@ -580,6 +626,7 @@ data Command : Type =
     GodNext
     RerollSign
     ConfirmCreation
+    ToggleCrouch
     NoCommand
 
 data Key : Type =
@@ -624,6 +671,7 @@ let tileKindCode k =
     case LoreStone -> 11
     case ChaosVent -> 12
     case BranchDown -> 13
+    case Campfire -> 14
 
 instance Eq TileKind =
     let (==) a b = tileKindCode a == tileKindCode b
@@ -855,6 +903,7 @@ let commandTag c =
     case GodNext -> 34
     case RerollSign -> 35
     case ConfirmCreation -> 36
+    case ToggleCrouch -> 37
 
 instance Eq Command =
     let (==) a b =
@@ -884,7 +933,7 @@ message : String -> GameState -> GameState
 let message text game =
     let msgs = takeMessages game.content.rules.messageLimit ((::) text game.level.messages)
     let level2 = Level game.level.depth game.level.size game.level.tiles game.level.rooms game.level.actors game.level.items msgs game.level.turn game.level.branch
-    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels game.invCursor game.creationGod game.lookPos
+    in GameState game.rng game.player level2 game.mode game.lastCommand game.rumors game.content game.ecs game.savePath game.audioMuted game.levels game.invCursor game.creationGod game.lookPos game.noise
 
 playerActor : GameState -> Option Actor
 let playerActor game =

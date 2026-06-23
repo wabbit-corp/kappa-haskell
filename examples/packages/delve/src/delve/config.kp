@@ -57,7 +57,9 @@ let loadPack packPath =
                 faiths = systems.faiths,
                 rumors = lore,
                 affixes = affixes,
-                branches = branches
+                branches = branches,
+                languages = systems.languages,
+                structures = spawns.structures
             }
         validateContentPack pack
 
@@ -281,7 +283,9 @@ let decodeActor value =
         abilities <- traverse decodeAbility abilityJson
         description <- stringField "description" value
         sightRange <- intField "sight_range" value
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange)
+        hearing <- intField "hearing" value
+        language <- stringField "language" value
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =
@@ -297,15 +301,42 @@ let decodeStats value =
         level <- intField "level" value
         pure (Stats hp maxHp mp maxMp strength dex defense xp level)
 
-loadSpawns : String -> IO GameError (monsters : List SpawnRule, items : List SpawnRule)
+loadSpawns : String -> IO GameError (monsters : List SpawnRule, items : List SpawnRule, structures : List StructureDef)
 let loadSpawns path =
     do
         root <- readJsonFile path
         monsterJson <- arrayField "monster_spawns" root
         itemJson <- arrayField "item_spawns" root
+        structureJson <- arrayField "structures" root
         monsters <- traverse decodeSpawn monsterJson
         items <- traverse decodeSpawn itemJson
-        pure (monsters = monsters, items = items)
+        structures <- traverse decodeStructure structureJson
+        pure (monsters = monsters, items = items, structures = structures)
+
+decodeStructureMember : json.JsonValue -> IO GameError StructureMember
+let decodeStructureMember value =
+    do
+        speciesName <- stringField "species" value
+        species <- decodeSpecies speciesName
+        minCount <- intField "min" value
+        maxCount <- intField "max" value
+        pure (StructureMember species minCount maxCount)
+
+decodeStructure : json.JsonValue -> IO GameError StructureDef
+let decodeStructure value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        branch <- optionalIntField 0 "branch" value
+        minDepth <- intField "min_depth" value
+        maxDepth <- intField "max_depth" value
+        weight <- intField "weight" value
+        fire <- boolField "fire" value
+        memberJson <- arrayField "members" value
+        members <- traverse decodeStructureMember memberJson
+        lootJson <- arrayField "loot" value
+        loot <- traverse decodeItemKindFromJson lootJson
+        pure (StructureDef id name branch minDepth maxDepth weight fire members loot)
 
 decodeSpawn : json.JsonValue -> IO GameError SpawnRule
 let decodeSpawn value =
@@ -319,7 +350,7 @@ let decodeSpawn value =
             raise (ConfigError ("invalid spawn rule for " ++ id))
         else pure (SpawnRule id minDepth maxDepth weight branch)
 
-loadSystems : String -> IO GameError (tactics : List TacticDef, starSigns : List StarSignDef, mutations : List MutationDef, faiths : List FaithDef)
+loadSystems : String -> IO GameError (tactics : List TacticDef, starSigns : List StarSignDef, mutations : List MutationDef, faiths : List FaithDef, languages : List LanguageDef)
 let loadSystems path =
     do
         root <- readJsonFile path
@@ -327,11 +358,31 @@ let loadSystems path =
         signJson <- arrayField "star_signs" root
         mutationJson <- arrayField "mutations" root
         faithJson <- arrayField "faiths" root
+        languageJson <- arrayField "languages" root
         tactics <- traverse decodeTactic tacticJson
         signs <- traverse decodeStarSign signJson
         mutations <- traverse decodeMutation mutationJson
         faiths <- traverse decodeFaith faithJson
-        pure (tactics = tactics, starSigns = signs, mutations = mutations, faiths = faiths)
+        languages <- traverse decodeLanguage languageJson
+        pure (tactics = tactics, starSigns = signs, mutations = mutations, faiths = faiths, languages = languages)
+
+decodeLexEntry : json.JsonValue -> IO GameError LexEntry
+let decodeLexEntry value =
+    do
+        key <- stringField "key" value
+        word <- stringField "word" value
+        pure (LexEntry key word)
+
+decodeLanguage : json.JsonValue -> IO GameError LanguageDef
+let decodeLanguage value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        sylJson <- arrayField "syllables" value
+        syllables <- traverse decodeStringFromJson sylJson
+        lexJson <- arrayField "lexicon" value
+        lexicon <- traverse decodeLexEntry lexJson
+        pure (LanguageDef id name syllables lexicon)
 
 decodeTactic : json.JsonValue -> IO GameError TacticDef
 let decodeTactic value =

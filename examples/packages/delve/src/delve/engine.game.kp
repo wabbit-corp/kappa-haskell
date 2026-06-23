@@ -107,6 +107,19 @@ let placeFollowers origin nextId level blocked followers decreases listLength fo
             let placedRest = placeFollowers origin (nextId + 1) level ((::) placed blocked) rest
             in (actors = (::) placed placedRest.actors, nextId = placedRest.nextId)
 
+-- Walk into a friendly companion and you trade places with it instead of being
+-- blocked — so a hound standing in a doorway never wedges you in.
+squeezePast : Direction -> Actor -> Actor -> Vec2 -> GameState -> GameState
+let squeezePast dir p ally target game =
+    let p2 = p.{ pos = target, facing = dir }
+    let ally2 = ally.{ pos = p.pos }
+    let actors2 = replaceActor p2 (replaceActor ally2 game.level.actors)
+    let level2 = fov.refreshVisibility target game.level.{ actors = actors2 }
+    let stepLoud = if game.player.crouching then fov.crouchLoudness else fov.footstepLoudness
+    let game2 = game.{ level = level2, noise = Sound target stepLoud }
+    let tile = grid.getTile game.level target
+    in onEnteredTile tile.kind (message ("You squeeze past " ++ ally.name ++ ".") game2)
+
 movePlayer : Direction -> GameState -> GameState
 let movePlayer dir game =
     match playerActor game
@@ -118,6 +131,7 @@ let movePlayer dir game =
             match actorAt target game.level.actors
             case Some enemy ->
                 if enemy.id == p.id then game
+                elif enemy.alive && enemy.faction == p.faction then squeezePast dir p enemy target game
                 elif not (hostileTo p enemy) then message (enemy.name ++ " blocks your path.") game
                 else
                     let game0 = clearWardAt p.pos game
@@ -125,13 +139,15 @@ let movePlayer dir game =
                     let actors1 = replaceActor hit.attacker (replaceActor hit.defender game0.level.actors)
                     let g0 = game0.{ rng = intToNat hit.rng, level = game0.level.{ actors = removeDeadActors actors1 } }
                     let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
-                    in message hit.log g1
+                    let g2 = g1.{ noise = Sound target fov.combatLoudness }
+                    in message hit.log g2
             case None ->
                 if isWalkable tile then
                     let p2 = p.{ pos = target, facing = dir }
                     let actors2 = replaceActor p2 game.level.actors
                     let level2 = fov.refreshVisibility target game.level.{ actors = actors2 }
-                    let game2 = game.{ level = level2 }
+                    let stepLoud = if game.player.crouching then fov.crouchLoudness else fov.footstepLoudness
+                    let game2 = game.{ level = level2, noise = Sound target stepLoud }
                     in onEnteredTile tile.kind game2
                 else
                     match tile.kind
@@ -490,15 +506,23 @@ let toggleDoor game =
 
 applyCommand : Command -> GameState -> GameState
 let applyCommand cmd game =
-    match cmd
-    case ToggleAudio -> toggleAudio game
-    case _ -> applyModeCommand cmd game
+    let quiet = game.{ noise = Sound (Vec2 0 0) 0 }
+    in
+        match cmd
+        case ToggleAudio -> toggleAudio quiet
+        case _ -> applyModeCommand cmd quiet
 
 toggleAudio : GameState -> GameState
 let toggleAudio game =
     let muted = not game.audioMuted
     let label = if muted then "Sound muted." else "Sound unmuted."
     in message label game.{ audioMuted = muted }
+
+toggleCrouch : GameState -> GameState
+let toggleCrouch game =
+    let c = not game.player.crouching
+    let label = if c then "You crouch low, moving in silence." else "You rise to your feet."
+    in message label game.{ player = game.player.{ crouching = c } }
 
 invCount : GameState -> Int
 let invCount game =
@@ -638,6 +662,7 @@ let applyModeCommand cmd game =
         case Engrave -> interact.engrave game
         case Talk -> interact.talk game
         case CycleTactic -> cycleTactic game
+        case ToggleCrouch -> toggleCrouch game
         case TargetedAttack -> interact.targetedAttack game
         case Help -> game.{ mode = HelpMode }
         case SaveAndQuit -> message "Saving..." game

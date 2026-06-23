@@ -30,7 +30,9 @@
       ],
       "abilities": [],
       "description": "You. A delver who walked down on purpose; the dark still hasn't decided what to make of that.",
-      "sight_range": 9
+      "sight_range": 9,
+      "hearing": 0,
+      "language": ""
     },
     {
       "id": "hound",
@@ -59,7 +61,9 @@
       ],
       "abilities": [],
       "description": "A shaggy hound with moss matted into its coat. It chose you on the threshold and has not reconsidered.",
-      "sight_range": 7
+      "sight_range": 7,
+      "hearing": 6,
+      "language": ""
     },
     {
       "id": "rat",
@@ -87,7 +91,9 @@
       ],
       "abilities": [],
       "description": "A rat swollen dog-large on cave-leavings. Where there is one, the walls hold a hundred more.",
-      "sight_range": 5
+      "sight_range": 5,
+      "hearing": 2,
+      "language": ""
     },
     {
       "id": "bat",
@@ -116,7 +122,9 @@
       ],
       "abilities": [],
       "description": "A leather-winged bat that reads the dark by its echoes. It harries before it bites.",
-      "sight_range": 6
+      "sight_range": 6,
+      "hearing": 10,
+      "language": ""
     },
     {
       "id": "goblin",
@@ -144,7 +152,9 @@
       ],
       "abilities": [],
       "description": "A wiry cave-goblin, quick to swarm and quicker to flee when the swarm thins.",
-      "sight_range": 7
+      "sight_range": 7,
+      "hearing": 0,
+      "language": "goblin"
     },
     {
       "id": "kobold",
@@ -172,7 +182,9 @@
       ],
       "abilities": [],
       "description": "A small scaled tunnel-dweller. It traps the corridors it cannot hold by force.",
-      "sight_range": 7
+      "sight_range": 7,
+      "hearing": 2,
+      "language": "goblin"
     },
     {
       "id": "orc",
@@ -204,7 +216,9 @@
         }
       ],
       "description": "A heavy-shouldered orc bred for the deep wars. It does not bluff and it does not tire.",
-      "sight_range": 7
+      "sight_range": 7,
+      "hearing": 0,
+      "language": "orcish"
     },
     {
       "id": "skeleton",
@@ -232,7 +246,9 @@
       ],
       "abilities": [],
       "description": "Bones walking without breath, bound by some unfinished errand. Cut it down and it may simply rise again.",
-      "sight_range": 6
+      "sight_range": 6,
+      "hearing": -2,
+      "language": ""
     },
     {
       "id": "troll",
@@ -266,7 +282,9 @@
         }
       ],
       "description": "A slab of grey muscle that knits its own wounds shut. Patience is the only thing that kills it.",
-      "sight_range": 6
+      "sight_range": 6,
+      "hearing": -2,
+      "language": ""
     },
     {
       "id": "wizard",
@@ -300,7 +318,9 @@
         }
       ],
       "description": "A robed adept who traded a name for a fistful of chaos, and flings that ruin from a safe distance.",
-      "sight_range": 8
+      "sight_range": 8,
+      "hearing": 2,
+      "language": "chaos"
     },
     {
       "id": "chaos_spawn",
@@ -332,7 +352,9 @@
         }
       ],
       "description": "A thing the Rift made and could not finish: too many limbs, none of them sorry. Wards mean nothing to it.",
-      "sight_range": 7
+      "sight_range": 7,
+      "hearing": 4,
+      "language": "chaos"
     },
     {
       "id": "dragon",
@@ -369,7 +391,9 @@
         }
       ],
       "description": "An ancient dragon coiled at the root of the world, older than every faith that fears it. Its waking is an ending.",
-      "sight_range": 10
+      "sight_range": 10,
+      "hearing": 6,
+      "language": "draconic"
     },
     {
       "id": "pilgrim",
@@ -398,7 +422,9 @@
       ],
       "abilities": [],
       "description": "A pilgrim who came seeking and stayed lost. It will talk, if you let it, of things best left below.",
-      "sight_range": 7
+      "sight_range": 7,
+      "hearing": 0,
+      "language": "common"
     }
   ]
 }

@@ -33,6 +33,7 @@ let keyToCommand key =
     case KeyChar "Z" -> ZapFirst
     case KeyChar "D" -> DropFirst
     case KeyChar "A" -> TargetedAttack
+    case KeyChar "C" -> ToggleCrouch
     case KeyChar "m" -> ToggleAudio
     case KeyChar "M" -> ToggleAudio
     case KeyChar "?" -> Help
@@ -52,7 +53,7 @@ let helpLines =
     , "g or ,: pick up    f: throw at nearest foe"
     , "o: open / close nearby door    r: engrave a ward"
     , "v: cycle combat stance    t: talk to neighbor"
-    , ";: look around    A: aimed attack"
+    , ";: look around    A: aimed attack    C: crouch / sneak"
     , "U/Z/D: quick use / zap / drop"
     , ">/<: stairs and branch portals"
     , "m: mute / unmute sound    ?: help"
