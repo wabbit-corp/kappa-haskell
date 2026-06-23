@@ -304,7 +304,7 @@ collectLockClosure file bc mtgt = case mtgt of
             Nothing -> pure (Right (True, rxLockEntries rx)) -- no toolchain: build step reports it
             Just cc -> do
               let bindings =
-                    [ (nm', map renderSym ss ++ meta, ins, [externPrototype s | s <- ss, scalarOnly s, not (rnsShimProvided s)])
+                    [ (nm', map renderSym ss ++ meta, ins, [externPrototype s | s <- ss, scalarOnly s, not (s.shimProvided)])
                     | (nm', ss, ins, meta) <- rxNativeBindings rx
                     ]
               r <- hostBindingLockEntries cc manifestDir (rxTargetTriple rx) bindings
@@ -312,8 +312,8 @@ collectLockClosure file bc mtgt = case mtgt of
                 Left ds -> Left ds
                 Right hbs -> Right (True, rxLockEntries rx ++ hbs)
     renderSym s =
-      rnsMember s <> " " <> rnsCSymbol s <> " "
-        <> T.pack (show (rnsParams s)) <> "->" <> T.pack (show (rnsResult s))
+      s.member <> " " <> s.cSymbol <> " "
+        <> T.pack (show (s.params)) <> "->" <> T.pack (show (s.result))
     go visited nm
       | nm `Set.member` visited = pure (Right (False, []))
       | otherwise = case [t | t <- bc.targets, t.name == nm] of

@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
 -- | A build-plan resolution slice (§36.4) sufficient to build one
@@ -169,7 +170,7 @@ resolveExecutable manifestDir bc mTarget =
                                   { rxName = tgt.name
                                   , rxEntryModule = entryMod
                                   , rxSourceFiles = unit
-                                  , rxProvidedModules = dedup (map rnsModule nativeSyms)
+                                  , rxProvidedModules = dedup (map (.moduleName) nativeSyms)
                                   , rxNativeSymbols = nativeSyms
                                   , rxLinkSpecs = linkSpecs
                                   , rxNativeInputs = nativeInputs
@@ -385,7 +386,7 @@ resolveExecutable manifestDir bc mTarget =
             -- (pre-resolved into genMap) — the SOLE authority, no hardcoded catalog.
             perBinding <- traverse (resolveBinding genMap shimDefs) selected
             let allSyms = concat [ss | (_, ss) <- perBinding]
-                bindingMods = [(bn, dedup (map rnsModule ss)) | (bn, ss) <- perBinding]
+                bindingMods = [(bn, dedup (map (.moduleName) ss)) | (bn, ss) <- perBinding]
             -- collision: same effective module provided by ≥2 bindings (a
             -- structural manifest error — reported before the per-symbol ABI check).
             checkCollisions bindingMods
@@ -472,12 +473,12 @@ resolveExecutable manifestDir bc mTarget =
       let defined = Map.findWithDefault Set.empty (hb.name) shimDefs
           syms =
             [ ResolvedNativeSymbol
-                { rnsModule = mn
-                , rnsMember = d.member
-                , rnsCSymbol = d.symbol
-                , rnsParams = d.params
-                , rnsResult = d.result
-                , rnsShimProvided = d.symbol `Set.member` defined
+                { moduleName = mn
+                , member = d.member
+                , cSymbol = d.symbol
+                , params = d.params
+                , result = d.result
+                , shimProvided = d.symbol `Set.member` defined
                 }
             | mn <- mods
             , d <- decls
@@ -500,8 +501,8 @@ resolveExecutable manifestDir bc mTarget =
       where
         verifyByName = [(verifyDeclName d, d) | VerifyInput ds <- hb.inputs, d <- ds]
         checkOne s
-          | rnsShimProvided s = Right () -- shim-defined → force-include ABI-checked
-          | otherwise = case lookup (rnsCSymbol s) verifyByName of
+          | s.shimProvided = Right () -- shim-defined → force-include ABI-checked
+          | otherwise = case lookup (s.cSymbol) verifyByName of
               -- a verify decl PROVES the ABI: it is checked against the real
               -- header AND (for scalars) conflicts with the conservative scalar
               -- extern in the same probe if its width disagrees — so a name-only
@@ -516,14 +517,14 @@ resolveExecutable manifestDir bc mTarget =
         -- declared params must match the verify prototype's arity + per-position
         -- ABI class; a declared Unit result may discard ANY real return.
         abiConsistent s ps r =
-          map ctypeAbiClass (rnsParams s) == ps
-            && (ctypeAbiClass (rnsResult s) == ClsVoid || ctypeAbiClass (rnsResult s) == r)
+          map ctypeAbiClass (s.params) == ps
+            && (ctypeAbiClass (s.result) == ClsVoid || ctypeAbiClass (s.result) == r)
 
     abiMismatch :: HostBinding -> ResolvedNativeSymbol -> Text -> Diagnostic
     abiMismatch hb s d =
       buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
-        ( "native binding '" <> hb.name <> "' symbolList declares '" <> rnsMember s
-            <> "' (C symbol '" <> rnsCSymbol s <> "') with an ABI signature that is NOT consistent with its "
+        ( "native binding '" <> hb.name <> "' symbolList declares '" <> s.member
+            <> "' (C symbol '" <> s.cSymbol <> "') with an ABI signature that is NOT consistent with its "
             <> "'verify' prototype \"" <> d <> "\" (arity or pointer/scalar/float class disagree); the declared "
             <> "surface would misrepresent the real ABI. Make the symbolList signature match the verify prototype, "
             <> "or generate the surface from a header (Spec §26.1.5/§36.28)"
@@ -532,10 +533,10 @@ resolveExecutable manifestDir bc mTarget =
     unverifiedAbi :: HostBinding -> ResolvedNativeSymbol -> Diagnostic
     unverifiedAbi hb s =
       buildErr "E_NATIVE_BINDING_ABI_UNVERIFIED" "kappa-hs.build.native-abi"
-        ( "native binding '" <> hb.name <> "' symbolList declares '" <> rnsMember s
-            <> "' (C symbol '" <> rnsCSymbol s <> "') whose ABI is not verified: it is not shim-defined and has "
+        ( "native binding '" <> hb.name <> "' symbolList declares '" <> s.member
+            <> "' (C symbol '" <> s.cSymbol <> "') whose ABI is not verified: it is not shim-defined and has "
             <> "no matching 'verify' declaration. A `headers` input alone is insufficient (a header that does not "
-            <> "declare the symbol proves nothing). Add a 'verify' prototype for '" <> rnsCSymbol s
+            <> "declare the symbol proves nothing). Add a 'verify' prototype for '" <> s.cSymbol
             <> "' consistent with the declared signature, provide it via a shim, or generate the surface from a "
             <> "header (Spec §26.1.5/§36.28)"
         )

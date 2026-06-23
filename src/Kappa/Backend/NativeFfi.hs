@@ -1,3 +1,7 @@
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | The native foreign-ABI lowering vocabulary (§26.1.1/§26.1.4, §27.1.1).
 --
 -- A native host binding is described ENTIRELY by the build manifest's
@@ -35,14 +39,14 @@ import Kappa.Source (ModuleName (..))
 -- codegen (§27.1.1/§36.28): which @host.native.*@ member it backs, the C
 -- symbol the generated wrapper calls directly, and its ABI signature.
 data ResolvedNativeSymbol = ResolvedNativeSymbol
-  { rnsModule :: !ModuleName
-  , rnsMember :: !Text
-  -- ^ the Kappa member name within @rnsModule@
-  , rnsCSymbol :: !Text
+  { moduleName :: !ModuleName
+  , member :: !Text
+  -- ^ the Kappa member name within @moduleName@
+  , cSymbol :: !Text
   -- ^ the C symbol the wrapper calls directly (no name dispatch)
-  , rnsParams :: ![CType]
-  , rnsResult :: !CType
-  , rnsShimProvided :: !Bool
+  , params :: ![CType]
+  , result :: !CType
+  , shimProvided :: !Bool
   -- ^ True iff this symbol is DEFINED by one of the binding's shim translation
   -- units (the binding has a @shim@ input). Only shim-provided symbols get a
   -- force-included conservative prototype for shim-ABI checking (§27.1.1): a
@@ -127,7 +131,7 @@ ffiScalar = \case
 -- checked against the real header (a pointer maps to @void *@, intentionally
 -- not the real pointer type, so its prototype would falsely conflict).
 scalarOnly :: ResolvedNativeSymbol -> Bool
-scalarOnly rns = all isScalar (rnsResult rns : rnsParams rns)
+scalarOnly rns = all isScalar (rns.result : rns.params)
   where
     isScalar t = t `notElem` [CtRawPtr, CtHandle, CtString]
 
@@ -136,7 +140,7 @@ scalarOnly rns = all isScalar (rnsResult rns : rnsParams rns)
 -- builtin (fixed KCT_ ids) and are not collected.
 rnsCollectCtors :: ResolvedNativeSymbol -> [Text]
 rnsCollectCtors rns =
-  concatMap ctorsOf (rnsResult rns : rnsParams rns)
+  concatMap ctorsOf (rns.result : rns.params)
   where
     ctorsOf t = case t of
       CtRawPtr -> ["std.ffi.MkRawPtr"]
@@ -158,14 +162,14 @@ nativeMemberType ps r =
 -- if they share a C symbol.
 wrapperCName :: ResolvedNativeSymbol -> Text
 wrapperCName rns =
-  "kw_" <> mangle (renderMod (rnsModule rns) <> "." <> rnsMember rns)
+  "kw_" <> mangle (renderMod (rns.moduleName) <> "." <> rns.member)
 
 -- | @extern <ret> <sym>(<params>);@ — the direct prototype of the C symbol
 -- the wrapper calls. Emitted once per distinct C symbol.
 externPrototype :: ResolvedNativeSymbol -> Text
 externPrototype rns =
-  "extern " <> cAbiType (rnsResult rns) <> " " <> rnsCSymbol rns
-    <> "(" <> paramList (rnsParams rns) <> ");"
+  "extern " <> cAbiType (rns.result) <> " " <> rns.cSymbol
+    <> "(" <> paramList (rns.params) <> ");"
   where
     paramList [] = "void"
     paramList ps = T.intercalate ", " (map cAbiType ps)
@@ -182,9 +186,9 @@ wrapperDefinition rns =
         ++ ["}"]
     )
   where
-    args = T.intercalate ", " [unbox p ("a[" <> T.pack (show i) <> "]") | (i, p) <- zip [0 :: Int ..] (rnsParams rns)]
-    call = rnsCSymbol rns <> "(" <> args <> ")"
-    bodyLines = case rnsResult rns of
+    args = T.intercalate ", " [unbox p ("a[" <> T.pack (show i) <> "]") | (i, p) <- zip [0 :: Int ..] (rns.params)]
+    call = rns.cSymbol <> "(" <> args <> ")"
+    bodyLines = case rns.result of
       CtUnit -> [call <> "; return kunit();"]
       r ->
         -- capture the C result in a typed temp, then box it (the box for a

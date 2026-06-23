@@ -189,7 +189,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- with the real pointer type when that header is in scope
               -- (e.g. uv.h's `uint16_t *` vs our `void *`). Library-symbol ABI
               -- is checked instead by the scalar-only verify probe (§26.1.5).
-              shimSyms = [rns | rns <- Map.elems (opts.hostSyms), rnsShimProvided rns, rnsCSymbol rns `notElem` verifyNames]
+              shimSyms = [rns | rns <- Map.elems (opts.hostSyms), rns.shimProvided, rns.cSymbol `notElem` verifyNames]
           hdrInclude <-
             if null shimSyms
               then pure []

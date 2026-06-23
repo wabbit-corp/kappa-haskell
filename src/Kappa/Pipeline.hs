@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | The conductor: it wires the individual phases together into a whole
 -- compilation. If you want to see the order things happen in, this is the
 -- file — and 'compileFilesWithCfgInj' is the function that runs the
@@ -311,25 +313,25 @@ applyNativeModules syms st0 =
   where
     byModule =
       Map.toList $
-        foldl' (\m s -> Map.insertWith (++) (rnsModule s) [s] m) Map.empty syms
+        foldl' (\m s -> Map.insertWith (++) (s.moduleName) [s] m) Map.empty syms
     addMod st (mn, ss) =
       let ec = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-          gdOf s = GlobalDef (eval ec [] (nativeMemberType (rnsParams s) (rnsResult s))) Nothing False
+          gdOf s = GlobalDef (eval ec [] (nativeMemberType (s.params) (s.result))) Nothing False
           gs =
             foldl'
-              (\g s -> Map.insert (GName mn (rnsMember s)) (gdOf s) g)
+              (\g s -> Map.insert (GName mn (s.member)) (gdOf s) g)
               (csGlobals st)
               ss
        in st
             { csGlobals = gs
-            , csModuleExports = Map.insert mn (map rnsMember ss) (csModuleExports st)
+            , csModuleExports = Map.insert mn (map (.member) ss) (csModuleExports st)
             }
 
 -- | The gname→resolved-symbol map for the provided host bindings, threaded
 -- into codegen so each member reference lowers to a DIRECT typed call.
 nativeHostSymbols :: [ResolvedNativeSymbol] -> Map.Map GName ResolvedNativeSymbol
 nativeHostSymbols syms =
-  Map.fromList [(GName (rnsModule s) (rnsMember s), s) | s <- syms]
+  Map.fromList [(GName (s.moduleName) (s.member), s) | s <- syms]
 
 -- | Emit 'E_HOST_MODULE_SOURCE_DEFINED' if @mn@ is exactly a reserved host
 -- root or lies under one (§8.3.5).

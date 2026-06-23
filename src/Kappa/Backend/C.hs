@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | Native backend: lower elaborated KCore ('Kappa.Core.Term') to C that
 -- links against the @kappart@ runtime (see @runtime/kappart.h@ and
 -- docs/NATIVE_BACKEND.md).
@@ -1625,8 +1627,8 @@ emitHostNative g rns = do
   collectHostCtors rns
   pure
     ( "knative(" <> wrapperCName rns <> ", "
-        <> T.pack (show (length (rnsParams rns))) <> ", "
-        <> cStr (rnsCSymbol rns) <> ", 1)"
+        <> T.pack (show (length (rns.params))) <> ", "
+        <> cStr (rns.cSymbol) <> ", 1)"
     )
 
 -- | Record a host member as referenced so 'assemble' emits its wrapper.
@@ -1885,7 +1887,7 @@ compileApp term = do
         -- wrapper). A partial application falls through to the curried
         -- bare-reference path (compileGlob → knative + kapp).
         Just rns
-          | let arity = length (rnsParams rns)
+          | let arity = length (rns.params)
                 explArgs = [a | (Expl, a) <- sargs]
           , length explArgs >= arity
           , arity > 0 -> do
