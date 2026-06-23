@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+--! assertEval f 5
+
+-- §11.3.3: free ASCII-lowercase type variables are implicitly
+-- universalized in a BLOCK-LOCAL named `let` signature (not just at the
+-- top level). `a` resolves to no global and no enclosing binder, so the
+-- local `idf` is polymorphic `forall a. a -> a`.
+module main
+
+f : Int
+let f =
+    block
+        let idf : a -> a = \x -> x
+        idf 5

@@ -6,10 +6,13 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 (requirement matrix + ranked Gn worklist), both of which had become
 substantially self-superseded.
 
-**Status (verified 2026-06-23):** `kappa test tests/conformance` = **349/349**
-pass (0 fail, 0 unsupported, 0 harness error). Every gap below was re-verified
+**Status (verified 2026-06-23):** `kappa test tests/conformance` = **1334/1334**
+pass (0 fail, 0 unsupported, 0 harness error; the suite grew from 349 as the
+reference-repo conformance corpus was imported). Every gap below was re-verified
 against the *current* code in a parallel 9-group re-audit (see
 [Methodology](#appendix-b-methodology)); fix loci are `file:line` at audit time.
+Since the audit, §14.3.4 (associated members) and §28.2 `Iterator.next` have
+also been fixed (see Appendix A).
 
 ## Scope and profile model
 
@@ -27,7 +30,7 @@ completeness but are **not** required for core conformance.
 
 | Bucket | Count | Meaning |
 | --- | --- | --- |
-| **Core MUST/SHALL gaps** (§1) | 30 | Required for portable-profile conformance. Do these. |
+| **Core MUST/SHALL gaps** (§1) | 29 | Required for portable-profile conformance. Do these. |
 | **SHOULD gaps** (§2) | 12 | Recommended; non-conformance is permitted but discouraged. |
 | **Profile-scoped / adjudication** (§3) | 22 | Sanctioned by an explicit profile clause, or spec-MUST-but-profile-gated (flagged). |
 | **Optional / MAY** (§4) | 1 | Pure latitude. |
@@ -62,7 +65,6 @@ No unsound "assume the callee uses its argument" defaulting remains.
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§11.3.3** | Free lowercase type variables are **not** universalized in **block-local** named `let` signatures (only top-level). Local `let idf : a -> a = \x -> x` → `E_NAME_UNRESOLVED 'a'`. | universalization pass (currently top-level/instance-head only) | medium |
 | **§11.4.2** | **Boolean→type coercion** `b ⟼ (b = True)` is unimplemented in all three forms: implicit binder `(@x : b)`, left of `b => T`, and a record/tuple field with a bare-boolean declared type (`ok : id == 1`). All three → `E_NOT_A_TYPE`. | `Check.hs` type-position elaboration (no `= True` coercion path) | medium |
 | **§16.3.2** | **Named holes** don't share: every `?h` makes a fresh independent meta (`anyHole` ignores the name), so two `?h` at incompatible types aren't rejected. Also the unsolved-hole diagnostic doesn't report the expected type (no `EHole` case in the `check` direction). | `Check.hs:1889-1893` (`anyHole`), `Check.hs:3098-3115` (only-`infer` `EHole`) | medium |
 | **§16.4.1** | **Exhaustiveness ignores flow refinement.** After `if e is C`, a `match e` covering only `C` in that branch is wrongly `E_PATTERN_NON_EXHAUSTIVE`. `checkExhaustive` consults `csDatas` and never `ctxRefines`. (Field projection on the refined value *does* work.) | `Check.hs:8146-8169` (`checkExhaustive`) | medium |
@@ -216,6 +218,15 @@ The 9-group re-audit verified **~59** items the old docs listed as gaps/Partial/
 MISSING are now **implemented** (dropped from the plan), and corrected **~46**
 stale claims. The headline removals:
 
+- **§11.3.3 universalization in block-local `let` signatures — FIXED.** Free
+  ASCII-lowercase type variables in a block-local / `let … in` named signature
+  that resolve to **neither a global nor an enclosing binder** are now implicitly
+  universalized as erased implicit binders (the same rule the top-level/instance-head
+  pass already applied), so `let idf : a -> a = \x -> x` is the polymorphic
+  `forall a. a -> a`. A variable that *is* in scope (e.g. an enclosing
+  `forall (a : Type)`) is **not** re-universalized — it resolves to that binder
+  (`elabLocalSig` in `elabLet` filters on both `lookupGlobalName` and `lookupCtx`).
+  Tests: `types/local-let-universalize{,-letin}.kp`, `types/local-let-no-reuniversalize.kp`.
 - **§14.3.4 associated static members in instances — FIXED.** An instance now
   *defines* an associated static member with `Name = expr` (no `let`; parsed by
   the bare-`pLetDef` path in `pInstanceMember`). `elabInstance` already checked

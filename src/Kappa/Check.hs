@@ -7034,6 +7034,36 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
     mkLet (q, n, tyT, rhs, isRec) b
       | isRec = CLetRec q n tyT rhs b
       | otherwise = CLet q n tyT rhs b
+    -- §11.3.3: elaborate a LOCAL let's type annotation, implicitly
+    -- universalizing free ASCII-lowercase identifiers that resolve to
+    -- NEITHER a global NOR an enclosing binder (so a block-local
+    -- `let idf : a -> a = \x -> x` is polymorphic, just like a top-level
+    -- signature). A name already in scope is NOT re-universalized — it
+    -- resolves to that binder. Returns the (universalized) type term and
+    -- its value.
+    elabLocalSig ctx tyE = do
+      fvs <-
+        filterM
+          ( \v -> do
+              mg <- lookupGlobalName v
+              pure (isNothing mg && isNothing (lookupCtx v ctx))
+          )
+          (nub (freeLower tyE))
+      if null fvs
+        then do
+          (tyTm, _) <- inferType ctx tyE
+          (,) tyTm <$> evalIn ctx tyTm
+        else do
+          kvs <- mapM (const (freshMetaV ctx)) fvs
+          let ctxU = foldl (\c (v, k) -> bindCtx v False k c) ctx (zip fvs kvs)
+          (tyTm0, _) <- inferType ctxU tyE
+          kTms <- forM kvs $ \kv -> do
+            kv' <- forceM kv
+            case kv' of
+              VFlex m [] -> solveMeta m (VSort 0) >> pure (CSort 0)
+              _ -> quoteIn ctx kv'
+          let tyTm = foldr (\(v, kT) acc -> CPi Impl Q0 False v kT acc) tyTm0 (zip fvs kTms)
+          (,) tyTm <$> evalIn ctx tyTm
     go ctx [] acc = do
       (bodyTm, bodyTy) <- case mexpected of
         Just t -> (,t) <$> check ctx body t
@@ -7046,8 +7076,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
     -- an annotated local function may refer to itself (§9.2 mirrored
     -- locally): elaborate the lambda under its own binder
     go ctx (LetBind implocal prefix (PVar n) (Just tyE) rhs@ELambda {} sp : rest) acc = do
-      (tyTm, _) <- inferType ctx tyE
-      tyV <- evalIn ctx tyTm
+      (tyTm, tyV) <- elabLocalSig ctx tyE
       let q = qOf (bpQuantity prefix)
           ctxRec = bindCtx (nameText n) implocal tyV ctx
       tm <- check ctxRec rhs tyV
@@ -7073,8 +7102,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
         pure (normRebind pat0)
       (rhsTm, rhsTy) <- case mty of
         Just tyE -> do
-          (tyTm, _) <- inferType ctx tyE
-          tyV <- evalIn ctx tyTm
+          (_, tyV) <- elabLocalSig ctx tyE
           tm <- check ctx rhs tyV
           pure (tm, tyV)
         Nothing -> do

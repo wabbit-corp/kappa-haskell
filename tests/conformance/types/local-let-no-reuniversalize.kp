@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.3: a free lowercase variable that IS in scope (here the enclosing
+-- `forall (a : Type)`) is not re-universalized in a block-local signature;
+-- it resolves to the enclosing binder, so `v : a` is the outer `a` and the
+-- argument `x : a` checks.
+module main
+
+wrap : forall (a : Type). (1 x : a) -> a
+let wrap x =
+    block
+        let v : a = x
+        v

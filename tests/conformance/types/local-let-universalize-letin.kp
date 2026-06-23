@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+--! assertEval g 5
+
+-- §11.3.3: also in `let … in` position.
+module main
+
+g : Int
+let g =
+    let idf : a -> a = \x -> x
+    in idf 5
