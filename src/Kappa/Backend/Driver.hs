@@ -1,3 +1,7 @@
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | Native-backend build driver: turn an elaborated 'CheckState' into a
 -- native executable by generating C (via "Kappa.Backend.C"), locating the
 -- @kappart@ runtime, detecting a C toolchain, and invoking it.
@@ -40,44 +44,44 @@ import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.Process (readProcessWithExitCode)
 
 data BuildOptions = BuildOptions
-  { boOutput :: !(Maybe FilePath) -- ^ output path (default: input basename)
-  , boEmitCOnly :: !Bool -- ^ write the generated C and stop
-  , boCC :: !(Maybe String) -- ^ explicit C driver override
-  , boHostSyms :: !(Map GName ResolvedNativeSymbol)
+  { output :: !(Maybe FilePath) -- ^ output path (default: input basename)
+  , emitCOnly :: !Bool -- ^ write the generated C and stop
+  , cc :: !(Maybe String) -- ^ explicit C driver override
+  , hostSyms :: !(Map GName ResolvedNativeSymbol)
   -- ^ §27.1.1/§36.28: each provided host-binding member ↦ its resolved
   -- native symbol (C symbol + ABI signature), built per build from the
   -- manifest's native bindings (never a hardcoded catalog). Threaded to
   -- codegen, which emits a direct extern prototype + typed wrapper +
   -- direct call site per used member.
-  , boLinkSpecs :: ![NativeLinkSpec]
+  , linkSpecs :: ![NativeLinkSpec]
   -- ^ §36.28 link specs from the selected native bindings; mapped to cc
   -- linker flags. Replaces the former @--lib@ extra-libs list.
-  , boNativeInputs :: ![NativeInput]
+  , nativeInputs :: ![NativeInput]
   -- ^ §36.28 realization inputs of the selected bindings; drive the C
   -- toolchain (include dirs, defines, pkg-config flags, compiled shim
   -- translation units, prebuilt link inputs).
-  , boNativeBaseDir :: !(Maybe FilePath)
+  , nativeBaseDir :: !(Maybe FilePath)
   -- ^ directory that native input relative paths (headers/includeDir/
   -- shim/prebuilt) resolve against — the manifest directory.
-  , boTargetTriple :: !T.Text
+  , targetTriple :: !T.Text
   -- ^ §36.21 the target's toolchain triple; passed to a cross-capable C
   -- driver (@zig cc -target <triple>@) so a cross-compile actually targets
   -- the requested platform instead of silently building for the host.
-  , boWorkDir :: !(Maybe FilePath) -- ^ directory for generated artifacts
+  , workDir :: !(Maybe FilePath) -- ^ directory for generated artifacts
   }
 
 defaultBuildOptions :: BuildOptions
 defaultBuildOptions =
   BuildOptions
-    { boOutput = Nothing
-    , boEmitCOnly = False
-    , boCC = Nothing
-    , boHostSyms = Map.empty
-    , boLinkSpecs = []
-    , boNativeInputs = []
-    , boNativeBaseDir = Nothing
-    , boTargetTriple = ""
-    , boWorkDir = Nothing
+    { output = Nothing
+    , emitCOnly = False
+    , cc = Nothing
+    , hostSyms = Map.empty
+    , linkSpecs = []
+    , nativeInputs = []
+    , nativeBaseDir = Nothing
+    , targetTriple = ""
+    , workDir = Nothing
     }
 
 -- | Build a native executable for @mainG@.  On success returns the path to
@@ -88,14 +92,14 @@ buildNative cs mainG inputPath opts =
   -- Native host bindings lower to direct typed call sites generated from
   -- the resolved symbol map (no FFI prim set); the runtime needs no extra
   -- prim names seeded here.
-  case generateC cs mainG Set.empty (boHostSyms opts) of
+  case generateC cs mainG Set.empty (opts.hostSyms) of
     Left errs -> pure (Left (backendDiagnostics errs))
     Right csource -> do
       mruntime <- findRuntimeDir
       case mruntime of
         Nothing -> pure (Left [toolDiag noRuntimeMsg])
         Just runtimeDir -> do
-          workDir <- maybe (pure (takeDirectory inputPath)) pure (boWorkDir opts)
+          workDir <- maybe (pure (takeDirectory inputPath)) pure (opts.workDir)
           createDirectoryIfMissing True workDir
           let base = dropExtensionSafe (takeFileName inputPath)
               cPath = workDir </> (base ++ ".kappa.c")
@@ -110,7 +114,7 @@ buildNative cs mainG inputPath opts =
           case mverified of
             Left ds -> pure (Left ds)
             Right () ->
-              if boEmitCOnly opts
+              if opts.emitCOnly
                 then pure (Right cPath)
                 else linkExecutable cs mainG opts runtimeDir cPath base workDir
 
@@ -119,14 +123,14 @@ buildNative cs mainG inputPath opts =
 -- when no input requires discovery (no pkg-config/header/verify input).
 verifyAndRecord :: BuildOptions -> String -> FilePath -> IO (Either Diagnostics ())
 verifyAndRecord opts base workDir
-  | not (needsDiscovery (boNativeInputs opts)) = pure (Right ())
+  | not (needsDiscovery (opts.nativeInputs)) = pure (Right ())
   | otherwise = do
-      mcc <- detectCC (boCC opts)
+      mcc <- detectCC (opts.cc)
       case mcc of
         Nothing -> pure (Left [toolDiag noCcMsg])
         Just cc -> do
-          let baseDir = maybe "." id (boNativeBaseDir opts)
-          r <- discoverAndVerifyNative cc (boTargetTriple opts) baseDir workDir (boNativeInputs opts) []
+          let baseDir = maybe "." id (opts.nativeBaseDir)
+          r <- discoverAndVerifyNative cc (opts.targetTriple) baseDir workDir (opts.nativeInputs) []
           case r of
             Left ds -> pure (Left ds)
             Right prov -> do
@@ -149,17 +153,17 @@ linkExecutable
   :: CheckState -> GName -> BuildOptions -> FilePath -> FilePath -> String -> FilePath
   -> IO (Either Diagnostics FilePath)
 linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
-  mcc <- detectCC (boCC opts)
+  mcc <- detectCC (opts.cc)
   case mcc of
     Nothing -> pure (Left [toolDiag noCcMsg])
     Just (ccExe, ccLead) -> do
-      let outPath = maybe (workDir </> base) id (boOutput opts)
-          baseDir = maybe "." id (boNativeBaseDir opts)
+      let outPath = maybe (workDir </> base) id (opts.output)
+          baseDir = maybe "." id (opts.nativeBaseDir)
       -- §36.28: realize the manifest's native inputs into toolchain flags
       -- (include dirs, defines, compiled shim TUs, prebuilt link inputs)
       -- and pkg-config cflags/libs (the only fs/tool discovery, done here
       -- in the build phase, never at config-eval — §35.13).
-      (inCFlags, inSources, inLibs, pkgErr) <- resolveInputs baseDir (boNativeInputs opts)
+      (inCFlags, inSources, inLibs, pkgErr) <- resolveInputs baseDir (opts.nativeInputs)
       case pkgErr of
         Just msg -> pure (Left [toolDiag msg])
         Nothing -> do
@@ -177,7 +181,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- exclude only symbols whose EXACT name is a `verify` decl's
               -- declared symbol (real library symbols, checked against headers);
               -- a substring match would wrongly exclude an unrelated shim symbol.
-              verifyNames = [verifyDeclName d | VerifyInput ds <- boNativeInputs opts, d <- ds]
+              verifyNames = [verifyDeclName d | VerifyInput ds <- opts.nativeInputs, d <- ds]
               -- Only SHIM-PROVIDED symbols get a force-included conservative
               -- prototype: a real library symbol (a generated raw surface over
               -- a header) is declared by its own header, so asserting our
@@ -185,7 +189,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- with the real pointer type when that header is in scope
               -- (e.g. uv.h's `uint16_t *` vs our `void *`). Library-symbol ABI
               -- is checked instead by the scalar-only verify probe (§26.1.5).
-              shimSyms = [rns | rns <- Map.elems (boHostSyms opts), rnsShimProvided rns, rnsCSymbol rns `notElem` verifyNames]
+              shimSyms = [rns | rns <- Map.elems (opts.hostSyms), rnsShimProvided rns, rnsCSymbol rns `notElem` verifyNames]
           hdrInclude <-
             if null shimSyms
               then pure []
@@ -205,8 +209,8 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- (an explicit non-host triple there would fail the link, which is
               -- the honest outcome — the toolchain cannot cross-compile).
               targetFlags
-                | not (T.null (boTargetTriple opts)) && isZig =
-                    ["-target", T.unpack (boTargetTriple opts)]
+                | not (T.null (opts.targetTriple)) && isZig =
+                    ["-target", T.unpack (opts.targetTriple)]
                 | otherwise = []
               isZig = takeFileName ccExe == "zig" && ccLead == ["cc"]
               args =
@@ -236,7 +240,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                   ++ [ "-lgc"
                      , "-lgmp" -- unbounded Integer (§6); see docs/NATIVE_BACKEND.md
                      ]
-                  ++ linkFlags (boLinkSpecs opts)
+                  ++ linkFlags (opts.linkSpecs)
                   ++ inLibs
                   ++ ["-o", outPath]
           (ec, out, err) <- readProcessWithExitCode ccExe args ""

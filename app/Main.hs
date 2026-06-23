@@ -421,14 +421,14 @@ runExecutable manifestFile bc ma mname = do
       let entryFile = maybe "<entry>" fst (lookupEntry rx)
           opts =
             defaultBuildOptions
-              { boOutput = maOut ma
-              , boEmitCOnly = maEmitC ma
-              , boCC = maCC ma
-              , boHostSyms = hostSyms
-              , boLinkSpecs = rxLinkSpecs rx
-              , boNativeInputs = rxNativeInputs rx
-              , boNativeBaseDir = Just (takeDirectory manifestFile)
-              , boTargetTriple = rxTargetTriple rx
+              { output = maOut ma
+              , emitCOnly = maEmitC ma
+              , cc = maCC ma
+              , hostSyms = hostSyms
+              , linkSpecs = rxLinkSpecs rx
+              , nativeInputs = rxNativeInputs rx
+              , nativeBaseDir = Just (takeDirectory manifestFile)
+              , targetTriple = rxTargetTriple rx
               }
       result <- buildNative st mainG entryFile opts
       case result of
@@ -646,10 +646,10 @@ parseBuildArgs args opts0 cfg0 = go args opts0 cfg0 Nothing
   where
     go [] opts cfg (Just p) = Right (opts, cfg, p)
     go [] _ _ Nothing = Left "kappa build: missing source path"
-    go ("--emit-c" : xs) opts cfg mp = go xs opts {boEmitCOnly = True} cfg mp
+    go ("--emit-c" : xs) opts cfg mp = go xs opts {emitCOnly = True} cfg mp
     go ("--no-implicit-prelude" : xs) opts cfg mp = go xs opts cfg {implicitPrelude = False} mp
-    go ("-o" : o : xs) opts cfg mp = go xs opts {boOutput = Just o} cfg mp
-    go ("--cc" : c : xs) opts cfg mp = go xs opts {boCC = Just c} cfg mp
+    go ("-o" : o : xs) opts cfg mp = go xs opts {output = Just o} cfg mp
+    go ("--cc" : c : xs) opts cfg mp = go xs opts {cc = Just c} cfg mp
     go (x : xs) opts cfg Nothing
       | take 1 x /= "-" = go xs opts cfg (Just x)
     go (x : _) _ _ _ = Left ("kappa build: unexpected argument '" <> x <> "'")
