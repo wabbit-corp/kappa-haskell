@@ -471,6 +471,136 @@ data ProjBody
   | ProjAccessors ![(Text, Maybe Binder, Expr)] -- ^ get\/set\/inout\/sink clauses
   deriving stock (Show, Data)
 
+data LetDef = LetDef
+  { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
+  , ldImplicit :: !Bool -- ^ @let (\@q x : T) = e@ implicit local (§9.3)
+  , ldPattern :: !(Maybe Pattern) -- ^ 'Just' for pattern bindings
+  , ldPrefix :: !BinderPrefix -- ^ @let 1 pat = e@ / @let & pat = e@ prefix (§12.2, §12.3.1)
+  , ldBinders :: ![Binder]
+  , ldResultType :: !(Maybe Expr)
+  , ldDecreases :: !(Maybe Decreases)
+  , ldBody :: !Expr
+  }
+  deriving stock (Show, Data)
+
+data Decreases
+  = DecMeasure !Expr !(Maybe Expr) !(Maybe Expr) -- ^ measure [by R] [using proof]
+  | DecStructural ![Name]
+  deriving stock (Show, Data)
+
+data DataDecl = DataDecl
+  { ddName :: !Name
+  , ddParams :: ![Binder]
+  , ddKind :: !(Maybe Expr)
+  , ddCtors :: ![CtorDecl]
+  }
+  deriving stock (Show, Data)
+
+data CtorDecl = CtorDecl
+  { cdName :: !Name
+  , cdBinders :: ![Binder] -- ^ positional fields become unnamed binders
+  , cdGadtType :: !(Maybe Expr) -- ^ GADT-style result signature (§10.2)
+  , cdSpan :: !Span
+  }
+  deriving stock (Show, Data)
+
+data TraitDecl = TraitDecl
+  { trSupers :: ![Expr] -- ^ supertrait context @C1, ..., Cn =>@
+  , trName :: !Name
+  , trParams :: ![Binder]
+  , trMembers :: ![TraitMember]
+  }
+  deriving stock (Show, Data)
+
+data TraitMember
+  = TraitSig !Name !Expr !Span
+  | TraitDefault !LetDef !Span
+  deriving stock (Show, Data)
+
+data InstanceDecl = InstanceDecl
+  { inPremises :: ![Expr] -- ^ @Eq a =>@ premises
+  , inHead :: !Expr
+  , inMembers :: ![Decl] -- ^ member signatures and definitions
+  }
+  deriving stock (Show, Data)
+
+data EffectDecl = EffectDecl
+  { effName :: !Name
+  , effParams :: ![Binder]
+  , effOps :: ![EffectOp]
+  , effIsLabelDecl :: !Bool -- ^ @effect label l : E@ form
+  , effLabelType :: !(Maybe Expr)
+  }
+  deriving stock (Show, Data)
+
+data EffectOp = EffectOp
+  { eoQuantity :: !(Maybe Quantity)
+  , eoName :: !Name
+  , eoType :: !Expr
+  , eoSpan :: !Span
+  }
+  deriving stock (Show, Data)
+
+data FixityDecl = FixityDecl
+  { fxKind :: !FixityKind
+  , fxPrec :: !Int
+  , fxOp :: !Name
+  }
+  deriving stock (Show, Data)
+
+data FixityKind
+  = InfixN
+  | InfixL
+  | InfixR
+  | Prefix
+  | Postfix
+  deriving stock (Eq, Show, Data)
+
+data ModuleRef
+  = RefPath !ModPath
+  | RefUrl !Text !Span
+  deriving stock (Show, Data)
+
+data ImportSpec
+  = ImportModule !ModuleRef !(Maybe Name) -- ^ @import M [as A]@
+  | ImportItems !ModuleRef ![ImportItem]
+  | ImportAll !ModuleRef ![ExceptItem]
+  | ImportSingleton !ModuleRef !Name -- ^ @import M.x@ sugar (disambiguated semantically, §8.3)
+  deriving stock (Show, Data)
+
+data ImportItem = ImportItem
+  { iiUnhide :: !Bool
+  , iiClarify :: !Bool
+  , iiKind :: !(Maybe KindSelector)
+  , iiName :: !Name
+  , iiCtorAll :: !Bool -- ^ @T(..)@
+  , iiAlias :: !(Maybe Name)
+  }
+  deriving stock (Show, Data)
+
+data KindSelector = SelTerm | SelType | SelTrait | SelCtor | SelEffectLabel | SelModule
+  deriving stock (Eq, Show, Data)
+
+data ExceptItem = ExceptItem !(Maybe KindSelector) !Name
+  deriving stock (Show, Data)
+
+data ExpectForm
+  = ExpectTerm !Name !Expr
+  | ExpectType !Name ![Binder] !(Maybe Expr)
+  | ExpectData !Name ![Binder] !(Maybe Expr)
+  | ExpectTrait !Name ![Binder] !(Maybe Expr)
+  deriving stock (Show, Data)
+
+-- | A parsed source file.
+data Module = Module
+  { modAttrs :: ![Name]
+  , modHeader :: !(Maybe ModPath)
+  , modDecls :: ![Decl]
+  }
+  deriving stock (Show, Data)
+
+-- ── AST traversals and span helpers ─────────────────────────────────
+
 -- | Recover the §9.1.1 binder structure of a projection declaration:
 -- a @(place x : T)@ group parses as two same-span binders, the first
 -- spelled @place@. Returns the effective explicit binders in
@@ -605,134 +735,6 @@ projYieldPlaces = go
         Just (root, path ++ [nameText f])
       EAscription e _ _ -> placePath e
       _ -> Nothing
-
-data LetDef = LetDef
-  { ldName :: !(Maybe Name) -- ^ 'Just' for named definitions
-  , ldImplicit :: !Bool -- ^ @let (\@q x : T) = e@ implicit local (§9.3)
-  , ldPattern :: !(Maybe Pattern) -- ^ 'Just' for pattern bindings
-  , ldPrefix :: !BinderPrefix -- ^ @let 1 pat = e@ / @let & pat = e@ prefix (§12.2, §12.3.1)
-  , ldBinders :: ![Binder]
-  , ldResultType :: !(Maybe Expr)
-  , ldDecreases :: !(Maybe Decreases)
-  , ldBody :: !Expr
-  }
-  deriving stock (Show, Data)
-
-data Decreases
-  = DecMeasure !Expr !(Maybe Expr) !(Maybe Expr) -- ^ measure [by R] [using proof]
-  | DecStructural ![Name]
-  deriving stock (Show, Data)
-
-data DataDecl = DataDecl
-  { ddName :: !Name
-  , ddParams :: ![Binder]
-  , ddKind :: !(Maybe Expr)
-  , ddCtors :: ![CtorDecl]
-  }
-  deriving stock (Show, Data)
-
-data CtorDecl = CtorDecl
-  { cdName :: !Name
-  , cdBinders :: ![Binder] -- ^ positional fields become unnamed binders
-  , cdGadtType :: !(Maybe Expr) -- ^ GADT-style result signature (§10.2)
-  , cdSpan :: !Span
-  }
-  deriving stock (Show, Data)
-
-data TraitDecl = TraitDecl
-  { trSupers :: ![Expr] -- ^ supertrait context @C1, ..., Cn =>@
-  , trName :: !Name
-  , trParams :: ![Binder]
-  , trMembers :: ![TraitMember]
-  }
-  deriving stock (Show, Data)
-
-data TraitMember
-  = TraitSig !Name !Expr !Span
-  | TraitDefault !LetDef !Span
-  deriving stock (Show, Data)
-
-data InstanceDecl = InstanceDecl
-  { inPremises :: ![Expr] -- ^ @Eq a =>@ premises
-  , inHead :: !Expr
-  , inMembers :: ![Decl] -- ^ member signatures and definitions
-  }
-  deriving stock (Show, Data)
-
-data EffectDecl = EffectDecl
-  { effName :: !Name
-  , effParams :: ![Binder]
-  , effOps :: ![EffectOp]
-  , effIsLabelDecl :: !Bool -- ^ @effect label l : E@ form
-  , effLabelType :: !(Maybe Expr)
-  }
-  deriving stock (Show, Data)
-
-data EffectOp = EffectOp
-  { eoQuantity :: !(Maybe Quantity)
-  , eoName :: !Name
-  , eoType :: !Expr
-  , eoSpan :: !Span
-  }
-  deriving stock (Show, Data)
-
-data FixityDecl = FixityDecl
-  { fxKind :: !FixityKind
-  , fxPrec :: !Int
-  , fxOp :: !Name
-  }
-  deriving stock (Show, Data)
-
-data FixityKind
-  = InfixN
-  | InfixL
-  | InfixR
-  | Prefix
-  | Postfix
-  deriving stock (Eq, Show, Data)
-
-data ModuleRef
-  = RefPath !ModPath
-  | RefUrl !Text !Span
-  deriving stock (Show, Data)
-
-data ImportSpec
-  = ImportModule !ModuleRef !(Maybe Name) -- ^ @import M [as A]@
-  | ImportItems !ModuleRef ![ImportItem]
-  | ImportAll !ModuleRef ![ExceptItem]
-  | ImportSingleton !ModuleRef !Name -- ^ @import M.x@ sugar (disambiguated semantically, §8.3)
-  deriving stock (Show, Data)
-
-data ImportItem = ImportItem
-  { iiUnhide :: !Bool
-  , iiClarify :: !Bool
-  , iiKind :: !(Maybe KindSelector)
-  , iiName :: !Name
-  , iiCtorAll :: !Bool -- ^ @T(..)@
-  , iiAlias :: !(Maybe Name)
-  }
-  deriving stock (Show, Data)
-
-data KindSelector = SelTerm | SelType | SelTrait | SelCtor | SelEffectLabel | SelModule
-  deriving stock (Eq, Show, Data)
-
-data ExceptItem = ExceptItem !(Maybe KindSelector) !Name
-  deriving stock (Show, Data)
-
-data ExpectForm
-  = ExpectTerm !Name !Expr
-  | ExpectType !Name ![Binder] !(Maybe Expr)
-  | ExpectData !Name ![Binder] !(Maybe Expr)
-  | ExpectTrait !Name ![Binder] !(Maybe Expr)
-  deriving stock (Show, Data)
-
--- | A parsed source file.
-data Module = Module
-  { modAttrs :: ![Name]
-  , modHeader :: !(Maybe ModPath)
-  , modDecls :: ![Decl]
-  }
-  deriving stock (Show, Data)
 
 exprSpan :: Expr -> Span
 exprSpan = \case

@@ -63,6 +63,39 @@ Each item: what, why it would help, rough size/risk.
   of `force`/spine handling). Useful to a maintainer, noise to a learner — could
   move to a `NOTES`/`PERFORMANCE.md` cross-reference.
 
+## Definition ordering (read top-to-bottom)
+
+Goal: each module should read like a chapter — orientation, then the data it
+works on, then the headline entry point, then supporting detail. Haskell is
+order-independent at the top level, so reordering is behavior-preserving; the
+only friction is diff churn and `where`-block boundaries.
+
+Done as small moves:
+- `Syntax.hs`: the AST-traversal helpers (`projBinderGroups`, `surfaceThisRefs`,
+  `surfaceVarNames`, `projYieldPlaces`) were interleaved in the middle of the
+  `data` catalog; moved to an "AST traversals and span helpers" section at the
+  bottom next to `exprSpan`\/`patternSpan`, so the type catalog is contiguous.
+
+Larger reorders still worth doing (deferred — bigger diffs / tied to splits):
+- **`Check.hs`: headline-first per section.** Within several of the 23 sections
+  the main entry sits *below* its helpers (Haskell's bottom-up habit). For a
+  top-down read each section should lead with its documented entry point, then
+  helpers. Best done together with the module split (above), since the cut
+  points are the same. Size: large.
+- **`Eval.hs`: lead with the NbE triple.** `eval`\/`force`\/`quote`\/`convertible`
+  are the headline of the module but `force` (217) and `quote` (439) are
+  separated by `matchPat` and the spine helpers, and the ~270-line `evalPurePrim`
+  table sits in the middle of the conversion machinery. Consider grouping the
+  four NbE functions adjacently up top, then the primitive tables last. Size: medium.
+- **`Interp.hs` / `Eval.hs` primitive tables.** (Also under "Medium value"
+  above.) The flat string-keyed `case` ladders read better split into labelled
+  sub-groups (arithmetic / bytes / string / IO), each its own `where` helper or
+  divider — a reorder + grouping, not just comments. Size: small–medium.
+- **General convention to settle:** pick one — "headline entry first, helpers
+  below" (book style) vs. Haskell's "helpers first, entry last" — and apply it
+  consistently per module. Currently mixed. Documenting the choice in CONTRIBUTING
+  would stop the two styles fighting. Size: small (decision) + ongoing.
+
 ## Naming suggestions (deferred — renames touch many call sites)
 
 These names obscure intent. The documentation pass has explained them in
