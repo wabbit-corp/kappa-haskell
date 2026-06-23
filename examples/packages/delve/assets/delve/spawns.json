@@ -237,6 +237,12 @@
       "min_depth": 1,
       "max_depth": 99,
       "weight": 7
+    },
+    {
+      "id": "tome_lore",
+      "min_depth": 2,
+      "max_depth": 99,
+      "weight": 1
     }
   ],
   "structures": [

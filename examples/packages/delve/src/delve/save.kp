@@ -73,6 +73,12 @@ let encodeRumor rumor =
     match rumor
     case Rumor text -> str text
 
+encodeSkillEntry : SkillEntry -> JsonValue
+let encodeSkillEntry e = obj [ field "id" (str e.id), field "level" (num e.level) ]
+
+encodeKnowledge : SpeciesKnowledge -> JsonValue
+let encodeKnowledge k = obj [ field "species" (str (speciesName k.species)), field "sightings" (num k.sightings), field "kills" (num k.kills), field "damage_seen" (arr (map (\d -> str (damageTypeName d)) k.damageSeen)) ]
+
 encodePlayer : PlayerState -> JsonValue
 let encodePlayer p =
     obj [ field "actor_id" (num p.actorId)
@@ -86,7 +92,8 @@ let encodePlayer p =
         , field "favor" (num p.favor)
         , field "faith" (str (faithName p.faith))
         , field "reputation" (num p.reputation)
-        , field "crafting" (num p.crafting)
+        , field "skills" (arr (map encodeSkillEntry p.skills))
+        , field "knowledge" (arr (map encodeKnowledge p.knowledge))
         ]
 
 encodeLevel : Level -> JsonValue
@@ -298,6 +305,24 @@ let decodeRumor value =
     case Ok s -> pure (Rumor s)
     case Err e -> raise e
 
+decodeSkillEntry : JsonValue -> IO GameError SkillEntry
+let decodeSkillEntry value =
+    do
+        id <- optStringField "" "id" value
+        level <- optIntField 0 "level" value
+        pure (SkillEntry id level)
+
+decodeKnowledge : JsonValue -> IO GameError SpeciesKnowledge
+let decodeKnowledge value =
+    do
+        speciesName0 <- optStringField "Rat" "species" value
+        species <- decodeSpeciesString speciesName0
+        sightings <- optIntField 0 "sightings" value
+        kills <- optIntField 0 "kills" value
+        dmgJson <- optArrayField Nil "damage_seen" value
+        damageSeen <- traverse decodeDamageTypeJson dmgJson
+        pure (SpeciesKnowledge species sightings kills damageSeen)
+
 decodePlayer : ContentPack -> JsonValue -> IO GameError PlayerState
 let decodePlayer pack value =
     do
@@ -317,8 +342,13 @@ let decodePlayer pack value =
         faithName0 <- optStringField "EmberMother" "faith" value
         faith <- decodeFaithString faithName0
         reputation <- optIntField 0 "reputation" value
-        crafting <- optIntField 1 "crafting" value
-        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False crafting)
+        legacyCrafting <- optIntField 1 "crafting" value
+        skillsJson <- optArrayField Nil "skills" value
+        skills0 <- traverse decodeSkillEntry skillsJson
+        let skills = if listLength skills0 == 0 then [SkillEntry "crafting" legacyCrafting] else skills0
+        knowledgeJson <- optArrayField Nil "knowledge" value
+        knowledge <- traverse decodeKnowledge knowledgeJson
+        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False skills knowledge)
 
 decodeLevel : Size -> JsonValue -> IO GameError Level
 let decodeLevel fallbackSize value =
@@ -530,6 +560,7 @@ let itemKindName k =
     case BoneCharm -> "BoneCharm"
     case ChaosShard -> "ChaosShard"
     case Amulet -> "Amulet"
+    case Tome -> "Tome"
 
 itemClassName : ItemClass -> String
 let itemClassName c =

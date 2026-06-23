@@ -4,6 +4,7 @@ import delve.core.*
 import delve.natutil.*
 import delve.rng as rand
 import std.unicode as uni
+import delve.skill as skill
 
 -- All numeric/content values in this module come from ContentPack JSON. The
 -- pattern-matching functions are schema adapters between typed game enums and
@@ -81,22 +82,22 @@ let hasToolClass cls items decreases listLength items =
 
 -- Recipes that act on this item kind and that the player can currently perform
 -- (has the right skill level and a suitable tool in hand).
-craftVerbsFor : List RecipeDef -> Int -> List Item -> ItemKind -> List Verb
-let craftVerbsFor recipes crafting inv kind decreases listLength recipes =
+craftVerbsFor : List RecipeDef -> PlayerState -> List Item -> ItemKind -> List Verb
+let craftVerbsFor recipes player inv kind decreases listLength recipes =
     match recipes
     case Nil -> Nil
     case r :: rest ->
-        let more = craftVerbsFor rest crafting inv kind
-        in if r.input == kind && crafting >= r.minLevel && hasToolClass r.toolClass inv then (::) (VCraft r) more else more
+        let more = craftVerbsFor rest player inv kind
+        in if r.input == kind && skill.skillLevel r.skill player >= r.minLevel && hasToolClass r.toolClass inv then (::) (VCraft r) more else more
 
-itemVerbs : ContentPack -> Int -> Actor -> Item -> List Verb
-let itemVerbs pack crafting actor item =
+itemVerbs : ContentPack -> PlayerState -> Actor -> Item -> List Verb
+let itemVerbs pack player actor item =
     let useV = if verbUsable item.class then [VUse] else Nil
     let equipV = if verbEquip item.class then [VEquip] else Nil
     let butcherV = if item.kind == Corpse then [VButcher] else Nil
     let kindleV = if flammableOf pack item.kind then [VKindle] else Nil
     let feedV = if item.kind == Corpse || item.class == FoodClass then [VFeed] else Nil
-    let crafts = craftVerbsFor pack.recipes crafting actor.inventory item.kind
+    let crafts = craftVerbsFor pack.recipes player actor.inventory item.kind
     in listAppend useV (listAppend equipV (listAppend butcherV (listAppend kindleV (listAppend feedV (listAppend crafts (listAppend [VThrow] [VDrop]))))))
 
 verbLabel : Verb -> String

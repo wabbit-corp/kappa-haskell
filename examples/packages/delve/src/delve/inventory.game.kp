@@ -7,6 +7,7 @@ import delve.knowledge as know
 import delve.corruption as corruption
 import delve.content as content
 import delve.combat as combat
+import delve.skill as skill
 
 itemsAt : Vec2 -> List GroundItem -> List GroundItem
 let itemsAt pos items decreases listLength items =
@@ -197,6 +198,7 @@ let useScroll item rest p game =
     case ScrollIdentify -> identifyInventory p2 known
     case ScrollMapping -> message "The map unfolds in your mind." (revealMap known)
     case ScrollWard -> message "A glowing ward appears on the floor." (wardCurrentTile known)
+    case Tome -> message "You pore over the tome; the ways of beasts settle into you." (known.{ player = skill.setSkill game.content "lore" 3 known.player })
     case _ -> message "The scroll crumbles." known
 
 boostStrength : GameState -> GameState

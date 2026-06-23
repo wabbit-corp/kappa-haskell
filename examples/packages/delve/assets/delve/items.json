@@ -322,6 +322,20 @@
       "starts_identified": true,
       "beatitude_known": true,
       "flammable": false
+    },
+    {
+      "id": "tome_lore",
+      "kind": "Tome",
+      "name": "dusty tome",
+      "true_name": "tome of beasts",
+      "glyph": "+",
+      "class": "ScrollClass",
+      "stackable": false,
+      "power": 0,
+      "charges": 0,
+      "starts_identified": false,
+      "beatitude_known": false,
+      "flammable": true
     }
   ],
   "affixes": [

@@ -9,6 +9,7 @@ import delve.input as input
 import delve.tactics as tactics
 import delve.content as content
 import delve.knowledge as know
+import delve.skill as skill
 
 -- ── ANSI helpers ────────────────────────────────────────────────────────
 ansiClear : String
@@ -323,6 +324,16 @@ let faithLabel pack faith =
         case RootFather -> "Root-Father"
         case VeiledWitness -> "Veiled Witness"
 
+skillSummary : ContentPack -> PlayerState -> String
+let skillSummary pack player =
+    block
+        go : List SkillDef -> String -> String
+        let go xs acc decreases listLength xs =
+            match xs
+            case Nil -> if acc == "" then "none" else acc
+            case d :: rest -> go rest (acc ++ (if acc == "" then "" else "  ") ++ d.name ++ " " ++ show (skill.skillLevel d.id player))
+        go pack.skills ""
+
 renderCharacter : GameState -> String
 let renderCharacter game =
     match playerActor game
@@ -336,6 +347,8 @@ let renderCharacter game =
             , "Mutations: " ++ mutationList game.content game.player.mutations
             , "Reputation: " ++ show game.player.reputation
             , "Stats: Str " ++ show p.stats.str ++ " Dex " ++ show p.stats.dex ++ " Def " ++ show p.stats.def
+            , "Skills: " ++ skillSummary game.content game.player
+            , "Studied: " ++ show (listLength game.player.knowledge) ++ " kinds of creature"
             ]
 
 renderHelp : String
@@ -517,7 +530,7 @@ let renderActionMenu game =
         match listGet p.inventory game.invCursor
         case None -> renderBox "Actions" ["Nothing selected."]
         case Some item ->
-            let verbs = content.itemVerbs game.content game.player.crafting p item
+            let verbs = content.itemVerbs game.content game.player p item
             in renderBox ("Actions — " ++ know.visibleName game.content game.player item) (listAppend (verbLines verbs) ["", "press a letter, or Esc to go back"])
 
 -- ── Fire interaction menu (take cooked/cooking items, add items to cook/burn) ──

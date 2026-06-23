@@ -60,6 +60,7 @@ let loadPack packPath =
         filesObject <- objectField "files" packJson
         saveObject <- objectField "save" packJson
         rulesObject <- objectField "rules" packJson
+        revealObject <- objectField "reveal" packJson
         packId <- stringField "pack_id" packJson
         version <- stringField "version" packJson
         worldPath <- filePath "worldgen" filesObject
@@ -71,6 +72,7 @@ let loadPack packPath =
         recipePath <- filePath "recipes" filesObject
         rarityPath <- filePath "rarities" filesObject
         colorPath <- filePath "colors" filesObject
+        skillsPath <- filePath "skills" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -82,8 +84,10 @@ let loadPack packPath =
         recipes <- loadRecipes recipePath
         rarities <- loadRarities rarityPath
         colors <- loadColors colorPath
+        skills <- loadSkills skillsPath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
+        reveal <- decodeReveal revealObject
         let pack =
             ContentPack {
                 packId = packId,
@@ -106,7 +110,9 @@ let loadPack packPath =
                 structures = spawns.structures,
                 recipes = recipes,
                 rarities = rarities,
-                colors = colors
+                colors = colors,
+                skills = skills,
+                reveal = reveal
             }
         validateContentPack pack
 
@@ -245,6 +251,32 @@ let loadColors path =
         root <- readJsonFile path
         xs <- arrayField "colors" root
         traverse decodeColor xs
+
+decodeSkill : json.JsonValue -> IO GameError SkillDef
+let decodeSkill value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        maxLevel <- intField "max_level" value
+        pure (SkillDef id name maxLevel)
+
+loadSkills : String -> IO GameError (List SkillDef)
+let loadSkills path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "skills" root
+        traverse decodeSkill xs
+
+decodeReveal : json.JsonValue -> IO GameError RevealConfig
+let decodeReveal value =
+    do
+        vagueAt <- intField "vague_at" value
+        approxAt <- intField "approx_at" value
+        knownAt <- intField "known_at" value
+        vagueTough <- stringField "vague_tough" value
+        vagueWeak <- stringField "vague_weak" value
+        vagueNeutral <- stringField "vague_neutral" value
+        pure (RevealConfig vagueAt approxAt knownAt vagueTough vagueWeak vagueNeutral)
 
 loadWorldGen : String -> IO GameError WorldGenConfig
 let loadWorldGen path =
@@ -626,6 +658,7 @@ let decodeItemKind s =
     elif s == "BoneCharm" then pure BoneCharm
     elif s == "ChaosShard" then pure ChaosShard
     elif s == "Amulet" then pure Amulet
+    elif s == "Tome" then pure Tome
     else raise (ConfigError ("unknown item kind: " ++ s))
 
 decodeItemClass : String -> IO GameError ItemClass
@@ -746,6 +779,9 @@ let validateContentPack pack =
         elif listLength pack.starSigns == 0 then raise (ConfigError "content pack has no star signs")
         elif listLength pack.mutations == 0 then raise (ConfigError "content pack has no mutations")
         elif listLength pack.colors == 0 then raise (ConfigError "content pack has no colors")
+        elif listLength pack.skills == 0 then raise (ConfigError "content pack has no skills")
+        elif not (pack.reveal.vagueAt <= pack.reveal.approxAt) then raise (ConfigError "reveal thresholds must satisfy vague <= approx <= known")
+        elif not (pack.reveal.approxAt <= pack.reveal.knownAt) then raise (ConfigError "reveal thresholds must satisfy vague <= approx <= known")
         else pure pack
 
 requireActor : String -> ContentPack -> IO GameError Unit

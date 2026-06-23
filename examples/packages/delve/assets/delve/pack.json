@@ -10,7 +10,8 @@
     "lore": "assets/delve/lore.json",
     "recipes": "assets/delve/recipes.json",
     "rarities": "assets/delve/rarities.json",
-    "colors": "assets/delve/colors.json"
+    "colors": "assets/delve/colors.json",
+    "skills": "assets/delve/skills.json"
   },
   "save": {
     "path": "saves/delve-save.json",
@@ -21,5 +22,13 @@
   "rules": {
     "starting_hunger": 1200,
     "message_limit": 9
+  },
+  "reveal": {
+    "vague_at": 2,
+    "approx_at": 5,
+    "known_at": 9,
+    "vague_tough": "It carries itself like something hard to wound.",
+    "vague_weak": "Something about it looks brittle.",
+    "vague_neutral": "You can't quite take its measure yet."
   }
 }

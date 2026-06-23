@@ -3,13 +3,61 @@ module delve.knowledge
 import delve.core.*
 import delve.natutil.*
 import delve.content as content
+import delve.skill as skill
 
--- Lore-gated reveal of a creature's resistances/vulnerabilities for look mode.
--- The runtime Actor already carries a.resistances/a.vulnerabilities, so when a
--- lore/knowledge skill exists this gates on it and formats via content.resistanceWords.
--- Dormant (returns nothing) until that skill lands.
+-- Lore-gated reveal of a creature's resistances/vulnerabilities in look mode.
+-- What you know scales with how much you've studied the species (sightings,
+-- kills, elements tested) plus your lore skill, which accelerates it. Reveals
+-- progressively: nothing → a vague impression → the elements you've tested →
+-- the full picture.
+revealTier : RevealConfig -> Int -> Int
+let revealTier cfg eff =
+    if eff >= cfg.knownAt then 3
+    elif eff >= cfg.approxAt then 2
+    elif eff >= cfg.vagueAt then 1
+    else 0
+
+intersectDamage : List DamageType -> List DamageType -> List DamageType
+let intersectDamage xs ys decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case x :: rest -> if skill.memberDamage x ys then (::) x (intersectDamage rest ys) else intersectDamage rest ys
+
+loreVagueLine : RevealConfig -> Actor -> String
+let loreVagueLine cfg a =
+    let nr = listLength a.resistances
+    let nv = listLength a.vulnerabilities
+    in if nr > nv then cfg.vagueTough elif nv > nr then cfg.vagueWeak else cfg.vagueNeutral
+
+loreApproxLines : ContentPack -> Actor -> SpeciesKnowledge -> List String
+let loreApproxLines pack a k =
+    let seenR = intersectDamage a.resistances k.damageSeen
+    let seenV = intersectDamage a.vulnerabilities k.damageSeen
+    let rl = if listIsEmpty seenR then Nil else ["It seems to resist " ++ content.resistanceWords seenR ++ "."]
+    let vl = if listIsEmpty seenV then Nil else ["It seems vulnerable to " ++ content.resistanceWords seenV ++ "."]
+    let both = listAppend rl vl
+    in if listIsEmpty both then [loreVagueLine pack.reveal a] else both
+
+loreKnownLines : Actor -> List String
+let loreKnownLines a =
+    let rl = if listIsEmpty a.resistances then Nil else ["Resists " ++ content.resistanceWords a.resistances ++ "."]
+    let vl = if listIsEmpty a.vulnerabilities then Nil else ["Vulnerable to " ++ content.resistanceWords a.vulnerabilities ++ "."]
+    let both = listAppend rl vl
+    in if listIsEmpty both then ["It has no elemental weakness you can find."] else both
+
+loreLines : ContentPack -> Actor -> SpeciesKnowledge -> Int -> List String
+let loreLines pack a k tier =
+    if tier <= 0 then Nil
+    elif tier == 1 then [loreVagueLine pack.reveal a]
+    elif tier == 2 then loreApproxLines pack a k
+    else loreKnownLines a
+
 revealActorLore : ContentPack -> PlayerState -> Actor -> List String
-let revealActorLore pack player a = Nil
+let revealActorLore pack player a =
+    let k = skill.lookupKnowledge a.species player
+    let eff = skill.knowledgeScore k + skill.skillLevel "lore" player
+    let tier = revealTier pack.reveal eff
+    in loreLines pack a k tier
 
 beatitudeText : Beatitude -> String
 let beatitudeText beatitude =

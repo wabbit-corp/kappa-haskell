@@ -1,0 +1,101 @@
+module delve.skill
+
+import delve.core.*
+import delve.natutil.*
+
+-- ── Soft skills ──────────────────────────────────────────────────────────
+-- Skills are use-trained: any action is always allowed, but practising it
+-- raises the matching skill (capped per SkillDef). Levels improve quality and,
+-- for "lore", perception — they never gate a mundane action.
+
+skillLevel : String -> PlayerState -> Int
+let skillLevel id player =
+    block
+        go : List SkillEntry -> Int
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> 0
+            case e :: rest -> if e.id == id then e.level else go rest
+        go player.skills
+
+maxLevelOf : ContentPack -> String -> Int
+let maxLevelOf pack id =
+    block
+        go : List SkillDef -> Int
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> 99
+            case d :: rest -> if d.id == id then d.maxLevel else go rest
+        go pack.skills
+
+bumpSkill : String -> Int -> List SkillEntry -> List SkillEntry
+let bumpSkill id cap xs decreases listLength xs =
+    match xs
+    case Nil -> [SkillEntry id (min cap 1)]
+    case e :: rest -> if e.id == id then (::) (SkillEntry id (min cap (e.level + 1))) rest else (::) e (bumpSkill id cap rest)
+
+-- One unit of practice with a skill.
+trainSkill : ContentPack -> String -> PlayerState -> PlayerState
+let trainSkill pack id player =
+    player.{ skills = bumpSkill id (maxLevelOf pack id) player.skills }
+
+raiseSkill : String -> Int -> List SkillEntry -> List SkillEntry
+let raiseSkill id level xs decreases listLength xs =
+    match xs
+    case Nil -> [SkillEntry id level]
+    case e :: rest -> if e.id == id then (::) (SkillEntry id (max e.level level)) rest else (::) e (raiseSkill id level rest)
+
+-- Set a skill to at least `level` (used by tomes — taught knowledge, not practice).
+setSkill : ContentPack -> String -> Int -> PlayerState -> PlayerState
+let setSkill pack id level player =
+    player.{ skills = raiseSkill id (min (maxLevelOf pack id) level) player.skills }
+
+-- ── Per-species knowledge (lite Codex) ───────────────────────────────────
+
+memberDamage : DamageType -> List DamageType -> Bool
+let memberDamage d xs decreases listLength xs =
+    match xs
+    case Nil -> False
+    case y :: rest -> if d == y then True else memberDamage d rest
+
+unionDamage : DamageType -> List DamageType -> List DamageType
+let unionDamage d xs = if memberDamage d xs then xs else (::) d xs
+
+lookupKnowledge : Species -> PlayerState -> SpeciesKnowledge
+let lookupKnowledge species player =
+    block
+        go : List SpeciesKnowledge -> SpeciesKnowledge
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> SpeciesKnowledge species 0 0 Nil
+            case k :: rest -> if k.species == species then k else go rest
+        go player.knowledge
+
+-- How much the player has learned about a species. Kills weigh more than
+-- glances; testing varied elements adds up too.
+knowledgeScore : SpeciesKnowledge -> Int
+let knowledgeScore k = k.sightings + k.kills * 2 + listLength k.damageSeen
+
+bumpKnowledge : SpeciesKnowledge -> Bool -> Option DamageType -> SpeciesKnowledge
+let bumpKnowledge k killed dmg =
+    let k1 = k.{ sightings = k.sightings + 1, kills = if killed then k.kills + 1 else k.kills }
+    in
+        match dmg
+        case Some d -> k1.{ damageSeen = unionDamage d k1.damageSeen }
+        case None -> k1
+
+recordSpecies : Species -> Bool -> Option DamageType -> List SpeciesKnowledge -> List SpeciesKnowledge
+let recordSpecies species killed dmg xs decreases listLength xs =
+    match xs
+    case Nil -> [bumpKnowledge (SpeciesKnowledge species 0 0 Nil) killed dmg]
+    case k :: rest -> if k.species == species then (::) (bumpKnowledge k killed dmg) rest else (::) k (recordSpecies species killed dmg rest)
+
+-- Record an encounter with a creature: a sighting, possibly a kill, possibly an
+-- element tested against it. The player never studies its own species.
+observeSpecies : Species -> Bool -> Option DamageType -> PlayerState -> PlayerState
+let observeSpecies species killed dmg player =
+    if species == PlayerSpecies then player
+    else player.{ knowledge = recordSpecies species killed dmg player.knowledge }
+
+studiedCount : List SpeciesKnowledge -> Int
+let studiedCount xs = listLength xs

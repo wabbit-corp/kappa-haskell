@@ -162,6 +162,7 @@ data ItemKind : Type =
     BoneCharm
     ChaosShard
     Amulet
+    Tome
 
 data Species : Type =
     PlayerSpecies
@@ -338,6 +339,39 @@ data Level : Type =
         (turn : Nat)
         (branch : Int)
 
+-- A trained soft skill: id matches a SkillDef in the pack; level rises with use.
+data SkillEntry : Type =
+    SkillEntry
+        (id : String)
+        (level : Int)
+
+-- Authored skill definition (skills.json): display name + level cap.
+data SkillDef : Type =
+    SkillDef
+        (id : String)
+        (name : String)
+        (maxLevel : Int)
+
+-- Per-species knowledge earned by encountering a creature. `damageSeen` records
+-- which elements the player has actually tested it with — so a weakness is only
+-- "known" once you've hit it with that element (or studied it enough).
+data SpeciesKnowledge : Type =
+    SpeciesKnowledge
+        (species : Species)
+        (sightings : Int)
+        (kills : Int)
+        (damageSeen : List DamageType)
+
+-- Reveal thresholds + vague flavor for the lore/perception system (pack.json "reveal").
+data RevealConfig : Type =
+    RevealConfig
+        (vagueAt : Int)
+        (approxAt : Int)
+        (knownAt : Int)
+        (vagueTough : String)
+        (vagueWeak : String)
+        (vagueNeutral : String)
+
 data PlayerState : Type =
     PlayerState
         (actorId : Int)
@@ -352,7 +386,8 @@ data PlayerState : Type =
         (faith : Faith)
         (reputation : Int)
         (crouching : Bool)
-        (crafting : Int)
+        (skills : List SkillEntry)
+        (knowledge : List SpeciesKnowledge)
 
 -- Data-driven content registry. These definitions are deliberately in core so
 -- gameplay, save/load, and JSON decoding agree on one schema. String IDs are
@@ -595,6 +630,8 @@ data ContentPack : Type =
         (structures : List StructureDef)
         (rarities : List RarityDef)
         (colors : List ColorDef)
+        (skills : List SkillDef)
+        (reveal : RevealConfig)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is
@@ -807,6 +844,7 @@ let itemKindCode k =
     case Bones -> 20
     case Mushroom -> 21
     case BoneCharm -> 22
+    case Tome -> 23
 
 instance Eq ItemKind =
     let (==) a b = itemKindCode a == itemKindCode b

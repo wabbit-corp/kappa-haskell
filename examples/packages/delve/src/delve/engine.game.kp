@@ -17,6 +17,7 @@ import delve.faith as faith
 import delve.interact as interact
 import delve.corruption as corruption
 import delve.content as content
+import delve.skill as skill
 import delve.knowledge as know
 import delve.config as config
 import delve.save as save
@@ -142,7 +143,10 @@ let movePlayer dir game =
                     let g0 = game0.{ rng = intToNat hit.rng, level = game0.level.{ actors = removeDeadActors actors1 } }
                     let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
                     let g2 = g1.{ noise = Sound target fov.combatLoudness }
-                    in message hit.log g2
+                    let killed = not hit.defender.alive
+                    let learned = skill.observeSpecies enemy.species killed (Some (content.playerMeleeElement game.content p game.player)) game.player
+                    let trained = if killed then skill.trainSkill game.content "lore" learned else learned
+                    in message hit.log (g2.{ player = trained })
             case None ->
                 if isWalkable tile then
                     let p2 = p.{ pos = target, facing = dir }
@@ -593,7 +597,7 @@ let craftRecipe r game =
                 let out = content.mkItem game.content r.output
                 let p2 = p.{ inventory = inventory.addToInventory out removed.rest }
                 let newCursor = max 0 (min game.invCursor (listLength p2.inventory - 1))
-                in message ("You craft " ++ know.visibleName game.content game.player out ++ ".") (game.{ player = game.player.{ crafting = min 6 (game.player.crafting + 1) }, invCursor = newCursor, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+                in message ("You craft " ++ know.visibleName game.content game.player out ++ ".") (game.{ player = skill.trainSkill game.content "crafting" game.player, invCursor = newCursor, level = game.level.{ actors = replaceActor p2 game.level.actors } })
 
 -- Where a thrown item comes to rest: it flies in the thrower's facing until it
 -- hits a wall (stops short) or a creature (lands on it), up to `steps`.
@@ -738,7 +742,7 @@ let actionCommand cmd game =
             match listGet p.inventory game.invCursor
             case None -> game.{ mode = InventoryMode }
             case Some item ->
-                match listGet (content.itemVerbs game.content game.player.crafting p item) n
+                match listGet (content.itemVerbs game.content game.player p item) n
                 case Some v -> executeVerb v game
                 case None -> game
         case _ -> game.{ mode = InventoryMode }
