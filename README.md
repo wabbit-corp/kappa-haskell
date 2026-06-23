@@ -184,6 +184,11 @@ cabal run -v0 kappa -- test  tests/conformance
 
 ## How a program is compiled
 
+> **New to the codebase?** [`docs/CONCEPTS.md`](docs/CONCEPTS.md) is a primer
+> on the vocabulary the source assumes (de Bruijn indices vs. levels,
+> normalization by evaluation, bidirectional typing, quantities) plus a
+> suggested file-by-file reading order. The source comments point back to it.
+
 The pipeline lives under [`src/Kappa/`](src/Kappa) and is orchestrated by
 [`Kappa.Pipeline`](src/Kappa/Pipeline.hs). Roughly in order:
 
@@ -305,6 +310,7 @@ input/               upstream source bundles used as design references
 
 | File | Contents |
 | --- | --- |
+| [`docs/CONCEPTS.md`](docs/CONCEPTS.md) | Primer + reading order for understanding the compiler source. Start here. |
 | [`docs/Spec.md`](docs/Spec.md) | The Kappa Language Specification (the normative source). |
 | [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) | What's implemented vs. the spec; remaining gaps to 100%. |
 | [`KNOWN_SPEC_ISSUES.md`](KNOWN_SPEC_ISSUES.md) | Known issues / ambiguities in the spec itself. |
