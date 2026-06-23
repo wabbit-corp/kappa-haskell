@@ -88,7 +88,7 @@ backtracking). Net effect: query/handler keywords are ordinary
 identifiers in binder, assignment, and argument positions
 (`tests/conformance/lexer/soft-keyword-identifiers.kp`); the
 structural tier remains reserved in argument position (delta table
-below, SPEC_COVERAGE.md §5.2).
+below, SPEC_COMPLIANCE.md §5.2).
 
 **Flat operator chains, re-associated after parsing.** Fixity is
 block-scoped and declarable mid-module (§5.5.2), so the parser cannot
@@ -216,7 +216,7 @@ lexical states make recovery guesses worse than a clean stop).
 | Supertraits (§14.1.4, §14.3.3) | Premises enforced at instance declarations (`E_SUPERTRAIT_UNSATISFIED`), satisfiable through depth-bounded transitive conformance paths from the instance's own premises | Use-site implicit resolution does not walk conformance paths (evidence of a subtrait does not discharge a supertrait goal at call sites) |
 | Constructor field defaults (§10.1.1) | Stored on the constructor, elaborated at each application site against the field type | Defaults may not refer to the constructor's other fields |
 | Parse recovery (§3.1.14A) | Declaration-boundary recovery only | A parse error inside a `do` block abandons the block; later block lines cascade as bogus declaration-level errors far from the cause |
-| Soft keywords (§5.2) | Query/handler keywords identifier-usable everywhere outside their clause contexts; structural keywords context-insensitive argument terminators | A bare reference named `then`/`else`/`is`/`as`/`on`/`using`/`where`/… in argument position misparses (full residual list in SPEC_COVERAGE.md §5.2) |
+| Soft keywords (§5.2) | Query/handler keywords identifier-usable everywhere outside their clause contexts; structural keywords context-insensitive argument terminators | A bare reference named `then`/`else`/`is`/`as`/`on`/`using`/`where`/… in argument position misparses (full residual list in SPEC_COMPLIANCE.md §5.2) |
 | GADTs (§17.1.1–17.1.2) | Constructor result unified with scrutinee type | No general index refinement or `impossible` reasoning |
 | Exhaustiveness (§17.1) | Closed ADTs/Bool/variants/records/tuples; literals need catch-all | No guard-aware or flow-aware coverage proofs |
 | Flow typing (§16.4) | None | `&&`/`||`/`not` refinement, transport, lower-bound flow checks absent |
@@ -225,7 +225,7 @@ lexical states make recovery guesses worse than a clean stop).
 | Diagnostics (§3) | Structured records, text rendering | No JSON output, registry, payloads, fix-its, explanations |
 | Modules (§8) | Import-ordered multi-file suites | No visibility/opacity/export enforcement, URL imports |
 | Lexer recovery (§3.1.14A) | Stops at first lexical error | Multi-error lexical fixtures under-count |
-| Prelude (§28) | §28.2 subset, not closable | Missing names listed in SPEC_COVERAGE.md §28.2 row |
+| Prelude (§28) | §28.2 subset, not closable | Missing names listed in SPEC_COMPLIANCE.md §28.2 row |
 | Labeled control (§18.2.5, §18.5.1, §18.7) | `break@L`/`continue@L`, `return@L`, and `defer@L` are all implemented with compile-time label resolution (`E_LABEL_UNRESOLVED`/`E_BREAK_OUTSIDE_LOOP` §18.6). A nested `do` block in STATEMENT position is transparent to abrupt completion (§18.8.3.1): break/continue/return@L inside it resolve against the inherited lexical context and propagate to the enclosing loop/function (elaborated as a `KSubDo` child scope), while its own `defer` runs at the nested exit and `defer@L` reaches the labeled enclosing scope — verified in both backends | A first-class do VALUE (`let inner = do …`, spliced `!inner`) stays opaque: it has no lexical completion target at its definition site, so break/continue/return@L inside it are rejected (matches §18.6 — targets must syntactically occur within an enclosing loop of the same function body). This is the corrected, spec-aligned successor to the earlier blanket "Completion is not first-class" confinement (findings #14/#15 below), which over-confined nested do STATEMENTS too |
 | Unicode data (§29.4, §6.5) | UCD 15.0.0 embedded as `Kappa.UnicodeData`, generated once by `tools/gen-unicode-data.py` and committed (normalization tables, grapheme-cluster-break classes); `Kappa.Unicode` implements UAX #15 normalization and UAX #29 extended grapheme clusters over them | `Extended_Pictographic` and the Indic `Prepend` component are vendored snapshots of the 15.0 data files (the script documents the derivation); `words`/`sentences` are simple whitespace/terminator approximations, not UAX #29 segmentation; `displayWidth` is a documented one-cell-per-grapheme policy |
 | Quoted-literal handlers (§6.5) | The conventional `g`/`b` handlers are built into the elaborator (`EQuotedLit` in `Check.hs`) and validate the §6.5 text/byte views directly | No user-extensible `QuotedLiteralMacro` machinery (depends on the §21–§23 macro stack); other prefixes stay `E_UNSUPPORTED` |
@@ -235,7 +235,7 @@ lexical states make recovery guesses worse than a clean stop).
 | Reflection queries (§21.6) and staged code (§23) | `defEqSyntax`/`headSymbolSyntax` keep their spec `Elab` signatures and are interpreted by `runElab` (payloads re-elaborated at the call site through the splice grafting/capture machinery; `defEqSyntax` snapshots and restores checker state so the query commits no constraints); `Symbol` values are `__symbolV` primitives carrying the resolved `module::name` identity, compared by `sameSymbol`. `.< e >.` elaborates to `__codeQuote e` — the interpreter models generative code by its present-stage value (a value environment is captured, so §23.7 scope safety holds by construction and `closeCode` always succeeds); `Kappa.Usage` treats a code quote like a closure over its payload for the §12.3 borrow-escape discipline | In ordinary (non-`Elab`) term positions the elaborator runs an applied convenience query at the call site and residualizes its first-order result (`elabReflQuery`); the corpus's static-object reflection fixtures use the queries this way (`sameType : Bool` directly from `defEqSyntax …`), which a strict reading of the §21.6 `Elab` signatures alone would reject — kept narrowly scoped to the two standardized queries, never a generic §21.2 coercion. `headSymbolSyntax` answers from the elaborated head without whnf-unfolding transparent globals (unfolding would erase every symbol identity the §21.6 alias-invariance rules are about). `genlet` is the host's thunk sharing; quote payloads that elaborate as types reflect the type facet so `defEqSyntax` relates `Box Int` to a rebound `let F = type Box` |
 
 Everything rejected rather than approximated is surfaced as
-`E_UNSUPPORTED` with a note pointing at SPEC_COVERAGE.md (see
+`E_UNSUPPORTED` with a note pointing at SPEC_COMPLIANCE.md (see
 `unsupported`/`reportUnsupported` in `Check.hs` and the per-declaration
 rejections).
 
@@ -337,7 +337,7 @@ fixed or justified here).
     confines targets to the do-scope the break is written in — is
     retained deliberately (it is the "Completion is not a first-class
     core value" representation choice above) and is now stated
-    explicitly in SPEC_COVERAGE.md's §18.2–18.8 row and the deltas
+    explicitly in SPEC_COMPLIANCE.md's §18.2–18.8 row and the deltas
     table here, instead of only in prose.
 15. **`if c then do break` inside a loop (info)** — justified, not
     changed. `then do …` introduces a nested first-class do-expression,
@@ -351,7 +351,7 @@ fixed or justified here).
     stays confined would need an ad-hoc "syntactically immediate do"
     carve-out in `elabDo`, splitting one rule into two. The rejection
     is loud, names the rule and section, and the documented delta
-    (SPEC_COVERAGE.md §18.2–18.8 row; "Completion is not a first-class
+    (SPEC_COMPLIANCE.md §18.2–18.8 row; "Completion is not a first-class
     core value" above) covers it — per the reviewer, no action
     required.
 
@@ -402,7 +402,7 @@ duplication reviewers):
     binding group was ignored. Visibility is now aggregated per term name
     across the §8.5.1 binding group: private on any declaration makes the
     item private. Covered by `tests/conformance/modules-private-visibility/`;
-    the SPEC_COVERAGE.md §8 row was corrected.
+    the SPEC_COMPLIANCE.md §8 row was corrected.
 19. **Duplicated `Term→[MetaId]` collectors (MINOR, dup reviewer)** —
     fixed. `unsolvedMetaIdsIn`'s local `goT` and the type-alias
     generalization's local `metasOf` are now one `metaIdsOf`
@@ -475,7 +475,7 @@ duplication reviewers):
     `withArgIndexRetag :: CheckM a -> CheckM a` combinator mirroring
     `withArgFlatFor`, so the two sites cannot drift.
 
-25. **Stale SPEC_COVERAGE.md §13.2.11 row (MAJOR, spec reviewer)** — fixed.
+25. **Stale SPEC_COMPLIANCE.md §13.2.11 row (MAJOR, spec reviewer)** — fixed.
     The row claimed `exists`/`open` are parsed-only and emit `E_UNSUPPORTED`,
     citing a `tests/conformance/unsupported/exists.kp` that does not exist.
     `exists` is fully implemented (`elabExists`, round-1 finding #16): it
@@ -834,7 +834,7 @@ entry #3 below).
      receiver's ω demand and fires `E_QTT_LINEAR_OVERUSE` (§16.2.1).
    This implements the §13.2.7/§14.1.2 discipline by rejection; only the
    `RecTailSatisfies`-evidenced *acceptance* path remains future work,
-   tracked in `SPEC_COVERAGE.md`. Regression coverage:
+   tracked in `SPEC_COMPLIANCE.md`. Regression coverage:
    `tests/conformance/qtt/record-linear-field-drop`,
    `record-linear-field-ok`, `record-linear-field-overuse`,
    `record-linear-arg-overuse`, `open-record-tail-drop`,

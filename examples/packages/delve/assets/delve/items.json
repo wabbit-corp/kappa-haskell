@@ -11,7 +11,8 @@
       "power": 1,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": true
+      "beatitude_known": true,
+      "flammable": false
     },
     {
       "id": "potion_healing",
@@ -24,7 +25,8 @@
       "power": 10,
       "charges": 0,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "potion_mutation",
@@ -37,7 +39,8 @@
       "power": 1,
       "charges": 0,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "potion_water",
@@ -50,7 +53,8 @@
       "power": 1,
       "charges": 0,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "scroll_identify",
@@ -63,7 +67,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": true
     },
     {
       "id": "scroll_mapping",
@@ -76,7 +81,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": true
     },
     {
       "id": "scroll_ward",
@@ -89,7 +95,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": true
     },
     {
       "id": "food_ration",
@@ -102,7 +109,8 @@
       "power": 800,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": true
+      "beatitude_known": true,
+      "flammable": true
     },
     {
       "id": "dagger",
@@ -115,7 +123,8 @@
       "power": 2,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "sword",
@@ -128,7 +137,8 @@
       "power": 5,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "mace",
@@ -141,7 +151,8 @@
       "power": 4,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "leather_armor",
@@ -154,7 +165,8 @@
       "power": 2,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "chain_mail",
@@ -167,7 +179,8 @@
       "power": 4,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "wand_fire",
@@ -180,7 +193,8 @@
       "power": 9,
       "charges": 3,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "wand_digging",
@@ -193,7 +207,8 @@
       "power": 0,
       "charges": 3,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "wand_polymorph",
@@ -206,7 +221,8 @@
       "power": 0,
       "charges": 3,
       "starts_identified": false,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "holy_symbol",
@@ -219,7 +235,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "corpse",
@@ -232,7 +249,8 @@
       "power": 1,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": true
+      "beatitude_known": true,
+      "flammable": false
     },
     {
       "id": "chaos_shard",
@@ -245,7 +263,8 @@
       "power": 3,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "amulet",
@@ -258,7 +277,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": false
+      "beatitude_known": false,
+      "flammable": false
     },
     {
       "id": "bones",
@@ -271,7 +291,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": true
+      "beatitude_known": true,
+      "flammable": false
     },
     {
       "id": "mushroom",
@@ -284,7 +305,8 @@
       "power": 250,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": true
+      "beatitude_known": true,
+      "flammable": true
     },
     {
       "id": "bone_charm",
@@ -297,7 +319,8 @@
       "power": 0,
       "charges": 0,
       "starts_identified": true,
-      "beatitude_known": true
+      "beatitude_known": true,
+      "flammable": false
     }
   ],
   "affixes": [

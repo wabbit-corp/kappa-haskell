@@ -8,7 +8,7 @@
 -- normalization for @(lhs = rhs)@ goals decided by conversion.
 --
 -- Deliberate v1 restrictions surface as @E_UNSUPPORTED@ diagnostics and
--- are catalogued in SPEC_COVERAGE.md; approximations (quantity usage
+-- are catalogued in SPEC_COMPLIANCE.md; approximations (quantity usage
 -- checking, termination) are catalogued in IMPLEMENTATION_NOTES.md.
 module Kappa.Check
   ( CheckState (..)
@@ -1896,7 +1896,7 @@ reportUnsupported :: Span -> Text -> CheckM ()
 reportUnsupported sp what =
   let msg = what <> " is not supported by this implementation"
    in report $
-        withNote "see SPEC_COVERAGE.md for the implemented subset" $
+        withNote "see SPEC_COMPLIANCE.md for the implemented subset" $
           withPayload (unsupportedPayload msg) $
             diag SevError StageElaborate "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic") sp msg
 
@@ -9186,7 +9186,7 @@ desugarBang = \case
 -- §21.8 restrictions: package mode provides no IO capability to the
 -- evaluator by construction (no IO primitive reduces outside the
 -- §18.8 kernel). Termination of macro execution is bounded by the
--- evaluator's fuel; see SPEC_COVERAGE.md for the provided subset.
+-- evaluator's fuel; see SPEC_COMPLIANCE.md for the provided subset.
 
 -- | The runtime-mode evaluation context for elaboration-time
 -- execution (§21.8, §30.2.4): every global unfolds.
@@ -9690,7 +9690,7 @@ runElab ctx sp v0 = do
     VPrim "__shapeMatchAdt2" [shapeV, lV, rV, cbS, cbD] -> shapeMatchAdt2Op ctx sp shapeV lV rV cbS cbD
     _ -> do
       errAt sp "E_ELAB_STUCK" (Just "kappa.macro.failure")
-        "this elaboration-time action could not be executed by the Elab evaluator (§21.9; see SPEC_COVERAGE.md for the provided subset)"
+        "this elaboration-time action could not be executed by the Elab evaluator (§21.9; see SPEC_COMPLIANCE.md for the provided subset)"
       pure (Left ())
   where
     literalQuote e = VQuote (QuotedSyntax e [] sp) []
@@ -12558,7 +12558,29 @@ verifyTerminationScc tds = do
           if valid
             then boolCert TerminationConversionSafe <$> structuralSccOK funMap (Just (structuralSelections funs))
             else pure TerminationUnverified
-      | all isMeasureDec explicit -> boolCert TerminationTotalOnly <$> measureSccOK funMap
+      | all isMeasureDec explicit -> do
+          -- A `decreases <measure>` annotation states intent, but if the
+          -- recursion is in fact STRUCTURAL — the recursive call passes a
+          -- constructor sub-term of an argument (e.g. `decreases listLength
+          -- xs` recursing on the tail of `xs`) — accept it by structural
+          -- descent. Structural descent is the stronger, conversion-safe
+          -- guarantee and subsumes any size-like measure: the recursion
+          -- demonstrably terminates regardless of the (possibly
+          -- non-arithmetic) measure the author named. Fall back to the
+          -- arithmetic measure proof for genuinely non-structural measures
+          -- (e.g. `decreases fuel` / `decreases max 0 n` on an Int counter).
+          --
+          -- Certify TOTALITY only (TerminationTotalOnly), NOT conversion
+          -- safety: an explicit `decreases` measure signals the author
+          -- intends a *total* (not necessarily δ-reducible) definition, and
+          -- granting conversion-reducibility here would change how the body
+          -- unfolds during conversion — perturbing downstream analyses such
+          -- as match exhaustiveness. Clearing the termination warning must
+          -- not silently alter reduction behavior.
+          struct <- structuralSccOK funMap Nothing
+          if struct
+            then pure TerminationTotalOnly
+            else boolCert TerminationTotalOnly <$> measureSccOK funMap
       | otherwise -> pure TerminationUnverified
   where
     boolCert yes ok = if ok then yes else TerminationUnverified

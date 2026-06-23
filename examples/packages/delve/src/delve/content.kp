@@ -44,13 +44,66 @@ let fallbackItemDef kind =
     -- Should be unreachable after config validation. Keeping a visible fallback
     -- makes accidental schema breakage noisy in-game rather than crashing the
     -- renderer with a missing glyph.
-    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True
+    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True False
 
 itemDef : ContentPack -> ItemKind -> ItemDef
 let itemDef pack kind =
     match findItemDef pack kind
     case Some def -> def
     case None -> fallbackItemDef kind
+
+flammableOf : ContentPack -> ItemKind -> Bool
+let flammableOf pack kind = (itemDef pack kind).flammable
+
+-- ── Item action menu: the verbs an item offers (built-ins + craft recipes) ──
+verbUsable : ItemClass -> Bool
+let verbUsable cls =
+    match cls
+    case PotionClass -> True
+    case ScrollClass -> True
+    case FoodClass -> True
+    case CorpseClass -> True
+    case _ -> False
+
+verbEquip : ItemClass -> Bool
+let verbEquip cls =
+    match cls
+    case WeaponClass -> True
+    case ArmorClass -> True
+    case WandClass -> True
+    case _ -> False
+
+hasToolClass : ItemClass -> List Item -> Bool
+let hasToolClass cls items decreases listLength items =
+    match items
+    case Nil -> False
+    case i :: rest -> if i.class == cls then True else hasToolClass cls rest
+
+-- Recipes that act on this item kind and that the player can currently perform
+-- (has the right skill level and a suitable tool in hand).
+craftVerbsFor : List RecipeDef -> Int -> List Item -> ItemKind -> List Verb
+let craftVerbsFor recipes crafting inv kind decreases listLength recipes =
+    match recipes
+    case Nil -> Nil
+    case r :: rest ->
+        let more = craftVerbsFor rest crafting inv kind
+        in if r.input == kind && crafting >= r.minLevel && hasToolClass r.toolClass inv then (::) (VCraft r) more else more
+
+itemVerbs : ContentPack -> Int -> Actor -> Item -> List Verb
+let itemVerbs pack crafting actor item =
+    let useV = if verbUsable item.class then [VUse] else Nil
+    let equipV = if verbEquip item.class then [VEquip] else Nil
+    let crafts = craftVerbsFor pack.recipes crafting actor.inventory item.kind
+    in listAppend (listAppend useV equipV) (listAppend crafts [VDrop])
+
+verbLabel : Verb -> String
+let verbLabel v =
+    match v
+    case VUse -> "Use"
+    case VEquip -> "Equip / wield"
+    case VDrop -> "Drop"
+    case VThrow -> "Throw"
+    case VCraft r -> r.label
 
 trueName : ContentPack -> ItemKind -> String
 let trueName pack kind = (itemDef pack kind).trueName

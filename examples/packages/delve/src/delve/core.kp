@@ -162,6 +162,21 @@ data ItemKind : Type =
     ChaosShard
     Amulet
 
+data Species : Type =
+    PlayerSpecies
+    Hound
+    Goblin
+    Orc
+    Kobold
+    Rat
+    Bat
+    Troll
+    Skeleton
+    Wizard
+    Dragon
+    ChaosSpawn
+    Pilgrim
+
 data Item : Type =
     Item
         (kind : ItemKind)
@@ -178,21 +193,6 @@ data Item : Type =
         (equipped : Bool)
         (source : Species)
         (cooked : Bool)
-
-data Species : Type =
-    PlayerSpecies
-    Hound
-    Goblin
-    Orc
-    Kobold
-    Rat
-    Bat
-    Troll
-    Skeleton
-    Wizard
-    Dragon
-    ChaosSpawn
-    Pilgrim
 
 data Faction : Type =
     HeroFaction
@@ -339,6 +339,7 @@ data PlayerState : Type =
         (faith : Faith)
         (reputation : Int)
         (crouching : Bool)
+        (crafting : Int)
 
 -- Data-driven content registry. These definitions are deliberately in core so
 -- gameplay, save/load, and JSON decoding agree on one schema. String IDs are
@@ -359,6 +360,7 @@ data ItemDef : Type =
         (charges : Int)
         (startsIdentified : Bool)
         (beatitudeKnownByDefault : Bool)
+        (flammable : Bool)
 
 data ItemAffix : Type =
     ItemAffix
@@ -472,6 +474,26 @@ data LanguageDef : Type =
         (syllables : List String)
         (lexicon : List LexEntry)
 
+-- A crafting recipe: act on `input` (consumed) while holding a `toolClass` item,
+-- gated by a named skill at `minLevel`, to produce `output`. Authored in recipes.json.
+data RecipeDef : Type =
+    RecipeDef
+        (id : String)
+        (label : String)
+        (input : ItemKind)
+        (output : ItemKind)
+        (toolClass : ItemClass)
+        (skill : String)
+        (minLevel : Int)
+
+-- The actions offered for an item in its inventory action menu.
+data Verb : Type =
+    VUse
+    VEquip
+    VDrop
+    VThrow
+    VCraft (recipe : RecipeDef)
+
 data FaithDef : Type =
     FaithDef
         (faith : Faith)
@@ -529,6 +551,7 @@ data ContentPack : Type =
         (affixes : List ItemAffix)
         (branches : List BranchDef)
         (languages : List LanguageDef)
+        (recipes : List RecipeDef)
         (structures : List StructureDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
@@ -567,6 +590,8 @@ data GameMode : Type =
     CharacterMode
     CharacterCreation
     LookMode
+    ActionMenu
+    FireMenu
     Dead
     Won
     Quit
@@ -635,6 +660,8 @@ data Command : Type =
     ConfirmCreation
     ToggleCrouch
     NoCommand
+    OpenActions
+    Choose (n : Int)
 
 data Key : Type =
     KeyChar (text : String)
@@ -869,6 +896,8 @@ let gameModeCode mode =
     case Quit -> 7
     case CharacterCreation -> 8
     case LookMode -> 9
+    case ActionMenu -> 10
+    case FireMenu -> 11
 
 instance Eq GameMode =
     let (==) a b = gameModeCode a == gameModeCode b
@@ -914,11 +943,14 @@ let commandTag c =
     case RerollSign -> 35
     case ConfirmCreation -> 36
     case ToggleCrouch -> 37
+    case OpenActions -> 38
+    case Choose _ -> 39
 
 instance Eq Command =
     let (==) a b =
         match (a, b)
         case (Move da, Move db) -> da == db
+        case (Choose na, Choose nb) -> na == nb
         case _ -> commandTag a == commandTag b
 
 instance Eq Key =

@@ -13,7 +13,7 @@ matches the raw `code`, so these are the other implementation's spelling choice,
 not MUST violations. (b) build-DSL surface gaps (`BuildConfig` manifests outside
 the documented manifest subset). (c) two genuine accept-clean under-rejections
 (`for value in (Option a)` non-List source; a member-resolution-at-lowering case)
-tracked in SPEC_COVERAGE §18.6/§22. The 66 harness-errors are predominantly in
+tracked in SPEC_COMPLIANCE §18.6/§22. The 66 harness-errors are predominantly in
 the `build` category: fixtures assert another implementation's §36
 build-resolution diagnostic spellings (`E_BUILD_DEP_UNRESOLVED`,
 `E_BUILD_LOCK_MISMATCH`, `E_BUILD_PROVIDER_COLLISION`, …) that this

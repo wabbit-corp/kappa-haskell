@@ -246,5 +246,5 @@ into ordinary code are unaffected.
 ## Non-goals
 
 No benchmarking of backends, codegen, or incremental checking — none
-exist (SPEC_COVERAGE.md Parts VI/IX). Numbers here are for honesty
+exist (SPEC_COMPLIANCE.md Parts VI/IX). Numbers here are for honesty
 about interpreter-grade performance, not competitive claims.

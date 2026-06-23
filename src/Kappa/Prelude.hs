@@ -1,6 +1,6 @@
 -- | The implicit prelude (Spec §28): builtin types and primitives
 -- registered directly, plus an embedded @std.prelude@ source compiled
--- through the ordinary pipeline. SPEC_COVERAGE.md documents which parts
+-- through the ordinary pipeline. SPEC_COMPLIANCE.md documents which parts
 -- of the §28.2 normative minimum are provided.
 module Kappa.Prelude
   ( builtinState
@@ -690,7 +690,7 @@ evalClosed = go []
     app f _ _ = f
 
 
--- | Embedded @std.prelude@ source (§28.2 subset; see SPEC_COVERAGE.md).
+-- | Embedded @std.prelude@ source (§28.2 subset; see SPEC_COMPLIANCE.md).
 preludeSource :: Text
 preludeSource =
   T.unlines
@@ -1902,7 +1902,7 @@ preludeSource =
       -- 'transCoreEq'/'substCoreEq' are deferred: a signature sharing a
       -- variable across implicit type-former-argument positions (the
       -- middle 'y' of transitivity) currently mis-infers CoreEq's implicit
-      -- indices at the application site; see SPEC_COVERAGE.md.
+      -- indices at the application site; see SPEC_COMPLIANCE.md.
       "reflCoreEq : forall (@0 G : CoreCtx) (@0 a : Type) (@0 x : Core G a) . CoreEq x x"
     , "let reflCoreEq = __eqProof"
     , ""
@@ -2137,7 +2137,7 @@ preludeSource =
 -- subset of the §22 fields the reflection queries of this
 -- implementation populate (names, tags, constructor field lists); the
 -- reflective operations are elaborator primitives executed by the
--- §21.8 Elab runner. See SPEC_COVERAGE.md for the provided subset.
+-- §21.8 Elab runner. See SPEC_COMPLIANCE.md for the provided subset.
 stdDerivingShapeSource :: Text
 stdDerivingShapeSource =
   T.unlines
@@ -2227,7 +2227,7 @@ stdDerivingShapeSource =
 -- same-execution tokens with Eq/Ord comparison only — neither numeric
 -- nor showable. The §29.3 @Eq a =>@ superclass on 'Hashable' and the
 -- container instances (Option\/Result\/List\/Array) are not modelled;
--- see SPEC_COVERAGE.md.
+-- see SPEC_COMPLIANCE.md.
 stdHashSource :: Text
 stdHashSource =
   T.unlines
@@ -2443,7 +2443,7 @@ stdDebugSource =
 -- builtin opaque carriers (re-exported here). The proof-carrying
 -- 'bytesIndex'\/'bytesSlice' delegate to trapping primitives (the
 -- supplied bounds proofs make the access total). The dependent
--- 'SizedArray' views of §29.5 are not provided; see SPEC_COVERAGE.md.
+-- 'SizedArray' views of §29.5 are not provided; see SPEC_COMPLIANCE.md.
 stdBytesSource :: Text
 stdBytesSource =
   T.unlines
@@ -2542,7 +2542,7 @@ stdBytesSource =
     , "let bytesBuilderSizedArray arr builder = bytesBuilderBytes (bytesFromSizedArray arr) builder"
     ]
 
--- | Embedded @std.unicode@ source (§29.4; see SPEC_COVERAGE.md).
+-- | Embedded @std.unicode@ source (§29.4; see SPEC_COMPLIANCE.md).
 -- Unicode data version: UCD 15.0.0 (Kappa.UnicodeData); normalization,
 -- canonical equivalence and grapheme segmentation are full-fidelity for
 -- that version, while word\/sentence segmentation and display-width are

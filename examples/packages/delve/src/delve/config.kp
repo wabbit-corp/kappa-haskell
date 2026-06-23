@@ -15,6 +15,28 @@ let defaultPackFile = "assets/delve/pack.json"
 loadDefault : IO GameError ContentPack
 let loadDefault = loadPack defaultPackFile
 
+decodeRecipe : json.JsonValue -> IO GameError RecipeDef
+let decodeRecipe value =
+    do
+        id <- stringField "id" value
+        label <- stringField "label" value
+        inputName <- stringField "input" value
+        input <- decodeItemKind inputName
+        outputName <- stringField "output" value
+        output <- decodeItemKind outputName
+        toolName <- stringField "tool" value
+        tool <- decodeItemClass toolName
+        skill <- stringField "skill" value
+        minLevel <- intField "min_level" value
+        pure (RecipeDef id label input output tool skill minLevel)
+
+loadRecipes : String -> IO GameError (List RecipeDef)
+let loadRecipes path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "recipes" root
+        traverse decodeRecipe xs
+
 loadPack : String -> IO GameError ContentPack
 let loadPack packPath =
     do
@@ -30,6 +52,7 @@ let loadPack packPath =
         systemPath <- filePath "systems" filesObject
         spawnPath <- filePath "spawns" filesObject
         lorePath <- filePath "lore" filesObject
+        recipePath <- filePath "recipes" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -38,6 +61,7 @@ let loadPack packPath =
         systems <- loadSystems systemPath
         spawns <- loadSpawns spawnPath
         lore <- loadLore lorePath
+        recipes <- loadRecipes recipePath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
         let pack =
@@ -59,7 +83,8 @@ let loadPack packPath =
                 affixes = affixes,
                 branches = branches,
                 languages = systems.languages,
-                structures = spawns.structures
+                structures = spawns.structures,
+                recipes = recipes
             }
         validateContentPack pack
 
@@ -213,7 +238,8 @@ let decodeItem value =
         charges <- intField "charges" value
         identified <- boolField "starts_identified" value
         beatitudeKnown <- boolField "beatitude_known" value
-        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown)
+        flammable <- boolField "flammable" value
+        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown flammable)
 
 decodeAffix : json.JsonValue -> IO GameError ItemAffix
 let decodeAffix value =

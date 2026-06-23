@@ -1,0 +1,22 @@
+{
+  "recipes": [
+    {
+      "id": "bone_shiv",
+      "label": "Sharpen into a bone shiv",
+      "input": "Bones",
+      "output": "Dagger",
+      "tool": "WeaponClass",
+      "skill": "crafting",
+      "min_level": 1
+    },
+    {
+      "id": "bone_charm",
+      "label": "Carve a bone charm",
+      "input": "Bones",
+      "output": "BoneCharm",
+      "tool": "WeaponClass",
+      "skill": "crafting",
+      "min_level": 2
+    }
+  ]
+}

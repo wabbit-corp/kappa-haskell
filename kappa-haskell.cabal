@@ -6,7 +6,7 @@ description:
     Lexer, parser, resolver, elaborator, interpreter, prelude, CLI and
     conformance test harness for the Kappa language as specified in
     docs/Spec.md. Targets the @kappa-v1@ portable profile surface that is
-    implementable without backend codegen; see SPEC_COVERAGE.md.
+    implementable without backend codegen; see SPEC_COMPLIANCE.md.
 license:         MIT
 license-file:    LICENSE
 build-type:      Simple

@@ -69,6 +69,22 @@ let inventoryKeyToCommand key =
     case KeyArrow South -> SelectDown
     case KeyChar "e" -> UseSelected
     case KeyChar "q" -> DropSelected
+    case KeyChar ";" -> OpenActions
+    case KeyEnter -> OpenActions
+    case KeyEscape -> NoCommand
+    case _ -> NoCommand
+
+actionKeyToCommand : Key -> Command
+let actionKeyToCommand key =
+    match key
+    case KeyChar "a" -> Choose 0
+    case KeyChar "b" -> Choose 1
+    case KeyChar "c" -> Choose 2
+    case KeyChar "d" -> Choose 3
+    case KeyChar "e" -> Choose 4
+    case KeyChar "f" -> Choose 5
+    case KeyChar "g" -> Choose 6
+    case KeyChar "h" -> Choose 7
     case KeyEscape -> NoCommand
     case _ -> NoCommand
 

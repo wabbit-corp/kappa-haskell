@@ -86,6 +86,7 @@ let encodePlayer p =
         , field "favor" (num p.favor)
         , field "faith" (str (faithName p.faith))
         , field "reputation" (num p.reputation)
+        , field "crafting" (num p.crafting)
         ]
 
 encodeLevel : Level -> JsonValue
@@ -313,7 +314,8 @@ let decodePlayer pack value =
         faithName0 <- optStringField "EmberMother" "faith" value
         faith <- decodeFaithString faithName0
         reputation <- optIntField 0 "reputation" value
-        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False)
+        crafting <- optIntField 1 "crafting" value
+        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False crafting)
 
 decodeLevel : Size -> JsonValue -> IO GameError Level
 let decodeLevel fallbackSize value =

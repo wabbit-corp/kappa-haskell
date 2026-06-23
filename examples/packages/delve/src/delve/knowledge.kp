@@ -39,8 +39,11 @@ let identifyItem pack item player =
 visibleName : ContentPack -> PlayerState -> Item -> String
 let visibleName pack player item =
     let known = item.identified || knownByKind item.kind player.identified || not (classUsesMystery item.class)
-    let base = if known then content.trueName pack item.kind else item.name
-    let buc = if item.beatitudeKnown then beatitudeText item.beatitude else ""
+    -- corpses and bones carry a per-item typed name ("kobold corpse"); everything
+    -- else takes its name from the item definition once identified.
+    let typed = item.kind == Corpse || item.kind == Bones
+    let base = if typed then item.name elif known then content.trueName pack item.kind else item.name
+    let buc = if item.beatitudeKnown && not typed && item.kind != Mushroom then beatitudeText item.beatitude else ""
     let count = if item.count > 1 then show item.count ++ " " else ""
     let charges = if known && item.class == WandClass then " (" ++ show item.charges ++ " charges)" else ""
     in count ++ buc ++ base ++ charges

@@ -37,11 +37,11 @@ let testRules = RulesConfig 1200 9
 
 testItems : List ItemDef
 let testItems =
-    [ ItemDef "dagger" Dagger "dagger" "dagger" ")" WeaponClass False 2 0 True True
-    , ItemDef "food_ration" FoodRation "food ration" "food ration" "%" FoodClass True 800 0 True True
-    , ItemDef "holy_symbol" HolySymbol "plain holy symbol" "plain holy symbol" "_" ToolClass False 0 0 True True
-    , ItemDef "corpse" Corpse "fresh corpse" "fresh corpse" "%" CorpseClass False 250 0 True True
-    , ItemDef "gold" Gold "gold pieces" "gold pieces" "$" CoinClass True 1 0 True True
+    [ ItemDef "dagger" Dagger "dagger" "dagger" ")" WeaponClass False 2 0 True True False
+    , ItemDef "food_ration" FoodRation "food ration" "food ration" "%" FoodClass True 800 0 True True True
+    , ItemDef "holy_symbol" HolySymbol "plain holy symbol" "plain holy symbol" "_" ToolClass False 0 0 True True False
+    , ItemDef "corpse" Corpse "fresh corpse" "fresh corpse" "%" CorpseClass False 250 0 True True False
+    , ItemDef "gold" Gold "gold pieces" "gold pieces" "$" CoinClass True 1 0 True True False
     ]
 
 testActors : List ActorDef
@@ -104,5 +104,6 @@ let testPack =
         affixes = Nil,
         branches = Nil,
         languages = testLanguages,
-        structures = Nil
+        structures = Nil,
+        recipes = Nil
     }

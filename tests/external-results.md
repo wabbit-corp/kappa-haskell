@@ -281,7 +281,7 @@ matches the raw `code`, so these are the other implementation's spelling choice,
 not MUST violations. (b) build-DSL surface gaps (`BuildConfig` manifests outside
 the documented manifest subset). (c) two genuine accept-clean under-rejections
 (`for value in (Option a)` non-List source; a member-resolution-at-lowering case)
-tracked in SPEC_COVERAGE §18.6/§22. The 59 harness-errors are predominantly
+tracked in SPEC_COMPLIANCE §18.6/§22. The 59 harness-errors are predominantly
 fixtures using language features this implementation does not provide (effect
 handlers §18/§19, labeled control §18.5/§18.7) — reported as the §2.1
 deterministic-unsupported / harnessError outcome, not silent miscompiles. A full

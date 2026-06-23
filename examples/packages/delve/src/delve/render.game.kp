@@ -269,7 +269,7 @@ itemFlavor : ContentPack -> PlayerState -> Item -> List String
 let itemFlavor pack player item =
     match item.kind
     case Corpse -> [ "Remains of " ++ content.nameForSpecies pack item.source ++ "."
-        , "Food " ++ show (content.corpseNutritionOf pack item.source) ++ " raw (more cooked). Cook it on a fire."
+        , (if item.cooked then "Cooked. " else "") ++ "Food value " ++ show (content.corpseNutritionOf pack item.source) ++ "."
         ]
     case Bones -> ["Clean bones. With a knife you can carve them into tools or charms."]
     case Mushroom -> ["A pale cave mushroom — modest but reliable forage."]
@@ -279,7 +279,7 @@ renderInventory : ContentPack -> PlayerState -> Actor -> Int -> String
 let renderInventory pack player actor cursor =
     let body =
         if listIsEmpty actor.inventory then ["(your pack is empty)"]
-        else (::) "w/x: select   e: use/equip   q: drop   Esc: back" ((::) "" (invLines pack player cursor actor.inventory))
+        else (::) "w/x select · e use/equip · q drop · ; actions · Esc back" ((::) "" (invLines pack player cursor actor.inventory))
     let flav =
         match listGet actor.inventory cursor
         case Some it -> (::) "" ((::) "── selected ──" (itemFlavor pack player it))
@@ -459,6 +459,70 @@ let renderLook game =
     let panel = lookDescription game.content game.player game.level game.lookPos
     in ansiClear ++ ansiHideCursor ++ renderMapLook game.level game.lookPos cone ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "look: move the cursor with the movement keys; ; or Esc to stop"
 
+-- ── Item action menu (verbs: use/equip/drop + craft recipes) ─────────────
+letterFor : Int -> String
+let letterFor i =
+    match i
+    case 0 -> "a"
+    case 1 -> "b"
+    case 2 -> "c"
+    case 3 -> "d"
+    case 4 -> "e"
+    case 5 -> "f"
+    case 6 -> "g"
+    case _ -> "h"
+
+verbLines : List Verb -> List String
+let verbLines verbs =
+    block
+        go : Int -> List Verb -> List String -> List String
+        let go i vs acc decreases listLength vs =
+            match vs
+            case Nil -> reverse acc
+            case v :: rest -> go (i + 1) rest ((::) (letterFor i ++ ") " ++ content.verbLabel v) acc)
+        go 0 verbs Nil
+
+renderActionMenu : GameState -> String
+let renderActionMenu game =
+    match playerActor game
+    case None -> renderBox "Actions" ["No player."]
+    case Some p ->
+        match listGet p.inventory game.invCursor
+        case None -> renderBox "Actions" ["Nothing selected."]
+        case Some item ->
+            let verbs = content.itemVerbs game.content game.player.crafting p item
+            in renderBox ("Actions — " ++ know.visibleName game.content game.player item) (listAppend (verbLines verbs) ["", "press a letter, or Esc to go back"])
+
+-- ── Fire interaction menu (take cooked/cooking items, add items to cook/burn) ──
+letterList : List String -> List String
+let letterList labels =
+    block
+        go : Int -> List String -> List String -> List String
+        let go i xs acc decreases listLength xs =
+            match xs
+            case Nil -> reverse acc
+            case s :: rest -> go (i + 1) rest ((::) (letterFor i ++ ") " ++ s) acc)
+        go 0 labels Nil
+
+fireTakeLabel : ContentPack -> PlayerState -> GroundItem -> String
+let fireTakeLabel pack player gi = "Take " ++ (if gi.item.cooked then "cooked " else "") ++ know.visibleName pack player gi.item
+
+firePutLabel : ContentPack -> PlayerState -> Item -> String
+let firePutLabel pack player item =
+    let nm = know.visibleName pack player item
+    in if item.kind == Corpse then "Cook " ++ nm elif content.flammableOf pack item.kind then "Burn " ++ nm else "Drop " ++ nm ++ " in the fire"
+
+renderFireMenu : GameState -> String
+let renderFireMenu game =
+    match playerActor game
+    case None -> renderBox "Campfire" ["No player."]
+    case Some p ->
+        let onFire = inv.itemsAt game.lookPos game.level.items
+        let takes = map (\gi -> fireTakeLabel game.content game.player gi) onFire
+        let puts = map (\it -> firePutLabel game.content game.player it) p.inventory
+        let body = letterList (listAppend takes puts)
+        in renderBox "Campfire" (listAppend (if listIsEmpty body then ["The fire crackles. You have nothing to add."] else body) ["", "press a letter, or Esc to step back"])
+
 renderGame : GameState -> String
 let renderGame game =
     match game.mode
@@ -467,6 +531,8 @@ let renderGame game =
     case CharacterMode -> renderCharacter game
     case CharacterCreation -> renderCreation game
     case LookMode -> renderLook game
+    case ActionMenu -> renderActionMenu game
+    case FireMenu -> renderFireMenu game
     case InventoryMode ->
         match playerActor game
         case Some p -> renderInventory game.content game.player p game.invCursor

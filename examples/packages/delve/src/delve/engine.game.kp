@@ -154,6 +154,7 @@ let movePlayer dir game =
                 else
                     match tile.kind
                     case ClosedDoor -> openDoorAt target game
+                    case Campfire -> openFire target game
                     case Wall -> message "You bump into a wall." game
                     case _ -> message "You cannot move there." game
 
@@ -572,6 +573,100 @@ let dropSelected game =
                 let newCursor = min game.invCursor (max 0 (listLength taken.rest - 1))
                 in message ("You drop " ++ know.visibleName game.content game.player dropped ++ ".") (game.{ invCursor = newCursor, level = game.level.{ actors = replaceActor p2 game.level.actors, items = (::) (GroundItem p.pos dropped) game.level.items } })
 
+-- Craft: consume the selected input item, add the output, and train the skill a
+-- notch (so simple recipes unlock the harder ones).
+craftRecipe : RecipeDef -> GameState -> GameState
+let craftRecipe r game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let removed = inventory.removeAt game.invCursor p.inventory
+        in
+            match removed.removed
+            case None -> game
+            case Some _ ->
+                let out = content.mkItem game.content r.output
+                let p2 = p.{ inventory = inventory.addToInventory out removed.rest }
+                let newCursor = max 0 (min game.invCursor (listLength p2.inventory - 1))
+                in message ("You craft " ++ know.visibleName game.content game.player out ++ ".") (game.{ player = game.player.{ crafting = min 6 (game.player.crafting + 1) }, invCursor = newCursor, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+executeVerb : Verb -> GameState -> GameState
+let executeVerb v game =
+    match v
+    case VUse -> useSelected game
+    case VEquip -> (useSelected game).{ mode = InventoryMode }
+    case VDrop -> (dropSelected game).{ mode = InventoryMode }
+    case VThrow -> game.{ mode = InventoryMode }
+    case VCraft r -> (craftRecipe r game).{ mode = InventoryMode }
+
+actionCommand : Command -> GameState -> GameState
+let actionCommand cmd game =
+    match playerActor game
+    case None -> game.{ mode = InventoryMode }
+    case Some p ->
+        match cmd
+        case Choose n ->
+            match listGet p.inventory game.invCursor
+            case None -> game.{ mode = InventoryMode }
+            case Some item ->
+                match listGet (content.itemVerbs game.content game.player.crafting p item) n
+                case Some v -> executeVerb v game
+                case None -> game
+        case _ -> game.{ mode = InventoryMode }
+
+-- ── Fire interaction: walk into a campfire to open it, then add/take items ──
+openFire : Vec2 -> GameState -> GameState
+let openFire pos game = game.{ mode = FireMenu, lookPos = pos }
+
+removeNthAt : Vec2 -> Int -> List GroundItem -> (removed : Option GroundItem, rest : List GroundItem)
+let removeNthAt pos n items decreases listLength items =
+    match items
+    case Nil -> (removed = None, rest = Nil)
+    case gi :: rest ->
+        if eqPos gi.pos pos then
+            if n <= 0 then (removed = Some gi, rest = rest)
+            else
+                let r = removeNthAt pos (n - 1) rest
+                in (removed = r.removed, rest = (::) gi r.rest)
+        else
+            let r = removeNthAt pos n rest
+            in (removed = r.removed, rest = (::) gi r.rest)
+
+takeFromFire : Int -> GameState -> GameState
+let takeFromFire n game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let r = removeNthAt game.lookPos n game.level.items
+        in
+            match r.removed
+            case None -> game
+            case Some gi ->
+                let p2 = p.{ inventory = inventory.addToInventory gi.item p.inventory }
+                in message ("You take the " ++ know.visibleName game.content game.player gi.item ++ " from the fire.") (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors, items = r.rest } })
+
+putOnFire : Int -> GameState -> GameState
+let putOnFire idx game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let r = inventory.removeAt idx p.inventory
+        in
+            match r.removed
+            case None -> game
+            case Some whole ->
+                let taken = inventory.takeOneFromStack whole r.rest
+                let p2 = p.{ inventory = taken.rest }
+                in message ("You place the " ++ know.visibleName game.content game.player taken.picked ++ " in the fire.") (game.{ level = game.level.{ actors = replaceActor p2 game.level.actors, items = (::) (GroundItem game.lookPos taken.picked) game.level.items } })
+
+fireCommand : Command -> GameState -> GameState
+let fireCommand cmd game =
+    match cmd
+    case Choose n ->
+        let nTakes = listLength (inventory.itemsAt game.lookPos game.level.items)
+        in if n < nTakes then takeFromFire n game else putOnFire (n - nTakes) game
+    case _ -> game.{ mode = Playing }
+
 inventoryCommand : Command -> GameState -> GameState
 let inventoryCommand cmd game =
     match cmd
@@ -579,6 +674,7 @@ let inventoryCommand cmd game =
     case SelectDown -> game.{ invCursor = min (max 0 (invCount game - 1)) (game.invCursor + 1) }
     case UseSelected -> useSelected game
     case DropSelected -> dropSelected game
+    case OpenActions -> if invCount game > 0 then game.{ mode = ActionMenu } else game
     case _ -> game.{ mode = Playing }
 
 faithCount : GameState -> Int
@@ -635,6 +731,8 @@ let applyModeCommand cmd game =
     case CharacterMode -> game.{ mode = Playing }
     case CharacterCreation -> creationCommand cmd game
     case LookMode -> lookCommand cmd game
+    case ActionMenu -> actionCommand cmd game
+    case FireMenu -> fireCommand cmd game
     case Dead ->
         match cmd
         case QuitNoSave -> game.{ mode = Quit }
@@ -693,6 +791,7 @@ let costsTurn cmd =
     case CycleTactic -> True
     case TargetedAttack -> True
     case UseSelected -> True
+    case Choose _ -> True
     case _ -> False
 
 actorVitality : List Actor -> Int
@@ -816,6 +915,29 @@ let spreadChaos game =
                                     let g2 = game.{ rng = intToNat pf.rng, level = level2 }
                                     in if t.lit then message "Chaos bleeds into the nearby stone." g2 else g2
 
+isFireKind : TileKind -> Bool
+let isFireKind k =
+    match k
+    case Campfire -> True
+    case Lava -> True
+    case _ -> False
+
+-- Fire chemistry: anything resting in a fire transforms — raw corpses cook, and
+-- flammable items (scrolls, food) burn away. Whether an item burns is data
+-- (items.json flammable); cooking is intrinsic to corpses.
+fireTransform : ContentPack -> Level -> List GroundItem -> List GroundItem
+let fireTransform pack level items decreases listLength items =
+    match items
+    case Nil -> Nil
+    case gi :: rest ->
+        if not (isFireKind (grid.getTile level gi.pos).kind) then (::) gi (fireTransform pack level rest)
+        elif gi.item.kind == Corpse && not gi.item.cooked then (::) gi.{ item = gi.item.{ cooked = True } } (fireTransform pack level rest)
+        elif content.flammableOf pack gi.item.kind then fireTransform pack level rest
+        else (::) gi (fireTransform pack level rest)
+
+fireTick : GameState -> GameState
+let fireTick game = game.{ level = game.level.{ items = fireTransform game.content game.level game.level.items } }
+
 tickWorld : Command -> GameState -> GameState -> GameState
 let tickWorld cmd before game =
     if commandActed cmd before game && game.mode == Playing then
@@ -826,7 +948,8 @@ let tickWorld cmd before game =
         let hazard = if starving.mode == Playing then hazardTick starving else starving
         let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
         let spread = if corrupted.mode == Playing then spreadChaos corrupted else corrupted
-        if spread.mode == Playing then ai.runMonsters spread else spread
+        let cooked = if spread.mode == Playing then fireTick spread else spread
+        if cooked.mode == Playing then ai.runMonsters cooked else cooked
     else game
 
 commandFor : GameState -> Key -> Command
@@ -835,6 +958,8 @@ let commandFor game key =
     case MainMenu -> input.menuKeyToCommand key
     case InventoryMode -> input.inventoryKeyToCommand key
     case CharacterCreation -> input.creationKeyToCommand key
+    case ActionMenu -> input.actionKeyToCommand key
+    case FireMenu -> input.actionKeyToCommand key
     case _ -> input.keyToCommand key
 
 stepPure : Command -> GameState -> GameState

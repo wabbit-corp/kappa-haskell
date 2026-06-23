@@ -349,7 +349,7 @@ let newLevel pack branch depth size seed0 =
     let level = fov.refreshVisibility start level0
     in GameState {
         rng = intToNat items.rng,
-        player = PlayerState playerActorId (pack.rules.startingHunger + (content.starSignDef pack sign.sign).hungerBonus) 0 Nil Balanced sign.sign 0 Nil 0 EmberMother 0 False,
+        player = PlayerState playerActorId (pack.rules.startingHunger + (content.starSignDef pack sign.sign).hungerBonus) 0 Nil Balanced sign.sign 0 Nil 0 EmberMother 0 False 1,
         level = level,
         mode = Playing,
         lastCommand = "",

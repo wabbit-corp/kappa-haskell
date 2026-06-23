@@ -102,7 +102,7 @@ freeVarOccurrences = queryExprs $ \case
 -- local definitions, comprehension clauses, do items). Conservative
 -- over-approximation: a quoted payload that rebinds a name anywhere
 -- keeps every occurrence of that spelling un-captured (§21.4 hygiene
--- still holds for the fixture-relevant forms; see SPEC_COVERAGE.md).
+-- still holds for the fixture-relevant forms; see SPEC_COMPLIANCE.md).
 boundNamesIn :: Expr -> [Text]
 boundNamesIn e0 = nub (goAll e0)
   where

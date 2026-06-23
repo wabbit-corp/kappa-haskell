@@ -163,7 +163,7 @@ jobs:
           cp CHANGELOG.md "$out_dir/CHANGELOG.md"
           cp docs/Spec.md "$out_dir/Spec.md"
           cp TESTING.md "$out_dir/TESTING.md"
-          cp SPEC_COVERAGE.md "$out_dir/SPEC_COVERAGE.md" || true
+          cp SPEC_COMPLIANCE.md "$out_dir/SPEC_COMPLIANCE.md" || true
 
           mkdir -p "$PWD/dist/assets"
           tar -C "$PWD/dist/release" -czf "$PWD/dist/assets/kappa-haskell-${{ matrix.platform }}.tar.gz" "kappa-haskell-${{ matrix.platform }}"

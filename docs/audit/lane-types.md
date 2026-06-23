@@ -4,7 +4,7 @@ Hostile compliance audit of the Kappa-Haskell implementation against `docs/Spec.
 for §3 (diagnostic contract), §9–§17 (declarations through patterns), §30–§31
 (elaboration/KCore/defeq/erasure). Verdicts are against normative spec text and
 against observed CLI behavior of probe `.kp` programs, NOT against
-`SPEC_COVERAGE.md` or the corpus pass rate.
+`SPEC_COMPLIANCE.md` or the corpus pass rate.
 
 Status legend: IMPLEMENTED+TESTED | IMPLEMENTED-WEAK | MISSING |
 INTENTIONALLY-UNSUPPORTED(cite) | SPEC-CONFLICT | UNCLEAR.

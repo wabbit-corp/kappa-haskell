@@ -39,7 +39,7 @@ already lexes adjacent `type"…"` as a prefixed string, and the
 implementation now provides the conventional built-in `type"…"`
 type-producing handler (it parses the literal content as a type
 expression and elaborates it; `macros/type-prefix-handler.kp`,
-SPEC_COVERAGE.md §6.3.5). The remaining lookahead observation about the
+SPEC_COMPLIANCE.md §6.3.5). The remaining lookahead observation about the
 three roles of `type` stands as a spec-ergonomics note, but no
 normative form is unsupported on its account.
 
@@ -56,7 +56,7 @@ unstated what happens when a user rebinds `(&&)` locally to a function
 of the same type (refinement silently off? error?). The two sections
 read as if written under different assumptions. (This implementation
 sidesteps it only because flow typing is unimplemented —
-SPEC_COVERAGE.md §16.4.)
+SPEC_COMPLIANCE.md §16.4.)
 
 ## 4. §28.2.1 + §16.4.4: checked subtraction makes ordinary `x - y` unwritable without flow facts
 
@@ -161,7 +161,7 @@ inside comprehension bodies (clause reading wins there, identifier
 reading everywhere else; `deep` is keyword-read only when followed by
 `handle`). The expression-continuing/statement keywords remain
 context-insensitive argument terminators — the residual delta
-enumerated in SPEC_COVERAGE.md §5.2. Evidence:
+enumerated in SPEC_COMPLIANCE.md §5.2. Evidence:
 `tests/conformance/lexer/soft-keyword-identifiers.kp`, and
 `Kappa.Parser` (`stopKeywords` vs `queryStopKeywords` /
 `isStopKeywordAt`).
@@ -210,7 +210,7 @@ provenance side-table threaded through KCore (`Term`), plus a query/stage
 The full KCore-node provenance store and its dump surface are §34 tooling
 (stage dumps, query traces, conformance-verification mode) — explicitly
 profile-scoped by §37.3 tiers and the §34 scope rule, and excluded from
-the CORE remediation set (see `SPEC_AUDIT_MATRIX.md` profile-scoped
+the CORE remediation set (see `SPEC_COMPLIANCE.md` profile-scoped
 ledger). This implementation therefore implements only the
 *diagnostic-facing* slice of §3.1.5A: a desugaring/generated construct
 that produces a diagnostic blames the user-written source as `primary`
