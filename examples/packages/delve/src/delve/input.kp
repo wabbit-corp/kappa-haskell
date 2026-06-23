@@ -18,6 +18,7 @@ let keyToCommand key =
     case KeyArrow dir -> Move dir
     case KeyChar "i" -> Inventory
     case KeyChar "@" -> Character
+    case KeyChar "B" -> OpenCodex
     case KeyChar "g" -> PickUp
     case KeyChar "," -> PickUp
     case KeyChar "f" -> ThrowFirst
@@ -54,6 +55,7 @@ let helpLines =
     , "o: open / close nearby door    r: engrave a ward"
     , "v: cycle combat stance    t: talk to neighbor"
     , ";: look around    A: aimed attack    C: crouch / sneak"
+    , "@: character    B: codex of creatures"
     , "U/Z/D: quick use / zap / drop"
     , ">/<: stairs and branch portals"
     , "m: mute / unmute sound    ?: help"
@@ -71,6 +73,16 @@ let inventoryKeyToCommand key =
     case KeyChar "q" -> DropSelected
     case KeyChar ";" -> OpenActions
     case KeyEnter -> OpenActions
+    case KeyEscape -> NoCommand
+    case _ -> NoCommand
+
+codexKeyToCommand : Key -> Command
+let codexKeyToCommand key =
+    match key
+    case KeyChar "w" -> SelectUp
+    case KeyChar "x" -> SelectDown
+    case KeyArrow North -> SelectUp
+    case KeyArrow South -> SelectDown
     case KeyEscape -> NoCommand
     case _ -> NoCommand
 

@@ -671,6 +671,7 @@ data GameMode : Type =
     LookMode
     ActionMenu
     FireMenu
+    CodexMode
     Dead
     Won
     Quit
@@ -741,6 +742,7 @@ data Command : Type =
     NoCommand
     OpenActions
     Choose (n : Int)
+    OpenCodex
 
 data Key : Type =
     KeyChar (text : String)
@@ -991,6 +993,7 @@ let gameModeCode mode =
     case LookMode -> 9
     case ActionMenu -> 10
     case FireMenu -> 11
+    case CodexMode -> 12
 
 instance Eq GameMode =
     let (==) a b = gameModeCode a == gameModeCode b
@@ -1038,6 +1041,7 @@ let commandTag c =
     case ToggleCrouch -> 37
     case OpenActions -> 38
     case Choose _ -> 39
+    case OpenCodex -> 40
 
 instance Eq Command =
     let (==) a b =

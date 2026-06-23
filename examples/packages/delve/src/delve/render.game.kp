@@ -563,6 +563,36 @@ let renderFireMenu game =
         let body = letterList (listAppend takes puts)
         in renderBox "Campfire" (listAppend (if listIsEmpty body then ["The fire crackles. You have nothing to add."] else body) ["", "press a letter, or Esc to step back"])
 
+codexNames : ContentPack -> List SpeciesKnowledge -> Int -> List String
+let codexNames pack ks cursor =
+    block
+        go : Int -> List SpeciesKnowledge -> List String -> List String
+        let go i xs acc decreases listLength xs =
+            match xs
+            case Nil -> reverse acc
+            case k :: rest -> go (i + 1) rest ((::) ((if i == cursor then "> " else "  ") ++ (content.actorDefBySpecies pack k.species).name) acc)
+        go 0 ks Nil
+
+codexDetail : ContentPack -> PlayerState -> List SpeciesKnowledge -> Int -> List String
+let codexDetail pack player ks cursor =
+    match listGet ks cursor
+    case None -> Nil
+    case Some k ->
+        let header = (content.actorDefBySpecies pack k.species).name ++ " — seen " ++ show k.sightings ++ ", slain " ++ show k.kills
+        in listAppend [header, content.descriptionOf pack k.species, ""] (know.speciesLore pack player k.species)
+
+codexBody : ContentPack -> PlayerState -> List SpeciesKnowledge -> Int -> List String
+let codexBody pack player ks cursor =
+    let names = codexNames pack ks cursor
+    let detail = codexDetail pack player ks cursor
+    in listAppend ((::) "w/x select · Esc back" ((::) "" names)) ((::) "" ((::) "── what you know ──" detail))
+
+renderCodex : GameState -> String
+let renderCodex game =
+    let ks = game.player.knowledge
+    let body = if listLength ks == 0 then ["You have studied no creatures yet.", "Fight and watch them, and what you learn will gather here."] else codexBody game.content game.player ks game.invCursor
+    in renderBox "Codex" body
+
 renderGame : GameState -> String
 let renderGame game =
     match game.mode
@@ -573,6 +603,7 @@ let renderGame game =
     case LookMode -> renderLook game
     case ActionMenu -> renderActionMenu game
     case FireMenu -> renderFireMenu game
+    case CodexMode -> renderCodex game
     case InventoryMode ->
         match playerActor game
         case Some p -> renderInventory game.content game.player p game.invCursor

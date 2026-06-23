@@ -242,7 +242,7 @@ let eatCorpse item rest p game =
     let nutrition = if item.cooked then base + divInt base 2 else base
     let p2 = p.{ inventory = addToInventory (content.mkBones game.content item.source) rest }
     let cookWord = if item.cooked then "cooked " else "raw "
-    let fed = game.{ player = game.player.{ hunger = game.player.hunger + nutrition }, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let fed = game.{ player = skill.trainSkill game.content "survival" (game.player.{ hunger = game.player.hunger + nutrition }), level = game.level.{ actors = replaceActor p2 game.level.actors } }
     in corpseEffect item (message ("You eat the " ++ cookWord ++ item.name ++ "; the bones remain.") fed)
 
 useFood : Item -> List Item -> Actor -> GameState -> GameState

@@ -387,6 +387,9 @@ let rangedElementOf pack species = (actorDefBySpecies pack species).rangedElemen
 speciesResistances : ContentPack -> Species -> List DamageType
 let speciesResistances pack species = (actorDefBySpecies pack species).resistances
 
+speciesVulnerabilities : ContentPack -> Species -> List DamageType
+let speciesVulnerabilities pack species = (actorDefBySpecies pack species).vulnerabilities
+
 -- The element a mutation rides on hit (e.g. BurningBlood -> Fire), if any.
 mutationDamageType : ContentPack -> Mutation -> Option DamageType
 let mutationDamageType pack m =

@@ -444,7 +444,9 @@ let zapWand wand before after p enemy game =
         let attacker2 = if enemy2.alive then attacker0 else combat.awardXp attacker0 enemy2
         let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
         let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
-        message ("A line of " ++ content.damageTypeDisplayName dt ++ " hits " ++ enemy.name ++ " for " ++ show dmg ++ "." ++ combat.elementTag dt enemy) g1
+        let learned = skill.observeSpecies enemy.species (not enemy2.alive) (Some dt) g1.player
+        let trained = if enemy2.alive then learned else skill.trainSkill game.content "lore" learned
+        message ("A line of " ++ content.damageTypeDisplayName dt ++ " hits " ++ enemy.name ++ " for " ++ show dmg ++ "." ++ combat.elementTag dt enemy) (g1.{ player = trained })
     case WandPolymorph ->
         let pool = content.monsterTable game.content game0.level.branch game0.level.depth
         let pick = rand.choose pool (natToInt game0.rng)
@@ -502,7 +504,9 @@ let throwFirst game =
                 let p3 = if enemy2.alive then p2 else combat.awardXp p2 enemy2
                 let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor p3 game0.level.actors)), items = (::) (GroundItem enemy.pos thrown) game0.level.items } }
                 let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
-                message ("You throw " ++ know.visibleName game.content game.player thrown ++ " at " ++ enemy.name ++ " for " ++ show dmg ++ ".") g1
+                let learned = skill.observeSpecies enemy.species (not enemy2.alive) (Some dt) g1.player
+                let trained = if enemy2.alive then learned else skill.trainSkill game.content "lore" learned
+                message ("You throw " ++ know.visibleName game.content game.player thrown ++ " at " ++ enemy.name ++ " for " ++ show dmg ++ ".") (g1.{ player = trained })
 
 toggleDoor : GameState -> GameState
 let toggleDoor game =
@@ -650,7 +654,7 @@ let butcherCorpse game =
                 let bone = content.mkBones game.content corpse.source
                 let p2 = p.{ inventory = inventory.addToInventory bone (inventory.addToInventory bone r.rest) }
                 let nc = max 0 (min game.invCursor (listLength p2.inventory - 1))
-                in message ("You butcher the " ++ corpse.name ++ " for bones.") (game.{ invCursor = nc, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+                in message ("You butcher the " ++ corpse.name ++ " for bones.") (game.{ invCursor = nc, player = skill.trainSkill game.content "survival" game.player, level = game.level.{ actors = replaceActor p2 game.level.actors } })
 
 isFloorKindleTarget : TileKind -> Bool
 let isFloorKindleTarget k =
@@ -825,6 +829,13 @@ let inventoryCommand cmd game =
     case OpenActions -> if invCount game > 0 then game.{ mode = ActionMenu } else game
     case _ -> game.{ mode = Playing }
 
+codexCommand : Command -> GameState -> GameState
+let codexCommand cmd game =
+    match cmd
+    case SelectUp -> game.{ invCursor = max 0 (game.invCursor - 1) }
+    case SelectDown -> game.{ invCursor = min (max 0 (listLength game.player.knowledge - 1)) (game.invCursor + 1) }
+    case _ -> game.{ mode = Playing }
+
 faithCount : GameState -> Int
 let faithCount game = listLength game.content.faiths
 
@@ -881,6 +892,7 @@ let applyModeCommand cmd game =
     case LookMode -> lookCommand cmd game
     case ActionMenu -> actionCommand cmd game
     case FireMenu -> fireCommand cmd game
+    case CodexMode -> codexCommand cmd game
     case Dead ->
         match cmd
         case QuitNoSave -> game.{ mode = Quit }
@@ -904,6 +916,7 @@ let applyModeCommand cmd game =
         case ThrowFirst -> throwFirst game
         case Inventory -> game.{ mode = InventoryMode }
         case Character -> game.{ mode = CharacterMode }
+        case OpenCodex -> game.{ mode = CodexMode, invCursor = 0 }
         case Descend -> stairsCommand True game
         case Ascend -> stairsCommand False game
         case Pray -> faith.pray game
@@ -1108,6 +1121,7 @@ let commandFor game key =
     case CharacterCreation -> input.creationKeyToCommand key
     case ActionMenu -> input.actionKeyToCommand key
     case FireMenu -> input.actionKeyToCommand key
+    case CodexMode -> input.codexKeyToCommand key
     case _ -> input.keyToCommand key
 
 stepPure : Command -> GameState -> GameState

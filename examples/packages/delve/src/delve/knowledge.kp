@@ -23,41 +23,48 @@ let intersectDamage xs ys decreases listLength xs =
     case Nil -> Nil
     case x :: rest -> if skill.memberDamage x ys then (::) x (intersectDamage rest ys) else intersectDamage rest ys
 
-loreVagueLine : RevealConfig -> Actor -> String
-let loreVagueLine cfg a =
-    let nr = listLength a.resistances
-    let nv = listLength a.vulnerabilities
+loreVagueLine : RevealConfig -> List DamageType -> List DamageType -> String
+let loreVagueLine cfg res vul =
+    let nr = listLength res
+    let nv = listLength vul
     in if nr > nv then cfg.vagueTough elif nv > nr then cfg.vagueWeak else cfg.vagueNeutral
 
-loreApproxLines : ContentPack -> Actor -> SpeciesKnowledge -> List String
-let loreApproxLines pack a k =
-    let seenR = intersectDamage a.resistances k.damageSeen
-    let seenV = intersectDamage a.vulnerabilities k.damageSeen
+loreApproxLines : ContentPack -> SpeciesKnowledge -> List DamageType -> List DamageType -> List String
+let loreApproxLines pack k res vul =
+    let seenR = intersectDamage res k.damageSeen
+    let seenV = intersectDamage vul k.damageSeen
     let rl = if listIsEmpty seenR then Nil else ["It seems to resist " ++ content.resistanceWords seenR ++ "."]
     let vl = if listIsEmpty seenV then Nil else ["It seems vulnerable to " ++ content.resistanceWords seenV ++ "."]
     let both = listAppend rl vl
-    in if listIsEmpty both then [loreVagueLine pack.reveal a] else both
+    in if listIsEmpty both then [loreVagueLine pack.reveal res vul] else both
 
-loreKnownLines : Actor -> List String
-let loreKnownLines a =
-    let rl = if listIsEmpty a.resistances then Nil else ["Resists " ++ content.resistanceWords a.resistances ++ "."]
-    let vl = if listIsEmpty a.vulnerabilities then Nil else ["Vulnerable to " ++ content.resistanceWords a.vulnerabilities ++ "."]
+loreKnownLines : List DamageType -> List DamageType -> List String
+let loreKnownLines res vul =
+    let rl = if listIsEmpty res then Nil else ["Resists " ++ content.resistanceWords res ++ "."]
+    let vl = if listIsEmpty vul then Nil else ["Vulnerable to " ++ content.resistanceWords vul ++ "."]
     let both = listAppend rl vl
     in if listIsEmpty both then ["It has no elemental weakness you can find."] else both
 
-loreLines : ContentPack -> Actor -> SpeciesKnowledge -> Int -> List String
-let loreLines pack a k tier =
+loreLines : ContentPack -> SpeciesKnowledge -> Int -> List DamageType -> List DamageType -> List String
+let loreLines pack k tier res vul =
     if tier <= 0 then Nil
-    elif tier == 1 then [loreVagueLine pack.reveal a]
-    elif tier == 2 then loreApproxLines pack a k
-    else loreKnownLines a
+    elif tier == 1 then [loreVagueLine pack.reveal res vul]
+    elif tier == 2 then loreApproxLines pack k res vul
+    else loreKnownLines res vul
 
-revealActorLore : ContentPack -> PlayerState -> Actor -> List String
-let revealActorLore pack player a =
-    let k = skill.lookupKnowledge a.species player
+loreFor : ContentPack -> PlayerState -> Species -> List DamageType -> List DamageType -> List String
+let loreFor pack player species res vul =
+    let k = skill.lookupKnowledge species player
     let eff = skill.knowledgeScore k + skill.skillLevel "lore" player
     let tier = revealTier pack.reveal eff
-    in loreLines pack a k tier
+    in loreLines pack k tier res vul
+
+revealActorLore : ContentPack -> PlayerState -> Actor -> List String
+let revealActorLore pack player a = loreFor pack player a.species a.resistances a.vulnerabilities
+
+-- Same reveal, addressed by species (for the Codex, which has no live Actor).
+speciesLore : ContentPack -> PlayerState -> Species -> List String
+let speciesLore pack player species = loreFor pack player species (content.speciesResistances pack species) (content.speciesVulnerabilities pack species)
 
 beatitudeText : Beatitude -> String
 let beatitudeText beatitude =
