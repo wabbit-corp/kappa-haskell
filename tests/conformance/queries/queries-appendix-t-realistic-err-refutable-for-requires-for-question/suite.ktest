@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- Refutable generator patterns must use for?, not plain for.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch (refutable|Refutable).*for\?|for\?.*(refutable|Refutable)|irrefutable|Irrefutable

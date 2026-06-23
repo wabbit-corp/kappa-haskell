@@ -1,0 +1,15 @@
+module main
+
+-- Round-8 KR8-6 + round-6 F3 (§5.5.1): only (-) has a unary fixity — any
+-- other bare operator at a unary arrow signature or under-applied at a
+-- scalar expectation fails closed (previously `add 7` was a closure at Int).
+
+add : Int -> Int
+let add = (+)
+
+plusAtInt : Int
+let plusAtInt = (+) 5
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH

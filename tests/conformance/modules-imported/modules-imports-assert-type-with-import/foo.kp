@@ -1,0 +1,4 @@
+module foo
+
+message : String
+let message = "hello"

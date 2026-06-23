@@ -1,0 +1,15 @@
+module interpolation
+
+-- Source issue: KT-881
+
+name : String
+let name = "done"
+
+value : String
+let value = f"test = ${ "test" } and $name"
+
+--! assertNoErrors
+--! assertType value String
+--! x-assertEval value "test = test and done"
+--! assertDeclKinds signature, let, signature, let
+--! x-assertContainsTokenKinds InterpolatedStringStart, StringTextSegment, InterpolationStart, InterpolationEnd, InterpolatedStringEnd

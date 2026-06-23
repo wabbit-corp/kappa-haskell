@@ -1,0 +1,11 @@
+module main
+
+-- Source issue: KT-682
+-- Spec: §2.3, §2.8.1
+import library.math.fortyTwo
+
+answer : Int
+let answer = fortyTwo
+
+--! assertType answer Int
+--! assertDeclKinds import, signature, let

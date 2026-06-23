@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType ok main.Delayed
+--! assertType observed Int

@@ -1,0 +1,27 @@
+module main
+
+-- Hostile-audit SYN-1 pin (§5.5.1 longest-match-first / §28.2.3 normative `(:&) : infix right 4`):
+-- a ':'-led operator token must lex as a SINGLE operator, not Colon + operator. Before the fix the
+-- lexer's ':' arm emitted a Colon and scanned the rest separately, so a ':'-led operator — and the
+-- normative `(:&)` fixity declaration itself — could not be lexed/declared. The reserved digraphs
+-- `::` (cons) and `:=` (record patch) must keep their existing two-token-equivalent behavior.
+infix left 40 (:+)
+
+(:+) : Int -> Int -> Int
+let (:+) a b = a + b
+
+sum : Int
+let sum = 3 :+ 4
+
+-- `::` cons must keep working unchanged (still a single Operator token).
+firstThree : List Int
+let firstThree = 1 :: 2 :: 3 :: Nil
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors
+--! assertType sum Int
+--! assertEval sum 7
+--! assertContainsTokenTexts :+, ::

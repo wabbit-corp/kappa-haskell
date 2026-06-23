@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+import std.unicode.*
+
+-- This name is intentionally not provided by std.unicode's portable minimum.
+--! assertDiagnosticNext error E_NAME_UNRESOLVED
+let bad = localeCompare "sv-SE" "ä" "z"

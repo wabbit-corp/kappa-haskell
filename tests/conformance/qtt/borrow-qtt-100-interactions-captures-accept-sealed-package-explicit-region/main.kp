@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+type GetterSig (s : Region) : Type =
+    (get : ((Unit -> Int) captures (s)))
+
+mk : forall (s : Region). (&[s] x : Int) -> GetterSig s
+let mk (@0 s : Region) (&[s] x : Int) : GetterSig s =
+    (get = \() -> x)

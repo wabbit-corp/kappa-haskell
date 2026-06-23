@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type TypePkg : Type = (@T : Type, value : this.T)
+
+repair : TypePkg -> TypePkg
+let repair (p : TypePkg) : TypePkg = p.{ @T = String, value = "ok" }

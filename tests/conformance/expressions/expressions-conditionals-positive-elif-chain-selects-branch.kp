@@ -1,0 +1,44 @@
+module main
+
+-- Opus task #23 pin: `elif` is sugar for `else if` (Spec §16.4 L16962). A multi-arm elif
+-- chain must parse and select the correct branch — tested here in BOTH the newline-indented
+-- form (band) and the inline form (inlineBand), with assertEval on each arm.
+band : Int -> String
+let band n =
+    if n < 10 then "low"
+    elif n < 20 then "mid"
+    elif n < 30 then "high"
+    else "huge"
+
+low : String
+let low = band 5
+
+mid : String
+let mid = band 15
+
+high : String
+let high = band 25
+
+huge : String
+let huge = band 100
+
+inlineBand : Int -> String
+let inlineBand n = if n == 0 then "zero" elif n > 0 then "pos" else "neg"
+
+inlinePos : String
+let inlinePos = inlineBand 7
+
+inlineNeg : String
+let inlineNeg = inlineBand (0 - 3)
+
+main : UIO Unit
+let main = printlnString (band 15)
+
+--! mode check
+--! assertNoErrors
+--! assertEval low "low"
+--! assertEval mid "mid"
+--! assertEval high "high"
+--! assertEval huge "huge"
+--! assertEval inlinePos "pos"
+--! assertEval inlineNeg "neg"

@@ -1,0 +1,9 @@
+module main
+
+oldBuild : List SyntaxFragment -> Syntax Int
+let oldBuild fragments =
+    '{ 0 }
+
+newBuild : List SyntaxFragment -> Elab (Syntax Int)
+let newBuild =
+    oldBuild

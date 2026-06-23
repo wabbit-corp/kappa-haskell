@@ -1,0 +1,7 @@
+module main_not
+
+value : Bool
+let value = not False
+
+--! assertType value Bool
+--! assertDeclKinds signature, let

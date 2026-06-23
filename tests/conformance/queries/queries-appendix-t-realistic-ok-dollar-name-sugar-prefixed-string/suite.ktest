@@ -1,0 +1,7 @@
+-- Appendix T directory suite.
+-- Ordinary prefixed strings support $name sugar for ${name}.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType greeting String -> dsl.web.Html

@@ -1,0 +1,21 @@
+module main
+
+--! allow_unsafe_consume
+
+data Resource : Type =
+    Resource
+
+inspectOnly : (& x : Resource) -> Unit
+let inspectOnly x = ()
+
+consume : (1 x : Resource) -> Unit
+let consume x =
+    let _ = unsafeConsume x
+    in ()
+
+demo : (1 x : Resource) -> Unit
+let demo x =
+    let _ = inspectOnly x
+    consume x
+
+--! assertNoErrors

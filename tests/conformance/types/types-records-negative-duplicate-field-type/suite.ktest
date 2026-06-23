@@ -1,0 +1,3 @@
+--! mode check
+--! packageMode
+--! assertDiagnosticCodes E_RECORD_DUPLICATE_FIELD

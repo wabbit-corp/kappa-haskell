@@ -130,7 +130,7 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
                 Nothing -> Nothing
       CGlob x -> Just (CGlob x)
       CLam ic q n b -> CLam ic q n <$> go (curDepth + 1) b
-      CPi ic q n a b -> CPi ic q n <$> go curDepth a <*> go (curDepth + 1) b
+      CPi ic q brw n a b -> CPi ic q brw n <$> go curDepth a <*> go (curDepth + 1) b
       CApp ic f a -> CApp ic <$> go curDepth f <*> go curDepth a
       CSort u -> Just (CSort u)
       CLit l -> Just (CLit l)
@@ -182,7 +182,7 @@ simplifyDecisionTerm = go
          in fromMaybe (CMatch s' alts') (reduceSimpleMatch s' alts')
       CApp ic f a -> CApp ic (go f) (go a)
       CLam ic q n b -> CLam ic q n (go b)
-      CPi ic q n a b -> CPi ic q n (go a) (go b)
+      CPi ic q brw n a b -> CPi ic q brw n (go a) (go b)
       CCtor g as -> CCtor g (map go as)
       CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
       CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]

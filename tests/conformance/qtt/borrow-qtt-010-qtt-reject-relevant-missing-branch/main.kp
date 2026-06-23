@@ -1,0 +1,10 @@
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+bad : (>=1 x : Int) -> Bool -> Int
+let bad (>=1 x : Int) (b : Bool) : Int =
+    if b then strictId x else 0
+
+--! assertErrorCount 1

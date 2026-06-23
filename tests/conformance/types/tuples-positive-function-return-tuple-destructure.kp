@@ -1,0 +1,19 @@
+module main
+
+-- Source issue: KT-730
+-- Spec: §4.5, §6.3.1
+
+neighbors : Int -> (Int, Int)
+let neighbors x = (x - 1, x + 1)
+
+sumNeighbors : Int -> Int
+let sumNeighbors x =
+    let (left, right) = neighbors x
+    left + right
+
+result : Int
+let result = sumNeighbors 21
+
+--! assertType neighbors Int -> (Int, Int)
+--! assertType sumNeighbors Int -> Int
+--! assertEval result 42

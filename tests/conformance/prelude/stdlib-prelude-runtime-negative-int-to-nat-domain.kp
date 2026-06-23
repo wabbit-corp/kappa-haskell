@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+-- intToNat is partial: negative Int values have no Nat image and trap at
+-- runtime instead of minting a negative Nat.
+okNat : Nat
+let okNat = intToNat 2
+
+badNat : Nat
+let badNat = intToNat (0 - 2)
+
+--! assertNoErrors
+--! assertEval okNat 2
+--! assertEvalErrorContains badNat intToNat

@@ -27,7 +27,7 @@ completeness but are **not** required for core conformance.
 
 | Bucket | Count | Meaning |
 | --- | --- | --- |
-| **Core MUST/SHALL gaps** (§1) | 31 | Required for portable-profile conformance. Do these. |
+| **Core MUST/SHALL gaps** (§1) | 30 | Required for portable-profile conformance. Do these. |
 | **SHOULD gaps** (§2) | 12 | Recommended; non-conformance is permitted but discouraged. |
 | **Profile-scoped / adjudication** (§3) | 22 | Sanctioned by an explicit profile clause, or spec-MUST-but-profile-gated (flagged). |
 | **Optional / MAY** (§4) | 1 | Pure latitude. |
@@ -49,11 +49,14 @@ These are the real "must do for 100%". Ordered soundness-first, then by subsyste
 
 ### 1.1 Soundness / correctness — do first
 
-| § | Gap | Fix locus | Effort |
-| --- | --- | --- | --- |
-| **§11.1** | **Latent Type-in-Type.** Records and Pi types unconditionally land in `Type 0`, so a record/function carrying a `Type`-valued field/domain is accepted at `Type0` (universe inconsistency, no error). Universe stratification (`Type0 : Type1`, level ≥ field level) is not enforced. *(Universe polymorphism `forall (u:Universe). Type u` is the separate SHOULD extension — §2.)* | `Check.hs:3211` (`CRecordT … VSort 0`), `Check.hs:3281` (`CPi … VSort 0`) | medium |
-| **§8.5.2** | **`opaque` equation leaks across modules.** `opaque let`/`opaque type` is parsed but ignored in elaboration: the definitional equation stays available for definitional equality outside the defining module (δ-unfolds), so a cross-module `proof : secret = 7; let proof = refl` wrongly compiles. `dmOpaque` is consumed only for `data` (§8.5.3 representation hiding), never to force `gdReducible = False` or record a per-module δ-opacity boundary. | `Check.hs:12272,12403` (`elabLetDecl` discards `mods`), `Check.hs:11087,11102,11116` (`DTypeAlias` discards `mods`) | medium |
-| **§16.4.4 / §17.1.10** | **Positive-lower-bound false rejects.** The spec's own *ACCEPTED* examples `if b then x else x + 1` and `match o case Some y -> x+y case None -> x` are **REJECTED** with `E_QTT_LINEAR_DROP`. Root cause: a `>=1`/`1` binder used as an argument to an unrestricted (ω/unannotated) parameter is demanded at `[0,ω]`, so the lower bound is never discharged (and a linear value to ω falsely over-uses). The branch join itself is correct. | `Usage.hs:94-106` (`pDemand` returns `(0,Nothing)`), `Usage.hs:1700-1729` (scales by interval), `Usage.hs:947` (`closeVar` drop check) | medium |
+All soundness items identified in the audit have been **resolved** this pass —
+§11.1 universe stratification, §8.5.2 opaque cross-module leak, and
+§16.4.4/§17.1.10 positive-lower-bound false rejects (see Appendix A). The
+last is fixed *soundly and modularly* — the arithmetic operators borrow their
+operands, so a relevant (`>=1`) value supplied to `+` is demanded (a borrow
+reads it) while a relevant value supplied to a genuinely unrestricted parameter
+is still correctly rejected (`QuantitySatisfies >=1 ω` does not hold, §12.2.1).
+No unsound "assume the callee uses its argument" defaulting remains.
 
 ### 1.2 Type system & elaboration
 
@@ -214,6 +217,40 @@ The 9-group re-audit verified **~59** items the old docs listed as gaps/Partial/
 MISSING are now **implemented** (dropped from the plan), and corrected **~46**
 stale claims. The headline removals:
 
+- **§16.4.4 / §17.1.10 positive-lower-bound false rejects — FIXED (soundly, via
+  borrowing).** The arithmetic operators now **borrow** their operands
+  (`(+) : … -> (& x : a) -> (& y : a) -> a`, likewise `(*)`), so `x + 1` *reads*
+  `x` (a borrow touches it, discharging the `>=1` obligation per §12.4) without
+  consuming it: `if b then x else x + 1` and `match o case Some y -> x+y case
+  None -> x` with a `>=1` binder are Accepted, while `if b then x else 0` is
+  still `E_QTT_LINEAR_DROP` and a relevant value supplied to a genuinely
+  unrestricted parameter is still rejected (no unsound "assume-uses" default).
+  The binder borrow marker is carried in core (**`CPi`/`VPi` gained a borrow
+  field**), so `coreFnParams` reads it from the type rather than the surface AST
+  (modular). Borrow-after-consume is now gated on a *definite* (consumable)
+  consume, so re-reading an ω value after `let q = p` is no longer a false
+  `E_QTT_PATH_CONSUMED`. Tests: `qtt/positive-lower-bound-through-branches.kp`,
+  `qtt/positive-lower-bound-drop-reject.kp`, `qtt/linear-to-unrestricted-overuse.kp`.
+  (The earlier `scaleC` touch-preservation and the H2 demand-inference attempt
+  were reverted as unsound/non-modular.)
+- **§8.5.2 `opaque` cross-module leak — FIXED.** `opaque let`/`opaque type`
+  now records the def in `csOpaqueDefs`; an `opaqueSealPass` at the end of each
+  module clears `gdReducible` for that module's opaque defs, so they stay
+  transparent within the defining module but no longer δ-unfold during
+  conversion downstream (a cross-module `proof : secret = 7` by `refl` is now
+  rejected). Runtime evaluation is unaffected (`ecRuntime` unfolds every valued
+  global). Tests: `modules-opaque-cross-module/` (reject),
+  `modules-opaque-runtime/` (value still computes cross-module),
+  `equality/opaque-def-in-module.kp` (transparent in-module).
+- **§11.1 latent Type-in-Type — FIXED.** Type formers now compute a
+  predicative `max`-of-component universe level (`Check.hs` record/Pi/tuple/
+  option/forall/exists cases): a record/tuple/Pi/existential carrying a
+  `Type`-valued component lands in `Type1`, and ascribing it to `Type0` is now
+  rejected (`E_TYPE_EQUALITY_MISMATCH`); formers over only `Type0` components
+  are unchanged. Regression tests: `types/universe-stratification.kp`,
+  `types/universe-type-in-type-reject.kp`. (Universe *polymorphism* — bare
+  `Type` absorbing the level — remains the §2 SHOULD; until then a Type-valued
+  type written `: Type` must be written `: Type1`.)
 - **§4 unsafe/debug — fully done** (was "Not implemented"): `UnsafeConfig`
   `allow_*` flags, `assertTerminates`/`assertReducible`/`assertTotal` +
   `unsafeAssertProof` parsed & gated, `unhide`/`clarify` build-gated, §4.7 audit

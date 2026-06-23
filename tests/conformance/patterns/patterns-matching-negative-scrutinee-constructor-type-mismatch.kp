@@ -1,0 +1,25 @@
+module main
+
+-- Round-8 KR8-2 (§17.1): a known scrutinee type must agree with the owning
+-- type of the cases' constructor patterns; previously `match "boom"` over
+-- Color constructors compiled and trapped at runtime.
+
+data Color : Type =
+    Red
+    Green
+
+viaString : Int
+let viaString =
+    match "boom"
+      case Red -> 1
+      case Green -> 2
+
+viaInt : Int
+let viaInt =
+    match 5
+      case Red -> 1
+      case Green -> 2
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH

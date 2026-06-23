@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- group by produces an unordered stream; skip requires a later order by.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch (skip|Skip|take|Take).*(ordered|Ordered)|(ordered|Ordered).*(skip|Skip|take|Take)|(group|Group).*(unordered|Unordered)

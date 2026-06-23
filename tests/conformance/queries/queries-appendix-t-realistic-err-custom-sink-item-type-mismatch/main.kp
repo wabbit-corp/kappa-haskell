@@ -1,0 +1,18 @@
+module main
+
+import model.data.*
+
+data OnlyInt : Type =
+    OnlyInt (description : String)
+
+instance FromComprehensionPlan OnlyInt =
+    let Item = Int
+    let fromComprehensionPlan plan =
+        pure '{ OnlyInt "only-int" }
+
+bad : OnlyInt
+let bad =
+    OnlyInt [
+        for u in users
+        yield u.name
+    ]

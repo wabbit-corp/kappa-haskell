@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+import lib.runtime as R
+
+ok : Int
+let ok =
+    block
+        let M = module R
+        M.answer

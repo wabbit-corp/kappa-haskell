@@ -1,0 +1,22 @@
+module main
+
+-- Hostile-audit RT-3-residue pin (§18.6): the member-body guard must NOT flag a `break`/`continue` that is
+-- lexically inside a loop body within an instance member (just as for top-level bodies). Asserts the new
+-- member-body coverage is in-loop-aware, not a blunt rejection.
+trait Greet (a : Type) =
+    greet : a -> UIO Unit
+
+data Person = MkPerson
+
+instance Greet Person =
+    let greet p =
+        do
+            for value in 1 :: 2 :: 3 :: Nil do
+                break
+            pure ()
+
+main : UIO Unit
+let main = printlnString "x"
+
+--! mode check
+--! assertNoErrors

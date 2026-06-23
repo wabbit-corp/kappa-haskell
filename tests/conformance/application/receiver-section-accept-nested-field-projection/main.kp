@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+
+type Inner = (value : Int, tag : Int)
+type Outer = (inner : Inner, other : Int)
+
+getValue : Outer -> Int
+let getValue : Outer -> Int = (.inner.value)
+
+ok : Int
+let ok : Int = getValue (inner = (value = 9, tag = 0), other = 1)

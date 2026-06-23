@@ -1,0 +1,8 @@
+module main
+
+value : Unit
+let value = ()
+
+--! assertNoErrors
+--! assertType value Unit
+--! x-assertContainsTokenKinds LeftParen, RightParen

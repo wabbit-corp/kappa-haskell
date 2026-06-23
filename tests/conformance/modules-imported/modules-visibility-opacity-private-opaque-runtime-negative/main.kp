@@ -1,0 +1,8 @@
+module main
+
+import hidden.secret as secret
+
+result : Int
+let result = secret.secret
+
+--! assertDiagnosticCodes E_NAME_UNRESOLVED

@@ -1,0 +1,17 @@
+module main
+
+-- Manual oracle seed: recursive list traversal in an IO result program.
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+main : IO Int
+let main = do
+    let numbers = 10 :: 12 :: 20 :: Nil
+    pure (sumList numbers)
+
+--! assertNoErrors
+--! assertType main IO Int
+--! assertExecute main 42

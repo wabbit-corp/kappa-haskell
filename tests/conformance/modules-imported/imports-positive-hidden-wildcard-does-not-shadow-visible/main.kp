@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: scala2#12736
+-- Spec: §2.3.1, §2.5
+import current.visible.*
+import hidden.shadow.*
+
+result : Int
+let result = answer
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

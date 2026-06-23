@@ -1,0 +1,12 @@
+--}
+module main
+
+-- Source issue: Idris2#711
+-- Kappa analogue: `--}` is ordinary line-comment text, not a special unmatched block-comment terminator.
+-- Spec: §3.3
+value : Int
+let value = 100
+
+--! assertNoErrors
+--! assertType value Int
+--! assertEval value 100

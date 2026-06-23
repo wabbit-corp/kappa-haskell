@@ -1,0 +1,7 @@
+module Defs
+
+isNotLT : Ordering -> Bool
+let isNotLT o =
+    match o
+    case LT -> False
+    case _  -> True

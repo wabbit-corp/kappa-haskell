@@ -1,0 +1,12 @@
+module main
+
+whole : Int
+let whole = 42
+
+decimal : Float
+let decimal = 3.14
+
+--! assertNoErrors
+--! assertType whole Int
+--! assertType decimal Float
+--! x-assertContainsTokenKinds IntegerLiteral, FloatLiteral

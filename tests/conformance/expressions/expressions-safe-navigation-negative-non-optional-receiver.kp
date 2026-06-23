@@ -1,0 +1,14 @@
+module main
+
+import std.prelude.(type Option)
+
+type Inner = (c : Int)
+type Outer = (b : Inner)
+
+-- Source issue: KT-418
+-- Spec: §7.1.1.2
+bad : Outer -> Option Inner
+let bad a = a?.b
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_SAFE_NAVIGATION_RECEIVER_NOT_OPTION

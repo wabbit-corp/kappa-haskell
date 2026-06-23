@@ -1,0 +1,11 @@
+module main
+
+linearId : (1 x : Int) -> Int
+let linearId (1 x : Int) : Int = x
+
+bad : (1 x : Int) -> Int
+let bad (1 x : Int) : Int =
+    let _ = linearId x
+    in linearId x
+
+--! assertErrorCount 1

@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- Query {| ... |} is ill-formed because Query cannot silently discard set metadata.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch Query.*(set|Set)|(set|Set).*Query|metadata|ill-formed

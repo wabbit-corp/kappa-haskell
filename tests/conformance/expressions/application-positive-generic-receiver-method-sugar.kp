@@ -1,0 +1,18 @@
+module main
+
+-- Source issues: KT-125, KT-911
+-- Spec: §2.8.4, §7.1.3
+echo : forall (a : Type). (this x : a) -> a
+let echo @a (this x : a) = x
+
+intResult : Int
+let intResult = 42.echo
+
+stringResult : String
+let stringResult = "OK".echo
+
+--! assertNoErrors
+--! assertType intResult Int
+--! assertType stringResult String
+--! assertEval intResult 42
+--! assertEval stringResult "OK"

@@ -1,0 +1,7 @@
+module providers.score
+
+trait Score a =
+    score : a -> Int
+
+instance Score Int =
+    let score x = x

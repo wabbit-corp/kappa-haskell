@@ -1,0 +1,10 @@
+module main
+
+import lib.(makeGetter)
+
+useLocal : (& x : Int) -> Int
+let useLocal (& x : Int) : Int =
+    let g = makeGetter x
+    in g ()
+
+--! assertNoErrors

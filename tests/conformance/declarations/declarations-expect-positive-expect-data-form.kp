@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+-- Spec: the `expect data Name <params>` declaration form is accepted with
+-- expected-type semantics; in a user module without intrinsic backing it
+-- reports the ordinary unsatisfied-expect diagnostic (not a parse error).
+expect data ExternalData (a : Type)
+
+holder : Bool
+let holder = True
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_EXPECT_UNSATISFIED

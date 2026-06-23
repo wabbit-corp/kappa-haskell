@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType getX main.Point -> Int

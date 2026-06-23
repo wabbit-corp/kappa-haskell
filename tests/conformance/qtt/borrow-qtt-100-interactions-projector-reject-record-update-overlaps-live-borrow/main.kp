@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Pair : Type = (left : Int, right : Int)
+
+bad : (1 p : Pair) -> Pair
+let bad (1 p : Pair) : Pair =
+    block
+        let & l = p.left
+        p.{ left = 10 }

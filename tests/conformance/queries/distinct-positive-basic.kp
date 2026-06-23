@@ -1,0 +1,14 @@
+module main
+
+-- Source family: distinct / dedup issue family
+-- Spec: §10.6.3
+unique : List Int
+let unique =
+    [
+        for x in [2, 1, 2, 3]
+        distinct
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType unique List Int

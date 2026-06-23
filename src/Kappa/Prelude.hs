@@ -35,10 +35,10 @@ prel = GName preludeModule
 -- small Pi-type builders (closed terms, evaluated lazily by the checker)
 infixr 5 ~>
 (~>) :: Term -> Term -> Term
-a ~> b = CPi Expl QW "_" a b
+a ~> b = CPi Expl QW False "_" a b
 
 piI :: Q -> Text -> Term -> Term -> Term
-piI = CPi Impl
+piI q nm a b = CPi Impl q False nm a b
 
 tcon :: Text -> Term
 tcon = CGlob . prel
@@ -194,22 +194,22 @@ builtinState =
           piI Q0 "mid" tType $
             piI Q0 "midRoots" tType $
               piI Q0 "focus" tType $
-                CPi Expl QW "_" (projT (CVar 3) (CVar 2)) $
-                  CPi Expl QW "_" (projT (CVar 2) (CVar 1)) $
+                CPi Expl QW False "_" (projT (CVar 3) (CVar 2)) $
+                  CPi Expl QW False "_" (projT (CVar 2) (CVar 1)) $
                     projT (CVar 5) (CVar 2)
     captureBorrowTy =
       tyV $
         piI Q0 "ρ" (tcon "Region") $
           piI Q0 "a" tType $
-            CPi Expl QW "_" (CVar 0) $
+            CPi Expl QW False "_" (CVar 0) $
               CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)
     withBorrowViewTy =
       tyV $
         piI Q0 "ρ" (tcon "Region") $
           piI Q0 "a" tType $
             piI Q0 "r" tType $
-              CPi Expl QW "_" (CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)) $
-                CPi Expl QW "_" (CPi Expl QW "_" (CVar 2) (CVar 2)) $
+              CPi Expl QW False "_" (CApp Expl (CApp Expl (tcon "BorrowView") (CVar 2)) (CVar 1)) $
+                CPi Expl QW False "_" (CPi Expl QW False "_" (CVar 2) (CVar 2)) $
                   CVar 2
     ctors =
       [ (prel "refl", CtorInfo (prel "=") (quoteClosedTy reflTy) [])
@@ -335,10 +335,10 @@ builtinState =
       , prim "__stringSentences" (tyV (tStr ~> listT tStr))
       , -- §29.4 StringBuilder (linear text accumulator)
         prim "__newStringBuilder" (tyV (tcon "StringBuilder"))
-      , prim "__stringBuilderString" (tyV (tStr ~> CPi Expl Q1 "b" (tcon "StringBuilder") (tcon "StringBuilder")))
-      , prim "__stringBuilderScalar" (tyV (tScalar ~> CPi Expl Q1 "b" (tcon "StringBuilder") (tcon "StringBuilder")))
-      , prim "__stringBuilderGrapheme" (tyV (tGrapheme ~> CPi Expl Q1 "b" (tcon "StringBuilder") (tcon "StringBuilder")))
-      , prim "__finishStringBuilder" (tyV (CPi Expl Q1 "b" (tcon "StringBuilder") tStr))
+      , prim "__stringBuilderString" (tyV (tStr ~> CPi Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__stringBuilderScalar" (tyV (tScalar ~> CPi Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__stringBuilderGrapheme" (tyV (tGrapheme ~> CPi Expl Q1 False "b" (tcon "StringBuilder") (tcon "StringBuilder")))
+      , prim "__finishStringBuilder" (tyV (CPi Expl Q1 False "b" (tcon "StringBuilder") tStr))
       , -- §29.4 string cursors (StringCursor is a scalar offset; the
         -- byte offset is reported by __stringCursorOffset)
         prim "__stringStart" (tyV (tStr ~> tcon "StringCursor"))
@@ -357,10 +357,10 @@ builtinState =
         -- 'Err MkUnicodeDecodeError' and Some to 'Ok'.
         prim "__newUtf8Decoder" (tyV (tcon "Utf8Decoder"))
       , prim "__decodeUtf8Chunk"
-          (tyV (tBytes ~> CPi Expl Q1 "d" (tcon "Utf8Decoder")
+          (tyV (tBytes ~> CPi Expl Q1 False "d" (tcon "Utf8Decoder")
                   (optionT (CRecordT [("decoder", tcon "Utf8Decoder"), ("text", tStr)]))))
       , prim "__finishUtf8Decoder"
-          (tyV (CPi Expl Q1 "d" (tcon "Utf8Decoder") (optionT tStr)))
+          (tyV (CPi Expl Q1 False "d" (tcon "Utf8Decoder") (optionT tStr)))
       , prim "__byteToNat" (tyV (tByte ~> tNat))
       , prim "__natToByte" (tyV (tNat ~> tByte)) -- §29.5 builder/byte construction
       , -- §29.5 std.bytes internals (wrapped by the std.bytes module)
@@ -383,9 +383,9 @@ builtinState =
       , prim "__bytesFromList" (tyV (listT tByte ~> tBytes))
       , prim "__bytesCompact" (tyV (tBytes ~> tBytes))
       , prim "__newBytesBuilder" (tyV (tcon "BytesBuilder"))
-      , prim "__bytesBuilderByte" (tyV (tByte ~> CPi Expl Q1 "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
-      , prim "__bytesBuilderBytes" (tyV (tBytes ~> CPi Expl Q1 "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
-      , prim "__finishBytesBuilder" (tyV (CPi Expl Q1 "b" (tcon "BytesBuilder") tBytes))
+      , prim "__bytesBuilderByte" (tyV (tByte ~> CPi Expl Q1 False "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
+      , prim "__bytesBuilderBytes" (tyV (tBytes ~> CPi Expl Q1 False "b" (tcon "BytesBuilder") (tcon "BytesBuilder")))
+      , prim "__finishBytesBuilder" (tyV (CPi Expl Q1 False "b" (tcon "BytesBuilder") tBytes))
       , -- §29.1 std.atomic bitwise read-modify-write internals
         prim "__intAnd" (tyV (tInt ~> tInt ~> tInt))
       , prim "__intOr" (tyV (tInt ~> tInt ~> tInt))
@@ -417,7 +417,7 @@ builtinState =
         prim "intToNat" (tyV (tInt ~> tNat))
       , -- linear sink used by the external corpus behind its
         -- 'allow_unsafe_consume' directive: discards a linear value
-        prim "unsafeConsume" (tyV (piI Q0 "a" tType (CPi Expl Q1 "x" (CVar 0) tUnit)))
+        prim "unsafeConsume" (tyV (piI Q0 "a" tType (CPi Expl Q1 False "x" (CVar 0) tUnit)))
       , prim "printString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "printlnString" (tyV (forallE (tStr ~> io (CVar 1) tUnit)))
       , prim "ioPure" (tyV (forallEA (CVar 0 ~> io (CVar 2) (CVar 1))))
@@ -648,11 +648,11 @@ builtinState =
         -- the type argument is passed explicitly so the elaboration-time
         -- evaluator can see it)
         prim "__shapeInspectAdt"
-          (tyV (CPi Expl QW "a" tType (synT tType ~> elabT (CApp Expl (tconShape "AdtShape") (CVar 1)))))
+          (tyV (CPi Expl QW False "a" tType (synT tType ~> elabT (CApp Expl (tconShape "AdtShape") (CVar 1)))))
       , prim "__shapeInspectRecord"
-          (tyV (CPi Expl QW "a" tType (synT tType ~> elabT (CApp Expl (tconShape "RecordShape") (CVar 1)))))
+          (tyV (CPi Expl QW False "a" tType (synT tType ~> elabT (CApp Expl (tconShape "RecordShape") (CVar 1)))))
       , prim "__shapeRequireFieldInstances"
-          (tyV (CPi Expl QW "tc" (tType ~> tType) (CPi Expl QW "a" tType (CApp Expl (tconShape "AdtShape") (CVar 0) ~> elabT tUnit))))
+          (tyV (CPi Expl QW False "tc" (tType ~> tType) (CPi Expl QW False "a" tType (CApp Expl (tconShape "AdtShape") (CVar 0) ~> elabT tUnit))))
       , prim "__shapeMatchAdt"
           (tyV
              (piI Q0 "a" tType (piI Q0 "r" tType
@@ -681,7 +681,7 @@ evalClosed = go []
     go env = \case
       CVar i -> lookupEnv i env
       CGlob g -> VGlobN g []
-      CPi ic q n a b -> VPi ic q n (go env a) (Closure env b)
+      CPi ic q brw n a b -> VPi ic q brw n (go env a) (Closure env b)
       CApp ic f a -> app (go env f) ic (go env a)
       CSort n -> VSort n
       CRecordT fs -> VRecordT [(n, go env t) | (n, t) <- fs]
@@ -967,10 +967,10 @@ preludeSource =
     , "lexRelation : forall (a b : Type). (@_ : WellFoundedRelation a) -> (@_ : WellFoundedRelation b) -> WellFoundedRelation (a, b)"
     , "let lexRelation = __eqProof"
     , ""
-    , "(+) : forall (a : Type). (@_ : Add a) -> a -> a -> a"
+    , "(+) : forall (a : Type). (@_ : Add a) -> (& x : a) -> (& y : a) -> a"
     , "let (+) x y = add x y"
     , ""
-    , "(*) : forall (a : Type). (@_ : Mul a) -> a -> a -> a"
+    , "(*) : forall (a : Type). (@_ : Mul a) -> (& x : a) -> (& y : a) -> a"
     , "let (*) x y = multiply x y"
     , ""
     , "(-) : forall (a : Type). (@_ : CheckedSub a) -> (x : a) -> (y : a) -> (@_ : subDefined x y = True) -> a"

@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+data Cell : Type =
+    Cell
+
+instance Shareable Cell =
+type NeedBox = (lazy cell : Cell)
+
+ok : NeedBox
+let ok : NeedBox = (cell = Cell)
+
+forced : Cell
+let forced : Cell = force ok.cell

@@ -1,0 +1,18 @@
+module main
+
+data Byte : Type =
+    Byte
+
+data Array n a : Type =
+    Array
+
+mkBuffer : (len : Nat) -> Array len Byte
+let mkBuffer len = Array
+
+type SizedBuffer = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+
+grow : SizedBuffer -> SizedBuffer
+let grow buf =
+    buf.{ len = 20, buffer = mkBuffer this.len }
+
+--! assertNoErrors

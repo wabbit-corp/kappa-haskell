@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+bad : Bool -> UIO Unit
+let bad (cond : Bool) : UIO Unit =
+    do
+        while cond do
+            let >=1 x = 1
+            continue
+        pure ()

@@ -1,0 +1,69 @@
+module main
+
+-- Regression for the iterative (explicit work stack / loop) implementations of
+-- RuntimeValue.format, structural equality, and the IO chain executor: these
+-- run OUTSIDE the interpreter's evaluation depth guard, so they must not
+-- recurse on the caller's stack once per list element / IO step. This fixture
+-- pins behavior on a moderately deep value (the depth-robustness itself is
+-- structural: the implementations no longer recurse). NB there is no
+-- Eq (List a) instance, so deep equality is exercised element-wise (Int ==)
+-- and the deep value's integrity via its length; small `show` output pins the
+-- iterative renderer byte-for-byte against the original recursive renderer.
+
+buildList : Int -> List Int -> List Int
+let buildList n acc =
+    if n == 0 then acc else buildList (n - 1) (n :: acc)
+
+big : List Int
+let big = buildList 4000 Nil
+
+bigSame : List Int
+let bigSame = buildList 4000 Nil
+
+bigOther : List Int
+let bigOther = 0 :: buildList 3999 Nil
+
+eqListInt : List Int -> List Int -> Bool
+let eqListInt xs ys =
+    match xs
+      case Nil ->
+        match ys
+          case Nil -> True
+          case _ :: _ -> False
+      case x :: xt ->
+        match ys
+          case Nil -> False
+          case y :: yt -> if x == y then eqListInt xt yt else False
+
+len : List Int -> Int
+let len xs =
+    match xs
+      case Nil -> 0
+      case _ :: t -> 1 + len t
+
+deepEqual : Bool
+let deepEqual = eqListInt big bigSame
+
+deepNotEqual : Bool
+let deepNotEqual = eqListInt big bigOther
+
+bigLength : Int
+let bigLength = len big
+
+-- assertEval renders the evaluated value with RuntimeValue.format, so
+-- asserting directly on container values pins the iterative renderer's output
+-- byte-for-byte against the original recursive renderer (no Show instance for
+-- List/Option exists, so `show` cannot be used here).
+small : List Int
+let small = 1 :: 2 :: 3 :: Nil
+
+wrapped : Option (List Int)
+let wrapped = Some (1 :: Nil)
+
+--! mode check
+--! assertNoErrors
+--! assertEval deepEqual True
+--! assertEval deepNotEqual False
+--! assertEval bigLength 4000
+--! assertEval small 1 :: 2 :: 3 :: Nil
+--! assertEval wrapped Some 1 :: Nil

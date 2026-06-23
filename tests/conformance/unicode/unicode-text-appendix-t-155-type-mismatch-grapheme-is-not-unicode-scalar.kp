@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+--! assertDiagnosticNext error E_TYPE_MISMATCH
+let bad : UnicodeScalar = g'a'

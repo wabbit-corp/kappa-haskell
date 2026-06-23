@@ -1,0 +1,22 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+-- Source issues: KT-549, KT-571
+-- Spec: §7.1.3, §7.2
+chooseWhen : forall (a : Type). a -> (a -> Bool) -> Option a
+let chooseWhen @a value predicate =
+    if predicate value then
+        Some value
+    else
+        None
+
+selectedName : Option String
+let selectedName = chooseWhen "grace" (\name -> name == "grace")
+
+selectedCount : Option Int
+let selectedCount = chooseWhen 3 (\count -> count > 1)
+
+--! assertNoErrors
+--! assertType selectedName Option String
+--! assertType selectedCount Option Int

@@ -1,0 +1,14 @@
+module main
+
+trait Foo a =
+    Out : Type
+
+trait Render a =
+    render : a -> String
+
+need : (@foo : Foo Int) -> (@renderOut : Render foo.Out) -> String
+let need (@foo : Foo Int) (@renderOut : Render foo.Out) = ""
+
+--! assertNoErrors
+--! assertType need (@foo : Foo Int) -> (@renderOut : Render foo.Out) -> String
+--! assertDeclKinds trait, trait, signature, let

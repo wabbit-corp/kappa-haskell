@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type Point : Type = (x : Int, y : Int)
+
+moveY : Point -> Point
+let moveY (p : Point) : Point = p.{ y = 99 }

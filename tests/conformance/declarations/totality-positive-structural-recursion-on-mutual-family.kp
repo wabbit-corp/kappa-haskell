@@ -1,0 +1,29 @@
+module main
+
+-- Source issue: lean4#262
+-- Spec: §6.4.2, §6.4.3
+data Con : Type =
+    Nil : Con
+    Cons : Con -> Ty -> Con
+
+data Ty : Type =
+    U : Con -> Ty
+
+lengthCon : Con -> Int
+let lengthCon c =
+    match c
+      case Nil -> 0
+      case Cons tail _ -> 1 + lengthCon tail
+
+lengthOf : Ty -> Int
+let lengthOf t =
+    match t
+      case U c -> lengthCon c
+
+result : Int
+let result = lengthOf (U (Cons (Cons Nil (U Nil)) (U Nil)))
+
+--! assertNoErrors
+--! assertType lengthCon Con -> Int
+--! assertType lengthOf Ty -> Int
+--! assertEval result 2

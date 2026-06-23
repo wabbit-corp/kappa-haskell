@@ -1,0 +1,25 @@
+module main
+
+-- Source issues: ponyc#126, chapel#4966, inko#398
+-- Spec: §2.7C, §14.8.4A, §17.13
+import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst, ctor CasFailSeqCst)
+import std.atomic.(ctor Exchanged, ctor NotExchanged)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicCompareExchange)
+
+main : UIO Int
+let main = do
+    let cell <- newAtomicRef 1
+    let first <- atomicCompareExchange RmwSeqCst CasFailSeqCst cell 1 5
+    let afterFirst <- atomicLoad LoadSeqCst cell
+    let second <- atomicCompareExchange RmwSeqCst CasFailSeqCst cell 1 9
+    let afterSecond <- atomicLoad LoadSeqCst cell
+    match first
+      case Exchanged old ->
+        match second
+          case NotExchanged current -> pure (old + afterFirst + current + afterSecond)
+          case Exchanged _ -> pure 0
+      case NotExchanged _ -> pure 0
+
+--! assertNoErrors
+--! assertType main UIO Int
+--! assertExecute main 16

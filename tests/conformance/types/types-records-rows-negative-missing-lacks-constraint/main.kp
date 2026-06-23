@@ -1,0 +1,5 @@
+@PrivateByDefault module main
+
+bad : forall (r : RecRow). (name : String | r) -> (name : String, age : Int | r)
+let bad (@0 r : RecRow) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }

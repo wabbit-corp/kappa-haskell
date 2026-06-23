@@ -1,0 +1,10 @@
+module main
+
+-- Source issue: Idris2#338
+-- Spec: §2.8, §11.1
+data Flag : Type =
+    On
+    On
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch duplicate|constructor|On|same scope

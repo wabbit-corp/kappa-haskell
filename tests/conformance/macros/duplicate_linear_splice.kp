@@ -6,7 +6,7 @@
 -- macro-duplicated linear variable fails ordinary QTT checking.
 dupSyntax : Syntax Integer -> Elab (Syntax Integer)
 let dupSyntax s =
-    pure '{ ${s} + ${s} }
+    pure '{ addInt ${s} ${s} }
 
 bad : (1 t : Integer) -> Integer
 let bad t =

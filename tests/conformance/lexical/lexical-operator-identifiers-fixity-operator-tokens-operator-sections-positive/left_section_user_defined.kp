@@ -1,0 +1,14 @@
+module left_section_user_defined
+
+infix left 60 (++)
+(++) : Int -> Int -> Int
+let (++) x y = x + y
+prependOne : Int -> Int
+let prependOne = (1 ++)
+
+result : Int
+let result = prependOne 41
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

@@ -1,0 +1,12 @@
+module main
+
+-- Hostile-audit EXP-1 pin (§16.3.2): a named expression hole `?foo` (the lexer previously split `?`/`foo` and
+-- it did not parse) now parses to a typed hole that fails compilation with E_HOLE_UNSOLVED, reporting the hole
+-- name and the expected type.
+x : Int
+let x = ?foo
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_HOLE_UNSOLVED
+--! assertDiagnosticMatch foo

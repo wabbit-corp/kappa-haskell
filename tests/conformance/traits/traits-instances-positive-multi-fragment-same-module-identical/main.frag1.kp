@@ -1,0 +1,17 @@
+module main
+
+-- TRAIT-1 (Edit 1, post-merge placement): identical instances split across
+-- TWO fragments/files of the SAME module. mergeModuleSurfaceInfo concatenates
+-- the per-fragment instance lists, and the dedup at `visibleInstances` runs
+-- AFTER that merge, so the duplicate is collapsed to one representative. A
+-- per-fragment dedup would miss this. The member is used to prove a
+-- representative runs after the merge.
+
+trait Doubler a =
+    twice : a -> a
+
+instance Doubler Int =
+    let twice x = x + x
+
+result : Int
+let result = twice 50

@@ -1,0 +1,33 @@
+module main
+
+-- Regression: a bare trait-member call whose function argument is an
+-- UNANNOTATED lambda must resolve. Synthesis-only validation inference cannot
+-- type `\x -> x + 1` standalone, so member-call preparation now seeds the
+-- lambda's parameter types from the expected member-signature arrow (the
+-- lambda body itself is still checked by the main elaboration). Previously
+-- `map (\x -> x + 1) (Some 1)` failed with "Overloaded trait member 'map'
+-- from [Functor] could not be resolved for argument types '_, Option Int'"
+-- even though `instance Functor Option` ships in the prelude.
+
+mapped : Option Int
+let mapped = map (\x -> x + 1) (Some 1)
+
+annotated : Option Int
+let annotated = map (\(x : Int) -> x + 10) (Some 1)
+
+unwrap : Option Int -> Int
+let unwrap o =
+    match o
+      case Some v -> v
+      case None -> 0 - 1
+
+viaLambda : Int
+let viaLambda = unwrap mapped
+
+viaAnnotated : Int
+let viaAnnotated = unwrap annotated
+
+--! mode check
+--! assertNoErrors
+--! assertEval viaLambda 2
+--! assertEval viaAnnotated 11

@@ -11,16 +11,23 @@
 --   * a non-record body is one anonymous payload slot of type T (ω);
 --   * a record body contributes its fields directly to the payload view;
 --   * later witnesses and the payload may depend on earlier witnesses.
+--
+-- §11.1: an existential is a strong-Σ (the `open` form eliminates it), so
+-- one quantifying over a witness `a : Type` (which inhabits Type1) lives
+-- in Type1, not Type0 — assigning it to bare `Type` (= Type0) would be a
+-- universe inconsistency. (With universe polymorphism, bare `Type` would
+-- absorb the level; that is the §2 SHOULD extension. Until then the level
+-- is written explicitly.)
 module main
 
-anonBody : Type
+anonBody : Type1
 let anonBody = exists (a : Type). a
 
 -- `exists a. T` is sugar for `exists (a : Type). T`
-sugarBinder : Type
+sugarBinder : Type1
 let sugarBinder = exists a. a
 
-recordBody : Type
+recordBody : Type1
 let recordBody = exists (a : Type). (value : a)
 
 -- direct payload introduction (Spec.md 13352): the witness is solved by

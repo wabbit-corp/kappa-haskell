@@ -1,0 +1,12 @@
+module main
+
+ordered : List Int
+let ordered =
+    [
+        for x in [3, 1, 2]
+        order by x
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType ordered List Int

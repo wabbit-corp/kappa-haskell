@@ -1,0 +1,3 @@
+module facade
+
+export lib.raw.(type Box as PublicBox)

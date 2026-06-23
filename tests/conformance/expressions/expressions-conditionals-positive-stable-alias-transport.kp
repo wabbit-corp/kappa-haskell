@@ -1,0 +1,24 @@
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- Source issue: KT-175
+-- Spec: §7.4.1, §7.4.3, §2.8.3
+readTwice : Payload -> Int
+let readTwice p =
+    block
+        let q = p
+        if q is Box then p.value + q.value else 0
+
+boxed : Int
+let boxed = readTwice (Box 21)
+
+empty : Int
+let empty = readTwice Empty
+
+--! assertNoErrors
+--! assertType readTwice Payload -> Int
+--! assertEval boxed 42
+--! assertEval empty 0

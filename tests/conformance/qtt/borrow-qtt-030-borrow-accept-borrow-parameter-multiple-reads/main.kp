@@ -1,0 +1,11 @@
+module main
+
+readBorrow : (& x : Int) -> Int
+let readBorrow (& x : Int) : Int = x
+
+ok : (& x : Int) -> Int
+let ok (& x : Int) : Int =
+    let _ = readBorrow x
+    in readBorrow x
+
+--! assertNoErrors

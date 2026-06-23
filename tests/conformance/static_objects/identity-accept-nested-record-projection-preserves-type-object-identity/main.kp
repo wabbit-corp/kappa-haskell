@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+let outer = (inner = (F = Option,),)
+
+ok : outer.inner.F Int
+let ok = outer.inner.F.Some 1

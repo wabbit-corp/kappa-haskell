@@ -1,0 +1,16 @@
+module main
+
+data Token : Type =
+    Token
+
+type TokenBox = (value : Token)
+
+observe : (& t : Token) -> Unit
+let observe (& t : Token) : Unit = ()
+
+ok : (& b : TokenBox) -> Unit
+let ok (& b : TokenBox) : Unit =
+    let _ = observe b.value
+    in observe b.value
+
+--! assertNoErrors

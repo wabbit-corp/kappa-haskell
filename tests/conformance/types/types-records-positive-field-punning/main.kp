@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+type Person : Type = (name : String, age : Int)
+
+mk : String -> Int -> Person
+let mk (name : String) (age : Int) : Person =
+    (name, age)

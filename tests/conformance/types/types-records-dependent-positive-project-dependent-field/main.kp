@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+makeVec : (n : Nat) -> Vec n Byte
+let makeVec (n : Nat) : Vec n Byte = VNil
+
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+getBuf : (s : Sized) -> Vec s.len Byte
+let getBuf (s : Sized) : Vec s.len Byte = s.buf

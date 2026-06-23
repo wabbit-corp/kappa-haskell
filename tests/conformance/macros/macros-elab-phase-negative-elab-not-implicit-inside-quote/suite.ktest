@@ -1,0 +1,4 @@
+-- Appendix T directory suite.
+--! mode check
+--! packageMode
+--! assertDiagnosticMatch (Elab.*Syntax|Syntax.*Elab|quote.*Elab|inside.*quote)

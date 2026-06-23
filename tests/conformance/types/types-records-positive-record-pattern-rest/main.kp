@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+type Full : Type = (name : String, age : Int, active : Bool)
+type Tail : Type = (age : Int, active : Bool)
+
+dropName : Full -> Tail
+let dropName (r : Full) : Tail =
+    block
+        let (name = _, ..rest) = r
+        rest

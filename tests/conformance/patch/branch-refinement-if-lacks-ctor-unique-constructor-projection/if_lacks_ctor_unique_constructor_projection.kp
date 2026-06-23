@@ -1,0 +1,17 @@
+module if_lacks_ctor_unique_constructor_projection
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+extractOrZero : MyOption Int -> Int
+let extractOrZero x =
+    if x is MyNone then
+        0
+    else
+        x.value
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType extractOrZero MyOption Int -> Int

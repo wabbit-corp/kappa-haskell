@@ -1,0 +1,27 @@
+module main
+
+-- Regression (spec E_CONSTRUCTOR_ARITY_MISMATCH, §"constructor application
+-- supplies too few, too many, ... arguments"): applying a data constructor to
+-- more arguments than it has fields produces a saturated, non-callable value,
+-- so it MUST be rejected at compile time rather than surfacing at runtime as
+-- "Cannot apply ... as a function". This covers nullary, unary and multi-field
+-- constructors.
+
+data Pair : Type =
+    Pair Int Int
+
+-- Some has one field; True/Nil have none; Pair has two.
+overUnary : Option Int
+let overUnary = Some 1 2
+
+overNullaryBool : Bool
+let overNullaryBool = True 5
+
+overNullaryList : List Int
+let overNullaryList = Nil 9
+
+overBinary : Pair
+let overBinary = Pair 1 2 3
+
+--! mode check
+--! assertDiagnosticCodes E_CONSTRUCTOR_ARITY_MISMATCH, E_CONSTRUCTOR_ARITY_MISMATCH, E_CONSTRUCTOR_ARITY_MISMATCH, E_CONSTRUCTOR_ARITY_MISMATCH

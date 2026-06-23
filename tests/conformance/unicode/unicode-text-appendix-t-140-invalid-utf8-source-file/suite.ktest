@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNICODE_INVALID_UTF8
+--! assertDiagnosticAt bad_utf8.kp error E_UNICODE_INVALID_UTF8 1

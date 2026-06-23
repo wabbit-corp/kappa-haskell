@@ -1,0 +1,4 @@
+module foo
+
+data Box a : Type =
+    Box a

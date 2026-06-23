@@ -1,0 +1,14 @@
+module main
+
+import library.math as math, library.text.(greeting)
+
+answer : Int
+let answer = math.fortyTwo
+
+message : String
+let message = greeting
+
+--! assertNoErrors
+--! assertType answer Int
+--! assertType message String
+--! x-assertDeclDescriptors import library.math as math | library.text.(greeting), signature answer, let answer, signature message, let message

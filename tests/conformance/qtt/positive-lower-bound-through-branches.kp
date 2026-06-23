@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.4.4 / §17.1.10: a `>=1` (relevant) binder must be demanded in every
+-- reachable branch. Supplying it to a parameter that uses it (e.g. the
+-- unrestricted `(+)`) counts as demanding it, so both spec ACCEPTED
+-- examples type-check.
+module main
+
+f : (>=1 x : Int) -> (b : Bool) -> Int
+let f x b = if b then x else x + 1
+
+h : (>=1 x : Int) -> (o : Option Int) -> Int
+let h x o =
+    match o
+      case Some y -> x + y
+      case None -> x

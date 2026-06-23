@@ -1,0 +1,21 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let asciiG : Grapheme = g'a'
+let combiningG : Grapheme = g'e\u{301}'
+let combiningMarkAloneG : Grapheme = g'\u{301}'
+let flagUS : Grapheme = g'\u{1F1FA}\u{1F1F8}'
+let keycapOne : Grapheme = g'1\u{FE0F}\u{20E3}'
+let wavingMediumSkinTone : Grapheme = g'\u{1F44B}\u{1F3FD}'
+let womanTechnologist : Grapheme = g'\u{1F469}\u{200D}\u{1F4BB}'
+let crlf : Grapheme = g'\r\n'
+
+--! assertType asciiG Grapheme
+--! assertType combiningG Grapheme
+--! assertType combiningMarkAloneG Grapheme
+--! assertType flagUS Grapheme
+--! assertType keycapOne Grapheme
+--! assertType wavingMediumSkinTone Grapheme
+--! assertType womanTechnologist Grapheme
+--! assertType crlf Grapheme

@@ -1,11 +1,15 @@
--- | Surface abstract syntax (Spec Part II–IV).
+-- | Surface abstract syntax (Spec Part II–IV): the tree the parser builds
+-- and that nearly every later phase matches on. The tiers nest
+-- 'Module' ⊃ 'Decl' ⊃ 'Expr' \/ 'Pattern'.
 --
--- Kappa is dependently typed, so the surface grammar of types and terms is
--- unified into one 'Expr' family; the elaborator interprets expressions in
--- type position. Operator applications are kept as flat 'EOpChain's at
--- parse time and re-associated during resolution, because fixity is
--- block-scoped and import-sensitive (§5.5.2) and therefore not known to a
--- single-pass parser.
+-- Two non-obvious choices shape everything downstream:
+--
+--   1. Types and terms share one 'Expr' grammar (Kappa is dependently
+--      typed): 'EArrow', 'EForall', 'ERecordType' etc. are just 'Expr's
+--      read in type position. There is no separate type AST.
+--   2. Operators parse /flat/ into 'EOpChain' and are re-associated later by
+--      'Kappa.Resolve'. Fixity is block-scoped and import-sensitive
+--      (§5.5.2), so a single parse pass cannot know precedence.
 module Kappa.Syntax
   ( Name (..)
   , ModPath (..)
@@ -206,8 +210,13 @@ data VariantArm = VariantArm
   }
   deriving stock (Show, Data)
 
+-- | An expression (also a type, in type position). Constructors are grouped
+-- into families below for reading; order is not significant. The trailing
+-- @!Span@ most carry is the source location ('exprSpan' recovers it
+-- generically). Where a constructor's payload isn't self-evident, it's noted.
 data Expr
-  = EVar !Name
+  = -- Atoms: variables, holes, and literals -------------------------------
+    EVar !Name
   | EHole !(Maybe Name) !Span -- ^ @_@ (expression position) or @?name@
   | EIntLit !Integer !(Maybe Name) !Span
   | EFloatLit !Double !(Maybe Name) !Span
@@ -215,8 +224,13 @@ data Expr
   | EQuotedLit !QuotedLit !Span
   | EUnit !Span
   | ETuple ![Expr] !Span
+  -- Records (literals and the record-/type/ that classifies them) --------
   | ERecordLit ![RecItem] !Span
   | ERecordType ![RecTypeField] !(Maybe Expr) !Span
+  -- ^ @(x : A, y : B)@. The @Maybe Expr@ is the /row tail/ of an open
+  -- (extensible) record: @(x : A | r)@ extends row @r@; 'Nothing' is a
+  -- closed record. ('EVariant' and 'EEffRow' carry the same kind of tail.)
+  -- Application, projection, sections, and operator chains ---------------
   | EApp !Expr ![Arg]
   | EDot !Expr !DotMember
   | EQDot !Expr !DotMember
@@ -226,37 +240,46 @@ data Expr
   | ESectionRight !Name !Expr !Span -- ^ @(op e)@
   | EOpRef !(Maybe FixityKind) !Name !Span -- ^ @(op)@, @(infix -)@, @(prefix -)@
   | EOpChain ![OpElem]
+  -- ^ A flat chain of alternating operands\/operators, e.g. @a + b * c@.
+  -- The resolver re-associates it into nested 'EApp's using fixity; see the
+  -- header note. This is /the/ reason the parser stays single-pass.
   | EElvis !Expr !Expr !Span -- ^ @l ?: r@ (§16.1.2), built by the resolver
-  -- ^ Alternating operands\/operators, re-associated at resolution.
-  | ELambda !(Maybe Name) ![Binder] !Expr !Span
+  -- Binding forms: lambda, let, block, do --------------------------------
+  | ELambda !(Maybe Name) ![Binder] !Expr !Span -- ^ @Maybe Name@: optional @return@-target label
   | ELet ![LetBind] !Expr !Span -- ^ @let ... in@
-  | EBlock ![Decl] !(Maybe Expr) !Span -- ^ pure @block@ (§9.3.1)
-  | EDo !(Maybe Name) ![DoItem] !Span
+  | EBlock ![Decl] !(Maybe Expr) !Span -- ^ pure @block@ (§9.3.1); @Maybe Expr@ is the trailing result
+  | EDo !(Maybe Name) ![DoItem] !Span -- ^ @Maybe Name@: optional block label for break\/continue\/return
+  -- Control flow: if, match, try, handle ---------------------------------
   | EIf ![(Expr, Expr)] !(Maybe Expr) !Span
   | EMatch !Expr ![MatchCase] !Span
   | ETry !Expr ![ExceptCase] !(Maybe Expr) !Span
   | ETryMatch !Expr ![MatchCase] ![ExceptCase] !(Maybe Expr) !Span
   | EHandle !Bool !Expr !Expr ![HandlerCase] !Span -- ^ deep? label scrutinee cases
-  | EIs !Expr !CtorRef
+  | EIs !Expr !CtorRef -- ^ @e is C@: a constructor test that also flow-refines @e@ in the taken branch
+  -- Suspensions (laziness) and existential packages ----------------------
   | EThunk !Expr !Span
   | ELazy !Expr !Span
   | EForce !Expr !Span
   | ESeal !Expr !Expr !Span
   | EOpenExists !Expr ![Name] !Pattern !Expr !Span
   | ESealExists ![(Name, Expr)] !Expr !Expr !Span
+  -- Collections and comprehensions ---------------------------------------
   | EListLit ![Expr] !Span
   | ESetLit ![Expr] !Span
   | EMapLit ![(Expr, Expr)] !Span
   | EComprehension !CompKind ![CompClause] !CompYield !Span
-  | EArrow !Binder !Expr -- ^ Pi: @(q x : A) -> B@ or @A -> B@
+  -- Type formers (these 'Expr's appear in type position) -----------------
+  | EArrow !Binder !Expr -- ^ Pi (function type): @(q x : A) -> B@ or @A -> B@
   | EForall ![Binder] !Expr !Span
   | EExists ![Binder] !Expr !Span
-  | ETraitArrow !Expr !Expr -- ^ @C => T@
-  | EEffRow ![(Name, Expr)] !(Maybe Expr) !Span
-  | EVariant ![VariantArm] !(Maybe Expr) !Span
+  | ETraitArrow !Expr !Expr -- ^ @C => T@ (a constraint/trait arrow)
+  | EEffRow ![(Name, Expr)] !(Maybe Expr) !Span -- ^ effect row @\<[ l : E, ... | r ]\>@ (tail @r@ optional)
+  | EVariant ![VariantArm] !(Maybe Expr) !Span -- ^ variant @(| ... |)@ (open if a tail is present)
   | EOptionSugar !Expr !Span -- ^ @T?@
+  -- Ascription and capture annotations -----------------------------------
   | EAscription !Expr !Expr !Span -- ^ @(e : T)@
   | ECaptures !Expr ![Name] !Span
+  -- Effectful and staged splices (the @!@ @$@ @'@ @.<@ @>.@ sigils) -------
   | EBang !Bool !Expr !Span
   -- ^ @!e@ monadic splice (§18.3.1). The 'Bool' records whether the
   -- splice was written /explicitly parenthesised/ as @(!e)@. A closed
@@ -269,6 +292,7 @@ data Expr
   | ESplice !Expr !Span -- ^ @$( e )@
   | ESpliceInQuote !Expr !Span -- ^ @${ e }@ inside a quote (§21.1)
   | EQuoteHole !Int !Span -- ^ internal: grafting slot of an elaborated quote
+  -- Miscellaneous --------------------------------------------------------
   | EImpossible !Span
   | EKindQualified !KindSelector !Name !Span -- ^ @type T@, @trait C@, ... (§7.1.1)
   | EModuleSig !Name !Span -- ^ @moduleSig M@ (§7.5)
@@ -353,8 +377,12 @@ data HandlerCase
 data ExceptCase = ExceptCase !Pattern !(Maybe Expr) !Expr !Span
   deriving stock (Show, Data)
 
+-- | A pattern — the left-hand side of a @match@ case, a binding, or a
+-- function parameter. Patterns mirror the value-building 'Expr'
+-- constructors (a constructor application 'PCtor' deconstructs what 'EApp'
+-- on a constructor builds, etc.) and bind the variables named inside them.
 data Pattern
-  = PWild !Span
+  = PWild !Span -- ^ @_@: matches anything, binds nothing
   | PVar !Name
   | PLit !Lit !Span
   | PAs !Name !Pattern
@@ -402,9 +430,14 @@ data DeclMods = DeclMods
 noMods :: DeclMods
 noMods = DeclMods VisDefault False False
 
+-- | A declaration: anything that can appear at the top level of a module
+-- (and most can also appear inside a @block@\/@do@). The common cases are
+-- 'DSig' (a type signature @f : T@) paired with 'DLet' (its definition
+-- @let f = …@); the rest introduce data types, traits, instances,
+-- effects, fixity, imports/exports, and the metaprogramming forms.
 data Decl
-  = DSig !DeclMods !Name !Expr !Span
-  | DLet !DeclMods !LetDef !Span
+  = DSig !DeclMods !Name !Expr !Span -- ^ a type signature: @f : T@
+  | DLet !DeclMods !LetDef !Span -- ^ a definition: @let f = e@
   | DData !DeclMods !DataDecl !Span
   | DTypeAlias !DeclMods !Name ![Binder] !(Maybe Expr) !(Maybe Expr) !Span
   -- ^ name params kind rhs

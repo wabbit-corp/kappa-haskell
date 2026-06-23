@@ -1,0 +1,17 @@
+module main
+
+trait Tagged a =
+    tagWith : a -> (@_ : Eq a) -> a
+
+instance Tagged Int =
+    let tagWith x = x
+
+result : Int
+let result = tagWith 42
+
+-- Source issue: Idris2#67
+-- Kappa analogue: trait members may declare their own implicit parameters.
+-- Spec: §12.1, §7.3
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

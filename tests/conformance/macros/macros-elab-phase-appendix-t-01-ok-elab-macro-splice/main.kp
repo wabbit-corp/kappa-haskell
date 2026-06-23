@@ -1,0 +1,9 @@
+module main
+
+addOneSyntax : Syntax Int -> Elab (Syntax Int)
+let addOneSyntax e =
+    pure '{ ${e} + 1 }
+
+value : Int
+let value =
+    $(addOneSyntax '{ 41 })

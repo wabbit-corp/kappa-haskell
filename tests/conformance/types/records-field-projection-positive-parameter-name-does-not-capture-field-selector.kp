@@ -1,0 +1,18 @@
+module main
+
+-- Source issue: Idris2#441
+-- Kappa analogue: a function parameter may share a spelling with a record field name, and `record.field` must still
+-- resolve as ordinary field projection rather than capturing the parameter binder.
+-- Spec: §5.5.4, §7.1.1
+
+type TestRecord : Type = (n : Int)
+
+testFunc : Int -> TestRecord -> Bool
+let testFunc n testRecord = n == testRecord.n
+
+result : Bool
+let result = testFunc 7 (n = 7)
+
+--! assertNoErrors
+--! assertType testFunc Int -> TestRecord -> Bool
+--! assertEval result True

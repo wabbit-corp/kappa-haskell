@@ -1,0 +1,21 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let nul : Byte = b'\x00'
+let one : Byte = b'\x01'
+let asciiA : Byte = b'a'
+let newline : Byte = b'\n'
+let quote : Byte = b'\''
+let slash : Byte = b'\\'
+let del : Byte = b'\u{7F}'
+let max : Byte = b'\xFF'
+
+--! assertType nul Byte
+--! assertType one Byte
+--! assertType asciiA Byte
+--! assertType newline Byte
+--! assertType quote Byte
+--! assertType slash Byte
+--! assertType del Byte
+--! assertType max Byte

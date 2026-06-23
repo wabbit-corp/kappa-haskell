@@ -1,0 +1,9 @@
+module main
+
+dupSyntax : Syntax Int -> Elab (Syntax Int)
+let dupSyntax s =
+    pure '{ addInt ${s} ${s} }
+
+bad : (1 t : Int) -> Int
+let bad t =
+    $(dupSyntax '{ t })

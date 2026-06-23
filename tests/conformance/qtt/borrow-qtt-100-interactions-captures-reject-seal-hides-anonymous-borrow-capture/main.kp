@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+type HiddenGetter : Type =
+    (get : Unit -> Int)
+
+bad : (& x : Int) -> HiddenGetter
+let bad (& x : Int) : HiddenGetter =
+    seal
+        (get = \() -> x)
+    as HiddenGetter

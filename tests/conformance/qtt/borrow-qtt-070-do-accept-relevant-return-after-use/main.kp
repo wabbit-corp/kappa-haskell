@@ -1,0 +1,15 @@
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+ok : (>=1 x : Int) -> Bool -> UIO Unit
+let ok (>=1 x : Int) (b : Bool) : UIO Unit =
+    do
+        if b then
+            let _ = strictId x
+            return ()
+        let _ = strictId x
+        pure ()
+
+--! assertNoErrors

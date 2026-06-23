@@ -1,0 +1,18 @@
+module Main
+
+import A.*
+import B.*
+import C.*
+
+proof :
+    (o : Ordering) ->
+    match o
+    case LT -> Unit
+    case _  -> nonLT (idOrdering o) = True
+let proof o =
+    match o
+    case LT -> ()
+    case _  -> refl
+
+answer : Int
+let answer = unrelated

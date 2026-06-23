@@ -1,0 +1,10 @@
+module main
+
+type Point = (x : Int, y : Int)
+
+moveY : Point -> Point
+let moveY (p : Point) : Point = p.{ y = 99 }
+
+--! assertNoErrors
+--! assertType moveY Point -> Point
+

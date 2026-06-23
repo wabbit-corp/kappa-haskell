@@ -1,0 +1,12 @@
+module main
+
+orderedIds : List Int
+let orderedIds =
+    [
+        for x in {|3, 1, 2, 2|}
+        distinct by x
+        order by x
+        skip 1
+        take 2
+        yield x
+    ]

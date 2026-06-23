@@ -1,0 +1,5 @@
+module type_mismatch_payload
+
+bad : Int
+let bad = True
+

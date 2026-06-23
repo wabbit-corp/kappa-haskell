@@ -1,0 +1,21 @@
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- Source issue: KT-3899
+-- Spec: §8.2.2A, §7.4.1, §7.4.3
+afterGuard : Payload -> IO Int
+let afterGuard payload = do
+    if payload is Box then pure () else do
+        return 0
+
+    pure (payload.value + 1)
+
+main : IO Int
+let main = afterGuard (Box 41)
+
+--! assertNoErrors
+--! assertType afterGuard Payload -> IO Int
+--! assertExecute main 42

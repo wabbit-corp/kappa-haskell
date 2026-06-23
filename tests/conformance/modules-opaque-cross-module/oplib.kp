@@ -1,0 +1,6 @@
+module oplib
+
+-- §8.5.2: an `opaque` term definition's defining equation is available for
+-- definitional equality only INSIDE its defining module.
+secret : Int
+opaque let secret = 7

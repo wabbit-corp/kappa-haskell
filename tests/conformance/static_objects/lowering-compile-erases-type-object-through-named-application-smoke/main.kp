@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+make : (F : Type -> Type) -> (value : F Int) -> F Int
+let make F value = value
+
+ok : Option Int
+let ok = make { F = Option, value = Some 6 }

@@ -1,0 +1,12 @@
+module main
+
+-- Source issue: KT-451
+-- Spec: §4.4
+empty : Char
+let empty = ''
+
+multiple : Char
+let multiple = '23'
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_UNICODE_INVALID_SCALAR_LITERAL, E_UNICODE_INVALID_SCALAR_LITERAL

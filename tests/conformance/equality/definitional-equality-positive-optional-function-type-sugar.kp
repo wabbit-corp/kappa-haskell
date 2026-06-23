@@ -1,0 +1,25 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+-- Source issue: KT-332
+-- Spec: §5.4.9
+maybeCallable : (Unit -> Int)?
+let maybeCallable = Some (\() -> 42)
+
+optionalResult : Unit -> Int?
+let optionalResult () = Some 7
+
+callMaybe : (Unit -> Int)? -> Int
+let callMaybe value =
+    match value
+      case Some f -> f ()
+      case None -> 0
+
+called : Int
+let called = callMaybe maybeCallable
+
+--! assertNoErrors
+--! assertType maybeCallable Option (Unit -> Int)
+--! assertType optionalResult Unit -> Option Int
+--! assertEval called 42

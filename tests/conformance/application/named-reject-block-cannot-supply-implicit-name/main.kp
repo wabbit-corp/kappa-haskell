@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+choose : forall (a : Type). (left : a) -> (right : a) -> a
+let choose (@0 a : Type) (left : a) (right : a) : a = left
+
+bad : Int
+let bad : Int = choose @Int { a = Int, left = 1, right = 2 }

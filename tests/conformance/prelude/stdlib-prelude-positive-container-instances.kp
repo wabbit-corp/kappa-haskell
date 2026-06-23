@@ -1,0 +1,95 @@
+module main
+
+-- Spec §"Instances" (normative portable instances): the prelude must provide
+-- Functor/Foldable/Traversable/Filterable/FilterMap for List, Monoid (List a),
+-- and Functor/Foldable/Traversable for Option. This fixture exercises each new
+-- instance end-to-end (check + eval), including `sequence`, which requires
+-- Traversable List + Applicative Option together.
+
+len : List Int -> Int
+let len xs =
+    match xs
+      case Nil -> 0
+      case _ :: t -> 1 + len t
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case h :: t -> h + sumList t
+
+-- Functor List
+mappedSum : Int
+let mappedSum = sumList (map (\x -> x * 2) (1 :: 2 :: 3 :: Nil))
+
+-- Foldable List: foldr, foldl, foldMap (result monoid: List Int)
+foldedR : Int
+let foldedR = foldr (\x -> \acc -> x + acc) 0 (1 :: 2 :: 3 :: Nil)
+
+foldedL : Int
+let foldedL = foldl (\acc -> \x -> acc * 10 + x) 0 (1 :: 2 :: 3 :: Nil)
+
+duplicatedLen : Int
+let duplicatedLen = len (foldMap (\x -> x :: x :: Nil) (1 :: 2 :: Nil))
+
+-- Filterable List
+keptSum : Int
+let keptSum = sumList (filter (\x -> 2 < x) (1 :: 2 :: 3 :: 4 :: Nil))
+
+-- FilterMap List
+halvedSum : Int
+let halvedSum = sumList (filterMap (\x -> if 2 < x then Some (x * 100) else None) (1 :: 2 :: 3 :: Nil))
+
+-- Foldable Option
+optFolded : Int
+let optFolded = foldr (\x -> \acc -> x + acc) 10 (Some 5)
+
+optFoldedNone : Int
+let optFoldedNone = foldr (\x -> \acc -> x + acc) 10 (None : Option Int)
+
+-- Traversable List + Applicative Option via prelude `sequence`
+sequencedAll : Option (List Int)
+let sequencedAll = sequence (Some 1 :: Some 2 :: Some 3 :: Nil)
+
+sequencedNone : Option (List Int)
+let sequencedNone = sequence (Some 1 :: None :: Some 3 :: Nil)
+
+optListSum : Option (List Int) -> Int
+let optListSum o =
+    match o
+      case Some xs -> sumList xs
+      case None -> 0 - 1
+
+sequencedSum : Int
+let sequencedSum = optListSum sequencedAll
+
+sequencedMissing : Int
+let sequencedMissing = optListSum sequencedNone
+
+-- Traversable Option
+traversedOpt : Option (Option Int)
+let traversedOpt = traverse (\x -> if x == 0 then None else Some (x + 1)) (Some 4)
+
+flattenOpt : Option (Option Int) -> Int
+let flattenOpt o =
+    match o
+      case Some (Some v) -> v
+      case Some None -> 0 - 2
+      case None -> 0 - 1
+
+traversedOptValue : Int
+let traversedOptValue = flattenOpt traversedOpt
+
+--! mode check
+--! assertNoErrors
+--! assertEval mappedSum 12
+--! assertEval foldedR 6
+--! assertEval foldedL 123
+--! assertEval duplicatedLen 4
+--! assertEval keptSum 7
+--! assertEval halvedSum 300
+--! assertEval optFolded 15
+--! assertEval optFoldedNone 10
+--! assertEval sequencedSum 6
+--! assertEval sequencedMissing -1
+--! assertEval traversedOptValue 5

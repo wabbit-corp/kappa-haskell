@@ -1,0 +1,16 @@
+module residual_does_not_invent_positive_fact
+
+data Tri : Type =
+    A (value : Int)
+    B (value : Int)
+    C
+
+bad : Tri -> Int
+let bad x =
+    if x is C then
+        0
+    else
+        x.value
+
+--! mode check
+--! assertErrorCount 1

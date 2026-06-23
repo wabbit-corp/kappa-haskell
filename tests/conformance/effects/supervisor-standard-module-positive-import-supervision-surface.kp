@@ -1,0 +1,47 @@
+module main
+
+-- Spec: §2.7D
+import std.supervisor.(type Supervisor, type ChildSpec, type SupervisorStrategy, type RestartPolicy, type RestartIntensity)
+import std.supervisor.(term childSpec, term startSupervisor, term withSupervisor, term shutdownSupervisor, term awaitSupervisor)
+import std.supervisor.(ctor OneForOne, ctor Permanent)
+
+keepSupervisor : Supervisor e -> Supervisor e
+let keepSupervisor supervisor = supervisor
+
+keepChildSpec : ChildSpec e -> ChildSpec e
+let keepChildSpec spec = spec
+
+keepStrategy : SupervisorStrategy -> SupervisorStrategy
+let keepStrategy _ = OneForOne
+
+keepPolicy : RestartPolicy -> RestartPolicy
+let keepPolicy _ = Permanent
+
+keepIntensity : RestartIntensity -> RestartIntensity
+let keepIntensity intensity = intensity
+
+mkChildSpec : String -> IO e Unit -> ChildSpec e
+let mkChildSpec label run = childSpec label Permanent run
+
+startManagedSupervisor :
+    RestartIntensity ->
+    List (ChildSpec e) ->
+    UIO (Supervisor e)
+let startManagedSupervisor intensity children =
+    startSupervisor OneForOne intensity children
+
+useSupervisor :
+    RestartIntensity ->
+    List (ChildSpec e) ->
+    (Supervisor e -> IO e a) ->
+    IO e a
+let useSupervisor intensity children use =
+    withSupervisor OneForOne intensity children use
+
+stopSupervisor : Supervisor e -> UIO Unit
+let stopSupervisor supervisor = shutdownSupervisor supervisor
+
+waitSupervisor : Supervisor e -> UIO (Exit e Unit)
+let waitSupervisor supervisor = awaitSupervisor supervisor
+
+--! assertNoErrors

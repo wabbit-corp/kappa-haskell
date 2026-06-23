@@ -1,0 +1,8 @@
+module main
+
+skipMaybe : (<=1 x : Int) -> Int
+let skipMaybe x = 0
+
+--! assertNoErrors
+--! assertType skipMaybe (<=1 x : Int) -> Int
+

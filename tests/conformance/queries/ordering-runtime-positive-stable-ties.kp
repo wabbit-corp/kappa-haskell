@@ -1,0 +1,32 @@
+module main
+
+-- Source family: stable-ordering issue family
+-- Spec: §10.3.2, §10.6.1, §10.10.3
+type Row = (key : Int, value : Int)
+
+rows : List Row
+let rows =
+    [
+        (key = 2, value = 9),
+        (key = 1, value = 3),
+        (key = 1, value = 4)
+    ]
+
+ordered : List Int
+let ordered =
+    [
+        for row in rows
+        order by row.key
+        yield row.value
+    ]
+
+result : Int
+let result =
+    match ordered
+      case a :: b :: c :: Nil -> 100 * a + 10 * b + c
+      case _ -> 0
+
+--! assertNoErrors
+--! assertType ordered List Int
+--! assertType result Int
+--! assertEval result 349

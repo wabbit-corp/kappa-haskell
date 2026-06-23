@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: KT-537
+-- Spec: §10.1, §10.3.1
+scores : Map String Int
+let scores = { "ada": 1, "grace": 2 }
+
+emptyScores : Map String Int
+let emptyScores = {}
+
+--! assertNoErrors
+--! assertType scores Map String Int
+--! assertType emptyScores Map String Int

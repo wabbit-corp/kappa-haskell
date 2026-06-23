@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType both std.prelude.Bool
+--! assertType either std.prelude.Bool

@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+
+data Buf : Type =
+    Buf (n : Int)
+
+notPattern : (& b : Buf) -> Option Int
+let notPattern (& b : Buf) : Option Int =
+    match b
+    case Buf n -> Some n
+
+bad : (& b : Buf) -> Int
+let bad (& b : Buf) : Int =
+    match b
+    case notPattern (n) -> n
+    case _ -> 0

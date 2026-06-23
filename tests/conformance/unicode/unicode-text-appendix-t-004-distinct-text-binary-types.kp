@@ -1,0 +1,27 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.unicode.*
+
+let scalar : UnicodeScalar = 'a'
+let grapheme : Grapheme = g'a'
+let byte : Byte = b'a'
+let text : String = "a"
+let encoded : Bytes = utf8Bytes text
+let scalarText : String = scalarToString scalar
+let graphemeText : String = graphemeToString grapheme
+
+--! assertType scalar UnicodeScalar
+--! assertType grapheme Grapheme
+--! assertType byte Byte
+--! assertType text String
+--! assertType encoded Bytes
+--! assertType scalarText String
+--! assertType graphemeText String
+
+let bytesEq : Bool = encoded == utf8Bytes "a"
+let bytesOrd : Bool = utf8Bytes "a" < utf8Bytes "b"
+
+--! assertType bytesEq Bool
+--! assertType bytesOrd Bool

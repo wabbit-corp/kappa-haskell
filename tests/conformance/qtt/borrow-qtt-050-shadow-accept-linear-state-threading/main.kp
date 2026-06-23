@@ -1,0 +1,11 @@
+module main
+
+step : (1 x : Int) -> Int
+let step (1 x : Int) : Int = x
+
+ok : (1 x : Int) -> Int
+let ok (1 x : Int) : Int =
+    let 1 x = step x
+    in step x
+
+--! assertNoErrors

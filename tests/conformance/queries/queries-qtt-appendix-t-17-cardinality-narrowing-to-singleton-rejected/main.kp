@@ -1,0 +1,11 @@
+module main
+
+bad : Query Int -> SingletonQuery Int
+let bad q =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω [
+        for x in q
+        yield x
+    ]
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Cc]ardinality|singleton|QOne|zero[- ]or[- ]more|ZeroOrMore

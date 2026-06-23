@@ -1,0 +1,12 @@
+module main
+
+data Token : Type =
+    Token
+
+dupSyntax : Syntax Token -> Elab (Syntax (Token, Token))
+let dupSyntax s =
+    pure '{ (${s}, ${s}) }
+
+bad : (1 t : Token) -> (Token, Token)
+let bad t =
+    $(dupSyntax '{ t })

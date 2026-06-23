@@ -1,0 +1,15 @@
+module main
+
+data Byte : Type =
+    Byte
+
+data Array n a : Type =
+    Array
+
+type SizedBuffer = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+
+bad : SizedBuffer -> SizedBuffer
+let bad buf = buf.{ len = 20 }
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH

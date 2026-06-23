@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: Idris2#208
+-- Kappa analogue: definitional equality should see through an irrefutable tuple destructure used to define an equivalent tuple-producing function.
+-- Spec: §6.1.2, §14.3
+bothStep : (Int, Int) -> (Int, Int)
+let bothStep pair =
+    let (left, right) = pair
+    (left + 1, right + 1)
+
+sameStep : forall (pair : (Int, Int)). bothStep pair = let (left, right) = pair in (left + 1, right + 1)
+let sameStep pair = refl
+
+--! assertNoErrors
+--! assertType sameStep forall (pair : (Int, Int)). bothStep pair = let (left, right) = pair in (left + 1, right + 1)

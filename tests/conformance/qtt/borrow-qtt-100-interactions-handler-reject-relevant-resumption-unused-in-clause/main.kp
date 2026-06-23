@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+bad : Int
+let bad : Int =
+    block
+        scoped effect MustResume =
+            >=1 ping : Unit -> Unit
+
+        let comp : Eff <[MustResume : MustResume]> Int =
+            do
+                let _ <- MustResume.ping ()
+                pure 1
+
+        let handled =
+            handle MustResume comp with
+                case return y -> pure y
+                case ping _ k -> pure 0
+
+        runPure handled

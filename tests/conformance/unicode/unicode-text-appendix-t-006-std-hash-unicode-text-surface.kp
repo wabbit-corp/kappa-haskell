@@ -1,0 +1,22 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.hash.*
+import std.unicode.*
+
+let byteHash : HashCode = hashWith defaultHashSeed b'a'
+let scalarHash : HashCode = hashWith defaultHashSeed 'a'
+let graphemeHash : HashCode = hashWith defaultHashSeed g'e\u{301}'
+let stringHash : HashCode = hashWith defaultHashSeed "e\u{301}"
+let bytesHash : HashCode = hashWith defaultHashSeed (utf8Bytes "abc")
+let sameHashToken : Bool = scalarHash == hashWith defaultHashSeed 'a'
+let hashOrdering : Ordering = compare scalarHash graphemeHash
+
+--! assertType byteHash HashCode
+--! assertType scalarHash HashCode
+--! assertType graphemeHash HashCode
+--! assertType stringHash HashCode
+--! assertType bytesHash HashCode
+--! assertType sameHashToken Bool
+--! assertType hashOrdering Ordering

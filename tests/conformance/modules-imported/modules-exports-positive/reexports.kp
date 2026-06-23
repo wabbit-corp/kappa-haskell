@@ -1,0 +1,10 @@
+module reexports
+
+export library.math.(fortyTwo)
+export library.text as text
+
+value : Int
+let value = 42
+
+--! assertNoErrors
+--! assertDeclKinds export, export, signature, let

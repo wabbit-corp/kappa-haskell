@@ -1,0 +1,35 @@
+module main
+
+-- Spec portable alias E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH: a constructor
+-- pattern that binds more or fewer arguments than the constructor has fields
+-- can never match, so it must be rejected statically rather than surfacing as
+-- a runtime "Non-exhaustive match". Correct arities stay accepted.
+
+data Pair : Type =
+    MkPair Int Int
+
+overUnary : Option Int -> Int
+let overUnary o =
+    match o
+      case Some x y -> x
+      case None -> 0
+
+underBinary : Pair -> Int
+let underBinary p =
+    match p
+      case MkPair x -> x
+
+overNullary : List Int -> Int
+let overNullary xs =
+    match xs
+      case Nil z -> z
+      case _ -> 0
+
+good : Option Int -> Int
+let good o =
+    match o
+      case Some x -> x
+      case None -> 0
+
+--! mode check
+--! assertDiagnosticCodes E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH, E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH, E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH

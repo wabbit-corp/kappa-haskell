@@ -1,0 +1,10 @@
+--! mode check
+--! packageMode
+--! requires capability legacyCharAlias
+--! assertNoErrors
+
+let c : Char = 'a'
+let u : UnicodeScalar = c
+
+--! assertType c Char
+--! assertType u UnicodeScalar

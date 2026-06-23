@@ -1,0 +1,8 @@
+module if_true
+
+result : Int
+let result = if True then 42 else 0
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

@@ -1,0 +1,12 @@
+module main
+
+-- Source issues: KT-437, hylo#1596
+-- Spec: §8.2
+bad : IO Unit
+let bad = do
+    let x = 0
+    x = 1
+    return ()
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch assignment|mutable|var|x

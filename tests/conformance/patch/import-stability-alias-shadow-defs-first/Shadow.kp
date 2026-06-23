@@ -1,0 +1,6 @@
+module Shadow
+
+-- Same spelling as Defs.isNotLT, but a different declaration and type.
+-- Qualified reduction through D.isNotLT must use declaration identity, not unqualified spelling tables.
+isNotLT : Bool
+let isNotLT = False

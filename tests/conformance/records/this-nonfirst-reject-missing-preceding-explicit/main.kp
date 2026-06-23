@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+let between (low : Int) (this x : Int) (high : Int) : Bool =
+    if low <= x then x <= high else False
+
+bad : Bool
+let bad : Bool = 5.between 10

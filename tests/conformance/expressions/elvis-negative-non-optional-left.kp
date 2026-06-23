@@ -1,0 +1,9 @@
+module main
+
+-- Source issue: KT-577
+-- Spec: §7.1.2
+badElvis : Int
+let badElvis = 1 ?: 2
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch Elvis|\?:|Option|left

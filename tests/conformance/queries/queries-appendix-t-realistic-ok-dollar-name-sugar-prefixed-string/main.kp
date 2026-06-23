@@ -1,0 +1,7 @@
+module main
+
+import dsl.web.*
+
+greeting : String -> Html
+let greeting name =
+    html"<span class=\"greeting\">Hello, $name</span>"

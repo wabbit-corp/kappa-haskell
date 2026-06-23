@@ -1,0 +1,21 @@
+module main
+
+-- Source issue: hylo#878
+-- Spec: §6.1.2, §6.3.1, §14.1.1
+pair : (x : Int, y : Int)
+let pair = (x = 40, y = 2)
+
+result : Int
+let result =
+    block
+        let (x = captured, y = _) = pair
+
+        addCaptured : Int -> Int
+        let addCaptured y = captured + y
+
+        addCaptured 2
+
+--! assertNoErrors
+--! assertType pair (x : Int, y : Int)
+--! assertType result Int
+--! assertEval result 42

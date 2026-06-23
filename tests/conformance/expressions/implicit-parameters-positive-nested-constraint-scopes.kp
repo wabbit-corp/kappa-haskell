@@ -1,0 +1,27 @@
+module main
+
+-- Source issues: scala3#877, ghc#12507
+-- Spec: §6.3.1, §7.3.3
+trait Score a =
+    score : a -> Int
+
+instance Score Int =
+    let score x = x
+
+instance Score Bool =
+    let score x = if x then 1 else 0
+
+outer : Score Int => Int
+let outer =
+    block
+        inner : Score Bool => Int
+        let inner = score False + score 42
+
+        inner
+
+result : Int
+let result = outer
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

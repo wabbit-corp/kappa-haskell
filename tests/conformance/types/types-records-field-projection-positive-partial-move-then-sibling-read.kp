@@ -1,0 +1,19 @@
+module main
+
+--! allow_unsafe_consume
+
+data Buffer : Type =
+    Buffer
+
+consume : (1 old : Buffer) -> Unit
+let consume old =
+    let _ = unsafeConsume old
+    in ()
+
+demo : (1 r : (1 buf : Buffer, len : Nat)) -> Nat
+let demo r =
+    let old = r.buf
+    let used = consume old
+    r.len
+
+--! assertNoErrors

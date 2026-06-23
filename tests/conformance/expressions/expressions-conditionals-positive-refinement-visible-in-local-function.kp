@@ -1,0 +1,28 @@
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- Source issue: KT-338
+-- Spec: §6.3.1, §7.4.1, §7.4.2
+readViaLocalFunction : Payload -> Int
+let readViaLocalFunction p =
+    if p is Box then
+        block
+            read : Unit -> Int
+            let read () = p.value + 1
+
+            read ()
+    else 0
+
+boxed : Int
+let boxed = readViaLocalFunction (Box 41)
+
+empty : Int
+let empty = readViaLocalFunction Empty
+
+--! assertNoErrors
+--! assertType readViaLocalFunction Payload -> Int
+--! assertEval boxed 42
+--! assertEval empty 0

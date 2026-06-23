@@ -1,0 +1,3 @@
+-- Directory suite for QueryCore/QTT comprehension conformance.
+--! mode check
+--! packageMode

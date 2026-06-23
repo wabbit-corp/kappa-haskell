@@ -1,0 +1,27 @@
+module main
+
+-- Source issue: KT-399
+-- Spec: §7.1, §7.1.3, §7.3
+makeConst : forall (a : Type). a -> Unit -> a
+let makeConst value =
+    \() -> value
+
+explicitString : String
+let explicitString = (makeConst @String "OK") ()
+
+inferredInt : Int
+let inferredInt = (makeConst 41) () + 1
+
+fromHigherOrder : String
+let fromHigherOrder =
+    let f = makeConst "nested"
+    f ()
+
+--! assertNoErrors
+--! assertType makeConst forall (a : Type). a -> Unit -> a
+--! assertType explicitString String
+--! assertType inferredInt Int
+--! assertType fromHigherOrder String
+--! assertEval explicitString "OK"
+--! assertEval inferredInt 42
+--! assertEval fromHigherOrder "nested"

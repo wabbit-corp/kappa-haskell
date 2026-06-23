@@ -1,0 +1,7 @@
+module lib
+
+wrapImported : Syntax Int -> Syntax Int
+let wrapImported e = '{ (\x -> ${e}) 1 }
+
+--! assertNoErrors
+--! assertType wrapImported Syntax Int -> Syntax Int

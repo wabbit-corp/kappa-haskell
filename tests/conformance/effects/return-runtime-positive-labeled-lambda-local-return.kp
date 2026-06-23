@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: KT-139
+-- Spec: §8.4, §8.4.1, §7.2
+make : Unit -> IO Int
+let make =
+    exit@\() -> do
+        return@exit 42
+
+main : IO Int
+let main = make ()
+
+--! assertNoErrors
+--! assertType make Unit -> IO Int
+--! assertExecute main 42

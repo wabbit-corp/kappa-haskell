@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+data Shape : Type =
+    Shape
+
+trait Shape =
+    marker : Unit
+
+bad : Type
+let bad = Shape

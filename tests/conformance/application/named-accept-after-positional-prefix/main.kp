@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+place : (scale : Int) -> (image : Int) -> (width : Int) -> Int
+let place (scale : Int) (image : Int) (width : Int) : Int = image
+
+ok : Int
+let ok : Int = place 2 { width = 640, image = 1 }

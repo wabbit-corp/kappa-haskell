@@ -1,0 +1,25 @@
+module main
+
+-- Hostile-audit PAT-1 guard: an as-pattern is exactly as refutable/covering as its inner, so wrapping
+-- each constructor of an exhaustive match in an as-pattern must NOT produce a spurious
+-- non-exhaustive-match warning. Coverage is decided by the UNCHANGED surface check (which already
+-- delegates an as-pattern to its inner); this pins that the carrier work did not perturb that property.
+data Flag : Type =
+    On
+    Off
+
+invert : Flag -> Flag
+let invert flag =
+    match flag
+      case seen @ On -> Off
+      case seen @ Off -> On
+
+flipped : Flag
+let flipped = invert On
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

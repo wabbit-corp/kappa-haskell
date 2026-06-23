@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+needs : (@ω x : Int) -> Int
+let needs (@ω x : Int) : Int = x
+
+ok : Int
+let ok : Int =
+    block
+        let (@ω x : Int) = 1
+        needs

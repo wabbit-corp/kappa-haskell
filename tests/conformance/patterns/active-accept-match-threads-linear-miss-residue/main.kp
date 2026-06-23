@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+
+data Buf : Type =
+    Buf (n : Int)
+
+bufValue : (1 b : Buf) -> Int
+let bufValue (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+pattern TakePositive (1 b : Buf) : Match Int Buf =
+    match b
+    case Buf n -> if n > 0 then Match.Hit n else Match.Miss (Buf n)
+
+ok : (1 b : Buf) -> Int
+let ok (1 b : Buf) : Int =
+    match b
+    case TakePositive (n) -> n
+    case rest -> bufValue rest

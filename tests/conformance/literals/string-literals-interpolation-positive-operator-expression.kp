@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: KT-889
+-- Spec: §3.5, §4.3.4
+infix left 60 (++)
+let (++) x y = x + y
+
+value : String
+let value = f"${20 ++ 22}"
+
+--! assertNoErrors
+--! assertType value String
+--! x-assertEval value "42"

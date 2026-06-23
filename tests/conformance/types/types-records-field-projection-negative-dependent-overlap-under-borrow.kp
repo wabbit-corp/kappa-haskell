@@ -1,0 +1,18 @@
+module main
+
+data Byte : Type =
+    Byte
+
+data Array n a : Type =
+    Array
+
+type Sized = (1 len : Nat, 1 buffer : Array this.len Byte)
+
+bad : (1 r : Sized) -> Nat
+let bad r =
+    let & b = r.buffer
+    let n = r.len
+    n
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP

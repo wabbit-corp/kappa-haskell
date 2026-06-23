@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+import std.hash.*
+
+--! assertDiagnosticNext error E_NAME_UNRESOLVED
+let h = hashChar 'a'

@@ -1,0 +1,9 @@
+module main
+
+mayIgnoreAffine : (<=1 x : Int) -> Int
+let mayIgnoreAffine (<=1 x : Int) : Int = 0
+
+bad : (>=1 x : Int) -> Int
+let bad (>=1 x : Int) : Int = mayIgnoreAffine x
+
+--! assertErrorCount 1

@@ -1,0 +1,7 @@
+module main
+
+bad : (& x : Int) -> Unit -> Int
+let bad (& x : Int) : Unit -> Int =
+    \() -> x
+
+--! assertErrorCount 1

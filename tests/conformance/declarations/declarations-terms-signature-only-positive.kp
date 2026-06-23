@@ -1,0 +1,9 @@
+module main
+
+answer : Int
+let answer = 42
+
+--! assertNoErrors
+--! assertType answer Int
+--! assertEval answer 42
+--! x-assertDeclDescriptors signature answer, let answer

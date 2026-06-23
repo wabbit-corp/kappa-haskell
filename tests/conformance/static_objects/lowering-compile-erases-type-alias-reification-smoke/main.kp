@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+type UserId = Int
+
+mk : Int
+let mk =
+    block
+        let T = type UserId
+        let x : T = 12
+        x

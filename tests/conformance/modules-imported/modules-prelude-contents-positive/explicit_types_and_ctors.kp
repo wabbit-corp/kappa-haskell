@@ -1,0 +1,10 @@
+module explicit_types_and_ctors
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+maybe : Option Int
+let maybe = None
+
+--! assertNoErrors
+--! assertType maybe Option Int
+--! x-assertDeclDescriptors import std.prelude.(type Option + ctor Some + ctor None), signature maybe, let maybe

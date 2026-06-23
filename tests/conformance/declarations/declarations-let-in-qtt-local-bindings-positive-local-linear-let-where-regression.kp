@@ -1,0 +1,30 @@
+module main
+
+--! allow_unsafe_consume
+
+data A : Type =
+    A
+
+data B : Type =
+    B
+
+data C : Type =
+    C
+
+f : (1 x : A) -> B
+let f x =
+    let _ = unsafeConsume x
+    in B
+
+g : (1 y : B) -> C
+let g y =
+    let _ = unsafeConsume y
+    in C
+
+h : (1 x : A) -> C
+let h x =
+    let y = f x
+    g y
+
+--! assertNoErrors
+--! assertType h (1 x : A) -> C

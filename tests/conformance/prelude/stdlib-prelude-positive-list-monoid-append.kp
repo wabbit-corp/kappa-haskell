@@ -1,0 +1,40 @@
+module main
+
+-- Regression: the prelude now ships `instance Monoid (List a)` (with a recursive
+-- `appendList` helper), so the append operator `++` works on the built-in list
+-- type out of the box — previously it failed with
+-- "Implicit trait constraint 'Monoid (List Int)' could not be resolved".
+
+len : List Int -> Int
+let len xs =
+    match xs
+      case Nil -> 0
+      case _ :: t -> 1 + len t
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case h :: t -> h + sumList t
+
+joined : List Int
+let joined = (1 :: 2 :: Nil) ++ (3 :: 4 :: 5 :: Nil)
+
+-- empty is the left/right identity.
+withEmpty : List Int
+let withEmpty = Nil ++ (7 :: 8 :: Nil)
+
+joinedLength : Int
+let joinedLength = len joined
+
+joinedSum : Int
+let joinedSum = sumList joined
+
+emptyAppendSum : Int
+let emptyAppendSum = sumList withEmpty
+
+--! mode check
+--! assertNoErrors
+--! assertEval joinedLength 5
+--! assertEval joinedSum 15
+--! assertEval emptyAppendSum 15

@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType ok main.NeedBox
+--! assertType forced main.Cell

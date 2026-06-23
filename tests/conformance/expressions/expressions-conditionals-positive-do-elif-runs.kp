@@ -1,0 +1,13 @@
+module main
+
+-- Opus task #23 pin: `elif` works inside a do-block `if` too (Spec §18.4 reuses the §16.4 if
+-- grammar). Inline do-block elif selects the right branch at runtime.
+classify : Int -> UIO Unit
+let classify n = do
+    if n == 0 then printlnString "zero" elif n > 0 then printlnString "pos" else printlnString "neg"
+
+main : UIO Unit
+let main = classify 5
+
+--! assertNoErrors
+--! assertRunStdout main pos

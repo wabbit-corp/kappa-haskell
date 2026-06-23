@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+type Cell = (value : Int)
+
+projection bad (place this : Cell) : Int =
+    get -> this.value
+
+    get -> this.value

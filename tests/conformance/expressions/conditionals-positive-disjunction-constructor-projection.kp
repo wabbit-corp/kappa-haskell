@@ -1,0 +1,30 @@
+module main
+
+data Payload : Type =
+    IntBox (value : Int)
+    NatBox (value : Int)
+    Empty
+
+-- Source issue: KT-1982
+-- Spec: §7.4.1, §7.4.2, §2.8.3
+readValue : Payload -> Int
+let readValue p =
+    if p is IntBox || p is NatBox then p.value else 0
+
+fromInt : Int
+let fromInt = readValue (IntBox 20)
+
+fromNat : Int
+let fromNat = readValue (NatBox 22)
+
+fromEmpty : Int
+let fromEmpty = readValue Empty
+
+--! assertNoErrors
+--! assertType readValue Payload -> Int
+--! assertType fromInt Int
+--! assertType fromNat Int
+--! assertType fromEmpty Int
+--! assertEval fromInt 20
+--! assertEval fromNat 22
+--! assertEval fromEmpty 0

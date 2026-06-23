@@ -1,0 +1,33 @@
+module main
+
+-- Source issues: KT-258, KT-262
+-- Spec: §2.8.4, §7.1.3
+data Slot (a : Type) : Type =
+    Slot (value : a)
+
+replace : forall (a : Type). (this s : Slot a) -> (newValue : a) -> Slot a
+let replace @a (this s : Slot a) newValue = Slot newValue
+
+read : forall (a : Type). Slot a -> a
+let read @a slot =
+    match slot
+      case Slot value -> value
+
+updatedInt : Slot Int
+let updatedInt = (Slot 0).replace 42
+
+updatedString : Slot String
+let updatedString = (Slot "old").replace "new"
+
+intResult : Int
+let intResult = read updatedInt
+
+stringResult : String
+let stringResult = read updatedString
+
+--! assertNoErrors
+--! assertType replace forall (a : Type). (this s : Slot a) -> (newValue : a) -> Slot a
+--! assertType updatedInt Slot Int
+--! assertType updatedString Slot String
+--! assertEval intResult 42
+--! assertEval stringResult "new"

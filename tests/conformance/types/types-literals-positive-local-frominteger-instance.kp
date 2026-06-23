@@ -1,0 +1,32 @@
+module main
+
+-- Round-9 KR9-3 positive control (REWRITTEN round-10 R10-CF-PIN): a user
+-- type WITH a local FromInteger instance accepts integer literals at
+-- Meters-DEMANDED positions (boundary slots and direct bindings), with a
+-- REAL conversion body. Mutation-sensitive: reverting the carve-out to
+-- dead code regresses `unwrap 42` below.
+
+data Meters : Type =
+    MkMeters Int
+
+instance FromInteger Meters =
+    let fromInteger n = MkMeters (natToInt n)
+
+unwrap : Meters -> Int
+let unwrap m =
+    match m
+    case MkMeters n -> n
+
+viaBoundary : Int
+let viaBoundary = unwrap 42
+
+direct : Meters
+let direct = 7
+
+viaDirect : Int
+let viaDirect = unwrap direct
+
+--! mode check
+--! assertNoErrors
+--! assertEval viaBoundary 42
+--! assertEval viaDirect 7

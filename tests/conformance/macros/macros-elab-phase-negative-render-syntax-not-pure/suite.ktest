@@ -1,0 +1,4 @@
+-- Appendix T directory suite.
+--! mode check
+--! packageMode
+--! assertDiagnosticMatch (renderSyntax|Elab String|Elab.*String|expected.*String)

@@ -1,0 +1,21 @@
+module main
+
+data DualSink (row : Type) : Type =
+    DualSink (which : String)
+
+instance FromComprehensionRaw (DualSink row) =
+    let Item = row
+    let fromComprehensionRaw raw =
+        pure '{ DualSink "raw" }
+
+instance FromComprehensionPlan (DualSink row) =
+    let Item = row
+    let fromComprehensionPlan plan =
+        failElabWith "KAPPA-TEST-PLAN-HOOK-CHOSEN" "raw hook should have priority over plan hook" Nil
+
+ok : DualSink Int
+let ok =
+    DualSink [
+        for x in [1, 2, 3]
+        yield x
+    ]

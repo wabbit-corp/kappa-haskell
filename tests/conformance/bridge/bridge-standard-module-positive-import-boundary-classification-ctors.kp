@@ -1,0 +1,28 @@
+module main
+
+-- Source tests: github-modularml-mojo/tests/mojo/stdlib/test/python/test_python_error_handling.mojo
+-- Source issues: mojo#514
+-- Spec: §2.7B, §17.7.4A, §17.7.7A
+import std.bridge.(type BoundaryDirection, type BoundaryPrecision)
+import std.bridge.(ctor IntoKappa, ctor OutOfKappa, ctor LaterUse)
+import std.bridge.(ctor Exact, ctor Conservative, ctor Lossy)
+
+directionInto : BoundaryDirection
+let directionInto = IntoKappa
+
+directionOut : BoundaryDirection
+let directionOut = OutOfKappa
+
+directionLater : BoundaryDirection
+let directionLater = LaterUse
+
+precisionExact : BoundaryPrecision
+let precisionExact = Exact
+
+precisionConservative : BoundaryPrecision
+let precisionConservative = Conservative
+
+precisionLossy : BoundaryPrecision
+let precisionLossy = Lossy
+
+--! assertNoErrors

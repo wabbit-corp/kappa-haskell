@@ -1,0 +1,38 @@
+module main
+
+--! allow_unsafe_consume
+
+data A : Type =
+    A
+
+data B : Type =
+    B
+
+data C_or_B : Type =
+    FromC
+    | FromB
+
+data Option a : Type =
+    Some a
+    | None
+
+peek : (& x : A) -> Option B
+let peek x = None
+
+consume : (1 x : A) -> C_or_B
+let consume x =
+    let _ = unsafeConsume x
+    in FromC
+
+use : B -> C_or_B
+let use y = FromB
+
+foo : (1 x : A) -> C_or_B
+let foo x =
+    do
+      match peek x
+        case Some y -> use y
+        case None -> FromC
+      consume x
+
+--! assertNoErrors

@@ -1,0 +1,17 @@
+module main
+
+-- Source issue: Idris2#202
+-- Kappa analogue: indexed refinement may rule out impossible constructors, but it must still reject a match that omits a remaining reachable constructor.
+-- Spec: §7.5.1, §7.5.1A, §17.3.6
+data Choice (flag : Bool) : Type =
+    Always : Choice True
+    Also : Choice True
+    Never : Choice False
+
+choose : Choice True -> Int
+let choose c =
+    match c
+      case Always -> 1
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing

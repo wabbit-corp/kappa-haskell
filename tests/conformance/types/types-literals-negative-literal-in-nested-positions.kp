@@ -1,0 +1,27 @@
+module main
+
+-- Round-9 KR9-1: literals at user nominal types reject in match-case
+-- bodies, local-let tails, and lambda bodies (previously compiled clean
+-- and crashed at runtime).
+
+data Color : Type =
+    Red
+    Green
+
+viaCase : Color
+let viaCase =
+    match 1
+      case 1 -> "boom"
+      case _ -> Red
+
+viaLet : Color
+let viaLet =
+    let x = 1
+    "boom"
+
+viaLambda : Unit -> Color
+let viaLambda = \u -> "boom"
+
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH, E_TYPE_MISMATCH

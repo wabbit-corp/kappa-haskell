@@ -1,0 +1,13 @@
+@PrivateByDefault module user_operator_function
+
+infix left 60 (++)
+let (++) x y = x + y
+let add = (++)
+
+result : Int
+let result = add 20 22
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42
+--! x-assertDeclDescriptors fixity infix ++, let ++, let add, signature result, let result

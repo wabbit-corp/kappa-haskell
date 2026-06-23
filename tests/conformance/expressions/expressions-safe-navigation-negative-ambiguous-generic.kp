@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+import std.prelude.(type Option)
+
+type Box a = (value : a)
+
+let getValue x = x?.value
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_SAFE_NAVIGATION_AMBIGUOUS

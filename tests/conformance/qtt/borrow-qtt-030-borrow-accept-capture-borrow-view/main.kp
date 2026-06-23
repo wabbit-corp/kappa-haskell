@@ -1,0 +1,8 @@
+module main
+
+roundTrip : forall (s : Region). (&[s] x : Int) -> Int
+let roundTrip (@0 s : Region) (&[s] x : Int) : Int =
+    let view = captureBorrow x
+    in withBorrowView view (\(&[s] y : Int) -> y)
+
+--! assertNoErrors

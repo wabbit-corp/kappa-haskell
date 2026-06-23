@@ -1,0 +1,12 @@
+module main
+
+import model.data.*
+import dsl.sql.*
+
+runtimeSql : InterpolatedMacro (PreparedSql User)
+let runtimeSql =
+    summon (InterpolatedMacro (PreparedSql User))
+
+bad : PreparedSql User
+let bad =
+    runtimeSql"select * from users where id = ${1 : param}"

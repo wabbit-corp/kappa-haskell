@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+omegaIgnore : (x : Int) -> Int
+let omegaIgnore (x : Int) : Int = 0
+
+useLinearFn : ((1 x : Int) -> Int) -> Int
+let useLinearFn (fn : (1 x : Int) -> Int) : Int = fn 0
+
+bad : Int
+let bad : Int = useLinearFn omegaIgnore

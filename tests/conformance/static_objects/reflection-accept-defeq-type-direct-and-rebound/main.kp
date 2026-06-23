@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+sameType : Bool
+let sameType =
+    block
+        let F = type Box
+        defEqSyntax '{ Box Int } '{ F Int }

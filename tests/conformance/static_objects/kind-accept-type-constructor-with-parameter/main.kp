@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+B : Type -> Type
+let B = type Box
+
+ok : B Int
+let ok = B.Box 1

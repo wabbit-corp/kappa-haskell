@@ -1,0 +1,11 @@
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- §11.1: a record carrying a `Type`-valued field inhabits Type1, so
+-- ascribing it to Type0 is a universe inconsistency (the latent
+-- Type-in-Type hole: a strong-Σ storing a type must not sit in the same
+-- universe as the type it stores). Cumulativity is one-directional
+-- (Type m ≤ Type n only when m ≤ n), so Type1 is not accepted at Type0.
+module main
+
+recInType0 : Type0
+let recInType0 = (ty : Type) --!! E_TYPE_EQUALITY_MISMATCH

@@ -1,0 +1,7 @@
+--! mode check
+--! packageMode
+--! requires capability unicodeSourceWarnings
+--! assertWarningCount 1
+--! assertDiagnostic warning W_UNICODE_NON_NORMALIZED_SOURCE_TEXT
+
+let s = "é"

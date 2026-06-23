@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+import lib.box.(term Box)
+
+bad : Int
+let bad = 0

@@ -1,0 +1,53 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.unicode.*
+
+let version : UnicodeVersion = unicodeVersion
+let nfc : NormalizationForm = NFC
+let nfd : NormalizationForm = NFD
+let nfkc : NormalizationForm = NFKC
+let nfkd : NormalizationForm = NFKD
+let encoded : Bytes = utf8Bytes "abc"
+let decoded : Result UnicodeDecodeError String = decodeUtf8 encoded
+let lossy : String = decodeUtf8Lossy encoded
+let bytesN : Nat = byteLength "e\u{301}"
+let scalarN : Nat = scalarCount "e\u{301}"
+let graphemeN : Nat = graphemeCount "e\u{301}"
+let scalarQ : Query UnicodeScalar = scalars "e\u{301}"
+let graphemeQ : Query Grapheme = graphemes "e\u{301}"
+let wordQ : Query String = words "hello world"
+let sentenceQ : Query String = sentences "hello. world."
+let scalarNat : Nat = scalarValue '\u03BB'
+let scalarOpt : Option UnicodeScalar = unicodeScalarFromValue 0x03BB
+let scalarS : String = scalarToString '\u03BB'
+let graphemeS : String = graphemeToString g'e\u{301}'
+let graphemeOpt : Option Grapheme = graphemeFromString "e\u{301}"
+let normalized : String = normalize NFC "e\u{301}"
+let normalizedQ : Bool = isNormalized NFC normalized
+let canonicalQ : Bool = canonicalEquivalent "\u{00E9}" "e\u{301}"
+
+--! assertType version UnicodeVersion
+--! assertType nfc NormalizationForm
+--! assertType nfd NormalizationForm
+--! assertType nfkc NormalizationForm
+--! assertType nfkd NormalizationForm
+--! assertType encoded Bytes
+--! assertType decoded Result UnicodeDecodeError String
+--! assertType lossy String
+--! assertType bytesN Nat
+--! assertType scalarN Nat
+--! assertType graphemeN Nat
+--! assertType scalarQ Query UnicodeScalar
+--! assertType graphemeQ Query Grapheme
+--! assertType wordQ Query String
+--! assertType sentenceQ Query String
+--! assertType scalarNat Nat
+--! assertType scalarOpt Option UnicodeScalar
+--! assertType scalarS String
+--! assertType graphemeS String
+--! assertType graphemeOpt Option Grapheme
+--! assertType normalized String
+--! assertType normalizedQ Bool
+--! assertType canonicalQ Bool

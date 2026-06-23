@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN

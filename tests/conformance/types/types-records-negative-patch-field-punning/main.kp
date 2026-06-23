@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type Point : Type = (x : Int, y : Int)
+
+bad : Point -> Int -> Point
+let bad (p : Point) (x : Int) : Point = p.{ x }

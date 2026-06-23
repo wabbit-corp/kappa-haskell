@@ -1,0 +1,65 @@
+module main
+
+-- Spec: §2.7C
+import std.atomic.(type AtomicRef, type LoadOrder, type StoreOrder, type RmwOrder, type CasFailureOrder)
+import std.atomic.(type CompareExchangeResult)
+import std.atomic.(trait AtomicValue)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicStore, term atomicExchange, term atomicCompareExchange)
+import std.atomic.(term atomicFetchAdd, term atomicFetchSub, term atomicFetchAnd, term atomicFetchOr, term atomicFetchXor)
+import std.atomic.(ctor LoadAcquire, ctor StoreRelease, ctor RmwSeqCst, ctor CasFailAcquire)
+
+keepAtomicRef : AtomicRef a -> AtomicRef a
+let keepAtomicRef cell = cell
+
+keepAtomicWitness : (@_ : AtomicValue a) -> a -> a
+let keepAtomicWitness value = value
+
+keepLoadOrder : LoadOrder -> LoadOrder
+let keepLoadOrder _ = LoadAcquire
+
+keepStoreOrder : StoreOrder -> StoreOrder
+let keepStoreOrder _ = StoreRelease
+
+keepRmwOrder : RmwOrder -> RmwOrder
+let keepRmwOrder _ = RmwSeqCst
+
+keepCasFailureOrder : CasFailureOrder -> CasFailureOrder
+let keepCasFailureOrder _ = CasFailAcquire
+
+makeAtomicRef : (@_ : AtomicValue a) -> a -> UIO (AtomicRef a)
+let makeAtomicRef value = newAtomicRef value
+
+loadAtomicRef : (@_ : AtomicValue a) -> AtomicRef a -> UIO a
+let loadAtomicRef cell = atomicLoad LoadAcquire cell
+
+storeAtomicRef : (@_ : AtomicValue a) -> AtomicRef a -> a -> UIO Unit
+let storeAtomicRef cell value = atomicStore StoreRelease cell value
+
+exchangeAtomicRef : (@_ : AtomicValue a) -> AtomicRef a -> a -> UIO a
+let exchangeAtomicRef cell value = atomicExchange RmwSeqCst cell value
+
+compareExchangeAtomicRef :
+    (@_ : AtomicValue a) ->
+    AtomicRef a ->
+    a ->
+    a ->
+    UIO (CompareExchangeResult a)
+let compareExchangeAtomicRef cell expected desired =
+    atomicCompareExchange RmwSeqCst CasFailAcquire cell expected desired
+
+fetchAddAtomicInt : AtomicRef Int -> Int -> UIO Int
+let fetchAddAtomicInt cell delta = atomicFetchAdd RmwSeqCst cell delta
+
+fetchSubAtomicInt : AtomicRef Int -> Int -> UIO Int
+let fetchSubAtomicInt cell delta = atomicFetchSub RmwSeqCst cell delta
+
+fetchAndAtomicInt : AtomicRef Int -> Int -> UIO Int
+let fetchAndAtomicInt cell bits = atomicFetchAnd RmwSeqCst cell bits
+
+fetchOrAtomicInt : AtomicRef Int -> Int -> UIO Int
+let fetchOrAtomicInt cell bits = atomicFetchOr RmwSeqCst cell bits
+
+fetchXorAtomicInt : AtomicRef Int -> Int -> UIO Int
+let fetchXorAtomicInt cell bits = atomicFetchXor RmwSeqCst cell bits
+
+--! assertNoErrors

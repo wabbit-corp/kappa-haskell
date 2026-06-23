@@ -1,0 +1,19 @@
+module main
+
+type Alias = Int
+
+trait Show a =
+    show : a -> String
+
+instance Show Int =
+    let show x = primitiveIntToString x
+
+render : Show Alias => Alias -> String
+let render x = show x
+
+message : String
+let message = render 7
+
+--! assertNoErrors
+--! assertType message String
+--! x-assertEval message "7"

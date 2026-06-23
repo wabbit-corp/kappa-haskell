@@ -1,0 +1,9 @@
+module main
+
+-- Source issue: reified static-object facets
+-- Spec: §2.8.1.1, §2.8.6
+missingType : Type
+let missingType = type Missing
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_STATIC_OBJECT_UNRESOLVED

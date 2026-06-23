@@ -1,0 +1,15 @@
+module main
+
+-- Regression (pending-failures/crash-c84748e9d24e): a non-terminating program
+-- previously crashed the host process with an uncatchable .NET stack overflow.
+-- The interpreter now bounds evaluation depth and reports a clean runtime error.
+loop : Int -> Int
+let loop n = loop n
+
+result : Int
+let result = loop 0
+
+--! mode check
+--! assertNoErrors
+--! assertType result Int
+--! assertEvalErrorContains result exceeded the maximum recursion depth

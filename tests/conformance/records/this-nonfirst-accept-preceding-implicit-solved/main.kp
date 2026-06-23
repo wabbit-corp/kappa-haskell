@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+
+data Env : Type =
+    Env (bias : Int)
+
+let offsetByEnv (@ω env : Env) (this x : Int) : Int =
+    match env
+    case Env bias -> x + bias
+
+ok : Int
+let ok : Int =
+    block
+        let (@ω env : Env) = Env 7
+        5.offsetByEnv

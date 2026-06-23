@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+idInt : Int -> Int
+let idInt (x : Int) : Int = x
+
+bad : Int
+let bad : Int = idInt @1

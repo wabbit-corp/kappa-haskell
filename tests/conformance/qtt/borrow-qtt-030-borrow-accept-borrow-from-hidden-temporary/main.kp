@@ -1,0 +1,14 @@
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+readBox : (& b : Box) -> Int
+let readBox (& b : Box) : Int = b.value
+
+ok : Unit -> Int
+let ok () : Int =
+    let & b = Box 1
+    in readBox b
+
+--! assertNoErrors

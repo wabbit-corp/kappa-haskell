@@ -1,0 +1,12 @@
+module main
+
+-- §8.5.2/§32.1: opacity is a conversion-time (definitional-equality) rule
+-- only; an opaque definition is still an ordinary value at runtime, so an
+-- importing module can compute with it.
+import oplib.(secret)
+
+useSecret : Int
+let useSecret = addInt secret 1
+
+--! assertNoErrors
+--! assertEval useSecret 8

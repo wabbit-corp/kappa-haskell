@@ -1,0 +1,23 @@
+module main
+
+-- Spec: §6.4.2, §6.4.3
+evenLen : List Int -> Bool
+oddLen : List Int -> Bool
+
+let evenLen xs =
+    match xs
+      case Nil -> True
+      case _ :: tail -> oddLen tail
+
+let oddLen xs =
+    match xs
+      case Nil -> False
+      case _ :: tail -> evenLen tail
+
+result : Bool
+let result = evenLen (1 :: 2 :: 3 :: Nil)
+
+--! assertNoErrors
+--! assertType evenLen List Int -> Bool
+--! assertType oddLen List Int -> Bool
+--! assertEval result False

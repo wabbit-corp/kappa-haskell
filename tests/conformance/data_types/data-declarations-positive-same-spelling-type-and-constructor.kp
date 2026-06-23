@@ -1,0 +1,23 @@
+module main
+
+-- Source issue: Idris2#504
+-- Kappa analogue: a `data` declaration may contribute a type facet and a same-spelling constructor facet in one binding
+-- group; type positions select the type facet, and term/pattern positions select the constructor facet.
+-- Spec: §2.8.1, §2.8.2
+data Thing : Type =
+    Thing
+
+value : Thing
+let value = Thing
+
+isThing : Thing -> Bool
+let isThing x =
+    match x
+      case Thing -> True
+
+result : Bool
+let result = isThing value
+
+--! assertNoErrors
+--! assertType value Thing
+--! assertEval result True

@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+pattern BadPattern (x : Int) : UIO Int =
+    pure x
+
+bad : Int
+let bad : Int = 0

@@ -1,0 +1,18 @@
+module main
+
+-- Hostile-audit RT-6 pin (§20.3.2): `order by` makes the pipeline Ordered, so `skip`/`take` AFTER an
+-- `order by` are valid even when the source (a `Set`) was Unordered. Guards the order-by recovery — the
+-- orderedness accumulator must reset to Ordered at `order by` (otherwise this would be a false reject).
+s : Set Int
+let s = {| 3, 1, 2 |}
+
+ok : List Int
+let ok =
+    [
+        for x in s
+        order by x
+        skip 1
+        yield x
+    ]
+
+--! assertNoErrors

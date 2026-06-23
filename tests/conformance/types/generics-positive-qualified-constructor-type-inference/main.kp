@@ -1,0 +1,26 @@
+module main
+
+-- Source issues: KT-459, KT-507
+-- Spec: §2.8.3, §5.2, §7.1.3, §11.1
+import collections.maps
+
+qualified : collections.maps.Pair String Int
+let qualified = collections.maps.Pair "href" 1
+
+result : Int
+let result = collections.maps.readSecond qualified
+
+callback : Unit -> Unit
+let callback = \() -> ()
+
+callbackPair : collections.maps.Pair String (Unit -> Unit)
+let callbackPair = collections.maps.Pair "run" callback
+
+selectedCallback : Unit -> Unit
+let selectedCallback = collections.maps.readSecond callbackPair
+
+--! assertNoErrors
+--! assertType qualified collections.maps.Pair String Int
+--! assertType callbackPair collections.maps.Pair String (Unit -> Unit)
+--! assertType selectedCallback Unit -> Unit
+--! assertEval result 1

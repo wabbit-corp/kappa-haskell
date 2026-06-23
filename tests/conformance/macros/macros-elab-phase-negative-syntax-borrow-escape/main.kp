@@ -1,0 +1,10 @@
+module main
+
+bad : (value : Int,) -> Int
+let bad box =
+    block
+        let s : Syntax Int =
+            block
+                let & x = box.value
+                '{ x }
+        $(pure s)

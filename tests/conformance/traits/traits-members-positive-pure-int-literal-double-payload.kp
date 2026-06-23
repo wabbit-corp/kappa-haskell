@@ -1,0 +1,36 @@
+module main
+
+-- DEFECT-1 guard (RESULT-DIRECTED-ANNOTATION-GAP numeric carve-out, instance
+-- driven): `good : Box Double = pure 5` solves the payload `a` to `Double`; the
+-- integer literal `5` standalone-infers `Int`. matchesBuiltinNumericTarget's
+-- INTEGER branch matches only Int/Integer/Nat and OMITS Double/Float/Real, so the
+-- original text-only carve-out WRONGLY refuted this even though `instance
+-- FromInteger Double` exists (prelude) and `Float = Double`. The carve-out now
+-- ALSO treats the literal as DEFAULTABLE when the solved ground parameter has a
+-- RESOLVABLE FromInteger instance (here, the prelude's `instance FromInteger
+-- Double` resolved via resolveLiteralConstraintInstance), so `Box Double`,
+-- `Box Float`, and any user type with a FromInteger instance are accepted.
+-- (A type with NO FromInteger instance, e.g. `Box Color`, is still refuted.)
+--
+-- COMPILE-LEVEL assertion: the no-over-rejection property is STATIC (the call
+-- must type-check, not be refuted). Runtime evaluation is intentionally NOT
+-- asserted here: result-directed `pure` produces an IO action, so a `pure`
+-- result binding evaluates to `<io>` rather than a scalar (orthogonal to this
+-- gap), and unwrapping a `Box Double` built by the local `pure` instance hits
+-- the disclosed IO-biased value-dispatch limitation. The regression this fixture
+-- guards (Box Double being WRONGLY refuted at compile time) is fully captured by
+-- assertNoErrors.
+
+data Box a = MkBox a
+
+trait Pure (f : Type -> Type) =
+    pure : forall (a : Type). a -> f a
+
+instance Pure Box =
+    let pure x = MkBox x
+
+good : Box Double
+let good = pure 5
+
+--! mode check
+--! assertNoErrors

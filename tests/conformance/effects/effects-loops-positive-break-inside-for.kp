@@ -1,0 +1,18 @@
+module main
+
+-- Hostile-audit RT-1 + RT-3 integration pin (§18.6): the out-of-loop break/continue guard must treat a
+-- `for` body as a loop body (just like `while`). `break`/`continue` lexically inside a for-loop body are
+-- accepted (in-loop), not flagged E_CONTROL_FLOW_INVALID_ESCAPE. (Runtime early-exit control flow for
+-- in-loop break/continue remains the separately-tracked Tier-2 gap, shared with `while`.)
+f : Bool -> UIO Unit
+let f (cond : Bool) : UIO Unit =
+    do
+        for value in 1 :: 2 :: 3 :: Nil do
+            if cond then
+                break
+            else
+                continue
+        pure ()
+
+--! mode check
+--! assertNoErrors

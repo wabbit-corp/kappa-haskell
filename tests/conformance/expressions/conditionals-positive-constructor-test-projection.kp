@@ -1,0 +1,14 @@
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- Source family: Kotlin smart-cast / tag-test issue family
+-- Spec: §7.3.4, §7.4.1
+readOrZero : Payload -> Int
+let readOrZero p =
+    if p is Box then p.value else 0
+
+--! assertNoErrors
+--! assertType readOrZero Payload -> Int

@@ -1,0 +1,15 @@
+module main
+
+-- Round-6 F5 (§6.1.6): a SUFFIXED real literal elaborates as the suffix
+-- call; its result type meets the integral expectation (previously
+-- spuriously rejected with E_NUMERIC_LITERAL_DOMAIN_MISMATCH).
+
+rad : Double -> Int
+let rad d = if floatEq d 3.14 then 77 else 88
+
+sfx : Int
+let sfx = 3.14rad
+
+--! mode check
+--! assertNoErrors
+--! assertEval sfx 77

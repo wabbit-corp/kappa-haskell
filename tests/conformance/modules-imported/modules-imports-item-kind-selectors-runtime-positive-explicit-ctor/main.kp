@@ -1,0 +1,11 @@
+module main
+
+import foo.(ctor Box)
+
+result : Int
+let result =
+    match Box 42
+      case Box value -> value
+
+--! assertNoErrors
+--! assertEval result 42

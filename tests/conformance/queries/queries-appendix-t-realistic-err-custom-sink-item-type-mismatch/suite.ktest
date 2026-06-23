@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- Selected sink Item must be definitionally equal to the normalized yielded item type.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch Item.*String|String.*Item|definitionally equal|yielded item|OnlyInt

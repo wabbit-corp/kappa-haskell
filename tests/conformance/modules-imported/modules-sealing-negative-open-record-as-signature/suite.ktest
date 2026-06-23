@@ -1,0 +1,3 @@
+--! mode check
+--! packageMode
+--! assertDiagnosticCodes E_SEAL_OPEN_RECORD_ASCRIPTION

@@ -1,0 +1,46 @@
+module main
+
+-- Source issue: KT-257
+-- Spec: §11.1, §7.3.4, §7.4.1
+data Box (a : Type) : Type =
+    Box (value : a)
+
+data Wrap (a : Type) : Type =
+    Wrap (payload : a)
+
+inner : Box Int
+let inner = Box 41
+
+nestedBox : Box (Box Int)
+let nestedBox = Box inner
+
+nestedWrap : Box (Wrap Int)
+let nestedWrap = Box (Wrap 5)
+
+readNestedBox : Box (Box Int) -> Int
+let readNestedBox b =
+    if b is Box then
+        block
+            let inside = b.value
+            if inside is Box then inside.value + 1 else 0
+    else 0
+
+readNestedWrap : Box (Wrap Int) -> Int
+let readNestedWrap b =
+    if b is Box then
+        block
+            let inside = b.value
+            if inside is Wrap then inside.payload * 2 else 0
+    else 0
+
+boxResult : Int
+let boxResult = readNestedBox nestedBox
+
+wrapResult : Int
+let wrapResult = readNestedWrap nestedWrap
+
+--! assertNoErrors
+--! assertType nestedBox Box (Box Int)
+--! assertType nestedWrap Box (Wrap Int)
+--! assertEval boxResult 42
+--! assertEval wrapResult 10

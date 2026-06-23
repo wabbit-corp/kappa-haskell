@@ -1,0 +1,7 @@
+module api
+
+type Box (a : Type) = (value : a)
+
+makeGetter : forall (s : Region) (a : Type). (&[s] box : Box a) -> ((Unit -> a) captures (s))
+let makeGetter box = \ (_ : Unit) -> box.value
+

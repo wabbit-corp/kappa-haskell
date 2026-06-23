@@ -1,0 +1,20 @@
+module main
+
+-- Source issues: scala2#2714, scala2#2709
+-- Spec: §12.3, §12.3.1
+import providers.score.(trait Score)
+import providers.misc.*
+
+noiseValue : Int
+let noiseValue = noise
+
+result : Int
+let result =
+    let
+        dict = summon (Score Int)
+    in
+        noiseValue + dict.score 42
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

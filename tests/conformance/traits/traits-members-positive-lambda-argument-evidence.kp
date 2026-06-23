@@ -1,0 +1,43 @@
+@PrivateByDefault module main
+
+-- Round-3 reviewer finding F2: constrained prelude terms inside unannotated
+-- lambdas with a literal RIGHT operand must keep their evidence — these all
+-- lowered to under-applied closures before the typed prepared-argument /
+-- binder-hint / direct-redex fixes.
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case h :: t -> h + sumList t
+
+directRedex : Bool
+let directRedex = (\x -> x < 3) 5
+
+redexLe : Bool
+let redexLe = (\x -> x <= 3) 5
+
+redexGt : Bool
+let redexGt = (\x -> x > 3) 5
+
+filterLiteralRight : Int
+let filterLiteralRight = sumList (filter (\x -> x < 3) (1 :: 2 :: 3 :: 4 :: Nil))
+
+mapOverOption : Bool
+let mapOverOption =
+    match map (\x -> x < 3) (Some 5)
+      case Some b -> b
+      case None -> True
+
+mapOverList : Int
+let mapOverList =
+    match map (\x -> x < 3) (5 :: Nil)
+      case b :: rest -> if b then 1 else 0
+      case Nil -> 0 - 1
+
+--! assertNoErrors
+--! assertEval directRedex False
+--! assertEval redexLe False
+--! assertEval redexGt True
+--! assertEval filterLiteralRight 3
+--! assertEval mapOverOption False
+--! assertEval mapOverList 0

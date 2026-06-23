@@ -1,0 +1,12 @@
+module main
+
+-- Source issues: KT-381, KT-382, KT-478
+-- Spec: §2.1, §6.5
+expect term platformAnswer : Int
+
+total : Int
+let total = sharedOffset + platformAnswer
+
+--! assertNoErrors
+--! assertType total Int
+--! assertEval total 42

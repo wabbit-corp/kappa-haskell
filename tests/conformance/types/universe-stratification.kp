@@ -1,0 +1,37 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1: predicative universe stratification. A type former that carries
+-- a `Type`-valued component (record field, tuple component, Pi domain,
+-- existential witness, quantifier binder) inhabits Type1 (since Type0 :
+-- Type1); a former over ordinary Type0 components stays in Type0. This is
+-- the fix for the latent Type-in-Type hole where everything landed in
+-- Type0 unconditionally.
+module main
+
+-- record carrying a Type-valued field -> Type1
+recField : Type1
+let recField = (ty : Type)
+
+-- positional tuple type with a Type-valued component -> Type1
+tupField : Type1
+let tupField = (Type, Int)
+
+-- function whose domain is a type -> Type1
+piDom : Type1
+let piDom = (s : Type) -> s
+
+-- existential quantifying over a type (strong-Σ) -> Type1
+existsType : Type1
+let existsType = exists (a : Type). a
+
+-- polymorphic (universal) type quantifying over a type -> Type1
+polyId : Type1
+let polyId = forall a. a -> a
+
+-- formers with only Type0 components stay in Type0 (no spurious bump)
+normalRec : Type0
+let normalRec = (x : Int, y : Bool)
+
+normalPi : Type0
+let normalPi = (n : Int) -> Bool

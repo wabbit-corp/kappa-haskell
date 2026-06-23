@@ -1,0 +1,11 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.hash.*
+
+--! assertType hashUnicodeScalar UnicodeScalar -> (1 state : HashState) -> HashState
+--! assertType hashGrapheme Grapheme -> (1 state : HashState) -> HashState
+--! assertType hashString String -> (1 state : HashState) -> HashState
+--! assertType hashBytes Bytes -> (1 state : HashState) -> HashState
+--! assertType hashWith forall (a : Type). (@_ : Hashable a) -> HashSeed -> (& value : a) -> HashCode

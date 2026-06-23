@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+type Box : Type = (value : Int)
+type Packet : Type = (1 payload : Box, tag : Int)
+
+restore : (1 p : Packet) -> Packet
+let restore (1 p : Packet) : Packet =
+    block
+        let 1 old = p.payload
+        p.{ payload = old }

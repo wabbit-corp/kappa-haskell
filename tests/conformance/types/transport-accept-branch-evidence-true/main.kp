@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needTrue : FlagBox True -> Unit
+let needTrue (x : FlagBox True) : Unit = ()
+
+needFalse : FlagBox False -> Unit
+let needFalse (x : FlagBox False) : Unit = ()
+ok : (b : Bool) -> FlagBox b -> Unit
+let ok (b : Bool) (x : FlagBox b) : Unit =
+    if b then needTrue x else ()

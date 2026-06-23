@@ -1,0 +1,14 @@
+module main
+
+-- Source issue: KT-109
+-- Spec: §7.1, §7.2
+invoke : forall (a : Type). (Unit -> a) -> a
+let invoke gen = gen ()
+
+result : String
+let result = invoke (\() -> "OK")
+
+--! assertNoErrors
+--! assertType invoke forall (a : Type). (Unit -> a) -> a
+--! assertType result String
+--! assertEval result "OK"

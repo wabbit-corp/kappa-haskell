@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE

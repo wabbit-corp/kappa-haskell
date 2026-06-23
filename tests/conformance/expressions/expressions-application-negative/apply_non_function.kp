@@ -1,0 +1,7 @@
+module apply_non_function
+
+result : Int
+let result = 42 1
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_APPLICATION_NONCALLABLE

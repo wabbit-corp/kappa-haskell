@@ -1,0 +1,24 @@
+module main
+
+-- Source issues: hylo#674, hylo#629
+-- Spec: §6.3.1, §11.3, §14.1.1
+rebox : forall (a : Type). a -> a
+let rebox x =
+    block
+        type Box = (value : a)
+
+        pack : a -> Box
+        let pack y = (value = y)
+
+        unpack : Box -> a
+        let unpack box = box.value
+
+        unpack (pack x)
+
+result : Int
+let result = rebox 42
+
+--! assertNoErrors
+--! assertType rebox forall (a : Type). a -> a
+--! assertType result Int
+--! assertEval result 42

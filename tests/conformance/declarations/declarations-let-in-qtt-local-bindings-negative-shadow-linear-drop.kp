@@ -1,0 +1,11 @@
+module main
+
+badShadow : (1 x : Int) -> Int
+let badShadow x =
+    let
+        x = 1
+    in
+        x
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP

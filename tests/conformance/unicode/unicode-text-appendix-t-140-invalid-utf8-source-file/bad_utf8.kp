@@ -1,0 +1,2 @@
+module bad
+let x = "ÿ"

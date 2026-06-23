@@ -1,0 +1,94 @@
+module main
+
+-- Spec §28.2.1 numeric operation traits: Zero/One/Add/Mul/Negatable/
+-- CheckedSub instances for the builtin-arithmetic-backed scalars. Evidence is
+-- demanded value-driven; members are exercised through the bare overloaded
+-- spellings where argument types pick the instance. Nat supports + and * but
+-- NOT unchecked '-' (the spec's subtraction is the CheckedSub protocol), so
+-- the Nat instances cover Zero/One/Add/Mul only.
+
+needZero : forall (a : Type). (@ev : Zero a) -> a -> Bool
+let needZero @ev x = True
+
+needOne : forall (a : Type). (@ev : One a) -> a -> Bool
+let needOne @ev x = True
+
+needAdd : forall (a : Type). (@ev : Add a) -> a -> Bool
+let needAdd @ev x = True
+
+needMul : forall (a : Type). (@ev : Mul a) -> a -> Bool
+let needMul @ev x = True
+
+needNegatable : forall (a : Type). (@ev : Negatable a) -> a -> Bool
+let needNegatable @ev x = True
+
+needCheckedSub : forall (a : Type). (@ev : CheckedSub a) -> a -> Bool
+let needCheckedSub @ev x = True
+
+needFromInteger : forall (a : Type). (@ev : FromInteger a) -> a -> Bool
+let needFromInteger @ev x = True
+
+intAddEvidence : Int -> Bool
+let intAddEvidence x = needAdd x
+
+natAddEvidence : Nat -> Bool
+let natAddEvidence x = needAdd x
+
+integerAddEvidence : Integer -> Bool
+let integerAddEvidence x = needAdd x
+
+doubleAddEvidence : Double -> Bool
+let doubleAddEvidence x = needAdd x
+
+floatMulEvidence : Float -> Bool
+let floatMulEvidence x = needMul x
+
+intZeroEvidence : Int -> Bool
+let intZeroEvidence x = needZero x
+
+intOneEvidence : Int -> Bool
+let intOneEvidence x = needOne x
+
+intNegatableEvidence : Int -> Bool
+let intNegatableEvidence x = needNegatable x
+
+doubleNegatableEvidence : Double -> Bool
+let doubleNegatableEvidence x = needNegatable x
+
+intCheckedSubEvidence : Int -> Bool
+let intCheckedSubEvidence x = needCheckedSub x
+
+intFromIntegerEvidence : Int -> Bool
+let intFromIntegerEvidence x = needFromInteger x
+
+doubleFromIntegerEvidence : Double -> Bool
+let doubleFromIntegerEvidence x = needFromInteger x
+
+evidenceProbe : Bool
+let evidenceProbe = intAddEvidence 1
+
+added : Int
+let added = add 19 23
+
+multiplied : Int
+let multiplied = multiply 6 7
+
+negated : Int
+let negated = negate 5
+
+subtracted : Int
+let subtracted = subtract 50 8
+
+natSum : Nat -> Nat -> Nat
+let natSum x y = x + y
+
+integerDiff : Integer -> Integer -> Integer
+let integerDiff x y = x - y
+
+--! mode check
+--! assertNoErrors
+--! assertEval evidenceProbe True
+--! assertEval added 42
+--! assertEval multiplied 42
+--! assertEval negated -5
+--! assertEval subtracted 42

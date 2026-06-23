@@ -1,0 +1,9 @@
+module main
+
+-- Source issue: Idris2#19
+-- Spec: §6.4.1, §16.4
+loop : Int
+let loop = loop
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch total|terminat|recursive|cycle

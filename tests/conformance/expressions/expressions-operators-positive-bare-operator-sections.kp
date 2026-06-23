@@ -1,0 +1,17 @@
+module main
+
+-- Round-6 F3 (§5.5.1): `(-) 5` at expected Int selects the prefix
+-- (negation) fixity and `(+) 5 7` applies the curried section; the negative
+-- half (`(+) 5 : Int` fails closed) is pinned in
+-- expressions.operators.negative_section_under_application.
+
+neg : Int
+let neg = (-) 5
+
+twoArg : Int
+let twoArg = (+) 5 7
+
+--! mode check
+--! assertNoErrors
+--! assertEval neg -5
+--! assertEval twoArg 12

@@ -1,0 +1,9 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertDiagnosticExplainExists E_UNICODE_INVALID_SCALAR_LITERAL
+--! assertDiagnosticExplainExists E_UNICODE_INVALID_GRAPHEME_LITERAL
+--! assertDiagnosticExplainExists E_UNICODE_INVALID_BYTE_LITERAL
+--! assertDiagnosticExplainExists E_UNICODE_INVALID_UTF8
+
+let ok : Unit = ()

@@ -1,0 +1,44 @@
+module main
+
+type Node = (id : Int, parent : Int, name : Int)
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+nodes : List Node
+let nodes =
+    [
+        (id = 0, parent = -1, name = 0),
+        (id = 1, parent = 0, name = 1),
+        (id = 2, parent = 1, name = 2),
+        (id = 3, parent = 2, name = 3),
+        (id = 4, parent = 1, name = 4),
+        (id = 5, parent = 4, name = 5),
+        (id = 6, parent = 4, name = 6)
+    ]
+
+descendantsTwoAway : Node -> List Node
+let descendantsTwoAway root =
+    [
+        for child in nodes
+        for grandChild in nodes
+        if child.parent == root.id
+        if grandChild.parent == child.id
+        yield grandChild
+    ]
+
+result : Int
+let result =
+    sumList [
+        for root in nodes
+        if root.parent == -1
+        for hit in descendantsTwoAway root
+        yield hit.name
+    ]
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 6

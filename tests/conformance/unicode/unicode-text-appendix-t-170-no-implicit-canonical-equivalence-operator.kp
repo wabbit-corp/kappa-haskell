@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+-- Eq String is exact; there is no special Unicode-equivalence operator in the prelude.
+--! assertDiagnosticNext error E_NAME_UNRESOLVED
+let bad = canonicalEquivalent "\u{00E9}" "e\u{301}"

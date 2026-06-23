@@ -1,0 +1,10 @@
+module reexports_url
+
+export "https://example.com/lib" as ext
+
+value : Int
+let value = 42
+
+--! assertDeclKinds export, signature, let
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE

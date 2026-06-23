@@ -1,0 +1,22 @@
+module main
+
+-- Source issue: agda#59
+-- Kappa analogue: an explicit helper-lowered form should preserve structural descent.
+-- Spec: §6.3.1, §6.4.2, §6.4.5, §17.3.1.4
+countViaHelper : List Int -> Int
+let countViaHelper xs =
+    block
+        step : List Int -> Int
+        let step ys =
+            match ys
+              case Nil -> 0
+              case _ :: tail -> 1 + step tail
+
+        step xs
+
+result : Int
+let result = countViaHelper (1 :: 2 :: 3 :: Nil)
+
+--! assertNoErrors
+--! assertType countViaHelper List Int -> Int
+--! assertEval result 3

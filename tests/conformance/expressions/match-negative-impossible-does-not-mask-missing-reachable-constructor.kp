@@ -1,0 +1,19 @@
+module main
+
+-- Source issue: Idris2#484
+-- Kappa analogue: adding a final `case impossible` must not suppress an ordinary non-exhaustiveness error when a
+-- reachable constructor still remains uncovered.
+-- Spec: §7.5.2A, §17.3.6
+data Choice (flag : Bool) : Type =
+    Always : Choice True
+    Also : Choice True
+    Never : Choice False
+
+choose : Choice True -> Int
+let choose c =
+    match c
+      case Always -> 1
+      case impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing|impossible|reachable

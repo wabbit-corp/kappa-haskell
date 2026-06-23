@@ -1,0 +1,14 @@
+module main
+
+-- Source family: Links orderedness issue family
+-- Spec: §10.3.2, §10.6.2
+bad : List Int
+let bad =
+    [
+        for x in {| 3, 1, 2 |}
+        skip 1
+        yield x
+    ]
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch skip|take|Ordered|unordered

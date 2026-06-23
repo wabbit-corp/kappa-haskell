@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+import std.hash.*
+
+let h = hashWith defaultHashSeed "x"
+--! assertDiagnosticNext error E_UNSOLVED_IMPLICIT
+let bad : String = show h

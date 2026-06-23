@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+-- Spec §28.2.1 (%) operator: CheckedMod-routed remainder with the normative
+-- infix left 70 fixity (binds tighter than +).
+sevenModTwo : Int
+let sevenModTwo = 7 % 2
+
+precedence : Int
+let precedence = 7 % 2 + 1
+
+negativeMod : Int
+let negativeMod = (0 - 7) % 2
+
+--! assertNoErrors
+--! assertEval sevenModTwo 1
+--! assertEval precedence 2
+--! assertEval negativeMod -1

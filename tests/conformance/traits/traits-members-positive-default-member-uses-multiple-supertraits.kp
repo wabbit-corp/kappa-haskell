@@ -1,0 +1,29 @@
+module main
+
+trait LeftScore a =
+    leftScore : a -> Int
+
+trait RightScore a =
+    rightScore : a -> Int
+
+trait (LeftScore a, RightScore a) => Combined a =
+    totalScore : a -> Int
+    let totalScore x = leftScore x + rightScore x
+
+instance LeftScore Int =
+    let leftScore x = x + 1
+
+instance RightScore Int =
+    let rightScore x = x + 2
+
+instance Combined Int =
+
+result : Int
+let result = totalScore 39
+
+-- Source issue: Idris2#56
+-- Kappa analogue: a default trait member sees all declared supertrait members under the same type argument.
+-- Spec: §12.1, §12.2.1
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 81

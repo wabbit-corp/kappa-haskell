@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+let value = "broken
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_UNTERMINATED_STRING_LITERAL

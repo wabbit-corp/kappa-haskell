@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: Idris2#230
+-- Kappa analogue: alpha-renaming a dependent function binder should not change an `if`-indexed codomain.
+-- Spec: §5.6.1, §14.3
+type Branch (@0 a : Type) (@0 b : Type) : Type =
+    (c : Bool) -> if c then a else b
+
+sameBranchType :
+    (@0 a : Type) -> (@0 b : Type) ->
+    Branch a b = ((y : Bool) -> if y then a else b)
+let sameBranchType (@0 a : Type) (@0 b : Type) = refl
+
+--! assertNoErrors
+--! assertType sameBranchType (@0 a : Type) -> (@0 b : Type) -> Branch a b = ((y : Bool) -> if y then a else b)

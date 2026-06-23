@@ -1,0 +1,15 @@
+module main
+
+-- Opus task #23 pin: `elif c then e` desugars to `else if c then e` (Spec §16.4), so an elif
+-- condition is the condition of an `if` and must have type Bool (§16.4 L16949). A confidently
+-- non-Bool elif condition (Int here) must be a static E_TYPE_MISMATCH, proving the desugared
+-- elif condition gets the same Bool obligation as a plain `if`.
+classify : Int -> String
+let classify n = if n == 0 then "zero" elif n then "nonbool" else "other"
+
+main : UIO Unit
+let main = printlnString "unused"
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_MISMATCH

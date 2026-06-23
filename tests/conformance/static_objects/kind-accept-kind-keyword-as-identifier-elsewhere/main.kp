@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+kindWord : Int
+let kindWord =
+    block
+        let type = 41
+        type + 1

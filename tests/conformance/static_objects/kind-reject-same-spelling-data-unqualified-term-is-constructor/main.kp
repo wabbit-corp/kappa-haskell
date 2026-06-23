@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+data Person : Type =
+    Person (name : String)
+
+bad : Type
+let bad = Person

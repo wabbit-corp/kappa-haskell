@@ -1,0 +1,17 @@
+module main
+
+-- Hostile-audit EXP-1 pin (§16.3.2): the map-comprehension `on conflict combine with <expr>` combiner lives in
+-- the comprehension's ConflictPolicy (NOT in its lowered form), so the surface-AST hole walk must recurse it
+-- explicitly. A hole there previously type-checked clean and ran (a §16.3.2 MUST violation found in review); it
+-- is now rejected with E_HOLE_UNSOLVED like a hole in any other position.
+m : Map String Int
+let m =
+    {
+        for x in 1 :: 2 :: 3 :: Nil
+        yield "k" : x
+        on conflict combine with _
+    }
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_HOLE_UNSOLVED

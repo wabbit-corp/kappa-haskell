@@ -1,0 +1,22 @@
+module main
+
+-- TRAIT-1 (§33.2.1 step 3 / §14.3.1 step 6): two BYTE-IDENTICAL instance
+-- declarations in the SAME module are HARMLESS OVERLAP. The compiler must
+-- accept them, select a deterministic representative, and the member must
+-- still resolve and RUN at a use site. This is the key pin for Site C
+-- (KCore synthesis dedup) plus end-to-end representative selection.
+
+trait Doubler a =
+    twice : a -> a
+
+instance Doubler Int =
+    let twice x = x + x
+
+instance Doubler Int =
+    let twice x = x + x
+
+result : Int
+let result = twice 21
+
+--! assertNoErrors
+--! assertEval result 42

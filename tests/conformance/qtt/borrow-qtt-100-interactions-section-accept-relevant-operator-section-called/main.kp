@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+ok : (>=1 x : Int) -> Int
+let ok (>=1 x : Int) : Int =
+    block
+        let f = (+ x)
+        f 10

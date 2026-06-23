@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+expect term value : Int
+
+let value = 1
+let value = 2
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_DUPLICATE_DECLARATION, E_EXPECT_AMBIGUOUS
+--! assertDeclKinds expect, let, let

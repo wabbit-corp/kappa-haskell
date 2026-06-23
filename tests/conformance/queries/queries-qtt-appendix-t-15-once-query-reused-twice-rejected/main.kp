@@ -1,0 +1,11 @@
+module main
+
+bad : (1 src : OnceQuery Int) -> List Int
+let bad src =
+    block
+        let a = [ for x in src, yield x ]
+        let b = [ for y in src, yield y ]
+        a
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Oo]ne[- ]shot|[Cc]onsum|twice|[Ll]inear

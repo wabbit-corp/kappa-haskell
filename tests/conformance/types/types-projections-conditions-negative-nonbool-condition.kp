@@ -1,0 +1,24 @@
+module main
+
+-- Hostile-audit XIMPL-2/XIMPL-3 pin: a non-Bool projection if-condition (Int and function-typed)
+-- and a non-Bool match-case guard are each a static E_TYPE_MISMATCH (§16.4 L16949 / §17.1.9 L17637).
+-- Before the fix the projection-body validator only checked yield-rootedness, so these compiled clean.
+type Pair = (left : Int, right : Int)
+
+projection intCond (sel : Int) (place this : Pair) : Int =
+    if sel then yield this.left else yield this.right
+
+projection fnCond (pred : Int -> Bool) (place this : Pair) : Int =
+    if pred then yield this.left else yield this.right
+
+projection intGuard (place this : Pair) : Int =
+    match this.left
+      case n if n -> yield this.left
+      case _ -> yield this.right
+
+main : UIO Unit
+let main = printlnString "x"
+
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH, E_TYPE_MISMATCH

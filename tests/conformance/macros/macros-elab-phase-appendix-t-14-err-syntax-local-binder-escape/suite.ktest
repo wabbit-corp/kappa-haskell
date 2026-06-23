@@ -1,0 +1,4 @@
+-- Appendix T directory suite.
+--! mode check
+--! packageMode
+--! assertDiagnosticMatch (Syntax|syntax).*(scope|hygienic|binder|escape)|(scope|hygienic|binder|escape).*(Syntax|syntax)

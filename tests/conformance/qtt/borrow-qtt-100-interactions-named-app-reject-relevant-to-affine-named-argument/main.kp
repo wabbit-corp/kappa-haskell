@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+affineUse : (<=1 y : Int) -> Int
+let affineUse (<=1 y : Int) : Int = 0
+
+bad : (>=1 y : Int) -> Int
+let bad (>=1 y : Int) : Int = affineUse { y = y }

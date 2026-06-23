@@ -1,0 +1,13 @@
+module main
+
+rendered : Elab String
+let rendered =
+    renderSyntax '{ 1 + 1 }
+
+origin : Elab SyntaxOrigin
+let origin =
+    syntaxOrigin '{ 1 }
+
+normalized : Elab (Syntax Int)
+let normalized =
+    normalizeSyntax '{ 1 + 1 }

@@ -1,0 +1,17 @@
+module main
+
+data Buffer : Type =
+    Buffer
+
+type VecPair = (left : Buffer, right : Buffer)
+
+projection pick (place v : VecPair) (i : Nat) : Buffer =
+    if i == 0 then yield v.left else yield v.right
+
+use : (& buf : Buffer) -> Nat
+let use buf = 0
+
+demo : (1 v : VecPair) -> Nat -> Nat
+let demo v i = use (pick v i)
+
+--! assertNoErrors

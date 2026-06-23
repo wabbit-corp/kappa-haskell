@@ -1,0 +1,20 @@
+module main
+
+-- Source issues: mojo#215, mojo#317, mojo#514
+-- Spec: §2.7B, §17.7.7, §17.7.7A
+import std.bridge.(type BridgeOrigin, type BoundaryDirection, type BoundaryPrecision)
+import std.bridge.(type BridgeFailure, type BridgeContract, type BridgePackage)
+import std.bridge.(trait BridgeBindable, trait BridgeHandle)
+import std.bridge.(term bindModule, term bindModuleOwned)
+import std.bridge.(term bridgePackageValue, term bridgePackageOrigin, term bridgeFailureToCastBlame)
+
+contractFor : (@_ : BridgeBindable sig) -> BridgeContract sig
+let contractFor (@binding : BridgeBindable sig) = binding.bridgeContract
+
+keepBridgeHandle : (@_ : BridgeHandle h) -> h -> h
+let keepBridgeHandle value = value
+
+keepBridgePackage : BridgePackage sig -> BridgePackage sig
+let keepBridgePackage package = package
+
+--! assertNoErrors

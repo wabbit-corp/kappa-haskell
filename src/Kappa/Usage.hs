@@ -857,15 +857,24 @@ closeVar vi u = do
   -- §12.4: borrowing or re-projecting a path after an overlapping
   -- definite consume (no intervening restore — a restoring patch
   -- rebinds through a fresh root) is a compile-time error
+  -- A borrow-after-consume is a violation only when the prior consume was
+  -- DEFINITE: the binding (or the borrowed path) must actually be
+  -- consumable. Moving an unrestricted (ω) value is a copy, not a consume,
+  -- so re-reading the value afterwards is sound — e.g. `let q = p` then
+  -- `p.value` for a plain (ω) record `p` (§12.4, §16.4.3 stable alias).
+  let definiteConsume bp =
+        vQ vi `elem` [Just QOne, Just QAtMostOne, Just QAtLeastOne]
+          || isLinearPath vi bp
   forM_ (dedupViols viols) $ \(bp, bsp) ->
-    -- §3.1.1A: cite the consume/borrow introduction site (the binding's
-    -- declaration) and the failing later use site.
-    emitRel "E_QTT_PATH_CONSUMED" "kappa.path.consumed" bsp
-      [ related RoleConsumedHere (vSpan vi) ("'" <> nm <> "' introduced here")
-      , related RoleUsedAfterConsume bsp "borrowed here after the path was consumed"
-      ]
-      ("'" <> nm <> T.concat (map ("." <>) bp)
-         <> "' is borrowed after the path was consumed (§12.4); restore it by record update first")
+    when (definiteConsume bp) $
+      -- §3.1.1A: cite the consume/borrow introduction site (the binding's
+      -- declaration) and the failing later use site.
+      emitRel "E_QTT_PATH_CONSUMED" "kappa.path.consumed" bsp
+        [ related RoleConsumedHere (vSpan vi) ("'" <> nm <> "' introduced here")
+        , related RoleUsedAfterConsume bsp "borrowed here after the path was consumed"
+        ]
+        ("'" <> nm <> T.concat (map ("." <>) bp)
+           <> "' is borrowed after the path was consumed (§12.4); restore it by record update first")
   -- per-path overuse: a whole-record use re-consumes every moved path
   -- (a patch consumes the residue only, not the paths it replaces).
   -- §13.2.1: a record carrying a quantity-1 field is a linear resource
@@ -1851,11 +1860,11 @@ calleeDemandName env = \case
 
 coreFnParams :: Term -> [PInfo]
 coreFnParams = \case
-  Core.CPi Core.Expl q nm _ body -> coreP nm q : coreFnParams body
-  Core.CPi Core.Impl _ _ _ body -> coreFnParams body
+  Core.CPi Core.Expl q brw nm _ body -> coreP nm q brw : coreFnParams body
+  Core.CPi Core.Impl _ _ _ _ body -> coreFnParams body
   _ -> []
   where
-    coreP nm q = defaultP {pName = Just nm, pQuantity = coreQuantity q, pKnown = True}
+    coreP nm q brw = defaultP {pName = Just nm, pQuantity = coreQuantity q, pBorrow = brw, pKnown = True}
     coreQuantity = \case
       Core.Q0 -> Just QZero
       Core.Q1 -> Just QOne

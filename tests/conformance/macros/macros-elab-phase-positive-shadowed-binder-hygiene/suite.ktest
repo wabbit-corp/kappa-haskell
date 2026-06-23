@@ -1,0 +1,8 @@
+-- Appendix T directory suite.
+-- A hygienic Syntax value may keep referring to an earlier binder while that binder remains semantically in scope, even after name shadowing.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType ok Int
+--! assertFileDeclKinds main.kp signature, let

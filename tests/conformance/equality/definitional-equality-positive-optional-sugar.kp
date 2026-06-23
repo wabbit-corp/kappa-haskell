@@ -1,0 +1,8 @@
+module main
+
+idOpt : Int? -> Option Int
+let idOpt x = x
+
+--! assertNoErrors
+--! assertType idOpt Option Int -> Option Int
+

@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: KT-654
+-- Spec: §7.1, §7.5
+score : Int -> Int
+let score n =
+    match n
+      case 0 -> (\x -> x * 2) 21
+      case _ -> 0
+
+main : Int
+let main = score 0
+
+--! assertNoErrors
+--! assertType score Int -> Int
+--! assertExecute main 42

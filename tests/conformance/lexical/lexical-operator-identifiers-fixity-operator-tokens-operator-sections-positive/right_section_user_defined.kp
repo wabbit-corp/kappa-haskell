@@ -1,0 +1,14 @@
+module right_section_user_defined
+
+infix left 60 (++)
+(++) : Int -> Int -> Int
+let (++) x y = x + y
+bump : Int -> Int
+let bump = (++ 1)
+
+result : Int
+let result = bump 41
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

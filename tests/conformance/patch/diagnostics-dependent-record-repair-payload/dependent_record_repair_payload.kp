@@ -1,0 +1,14 @@
+module dependent_record_repair_payload
+
+data Buf (n : Nat) : Type =
+    MkBuf
+
+mkBuf : (n : Nat) -> Buf n
+let mkBuf n = MkBuf
+
+type SizedBuffer =
+    (len : Nat, buffer : Buf this.len)
+
+badResize : SizedBuffer -> SizedBuffer
+let badResize buf =
+    buf.{ len = 20 }

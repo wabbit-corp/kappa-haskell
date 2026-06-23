@@ -1,0 +1,8 @@
+module main_bool
+
+flag : Bool
+let flag = False
+
+--! assertNoErrors
+--! assertType flag Bool
+--! assertDeclKinds signature, let

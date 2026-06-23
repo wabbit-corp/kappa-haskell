@@ -1,0 +1,5 @@
+module library.math
+
+infix left 60 (+++)
+(+++) : Int -> Int -> Int
+let (+++) x y = x + y

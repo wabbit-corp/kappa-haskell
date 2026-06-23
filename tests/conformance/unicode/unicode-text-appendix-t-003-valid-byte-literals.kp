@@ -1,0 +1,19 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let asciiByte : Byte = b'a'
+let newlineByte : Byte = b'\n'
+let nulByte : Byte = b'\x00'
+let maxByte : Byte = b'\xFF'
+let asciiEscapeByte : Byte = b'\u{61}'
+let byteEq : Bool = b'a' == b'\x61'
+let byteCompare : Ordering = compare b'a' b'b'
+
+--! assertType asciiByte Byte
+--! assertType newlineByte Byte
+--! assertType nulByte Byte
+--! assertType maxByte Byte
+--! assertType asciiEscapeByte Byte
+--! assertType byteEq Bool
+--! assertType byteCompare Ordering

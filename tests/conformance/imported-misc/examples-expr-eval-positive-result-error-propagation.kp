@@ -1,0 +1,68 @@
+module main
+
+-- Regression coverage for the examples/expr-eval realistic program: an
+-- arithmetic evaluator that exercises ADTs, recursion, exhaustive matching,
+-- a higher-order combinator, and Result-based error propagation. Locks in
+-- end-to-end evaluation (including division-by-zero short-circuiting).
+
+data Expr : Type =
+    Lit Int
+    Add Expr Expr
+    Sub Expr Expr
+    Mul Expr Expr
+    Div Expr Expr
+
+combine : Result String Int -> Result String Int -> (Int -> Int -> Result String Int) -> Result String Int
+let combine ra rb f =
+    match ra
+      case Err e -> Err e
+      case Ok a ->
+          match rb
+            case Err e -> Err e
+            case Ok b -> f a b
+
+addChecked : Int -> Int -> Result String Int
+let addChecked x y = Ok (x + y)
+
+subChecked : Int -> Int -> Result String Int
+let subChecked x y = Ok (x - y)
+
+mulChecked : Int -> Int -> Result String Int
+let mulChecked x y = Ok (x * y)
+
+divChecked : Int -> Int -> Result String Int
+let divChecked x y = if y == 0 then Err "division by zero" else Ok (x / y)
+
+eval : Expr -> Result String Int
+let eval expr =
+    match expr
+      case Lit n -> Ok n
+      case Add a b -> combine (eval a) (eval b) addChecked
+      case Sub a b -> combine (eval a) (eval b) subChecked
+      case Mul a b -> combine (eval a) (eval b) mulChecked
+      case Div a b -> combine (eval a) (eval b) divChecked
+
+evalOr : Expr -> Int -> Int
+let evalOr expr fallback =
+    match eval expr
+      case Ok value -> value
+      case Err _ -> fallback
+
+-- ((2 + 3) * 4) - 6  ==> 14
+nested : Int
+let nested = evalOr (Sub (Mul (Add (Lit 2) (Lit 3)) (Lit 4)) (Lit 6)) 0
+
+-- 7 * (8 + 9)  ==> 119
+product : Int
+let product = evalOr (Mul (Lit 7) (Add (Lit 8) (Lit 9))) 0
+
+-- 100 / (5 - 5)  ==> division by zero, falls back to the sentinel
+divByZero : Int
+let divByZero = evalOr (Div (Lit 100) (Sub (Lit 5) (Lit 5))) (0 - 999)
+
+--! mode check
+--! assertNoErrors
+--! assertType nested Int
+--! assertEval nested 14
+--! assertEval product 119
+--! assertEval divByZero -999

@@ -1,0 +1,13 @@
+module main
+
+data Box a : Type =
+    Box a
+
+read : (& x : Box Int) -> Int
+let read x = 0
+
+bad : (& x : Box Int) -> (Unit -> Int)
+let bad x = \_ -> read x
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE

@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+type Pair = (x : Int, y : Int)
+
+data PairBox : Type =
+    PairBox (1 pair : Pair)
+
+consumePairUnit : (1 p : Pair) -> Unit
+let consumePairUnit (1 p : Pair) : Unit =
+    block
+        let _ = PairBox p
+        ()
+
+borrowThenConsumeRoot : (& x : Int) -> (1 p : Pair) -> Unit
+let borrowThenConsumeRoot (& x : Int) (1 p : Pair) : Unit = consumePairUnit p
+
+bad : (1 p : Pair) -> Unit
+let bad (1 p : Pair) : Unit = borrowThenConsumeRoot p.x p

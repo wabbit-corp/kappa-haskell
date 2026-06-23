@@ -1,0 +1,24 @@
+module main
+
+-- Round-9 KR9-2 (§17.1.9) + KR9-5 (§17.2.1): guards are Bool; literal
+-- patterns agree with known concrete scrutinee types (a bogus arm
+-- previously defeated closed-type exhaustiveness and trapped at runtime).
+
+data Color : Type =
+    Red
+    Green
+
+badGuard : Int
+let badGuard =
+    match Red
+      case Red if "boom" -> 1
+      case _ -> 0
+
+badPattern : Int
+let badPattern =
+    match Red
+      case "boom" -> 1
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH

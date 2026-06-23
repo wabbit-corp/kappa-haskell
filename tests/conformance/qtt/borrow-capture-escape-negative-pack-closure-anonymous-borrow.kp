@@ -1,0 +1,13 @@
+module main
+
+type Box (a : Type) = (value : a)
+
+badPack : Int -> (get : Unit -> Int)
+let badPack (n : Int) : (get : Unit -> Int) =
+    block
+        let cell = (value = n)
+        let &b = cell
+        (get = \ (_ : Unit) -> b.value)
+
+--! assertErrorCount 1
+

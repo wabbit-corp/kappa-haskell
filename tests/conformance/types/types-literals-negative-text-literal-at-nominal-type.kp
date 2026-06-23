@@ -1,0 +1,24 @@
+module main
+
+-- Round-6 F1 (§6.1.5): string/character literals have their builtin types
+-- DIRECTLY; a literal body at any other nominal type must reject statically
+-- (previously the raw String reached runtime and crashed in a match).
+
+data MyT : Type =
+    MkMyT String
+
+xStr : MyT
+let xStr = "abc"
+
+xChr : MyT
+let xChr = 'a'
+
+okStr : String
+let okStr = "fine"
+
+okChr : Char
+let okChr = 'k'
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH

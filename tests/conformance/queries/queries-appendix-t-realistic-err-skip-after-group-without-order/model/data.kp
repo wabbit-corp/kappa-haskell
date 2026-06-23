@@ -1,0 +1,42 @@
+module model.data
+
+type User =
+    (id : Int, name : String, region : String, tier : String)
+
+type Order =
+    (id : Int, userId : Int, region : String, total : Int, status : String)
+
+type Payment =
+    (orderId : Int, captured : Bool, amount : Int)
+
+users : Query User
+let users =
+    Query [
+        for u in [
+            (id = 1, name = "Ada", region = "North", tier = "enterprise"),
+            (id = 2, name = "Grace", region = "West", tier = "standard"),
+            (id = 3, name = "Edsger", region = "North", tier = "standard")
+        ]
+        yield u
+    ]
+
+orders : Query Order
+let orders =
+    Query [
+        for o in [
+            (id = 10, userId = 1, region = "North", total = 150, status = "paid"),
+            (id = 11, userId = 1, region = "North", total = 80, status = "open"),
+            (id = 12, userId = 2, region = "West", total = 200, status = "paid")
+        ]
+        yield o
+    ]
+
+payments : Query Payment
+let payments =
+    Query [
+        for p in [
+            (orderId = 10, captured = True, amount = 150),
+            (orderId = 12, captured = True, amount = 200)
+        ]
+        yield p
+    ]

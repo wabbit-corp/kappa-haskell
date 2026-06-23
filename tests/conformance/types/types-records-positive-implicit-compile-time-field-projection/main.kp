@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type TypePkg : Type = (@T : Type, value : this.T)
+
+pkg : TypePkg
+let pkg : TypePkg = (@T = Int, value = 1)
+
+value : pkg.T
+let value : pkg.T = pkg.value

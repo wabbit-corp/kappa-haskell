@@ -1,0 +1,4 @@
+@PrivateByDefault module main
+
+bad : (& x : Int) -> Code Int
+let bad (& x : Int) : Code Int = .< x >.

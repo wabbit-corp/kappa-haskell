@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+add : Int -> Int -> Int
+let add : Int -> Int -> Int = (+)
+
+ok : Int
+let ok : Int = add 20 22

@@ -1,0 +1,9 @@
+module main
+
+ok : Int
+let ok =
+    block
+        let x = 1
+        let s : Syntax Int = '{ x }
+        let x = 2
+        $(pure s)

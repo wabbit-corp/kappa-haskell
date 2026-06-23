@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+
+data Buf : Type =
+    Buf (n : Int)
+
+pattern GreaterThan (threshold : Int) (& b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > threshold then Some n else None
+
+ok : (& b : Buf) -> Int
+let ok (& b : Buf) : Int =
+    match b
+    case GreaterThan 10 (n) -> n
+    case _ -> 0

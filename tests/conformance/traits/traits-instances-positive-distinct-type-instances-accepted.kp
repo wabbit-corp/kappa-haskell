@@ -1,0 +1,25 @@
+module main
+
+-- TRAIT-1 control: instances over DISTINCT heads (`Tag Int`, `Tag Bool`) have
+-- different identities and are NOT duplicates. Both must be accepted and both
+-- must resolve at their respective use sites. Guards against the dedup
+-- collapsing genuinely-distinct instances.
+
+trait Tag a =
+    tag : a -> Int
+
+instance Tag Int =
+    let tag x = 1
+
+instance Tag Bool =
+    let tag x = 2
+
+fromInt : Int
+let fromInt = tag 9
+
+fromBool : Int
+let fromBool = tag True
+
+--! assertNoErrors
+--! assertEval fromInt 1
+--! assertEval fromBool 2

@@ -1,0 +1,6 @@
+module main
+
+bad : (& x : Int) -> Need Int
+let bad (& x : Int) : Need Int = lazy x
+
+--! assertErrorCount 1

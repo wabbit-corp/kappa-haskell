@@ -1,0 +1,15 @@
+module main
+
+-- Round-8 KR8-5 (§6.1.6): the suffix application's RESULT type must meet
+-- the demanded type; previously `12qq` with qq : Int -> String put a
+-- String into an Int binding.
+
+qq : Int -> String
+let qq n = "s"
+
+bad : Int
+let bad = 12qq
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_MISMATCH

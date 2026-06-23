@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+type Packet : Type = (1 payload : Int, tag : Int)
+
+bad : (1 p : Packet) -> Int
+let bad (1 p : Packet) : Int =
+    match p
+    case (tag = t, ..) -> t

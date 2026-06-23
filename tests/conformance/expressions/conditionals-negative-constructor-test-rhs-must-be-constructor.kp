@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: KT-272
+-- Spec: §7.3.4
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+badTypeRhs : Payload -> Bool
+let badTypeRhs payload = payload is Payload
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch is|constructor|Payload

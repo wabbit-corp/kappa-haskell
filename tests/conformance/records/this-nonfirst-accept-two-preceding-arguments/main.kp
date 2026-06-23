@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+let mixAt (left : Int) (right : Int) (this x : Int) : Int =
+    left + x + right
+
+ok : Int
+let ok : Int = 3.mixAt 10 20

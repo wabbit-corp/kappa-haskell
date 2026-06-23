@@ -1,0 +1,8 @@
+module main
+
+choose : Bool -> Int -> Int -> Int
+let choose flag left right = if flag then left else right
+
+--! assertNoErrors
+--! assertType choose Bool -> Int -> Int -> Int
+--! x-assertDeclDescriptors signature choose, let choose

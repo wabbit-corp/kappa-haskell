@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNICODE_INVALID_UTF8

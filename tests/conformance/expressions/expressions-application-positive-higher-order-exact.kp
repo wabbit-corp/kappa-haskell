@@ -1,0 +1,16 @@
+module main
+
+id1 : (1 x : Int) -> Int
+let id1 (1 x : Int) : Int = x
+
+applyOnce : (((1 x : Int) -> Int) -> Int)
+let applyOnce (k : (1 x : Int) -> Int) : Int = k 1
+
+result : Int
+let result = applyOnce id1
+
+--! assertNoErrors
+--! assertType id1 (1 x : Int) -> Int
+--! assertType applyOnce ((1 x : Int) -> Int) -> Int
+--! assertType result Int
+

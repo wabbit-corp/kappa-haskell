@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: Idris2#743
+-- Kappa analogue: outermost-arrow subsumption is confined to application boundaries; an unrestricted function value is
+-- not implicitly assignable to a linear function type at a plain definition boundary.
+-- Spec: §5.1.5, §7.1.3, §14.3
+dupOmega : Nat -> (Nat, Nat)
+let dupOmega x = (x, x)
+
+bad : (1 x : Nat) -> (Nat, Nat)
+let bad = dupOmega
+
+--! assertErrorCount 1

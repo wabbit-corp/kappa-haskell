@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+--! assertDiagnosticNext error E_UNICODE_INVALID_BYTE_LITERAL
+let bad = b'\r\n'

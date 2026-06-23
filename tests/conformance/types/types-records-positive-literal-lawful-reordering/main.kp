@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Person : Type = (name : String, age : Int, active : Bool)
+
+ada : Person
+let ada : Person = (active = True, age = 36, name = "Ada")
+
+ageOfAda : Int
+let ageOfAda : Int = ada.age

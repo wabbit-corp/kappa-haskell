@@ -1,0 +1,4 @@
+module library.text
+
+greeting : String
+let greeting = "hello"

@@ -1,0 +1,8 @@
+module main
+
+bad : (1 x : Int) -> Int
+let bad (1 x : Int) : Int =
+    let 1 x = 0
+    in x
+
+--! assertErrorCount 1

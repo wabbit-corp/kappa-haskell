@@ -1,0 +1,11 @@
+module main
+
+add : Int -> Int -> Int
+let add = \(x : Int) (y : Int) -> x + y
+
+result : Int
+let result = add 20 22
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

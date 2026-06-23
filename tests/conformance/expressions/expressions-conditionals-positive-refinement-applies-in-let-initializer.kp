@@ -1,0 +1,26 @@
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- Source issue: KT-244
+-- Spec: §7.4.1, §7.4.2, §6.3.1
+readViaLocal : Payload -> Int
+let readViaLocal p =
+    if p is Box then
+        block
+            let extracted = p.value
+            extracted + 1
+    else 0
+
+boxed : Int
+let boxed = readViaLocal (Box 41)
+
+empty : Int
+let empty = readViaLocal Empty
+
+--! assertNoErrors
+--! assertType readViaLocal Payload -> Int
+--! assertEval boxed 42
+--! assertEval empty 0

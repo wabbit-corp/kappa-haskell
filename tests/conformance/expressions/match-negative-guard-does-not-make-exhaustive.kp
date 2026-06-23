@@ -1,0 +1,12 @@
+module main
+
+-- Source issues: ghc#29, ghc#30
+-- Spec: §7.5.6
+headOrZero : List Int -> Int
+let headOrZero xs =
+    match xs
+    case head :: tail if False -> head
+    case Nil -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|guard

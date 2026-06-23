@@ -1,0 +1,18 @@
+module main
+
+-- Source issue: Idris2#694
+-- Kappa analogue: a `match`-branch binder inside a local definition should shadow the surrounding local definition name.
+-- Spec: §2.8.1, §6.3.1, §7.5
+result : Int
+let result =
+    block
+        foo : Int
+        let foo =
+            match 0
+              case foo -> foo
+
+        foo
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 0

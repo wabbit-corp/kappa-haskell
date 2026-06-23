@@ -1,0 +1,22 @@
+module main
+
+-- Source family: local-declaration capture issue family (hylo#1088, hylo#674)
+-- Spec: §6.3.1, §14.1.1
+addTwiceWithSeed : Int -> Int
+let addTwiceWithSeed seed =
+    block
+        addSeed : Int -> Int
+        let addSeed x = x + seed
+
+        addTwo : Int -> Int
+        let addTwo x = addSeed x + addSeed 0
+
+        addTwo 2
+
+result : Int
+let result = addTwiceWithSeed 40
+
+--! assertNoErrors
+--! assertType addTwiceWithSeed Int -> Int
+--! assertType result Int
+--! assertEval result 82

@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type Cell = (value : Int)
+
+projection bad (cell : Cell) : Int =
+    yield cell.value

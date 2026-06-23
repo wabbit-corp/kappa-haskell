@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+
+let plus (this n : Int) (delta : Int) : Int = n + delta
+
+bad : (>=1 delta : Int) -> Unit
+let bad (>=1 delta : Int) : Unit =
+    block
+        let f = (.plus delta)
+        ()

@@ -1,0 +1,7 @@
+module main
+
+undefined_string : String
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_SIGNATURE_UNSATISFIED
+--! assertDeclKinds signature

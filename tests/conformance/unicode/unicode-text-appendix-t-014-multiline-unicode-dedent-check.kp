@@ -1,0 +1,18 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let poem : String = """
+    λ
+    书
+    e\u{301}
+    """
+
+let rawPoem : String = #"""
+    \u{03BB}
+    \u{4E66}
+    e\u{301}
+    """#
+
+--! assertType poem String
+--! assertType rawPoem String

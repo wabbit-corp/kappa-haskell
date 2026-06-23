@@ -1,0 +1,7 @@
+-- Appendix T directory suite.
+-- for? filters Option values and brings successful pattern binders into scope.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType present List Int

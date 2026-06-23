@@ -1,0 +1,14 @@
+module main
+
+readBorrow : (& x : Int) -> Int
+let readBorrow (& x : Int) : Int = x
+
+linearId : (1 x : Int) -> Int
+let linearId (1 x : Int) : Int = x
+
+ok : (1 x : Int) -> Int
+let ok (1 x : Int) : Int =
+    let _ = readBorrow x
+    in linearId x
+
+--! assertNoErrors

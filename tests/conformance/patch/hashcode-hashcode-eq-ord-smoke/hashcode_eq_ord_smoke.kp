@@ -1,0 +1,26 @@
+module hashcode_eq_ord_smoke
+
+import std.hash.*
+
+sameHashCode : HashCode -> HashCode -> Bool
+let sameHashCode h1 h2 =
+    h1 == h2
+
+orderHashCode : HashCode -> HashCode -> Ordering
+let orderHashCode h1 h2 =
+    compare h1 h2
+
+hashInt : Int -> HashCode
+let hashInt x =
+    hashWith defaultHashSeed x
+
+compareHashedInts : Int -> Int -> Ordering
+let compareHashedInts x y =
+    compare (hashInt x) (hashInt y)
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType sameHashCode HashCode -> HashCode -> Bool
+--! assertType orderHashCode HashCode -> HashCode -> Ordering
+--! assertType hashInt Int -> HashCode

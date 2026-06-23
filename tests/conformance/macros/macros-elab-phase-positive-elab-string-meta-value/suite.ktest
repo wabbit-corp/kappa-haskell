@@ -1,0 +1,7 @@
+-- Appendix T directory suite.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType makeNamedDiagnostic Elab Unit
+--! assertFileDeclKinds main.kp signature, let

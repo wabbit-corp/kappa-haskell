@@ -1,0 +1,12 @@
+module main
+
+project : (pair : (x : Int)) -> (x : Int)
+let project pair = pair
+
+bad : (pair : (x : Int)) -> Unit -> Int
+let bad pair =
+    let & (x = bx) = project pair
+    \_ -> bx
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE

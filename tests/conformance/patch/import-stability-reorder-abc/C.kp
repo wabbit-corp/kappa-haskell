@@ -1,0 +1,5 @@
+module C
+
+flipBool : Bool -> Bool
+let flipBool b =
+    if b then False else True

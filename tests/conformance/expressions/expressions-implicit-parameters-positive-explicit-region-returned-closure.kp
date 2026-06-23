@@ -1,0 +1,17 @@
+module main
+
+data Box a : Type =
+    Box a
+
+read : (& x : Box a) -> a
+let read x =
+    match x
+      case Box value -> value
+
+makeGetter :
+    forall (s : Region) (a : Type).
+    (&[s] x : Box a) -> ((Unit -> a) captures (s))
+
+let makeGetter x = \_ -> read x
+
+--! assertNoErrors

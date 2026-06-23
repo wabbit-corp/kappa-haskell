@@ -1,0 +1,23 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.unicode.*
+
+--! assertType unicodeVersion UnicodeVersion
+--! assertType utf8Bytes String -> Bytes
+--! assertType decodeUtf8 Bytes -> Result UnicodeDecodeError String
+--! assertType decodeUtf8Lossy Bytes -> String
+--! assertType byteLength String -> Nat
+--! assertType scalarValue UnicodeScalar -> Nat
+--! assertType unicodeScalarFromValue Nat -> Option UnicodeScalar
+--! assertType scalarToString UnicodeScalar -> String
+--! assertType scalars String -> Query UnicodeScalar
+--! assertType scalarCount String -> Nat
+--! assertType graphemeToString Grapheme -> String
+--! assertType graphemeFromString String -> Option Grapheme
+--! assertType graphemes String -> Query Grapheme
+--! assertType graphemeCount String -> Nat
+--! assertType normalize NormalizationForm -> String -> String
+--! assertType isNormalized NormalizationForm -> String -> Bool
+--! assertType canonicalEquivalent String -> String -> Bool

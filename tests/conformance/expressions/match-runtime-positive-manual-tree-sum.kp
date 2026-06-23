@@ -1,0 +1,19 @@
+module main
+
+-- Manual oracle seed: recursive algebraic data and pattern matching.
+data Tree : Type =
+    Leaf : Int -> Tree
+    Branch : Tree -> Tree -> Tree
+
+sumTree : Tree -> Int
+let sumTree tree =
+    match tree
+      case Leaf value -> value
+      case Branch left right -> sumTree left + sumTree right
+
+result : Int
+let result = sumTree (Branch (Leaf 10) (Branch (Leaf 20) (Leaf 12)))
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

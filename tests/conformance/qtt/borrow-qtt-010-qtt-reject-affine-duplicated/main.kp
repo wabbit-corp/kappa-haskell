@@ -1,0 +1,11 @@
+module main
+
+useAffine : (<=1 x : Int) -> Int
+let useAffine (<=1 x : Int) : Int = x
+
+bad : (<=1 x : Int) -> Int
+let bad (<=1 x : Int) : Int =
+    let _ = useAffine x
+    in useAffine x
+
+--! assertErrorCount 1

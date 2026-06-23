@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: Idris2#116
+-- Kappa analogue: replacing a final do-expression with a local alias must not change typing.
+-- Spec: §8.2.5, §14.1.1
+
+main : IO Int
+let main = do
+    value <- pure 42
+    let result = pure value
+    result
+
+--! assertNoErrors
+--! assertType main IO Int
+--! assertExecute main 42

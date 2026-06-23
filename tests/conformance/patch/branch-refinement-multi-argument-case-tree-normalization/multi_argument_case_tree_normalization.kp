@@ -1,0 +1,24 @@
+module multi_argument_case_tree_normalization
+
+foo : List a -> List a -> List a
+let foo left right =
+    match left
+    case Nil -> Nil
+    case _ ->
+        match right
+        case Nil -> Nil
+        case _   -> Nil
+
+fooRightNil :
+    (left : List a) ->
+    match left
+    case Nil -> Unit
+    case _   -> foo left Nil = Nil
+let fooRightNil left =
+    match left
+    case Nil -> ()
+    case _   -> refl
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

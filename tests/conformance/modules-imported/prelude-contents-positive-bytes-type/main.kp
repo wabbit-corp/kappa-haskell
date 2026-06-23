@@ -1,0 +1,12 @@
+module main
+
+import std.prelude.(type Bytes)
+
+idBytes : Bytes -> Bytes
+let idBytes bytes = bytes
+
+-- Source issue: Idris2#78
+-- Kappa analogue: the portable prelude exports `Bytes` as a first-class ordinary type.
+-- Spec: §2.6, §5.1.2
+--! assertNoErrors
+--! assertType idBytes Bytes -> Bytes

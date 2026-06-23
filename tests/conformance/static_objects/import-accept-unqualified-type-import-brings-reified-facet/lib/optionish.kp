@@ -1,0 +1,5 @@
+module lib.optionish
+
+data Maybe (a : Type) : Type =
+    Nothing
+    Just (value : a)

@@ -1,0 +1,10 @@
+module main
+
+import a.*
+import b.*
+
+result : Int
+let result = value
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_NAME_AMBIGUOUS

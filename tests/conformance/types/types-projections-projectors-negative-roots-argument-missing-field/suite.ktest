@@ -1,0 +1,3 @@
+--! mode check
+--! packageMode
+--! assertDiagnosticCodes E_PROJECTION_ROOTS_PACK_MISMATCH

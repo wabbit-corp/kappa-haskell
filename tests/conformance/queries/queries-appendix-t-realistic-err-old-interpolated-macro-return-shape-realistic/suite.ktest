@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- The old bare-Syntax InterpolatedMacro method shape must be rejected.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch Elab.*Syntax|Syntax.*Elab|buildInterpolated|InterpolatedMacro

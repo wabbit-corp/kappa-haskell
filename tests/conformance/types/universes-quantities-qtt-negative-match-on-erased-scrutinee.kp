@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: granule#56
+-- Spec: §5.1.5, §7.5.1B
+data Flag : Type =
+    No
+    Yes
+
+bad : (@0 flag : Flag) -> Int
+let bad flag =
+    match flag
+      case No -> 0
+      case Yes -> 1
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch erased|quantity 0|scrutinee|runtime

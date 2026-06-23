@@ -1,0 +1,15 @@
+module main
+
+type Ops = (adder : Int -> Int)
+
+makeOps : Int -> Ops
+let makeOps offset = (adder = \ (value : Int) -> offset + value)
+
+-- Source issue: KT-82
+-- Spec: Appendix B.2, §2.8.3, §7.1.1
+main : Int
+let main = 20 |> (makeOps 22).adder
+
+--! assertNoErrors
+--! assertType main Int
+--! assertExecute main 42

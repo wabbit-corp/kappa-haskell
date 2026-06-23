@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: reified static-object facets
+-- Spec: §2.8.1.1, §2.8.2, §2.8.6
+data Person : Type =
+    Person String
+
+person : Person
+let person = Person "Ada"
+
+personType : Type
+let personType = type Person
+
+--! assertNoErrors
+--! assertType person Person
+--! assertType personType Type

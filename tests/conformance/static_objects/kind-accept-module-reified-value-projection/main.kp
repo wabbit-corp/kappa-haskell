@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+import lib.api as Api
+
+let M = module Api
+
+ok : Int
+let ok = M.answer

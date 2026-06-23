@@ -1,0 +1,15 @@
+module main
+
+trait Show a =
+    show : a -> String
+    let debug : a -> String = \x -> show x
+
+instance Show Int =
+    let show x = primitiveIntToString x
+
+result : String
+let result = debug 42
+
+--! assertNoErrors
+--! assertType result String
+--! assertEval result "42"

@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+
+data Box : Type =
+    Box (n : Int)
+
+let consumeBoxWith (bonus : Int) (1 this b : Box) : Int =
+    match b
+    case Box n -> n + bonus
+
+bad : (1 b : Box) -> Int
+let bad (1 b : Box) : Int =
+    block
+        let first = b.consumeBoxWith 3
+        b.consumeBoxWith 4

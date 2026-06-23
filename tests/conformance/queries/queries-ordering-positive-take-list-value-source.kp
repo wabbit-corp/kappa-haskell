@@ -1,0 +1,16 @@
+module main
+
+-- Hostile-audit RT-6 pin (§20.3.2): an ORDERED source (a `List` held in a name) permits `skip`/`take`.
+-- Guards against over-rejection of valid ordered paging.
+xs : List Int
+let xs = 1 :: 2 :: 3 :: Nil
+
+ok : List Int
+let ok =
+    [
+        for x in xs
+        take 2
+        yield x
+    ]
+
+--! assertNoErrors

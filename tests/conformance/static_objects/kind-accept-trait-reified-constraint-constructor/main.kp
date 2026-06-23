@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+trait Pretty (a : Type) =
+    pretty : a -> String
+
+C : Type -> Type
+let C = trait Pretty
+
+use : C Int -> Pretty Int
+let use d = d

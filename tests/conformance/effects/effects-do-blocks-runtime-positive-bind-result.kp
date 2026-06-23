@@ -1,0 +1,11 @@
+module main
+
+main : IO Int
+let main = do
+    value <- pure 40
+    pure (value + 2)
+
+--! assertNoErrors
+--! assertType main IO Int
+--! assertDeclKinds signature, let
+--! assertExecute main 42

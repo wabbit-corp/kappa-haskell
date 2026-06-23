@@ -1,0 +1,26 @@
+module main
+
+-- Source issue: KT-668
+-- Spec: §2.8.4, §7.1.3, §7.2
+data Box : Type =
+    Box Int
+
+bump : (this b : Box) -> Box
+let bump (this b : Box) =
+    match b
+      case Box n -> Box (n + 1)
+
+applyTwice : forall (a : Type). (a -> a) -> a -> a
+let applyTwice @a f x = f (f x)
+
+result : Box
+let result = applyTwice (\x -> x.bump) (Box 40)
+
+value : Int
+let value =
+    match result
+      case Box n -> n
+
+--! assertNoErrors
+--! assertType result Box
+--! assertExecute value 42

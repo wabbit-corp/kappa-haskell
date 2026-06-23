@@ -1,0 +1,25 @@
+module main
+
+data Token : Type =
+    Token
+
+type TokenPair = (1 left : Token, 1 right : Token)
+
+takeToken : (1 t : Token) -> Token
+let takeToken (1 t : Token) : Token = t
+
+packPair : (1 left : Token) -> (1 right : Token) -> TokenPair
+let packPair (1 left : Token) (1 right : Token) : TokenPair =
+    (left = left, right = right)
+
+
+bad : (1 p : TokenPair) -> TokenPair
+let bad (1 p : TokenPair) : TokenPair =
+    let & l = p.left
+    in
+        let 1 left = takeToken p.left
+        in
+            let 1 right = takeToken p.right
+            in packPair left right
+
+--! assertErrorCount 1

@@ -1,0 +1,5 @@
+-- Appendix T directory suite.
+-- This catches old-style hook implementations that return bare Syntax instead of Elab (Syntax ...).
+--! mode check
+--! packageMode
+--! assertDiagnosticMatch (Elab.*Syntax|Syntax.*Elab|InterpolatedMacro|buildInterpolated)

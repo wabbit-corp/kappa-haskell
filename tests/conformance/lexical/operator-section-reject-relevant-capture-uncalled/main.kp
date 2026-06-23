@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+bad : (>=1 x : Int) -> Unit
+let bad (>=1 x : Int) : Unit =
+    block
+        let f = (+ x)
+        ()

@@ -1,0 +1,9 @@
+module main
+
+ten : Elab (Syntax Int)
+let ten =
+    pure '{ 10 }
+
+badQuote : Syntax Int
+let badQuote =
+    '{ ${ten} + 1 }

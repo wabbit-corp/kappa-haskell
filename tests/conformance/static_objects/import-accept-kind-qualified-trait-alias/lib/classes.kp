@@ -1,0 +1,4 @@
+module lib.classes
+
+trait Size (a : Type) =
+    size : a -> Int

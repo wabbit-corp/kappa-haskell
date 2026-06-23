@@ -1,0 +1,14 @@
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+bad : (>=1 x : Int) -> Bool -> UIO Unit
+let bad (>=1 x : Int) (flag : Bool) : UIO Unit =
+    do
+        while flag do
+            let _ = strictId x
+            pure ()
+        pure ()
+
+--! assertErrorCount 1

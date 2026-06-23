@@ -1,0 +1,14 @@
+module hashcode_not_numeric
+
+import std.hash.*
+
+-- This intentionally asks for an ordinary numeric interpretation of HashCode.
+-- The patched spec permits Eq/Ord opaque-token comparison, not numeric conversion.
+
+badNumericHashCode : HashCode -> Int
+let badNumericHashCode h =
+    h
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH

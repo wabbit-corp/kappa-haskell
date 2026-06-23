@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+takeThunk : Thunk Int -> Int
+let takeThunk (t : Thunk Int) : Int = force t
+
+bad : Int
+let bad : Int = takeThunk "not an int"

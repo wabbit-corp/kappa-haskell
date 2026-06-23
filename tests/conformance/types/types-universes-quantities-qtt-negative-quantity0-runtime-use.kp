@@ -1,0 +1,7 @@
+module main
+
+bad : (@0 n : Nat) -> Unit -> Nat
+let bad n = \_ -> n
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE

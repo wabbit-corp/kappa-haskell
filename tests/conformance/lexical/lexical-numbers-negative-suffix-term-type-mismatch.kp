@@ -1,0 +1,22 @@
+module main
+
+-- Round-7 AUD-2 (§6.1.6): a literal suffix resolving to an incompatible-
+-- typed term is a static error at the literal (previously 12qq with
+-- qq : String -> Int compiled then crashed; 3.14px with px : Nat -> Int
+-- silently put a Double in a Nat slot).
+
+qq : String -> Int
+let qq s = 1
+
+px : Nat -> Int
+let px n = 2
+
+badInt : Int
+let badInt = 12qq
+
+badReal : Int
+let badReal = 3.14px
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_APPLICATION_ARGUMENT_MISMATCH, E_APPLICATION_ARGUMENT_MISMATCH

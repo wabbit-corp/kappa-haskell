@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type UserId = Int
+
+UserIdType : Type
+let UserIdType = type UserId
+
+ok : UserIdType
+let ok = 1

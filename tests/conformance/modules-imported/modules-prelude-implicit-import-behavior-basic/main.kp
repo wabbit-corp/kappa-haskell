@@ -1,0 +1,11 @@
+module main
+
+flag : Bool
+let flag = not False
+
+message : String
+let message = "ready"
+
+--! assertNoErrors
+--! assertType flag Bool
+--! assertType message String

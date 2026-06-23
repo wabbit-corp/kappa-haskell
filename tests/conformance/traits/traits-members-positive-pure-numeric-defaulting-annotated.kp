@@ -1,0 +1,31 @@
+module main
+
+-- No-over-rejection (RESULT-DIRECTED-ANNOTATION-GAP numeric carve-out): the
+-- refutation guard MUST NOT fire for numeric-literal defaulting. `good : Box
+-- Integer = pure 5` solves the payload `a` to `Integer`; the argument `5`
+-- standalone-infers `Int` (a DISTINCT nominal type), which would structurally
+-- look like a refutation (Int vs Integer) — but it is legitimate FromInteger
+-- defaulting. The matchesBuiltinNumericTarget carve-out (mirroring
+-- headGuessForUnsolvedGoal's FromInteger/FromFloat exception) keeps it accepted.
+--
+-- COMPILE-LEVEL assertion: the no-over-rejection property is STATIC (the call
+-- must type-check, not be refuted). Runtime evaluation is intentionally NOT
+-- asserted: result-directed `pure` produces an IO action, so a `pure` result
+-- binding evaluates to `<io>` rather than a scalar, and a USER `Box` carrier
+-- whose payload differs from the literal's standalone Int type hits the disclosed
+-- IO-biased value-dispatch limitation (ORTHOGONAL to this gap). The carve-out
+-- property this fixture guards is fully captured by assertNoErrors.
+
+data Box a = MkBox a
+
+trait Pure (f : Type -> Type) =
+    pure : forall (a : Type). a -> f a
+
+instance Pure Box =
+    let pure x = MkBox x
+
+good : Box Integer
+let good = pure 5
+
+--! mode check
+--! assertNoErrors

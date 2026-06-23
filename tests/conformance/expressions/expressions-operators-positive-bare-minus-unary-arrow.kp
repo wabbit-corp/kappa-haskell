@@ -1,0 +1,23 @@
+module main
+
+-- Round-7 AUD-3 (§5.5.1): bare (-) at a UNARY arrow signature selects the
+-- prefix (negation) fixity (previously both section binders were absorbed
+-- and `neg 9` was a closure in an Int position); the curried 2-arity
+-- binding keeps the infix meaning.
+
+neg : Int -> Int
+let neg = (-)
+
+sub : Int -> Int -> Int
+let sub = (-)
+
+probeNeg : Int
+let probeNeg = neg 9
+
+probeSub : Int
+let probeSub = sub 9 4
+
+--! mode check
+--! assertNoErrors
+--! assertEval probeNeg -9
+--! assertEval probeSub 5

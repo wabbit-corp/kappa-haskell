@@ -1,0 +1,7 @@
+module main
+
+-- Spec: §5.5.1.1
+type Bad : Type = (x : this.y, y : this.x)
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_RECORD_DEPENDENCY_CYCLE

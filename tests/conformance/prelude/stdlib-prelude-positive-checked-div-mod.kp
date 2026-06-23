@@ -1,0 +1,62 @@
+@PrivateByDefault module main
+
+-- Spec §28.2.1 CheckedDiv/CheckedMod operational coverage: divide/modulo via
+-- the prelude instances for Int, Integer, Nat (Int-routed), and Double, plus
+-- the definedness predicates.
+needDiv : forall (a : Type). (@ev : CheckedDiv a) -> a -> a -> a
+let needDiv @ev x y = divide x y
+
+needMod : forall (a : Type). (@ev : CheckedMod a) -> a -> a -> a
+let needMod @ev x y = modulo x y
+
+intDiv : Int
+let intDiv = needDiv 7 2
+
+intMod : Int
+let intMod = needMod 7 2
+
+intDivNegative : Int
+let intDivNegative = needDiv (0 - 7) 2
+
+intModNegative : Int
+let intModNegative = needMod (0 - 7) 2
+
+integerDiv : Integer
+let integerDiv = needDiv 9 4
+
+natValue : Nat
+let natValue = 9
+
+natDivisor : Nat
+let natDivisor = 4
+
+natDiv : Nat
+let natDiv = needDiv natValue natDivisor
+
+natMod : Nat
+let natMod = needMod natValue natDivisor
+
+doubleDiv : Double
+let doubleDiv = needDiv 7.5 2.5
+
+divOk : Bool
+let divOk = divDefined 7 2
+
+divZero : Bool
+let divZero = divDefined 7 0
+
+modZero : Bool
+let modZero = modDefined 7 0
+
+--! assertNoErrors
+--! assertEval intDiv 3
+--! assertEval intMod 1
+--! assertEval intDivNegative -3
+--! assertEval intModNegative -1
+--! assertEval integerDiv 2
+--! assertEval natDiv 2
+--! assertEval natMod 1
+--! assertEval doubleDiv 3
+--! assertEval divOk True
+--! assertEval divZero False
+--! assertEval modZero False

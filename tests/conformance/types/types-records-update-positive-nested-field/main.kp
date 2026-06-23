@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+type Address : Type = (city : String, zip : Int)
+type User : Type = (name : String, address : Address)
+
+relocate : User -> User
+let relocate (u : User) : User = u.{ address.city = "Paris" }

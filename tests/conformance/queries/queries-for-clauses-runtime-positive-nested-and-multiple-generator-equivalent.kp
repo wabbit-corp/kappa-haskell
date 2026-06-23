@@ -1,0 +1,31 @@
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+nested : Int
+let nested =
+    sumList [
+        for xs in [[1], [2], [3]]
+        yield sumList [
+            for x in xs
+            yield x
+        ]
+    ]
+
+multiple : Int
+let multiple =
+    sumList [
+        for xs in [[1], [2], [3]]
+        for x in xs
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType nested Int
+--! assertType multiple Int
+--! assertEval nested 6
+--! assertEval multiple 6

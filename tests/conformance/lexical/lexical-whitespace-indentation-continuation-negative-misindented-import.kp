@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+  import std.prelude.(not)
+
+let result = 42
+
+--! assertDiagnosticCodes E_UNEXPECTED_INDENTATION

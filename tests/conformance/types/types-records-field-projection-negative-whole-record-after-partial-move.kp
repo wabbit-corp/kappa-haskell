@@ -1,0 +1,19 @@
+module main
+
+--! allow_unsafe_consume
+
+data Buffer : Type =
+    Buffer
+
+consumeWhole : (1 r : (1 buf : Buffer, len : Nat)) -> Unit
+let consumeWhole r =
+    let _ = unsafeConsume r
+    in ()
+
+bad : (1 r : (1 buf : Buffer, len : Nat)) -> Unit
+let bad r =
+    let old = r.buf
+    consumeWhole r
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE, E_QTT_LINEAR_DROP

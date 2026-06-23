@@ -1,0 +1,17 @@
+module main
+
+-- Source issue: lean4#586
+-- Spec: §5.8.1, §5.8.3, §5.8.4
+wrapWithShadow : Syntax Int -> Syntax Int
+let wrapWithShadow e = '{ (\x -> ${e}) 1 }
+
+result : Int
+let result =
+    block
+        let x = 41
+        $(wrapWithShadow '{ x + 1 })
+
+--! assertNoErrors
+--! assertType wrapWithShadow Syntax Int -> Syntax Int
+--! assertType result Int
+--! assertEval result 42

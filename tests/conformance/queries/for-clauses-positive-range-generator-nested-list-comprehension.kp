@@ -1,0 +1,27 @@
+module main
+
+sumPairList : List (Int, Int) -> Int
+let sumPairList pairs decreases structural pairs =
+    match pairs
+    case Nil -> 0
+    case (left, right) :: tail -> left + right + sumPairList tail
+
+sumNested : List (List (Int, Int)) -> Int
+let sumNested rows decreases structural rows =
+    match rows
+    case Nil -> 0
+    case head :: tail -> sumPairList head + sumNested tail
+
+rows : List (List (Int, Int))
+let rows =
+    [ for i in 1 .. 3, yield [(i, 0), (0, i)] ]
+
+result : Int
+let result = sumNested rows
+
+-- Source issues: Idris2#41, KT-821
+-- Kappa analogue: a list comprehension may iterate a portable integer range and yield nested tuple/list structure.
+-- Spec: §10.2, §10.3, §10.10.1
+--! assertNoErrors
+--! assertType rows List (List (Int, Int))
+--! assertEval result 12

@@ -1,0 +1,10 @@
+module main
+
+badEq : ((x : Nat) -> Nat) = ((1 x : Nat) -> Nat)
+let badEq = refl
+
+-- Source issue: Idris2#73
+-- Kappa analogue: function types with different binder quantities are not definitionally equal.
+-- Spec: §5.1.5, §14.3
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH

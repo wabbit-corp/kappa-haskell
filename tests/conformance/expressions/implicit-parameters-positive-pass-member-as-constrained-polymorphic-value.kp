@@ -1,0 +1,30 @@
+module main
+
+-- Source issue: Idris2#763
+-- Kappa analogue: passing a bare overloaded trait member as a constrained polymorphic function value should not
+-- trigger trait search prematurely at the passing site.
+-- Spec: §7.3.3, §12.2.1
+
+trait Clone a =
+    clone : a -> a
+
+instance Clone Int =
+    let clone x = x
+
+ignoreMember : (f : forall (a : Type). Clone a => a -> a) -> Int
+let ignoreMember f = 42
+
+useMember : (f : forall (a : Type). Clone a => a -> a) -> Int
+let useMember f = f 42
+
+ignored : Int
+let ignored = ignoreMember clone
+
+result : Int
+let result = useMember clone
+
+--! assertNoErrors
+--! assertType ignored Int
+--! assertType result Int
+--! assertEval ignored 42
+--! assertEval result 42

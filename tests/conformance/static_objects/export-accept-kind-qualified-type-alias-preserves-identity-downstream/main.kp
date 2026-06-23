@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+import facade.(type PublicBox)
+
+ok : PublicBox Int
+let ok = PublicBox.Box 1

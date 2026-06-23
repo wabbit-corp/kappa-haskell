@@ -1,0 +1,9 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §16.4.4: a `>=1` binder that is NOT demanded in some reachable branch
+-- (the `else 0` arm never references `x`) may be dropped — rejected.
+module main
+
+g : (>=1 x : Int) -> (b : Bool) -> Int
+let g x b = if b then x else 0

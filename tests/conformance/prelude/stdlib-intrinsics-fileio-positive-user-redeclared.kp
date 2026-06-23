@@ -1,0 +1,23 @@
+module main
+
+-- Hostile-audit RT-5 regression guard: removing the schemeless file-IO intrinsics from the
+-- source resolution set must NOT stop a program from re-declaring those names with its own
+-- signature (the binding resolves through the ordinary environment), and the genuinely
+-- scheme-bearing intrinsic newRef must keep working.
+data File = Handle Int
+
+openFile : String -> UIO File
+let openFile name = pure (Handle 1)
+
+readData : File -> UIO String
+let readData file = pure "chunk"
+
+main : UIO Unit
+let main = do
+  cell <- newRef 0
+  opened <- openFile "data.txt"
+  chunk <- readData opened
+  printlnString chunk
+
+--! mode check
+--! assertNoErrors

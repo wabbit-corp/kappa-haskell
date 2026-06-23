@@ -1,0 +1,14 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §12.2.1: a linear (1) value supplied to an unrestricted (ω) parameter
+-- overuses it (`QuantitySatisfies 1 ω` does not hold) — the unrestricted
+-- callee may use the value any number of times. Linear soundness is
+-- enforced independently of the §16.4.4 lower-bound relaxation.
+module main
+
+mayUse : Int -> Int
+let mayUse (x : Int) : Int = x
+
+bad : (1 x : Int) -> Int
+let bad x = mayUse x

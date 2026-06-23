@@ -1,0 +1,29 @@
+module main
+
+-- Source issue: chalk#235
+-- Spec: §12.3, §12.3.1, §15.2.1
+trait Render a =
+    render : a -> String
+
+data Box a : Type =
+    Box a
+
+trait ShowBox a =
+    showBox : a -> String
+
+instance ShowBox (Box Int) =
+    let showBox _ = "direct"
+
+instance Render a => ShowBox (Box a) =
+    let showBox _ = "generic"
+
+result : String
+let result =
+    let
+        dict = summon (ShowBox (Box Int))
+    in
+        dict.showBox (Box 42)
+
+--! assertNoErrors
+--! assertType result String
+--! assertEval result "direct"

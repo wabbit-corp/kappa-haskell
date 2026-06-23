@@ -1,0 +1,10 @@
+module main
+
+result : Int
+let result =
+    20 +
+        22
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

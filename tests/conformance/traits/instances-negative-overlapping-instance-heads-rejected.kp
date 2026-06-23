@@ -1,0 +1,30 @@
+module main
+
+-- Source issue: chalk#10
+-- Spec: §12.3, §12.3.1, §15.2.1
+trait Render a =
+    render : a -> String
+
+data Box a : Type =
+    Box a
+
+trait ShowBox a =
+    showBox : a -> String
+
+instance Render Int =
+    let render x = primitiveIntToString x
+
+instance ShowBox (Box Int) =
+    let showBox _ = "direct"
+
+instance Render a => ShowBox (Box a) =
+    let showBox (Box x) = render x
+
+result : String
+let result =
+    let
+        dict = summon (ShowBox (Box Int))
+    in
+        dict.showBox (Box 42)
+
+--! assertDiagnosticMatch overlap|coher|ambig|instance

@@ -1,0 +1,19 @@
+module main
+
+-- Round-10 R10-WC-3: literal sub-patterns inside constructor patterns are
+-- typed against the constructor field types — a bogus arm previously
+-- counted toward exhaustiveness and the match trapped at runtime.
+
+data Color : Type =
+    Red
+    Green
+
+bad : Option Color -> Int
+let bad o =
+    match o
+      case Some "boom" -> 1
+      case None -> 0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_MISMATCH

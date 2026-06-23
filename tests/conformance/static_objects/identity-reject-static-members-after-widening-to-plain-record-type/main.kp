@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+forget : (F : Type -> Type) -> (G : Type -> Type,)
+let forget F = (G = F,)
+
+pkg : (G : Type -> Type,)
+let pkg = forget Option
+
+bad : pkg.G Int
+let bad = pkg.G.Some 1

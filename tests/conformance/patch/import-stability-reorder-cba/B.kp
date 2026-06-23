@@ -1,0 +1,4 @@
+module B
+
+unrelated : Int
+let unrelated = 41 + 1

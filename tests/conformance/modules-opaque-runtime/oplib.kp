@@ -1,0 +1,4 @@
+module oplib
+
+secret : Int
+opaque let secret = 7

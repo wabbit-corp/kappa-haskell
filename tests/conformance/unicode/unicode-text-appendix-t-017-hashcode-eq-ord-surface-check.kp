@@ -1,0 +1,14 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.hash.*
+
+let h1 : HashCode = hashWith defaultHashSeed "abc"
+let h2 : HashCode = hashWith defaultHashSeed "abc"
+let same : Bool = h1 == h2
+let ord : Ordering = compare h1 h2
+
+--! assertType h1 HashCode
+--! assertType same Bool
+--! assertType ord Ordering

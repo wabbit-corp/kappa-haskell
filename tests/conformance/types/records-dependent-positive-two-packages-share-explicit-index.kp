@@ -1,0 +1,28 @@
+module main
+
+-- Source issue: Idris2#706
+-- Kappa analogue: two transparent dependent packages sharing one explicit index should both project fields at that same
+-- index without spurious witness divergence.
+-- Spec: §5.5.9, §14.1.1
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type SizedAt (n : Nat) : Type =
+    (buf : Vec n Byte)
+
+type PairAt (n : Nat) : Type =
+    (left : Vec n Byte, right : Vec n Byte)
+
+pairSized : (n : Nat) -> SizedAt n -> SizedAt n -> PairAt n
+let pairSized n xs ys =
+    (left = xs.buf, right = ys.buf)
+
+sample : PairAt 0
+let sample = pairSized 0 (buf = VNil) (buf = VNil)
+
+--! assertNoErrors
+--! assertType pairSized (n : Nat) -> SizedAt n -> SizedAt n -> PairAt n
+--! assertType sample PairAt 0

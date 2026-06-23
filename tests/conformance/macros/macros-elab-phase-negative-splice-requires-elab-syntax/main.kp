@@ -1,0 +1,5 @@
+module main
+
+bad : Int
+let bad =
+    $(42)

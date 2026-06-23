@@ -1,0 +1,49 @@
+module main
+
+-- Opus SO-1 pin: Int/Integer is an arbitrary-precision signed integer type and
+-- portable Int arithmetic is EXACT mathematical integer arithmetic, not machine-word
+-- arithmetic (Spec.md §28, L28556-28558). The interpreter (default/reference backend)
+-- computes exactly past the signed-64-bit boundary; the values below all exceed int64
+-- range, so before the bigint migration they silently wrapped to wrong answers.
+-- (The CLR/hosted/IL/zig backends store integers as signed 64-bit and FAIL CLOSED on
+--  overflow — a precise disclosed bound — rather than wrapping; see the progress doc.)
+
+-- int64 max (9223372036854775807) + 1 = 9223372036854775808 (one past Int64.MaxValue).
+overflowAdd : String
+let overflowAdd = primitiveIntToString (9223372036854775807 + 1)
+
+-- 3037000500^2 = 9223372037000250000 (just past int64 max).
+overflowMul : String
+let overflowMul = primitiveIntToString (3037000500 * 3037000500)
+
+-- 10^12 * 10^12 = 10^24, far beyond int64.
+huge : String
+let huge = primitiveIntToString (1000000000000 * 1000000000000)
+
+-- Subtraction below Int64.MinValue (-9223372036854775808): -9223372036854775807 - 2.
+underflowSub : String
+let underflowSub = primitiveIntToString ((0 - 9223372036854775807) - 2)
+
+-- 21! = 51090942171709440000, computed by runtime recursion (multiplication overflows
+-- int64 at the final steps). Exercises exactness through ordinary function evaluation.
+factorial : Int -> Int
+let factorial n = if n <= 1 then 1 else n * factorial (n - 1)
+
+fact21 : String
+let fact21 = primitiveIntToString (factorial 21)
+
+-- Exact arithmetic stays exact when brought back down: (int64max + 1) - int64max = 1.
+roundTrip : String
+let roundTrip = primitiveIntToString ((9223372036854775807 + 1) - 9223372036854775807)
+
+main : UIO Unit
+let main = printlnString fact21
+
+--! mode check
+--! assertNoErrors
+--! assertEval overflowAdd "9223372036854775808"
+--! assertEval overflowMul "9223372037000250000"
+--! assertEval huge "1000000000000000000000000"
+--! assertEval underflowSub "-9223372036854775809"
+--! assertEval fact21 "51090942171709440000"
+--! assertEval roundTrip "1"

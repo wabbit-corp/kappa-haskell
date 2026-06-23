@@ -1,0 +1,30 @@
+module main
+
+type Row = (key : Int, value : Int)
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+rows : List Row
+let rows =
+    [
+        (key = 1, value = 10),
+        (key = 1, value = 20),
+        (key = 2, value = 30),
+        (key = 2, value = 40)
+    ]
+
+result : Int
+let result =
+    sumList [
+        for row in rows
+        distinct by row.key
+        yield row.value
+    ]
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 40

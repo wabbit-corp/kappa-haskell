@@ -1,0 +1,20 @@
+module main
+
+-- Hostile-audit RT-6 pin (§20.3.2 / §20.6.2): `skip`/`take` are well-formed only when the query pipeline is
+-- Ordered. A `Set` is Unordered. Orderedness was previously decided SYNTACTICALLY (only the literal `{| |}`
+-- form was caught), so a Set held in a NAME/parameter/result was treated as unknown-orderedness and `skip`/
+-- `take` on it was wrongly accepted (accept-invalid). It is now rejected at compile time with
+-- E_QUERY_UNORDERED_PAGING, classifying the source by its inferred type head.
+s : Set Int
+let s = {| 3, 1, 2 |}
+
+bad : List Int
+let bad =
+    [
+        for x in s
+        skip 1
+        yield x
+    ]
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QUERY_UNORDERED_PAGING

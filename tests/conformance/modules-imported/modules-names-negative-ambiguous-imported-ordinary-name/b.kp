@@ -1,0 +1,4 @@
+module b
+
+value : Int
+let value = 2

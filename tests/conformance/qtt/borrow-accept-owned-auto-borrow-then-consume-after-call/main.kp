@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+consume : (1 x : Int) -> Int
+let consume (1 x : Int) : Int = x
+
+ok : (1 x : Int) -> Int
+let ok (1 x : Int) : Int =
+    block
+        let _ = observe x
+        consume x

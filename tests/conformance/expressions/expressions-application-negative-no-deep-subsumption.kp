@@ -1,0 +1,15 @@
+module main
+
+acceptWrapped : (arg : (cb : (ω x : Int) -> Int)) -> Int
+let acceptWrapped (arg : (cb : (ω x : Int) -> Int)) : Int =
+    arg.cb 1
+
+wrapped : (cb : (1 x : Int) -> Int)
+let wrapped = (cb = \ (1 x : Int) -> x)
+
+bad : Int
+let bad = acceptWrapped wrapped
+
+--! assertErrorCount 1
+--! assertDeclKinds signature, let, signature, let, signature, let
+

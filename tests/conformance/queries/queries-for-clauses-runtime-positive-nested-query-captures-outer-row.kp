@@ -1,0 +1,27 @@
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+result : Int
+let result =
+    sumList [
+        for root in [0, 1, 2]
+        let hits =
+            [
+                for child in [0, 1, 2]
+                for grandChild in [1, 2, 3]
+                if child == root
+                if grandChild == child + 1
+                yield grandChild
+            ]
+        if sumList hits > 0
+        yield sumList hits
+    ]
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 6

@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+id1 : (1 x : Int) -> Int
+let id1 (1 x : Int) : Int = x
+
+bad : (>=1 x : Int) -> UIO Unit
+let bad (>=1 x : Int) : UIO Unit =
+    do
+        defer (pure (id1 x))
+        pure ()

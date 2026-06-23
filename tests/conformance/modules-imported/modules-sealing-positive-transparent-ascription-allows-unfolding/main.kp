@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type BoxSig : Type = (T : Type, value : this.T)
+
+box : BoxSig
+let box : BoxSig = seal (T = Int, value = 1, hidden = True) as BoxSig
+
+value : Int
+let value : Int = box.value

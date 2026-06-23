@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+data File : Type =
+    Handle Int
+
+let consume (1 file : File) = unsafeConsume file
+
+let main : IO Unit = do
+    let 1 file = Handle 1
+    let alias = file
+    consume alias
+
+--! assertErrorCount 0

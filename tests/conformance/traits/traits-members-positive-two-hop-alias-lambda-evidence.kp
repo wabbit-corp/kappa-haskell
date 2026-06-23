@@ -1,0 +1,29 @@
+module main
+
+-- Regression (round-5 F6): member resolution must survive a two-hop local
+-- alias between the lambda binding and its use site. Seeding walks the alias
+-- chain (`let q = p` hops to p's uses) to recover the lambda's parameter
+-- type, so `filter q xs` resolves the Filterable List instance. Previously
+-- the alias hop lost the seed and the member call was rejected.
+
+sumList : List Int -> Int
+let sumList zs = foldl (\acc x -> acc + x) 0 zs
+
+xs : List Int
+let xs = 1 :: 2 :: 3 :: Nil
+
+twoHop : Int
+let twoHop =
+    let p = \x -> x > 1
+    let q = p
+    sumList (filter q xs)
+
+oneHop : Int
+let oneHop =
+    let f = \x -> x > 2
+    sumList (filter f xs)
+
+--! mode check
+--! assertNoErrors
+--! assertEval twoHop 5
+--! assertEval oneHop 3

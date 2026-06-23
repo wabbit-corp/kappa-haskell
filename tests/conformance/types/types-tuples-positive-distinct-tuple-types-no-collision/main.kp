@@ -1,0 +1,41 @@
+module main
+
+-- F-12 (soundness guardrail #3): distinct record/tuple types must keep distinct synthetic
+-- constructors. The synthetic key is `toText` of the EXPECTED record type including its field
+-- names, so `Person = (name : Int, age : Int)`, `(Int, Int)` (fields `_1, _2`) and
+-- `(Int, Int, Int)` (fields `_1, _2, _3`) never merge — the re-key in F-12 must not collapse
+-- them. A named-field literal binds by name (rule b, field punning preserved); a tuple literal
+-- re-keys positionally (rule a). Spec §13.2 (record definitional equality by field-name set).
+
+type Person = (name : Int, age : Int)
+
+mkPerson : Int -> Int -> Person
+let mkPerson n a = (name = n, age = a)
+
+getAge : Person -> Int
+let getAge p =
+    match p
+      case (name = _, age = a) -> a
+
+pair : (Int, Int)
+let pair = (3, 7)
+
+sumPair : (Int, Int) -> Int
+let sumPair p =
+    match p
+      case (a, b) -> a + b
+
+triple : (Int, Int, Int)
+let triple = (1, 2, 3)
+
+sumTriple : (Int, Int, Int) -> Int
+let sumTriple t =
+    match t
+      case (a, b, c) -> a + b + c
+
+main : UIO Unit
+let main =
+    do
+        printInt (getAge (mkPerson 1 42))
+        printInt (sumPair pair)
+        printInt (sumTriple triple)

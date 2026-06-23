@@ -1,0 +1,14 @@
+module main
+
+wideParam : (ω x : Int) -> Int
+let wideParam (ω x : Int) : Int = x
+
+acceptLinear : (((1 x : Int) -> Int) -> Int)
+let acceptLinear (k : (1 x : Int) -> Int) : Int = k 1
+
+bad : Int
+let bad = acceptLinear wideParam
+
+--! assertErrorCount 1
+--! assertDeclKinds signature, let, signature, let, signature, let
+

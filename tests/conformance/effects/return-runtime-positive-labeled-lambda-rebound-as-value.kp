@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: KT-267
+-- Spec: §8.4, §8.4.1, §7.2
+abs : Int -> IO Int
+let abs =
+    abs@\(value : Int) -> do
+        return@abs value
+
+main : IO Int
+let main = abs 42
+
+--! assertNoErrors
+--! assertType abs Int -> IO Int
+--! assertExecute main 42

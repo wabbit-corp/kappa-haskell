@@ -1,0 +1,15 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.unicode.*
+
+let composed : String = "\u{00E9}"
+let decomposed : String = "e\u{301}"
+let exactDifferent : Bool = composed == decomposed
+let canonicalSame : Bool = canonicalEquivalent composed decomposed
+let normalizedSame : Bool = normalize NFC composed == normalize NFC decomposed
+
+--! assertType exactDifferent Bool
+--! assertType canonicalSame Bool
+--! assertType normalizedSame Bool

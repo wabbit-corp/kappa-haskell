@@ -1,0 +1,4 @@
+module lib.raw
+
+data Box (a : Type) : Type =
+    Box (value : a)

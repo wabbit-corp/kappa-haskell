@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticNext error E_NAME_UNRESOLVED
+
+let bad = length "abc"

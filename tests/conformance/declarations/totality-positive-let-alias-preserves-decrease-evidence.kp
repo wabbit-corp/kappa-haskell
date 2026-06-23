@@ -1,0 +1,20 @@
+module main
+
+-- Source issues: Idris2#493, Idris2#300
+-- Spec: §6.3.1, §6.4.2, §6.4.5
+sizeViaAlias : List Int -> Int
+let sizeViaAlias xs =
+    match xs
+      case Nil -> 0
+      case _ :: tail ->
+          let
+              tail1 = tail
+          in
+              if True then 1 + sizeViaAlias tail1 else 0
+
+result : Int
+let result = sizeViaAlias (1 :: 2 :: 3 :: Nil)
+
+--! assertNoErrors
+--! assertType sizeViaAlias List Int -> Int
+--! assertEval result 3

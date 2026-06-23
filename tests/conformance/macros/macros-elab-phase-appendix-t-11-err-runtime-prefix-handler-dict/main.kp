@@ -1,0 +1,5 @@
+module main
+
+bad : InterpolatedMacro Int -> Int
+let bad p =
+    p"raw"

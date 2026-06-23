@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+resize : (image : Int) -> (width : Int) -> (height : Int) -> Int
+let resize (image : Int) (width : Int) (height : Int) : Int = image
+eraseNames : (Int -> Int -> Int -> Int) -> Int -> Int -> Int -> Int
+let eraseNames (f : Int -> Int -> Int -> Int) : Int -> Int -> Int -> Int = f
+
+bad : Int
+let bad : Int =
+    block
+        let plain = eraseNames resize
+        plain { image = 1, width = 640, height = 480 }

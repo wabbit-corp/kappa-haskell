@@ -1,0 +1,19 @@
+module main
+
+-- Regression (round-5 F7-t2): a trait-member call bound by an ANNOTATED local
+-- let must resolve through the declared type. `let r : Option Int = map ...`
+-- parses as LocalSignature + unannotated LocalLet; lowering now fuses the
+-- declared type onto the binding and threads it into member preparation as a
+-- demanded result type (§12.2.2). Previously the member lowered as a bare
+-- name and crashed at runtime with "Name 'map' is not in scope".
+
+annotatedLocal : Int
+let annotatedLocal =
+    let r : Option Int = map (\(x : Int) -> x * 10) (Some 4)
+    match r
+      case Some y -> y
+      case None -> 0 - 1
+
+--! mode check
+--! assertNoErrors
+--! assertEval annotatedLocal 40

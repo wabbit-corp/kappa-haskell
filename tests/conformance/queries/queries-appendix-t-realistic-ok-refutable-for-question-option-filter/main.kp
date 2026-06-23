@@ -1,0 +1,11 @@
+module main
+
+values : List (Option Int)
+let values = [Some 1, None, Some 3]
+
+present : List Int
+let present =
+    [
+        for? Some x in values
+        yield x
+    ]

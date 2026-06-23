@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+trait Pretty (a : Type) =
+    pretty : a -> String
+
+bad : Type -> Type
+let bad = type Pretty

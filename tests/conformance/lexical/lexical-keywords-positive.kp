@@ -1,0 +1,12 @@
+module main
+
+return : Int
+let return = 1
+
+term : Int
+let term = 2
+
+--! assertNoErrors
+--! assertType return Int
+--! assertType term Int
+--! x-assertDeclDescriptors signature return, let return, signature term, let term

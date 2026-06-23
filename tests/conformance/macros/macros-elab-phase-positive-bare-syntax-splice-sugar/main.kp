@@ -1,0 +1,9 @@
+module main
+
+wrap : Syntax Int -> Syntax Int
+let wrap e =
+    '{ ${e} + 1 }
+
+value : Int
+let value =
+    $(wrap '{ 10 })

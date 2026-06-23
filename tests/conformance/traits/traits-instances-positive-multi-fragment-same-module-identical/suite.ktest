@@ -1,0 +1,2 @@
+--! assertNoErrors
+--! assertEval result 100

@@ -1,0 +1,21 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+-- Source issue: KT-1154
+-- Spec: §7.1.2
+incremented : Option Int -> Int
+let incremented x = (x ?: 0) + 1
+
+fromNone : Int
+let fromNone = incremented None
+
+fromSome : Int
+let fromSome = incremented (Some 41)
+
+--! assertNoErrors
+--! assertType incremented Option Int -> Int
+--! assertType fromNone Int
+--! assertType fromSome Int
+--! assertEval fromNone 1
+--! assertEval fromSome 42

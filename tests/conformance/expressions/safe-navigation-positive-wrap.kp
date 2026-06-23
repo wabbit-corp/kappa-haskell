@@ -1,0 +1,14 @@
+module main
+
+import std.prelude.(type Option)
+
+type Inner = (c : Int)
+type Outer = (b : Inner)
+
+-- Source family: Kotlin safe-call issue family
+-- Spec: §7.1.1.2
+wrapped : Option Outer -> Option Inner
+let wrapped a = a?.b
+
+--! assertNoErrors
+--! assertType wrapped Option Outer -> Option Inner

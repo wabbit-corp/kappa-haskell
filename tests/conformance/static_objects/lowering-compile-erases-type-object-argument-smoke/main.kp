@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+idThroughType : (F : Type -> Type) -> F Int -> F Int
+let idThroughType F x = x
+
+ok : Option Int
+let ok = idThroughType Option (Some 1)

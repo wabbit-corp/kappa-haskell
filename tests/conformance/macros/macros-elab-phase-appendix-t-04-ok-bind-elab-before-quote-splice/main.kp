@@ -1,0 +1,15 @@
+module main
+
+ten : Elab (Syntax Int)
+let ten =
+    pure '{ 10 }
+
+quotedPlusOne : Elab (Syntax Int)
+let quotedPlusOne =
+    do
+        let e <- ten
+        pure '{ ${e} + 1 }
+
+value : Int
+let value =
+    $(quotedPlusOne)

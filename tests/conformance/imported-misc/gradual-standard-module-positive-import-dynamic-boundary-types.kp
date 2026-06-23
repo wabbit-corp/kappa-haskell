@@ -1,0 +1,19 @@
+module main
+
+-- Source issues: mojo#122, gleam#1190
+-- Spec: §2.7A, §5.10
+import std.gradual.(type Dyn, type DynRep, type CastBlame)
+import std.gradual.(trait DynamicType)
+import std.gradual.(term toDynWith, term checkedCastWith, term sameDynRep)
+import std.gradual.(term toDyn, term checkedCast)
+
+packWithRep : DynRep a -> a -> Dyn
+let packWithRep rep value = toDynWith rep value
+
+tryCastWithRep : DynRep a -> Dyn -> Result CastBlame a
+let tryCastWithRep rep value = checkedCastWith rep value
+
+packWithImplicitRep : (@_ : DynamicType a) -> a -> Dyn
+let packWithImplicitRep value = toDyn value
+
+--! assertNoErrors

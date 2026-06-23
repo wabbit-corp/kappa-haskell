@@ -1,0 +1,12 @@
+module main
+
+--! allow_unsafe_consume
+
+data Token : Type =
+    Token
+
+ok : (1 token : Token) -> Unit
+let ok token =
+    unsafeConsume token
+
+--! assertNoErrors

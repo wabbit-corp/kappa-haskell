@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: ghc#1060
+-- Spec: §3.4
+bad : Bool -> IO Bool
+let bad x =
+    match x
+    case False -> do
+    { return x }
+    case True -> return x
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_EXPECTED_SYNTAX_TOKEN

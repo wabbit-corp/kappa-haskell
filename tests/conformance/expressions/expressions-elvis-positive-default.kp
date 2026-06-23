@@ -1,0 +1,17 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+fallback : Option Int -> Int
+let fallback x = x ?: 42
+
+fromNone : Int
+let fromNone = None ?: 42
+
+fromSome : Int
+let fromSome = Some 7 ?: 42
+
+--! assertNoErrors
+--! assertType fallback Option Int -> Int
+--! assertType fromNone Int
+--! assertType fromSome Int

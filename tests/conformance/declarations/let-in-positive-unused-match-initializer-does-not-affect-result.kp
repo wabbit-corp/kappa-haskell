@@ -1,0 +1,19 @@
+module main
+
+-- Source issue: Idris2#307
+-- Kappa analogue: an unused local initialized by a `match` expression should not interfere with the enclosing result type.
+-- Spec: §6.3.1, §7.5
+result : Int
+let result =
+    block
+        let flag = True
+        let branchText =
+            match flag
+              case True -> "1"
+              case False -> "2"
+
+        1
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 1

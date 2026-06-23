@@ -1,0 +1,7 @@
+module namespaces.beta
+
+foo : Int
+let foo = 3
+
+bar : Unit -> Int
+let bar () = 4

@@ -1,0 +1,9 @@
+module collections.maps
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair (first : a) (second : b)
+
+readSecond : forall (a : Type) (b : Type). Pair a b -> b
+let readSecond @a @b pair =
+    match pair
+      case Pair first second -> second

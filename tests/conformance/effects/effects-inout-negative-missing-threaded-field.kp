@@ -1,0 +1,9 @@
+module main
+
+type Cell = (1 value : Int)
+
+badStep : (inout c : Cell) -> Cell
+let badStep c = c
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_INOUT_THREADED_FIELD_MISSING

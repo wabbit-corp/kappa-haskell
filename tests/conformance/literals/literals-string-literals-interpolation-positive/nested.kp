@@ -1,0 +1,13 @@
+module nested
+
+name : String
+let name = "yo"
+
+value : String
+let value = f"${ f" $name " }"
+
+--! assertNoErrors
+--! assertType value String
+--! x-assertEval value " yo "
+--! assertDeclKinds signature, let, signature, let
+--! x-assertContainsTokenKinds InterpolatedStringStart, InterpolationStart, InterpolationEnd, InterpolatedStringEnd

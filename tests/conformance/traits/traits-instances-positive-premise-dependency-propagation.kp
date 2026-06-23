@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+trait Foo a =
+    Out : Type
+
+trait Bar a =
+    unit : Unit
+
+instance Foo Int =
+    let Out = String
+
+instance Bar String =
+    let unit = ()
+
+let solve (@foo : Foo Int) (@bar : Bar foo.Out) = ()
+
+--! assertNoErrors
+--! assertDeclKinds trait, trait, instance, instance, let

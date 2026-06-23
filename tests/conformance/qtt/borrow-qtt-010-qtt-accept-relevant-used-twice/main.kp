@@ -1,0 +1,11 @@
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+twiceOk : (>=1 x : Int) -> Int
+let twiceOk (>=1 x : Int) : Int =
+    let _ = strictId x
+    in strictId x
+
+--! assertNoErrors

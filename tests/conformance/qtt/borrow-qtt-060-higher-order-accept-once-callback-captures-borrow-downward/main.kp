@@ -1,0 +1,9 @@
+module main
+
+withOnce : (1 k : Unit -> Int) -> Int
+let withOnce (1 k : Unit -> Int) : Int = k ()
+
+ok : (& x : Int) -> Int
+let ok (& x : Int) : Int = withOnce (\() -> x)
+
+--! assertNoErrors

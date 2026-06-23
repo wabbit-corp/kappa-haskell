@@ -1,0 +1,7 @@
+module main
+
+result : String
+let result = unsupported_prefix"hello"
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_NAME_UNRESOLVED

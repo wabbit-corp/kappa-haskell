@@ -1,0 +1,7 @@
+module lib
+
+makeGetter : forall (s : Region). (&[s] x : Int) -> ((Unit -> Int) captures (s))
+let makeGetter (@0 s : Region) (&[s] x : Int) : ((Unit -> Int) captures (s)) =
+    \() -> x
+
+--! assertNoErrors

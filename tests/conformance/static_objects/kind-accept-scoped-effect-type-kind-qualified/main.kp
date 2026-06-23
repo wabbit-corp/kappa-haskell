@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+ok : Unit
+let ok =
+    block
+        scoped effect State =
+            get : Unit -> Int
+
+        let T = type State
+        ()

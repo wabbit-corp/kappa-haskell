@@ -555,7 +555,7 @@ bodyCapturesEnv = go
       CRecordT fs -> any (go . snd) fs
       CVariantT ts -> any go ts
       CSigT _ e -> go e
-      CPi _ _ _ a b -> go a || go b
+      CPi _ _ _ _ a b -> go a || go b
       CVar {} -> False
       CGlob {} -> False
       CSort {} -> False
@@ -819,7 +819,7 @@ typeScalarKinds g n = do
     paramKindV dom = maybe PBoxed PScalar (scalarHeadKindV dom)
     walkPiV ctx lvl acc ty =
       case force ctx ty of
-        VPi ic q _ dom clo@(Closure env body) -> do
+        VPi ic q _ _ dom clo@(Closure env body) -> do
           if not (closureHasBoundEnv env body)
             then Nothing
             else do
@@ -836,7 +836,7 @@ typeScalarKinds g n = do
       CVar i -> i
       CGlob _ -> -1
       CLam _ _ _ b -> maxVar b - 1
-      CPi _ _ _ a b -> max (maxVar a) (maxVar b - 1)
+      CPi _ _ _ _ a b -> max (maxVar a) (maxVar b - 1)
       CApp _ f a -> max (maxVar f) (maxVar a)
       CSort _ -> -1
       CLit _ -> -1
@@ -1584,7 +1584,7 @@ isTypeGlob g = do
 isTypeKindTerm :: Term -> Bool
 isTypeKindTerm = \case
   CSort _ -> True
-  CPi _ _ _ _ body -> isTypeKindTerm body
+  CPi _ _ _ _ _ body -> isTypeKindTerm body
   _ -> False
 
 -- | Emit a reference to a runtime primitive, after confirming the linked

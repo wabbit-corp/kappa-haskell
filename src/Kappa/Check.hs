@@ -204,6 +204,13 @@ data CheckState = CheckState
   , csOpaqueDatas :: !(Map GName ())
   -- ^ §10 'opaque data' declarations: representation visible only in
   -- the defining module (consulted by §22.1 shape inspection)
+  , csOpaqueDefs :: !(Map GName ())
+  -- ^ §8.5.2 'opaque' term/type-alias definitions: the defining
+  -- equation is available for definitional equality only INSIDE the
+  -- defining module. Sealed at module end ('opaqueSealPass') by
+  -- clearing 'gdReducible' so downstream modules cannot δ-unfold the
+  -- definition during conversion (runtime evaluation is unaffected:
+  -- 'ecRuntime' unfolds every valued global regardless).
   , csRecordOrders :: !(Map GName [Text])
   -- ^ Written field order of record type aliases (§22.2 shape order;
   -- core record types are canonicalized to lexicographic order)
@@ -412,6 +419,7 @@ initCheckState =
     , csReceivers = Map.empty
     , csExpansions = Map.empty
     , csOpaqueDatas = Map.empty
+    , csOpaqueDefs = Map.empty
     , csRecordOrders = Map.empty
     , csReExports = Map.empty
     , csBoolFacts = []
@@ -981,7 +989,7 @@ unify ctx = goTop True
       (VFlex m sp, t) | not (null sp) -> solveFlexSpine lvl m sp t
       (t, VFlex m sp) | not (null sp) -> solveFlexSpine lvl m sp t
       (VSort m, VSort n) -> pure (m <= n) -- cumulativity (§11.1.1)
-      (VPi i1 q1 _ d1 c1, VPi i2 q2 _ d2 c2) | i1 == i2 && (q1 == q2 || (qok && qSubsumes q1 q2)) -> do
+      (VPi i1 q1 _ _ d1 c1, VPi i2 q2 _ _ d2 c2) | i1 == i2 && (q1 == q2 || (qok && qSubsumes q1 q2)) -> do
         ok <- goTop False d1 d2
         if not ok
           then pure False
@@ -1137,7 +1145,7 @@ metaOccursInValueSeen metas fuel0 seen0 target = goV fuel0 seen0
              )
       VGlobN _ sp -> goSp n seen sp
       VLam _ _ _ clo -> goClosure n seen clo
-      VPi _ _ _ dom clo -> goV (next n) seen dom || goClosure (next n) seen clo
+      VPi _ _ _ _ dom clo -> goV (next n) seen dom || goClosure (next n) seen clo
       VSort _ -> False
       VLit _ -> False
       VCtor _ args -> any (goV (next n) seen) args
@@ -1242,7 +1250,7 @@ metaOccursInTerm metas fuel0 seen target = go fuel0
              )
       CApp _ f a -> go (next n) f || go (next n) a
       CLam _ _ _ b -> go (next n) b
-      CPi _ _ _ a b -> go (next n) a || go (next n) b
+      CPi _ _ _ _ a b -> go (next n) a || go (next n) b
       CCtor _ as -> any (go (next n)) as
       CMatch s alts -> go (next n) s || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
       CRecordT fs -> any (go (next n) . snd) fs
@@ -1291,7 +1299,7 @@ metaOccursInValueShallow target = goV 512
           VFlex m sp -> m == target || goSp n sp
           VGlobN _ sp -> goSp n sp
           VLam _ _ _ clo -> goClosure (next n) clo
-          VPi _ _ _ dom clo -> goV (next n) dom || goClosure (next n) clo
+          VPi _ _ _ _ dom clo -> goV (next n) dom || goClosure (next n) clo
           VSort _ -> False
           VLit _ -> False
           VCtor _ args -> any (goV (next n)) args
@@ -1500,7 +1508,7 @@ expectType ctx sp actual expected = do
           aF <- forceM actual
           eF <- forceM expected
           pure $ case (aF, eF) of
-            (VPi i1 _ _ _ _, VPi i2 _ _ _ _) -> i1 == i2
+            (VPi i1 _ _ _ _ _, VPi i2 _ _ _ _ _) -> i1 == i2
             _ -> False
     if not (aOp || eOp) && retag && sameHead
       then
@@ -1648,7 +1656,7 @@ etaCtor :: EvalCtx -> GName -> Term -> Term
 etaCtor ec g cty = build 0 [] (eval ec [] cty)
   where
     build n acc fty = case force ec fty of
-      VPi ic q _ _ clo ->
+      VPi ic q _ _ _ clo ->
         CLam ic q ("x" <> T.pack (show n)) $
           build (n + 1) ((ic, q, n) : acc) (evalClosure clo (VRigid n []))
       _ ->
@@ -2033,7 +2041,7 @@ isTraitWitness ctx goal = go (ctxLen ctx) goal
     go lvl v = do
       vF <- forceM v
       case vF of
-        VPi ic q nm _ clo -> do
+        VPi ic q _ nm _ clo -> do
           cod <- clApp clo (VRigid lvl [])
           fmap (CLam ic q nm) <$> go (lvl + 1) cod
         VGlobN (GName pm "IsTrait") _
@@ -2048,7 +2056,7 @@ isKindLike lvl v = do
   t <- forceM v
   case t of
     VSort _ -> pure True
-    VPi _ _ _ _ clo -> do
+    VPi _ _ _ _ _ clo -> do
       cod <- clApp clo (VRigid lvl [])
       isKindLike (lvl + 1) cod
     _ -> pure False
@@ -3033,7 +3041,7 @@ insertAllImplicits :: Ctx -> Span -> Term -> Value -> CheckM (Term, Value)
 insertAllImplicits ctx sp tm ty = do
   t <- forceM ty
   case t of
-    VPi Impl q _ dom clo -> do
+    VPi Impl q _ _ dom clo -> do
       arg <- resolveImplicitQ ctx sp q dom
       argV <- evalIn ctx arg
       ty' <- clApp clo argV
@@ -3187,16 +3195,19 @@ infer ctx expr = case expr of
         errAt sp "E_RECORD_DEPENDENCY_CYCLE" (Just "kappa-hs.record.dependency-cycle")
           "the field-dependency graph of this record type contains a cycle (§13.2.1)"
         fields <- forM names $ \n -> (,) n <$> freshMeta
-        finish fields
+        finish 0 fields
       Just fsOrdered -> do
         -- §13.2.1: elaborate the telescope in dependency order; later
         -- field types see earlier fields through 'this'
         fields <- goDep phantoms fsOrdered
-        finish [(nameText (rtfName f), t) | (f, t) <- fields]
+        -- §11.1: the record type lives in the max universe level of its
+        -- field types (a `(ty : Type)` field forces Type1, not Type0).
+        let lvl = maximum (0 : [l | (_, _, l) <- fields])
+        finish lvl [(nameText (rtfName f), t) | (f, t, _) <- fields]
     where
       goDep _ [] = pure []
       goDep done (f : rest) = do
-        (t0, _) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
+        (t0, lvl) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
         -- §13.2.1/§16.1.7.1: a suspension-marked field declares the
         -- suspension type; literals insert the suspension at the field
         let t = case rtfSusp f of
@@ -3204,20 +3215,20 @@ infer ctx expr = case expr of
               Just SuspLazy -> CApp Expl (CGlob prelNeed) t0
               Nothing -> t0
         tV <- evalIn ctx t
-        ((f, t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
-      finish fields = case mtail of
+        ((f, t, lvl) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
+      finish lvl fields = case mtail of
         -- §13.2.10: opaque members make the closed record a signature
         Nothing
           | opaqs@(_ : _) <- sort [nameText (rtfName f) | f <- fs, rtfOpaque f] ->
-              pure (CSigT opaqs (CRecordT (sortOn fst fields)), VSort 0)
-        Nothing -> pure (CRecordT (sortOn fst fields), VSort 0)
+              pure (CSigT opaqs (CRecordT (sortOn fst fields)), VSort lvl)
+        Nothing -> pure (CRecordT (sortOn fst fields), VSort lvl)
         -- §11.3.1A: open record with a contextual row tail
         Just tailE -> do
           rowTm <- check ctx tailE (VGlobN prelRecRow [])
           pure
             ( CApp Expl (CApp Expl (CGlob prelOpenRec) rowTm)
                 (CRecordT (sortOn fst fields))
-            , VSort 0
+            , VSort lvl
             )
   -- §21.6 convenience reflection queries in ordinary (non-Elab)
   -- positions run at the call site ('elabReflQuery')
@@ -3272,26 +3283,30 @@ infer ctx expr = case expr of
     domE <- case binderTypeExpr b of
       Just t -> pure t
       Nothing -> pure (EUnit (bSpan b))
-    (domTm, _) <- inferType ctx domE
+    (domTm, domLvl) <- inferType ctx domE
     domV <- evalIn ctx domTm
     let nm = maybe "_" nameText (bName b)
         ic = if bImplicit b then Impl else Expl
         -- implicit Pi binders join the local implicit context (§16.3.3)
         ctx' = bindCtx nm (bImplicit b) domV ctx
-    (codTm, _) <- inferType ctx' body
-    pure (CPi ic (binderQ b) nm domTm codTm, VSort 0)
+    (codTm, codLvl) <- inferType ctx' body
+    -- §11.1: a Pi type lives in the max of its domain's and codomain's
+    -- universe levels (predicative stratification), so e.g.
+    -- `(s : Type) -> s` lands in Type1, not Type0.
+    pure (CPi ic (binderQ b) (isJust (bpBorrow (bPrefix b))) nm domTm codTm, VSort (max domLvl codLvl))
   EForall bs body _ -> elabForall ctx bs body
   EExists bs body sp -> elabExists ctx bs body sp
   ETraitArrow c rest -> do
-    (cTm, _) <- inferType ctx c
+    (cTm, cLvl) <- inferType ctx c
     cV <- evalIn ctx cTm
     -- the evidence binder joins the local implicit context (§16.3.3)
     let ctx' = bindCtx "_ev" True cV ctx
-    (restTm, _) <- inferType ctx' rest
-    pure (CPi Impl QW "_ev" cTm restTm, VSort 0)
+    (restTm, restLvl) <- inferType ctx' rest
+    pure (CPi Impl QW False "_ev" cTm restTm, VSort (max cLvl restLvl))
   EOptionSugar t _ -> do
-    (tm, _) <- inferType ctx t
-    pure (CApp Expl (CGlob prelOption) tm, VSort 0)
+    -- `Option t : Type (level of t)` (Option : Type u -> Type u)
+    (tm, lvl) <- inferType ctx t
+    pure (CApp Expl (CGlob prelOption) tm, VSort lvl)
   EVariant arms mtail sp -> elabVariant ctx arms mtail sp Nothing
   -- §18.5.1: a lambda label names a return target consumable by
   -- @return@L@ inside the body.
@@ -3466,7 +3481,7 @@ check :: Ctx -> Expr -> Value -> CheckM Term
 check ctx expr expected0 = do
   expected <- forceM expected0
   case (expr, expected) of
-    (ELambda l bs body sp, VPi Impl q nm dom clo)
+    (ELambda l bs body sp, VPi Impl q _ nm dom clo)
       | not (firstImplicit bs) -> do
           let ctx' = bindCtx nm True dom ctx
           cod <- clApp clo (VRigid (ctxLen ctx) [])
@@ -3484,7 +3499,7 @@ check ctx expr expected0 = do
       (tm, ty) <- elabLambda (ctx {ctxReturnTarget = nameText <$> mlbl}) bs body sp (Just expected)
       expectType ctx sp ty expected
       pure tm
-    (_, VPi Impl q nm dom clo)
+    (_, VPi Impl q _ nm dom clo)
       | not (isHole expr) -> do
           let ctx' = bindCtx nm True dom ctx
           cod <- clApp clo (VRigid (ctxLen ctx) [])
@@ -3505,7 +3520,7 @@ check ctx expr expected0 = do
     -- for — unary `(-)` is the prefix reading (negate); otherwise the
     -- reference eta-expands so trailing implicit obligations (the
     -- §28.2.1 checked-arithmetic proofs) insert at the application
-    (e, VPi Expl _ _ _ _)
+    (e, VPi Expl _ _ _ _ _)
       | Just n <- bareOpRef e
       , isOpSpelling (nameText n)
       , Nothing <- lookupCtx (nameText n) ctx -> do
@@ -3820,10 +3835,10 @@ check ctx expr expected0 = do
     explicitArity lvl v = do
       t <- forceM v
       case t of
-        VPi Expl _ _ _ clo -> do
+        VPi Expl _ _ _ _ clo -> do
           cod <- clApp clo (VRigid lvl [])
           (1 +) <$> explicitArity (lvl + 1) cod
-        VPi Impl _ _ _ clo -> do
+        VPi Impl _ _ _ _ clo -> do
           cod <- clApp clo (VRigid lvl [])
           explicitArity (lvl + 1) cod
         _ -> pure (0 :: Int)
@@ -3963,7 +3978,7 @@ inferType ctx e = do
         -- compatibility accommodation for the external corpus: `IO a`
         -- written for `IO ?e a` (§18.1 IO : Type -> Type -> Type); the
         -- missing error parameter becomes a fresh metavariable
-        VPi Expl _ _ _ _
+        VPi Expl _ _ _ _ _
           | CApp Expl (CGlob g) argTm <- tm
           , g == prelIO -> do
               m <- freshMeta
@@ -4015,9 +4030,9 @@ inferT ctx e = case e of
             elabSpine ctx (nameSpan hd) fTm fTy [ArgExplicit nE, ArgExplicit elemE]
           else do
             nTm <- check ctx nE (VGlobN prelNat [])
-            (elemTm, _) <- inferType ctx elemE
+            (elemTm, elemLvl) <- inferType ctx elemE
             let sized = CApp Expl (CApp Expl (CGlob prelSizedOf) nTm) elemTm
-            pure (CApp Expl (CGlob prelArray) sized, VSort 0)
+            pure (CApp Expl (CGlob prelArray) sized, VSort elemLvl)
   -- §11.3.1 row constraints take field labels: 'LacksRec r age'
   -- elaborates the label to a string literal
   EApp (EVar hd) [ArgExplicit rowE, ArgExplicit (EVar lbl)]
@@ -4033,10 +4048,12 @@ inferT ctx e = case e of
   -- a parenthesized tuple in type position is a positional record type
   -- (§13.1): (Integer, String) ≡ (_1 : Integer, _2 : String)
   ETuple es _ -> do
-    fields <- forM (zip [1 :: Int ..] es) $ \(i, fe) -> do
-      (t, _) <- inferType ctx fe
-      pure ("_" <> T.pack (show i), t)
-    pure (CRecordT fields, VSort 0)
+    fieldsL <- forM (zip [1 :: Int ..] es) $ \(i, fe) -> do
+      (t, lvl) <- inferType ctx fe
+      pure (("_" <> T.pack (show i), t), lvl)
+    let fields = map fst fieldsL
+        lvl = maximum (0 : map snd fieldsL)
+    pure (CRecordT fields, VSort lvl)
   -- §7.2: in type position a module-qualified name selects the TYPE
   -- facet of a same-spelling data family (term position prefers the
   -- constructor facet)
@@ -4068,8 +4085,8 @@ inferT ctx e = case e of
   -- parser cannot distinguish it from an ascription
   EAscription (EVar n) tyE _
     | isLowerName (nameText n) -> do
-        (t, _) <- inferType ctx tyE
-        pure (CRecordT [(nameText n, t)], VSort 0)
+        (t, lvl) <- inferType ctx tyE
+        pure (CRecordT [(nameText n, t)], VSort lvl)
   _ -> infer ctx e
   where
     isLowerName t = case T.uncons t of
@@ -4081,21 +4098,25 @@ inferT ctx e = case e of
       _ -> Nothing
 
 elabForall :: Ctx -> [Binder] -> Expr -> CheckM (Term, Value)
-elabForall ctx0 bs0 body = go ctx0 bs0
+elabForall ctx0 bs0 body = do
+  (tm, lvl) <- go ctx0 bs0
+  -- §11.1: the quantified type lives in the max universe level of every
+  -- binder domain and the body (predicative). `forall a.` binds
+  -- `a : Type0`, which inhabits Type1, so a polymorphic type lands in
+  -- Type1 unless the body forces it higher.
+  pure (tm, VSort lvl)
   where
-    go ctx [] = do
-      (tm, _) <- inferType ctx body
-      pure (tm, VSort 0)
+    go ctx [] = inferType ctx body
     go ctx (b : rest) = do
-      domTm <- case bType b of
-        Just t -> fst <$> inferType ctx t
-        Nothing -> pure (CSort 0) -- `forall a.` binds a : Type (§11.3)
+      (domTm, domLvl) <- case bType b of
+        Just t -> inferType ctx t
+        Nothing -> pure (CSort 0, 1) -- `forall a.` binds a : Type0 : Type1 (§11.3)
       domV <- evalIn ctx domTm
       let nm = maybe "_" nameText (bName b)
           q = maybe Q0 (qOf . Just) (bpQuantity (bPrefix b))
           ctx' = bindCtx nm False domV ctx
-      (restTm, _) <- go ctx' rest
-      pure (CPi Impl q nm domTm restTm, VSort 0)
+      (restTm, restLvl) <- go ctx' rest
+      pure (CPi Impl q False nm domTm restTm, max domLvl restLvl)
 
 -- | §13.2.11 anonymous existential package types. @exists (a1:S1)
 -- ... (an:Sn). T@ is surface sugar that elaborates to the §13.2.10
@@ -4133,15 +4154,18 @@ elabExists ctx bs body sp = do
   witFields <- goWits labelOf [] (zip3 [0 ..] witNames bs)
   -- (internal label, type) oldest-first, with binder names exposed under
   -- 'this' for resolving later witness/body references
-  let witDone = [(n, v) | (n, _, _, v) <- witFields]
-  payloadFields0 <- withThis (Just (ThisType witDone)) payloadView
+  let witDone = [(n, v) | (n, _, _, v, _) <- witFields]
+  (bodyLvl, payloadFields0) <- withThis (Just (ThisType witDone)) payloadView
   -- rename binder-name 'this' projections in the payload to the internal
   -- witness labels, mirroring the witness telescope
   let payloadFields = [(fn, renameThisLabels labelOf t) | (fn, t) <- payloadFields0]
-      allFields = [(lbl, t) | (_, lbl, t, _) <- witFields] ++ payloadFields
+      allFields = [(lbl, t) | (_, lbl, t, _, _) <- witFields] ++ payloadFields
       fields = sortOn fst allFields
-      opaqs = sort [lbl | (_, lbl, _, _) <- witFields]
-  pure (CSigT opaqs (CRecordT fields), VSort 0)
+      opaqs = sort [lbl | (_, lbl, _, _, _) <- witFields]
+      -- §11.1: the existential's universe is the max over the witness
+      -- domains (each `exists a.` binds a : Type0 : Type1) and the body.
+      lvl = maximum (bodyLvl : [wl | (_, _, _, _, wl) <- witFields])
+  pure (CSigT opaqs (CRecordT fields), VSort lvl)
   where
     -- each witness field, elaborated with prior witnesses in 'this'.
     -- The accumulator threads (binderName, type) so the binder name
@@ -4149,21 +4173,22 @@ elabExists ctx bs body sp = do
     -- its 'this' projections name the internal labels instead.
     goWits _ _ [] = pure []
     goWits labelOf done ((i, nm, b) : rest) = do
-      (t0, _) <- withThis (Just (ThisType (reverse done))) $ case bType b of
+      (t0, wlvl) <- withThis (Just (ThisType (reverse done))) $ case bType b of
         Just t -> inferType ctx t
-        Nothing -> pure (CSort 0, 0) -- `exists a.` binds a : Type (§13.2.11)
+        Nothing -> pure (CSort 0, 1) -- `exists a.` binds a : Type0 : Type1 (§13.2.11)
       let t0' = renameThisLabels labelOf t0
       tV <- evalIn ctx t0'
       -- expose the witness under its binder name for later references,
       -- but record the field under its internal label
       let lbl = existsWitLabel i
-          ent = (nm, lbl, t0', tV)
+          ent = (nm, lbl, t0', tV, wlvl)
       (ent :) <$> goWits labelOf ((nm, tV) : done) rest
-    -- the payload view of the existential body (§13.2.11)
+    -- the payload view of the existential body (§13.2.11), with the
+    -- universe level the body type inhabits
     payloadView = do
-      (tTm, _) <- inferType ctx body
+      (tTm, bodyLvl) <- inferType ctx body
       tV <- forceM =<< evalIn ctx tTm
-      case tV of
+      flds <- case tV of
         -- record/signature payload: contribute its fields directly,
         -- under their source labels (source-addressable, Spec.md 13324)
         VRecordT fs -> recFields fs
@@ -4172,6 +4197,7 @@ elabExists ctx bs body sp = do
             VRecordT fs -> recFields fs
             _ -> anonPayload tTm
         _ -> anonPayload tTm
+      pure (bodyLvl, flds)
       where
         recFields fs = forM fs $ \(fn, fty) -> (,) fn <$> quoteIn ctx fty
         -- one anonymous payload slot at quantity ω under the internal
@@ -4196,7 +4222,7 @@ renameThisLabels labelOf = go
         | CGlob g <- e, g == thisG, Just lbl <- lookup f labelOf -> CProj e lbl
         | otherwise -> CProjAt (go e) f i
       CLam ic q n b -> CLam ic q n (go b)
-      CPi ic q n a b -> CPi ic q n (go a) (go b)
+      CPi ic q brw n a b -> CPi ic q brw n (go a) (go b)
       CApp ic f a -> CApp ic (go f) (go a)
       CCtor g as -> CCtor g (map go as)
       CMatch s alts -> CMatch (go s) [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
@@ -4324,7 +4350,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
         -- the goal sees solved metas (§16.1.7.1, §6.1.5). Trailing
         -- implicits (e.g. §28.2.1 proof obligations) are saturated
         -- like 'insertAllImplicits' does on the inference path.
-        VPi Impl q _ dom clo -> do
+        VPi Impl q _ _ dom clo -> do
           kindLike <- isKindLike (ctxLen ctx) dom
           m <- freshMeta
           mV <- evalIn ctx m
@@ -4334,7 +4360,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
                   then SlotKind m
                   else SlotEvid q dom m mV
           peel ty' as0 (slot : acc)
-        VPi Expl q _ dom clo@(Closure _ cloBody)
+        VPi Expl q _ _ dom clo@(Closure _ cloBody)
           | (ArgExplicit e : as) <- as0 -> do
               mid <- freshMetaId
               mV <- evalIn ctx (CMeta mid)
@@ -4417,7 +4443,7 @@ finalIsSort ctx v0 = go (ctxLen ctx) (8 :: Int) v0
       vf <- forceM v
       case vf of
         VSort _ -> pure True
-        VPi _ _ _ _ clo -> clApp clo (VRigid lvl []) >>= go (lvl + 1) (fuel - 1)
+        VPi _ _ _ _ _ clo -> clApp clo (VRigid lvl []) >>= go (lvl + 1) (fuel - 1)
         _ -> pure False
 
 -- | Apply a rewrite to every diagnostic reported since a marker.
@@ -4741,7 +4767,7 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
 elabSpineArg :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArg ctx sp fTm fTy arg rest = do
   case (arg, fTy) of
-    (ArgImplicit e, VPi Impl _ _ dom clo) -> do
+    (ArgImplicit e, VPi Impl _ _ _ dom clo) -> do
       -- §16.1.7.2: the explicit implicit argument's payload is elaborated
       -- against the selected implicit binder's demanded type 'dom'. If
       -- that elaboration fails, §3.1.4 mandates the portable
@@ -4757,7 +4783,7 @@ elabSpineArg ctx sp fTm fTy arg rest = do
     -- a type former's implicit parameters may be saturated positionally
     -- in type application ('Foo Nat (=)' for 'Foo (@0 a) (@0 p)', §7.2):
     -- an explicit argument whose type fits the implicit domain fills it
-    (ArgExplicit e, VPi Impl q _ dom clo) -> do
+    (ArgExplicit e, VPi Impl q _ _ dom clo) -> do
       former <- finalIsSort ctx fTy
       filled <-
         if not former
@@ -4788,19 +4814,19 @@ elabSpineArg ctx sp fTm fTy arg rest = do
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
           elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
-    (_, VPi Impl q _ dom clo) -> do
+    (_, VPi Impl q _ _ dom clo) -> do
       iTm <- resolveImplicitQ ctx sp q dom
       iV <- evalIn ctx iTm
       ty' <- clApp clo iV
       elabSpine ctx sp (CApp Impl fTm iTm) ty' (arg : rest)
-    (ArgExplicit e, VPi Expl q _ dom clo) -> do
+    (ArgExplicit e, VPi Expl q _ _ dom clo) -> do
       aTm <- checkExplicitArg ctx q e dom
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
     -- a '~place' marker against a callable parameter: the place value
     -- is demanded in open mode (§18.9.3, §16.1.6)
-    (ArgInout e _, VPi Expl _ _ dom clo) -> do
+    (ArgInout e _, VPi Expl _ _ _ dom clo) -> do
       aTm <- withDemand DemandOpen (check ctx e dom)
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
@@ -4809,7 +4835,7 @@ elabSpineArg ctx sp fTm fTy arg rest = do
       dom <- freshMetaV ctx
       codM <- freshMeta
       domT <- quoteIn ctx dom
-      piV <- evalIn ctx (CPi Expl QW "_a" domT codM)
+      piV <- evalIn ctx (CPi Expl QW False "_a" domT codM)
       solveMeta m piV
       elabSpine ctx sp fTm piV (ArgExplicit e : rest)
     (ArgNamedBlock items bsp, _) -> elabNamedBlock ctx fTm fTy items bsp rest
@@ -4943,12 +4969,12 @@ elabNamedBlock ctx fTm fTy items sp rest = do
     goPiNamed tm ty0 remaining = do
       ty <- forceM ty0
       case ty of
-        VPi Impl q _ dom clo -> do
+        VPi Impl q _ _ dom clo -> do
           iTm <- resolveImplicitQ ctx sp q dom
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
           goPiNamed (CApp Impl tm iTm) ty' remaining
-        VPi Expl _ nm dom clo
+        VPi Expl _ _ nm dom clo
           | Just e <- lookup nm remaining -> do
               aTm <- check ctx e dom
               aV <- evalIn ctx aTm
@@ -4971,12 +4997,12 @@ elabNamedBlock ctx fTm fTy items sp rest = do
     goSpine ctxAcc tm ty0 (a@(_, _, _) : as) = do
       ty <- forceM ty0
       case ty of
-        VPi Impl q _ dom clo -> do
+        VPi Impl q _ _ dom clo -> do
           iTm <- resolveImplicitQ ctx sp q dom
           iV <- evalIn ctx iTm
           ty' <- clApp clo iV
           goSpine ctxAcc (CApp Impl tm iTm) ty' (a : as)
-        VPi Expl _ _ dom clo -> do
+        VPi Expl _ _ _ dom clo -> do
           let (mname, isDefault, payload) = a
               argCtx = if isDefault then ctxAcc else ctx
           (aTm, aV) <- case payload of
@@ -5126,8 +5152,8 @@ suffixDomAdmits ctx traitName litHeads = goPeel (ctxLen ctx)
     goPeel lvl ty = do
       t <- forceM ty
       case t of
-        VPi Impl _ _ _ clo -> clApp clo (VRigid lvl []) >>= goPeel (lvl + 1)
-        VPi Expl _ _ dom _ -> do
+        VPi Impl _ _ _ _ clo -> clApp clo (VRigid lvl []) >>= goPeel (lvl + 1)
+        VPi Expl _ _ _ dom _ -> do
           d <- forceM dom
           case d of
             VGlobN (GName _ n) []
@@ -5762,25 +5788,25 @@ elabDotUnqualified ctx e member mname = do
         go c depth accTm ty0 = do
           ty <- forceM ty0
           case ty of
-            VPi Impl q _ dom clo -> do
+            VPi Impl q _ _ dom clo -> do
               iTm <- resolveImplicitQ c (nameSpanOf member) q dom
               iV <- evalIn c iTm
               ty' <- clApp clo iV
               go c depth (CApp Impl accTm iTm) ty'
-            VPi Expl _ _ dom clo
+            VPi Expl _ _ _ dom clo
               | depth == recvIdx -> do
                   let recvTm = shiftTerm (ctxLen c - ctxLen ctx) 0 recvTm0
                   expectType c (exprSpan e) recvTy dom
                   rV <- evalIn c recvTm
                   ty' <- clApp clo rV
                   pure (CApp Expl accTm recvTm, ty')
-            VPi Expl q nm dom clo -> do
+            VPi Expl q _ nm dom clo -> do
               let c' = bindCtx nm False dom c
               cod <- clApp clo (VRigid (ctxLen c) [])
               (body, bodyTy) <- go c' (depth + 1) (CApp Expl (shiftTerm 1 0 accTm) (CVar 0)) cod
               domTm <- quoteIn c dom
               bodyTyTm <- quoteIn c' bodyTy
-              piV <- evalIn c (CPi Expl q nm domTm bodyTyTm)
+              piV <- evalIn c (CPi Expl q False nm domTm bodyTyTm)
               pure (CLam Expl q nm body, piV)
             _ -> do
               errAt (nameSpanOf member) "E_APPLICATION_NONCALLABLE" (Just "kappa-hs.application.non-callable")
@@ -5843,7 +5869,7 @@ memberTypeOf ctx traitG member args dictTm = do
     peel ty [] = do
       t <- forceM ty
       case t of
-        VPi Impl _ _ _ clo -> do
+        VPi Impl _ _ _ _ clo -> do
           -- instantiate the dict binder with the receiver itself, so
           -- associated-static-member projections in the member type
           -- (§14.2.1) name the receiver's own members
@@ -5853,7 +5879,7 @@ memberTypeOf ctx traitG member args dictTm = do
     peel ty (a : as) = do
       t <- forceM ty
       case t of
-        VPi Impl _ _ _ clo -> do
+        VPi Impl _ _ _ _ clo -> do
           r <- clApp clo a
           peel r as
         _ -> pure t
@@ -6708,7 +6734,7 @@ varUsedAt = go
     go ix = \case
       CVar i -> i == ix
       CLam _ _ _ b -> go (ix + 1) b
-      CPi _ _ _ a b -> go ix a || go (ix + 1) b
+      CPi _ _ _ _ a b -> go ix a || go (ix + 1) b
       CApp _ f a -> go ix f || go ix a
       CCtor _ as -> any (go ix) as
       CMatch s alts -> go ix s || or [maybe False (go (ix + patBindersC p)) g || go (ix + patBindersC p) b | CaseAlt p g b <- alts]
@@ -6902,7 +6928,7 @@ elabLambda ctx0 bs0 body sp mexpected =
     go ctx (b : rest) mexp = do
       mexp' <- traverse forceM mexp
       case mexp' of
-        Just expectedPi@(VPi ic q nm dom clo)
+        Just expectedPi@(VPi ic q _ nm dom clo)
           | ic == (if bImplicit b then Impl else Expl) -> do
               -- check declared annotation against expected domain
               forM_ (binderTypeExpr b) $ \tyE -> do
@@ -6929,7 +6955,7 @@ elabLambda ctx0 bs0 body sp mexpected =
           (inner, innerTy) <- go ctx' rest Nothing
           domTm <- quoteIn ctx domV
           innerTyTm <- quoteIn ctx' innerTy
-          piV <- evalIn ctx (CPi ic q bn domTm innerTyTm)
+          piV <- evalIn ctx (CPi ic q False bn domTm innerTyTm)
           case mexp' of
             Just t -> expectType ctx sp piV t
             Nothing -> pure ()
@@ -7193,7 +7219,7 @@ elabEffParams ctx (b : bs) = do
 elabEffInterface :: Ctx -> EffectDecl -> CheckM ([(Text, Term)], Term, [EffOpInfo])
 elabEffInterface ctx eff = do
   (ctxP, params) <- elabEffParams ctx (effParams eff)
-  let ifaceKindTm = foldr (\(nm, kT) acc -> CPi Expl Q0 nm kT acc) (CSort 0) params
+  let ifaceKindTm = foldr (\(nm, kT) acc -> CPi Expl Q0 False nm kT acc) (CSort 0) params
   ops <- fmap catMaybes . forM (effOps eff) $ \op -> do
     (tyTm, _) <- inferType ctxP (eoType op)
     tyV <- evalIn ctxP tyTm >>= forceM
@@ -7203,14 +7229,14 @@ elabEffInterface ctx eff = do
     -- context so the argument/result types may reference them), then every
     -- explicit Pi as an argument, leaving @B@ as the final codomain.
     let peelImpl ctxC accI t = case t of
-          VPi Impl _ inm dom clo -> do
+          VPi Impl _ _ inm dom clo -> do
             kT <- quoteIn ctxC dom
             let ctxC' = bindCtx inm False dom ctxC
             res <- clApp clo (VRigid (ctxLen ctxC) []) >>= forceM
             peelImpl ctxC' (accI ++ [(inm, kT)]) res
           _ -> pure (ctxC, accI, t)
         peelArgs ctxC accA t = case t of
-          VPi Expl _ _ dom clo -> do
+          VPi Expl _ _ _ dom clo -> do
             argT <- quoteIn ctxC dom
             res <- clApp clo (VRigid (ctxLen ctxC) []) >>= forceM
             peelArgs ctxC (accA ++ [argT]) res
@@ -7365,7 +7391,7 @@ elabEffRow ctx entries mtail _sp = do
 -- | A non-dependent function-type value (level-safe: the codomain is
 -- captured in the closure environment).
 nonDepPiV :: Q -> Value -> Value -> Value
-nonDepPiV q dom cod = VPi Expl q "_" dom (Closure [cod] (CVar 1))
+nonDepPiV q dom cod = VPi Expl q False "_" dom (Closure [cod] (CVar 1))
 
 effTyV :: Value -> Value -> Value
 effTyV row a = VGlobN prelEff [(Expl, row), (Expl, a)]
@@ -7412,8 +7438,8 @@ effOpSelection eli op = do
       -- Under the k-th argument binder, the implicit binders are shifted by k,
       -- and argument type Aₖ (de Bruijn under the implicit binders) by k.
       effCod = CApp Expl (CApp Expl (CGlob prelEff) (rowT na)) (shiftTerm na 0 (eoiResT op))
-      argArrows = foldr (\(k, aT) acc -> CPi Expl QW "__x" (shiftTerm k 0 aT) acc) effCod (zip [0 ..] argsT)
-      tyTerm = foldr (\(nm, kT) acc -> CPi Impl Q0 nm kT acc) argArrows allParams
+      argArrows = foldr (\(k, aT) acc -> CPi Expl QW False "__x" (shiftTerm k 0 aT) acc) effCod (zip [0 ..] argsT)
+      tyTerm = foldr (\(nm, kT) acc -> CPi Impl Q0 False nm kT acc) argArrows allParams
       -- TERM: \@params @opImpls -> \x₁ … \xₙ -> __EffOp label op PAYLOAD k,
       -- where PAYLOAD is the single argument when n = 1, else the tuple.
       payload
@@ -8568,11 +8594,11 @@ ctorFieldTypes ctx _ ci scrutTy _ = do
     peel t acc = do
       t' <- forceM t
       case t' of
-        VPi Impl _ _ _ clo -> do
+        VPi Impl _ _ _ _ clo -> do
           m <- freshMetaV ctx
           r <- clApp clo m
           peel r acc
-        VPi Expl _ _ dom clo -> do
+        VPi Expl _ _ _ dom clo -> do
           m <- freshMetaV ctx
           r <- clApp clo m
           peel r (acc ++ [dom])
@@ -10515,8 +10541,8 @@ consumesLin ctx lins e0 = case e0 of
   _ -> pure [v | v <- lins, occursVar v e0]
   where
     piExplQs ty = case ty of
-      VPi Expl q _ _ clo -> q : piExplQs (peek clo)
-      VPi Impl _ _ _ clo -> piExplQs (peek clo)
+      VPi Expl q _ _ _ clo -> q : piExplQs (peek clo)
+      VPi Impl _ _ _ _ clo -> piExplQs (peek clo)
       _ -> []
     -- peeking under the binder with a dummy is enough for quantities
     peek (Closure env body) =
@@ -10623,7 +10649,7 @@ carrierPrefix ctx f preArgs = do
         then pure Nothing
         else case hTy' of
           VSort _ -> pure (Just (hTm, hTy'))
-          VPi Expl _ _ dom _ -> do
+          VPi Expl _ _ _ dom _ -> do
             domF <- forceM dom
             case domF of
               VSort _ -> pure (Just (hTm, hTy'))
@@ -10637,7 +10663,7 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
   itemV <- elemOfList listTy
   candidate <- case prefTy of
     VSort _ -> evalIn ctx prefTm
-    VPi Expl _ _ _ _ -> do
+    VPi Expl _ _ _ _ _ -> do
       itemTm <- quoteIn ctx itemV
       evalIn ctx (CApp Expl prefTm itemTm)
     _ -> freshMetaV ctx
@@ -10984,6 +11010,10 @@ checkModule st0 m =
         terminationSccPass
         flushPendingFinal
         sigSatisfactionPass
+        -- §8.5.2: now that this module's bodies (and any in-module proofs
+        -- that rely on an opaque definition unfolding) are checked, seal
+        -- the module's 'opaque' definitions against δ-unfolding downstream.
+        opaqueSealPass
       (_, st1) =
         runState
           passes
@@ -11012,6 +11042,18 @@ signedLetNames sigNames = concatMap go
       DUnsafeAssert _ inner _ -> go inner
       _ -> []
 
+-- §8.5.2: seal this module's 'opaque' term/type-alias definitions. Their
+-- defining equations were available for definitional equality while this
+-- module was checked (transparent within the defining module); now clear
+-- 'gdReducible' so no downstream module can δ-unfold them during
+-- conversion. Runtime evaluation is unaffected — 'ecRuntime' unfolds every
+-- valued global regardless of 'gdReducible'.
+opaqueSealPass :: CheckM ()
+opaqueSealPass = modify' $ \st ->
+  let mn = csModule st
+      ours = [g | g@(GName m _) <- Map.keys (csOpaqueDefs st), m == mn]
+   in st {csGlobals = foldr (Map.adjust (\gd -> gd {gdReducible = False})) (csGlobals st) ours}
+
 -- §9.1: a non-expect top-level term signature must be satisfied by
 -- exactly one matching definition in the same source file.
 sigSatisfactionPass :: CheckM ()
@@ -11033,7 +11075,7 @@ predeclarePass = \case
     exists <- gets (Map.member g . csGlobals)
     unless exists $ do
       paramTele <- elabTele emptyCtx params
-      let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) (CSort 0) paramTele
+      let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q False nm t acc) (CSort 0) paramTele
       tyV <- evalIn emptyCtx tyTm
       addGlobal g (GlobalDef tyV Nothing False)
   _ -> pure ()
@@ -11062,7 +11104,7 @@ headerPassIn siglessLets = \case
       case kv' of
         VFlex m [] -> solveMeta m (VSort 0) >> pure (CSort 0)
         _ -> quoteIn emptyCtx kv'
-    let tyTm = foldr (\(v, kT) acc -> CPi Impl Q0 v kT acc) tyTm0 (zip fvs kTms)
+    let tyTm = foldr (\(v, kT) acc -> CPi Impl Q0 False v kT acc) tyTm0 (zip fvs kTms)
     tyV <- evalIn emptyCtx tyTm
     g <- ownName n
     exists <- gets (Map.member g . csGlobals)
@@ -11100,11 +11142,15 @@ headerPassIn siglessLets = \case
         tyV <- aliasKind params
         mv <- freshMetaV emptyCtx
         addGlobal g (GlobalDef tyV (Just mv) True)
-  DTypeAlias _ n params _ (Just rhs) sp -> do
+  DTypeAlias mods n params _ (Just rhs) sp -> do
     -- alias: a definition at a universe type
     (tm, ty) <- elabAliasBody params rhs
     g <- ownName n
     noteDefinition g sp
+    -- §8.5.2: an 'opaque' type alias is transparent only within its
+    -- defining module; sealed at module end ('opaqueSealPass').
+    when (dmOpaque mods) $
+      modify' $ \st -> st {csOpaqueDefs = Map.insert g () (csOpaqueDefs st)}
     -- §22.2: remember the written field order of a record alias for
     -- derivation-shape reflection (core records are canonicalized)
     case rhs of
@@ -11153,7 +11199,7 @@ aliasKind :: [Binder] -> CheckM Value
 aliasKind params = do
   -- (p1 : K1) -> ... -> Type
   let go [] = CSort 0
-      go (b : rest) = CPi (if bImplicit b then Impl else Expl) Q0 (maybe "_" nameText (bName b)) (CSort 0) (go rest)
+      go (b : rest) = CPi (if bImplicit b then Impl else Expl) Q0 False (maybe "_" nameText (bName b)) (CSort 0) (go rest)
   evalIn emptyCtx (go params)
 
 elabAliasBody :: [Binder] -> Expr -> CheckM (Term, Value)
@@ -11170,7 +11216,7 @@ elabAliasBody params rhs = do
       offsets = Map.fromList (zip unsolved [0 :: Int ..])
       replaceMetas d t = case t of
         CMeta m | Just i <- Map.lookup m offsets -> CVar (d + (k - 1 - i))
-        CPi ic q nm a b -> CPi ic q nm (replaceMetas d a) (replaceMetas (d + 1) b)
+        CPi ic q brw nm a b -> CPi ic q brw nm (replaceMetas d a) (replaceMetas (d + 1) b)
         CLam ic q nm b -> CLam ic q nm (replaceMetas (d + 1) b)
         CApp ic f a -> CApp ic (replaceMetas d f) (replaceMetas d a)
         other -> other
@@ -11179,7 +11225,7 @@ elabAliasBody params rhs = do
           then (tm1, kindTm1)
           else
             ( foldr (\_ b -> CLam Impl Q0 "__k" b) (replaceMetas 0 tm1) unsolved
-            , foldr (\_ b -> CPi Impl Q0 "__k" (CSort 0) b) (replaceMetas 0 kindTm1) unsolved
+            , foldr (\_ b -> CPi Impl Q0 False "__k" (CSort 0) b) (replaceMetas 0 kindTm1) unsolved
             )
   tyV <- evalIn emptyCtx kindTm
   pure (tm, tyV)
@@ -11194,7 +11240,7 @@ elabAliasBody params rhs = do
         VSort _ -> pure (tm0, CSort 0)
         VFlex m [] -> solveMeta m (VSort 0) >> pure (tm0, CSort 0)
         -- the §18.1 'IO a' accommodation of inferType
-        VPi Expl _ _ _ _
+        VPi Expl _ _ _ _ _
           | CApp Expl (CGlob g) argTm <- tm0
           , g == prelIO -> do
               m <- freshMeta
@@ -11216,7 +11262,7 @@ elabAliasBody params rhs = do
           ic = if bImplicit b then Impl else Expl
           ctx' = bindCtx nm False domV ctx
       (tm, innerK) <- go ctx' rest
-      pure (CLam ic Q0 nm tm, CPi ic Q0 nm domTm innerK)
+      pure (CLam ic Q0 nm tm, CPi ic Q0 False nm domTm innerK)
 
 headerData :: DataDecl -> Span -> CheckM ()
 headerData (DataDecl n params mkind ctors) sp = do
@@ -11233,7 +11279,7 @@ headerData (DataDecl n params mkind ctors) sp = do
     kindV <- evalIn ctx kindTm
     expectType ctx (exprSpan kindExpr) kindV (VSort 0)
   let sortT = CSort 0
-  let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) sortT paramTele
+  let tyTm = foldr (\(ic, q, nm, t) acc -> CPi ic q False nm t acc) sortT paramTele
   tyV <- evalIn emptyCtx tyTm
   addGlobal g (GlobalDef tyV Nothing False)
   ctorGs <- forM ctors $ \(CtorDecl cn binders mgadt _) -> do
@@ -11255,7 +11301,7 @@ headerData (DataDecl n params mkind ctors) sp = do
                 (CGlob g)
                 (reverse [length fieldsTele .. length fieldsTele + length paramTele - 1])
             full =
-              foldr (\(ic, q, nm, t) acc -> CPi ic q nm t acc) resultT
+              foldr (\(ic, q, nm, t) acc -> CPi ic q False nm t acc) resultT
                 ([(Impl, Q0, nm, t) | (_, _, nm, t) <- paramTele] ++ fieldsTele)
         pure full
     let fields = ctorFieldsOf binders mgadt
@@ -11364,10 +11410,10 @@ posCtorFieldTypes :: Int -> Term -> [PosField]
 posCtorFieldTypes pc = peelParams pc
   where
     peelParams 0 t = peelFields pc t
-    peelParams k (CPi _ _ _ _ b) = peelParams (k - 1) b
+    peelParams k (CPi _ _ _ _ _ b) = peelParams (k - 1) b
     peelParams _ _ = [] -- malformed; nothing to check
     peelFields depth = \case
-      CPi _ _ _ a b -> PosField depth a : peelFields (depth + 1) b
+      CPi _ _ _ _ a b -> PosField depth a : peelFields (depth + 1) b
       _ -> [] -- the result head 'T params' carries no fields
 
 -- | Fixed-point iteration of the group's parameter-positivity signatures
@@ -11434,7 +11480,7 @@ posWalk groupNames sig occurs isBareTarget = go
       | otherwise = case posSpine t of
           -- function/dependent-function type 'X -> U' / '(x : X) -> U':
           -- target absent from the domain and strictly positive in 'U'
-          (CPi _ _ _ a b, []) ->
+          (CPi _ _ _ _ a b, []) ->
             not (occurs shift a) && go (shift + 1) b
           -- application 'F A1 .. An'
           (hd, args@(_ : _)) ->
@@ -11499,7 +11545,7 @@ mentionsGroup groupNames = go
       CGlob g -> g `Set.member` groupNames
       CVar _ -> False
       CLam _ _ _ b -> go b
-      CPi _ _ _ a b -> go a || go b
+      CPi _ _ _ _ a b -> go a || go b
       CApp _ f a -> go f || go a
       CSort _ -> False
       CLit _ -> False
@@ -11532,7 +11578,7 @@ mentionsVar = go
       CVar i -> i == v
       CGlob _ -> False
       CLam _ _ _ b -> go (v + 1) b
-      CPi _ _ _ a b -> go v a || go (v + 1) b
+      CPi _ _ _ _ a b -> go v a || go (v + 1) b
       CApp _ f a -> go v f || go v a
       CSort _ -> False
       CLit _ -> False
@@ -11624,7 +11670,7 @@ elabUnderParams tele e = do
   ctx <- teleCtx tele
   (tm, _) <- inferType ctx e
   -- close over params as implicit Pi
-  let closed = foldr (\(_, _, nm, t) acc -> CPi Impl Q0 nm t acc) tm tele
+  let closed = foldr (\(_, _, nm, t) acc -> CPi Impl Q0 False nm t acc) tm tele
   pure (closed, VSort 0)
 
 headerTrait :: TraitDecl -> Span -> CheckM ()
@@ -11633,7 +11679,7 @@ headerTrait (TraitDecl supers n params members) sp = do
   noteDefinition g sp
   paramTele <- elabTele emptyCtx params
   -- trait constructor: params -> Type
-  let tyTm = foldr (\(_, _, nm, t) acc -> CPi Expl Q0 nm t acc) (CSort 0) paramTele
+  let tyTm = foldr (\(_, _, nm, t) acc -> CPi Expl Q0 False nm t acc) (CSort 0) paramTele
   tyV <- evalIn emptyCtx tyTm
   pctx <- teleCtx paramTele
   -- supertrait premises (§14.1.4): their evidence is carried as
@@ -11667,7 +11713,7 @@ headerTrait (TraitDecl supers n params members) sp = do
           case kv' of
             VFlex m [] -> solveMeta m (VSort 0) >> pure (CSort 0)
             _ -> quoteIn pctx kv'
-        let mtyTm = foldr (\(v, kT) b -> CPi Impl Q0 v kT b) mtyTm0 (zip fvs kTms)
+        let mtyTm = foldr (\(v, kT) b -> CPi Impl Q0 False v kT b) mtyTm0 (zip fvs kTms)
         mtyV <- evalIn pctx mtyTm
         pure (mtyTm, mtyV)
       goMembers _acc done [] = pure (reverse done)
@@ -11718,8 +11764,8 @@ headerTrait (TraitDecl supers n params members) sp = do
             (reverse [0 .. length paramTele - 1])
         projTy =
           foldr
-            (\(_, _, nm, t) acc -> CPi Impl Q0 nm t acc)
-            (CPi Impl QW "__d" dictTy (substThisTm (CVar 0) (shiftTerm 1 0 mtyTm)))
+            (\(_, _, nm, t) acc -> CPi Impl Q0 False nm t acc)
+            (CPi Impl QW False "__d" dictTy (substThisTm (CVar 0) (shiftTerm 1 0 mtyTm)))
             paramTele
         projTm =
           foldr
@@ -11763,7 +11809,7 @@ coreUsesVar0 = go 0
       CVar i -> i == d
       CGlob _ -> False
       CLam _ _ _ b -> go (d + 1) b
-      CPi _ _ _ a b -> go d a || go (d + 1) b
+      CPi _ _ _ _ a b -> go d a || go (d + 1) b
       CApp _ f a -> go d f || go d a
       CSort _ -> False
       CLit _ -> False
@@ -12042,7 +12088,7 @@ elabActivePatternDecl mods ld sp = do
         goU expl lvl v = do
           vf <- forceM v
           case vf of
-            VPi ic _ _ _ clo -> do
+            VPi ic _ _ _ _ clo -> do
               inner <- clApp clo (VRigid lvl [])
               goU (if ic == Expl then expl + 1 else expl) (lvl + 1) inner
             _ -> pure (expl, vf)
@@ -12091,7 +12137,7 @@ elabProjectionDecl _mods n binders resTyE body sp = do
       rootsTm = CRecordT [(nm, t) | (nm, t, _) <- placesLex]
       placeNames = [nm | (nm, _, _) <- places0]
       lamsOrd t = foldr (\(q, nm, _) acc -> CLam Expl q nm acc) t ordTele
-      pisOrd t = foldr (\(q, nm, ty) acc -> CPi Expl q nm ty acc) t ordTele
+      pisOrd t = foldr (\(q, nm, ty) acc -> CPi Expl q False nm ty acc) t ordTele
       app2 h a b = CApp Expl (CApp Expl (CGlob (gPrel h)) a) b
   case body of
     ProjSelector bodyE0 -> do
@@ -12212,7 +12258,7 @@ placesToThis n = go 0
         | otherwise -> t
       CGlob _ -> t
       CLam ic q nm b -> CLam ic q nm (go (d + 1) b)
-      CPi ic q nm a b -> CPi ic q nm (go d a) (go (d + 1) b)
+      CPi ic q brw nm a b -> CPi ic q brw nm (go d a) (go (d + 1) b)
       CApp ic f a -> CApp ic (go d f) (go d a)
       CSort _ -> t
       CLit _ -> t
@@ -12270,12 +12316,18 @@ registerProjection g coreTy defTm pj = do
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 -- Signature-governed functions are recorded for the SCC termination pass;
 -- non-recursive values still become reducible immediately.
-elabLetDecl _ (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
+elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   -- resolve any goals postponed from signature elaboration first, so the
   -- signature's value is canonical while checking the body
   flushPending
   g <- ownName n
   noteDefinition g sp
+  -- §8.5.2: an 'opaque' term definition keeps its equation available for
+  -- definitional equality inside this module, but it is sealed
+  -- (gdReducible cleared) at module end so other modules treat it as an
+  -- opaque constant at its declared type.
+  when (dmOpaque mods) $
+    modify' $ \stM -> stM {csOpaqueDefs = Map.insert g () (csOpaqueDefs stM)}
   -- §7.4: record receiver-marked explicit binder positions (method
   -- sugar inserts the receiver at the unique such binder)
   let recvIdxs =
@@ -12667,12 +12719,12 @@ measureCtxFromSig sigTy binders = go emptyCtx sigTy binders
     go ctx ty0 bs@(b : rest) = do
       ty <- forceM ty0
       case ty of
-        VPi Impl _ nm dom clo
+        VPi Impl _ _ nm dom clo
           | not (bImplicit b)
           , (nameText <$> bName b) /= Just nm -> do
               cod <- clApp clo (VRigid (ctxLen ctx) [])
               go (bindCtx nm True dom ctx) cod bs
-        VPi _ _ nm dom clo -> do
+        VPi _ _ _ nm dom clo -> do
           let bn = fromMaybe nm (nameText <$> bName b)
           cod <- clApp clo (VRigid (ctxLen ctx) [])
           go (bindCtx bn (bImplicit b) dom ctx) cod rest
@@ -12798,7 +12850,7 @@ relationExpectedType ctx measureTy flavor = do
         RelationReturnsType -> CSort 0
         RelationReturnsBool -> CGlob prelBool
         RelationUnknown -> CSort 0
-      tyTm = CPi Expl QW "_x" mTyTm (CPi Expl QW "_y" (shiftTerm 1 0 mTyTm) cod)
+      tyTm = CPi Expl QW False "_x" mTyTm (CPi Expl QW False "_y" (shiftTerm 1 0 mTyTm) cod)
   evalIn ctx tyTm
 
 -- | Evidence that an explicit `by R` relation is well-founded.  The current
@@ -12899,7 +12951,7 @@ collectFunEdges funMap src =
                 edge = CallEdge (tfName src) (pcTarget pc) d facts boolFacts (pcArgs pc) sub
             pure (Just [edge])
       CLam _ _ _ b -> go (d + 1) sub ho esc facts boolFacts b
-      CPi _ _ _ a b -> joinEdges <$> go d sub ho esc facts boolFacts a <*> go (d + 1) sub ho esc facts boolFacts b
+      CPi _ _ _ _ a b -> joinEdges <$> go d sub ho esc facts boolFacts a <*> go (d + 1) sub ho esc facts boolFacts b
       CLet _ _ a b c -> do
         ra <- go d sub ho esc facts boolFacts a
         bNorm <-
@@ -13025,7 +13077,7 @@ collectFunEdges funMap src =
       CThunkE {} -> pure (Just [])
       CLazyE {} -> pure (Just [])
       CQuote {} -> pure (Just [])
-      CPi _ _ _ a b -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts a <*> collectStrictSubtermEdges (d + 1) sub ho facts boolFacts b
+      CPi _ _ _ _ a b -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts a <*> collectStrictSubtermEdges (d + 1) sub ho facts boolFacts b
       CLet _ _ a b c ->
         join3Edges
           <$> collectStrictSubtermEdges d sub ho facts boolFacts a
@@ -13154,7 +13206,7 @@ collectFunEdges funMap src =
       CGlob g -> Set.member g sccNames
       CVar i -> Map.member (d - 1 - i) ho || Set.member (d - 1 - i) esc
       CLam _ _ _ b -> containsSccReference (d + 1) ho esc b
-      CPi _ _ _ a b -> containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b
+      CPi _ _ _ _ a b -> containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b
       CApp _ f a -> containsSccReference d ho esc f || containsSccReference d ho esc a
       CCtor _ as -> any (containsSccReference d ho esc) as
       CMatch s alts ->
@@ -13875,7 +13927,7 @@ checkAgainstSig retName sigTy binders body sp = do
     go ctx ty0 (b : rest) = do
       ty <- forceM ty0
       case ty of
-        VPi Impl q nm dom clo
+        VPi Impl q _ nm dom clo
           | not (bImplicit b)
           , (nameText <$> bName b) /= Just nm ->
               -- skip implicit binder: bind it for the body (an explicit
@@ -13883,7 +13935,7 @@ checkAgainstSig retName sigTy binders body sp = do
               -- implicit parameter, e.g. `let f r = …` against
               -- `f : forall (r : T). …`)
               skipImplicit ctx q nm dom clo (b : rest)
-        VPi Impl q nm dom clo
+        VPi Impl q _ nm dom clo
           | bImplicit b
           , nm /= "_"
           , (nameText <$> bName b) /= Just nm
@@ -13904,7 +13956,7 @@ checkAgainstSig retName sigTy binders body sp = do
               if ok && nAfter == nBefore
                 then claim ctx Impl q nm dom clo b rest
                 else skipImplicit ctx q nm dom clo (b : rest)
-        VPi ic q nm dom clo -> claim ctx ic q nm dom clo b rest
+        VPi ic q _ nm dom clo -> claim ctx ic q nm dom clo b rest
         _ -> do
           errAt sp "E_SIGNATURE_ARITY" (Just "kappa-hs.type.signature-arity")
             "definition has more parameters than its signature type"
@@ -14033,7 +14085,7 @@ instCheckHeadArgs _ _ [] = pure []
 instCheckHeadArgs ctx ty (e : es) = do
   t <- forceM ty
   case t of
-    VPi Expl _ _ dom clo -> do
+    VPi Expl _ _ _ dom clo -> do
       tm <- check ctx e dom
       v <- evalIn ctx tm
       rest <- clApp clo v >>= \cod -> instCheckHeadArgs ctx cod es
@@ -14052,9 +14104,9 @@ instDictTy traitG fvs premTms argTms = do
   let dictHead = foldl (\f a -> CApp Expl f a) (CGlob traitG) argTms
       withPrems = go (0 :: Int) premTms
       go _ [] = dictHead
-      go k (p : ps) = CPi Impl QW "__p" (shiftTerm k 0 p) (go (k + 1) ps)
+      go k (p : ps) = CPi Impl QW False "__p" (shiftTerm k 0 p) (go (k + 1) ps)
       nest [] = withPrems
-      nest (v : vs) = CPi Impl Q0 v (CSort 0) (nest vs)
+      nest (v : vs) = CPi Impl Q0 False v (CSort 0) (nest vs)
   evalIn emptyCtx (nest fvs)
 
 elabInstance :: InstanceDecl -> Span -> CheckM ()
@@ -14164,7 +14216,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
         peelArgs ty [] = do
           t <- forceM ty
           case t of
-            VPi Impl _ _ _ clo -> do
+            VPi Impl _ _ _ _ clo -> do
               -- the dict binder: instantiate with the partial dictionary
               -- being defined, so member types that project earlier
               -- members — associated static members above all — see the
@@ -14175,7 +14227,7 @@ elabInstance (InstanceDecl premises hd members) sp = do
         peelArgs ty (a : as) = do
           t <- forceM ty
           case t of
-            VPi Impl _ _ _ clo -> do
+            VPi Impl _ _ _ _ clo -> do
               r <- clApp clo a
               peelArgs r as
             _ -> pure t
@@ -14189,12 +14241,12 @@ elabInstance (InstanceDecl premises hd members) sp = do
       t <- forceM ty
       case (binders, t) of
         ([], _) -> check ctx body t
-        (b : rest, VPi Impl q nm dom clo)
+        (b : rest, VPi Impl q _ nm dom clo)
           | not (bImplicit b) -> do
               let ctx' = bindCtx nm True dom ctx
               cod <- clApp clo (VRigid (ctxLen ctx) [])
               CLam Impl q nm <$> checkLambdaAgainst ctx' cod (b : rest) body msp
-        (b : rest, VPi ic q nm dom clo) -> do
+        (b : rest, VPi ic q _ nm dom clo) -> do
           let bn = fromMaybe nm (nameText <$> bName b)
               ctx' = bindCtx bn (bImplicit b) dom ctx
           cod <- clApp clo (VRigid (ctxLen ctx) [])

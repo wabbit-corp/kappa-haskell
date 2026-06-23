@@ -1,0 +1,39 @@
+module main
+
+-- Source issue: ghc#26714
+-- Kappa analogue: an instance premise that carries the needed supertrait should satisfy the instance head's superclass obligation.
+-- Spec: §12.1.1, §12.3.1
+trait Semigroup a =
+    append : a -> a -> a
+
+trait Semigroup a => Monoid a =
+    neutral : a
+
+trait Monoid a => Valid a =
+    witness : Unit
+
+trait Monoid a => Expose a =
+    expose : Unit -> Unit
+
+instance Semigroup Int =
+    let append x y = x + y
+
+instance Monoid Int =
+    let neutral = 0
+
+instance Valid Int =
+    let witness = ()
+
+instance Valid a => Expose a =
+    let expose () = ()
+
+useExpose : (@_ : Expose Int) -> Unit -> Unit
+let useExpose () = expose ()
+
+result : Unit
+let result = useExpose ()
+
+--! assertNoErrors
+--! assertType useExpose (@_ : Expose Int) -> Unit -> Unit
+--! assertType result Unit
+--! assertEval result ()

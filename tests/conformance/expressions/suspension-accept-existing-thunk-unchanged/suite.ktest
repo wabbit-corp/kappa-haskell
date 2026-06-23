@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType existing Thunk Int
+--! assertType ok Int

@@ -1,0 +1,5 @@
+--! mode compile
+--! packageMode
+--! requires capability pipelineTrace
+--! assertNoErrors
+--! assertTraceCount lowerKBackendIR module >= 1

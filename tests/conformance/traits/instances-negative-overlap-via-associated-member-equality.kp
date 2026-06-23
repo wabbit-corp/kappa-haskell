@@ -1,0 +1,18 @@
+module main
+
+-- Source issue: chalk#515
+-- Spec: §12.3, §12.3.1, §15.2.1
+trait Container a =
+    Item : Type
+    wrap : a -> Item
+
+instance Container Int =
+    let Item = String
+    let wrap x = primitiveIntToString x
+
+instance Container Int =
+    let Item = Bool
+    let wrap x = x == 0
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch overlap|coher|ambig|instance

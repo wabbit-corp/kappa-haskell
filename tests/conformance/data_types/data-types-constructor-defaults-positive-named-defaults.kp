@@ -1,0 +1,41 @@
+module main
+
+-- Source issues: KT-265, KT-372
+-- Spec: §11.1, §11.1.1
+data Rect : Type =
+    Rect {
+        width : Int,
+        height : Int = width + 1
+    }
+
+describe : Rect -> Int
+let describe rect =
+    match rect
+      case Rect width height -> width * 10 + height
+
+defaulted : Rect
+let defaulted = Rect { width = 4 }
+
+explicit : Rect
+let explicit = Rect { height = 9, width = 2 }
+
+viaBinding : Rect
+let viaBinding =
+    block
+        let MkRect = Rect
+        MkRect { width = 5 }
+
+defaultedResult : Int
+let defaultedResult = describe defaulted
+
+explicitResult : Int
+let explicitResult = describe explicit
+
+viaBindingResult : Int
+let viaBindingResult = describe viaBinding
+
+--! assertNoErrors
+--! assertType defaulted Rect
+--! assertEval defaultedResult 45
+--! assertEval explicitResult 29
+--! assertEval viaBindingResult 56

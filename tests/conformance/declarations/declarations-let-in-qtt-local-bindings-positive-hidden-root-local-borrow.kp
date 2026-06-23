@@ -1,0 +1,11 @@
+module main
+
+project : (pair : (x : Int, y : Int)) -> (x : Int, y : Int)
+let project pair = pair
+
+demo : (pair : (x : Int, y : Int)) -> Int
+let demo pair =
+    let & (x = bx, y = by) = project pair
+    bx + by
+
+--! assertNoErrors

@@ -1,0 +1,30 @@
+module main
+
+-- Opus cycle B: string append via `instance Monoid String` (usability floor;
+-- a disclosed usability extension — NOT spec-mandated, but consistent with the
+-- spec's exact-scalar-sequence string semantics: byte-concatenating two valid
+-- UTF-8 strings preserves scalar order without normalization). Implemented as a
+-- `stringAppend` intrinsic across all four runtimes (interpreter, CLR runtime,
+-- hosted runtime, zig C runtime + IL emitter).
+
+greet : String
+let greet = "hello" ++ ", " ++ "world"
+
+leftIdentity : String
+let leftIdentity = "" ++ "x"
+
+rightIdentity : String
+let rightIdentity = "y" ++ ""
+
+empties : String
+let empties = "" ++ ""
+
+main : UIO Unit
+let main = printlnString greet
+
+--! mode check
+--! assertNoErrors
+--! assertEval greet "hello, world"
+--! assertEval leftIdentity "x"
+--! assertEval rightIdentity "y"
+--! assertEval empties ""

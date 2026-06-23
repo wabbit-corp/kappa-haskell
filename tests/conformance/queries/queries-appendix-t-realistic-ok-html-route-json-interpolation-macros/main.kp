@@ -1,0 +1,15 @@
+module main
+
+import dsl.web.*
+
+userRoute : Int -> Route
+let userRoute userId =
+    route"/users/${userId : path}/orders"
+
+link : Int -> String -> Html
+let link userId label =
+    html#"<a href=#{userRoute userId : attr}>#{label : text}</a>"#
+
+payload : Int -> String -> JsonTemplate
+let payload userId label =
+    json#"{ "id": #{userId : number}, "label": #{label : string} }"#

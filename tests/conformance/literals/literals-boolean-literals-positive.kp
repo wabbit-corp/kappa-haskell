@@ -1,0 +1,12 @@
+module main
+
+truth : Bool
+let truth = True
+
+falsehood : Bool
+let falsehood = False
+
+--! assertNoErrors
+--! assertType truth Bool
+--! assertType falsehood Bool
+--! x-assertDeclDescriptors signature truth, let truth, signature falsehood, let falsehood

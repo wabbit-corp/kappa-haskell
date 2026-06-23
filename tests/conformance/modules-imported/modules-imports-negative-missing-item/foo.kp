@@ -1,0 +1,4 @@
+module foo
+
+present : Int
+let present = 42

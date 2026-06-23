@@ -1,0 +1,40 @@
+module main
+
+-- Source issue: hylo#1582
+-- Spec: §12.2.1, §12.3
+trait P a =
+    Element : Type
+    fromP : a -> Element
+
+trait Q a =
+    Element : Type
+    fromQ : a -> Element
+
+instance P Int =
+    let Element = String
+    let fromP x = primitiveIntToString x
+
+instance Q Int =
+    let Element = Bool
+    let fromQ x = True
+
+useBoth : (@p : P Int) -> (@q : Q Int) -> (left : p.Element, right : q.Element)
+let useBoth (@p : P Int) (@q : Q Int) =
+    (left = p.fromP 42, right = q.fromQ 42)
+
+leftResult : String
+let leftResult =
+    let dict = summon (P Int)
+    dict.fromP 7
+
+rightResult : Bool
+let rightResult =
+    let dict = summon (Q Int)
+    dict.fromQ 7
+
+--! assertNoErrors
+--! assertType useBoth (@p : P Int) -> (@q : Q Int) -> (left : p.Element, right : q.Element)
+--! assertType leftResult String
+--! assertType rightResult Bool
+--! assertEval leftResult "7"
+--! assertEval rightResult True

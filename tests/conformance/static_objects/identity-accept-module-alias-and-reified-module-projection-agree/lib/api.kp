@@ -1,0 +1,4 @@
+module lib.api
+
+x : Int
+let x = 1

@@ -1,0 +1,24 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+data File : Type =
+    Handle Int
+
+let consume (1 f : File) = unsafeConsume f
+let borrow (& f : File) = ()
+let borrowScoped (&[s] f : File) = ()
+let erase (0 proof : Unit) = ()
+let share (ω x : Int) = x
+let maybe (<=1 x : Int) = x
+let atLeast (>=1 x : Int) = x
+
+--! assertNoErrors
+--! assertDeclKinds data, let, let, let, let, let, let, let
+--! assertParameterQuantities consume 1
+--! assertParameterQuantities borrow &
+--! assertParameterQuantities borrowScoped &[s]
+--! assertParameterQuantities erase 0
+--! assertParameterQuantities share ω
+--! assertParameterQuantities maybe <=1
+--! assertParameterQuantities atLeast >=1

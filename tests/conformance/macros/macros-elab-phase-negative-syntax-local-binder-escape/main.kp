@@ -1,0 +1,10 @@
+module main
+
+bad : Int
+let bad =
+    block
+        let s : Syntax Int =
+            block
+                let y = 1
+                '{ y }
+        $(pure s)

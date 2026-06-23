@@ -1,0 +1,8 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+import std.unicode.*
+
+--! assertDiagnosticNext error E_TYPE_MISMATCH
+let bad : String = decodeUtf8 (utf8Bytes "a")

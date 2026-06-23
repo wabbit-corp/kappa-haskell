@@ -1,0 +1,6 @@
+module main
+
+affineDrop : (<=1 x : Int) -> Int
+let affineDrop (<=1 x : Int) : Int = 0
+
+--! assertNoErrors

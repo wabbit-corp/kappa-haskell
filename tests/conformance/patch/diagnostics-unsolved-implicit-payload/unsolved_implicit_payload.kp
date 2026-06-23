@@ -1,0 +1,14 @@
+module unsolved_implicit_payload
+
+import std.hash.(type HashCode)
+
+trait Show (a : Type) =
+    show : a -> String
+
+needsShow : Show a => a -> String
+let needsShow x = show x
+
+bad : HashCode -> String
+let bad h = needsShow h
+
+-- HashCode is intentionally not Showable under the HashCode patch.

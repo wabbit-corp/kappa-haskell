@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+value : Int
+let value = 1
+
+bad : Int
+let bad = module value

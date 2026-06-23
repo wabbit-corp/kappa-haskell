@@ -1,0 +1,16 @@
+@PrivateByDefault module main
+
+data Buffer : Type =
+    Buffer
+
+type WithBuf : Type = (1 buf : Buffer, len : Nat)
+
+process : (1 b : Buffer) -> Buffer
+let process (1 b : Buffer) : Buffer = b
+
+restore : (1 r : WithBuf) -> WithBuf
+let restore (1 r : WithBuf) : WithBuf =
+    block
+        let old = r.buf
+        let new = process old
+        r.{ buf = new }

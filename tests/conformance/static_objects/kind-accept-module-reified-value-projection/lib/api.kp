@@ -1,0 +1,4 @@
+module lib.api
+
+answer : Int
+let answer = 42

@@ -1,0 +1,12 @@
+module main
+
+import model.data.*
+import dsl.sql.*
+
+bad : SqlQuery (id : Int)
+let bad =
+    SqlQuery [
+        for u in users
+        left join o in orders on o.userId == u.id into customerOrders
+        yield (id = o.id)
+    ]

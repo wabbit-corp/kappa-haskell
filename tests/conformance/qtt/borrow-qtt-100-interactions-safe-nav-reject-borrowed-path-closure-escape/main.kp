@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+type Box : Type = (value : Int)
+type Holder : Type = (maybe : Option Box)
+
+bad : (& h : Holder) -> Unit -> Option Int
+let bad (& h : Holder) : Unit -> Option Int =
+    \() -> h.maybe?.value

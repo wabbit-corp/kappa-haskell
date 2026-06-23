@@ -1,0 +1,18 @@
+module main
+
+-- Source issues: KT-202, KT-214
+-- Spec: §7.1.3C
+scale : (value : Int) -> (factor : Int) -> Int
+let scale value factor = value * factor
+
+missing : Int
+let missing = scale { value = 3 }
+
+extra : Int
+let extra = scale { value = 3, factor = 4, offset = 1 }
+
+duplicate : Int
+let duplicate = scale { value = 3, value = 4, factor = 2 }
+
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH, E_TYPE_EQUALITY_MISMATCH, E_TYPE_EQUALITY_MISMATCH

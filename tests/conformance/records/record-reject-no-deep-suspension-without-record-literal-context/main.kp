@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+type Delayed = (thunk value : Int, label : String)
+
+readDelayed : Delayed -> Int
+let readDelayed (d : Delayed) : Int = force d.value
+type RawDelayed = (value : Int, label : String)
+
+raw : RawDelayed
+let raw : RawDelayed = (value = 1, label = "raw")
+
+bad : Int
+let bad : Int = readDelayed raw

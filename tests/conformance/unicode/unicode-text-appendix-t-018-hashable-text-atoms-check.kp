@@ -1,0 +1,18 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.hash.*
+import std.unicode.*
+
+let byteHash : HashCode = hashWith defaultHashSeed b'\x61'
+let bytesHash : HashCode = hashWith defaultHashSeed (utf8Bytes "a")
+let scalarHash : HashCode = hashWith defaultHashSeed 'a'
+let graphemeHash : HashCode = hashWith defaultHashSeed g'a'
+let stringHash : HashCode = hashWith defaultHashSeed "a"
+
+--! assertType byteHash HashCode
+--! assertType bytesHash HashCode
+--! assertType scalarHash HashCode
+--! assertType graphemeHash HashCode
+--! assertType stringHash HashCode

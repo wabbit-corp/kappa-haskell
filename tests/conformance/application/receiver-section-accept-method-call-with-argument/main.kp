@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+
+let plus (this n : Int) (delta : Int) : Int = n + delta
+
+addFive : Int -> Int
+let addFive : Int -> Int = (.plus 5)
+
+ok : Int
+let ok : Int = addFive 37

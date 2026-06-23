@@ -1,0 +1,19 @@
+module main
+
+-- Source issue: KT-516
+-- Spec: §7.4, §7.4.1
+choose : Int -> Int
+let choose a =
+    let b = 3
+    let c = 4
+    if a < 2 then
+        a
+    elif a > 2 then
+        b
+    elif a == c then
+        c
+    else
+        5
+
+--! assertNoErrors
+--! assertType choose Int -> Int

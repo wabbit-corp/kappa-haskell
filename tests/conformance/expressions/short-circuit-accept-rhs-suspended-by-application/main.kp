@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+both : Bool
+let both : Bool = True && False
+
+either : Bool
+let either : Bool = False || True

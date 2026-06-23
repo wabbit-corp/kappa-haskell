@@ -1,0 +1,119 @@
+module main
+
+-- Opus SO-2 pin: a nullary constructor that is NOT the first alternative — and any
+-- constructor written in leading-pipe style — must be usable as a bare VALUE / function
+-- argument, not only in patterns. Before the fix, `SplitTopLevelConstructorAlternatives`
+-- left the separating `|` attached to such a constructor's tokens; field extraction then
+-- mis-read the `|` as the constructor name, recording a phantom `Ctor -> T` scheme, so the
+-- constructor was wrongly rejected as a value (e.g. the spec's own L8697
+-- `data Tree a = Branch ... | Leaf` with `Leaf` used as a value). Patterns always worked
+-- (name/arity were computed on a path that stripped the `|`); only the value-level scheme
+-- was wrong. Fix: exclude the `|` separator from the next constructor group (Parser.fs).
+
+-- P1: ordinary pipe-separated; Red (non-first nullary) and Green (last nullary) as args.
+data Color = Shade Int | Red | Green
+
+colorName : Color -> String
+let colorName c =
+    match c
+      case Shade n -> "shade"
+      case Red -> "red"
+      case Green -> "green"
+
+redName : String
+let redName = colorName Red
+
+greenName : String
+let greenName = colorName Green
+
+-- G1 regression: the first constructor (non-nullary) as a value still works.
+shadeName : String
+let shadeName = colorName (Shade 7)
+
+-- P2: the spec's L8697 `data Tree a = Leaf | Branch (Tree a) a (Tree a)` (Leaf written
+-- first there); here Leaf is the equally-valid SECOND (nullary) alternative, used as a value.
+data Tree a = Branch (Tree a) a (Tree a) | Leaf
+
+treeTag : Tree Int -> String
+let treeTag t =
+    match t
+      case Branch l v r -> "branch"
+      case Leaf -> "leaf"
+
+leafTag : String
+let leafTag = treeTag Leaf
+
+-- P3: leading-pipe style; None (leading-pipe first) as a value.
+data Opt =
+  | None
+  | Some Int
+
+optTag : Opt -> String
+let optTag o =
+    match o
+      case None -> "none"
+      case Some n -> "some"
+
+noneTag : String
+let noneTag = optTag None
+
+-- P4: record-style alternative followed by a nullary alternative; Point as a value.
+data Shape = Circle { radius : Int } | Point
+
+shapeTag : Shape -> String
+let shapeTag s =
+    match s
+      case Circle fields -> "circle"
+      case Point -> "point"
+
+pointTag : String
+let pointTag = shapeTag Point
+
+-- G2 regression: newline-style declaration; non-first nullary as a value still works.
+data Dir =
+    North Int
+    South
+    East
+
+dirTag : Dir -> String
+let dirTag d =
+    match d
+      case North n -> "north"
+      case South -> "south"
+      case East -> "east"
+
+southTag : String
+let southTag = dirTag South
+
+-- G3 regression: expected-type ("masked") positions still accept — annotated RHS + list.
+directRed : Color
+let directRed = Red
+
+palette : List Color
+let palette = [Red, Green]
+
+-- G4 boundary: a non-nullary, non-first constructor as a value is unaffected.
+data Pair = MkInt Int | MkBool Bool
+
+pairTag : Pair -> String
+let pairTag p =
+    match p
+      case MkInt n -> "int"
+      case MkBool b -> "bool"
+
+boolTag : String
+let boolTag = pairTag (MkBool True)
+
+main : UIO Unit
+let main = printlnString leafTag
+
+--! mode check
+--! assertNoErrors
+--! assertEval redName "red"
+--! assertEval greenName "green"
+--! assertEval shadeName "shade"
+--! assertEval leafTag "leaf"
+--! assertEval noneTag "none"
+--! assertEval pointTag "point"
+--! assertEval southTag "south"
+--! assertEval boolTag "bool"

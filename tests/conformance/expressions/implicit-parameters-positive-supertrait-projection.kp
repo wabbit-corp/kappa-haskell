@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: chalk#71
+-- Spec: §7.3.3, §12.1.1
+trait Parent a =
+    score : a -> Int
+
+trait Parent a => Child a =
+    child : a -> Int
+
+viaProjectedSupertrait : (@child : Child Int) -> Int
+let viaProjectedSupertrait (@child : Child Int) =
+    score 41
+
+--! assertNoErrors
+--! assertType viaProjectedSupertrait (@child : Child Int) -> Int

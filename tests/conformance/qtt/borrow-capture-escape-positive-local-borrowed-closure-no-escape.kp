@@ -1,0 +1,15 @@
+module main
+
+type Box (a : Type) = (value : a)
+
+useLocal : Int -> Int
+let useLocal (n : Int) : Int =
+    block
+        let cell = (value = n)
+        let &b = cell
+        let getter = \ (_ : Unit) -> b.value
+        getter ()
+
+--! assertNoErrors
+--! assertType useLocal Int -> Int
+

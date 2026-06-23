@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- A runtime InterpolatedMacro value is not a valid prefixed-string handler; handler evidence must be meta-phase / Elab.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch (runtime|Runtime|object-phase|Object-phase).*InterpolatedMacro|prefixed.*handler

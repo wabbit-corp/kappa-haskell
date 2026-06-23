@@ -1,0 +1,17 @@
+module main
+
+-- Source issue: scala2#182
+-- Spec: §7.6.3
+data Choice : Type =
+    LeftInt (value : Int)
+    RightInt (value : Int)
+    Empty
+
+bad : Choice -> Int
+let bad value =
+    match value
+      case LeftInt x | RightInt _ -> 0
+      case Empty -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_OR_PATTERN_BINDER_MISMATCH

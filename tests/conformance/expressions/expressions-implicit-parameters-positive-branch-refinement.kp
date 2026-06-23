@@ -1,0 +1,33 @@
+module main
+
+-- Source issue: scala3#5469
+-- Spec: §7.3.3, §7.5.4
+trait Score a =
+    score : a -> Int
+
+instance Score Int =
+    let score x = x
+
+instance Score Bool =
+    let score x = if x then 100 else 0
+
+data Payload : Type =
+    IntBox (value : Int)
+    BoolBox (value : Bool)
+
+readScore : Payload -> Int
+let readScore p =
+    match p
+      case IntBox value -> score value
+      case BoolBox value -> score value
+
+fromInt : Int
+let fromInt = readScore (IntBox 42)
+
+fromBool : Int
+let fromBool = readScore (BoolBox True)
+
+--! assertNoErrors
+--! assertType readScore Payload -> Int
+--! assertEval fromInt 42
+--! assertEval fromBool 100

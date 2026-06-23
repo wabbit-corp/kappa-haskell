@@ -1,0 +1,11 @@
+module client
+
+import api
+
+useGetter : forall (s : Region). (&[s] box : api.Box Int) -> Int
+let useGetter box =
+    let
+        g = api.makeGetter box
+    in
+        g ()
+

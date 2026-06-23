@@ -1,0 +1,13 @@
+module main
+
+-- Round-6 F6 (§6.3.1): the portable escape set includes \f and \0
+-- (previously rejected as unknown escapes).
+
+withFf : String
+let withFf = "a\fb"
+
+withNul : String
+let withNul = "a\0b"
+
+--! mode check
+--! assertNoErrors

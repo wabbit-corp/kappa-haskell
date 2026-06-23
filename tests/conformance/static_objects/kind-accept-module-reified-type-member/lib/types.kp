@@ -1,0 +1,4 @@
+module lib.types
+
+data Token : Type =
+    Token (id : Int)

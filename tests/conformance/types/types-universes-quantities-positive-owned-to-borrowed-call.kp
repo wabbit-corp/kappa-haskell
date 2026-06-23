@@ -1,0 +1,15 @@
+module main
+
+data Box a : Type =
+    Box a
+
+read : (& x : Box Int) -> Int
+let read x = 0
+
+peek : (& x : Box Int) -> Int
+let peek x = read x
+
+demo : (1 x : Box Int) -> Int
+let demo x = peek x
+
+--! assertNoErrors

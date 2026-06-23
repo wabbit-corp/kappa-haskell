@@ -1,0 +1,25 @@
+module main
+
+-- Source issue: KT-237
+-- Spec: §2.6, §4.5, §5.1
+data Box a : Type =
+    Box a
+
+id : forall (a : Type). a -> a
+let id @a value = value
+
+boxed : Box Unit
+let boxed = Box ()
+
+extract : Box Unit -> Unit
+let extract b =
+    match b
+      case Box value -> value
+
+roundTrip : Unit
+let roundTrip = id (extract boxed)
+
+--! assertNoErrors
+--! assertType boxed Box Unit
+--! assertType extract Box Unit -> Unit
+--! assertType roundTrip Unit

@@ -1,0 +1,19 @@
+module main
+
+-- Opus SO-2 negative pin: over-applying a nullary constructor that is not the first
+-- alternative must report the CORRECT arity error. Before the fix, `Mid` carried a
+-- phantom `Mid -> T` scheme, so `Mid 5` was mis-diagnosed as a type mismatch
+-- ("expected 'Mid' but found 'Int'") — masking the real over-application. It must now
+-- match the first-constructor behaviour: a constructor-arity error.
+
+data C = First Int | Mid | Last
+
+bad : C
+let bad = Mid 5
+
+main : UIO Unit
+let main = printlnString "unused"
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_CONSTRUCTOR_ARITY_MISMATCH

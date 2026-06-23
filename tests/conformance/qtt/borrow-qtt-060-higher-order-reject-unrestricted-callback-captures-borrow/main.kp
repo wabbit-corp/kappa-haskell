@@ -1,0 +1,9 @@
+module main
+
+mayIgnoreCallback : (k : Unit -> Int) -> Int
+let mayIgnoreCallback (k : Unit -> Int) : Int = 0
+
+bad : (& x : Int) -> Int
+let bad (& x : Int) : Int = mayIgnoreCallback (\() -> x)
+
+--! assertErrorCount 1

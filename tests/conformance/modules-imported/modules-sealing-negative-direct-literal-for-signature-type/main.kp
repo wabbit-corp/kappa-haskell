@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type OpaqueBox : Type = (opaque T : Type, value : this.T)
+
+bad : OpaqueBox
+let bad : OpaqueBox = (T = Int, value = 1)

@@ -1,0 +1,13 @@
+module main
+
+data ParseResult : Type =
+    Parsed (value : Int)
+    Failed (>=1 token : Int)
+
+bad : ParseResult -> STM Int
+let bad (r : ParseResult) : STM Int =
+    do
+        let? Parsed x = r
+        pure x
+
+--! assertErrorCount 1

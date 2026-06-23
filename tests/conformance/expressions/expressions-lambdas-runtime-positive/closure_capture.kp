@@ -1,0 +1,11 @@
+module closure_capture
+
+makeAdder : Int -> Int -> Int
+let makeAdder x = \y -> x + y
+
+result : Int
+let result = makeAdder 40 2
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

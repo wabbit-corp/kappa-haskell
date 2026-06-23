@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+-- Source issue: rebound static-object identity
+-- Spec: §2.8.1.1, §2.8.3, §17.3.1.9
+data MaybeBox a : Type =
+    Nothing
+    Just a
+
+let M = type MaybeBox
+
+none : MaybeBox Int
+let none = M.Nothing
+
+some : MaybeBox Int
+let some = M.Just 1
+
+--! assertNoErrors
+--! assertType none MaybeBox Int
+--! assertType some MaybeBox Int

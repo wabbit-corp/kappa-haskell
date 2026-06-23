@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+
+data Pair : Type =
+    Pair (x : Int) (y : Int)
+
+data PairView : Type =
+    Same (n : Int)
+    Different (x : Int) (y : Int)
+
+pattern ViewPair (p : Pair) : PairView =
+    match p
+    case Pair x y -> if x == y then Same x else Different x y
+
+ok : Pair -> Int
+let ok (p : Pair) : Int =
+    match p
+    case ViewPair (Same n) -> n
+    case ViewPair (Different x y) -> x + y

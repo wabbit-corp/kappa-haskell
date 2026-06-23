@@ -1,0 +1,30 @@
+module main
+
+-- Source issue: Idris2#243
+-- Kappa analogue: type-level `if` and `match` used in signatures must normalize to the selected branch.
+-- Spec: §7.5, §14.3, §14.3A
+type PickIf (flag : Bool) : Type =
+    if flag then Int else Bool
+
+type PickMatch (flag : Bool) : Type =
+    match flag
+      case True -> Int
+      case False -> Bool
+
+pickIfFalse : PickIf False
+let pickIfFalse = False
+
+pickIfTrue : PickIf True
+let pickIfTrue = 1
+
+pickMatchFalse : PickMatch False
+let pickMatchFalse = False
+
+pickMatchTrue : PickMatch True
+let pickMatchTrue = 1
+
+--! assertNoErrors
+--! assertType pickIfFalse Bool
+--! assertType pickIfTrue Int
+--! assertType pickMatchFalse Bool
+--! assertType pickMatchTrue Int

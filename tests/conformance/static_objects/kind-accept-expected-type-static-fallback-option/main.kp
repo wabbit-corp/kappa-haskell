@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+F : Type -> Type
+let F = Option
+
+ok : F Int
+let ok = F.Some 1

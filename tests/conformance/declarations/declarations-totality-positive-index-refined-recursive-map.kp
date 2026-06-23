@@ -1,0 +1,20 @@
+module main
+
+-- Source issue: lean4#281
+-- Spec: §6.4.2, §7.5.1A, §11.2
+data V (b : Bool) : Type =
+    Done : Int -> V b
+    Step : V False -> V False
+
+depth : (b : Bool) -> V b -> Int
+let depth b v =
+    match v
+      case Done n -> n
+      case Step inner -> 1 + depth False inner
+
+result : Int
+let result = depth False (Step (Step (Done 0)))
+
+--! assertNoErrors
+--! assertType depth (b : Bool) -> V b -> Int
+--! assertEval result 2

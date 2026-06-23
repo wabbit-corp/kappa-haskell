@@ -1,0 +1,15 @@
+module main
+
+trait Semigroup a =
+    append : a -> a -> a
+
+trait Semigroup a => Monoid a =
+    neutral : a
+
+trait Monoid a => Expose a =
+    expose : Unit
+
+instance Expose Int =
+    let expose = ()
+
+--! assertDiagnosticCodes E_TRAIT_SUPERTRAIT_UNSATISFIED

@@ -1,0 +1,7 @@
+-- Appendix T directory suite.
+-- An unordered set source becomes pageable only after an explicit order by.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType orderedIds List Int

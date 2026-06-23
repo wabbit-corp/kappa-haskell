@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: KT-458
+-- Spec: §3.1
+`class` : Int
+let `class` = 17
+
+`$$$$` : Int
+let `$$$$` = 25
+
+result : Int
+let result = `class` + `$$$$`
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

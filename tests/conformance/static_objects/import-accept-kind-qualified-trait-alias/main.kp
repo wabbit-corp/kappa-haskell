@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+import lib.classes.(trait Size as Sized)
+
+C : Type -> Type
+let C = trait Sized
+
+use : C String -> Sized String
+let use d = d

@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+plainAdd : Int -> Int -> Int
+let plainAdd (x : Int) (y : Int) : Int = x + y
+
+bad : Int
+let bad : Int = 1.plainAdd 2

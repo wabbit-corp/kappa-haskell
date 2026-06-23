@@ -1,0 +1,17 @@
+module main
+
+-- Opus task #23 pin: `elif` is admissible in a projection-if body too (Spec §16.4 grammar,
+-- reused uniformly). A projection whose body is an `if .. elif .. else` chain must parse and
+-- elaborate (desugaring elif to a nested ProjectionIfThenElse).
+type Trip = (a : Int, b : Int, c : Int)
+
+projection pick (sel : Int) (place this : Trip) : Int =
+    if sel == 0 then yield this.a
+    elif sel == 1 then yield this.b
+    else yield this.c
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors

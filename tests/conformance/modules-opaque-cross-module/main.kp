@@ -1,0 +1,11 @@
+module main
+
+-- §8.5.2: `secret` is opaque outside `oplib`, so it does NOT δ-unfold to 7
+-- during conversion here; `refl` therefore cannot prove `secret = 7` and the
+-- equation is rejected (it would wrongly compile if opacity were ignored).
+import oplib.(secret)
+
+proof : secret = 7
+let proof = refl
+
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH

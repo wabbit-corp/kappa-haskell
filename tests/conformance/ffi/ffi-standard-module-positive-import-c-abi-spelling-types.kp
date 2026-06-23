@@ -1,0 +1,19 @@
+module main
+
+-- Source tests: github-ziglang-zig/tests/test/c_abi/main.zig
+-- Source issues: zig#180, ocaml#5707
+-- Spec: §2.7, §17.7.1, §17.7.2.1
+import std.ffi.c.(type CChar, type CSChar, type CUChar)
+import std.ffi.c.(type CShort, type CUShort, type CInt, type CUInt)
+import std.ffi.c.(type CLong, type CULong, type CLongLong, type CULongLong)
+import std.ffi.c.(type CSize, type CPtrdiff, type CBool)
+
+useCIntegers :
+    CChar -> CSChar -> CUChar ->
+    CShort -> CUShort -> CInt -> CUInt ->
+    CLong -> CULong -> CLongLong -> CULongLong ->
+    CSize -> CPtrdiff -> CBool ->
+    Unit
+let useCIntegers _ _ _ _ _ _ _ _ _ _ _ _ _ _ = ()
+
+--! assertNoErrors

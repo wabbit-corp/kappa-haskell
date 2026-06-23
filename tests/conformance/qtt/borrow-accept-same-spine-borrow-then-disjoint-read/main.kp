@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Pair = (x : Int, y : Int)
+
+borrowThenRead : (& x : Int) -> Int -> Int
+let borrowThenRead (& x : Int) (y : Int) : Int = y
+
+ok : Pair -> Int
+let ok (p : Pair) : Int = borrowThenRead p.x p.y

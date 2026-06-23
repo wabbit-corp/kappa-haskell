@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+type Pair : Type = (left : Int, right : Int)
+
+projection leftOf (place p : Pair) : Int =
+    yield p.left
+
+readInt : (& x : Int) -> Int
+let readInt (& x : Int) : Int = x
+
+ok : (& p : Pair) -> Int
+let ok (& p : Pair) : Int = readInt (leftOf p)

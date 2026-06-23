@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+-- Source issue: reified module values
+-- Spec: §2.3, §2.8.1.1, §2.8.6
+import util.target
+
+let targetModule = module util.target
+
+--! assertNoErrors

@@ -277,7 +277,7 @@ ffi = CGlob . GName (ModuleName ["std", "ffi"])
 
 infixr 5 ~>
 (~>) :: Term -> Term -> Term
-a ~> b = CPi Expl QW "_" a b
+a ~> b = CPi Expl QW False "_" a b
 
 -- | @IO Void a@ — the normal form of the prelude's @UIO a@ alias.
 uio :: Term -> Term

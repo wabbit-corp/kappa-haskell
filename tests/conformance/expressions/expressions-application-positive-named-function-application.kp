@@ -1,0 +1,37 @@
+module main
+
+-- Source issues: KT-202, KT-214
+-- Spec: §7.1.3C
+resize : (image : Int) -> (width : Int) -> (height : Int) -> Int
+let resize image width height =
+    image + width * 10 + height
+
+outOfOrder : Int
+let outOfOrder = resize { height = 3, image = 1, width = 2 }
+
+viaBinding : Int
+let viaBinding =
+    block
+        let r = resize
+        r { image = 4, width = 5, height = 6 }
+
+lambdaCall : Int
+let lambdaCall =
+    block
+        let add = \(left : Int) (right : Int) -> left + right
+        add { right = 8, left = 7 }
+
+punned : Int
+let punned =
+    block
+        let image = 9
+        let width = 1
+        let height = 2
+        resize { image, width, height }
+
+--! assertNoErrors
+--! assertType resize (image : Int) -> (width : Int) -> (height : Int) -> Int
+--! assertEval outOfOrder 24
+--! assertEval viaBinding 60
+--! assertEval lambdaCall 15
+--! assertEval punned 21

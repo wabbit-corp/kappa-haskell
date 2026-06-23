@@ -1,0 +1,29 @@
+module main
+
+-- Source issue: KT-463
+-- Spec: §4.4
+newline : Char
+let newline = '\n'
+
+tab : Char
+let tab = '\t'
+
+carriageReturn : Char
+let carriageReturn = '\r'
+
+backslash : Char
+let backslash = '\\'
+
+quote : Char
+let quote = '\''
+
+unicodeLambda : Char
+let unicodeLambda = '\u03BB'
+
+--! assertNoErrors
+--! assertType newline Char
+--! assertType tab Char
+--! assertType carriageReturn Char
+--! assertType backslash Char
+--! assertType quote Char
+--! assertType unicodeLambda Char

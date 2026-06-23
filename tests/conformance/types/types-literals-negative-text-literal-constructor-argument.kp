@@ -1,0 +1,24 @@
+module main
+
+-- Round-7 AUD-1 (§6.1.5): text literals at constructor-argument positions
+-- must reject at non-text parameter types (previously MkWrap "boom"
+-- compiled and crashed at runtime; Int slots silently held text values).
+
+data Foo : Type =
+    MkFoo Int
+
+data Wrap : Type =
+    MkWrap Foo
+
+badWrap : Wrap
+let badWrap = MkWrap "boom"
+
+badInt : Foo
+let badInt = MkFoo "boom"
+
+badChr : Foo
+let badChr = MkFoo 'z'
+
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH, E_TYPE_MISMATCH

@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type Base : Type = (name : String,)
+
+bad : Base -> (name : String, age : Int)
+let bad (b : Base) : (name : String, age : Int) = b.{ age := 36, age := 37 }

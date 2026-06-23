@@ -1,0 +1,11 @@
+module main
+
+badOmitConsumed : (1 r : (1 x : Int, y : Int)) -> (1 x : Int, y : Int)
+let badOmitConsumed r =
+    let
+        moved = r.x
+    in
+        r.{ y = r.y }
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE, E_QTT_LINEAR_DROP

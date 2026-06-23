@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+bad : UIO Unit
+let bad : UIO Unit =
+    do
+        defer
+            do
+                return ()
+        pure ()

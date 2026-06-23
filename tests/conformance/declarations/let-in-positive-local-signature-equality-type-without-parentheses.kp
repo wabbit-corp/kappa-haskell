@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: Idris2#518
+-- Kappa analogue: a block-local signature may use an unparenthesized propositional equality type directly after `:`
+-- without being misparsed as a definition boundary.
+-- Spec: §5.6.1, §6.3.1
+proveSelf : (n : Nat) -> n = n
+let proveSelf n =
+    block
+        witness : n = n
+        let witness = refl
+        witness
+
+--! assertNoErrors
+--! assertType proveSelf (n : Nat) -> n = n

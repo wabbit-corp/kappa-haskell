@@ -1,0 +1,4 @@
+module util.target
+
+value : Int
+let value = 1

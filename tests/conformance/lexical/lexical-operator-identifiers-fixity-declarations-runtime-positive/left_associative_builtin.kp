@@ -1,0 +1,8 @@
+module left_associative_builtin
+
+result : Int
+let result = 20 - 5 - 3
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 12

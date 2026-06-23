@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+mkPkg : Int -> (F : Type -> Type, value : F Int)
+let mkPkg n = (F = Option, value = Some n)
+
+ok : Int
+let ok =
+    block
+        let p = mkPkg 5
+        match p.value
+        case Some n -> n
+        case None -> 0

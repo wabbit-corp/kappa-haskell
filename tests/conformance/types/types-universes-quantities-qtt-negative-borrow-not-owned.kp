@@ -1,0 +1,10 @@
+module main
+
+needOwned : (1 x : Int) -> Int
+let needOwned x = x
+
+badBorrowAsOwned : (& x : Int) -> Int
+let badBorrowAsOwned x = needOwned x
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME

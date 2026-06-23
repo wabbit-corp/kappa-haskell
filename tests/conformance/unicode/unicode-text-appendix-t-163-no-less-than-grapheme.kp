@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+--! assertDiagnosticNext error E_UNSOLVED_IMPLICIT
+let bad : Bool = g'a' < g'b'

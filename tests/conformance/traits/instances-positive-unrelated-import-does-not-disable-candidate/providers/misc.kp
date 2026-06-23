@@ -1,0 +1,4 @@
+module providers.misc
+
+noise : Int
+let noise = 0

@@ -1,0 +1,4 @@
+@PrivateByDefault module main
+
+bad : (F : Type -> Type) -> F Int
+let bad F = F.None

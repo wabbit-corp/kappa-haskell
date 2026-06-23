@@ -1,0 +1,12 @@
+module main
+
+data Buffer : Type =
+    Buffer
+
+bad : (1 r : (1 buf : Buffer, len : Nat)) -> Buffer
+let bad r =
+    let old = r.buf
+    r.buf
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE, E_QTT_LINEAR_DROP

@@ -1,0 +1,18 @@
+module main
+
+-- Source issue: KT-530
+-- Spec: §4.5, §7.5
+data Input : Type =
+    Digit Int
+    Separator
+    Other Char
+
+handle : Input -> Unit
+let handle input =
+    match input
+      case Digit _ -> ()
+      case Separator -> ()
+      case Other _ -> ()
+
+--! assertNoErrors
+--! assertType handle Input -> Unit

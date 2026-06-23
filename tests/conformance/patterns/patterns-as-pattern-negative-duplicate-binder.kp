@@ -1,0 +1,18 @@
+module main
+
+-- Hostile-audit PAT-1 guard: an as-pattern whose name collides with a binder inside its own inner
+-- pattern is a duplicate binder and must be rejected. This is enforced by the UNCHANGED surface static
+-- duplicate-binder check (collectPatternNames already yields the as-name), which fires before lowering
+-- — confirming the as-name is a real binder at the static level, independent of the carrier.
+firstOrZero : List Int -> Int
+let firstOrZero xs =
+    match xs
+      case dup @ (dup :: _) -> dup
+      case Nil -> 0
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_DUPLICATE_PATTERN_BINDER

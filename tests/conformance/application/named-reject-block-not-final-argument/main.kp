@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+resize : (image : Int) -> (width : Int) -> (height : Int) -> Int
+let resize (image : Int) (width : Int) (height : Int) : Int = image
+bad : Int
+let bad : Int = resize { image = 1, width = 640, height = 480 } 0

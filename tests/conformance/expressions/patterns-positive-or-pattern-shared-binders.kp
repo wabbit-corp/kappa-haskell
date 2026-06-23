@@ -1,0 +1,25 @@
+module main
+
+-- Source issue: scala2#182
+-- Spec: §7.6.3
+data Choice : Type =
+    LeftInt (value : Int)
+    RightInt (value : Int)
+    Empty
+
+readChoice : Choice -> Int
+let readChoice value =
+    match value
+      case LeftInt x | RightInt x -> x
+      case Empty -> 0
+
+leftResult : Int
+let leftResult = readChoice (LeftInt 20)
+
+rightResult : Int
+let rightResult = readChoice (RightInt 22)
+
+--! assertNoErrors
+--! assertType readChoice Choice -> Int
+--! assertEval leftResult 20
+--! assertEval rightResult 22

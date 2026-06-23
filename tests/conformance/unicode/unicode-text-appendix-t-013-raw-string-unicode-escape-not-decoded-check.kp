@@ -1,0 +1,11 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let rawEscape : String = #"\u{1F642}"#
+let normalEscape : String = "\u{1F642}"
+let rawDollar : String = #"$name and ${expr}"#
+
+--! assertType rawEscape String
+--! assertType normalEscape String
+--! assertType rawDollar String

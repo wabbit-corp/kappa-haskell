@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+import lib.api as Api
+
+let M = module Api
+
+direct : Int
+let direct = Api.x
+
+viaValue : Int
+let viaValue = M.x

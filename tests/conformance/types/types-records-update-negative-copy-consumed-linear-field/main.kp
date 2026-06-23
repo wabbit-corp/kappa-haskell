@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+data Buffer : Type =
+    Buffer
+
+type WithBuf : Type = (1 buf : Buffer, len : Nat)
+
+bad : (1 r : WithBuf) -> WithBuf
+let bad (1 r : WithBuf) : WithBuf =
+    block
+        let old = r.buf
+        r.{ len = 2 }

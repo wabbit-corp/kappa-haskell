@@ -1,0 +1,4 @@
+-- Appendix T directory suite.
+--! mode check
+--! packageMode
+--! assertDiagnosticMatch (prefixed|string|handler|InterpolatedMacro).*(runtime|object-phase|Elab|meta)|runtime.*prefixed|string.*runtime

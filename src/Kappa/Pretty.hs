@@ -18,7 +18,7 @@ renderTerm = go 0
       CVar i -> "@" <> tshow i
       CGlob g -> gnameText g
       CLam _ _ n b -> paren (p > 0) ("\\" <> n <> " -> " <> go 0 b)
-      CPi ic q n a b ->
+      CPi ic q _ n a b ->
         paren (p > 0) $
           binder <> " -> " <> go 0 b
         where

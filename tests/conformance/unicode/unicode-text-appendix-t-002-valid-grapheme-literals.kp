@@ -1,0 +1,17 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let asciiGrapheme : Grapheme = g'a'
+let precomposedGrapheme : Grapheme = g'\u{00E9}'
+let decomposedGrapheme : Grapheme = g'e\u{301}'
+let combiningMarkGrapheme : Grapheme = g'\u{301}'
+let flagGrapheme : Grapheme = g'\u{1F1E8}\u{1F1E6}'
+let familyGrapheme : Grapheme = g'\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}'
+
+--! assertType asciiGrapheme Grapheme
+--! assertType precomposedGrapheme Grapheme
+--! assertType decomposedGrapheme Grapheme
+--! assertType combiningMarkGrapheme Grapheme
+--! assertType flagGrapheme Grapheme
+--! assertType familyGrapheme Grapheme

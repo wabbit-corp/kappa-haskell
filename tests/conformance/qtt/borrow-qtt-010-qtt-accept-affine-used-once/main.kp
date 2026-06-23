@@ -1,0 +1,6 @@
+module main
+
+affineUse : (<=1 x : Int) -> Int
+let affineUse (<=1 x : Int) : Int = x
+
+--! assertNoErrors

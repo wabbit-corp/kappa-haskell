@@ -1,0 +1,21 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+type TextAtoms =
+    (scalar : UnicodeScalar,
+     cluster : Grapheme,
+     text : String,
+     raw : Bytes,
+     octet : Byte)
+
+import std.unicode.*
+
+let atoms : TextAtoms =
+    (scalar = '\u{1F642}',
+     cluster = g'e\u{301}',
+     text = "e\u{301}",
+     raw = utf8Bytes "e\u{301}",
+     octet = b'\x65')
+
+--! assertType atoms TextAtoms

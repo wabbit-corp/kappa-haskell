@@ -1,0 +1,22 @@
+module main
+
+import std.prelude.(filter)
+
+sumList : List Int -> Int
+let sumList xs decreases structural xs =
+    match xs
+    case Nil -> 0
+    case head :: tail -> head + sumList tail
+
+kept : List Int
+let kept = filter (\x -> x < 3) [0, 1, 2, 3, 4]
+
+result : Int
+let result = sumList kept
+
+-- Source issue: Idris2#42
+-- Kappa analogue: the portable prelude exports `filter` as an ordinary term.
+-- Spec: §2.6, §10.10.1, §17.1
+--! assertNoErrors
+--! assertType kept List Int
+--! assertEval result 3

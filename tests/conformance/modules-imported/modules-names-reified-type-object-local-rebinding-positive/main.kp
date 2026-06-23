@@ -1,0 +1,25 @@
+module main
+
+-- Source issue: local rebound static-object identity
+-- Spec: §2.8.3, §2.8.6, §17.3.1.9
+data MaybeBox a : Type =
+    Nothing
+    Just a
+
+none : MaybeBox Int
+let none =
+    let
+        M = type MaybeBox
+    in
+        M.Nothing
+
+some : MaybeBox Int
+let some =
+    let
+        M = type MaybeBox
+    in
+        M.Just 1
+
+--! assertNoErrors
+--! assertType none MaybeBox Int
+--! assertType some MaybeBox Int

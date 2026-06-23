@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: KT-264
+-- Spec: §11.1, §11.1.1
+data BadMissing : Type =
+    BadMissing {
+        value : Int = missingDefault
+    }
+
+data BadType : Type =
+    BadType {
+        value : Int = "not an int"
+    }
+
+--! assertErrorCount 2
+--! assertDiagnosticMatch default|missingDefault|Int|String

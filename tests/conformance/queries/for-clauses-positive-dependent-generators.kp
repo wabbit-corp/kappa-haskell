@@ -1,0 +1,14 @@
+module main
+
+-- Source issue: links#834
+-- Spec: §10.4, §10.10.3
+result : List Int
+let result =
+    [
+        for xs in [[1], [2], [3]]
+        for x in xs
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType result List Int

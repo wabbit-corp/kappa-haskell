@@ -1,0 +1,10 @@
+module explicit_traits
+
+import std.prelude.(trait Eq, type Int)
+
+value : Int
+let value = 42
+
+--! assertNoErrors
+--! assertType value Int
+--! x-assertDeclDescriptors import std.prelude.(trait Eq + type Int), signature value, let value

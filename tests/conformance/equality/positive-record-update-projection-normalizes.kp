@@ -1,0 +1,17 @@
+module main
+
+-- Source issue: Idris2#457
+-- Kappa analogue: ordinary record update should expose the updated field projection to definitional equality without
+-- requiring explicit destructuring of the original record.
+-- Spec: §5.5.5, §14.3
+
+type SimpleRecord : Type = (simpleField : Bool)
+
+updateField : SimpleRecord -> SimpleRecord
+let updateField (r : SimpleRecord) : SimpleRecord = r.{ simpleField = True }
+
+updatingFieldWorks : (r : SimpleRecord) -> (updateField r).simpleField = True
+let updatingFieldWorks r = refl
+
+--! assertNoErrors
+--! assertType updatingFieldWorks (r : SimpleRecord) -> (updateField r).simpleField = True

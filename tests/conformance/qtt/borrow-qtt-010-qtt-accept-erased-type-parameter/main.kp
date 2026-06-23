@@ -1,0 +1,6 @@
+module main
+
+id : forall (a : Type). a -> a
+let id (@0 a : Type) (x : a) : a = x
+
+--! assertNoErrors

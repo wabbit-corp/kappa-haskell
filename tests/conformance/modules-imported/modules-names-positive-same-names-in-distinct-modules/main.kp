@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: KT-468
+-- Spec: §2.8.1, §2.8.3
+import namespaces.alpha as alpha
+import namespaces.beta as beta
+
+result : Int
+let result = alpha.foo + beta.foo + alpha.bar () + beta.bar ()
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 10

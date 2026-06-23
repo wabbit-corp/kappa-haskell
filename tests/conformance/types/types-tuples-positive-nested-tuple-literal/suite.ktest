@@ -1,0 +1,7 @@
+--! mode run
+--! backend interpreter
+--! packageMode
+--! requires capability runTask
+--! entry main.main
+--! assertExitCode 0
+--! assertStdout "6\n"

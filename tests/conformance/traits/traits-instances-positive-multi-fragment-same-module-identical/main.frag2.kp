@@ -1,0 +1,6 @@
+module main
+
+-- Second fragment of `module main`: a byte-identical Doubler Int instance.
+
+instance Doubler Int =
+    let twice x = x + x

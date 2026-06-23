@@ -1,0 +1,5 @@
+-- Appendix T directory suite.
+-- Diagnostic code is intentionally not fixed by the portable spec.
+--! mode check
+--! packageMode
+--! assertDiagnosticMatch (object-phase|runtime).*Elab|Elab.*(object-phase|runtime)|phase

@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type TypeBox : Type = (T : Type, value : this.T)
+
+box : TypeBox
+let box : TypeBox = (T = Int, value = 1)
+
+value : box.T
+let value : box.T = box.value

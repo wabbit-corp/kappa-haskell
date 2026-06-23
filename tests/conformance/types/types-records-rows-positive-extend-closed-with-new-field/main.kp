@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+type Base : Type = (name : String,)
+type Extended : Type = (name : String, age : Int)
+
+addAge : Base -> Extended
+let addAge (b : Base) : Extended = b.{ age := 36 }

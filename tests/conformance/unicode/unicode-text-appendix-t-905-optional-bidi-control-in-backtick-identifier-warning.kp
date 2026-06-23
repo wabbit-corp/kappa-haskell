@@ -1,0 +1,7 @@
+--! mode check
+--! packageMode
+--! requires capability unicodeSourceWarnings
+--! assertWarningCount 1
+--! assertDiagnostic warning W_UNICODE_BIDI_CONTROL
+
+let `abc‮def` = 1

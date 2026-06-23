@@ -1,0 +1,17 @@
+module main
+
+-- Source issue: KT-1030
+-- Spec: §2.8.4, §7.1.3, §7.2
+applyTo : forall (a : Type) (b : Type). (this f : a -> b) -> a -> b
+let applyTo @a @b (this f : a -> b) x = f x
+
+inc : Int -> Int
+let inc x = x + 1
+
+result : Int
+let result = inc.applyTo 41
+
+--! assertNoErrors
+--! assertType applyTo forall (a : Type) (b : Type). (this f : a -> b) -> a -> b
+--! assertType result Int
+--! assertEval result 42

@@ -1,0 +1,7 @@
+module main
+
+sharedOffset : Int
+let sharedOffset = 2
+
+platformAnswer : Int
+let platformAnswer = 40

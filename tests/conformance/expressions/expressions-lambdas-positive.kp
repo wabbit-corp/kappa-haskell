@@ -1,0 +1,8 @@
+module main
+
+makeAdder : Int -> Int -> Int
+let makeAdder x = \y -> x + y
+
+--! assertNoErrors
+--! assertType makeAdder Int -> Int -> Int
+--! x-assertDeclDescriptors signature makeAdder, let makeAdder

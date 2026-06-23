@@ -1,0 +1,18 @@
+module main
+
+-- Source issues: chapel#4966, chapel#5037, inko#375
+-- Spec: §2.7C, §14.8.4A, §17.13
+import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicExchange, term atomicFetchAdd)
+
+main : UIO Int
+let main = do
+    let cell <- newAtomicRef 10
+    let oldExchange <- atomicExchange RmwSeqCst cell 20
+    let oldAdd <- atomicFetchAdd RmwSeqCst cell 3
+    let final <- atomicLoad LoadSeqCst cell
+    pure (oldExchange + oldAdd + final)
+
+--! assertNoErrors
+--! assertType main UIO Int
+--! assertExecute main 53

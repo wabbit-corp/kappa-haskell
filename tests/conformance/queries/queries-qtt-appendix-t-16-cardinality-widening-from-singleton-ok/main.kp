@@ -1,0 +1,11 @@
+module main
+
+fromSingleton : SingletonQuery Int -> Query Int
+let fromSingleton q =
+    Query [
+        for x in q
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType fromSingleton SingletonQuery Int -> Query Int

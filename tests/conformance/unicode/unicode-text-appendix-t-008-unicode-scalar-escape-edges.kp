@@ -1,0 +1,21 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let nul : UnicodeScalar = '\u{0}'
+let del : UnicodeScalar = '\u{7F}'
+let quote : UnicodeScalar = '\''
+let slash : UnicodeScalar = '\\'
+let tab : UnicodeScalar = '\t'
+let maxBmpBeforeSurrogate : UnicodeScalar = '\u{D7FF}'
+let minBmpAfterSurrogate : UnicodeScalar = '\u{E000}'
+let maxScalar : UnicodeScalar = '\u{10FFFF}'
+
+--! assertType nul UnicodeScalar
+--! assertType del UnicodeScalar
+--! assertType quote UnicodeScalar
+--! assertType slash UnicodeScalar
+--! assertType tab UnicodeScalar
+--! assertType maxBmpBeforeSurrogate UnicodeScalar
+--! assertType minBmpAfterSurrogate UnicodeScalar
+--! assertType maxScalar UnicodeScalar

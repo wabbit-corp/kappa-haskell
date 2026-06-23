@@ -1,0 +1,52 @@
+module main
+
+-- Hostile-audit PAT-1 pin: NESTED as-patterns and an as-pattern over an OR-pattern whose as-name is
+-- LOAD-BEARING (re-matched in the body) and whose inner binder is read by a guard. All require the
+-- as-binding carrier — dropping the as-name crashes at runtime ("Name 'captured' is not in scope").
+-- The as-over-or form also exercises the cross-backend KRuntimeOrPattern verifier (a live or-pattern
+-- survives lowering only when nested under an as-pattern).
+data Choice : Type =
+    LeftInt (value : Int)
+    RightInt (value : Int)
+
+-- `captured` (the as-name) is re-matched in the body, and the guard reads the inner or-binder `n`.
+tag : Choice -> Int
+let tag choice =
+    match choice
+      case captured @ (LeftInt n | RightInt n) if n > 0 ->
+        match captured
+          case LeftInt _ -> n
+          case RightInt _ -> n + 1000
+      case captured @ (LeftInt n | RightInt n) -> 0 - n
+
+rightTag : Int
+let rightTag = tag (RightInt 22)
+
+leftTag : Int
+let leftTag = tag (LeftInt 5)
+
+negTag : Int
+let negTag = tag (LeftInt (0 - 7))
+
+-- nested as-pattern inside a tuple: `tailWhole` binds the whole sub-list (not a destructured part).
+combine : (Int, List Int) -> List Int
+let combine pair =
+    match pair
+      case (lead, tailWhole @ (h :: t)) -> lead :: h :: tailWhole
+      case (lead, empties) -> lead :: empties
+
+combinedHead : Int
+let combinedHead =
+    match combine (5, 6 :: 7 :: Nil)
+      case a :: _ -> a
+      case Nil -> 0
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors
+--! assertEval rightTag 1022
+--! assertEval leftTag 5
+--! assertEval negTag 7
+--! assertEval combinedHead 5

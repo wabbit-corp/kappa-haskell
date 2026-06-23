@@ -1,0 +1,17 @@
+module main
+
+data File : Type =
+    Handle Int
+
+let step (inout file : File) : IO (1 file : File) = pure file
+
+let main : IO Unit = do
+    let file = Handle 1
+    step ~file
+    printInt 0
+
+--! assertNoErrors
+--! assertParameterQuantities step 1
+--! assertInoutParameters step file
+--! assertDoItemDescriptors main let file, expression, expression
+--! assertContainsTokenTexts inout, ~

@@ -1,0 +1,11 @@
+module main
+
+data Box : Type =
+    Box (value : Int)
+
+bad : Unit -> Unit -> Int
+let bad () : Unit -> Int =
+    let & b = Box 1
+    in \() -> b.value
+
+--! assertErrorCount 1

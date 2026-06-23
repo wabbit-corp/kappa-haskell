@@ -1,0 +1,17 @@
+module main
+
+-- Hostile-audit SYN-1 regression guard: the ':' longest-match must NOT fuse `:=`. Record-update
+-- `b.{ age := 36 }` relies on `:=` lexing as Colon + Equals (the record-patch detector in
+-- CoreParsing matches a Colon immediately followed by an Equals); if a future change fused `:=`
+-- into one operator token this would fail to parse. The `<> '='` guard in the ':' arm keeps it split.
+type Base : Type = (name : String,)
+type Wider : Type = (name : String, age : Int)
+
+widen : Base -> Wider
+let widen (b : Base) : Wider = b.{ age := 36 }
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,60 @@
+module main
+
+-- Opus AC-1 regression guard: the §16.4 Bool-condition obligation must NOT over-reject any
+-- legitimate Bool-valued condition. The check fires only on a confidently-inferred non-Bool,
+-- so every Bool-typed condition form below must keep compiling clean. (Uses `else if`, the
+-- spec-canonical nested form — bare `elif` is a separate unimplemented-parser gap, disclosed.)
+
+data Box = MkBox Int
+
+isBig : Int -> Bool
+let isBig n = n > 10
+
+-- Bool variable, &&, ||, not, comparisons, Bool-returning call, `is` refinement, else-if chain.
+classify : Int -> Bool -> Bool -> Box -> String
+let classify n flag other box =
+    if flag then "flag"
+    else if flag && other then "both"
+    else if flag || other then "either"
+    else if not other then "notother"
+    else if n == 0 then "zero"
+    else if n < 5 then "small"
+    else if isBig n then "big"
+    else if isBig n && not flag then "bignf"
+    else if box is MkBox then "box"
+    else "none"
+
+-- Nested if-expression as a condition (Bool result).
+nested : Bool -> String
+let nested c = if (if c then True else False) then "t" else "f"
+
+-- do-block `if` with a Bool condition.
+doIfOk : Bool -> UIO Unit
+let doIfOk c = do
+    if c then printlnString "t" else printlnString "f"
+
+-- `while` with a pure Bool condition.
+whileOk : Bool -> UIO Unit
+let whileOk c = do
+    while c do
+        printlnString "loop"
+
+-- `while` with a MONADIC condition (`m Bool`): Spec §16.4 while-typing / §18.6 allow the
+-- condition to be `Bool` OR `m Bool`. This must NOT be rejected by the §16.4 Bool obligation.
+readFlag : UIO Bool
+let readFlag = pureIO False
+
+whileMonadic : UIO Unit
+let whileMonadic = do
+    while readFlag do
+        printlnString "loop"
+
+result : String
+let result = classify 3 True False (MkBox 1)
+
+main : UIO Unit
+let main = printlnString result
+
+--! mode check
+--! assertNoErrors
+--! assertEval result "flag"

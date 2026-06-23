@@ -1,0 +1,17 @@
+module custom.expects
+
+expect type Box
+data Box : Type =
+    Box
+
+expect trait Display a
+trait Display a =
+    show : a -> String
+
+expect term build : Box
+build : Box
+let build = Box
+
+--! assertNoErrors
+--! assertType build Box
+--! assertDeclKinds expect, data, expect, trait, expect, signature, let

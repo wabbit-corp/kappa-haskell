@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+bad : Int
+let bad : Int =
+    block
+        let u = (| 1 |)
+        0

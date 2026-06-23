@@ -1,0 +1,11 @@
+module main
+
+-- §12.2.1: an affine (<=1) value may be consumed at most once. It is
+-- consumed twice here. (Uses the consuming primitive `addInt`; the `+`
+-- operator now BORROWS its operands per §16.4.4/§12.3, so `x + x` would be
+-- a double read, not a double consume — see qtt/positive-lower-bound-*.)
+dupLeq1 : (<=1 x : Int) -> Int
+let dupLeq1 x = addInt x x
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE

@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType updated main.Holder

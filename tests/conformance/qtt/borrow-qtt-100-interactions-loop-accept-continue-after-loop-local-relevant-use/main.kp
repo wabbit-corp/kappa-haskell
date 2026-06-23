@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+ok : Bool -> UIO Unit
+let ok (cond : Bool) : UIO Unit =
+    do
+        while cond do
+            let >=1 x = 1
+            let _ = unsafeConsume x
+            continue
+        pure ()

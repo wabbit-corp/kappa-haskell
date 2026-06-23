@@ -1,0 +1,11 @@
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+bad : (>=1 x : Int) -> Unit
+let bad (>=1 x : Int) : Unit =
+    let t = thunk (strictId x)
+    in ()
+
+--! assertErrorCount 1

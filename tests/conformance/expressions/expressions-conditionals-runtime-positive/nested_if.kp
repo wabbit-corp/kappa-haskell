@@ -1,0 +1,8 @@
+module nested_if
+
+result : Int
+let result = if False then 0 else if True then 42 else 1
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

@@ -1,0 +1,13 @@
+module main
+
+-- Source issue: scala3#9822
+-- Spec: §3.4, §7.5
+result : Int
+let result =
+    match True
+      case True ->
+    1
+      case False -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_UNEXPECTED_INDENTATION

@@ -1,0 +1,8 @@
+module main
+
+usePoint : (y : Int, x : Int) -> Int
+let usePoint (p : (y : Int, x : Int)) : Int = p.x + p.y
+
+--! assertNoErrors
+--! assertType usePoint (x : Int, y : Int) -> Int
+

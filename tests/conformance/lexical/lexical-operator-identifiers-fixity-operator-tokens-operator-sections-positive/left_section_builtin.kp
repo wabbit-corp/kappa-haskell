@@ -1,0 +1,12 @@
+module left_section_builtin
+
+addToOne : Int -> Int
+let addToOne = (1 +)
+
+result : Int
+let result = addToOne 41
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42
+--! x-assertContainsTokenTexts (, 1, +, )

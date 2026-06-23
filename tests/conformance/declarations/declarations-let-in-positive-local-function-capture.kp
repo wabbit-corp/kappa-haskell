@@ -1,0 +1,19 @@
+module main
+
+-- Source issue: hylo#1088
+-- Spec: §6.3.1, §7.2.1, §14.1.1
+addWithSeed : Int -> Int
+let addWithSeed seed =
+    block
+        addSeed : Int -> Int
+        let addSeed x = x + seed
+
+        addSeed 2
+
+result : Int
+let result = addWithSeed 40
+
+--! assertNoErrors
+--! assertType addWithSeed Int -> Int
+--! assertType result Int
+--! assertEval result 42

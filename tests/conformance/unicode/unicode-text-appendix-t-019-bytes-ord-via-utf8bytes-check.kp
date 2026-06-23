@@ -1,0 +1,14 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.unicode.*
+
+let aBytes : Bytes = utf8Bytes "a"
+let bBytes : Bytes = utf8Bytes "b"
+let bytesEq : Bool = aBytes == bBytes
+let bytesOrd : Ordering = compare aBytes bBytes
+
+--! assertType aBytes Bytes
+--! assertType bytesEq Bool
+--! assertType bytesOrd Ordering

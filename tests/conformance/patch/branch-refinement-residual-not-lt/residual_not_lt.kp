@@ -1,0 +1,22 @@
+module residual_not_lt
+
+notLT : Ordering -> Bool
+let notLT o =
+    match o
+    case LT -> False
+    case _  -> True
+
+notLTResidual :
+    (o : Ordering) ->
+    match o
+    case LT -> Unit
+    case _  -> notLT o = True
+let notLTResidual o =
+    match o
+    case LT -> ()
+    case _  -> refl
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType notLT Ordering -> Bool

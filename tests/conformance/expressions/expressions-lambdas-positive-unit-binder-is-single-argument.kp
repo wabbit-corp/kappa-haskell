@@ -1,0 +1,21 @@
+module main
+
+-- Source issue: KT-221
+-- Spec: §4.5, §7.2.2
+makeAnswer : Unit -> Int
+let makeAnswer () = 42
+
+answer : Int
+let answer = makeAnswer ()
+
+asValue : Unit -> Int
+let asValue = \() -> 7
+
+value : Int
+let value = asValue ()
+
+--! assertNoErrors
+--! assertType makeAnswer Unit -> Int
+--! assertType asValue Unit -> Int
+--! assertEval answer 42
+--! assertEval value 7

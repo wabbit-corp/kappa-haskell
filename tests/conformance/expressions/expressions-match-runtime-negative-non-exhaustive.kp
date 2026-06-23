@@ -1,0 +1,17 @@
+@PrivateByDefault module main
+
+-- Codified behavior change: a match over a closed data type with missing
+-- cases is now a STATIC error (spec: family kappa.pattern.non-exhaustive,
+-- code E_PATTERN_NON_EXHAUSTIVE) instead of a runtime "Non-exhaustive match"
+-- failure.
+
+headOnly : List Int -> Int
+let headOnly xs =
+    match xs
+      case head :: tail -> head
+
+result : Int
+let result = headOnly Nil
+
+--! mode check
+--! assertDiagnosticCodes E_PATTERN_NON_EXHAUSTIVE

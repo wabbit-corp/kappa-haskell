@@ -1,0 +1,17 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+import std.unicode.*
+
+let showByte : String = show b'a'
+let showBytes : String = show (utf8Bytes "a")
+let showScalar : String = show 'λ'
+let showGrapheme : String = show g'e\u{301}'
+let showString : String = show "text"
+
+--! assertType showByte String
+--! assertType showBytes String
+--! assertType showScalar String
+--! assertType showGrapheme String
+--! assertType showString String

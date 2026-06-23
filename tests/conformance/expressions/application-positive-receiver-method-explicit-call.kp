@@ -1,0 +1,32 @@
+module main
+
+-- Source issue: KT-457
+-- Spec: §2.8.4, §7.1.3
+data Box (a : Type) : Type =
+    Box (value : a)
+
+replace : forall (a : Type). (this b : Box a) -> (newValue : a) -> Box a
+let replace @a (this b : Box a) newValue = Box newValue
+
+read : forall (a : Type). Box a -> a
+let read @a box =
+    match box
+      case Box value -> value
+
+viaExplicit : Box Int
+let viaExplicit = replace (Box 0) 7
+
+viaDotted : Box Int
+let viaDotted = (Box 0).replace 9
+
+explicitResult : Int
+let explicitResult = read viaExplicit
+
+dottedResult : Int
+let dottedResult = read viaDotted
+
+--! assertNoErrors
+--! assertType viaExplicit Box Int
+--! assertType viaDotted Box Int
+--! assertEval explicitResult 7
+--! assertEval dottedResult 9

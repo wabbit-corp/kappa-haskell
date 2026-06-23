@@ -1,0 +1,17 @@
+module main
+
+-- Manual oracle seed: simple named-function application pipeline.
+twice : Int -> Int
+let twice value = value * 2
+
+finish : Int -> Int
+let finish value = value + 2
+
+main : IO Int
+let main = do
+    let start = 20
+    pure (finish (twice start))
+
+--! assertNoErrors
+--! assertType main IO Int
+--! assertExecute main 42

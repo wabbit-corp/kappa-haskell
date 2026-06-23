@@ -1,0 +1,12 @@
+module main
+
+take : (1 x : Int) -> Int
+let take (1 x : Int) : Int = x
+
+mayIgnoreCallback : (k : Unit -> Int) -> Int
+let mayIgnoreCallback (k : Unit -> Int) : Int = 0
+
+bad : (1 x : Int) -> Int
+let bad (1 x : Int) : Int = mayIgnoreCallback (\() -> take x)
+
+--! assertErrorCount 1

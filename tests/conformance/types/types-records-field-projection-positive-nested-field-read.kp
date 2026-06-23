@@ -1,0 +1,17 @@
+module main
+
+type NestedRecord : Type = (subElement : Int)
+type MyRecord : Type = (nested : NestedRecord)
+
+getNestedSubElement : MyRecord -> Int
+let getNestedSubElement rec = rec.nested.subElement
+
+example : Int
+let example = getNestedSubElement (nested = (subElement = 42))
+
+-- Source issue: Idris2#50
+-- Kappa analogue: nested record extraction is an ordinary dotted projection chain.
+-- Spec: §2.8.3, §5.5.5
+--! assertNoErrors
+--! assertType getNestedSubElement MyRecord -> Int
+--! assertEval example 42

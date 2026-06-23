@@ -1,0 +1,17 @@
+module main
+
+trait Clone a =
+    clone : a -> a
+
+instance Clone Int =
+    let clone x = x
+
+use : forall a. Clone a => a -> a
+let use x = clone x
+
+result : Int
+let result = use 42
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

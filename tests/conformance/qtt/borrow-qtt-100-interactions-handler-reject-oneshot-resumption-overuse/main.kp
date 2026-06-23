@@ -1,0 +1,23 @@
+@PrivateByDefault module main
+
+bad : Int
+let bad : Int =
+    block
+        scoped effect Ask =
+            ask : Unit -> Bool
+
+        let comp : Eff <[Ask : Ask]> Int =
+            do
+                let _ <- Ask.ask ()
+                pure 1
+
+        let handled =
+            deep handle Ask comp with
+                case return y -> pure y
+                case ask _ k ->
+                    do
+                        let a <- k True
+                        let _ <- k False
+                        pure a
+
+        runPure handled

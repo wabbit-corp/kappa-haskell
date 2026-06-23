@@ -44,7 +44,7 @@ foldTerm termF itemF = go
       CVar _ -> mempty
       CGlob _ -> mempty
       CLam _ _ _ b -> go b
-      CPi _ _ _ a b -> go a <> go b
+      CPi _ _ _ _ a b -> go a <> go b
       CApp _ f a -> go f <> go a
       CSort _ -> mempty
       CLit _ -> mempty
@@ -97,7 +97,7 @@ foldTermWithDepth termF = go
       CVar _ -> mempty
       CGlob _ -> mempty
       CLam _ _ _ b -> go (d + 1) b
-      CPi _ _ _ a b -> go d a <> go (d + 1) b
+      CPi _ _ _ _ a b -> go d a <> go (d + 1) b
       CApp _ f a -> go d f <> go d a
       CSort _ -> mempty
       CLit _ -> mempty
@@ -137,7 +137,7 @@ mapTermWithDepth f = go
         CVar i -> CVar i
         CGlob g -> CGlob g
         CLam ic q n b -> CLam ic q n (go (d + 1) b)
-        CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
+        CPi ic q brw n a b -> CPi ic q brw n (go d a) (go (d + 1) b)
         CApp ic fn a -> CApp ic (go d fn) (go d a)
         CSort u -> CSort u
         CLit l -> CLit l
@@ -282,7 +282,7 @@ zonkTermWith resolveMeta = go
       CVar i -> CVar i
       CGlob g -> CGlob g
       CLam ic q n b -> CLam ic q n (go (d + 1) b)
-      CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
+      CPi ic q brw n a b -> CPi ic q brw n (go d a) (go (d + 1) b)
       CApp ic f a -> CApp ic (go d f) (go d a)
       CSort u -> CSort u
       CLit l -> CLit l
@@ -394,7 +394,7 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
           CMeta m -> m == target
           CApp _ f a -> go (next n) f || go (next n) a
           CLam _ _ _ b -> go (next n) b
-          CPi _ _ _ a b -> go (next n) a || go (next n) b
+          CPi _ _ _ _ a b -> go (next n) a || go (next n) b
           CCtor _ as -> any (go (next n)) as
           CMatch scrut alts ->
             go (next n) scrut

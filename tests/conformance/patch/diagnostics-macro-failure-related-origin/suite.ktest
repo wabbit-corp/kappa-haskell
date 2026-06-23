@@ -1,0 +1,3 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch E_TEST_MACRO_FAILURE|macro rejected this expression

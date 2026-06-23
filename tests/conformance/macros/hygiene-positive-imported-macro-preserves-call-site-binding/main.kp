@@ -1,0 +1,15 @@
+module main
+
+import lib.(wrapImported)
+
+-- Source issues: racket#1746, racket#2133
+-- Spec: §2.3, §5.8.2, §5.8.4
+result : Int
+let result =
+    block
+        let x = 41
+        $(wrapImported '{ x + 1 })
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 42

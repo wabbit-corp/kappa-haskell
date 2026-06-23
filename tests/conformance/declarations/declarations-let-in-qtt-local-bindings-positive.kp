@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+data File : Type =
+    Handle Int
+
+let consume (1 f : File) = unsafeConsume f
+
+let main : IO Unit = do
+    let 1 file = Handle 1
+    consume file
+    let & borrowed = Handle 2
+    let typed : Int = 1
+    printInt 0
+
+--! assertNoErrors
+--! assertDoItemDescriptors main let 1 file, expression, let & borrowed, let typed, expression

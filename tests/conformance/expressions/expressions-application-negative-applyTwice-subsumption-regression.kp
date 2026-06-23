@@ -1,0 +1,24 @@
+module main
+
+--! allow_unsafe_consume
+
+data Token : Type =
+    Token
+
+consume : (1 t : Token) -> Unit
+let consume t =
+    let _ = unsafeConsume t
+    in ()
+
+applyTwice : (ω k : (ω x : Unit) -> Unit) -> Unit
+let applyTwice k = do
+    k ()
+    k ()
+
+bad : (1 t : Token) -> Unit
+let bad t =
+    let k : (1 x : Unit) -> Unit = \(_ : Unit) -> consume t
+    applyTwice k
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE

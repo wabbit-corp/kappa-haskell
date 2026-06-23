@@ -1,0 +1,9 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let composed : Grapheme = g'\u{00E9}'
+let decomposed : Grapheme = g'e\u{301}'
+let exactDifferent : Bool = composed == decomposed
+
+--! assertType exactDifferent Bool

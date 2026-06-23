@@ -1,0 +1,12 @@
+@PrivateByDefault module operators
+
+infix left 60 (++)
+let (++) x y = x + y
+
+result : Int
+let result = 20 ++ 22
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42
+--! assertDeclKinds fixity, let, signature, let

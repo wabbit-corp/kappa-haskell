@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+takeThunk : Thunk Int -> Int
+let takeThunk (t : Thunk Int) : Int = force t
+
+existing : Thunk Int
+let existing : Thunk Int = thunk 1
+
+ok : Int
+let ok : Int = takeThunk existing

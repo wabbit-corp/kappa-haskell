@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+F : Type -> Type
+let F = type Box
+
+unwrap : F Int -> Int
+let unwrap b =
+    match b
+    case F.Box n -> n

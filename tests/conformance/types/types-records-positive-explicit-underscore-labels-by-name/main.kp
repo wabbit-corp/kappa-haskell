@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+-- F-12 soundness guard (adversarial-review vector 9). An EXPLICIT tuple-slot
+-- label literal `(_2 = a, _1 = b)` must bind BY NAME, not be positionally
+-- re-keyed in source order. With a = 3, b = 7 the record is `_1 = 7, _2 = 3`,
+-- so matching `(x, y)` binds x = _1 = 7. A positional re-key (the bug) would
+-- yield x = 3. Rule (a) positional re-keying is gated on IsPunned, and an
+-- explicit `_n =` label is not punned, so it routes to rule (b) by-name.
+mk : Int -> Int -> (Int, Int)
+let mk a b = (_2 = a, _1 = b)
+
+useFirst : (Int, Int) -> Int
+let useFirst p =
+    match p
+    case (x, y) -> x
+
+main : UIO Unit
+let main =
+    do
+        printInt (useFirst (mk 3 7))

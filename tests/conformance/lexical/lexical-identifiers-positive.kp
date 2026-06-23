@@ -1,0 +1,13 @@
+module main
+
+`type` : Int
+let `type` = 42
+
+snake_case : Int
+let snake_case = `type`
+
+--! assertNoErrors
+--! assertType type Int
+--! assertType snake_case Int
+--! x-assertDeclDescriptors signature type, let type, signature snake_case, let snake_case
+--! x-assertContainsTokenKinds Identifier

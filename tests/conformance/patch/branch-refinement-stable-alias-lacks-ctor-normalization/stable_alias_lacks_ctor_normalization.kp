@@ -1,0 +1,25 @@
+module stable_alias_lacks_ctor_normalization
+
+notLT : Ordering -> Bool
+let notLT o =
+    match o
+    case LT -> False
+    case _  -> True
+
+aliasResidual :
+    (o : Ordering) ->
+    match o
+    case LT -> Unit
+    case _  ->
+        let alias = o
+        in notLT alias = True
+let aliasResidual o =
+    match o
+    case LT -> ()
+    case _  ->
+        let alias = o
+        in refl
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

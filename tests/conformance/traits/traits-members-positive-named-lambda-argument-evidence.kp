@@ -1,0 +1,43 @@
+@PrivateByDefault module main
+
+-- Round-4 reviewer finding F3: an unannotated LOCAL let-bound lambda passed
+-- BY NAME into a higher-order callee must keep the evidence of constrained
+-- terms in its body (previously check-clean and wrong at runtime through
+-- all three sink shapes below).
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case h :: t -> h + sumList t
+
+applyTo : (Int -> Bool) -> Int -> Bool
+let applyTo f x = f x
+
+viaFilter : Int
+let viaFilter =
+    let f = \x -> x > 2
+    sumList (filter f (1 :: 2 :: 3 :: 4 :: Nil))
+
+viaMap : Bool
+let viaMap =
+    let f = \x -> x < 3
+    match map f (Some 5)
+      case Some b -> b
+      case None -> True
+
+viaUserHof : Bool
+let viaUserHof =
+    let f = \x -> x > 2
+    applyTo f 5
+
+topLevelNamed : Int
+let topLevelNamed = sumList (filter gtTwo (1 :: 2 :: 3 :: 4 :: Nil))
+
+gtTwo : Int -> Bool
+let gtTwo = \x -> x > 2
+
+--! assertNoErrors
+--! assertEval viaFilter 7
+--! assertEval viaMap False
+--! assertEval viaUserHof True
+--! assertEval topLevelNamed 7

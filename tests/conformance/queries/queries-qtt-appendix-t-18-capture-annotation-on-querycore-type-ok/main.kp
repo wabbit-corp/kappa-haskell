@@ -1,0 +1,9 @@
+module main
+
+usesBorrowedQuery :
+    forall (ρ : Region).
+    (q : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) ω (BorrowView ρ Int) captures (ρ)) ->
+    Unit
+let usesBorrowedQuery q = ()
+
+--! assertNoErrors

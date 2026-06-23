@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+
+let escapedBidi : String = "\u{202E}"

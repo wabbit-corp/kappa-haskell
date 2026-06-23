@@ -1,0 +1,10 @@
+module main_unpinned_alias
+
+import "https://example.com/lib" as remote
+
+value : String
+let value = "alias"
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE
+--! x-assertDeclDescriptors import "https://example.com/lib" as remote, signature value, let value

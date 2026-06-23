@@ -1,0 +1,11 @@
+module main
+
+badOverlap : (1 r : (1 x : Int, y : Int)) -> Int
+let badOverlap r =
+    let
+        & bx = r.x
+    in
+        r.x
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP

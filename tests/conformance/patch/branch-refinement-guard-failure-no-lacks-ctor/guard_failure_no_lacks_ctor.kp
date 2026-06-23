@@ -1,0 +1,14 @@
+module guard_failure_no_lacks_ctor
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+badGuarded : MyOption Int -> Bool -> Int
+let badGuarded x b =
+    match x
+    case MySome v if b -> v
+    case _             -> x.value
+
+--! mode check
+--! assertErrorCount 1

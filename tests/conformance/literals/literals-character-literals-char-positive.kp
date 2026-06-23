@@ -1,0 +1,12 @@
+module main
+
+letter : Char
+let letter = 'x'
+
+escaped : Char
+let escaped = '\n'
+
+--! assertNoErrors
+--! assertType letter Char
+--! assertType escaped Char
+--! x-assertContainsTokenKinds CharacterLiteral

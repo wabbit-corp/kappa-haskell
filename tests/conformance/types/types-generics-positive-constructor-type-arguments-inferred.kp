@@ -1,0 +1,31 @@
+module main
+
+-- Source issue: KT-287
+-- Spec: §7.1, §11.1
+data MapBox (k : Type) (v : Type) : Type =
+    EmptyMap
+    One (key : k) (value : v)
+
+emptyFromExpected : MapBox String Int
+let emptyFromExpected = EmptyMap
+
+oneFromArguments : MapBox String Int
+let oneFromArguments = One "answer" 42
+
+readValue : MapBox String Int -> Int
+let readValue m =
+    match m
+      case EmptyMap -> 0
+      case One key value -> value
+
+emptyValue : Int
+let emptyValue = readValue emptyFromExpected
+
+oneValue : Int
+let oneValue = readValue oneFromArguments
+
+--! assertNoErrors
+--! assertType emptyFromExpected MapBox String Int
+--! assertType oneFromArguments MapBox String Int
+--! assertEval emptyValue 0
+--! assertEval oneValue 42

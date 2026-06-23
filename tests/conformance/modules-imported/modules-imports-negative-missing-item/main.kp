@@ -1,0 +1,9 @@
+module main
+
+import foo.(missing)
+
+result : Int
+let result = 0
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_IMPORT_ITEM_NOT_FOUND

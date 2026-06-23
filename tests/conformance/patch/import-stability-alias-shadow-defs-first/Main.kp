@@ -1,0 +1,14 @@
+module Main
+
+import Defs as D
+import Shadow.*
+
+qualifiedReduction :
+    (o : Ordering) ->
+    match o
+    case LT -> Unit
+    case _  -> D.isNotLT o = True
+let qualifiedReduction o =
+    match o
+    case LT -> ()
+    case _  -> refl

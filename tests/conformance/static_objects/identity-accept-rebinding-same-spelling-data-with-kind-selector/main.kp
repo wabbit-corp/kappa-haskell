@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+data Cell (a : Type) : Type =
+    Cell (value : a)
+
+F : Type -> Type
+let F = type Cell
+
+ok : F Int
+let ok = F.Cell 1

@@ -1,0 +1,7 @@
+module main
+
+etaProof : forall (r : (x : Int, y : Int)). r = (x = r.x, y = r.y)
+let etaProof r = refl
+
+--! assertNoErrors
+

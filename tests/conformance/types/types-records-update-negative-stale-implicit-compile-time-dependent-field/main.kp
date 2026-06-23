@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type TypePkg : Type = (@T : Type, value : this.T)
+
+bad : TypePkg -> TypePkg
+let bad (p : TypePkg) : TypePkg = p.{ @T = String }

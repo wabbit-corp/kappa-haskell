@@ -1,0 +1,25 @@
+module main
+
+-- Round-9 NS-1: Float≡Double and Char≡UnicodeScalar compare equal at
+-- application boundaries, and document-declared alias heads are not
+-- raw-compared (previously every `type X = Y` argument rejected).
+
+type Meters = Int
+
+double : Int -> Int
+let double x = x * 2
+
+viaAlias : Int
+let viaAlias =
+    let m : Meters = 21
+    double m
+
+floatSide : Bool
+let floatSide =
+    let f : Float = 1.5
+    floatEq f 1.5
+
+--! mode check
+--! assertNoErrors
+--! assertEval viaAlias 42
+--! assertEval floatSide True

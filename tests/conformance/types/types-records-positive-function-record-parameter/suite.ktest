@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType sumPair (x : Int, y : Int) -> Int

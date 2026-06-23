@@ -1,0 +1,20 @@
+module main
+
+-- Source issues: elixir#392, elixir#869, elixir#982, ponyc#350
+-- Spec: §2.7D, §8.1.3D, §14.8.4C
+import std.supervisor.(ctor OneForOne, ctor RestartIntensity)
+import std.supervisor.(term startSupervisor, term shutdownSupervisor, term awaitSupervisor)
+
+main : UIO Unit
+let main = do
+    let sup <- startSupervisor OneForOne (RestartIntensity 0 (millis 0)) Nil
+    shutdownSupervisor sup
+    shutdownSupervisor sup
+    let exit <- awaitSupervisor sup
+    match exit
+      case Success () -> printInt 1
+      case Failure _ -> printInt 0
+
+--! assertNoErrors
+--! assertType main UIO Unit
+--! assertRunStdout main 1

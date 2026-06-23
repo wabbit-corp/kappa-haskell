@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+type Big = (| Int | String |)
+type Tiny = (| Int |)
+
+big : Big
+let big : Big = 1
+
+bad : Tiny
+let bad : Tiny = big

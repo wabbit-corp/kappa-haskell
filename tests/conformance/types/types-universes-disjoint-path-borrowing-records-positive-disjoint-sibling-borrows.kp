@@ -1,0 +1,9 @@
+module main
+
+sum2 : (& x : Int) -> (& y : Int) -> Int
+let sum2 x y = x + y
+
+demo : (1 r : (x : Int, y : Int)) -> Int
+let demo r = sum2 r.x r.y
+
+--! assertNoErrors

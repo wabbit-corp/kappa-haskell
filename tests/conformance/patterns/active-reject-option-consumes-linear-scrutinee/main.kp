@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+
+data Buf : Type =
+    Buf (n : Int)
+
+bufValue : (1 b : Buf) -> Int
+let bufValue (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+pattern MaybeTake (1 b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+bad : (1 b : Buf) -> Int
+let bad (1 b : Buf) : Int =
+    match b
+    case MaybeTake (n) -> n
+    case rest -> bufValue rest

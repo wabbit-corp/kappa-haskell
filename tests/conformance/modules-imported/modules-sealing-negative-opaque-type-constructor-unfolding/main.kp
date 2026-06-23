@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+data ListSet (a : Type) : Type =
+    EmptySet
+
+type SetSig : Type =
+    (opaque Set : Type -> Type,
+     empty : forall (a : Type). this.Set a)
+
+sets : SetSig
+let sets : SetSig =
+    seal
+        (Set = ListSet,
+         empty = \(@0 a : Type) -> EmptySet)
+    as SetSig
+
+bad : ListSet Int
+let bad : ListSet Int = sets.empty @Int

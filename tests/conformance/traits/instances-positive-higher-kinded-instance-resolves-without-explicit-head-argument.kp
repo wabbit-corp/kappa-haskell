@@ -1,0 +1,19 @@
+module main
+
+trait IxPure (f : Type -> Type -> Type) =
+    ixPure : a -> f tag a
+
+data Dummy tag a : Type =
+    MkDummy a
+
+instance IxPure Dummy =
+    let ixPure = MkDummy
+
+pure12 : Dummy String Int
+let pure12 = ixPure 12
+
+-- Source issue: Idris2#66
+-- Kappa analogue: a higher-kinded trait instance resolves from the demanded result type.
+-- Spec: §12.2.2, §12.3.1
+--! assertNoErrors
+--! assertType pure12 Dummy String Int

@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+
+type Counter = (n : Int, spare : Int)
+
+bad : Counter -> (Int -> Int)
+let bad (c : Counter) : Int -> Int =
+    block
+        let & n = c.n
+        (+ n)

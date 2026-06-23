@@ -1,0 +1,20 @@
+module main
+
+-- Regression (instance-resolution soundness): the prelude ships a single
+-- parameterized Monoid instance, `Monoid (List a)`. Resolving `Monoid a` for an
+-- unsolved goal variable must NOT bind it to the non-ground head `List a` (that
+-- guess previously let `(1 : Int) ++ (2 : Int)` type-check and then crash at
+-- runtime running the List append on an Int). A type with no Monoid instance
+-- must instead produce a clean compile-time "could not be resolved" error.
+-- (Numeric-literal defaulting via ground heads like `FromInteger Int` is
+-- unaffected; see the arithmetic below, which must remain clean.)
+
+bad : Int
+let bad = (1 : Int) ++ (2 : Int)
+
+ok : Int
+let ok = 1 + 2
+
+--! mode check
+--! assertErrorCount 1
+--! assertType ok Int

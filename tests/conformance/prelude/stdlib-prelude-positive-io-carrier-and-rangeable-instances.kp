@@ -1,0 +1,83 @@
+module main
+
+-- Spec §28 "Computation carriers" / "Ranges": Functor/Applicative/Monad (IO e)
+-- and Rangeable Nat/Int/Integer/UnicodeScalar must provide coherent evidence.
+-- Evidence is demanded through VALUE-driven constrained calls (binding-call
+-- constraint resolution is static; type-application shapes check lazily), and
+-- the IO instances are exercised end-to-end by RUNNING IO chains built
+-- through the instance members (runPure types against Eff only, so IO results
+-- are observed via assertRunStdout).
+
+needFunctor : forall (f : Type -> Type) (a : Type). (@ev : Functor f) -> f a -> Bool
+let needFunctor @ev x = True
+
+needApplicative : forall (f : Type -> Type) (a : Type). (@ev : Applicative f) -> f a -> Bool
+let needApplicative @ev x = True
+
+needMonad : forall (f : Type -> Type) (a : Type). (@ev : Monad f) -> f a -> Bool
+let needMonad @ev x = True
+
+needRangeable : forall (v : Type). (@ev : Rangeable v) -> v -> Bool
+let needRangeable @ev x = True
+
+pure41 : UIO Int
+let pure41 = pureIO 41
+
+ioFunctorEvidence : Bool
+let ioFunctorEvidence = needFunctor pure41
+
+ioApplicativeEvidence : Bool
+let ioApplicativeEvidence = needApplicative pure41
+
+ioMonadEvidence : Bool
+let ioMonadEvidence = needMonad pure41
+
+intRangeableEvidence : Int -> Bool
+let intRangeableEvidence x = needRangeable x
+
+natRangeableEvidence : Nat -> Bool
+let natRangeableEvidence x = needRangeable x
+
+integerRangeableEvidence : Integer -> Bool
+let integerRangeableEvidence x = needRangeable x
+
+scalarRangeableEvidence : UnicodeScalar -> Bool
+let scalarRangeableEvidence x = needRangeable x
+
+intRangeableProbe : Bool
+let intRangeableProbe = intRangeableEvidence 3
+
+-- Functor (IO e): map through the instance member.
+mappedMain : UIO Unit
+let mappedMain = bindIO (map (\x -> x + 1) pure41) (\value -> printInt value)
+
+-- Monad (IO e): the (>>=) member (delegating to bindIO).
+memberMain : UIO Unit
+let memberMain = bindIO (pure41 >>= (\x -> pureIO (x + 1))) (\value -> printInt value)
+
+pure6 : UIO Int
+let pure6 = pureIO 6
+
+pure7 : UIO Int
+let pure7 = pureIO 7
+
+-- Applicative (IO e): liftA2 via evidence projection, which also forces
+-- implicit resolution of Applicative (IO Void) at the call site.
+liftedAction : (@app : Applicative (IO Void)) -> UIO Int
+let liftedAction @app = app.liftA2 (\a -> \b -> a * b) pure6 pure7
+
+liftedMain : UIO Unit
+let liftedMain = bindIO liftedAction (\value -> printInt value)
+
+rangeValue : NumericRange Int
+let rangeValue = 1 .. 5
+
+--! assertNoErrors
+--! assertEval ioFunctorEvidence True
+--! assertEval ioApplicativeEvidence True
+--! assertEval ioMonadEvidence True
+--! assertEval intRangeableProbe True
+--! assertEval rangeValue NumericRange 1 5 False
+--! assertRunStdout mappedMain 42
+--! assertRunStdout memberMain 42
+--! assertRunStdout liftedMain 42

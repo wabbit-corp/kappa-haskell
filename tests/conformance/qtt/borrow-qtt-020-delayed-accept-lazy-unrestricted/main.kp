@@ -1,0 +1,8 @@
+module main
+
+ok : Int -> Int
+let ok (x : Int) : Int =
+    let n = lazy x
+    in force n
+
+--! assertNoErrors

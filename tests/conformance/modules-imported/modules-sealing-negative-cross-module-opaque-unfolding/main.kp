@@ -1,0 +1,6 @@
+module main
+
+import lib.(box, type OpaqueBox)
+
+bad : Int
+let bad : Int = box.value

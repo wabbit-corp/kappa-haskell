@@ -1,0 +1,17 @@
+module main
+
+-- Hostile-audit EXP-1 regression guard (§16.3.2:16677-16678): `_` in PATTERN/binder position is the wildcard,
+-- NOT an expression hole. The hole change touches only the expression dispatch (ParsePrimaryExpression), so
+-- wildcard patterns and lambda wildcard binders must remain unaffected (no spurious E_HOLE_UNSOLVED).
+data Box = Wrap Int
+
+f : Box -> Int
+let f b =
+    match b
+      case Wrap _ -> 0
+
+g : Int -> Int
+let g = \_ -> 5
+
+--! mode check
+--! assertNoErrors

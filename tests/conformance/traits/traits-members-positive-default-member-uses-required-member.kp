@@ -1,0 +1,18 @@
+module main
+
+-- Source issue: hylo#819
+-- Spec: §12.2.1
+trait Show a =
+    show : a -> String
+    debug : a -> String
+    let debug x = show x
+
+instance Show Int =
+    let show x = primitiveIntToString x
+
+result : String
+let result = debug 42
+
+--! assertNoErrors
+--! assertType result String
+--! assertEval result "42"

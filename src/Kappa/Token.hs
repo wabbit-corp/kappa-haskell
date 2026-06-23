@@ -1,10 +1,12 @@
--- | Token types produced by the lexer (Spec §5–§6).
+-- | Token types produced by the lexer (Spec §5–§6): the flat vocabulary
+-- the parser consumes. No logic lives here, so it is a good first file to
+-- read. (Codebase orientation and a reading order: docs/CONCEPTS.md.)
 --
--- Keywords are soft (§5.2): the lexer emits them as 'TokIdent' and the
--- parser decides keyword-ness contextually. The two exceptions are
--- @let?@ and @for?@, which §5.5.1 requires to be recognized as single
--- tokens; they are emitted as 'TokIdent' with the literal text @let?@ /
--- @for?@.
+-- Notable: keywords are __soft__ (§5.2). The lexer keeps no keyword list and
+-- emits words like @let@ or @match@ as ordinary 'TokIdent's; the parser
+-- decides keyword-ness from context, so @match@ stays usable as an
+-- identifier. The only forced single-token spellings are @let?@ \/ @for?@
+-- (§5.5.1), also emitted as 'TokIdent' carrying that literal text.
 module Kappa.Token
   ( Token (..)
   , Located (..)
@@ -52,8 +54,12 @@ data QuotedLit = QuotedLit
   }
   deriving stock (Eq, Show, Data)
 
+-- | The token vocabulary. Grouped below into families (names\/literals,
+-- reserved punctuation, brackets, metaprogramming, layout) purely for
+-- reading; the order is not significant.
 data Token
-  = TokIdent !Text
+  = -- Names and literals --------------------------------------------------
+    TokIdent !Text
   -- ^ Identifier or soft keyword (including @let?@ / @for?@).
   | TokBacktick !Text
   -- ^ Backtick-quoted identifier; payload is the unquoted text.
@@ -62,6 +68,10 @@ data Token
   | TokFloat !Double !(Maybe Text)
   | TokString !StringLit
   | TokQuoted !QuotedLit
+  -- Operators and reserved punctuation ----------------------------------
+  -- Most punctuation is just 'TokOperator', but a handful of forms are so
+  -- structural (arrows, binders, the layout-significant ones) that the
+  -- lexer gives them their own constructor so the parser needn't re-match text.
   | TokOperator !Text
   -- ^ Operator token (maximal munch, §5.5.1), e.g. @==@, @::@, @..<@.
   | TokArrow      -- ^ @->@
@@ -73,9 +83,11 @@ data Token
   | TokTilde      -- ^ @~@
   | TokBar        -- ^ @|@
   | TokBackslash  -- ^ @\\@
+  -- Optional-chaining sigils and holes ----------------------------------
   | TokQDot       -- ^ @?.@
   | TokElvis      -- ^ @?:@
   | TokHole !Text -- ^ named hole @?name@
+  -- Brackets and delimiters ---------------------------------------------
   | TokLParen | TokRParen
   | TokLBracket | TokRBracket
   | TokLBrace | TokRBrace
@@ -83,10 +95,15 @@ data Token
   | TokSetOpen | TokSetClose           -- ^ @{|@ / @|}@
   | TokEffOpen | TokEffClose           -- ^ @<[@ / @]>@
   | TokComma
+  -- Metaprogramming (quoting and splicing, §21) -------------------------
   | TokQuoteBrace -- ^ syntax quote opener @'{@ (§21.1)
   | TokSplice     -- ^ splice opener @$(@ (§21.2)
   | TokQuoteSplice -- ^ in-quote splice opener @${@ (§21.1)
   | TokBang       -- ^ monadic splice @!@ (§18.3) when prefix-adjacent
+  -- Errors and layout ---------------------------------------------------
+  -- Layout tokens are synthesized by the lexer from indentation, Python-style:
+  -- the source has no braces, so 'TokIndent'\/'TokDedent'\/'TokNewline' stand
+  -- in for the block structure the parser needs.
   | TokError
   -- ^ Recovered lexical error (e.g. unterminated backtick identifier):
   -- the diagnostic is already recorded; the parser never accepts this.

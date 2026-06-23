@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+consume : (1 x : Int) -> Int
+let consume (1 x : Int) : Int = x
+
+bad : (& x : Int) -> Int
+let bad (& x : Int) : Int = consume x

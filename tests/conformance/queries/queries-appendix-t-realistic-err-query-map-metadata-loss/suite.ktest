@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- Query { ... } is ill-formed because Query cannot silently discard map metadata.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch Query.*(map|Map)|(map|Map).*Query|metadata|ill-formed

@@ -1,0 +1,33 @@
+module main
+
+--! allow_unsafe_consume
+
+-- Source issue: rust#30745
+-- Spec: §5.1.5, §7.2.1, §7.5
+data Token : Type =
+    Token
+
+data MaybeToken : Type =
+    None
+    Some Token
+
+consume : (1 token : Token) -> Unit
+let consume token =
+    let _ = unsafeConsume token
+    in ()
+
+twice : (ω f : Unit -> Unit) -> Unit
+let twice f = do
+    f ()
+    f ()
+
+bad : (1 tokens : MaybeToken) -> Unit
+let bad tokens =
+    let f = \(_ : Unit) ->
+        match tokens
+          case Some token -> consume token
+          case None -> ()
+    twice f
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE

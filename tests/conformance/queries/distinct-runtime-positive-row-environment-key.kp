@@ -1,0 +1,22 @@
+module main
+
+-- Source family: query row-environment issue family
+-- Spec: §10.6.3, §10.10.2, §10.10.3
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+result : Int
+let result =
+    sumList [
+        for x in [1]
+        for y in [10, 20]
+        distinct
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 2

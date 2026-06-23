@@ -1,0 +1,25 @@
+module main
+
+-- Source issues: KT-328, KT-329
+-- Spec: §6.3.1, §7.2.1, §14.1.1
+invoke : (Unit -> Int) -> Int
+let invoke thunk = thunk ()
+
+makeThunk : Int -> Unit -> Int
+let makeThunk seed =
+    \() ->
+        addSeed : Int -> Int
+        let addSeed x = x + seed
+
+        doubleSeed : Int -> Int
+        let doubleSeed x = addSeed x + addSeed 0
+
+        doubleSeed 2
+
+result : Int
+let result = invoke (makeThunk 40)
+
+--! assertNoErrors
+--! assertType makeThunk Int -> Unit -> Int
+--! assertType result Int
+--! assertEval result 82

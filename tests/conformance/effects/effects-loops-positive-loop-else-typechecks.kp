@@ -1,0 +1,15 @@
+module main
+
+-- Source issue: KT-476
+-- Spec: §8.5.2, §8.7.5
+withLoopElse : Bool -> UIO Unit
+let withLoopElse flag =
+    do
+        while flag do
+            pure ()
+        else do
+            pure ()
+        pure ()
+
+--! assertNoErrors
+--! assertType withLoopElse Bool -> UIO Unit

@@ -1,0 +1,33 @@
+module main
+
+-- No-over-rejection (RESULT-DIRECTED-ANNOTATION-GAP expectedType gate + ground
+-- match): the refutation guard solves the payload from the demanded result and
+-- compares it against the argument's STANDALONE type. A VARIABLE argument whose
+-- type MATCHES the solved parameter must NOT be refuted: here `pure x` (x : Int)
+-- under the demanded `Box Int` solves the payload to `Int`, x's type is `Int`,
+-- and they unify — so the directed preparation succeeds and the guard never
+-- refutes. (The guard is also gated on a PRESENT expected type; with none, it is
+-- never consulted at all.)
+--
+-- COMPILE-LEVEL assertion: the no-over-rejection property is STATIC. Runtime
+-- evaluation is intentionally NOT asserted: result-directed `pure` produces an
+-- IO action, so a `pure` result binding evaluates to `<io>` rather than a scalar,
+-- and a USER `Box` carrier hits the disclosed IO-biased value-dispatch limitation
+-- (ORTHOGONAL to this gap). The no-over-rejection property is fully captured by
+-- assertNoErrors.
+
+data Box a = MkBox a
+
+trait Pure (f : Type -> Type) =
+    pure : forall (a : Type). a -> f a
+
+instance Pure Box =
+    let pure x = MkBox x
+
+wrapped : Box Int
+let wrapped =
+    let x : Int = 7
+    pure x
+
+--! mode check
+--! assertNoErrors

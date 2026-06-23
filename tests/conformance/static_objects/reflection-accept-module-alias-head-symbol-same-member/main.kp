@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+import lib.api as Api
+
+sameMember : Bool
+let sameMember =
+    block
+        let M = module Api
+        match headSymbolSyntax '{ Api.answer }
+        case Some s1 ->
+            match headSymbolSyntax '{ M.answer }
+            case Some s2 -> sameSymbol s1 s2
+            case None -> False
+        case None -> False

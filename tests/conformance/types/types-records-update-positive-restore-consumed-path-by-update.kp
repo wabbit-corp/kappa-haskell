@@ -1,0 +1,15 @@
+module main
+
+data Buffer : Type =
+    Buffer
+
+process : (1 old : Buffer) -> Buffer
+let process old = old
+
+repair : (1 r : (1 buf : Buffer, len : Nat)) -> (1 buf : Buffer, len : Nat)
+let repair r =
+    let old = r.buf
+    let new = process old
+    r.{ buf = new }
+
+--! assertNoErrors

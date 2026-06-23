@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- Prefixed-string macro diagnostics are ordinary Elab diagnostics with related origins.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch KAPPA-SQL-FORMAT|unsupported SQL interpolation format|:param|:ident

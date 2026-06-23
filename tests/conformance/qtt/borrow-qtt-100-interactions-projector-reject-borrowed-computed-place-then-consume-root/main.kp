@@ -1,0 +1,20 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+type Pair : Type = (left : Int, right : Int)
+
+projection leftOf (place p : Pair) : Int =
+    yield p.left
+
+consumePair : (1 p : Pair) -> Int
+let consumePair (1 p : Pair) : Int =
+    block
+        let _ = unsafeConsume p
+        0
+
+bad : (1 p : Pair) -> Int
+let bad (1 p : Pair) : Int =
+    block
+        let & l = leftOf p
+        consumePair p

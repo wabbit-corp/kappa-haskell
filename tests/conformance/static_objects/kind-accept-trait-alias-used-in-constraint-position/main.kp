@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+trait Sized (a : Type) =
+    size : a -> Int
+
+C : Type -> Type
+let C = trait Sized
+
+needs : C String => String -> Int
+let needs s = 0

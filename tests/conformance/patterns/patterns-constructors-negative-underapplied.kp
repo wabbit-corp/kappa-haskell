@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+-- Round-4 reviewer finding F4: an UNDER-applied constructor pattern is a
+-- static arity error (spec E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH covers "too
+-- few" as well); previously `case Some ->` checked clean, counted as covering
+-- for exhaustiveness, and trapped non-exhaustive at runtime.
+probe : Option Int -> Int
+let probe o =
+    match o
+      case Some -> 1
+      case None -> 0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH

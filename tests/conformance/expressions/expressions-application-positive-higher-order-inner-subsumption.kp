@@ -1,0 +1,14 @@
+module main
+
+consumeArgOnce : (1 x : Int) -> Int
+let consumeArgOnce x = x
+
+needsFlexibleInner : (k : (ω x : Int) -> Int) -> Int
+let needsFlexibleInner k = k 1
+
+okInnerSubsumption : Int
+let okInnerSubsumption = needsFlexibleInner consumeArgOnce
+
+--! assertNoErrors
+--! assertType okInnerSubsumption Int
+

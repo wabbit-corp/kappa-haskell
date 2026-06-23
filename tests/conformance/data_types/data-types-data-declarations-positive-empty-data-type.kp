@@ -1,0 +1,14 @@
+module main
+
+-- Source issue: KT-292
+-- Spec: §11.1
+data Never : Type
+
+data Token : Type =
+    Token
+
+ok : Token
+let ok = Token
+
+--! assertNoErrors
+--! assertType ok Token

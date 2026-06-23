@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+inc : Int -> Int
+let inc : Int -> Int = (+ 1)
+
+ok : Int
+let ok : Int = inc 41

@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+mkPkg : Unit -> (F : Type -> Type,)
+let mkPkg () = (F = Option,)
+
+ok : (mkPkg ()).F Int
+let ok = (mkPkg ()).F.Some 1

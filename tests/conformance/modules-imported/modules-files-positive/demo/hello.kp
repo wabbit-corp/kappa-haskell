@@ -1,0 +1,9 @@
+module demo.hello
+
+answer : Int
+let answer = 42
+
+--! assertNoErrors
+--! x-assertModule demo.hello
+--! assertType answer Int
+--! assertDeclKinds signature, let

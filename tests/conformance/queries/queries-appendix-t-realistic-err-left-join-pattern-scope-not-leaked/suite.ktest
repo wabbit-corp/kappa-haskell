@@ -1,0 +1,6 @@
+-- Appendix T directory suite.
+-- The pattern variable of a left join is not in scope after the clause.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticMatch (not in scope|Not in scope|unbound|Unbound|undefined|Undefined).*\bo\b|\bo\b.*(not in scope|Not in scope|unbound|Unbound|undefined|Undefined)

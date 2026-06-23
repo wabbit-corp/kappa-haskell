@@ -1,0 +1,26 @@
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- Source issues: KT-146, KT-592
+-- Spec: §7.1.2A, §7.4.1, §7.4.2, §2.8.3
+readValue : Payload -> Int
+let readValue p =
+    if p is Box && p.value == 41 then p.value else 0
+
+fromBox : Int
+let fromBox = readValue (Box 41)
+
+fromOther : Int
+let fromOther = readValue (Box 40)
+
+fromEmpty : Int
+let fromEmpty = readValue Empty
+
+--! assertNoErrors
+--! assertType readValue Payload -> Int
+--! assertEval fromBox 41
+--! assertEval fromOther 0
+--! assertEval fromEmpty 0

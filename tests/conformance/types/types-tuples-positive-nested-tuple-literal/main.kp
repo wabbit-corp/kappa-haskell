@@ -1,0 +1,20 @@
+module main
+
+-- F-12 (nested): expected-type-directed RecordLiteral lowering recurses into each
+-- re-keyed field value with that field's expected type, so a nested tuple literal
+-- `((b, a), c)` re-keys at EVERY level against `((Int, Int), Int)`. The inner `(b, a)`
+-- must key the same synthetic `_1, _2` constructor as the inner pattern `(x, y)`, and
+-- the outer pair likewise. Spec §4.5 (tuples), §13.2 (record equality).
+
+nest : Int -> Int -> Int -> ((Int, Int), Int)
+let nest a b c = ((b, a), c)
+
+sumNest : ((Int, Int), Int) -> Int
+let sumNest p =
+    match p
+      case ((x, y), z) -> x + y + z
+
+main : UIO Unit
+let main =
+    do
+        printInt (sumNest (nest 1 2 3))

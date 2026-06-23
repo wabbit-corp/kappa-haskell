@@ -1,0 +1,19 @@
+module main
+
+-- Round-6 F2 (§6.1.6): an out-of-scope numeric-literal suffix previously
+-- compiled clean and crashed at runtime ("Name 'qq' is not in scope"); the
+-- spec mandates a compile-time error identifying the missing suffix. The
+-- in-scope suffix form stays accepted (pinned below via px).
+
+px : Int -> Int
+let px x = x * 2
+
+good : Int
+let good = 12px
+
+bad : Int
+let bad = 12qq
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_NAME_UNRESOLVED

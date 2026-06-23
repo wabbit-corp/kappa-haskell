@@ -1,0 +1,13 @@
+module main
+
+import foo
+
+result : String
+let result = foo.message
+
+let banner : String = f"${result}!"
+
+--! assertNoErrors
+--! assertType result String
+--! assertType banner String
+--! assertType foo.message String

@@ -1,0 +1,11 @@
+module main
+
+-- Source issue: ghc#2141
+-- Spec: §5.5.5
+type Point : Type = (x : Int, y : Int)
+
+bad : Point -> Point
+let bad (p : Point) : Point = p.{ z = 0 }
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch record|update|field|z

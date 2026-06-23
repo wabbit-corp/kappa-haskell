@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+
+let twoReceivers (this x : Int) (this y : Int) : Int = x + y
+
+bad : Int
+let bad : Int = 1.twoReceivers 2

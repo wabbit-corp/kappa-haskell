@@ -1,0 +1,11 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let alphaLessBeta : Bool = '\u{03B1}' < '\u{03B2}'
+let asciiBeforeCjk : Bool = 'a' < '\u{4E66}'
+let scalarOrdering : Ordering = compare '\u{10FFFF}' '\u{0}'
+
+--! assertType alphaLessBeta Bool
+--! assertType asciiBeforeCjk Bool
+--! assertType scalarOrdering Ordering

@@ -1,0 +1,20 @@
+module main
+
+data Foo (@0 a : Type) (@0 p : a -> a -> Type) : Type =
+    Bar (x : a) (y : a) (proof : p x y)
+
+direct : Foo Nat (=)
+let direct = Bar 1 1 refl
+
+type Equal (@0 a : Type) = (=) a
+
+viaAlias : Foo Nat (Equal Nat)
+let viaAlias = Bar 2 2 refl
+
+-- Source issue: Idris2#367
+-- Kappa analogue: a parenthesized operator name such as `(=)` must parse and elaborate as an ordinary type-level name
+-- in direct type arguments and in eta-reduced type-alias bodies.
+-- Spec: §3.5.1, §5.6.1
+--! assertNoErrors
+--! assertType direct Foo Nat (=)
+--! assertType viaAlias Foo Nat (Equal Nat)

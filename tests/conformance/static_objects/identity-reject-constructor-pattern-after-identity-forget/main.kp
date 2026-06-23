@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+forget : (F : Type -> Type) -> (G : Type -> Type,)
+let forget F = (G = F,)
+
+pkg : (G : Type -> Type,)
+let pkg = forget (type Box)
+
+bad : pkg.G Int -> Int
+let bad x =
+    match x
+    case pkg.G.Box n -> n

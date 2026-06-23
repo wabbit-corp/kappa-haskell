@@ -81,7 +81,12 @@ data Term
   = CVar !Int
   | CGlob !GName
   | CLam !Icit !Q !Text !Term
-  | CPi !Icit !Q !Text !Term !Term
+  -- | Dependent function type. The 'Bool' is the binder's borrow marker
+  -- (§12.3: @(& x : A) -> …@) — part of the binder information carried in
+  -- core so usage analysis reads it from the type, not the surface AST. It
+  -- is metadata for the quantity/borrow checker: conversion ignores it
+  -- (borrow on a parameter is not part of definitional type identity here).
+  | CPi !Icit !Q !Bool !Text !Term !Term
   | CApp !Icit !Term !Term
   | CSort !Int -- ^ @Type u@
   | CLit !Literal
@@ -218,7 +223,7 @@ data Value
   | VFlex !MetaId !Spine
   | VGlobN !GName !Spine -- ^ neutral global (opaque or not yet unfolded)
   | VLam !Icit !Q !Text !Closure
-  | VPi !Icit !Q !Text !Value !Closure
+  | VPi !Icit !Q !Bool !Text !Value !Closure -- ^ 'Bool': binder borrow marker (§12.3), see 'CPi'
   | VSort !Int
   | VLit !Literal
   | VCtor !GName ![Value]

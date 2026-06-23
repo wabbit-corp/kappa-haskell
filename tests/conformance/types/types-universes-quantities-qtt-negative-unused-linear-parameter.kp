@@ -1,0 +1,10 @@
+module main
+
+data Token : Type =
+    Token
+
+bad : (1 token : Token) -> Unit
+let bad token = ()
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP

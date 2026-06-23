@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+type Address : Type = (city : String, zip : Int)
+type User : Type = (name : String, address : Address)
+
+bad : User -> User
+let bad (u : User) : User = u.{ address = (city = "Paris", zip = 75000), address.city = "Lyon" }

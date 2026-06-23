@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+
+addToOne : Int -> Int
+let addToOne : Int -> Int = (1 +)
+
+ok : Int
+let ok : Int = addToOne 41

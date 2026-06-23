@@ -1,0 +1,11 @@
+module main
+
+-- Source issue: KT-291
+-- Spec: §2.8.6, §11.1
+data Empty : Type
+
+bad : Empty
+let bad = Empty
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH

@@ -1,0 +1,27 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+-- Source issues: KT-313, KT-314
+-- Spec: §5.4.9, §7.5, §11.1
+unwrapOr : forall (a : Type). Option a -> a -> a
+let unwrapOr @a value fallback =
+    match value
+      case Some payload -> payload
+      case None -> fallback
+
+presentName : String
+let presentName = unwrapOr (Some "kappa") "fallback"
+
+missingCount : Option Int
+let missingCount = None
+
+fallbackCount : Int
+let fallbackCount = unwrapOr missingCount 42
+
+--! assertNoErrors
+--! assertType unwrapOr forall (a : Type). Option a -> a -> a
+--! assertType presentName String
+--! assertType fallbackCount Int
+--! assertEval presentName "kappa"
+--! assertEval fallbackCount 42

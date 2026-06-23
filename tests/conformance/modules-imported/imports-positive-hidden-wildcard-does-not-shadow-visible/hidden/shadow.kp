@@ -1,0 +1,5 @@
+@PrivateByDefault
+module hidden.shadow
+
+let answer = 0
+public let keep = 1

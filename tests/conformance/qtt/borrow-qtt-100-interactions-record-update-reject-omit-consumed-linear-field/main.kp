@@ -1,0 +1,19 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+type Box : Type = (value : Int)
+type Packet : Type = (1 payload : Box, tag : Int)
+
+boxValue : (1 b : Box) -> Int
+let boxValue (1 b : Box) : Int =
+    block
+        let _ = unsafeConsume b
+        0
+
+bad : (1 p : Packet) -> Packet
+let bad (1 p : Packet) : Packet =
+    block
+        let 1 old = p.payload
+        let n = boxValue old
+        p.{ tag = n }

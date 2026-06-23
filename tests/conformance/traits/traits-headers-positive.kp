@@ -1,0 +1,13 @@
+module main
+
+trait Eq a =
+    equals : a -> a -> Bool
+
+trait Show a =
+    show : a -> String
+    debug : a -> String
+
+--! assertNoErrors
+--! x-assertDeclDescriptors trait Eq, trait Show
+--! x-assertTraitMembers Eq equals
+--! x-assertTraitMembers Show show, debug

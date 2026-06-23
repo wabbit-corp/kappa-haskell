@@ -1,0 +1,3 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Ss]how|[Ii]mplicit|HashCode

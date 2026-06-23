@@ -1,0 +1,8 @@
+module main
+
+ok : (value : Int,) -> Int
+let ok box =
+    let
+        & x = box.value
+    in
+        $(pure '{ x + 1 })

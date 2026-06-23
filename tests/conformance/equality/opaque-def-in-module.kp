@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+--! assertEval useSecret 7
+
+-- §8.5.2: within its defining module an `opaque` definition is transparent
+-- (its equation IS available for definitional equality), so a local `refl`
+-- proof of `secret = 7` succeeds; the value also still evaluates. (Outside
+-- the module it is opaque — see modules-opaque-cross-module.)
+module main
+
+secret : Int
+opaque let secret = 7
+
+proof : secret = 7
+let proof = refl
+
+useSecret : Int
+let useSecret = secret

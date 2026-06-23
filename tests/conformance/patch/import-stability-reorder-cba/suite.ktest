@@ -1,0 +1,4 @@
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType Main.answer Int

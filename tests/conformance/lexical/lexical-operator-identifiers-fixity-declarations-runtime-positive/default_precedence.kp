@@ -1,0 +1,8 @@
+module default_precedence
+
+result : Int
+let result = 2 + 3 * 4
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 14

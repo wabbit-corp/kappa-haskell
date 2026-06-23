@@ -1,0 +1,18 @@
+module main
+
+-- Source issue: agda#238
+-- Kappa analogue: descent under a fixed constructor spine must retain the recursive relation.
+-- Spec: §6.4.2, §6.4.5, §17.3.1.4
+shrinkSpine : List Int -> Int
+let shrinkSpine xs =
+    match xs
+      case Nil -> 0
+      case _ :: Nil -> 1
+      case _ :: second :: tail -> 1 + shrinkSpine (second :: tail)
+
+result : Int
+let result = shrinkSpine (1 :: 2 :: 3 :: 4 :: Nil)
+
+--! assertNoErrors
+--! assertType shrinkSpine List Int -> Int
+--! assertEval result 4

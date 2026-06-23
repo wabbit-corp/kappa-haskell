@@ -1,0 +1,20 @@
+module dsl.sql
+
+data SqlQuery (row : Type) : Type =
+    SqlQuery (text : String)
+
+data PreparedSql (row : Type) : Type =
+    PreparedSql (text : String)
+
+instance InterpolatedMacro (PreparedSql row) =
+    let buildInterpolated fragments =
+        pure '{ PreparedSql "prepared-sql-from-fragments" }
+
+sql : forall (row : Type). Elab (InterpolatedMacro (PreparedSql row))
+let sql @row =
+    pure (summon (InterpolatedMacro (PreparedSql row)))
+
+instance FromComprehensionRaw (SqlQuery row) =
+    let Item = row
+    let fromComprehensionRaw raw =
+        pure '{ SqlQuery "compiled-from-raw-comprehension" }

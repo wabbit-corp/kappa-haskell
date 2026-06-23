@@ -1,0 +1,18 @@
+module main
+
+single : Query Int
+let single =
+    Query [ yield 1 ]
+
+onceSingle : OnceQuery Int
+let onceSingle =
+    OnceQuery [ yield 1 ]
+
+explicitSingleton : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω Int
+let explicitSingleton =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω [ yield 1 ]
+
+--! assertNoErrors
+--! assertType single Query Int
+--! assertType onceSingle OnceQuery Int
+--! assertType explicitSingleton QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω Int

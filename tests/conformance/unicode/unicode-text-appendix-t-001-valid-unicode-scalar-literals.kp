@@ -1,0 +1,15 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let asciiScalar : UnicodeScalar = 'a'
+let newlineScalar : UnicodeScalar = '\n'
+let lambdaScalar : UnicodeScalar = '\u03BB'
+let cjkScalar : UnicodeScalar = '\u{4E66}'
+let emojiScalar : UnicodeScalar = '\u{1F642}'
+
+--! assertType asciiScalar UnicodeScalar
+--! assertType newlineScalar UnicodeScalar
+--! assertType lambdaScalar UnicodeScalar
+--! assertType cjkScalar UnicodeScalar
+--! assertType emojiScalar UnicodeScalar

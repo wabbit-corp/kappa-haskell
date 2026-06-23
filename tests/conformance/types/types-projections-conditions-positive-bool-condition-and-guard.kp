@@ -1,0 +1,33 @@
+module main
+
+-- Hostile-audit XIMPL-2/XIMPL-3 pin: a projection-body if/elif condition (§16.4 L16949) and a
+-- match-case guard (§17.1.9 L17637) must be Bool — exactly like value-position if/match. These
+-- legitimate Bool forms must keep compiling (regression guard).
+data Side = Lo | Hi
+
+type Pair = (left : Int, right : Int, flag : Bool, tag : Side)
+
+projection bigger (place this : Pair) : Int =
+    if this.left > this.right then yield this.left else yield this.right
+
+projection byFlag (place this : Pair) : Int =
+    if this.flag then yield this.left else yield this.right
+
+projection byParamElif (pick : Bool) (place this : Pair) : Int =
+    if pick then yield this.left
+    elif this.left > 0 then yield this.right
+    else yield this.left
+
+projection byTag (place this : Pair) : Int =
+    if this.tag is Hi then yield this.left else yield this.right
+
+projection guardCompare (place this : Pair) : Int =
+    match this.left
+      case n if n > 0 -> yield this.left
+      case _ -> yield this.right
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,8 @@
+module typed_binder
+
+result : Int
+let result = (\(x : Int) -> x + 1) 41
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

@@ -1,0 +1,46 @@
+module main
+
+-- Regression for three intertwined fixes needed by constrained trait members
+-- (the Foldable.foldMap shape):
+--
+-- 1. Validation comparison: a recursive call instantiates its callee with
+--    fresh variables ('v4 -> v5 -> v5') that must UNIFY with the enclosing
+--    binder's rigid parameter types ('a -> m'); previously the dependent
+--    comparison demanded definitional equality and spuriously reported
+--    "requires equality transport evidence".
+-- 2. Implicit evidence propagation: the recursive call re-supplies @mon from
+--    the evidence in scope.
+-- 3. Bare evidence projection: `mon.empty` (zero-argument member projection
+--    from evidence) must lower to a trait call; it previously lowered to a
+--    plain name projection and failed at RUNTIME with "Value 'mon' has no
+--    projected member 'empty'" (applied projections like `mon.append x y`
+--    already worked).
+
+trait MyFold (f : Type -> Type) =
+    myFoldMap : forall (a : Type) (m : Type). (@_ : Monoid m) -> (a -> m) -> f a -> m
+
+myFoldMapList : forall (a : Type) (m : Type). (@mon : Monoid m) -> (a -> m) -> List a -> m
+let myFoldMapList (@0 a : Type) (@0 m : Type) @mon f xs =
+    match xs
+      case Nil -> mon.empty
+      case h :: t -> mon.append (f h) (myFoldMapList f t)
+
+instance MyFold List =
+    let myFoldMap @mon f xs = myFoldMapList f xs
+
+len : List Int -> Int
+let len xs =
+    match xs
+      case Nil -> 0
+      case _ :: t -> 1 + len t
+
+-- duplicates each element; the result monoid is Monoid (List Int)
+doubled : List Int
+let doubled = myFoldMap (\x -> x :: x :: Nil) (1 :: 2 :: 3 :: Nil)
+
+doubledLength : Int
+let doubledLength = len doubled
+
+--! mode check
+--! assertNoErrors
+--! assertEval doubledLength 6

@@ -1,0 +1,3 @@
+@PrivateByDefault module main
+
+type Bad : Type = (x : Int, x : String)

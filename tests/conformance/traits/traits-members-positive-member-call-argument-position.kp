@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+-- Round-3 reviewer finding F1: a bare trait-member call in ARGUMENT position
+-- must receive its demanded type from the enclosing callee's parameter
+-- (result-directed resolution per spec 12.2.2); this previously lowered as a
+-- bare name and crashed at runtime.
+unwrapOO : Option (Option Int) -> Int
+let unwrapOO o =
+    match o
+      case Some (Some v) -> v
+      case Some None -> 0 - 1
+      case None -> 0 - 2
+
+travArg : Int
+let travArg = unwrapOO (traverse (\x -> Some (x + 3)) (Some 4))
+
+--! assertNoErrors
+--! assertEval travArg 7

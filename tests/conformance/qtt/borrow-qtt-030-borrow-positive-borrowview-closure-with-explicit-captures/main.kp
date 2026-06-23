@@ -1,0 +1,84 @@
+@PrivateByDefault module main
+
+type Cell = (value : Int)
+type Pair = (left : Int, right : Int)
+type Nest = (inner : Cell, other : Int)
+type LinCell = (1 value : Int, tag : Int)
+
+data CellBox : Type =
+    CellBox (1 cell : Cell)
+
+data NestBox : Type =
+    NestBox (1 nest : Nest)
+
+data LinCellBox : Type =
+    LinCellBox (1 cell : LinCell)
+
+consumeCell : (1 cell : Cell) -> CellBox
+let consumeCell (1 cell : Cell) : CellBox = CellBox cell
+
+consumeNest : (1 nest : Nest) -> NestBox
+let consumeNest (1 nest : Nest) : NestBox = NestBox nest
+
+consumeLinCell : (1 cell : LinCell) -> LinCellBox
+let consumeLinCell (1 cell : LinCell) : LinCellBox = LinCellBox cell
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+consumeInt : (1 x : Int) -> Int
+let consumeInt (1 x : Int) : Int = x
+
+makeCell : Unit -> Cell
+let makeCell () : Cell = (value = 0)
+
+projection cellValue (place this : Cell) : Int =
+    yield this.value
+
+projection pairLeft (place this : Pair) : Int =
+    yield this.left
+
+projection pairRight (place this : Pair) : Int =
+    yield this.right
+
+projection choosePairField (chooseLeft : Bool) (place this : Pair) : Int =
+    if chooseLeft then
+        yield this.left
+    else
+        yield this.right
+
+projection chooseBetweenCells (chooseLeft : Bool) (place leftRoot : Cell) (place rightRoot : Cell) : Int =
+    if chooseLeft then
+        yield leftRoot.value
+    else
+        yield rightRoot.value
+
+projection selfInt (place this : Int) : Int =
+    yield this
+
+projection linValue (place this : LinCell) : Int =
+    yield this.value
+
+projection cellLens (place this : Cell) : Int =
+    get -> this.value
+
+    set (new_value : Int) ->
+        this.{ value = new_value }
+
+projection readOnlyLens (place this : Cell) : Int =
+    get -> this.value
+
+projection sinkOnly (place this : Cell) : Int =
+    sink -> this.value
+
+bump : (inout v : Int) -> UIO (1 v : Int)
+let bump (inout v : Int) : UIO (1 v : Int) =
+    pure (v = v)
+
+step2 : (inout a : Int) -> (inout b : Int) -> UIO (1 a : Int, 1 b : Int)
+let step2 (inout a : Int) (inout b : Int) : UIO (1 a : Int, 1 b : Int) =
+    pure (a = b, b = a)
+
+makeReader : forall (r : Region). BorrowView r Int -> ((Unit -> Int) captures (r))
+let makeReader (@0 r : Region) (view : BorrowView r Int) : ((Unit -> Int) captures (r)) =
+    \() -> withBorrowView view (\(&[r] x : Int) -> observe x)

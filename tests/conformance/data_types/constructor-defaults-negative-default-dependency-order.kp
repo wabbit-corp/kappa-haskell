@@ -1,0 +1,17 @@
+module main
+
+-- Source issues: KT-371, KT-826
+-- Spec: §11.1, §11.1.1
+data BadLater : Type =
+    BadLater {
+        left : Int = right,
+        right : Int = 0
+    }
+
+data BadSelf : Type =
+    BadSelf {
+        value : Int = value
+    }
+
+--! assertErrorCount 2
+--! assertDiagnosticMatch default|later|self|right|value

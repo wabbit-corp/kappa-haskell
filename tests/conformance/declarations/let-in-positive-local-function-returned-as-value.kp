@@ -1,0 +1,16 @@
+module main
+
+-- Source issue: KT-1037
+-- Spec: §6.3.1, §7.1, §7.2
+makeInc : Unit -> (Int -> Int)
+let makeInc () =
+    let inc x = x + 1
+    inc
+
+result : Int
+let result = (makeInc ()) 41
+
+--! assertNoErrors
+--! assertType makeInc Unit -> (Int -> Int)
+--! assertType result Int
+--! assertEval result 42

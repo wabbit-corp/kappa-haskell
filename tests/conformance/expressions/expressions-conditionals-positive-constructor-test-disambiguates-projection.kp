@@ -1,0 +1,14 @@
+module main
+
+data Payload : Type =
+    IntBox (label : Int)
+    NatBox (label : Nat)
+
+-- Source issue: ghc#1401
+-- Spec: §7.3.4, §7.4.1, §2.8.3
+readLabel : Payload -> Nat
+let readLabel p =
+    if p is NatBox then p.label else 0
+
+--! assertNoErrors
+--! assertType readLabel Payload -> Nat

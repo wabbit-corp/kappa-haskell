@@ -1,0 +1,8 @@
+module main
+
+{- broken block comment
+value : Int
+let value = 42
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_UNTERMINATED_BLOCK_COMMENT

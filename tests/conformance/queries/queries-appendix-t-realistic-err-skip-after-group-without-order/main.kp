@@ -1,0 +1,14 @@
+module main
+
+import model.data.*
+
+bad : List (key : String, names : List String)
+let bad =
+    [
+        for u in users
+        group by u.region {
+            names = [u.name]
+        } into g
+        skip 1
+        yield g
+    ]

@@ -1,0 +1,12 @@
+-- leading line comment
+module main
+
+{- block comment
+   with nested {- inner -} content
+-}
+value : Int
+let value = 42 -- trailing line comment
+
+--! assertNoErrors
+--! assertType value Int
+--! x-assertDeclDescriptors signature value, let value

@@ -1,0 +1,19 @@
+module main
+
+-- Round-8 KR8-1 (§16.4): if-expression branches carry the expected type;
+-- previously `if True then "boom" else Red` checked clean at Color and the
+-- raw String reached runtime.
+
+data Color : Type =
+    Red
+    Green
+
+bad : Color
+let bad = if True then "boom" else Red
+
+badInt : Int
+let badInt = if True then Red else 1
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_TYPE_MISMATCH, E_TYPE_MISMATCH

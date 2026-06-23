@@ -1,0 +1,12 @@
+module main
+
+import std.prelude.(type Option)
+
+type Inner = (c : Int)
+type Outer = (b : Option Inner)
+
+flattened : Option Outer -> Option Int
+let flattened a = a?.b?.c
+
+--! assertNoErrors
+--! assertType flattened Option Outer -> Option Int

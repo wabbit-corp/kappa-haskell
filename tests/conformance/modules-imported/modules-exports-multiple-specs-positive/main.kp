@@ -1,0 +1,9 @@
+module main
+
+export library.math as math, library.text.(greeting)
+
+value : Int
+let value = 42
+
+--! assertNoErrors
+--! x-assertDeclDescriptors export library.math as math | library.text.(greeting), signature value, let value

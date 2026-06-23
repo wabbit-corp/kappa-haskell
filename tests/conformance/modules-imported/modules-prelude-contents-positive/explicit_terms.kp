@@ -1,0 +1,11 @@
+module explicit_terms
+
+import std.prelude.(not, False, True)
+
+flag : Bool
+let flag = not False
+
+--! assertNoErrors
+--! assertType flag Bool
+--! x-assertEval flag True
+--! x-assertDeclDescriptors import std.prelude.(not + False + True), signature flag, let flag

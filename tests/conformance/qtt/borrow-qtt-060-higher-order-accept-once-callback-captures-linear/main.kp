@@ -1,0 +1,12 @@
+module main
+
+take : (1 x : Int) -> Int
+let take (1 x : Int) : Int = x
+
+withOnce : (1 k : Unit -> Int) -> Int
+let withOnce (1 k : Unit -> Int) : Int = k ()
+
+ok : (1 x : Int) -> Int
+let ok (1 x : Int) : Int = withOnce (\() -> take x)
+
+--! assertNoErrors

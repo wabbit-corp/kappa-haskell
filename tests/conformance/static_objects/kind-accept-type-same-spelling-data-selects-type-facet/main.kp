@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+data Person : Type =
+    Person (name : String)
+
+PersonType : Type
+let PersonType = type Person
+
+mk : PersonType
+let mk = PersonType.Person "Ada"

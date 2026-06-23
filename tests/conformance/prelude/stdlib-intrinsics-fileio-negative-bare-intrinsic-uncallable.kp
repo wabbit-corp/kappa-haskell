@@ -1,0 +1,27 @@
+module main
+
+-- Hostile-audit RT-5 pin (§28.1 / §32 + the disclosed G1 file-IO simulation bound):
+-- the runtime file-IO intrinsics openFile/readData/primitiveReadData/primitiveCloseFile carry
+-- NO expect-term type scheme. Before the fix they sat in the source resolution set, so a bare
+-- reference was accepted at an ARBITRARY declared type (e.g. `openFile : Int`). They are an
+-- internal simulation bound, not source-callable terms, so a bare reference must be an honest
+-- E_NAME_UNRESOLVED. (newRef/readRef are NOT affected — they have real expect-term schemes.)
+
+bad1 : String
+let bad1 = openFile
+
+bad2 : String
+let bad2 = readData
+
+bad3 : String
+let bad3 = primitiveReadData
+
+bad4 : Unit
+let bad4 = primitiveCloseFile
+
+main : UIO Unit
+let main = printlnString "x"
+
+--! mode check
+--! assertErrorCount 4
+--! assertDiagnosticCodes E_NAME_UNRESOLVED, E_NAME_UNRESOLVED, E_NAME_UNRESOLVED, E_NAME_UNRESOLVED

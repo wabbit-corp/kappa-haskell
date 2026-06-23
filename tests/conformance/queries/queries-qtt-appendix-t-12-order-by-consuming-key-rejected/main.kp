@@ -1,0 +1,23 @@
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+keyOfToken : (& t : Token) -> Int
+let keyOfToken t = 0
+
+bad : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token) -> QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token
+let bad src =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 [
+        for t in src
+        order by consumeToken t
+        yield t
+    ]
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch order|[Kk]ey|[Cc]onsum|[Ll]inear|[Uu]navailable

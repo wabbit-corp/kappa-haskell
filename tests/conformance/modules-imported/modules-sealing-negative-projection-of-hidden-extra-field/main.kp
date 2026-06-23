@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Public : Type = (x : Int,)
+
+p : Public
+let p : Public = seal (x = 1, secret = "nope") as Public
+
+bad : String
+let bad : String = p.secret

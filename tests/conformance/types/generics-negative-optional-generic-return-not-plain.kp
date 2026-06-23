@@ -1,0 +1,18 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+-- Source issue: KT-312
+-- Spec: §5.4.9, §7.1.2, §11.1
+data Box (a : Type) : Type =
+    Box (value : a)
+
+maybeBox : Bool -> Option (Box Int)
+let maybeBox flag =
+    if flag then Some (Box 7) else None
+
+badPlainBox : Box Int
+let badPlainBox = maybeBox True
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch Option|Box Int|type

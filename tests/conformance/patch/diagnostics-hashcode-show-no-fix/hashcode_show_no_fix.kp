@@ -1,0 +1,10 @@
+module hashcode_show_no_fix
+
+import std.hash.*
+
+trait Show (a : Type) =
+    show : a -> String
+
+badShowHashCode : HashCode -> String
+let badShowHashCode h =
+    show h

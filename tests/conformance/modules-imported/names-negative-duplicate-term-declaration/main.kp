@@ -1,0 +1,9 @@
+module main
+
+-- Source issue: KT-424
+-- Spec: §2.8.1
+let choose (x : Int) : Int = x
+let choose (x : Int) : Int = x + 1
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch duplicate|same scope|term|choose

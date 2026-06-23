@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+type Sig : Type =
+    (F : Type -> Type,
+     value : this.F Int)
+
+pkg : Sig
+let pkg =
+    seal
+        (F = Option,
+         value = Some 4)
+    as Sig
+
+ok : Int
+let ok =
+    match pkg.value
+    case Some n -> n
+    case None -> 0

@@ -1,0 +1,7 @@
+module main_ops
+
+value : Bool
+let value = 1 != 2
+
+--! assertType value Bool
+--! assertDeclKinds signature, let

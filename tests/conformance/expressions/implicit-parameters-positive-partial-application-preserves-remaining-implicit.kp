@@ -1,0 +1,21 @@
+module main
+
+-- Source issue: ghc#1445
+-- Kappa analogue: applying earlier explicit arguments should preserve a remaining implicit parameter in the result type.
+-- Spec: §7.1, §7.3, §7.3.3
+mk : Int -> (@bias : Int) -> Int
+let mk x (@bias : Int) = x + bias
+
+use : (@bias : Int) -> Int
+let use = mk 5
+
+result : Int
+let result =
+    block
+        let (@bias : Int) = 7
+        use
+
+--! assertNoErrors
+--! assertType use (@bias : Int) -> Int
+--! assertType result Int
+--! assertEval result 12

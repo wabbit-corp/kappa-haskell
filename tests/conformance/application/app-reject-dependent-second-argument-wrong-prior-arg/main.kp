@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsSame : (b : Bool) -> FlagBox b -> Unit
+let needsSame (b : Bool) (x : FlagBox b) : Unit = ()
+
+bad : FlagBox True -> Unit
+let bad (x : FlagBox True) : Unit = needsSame False x

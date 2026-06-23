@@ -1,0 +1,25 @@
+module main
+
+--! allow_unsafe_consume
+
+-- Source issue: granule#54
+-- Spec: §5.1.5
+data Token : Type =
+    Token
+
+check : (1 token : Token) -> Bool
+let check token =
+    let _ = unsafeConsume token
+    in True
+
+consume : (1 token : Token) -> Unit
+let consume token =
+    let _ = unsafeConsume token
+    in ()
+
+bad : (1 token : Token) -> Unit
+let bad token =
+    if check token then consume token else ()
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE

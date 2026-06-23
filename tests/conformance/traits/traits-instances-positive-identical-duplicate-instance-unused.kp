@@ -1,0 +1,18 @@
+module main
+
+-- TRAIT-1: identical duplicate instances whose member is never USED must
+-- still be accepted as harmless overlap (no E_DUPLICATE_DECLARATION).
+
+trait Doubler a =
+    twice : a -> a
+
+instance Doubler Int =
+    let twice x = x + x
+
+instance Doubler Int =
+    let twice x = x + x
+
+probe : Int
+let probe = 7
+
+--! assertNoErrors

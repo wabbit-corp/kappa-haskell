@@ -1,0 +1,7 @@
+module main
+
+makeNamedDiagnostic : Elab Unit
+let makeNamedDiagnostic =
+    do
+        let message : String = "checked entirely at meta phase"
+        warnElab message

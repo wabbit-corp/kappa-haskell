@@ -1,0 +1,9 @@
+module main
+
+ignoreString : String -> Elab (Syntax Int)
+let ignoreString s =
+    pure '{ 0 }
+
+bad : String -> Int
+let bad s =
+    $(ignoreString s)

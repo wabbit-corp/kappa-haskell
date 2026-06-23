@@ -1,0 +1,4 @@
+module lib.runtime
+
+answer : Int
+let answer = 9

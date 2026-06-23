@@ -1,0 +1,18 @@
+module main
+
+score : Bool -> Int
+let score =
+    \flag ->
+        match flag
+          case True -> 1
+          case False -> 0
+
+result : Int
+let result = score True
+
+-- Source issue: Idris2#62
+-- Kappa analogue: a lambda body may be a match expression.
+-- Spec: §7.2.1, §7.5
+--! assertNoErrors
+--! assertType score Bool -> Int
+--! assertEval result 1

@@ -1,0 +1,6 @@
+module main
+
+linearId : (1 x : Int) -> Int
+let linearId (1 x : Int) : Int = x
+
+--! assertNoErrors

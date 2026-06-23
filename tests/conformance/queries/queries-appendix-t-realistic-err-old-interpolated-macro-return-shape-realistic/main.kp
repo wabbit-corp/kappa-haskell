@@ -1,0 +1,8 @@
+module main
+
+data LegacySql : Type =
+    LegacySql (text : String)
+
+instance InterpolatedMacro LegacySql =
+    let buildInterpolated fragments : Syntax LegacySql =
+        '{ LegacySql "old-shape" }

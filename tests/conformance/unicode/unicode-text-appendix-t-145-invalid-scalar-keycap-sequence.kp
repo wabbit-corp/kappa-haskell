@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+
+--! assertDiagnosticNext error E_UNICODE_INVALID_SCALAR_LITERAL
+let bad = '1\u{FE0F}\u{20E3}'

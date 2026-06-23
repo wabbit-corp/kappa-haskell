@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Outer = (inner : (thunk value : Int), label : String)
+
+ok : Outer
+let ok : Outer = (label = "outer", inner = (value = 1))
+
+forced : Int
+let forced : Int = force ok.inner.value

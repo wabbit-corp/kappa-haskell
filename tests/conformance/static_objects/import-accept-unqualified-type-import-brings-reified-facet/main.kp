@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+import lib.optionish.(type Maybe)
+
+F : Type -> Type
+let F = Maybe
+
+ok : F Int
+let ok = F.Just 1

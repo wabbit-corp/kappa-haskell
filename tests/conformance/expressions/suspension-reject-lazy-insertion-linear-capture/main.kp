@@ -1,0 +1,11 @@
+@PrivateByDefault module main
+
+data Cell : Type =
+    Cell
+
+instance Shareable Cell =
+takeNeed : Need Cell -> Cell
+let takeNeed (n : Need Cell) : Cell = force n
+
+bad : (1 c : Cell) -> Cell
+let bad (1 c : Cell) : Cell = takeNeed c

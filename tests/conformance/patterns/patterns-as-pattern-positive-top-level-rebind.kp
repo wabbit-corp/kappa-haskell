@@ -1,0 +1,24 @@
+module main
+
+-- Hostile-audit PAT-1 pin (§17.2.1): an as-pattern `name @ pat` binds `name` to the WHOLE matched
+-- value AND matches `pat` against it. Before the carrier fix the binder was dropped at lowering, so a
+-- body that referenced it type-checked clean but crashed at runtime ("Name 'captured' is not in scope").
+prefixWhole : List Int -> List Int
+let prefixWhole xs =
+    match xs
+      case captured @ (h :: t) -> h :: captured
+      case rest -> rest
+
+-- prefixWhole (7 :: 8 :: Nil) = 7 :: (7 :: 8 :: Nil); its head is 7.
+headOfResult : Int
+let headOfResult =
+    match prefixWhole (7 :: 8 :: Nil)
+      case a :: _ -> a
+      case Nil -> 0
+
+main : UIO Unit
+let main = printlnString "ok"
+
+--! mode check
+--! assertNoErrors
+--! assertEval headOfResult 7

@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+addAge :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (name : String | r) -> (name : String, age : Int | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }

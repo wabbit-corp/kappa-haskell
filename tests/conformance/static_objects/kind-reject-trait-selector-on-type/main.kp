@@ -1,0 +1,7 @@
+@PrivateByDefault module main
+
+data Box (a : Type) : Type =
+    Box (value : a)
+
+bad : Type -> Type
+let bad = trait Box

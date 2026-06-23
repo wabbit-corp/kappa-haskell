@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Box : Type = (value : Int)
+
+bad : (>=1 b : Box) -> Unit
+let bad (>=1 b : Box) : Unit =
+    block
+        let f = \() -> b.value
+        ()

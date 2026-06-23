@@ -1,0 +1,10 @@
+module main_url
+
+import "https://example.com/lib".*
+
+answer : Int
+let answer = 42
+
+--! assertDeclKinds import, signature, let
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE

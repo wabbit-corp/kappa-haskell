@@ -1,0 +1,12 @@
+module main
+
+result : Int
+let result =
+    match True
+      case True if False -> 0
+      case True -> 42
+      case False -> 1
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

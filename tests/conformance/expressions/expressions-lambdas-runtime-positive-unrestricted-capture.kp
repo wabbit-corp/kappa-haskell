@@ -1,0 +1,14 @@
+module main
+
+twice : (ω f : Unit -> Int) -> Int
+let twice f = f () + f ()
+
+demo : Int -> Int
+let demo n = twice (\_ -> n)
+
+result : Int
+let result = demo 21
+
+--! assertNoErrors
+--! assertType result Int
+--! x-assertEval result 42

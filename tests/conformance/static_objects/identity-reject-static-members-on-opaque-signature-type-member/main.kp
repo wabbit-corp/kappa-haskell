@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+type HiddenSig : Type =
+    (opaque F : Type -> Type,
+     value : this.F Int)
+
+hidden : HiddenSig
+let hidden =
+    seal
+        (F = Option,
+         value = Some 1)
+    as HiddenSig
+
+bad : hidden.F Int
+let bad = hidden.F.Some 2

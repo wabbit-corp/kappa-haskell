@@ -1,0 +1,11 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+
+let low : Byte = b'\x00'
+let high : Byte = b'\xFF'
+let less : Bool = low < high
+let ord : Ordering = compare low high
+
+--! assertType less Bool
+--! assertType ord Ordering

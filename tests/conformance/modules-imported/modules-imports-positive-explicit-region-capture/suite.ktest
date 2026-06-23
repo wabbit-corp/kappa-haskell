@@ -1,0 +1,6 @@
+--! assertNoErrors
+--! assertType api.makeGetter forall (s : Region) (a : Type). (&[s] box : api.Box a) -> ((Unit -> a) captures (s))
+--! assertType client.useGetter forall (s : Region). (&[s] box : api.Box Int) -> Int
+--! assertFileDeclKinds api.kp type, signature, let
+--! assertFileDeclKinds client.kp import, signature, let
+

@@ -1,0 +1,17 @@
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case head :: tail -> head + sumList tail
+
+let main : IO Unit = do
+    let nums = 10 :: 20 :: 42 :: Nil
+    let total = sumList nums
+    printInt total
+
+--! assertNoErrors
+--! assertType main IO Unit
+--! assertDeclKinds signature, let, let
+--! assertRunStdout main 72

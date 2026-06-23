@@ -1,0 +1,9 @@
+-- Appendix T directory suite.
+-- Nested realistic web DSL interpolation: route value embedded into HTML and JSON templates.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType userRoute Int -> dsl.web.Route
+--! assertType link Int -> String -> dsl.web.Html
+--! assertType payload Int -> String -> dsl.web.JsonTemplate

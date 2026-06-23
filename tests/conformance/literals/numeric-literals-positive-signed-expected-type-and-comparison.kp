@@ -1,0 +1,15 @@
+module main
+
+-- Source issues: KT-494, KT-495
+-- Spec: §4.1.4, §4.1.5, §7.1.3
+negativeInteger : Integer
+let negativeInteger = -1
+
+comparesAtExpectedInteger : Bool
+let comparesAtExpectedInteger =
+    let n : Integer = -1
+    n != 1
+
+--! assertNoErrors
+--! assertType negativeInteger Integer
+--! assertType comparesAtExpectedInteger Bool

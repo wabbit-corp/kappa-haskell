@@ -1,0 +1,18 @@
+@PrivateByDefault module main
+
+type Sig : Type =
+    (F : Type -> Type,
+     value : this.F Int)
+
+base : Sig
+let base =
+    seal
+        (F = Option,
+         value = Some 1)
+    as Sig
+
+again : Sig
+let again = seal base as Sig
+
+ok : again.F Int
+let ok = again.F.Some 3

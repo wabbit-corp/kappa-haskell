@@ -1,0 +1,30 @@
+module main
+
+-- No-over-rejection (RESULT-DIRECTED-ANNOTATION-GAP): a result-directed member
+-- call whose argument MATCHES the annotation-solved parameter type must still be
+-- accepted. `good : Box Int = pure 5` solves the payload `a` to `Int` and `5`
+-- defaults to `Int`; the directed preparation succeeds and the refutation guard
+-- is never consulted.
+
+data Box a = MkBox a
+
+trait Pure (f : Type -> Type) =
+    pure : forall (a : Type). a -> f a
+
+instance Pure Box =
+    let pure x = MkBox x
+
+unwrap : Box Int -> Int
+let unwrap b =
+    match b
+      case MkBox v -> v
+
+good : Box Int
+let good = pure 5
+
+result : Int
+let result = unwrap good
+
+--! mode check
+--! assertNoErrors
+--! assertEval result 5

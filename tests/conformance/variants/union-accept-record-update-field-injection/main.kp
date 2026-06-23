@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type Holder = (payload : (| Int | String |), tag : String)
+
+base : Holder
+let base : Holder = (tag = "n", payload = 1)
+
+updated : Holder
+let updated : Holder = base.{ payload = "s" }

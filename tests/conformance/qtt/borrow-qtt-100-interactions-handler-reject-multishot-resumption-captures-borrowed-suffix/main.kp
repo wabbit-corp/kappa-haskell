@@ -1,0 +1,23 @@
+@PrivateByDefault module main
+
+bad : (& x : Int) -> Int
+let bad (& x : Int) : Int =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                let b <- Choice.choose ()
+                if b then x else x
+
+        let handled =
+            deep handle Choice comp with
+                case return y -> pure y
+                case choose _ k ->
+                    do
+                        let a <- k True
+                        let _ <- k False
+                        pure a
+
+        runPure handled

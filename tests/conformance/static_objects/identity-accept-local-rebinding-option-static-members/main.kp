@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+F : Type -> Type
+let F = Option
+
+noneInt : F Int
+let noneInt = F.None
+
+someInt : F Int
+let someInt = F.Some 1

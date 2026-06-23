@@ -1,0 +1,8 @@
+module main
+
+value : String
+let value = "line\nvalue\tend"
+
+--! assertNoErrors
+--! assertType value String
+--! x-assertContainsTokenKinds StringLiteral

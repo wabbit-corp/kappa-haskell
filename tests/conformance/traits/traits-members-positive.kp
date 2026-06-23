@@ -1,0 +1,9 @@
+module main
+
+trait Show a =
+    show : a -> String
+    let debug x = show x
+
+--! assertNoErrors
+--! x-assertDeclDescriptors trait Show
+--! x-assertTraitMembers Show show, debug

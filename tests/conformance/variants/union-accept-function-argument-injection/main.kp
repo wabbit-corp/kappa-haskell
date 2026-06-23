@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+type U = (| Int | String |)
+
+acceptU : U -> U
+let acceptU (u : U) : U = u
+ok : U
+let ok : U = acceptU 1

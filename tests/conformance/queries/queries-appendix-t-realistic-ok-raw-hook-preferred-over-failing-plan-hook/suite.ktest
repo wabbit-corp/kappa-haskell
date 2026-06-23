@@ -1,0 +1,7 @@
+-- Appendix T directory suite.
+-- Carrier selection must prefer FromComprehensionRaw over FromComprehensionPlan.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType ok main.DualSink Int

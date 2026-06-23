@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+trait Marker (a : Type)
+
+useTraitDescriptor :
+    forall (@0 a : Type).
+    (F : Type -> Type) ->
+    (@_ : forall (x : Type). IsTrait (F x)) ->
+    F a -> F a
+let useTraitDescriptor @a F d = d

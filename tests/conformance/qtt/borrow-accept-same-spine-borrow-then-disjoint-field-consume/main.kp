@@ -1,0 +1,9 @@
+@PrivateByDefault module main
+
+type PairLin = (x : Int, 1 y : Int)
+
+borrowThenConsumeY : (& x : Int) -> (1 y : Int) -> Int
+let borrowThenConsumeY (& x : Int) (1 y : Int) : Int = y
+
+ok : (1 p : PairLin) -> Int
+let ok (1 p : PairLin) : Int = borrowThenConsumeY p.x p.y

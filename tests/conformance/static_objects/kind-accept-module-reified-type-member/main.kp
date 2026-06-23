@@ -1,0 +1,8 @@
+@PrivateByDefault module main
+
+import lib.types as Types
+
+let M = module Types
+
+ok : M.Token
+let ok = M.Token 7

@@ -1,0 +1,9 @@
+module main
+
+bad :
+    forall (s : Region) (t : Region).
+    (((Unit -> Int) captures (s, t)) -> ((Unit -> Int) captures (s)))
+let bad (f : ((Unit -> Int) captures (s, t))) : ((Unit -> Int) captures (s)) = f
+
+--! assertErrorCount 1
+

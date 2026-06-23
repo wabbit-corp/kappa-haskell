@@ -1,0 +1,29 @@
+module main
+
+-- Source issue: ghc#10335
+-- Kappa analogue: a transparent alias in an instance premise should still satisfy the instance head's superclass obligation.
+-- Spec: §11.3, §12.1.1, §12.3.1
+trait Same a =
+    same : a -> a -> Bool
+
+trait Same a => Verified a =
+    ok : a -> Bool
+
+type NeedsSame (a : Type) = Same a
+
+instance Same Int =
+    let same _ _ = True
+
+instance NeedsSame a => Verified a =
+    let ok _ = True
+
+result : Bool
+let result =
+    let
+        dict = summon (Verified Int)
+    in
+        dict.ok 0
+
+--! assertNoErrors
+--! assertType result Bool
+--! assertEval result True

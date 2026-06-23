@@ -1,0 +1,7 @@
+module main
+
+type Id a = a
+type Name = String
+
+--! assertNoErrors
+--! x-assertDeclDescriptors type Id, type Name

@@ -1,0 +1,11 @@
+module main
+
+ok : (1 src : OnceQuery Int) -> List Int
+let ok src =
+    [
+        for x in src
+        yield x
+    ]
+
+--! assertNoErrors
+--! assertType ok (1 src : OnceQuery Int) -> List Int

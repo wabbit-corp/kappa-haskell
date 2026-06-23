@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+let pkg = (F = Option,)
+
+ok : pkg.F Int
+let ok = pkg.F.Some 1

@@ -1,0 +1,22 @@
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+keyOfToken : (& t : Token) -> Int
+let keyOfToken t = 0
+
+bad : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> Query Int
+let bad src =
+    Query [
+        for t in src
+        yield consumeToken t
+    ]
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Qq]uery|[Rr]eusable|[Oo]ne[- ]shot

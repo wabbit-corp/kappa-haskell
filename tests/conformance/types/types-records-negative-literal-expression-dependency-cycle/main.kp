@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+type Pair : Type = (x : Int, y : Int)
+
+bad : Pair
+let bad : Pair = (x = this.y, y = this.x)

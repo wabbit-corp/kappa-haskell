@@ -1,0 +1,19 @@
+module main
+
+-- Source issue: KT-263
+-- Spec: §7.1, §7.1.3
+apply : (Int -> Int) -> Int -> Int
+let apply f x = f x
+
+inc : Int -> Int
+let inc x = x + 1
+
+alias : Int -> Int
+let alias = inc
+
+result : Int
+let result = apply alias 41
+
+--! assertNoErrors
+--! assertType alias Int -> Int
+--! assertEval result 42

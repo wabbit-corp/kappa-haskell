@@ -1,0 +1,33 @@
+module main
+
+-- Regression: the prelude defines the append operator `(++) = monoid.append`
+-- but shipped no fixity declaration for it, so `x ++ y` failed to parse with
+-- "Unexpected tokens at the end of the expression". Spec.md's normative fixity
+-- table (the `(::) (++) : infix right 50` row) requires the prelude to provide
+-- it. With the fixity in place, `++` parses as a right-associative infix
+-- operator and resolves its `Monoid` constraint normally.
+
+data Sum : Type =
+    Sum Int
+
+instance Monoid Sum =
+    let empty = Sum 0
+    let append a b =
+        match a
+          case Sum x ->
+              match b
+                case Sum y -> Sum (x + y)
+
+unwrap : Sum -> Int
+let unwrap s =
+    match s
+      case Sum n -> n
+
+-- Right-associative: parses as (Sum 1) ++ ((Sum 20) ++ (Sum 21)).
+total : Int
+let total = unwrap ((Sum 1) ++ (Sum 20) ++ (Sum 21))
+
+--! mode check
+--! assertNoErrors
+--! assertType total Int
+--! assertEval total 42

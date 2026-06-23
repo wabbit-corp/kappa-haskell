@@ -1,0 +1,17 @@
+module main
+
+data Buffer : Type =
+    Buffer
+
+type Pair = (1 buf : Buffer)
+
+projection chooseBuf (place a : Pair) (place b : Pair) (which : Bool) : Buffer =
+    if which then yield a.buf else yield b.buf
+
+use : (& buf : Buffer) -> Nat
+let use buf = 0
+
+demo : (1 a : Pair) -> (1 b : Pair) -> Bool -> Nat
+let demo a b which = use (chooseBuf a b which)
+
+--! assertNoErrors

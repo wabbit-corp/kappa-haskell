@@ -106,7 +106,7 @@ eval ctx env = \case
   -- primitives quoted by 'quote' round-trip back to 'VPrim'
   CGlob g@(GName m p) -> if m == primModule then VPrim p [] else VGlobN g []
   CLam ic q n body -> VLam ic q n (Closure env body)
-  CPi ic q n a b -> VPi ic q n (eval ctx env a) (Closure env b)
+  CPi ic q brw n a b -> VPi ic q brw n (eval ctx env a) (Closure env b)
   CApp ic f a -> vapp ctx (eval ctx env f) ic (eval ctx env a)
   CSort n -> VSort n
   CLit l -> VLit l
@@ -429,8 +429,8 @@ quote ctx lvl v = case forceQ ctx v of
   VGlobN g sp -> quoteSpine (CGlob g) sp
   VLam ic q n clo ->
     CLam ic q n (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
-  VPi ic q n a clo ->
-    CPi ic q n (quote ctx lvl a) (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
+  VPi ic q brw n a clo ->
+    CPi ic q brw n (quote ctx lvl a) (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
   VSort n -> CSort n
   VLit l -> CLit l
   VCtor g args -> CCtor g (map (quote ctx lvl) args)
@@ -484,7 +484,7 @@ convertible ctx = go (200 :: Int)
     go fuel lvl v1 v2 = case (force ctx v1, force ctx v2) of
       (VSort a, VSort b) -> a == b
       (VLit a, VLit b) -> a == b
-      (VPi i1 q1 _ a1 b1, VPi i2 q2 _ a2 b2) ->
+      (VPi i1 q1 _ _ a1 b1, VPi i2 q2 _ _ a2 b2) ->
         i1 == i2
           && q1 == q2 -- quantities are part of function-type identity
           && go (fuel - 1) lvl a1 a2

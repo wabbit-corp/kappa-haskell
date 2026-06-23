@@ -1,0 +1,26 @@
+module main
+
+-- Source issue: Idris2#403
+-- Kappa analogue: branch-local splitting must preserve recursive decrease evidence.
+-- Spec: §6.4.2, §6.4.5, §17.3.1.4
+mergeCount : Bool -> List Int -> List Int -> Int
+let mergeCount preferLeft xs ys =
+    match xs
+      case Nil ->
+          match ys
+            case Nil -> 0
+            case _ :: ysTail -> 1 + mergeCount preferLeft Nil ysTail
+      case x :: xsTail ->
+          match ys
+            case Nil -> 1 + mergeCount preferLeft xsTail Nil
+            case y :: ysTail ->
+                if preferLeft
+                then 1 + mergeCount False xsTail (y :: ysTail)
+                else 1 + mergeCount True (x :: xsTail) ysTail
+
+result : Int
+let result = mergeCount True (1 :: 2 :: Nil) (10 :: 11 :: Nil)
+
+--! assertNoErrors
+--! assertType mergeCount Bool -> List Int -> List Int -> Int
+--! assertEval result 4

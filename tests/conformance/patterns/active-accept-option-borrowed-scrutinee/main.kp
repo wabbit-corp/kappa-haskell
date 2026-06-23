@@ -1,0 +1,15 @@
+@PrivateByDefault module main
+
+
+data Buf : Type =
+    Buf (n : Int)
+
+pattern Positive (& b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+ok : (& b : Buf) -> Int
+let ok (& b : Buf) : Int =
+    match b
+    case Positive (n) -> n
+    case _ -> 0

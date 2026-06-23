@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+import lib.box.(type Box as B)
+
+ok : B Int
+let ok = B.Box 1

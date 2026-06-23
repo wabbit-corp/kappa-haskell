@@ -1,0 +1,17 @@
+module main
+
+-- Hostile-audit PROJ-YIELD pin (§projection-body type-checking): a projection's yielded place must
+-- have the projection's declared result type. Before the fix only yield-rootedness was checked, so
+-- `yield this.s` (a String place) in a projection declared `: Int` compiled clean — a wrong-type
+-- projection result. A place denotes a stable reference and does NOT coerce, so this is rejected.
+type Cell = (s : String, n : Int)
+
+projection bad (place this : Cell) : Int =
+    yield this.s
+
+main : UIO Unit
+let main = printlnString "x"
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_MISMATCH

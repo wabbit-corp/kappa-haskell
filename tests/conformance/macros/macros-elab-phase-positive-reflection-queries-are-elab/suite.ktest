@@ -1,0 +1,9 @@
+-- Appendix T directory suite.
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+--! assertType rendered Elab String
+--! assertType origin Elab SyntaxOrigin
+--! assertType normalized Elab (Syntax Int)
+--! assertFileDeclKinds main.kp signature, let, signature, let, signature, let

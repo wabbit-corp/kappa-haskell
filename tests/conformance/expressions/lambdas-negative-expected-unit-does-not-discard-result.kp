@@ -1,0 +1,17 @@
+module main
+
+-- Source issues: KT-343, KT-521
+-- Spec: §4.5, §6.3.1, §7.2
+unitThunk : Unit -> Unit
+let unitThunk =
+    \() -> 1
+
+unitThunkWithLocal : Unit -> Unit
+let unitThunkWithLocal =
+    \() ->
+        value : Int
+        let value = 1
+        value
+
+--! assertErrorCount 2
+--! assertDiagnosticMatch Unit|Int|lambda|result

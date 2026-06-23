@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+--! allow_unsafe_consume
+
+data File : Type =
+    Handle Int
+
+let consume (1 f : File) = unsafeConsume f
+
+let main : IO Unit = do
+    let 1 file = Handle 1
+    if True then consume file else consume file
+
+--! assertNoErrors

@@ -1,0 +1,26 @@
+module main
+
+-- Source issue: ghc#1
+-- Spec: §6.3, §7.3.3
+need : (@x : Int) -> Int
+let need (@x : Int) = x
+
+result : Int
+let result =
+    block
+        let (@x : Int) = 1
+
+        value : Int
+        let value =
+            block
+                capture : Unit -> Int
+                let capture () = need
+
+                let (@x : Int) = 2
+                capture ()
+
+        value
+
+--! assertNoErrors
+--! assertType result Int
+--! assertEval result 1

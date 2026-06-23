@@ -1,0 +1,10 @@
+@PrivateByDefault module main
+
+-- Spec (unicode-names gate): unquoted Unicode identifiers are rejected while
+-- the gate is inactive; backtick-quoted spellings remain available.
+λ : Int
+let λ = 1
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_FEATURE_INACTIVE, E_FEATURE_INACTIVE

@@ -1,0 +1,24 @@
+module main
+
+-- Spec portable aliases E_APPLICATION_NON_CALLABLE / E_APPLICATION_ARGUMENT_MISMATCH:
+-- types are first-class terms, so a type former used as a callee is validated
+-- like any other callable value. Applying a saturated type (kind Type) is a
+-- static non-callable error ('Int Bool', and 'List Int Bool' after the first
+-- application saturates), and a parameter of kind Type cannot be satisfied by
+-- a runtime literal ('List 41'). Legitimate type-as-term computation
+-- ('List Int') stays accepted.
+
+badSaturated : Type
+let badSaturated = Int Bool
+
+badArgument : Type
+let badArgument = List 41
+
+badOverApplied : Type
+let badOverApplied = List Int Bool
+
+goodAlias : Type
+let goodAlias = List Int
+
+--! mode check
+--! assertDiagnosticCodes E_APPLICATION_NON_CALLABLE, E_APPLICATION_ARGUMENT_MISMATCH, E_APPLICATION_NON_CALLABLE

@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+factory : Unit -> Int
+let factory =
+    block
+        let pkg = (F = Option, n = 7)
+        \() ->
+            match pkg.F.Some pkg.n
+            case Some n -> n
+            case None -> 0
+
+ok : Int
+let ok = factory ()

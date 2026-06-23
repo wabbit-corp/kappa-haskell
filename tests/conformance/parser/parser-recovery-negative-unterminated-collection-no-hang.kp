@@ -1,0 +1,13 @@
+@PrivateByDefault module main
+
+-- Regression (pending-failures/timeout-da39a3ee5e6b): this malformed input
+-- previously hung the parser forever. A lone `'` operator was accepted as an
+-- application-argument start but ParsePrimaryExpression could not consume it,
+-- so the application-argument loop spun without making progress. The parser
+-- must terminate and report diagnostics.
+let i0 =
+    I1 (i1 : distinct False -> Bool
+let I4 0 + 20) + [c'{|i5, (I3 + 1)|}
+
+--! mode check
+--! assertErrorCount 2

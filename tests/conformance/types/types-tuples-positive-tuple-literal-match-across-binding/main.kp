@@ -1,0 +1,22 @@
+module main
+
+-- F-12: a tuple literal `(y, x)` is parsed as a punned record `{y, x}`, but the tuple
+-- TYPE `(Int, Int)` and tuple PATTERN `(a, b)` use positional field names `_1, _2`.
+-- Expected-type-directed RecordLiteral lowering re-keys the punned literal onto the
+-- expected `_1, _2` layout, so the value the function builds matches the pattern the
+-- consuming function destructures. Before the fix this crashed at runtime with a
+-- "Non-exhaustive match for __kappa_record_..." because the literal and the pattern
+-- keyed different synthetic constructors. Spec §4.5 (tuples), §13.2 (record equality).
+
+swap : Int -> Int -> (Int, Int)
+let swap x y = (y, x)
+
+addPair : (Int, Int) -> Int
+let addPair p =
+    match p
+      case (a, b) -> a + b
+
+main : UIO Unit
+let main =
+    do
+        printInt (addPair (swap 3 7))

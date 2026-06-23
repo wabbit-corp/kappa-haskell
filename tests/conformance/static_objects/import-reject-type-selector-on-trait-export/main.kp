@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+import lib.classes.(type Size)
+
+bad : Int
+let bad = 0

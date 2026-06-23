@@ -1,0 +1,6 @@
+@PrivateByDefault module main
+
+let value = 'x
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_UNTERMINATED_CHARACTER_LITERAL, E_UNICODE_INVALID_SCALAR_LITERAL

@@ -1,0 +1,24 @@
+module main
+
+-- Source issue: hylo#1398
+-- Spec: §11.3, §12.2.1
+trait Builder a =
+    Out : Type
+    build : a -> Out
+
+instance Builder Int =
+    let Out = String
+    let build x = primitiveIntToString x
+
+type OutputOf (builder : Builder Int) = builder.Out
+
+buildViaAlias : (@builder : Builder Int) -> Int -> OutputOf builder
+let buildViaAlias (@builder : Builder Int) x = builder.build x
+
+result : String
+let result = buildViaAlias 42
+
+--! assertNoErrors
+--! assertType buildViaAlias (@builder : Builder Int) -> Int -> OutputOf builder
+--! assertType result String
+--! assertEval result "42"

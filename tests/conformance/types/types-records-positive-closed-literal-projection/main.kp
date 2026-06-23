@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+type Point : Type = (x : Int, y : Int)
+
+p : Point
+let p : Point = (x = 1, y = 2)
+
+getX : Point -> Int
+let getX (p : Point) : Int = p.x
+
+result : Int
+let result : Int = getX p

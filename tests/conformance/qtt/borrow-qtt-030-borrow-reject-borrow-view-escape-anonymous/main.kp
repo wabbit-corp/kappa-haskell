@@ -1,0 +1,9 @@
+module main
+
+bad : (& x : Int) -> exists (s : Region). BorrowView s Int
+let bad (& x : Int) : exists (s : Region). BorrowView s Int =
+    seal
+        (s = _, value = captureBorrow x)
+    as exists (s : Region). BorrowView s Int
+
+--! assertErrorCount 1

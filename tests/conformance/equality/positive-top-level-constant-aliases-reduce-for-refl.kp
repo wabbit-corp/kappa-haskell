@@ -1,0 +1,17 @@
+module main
+
+-- Source issue: Idris2#621
+-- Kappa analogue: transparent top-level constants that reduce to the same literal remain definitionally equal for
+-- `refl`.
+-- Spec: §5.6.1, §6.4.1, §14.3
+a1 : Char
+let a1 = 'a'
+
+a2 : Char
+let a2 = 'a'
+
+sameChar : a1 = a2
+let sameChar = refl
+
+--! assertNoErrors
+--! assertType sameChar a1 = a2

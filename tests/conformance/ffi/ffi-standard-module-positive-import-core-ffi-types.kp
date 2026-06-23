@@ -1,0 +1,19 @@
+module main
+
+-- Source issues: zig#180, roc#295, ocaml#5707
+-- Spec: §2.7, §17.7.1
+import std.ffi.(type I8, type I16, type I32, type I64)
+import std.ffi.(type U8, type U16, type U32, type U64)
+import std.ffi.(type Isize, type Usize, type F32, type F64)
+import std.ffi.(type RawPtr, type OpaqueHandle)
+
+useScalars : I8 -> I16 -> I32 -> I64 -> U8 -> U16 -> U32 -> U64 -> Isize -> Usize -> F32 -> F64 -> Unit
+let useScalars _ _ _ _ _ _ _ _ _ _ _ _ = ()
+
+keepPtr : RawPtr -> RawPtr
+let keepPtr p = p
+
+keepHandle : OpaqueHandle -> OpaqueHandle
+let keepHandle h = h
+
+--! assertNoErrors

@@ -1,0 +1,30 @@
+module main
+
+import std.prelude.(type Option, ctor Some, ctor None)
+
+-- Source issues: KT-410, KT-538
+-- Spec: §4.5, §5.4.9
+maybePair : (Int, String)?
+let maybePair = Some (42, "ok")
+
+absentPair : (Int, String)?
+let absentPair = None
+
+usePair : (Int, String)? -> Int
+let usePair value =
+    match value
+      case Some (left, _right) -> left
+      case None -> 0
+
+fromSome : Int
+let fromSome = usePair maybePair
+
+fromNone : Int
+let fromNone = usePair absentPair
+
+--! assertNoErrors
+--! assertType maybePair Option (Int, String)
+--! assertType absentPair Option (Int, String)
+--! assertType usePair Option (Int, String) -> Int
+--! assertEval fromSome 42
+--! assertEval fromNone 0
