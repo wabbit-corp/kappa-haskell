@@ -1,0 +1,14 @@
+-- §17.1.9: a guarded arm's branch-local fact must NOT leak to a later
+-- (unguarded) arm — the second arm has no proof that `y <= x`, so its
+-- `x - y` is correctly rejected.
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+leakGuard : Nat -> Nat -> Nat
+let leakGuard x y =
+    match x
+      case _ if leInt (natToInt y) (natToInt x) -> 0
+      case _ -> x - y --!! E_UNSOLVED_IMPLICIT

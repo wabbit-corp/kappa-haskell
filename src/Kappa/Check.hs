@@ -8236,8 +8236,16 @@ checkMatchPlain ctx scrut cases sp resT = do
           forM_ ((,) <$> mLvl <*> fact) $ \(l, f) ->
             modify' $ \st -> st {csFacts = Map.insert l f (csFacts st)}
           gTm <- traverse (\g -> check ctx' g (VGlobN prelBool [])) mguard
+          -- §17.1.9: the arm's guard holds while checking its body, so push
+          -- it as boolean evidence (a §3.2.3 proof source consulted by
+          -- conversion through 'csBoolFacts'); e.g. `case _ if y <= x ->
+          -- x - y` discharges the checked-subtraction obligation. The
+          -- if-expression and try-match paths already do this.
+          oldBool <- gets csBoolFacts
+          forM_ gTm $ \gt ->
+            modify' $ \st -> st {csBoolFacts = (gt, True) : csBoolFacts st}
           bTm <- check ctx' body resT
-          modify' $ \st -> st {csFacts = oldFacts}
+          modify' $ \st -> st {csFacts = oldFacts, csBoolFacts = oldBool}
           let prior' = prior ++ [g | CPCtor g _ <- [patC]]
               covered' = covered ++ [t | CPInject t _ <- [patC]]
           pure (accAlts ++ [CaseAlt patC gTm bTm], prior', covered')
@@ -8723,7 +8731,15 @@ elabTry ctx body excepts mfin sp = do
         alts <- forM excepts $ \(ExceptCase pat mguard hbody _) -> do
           (patC, ctx'', _) <- elabPattern ctx' pat errT'
           gTm <- traverse (\g -> check ctx'' g (VGlobN prelBool [])) mguard
+          -- §17.1.9: a guarded exception handler's guard holds while
+          -- checking its body, so push it as boolean evidence (the same
+          -- §3.2.3 proof source as the plain-match arm and if-expression
+          -- paths); scoped per handler so it does not leak to siblings.
+          oldBool <- gets csBoolFacts
+          forM_ gTm $ \gt ->
+            modify' $ \st -> st {csBoolFacts = (gt, True) : csBoolFacts st}
           hTm <- check ctx'' hbody (ioType outErr resT)
+          modify' $ \st -> st {csBoolFacts = oldBool}
           pure (CaseAlt patC gTm hTm)
         checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
         let handlerTm = CLam Expl QW nm (CMatch (CVar 0) alts)

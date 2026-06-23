@@ -1,0 +1,15 @@
+-- §17.1.9: a plain-`match` arm's guard holds while checking the arm body,
+-- so it discharges branch-local checked-subtraction evidence — exactly as
+-- the `if`-condition and `try match` paths already do.
+--! assertNoErrors
+--! assertNoWarnings
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+guardSub : Nat -> Nat -> Nat
+let guardSub x y =
+    match x
+      case _ if leInt (natToInt y) (natToInt x) -> x - y
+      case _ -> 0

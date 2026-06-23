@@ -1,0 +1,23 @@
+-- §17.1.9: a guarded handler's branch-local fact must NOT leak to a later
+-- (unguarded) handler — the second arm has no proof that `y <= x`, so its
+-- `x - y` is correctly rejected.
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+risky : IO String Nat
+let risky = do
+    raise "boom"
+    pure (natOfInt 0)
+
+handlerLeak : Nat -> Nat -> IO String Nat
+let handlerLeak x y = do
+    try risky
+    except _ if leInt (natToInt y) (natToInt x) ->
+        pure (natOfInt 0)
+    except _ ->
+        pure (x - y) --!! E_UNSOLVED_IMPLICIT

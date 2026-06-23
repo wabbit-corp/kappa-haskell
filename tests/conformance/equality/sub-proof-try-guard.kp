@@ -1,0 +1,24 @@
+-- §17.1.9: a guarded exception handler (`except pat if guard -> body`)
+-- introduces guard-success evidence in its body, just like a plain-match
+-- arm and an if-condition — so the guard discharges branch-local
+-- checked-subtraction evidence.
+--! assertNoErrors
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+risky : IO String Nat
+let risky = do
+    raise "boom"
+    pure (natOfInt 0)
+
+handlerOk : Nat -> Nat -> IO String Nat
+let handlerOk x y = do
+    try risky
+    except _ if leInt (natToInt y) (natToInt x) ->
+        pure (x - y)
+    except _ ->
+        pure (natOfInt 0)

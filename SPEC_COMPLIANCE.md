@@ -69,7 +69,7 @@ No unsound "assume the callee uses its argument" defaulting remains.
 | **§16.3.2** | **Named holes** don't share: every `?h` makes a fresh independent meta (`anyHole` ignores the name), so two `?h` at incompatible types aren't rejected. Also the unsolved-hole diagnostic doesn't report the expected type (no `EHole` case in the `check` direction). | `Check.hs:1889-1893` (`anyHole`), `Check.hs:3098-3115` (only-`infer` `EHole`) | medium |
 | **§16.4.1** | **Exhaustiveness ignores flow refinement.** After `if e is C`, a `match e` covering only `C` in that branch is wrongly `E_PATTERN_NON_EXHAUSTIVE`. `checkExhaustive` consults `csDatas` and never `ctxRefines`. (Field projection on the refined value *does* work.) | `Check.hs:8146-8169` (`checkExhaustive`) | medium |
 | **§16.4.2** | Flow refinement has **no `not` case.** `condRefines` handles `&&`/`||`/`is`/thunks but not `not`; `complementRefines` only fires on a bare `EIs (EVar _) _`. So `if not (b is Hole) then b.val else 0` doesn't refine. (Spec requires `if not a then t else f ≡ if a then f else t` before §16.4.1.) | `Check.hs:7845-7859` (`condRefines`), `Check.hs:7821-7823` (`negs`) | medium |
-| **§17.1.9** | **Guard evidence** isn't pushed in plain-match arms: the guard term isn't added to `csBoolFacts` when checking the arm body, so `case _ if y <= x -> x - y` can't discharge the checked-sub proof. The `if`-path and try-match path do push it. | `Check.hs:8119-8120` (`checkMatchPlain.goCase`, no `withFact`) | medium |
+| **§16.4.2 / §18.6.2** | **IO-kernel do-statement condition facts** aren't pushed into the suite. The if-*expression* path threads condition evidence (`withFact`), but the do-*statement* `DoIf` then-suite and the `DoWhile` body do not, so e.g. `do { if y <= x then consume (x - y) }` can't discharge a checked-sub proof that the equivalent if-*expression* can. The `DoIf` then-suite is a direct mirror of the if-path; the else-suite + `elif` need accumulated-negation threading; and `DoWhile` first needs §18.6.2 **versioned current-value representatives** (`VarCurrent(x,n)`) so a pushed `var`-condition fact is invalidated on reassignment — a naive push would be unsound. *(Surfaced by the §17.1.9 review; the guarded-`case`/`if`-expression/`try`-handler forms are done.)* | `Check.hs` `elabDoIOItems.goItems` (`DoIf`, `DoWhile`) | medium |
 | **§30.2.7** | No **inhabitance-summary** query. The only emptiness check (`scrutineeEmpty`) handles one case: a nullary data type with zero constructors. Missing: Subsingleton/Contractible/Finite, closed sum/product summaries, GADT family-argument refinement → Empty, proof-classification evidence (`IsEmpty`/`IsContr`/…), equality no-confusion. Bare `impossible` always rejects as reachable. *(Also unblocks §17.1.4.)* | `Check.hs:8133-8142` (`scrutineeEmpty`), `Check.hs:3451-3454` (`EImpossible` always errors) | large |
 
 ### 1.3 Effects, resources, collections
@@ -218,6 +218,19 @@ The 9-group re-audit verified **~59** items the old docs listed as gaps/Partial/
 MISSING are now **implemented** (dropped from the plan), and corrected **~46**
 stale claims. The headline removals:
 
+- **§17.1.9 guard-success evidence in `match` arms (and `try` handlers) — FIXED.**
+  A plain-`match` arm's guard is now pushed onto `csBoolFacts` while its body is
+  checked (`checkMatchPlain.goCase`), so `case _ if y <= x -> x - y` discharges the
+  branch-local checked-subtraction obligation — matching the if-expression
+  (`withFact`) and `try match` paths. The save/restore scopes the fact to that arm:
+  a wrong guard (`x <= y`) does **not** discharge `x - y`, and the fact does **not**
+  leak to a later unguarded arm. An adversarial review found the identical gap in the
+  guarded **exception handler** path (`elabTry`'s `except pat if guard -> body`), which
+  was fixed the same way. (The review also flagged the IO-kernel do-*statement* `if`/
+  `while` forms as a *separate* §16.4.2/§18.6.2 gap — see §1.2 — explicitly **not**
+  swept in here because a `while`-condition push is unsound without §18.6.2 version
+  tracking.) Tests: `equality/sub-proof-match-guard{,-wrong-fact-reject,-isolation-reject}.kp`,
+  `equality/sub-proof-try-guard{,-isolation-reject}.kp`.
 - **§11.3.3 universalization in block-local `let` signatures — FIXED.** Free
   ASCII-lowercase type variables in a block-local / `let … in` named signature
   that resolve to **neither a global nor an enclosing binder** are now implicitly
