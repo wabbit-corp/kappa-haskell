@@ -2641,25 +2641,32 @@ propProof ctx goal = do
     tryRefl l r = do
       mBranch <- boolLiteralRelationProof l r
       case mBranch of
-        Just ok -> pure ok
-        Nothing -> do
+        -- the bounded branch-facts prover proved it (variable/branch case)
+        Just True -> pure True
+        -- it could not prove it (Just False) or the goal is not a boolean
+        -- literal relation (Nothing): fall back to definitional
+        -- convertibility.  A closed/decidable checked-arithmetic obligation
+        -- such as `subDefined 5 3 = True` (§14) is proved by evaluating both
+        -- sides; the bounded prover above deliberately does not force, so
+        -- this fallback restores those proofs (regression fix).
+        _ -> do
           ec <- ec_
           let d = ctxLen ctx
           bfs0 <- gets csBoolFacts
-          if null bfs0
-            then pure (convertible ec d (force ec l) (force ec r))
-            else do
-              -- boolean branch refinement (§3.2.3 proof source): reduce a
-              -- side stuck on an in-scope `if` condition using the active
-              -- branch facts (`c = True`/`c = False`).  This is still a
-              -- decision procedure for definitional equality; it does not
-              -- invent user proofs.  Deliberately do not normalize arbitrary
-              -- equality sides before this point: cache admission and proof
-              -- search must not force user recursion merely to decide whether
-              -- a proposition is reusable.
-              let (lf, lChanged) = factReduce ec d bfs0 (4 :: Int) l
-                  (rf, rChanged) = factReduce ec d bfs0 (4 :: Int) r
-              pure ((lChanged || rChanged) && convertible ec d lf rf)
+          if convertible ec d (force ec l) (force ec r)
+            then pure True
+            else
+              if null bfs0
+                then pure False
+                else do
+                  -- boolean branch refinement (§3.2.3 proof source): reduce a
+                  -- side stuck on an in-scope `if` condition using the active
+                  -- branch facts (`c = True`/`c = False`).  This is still a
+                  -- decision procedure for definitional equality; it does not
+                  -- invent user proofs.
+                  let (lf, lChanged) = factReduce ec d bfs0 (4 :: Int) l
+                      (rf, rChanged) = factReduce ec d bfs0 (4 :: Int) r
+                  pure ((lChanged || rChanged) && convertible ec d lf rf)
 
     boolLiteralRelationProof l r = do
       case (boolLit l, boolLit r) of
@@ -2794,7 +2801,15 @@ proveBoolValueFromBranchFacts ctx want v = do
   let d = ctxLen ctx
   case neutralValueTerm d v of
     Nothing -> pure False
-    Just tm -> do
+    Just tm0 -> do
+      -- Resolve solved metavariables in the goal: a deferred proof
+      -- obligation captures fresh evidence/argument metas (instance dict,
+      -- arguments) that are only solved later in elaboration.  The
+      -- term-based decision procedures below render an unzonked solved
+      -- meta as a bare 'CMeta', so the predicate (e.g. 'divDefined') stays
+      -- stuck on a projection out of a meta and never unfolds.  Zonking
+      -- first restores the concrete instance/arguments (regression fix).
+      tm <- zonkTermM d tm0
       bfs <- normalizeBoolFacts d =<< gets csBoolFacts
       facts <- arithmeticBranchFacts ctx
       natLvls <- ctxNatLevels ctx
@@ -2812,7 +2827,12 @@ arithmeticBranchFacts ctx = do
 
 normalizeBoolFacts :: Int -> [(Term, Bool)] -> CheckM [(Term, Bool)]
 normalizeBoolFacts d facts =
-  concat <$> forM facts (\(tm, truth) -> do
+  concat <$> forM facts (\(tm0, truth) -> do
+    -- A branch fact is recorded as the elaborated condition term at the
+    -- point of the branch, where its instance-dictionary metas may still
+    -- be unsolved; zonk so the trait form (e.g. @==@) can later unfold to
+    -- the primitive comparison and align with the goal (regression fix).
+    tm <- zonkTermM d tm0
     mtm <- transparentProofNormalize d tm
     let raw = simplifyDecisionTerm tm
     pure $ case mtm of
@@ -2938,9 +2958,23 @@ unfoldReducibleGlobal :: Int -> GName -> CheckM (Maybe Term)
 unfoldReducibleGlobal d g = do
   st <- get
   case Map.lookup g (csGlobals st) of
-    Just gd | gdReducible gd, Just body <- gdValue gd -> do
-      ec <- ec_
-      pure (Just (quote ec d body))
+    Just gd | gdReducible gd, Just body <- gdValue gd ->
+      -- Prefer the raw (un-normalized) recorded core body. The bounded
+      -- syntactic reducer 'transparentProofReduce' steps through it itself,
+      -- and it deliberately does NOT descend into stuck `if`/`match`
+      -- branches — so a recursive definition applied to a neutral argument
+      -- unfolds at most once per step and is bounded by that reducer's fuel.
+      -- Quoting 'gdValue' instead would *fully* normalize the body (running
+      -- every stuck branch via 'quote'/'closRun', which is unbounded) and
+      -- diverges for such a recursive function (e.g. a §3.2.3 branch-fact
+      -- normalization that unfolds a recursive predicate). The core body is
+      -- closed and definitionally equal to the value's normal form, so
+      -- non-recursive helpers still reduce identically.
+      case Map.lookup g (csCoreBodies st) of
+        Just coreTm -> pure (Just coreTm)
+        Nothing -> do
+          ec <- ec_
+          pure (Just (quote ec d body))
     _ -> pure Nothing
 
 evalBoolTermWithFacts :: Int -> [(Term, Bool)] -> Int -> Term -> Maybe Bool

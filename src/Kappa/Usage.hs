@@ -392,6 +392,23 @@ usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
         | DTypeAlias _ n [] _ (Just rhs) _ <- decls
         , ERecordType {} <- [rhs]
         ]
+        <> dataRecordFields
+    -- §12.4.3: a single-constructor data type with named fields (the
+    -- prelude Zipper, or a user type) resolves to its real field
+    -- quantities, so usage checking reads them from the declaration
+    -- instead of a hardcoded table keyed on the type name.
+    dataRecordFields =
+      Map.fromList
+        [ (nameText (ddName dd), fields)
+        | DData _ dd _ <- decls
+        , [c] <- [ddCtors dd]
+        , let fields =
+                [ (nameText nm, bpQuantity (bPrefix b))
+                | b <- cdBinders c
+                , Just nm <- [bName b]
+                ]
+        , not (null fields)
+        ]
     aliasDeps =
       Map.fromList
         [ (nameText n, fieldDepsOf fs)
@@ -420,30 +437,35 @@ usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
           final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs topEffOps sigTy ld) (S [] False 0)
        in if sBail final then [] else reverse (sDiags final)
 
--- Callee demand for prelude helpers the fixtures rely on.
-builtinFns :: Map Text [PInfo]
-builtinFns =
+data BuiltinUsage = BuiltinUsage
+  { buParams :: [PInfo]
+  , buEscape :: EscapeKind
+  , buLiftLike :: Bool
+  }
+
+builtinUsage :: Map Text BuiltinUsage
+builtinUsage =
   Map.fromList
-    [ ("unsafeConsume", [defaultP {pQuantity = Just QOne, pKnown = True}])
-    , -- §18.1.1/§12.3.2: pure/ioPure are result-carrying computation
-      -- constructors. They preserve the argument's hidden capture into
-      -- the resulting IO value, but their argument position is not an
-      -- arbitrary retained callback slot, so the ordinary unrestricted-
-      -- parameter escape diagnostic must not fire here.
-      ("pure", [defaultP {pKnown = True, pEscapingParam = False}])
-    , ("ioPure", [defaultP {pKnown = True, pEscapingParam = False}])
-    , -- §14.3.2 'summon': the explicit goal argument is a type, erased
-      -- at runtime (§31.2), so mentioning an erased type binder there
-      -- is not a runtime use
-      ("summon", [defaultP {pQuantity = Just QZero, pKnown = True}])
-    , ("fork", [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeFork}])
-    , ("forkDaemon", [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeForkDaemon}])
+    [ ("unsafeConsume", BuiltinUsage [defaultP {pQuantity = Just QOne, pKnown = True}] EscapeOrdinaryParam False)
+    , ("pure", BuiltinUsage [defaultP {pKnown = True, pEscapingParam = False}] EscapeOrdinaryParam True)
+    , ("ioPure", BuiltinUsage [defaultP {pKnown = True, pEscapingParam = False}] EscapeOrdinaryParam True)
+    , ("return", BuiltinUsage [] EscapeOrdinaryParam True)
+    , ("summon", BuiltinUsage [defaultP {pQuantity = Just QZero, pKnown = True}] EscapeOrdinaryParam False)
+    , ("fork", BuiltinUsage [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeFork}] EscapeFork False)
+    , ("forkDaemon", BuiltinUsage [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeForkDaemon}] EscapeForkDaemon False)
     , ( "forkIn"
-      , [ defaultP {pKnown = True}
-        , defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeForkIn}
-        ]
+      , BuiltinUsage
+          [ defaultP {pKnown = True}
+          , defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeForkIn}
+          ]
+          EscapeForkIn
+          False
       )
     ]
+
+-- Callee demand for prelude helpers the fixtures rely on.
+builtinFns :: Map Text [PInfo]
+builtinFns = Map.mapMaybe (\bu -> if null (buParams bu) then Nothing else Just (buParams bu)) builtinUsage
 
 moduleUsageSignatures :: Module -> Map Text [PInfo]
 moduleUsageSignatures m =
@@ -465,11 +487,13 @@ resolveFields aliases = go
       ERecordType fs _ _ ->
         [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
       EVar n -> Map.findWithDefault [] (nameText n) aliases
-      -- the §12.4.3 prelude zipper: a linear fill closure
       EApp (EVar n) _
-        | nameText n == "Zipper"
-        , not (Map.member "Zipper" aliases) ->
-            [("focus", Nothing), ("fill", Just QOne)]
+        -- an applied record alias / single-ctor data type resolves to its
+        -- declared fields (so a user type named Zipper uses its own fields)
+        | Just fs <- Map.lookup (nameText n) aliases -> fs
+        -- §12.4.3 fallback for the prelude Zipper, an imported data type the
+        -- usage pass cannot resolve locally: a linear fill closure.
+        | nameText n == "Zipper" -> [("focus", Nothing), ("fill", Just QOne)]
       EAscription e _ _ -> go e
       ECaptures e _ _ -> go e
       _ -> []
@@ -674,10 +698,8 @@ fnParams msig ld =
     mergeCaptureBound _ CapClosed = CapClosed
     mergeCaptureBound _ _ = CapAny
     escapeKindFor = \case
-      Just "fork" -> EscapeFork
-      Just "forkDaemon" -> EscapeForkDaemon
-      Just "forkIn" -> EscapeForkIn
-      _ -> EscapeOrdinaryParam
+      Just nm -> maybe EscapeOrdinaryParam buEscape (Map.lookup nm builtinUsage)
+      Nothing -> EscapeOrdinaryParam
     mergeEscapeKind EscapeOrdinaryParam k = k
     mergeEscapeKind k EscapeOrdinaryParam = k
     mergeEscapeKind k _ = k
@@ -1612,7 +1634,7 @@ walkApp env f args = do
   --     exactly like the tuple/record-literal construction handled by
   --     'walks'. (Tuples and records already propagate via 'walks'.)
   let liftLike = case appHeadVar f of
-        Just n -> n `elem` ["pure", "ioPure", "return"]
+        Just n -> maybe False buLiftLike (Map.lookup n builtinUsage)
         Nothing -> False
       -- the head names a data constructor (looked up by ctor name, not a
       -- locally-bound variable shadowing it) — its application builds a
