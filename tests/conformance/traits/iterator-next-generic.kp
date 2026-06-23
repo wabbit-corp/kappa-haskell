@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2: `next` is usable in generic code parameterised over any
+-- `Iterator`; the associated `Item` stays abstract (projected from the
+-- evidence binder).
+module main
+
+hasNext : forall (it : Type). (@_ : Iterator it) -> (1 x : it) -> Bool
+let hasNext x =
+    match next x
+      case Option.Some _ -> True
+      case Option.None -> False

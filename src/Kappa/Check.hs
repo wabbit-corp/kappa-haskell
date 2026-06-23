@@ -3125,7 +3125,16 @@ infer ctx expr = case expr of
               _ -> False
         mg <- lookupGlobalName (nameText n)
         if sib && (override || isNothing mg)
-          then infer ctx (EDot (EVar (Name "this" (nameSpan n))) (DotName n))
+          then case mthis of
+            -- §14.2.1: an associated static member projects from the trait
+            -- evidence directly — NOT via the user-spellable name 'this',
+            -- which a member parameter may shadow (e.g. Iterator's
+            -- @next : (1 this : it) -> Option (item : Item, rest : it)@,
+            -- whose `this` binder must not capture the sibling `Item`).
+            Just (ThisTraitSibs fields)
+              | Just fty <- lookup (nameText n) fields ->
+                  pure (CProj (CGlob thisG) (nameText n), fty)
+            _ -> infer ctx (EDot (EVar (Name "this" (nameSpan n))) (DotName n))
           else resolveName ctx n
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
@@ -3244,7 +3253,18 @@ infer ctx expr = case expr of
     where
       goDep _ [] = pure []
       goDep done (f : rest) = do
-        (t0, lvl) <- withThis (Just (ThisType done)) (inferType ctx (rtfType f))
+        -- §13.2.1: a record field's type sees earlier fields through
+        -- 'this'. §14.2.1: when this record type appears INSIDE a trait
+        -- member signature, the trait's associated static members must
+        -- stay in scope too (e.g. Iterator's
+        -- @next : … -> Option (item : Item, rest : it)@ projects the
+        -- sibling @Item@), so keep the trait-sibling mode and add the
+        -- record's own fields to it rather than shadowing it.
+        outer <- gets csThis
+        let thisMode = case outer of
+              Just (ThisTraitSibs sibs) -> ThisTraitSibs (sibs ++ done)
+              _ -> ThisType done
+        (t0, lvl) <- withThis (Just thisMode) (inferType ctx (rtfType f))
         -- §13.2.1/§16.1.7.1: a suspension-marked field declares the
         -- suspension type; literals insert the suspension at the field
         let t = case rtfSusp f of

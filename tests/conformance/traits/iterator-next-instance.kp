@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2/§14.2.1/§14.3.4: the prelude `Iterator` trait declares the
+-- associated `Item : Type` and `next : (1 this : it) -> Option (item :
+-- Item, rest : it)` — `next`'s type projects the associated member `Item`
+-- (a sibling) in a nested record type. An instance defines BOTH the
+-- associated member and the step.
+module main
+
+data Counter : Type =
+    MkCounter (n : Int)
+
+instance Iterator Counter =
+    Item = Int
+    let next this =
+        match this
+          case MkCounter n -> Some (item = n, rest = MkCounter (addInt n 1))

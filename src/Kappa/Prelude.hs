@@ -893,15 +893,15 @@ preludeSource =
     , "    emptyA : forall (a : Type). f a"
     , "    (<|>) : forall (a : Type). f a -> f a -> f a"
     , ""
-    , -- §28.2 Iterator: the associated Item type plus a one-shot step.
-      -- The spec's 'next : (1 this : it) -> Option (item : Item, rest :'
-      -- 'it)' references the associated 'Item' in a sibling member
-      -- signature; this implementation cannot resolve an associated-type
-      -- member name in an applied type position, so only the associated
-      -- 'Item' member is surfaced (the trait name resolves). See
-      -- KNOWN_SPEC_ISSUES.md.
+    , -- §28.2 Iterator: the associated 'Item' type and the one-shot step
+      -- 'next'. 'next' references the associated 'Item' in its own
+      -- signature; §14.2.1 makes that a sibling-member projection of the
+      -- current trait evidence, now that associated static members are
+      -- supported (§14.3.4) — an instance defines both 'Item = …' and
+      -- 'let next this = …'.
       "trait Iterator (it : Type) ="
     , "    Item : Type"
+    , "    next : (1 this : it) -> Option (item : Item, rest : it)"
     , ""
     , -- §29.x runtime-effect / resource traits (§18.1.25, §18.6.1,
       -- §19.1-19.5). Operational subset: the IO carrier instances below
