@@ -361,6 +361,8 @@ data SpeciesKnowledge : Type =
         (sightings : Int)
         (kills : Int)
         (damageSeen : List DamageType)
+        (firstDepth : Int)
+        (drops : List ItemKind)
 
 -- Reveal thresholds + vague flavor for the lore/perception system (pack.json "reveal").
 data RevealConfig : Type =

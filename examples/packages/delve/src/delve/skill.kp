@@ -61,13 +61,22 @@ let memberDamage d xs decreases listLength xs =
 unionDamage : DamageType -> List DamageType -> List DamageType
 let unionDamage d xs = if memberDamage d xs then xs else (::) d xs
 
+memberKind : ItemKind -> List ItemKind -> Bool
+let memberKind k xs decreases listLength xs =
+    match xs
+    case Nil -> False
+    case y :: rest -> if k == y then True else memberKind k rest
+
+unionKind : ItemKind -> List ItemKind -> List ItemKind
+let unionKind k xs = if memberKind k xs then xs else (::) k xs
+
 lookupKnowledge : Species -> PlayerState -> SpeciesKnowledge
 let lookupKnowledge species player =
     block
         go : List SpeciesKnowledge -> SpeciesKnowledge
         let go xs decreases listLength xs =
             match xs
-            case Nil -> SpeciesKnowledge species 0 0 Nil
+            case Nil -> SpeciesKnowledge species 0 0 Nil 0 Nil
             case k :: rest -> if k.species == species then k else go rest
         go player.knowledge
 
@@ -76,26 +85,30 @@ let lookupKnowledge species player =
 knowledgeScore : SpeciesKnowledge -> Int
 let knowledgeScore k = k.sightings + k.kills * 2 + listLength k.damageSeen
 
-bumpKnowledge : SpeciesKnowledge -> Bool -> Option DamageType -> SpeciesKnowledge
-let bumpKnowledge k killed dmg =
+-- Fold one encounter into a knowledge entry: a sighting, a possible kill, the
+-- element tested, and what it dropped. firstDepth is set once (at creation), so
+-- bumping an existing entry leaves it alone.
+bumpKnowledge : SpeciesKnowledge -> Bool -> Option DamageType -> Option ItemKind -> SpeciesKnowledge
+let bumpKnowledge k killed dmg drop =
     let k1 = k.{ sightings = k.sightings + 1, kills = if killed then k.kills + 1 else k.kills }
+    let k2 = match dmg case Some d -> k1.{ damageSeen = unionDamage d k1.damageSeen } case None -> k1
     in
-        match dmg
-        case Some d -> k1.{ damageSeen = unionDamage d k1.damageSeen }
-        case None -> k1
+        match drop
+        case Some it -> k2.{ drops = unionKind it k2.drops }
+        case None -> k2
 
-recordSpecies : Species -> Bool -> Option DamageType -> List SpeciesKnowledge -> List SpeciesKnowledge
-let recordSpecies species killed dmg xs decreases listLength xs =
+recordSpecies : Int -> Species -> Bool -> Option DamageType -> Option ItemKind -> List SpeciesKnowledge -> List SpeciesKnowledge
+let recordSpecies depth species killed dmg drop xs decreases listLength xs =
     match xs
-    case Nil -> [bumpKnowledge (SpeciesKnowledge species 0 0 Nil) killed dmg]
-    case k :: rest -> if k.species == species then (::) (bumpKnowledge k killed dmg) rest else (::) k (recordSpecies species killed dmg rest)
+    case Nil -> [bumpKnowledge (SpeciesKnowledge species 0 0 Nil depth Nil) killed dmg drop]
+    case k :: rest -> if k.species == species then (::) (bumpKnowledge k killed dmg drop) rest else (::) k (recordSpecies depth species killed dmg drop rest)
 
--- Record an encounter with a creature: a sighting, possibly a kill, possibly an
--- element tested against it. The player never studies its own species.
-observeSpecies : Species -> Bool -> Option DamageType -> PlayerState -> PlayerState
-let observeSpecies species killed dmg player =
+-- Record an encounter: a sighting at the current depth, possibly a kill, the
+-- element tested, and the remains dropped. The player never studies its own kind.
+observeSpecies : Int -> Species -> Bool -> Option DamageType -> Option ItemKind -> PlayerState -> PlayerState
+let observeSpecies depth species killed dmg drop player =
     if species == PlayerSpecies then player
-    else player.{ knowledge = recordSpecies species killed dmg player.knowledge }
+    else player.{ knowledge = recordSpecies depth species killed dmg drop player.knowledge }
 
 studiedCount : List SpeciesKnowledge -> Int
 let studiedCount xs = listLength xs

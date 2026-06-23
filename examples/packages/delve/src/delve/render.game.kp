@@ -573,13 +573,26 @@ let codexNames pack ks cursor =
             case k :: rest -> go (i + 1) rest ((::) ((if i == cursor then "> " else "  ") ++ (content.actorDefBySpecies pack k.species).name) acc)
         go 0 ks Nil
 
+kindNames : ContentPack -> List ItemKind -> String
+let kindNames pack ks =
+    block
+        go : List ItemKind -> String -> String
+        let go xs acc decreases listLength xs =
+            match xs
+            case Nil -> acc
+            case k :: rest -> go rest (acc ++ (if acc == "" then "" else ", ") ++ (content.itemDef pack k).displayName)
+        go ks ""
+
 codexDetail : ContentPack -> PlayerState -> List SpeciesKnowledge -> Int -> List String
 let codexDetail pack player ks cursor =
     match listGet ks cursor
     case None -> Nil
     case Some k ->
         let header = (content.actorDefBySpecies pack k.species).name ++ " — seen " ++ show k.sightings ++ ", slain " ++ show k.kills
-        in listAppend [header, content.descriptionOf pack k.species, ""] (know.speciesLore pack player k.species)
+        let depthLine = if k.firstDepth > 0 then "First met on depth " ++ show k.firstDepth ++ "." else "First met somewhere below."
+        let dropLine = if listIsEmpty k.drops then Nil else ["Leaves behind: " ++ kindNames pack k.drops ++ "."]
+        let lore = know.speciesLore pack player k.species
+        in listAppend [header, content.descriptionOf pack k.species, depthLine] (listAppend dropLine ((::) "" lore))
 
 codexBody : ContentPack -> PlayerState -> List SpeciesKnowledge -> Int -> List String
 let codexBody pack player ks cursor =

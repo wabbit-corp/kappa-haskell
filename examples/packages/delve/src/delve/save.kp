@@ -77,7 +77,7 @@ encodeSkillEntry : SkillEntry -> JsonValue
 let encodeSkillEntry e = obj [ field "id" (str e.id), field "level" (num e.level) ]
 
 encodeKnowledge : SpeciesKnowledge -> JsonValue
-let encodeKnowledge k = obj [ field "species" (str (speciesName k.species)), field "sightings" (num k.sightings), field "kills" (num k.kills), field "damage_seen" (arr (map (\d -> str (damageTypeName d)) k.damageSeen)) ]
+let encodeKnowledge k = obj [ field "species" (str (speciesName k.species)), field "sightings" (num k.sightings), field "kills" (num k.kills), field "damage_seen" (arr (map (\d -> str (damageTypeName d)) k.damageSeen)), field "first_depth" (num k.firstDepth), field "drops" (arr (map (\it -> str (itemKindName it)) k.drops)) ]
 
 encodePlayer : PlayerState -> JsonValue
 let encodePlayer p =
@@ -321,7 +321,10 @@ let decodeKnowledge value =
         kills <- optIntField 0 "kills" value
         dmgJson <- optArrayField Nil "damage_seen" value
         damageSeen <- traverse decodeDamageTypeJson dmgJson
-        pure (SpeciesKnowledge species sightings kills damageSeen)
+        firstDepth <- optIntField 0 "first_depth" value
+        dropsJson <- optArrayField Nil "drops" value
+        drops <- traverse decodeItemKindJson dropsJson
+        pure (SpeciesKnowledge species sightings kills damageSeen firstDepth drops)
 
 decodePlayer : ContentPack -> JsonValue -> IO GameError PlayerState
 let decodePlayer pack value =

@@ -144,7 +144,7 @@ let movePlayer dir game =
                     let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
                     let g2 = g1.{ noise = Sound target fov.combatLoudness }
                     let killed = not hit.defender.alive
-                    let learned = skill.observeSpecies enemy.species killed (Some (content.playerMeleeElement game.content p game.player)) game.player
+                    let learned = skill.observeSpecies game.level.depth enemy.species killed (Some (content.playerMeleeElement game.content p game.player)) (if killed then Some (content.remainsKind enemy.species) else None) game.player
                     let trained = if killed then skill.trainSkill game.content "lore" learned else learned
                     in message hit.log (g2.{ player = trained })
             case None ->
@@ -444,7 +444,7 @@ let zapWand wand before after p enemy game =
         let attacker2 = if enemy2.alive then attacker0 else combat.awardXp attacker0 enemy2
         let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
         let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
-        let learned = skill.observeSpecies enemy.species (not enemy2.alive) (Some dt) g1.player
+        let learned = skill.observeSpecies game.level.depth enemy.species (not enemy2.alive) (Some dt) (if not enemy2.alive then Some (content.remainsKind enemy.species) else None) g1.player
         let trained = if enemy2.alive then learned else skill.trainSkill game.content "lore" learned
         message ("A line of " ++ content.damageTypeDisplayName dt ++ " hits " ++ enemy.name ++ " for " ++ show dmg ++ "." ++ combat.elementTag dt enemy) (g1.{ player = trained })
     case WandPolymorph ->
@@ -504,7 +504,7 @@ let throwFirst game =
                 let p3 = if enemy2.alive then p2 else combat.awardXp p2 enemy2
                 let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor p3 game0.level.actors)), items = (::) (GroundItem enemy.pos thrown) game0.level.items } }
                 let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
-                let learned = skill.observeSpecies enemy.species (not enemy2.alive) (Some dt) g1.player
+                let learned = skill.observeSpecies game.level.depth enemy.species (not enemy2.alive) (Some dt) (if not enemy2.alive then Some (content.remainsKind enemy.species) else None) g1.player
                 let trained = if enemy2.alive then learned else skill.trainSkill game.content "lore" learned
                 message ("You throw " ++ know.visibleName game.content game.player thrown ++ " at " ++ enemy.name ++ " for " ++ show dmg ++ ".") (g1.{ player = trained })
 
@@ -652,9 +652,10 @@ let butcherCorpse game =
             case None -> game
             case Some corpse ->
                 let bone = content.mkBones game.content corpse.source
-                let p2 = p.{ inventory = inventory.addToInventory bone (inventory.addToInventory bone r.rest) }
+                let count = 2 + divInt (skill.skillLevel "survival" game.player) 2
+                let p2 = p.{ inventory = inventory.addCopies bone count r.rest }
                 let nc = max 0 (min game.invCursor (listLength p2.inventory - 1))
-                in message ("You butcher the " ++ corpse.name ++ " for bones.") (game.{ invCursor = nc, player = skill.trainSkill game.content "survival" game.player, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+                in message ("You butcher the " ++ corpse.name ++ ", salvaging " ++ show count ++ " bones.") (game.{ invCursor = nc, player = skill.trainSkill game.content "survival" game.player, level = game.level.{ actors = replaceActor p2 game.level.actors } })
 
 isFloorKindleTarget : TileKind -> Bool
 let isFloorKindleTarget k =

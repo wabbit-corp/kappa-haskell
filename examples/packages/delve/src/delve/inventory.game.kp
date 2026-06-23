@@ -37,6 +37,11 @@ let addToInventory item items decreases listLength items =
         if sameStack item h then (::) h.{ count = h.count + item.count } rest
         else (::) h (addToInventory item rest)
 
+-- Add `n` copies of an item (used for skill-scaled yields like butchering).
+addCopies : Item -> Int -> List Item -> List Item
+let addCopies item n inv decreases max 0 n =
+    if n <= 0 then inv else addCopies item (n - 1) (addToInventory item inv)
+
 takeOneFromStack : Item -> List Item -> (picked : Item, rest : List Item)
 let takeOneFromStack item rest =
     if item.stackable && item.count > 1 then

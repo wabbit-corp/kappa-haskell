@@ -390,6 +390,10 @@ let speciesResistances pack species = (actorDefBySpecies pack species).resistanc
 speciesVulnerabilities : ContentPack -> Species -> List DamageType
 let speciesVulnerabilities pack species = (actorDefBySpecies pack species).vulnerabilities
 
+-- What a slain creature leaves behind: skeletons leave bones, others a corpse.
+remainsKind : Species -> ItemKind
+let remainsKind species = if species == Skeleton then Bones else Corpse
+
 -- The element a mutation rides on hit (e.g. BurningBlood -> Fire), if any.
 mutationDamageType : ContentPack -> Mutation -> Option DamageType
 let mutationDamageType pack m =
