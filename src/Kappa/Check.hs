@@ -38,6 +38,7 @@ import Control.Monad.State.Strict
 import Data.Data (Data, cast, gmapQ)
 import Data.Graph (SCC (..), stronglyConnComp)
 import Data.List (elemIndex, find, intersect, nub, sort, sortOn, (\\))
+import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe, maybeToList)
@@ -2569,8 +2570,8 @@ tryInstance depth ctx goalArgs ie
               -- standing for premise slots are not applied
               let nFv = ieTeleLen ie - length (iePremises ie)
                   dict =
-                    foldl' (\f a -> CApp Impl f a)
-                      (foldl' (\f a -> CApp Impl f a) (CGlob (ieDict ie)) (take nFv metaTms))
+                    List.foldl' (\f a -> CApp Impl f a)
+                      (List.foldl' (\f a -> CApp Impl f a) (CGlob (ieDict ie)) (take nFv metaTms))
                       (catMaybes prems)
               pure (Just dict)
             else put saved >> pure Nothing
@@ -2933,26 +2934,26 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTerm t0)
       applySpine (fuel - 1) hd args0
 
     applySpine fuel hd args
-      | fuel <= 0 = pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+      | fuel <= 0 = pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
       | otherwise = case (hd, args) of
           (CLam lamIc _ _ body, (argIc, arg) : rest)
-            | lamIc == argIc -> go (fuel - 1) (foldl' (\f (ic, a) -> CApp ic f a) (substTopTerm arg body) rest)
+            | lamIc == argIc -> go (fuel - 1) (List.foldl' (\f (ic, a) -> CApp ic f a) (substTopTerm arg body) rest)
           (CProj e f, _) -> do
             hd' <- go (fuel - 1) (CProj e f)
             if hd' == hd
-              then pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+              then pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
               else applySpine (fuel - 1) hd' args
           (CProjAt e f i, _) -> do
             hd' <- go (fuel - 1) (CProjAt e f i)
             if hd' == hd
-              then pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+              then pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
               else applySpine (fuel - 1) hd' args
           (CGlob g, _) -> do
             mBody <- unfoldReducibleGlobal d g
             case mBody of
               Just body -> applySpine (fuel - 1) body args
-              Nothing -> pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
-          _ -> pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+              Nothing -> pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
+          _ -> pure (List.foldl' (\f (ic, a) -> CApp ic f a) hd args)
 
 unfoldReducibleGlobal :: Int -> GName -> CheckM (Maybe Term)
 unfoldReducibleGlobal d g = do
@@ -3387,7 +3388,7 @@ infer ctx expr = case expr of
   EOpRef _ op _ -> resolveName ctx op
   EReceiverSection ms args sp ->
     infer ctx . lam1 sp "__x" $ \x ->
-      let base = foldl' EDot x ms
+      let base = List.foldl' EDot x ms
        in case args of
             [] -> base
             _ -> EApp base args
@@ -3441,7 +3442,7 @@ infer ctx expr = case expr of
       pure rTm
     let sorted = sortOn renderTerm (nub rs)
         capTm =
-          foldl'
+          List.foldl'
             (\acc r -> CApp Expl (CApp Expl (CGlob prelCaptures) acc) r)
             tTm
             sorted
@@ -3610,7 +3611,7 @@ check ctx expr expected0 = do
     (EReceiverSection ms args sp, _) ->
       check ctx
         ( lamSection sp "__x" $ \x ->
-            let base = foldl' EDot x ms
+            let base = List.foldl' EDot x ms
              in case args of
                   [] -> base
                   _ -> EApp base args
@@ -6950,7 +6951,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           -- context, not the caller's (§16.3.3)
           (tm, ty) <- infer ctx body
           insertAllImplicits ctx (exprSpan body) tm ty
-      pure (foldl' (flip mkLet) bodyTm acc, bodyTy)
+      pure (List.foldl' (flip mkLet) bodyTm acc, bodyTy)
     -- an annotated local function may refer to itself (§9.2 mirrored
     -- locally): elaborate the lambda under its own binder
     go ctx (LetBind implocal prefix (PVar n) (Just tyE) rhs@ELambda {} sp : rest) acc = do
@@ -7045,7 +7046,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
               checkIrrefutable ctx pat rhsTy sp
               let inner = foldr (\(nm, tyT, tm) b -> CLet q nm tyT tm b) bodyTm projBinds
                   whole = CLet q scrutN rhsTyTm rhsTm inner
-              pure (foldl' (flip mkLet) whole acc, bodyTy)
+              pure (List.foldl' (flip mkLet) whole acc, bodyTy)
             Nothing -> do
               -- irrefutable destructuring: elaborate as single-case
               -- match by rewriting `let pat = rhs; rest` to
@@ -7054,7 +7055,7 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
               (bodyTm, bodyTy) <- goUnder ctx' rest
               checkIrrefutable ctx pat rhsTy sp
               let matchTm = CMatch rhsTm [CaseAlt patC Nothing bodyTm]
-              pure (foldl' (flip mkLet) matchTm acc, bodyTy)
+              pure (List.foldl' (flip mkLet) matchTm acc, bodyTy)
       where
         patVarName = \case
           PVar n -> Just (Just n)
@@ -7571,7 +7572,7 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
           let opsRec = CRecordV (sortOn fst clauseTms)
               deepTm = CCtor (prelBoolV deep) []
               tm =
-                foldl'
+                List.foldl'
                   (CApp Expl)
                   (CGlob prelHandleEff)
                   [deepTm, CGlob (eliLabel eli), retLam, opsRec, scrutTm]
@@ -9205,7 +9206,7 @@ forceRT v = do
 vappRT :: Value -> [Value] -> CheckM Value
 vappRT f as = do
   ec <- ecRT_
-  pure (foldl' (\g a -> vapp ec g Expl a) f as)
+  pure (List.foldl' (\g a -> vapp ec g Expl a) f as)
 
 -- | Run an elaboration speculatively: keep its result only when it
 -- reported no new diagnostics; otherwise restore the full state.
@@ -12535,7 +12536,7 @@ withSccOpaque gs act = do
       (st {csGlobals = foldr (Map.adjust (\gd -> gd {gdReducible = False})) (csGlobals st) gs})
   r <- act
   modify' $ \st ->
-    invalidateSemanticCaches (st {csGlobals = foldl' restore (csGlobals st) gs})
+    invalidateSemanticCaches (st {csGlobals = List.foldl' restore (csGlobals st) gs})
   pure r
 
 setGlobalReducible :: GName -> Bool -> CheckM ()

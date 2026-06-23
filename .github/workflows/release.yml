@@ -39,7 +39,7 @@ jobs:
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.6.7"
+          ghc-version: "9.14.1"
           cabal-version: "3.10.3.0"
 
       - name: Cache Cabal store
@@ -48,9 +48,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.6.7-cabal-${{ hashFiles('kappa-haskell.cabal') }}
+          key: ${{ runner.os }}-ghc-9.14.1-cabal-${{ hashFiles('kappa-haskell.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.6.7-cabal-
+            ${{ runner.os }}-ghc-9.14.1-cabal-
 
       - name: Build
         run: |
@@ -78,7 +78,7 @@ jobs:
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.6.7"
+          ghc-version: "9.14.1"
           cabal-version: "3.10.3.0"
 
       - name: Cache Cabal store
@@ -87,9 +87,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.6.7-native-${{ hashFiles('kappa-haskell.cabal') }}
+          key: ${{ runner.os }}-ghc-9.14.1-native-${{ hashFiles('kappa-haskell.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.6.7-native-
+            ${{ runner.os }}-ghc-9.14.1-native-
 
       - name: Run native gate suite
         shell: bash
@@ -125,7 +125,7 @@ jobs:
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.6.7"
+          ghc-version: "9.14.1"
           cabal-version: "3.10.3.0"
 
       - name: Cache Cabal store
@@ -134,9 +134,9 @@ jobs:
           path: |
             ~/.cabal/store
             dist-newstyle
-          key: ${{ runner.os }}-ghc-9.6.7-package-${{ hashFiles('kappa-haskell.cabal') }}
+          key: ${{ runner.os }}-ghc-9.14.1-package-${{ hashFiles('kappa-haskell.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-9.6.7-package-
+            ${{ runner.os }}-ghc-9.14.1-package-
 
       - name: Build release executable
         shell: bash
@@ -236,7 +236,7 @@ jobs:
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
         with:
-          ghc-version: "9.6.7"
+          ghc-version: "9.14.1"
           cabal-version: "3.10.3.0"
 
       - name: Install Kappa compiler for Delve (Windows)
