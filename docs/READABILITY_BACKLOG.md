@@ -95,27 +95,23 @@ Larger reorders still worth doing (deferred — bigger diffs / tied to splits):
   consistently per module. Currently mixed. Documenting the choice in CONTRIBUTING
   would stop the two styles fighting. Size: small (decision) + ongoing.
 
-## Naming suggestions (deferred — renames touch many call sites)
+## Naming suggestions
 
-These names obscure intent. The documentation pass has explained them in
-comments; renaming would let the code read without the gloss. All are
-behavior-preserving but ripple across call sites, so they're deferred.
+These names obscured intent; the documentation pass explained them in comments,
+and the worst are now renamed (all were module-internal, so behavior-preserving
+and contained — GHC verifies completeness).
 
-**`Usage.hs`** (the worst offenders — single letters for core types):
-- `Cnt` → `Use` / `UseCount` — one binding's usage interval + metadata.
-- `S` → `AnalysisState`; `M` (= `State S`) → `Analysis`.
-- `R` → `WalkResult`; its fields `rU`/`rT`/`rL` → `wrUsage`/`wrTaint`/`wrLatent`.
-- `wInf` (= 1000000) → `omegaBound` / `qOmegaSentinel` — an arbitrary large
-  stand-in for ω; the magic literal should be a named sentinel.
-- The `…C` helper suffix (`zeroC`/`oneC`/`seqC`/`altC`/`scaleC`) just means
-  "of `Cnt`"; follows whatever `Cnt` becomes.
-- `cLo`/`cHi`/`cTouch` → `useLo`/`useHi`/`useTouched`.
+**`Usage.hs`** — DONE (all were internal to the module):
+- `Cnt` → `UseCount`; accessors `cLo`/`cHi`/`cTouch` → `ucLo`/`ucHi`/`ucTouched`;
+  combinators `zeroC`/`oneC`/`touchC`/`evC`/`seqC`/`altC`/`scaleC` → `…UC`.
+- `S` → `AnalysisState`; `M` → `Analysis`; `R` → `WalkResult` (fields
+  `rU`/`rT`/`rL` → `wrUsage`/`wrTaint`/`wrLatent`).
+- `wInf` (= 1000000) → `omegaBound` (a named sentinel for ω).
 
-**`Check.hs`** (local, lower-ripple):
-- `qok` (threaded through `unify`) → `allowQSubsumption`.
-- `ec_` accessor → spell out the eval/conversion context it returns.
-- `goTop`/`go` workers inside `unify`/`infer` → `unifyAt`/`inferArm` etc.
+**`Check.hs`** — DONE: `qok` (threaded through `unify`) → `allowQSubsumption`.
+- Still deferred (riskier — `go` is used everywhere; `ec_` is exported-ish):
+  `ec_` accessor → spell out the eval/conversion context it returns;
+  `goTop`/`go` workers inside `unify`/`infer` → `unifyAt`/`inferArm` etc.
 
-**`Eval.hs`**:
-- `forceQ` vs `force` vs `vforce` — three force-like names; clarify which is
-  the conversion-time vs runtime variant in their names.
+**`Eval.hs`** — deferred: `forceQ` vs `force` vs `vforce` are three force-like
+names; clarify which is the conversion-time vs runtime variant.

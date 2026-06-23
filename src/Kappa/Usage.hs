@@ -46,14 +46,13 @@
 -- from same-module signatures, and a definition containing constructs
 -- outside the modelled subset is skipped entirely rather than misjudged.
 --
--- Reading guide. The core data types are 'Cnt' (one binding's usage
+-- Reading guide. The core data types are 'UseCount' (one binding's usage
 -- interval @[lo, hi]@ plus borrow\/move metadata), 'Usage' (= @Map@ from a
--- binding key to its 'Cnt'), 'VInfo' (a tracked binding), 'PInfo' (a
--- parameter's demand: quantity plus borrow\/escape flags), and 'R' (the
--- result of walking one expression). The walk runs in the monad 'M'
--- (= @State S@). These
--- names are terser than ideal — proposed renames are in
--- docs/READABILITY_BACKLOG.md. Background on quantities: docs/CONCEPTS.md.
+-- binding key to its 'UseCount'), 'VInfo' (a tracked binding), 'PInfo' (a
+-- parameter's demand: quantity plus borrow\/escape flags), and 'WalkResult'
+-- (the result of walking one expression). The walk runs in the monad
+-- 'Analysis' (= @State AnalysisState@). Background on quantities:
+-- docs/CONCEPTS.md.
 module Kappa.Usage
   ( PInfo
   , coreFnParams
@@ -178,37 +177,37 @@ data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
 --   6. @![([Text], Span)]@ — detected §12.4 borrow-after-consume violations
 --                 (the borrowed path and the borrow site).
 --
--- Use 'cLo'\/'cHi'\/'cTouch' rather than positional matching where possible.
-data Cnt = Cnt !Int !Int ![Span] !Int ![PEv] ![([Text], Span)]
+-- Use 'ucLo'\/'ucHi'\/'ucTouched' rather than positional matching where possible.
+data UseCount = UseCount !Int !Int ![Span] !Int ![PEv] ![([Text], Span)]
 
-cLo :: Cnt -> Int
-cLo (Cnt a _ _ _ _ _) = a
+ucLo :: UseCount -> Int
+ucLo (UseCount a _ _ _ _ _) = a
 
-cHi :: Cnt -> Int
-cHi (Cnt _ b _ _ _ _) = b
+ucHi :: UseCount -> Int
+ucHi (UseCount _ b _ _ _ _) = b
 
-cTouch :: Cnt -> Bool
-cTouch (Cnt _ _ _ t _ _) = t > 0
+ucTouched :: UseCount -> Bool
+ucTouched (UseCount _ _ _ t _ _) = t > 0
 
-zeroC :: Cnt
-zeroC = Cnt 0 0 [] 0 [] []
+zeroUC :: UseCount
+zeroUC = UseCount 0 0 [] 0 [] []
 
-oneC :: Span -> Cnt
-oneC sp = Cnt 1 1 [sp] 1 [] []
+oneUC :: Span -> UseCount
+oneUC sp = UseCount 1 1 [sp] 1 [] []
 
-touchC :: Cnt
-touchC = Cnt 0 0 [] 1 [] []
+touchUC :: UseCount
+touchUC = UseCount 0 0 [] 1 [] []
 
 -- | A root-key occurrence carrying a §12.4 place event.
-evC :: PEv -> Cnt -> Cnt
-evC ev (Cnt a b o t evs vi) = Cnt a b o t (evs ++ [ev]) vi
+evUC :: PEv -> UseCount -> UseCount
+evUC ev (UseCount a b o t evs vi) = UseCount a b o t (evs ++ [ev]) vi
 
 -- | Sequential composition; a borrow of a path after an overlapping
 -- definite consume (with no restoring update in between — a patch
 -- rebinds through a fresh root) is a §12.4 violation.
-seqC :: Cnt -> Cnt -> Cnt
-seqC (Cnt a b o t evs vi) (Cnt c d o' t' evs' vi') =
-  Cnt (a + c) (b + d) (o ++ o') (t + t') (evs ++ evs') (vi ++ vi' ++ new)
+seqUC :: UseCount -> UseCount -> UseCount
+seqUC (UseCount a b o t evs vi) (UseCount c d o' t' evs' vi') =
+  UseCount (a + c) (b + d) (o ++ o') (t + t') (evs ++ evs') (vi ++ vi' ++ new)
   where
     new =
       [ (bp, sp)
@@ -216,19 +215,19 @@ seqC (Cnt a b o t evs vi) (Cnt c d o' t' evs' vi') =
       , any (\case PMove mp _ -> pathsOverlap mp bp; _ -> False) evs
       ]
 
-altC :: Cnt -> Cnt -> Cnt
-altC (Cnt a b o t evs vi) (Cnt c d o' t' evs' vi') =
-  Cnt (min a c) (max b d) (if d > b then o' else o) (min t t') (evs ++ evs') (vi ++ vi')
+altUC :: UseCount -> UseCount -> UseCount
+altUC (UseCount a b o t evs vi) (UseCount c d o' t' evs' vi') =
+  UseCount (min a c) (max b d) (if d > b then o' else o) (min t t') (evs ++ evs') (vi ++ vi')
 
 -- | Upper bound standing in for ω in scaled intervals.
-wInf :: Int
-wInf = 1000000
+omegaBound :: Int
+omegaBound = 1000000
 
 -- | Multiply a usage interval by a demand interval (§12.2.2, §16.2.1).
-scaleC :: (Int, Maybe Int) -> Cnt -> Cnt
-scaleC (lo, hi) (Cnt a b o t evs vi) =
-  Cnt
-    (min wInf (lo * a))
+scaleUC :: (Int, Maybe Int) -> UseCount -> UseCount
+scaleUC (lo, hi) (UseCount a b o t evs vi) =
+  UseCount
+    (min omegaBound (lo * a))
     b'
     (if b' > b then o ++ o else o)
     (if lo == 0 then 0 else t)
@@ -236,20 +235,20 @@ scaleC (lo, hi) (Cnt a b o t evs vi) =
     (if b' == 0 then [] else vi)
   where
     b' = case hi of
-      Nothing -> if b > 0 then wInf else 0
-      Just h -> min wInf (h * b)
+      Nothing -> if b > 0 then omegaBound else 0
+      Just h -> min omegaBound (h * b)
 
-type Usage = Map Text Cnt
+type Usage = Map Text UseCount
 
 scaleU :: (Int, Maybe Int) -> Usage -> Usage
-scaleU d = Map.map (scaleC d)
+scaleU d = Map.map (scaleUC d)
 
 seqU :: Usage -> Usage -> Usage
-seqU = Map.unionWith seqC
+seqU = Map.unionWith seqUC
 
 altU :: Usage -> Usage -> Usage
 altU u1 u2 =
-  Map.mergeWithKey (\_ a b -> Just (altC a b)) (Map.map (altC zeroC)) (Map.map (altC zeroC)) u1 u2
+  Map.mergeWithKey (\_ a b -> Just (altUC a b)) (Map.map (altUC zeroUC)) (Map.map (altUC zeroUC)) u1 u2
 
 altUs :: [Usage] -> Usage
 altUs [] = Map.empty
@@ -257,24 +256,24 @@ altUs us = foldr1 altU us
 
 -- mark every binding as possibly-unused (loops may run zero times)
 loopU :: Usage -> Usage
-loopU = Map.map (\(Cnt _ hi occs _ evs vi) -> Cnt 0 hi occs 0 evs vi)
+loopU = Map.map (\(UseCount _ hi occs _ evs vi) -> UseCount 0 hi occs 0 evs vi)
 
 -- ── Analysis monad ───────────────────────────────────────────────────
 
 -- | Mutable state of the analysis walk: accumulated diagnostics, a bail
 -- flag (set when an unmodelled construct is hit, so the definition is
 -- skipped rather than misjudged), and a counter for fresh binding keys.
-data S = S
+data AnalysisState = AnalysisState
   { sDiags :: ![Diagnostic]
   , sBail :: !Bool
   , sFresh :: !Int
   }
 
--- | The analysis monad: just 'State' over 'S'. (No reader env — the lexical
--- 'Env' is threaded explicitly as a function argument instead.)
-type M = State S
+-- | The analysis monad: just 'State' over 'AnalysisState'. (No reader env —
+-- the lexical 'Env' is threaded explicitly as a function argument instead.)
+type Analysis = State AnalysisState
 
-emit :: DiagnosticCode -> DiagnosticFamily -> Span -> Text -> M ()
+emit :: DiagnosticCode -> DiagnosticFamily -> Span -> Text -> Analysis ()
 emit code fam sp msg =
   modify' $ \s ->
     s {sDiags = diag SevError StageElaborate code (Just fam) sp msg : sDiags s}
@@ -282,7 +281,7 @@ emit code fam sp msg =
 -- | Like 'emit' but attaches §3.1.1A related origins — used by the
 -- borrow/path/ownership diagnostics, which MUST include the borrow or
 -- consume introduction site and the failing later use or escape site.
-emitRel :: DiagnosticCode -> DiagnosticFamily -> Span -> [RelatedOrigin] -> Text -> M ()
+emitRel :: DiagnosticCode -> DiagnosticFamily -> Span -> [RelatedOrigin] -> Text -> Analysis ()
 emitRel code fam sp rels msg =
   modify' $ \s ->
     s
@@ -291,11 +290,11 @@ emitRel code fam sp rels msg =
             : sDiags s
       }
 
-bailOut :: M ()
+bailOut :: Analysis ()
 bailOut = modify' $ \s -> s {sBail = True}
 
 -- | Shadowing-safe usage key for a new binding of @nm@.
-freshKey :: Text -> M Text
+freshKey :: Text -> Analysis Text
 freshKey nm = do
   n <- gets sFresh
   modify' $ \s -> s {sFresh = n + 1}
@@ -354,21 +353,21 @@ addBorrows :: [(Text, [Text], Span)] -> Env -> Env
 addBorrows bs env = env {eBorrows = bs ++ eBorrows env}
 
 -- | Walk result: immediate usage, escape taint, latent per-call usage.
-data R = R
-  { rU :: !Usage
-  , rT :: !(Maybe Span)
-  , rL :: !Usage
+data WalkResult = WalkResult
+  { wrUsage :: !Usage
+  , wrTaint :: !(Maybe Span)
+  , wrLatent :: !Usage
   }
 
-rPlain :: Usage -> R
-rPlain u = R u Nothing Map.empty
+rPlain :: Usage -> WalkResult
+rPlain u = WalkResult u Nothing Map.empty
 
-rNone :: R
+rNone :: WalkResult
 rNone = rPlain Map.empty
 
 -- | Fold latent usage in at exactly-once consumption.
-flatR :: R -> (Usage, Maybe Span)
-flatR r = (rU r `seqU` rL r, rT r)
+flatR :: WalkResult -> (Usage, Maybe Span)
+flatR r = (wrUsage r `seqU` wrLatent r, wrTaint r)
 
 -- ── Entry point ──────────────────────────────────────────────────────
 
@@ -461,7 +460,7 @@ usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs topEffOps sigTy ld) (S [] False 0)
+          final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs topEffOps sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
 
 data BuiltinUsage = BuiltinUsage
@@ -745,7 +744,7 @@ analyzeLet ::
   Map Text [(Text, Quantity)] ->
   Maybe Expr ->
   LetDef ->
-  M ()
+  Analysis ()
 analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
@@ -827,7 +826,7 @@ analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
 
 -- | §18.9.3: an @inout@ parameter must be threaded back through the
 -- declared result as a record field of the same name.
-checkInoutResult :: Maybe Expr -> LetDef -> M ()
+checkInoutResult :: Maybe Expr -> LetDef -> Analysis ()
 checkInoutResult msig ld =
   forM_ inouts $ \(nm, bsp) -> do
     let resTy = ldResultType ld `orElse` (sigResult <$> msig)
@@ -875,12 +874,12 @@ checkInoutResult msig ld =
 
 -- | Close one binding's scope: enforce its quantity interval, including
 -- per-path consumption of its quantity-1 record fields (§12.4).
-closeVar :: VInfo -> Usage -> M ()
+closeVar :: VInfo -> Usage -> Analysis ()
 closeVar vi u = do
-  let Cnt rLo rHi rOccs rTlo _ viols = Map.findWithDefault zeroC (vKey vi) u
-      res = Map.findWithDefault zeroC (vKey vi <> ".~") u
-      rootHi = rHi + cHi res
-      rootLo = rLo + cLo res
+  let UseCount rLo rHi rOccs rTlo _ viols = Map.findWithDefault zeroUC (vKey vi) u
+      res = Map.findWithDefault zeroUC (vKey vi <> ".~") u
+      rootHi = rHi + ucHi res
+      rootLo = rLo + ucLo res
   -- §12.4: borrowing or re-projecting a path after an overlapping
   -- definite consume (no intervening restore — a restoring patch
   -- rebinds through a fresh root) is a compile-time error
@@ -912,8 +911,8 @@ closeVar vi u = do
   -- independent of `vQ vi`; the upper-bound check must do the same, or a
   -- linear field consumed twice (`free r.buf; free r.buf`) escapes.
   pathOver <- fmap or . forM (linFields vi) $ \f -> do
-    let pc@(Cnt _ pHi pOccs _ _ _) = Map.findWithDefault zeroC (vKey vi <> "." <> f) u
-    if cHi pc > 0 && rHi + pHi > 1
+    let pc@(UseCount _ pHi pOccs _ _ _) = Map.findWithDefault zeroUC (vKey vi <> "." <> f) u
+    if ucHi pc > 0 && rHi + pHi > 1
       then do
         -- the path is in linFields, i.e. quantity-1 (linear)
         overuse "linear" (nm <> "." <> f) (pOccs ++ rOccs)
@@ -935,11 +934,11 @@ closeVar vi u = do
         | otherwise =
             [ f
             | f <- linFields vi
-            , let fc = Map.findWithDefault zeroC (vKey vi <> "." <> f) u
+            , let fc = Map.findWithDefault zeroUC (vKey vi <> "." <> f) u
               -- a linear field is dropped when neither consumed (moved)
               -- nor borrowed (touched) on this completion path; a borrow
               -- discharges the obligation for its scope under §12.2.5
-            , cLo fc < 1 && not (cTouch fc)
+            , ucLo fc < 1 && not (ucTouched fc)
             ]
   forM_ droppedFields $ \f ->
     emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
@@ -1113,7 +1112,7 @@ pathsOverlap a b = a `isPrefixOf` b || b `isPrefixOf` a
 
 -- | Report a consuming use of @path@ under @vi@ while an overlapping
 -- borrow is live (§12.4).
-checkBorrowOverlap :: Env -> VInfo -> [Text] -> Span -> M ()
+checkBorrowOverlap :: Env -> VInfo -> [Text] -> Span -> Analysis ()
 checkBorrowOverlap env vi path sp =
   case filter conflict (eBorrows env) of
     [] -> pure ()
@@ -1134,18 +1133,18 @@ checkBorrowOverlap env vi path sp =
 
 -- | Usage of a consuming occurrence of a place (whole binding or a
 -- quantity-1 field path), checked against live borrows.
-movePlace :: Env -> VInfo -> [Text] -> Span -> M Usage
+movePlace :: Env -> VInfo -> [Text] -> Span -> Analysis Usage
 movePlace env vi path sp = do
   when (vQ vi == Just QZero) $
     emit "E_QTT_ERASED_RUNTIME_USE" "kappa.quantity.unsatisfied" sp
       ("erased (quantity 0) binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' is used at runtime (§12.2.1)")
   checkBorrowOverlap env vi path sp
   pure $ case path of
-    [] -> Map.singleton (vKey vi) (evC (PMove [] sp) (oneC sp))
+    [] -> Map.singleton (vKey vi) (evUC (PMove [] sp) (oneUC sp))
     fs ->
       Map.fromList
-        [ (vKey vi <> "." <> T.intercalate "." fs, oneC sp)
-        , (vKey vi, evC (PMove fs sp) touchC)
+        [ (vKey vi <> "." <> T.intercalate "." fs, oneUC sp)
+        , (vKey vi, evUC (PMove fs sp) touchUC)
         ]
 
 -- | Is the one-segment path a quantity-1 field of the binding?
@@ -1159,9 +1158,9 @@ isLinearPath _ _ = False
 -- borrow's scope (a borrow is non-consuming but does demand the field).
 placeTouch :: VInfo -> [Text] -> Usage
 placeTouch vi path =
-  Map.fromListWith seqC $
-    (vKey vi, touchC)
-      : [ (vKey vi <> "." <> T.intercalate "." path, touchC)
+  Map.fromListWith seqUC $
+    (vKey vi, touchUC)
+      : [ (vKey vi <> "." <> T.intercalate "." path, touchUC)
         | not (null path)
         ]
 
@@ -1169,26 +1168,26 @@ placeTouch vi path =
 -- yield leaves).
 placesTouch :: [(VInfo, [Text], Span)] -> Usage
 placesTouch places =
-  Map.unionsWith seqC [placeTouch vi path | (vi, path, _) <- places]
+  Map.unionsWith seqUC [placeTouch vi path | (vi, path, _) <- places]
 
 -- | Like 'placeTouch', but the root touch carries a §12.4 'PBorrow'
 -- place event (for borrow-after-consume tracking) at the borrow span.
 placeBorrow :: VInfo -> [Text] -> Span -> Usage
 placeBorrow vi path sp =
-  Map.fromListWith seqC $
-    (vKey vi, evC (PBorrow path sp) touchC)
-      : [ (vKey vi <> "." <> T.intercalate "." path, touchC)
+  Map.fromListWith seqUC $
+    (vKey vi, evUC (PBorrow path sp) touchUC)
+      : [ (vKey vi <> "." <> T.intercalate "." path, touchUC)
         | not (null path)
         ]
 
 -- ── Expression walk ──────────────────────────────────────────────────
 
-walkE :: Env -> Expr -> M R
+walkE :: Env -> Expr -> Analysis WalkResult
 walkE env e0 = case e0 of
   EVar n -> case Map.lookup (nameText n) (eVars env) of
     Just vi -> do
       u <- movePlace env vi [] (nameSpan n)
-      pure (R u (vEscape vi (nameSpan n)) (vLatent vi))
+      pure (WalkResult u (vEscape vi (nameSpan n)) (vLatent vi))
     Nothing -> pure rNone
   EHole {} -> pure rNone
   EIntLit {} -> pure rNone
@@ -1205,7 +1204,7 @@ walkE env e0 = case e0 of
           else
             -- a non-linear field projection touches a disjoint path of
             -- the root, not the whole binding (§12.4)
-            pure (rPlain (Map.singleton (vKey vi) touchC))
+            pure (rPlain (Map.singleton (vKey vi) touchUC))
   EDot b _ -> walkE env b
   EQDot b _ -> walkE env b
   ERecordPatch b items _ -> walkPatch env b items (exprSpan e0)
@@ -1233,7 +1232,7 @@ walkE env e0 = case e0 of
     taintLatent env u' t sp
   ELet binds body _ -> do
     (segs, env') <- walkBinds env binds
-    R u2 t l2 <- walkE env' body
+    WalkResult u2 t l2 <- walkE env' body
     let bodyU = u2 `seqU` l2
         sufs = drop 1 (scanr seqU bodyU [u | (u, _, _) <- segs])
     -- each binding is checked against everything sequenced after it
@@ -1242,7 +1241,7 @@ walkE env e0 = case e0 of
     let allBound = concat [bound | (_, bound, _) <- segs]
         del u = foldr (Map.delete . vKey . snd) u allBound
         u1 = foldr (\(u, _, _) acc -> u `seqU` acc) Map.empty segs
-    pure (R (u1 `seqU` del u2) t (del l2))
+    pure (WalkResult (u1 `seqU` del u2) t (del l2))
   EBlock decls mres _ -> do
     -- §9.3.1.1: collect scoped effect declarations (label ↦ op
     -- quantities) for the handler checks before walking the lets
@@ -1253,14 +1252,14 @@ walkE env e0 = case e0 of
     fl <- walkItems env items
     let paths = maybeToList (fU fl) ++ fRet fl ++ fBC fl
         computeTaint = firstJust (maybeToList (fT fl) ++ mapMaybe (usageAnonBorrowIntro env) paths)
-    pure (R (altUs paths) computeTaint Map.empty)
+    pure (WalkResult (altUs paths) computeTaint Map.empty)
   EIf alts mels _ -> do
     condsU <- mapM (fmap (fst . flatR) . walkE env . fst) alts
     branches <- mapM (fmap flatR . walkE env . snd) alts
     melsR <- traverse (fmap flatR . walkE env) mels
     let bs = map fst branches ++ [maybe Map.empty fst melsR]
         taints = mapMaybe snd branches ++ catMaybes [snd =<< melsR]
-    pure ((rPlain (foldr seqU (altUs bs) condsU)) {rT = firstJust taints})
+    pure ((rPlain (foldr seqU (altUs bs) condsU)) {wrTaint = firstJust taints})
   EMatch scrut cases _ -> walkMatch env scrut cases
   ETry {} -> bailOut >> pure rNone
   ETryMatch {} -> bailOut >> pure rNone
@@ -1295,7 +1294,7 @@ walkE env e0 = case e0 of
   EForce b _ -> do
     r <- walkE env b
     let (u, t) = flatR r
-    pure (R u t Map.empty)
+    pure (WalkResult u t Map.empty)
   ESeal b _ _ -> walkE env b -- §13.2.10: hiding is not a consuming destructor
   EOpenExists {} -> bailOut >> pure rNone
   ESealExists {} -> bailOut >> pure rNone
@@ -1341,7 +1340,7 @@ walkE env e0 = case e0 of
     walks es = do
       rs <- mapM (walkE env) es
       let parts = map flatR rs
-      pure ((rPlain (foldr (seqU . fst) Map.empty parts)) {rT = firstJust (mapMaybe snd parts)})
+      pure ((rPlain (foldr (seqU . fst) Map.empty parts)) {wrTaint = firstJust (mapMaybe snd parts)})
     -- a delayed computation: its body usage becomes latent, and it is
     -- tainted when it captures an anonymous borrow (§12.3.2)
     suspend envS b sp = do
@@ -1351,8 +1350,8 @@ walkE env e0 = case e0 of
     -- shared by lambda/thunk/lazy/section formation
     taintLatent envS u t sp = do
       let anonKeys = [vKey vi | vi <- Map.elems (eVars envS), vAnonBorrow vi]
-          captured = or [cTouch c | (k, c) <- Map.toList u, k `elem` anonKeys]
-      pure (R Map.empty (if captured || isJust t then Just sp else Nothing) u)
+          captured = or [ucTouched c | (k, c) <- Map.toList u, k `elem` anonKeys]
+      pure (WalkResult Map.empty (if captured || isJust t then Just sp else Nothing) u)
     latentOf envS operand sp = do
       r <- walkE envS operand
       let (u, t) = flatR r
@@ -1378,7 +1377,7 @@ appHeadVar = \case
 -- cardinality, approximated as [0, ω]. Row binders introduced by
 -- clause patterns are tracked separately by elaboration (§20.10.4) and
 -- enter this analysis untracked.
-walkComp :: Env -> [CompClause] -> CompYield -> Span -> M R
+walkComp :: Env -> [CompClause] -> CompYield -> Span -> Analysis WalkResult
 walkComp env0 cls0 y sp = go env0 cls0 []
   where
     go env [] acc = do
@@ -1432,7 +1431,7 @@ walkComp env0 cls0 y sp = go env0 cls0 []
 -- type carried by an aligned signature Pi binder (§12.2.5) when the
 -- lambda binder leaves them unstated. The lambda binder's own prefix
 -- wins, exactly as 'paramBind' merges equation-head params.
-lamBind :: Env -> (Binder, Maybe Binder) -> M (Maybe (Text, VInfo))
+lamBind :: Env -> (Binder, Maybe Binder) -> Analysis (Maybe (Text, VInfo))
 lamBind env (b, ms) = case bName b of
   Nothing -> pure Nothing
   Just n -> do
@@ -1463,14 +1462,14 @@ lamBind env (b, ms) = case bName b of
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
-walkMatch :: Env -> Expr -> [MatchCase] -> M R
+walkMatch :: Env -> Expr -> [MatchCase] -> Analysis WalkResult
 walkMatch env scrut cases = do
   su <- fst . flatR <$> walkE env scrut
   let scrutV = case scrut of
         EVar n -> Map.lookup (nameText n) (eVars env)
         _ -> Nothing
   rs <- mapM (walkCase scrutV) [c | c@MatchCase {} <- cases]
-  pure ((rPlain (su `seqU` altUs (map fst rs))) {rT = firstJust (mapMaybe snd rs)})
+  pure ((rPlain (su `seqU` altUs (map fst rs))) {wrTaint = firstJust (mapMaybe snd rs)})
   where
     walkCase scrutV (MatchCase pat mguard body csp) = do
       when (hasActive pat) bailOut
@@ -1537,7 +1536,7 @@ patVars = \case
 
 -- | A @..@ rest that silently discards a quantity-1 field of a tracked
 -- record is a drop (§12.2.6, §12.4).
-checkRecordRest :: Maybe VInfo -> Pattern -> Span -> M ()
+checkRecordRest :: Maybe VInfo -> Pattern -> Span -> Analysis ()
 checkRecordRest (Just vi) (PRecord fs (Just PatRestDiscard) _) csp = do
   let named = [nameText f | (_, f, _) <- fs]
       missing = [f | f <- linFields vi, f `notElem` named]
@@ -1548,7 +1547,7 @@ checkRecordRest _ _ _ = pure ()
 
 -- ── Record patches (§12.4) ───────────────────────────────────────────
 
-walkPatch :: Env -> Expr -> [PatchItem] -> Span -> M R
+walkPatch :: Env -> Expr -> [PatchItem] -> Span -> Analysis WalkResult
 walkPatch env base items sp = do
   vu <- walks (concatMap patchExprs items)
   bu <- case base of
@@ -1560,12 +1559,12 @@ walkPatch env base items sp = do
           checkBorrowOverlap env vi [] sp
           let patched = concatMap patchLabels items
               reconsumed =
-                [ (vKey vi <> "." <> f, oneC sp)
+                [ (vKey vi <> "." <> f, oneUC sp)
                 | f <- linFields vi
                 , f `notElem` patched
                 ]
           pure $
-            Map.fromList ((vKey vi <> ".~", oneC sp) : (vKey vi, touchC) : reconsumed)
+            Map.fromList ((vKey vi <> ".~", oneUC sp) : (vKey vi, touchUC) : reconsumed)
     _ -> fst . flatR <$> walkE env base
   pure (rPlain (bu `seqU` vu))
   where
@@ -1595,7 +1594,7 @@ data Fact
   | FInout !Text ![Text] !Span
   -- ^ a '~'-marked inout argument's place footprint (§18.9.3)
 
-walkApp :: Env -> Expr -> [Arg] -> M R
+walkApp :: Env -> Expr -> [Arg] -> Analysis WalkResult
 walkApp env (EDot recv (DotName m)) args
   -- §7.4 method-call sugar: the receiver is one ordinary argument of
   -- the callee, demanded at its receiver-marked binder position
@@ -1679,18 +1678,18 @@ walkApp env f args = do
         Just n -> not (Map.member n (eVars env)) && Map.member n (eCtors env)
         Nothing -> False
       taint
-        | liftLike || ctorLike = firstJust (mapMaybe (rT . fst) rs)
+        | liftLike || ctorLike = firstJust (mapMaybe (wrTaint . fst) rs)
         | otherwise = Nothing
-  pure ((rPlain (foldr (seqU . rU . fst) hu rs)) {rT = taint})
+  pure ((rPlain (foldr (seqU . wrUsage . fst) hu rs)) {wrTaint = taint})
 
-walkArg :: Env -> [PInfo] -> Arg -> PInfo -> M (R, [Fact])
+walkArg :: Env -> [PInfo] -> Arg -> PInfo -> Analysis (WalkResult, [Fact])
 walkArg env params arg p = case arg of
   ArgImplicit _ -> pure (rNone, []) -- erased position (§12.2.1)
   ArgNamedBlock items _ -> do
     rs <- forM items $ \(n, me) -> do
       let np = fromMaybe defaultP (find ((== Just (nameText n)) . pName) params)
       walkArg env params (ArgExplicit (fromMaybe (EVar n) me)) np
-    let r = (rPlain (foldr (seqU . rU . fst) Map.empty rs)) {rT = firstJust (mapMaybe (rT . fst) rs)}
+    let r = (rPlain (foldr (seqU . wrUsage . fst) Map.empty rs)) {wrTaint = firstJust (mapMaybe (wrTaint . fst) rs)}
     pure (r, concatMap snd rs)
   ArgInout e sp
     | pInout p -> inoutish e sp
@@ -1730,7 +1729,7 @@ walkArg env params arg p = case arg of
           , related RoleConsumedHere sp "consumed by a quantity-1 parameter here"
           ]
           ("borrowed binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
-        pure (rPlain (Map.singleton (vKey vi) touchC), [])
+        pure (rPlain (Map.singleton (vKey vi) touchUC), [])
     -- a direct place argument is counted at the parameter's demand
     -- interval (§12.2.2); a definite consume is a move fact (§12.4)
     | Just (vi, path, sp) <- placeOf env e
@@ -1760,7 +1759,7 @@ walkArg env params arg p = case arg of
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
           _ -> pure ()
         pure
-          ( R (scaleU d u `seqU` latent) escapeT Map.empty
+          ( WalkResult (scaleU d u `seqU` latent) escapeT Map.empty
           , [FMove (vKey vi) path sp | fst d >= 1]
           )
     -- a definite consume of a deeper (non-linear) path still conflicts
@@ -1769,11 +1768,11 @@ walkArg env params arg p = case arg of
     , Just (vi, path, sp) <- placeOf env e -> do
         checkBorrowOverlap env vi path sp
         pure
-          ( rPlain (Map.singleton (vKey vi) touchC)
+          ( rPlain (Map.singleton (vKey vi) touchUC)
           , [FMove (vKey vi) path sp]
           )
     | otherwise -> do
-        R u t l <- walkE env e
+        WalkResult u t l <- walkE env e
         checkCaptureBound p t (exprSpan e)
         let d = pDemand p
             -- §16.2.1/§13.2.7: a composite argument value (e.g. a record
@@ -1804,17 +1803,17 @@ walkArg env params arg p = case arg of
                   ]
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
                 pure (rPlain (u' `seqU` scaleU d l), [])
-          _ -> pure (R (u' `seqU` scaleU d l) t Map.empty, [])
+          _ -> pure (WalkResult (u' `seqU` scaleU d l) t Map.empty, [])
   where
     hasDemand = isJust (pQuantity p) || pBorrow p
     consuming = pQuantity p `elem` [Just QOne, Just QAtLeastOne]
     placeUse vi path sp =
       case path of
-        [] -> Map.singleton (vKey vi) (oneC sp)
+        [] -> Map.singleton (vKey vi) (oneUC sp)
         fs ->
           Map.fromList
-            [ (vKey vi <> "." <> T.intercalate "." fs, oneC sp)
-            , (vKey vi, touchC)
+            [ (vKey vi <> "." <> T.intercalate "." fs, oneUC sp)
+            , (vKey vi, touchUC)
             ]
     borrowish e = case placeOf env e of
       Just (vi, path, sp) ->
@@ -1837,7 +1836,7 @@ walkArg env params arg p = case arg of
       (r, fs) <- borrowish e
       pure (r, [FInout k path isp | FBorrow k path _ <- fs])
 
-checkCaptureBound :: PInfo -> Maybe Span -> Span -> M ()
+checkCaptureBound :: PInfo -> Maybe Span -> Span -> Analysis ()
 checkCaptureBound p mt escapeSp =
   case (pCaptureBound p, mt) of
     (CapClosed, Just introSp) ->
@@ -1871,7 +1870,7 @@ usageAnonBorrowIntro env u =
     , any (touches vi) (Map.toList u)
     ]
   where
-    touches vi (k, c) = cTouch c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k)
+    touches vi (k, c) = ucTouched c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k)
 
 calleeDemandName :: Env -> Expr -> Maybe Text
 calleeDemandName env = \case
@@ -1904,7 +1903,7 @@ coreFnParams = \case
 -- | Walk a let-group's right-hand sides; returns one segment per
 -- binding (its RHS usage, the tracked bindings it introduces, and the
 -- borrows it opens) plus the fully-extended environment.
-walkBinds :: Env -> [LetBind] -> M ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
+walkBinds :: Env -> [LetBind] -> Analysis ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
 walkBinds env binds = go env binds
   where
     go envc [] = pure ([], envc)
@@ -1962,7 +1961,7 @@ walkBinds env binds = go env binds
               | isWildBinder p, Map.member (nameText n) (eVars envc) ->
                   pure (Map.empty, Nothing, Map.empty, [])
             _ -> do
-              R u' t' l' <- walkE envc rhs
+              WalkResult u' t' l' <- walkE envc rhs
               pure (u', t', l', [])
       let names = patVars pat
           single = length names == 1
@@ -2082,7 +2081,7 @@ multishotOpCall env = \case
         Just (nameSpan op, nameText op)
   _ -> Nothing
 
-declsToBinds :: [Decl] -> M [LetBind]
+declsToBinds :: [Decl] -> Analysis [LetBind]
 declsToBinds [] = pure []
 declsToBinds (d : ds) = case d of
   DLet _ (LetDef (Just n) _ Nothing prefix [] _ Nothing body) sp ->
@@ -2118,7 +2117,7 @@ flowPaths fl = maybeToList (fU fl) ++ fBC fl ++ fRet fl
 -- is a completion path of the bindings in scope. The returned taint is
 -- the do result's (its final expression or any @return@), used for
 -- escape detection.
-walkItems :: Env -> [DoItem] -> M Flow
+walkItems :: Env -> [DoItem] -> Analysis Flow
 walkItems env0 items0 = go env0 items0
   where
     go _ [] = pure (Flow (Just Map.empty) Nothing [] [])
@@ -2252,7 +2251,7 @@ walkItems env0 items0 = go env0 items0
         checkMultishotCapture envc osp opn paths = do
           let usesVar vi u =
                 any
-                  (\(k, c) -> cTouch c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k))
+                  (\(k, c) -> ucTouched c && (k == vKey vi || (vKey vi <> ".") `T.isPrefixOf` k))
                   (Map.toList u)
               offenders =
                 [ (vi, kind)

@@ -998,19 +998,19 @@ qSubsumes qa qe = qa == qe || qInterval qa `contained` qInterval qe
 -- reconciled with an /expected/ one. It first 'forceM's both heads, then
 -- compares structurally; when one side is an unsolved meta ('VFlex') it
 -- solves it (after the occurs check), and along the outer Pi spine it
--- allows quantity subsumption ('qSubsumes', gated by @qok@). It only ever
+-- allows quantity subsumption ('qSubsumes', gated by @allowQSubsumption@). It only ever
 -- returns 'True' soundly — an undecidable comparison answers 'False'.
 unify :: Ctx -> Value -> Value -> CheckM Bool
 unify ctx = goTop True
   where
-    -- qok: §12.2.1 binder-quantity subsumption applies only along the
+    -- allowQSubsumption: §12.2.1 binder-quantity subsumption applies only along the
     -- outer Pi spine of the unified types, never under records, type
     -- arguments, or domains (no deep subsumption)
-    goTop qok a b = do
+    goTop allowQSubsumption a b = do
       a' <- forceM a
       b' <- forceM b
-      go qok (ctxLen ctx) a' b'
-    go qok lvl a b = case (a, b) of
+      go allowQSubsumption (ctxLen ctx) a' b'
+    go allowQSubsumption lvl a b = case (a, b) of
       (VFlex m [], t) -> solveFlex lvl m t
       (t, VFlex m []) -> solveFlex lvl m t
       -- applied metas: first-order decomposition (?m a̅ ≡ G b̅ pre a̅'
@@ -1020,7 +1020,7 @@ unify ctx = goTop True
       (VFlex m sp, t) | not (null sp) -> solveFlexSpine lvl m sp t
       (t, VFlex m sp) | not (null sp) -> solveFlexSpine lvl m sp t
       (VSort m, VSort n) -> pure (m <= n) -- cumulativity (§11.1.1)
-      (VPi i1 q1 _ _ d1 c1, VPi i2 q2 _ _ d2 c2) | i1 == i2 && (q1 == q2 || (qok && qSubsumes q1 q2)) -> do
+      (VPi i1 q1 _ _ d1 c1, VPi i2 q2 _ _ d2 c2) | i1 == i2 && (q1 == q2 || (allowQSubsumption && qSubsumes q1 q2)) -> do
         ok <- goTop False d1 d2
         if not ok
           then pure False
@@ -1030,7 +1030,7 @@ unify ctx = goTop True
             b2 <- clApp c2 x
             b1' <- forceM b1
             b2' <- forceM b2
-            go qok (lvl + 1) b1' b2'
+            go allowQSubsumption (lvl + 1) b1' b2'
       (VRecordT f1, VRecordT f2) | map fst f1 == map fst f2 ->
         andM [goTop False x y | ((_, x), (_, y)) <- zip f1 f2]
       -- §11.3.1A: an open record type meets a closed record type by
@@ -1045,8 +1045,8 @@ unify ctx = goTop True
       -- and the underlying record types agree
       (VSigT l1 v1, VSigT l2 v2) | l1 == l2 -> goTop False v1 v2
       -- §13.2.10: seal is pure and non-generative (seal e as S ≡ e)
-      (VSealV _ x, t) -> goTop qok x t
-      (t, VSealV _ x) -> goTop qok t x
+      (VSealV _ x, t) -> goTop allowQSubsumption x t
+      (t, VSealV _ x) -> goTop allowQSubsumption t x
       (VVariantT m1, VVariantT m2) | length m1 == length m2 ->
         andM (zipWith (goTop False) m1 m2)
       (VCtor g1 a1, VCtor g2 a2) | g1 == g2 && length a1 == length a2 ->
