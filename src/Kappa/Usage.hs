@@ -165,29 +165,26 @@ linFields vi = [f | (f, Just QOne) <- vFields vi]
 data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
 
 -- | Usage interval of one binding plus the metadata its diagnostics need.
--- The six positional fields, in constructor order, are:
---
---   1. @!Int@   — move /lower/ bound (fewest definite consumes on any path);
---   2. @!Int@   — move /upper/ bound (most consumes on any path);
---   3. @![Span]@ — the consume occurrences (for "used more than once" reports);
---   4. @!Int@   — touch lower bound; touches include borrow-uses, so a
---                 binding is dropped iff some path never touches it;
---   5. @![PEv]@ — chronological place events on the root ('PMove'\/'PBorrow'),
---                 for path-sensitive §12.4 reasoning;
---   6. @![([Text], Span)]@ — detected §12.4 borrow-after-consume violations
---                 (the borrowed path and the borrow site).
---
--- Use 'ucLo'\/'ucHi'\/'ucTouched' rather than positional matching where possible.
-data UseCount = UseCount !Int !Int ![Span] !Int ![PEv] ![([Text], Span)]
+data UseCount = UseCount
+  { ucLo :: !Int
+  -- ^ move lower bound: fewest definite consumes on any completion path
+  , ucHi :: !Int
+  -- ^ move upper bound: most consumes on any completion path
+  , ucMoves :: ![Span]
+  -- ^ the consume occurrences (for "used more than once" reports)
+  , ucTouches :: !Int
+  -- ^ touch lower bound; borrow-uses count as touches, so a binding is
+  -- dropped iff some path never touches it
+  , ucEvents :: ![PEv]
+  -- ^ chronological place events on the root ('PMove'\/'PBorrow'), for
+  -- path-sensitive §12.4 reasoning
+  , ucViolations :: ![([Text], Span)]
+  -- ^ detected §12.4 borrow-after-consume violations (borrowed path, borrow site)
+  }
 
-ucLo :: UseCount -> Int
-ucLo (UseCount a _ _ _ _ _) = a
-
-ucHi :: UseCount -> Int
-ucHi (UseCount _ b _ _ _ _) = b
-
+-- | Whether the binding is touched (used or borrowed) on some path.
 ucTouched :: UseCount -> Bool
-ucTouched (UseCount _ _ _ t _ _) = t > 0
+ucTouched uc = ucTouches uc > 0
 
 zeroUC :: UseCount
 zeroUC = UseCount 0 0 [] 0 [] []
@@ -200,24 +197,38 @@ touchUC = UseCount 0 0 [] 1 [] []
 
 -- | A root-key occurrence carrying a §12.4 place event.
 evUC :: PEv -> UseCount -> UseCount
-evUC ev (UseCount a b o t evs vi) = UseCount a b o t (evs ++ [ev]) vi
+evUC ev uc = uc {ucEvents = ucEvents uc ++ [ev]}
 
 -- | Sequential composition; a borrow of a path after an overlapping
 -- definite consume (with no restoring update in between — a patch
 -- rebinds through a fresh root) is a §12.4 violation.
 seqUC :: UseCount -> UseCount -> UseCount
-seqUC (UseCount a b o t evs vi) (UseCount c d o' t' evs' vi') =
-  UseCount (a + c) (b + d) (o ++ o') (t + t') (evs ++ evs') (vi ++ vi' ++ new)
+seqUC x y =
+  UseCount
+    { ucLo = ucLo x + ucLo y
+    , ucHi = ucHi x + ucHi y
+    , ucMoves = ucMoves x ++ ucMoves y
+    , ucTouches = ucTouches x + ucTouches y
+    , ucEvents = ucEvents x ++ ucEvents y
+    , ucViolations = ucViolations x ++ ucViolations y ++ new
+    }
   where
     new =
       [ (bp, sp)
-      | PBorrow bp sp <- evs'
-      , any (\case PMove mp _ -> pathsOverlap mp bp; _ -> False) evs
+      | PBorrow bp sp <- ucEvents y
+      , any (\case PMove mp _ -> pathsOverlap mp bp; _ -> False) (ucEvents x)
       ]
 
 altUC :: UseCount -> UseCount -> UseCount
-altUC (UseCount a b o t evs vi) (UseCount c d o' t' evs' vi') =
-  UseCount (min a c) (max b d) (if d > b then o' else o) (min t t') (evs ++ evs') (vi ++ vi')
+altUC x y =
+  UseCount
+    { ucLo = min (ucLo x) (ucLo y)
+    , ucHi = max (ucHi x) (ucHi y)
+    , ucMoves = if ucHi y > ucHi x then ucMoves y else ucMoves x
+    , ucTouches = min (ucTouches x) (ucTouches y)
+    , ucEvents = ucEvents x ++ ucEvents y
+    , ucViolations = ucViolations x ++ ucViolations y
+    }
 
 -- | Upper bound standing in for ω in scaled intervals.
 omegaBound :: Int
@@ -225,18 +236,19 @@ omegaBound = 1000000
 
 -- | Multiply a usage interval by a demand interval (§12.2.2, §16.2.1).
 scaleUC :: (Int, Maybe Int) -> UseCount -> UseCount
-scaleUC (lo, hi) (UseCount a b o t evs vi) =
+scaleUC (lo, hi) uc =
   UseCount
-    (min omegaBound (lo * a))
-    b'
-    (if b' > b then o ++ o else o)
-    (if lo == 0 then 0 else t)
-    (if lo == 0 then [] else evs)
-    (if b' == 0 then [] else vi)
+    { ucLo = min omegaBound (lo * ucLo uc)
+    , ucHi = hi'
+    , ucMoves = if hi' > ucHi uc then ucMoves uc ++ ucMoves uc else ucMoves uc
+    , ucTouches = if lo == 0 then 0 else ucTouches uc
+    , ucEvents = if lo == 0 then [] else ucEvents uc
+    , ucViolations = if hi' == 0 then [] else ucViolations uc
+    }
   where
-    b' = case hi of
-      Nothing -> if b > 0 then omegaBound else 0
-      Just h -> min omegaBound (h * b)
+    hi' = case hi of
+      Nothing -> if ucHi uc > 0 then omegaBound else 0
+      Just h -> min omegaBound (h * ucHi uc)
 
 type Usage = Map Text UseCount
 
@@ -256,7 +268,7 @@ altUs us = foldr1 altU us
 
 -- mark every binding as possibly-unused (loops may run zero times)
 loopU :: Usage -> Usage
-loopU = Map.map (\(UseCount _ hi occs _ evs vi) -> UseCount 0 hi occs 0 evs vi)
+loopU = Map.map (\uc -> uc {ucLo = 0, ucTouches = 0})
 
 -- ── Analysis monad ───────────────────────────────────────────────────
 
@@ -876,7 +888,8 @@ checkInoutResult msig ld =
 -- per-path consumption of its quantity-1 record fields (§12.4).
 closeVar :: VInfo -> Usage -> Analysis ()
 closeVar vi u = do
-  let UseCount rLo rHi rOccs rTlo _ viols = Map.findWithDefault zeroUC (vKey vi) u
+  let UseCount {ucLo = rLo, ucHi = rHi, ucMoves = rOccs, ucTouches = rTlo, ucViolations = viols} =
+        Map.findWithDefault zeroUC (vKey vi) u
       res = Map.findWithDefault zeroUC (vKey vi <> ".~") u
       rootHi = rHi + ucHi res
       rootLo = rLo + ucLo res
@@ -911,7 +924,7 @@ closeVar vi u = do
   -- independent of `vQ vi`; the upper-bound check must do the same, or a
   -- linear field consumed twice (`free r.buf; free r.buf`) escapes.
   pathOver <- fmap or . forM (linFields vi) $ \f -> do
-    let pc@(UseCount _ pHi pOccs _ _ _) = Map.findWithDefault zeroUC (vKey vi <> "." <> f) u
+    let pc@(UseCount {ucHi = pHi, ucMoves = pOccs}) = Map.findWithDefault zeroUC (vKey vi <> "." <> f) u
     if ucHi pc > 0 && rHi + pHi > 1
       then do
         -- the path is in linFields, i.e. quantity-1 (linear)

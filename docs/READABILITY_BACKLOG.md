@@ -42,11 +42,10 @@ Each item: what, why it would help, rough size/risk.
   the independent scanners to top-level (where they don't need the closure) would
   let each be read and documented on its own. Size: medium.
 
-- **`Usage.hs` terse data model** — `data Cnt = Cnt !Int !Int ![Span] !Int …`
-  (positional 6-field, `Usage.hs:164`), `data R`, `data S`, magic `wInf = 1000000`
-  standing in for ω. Converting to record syntax with named fields (a mechanical
-  change, but touches many call sites) would make the usage algebra self-describing.
-  Size: medium. Risk: medium (many constructors/patterns).
+- **`Usage.hs` terse data model** — DONE. `Cnt` (positional 6-tuple) is now the
+  record `UseCount` with named fields, and the combinators (`seqUC`/`altUC`/
+  `scaleUC`/…) use field syntax instead of positional matching; `R`/`S` renamed,
+  `wInf` → `omegaBound`.
 
 - **`Eval.evalPurePrim` (~270 lines) and `Interp.runPrimIO'` are flat
   string-keyed `case` ladders over primitive names.** Grouping them (arithmetic /
@@ -115,3 +114,30 @@ and contained — GHC verifies completeness).
 
 **`Eval.hs`** — deferred: `forceQ` vs `force` vs `vforce` are three force-like
 names; clarify which is the conversion-time vs runtime variant.
+
+## Record field prefixes vs. dot syntax (codebase-wide decision)
+
+Every record in the codebase prefixes its fields with a type abbreviation —
+`Pos {posLine, posCol}`, `Span {spanFile, …}`, `Ctx {ctxEntries, …}`,
+`UseCount {ucLo, …}`, `BuildConfig {bcName, …}`, etc. This is the standard
+Haskell workaround: record field selectors are ordinary top-level functions in
+one shared namespace, so two records with a bare `name` field would clash. It's
+extremely common but widely considered a wart (the alternative camp uses
+lens-style `_name` + `makeLenses`).
+
+GHC 9.14 (this repo) supports the modern alternatives:
+- `OverloadedRecordDot` → `record.field` access (the Kappa-like syntax). Purely
+  additive: can be enabled project-wide with zero breakage; existing `f x`
+  selectors keep working. But fields keep their prefixes, so you get
+  `x.ucLo`, not `x.lo` — a mild win.
+- `DuplicateRecordFields` + `NoFieldSelectors` → drop the prefixes entirely
+  (`UseCount {lo, hi, …}`, accessed `x.lo`). This is the full Kappa-like
+  experience, but it's a large migration: rename every field across every
+  record AND rewrite every access site from `field record` to `record.field`.
+  `NoFieldSelectors` is per-module and removes the `f x` selectors, so it can't
+  be adopted piecemeal without converting that whole module's call sites.
+
+Recommendation: keep the consistent prefixed convention unless we commit to the
+full migration — converting one type to dot-syntax while the rest stays prefixed
+is worse (inconsistent) than a uniform-but-prefixed codebase. Size of full
+migration: large.
