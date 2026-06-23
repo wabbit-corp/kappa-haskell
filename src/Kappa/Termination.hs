@@ -39,6 +39,7 @@ module Kappa.Termination
 import Control.Applicative ((<|>))
 import Control.Monad (foldM)
 import Data.List (sortOn)
+import qualified Data.List as List
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, fromMaybe, isNothing)
@@ -563,7 +564,7 @@ boundsRaw natLvls facts expr = case expr of
 varBounds :: Set Int -> [AFact] -> Int -> ABounds
 varBounds natLvls facts v =
   let start = ABounds (if Set.member v natLvls then Just 0 else Nothing) Nothing
-   in foldl' addFact start facts
+   in List.foldl' addFact start facts
   where
     addFact b = \case
       AFact ACmpLe (AVar x) (AConst c) | x == v -> tightenUpper c b
@@ -717,7 +718,7 @@ lowerBoundPoly natLvls facts (Poly p) = foldM addTerm 0 (Map.toList p)
 
 boundsMonomial :: Set Int -> [AFact] -> Monomial -> ABounds
 boundsMonomial natLvls facts (Monomial powers) =
-  foldl' mulBounds (ABounds (Just 1) (Just 1))
+  List.foldl' mulBounds (ABounds (Just 1) (Just 1))
     [ powBounds power (varBounds natLvls facts v)
     | (v, pow) <- Map.toList powers
     , let power = pow
