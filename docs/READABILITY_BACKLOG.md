@@ -166,14 +166,27 @@ a single-constructor spec record — so the partial-field footgun is gone and al
 dot access is sound. Verified: build clean, conformance 1342/1342, manifest
 `--check` renders all targets. This is the reference implementation of the style.
 
-### Remaining phases (single-constructor records, smallest blast radius first)
-- `Backend.*` records (e.g. `ResolvedNativeSymbol`, `BuildOptions`) — consumers:
-  `Build.Plan`, `app/Main.hs`, `Pipeline`.
-- Front-end record types (`Binder`, `LetDef`, …) — consumers include `Parser`,
-  `Resolve`, `Check` (coordinate with parallel Check work).
-- The widely-consumed core types (`Span`/`Pos`/`GName`, `Ctx`, the `Eval`/`Check`
-  records) are LAST: migrating `Source` (Span/Pos) ripples to nearly every
-  module via `NoFieldSelectors`, so it's the biggest single step.
+### Phase 2 — Backend interface records: DONE
+- `BuildOptions` (`Backend.Driver`) → unprefixed dot fields; consumer `Main`.
+- `ResolvedNativeSymbol` (`Backend.NativeFfi`) → unprefixed dot fields
+  (`rnsModule` → `moduleName`, since `module` is a keyword); consumers
+  `Build.Plan`, `Backend.C`, `Pipeline`, `Main`, `Driver` each gained
+  `OverloadedRecordDot`. Verified: build all clean, conformance 1342/1342.
+
+### Remaining phases (single-constructor records)
+- **Backend internal plumbing** (parallel-safe, lower ROI): `Backend.C`'s codegen
+  records (`GenState`/`LoopCtx`/`TailInfo`/…) — `GenState` is accessed pervasively
+  across C.hs (~3.4k lines), a big internal sweep; `Backend.NativeProbe`
+  (`NativeProvenance`/`PkgInfo`/`HdrInfo`); `Backend.HeaderGen`.
+- **Front-end records** (`Binder`, `LetDef`, …) — HIGHER readability value, but
+  consumers include `Check.hs`, which the parallel team is actively modifying.
+  Migrating these (and especially the core types below) would force dot
+  conversions across `Check.hs` and collide with that work. **Hold until the
+  parallel Check work settles, or coordinate.**
+- **Core types** (`Span`/`Pos`/`GName`, `Ctx`, the `Eval`/`Check` records) are
+  LAST: migrating `Source` (Span/Pos) ripples to nearly every module via
+  `NoFieldSelectors` — the biggest single step, and maximally exposed to the
+  parallel Check work.
 
 `Build.Types.Target` partial-field smell: RESOLVED by the Phase-1 restructure
 (was: partial selectors `tBackend t`/`tMain t` guarded by `-Wno-partial-fields`).
