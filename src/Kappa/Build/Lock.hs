@@ -1,3 +1,6 @@
+{-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | The build lockfile (@kappa.lock@) and path-dependency content
 -- identity (§36.23.2, §36.4). A path dependency has no registry/digest
 -- pin, so its reproducibility identity is an implementation-defined
@@ -27,16 +30,23 @@ import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word64, Word8)
 import Numeric (showHex)
 
--- | One resolved dependency in the lockfile. @leKind@ is @"path"@,
--- @"git"@, or @"registry"@; @leKey@ is the dependency's stable locator (a
--- project-relative path, a git URL, or the registry package name); @leId@
--- is its immutable identity (a content digest for a path dependency, the
--- resolved commit SHA for a git dependency, or @version+content-digest@
--- for a registry dependency).
+-- | One resolved dependency in the lockfile. @kind@ is @"path"@, @"git"@,
+-- or @"registry"@; @key@ is the dependency's stable locator (a
+-- project-relative path, a git URL, or the registry package name);
+-- @identity@ is its immutable identity (a content digest for a path
+-- dependency, the resolved commit SHA for a git dependency, or
+-- @version+content-digest@ for a registry dependency).
+--
+-- This type is the pilot for the dot-syntax house style: fields are
+-- /unprefixed/ and read as @e.kind@ \/ @e.key@ \/ @e.identity@
+-- ('OverloadedRecordDot' + 'NoFieldSelectors'), the way Kappa records read.
+-- That's only sound because 'LockEntry' has a single constructor, so every
+-- field is total — never use dot access on a /partial/ field. See
+-- docs/READABILITY_BACKLOG.md.
 data LockEntry = LockEntry
-  { leKind :: !Text
-  , leKey :: !Text
-  , leId :: !Text
+  { kind :: !Text
+  , key :: !Text
+  , identity :: !Text
   }
   deriving stock (Eq, Show)
 
@@ -93,8 +103,8 @@ renderLock :: [LockEntry] -> Text
 renderLock entries =
   T.unlines
     ( lockHeader
-        : [ leKind e <> " " <> leId e <> " " <> leKey e
-          | e <- sortOn (\e -> (leKey e, leKind e)) entries
+        : [ e.kind <> " " <> e.identity <> " " <> e.key
+          | e <- sortOn (\e -> (e.key, e.kind)) entries
           ]
     )
 
@@ -103,7 +113,7 @@ renderLock entries =
 -- to detect them.
 parseLock :: Text -> [LockEntry]
 parseLock txt =
-  sortOn (\e -> (leKey e, leKind e)) [e | Just e <- map parseLine (contentLines txt)]
+  sortOn (\e -> (e.key, e.kind)) [e | Just e <- map parseLine (contentLines txt)]
 
 -- | True iff every content (non-blank, non-comment) line is a valid
 -- entry — used to distinguish an absent lock from a corrupt one.

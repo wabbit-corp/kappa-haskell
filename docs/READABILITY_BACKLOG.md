@@ -137,7 +137,33 @@ GHC 9.14 (this repo) supports the modern alternatives:
   `NoFieldSelectors` is per-module and removes the `f x` selectors, so it can't
   be adopted piecemeal without converting that whole module's call sites.
 
-Recommendation: keep the consistent prefixed convention unless we commit to the
-full migration — converting one type to dot-syntax while the rest stays prefixed
-is worse (inconsistent) than a uniform-but-prefixed codebase. Size of full
-migration: large.
+**Hard rule (correctness, not style): never dot-access a partial field.**
+`OverloadedRecordDot` on a field that isn't in every constructor desugars to a
+partial `getField` that crashes at runtime on the wrong constructor — the same
+footgun as the old partial selectors (`tBackend t`). Dot access is only sound on
+__single-constructor records__ (every field total). A partial field must be read
+inside a `case`/pattern match that has already fixed the constructor. So the
+dot-syntax house style applies to single-constructor records; sum types with
+per-constructor fields stay pattern-matched.
+
+**Pilot — DONE on `Build.Lock.LockEntry`** (single constructor, 3 total fields):
+fields are now unprefixed (`kind`/`key`/`identity`) and read as `e.kind` via
+`OverloadedRecordDot` + `NoFieldSelectors`; the only consumer (`app/Main.hs`)
+uses dot too. Construction sites in `Build.Plan`/`Backend.NativeProbe` are
+positional, so they were untouched. This is the reference for what the house
+style looks like — review it to decide on broader adoption.
+
+Recommendation: a full migration is large, but it can proceed
+record-by-record (single-constructor records first), each contained. Do NOT
+migrate sum types with partial fields to dot access (see the hard rule).
+
+## `Build.Types.Target` partial fields (structural, independent of dot syntax)
+
+`Target` has fields that exist in only some constructors (`tBackend`, `tMain`,
+`tModules`, `tMembers`, `tAlias`) — hence its `-Wno-partial-fields`. `Build.Plan`
+reaches several of them through partial selectors (`tBackend t`, `tMain t`),
+which crash if the target is the wrong kind; they're "safe" only by the caller's
+convention. Worth restructuring so the partiality is in the types, e.g.
+`data Target = Target { name :: Text, kind :: TargetKind }` with a `TargetKind`
+sum carrying each kind's payload — then every access is total and pattern-matched.
+Size: medium. (This is why `Build.Types` was *not* chosen for the dot pilot.)

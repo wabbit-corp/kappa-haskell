@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedRecordDot #-}
+
 -- | The @kappa@ CLI: check, run, and the Appendix T test harness.
 module Main (main) where
 
@@ -272,7 +274,7 @@ collectPackageLockClosure file bc = do
         go seen (e : es)
           | k `Set.member` seen = go seen es
           | otherwise = e : go (Set.insert k seen) es
-          where k = (leKind e, leKey e, leId e)
+          where k = (e.kind, e.key, e.identity)
 
 -- | Resolve (without building) the dependency-lock closure of an
 -- invocation, mirroring 'runNamedTarget' dispatch. Returns @(managesLock,
@@ -477,11 +479,11 @@ verifyLock manifestDir entries = do
       -- changed in the lock is an UNPINNED native binding — emit the
       -- native-specific diagnostic rather than the dependency one.
       reject ex actual =
-        let actualSet = Set.fromList [(leKind e, leKey e, leId e) | e <- actual]
-            hbBad = [e | e <- desired, leKind e == "host-binding", not ((leKind e, leKey e, leId e) `Set.member` actualSet)]
-            depBad = any (\e -> leKind e /= "host-binding") desired
-                       && parseLock (renderLock [e | e <- desired, leKind e /= "host-binding"])
-                          /= [e | e <- actual, leKind e /= "host-binding"]
+        let actualSet = Set.fromList [(e.kind, e.key, e.identity) | e <- actual]
+            hbBad = [e | e <- desired, e.kind == "host-binding", not ((e.kind, e.key, e.identity) `Set.member` actualSet)]
+            depBad = any (\e -> e.kind /= "host-binding") desired
+                       && parseLock (renderLock [e | e <- desired, e.kind /= "host-binding"])
+                          /= [e | e <- actual, e.kind /= "host-binding"]
             ds = [nativeUnpinnedDiag lockPath e | e <- hbBad]
                    ++ [lockMismatchDiag lockPath ex | depBad || (null hbBad)]
          in emitDiags Human ds >> exitFailure
@@ -498,7 +500,7 @@ nativeUnpinnedDiag lockPath e =
   diag SevError StageImports "E_NATIVE_BINDING_UNPINNED"
     (Just "kappa.package.reproducibility")
     (Span lockPath (Pos 1 1) (Pos 1 1))
-    ( "the host.native binding '" <> leKey e <> "' is not pinned by a matching host-source "
+    ( "the host.native binding '" <> e.key <> "' is not pinned by a matching host-source "
         <> "identity in '" <> T.pack lockPath <> "' (its pkg-config version, header/shim "
         <> "digests, symbol surface, or target triple changed, or no entry exists); a "
         <> "package-mode host.native build MUST be pinned (Spec §8.3.5, §27.1.1, §36.7) — "
