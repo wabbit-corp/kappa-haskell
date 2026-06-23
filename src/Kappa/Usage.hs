@@ -45,6 +45,14 @@
 -- projections of quantity-1 fields) are counted, parameter demand comes
 -- from same-module signatures, and a definition containing constructs
 -- outside the modelled subset is skipped entirely rather than misjudged.
+--
+-- Reading guide. The core data types are 'Cnt' (one binding's usage
+-- interval @[lo, hi]@ plus borrow\/move metadata), 'Usage' (= @Map@ from a
+-- binding key to its 'Cnt'), 'VInfo' (a tracked binding), 'PInfo' (a
+-- parameter's demand interval), and 'R' (the result of walking one
+-- expression). The walk itself runs in the monad 'M' (= @State S@). These
+-- names are terser than ideal — proposed renames are in
+-- docs/READABILITY_BACKLOG.md. Background on quantities: docs/CONCEPTS.md.
 module Kappa.Usage
   ( PInfo
   , coreFnParams
@@ -156,11 +164,20 @@ linFields vi = [f | (f, Just QOne) <- vFields vi]
 -- path (§12.4 path-sensitive consumption).
 data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
 
--- | Usage interval of one binding plus reporting metadata: move lo\/hi,
--- chronological move occurrences, touch lower bound (touches include
--- borrow-uses; a binding is dropped iff some path never touches it),
--- chronological place events on the root, and detected §12.4
--- borrow-after-consume violations (path, borrow site).
+-- | Usage interval of one binding plus the metadata its diagnostics need.
+-- The six positional fields, in constructor order, are:
+--
+--   1. @!Int@   — move /lower/ bound (fewest definite consumes on any path);
+--   2. @!Int@   — move /upper/ bound (most consumes on any path);
+--   3. @![Span]@ — the consume occurrences (for "used more than once" reports);
+--   4. @!Int@   — touch lower bound; touches include borrow-uses, so a
+--                 binding is dropped iff some path never touches it;
+--   5. @![PEv]@ — chronological place events on the root ('PMove'\/'PBorrow'),
+--                 for path-sensitive §12.4 reasoning;
+--   6. @![([Text], Span)]@ — detected §12.4 borrow-after-consume violations
+--                 (the borrowed path and the borrow site).
+--
+-- Use 'cLo'\/'cHi'\/'cTouch' rather than positional matching where possible.
 data Cnt = Cnt !Int !Int ![Span] !Int ![PEv] ![([Text], Span)]
 
 cLo :: Cnt -> Int
@@ -243,12 +260,17 @@ loopU = Map.map (\(Cnt _ hi occs _ evs vi) -> Cnt 0 hi occs 0 evs vi)
 
 -- ── Analysis monad ───────────────────────────────────────────────────
 
+-- | Mutable state of the analysis walk: accumulated diagnostics, a bail
+-- flag (set when an unmodelled construct is hit, so the definition is
+-- skipped rather than misjudged), and a counter for fresh binding keys.
 data S = S
   { sDiags :: ![Diagnostic]
   , sBail :: !Bool
   , sFresh :: !Int
   }
 
+-- | The analysis monad: just 'State' over 'S'. (No reader env — the lexical
+-- 'Env' is threaded explicitly as a function argument instead.)
 type M = State S
 
 emit :: DiagnosticCode -> DiagnosticFamily -> Span -> Text -> M ()
@@ -278,6 +300,10 @@ freshKey nm = do
   modify' $ \s -> s {sFresh = n + 1}
   pure (nm <> "#" <> T.pack (show n))
 
+-- | The lexical environment threaded through the walk: what's in scope and
+-- the facts the analysis needs about it — tracked variables, callee
+-- parameter demands, live borrows, constructor/field/projection shapes, and
+-- assorted §-specific side tables. Extended with 'bindVars'\/'addBorrows'.
 data Env = Env
   { eVars :: !(Map Text VInfo)
   , eFns :: !(Map Text [PInfo])

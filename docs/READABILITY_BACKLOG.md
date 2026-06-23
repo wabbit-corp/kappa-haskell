@@ -62,3 +62,28 @@ Each item: what, why it would help, rough size/risk.
 - Several `Eval.hs` comments are commit-message archaeology (performance history
   of `force`/spine handling). Useful to a maintainer, noise to a learner — could
   move to a `NOTES`/`PERFORMANCE.md` cross-reference.
+
+## Naming suggestions (deferred — renames touch many call sites)
+
+These names obscure intent. The documentation pass has explained them in
+comments; renaming would let the code read without the gloss. All are
+behavior-preserving but ripple across call sites, so they're deferred.
+
+**`Usage.hs`** (the worst offenders — single letters for core types):
+- `Cnt` → `Use` / `UseCount` — one binding's usage interval + metadata.
+- `S` → `AnalysisState`; `M` (= `State S`) → `Analysis`.
+- `R` → `WalkResult`; its fields `rU`/`rT`/`rL` → `wrUsage`/`wrTaint`/`wrLatent`.
+- `wInf` (= 1000000) → `omegaBound` / `qOmegaSentinel` — an arbitrary large
+  stand-in for ω; the magic literal should be a named sentinel.
+- The `…C` helper suffix (`zeroC`/`oneC`/`seqC`/`altC`/`scaleC`) just means
+  "of `Cnt`"; follows whatever `Cnt` becomes.
+- `cLo`/`cHi`/`cTouch` → `useLo`/`useHi`/`useTouched`.
+
+**`Check.hs`** (local, lower-ripple):
+- `qok` (threaded through `unify`) → `allowQSubsumption`.
+- `ec_` accessor → spell out the eval/conversion context it returns.
+- `goTop`/`go` workers inside `unify`/`infer` → `unifyAt`/`inferArm` etc.
+
+**`Eval.hs`**:
+- `forceQ` vs `force` vs `vforce` — three force-like names; clarify which is
+  the conversion-time vs runtime variant in their names.

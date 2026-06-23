@@ -1,7 +1,12 @@
--- | Compilation pipeline: prelude bootstrap, multi-file units with
--- same-module fragments (§8.1), §8.2 acyclic dependency ordering with
--- cycle diagnostics, §8.3 import processing (aliases, item selection,
--- wildcards with except-lists), §8.5 export visibility, then
+-- | The conductor: it wires the individual phases together into a whole
+-- compilation. If you want to see the order things happen in, this is the
+-- file — and 'compileFilesWithCfgInj' is the function that runs the
+-- sequence. (Background: docs/CONCEPTS.md.)
+--
+-- What it covers: prelude bootstrap, multi-file units with same-module
+-- fragments (§8.1), §8.2 acyclic dependency ordering with cycle
+-- diagnostics, §8.3 import processing (aliases, item selection, wildcards
+-- with except-lists), §8.5 export visibility, then, per module,
 -- parse → fixity resolution → elaboration.
 module Kappa.Pipeline
   ( CompiledUnit (..)
@@ -345,10 +350,29 @@ reservedHostRootDiag (ModuleName segs) sp
 compileFilesWithCfg :: Map.Map Text Term -> UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
 compileFilesWithCfg = compileFilesWithCfgInj id
 
--- | The general worker. @inject@ transforms the post-prelude base state
--- before the user modules are checked — used to register manifest-selected
--- @host.native.*@ host-binding modules (§8.3.5/§34.5.3) so a program can
--- @import@ them. Plain compilation passes 'id'.
+-- | The general worker — the end-to-end compile of a set of source files.
+-- Read top to bottom, the @let@ body is the pipeline:
+--
+--   1. bootstrap the prelude into the base state ('preludeState'), then
+--      apply @inject@ and the build config;
+--   2. parse every file ('parseModule' → @parsed@);
+--   3. group fragments of the same module and derive\/validate module names
+--      (§8.1: @frags0@, @effName@, @headerMismatchDiags@);
+--   4. build the import dependency graph and put the modules in acyclic
+--      order (§8.2: @order@), reporting cycles;
+--   5. fold @step@ over that order — for each module: resolve fixities,
+--      build its import scope (§8.3), and elaborate\/type-check it,
+--      accumulating diagnostics and state;
+--   6. run usage analysis and re-zonk metavariables, producing the final
+--      'CompiledUnit'.
+--
+-- @inject@ transforms the post-prelude base state before the user modules
+-- are checked — used to register manifest-selected @host.native.*@
+-- host-binding modules (§8.3.5/§34.5.3) so a program can @import@ them.
+-- Plain compilation passes 'id'.
+--
+-- (The body is a single large @let@; extracting the phases into named
+-- functions is tracked in docs/READABILITY_BACKLOG.md.)
 compileFilesWithCfgInj :: (CheckState -> CheckState) -> Map.Map Text Term -> UnsafeConfig -> Bool -> (FilePath -> ModuleName) -> [(FilePath, Text)] -> CompiledUnit
 compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
   let (pst0, pdiags) = preludeState
@@ -478,6 +502,10 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           ]
       (order, cycleDiags) = topoOrder (sortOn moduleKey unitModules) depMap
       byName = Map.fromList [(mn, (m, frs)) | (mn, m, frs) <- merged]
+      -- Process one module @mn@ in dependency order, threading the running
+      -- ('CheckState', diagnostic chunks, trace). It resolves the module's
+      -- fixities, builds its import scope, then elaborates/type-checks it
+      -- against the state built up from its already-processed dependencies.
       step (st, chunks, trc) mn =
         case Map.lookup mn byName of
         Nothing -> (st, chunks, trc)
