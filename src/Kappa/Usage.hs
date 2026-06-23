@@ -49,8 +49,9 @@
 -- Reading guide. The core data types are 'Cnt' (one binding's usage
 -- interval @[lo, hi]@ plus borrow\/move metadata), 'Usage' (= @Map@ from a
 -- binding key to its 'Cnt'), 'VInfo' (a tracked binding), 'PInfo' (a
--- parameter's demand interval), and 'R' (the result of walking one
--- expression). The walk itself runs in the monad 'M' (= @State S@). These
+-- parameter's demand: quantity plus borrow\/escape flags), and 'R' (the
+-- result of walking one expression). The walk runs in the monad 'M'
+-- (= @State S@). These
 -- names are terser than ideal — proposed renames are in
 -- docs/READABILITY_BACKLOG.md. Background on quantities: docs/CONCEPTS.md.
 module Kappa.Usage

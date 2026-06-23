@@ -6,8 +6,8 @@
 -- What it covers: prelude bootstrap, multi-file units with same-module
 -- fragments (§8.1), §8.2 acyclic dependency ordering with cycle
 -- diagnostics, §8.3 import processing (aliases, item selection, wildcards
--- with except-lists), §8.5 export visibility, then, per module,
--- parse → fixity resolution → elaboration.
+-- with except-lists), §8.5 export visibility, then parse all files and, per
+-- module, resolve fixities and elaborate.
 module Kappa.Pipeline
   ( CompiledUnit (..)
   , TraceEvent
@@ -361,10 +361,10 @@ compileFilesWithCfg = compileFilesWithCfgInj id
 --   4. build the import dependency graph and put the modules in acyclic
 --      order (§8.2: @order@), reporting cycles;
 --   5. fold @step@ over that order — for each module: resolve fixities,
---      build its import scope (§8.3), and elaborate\/type-check it,
---      accumulating diagnostics and state;
---   6. run usage analysis and re-zonk metavariables, producing the final
---      'CompiledUnit'.
+--      build its import scope (§8.3), elaborate\/type-check it, then run §12
+--      usage analysis over it, accumulating diagnostics and state;
+--   6. after the fold, re-zonk every captured core body against the final
+--      metavariable state and assemble the 'CompiledUnit'.
 --
 -- @inject@ transforms the post-prelude base state before the user modules
 -- are checked — used to register manifest-selected @host.native.*@
@@ -504,8 +504,9 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       byName = Map.fromList [(mn, (m, frs)) | (mn, m, frs) <- merged]
       -- Process one module @mn@ in dependency order, threading the running
       -- ('CheckState', diagnostic chunks, trace). It resolves the module's
-      -- fixities, builds its import scope, then elaborates/type-checks it
-      -- against the state built up from its already-processed dependencies.
+      -- fixities, builds its import scope, elaborates/type-checks it against
+      -- the state built up from its already-processed dependencies, and runs
+      -- §12 usage analysis over it.
       step (st, chunks, trc) mn =
         case Map.lookup mn byName of
         Nothing -> (st, chunks, trc)

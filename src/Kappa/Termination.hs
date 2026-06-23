@@ -6,8 +6,9 @@
 -- This module is the pure machinery that decides that:
 --
 --   * dependency scanning, to find the mutually-recursive groups
---     ('expandedGlobalsOfTerm', 'rankComponents');
---   * measure instantiation at a call site ('instantiateByLevelMaybe'); and
+--     ('expandedGlobalsOfTerm');
+--   * measure handling: instantiation at a call site ('instantiateByLevelMaybe')
+--     and decomposition of tuple\/lexicographic measures ('rankComponents'); and
 --   * a small abstract-arithmetic prover (the 'AExpr' \/ 'AFact' \/ 'ABounds'
 --     family) that decides goals like "this argument is smaller than that
 --     one" from the integer facts in scope.

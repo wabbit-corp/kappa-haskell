@@ -169,12 +169,10 @@ opApply1 op x
 
 -- | Turn one flat operator chain (the 'EOpChain' the parser left
 -- un-associated, e.g. @[a, +, b, *, c]@) into a proper application tree,
--- now that fixities are known. The inner 'parseExprAt'\/'loopTight' worker
--- is textbook /precedence climbing/: parse an operand, then keep folding in
--- operators whose precedence is high enough, recursing for the right operand
--- at a raised minimum so that, say, @*@ binds tighter than @+@. On unknown
--- operator fixity it emits the §5.5.3 infix-gating diagnostic and associates
--- left at precedence 9.
+-- now that fixities are known. The inner 'parseExprAt' worker is textbook
+-- /precedence climbing/ over the @[OpElem]@. On unknown operator fixity it
+-- emits the §5.5.3 infix-gating diagnostic and recovers by treating the
+-- operator as a tight left-associative application (precedence 100).
 reassoc :: FixityEnv -> Span -> [OpElem] -> RW Expr
 reassoc env sp els0 = do
   (e, rest) <- parseExprAt 0 els0
