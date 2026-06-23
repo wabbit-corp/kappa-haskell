@@ -272,6 +272,8 @@ registry =
       "A §22.4 field-constraint reflection action found a field with no instance satisfying the required runtime trait obligation."
   , ent "E_INTERNAL" Nothing
       "Internal compiler invariant violation. This is an implementation bug, not an error in the source program."
+  , ent "E_INTERNAL_BUILTIN_MISSING" (Just "kappa-hs.internal.builtin-missing")
+      "The bundled prelude does not define a name the compiler wires in (see Kappa.Builtins). This is an implementation bug — a drift between the compiler and its prelude — not an error in the source program."
   , ent "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
       "A labeled 'break' or 'continue' names a loop label that is not in scope."
   , ent "E_LAYOUT_BAD_DEDENT" Nothing

@@ -1,0 +1,75 @@
+-- §15.11: adversarial lookalikes must not be certified as decreasing.
+--! assertWarningCount 8
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+data Box : Type = Box Int
+
+boxValue : Box -> Int
+let boxValue b = match b case Box x -> x
+
+instance Eq Box =
+    let (==) x y = eqInt (boxValue x) (boxValue y)
+
+instance Ord Box =
+    let compare x y =
+        if ltInt (boxValue y) (boxValue x) then LT
+        elif eqInt (boxValue x) (boxValue y) then EQ
+        else GT
+
+customOrdFlippedBoundary : Int -> Int
+let customOrdFlippedBoundary n decreases n =
+    if Box n < Box 2 then 0
+    else customOrdFlippedBoundary (divInt n 2)
+
+customCompareMatch : Int -> Int
+let customCompareMatch n decreases n =
+    match compare (Box n) (Box 2)
+    case LT -> 0
+    case EQ -> 0
+    case GT -> customCompareMatch (divInt n 2)
+
+idInt : Int -> Int
+let idInt x = x
+
+helperIdentity : Int -> Int
+let helperIdentity n decreases n =
+    if n <= 0 then 0
+    else helperIdentity (idInt n)
+
+divOne : Int -> Int
+let divOne x = divInt x 1
+
+helperDivOne : Int -> Int
+let helperDivOne n decreases n =
+    if n < 2 then 0
+    else helperDivOne (divOne n)
+
+badGuardDiv : Int -> Int
+let badGuardDiv n decreases n =
+    if match compare n 2
+       case LT if eqInt 0 0 -> True
+       case LT -> False
+       case EQ -> True
+       case GT -> True
+    then addInt 1 (badGuardDiv (divInt n 2))
+    else 0
+
+badGuardSub : Int -> Int
+let badGuardSub n decreases n =
+    if match compare n 1
+       case LT if eqInt 0 0 -> True
+       case LT -> False
+       case EQ -> True
+       case GT -> True
+    then addInt 1 (badGuardSub (subInt n 1))
+    else 0
+
+badMutA : Int -> Int
+badMutB : Int -> Int
+
+let badMutA n decreases n =
+    if n <= 0 then 0 else badMutB n
+
+let badMutB n decreases n =
+    if n <= 0 then 0 else badMutA (n - 1)

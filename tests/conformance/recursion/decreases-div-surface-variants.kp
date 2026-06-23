@@ -1,0 +1,30 @@
+-- §15.11: surface comparisons over standard primitive ordered types should
+-- contribute arithmetic branch facts without requiring source workarounds.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+floorLog3 : Int -> Int
+let floorLog3 n decreases n =
+    if n <= 1 then 0
+    else 1 + floorLog3 (divInt n 3)
+
+floorLog2FromZeroBoundary : Int -> Int
+let floorLog2FromZeroBoundary n decreases n =
+    if n <= 0 then 0
+    else 1 + floorLog2FromZeroBoundary (divInt n 2)
+
+floorLog2Nat : Nat -> Nat
+let floorLog2Nat n decreases n =
+    if n < 2 then 0
+    else 1 + floorLog2Nat (natOfInt (divInt (natToInt n) 2))
+
+floorLog2Greater : Int -> Int
+let floorLog2Greater n decreases n =
+    if 1 >= n then 0
+    else 1 + floorLog2Greater (divInt n 2)
+
+floorLog2StrictGreater : Int -> Int
+let floorLog2StrictGreater n decreases n =
+    if n > 1 then 1 + floorLog2StrictGreater (divInt n 2)
+    else 0

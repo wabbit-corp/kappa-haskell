@@ -1,0 +1,24 @@
+-- §15.11: surface comparison facts must not over-prove non-decreasing calls.
+--! assertWarningCount 4
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+mayStayZeroSurface : Int -> Int
+let mayStayZeroSurface n decreases n =
+    if n < 0 then 0
+    else 1 + mayStayZeroSurface (divInt n 2)
+
+divisorOneSurface : Int -> Int
+let divisorOneSurface n decreases n =
+    if n < 2 then 0
+    else 1 + divisorOneSurface (divInt n 1)
+
+negativeDivisorSurface : Int -> Int
+let negativeDivisorSurface n decreases n =
+    if n < 2 then 0
+    else 1 + negativeDivisorSurface (divInt n -2)
+
+affineTooLargeSurface : Int -> Int
+let affineTooLargeSurface n decreases n =
+    if n < 2 then 0
+    else 1 + affineTooLargeSurface (divInt (addInt (mulInt 2 n) 1) 2)

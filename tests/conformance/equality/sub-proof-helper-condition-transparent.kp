@@ -1,0 +1,18 @@
+-- A preceding total/reducible helper may be transparently normalized while
+-- discharging branch-local checked-subtraction evidence. This is deliberately
+-- different from unfolding arbitrary or not-yet-total recursion.
+--! assertNoErrors
+--! assertNoWarnings
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+safeLe : Nat -> Nat -> Bool
+let safeLe x y = leInt (natToInt y) (natToInt x)
+
+helperCondition : Nat -> Nat -> Nat
+let helperCondition x y =
+    if safeLe x y
+    then x - y
+    else 0

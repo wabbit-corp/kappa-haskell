@@ -1,0 +1,12 @@
+-- §15.11: explicit Int measures can certify halving recursion when the
+-- branch condition proves the argument is positive enough for division by a
+-- positive constant to strictly decrease.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+floorLog2 : Int -> Int
+let floorLog2 v decreases v =
+    if ltInt v 2 then 0
+    else addInt 1 (floorLog2 (divInt v 2))
+

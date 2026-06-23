@@ -1,0 +1,16 @@
+-- §15.11: surface operators should elaborate to the same halving-recursion
+-- termination proof used by Delve's floorLog2-style code.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+floorLog2 : Int -> Int
+let floorLog2 n decreases n =
+    if n < 2 then 0
+    else 1 + floorLog2 (divInt n 2)
+
+maxInt : Int -> Int -> Int
+let maxInt a b = if a < b then b else a
+
+dropoff : Int -> Int
+let dropoff steps = 6 * floorLog2 (maxInt 1 steps)

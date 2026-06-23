@@ -1,0 +1,25 @@
+-- §15.11: positive constant division can prove affine halving measures when
+-- the branch facts imply 0 <= y < k*x.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+ceilHalfDown : Int -> Int
+let ceilHalfDown n decreases n =
+    if n <= 1 then 0
+    else ceilHalfDown (divInt (n + 1) 2)
+
+predHalfDown : Int -> Int
+let predHalfDown n decreases n =
+    if n <= 0 then 0
+    else predHalfDown (divInt (n - 1) 2)
+
+half : Int -> Int
+let half x = divInt x 2
+
+positive : Int -> Bool
+let positive x = x > 0
+
+transparentHalf : Int -> Int
+let transparentHalf n decreases n =
+    if positive n then transparentHalf (half n) else 0

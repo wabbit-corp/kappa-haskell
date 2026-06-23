@@ -83,7 +83,9 @@ let mkItem pack kind =
             beatitudeKnown = def.beatitudeKnownByDefault,
             identified = def.startsIdentified,
             charges = def.charges,
-            equipped = False
+            equipped = False,
+            source = PlayerSpecies,
+            cooked = False
         }
 
 rollBeatitude : rand.Rng -> (beatitude : Beatitude, rng : rand.Rng)
@@ -174,7 +176,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 ""
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 "none"
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
@@ -193,6 +195,42 @@ let sightRangeOf pack species = (actorDefBySpecies pack species).sightRange
 
 hearingOf : ContentPack -> Species -> Int
 let hearingOf pack species = (actorDefBySpecies pack species).hearing
+
+hasStringTag : String -> List String -> Bool
+let hasStringTag t xs decreases listLength xs =
+    match xs
+    case Nil -> False
+    case h :: rest -> if h == t then True else hasStringTag t rest
+
+speciesHasTag : ContentPack -> Species -> String -> Bool
+let speciesHasTag pack species tag = hasStringTag tag (actorDefBySpecies pack species).tags
+
+nameForSpecies : ContentPack -> Species -> String
+let nameForSpecies pack species = (actorDefBySpecies pack species).name
+
+-- Corpses and bones are typed by the creature they came from, so they can be
+-- named, eaten (leaving bones), and crafted with.
+corpseName : ContentPack -> Species -> String
+let corpseName pack species = nameForSpecies pack species ++ " corpse"
+
+boneName : ContentPack -> Species -> String
+let boneName pack species =
+    if species == Skeleton then "old bones"
+    else nameForSpecies pack species ++ " skeleton"
+
+mkCorpse : ContentPack -> Species -> Item
+let mkCorpse pack species = (mkItem pack Corpse).{ source = species, name = corpseName pack species }
+
+mkBones : ContentPack -> Species -> Item
+let mkBones pack species = (mkItem pack Bones).{ source = species, name = boneName pack species }
+
+-- A corpse's food value and what (if anything) eating it does are properties of
+-- the creature, defined in actors.json — not hardcoded per species in the rules.
+corpseNutritionOf : ContentPack -> Species -> Int
+let corpseNutritionOf pack species = (actorDefBySpecies pack species).corpseNutrition
+
+corpseEffectOf : ContentPack -> Species -> String
+let corpseEffectOf pack species = (actorDefBySpecies pack species).corpseEffect
 
 languageOf : ContentPack -> Species -> String
 let languageOf pack species = (actorDefBySpecies pack species).language

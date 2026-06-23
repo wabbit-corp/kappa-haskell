@@ -1,0 +1,13 @@
+-- Branch-local facts must not leak: the true branch gives x <= y, which is
+-- not enough to prove x - y. A stale fact from another branch would be unsound.
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+badBranch : Nat -> Nat -> Nat
+let badBranch x y =
+    if leInt (natToInt x) (natToInt y)
+    then x - y --!! E_UNSOLVED_IMPLICIT
+    else y - x

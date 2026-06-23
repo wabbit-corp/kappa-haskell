@@ -38,8 +38,8 @@ import qualified Data.Text.Encoding.Error as TEE
 import Data.Word (Word64, Word8)
 import GHC.Float (castDoubleToWord64)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
+import Kappa.Builtins
 import Kappa.Core
-import Kappa.Source (ModuleName (..))
 import Kappa.Unicode
   ( NormForm (..)
   , graphemeClusters
@@ -137,8 +137,8 @@ eval ctx env = \case
   CForceE e -> vforce ctx (eval ctx env e)
   CIf c t f ->
     case force ctx (eval ctx env c) of
-      VCtor (GName _ "True") [] -> eval ctx env t
-      VCtor (GName _ "False") [] -> eval ctx env f
+      VCtor g [] | g == prelTrue -> eval ctx env t
+      VCtor g [] | g == prelFalse -> eval ctx env f
       v -> VIfN v (Closure env t) (Closure env f)
   CQuote qs slots -> VQuote qs (map (eval ctx env) slots)
 
@@ -265,8 +265,8 @@ force ctx = go (if ecRuntime ctx then 1000000 else 1000 :: Int)
               VRecordV fs | Just x <- lookup fld fs -> go (fuel - 1) x
               _ -> v
       VIfN c t f -> case go (fuel - 1) c of
-        VCtor (GName _ "True") [] -> go (fuel - 1) (closRun t)
-        VCtor (GName _ "False") [] -> go (fuel - 1) (closRun f)
+        VCtor g [] | g == prelTrue -> go (fuel - 1) (closRun t)
+        VCtor g [] | g == prelFalse -> go (fuel - 1) (closRun f)
         _ -> v
       VMatchN scrut alts env
         | Just v' <- tryReduceMatch ctx scrut alts env ->
@@ -313,8 +313,8 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
            in case g of
                 Nothing -> Just (eval ctx env' body)
                 Just gd -> case force ctx (eval ctx env' gd) of
-                  VCtor (GName _ "True") [] -> Just (eval ctx env' body)
-                  VCtor (GName _ "False") [] -> tryAlts rest
+                  VCtor g [] | g == prelTrue -> Just (eval ctx env' body)
+                  VCtor g [] | g == prelFalse -> tryAlts rest
                   _ -> Nothing -- stuck guard: whole match stuck
         Nothing
           | definitelyNoMatch pat scrut' -> tryAlts rest
@@ -511,8 +511,8 @@ convertible ctx = go (200 :: Int)
       (VRecordV f1, VRecordV f2) ->
         map fst f1 == map fst f2 && and (zipWith (go (fuel - 1) lvl) (map snd f1) (map snd f2))
       -- record η: zero-field record ≡ Unit value
-      (VRecordV [], VCtor (GName _ "Unit") []) -> True
-      (VCtor (GName _ "Unit") [], VRecordV []) -> True
+      (VRecordV [], VCtor g []) | g == prelUnit -> True
+      (VCtor g [], VRecordV []) | g == prelUnit -> True
       -- record η (§31.1): a literal of projections of one neutral
       -- receiver is that receiver
       (VRecordV fs@(_ : _), t) | etaRecord fs t -> True
@@ -570,7 +570,7 @@ evalPurePrim p args = case (p, args) of
   ("instantAdd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a + b)
   ("instantDiff", [VLit (LitInt a), VLit (LitInt b)]) -> int (a - b)
   ("durationCompare", [VLit (LitInt a), VLit (LitInt b)]) ->
-    Just (VCtor (prelG (case compare a b of LT -> "LT"; EQ -> "EQ"; GT -> "GT")) [])
+    Just (VCtor (prelOrdering (compare a b)) [])
   -- §13.2.6/§11.3.1A row extension: append the field to the record
   -- value, keeping canonical lexicographic field order (§31.4)
   ("__rowExtend", [VRecordV fs, VLit (LitStr l), v])
@@ -781,7 +781,7 @@ evalPurePrim p args = case (p, args) of
   -- stuck and is reported as a runtime error
   ("intToNat", [VLit (LitInt a)]) | a >= 0 -> int a
   -- discard a (linear) value: implicit type argument + the value
-  ("unsafeConsume", [_, _]) -> Just (VCtor (GName (ModuleName ["std", "prelude"]) "Unit") [])
+  ("unsafeConsume", [_, _]) -> Just (VCtor prelUnit [])
   -- §20 collection carriers are list-backed at runtime (§20.10.11
   -- as-if rule); conversion/wrapping is the identity on the element
   -- stream (modes, quantities, and orderedness are static metadata)
@@ -819,7 +819,7 @@ evalPurePrim p args = case (p, args) of
   -- under §23.7 by construction)
   ("__codeEscape", [VPrim "__codeQuote" [v]]) -> Just v
   ("closeCode", [VPrim "__codeQuote" [v]]) ->
-    Just (VCtor (prelG "Some") [VPrim "__closedCode" [v]])
+    Just (VCtor prelSome [VPrim "__closedCode" [v]])
   ("genlet", [c@(VPrim "__codeQuote" _)]) -> Just c
   _ -> Nothing
   where
@@ -846,16 +846,16 @@ evalPurePrim p args = case (p, args) of
       _ -> Nothing
     asBoolV :: Value -> Maybe Bool
     asBoolV v = case v of
-      VCtor (GName _ "True") [] -> Just True
-      VCtor (GName _ "False") [] -> Just False
+      VCtor g [] | g == prelTrue -> Just True
+      VCtor g [] | g == prelFalse -> Just False
       _ -> Nothing
     -- walk a cons-list value to its i-th element (0-based); Nothing when
     -- the list runs out (out of bounds) so the application stays stuck
     indexList :: Value -> Integer -> Maybe Value
     indexList v i = case v of
-      VCtor (GName _ "::") [h, t]
-        | i <= 0 -> Just h
-        | otherwise -> indexList t (i - 1)
+      VCtor g [h, t]
+        | g == prelCons, i <= 0 -> Just h
+        | g == prelCons -> indexList t (i - 1)
       _ -> Nothing
     -- exact decode of a finite binary64 into a reduced ratio
     doubleToRatio :: Double -> (Integer, Integer)
@@ -865,11 +865,10 @@ evalPurePrim p args = case (p, args) of
           let r = toRational d
            in (numerator r, denominator r)
     bytes = Just . VLit . LitBytes
-    bool b = Just (VCtor (prelG (if b then "True" else "False")) [])
-    prelG = GName (ModuleName ["std", "prelude"])
-    listV = foldr (\x acc -> VCtor (prelG "::") [x, acc]) (VCtor (prelG "Nil") [])
-    someV x = VCtor (prelG "Some") [x]
-    noneV = VCtor (prelG "None") []
+    bool b = Just (VCtor (prelBoolV b) [])
+    listV = foldr (\x acc -> VCtor prelCons [x, acc]) (VCtor prelNil [])
+    someV x = VCtor prelSome [x]
+    noneV = VCtor prelNone []
     recV = VRecordV
     -- longest prefix of @bs@ that is valid UTF-8, plus the trailing bytes
     -- that are either an incomplete final sequence or the first invalid run
@@ -899,8 +898,8 @@ evalPurePrim p args = case (p, args) of
     -- decode a (possibly partly-evaluated) cons-list of Byte literals
     listOfBytes :: Value -> Maybe [Word8]
     listOfBytes v = case v of
-      VCtor (GName _ "Nil") [] -> Just []
-      VCtor (GName _ "::") [VLit (LitByte w), t] -> (w :) <$> listOfBytes t
+      VCtor g [] | g == prelNil -> Just []
+      VCtor g [VLit (LitByte w), t] | g == prelCons -> (w :) <$> listOfBytes t
       _ -> Nothing
     -- offset of the first occurrence of @sep@ in @bs@ (empty sep -> 0)
     bytesBreakIndex :: BS.ByteString -> BS.ByteString -> Maybe Int
@@ -937,16 +936,13 @@ evalPrimCtx ctx p args = case evalPurePrim p args of
 -- a function, a backend object, or stopped by the depth limit becomes
 -- the corresponding 'OpaqueValue'\/'Unknown' reason (§29.6).
 debugGN :: Text -> GName
-debugGN = GName (ModuleName ["std", "debug"])
-
-debugPrelGN :: Text -> GName
-debugPrelGN = GName (ModuleName ["std", "prelude"])
+debugGN = GName modDebug
 
 debugListV :: [Value] -> Value
-debugListV = foldr (\h t -> VCtor (debugPrelGN "::") [h, t]) (VCtor (debugPrelGN "Nil") [])
+debugListV = foldr (\h t -> VCtor prelCons [h, t]) (VCtor prelNil [])
 
 debugOptV :: Maybe Value -> Value
-debugOptV = maybe (VCtor (debugPrelGN "None") []) (\v -> VCtor (debugPrelGN "Some") [v])
+debugOptV = maybe (VCtor prelNone []) (\v -> VCtor prelSome [v])
 
 -- literal rendering kept local to avoid a dependency on Kappa.Pretty
 debugLitText :: Literal -> Text
@@ -1039,7 +1035,7 @@ evalEffPrim ctx p args = case (p, args) of
     | isCanonicalRt x && isCanonicalRt y ->
         Just
           ( VCtor
-              (GName (ModuleName ["std", "prelude"]) (if convertible ctx 0 x y then "True" else "False"))
+              (prelBoolV (convertible ctx 0 x y))
               []
           )
     where
@@ -1065,21 +1061,21 @@ evalEffPrim ctx p args = case (p, args) of
   ("__debugCompare", [x, y]) -> Just (debugCompare ctx x y)
   -- runPure : Eff <[ ]> a -> a (§18.1.14)
   ("runPure", [comp]) -> case force ctx comp of
-    VCtor (GName _ "__EffPure") [v] -> Just v
+    VCtor g [v] | g == prelEffPure -> Just v
     _ -> Nothing
   -- monadic bind over the tree (Eff is a Monad, §18.1.14)
   ("__effBind", [m, f]) -> case force ctx m of
-    VCtor (GName _ "__EffPure") [v] -> Just (vapp ctx f Expl v)
-    VCtor g@(GName _ "__EffOp") [l, op, a, cont] ->
+    VCtor g [v] | g == prelEffPure -> Just (vapp ctx f Expl v)
+    VCtor g [l, op, a, cont] | g == prelEffOp ->
       -- Op l op a (\x -> __effBind (cont x) f)
       Just (VCtor g [l, op, a, VLam Expl QW "x" (Closure [f, cont] bindBody)])
     _ -> Nothing
   -- __handleEff deep label ret ops comp (HandleShallow plus the
   -- §18.1.22 deep recursive driver)
   ("__handleEff", [deepV, label, ret, ops, comp]) -> case force ctx comp of
-    VCtor (GName _ "__EffPure") [v] -> Just (vapp ctx ret Expl v)
-    VCtor g@(GName _ "__EffOp") [l, opName, a, cont]
-      | sameLabel (force ctx l) (force ctx label) ->
+    VCtor g [v] | g == prelEffPure -> Just (vapp ctx ret Expl v)
+    VCtor g [l, opName, a, cont]
+      | g == prelEffOp, sameLabel (force ctx l) (force ctx label) ->
           -- nearest matching handler intercepts (§18.1.18); a deep
           -- handler's k reinstalls itself around the resumption
           case (force ctx opName, force ctx ops) of
@@ -1090,7 +1086,7 @@ evalEffPrim ctx p args = case (p, args) of
                         | otherwise = cont
                    in Just (vapp ctx (vapp ctx clause Expl a) Expl k)
             _ -> Nothing
-      | otherwise ->
+      | g == prelEffOp ->
           -- operations at other labels propagate outward unchanged,
           -- with this handler still installed inside the resumption
           Just (VCtor g [l, opName, a, reinstall cont])
@@ -1099,8 +1095,8 @@ evalEffPrim ctx p args = case (p, args) of
       reinstall cont = VLam Expl QW "x" (Closure [cont, ops, ret, label, deepV] handleBody)
   _ -> Nothing
   where
-    effBindG = CGlob (GName (ModuleName ["std", "prelude"]) "__effBind")
-    handleEffG = CGlob (GName (ModuleName ["std", "prelude"]) "__handleEff")
+    effBindG = CGlob prelEffBind
+    handleEffG = CGlob prelHandleEff
     appE = CApp Expl
     -- env [f, cont], binder x: __effBind (cont x) f
     bindBody = appE (appE effBindG (appE (CVar 2) (CVar 0))) (CVar 1)
@@ -1115,5 +1111,5 @@ evalEffPrim ctx p args = case (p, args) of
       (VCtor g1 [], VCtor g2 []) -> g1 == g2
       _ -> False
     isTrueV = \case
-      VCtor (GName _ "True") [] -> True
+      VCtor g [] | g == prelTrue -> True
       _ -> False

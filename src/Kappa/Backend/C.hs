@@ -101,6 +101,7 @@ data GenState = GenState
   , gsPrimUsed :: !(Set Text) -- ^ §34.5.3: builtin primitives actually referenced; 'assemble' emits an @extern@ decl for each direct entry point (@kpf_*@) so the optimized output calls it DIRECTLY — never @kprim_call@/@prim_fire_pure@ string dispatch.
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ §27.1.1/§36.28: each provided @host.native.*@ member (an abstract global) ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings (never a hardcoded catalog). A reference to such a member lowers to a DIRECT typed call ('knative'), not a runtime primitive.
   , gsHostUsed :: !(Set GName) -- ^ §27.1.1: host members actually referenced; 'assemble' emits one extern prototype + marshalling wrapper per used member.
+  , gsBounceMemo :: !(Map (GName, Int) (Maybe Bool)) -- ^ Native lowering cache: whether a boxed worker of this arity may return K_BOUNCE. 'Nothing' marks an in-progress analysis; recursive cycles conservatively read as may-bounce. The analysis is pure in the stable codegen environment, so caching prevents large game targets from re-walking the same bodies at every call site.
   , gsLoops :: ![LoopCtx] -- ^ enclosing loops, innermost first (§18.2.5 labels)
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
@@ -423,6 +424,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsPrimUsed = Set.empty
           , gsHostSyms = hostSyms
           , gsHostUsed = Set.empty
+          , gsBounceMemo = Map.empty
           , gsLoops = []
           , gsDefer = []
           , gsScopeDefers = []
@@ -1998,8 +2000,25 @@ globFuncArity g = do
 -- a call to a callee with no such effect needs no trampoline drain (it lowers
 -- to a direct call), realizing the §7 "trampolines → loop/musttail/direct vs
 -- boxed-trampoline fallback" requirement for the non-bouncing case.
+--
+-- Cache invariant: during one 'generateC' run, 'gsBodies' is immutable and
+-- each @(GName, arity)@ denotes a single worker body.  The cache key can
+-- therefore omit the 'body' argument; it is still passed explicitly so callers
+-- that have already looked up the body do not repeat that lookup.
 workerMayBounce :: GName -> Int -> Term -> Gen Bool
-workerMayBounce g n = tailMay
+workerMayBounce g n body = do
+  memo <- gets gsBounceMemo
+  case Map.lookup (g, n) memo of
+    Just (Just b) -> pure b
+    Just Nothing -> pure True
+    Nothing -> do
+      modify' $ \st -> st {gsBounceMemo = Map.insert (g, n) Nothing (gsBounceMemo st)}
+      b <- workerMayBounceUncached g n body
+      modify' $ \st -> st {gsBounceMemo = Map.insert (g, n) (Just b) (gsBounceMemo st)}
+      pure b
+
+workerMayBounceUncached :: GName -> Int -> Term -> Gen Bool
+workerMayBounceUncached g n = tailMay
   where
     tailMay term = case term of
       CIf _ t e -> orM [tailMay t, tailMay e]

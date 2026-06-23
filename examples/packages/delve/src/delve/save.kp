@@ -158,6 +158,8 @@ let encodeItem i =
         , field "identified" (bool i.identified)
         , field "charges" (num i.charges)
         , field "equipped" (bool i.equipped)
+        , field "source" (str (speciesName i.source))
+        , field "cooked" (bool i.cooked)
         ]
 
 encodeGroundItem : GroundItem -> JsonValue
@@ -426,7 +428,10 @@ let decodeItem value =
         identified <- optBoolField False "identified" value
         charges <- optIntField 0 "charges" value
         equipped <- optBoolField False "equipped" value
-        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped)
+        sourceName0 <- optStringField "PlayerSpecies" "source" value
+        source <- decodeSpeciesString sourceName0
+        cooked <- optBoolField False "cooked" value
+        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped source cooked)
 
 decodeGroundItem : JsonValue -> IO GameError GroundItem
 let decodeGroundItem value =
@@ -495,6 +500,9 @@ let itemKindName k =
     case WandPolymorph -> "WandPolymorph"
     case HolySymbol -> "HolySymbol"
     case Corpse -> "Corpse"
+    case Bones -> "Bones"
+    case Mushroom -> "Mushroom"
+    case BoneCharm -> "BoneCharm"
     case ChaosShard -> "ChaosShard"
     case Amulet -> "Amulet"
 

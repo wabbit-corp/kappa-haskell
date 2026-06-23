@@ -1,0 +1,15 @@
+-- The same branch-local subtraction proof must survive a let-binding.
+--! assertNoErrors
+--! assertNoWarnings
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+branchLet : Nat -> Nat -> Nat
+let branchLet x y =
+    if leInt (natToInt y) (natToInt x)
+    then
+        let d = x - y
+        d
+    else 0

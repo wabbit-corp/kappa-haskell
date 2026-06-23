@@ -146,7 +146,7 @@
       "id": "food_ration",
       "min_depth": 1,
       "max_depth": 2,
-      "weight": 6
+      "weight": 3
     },
     {
       "id": "dagger",
@@ -231,6 +231,12 @@
       "min_depth": 7,
       "max_depth": 99,
       "weight": 1
+    },
+    {
+      "id": "mushroom",
+      "min_depth": 1,
+      "max_depth": 99,
+      "weight": 7
     }
   ],
   "structures": [

@@ -41,6 +41,7 @@ library
         Kappa.Backend.HeaderGen
         Kappa.Backend.NativeFfi
         Kappa.Backend.NativeProbe
+        Kappa.Builtins
         Kappa.Build.Lock
         Kappa.Build.Plan
         Kappa.Build.Provenance
@@ -49,6 +50,7 @@ library
         Kappa.Check
         Kappa.Config
         Kappa.Core
+        Kappa.CoreOps
         Kappa.Diagnostic
         Kappa.Eval
         Kappa.Explain
@@ -65,6 +67,7 @@ library
         Kappa.Syntax
         Kappa.SyntaxOps
         Kappa.TestHarness
+        Kappa.Termination
         Kappa.Token
         Kappa.Unicode
         Kappa.UnicodeData

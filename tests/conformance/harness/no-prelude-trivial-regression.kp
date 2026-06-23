@@ -1,0 +1,10 @@
+-- Regression: checking even a trivial @NoPrelude module still elaborates the
+-- standard library modules first. A previous cyclic-meta solve in checked
+-- application elaboration made this hang while checking std.bytes.
+--! noPrelude
+--! assertNoErrors
+--! assertNoWarnings
+
+@NoPrelude module no_prelude_trivial_regression
+
+let x = 1

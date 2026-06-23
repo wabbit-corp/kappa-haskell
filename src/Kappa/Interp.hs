@@ -24,10 +24,10 @@ import System.IO.Unsafe (unsafePerformIO)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import Kappa.Builtins
 import Kappa.Core
 import Kappa.Eval
 import Kappa.Pretty (renderTerm, renderValueShallow)
-import Kappa.Source (ModuleName (..))
 import System.IO (hFlush, stdout)
 
 data RunResult = RunOk | RunFail Text
@@ -67,21 +67,21 @@ instance Exception CauseReraise
 -- interruption (timeout's @TimedOut@, race's @RaceLost@).
 interruptCause :: Text -> Value
 interruptCause tag =
-  VCtor (prelG "MkInterruptCause") [VCtor (prelG tag) [], VCtor (prelG "None") []]
+  VCtor prelMkInterruptCause [VCtor (gPrel tag) [], VCtor prelNone []]
 
 -- | The §18.1.2 'Cause' value carried by a host exception that escaped a
 -- fiber/sandbox: typed 'Fail', structured 'Interrupt', a faithfully
 -- round-tripped re-raised cause, or a 'Defect' for any other host failure.
 causeOf :: SomeException -> Value
 causeOf e = case fromException e of
-  Just (KappaError ev) -> VCtor (prelG "Fail") [ev]
+  Just (KappaError ev) -> VCtor prelFail [ev]
   Nothing -> case fromException e of
-    Just (Interrupt cause) -> VCtor (prelG "Interrupt") [cause]
+    Just (Interrupt cause) -> VCtor prelInterrupt [cause]
     Nothing -> case fromException e of
       Just (CauseReraise cause) -> cause
       Nothing ->
-        VCtor (prelG "Defect")
-          [VCtor (prelG "MkDefectInfo") [VLit (LitStr (T.pack (show e)))]]
+        VCtor prelDefect
+          [VCtor prelMkDefectInfo [VLit (LitStr (T.pack (show e)))]]
 
 -- | Re-raise a §18.1.2 'Cause' value back into host execution: typed 'Fail'
 -- becomes a 'KappaError'; every non-typed cause (Interrupt/Defect/composite)
@@ -89,8 +89,8 @@ causeOf e = case fromException e of
 -- cause (§18.1.4 join, §18.1.6 timeout/race, §18.1.2 unsandbox).
 reraiseCauseValue :: Value -> IO a
 reraiseCauseValue v = case v of
-  VCtor (GName _ "Fail") [ev] -> throwIO (KappaError ev)
-  VCtor (GName _ "Interrupt") [cause] -> throwIO (Interrupt cause)
+  VCtor g [ev] | g == prelFail -> throwIO (KappaError ev)
+  VCtor g [cause] | g == prelInterrupt -> throwIO (Interrupt cause)
   _ -> throwIO (CauseReraise v)
 
 -- | §18.1.7 fiber-local state. A 'FiberRef' is identified by a counter id;
@@ -192,10 +192,10 @@ nanosToMicros ns = fromInteger (max 1 ((ns + 999) `div` 1000))
 -- cause carries the @TimedOut@ tag — i.e. the timer beat the computation.
 exitTimedOut :: EvalCtx -> Value -> Bool
 exitTimedOut ec v = case force ec v of
-  VCtor (GName _ "Failure") [c] -> case force ec c of
-    VCtor (GName _ "Interrupt") [cause] -> case force ec cause of
-      VCtor (GName _ "MkInterruptCause") (tag : _) -> case force ec tag of
-        VCtor (GName _ "TimedOut") _ -> True
+  VCtor g [c] | g == prelFailure -> case force ec c of
+    VCtor g [cause] | g == prelInterrupt -> case force ec cause of
+      VCtor g (tag : _) | g == prelMkInterruptCause -> case force ec tag of
+        VCtor g _ | g == prelTimedOut -> True
         _ -> False
       _ -> False
     _ -> False
@@ -213,8 +213,8 @@ globalStmVersion = unsafePerformIO (STM.newTVarIO 0)
 -- completion, Failure (Fail e) for a raised Kappa error (isolated from the
 -- parent), Failure (Defect …) for any other host exception.
 exitOf :: Either SomeException Value -> Value
-exitOf (Right v) = VCtor (prelG "Success") [v]
-exitOf (Left e) = VCtor (prelG "Failure") [causeOf e]
+exitOf (Right v) = VCtor prelSuccess [v]
+exitOf (Left e) = VCtor prelFailure [causeOf e]
 
 -- | §18.1.13 'atomically' on the single agent: run the transaction; if it
 -- signals retry, park until the STM write-version advances, then re-run.
@@ -242,14 +242,8 @@ data RT = RT
   , rtEmit :: !(Text -> IO ())
   }
 
-preludeMod :: ModuleName
-preludeMod = ModuleName ["std", "prelude"]
-
-prelG :: Text -> GName
-prelG = GName preludeMod
-
 unitV :: Value
-unitV = VCtor (prelG "Unit") []
+unitV = VCtor prelUnit []
 
 -- | Run @main@ (an IO computation) writing to real stdout.
 runMain :: Globals -> MetaState -> GName -> IO RunResult
@@ -333,7 +327,7 @@ hasSplice :: Value -> Bool
 hasSplice = \case
   VPrim "__runIO" (_ : _) -> True
   VGlobN g sp
-    | gnameText g == "__runIO"
+    | g == prelRunIO
     , any ((== Expl) . fst) sp -> True
     | otherwise -> any (hasSplice . snd) sp
   VFlex _ sp -> any (hasSplice . snd) sp
@@ -362,7 +356,7 @@ runSplices rt v0 = case v0 of
   VGlobN g sp
     -- the implicit prefix holds the splice marker's erased type
     -- arguments; only the explicit argument onward matters here
-    | gnameText g == "__runIO"
+    | g == prelRunIO
     , (_implPrefix, (Expl, a) : restSp) <- span ((== Impl) . fst) sp -> do
         r <- runIOValue rt =<< runSplices rt a
         runSplices rt (evalApp ec r restSp)
@@ -540,12 +534,12 @@ runScope rt reg0 selfLabel env0 items0 = do
       targets (Just l) ml = Just l == ml
 
       asBool x = case force ec x of
-        VCtor (GName _ "True") [] -> Just True
-        VCtor (GName _ "False") [] -> Just False
+        VCtor g [] | g == prelTrue -> Just True
+        VCtor g [] | g == prelFalse -> Just False
         _ -> Nothing
 
       listElems x = case force ec x of
-        VCtor (GName _ "::") [h, t] -> h : listElems t
+        VCtor g [h, t] | g == prelCons -> h : listElems t
         _ -> []
 
   go env0 items0
@@ -632,7 +626,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("__timeout", [dVal, action]) -> do
     let ns = durationNanos dVal
     if ns <= 0
-      then pure (VCtor (prelG "TOTimedOut") [])
+      then pure (VCtor prelTOTimedOut [])
       else do
         (tid, mv) <- spawnExit rt action
         timer <- forkIO $ do
@@ -642,8 +636,8 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
         killThread timer
         pure $
           if exitTimedOut ec exitV
-            then VCtor (prelG "TOTimedOut") []
-            else VCtor (prelG "TOExit") [exitV]
+            then VCtor prelTOTimedOut []
+            else VCtor prelTOExit [exitV]
   -- §18.1.6 race: run both branches concurrently; the first to terminate
   -- wins, the loser is interrupted with tag RaceLost and race waits for it to
   -- terminate. The left branch wins ties.
@@ -660,11 +654,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
       then do
         throwTo rtid (Interrupt (interruptCause "RaceLost"))
         _ <- readMVar rmv
-        pure (VCtor (prelG "ROLeft") [ex])
+        pure (VCtor prelROLeft [ex])
       else do
         throwTo ltid (Interrupt (interruptCause "RaceLost"))
         _ <- readMVar lmv
-        pure (VCtor (prelG "RORight") [ex])
+        pure (VCtor prelRORight [ex])
   -- §18.1.8 explicit supervision scopes. A scope is a registry of attached
   -- fibers; forkIn attaches, shutdownScope interrupts + drains them, and
   -- withScope brackets a fresh scope with masked shutdown on every exit.
@@ -710,8 +704,8 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("writeTVar", [VTVar tv, v]) ->
     STM.atomically (STM.writeTVar tv v >> STM.modifyTVar' globalStmVersion (+ 1)) >> pure unitV
   ("atomically", [action]) -> stmAtomically rt action
-  ("check", [VCtor (GName _ "True") []]) -> pure unitV
-  ("check", [VCtor (GName _ "False") []]) -> throwIO RetrySignal
+  ("check", [VCtor g []]) | g == prelTrue -> pure unitV
+  ("check", [VCtor g []]) | g == prelFalse -> throwIO RetrySignal
   ("retry", _) -> throwIO RetrySignal
   ("stmAbort", _) -> throwIO RetrySignal
   -- §18.11 one-shot promises: a cell holding Option (Exit e a) — None until
@@ -723,14 +717,14 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- (another runnable fiber completes it; the RTS resumes the parked one).
   ("newPromise", _) -> VMVar <$> newEmptyMVar
   ("completePromise", [VMVar mv, exitV]) ->
-    (\b -> VCtor (prelG (if b then "True" else "False")) []) <$> tryPutMVar mv exitV
+    (\b -> VCtor (prelBoolV b) []) <$> tryPutMVar mv exitV
   ("awaitPromiseExit", [VMVar mv]) -> readMVar mv
   ("awaitPromise", [VMVar mv]) -> do
     exitV <- readMVar mv
     case force ec exitV of
-      VCtor (GName _ "Success") [v] -> pure v
-      VCtor (GName _ "Failure") [c] -> case force ec c of
-        VCtor (GName _ "Fail") [e] -> throwIO (KappaError e)
+      VCtor g [v] | g == prelSuccess -> pure v
+      VCtor g [c] | g == prelFailure -> case force ec c of
+        VCtor g [e] | g == prelFail -> throwIO (KappaError e)
         _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise failed with a non-Fail cause")))
       _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: malformed promise Exit")))
   -- §18.1 monotonic timers (single agent): nowMonotonic reads the host

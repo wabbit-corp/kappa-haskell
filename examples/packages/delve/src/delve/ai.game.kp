@@ -63,8 +63,8 @@ addCorpseFor : Actor -> GameState -> GameState
 let addCorpseFor victim game =
     if victim.species == PlayerSpecies || victim.species == Hound then game
     else
-        let corpse = content.mkItem game.content Corpse
-        game.{ level = game.level.{ items = (::) (GroundItem victim.pos corpse) game.level.items } }
+        let remains = if victim.species == Skeleton then content.mkBones game.content Skeleton else content.mkCorpse game.content victim.species
+        in game.{ level = game.level.{ items = (::) (GroundItem victim.pos remains) game.level.items } }
 
 -- Only narrate a blow the player could actually witness: a fight is "seen" if
 -- either combatant stands on a currently-lit tile. Off-screen monster duels

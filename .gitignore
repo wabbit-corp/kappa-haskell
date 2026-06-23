@@ -1,5 +1,7 @@
 dist-newstyle/
 dist-source/
+dist/
+.idea/
 *.hi
 *.o
 *.dyn_hi

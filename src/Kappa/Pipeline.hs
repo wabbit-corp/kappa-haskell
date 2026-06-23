@@ -19,12 +19,14 @@ module Kappa.Pipeline
   , compileProgramWithNative
   , reservedHostRootDiag
   , moduleNameOf
+  , preludeState
   ) where
 
 import Control.Monad.State.Strict (evalState)
 import qualified Data.ByteString as BS
 import Data.Char (isAlphaNum, isAscii, isLetter)
-import Data.List (foldl', nub, partition, sortOn)
+import Data.List (nub, partition, sortOn)
+import qualified Data.Map.Lazy as MapLazy
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
@@ -35,6 +37,7 @@ import Kappa.Backend.NativeFfi
   ( ResolvedNativeSymbol (..)
   , nativeMemberType
   )
+import Kappa.Builtins
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
 import Kappa.Core (GName (..), Term, gnameText)
@@ -86,24 +89,24 @@ preludeState =
       let (m', rdiags) = resolveModule defaultFixities m
           (st, diags) = checkModule builtinState m'
           stdSources =
-            [ (ModuleName ["std", "deriving", "shape"], "<std.deriving.shape>", stdDerivingShapeSource)
-            , (ModuleName ["std", "hash"], "<std.hash>", stdHashSource)
-            , (ModuleName ["std", "debug"], "<std.debug>", stdDebugSource)
-            , (ModuleName ["std", "bytes"], "<std.bytes>", stdBytesSource)
-            , (ModuleName ["std", "unicode"], "<std.unicode>", stdUnicodeSource)
-            , (ModuleName ["std", "ffi"], "<std.ffi>", stdFfiSource)
-            , (ModuleName ["std", "ffi", "c"], "<std.ffi.c>", stdFfiCSource)
-            , (ModuleName ["std", "atomic"], "<std.atomic>", stdAtomicSource)
-            , (ModuleName ["std", "gradual"], "<std.gradual>", stdGradualSource)
-            , (ModuleName ["std", "bridge"], "<std.bridge>", stdBridgeSource) -- after std.gradual
-            , (ModuleName ["std", "supervisor"], "<std.supervisor>", stdSupervisorSource)
+            [ (modDerivingShape, "<std.deriving.shape>", stdDerivingShapeSource)
+            , (modHash, "<std.hash>", stdHashSource)
+            , (modDebug, "<std.debug>", stdDebugSource)
+            , (modBytes, "<std.bytes>", stdBytesSource)
+            , (modUnicode, "<std.unicode>", stdUnicodeSource)
+            , (modFfi, "<std.ffi>", stdFfiSource)
+            , (modFfiC, "<std.ffi.c>", stdFfiCSource)
+            , (modAtomic, "<std.atomic>", stdAtomicSource)
+            , (modGradual, "<std.gradual>", stdGradualSource)
+            , (modBridge, "<std.bridge>", stdBridgeSource) -- after std.gradual
+            , (modSupervisor, "<std.supervisor>", stdSupervisorSource)
             , -- §35.3/§29.8: config-mode schema modules. They are checked
               -- here so their config-safe vocabulary is registered in
               -- csGlobals/csCtors/csModuleExports; a build-manifest loader
               -- (Kappa.Config) installs their names into the manifest's
               -- schema scope without an ordinary import.
-              (ModuleName ["std", "config"], "<std.config>", stdConfigSource)
-            , (ModuleName ["std", "build"], "<std.build>", stdBuildSource)
+              (modConfig, "<std.config>", stdConfigSource)
+            , (modBuild, "<std.build>", stdBuildSource)
             ]
           (st', sdiags) =
             foldl
@@ -112,7 +115,27 @@ preludeState =
                   in (stNext, dsAcc ++ ds))
               (st, [])
               stdSources
-       in (st', recovered ++ rdiags ++ diags ++ sdiags)
+       in (st', recovered ++ rdiags ++ diags ++ sdiags ++ builtinContractDiags st')
+
+-- | §28: the prelude must define every name the compiler wires in (see
+-- "Kappa.Builtins"). Any name the compiler spells but the prelude does not
+-- define is an internal inconsistency between the compiler and its bundled
+-- prelude; report it here rather than let it miscompile downstream.
+builtinContractDiags :: CheckState -> Diagnostics
+builtinContractDiags st =
+  case unresolvedBuiltins st of
+    [] -> []
+    miss ->
+      [ diag
+          SevError
+          StageElaborate
+          "E_INTERNAL_BUILTIN_MISSING"
+          (Just "kappa-hs.internal.builtin-missing")
+          noSpan
+          ( "the bundled prelude is missing names the compiler depends on (§28): "
+              <> T.intercalate ", " (map (gnameText . wiName) miss)
+          )
+      ]
 
 -- | Compile one embedded standard-library module on top of the
 -- prelude state and register its exports.
@@ -138,9 +161,6 @@ stdModule mn path src st0 =
           st2 = st1 {csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)}
        in (st2, recovered ++ rdiags ++ ieDiags ie ++ diags)
 
-implicitPreludeCtorNames :: [Text]
-implicitPreludeCtorNames =
-  ["True", "False", "None", "Some", "Ok", "Err", "Nil", "::", "LT", "EQ", "GT", "refl"]
 
 -- | Scope with prelude globals plus the fixed unqualified constructor
 -- subset visible unqualified (§28.1). This is only for the implicit
@@ -274,7 +294,15 @@ compileProgramWithNative syms cfg packageMode nameOf files =
 -- 'nativeMemberType') and evaluated to the global's type — there is no
 -- hardcoded catalog of types.
 applyNativeModules :: [ResolvedNativeSymbol] -> CheckState -> CheckState
-applyNativeModules syms st0 = foldl' addMod st0 byModule
+applyNativeModules syms st0 =
+  let st1 = foldl' addMod st0 byModule
+   in if null byModule
+        then st1
+        else
+          -- Native host bindings extend global lookup before user checking.
+          -- Drop proof/normalization caches inherited from the prelude state
+          -- so their keys cannot straddle two global environments.
+          invalidateSemanticCaches st1
   where
     byModule =
       Map.toList $
@@ -297,17 +325,6 @@ applyNativeModules syms st0 = foldl' addMod st0 byModule
 nativeHostSymbols :: [ResolvedNativeSymbol] -> Map.Map GName ResolvedNativeSymbol
 nativeHostSymbols syms =
   Map.fromList [(GName (rnsModule s) (rnsMember s), s) | s <- syms]
-
--- | §8.3.5 reserved host roots. A source-defined module at or under one of
--- these is a compile-time error (host binding modules are host-supplied).
-reservedHostRoots :: [[Text]]
-reservedHostRoots =
-  [ ["host", "jvm", "jni"]
-  , ["host", "jvm"]
-  , ["host", "dotnet"]
-  , ["host", "native"]
-  , ["host", "python"]
-  ]
 
 -- | Emit 'E_HOST_MODULE_SOURCE_DEFINED' if @mn@ is exactly a reserved host
 -- root or lies under one (§8.3.5).
@@ -461,7 +478,8 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           ]
       (order, cycleDiags) = topoOrder (sortOn moduleKey unitModules) depMap
       byName = Map.fromList [(mn, (m, frs)) | (mn, m, frs) <- merged]
-      step (st, chunks, trc) mn = case Map.lookup mn byName of
+      step (st, chunks, trc) mn =
+        case Map.lookup mn byName of
         Nothing -> (st, chunks, trc)
         Just (m, frs) ->
           let -- §5.5: exported fixity declarations are imported together
@@ -493,7 +511,9 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                     -- cache, which is keyed on the import scope and module
                     csScopeNameCache = Nothing
                   }
-              (st1, cdiags0) = checkModule st0 m'
+              (st1, cdiagsRaw) = checkModule st0 m'
+              cdiagCount = length cdiagsRaw
+              cdiags0 = cdiagCount `seq` cdiagsRaw
               recovered = concatMap frDiags frs
               -- recovery hygiene (§3.1.14): when part of the module
               -- failed to parse, a signature's "missing" definition may
@@ -538,7 +558,8 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
               udiags =
                 if hasErrors preDiags
                   then []
-                  else usageDiagnostics (csExpansions st1) (usageImportedParams byName st1 ie) m'
+                  else
+                    usageDiagnostics (csExpansions st1) (usageImportedParams byName st1 ie) m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
               -- §8.4 re-exports: record where each aliased/selected
@@ -552,16 +573,17 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                   , it <- items
                   , let alias = maybe (nameText (iiName it)) nameText (iiAlias it)
                   ]
-           in ( st1
-                  { csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)
-                  , csReExports =
-                      if Map.null reExps
-                        then csReExports st1
-                        else Map.insert mn reExps (csReExports st1)
-                  }
-              , (preDiags ++ udiags) : chunks
-              , ftrace : trc
-              )
+           in cdiagCount `seq`
+                ( st1
+                        { csModuleExports = Map.insert mn (moduleExportNames m') (csModuleExports st1)
+                        , csReExports =
+                            if Map.null reExps
+                              then csReExports st1
+                              else Map.insert mn reExps (csReExports st1)
+                        }
+                    , (preDiags ++ udiags) : chunks
+                    , ftrace : trc
+                    )
       -- §5.5: the fixities a module's imports bring along — an
       -- operator's exported fixity is imported together with the
       -- operator name (computed from the unit's parsed sources, which
@@ -613,10 +635,14 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       -- a polymorphic call resolved by a postponed goal). Re-zonk every
       -- captured body against the FINAL meta state so the native backend
       -- never sees an unsolved CMeta where a solved dictionary belongs.
+      -- The map is intentionally lazy: native builds may only force the
+      -- reachable subset of 'csCoreBodies', and eagerly re-zonking the whole
+      -- package penalizes large game targets before backend reachability has a
+      -- chance to prune unused definitions.
       finalSt' =
         finalSt
           { csCoreBodies =
-              Map.map
+              MapLazy.map
                 (\tm -> evalState (zonkTermM 0 tm) finalSt)
                 (csCoreBodies finalSt)
           }
@@ -907,7 +933,7 @@ buildImportsInWithScope unitMods baseScope st m = foldl' addSpec ie0 specs
         }
     addSpec ie (spec, sp)
       | Just mn <- refPathModule spec
-      , mn == ModuleName ["std", "debug"]
+      , mn == modDebug
       , not (allowDebugIntrospection cfg) =
           debugGateErr ie sp
     addSpec ie (spec, sp) = case spec of

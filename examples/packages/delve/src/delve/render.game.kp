@@ -263,12 +263,28 @@ let invLines pack player cursor items =
             case item :: rest -> go (i + 1) rest ((::) (invMark cursor i ++ show (i + 1) ++ ") " ++ know.visibleName pack player item ++ eqMark item) acc)
         go 0 items Nil
 
+-- Flavor for the selected item, assembled from its data (no hardcoded per-item
+-- strings) so corpses/bones/forage describe themselves.
+itemFlavor : ContentPack -> PlayerState -> Item -> List String
+let itemFlavor pack player item =
+    match item.kind
+    case Corpse -> [ "Remains of " ++ content.nameForSpecies pack item.source ++ "."
+        , "Food " ++ show (content.corpseNutritionOf pack item.source) ++ " raw (more cooked). Cook it on a fire."
+        ]
+    case Bones -> ["Clean bones. With a knife you can carve them into tools or charms."]
+    case Mushroom -> ["A pale cave mushroom — modest but reliable forage."]
+    case _ -> [know.visibleName pack player item]
+
 renderInventory : ContentPack -> PlayerState -> Actor -> Int -> String
 let renderInventory pack player actor cursor =
-    let lines =
+    let body =
         if listIsEmpty actor.inventory then ["(your pack is empty)"]
         else (::) "w/x: select   e: use/equip   q: drop   Esc: back" ((::) "" (invLines pack player cursor actor.inventory))
-    in renderBox "Inventory" lines
+    let flav =
+        match listGet actor.inventory cursor
+        case Some it -> (::) "" ((::) "── selected ──" (itemFlavor pack player it))
+        case None -> Nil
+    in renderBox "Inventory" (listAppend body flav)
 
 faithLabel : ContentPack -> Faith -> String
 let faithLabel pack faith =

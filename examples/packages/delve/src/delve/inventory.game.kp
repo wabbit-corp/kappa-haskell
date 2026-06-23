@@ -197,10 +197,38 @@ let useScroll item rest p game =
     case ScrollWard -> message "A glowing ward appears on the floor." (wardCurrentTile known)
     case _ -> message "The scroll crumbles." known
 
+boostStrength : GameState -> GameState
+let boostStrength game =
+    match playerActor game
+    case None -> game
+    case Some pl -> game.{ level = game.level.{ actors = replaceActor (pl.{ stats = pl.stats.{ str = pl.stats.str + 1 } }) game.level.actors } }
+
+-- The effect a corpse has is named in data (actors.json corpse_effect); this just
+-- dispatches the named effect to its system. Most corpses are "none".
+corpseEffect : Item -> GameState -> GameState
+let corpseEffect item game =
+    match content.corpseEffectOf game.content item.source
+    case "might" -> message "Terrible power floods you." (boostStrength (corruption.corrupt 60 game))
+    case "taint" -> message "The tainted meat sears you within." (corruption.corrupt (if item.cooked then 20 else 45) game)
+    case "heal" -> healPlayerAndWounds 8 (message "The rich meat knits your wounds." game)
+    case _ -> game
+
+eatCorpse : Item -> List Item -> Actor -> GameState -> GameState
+let eatCorpse item rest p game =
+    let base = content.corpseNutritionOf game.content item.source
+    let nutrition = if item.cooked then base + divInt base 2 else base
+    let p2 = p.{ inventory = addToInventory (content.mkBones game.content item.source) rest }
+    let cookWord = if item.cooked then "cooked " else "raw "
+    let fed = game.{ player = game.player.{ hunger = game.player.hunger + nutrition }, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    in corpseEffect item (message ("You eat the " ++ cookWord ++ item.name ++ "; the bones remain.") fed)
+
 useFood : Item -> List Item -> Actor -> GameState -> GameState
 let useFood item rest p game =
-    let p2 = consumeFirst p rest
-    message "You eat the ration." (game.{ player = game.player.{ hunger = game.player.hunger + item.power }, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+    match item.kind
+    case Corpse -> eatCorpse item rest p game
+    case _ ->
+        let p2 = consumeFirst p rest
+        in message ("You eat the " ++ item.name ++ ".") (game.{ player = game.player.{ hunger = game.player.hunger + item.power }, level = game.level.{ actors = replaceActor p2 game.level.actors } })
 
 usableClass : ItemClass -> Bool
 let usableClass cls =

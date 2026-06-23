@@ -1,0 +1,41 @@
+-- §15.11: matching the standard primitive compare result should refine the
+-- branch with the corresponding arithmetic fact.
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+downByCompare : Int -> Int
+let downByCompare n decreases n =
+    match compare n 0
+    case GT -> downByCompare (subInt n 1)
+    case EQ -> 0
+    case LT -> 0
+
+type Count = Nat
+
+natDownByCompare : Count -> Count
+let natDownByCompare n decreases n =
+    match compare n 0
+    case GT -> natDownByCompare (natOfInt (subInt (natToInt n) 1))
+    case EQ -> 0
+    case LT -> 0
+
+cmpInt : Int -> Int -> Ordering
+let cmpInt x y = compare x y
+
+downByCompareHelper : Int -> Int
+let downByCompareHelper n decreases n =
+    match cmpInt n 0
+    case GT -> downByCompareHelper (subInt n 1)
+    case EQ -> 0
+    case LT -> 0
+
+cmpNat : Nat -> Nat -> Ordering
+let cmpNat x y = compare x y
+
+natDownByCompareHelper : Nat -> Nat
+let natDownByCompareHelper n decreases n =
+    match cmpNat n 0
+    case GT -> natDownByCompareHelper (natOfInt (subInt (natToInt n) 1))
+    case EQ -> 0
+    case LT -> 0

@@ -24,7 +24,9 @@ module Kappa.Check
   , scriptUnsafeConfig
   , AuditRecord (..)
   , checkModule
+  , unresolvedBuiltins
   , expectUnsatisfiedDiags
+  , invalidateSemanticCaches
   , zonkTermM
   , preludeModule
   , shapeModule
@@ -35,16 +37,29 @@ import Control.Monad (filterM, foldM, forM, forM_, unless, void, when, zipWithM)
 import Control.Monad.State.Strict
 import Data.Data (Data, cast, gmapQ)
 import Data.Graph (SCC (..), stronglyConnComp)
-import Data.List (elemIndex, find, foldl', intersect, nub, sort, sortOn, (\\))
+import Data.List (elemIndex, find, intersect, nub, sort, sortOn, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe, maybeToList)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Text.Read (readMaybe)
+import Kappa.Builtins
 import Kappa.Core
+import Kappa.CoreOps
+  ( mentionsGlobal
+  , metaIdsOf
+  , metaOccursInTermShallow
+  , metaOccursInTermShallowFuel
+  , patBindersC
+  , projectionDepsOf
+  , shiftTerm
+  , substGlobal
+  , substTopTerm
+  , termClosed
+  , zonkTermWith
+  )
 import Kappa.Diagnostic
 import Kappa.Eval
 import Kappa.Pretty (renderTerm)
@@ -52,6 +67,8 @@ import Kappa.Parser (parseExprText)
 import Kappa.Source
 import Kappa.Syntax hiding (CompClause (..), Quantity (..))
 import qualified Kappa.Syntax as S
+import Kappa.Termination hiding (expandedGlobalsOfTerm)
+import qualified Kappa.Termination as Termination
 import Kappa.SyntaxOps
   ( boundNamesIn
   , collectSplices
@@ -107,20 +124,6 @@ data PreInstance = PreInstance
   , piDictG :: !GName -- ^ the dictionary global (type already registered)
   }
 
--- | The source metadata needed for the whole-module termination pass.
--- Recursive SCCs cannot be checked soundly one declaration at a time:
--- a later definition may close a cycle through an earlier one.  Bodies are
--- therefore installed conservatively and this record lets the final SCC pass
--- decide which definitions may be conversion-reducible (§15.1/§15.11).
-data TerminationDecl = TerminationDecl
-  { tdName :: !GName
-  , tdSigType :: !Value
-  , tdBinders :: ![Binder]
-  , tdDecreases :: !(Maybe Decreases)
-  , tdCoreBody :: !Term
-  , tdSpan :: !Span
-  }
-
 data CheckState = CheckState
   { csGlobals :: !(Map GName GlobalDef)
   , csDatas :: !(Map GName DataInfo)
@@ -135,10 +138,34 @@ data CheckState = CheckState
   , csModuleAliases :: !(Map Text ModuleName)
   , csModuleExports :: !(Map ModuleName [Text])
   , csFresh :: !Int
-  , csPending :: ![(MetaId, Value, Span, Ctx, [(Value, Bool)])]
+  , csPending :: ![(MetaId, Value, Span, Ctx, [(Term, Bool)])]
   -- ^ postponed implicit goals with the local context they were raised
   -- in (premise dictionaries live there, §14.3.2) and the boolean
   -- branch facts active at the raise site
+  , csEvidenceCache :: !(Map EvidenceCacheKey Term)
+  -- ^ Closed, local-candidate-free implicit/proof evidence, keyed by the
+  -- current semantic epoch plus the structurally quoted goal.  The cache is
+  -- populated only after local implicit evidence fails and only for closed
+  -- result terms produced without branch-local facts, so local dictionaries,
+  -- supertrait projections, and control-flow refinements cannot be captured
+  -- across contexts.
+  , csNormEpoch :: !Int
+  -- ^ Semantic epoch for bounded proof/termination caches.  It advances when
+  -- global lookup, trait/instance lookup, or conversion-time reducibility
+  -- changes.  Metavariable-sensitive entries are admitted to the caches only
+  -- after their quoted keys contain no unsolved metas, so solving the flood of
+  -- evidence metas produced by checked arithmetic does not pointlessly nuke the
+  -- cache after every success.  Cache keys include the epoch; old entries are
+  -- discarded eagerly as a memory bound rather than a correctness requirement.
+  , csNormCache :: !(Map NormCacheKey Term)
+  -- ^ Bounded cache for 'normalizeTermAt'.  Termination checking and
+  -- proposition solving repeatedly normalize the same arithmetic measures and
+  -- checked-operation predicates; caching the semantic normal form turns those
+  -- repeated obligations from accidental quadratic work into one NbE pass.
+  , csPropCache :: !(Map PropCacheKey Bool)
+  -- ^ Bounded cache for proposition classification.  The value records only
+  -- whether compiler-owned equality/proof normalization can construct 'refl';
+  -- it never caches arbitrary user evidence.
   , csScopeAmbig :: !(Map Text [GName])
   -- ^ §7.1 names provided ambiguously by several wildcard imports
   , csExpects :: !(Map GName (Span, Int))
@@ -182,7 +209,7 @@ data CheckState = CheckState
   , csReExports :: !(Map ModuleName (Map Text GName))
   -- ^ §8.4 re-exports: per module, exported spelling ↦ the originating
   -- declaration in another module (aliased and kind-selected items)
-  , csBoolFacts :: ![(Value, Bool)]
+  , csBoolFacts :: ![(Term, Bool)]
   -- ^ boolean branch refinement: `if c …` makes `c = True` available
   -- in the then-branch and `c = False` in the else-branch as equality
   -- evidence (a §3.2.3 proof source; branch facts in the §15.6 sense)
@@ -331,24 +358,95 @@ newtype APInfo = APInfo
   { apResult :: APResult
   }
 
+data NormCacheKey = NormCacheKey
+  { nckEpoch :: !Int
+  , nckDepth :: !Int
+  , nckTerm :: !Text
+  }
+  deriving stock (Eq, Ord, Show)
+
+data PropCacheKey = PropCacheKey
+  { pckEpoch :: !Int
+  , pckDepth :: !Int
+  , pckGoal :: !Text
+  , pckFacts :: !Text
+  , pckNatLevels :: !Text
+  }
+  deriving stock (Eq, Ord, Show)
+
+newtype EvidenceCacheKey = EvidenceCacheKey Text
+  deriving stock (Eq, Ord, Show)
+
 initCheckState :: CheckState
 initCheckState =
-  CheckState Map.empty Map.empty Map.empty Map.empty [] emptyMetas 0 []
-    (ModuleName ["main"]) Map.empty Map.empty Map.empty 0 [] Map.empty Map.empty Map.empty
-    Map.empty Map.empty Map.empty Map.empty DemandRead Nothing False Map.empty
-    Map.empty Map.empty Map.empty Map.empty [] False Map.empty
-    Map.empty Map.empty Set.empty defaultUnsafeConfig False [] Nothing
-    Map.empty Map.empty Set.empty Map.empty Map.empty Set.empty
-
-preludeModule :: ModuleName
-preludeModule = ModuleName ["std", "prelude"]
+  CheckState
+    { csGlobals = Map.empty
+    , csDatas = Map.empty
+    , csCtors = Map.empty
+    , csTraits = Map.empty
+    , csInstances = []
+    , csMetas = emptyMetas
+    , csNextMeta = 0
+    , csDiags = []
+    , csModule = ModuleName ["main"]
+    , csScope = Map.empty
+    , csModuleAliases = Map.empty
+    , csModuleExports = Map.empty
+    , csFresh = 0
+    , csPending = []
+    , csEvidenceCache = Map.empty
+    , csNormEpoch = 0
+    , csNormCache = Map.empty
+    , csPropCache = Map.empty
+    , csScopeAmbig = Map.empty
+    , csExpects = Map.empty
+    , csSigPending = Map.empty
+    , csManifest = Map.empty
+    , csActive = Map.empty
+    , csFacts = Map.empty
+    , csProjections = Map.empty
+    , csDemand = DemandRead
+    , csThis = Nothing
+    , csArgIndexRetag = False
+    , csReceivers = Map.empty
+    , csExpansions = Map.empty
+    , csOpaqueDatas = Map.empty
+    , csRecordOrders = Map.empty
+    , csReExports = Map.empty
+    , csBoolFacts = []
+    , csArgFlatOk = False
+    , csPreInstances = Map.empty
+    , csPositivity = Map.empty
+    , csDeclSites = Map.empty
+    , csMultiFixOps = Set.empty
+    , csUnsafe = defaultUnsafeConfig
+    , csPreludeDisabled = False
+    , csAuditLedger = []
+    , csScopeNameCache = Nothing
+    , csBackendIntrinsics = Map.empty
+    , csCoreBodies = Map.empty
+    , csTerminationNames = Set.empty
+    , csTerminationDecls = Map.empty
+    , csModEffLabels = Map.empty
+    , csAssertReducible = Set.empty
+    }
 
 -- | The §22 derivation-shape reflection module.
 shapeModule :: ModuleName
-shapeModule = ModuleName ["std", "deriving", "shape"]
+shapeModule = modDerivingShape
 
-gPrel :: Text -> GName
-gPrel = GName preludeModule
+-- | The wired-in prelude names (see "Kappa.Builtins") that fail to resolve
+-- in a checked state — i.e. names the compiler assumes the prelude defines
+-- but which are absent from its globals and constructors. An empty result
+-- means the compiler↔prelude name contract holds. Used by the pipeline's
+-- post-prelude validation to turn silent drift into a reported error.
+unresolvedBuiltins :: CheckState -> [WiredIn]
+unresolvedBuiltins st =
+  [ w
+  | w <- wiredInPreludeNames
+  , not (wiName w `Map.member` csGlobals st)
+  , not (wiName w `Map.member` csCtors st)
+  ]
 
 type CheckM = State CheckState
 
@@ -572,7 +670,7 @@ withThis tm act = do
 
 -- | The neutral standing for the record under §13.2.1 elaboration.
 thisG :: GName
-thisG = gPrel "__this"
+thisG = prelThis
 
 -- | §13.2.11 internal existential member labels. The angle-bracket
 -- sigil cannot occur in a source identifier (the lexer admits only
@@ -599,107 +697,16 @@ isExistsInternalLabel l = "⟨" `T.isPrefixOf` l
 
 -- | Does a term mention the §13.2.1 @this@ neutral?
 mentionsThis :: Term -> Bool
-mentionsThis = \case
-  CGlob g -> g == thisG
-  CVar _ -> False
-  CLam _ _ _ b -> mentionsThis b
-  CPi _ _ _ a b -> mentionsThis a || mentionsThis b
-  CApp _ f a -> mentionsThis f || mentionsThis a
-  CSort _ -> False
-  CLit _ -> False
-  CCtor _ as -> any mentionsThis as
-  CMatch s alts ->
-    mentionsThis s
-      || or [maybe False mentionsThis g || mentionsThis b | CaseAlt _ g b <- alts]
-  CRecordT fs -> any (mentionsThis . snd) fs
-  CRecordV fs -> any (mentionsThis . snd) fs
-  CProj e _ -> mentionsThis e
-  CProjAt e _ _ -> mentionsThis e
-  CVariantT ms -> any mentionsThis ms
-  CInject _ e -> mentionsThis e
-  CLet _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
-  CLetRec _ _ a b c -> mentionsThis a || mentionsThis b || mentionsThis c
-  CMeta _ -> False
-  CDo _ _ -> False
-  CSealE _ e -> mentionsThis e
-  CSigT _ e -> mentionsThis e
-  CThunkE e -> mentionsThis e
-  CLazyE e -> mentionsThis e
-  CForceE e -> mentionsThis e
-  CIf a b c -> mentionsThis a || mentionsThis b || mentionsThis c
-  CQuote _ slots -> any mentionsThis slots
+mentionsThis = mentionsGlobal thisG
 
 -- | The sibling field labels a §13.2.1 field type depends on.
 thisDepsOf :: Term -> [Text]
-thisDepsOf = nub . go
-  where
-    go = \case
-      CProj e f
-        | CGlob g <- e, g == thisG -> [f]
-        | otherwise -> go e
-      CProjAt e f _
-        | CGlob g <- e, g == thisG -> [f]
-        | otherwise -> go e
-      CGlob _ -> []
-      CVar _ -> []
-      CLam _ _ _ b -> go b
-      CPi _ _ _ a b -> go a ++ go b
-      CApp _ f a -> go f ++ go a
-      CSort _ -> []
-      CLit _ -> []
-      CCtor _ as -> concatMap go as
-      CMatch s alts -> go s ++ concat [maybe [] go g ++ go b | CaseAlt _ g b <- alts]
-      CRecordT fs -> concatMap (go . snd) fs
-      CRecordV fs -> concatMap (go . snd) fs
-      CVariantT ms -> concatMap go ms
-      CInject _ e -> go e
-      CLet _ _ a b c -> go a ++ go b ++ go c
-      CLetRec _ _ a b c -> go a ++ go b ++ go c
-      CMeta _ -> []
-      CDo _ _ -> []
-      CSealE _ e -> go e
-      CSigT _ e -> go e
-      CThunkE e -> go e
-      CLazyE e -> go e
-      CForceE e -> go e
-      CIf a b c -> go a ++ go b ++ go c
-      CQuote _ slots -> concatMap go slots
+thisDepsOf = projectionDepsOf thisG
 
 -- | Substitute a receiver term (well-scoped at the substitution site)
 -- for the §13.2.1 @this@ neutral, shifting under binders.
 substThisTm :: Term -> Term -> Term
-substThisTm recv = go 0
-  where
-    go d t = case t of
-      CGlob g | g == thisG -> shiftTerm d 0 recv
-      CGlob _ -> t
-      CVar _ -> t
-      CLam ic q n b -> CLam ic q n (go (d + 1) b)
-      CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
-      CApp ic f a -> CApp ic (go d f) (go d a)
-      CSort _ -> t
-      CLit _ -> t
-      CCtor g as -> CCtor g (map (go d) as)
-      CMatch s alts ->
-        CMatch (go d s)
-          [CaseAlt p (fmap (go (d + patBindersC p)) g) (go (d + patBindersC p) b) | CaseAlt p g b <- alts]
-      CRecordT fs -> CRecordT [(n, go d x) | (n, x) <- fs]
-      CRecordV fs -> CRecordV [(n, go d x) | (n, x) <- fs]
-      CProj e f -> CProj (go d e) f
-      CProjAt e f i -> CProjAt (go d e) f i
-      CVariantT ms -> CVariantT (map (go d) ms)
-      CInject tag e -> CInject tag (go d e)
-      CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
-      CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
-      CMeta _ -> t
-      CDo _ _ -> t
-      CSealE ls e -> CSealE ls (go d e)
-      CSigT ls e -> CSigT ls (go d e)
-      CThunkE e -> CThunkE (go d e)
-      CLazyE e -> CLazyE (go d e)
-      CForceE e -> CForceE (go d e)
-      CIf a b c -> CIf (go d a) (go d b) (go d c)
-      CQuote qs slots -> CQuote qs (map (go d) slots)
+substThisTm = substGlobal thisG
 
 -- | Substitute a receiver term for @this@ inside a field-type value
 -- (§13.2.1 dependent projection).
@@ -788,8 +795,68 @@ freshMeta = CMeta <$> freshMetaId
 freshMetaV :: Ctx -> CheckM Value
 freshMetaV ctx = freshMeta >>= evalIn ctx
 
+-- | Semantic caches are keyed by a small epoch rather than by the whole
+-- evaluator state.  Advancing the epoch is required when global lookup,
+-- trait/instance lookup, or conversion-time reducibility changes.
+-- Metavariable-sensitive normalization/proposition entries are kept out of the
+-- caches until their quoted keys contain no unsolved metas; otherwise every
+-- solved evidence hole would invalidate the very cache meant to tame evidence
+-- storms.  Clearing the maps at the same time keeps memory use bounded on
+-- proof-heavy files and prevents stale trait evidence after a new instance
+-- enters scope.
+invalidateSemanticCaches :: CheckState -> CheckState
+invalidateSemanticCaches st =
+  st
+    { csEvidenceCache = Map.empty
+    , csNormEpoch = csNormEpoch st + 1
+    , csNormCache = Map.empty
+    , csPropCache = Map.empty
+    }
+
+maxNormCacheEntries :: Int
+maxNormCacheEntries = 8192
+
+maxPropCacheEntries :: Int
+maxPropCacheEntries = 8192
+
+maxEvidenceCacheEntries :: Int
+maxEvidenceCacheEntries = 4096
+
+-- | Deterministic bounded insertion.  This is deliberately not an LRU cache:
+-- carrying access-order state through the checker would complicate auditing
+-- without changing the trusted result.  Dropping the smallest structural key
+-- keeps the bound strict and leaves cache contents semantically irrelevant.
+boundedInsert :: Ord k => Int -> k -> a -> Map k a -> Map k a
+boundedInsert cap k v m =
+  let m' = Map.insert k v m
+   in if Map.size m' <= cap
+        then m'
+        else snd (Map.deleteFindMin m')
+
+-- | Structural key for cache lookups.  This intentionally uses Core's derived
+-- representation, not user-facing pretty printing: it is exact enough for a
+-- best-effort cache and never participates in user-visible output or
+-- reproducibility.
+renderStructuralTermKey :: Term -> Text
+renderStructuralTermKey = T.pack . show
+
 solveMeta :: MetaId -> Value -> CheckM ()
-solveMeta m v = modify' $ \st -> st {csMetas = Map.insert m (Just v) (csMetas st)}
+solveMeta m v =
+  modify' $ \st ->
+    st {csMetas = Map.insert m (Just v) (csMetas st)}
+
+-- | Solve a metavariable only when the candidate value is acyclic through the
+-- current solved-meta graph.  The ordinary occurs check used to quote the
+-- candidate first; that is unsafe when another solved meta already points back
+-- to the target, because quotation/forcing can chase the cycle indefinitely.
+-- Walking the value graph directly rejects exactly those cyclic solutions
+-- without normalizing user code.
+solveMetaAcyclic :: MetaId -> Value -> CheckM Bool
+solveMetaAcyclic m v = do
+  metas <- gets csMetas
+  if metaOccursInValue metas m v
+    then pure False
+    else solveMeta m v >> pure True
 
 freshNameM :: Text -> CheckM Text
 freshNameM base = do
@@ -799,17 +866,19 @@ freshNameM base = do
 
 addGlobal :: GName -> GlobalDef -> CheckM ()
 addGlobal g@(GName m nm) gd = modify' $ \st ->
-  st
-    { csGlobals = Map.insert g gd (csGlobals st)
-    , -- Keep the §3.2.2 typo-suggestion index (if already built) in step
-      -- with the module's own globals, so it never needs a full rebuild
-      -- (see 'moduleScopeNameIndex'). Names from other modules are not
-      -- unqualified-in-scope here, so only this module's globals extend it.
-      csScopeNameCache =
-        if m == csModule st
-          then fmap (insertScopeName nm) (csScopeNameCache st)
-          else csScopeNameCache st
-    }
+  invalidateSemanticCaches
+    ( st
+        { csGlobals = Map.insert g gd (csGlobals st)
+        , -- Keep the §3.2.2 typo-suggestion index (if already built) in step
+          -- with the module's own globals, so it never needs a full rebuild
+          -- (see 'moduleScopeNameIndex'). Names from other modules are not
+          -- unqualified-in-scope here, so only this module's globals extend it.
+          csScopeNameCache =
+            if m == csModule st
+              then fmap (insertScopeName nm) (csScopeNameCache st)
+              else csScopeNameCache st
+        }
+    )
 
 -- | Add one spelling to the length-bucketed §3.2.2 candidate index.
 insertScopeName :: Text -> Map Int (Set Text) -> Map Int (Set Text)
@@ -969,8 +1038,8 @@ unify ctx = goTop True
                 then pure False
                 else do
                   let rest = [f | f@(l, _) <- fs, l `notElem` map fst pfs]
-                  goTop False rowV (VGlobN (gPrel "__closedRow") [(Expl, VRecordT rest)])
-        _ -> fallback lvl (VGlobN (gPrel "__openRec") [(Expl, rowV), (Expl, prefixV)]) (VRecordT fs)
+                  goTop False rowV (VGlobN prelClosedRow [(Expl, VRecordT rest)])
+        _ -> fallback lvl (VGlobN prelOpenRec [(Expl, rowV), (Expl, prefixV)]) (VRecordT fs)
       where
         andAll [] = pure True
         andAll (m : ms) = m >>= \ok -> if ok then andAll ms else pure False
@@ -1023,33 +1092,276 @@ unify ctx = goTop True
           -- not reject reflexive flex-flex problems
           VFlex m' [] | m' == m -> pure True
           _ -> do
-            ec <- ec_
-            let tm = quote ec lvl t
-            if occursMeta m tm then pure False else solveMeta m t >> pure True
+            solveMetaAcyclic m t
 
-occursMeta :: MetaId -> Term -> Bool
-occursMeta m = go
+metaOccursInValue :: Map MetaId (Maybe Value) -> MetaId -> Value -> Bool
+metaOccursInValue metas = metaOccursInValueSeen metas metaOccursFuel Set.empty
+
+metaOccursFuel :: Int
+metaOccursFuel = 4096
+
+metaOccursInValueSeen :: Map MetaId (Maybe Value) -> Int -> Set MetaId -> MetaId -> Value -> Bool
+metaOccursInValueSeen metas fuel0 seen0 target = goV fuel0 seen0
   where
-    go = \case
-      CMeta m' -> m == m'
-      CApp _ f a -> go f || go a
-      CLam _ _ _ b -> go b
-      CPi _ _ _ a b -> go a || go b
-      CCtor _ as -> any go as
-      CMatch s alts -> go s || any (\(CaseAlt _ g b) -> maybe False go g || go b) alts
-      CRecordT fs -> any (go . snd) fs
-      CRecordV fs -> any (go . snd) fs
-      CProj e _ -> go e
-      CProjAt e _ _ -> go e
-      CVariantT ms -> any go ms
-      CInject _ e -> go e
-      CLet _ _ a b c -> go a || go b || go c
-      CLetRec _ _ a b c -> go a || go b || go c
-      CIf a b c -> go a || go b || go c
-      CThunkE e -> go e
-      CLazyE e -> go e
-      CForceE e -> go e
+    next n = n - 1
+
+    exhausted n = n <= 0
+
+    -- Direct meta solving is a shortcut.  If the finite occurs-check budget is
+    -- exhausted, fail closed by reporting "may occur"; callers then use the
+    -- ordinary unifier instead of installing a possibly cyclic solution.  This
+    -- keeps the occurs check from recursively chasing large closure graphs or
+    -- recursive standard-library values while preserving soundness.
+    goSp n seen
+      | exhausted n = const True
+      | otherwise = any (goV (next n) seen . snd)
+
+    goClosure n seen (Closure env body)
+      | exhausted n = True
+      | otherwise =
+          any (metaOccursInValueShallow target) env
+            || metaOccursInTermShallow target body
+
+    goV n seen v
+      | exhausted n = True
+      | otherwise = case v of
+      VRigid _ sp -> goSp n seen sp
+      VFlex m sp ->
+        m == target
+          || goSp n seen sp
+          || ( not (Set.member m seen)
+                 && case Map.lookup m metas of
+                   Just (Just sol) -> goV (next n) (Set.insert m seen) sol
+                   _ -> False
+             )
+      VGlobN _ sp -> goSp n seen sp
+      VLam _ _ _ clo -> goClosure n seen clo
+      VPi _ _ _ dom clo -> goV (next n) seen dom || goClosure (next n) seen clo
+      VSort _ -> False
+      VLit _ -> False
+      VCtor _ args -> any (goV (next n) seen) args
+      VRecordT fs -> any (goV (next n) seen . snd) fs
+      VRecordV fs -> any (goV (next n) seen . snd) fs
+      VVariantT ms -> any (goV (next n) seen) ms
+      VInject _ v' -> goV (next n) seen v'
+      VMatchN scrut alts env ->
+        goV (next n) seen scrut || any (goAlt (next n) seen) alts || any (goV (next n) seen) env
+      VProjN v' _ -> goV (next n) seen v'
+      VSealV _ v' -> goV (next n) seen v'
+      VSigT _ v' -> goV (next n) seen v'
+      VDoV _ items env -> any (goK (next n) seen) items || any (goV (next n) seen) env
+      VThunkV clo -> goClosure n seen clo
+      VLazyV clo -> goClosure n seen clo
+      VIfN c t f -> goV (next n) seen c || goClosure (next n) seen t || goClosure (next n) seen f
+      VPrim _ args -> any (goV (next n) seen) args
+      VRef _ -> False
+      VMVar _ -> False
+      VFiber _ _ -> False
+      VScope _ -> False
+      VFiberRef _ -> False
+      VTVar _ -> False
+      VIOAction _ args -> any (goV (next n) seen) args
+      VQuote _ slots -> any (goV (next n) seen) slots
+
+    goAlt n seen (CaseAlt _ gd body)
+      | exhausted n = True
+      | otherwise =
+          maybe False (metaOccursInTerm metas (next n) seen target) gd
+            || metaOccursInTerm metas (next n) seen target body
+
+    goK n seen
+      | exhausted n = const True
+      | otherwise = \case
+      KBind _ _ t -> metaOccursInTerm metas (next n) seen target t
+      KLet _ _ t -> metaOccursInTerm metas (next n) seen target t
+      KLetQ _ t m -> metaOccursInTerm metas (next n) seen target t || maybe False (metaOccursInTerm metas (next n) seen target . snd) m
+      KExpr t -> metaOccursInTerm metas (next n) seen target t
+      KVarItem _ t -> metaOccursInTerm metas (next n) seen target t
+      KAssign lhs _ rhs -> metaOccursInTerm metas (next n) seen target lhs || metaOccursInTerm metas (next n) seen target rhs
+      KReturn t -> metaOccursInTerm metas (next n) seen target t
+      KBreak _ -> False
+      KContinue _ -> False
+      KWhile _ c b e ->
+        metaOccursInTerm metas (next n) seen target c
+          || any (goK (next n) seen) b
+          || maybe False (any (goK (next n) seen)) e
+      KFor _ _ src b e ->
+        metaOccursInTerm metas (next n) seen target src
+          || any (goK (next n) seen) b
+          || maybe False (any (goK (next n) seen)) e
+      KIf alts e ->
+        any
+          (\(c, b) ->
+             metaOccursInTerm metas (next n) seen target c
+               || any (goK (next n) seen) b)
+          alts
+          || maybe False (any (goK (next n) seen)) e
+      KDefer _ t -> metaOccursInTerm metas (next n) seen target t
+      KUsing _ acquire release ->
+        metaOccursInTerm metas (next n) seen target acquire
+          || metaOccursInTerm metas (next n) seen target release
+      KSubDo _ items -> any (goK (next n) seen) items
+
+metaOccursInTerm :: Map MetaId (Maybe Value) -> Int -> Set MetaId -> MetaId -> Term -> Bool
+metaOccursInTerm metas fuel0 seen target = go fuel0
+  where
+    next n = n - 1
+    exhausted n = n <= 0
+
+    goK n
+      | exhausted n = const True
+      | otherwise = \case
+      KBind _ _ t -> go (next n) t
+      KLet _ _ t -> go (next n) t
+      KLetQ _ t m -> go (next n) t || maybe False (go (next n) . snd) m
+      KExpr t -> go (next n) t
+      KVarItem _ t -> go (next n) t
+      KAssign lhs _ rhs -> go (next n) lhs || go (next n) rhs
+      KReturn t -> go (next n) t
+      KBreak _ -> False
+      KContinue _ -> False
+      KWhile _ c b e -> go (next n) c || any (goK (next n)) b || maybe False (any (goK (next n))) e
+      KFor _ _ src b e -> go (next n) src || any (goK (next n)) b || maybe False (any (goK (next n))) e
+      KIf alts e ->
+        any (\(c, b) -> go (next n) c || any (goK (next n)) b) alts
+          || maybe False (any (goK (next n))) e
+      KDefer _ t -> go (next n) t
+      KUsing _ acquire release -> go (next n) acquire || go (next n) release
+      KSubDo _ items -> any (goK (next n)) items
+
+    go n t
+      | exhausted n = True
+      | otherwise = case t of
+      CMeta m ->
+        m == target
+          || ( not (Set.member m seen)
+                 && case Map.lookup m metas of
+                   Just (Just sol) -> metaOccursInValueSeen metas (next n) (Set.insert m seen) target sol
+                   _ -> False
+             )
+      CApp _ f a -> go (next n) f || go (next n) a
+      CLam _ _ _ b -> go (next n) b
+      CPi _ _ _ a b -> go (next n) a || go (next n) b
+      CCtor _ as -> any (go (next n)) as
+      CMatch s alts -> go (next n) s || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
+      CRecordT fs -> any (go (next n) . snd) fs
+      CRecordV fs -> any (go (next n) . snd) fs
+      CProj e _ -> go (next n) e
+      CProjAt e _ _ -> go (next n) e
+      CVariantT ms -> any (go (next n)) ms
+      CInject _ e -> go (next n) e
+      CLet _ _ a b c -> go (next n) a || go (next n) b || go (next n) c
+      CLetRec _ _ a b c -> go (next n) a || go (next n) b || go (next n) c
+      CIf a b c -> go (next n) a || go (next n) b || go (next n) c
+      CThunkE e -> go (next n) e
+      CLazyE e -> go (next n) e
+      CForceE e -> go (next n) e
+      CSealE _ e -> go (next n) e
+      CSigT _ e -> go (next n) e
+      CQuote _ slots -> any (go (next n)) slots
+      CDo _ items -> any (goK (next n)) items
       _ -> False
+
+-- | A closure-safe scan used from the semantic occurs check.  Closure bodies
+-- and environments are suspended code, not already-forced value graph edges; a
+-- full solved-meta traversal through them can re-enter recursive library
+-- values and make a direct-solve shortcut diverge.  This scanner therefore
+-- looks for the target meta syntactically and through the immediate value
+-- structure only.  Exhaustion is conservative: the direct solve is refused and
+-- ordinary unification gets a chance to handle the problem.
+metaOccursInValueShallow :: MetaId -> Value -> Bool
+metaOccursInValueShallow target = goV 512
+  where
+    next n = n - 1
+    exhausted n = n <= 0
+
+    goSp n
+      | exhausted n = const True
+      | otherwise = any (goV (next n) . snd)
+
+    goClosure n (Closure env body)
+      | exhausted n = True
+      | otherwise = any (goV (next n)) env || metaOccursInTermShallowFuel (next n) target body
+
+    goV n v
+      | exhausted n = True
+      | otherwise = case v of
+          VRigid _ sp -> goSp n sp
+          VFlex m sp -> m == target || goSp n sp
+          VGlobN _ sp -> goSp n sp
+          VLam _ _ _ clo -> goClosure (next n) clo
+          VPi _ _ _ dom clo -> goV (next n) dom || goClosure (next n) clo
+          VSort _ -> False
+          VLit _ -> False
+          VCtor _ args -> any (goV (next n)) args
+          VRecordT fs -> any (goV (next n) . snd) fs
+          VRecordV fs -> any (goV (next n) . snd) fs
+          VVariantT ms -> any (goV (next n)) ms
+          VInject _ v' -> goV (next n) v'
+          VMatchN scrut alts env ->
+            goV (next n) scrut
+              || any (goAlt (next n)) alts
+              || any (goV (next n)) env
+          VProjN v' _ -> goV (next n) v'
+          VSealV _ v' -> goV (next n) v'
+          VSigT _ v' -> goV (next n) v'
+          VDoV _ items env ->
+            any (goK (next n)) items || any (goV (next n)) env
+          VThunkV clo -> goClosure (next n) clo
+          VLazyV clo -> goClosure (next n) clo
+          VIfN c t f -> goV (next n) c || goClosure (next n) t || goClosure (next n) f
+          VPrim _ args -> any (goV (next n)) args
+          VRef _ -> False
+          VMVar _ -> False
+          VFiber _ _ -> False
+          VScope _ -> False
+          VFiberRef _ -> False
+          VTVar _ -> False
+          VIOAction _ args -> any (goV (next n)) args
+          VQuote _ slots -> any (goV (next n)) slots
+
+    goAlt n (CaseAlt _ gd body)
+      | exhausted n = True
+      | otherwise =
+          maybe False (metaOccursInTermShallowFuel (next n) target) gd
+            || metaOccursInTermShallowFuel (next n) target body
+
+    goK n
+      | exhausted n = const True
+      | otherwise = \case
+          KBind _ _ t -> metaOccursInTermShallowFuel (next n) target t
+          KLet _ _ t -> metaOccursInTermShallowFuel (next n) target t
+          KLetQ _ t m ->
+            metaOccursInTermShallowFuel (next n) target t
+              || maybe False (metaOccursInTermShallowFuel (next n) target . snd) m
+          KExpr t -> metaOccursInTermShallowFuel (next n) target t
+          KVarItem _ t -> metaOccursInTermShallowFuel (next n) target t
+          KAssign lhs _ rhs ->
+            metaOccursInTermShallowFuel (next n) target lhs
+              || metaOccursInTermShallowFuel (next n) target rhs
+          KReturn t -> metaOccursInTermShallowFuel (next n) target t
+          KBreak _ -> False
+          KContinue _ -> False
+          KWhile _ c b e ->
+            metaOccursInTermShallowFuel (next n) target c
+              || any (goK (next n)) b
+              || maybe False (any (goK (next n))) e
+          KFor _ _ src b e ->
+            metaOccursInTermShallowFuel (next n) target src
+              || any (goK (next n)) b
+              || maybe False (any (goK (next n))) e
+          KIf alts e ->
+            any
+              (\(c, b) ->
+                 metaOccursInTermShallowFuel (next n) target c
+                   || any (goK (next n)) b)
+              alts
+              || maybe False (any (goK (next n))) e
+          KDefer _ t -> metaOccursInTermShallowFuel (next n) target t
+          KUsing _ acquire release ->
+            metaOccursInTermShallowFuel (next n) target acquire
+              || metaOccursInTermShallowFuel (next n) target release
+          KSubDo _ items -> any (goK (next n)) items
 
 -- | §3.1.9 expected/actual mismatch payload (the @kappa.type.mismatch@
 -- family MUST expose it when both sides are available). The compact
@@ -1556,8 +1868,8 @@ derefVar ctx i refTy = do
       _ -> freshMetaV ctx
   e <- freshMeta
   aTm <- quoteIn ctx elemTy
-  let rd = CApp Expl (CApp Impl (CApp Impl (CGlob (gPrel "readRef")) e) aTm) (CVar i)
-      run = CApp Expl (CApp Impl (CApp Impl (CGlob (gPrel "__runIO")) e) aTm) rd
+  let rd = CApp Expl (CApp Impl (CApp Impl (CGlob prelReadRef) e) aTm) (CVar i)
+      run = CApp Expl (CApp Impl (CApp Impl (CGlob prelRunIO) e) aTm) rd
   pure (run, elemTy)
 
 -- universe spellings: Type, Type0, Type1, ..., and '*' (§11.1)
@@ -1597,13 +1909,13 @@ badGrapheme :: Span -> Text -> CheckM (Term, Value)
 badGrapheme sp why = do
   errAt sp "E_UNICODE_INVALID_GRAPHEME_LITERAL" (Just "kappa-hs.unicode.invalid-grapheme-literal")
     ("invalid grapheme literal: " <> why <> " (Spec §6.5)")
-  pure (CLit (LitGrapheme "?"), VGlobN (gPrel "Grapheme") [])
+  pure (CLit (LitGrapheme "?"), VGlobN prelGrapheme [])
 
 badByte :: Span -> Text -> CheckM (Term, Value)
 badByte sp why = do
   errAt sp "E_UNICODE_INVALID_BYTE_LITERAL" (Just "kappa-hs.unicode.invalid-byte-literal")
     ("invalid byte literal: " <> why <> " (Spec §6.5)")
-  pure (CLit (LitByte 0x3F), VGlobN (gPrel "Byte") [])
+  pure (CLit (LitByte 0x3F), VGlobN prelByte [])
 
 -- §6.1.6: an out-of-scope numeric-literal suffix is a compile-time
 -- name-resolution error identifying the missing suffix name.
@@ -1660,30 +1972,46 @@ resolveImplicitQ ctx sp q goal = do
       case mLoc of
         Just tm -> pure tm
         Nothing -> do
-          mInst <- instanceSearch ctx sp g
-          case mInst of
+          cached <- lookupClosedEvidence ctx g
+          case cached of
             Just tm -> pure tm
             Nothing -> do
-              -- §14.3.3: project the goal out of in-scope evidence
-              -- through declared-supertrait conformance paths
+              found <- nonLocalLadder g isTrait isEq
+              case found of
+                Just tm -> rememberClosedEvidence ctx g tm >> pure tm
+                Nothing -> unresolved g isTrait isEq
+
+    nonLocalLadder g isTrait isEq = do
+      -- Equality evidence is not a trait dictionary.  After local explicit
+      -- candidates, try the compiler-owned equality/proposition solver before
+      -- any dictionary machinery, so checked arithmetic and branch-refined
+      -- propositions do not pay for unrelated instance search over large stuck
+      -- goals.  The closed-evidence cache wraps this whole non-local ladder,
+      -- but never caches proofs that depended on branch facts.
+      mEqProp <- if isEq then propProof ctx g else pure Nothing
+      case mEqProp of
+        Just tm -> pure (Just tm)
+        Nothing -> do
+          mInst <- if isEq then pure Nothing else instanceSearch ctx sp g
+          case mInst of
+            Just tm -> pure (Just tm)
+            Nothing -> do
+              -- §14.3.3: project trait goals out of in-scope evidence through
+              -- declared-supertrait conformance paths.
               mSup <- if isTrait then superCandidate ctx g else pure Nothing
               case mSup of
-                Just tm -> pure tm
+                Just tm -> pure (Just tm)
                 Nothing -> do
-                  mProp <- propProof g
+                  mProp <- if isEq then pure Nothing else propProof ctx g
                   case mProp of
-                    Just tm -> pure tm
+                    Just tm -> pure (Just tm)
                     Nothing -> do
-                      -- §11.3.1A compiler-owned introduction rules for
-                      -- the intrinsic row traits
+                      -- §11.3.1A compiler-owned introduction rules for the
+                      -- intrinsic row traits.
                       mRow <- rowProof g
                       case mRow of
-                        Just tm -> pure tm
-                        Nothing -> do
-                          mWitness <- isTraitWitness ctx g
-                          case mWitness of
-                            Just tm -> pure tm
-                            Nothing -> unresolved g isTrait isEq
+                        Just tm -> pure (Just tm)
+                        Nothing -> isTraitWitness ctx g
     unresolved g isTrait isEq = do
       isRow <- isRowGoal g
       if isTrait || isEq || q /= Q0
@@ -1709,7 +2037,7 @@ isTraitWitness ctx goal = go (ctxLen ctx) goal
           fmap (CLam ic q nm) <$> go (lvl + 1) cod
         VGlobN (GName pm "IsTrait") _
           | pm == preludeModule ->
-              pure (Just (CGlob (gPrel "__isTraitWitness")))
+              pure (Just (CGlob prelIsTraitWitness))
         _ -> pure Nothing
 
 -- | Kind-like goals — @Type@, @Type -> Type@, … — are inferred from
@@ -1817,28 +2145,7 @@ localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
                     <> "' may not be captured by a closure (§12.3.2)")
 
 goalHasFlex :: Value -> CheckM Bool
-goalHasFlex v = do
-  ec <- ec_
-  t <- pure (quote ec 0 v)
-  st <- get
-  let unsolved m = case Map.lookup m (csMetas st) of
-        Just (Just _) -> False
-        _ -> True
-  pure (anyMeta unsolved t)
-  where
-    anyMeta f = goT
-      where
-        goT = \case
-          CMeta m -> f m
-          CApp _ a b -> goT a || goT b
-          CPi _ _ _ a b -> goT a || goT b
-          CLam _ _ _ b -> goT b
-          CCtor _ as -> any goT as
-          CRecordT fs -> any (goT . snd) fs
-          CVariantT ms -> any goT ms
-          CProj e _ -> goT e
-          CProjAt e _ _ -> goT e
-          _ -> False
+goalHasFlex v = not . null <$> unsolvedMetaIdsIn v
 
 -- | Flush postponed trait goals after a body has been elaborated. A
 -- goal whose head is still an unsolved metavariable is kept pending
@@ -1876,25 +2183,53 @@ flushPendingWith final = do
             r <- case mLoc of
               Just tm -> pure (Just tm)
               Nothing -> do
-                mi <- instanceSearch ctx sp g
-                case mi of
+                cached <- lookupClosedEvidence ctx g
+                case cached of
                   Just tm -> pure (Just tm)
                   Nothing -> do
-                    -- §14.3.3 conformance paths from local evidence
-                    mSup <- superCandidate ctx g
-                    case mSup of
+                    isEq <- isEqGoal g
+                    isTrait <- isTraitGoal g
+                    let withPendingFacts act = do
+                          -- Re-enter the boolean branch facts that were in
+                          -- scope when the goal was raised.  Equality proofs
+                          -- consume those facts directly; dictionary search
+                          -- deliberately does not.
+                          oldBfs <- gets csBoolFacts
+                          modify' $ \s -> s {csBoolFacts = bfs ++ oldBfs}
+                          r0 <- act
+                          modify' $ \s -> s {csBoolFacts = oldBfs}
+                          pure r0
+                        remember tm = do
+                          rememberClosedEvidence ctx g tm
+                          pure (Just tm)
+                    eqProp <- if isEq then withPendingFacts (propProof ctx g) else pure Nothing
+                    case eqProp of
+                      -- The equality proof may have used the reinstated
+                      -- branch facts captured with the postponed goal.  The
+                      -- proposition cache keys those facts explicitly; the
+                      -- closed-evidence cache deliberately does not.
                       Just tm -> pure (Just tm)
                       Nothing -> do
-                        -- re-enter the boolean branch facts that were
-                        -- in scope when the goal was raised
-                        oldBfs <- gets csBoolFacts
-                        modify' $ \s -> s {csBoolFacts = bfs ++ oldBfs}
-                        r0 <- propProof g
-                        modify' $ \s -> s {csBoolFacts = oldBfs}
-                        case r0 of
-                          Just tm -> pure (Just tm)
-                          -- §11.3.1A intrinsic row-trait introduction
-                          Nothing -> rowProof g
+                        mi <- if isEq then pure Nothing else instanceSearch ctx sp g
+                        case mi of
+                          Just tm -> remember tm
+                          Nothing -> do
+                            -- §14.3.3 conformance paths from local trait evidence.
+                            mSup <- if isTrait then superCandidate ctx g else pure Nothing
+                            case mSup of
+                              Just tm -> remember tm
+                              Nothing -> do
+                                prop <- if isEq then pure Nothing else withPendingFacts (propProof ctx g)
+                                case prop of
+                                  -- As above, do not promote branch-refined
+                                  -- proposition proofs into closed evidence.
+                                  Just tm -> pure (Just tm)
+                                  -- §11.3.1A intrinsic row-trait introduction
+                                  Nothing -> do
+                                    mRow <- rowProof g
+                                    case mRow of
+                                      Just tm -> remember tm
+                                      Nothing -> pure Nothing
             case r of
               Just tm -> do
                 v <- evalIn ctx tm
@@ -1992,39 +2327,46 @@ emitUnsolvedGoal ctx sp g = do
              in st {csDiags = attachOnce (csDiags st)}
         else emit
 
--- | All metavariable identifiers occurring in a term, with full
--- constructor coverage (de-duplicated). Shared by the meta-collection
--- sites so they cannot drift in which constructors they descend into.
-metaIdsOf :: Term -> [MetaId]
-metaIdsOf = nub . go
-  where
-    go = \case
-      CMeta m -> [m]
-      CApp _ a b -> go a ++ go b
-      CPi _ _ _ a b -> go a ++ go b
-      CLam _ _ _ b -> go b
-      CCtor _ as -> concatMap go as
-      CRecordT fs -> concatMap (go . snd) fs
-      CRecordV fs -> concatMap (go . snd) fs
-      CVariantT ms -> concatMap go ms
-      CInject _ e -> go e
-      CProj e _ -> go e
-      CProjAt e _ _ -> go e
-      CMatch s alts -> go s ++ concat [maybe [] go g ++ go b | CaseAlt _ g b <- alts]
-      CLet _ _ a b c -> go a ++ go b ++ go c
-      CLetRec _ _ a b c -> go a ++ go b ++ go c
-      CSealE _ e -> go e
-      CSigT _ e -> go e
-      CThunkE e -> go e
-      CLazyE e -> go e
-      CForceE e -> go e
-      CIf a b c -> go a ++ go b ++ go c
-      CQuote _ slots -> concatMap go slots
-      CVar _ -> []
-      CGlob _ -> []
-      CSort _ -> []
-      CLit _ -> []
-      CDo _ _ -> []
+-- | Cache key for globally reusable implicit evidence.  The key is the exact
+-- de-Bruijn Core shape, not pretty-printed prose.  A key is produced only for
+-- closed goals, because local rigids make evidence context-sensitive.  The
+-- semantic epoch is part of the key, so global/trait/instance changes cannot
+-- reuse stale evidence even if a future state mutation forgets to clear the
+-- map eagerly.
+closedEvidenceKey :: Ctx -> Value -> CheckM (Maybe EvidenceCacheKey)
+closedEvidenceKey ctx goal = do
+  branchLocal <- gets (not . null . csBoolFacts)
+  if branchLocal || any ceImplicitLocal (ctxEntries ctx)
+    then pure Nothing
+    else do
+      ec <- ec_
+      epoch <- gets csNormEpoch
+      let gT = quote ec (ctxLen ctx) goal
+      pure $
+        if termClosed gT
+          then Just (EvidenceCacheKey (T.pack (show epoch) <> "\x1e" <> renderStructuralTermKey gT))
+          else Nothing
+
+lookupClosedEvidence :: Ctx -> Value -> CheckM (Maybe Term)
+lookupClosedEvidence ctx goal = do
+  mk <- closedEvidenceKey ctx goal
+  case mk of
+    Nothing -> pure Nothing
+    Just k -> gets (Map.lookup k . csEvidenceCache)
+
+rememberClosedEvidence :: Ctx -> Value -> Term -> CheckM ()
+rememberClosedEvidence ctx goal tm = do
+  -- Branch facts are proof sources (§3.2.3), not global theorems.  Reusing a
+  -- proof found under `if c then ...` outside that branch would be unsound even
+  -- when the goal term itself is closed.  Positive closed-evidence caching is
+  -- therefore restricted to the empty branch-fact environment.
+  branchLocal <- gets (not . null . csBoolFacts)
+  unless branchLocal $ do
+    mk <- closedEvidenceKey ctx goal
+    forM_ mk $ \k ->
+      when (termClosed tm) $
+        modify' $ \st ->
+          st {csEvidenceCache = boundedInsert maxEvidenceCacheEntries k tm (csEvidenceCache st)}
 
 -- | The unsolved subset of 'metaIdsOf' under the current solution map.
 unsolvedMetasOf :: CheckState -> Term -> [MetaId]
@@ -2051,62 +2393,8 @@ unsolvedMetaIdsIn v = do
 zonkTermM :: Int -> Term -> CheckM Term
 zonkTermM depth0 t0 = do
   ec <- ec_
-  let goI :: Int -> [KItem] -> [KItem]
-      goI _ [] = []
-      goI d (k : ks) =
-        let (k', d') = goK d k
-         in k' : goI d' ks
-      goK d = \case
-        KBind q p t -> (KBind q p (go d t), d + patBindersC p)
-        KLet q p t -> (KLet q p (go d t), d + patBindersC p)
-        KLetQ p t mElse ->
-          ( KLetQ p (go d t) (fmap (\(rp, e) -> (rp, go (d + patBindersC rp) e)) mElse)
-          , d + patBindersC p
-          )
-        KExpr t -> (KExpr (go d t), d)
-        KVarItem n t -> (KVarItem n (go d t), d + 1)
-        KAssign r monadic t -> (KAssign (go d r) monadic (go d t), d)
-        KReturn t -> (KReturn (go d t), d)
-        k@KBreak {} -> (k, d)
-        k@KContinue {} -> (k, d)
-        KWhile l c b e -> (KWhile l (go d c) (goI d b) (fmap (goI d) e), d)
-        KFor l p s b e -> (KFor l p (go d s) (goI (d + patBindersC p) b) (fmap (goI d) e), d)
-        KIf alts e -> (KIf [(go d c, goI d b) | (c, b) <- alts] (fmap (goI d) e), d)
-        KDefer ml t -> (KDefer ml (go d t), d)
-        KUsing p a r -> (KUsing p (go d a) (go d r), d)
-        KSubDo l b -> (KSubDo l (goI d b), d)
-      go :: Int -> Term -> Term
-      go d = \case
-        CMeta m -> case Map.lookup m (ecMetas ec) of
-          Just (Just v) -> quote ec d v
-          _ -> CMeta m
-        CVar i -> CVar i
-        CGlob g -> CGlob g
-        CLam ic q n b -> CLam ic q n (go (d + 1) b)
-        CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
-        CApp ic f a -> CApp ic (go d f) (go d a)
-        CSort s -> CSort s
-        CLit l -> CLit l
-        CCtor g as -> CCtor g (map (go d) as)
-        CMatch s alts ->
-          CMatch (go d s) [CaseAlt p (fmap (go (d + patBindersC p)) gd) (go (d + patBindersC p) b) | CaseAlt p gd b <- alts]
-        CRecordT fs -> CRecordT [(n, go d t) | (n, t) <- fs]
-        CRecordV fs -> CRecordV [(n, go d t) | (n, t) <- fs]
-        CProj e f -> CProj (go d e) f
-        CProjAt e f i -> CProjAt (go d e) f i
-        CVariantT ms -> CVariantT (map (go d) ms)
-        CInject tg e -> CInject tg (go d e)
-        CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
-        CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
-        CDo lbl items -> CDo lbl (goI d items)
-        CSealE ls e -> CSealE ls (go d e)
-        CSigT ls e -> CSigT ls (go d e)
-        CThunkE e -> CThunkE (go d e)
-        CLazyE e -> CLazyE (go d e)
-        CForceE e -> CForceE (go d e)
-        CIf a b c -> CIf (go d a) (go d b) (go d c)
-        CQuote qs slots -> CQuote qs (map (go d) slots)
-  pure (go depth0 t0)
+  let resolve d m = quote ec d <$> (Map.lookup m (ecMetas ec) >>= id)
+  pure (zonkTermWith resolve depth0 t0)
 
 isTraitGoal :: Value -> CheckM Bool
 isTraitGoal v =
@@ -2117,8 +2405,8 @@ isTraitGoal v =
 isEqGoal :: Value -> CheckM Bool
 isEqGoal v =
   forceM v >>= \case
-    VGlobN g _ | g == gPrel "=" -> pure True
-    VCtor g _ | g == gPrel "=" -> pure True
+    VGlobN g _ | g == prelEqType -> pure True
+    VCtor g _ | g == prelEqType -> pure True
     _ -> pure False
 
 -- | Is the goal one of the §11.3.1A intrinsic row traits (solved by
@@ -2147,7 +2435,7 @@ rowProof goal = do
                   case fsF of
                     VRecordT fs
                       | l `notElem` map fst fs ->
-                          pure (Just (CGlob (gPrel "__rowEvidence")))
+                          pure (Just (CGlob prelRowEvidence))
                     _ -> pure Nothing
             _ -> pure Nothing
     _ -> pure Nothing
@@ -2272,7 +2560,7 @@ tryInstance depth ctx goalArgs ie
                     mSup <- superCandidate ctx pv
                     case mSup of
                       Just t -> pure (Just t)
-                      Nothing -> propProof pv
+                      Nothing -> propProof ctx pv
           if all isJust prems
             then do
               metaTms <- mapM (quoteIn ctx) =<< mapM (evalIn emptyCtx) metas
@@ -2334,47 +2622,345 @@ checkInstanceOverlap sp g new prior
                  <> "' are not equivalent implementations (§14.3, §33.2.1 coherence)")
 
 -- Boolean-proposition normalization (§16.3.3 step 3): goals of shape
--- (lhs = rhs) decided by conversion yield refl.
-propProof :: Value -> CheckM (Maybe Term)
-propProof goal = do
+-- (lhs = rhs) decided by conversion yield refl.  Before falling back to full
+-- conversion, recognize equality-to-Bool-literal goals and discharge them with
+-- the same bounded arithmetic relation solver used by termination checking,
+-- seeded from the active boolean branch facts.  This is the proof source for
+-- checked arithmetic guarded by ordinary control flow, e.g. after
+-- `if x < y then ... else x - y`, the else branch carries `y <= x`.
+propProof :: Ctx -> Value -> CheckM (Maybe Term)
+propProof ctx goal = do
   g <- forceM goal
   case g of
-    VGlobN eqG sp | eqG == gPrel "=", [(_, l), (_, r)] <- drop (length sp - 2) sp -> tryRefl l r
-    VCtor eqG [_, l, r] | eqG == gPrel "=" -> tryRefl l r
+    VGlobN eqG sp | eqG == prelEqType, [(_, l), (_, r)] <- drop (length sp - 2) sp ->
+      cachedPropDecision ctx g (tryRefl l r)
+    VCtor eqG [_, l, r] | eqG == prelEqType ->
+      cachedPropDecision ctx g (tryRefl l r)
     _ -> pure Nothing
   where
     tryRefl l r = do
-      ec <- ec_
-      if convertible ec 0 (force ec l) (force ec r)
-        then pure (Just (CCtor (gPrel "refl") []))
-        else do
-          -- boolean branch refinement (§3.2.3 proof source): reduce a
-          -- side stuck on an in-scope `if` condition using the active
-          -- branch facts (`c = True`/`c = False`)
-          facts <- gets csBoolFacts
-          if null facts
-            then pure Nothing
+      mBranch <- boolLiteralRelationProof l r
+      case mBranch of
+        Just ok -> pure ok
+        Nothing -> do
+          ec <- ec_
+          let d = ctxLen ctx
+          bfs0 <- gets csBoolFacts
+          if null bfs0
+            then pure (convertible ec d (force ec l) (force ec r))
             else do
-              let lf = factReduce ec facts (4 :: Int) (force ec l)
-                  rf = factReduce ec facts (4 :: Int) (force ec r)
-              pure $
-                if convertible ec 0 lf rf
-                  then Just (CCtor (gPrel "refl") [])
-                  else Nothing
-    factReduce _ _ 0 v = v
-    factReduce ec facts depth v =
-      let factFor c =
-            case [b | (fv, b) <- facts, convertible ec 0 (force ec fv) (force ec c)] of
-              (b : _) -> Just b
-              [] -> Nothing
-          boolV b = VCtor (gPrel (if b then "True" else "False")) []
-       in case force ec v of
-            v' | Just b <- factFor v' -> boolV b
+              -- boolean branch refinement (§3.2.3 proof source): reduce a
+              -- side stuck on an in-scope `if` condition using the active
+              -- branch facts (`c = True`/`c = False`).  This is still a
+              -- decision procedure for definitional equality; it does not
+              -- invent user proofs.  Deliberately do not normalize arbitrary
+              -- equality sides before this point: cache admission and proof
+              -- search must not force user recursion merely to decide whether
+              -- a proposition is reusable.
+              let (lf, lChanged) = factReduce ec d bfs0 (4 :: Int) l
+                  (rf, rChanged) = factReduce ec d bfs0 (4 :: Int) r
+              pure ((lChanged || rChanged) && convertible ec d lf rf)
+
+    boolLiteralRelationProof l r = do
+      case (boolLit l, boolLit r) of
+        (Just want, Nothing) -> Just <$> proveBoolValueFromBranchFacts ctx want r
+        (Nothing, Just want) -> Just <$> proveBoolValueFromBranchFacts ctx want l
+        _ -> pure Nothing
+
+    boolLit = \case
+      VCtor g [] | g == prelTrue -> Just True
+      VCtor g [] | g == prelFalse -> Just False
+      _ -> Nothing
+
+    factReduce _ _ _ 0 v = (v, False)
+    factReduce ec d facts depth v =
+      let factMap =
+            Map.fromListWith
+              (\new _old -> new)
+              [ (branchFactKey tm, b)
+              | (tm, b) <- facts
+              ]
+          factFor c = neutralValueTerm d c >>= \tm -> Map.lookup (branchFactKey tm) factMap
+          boolV b = VCtor (prelBoolV b) []
+       in case v of
+            _ | Just b <- factFor v -> (boolV b, True)
             VIfN c t f
               | Just b <- factFor c ->
                   let Closure env body = if b then t else f
-                   in factReduce ec facts (depth - 1) (force ec (eval ec env body))
-            v' -> v'
+                   in let (v', changed) = factReduce ec d facts (depth - 1) (eval ec env body)
+                       in (v', True || changed)
+            _ -> (v, False)
+
+branchFactKey :: Term -> Text
+branchFactKey = renderStructuralTermKey . simplifyDecisionTerm
+
+-- | Reconstruct only already-neutral values as Core syntax.  This deliberately
+-- does not call 'force' or 'quote': boolean branch facts may mention recursive
+-- predicates, and using them as assumptions must not evaluate those predicates.
+neutralValueTerm :: Int -> Value -> Maybe Term
+neutralValueTerm lvl = \case
+  VRigid l sp -> neutralSpine (CVar (lvl - 1 - l)) sp
+  VFlex m sp -> neutralSpine (CMeta m) sp
+  VGlobN g sp -> neutralSpine (CGlob g) sp
+  VLit lit -> Just (CLit lit)
+  VCtor g args -> CCtor g <$> traverse (neutralValueTerm lvl) args
+  VPrim p args ->
+    foldM
+      (\acc a -> CApp Expl acc <$> neutralValueTerm lvl a)
+      (CGlob (GName primModule p))
+      args
+  VProjN e f -> CProj <$> neutralValueTerm lvl e <*> pure f
+  _ -> Nothing
+  where
+    neutralSpine hd =
+      foldM
+        (\acc (ic, a) -> CApp ic acc <$> neutralValueTerm lvl a)
+        hd
+
+propReflTerm :: Term
+propReflTerm = CCtor prelRefl []
+
+cachedPropDecision :: Ctx -> Value -> CheckM Bool -> CheckM (Maybe Term)
+cachedPropDecision ctx goal decide = do
+  -- Conversion can consult 'csFacts' for dependent-match refinements.  Those
+  -- facts contain Values with no stable structural key, so proposition caching
+  -- is disabled while they are active.  Boolean branch facts are local control
+  -- assumptions; building a cache key for a branch-refined proposition would
+  -- have to inspect the goal under those assumptions, which can otherwise
+  -- unfold recursive user predicates before their totality is known.
+  canCache <- gets (\st -> Map.null (csFacts st) && null (csBoolFacts st))
+  if not canCache
+    then certify <$> decide
+    else do
+      mKey <- propDecisionKey ctx goal
+      case mKey of
+        Nothing -> certify <$> decide
+        Just key -> do
+          cached <- gets (Map.lookup key . csPropCache)
+          case cached of
+            Just ok -> pure (certify ok)
+            Nothing -> do
+              ok <- decide
+              modify' $ \st ->
+                st {csPropCache = boundedInsert maxPropCacheEntries key ok (csPropCache st)}
+              pure (certify ok)
+  where
+    certify True = Just propReflTerm
+    certify False = Nothing
+
+propDecisionKey :: Ctx -> Value -> CheckM (Maybe PropCacheKey)
+propDecisionKey ctx goal = do
+  let d = ctxLen ctx
+  case neutralValueTerm d goal of
+    Nothing -> pure Nothing
+    Just goalTm -> do
+      facts <- boolFactsDecisionKey d
+      st <- get
+      if not (null (unsolvedMetasOf st goalTm))
+          || any (not . null . unsolvedMetasOf st . fst) facts
+        then pure Nothing
+        else do
+          stableCtx <- ctxTypesMetaStable ctx
+          if not stableCtx
+            then pure Nothing
+            else do
+              natKey <- natLevelsDecisionKey ctx
+              epoch <- gets csNormEpoch
+              let factsKey = T.intercalate "\x1e" [prefix <> renderStructuralTermKey tm | (tm, prefix) <- facts]
+              pure (Just (PropCacheKey epoch d (renderStructuralTermKey goalTm) factsKey natKey))
+
+boolFactsDecisionKey :: Int -> CheckM [(Term, Text)]
+boolFactsDecisionKey _d = do
+  facts <- gets csBoolFacts
+  let one (tm, truth) =
+        (simplifyDecisionTerm tm, if truth then "T:" else "F:")
+  pure (map one facts)
+
+ctxTypesMetaStable :: Ctx -> CheckM Bool
+ctxTypesMetaStable ctx = do
+  ec <- ec_
+  st <- get
+  let d = ctxLen ctx
+      tyStable e = null (unsolvedMetasOf st (quote ec d (ceType e)))
+  pure (all tyStable (ctxEntries ctx))
+
+natLevelsDecisionKey :: Ctx -> CheckM Text
+natLevelsDecisionKey ctx = do
+  natLvls <- ctxNatLevels ctx
+  pure (T.pack (show (Set.toAscList natLvls)))
+
+proveBoolValueFromBranchFacts :: Ctx -> Bool -> Value -> CheckM Bool
+proveBoolValueFromBranchFacts ctx want v = do
+  let d = ctxLen ctx
+  case neutralValueTerm d v of
+    Nothing -> pure False
+    Just tm -> do
+      bfs <- normalizeBoolFacts d =<< gets csBoolFacts
+      facts <- arithmeticBranchFacts ctx
+      natLvls <- ctxNatLevels ctx
+      proveBoolValue natLvls bfs facts d want tm
+
+arithmeticBranchFacts :: Ctx -> CheckM [AFact]
+arithmeticBranchFacts ctx = do
+  let d = ctxLen ctx
+  bfs <- normalizeBoolFacts d =<< gets csBoolFacts
+  fmap concat $ forM bfs $ \(tm, truth) -> do
+    mf <- boolRelBranchM d tm
+    pure $ case mf >>= if truth then Just else negateFact of
+      Just fact -> [fact]
+      Nothing -> []
+
+normalizeBoolFacts :: Int -> [(Term, Bool)] -> CheckM [(Term, Bool)]
+normalizeBoolFacts d facts =
+  concat <$> forM facts (\(tm, truth) -> do
+    mtm <- transparentProofNormalize d tm
+    let raw = simplifyDecisionTerm tm
+    pure $ case mtm of
+      Just norm | norm /= raw -> [(raw, truth), (norm, truth)]
+      _ -> [(raw, truth)]
+    )
+
+proveBoolValue :: Set Int -> [(Term, Bool)] -> [AFact] -> Int -> Bool -> Term -> CheckM Bool
+proveBoolValue natLvls boolFacts facts d want t = do
+  mRaw <- proveBoolValueAttempt natLvls boolFacts facts d want t
+  case mRaw of
+    Just ok -> pure ok
+    Nothing -> do
+      mNorm <- transparentProofNormalize d t
+      case mNorm of
+        Just t' -> fromMaybe False <$> proveBoolValueAttempt natLvls boolFacts facts d want t'
+        Nothing -> pure False
+
+proveBoolValueAttempt :: Set Int -> [(Term, Bool)] -> [AFact] -> Int -> Bool -> Term -> CheckM (Maybe Bool)
+proveBoolValueAttempt natLvls boolFacts facts d want t = do
+  case simplifyDecisionTerm t of
+    CCtor g [] | g == prelTrue -> pure (Just want)
+    CCtor g [] | g == prelFalse -> pure (Just (not want))
+    _ -> do
+      case evalBoolTermWithFacts d boolFacts (6 :: Int) t of
+        Just got -> pure (Just (got == want))
+        Nothing -> do
+          -- Branch-refined equality proofs first consume only the visible
+          -- boolean/arithmetic shape of the target proposition plus active
+          -- branch facts. The caller may then try one bounded transparent
+          -- normalization pass through definitions already marked reducible
+          -- by the ordinary totality/opacity machinery.
+          mf <- boolRelBranchM d t
+          case mf >>= if want then Just else negateFact of
+            Just fact -> do
+              ok <- proveFact natLvls facts fact
+              pure (if ok then Just True else Nothing)
+            Nothing -> pure Nothing
+
+transparentProofNormalize :: Int -> Term -> CheckM (Maybe Term)
+transparentProofNormalize d t = do
+  st <- get
+  if not (null (unsolvedMetasOf st t))
+    then pure Nothing
+    else do
+      t' <- transparentProofReduce d (96 :: Int) t
+      let raw = simplifyDecisionTerm t
+          norm = simplifyDecisionTerm t'
+      pure (if norm /= raw then Just norm else Nothing)
+
+-- | Bounded, non-strict proof-side reduction.
+--
+-- Runtime evaluation of Kappa is strict, but proposition solving must not
+-- force arbitrary user arguments just to learn that a transparent proof
+-- predicate ignores them.  This reducer unfolds only definitions that the
+-- ordinary totality machinery has already marked conversion-reducible, then
+-- performs beta/projection/known-branch reduction on Core syntax without
+-- evaluating function arguments first.  If the fuel runs out, it returns the
+-- best neutral term it has instead of claiming a proof.
+transparentProofReduce :: Int -> Int -> Term -> CheckM Term
+transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTerm t0)
+  where
+    go fuel t
+      | fuel <= 0 = pure (simplifyDecisionTerm t)
+      | otherwise = case simplifyDecisionTerm t of
+          CGlob g -> maybe (pure (CGlob g)) (go (fuel - 1)) =<< unfoldReducibleGlobal d g
+          CApp {} -> reduceApp fuel t
+          CProj e f -> do
+            e' <- go (fuel - 1) e
+            case e' of
+              CRecordV fs | Just x <- lookup f fs -> go (fuel - 1) x
+              CSealE ls inner | f `notElem` ls -> go (fuel - 1) (CProj inner f)
+              _ -> pure (CProj e' f)
+          CProjAt e f i -> do
+            e' <- go (fuel - 1) e
+            case e' of
+              CRecordV fs | Just x <- lookup f fs -> go (fuel - 1) x
+              CSealE ls inner | f `notElem` ls -> go (fuel - 1) (CProjAt inner f i)
+              _ -> pure (CProjAt e' f i)
+          CIf c th el -> do
+            c' <- go (fuel - 1) c
+            case c' of
+              CCtor g [] | g == prelTrue -> go (fuel - 1) th
+              CCtor g [] | g == prelFalse -> go (fuel - 1) el
+              _ -> pure (CIf c' th el)
+          CMatch s alts -> do
+            s' <- go (fuel - 1) s
+            pure (simplifyDecisionTerm (CMatch s' alts))
+          CLet _ _ _ rhs body ->
+            go (fuel - 1) (substTopTerm rhs body)
+          CLetRec q n a rhs body ->
+            pure (CLetRec q n a rhs body)
+          other -> pure other
+
+    reduceApp fuel t = do
+      let (hd0, args0) = spineOfTerm t
+      hd <- go (fuel - 1) hd0
+      applySpine (fuel - 1) hd args0
+
+    applySpine fuel hd args
+      | fuel <= 0 = pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+      | otherwise = case (hd, args) of
+          (CLam lamIc _ _ body, (argIc, arg) : rest)
+            | lamIc == argIc -> go (fuel - 1) (foldl' (\f (ic, a) -> CApp ic f a) (substTopTerm arg body) rest)
+          (CProj e f, _) -> do
+            hd' <- go (fuel - 1) (CProj e f)
+            if hd' == hd
+              then pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+              else applySpine (fuel - 1) hd' args
+          (CProjAt e f i, _) -> do
+            hd' <- go (fuel - 1) (CProjAt e f i)
+            if hd' == hd
+              then pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+              else applySpine (fuel - 1) hd' args
+          (CGlob g, _) -> do
+            mBody <- unfoldReducibleGlobal d g
+            case mBody of
+              Just body -> applySpine (fuel - 1) body args
+              Nothing -> pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+          _ -> pure (foldl' (\f (ic, a) -> CApp ic f a) hd args)
+
+unfoldReducibleGlobal :: Int -> GName -> CheckM (Maybe Term)
+unfoldReducibleGlobal d g = do
+  st <- get
+  case Map.lookup g (csGlobals st) of
+    Just gd | gdReducible gd, Just body <- gdValue gd -> do
+      ec <- ec_
+      pure (Just (quote ec d body))
+    _ -> pure Nothing
+
+evalBoolTermWithFacts :: Int -> [(Term, Bool)] -> Int -> Term -> Maybe Bool
+evalBoolTermWithFacts _ _ 0 _ = Nothing
+evalBoolTermWithFacts d facts depth t0 =
+  let factMap =
+        Map.fromListWith
+          (\new _old -> new)
+          [(branchFactKey tm, truth) | (tm, truth) <- facts]
+      go = evalBoolTermWithFacts d facts (depth - 1)
+      t = simplifyDecisionTerm t0
+   in case t of
+        CCtor g [] | g == prelTrue -> Just True
+        CCtor g [] | g == prelFalse -> Just False
+        _ | Just truth <- Map.lookup (branchFactKey t) factMap -> Just truth
+        CIf c th el -> do
+          truth <- go c
+          go (if truth then th else el)
+        _ | Just p <- boolNotArg t -> not <$> go p
+        _ -> Nothing
 
 -- ── Quantities (surface → core) ──────────────────────────────────────
 
@@ -2499,14 +3085,14 @@ infer ctx expr = case expr of
     | Nothing <- qlPrefix ql
     , Just txt <- qlText ql
     , [c] <- T.unpack txt ->
-        pure (CLit (LitScalar c), VGlobN (gPrel "UnicodeScalar") [])
+        pure (CLit (LitScalar c), VGlobN prelUnicodeScalar [])
     -- §6.5 conventional 'g' handler: requires a text view containing
     -- exactly one extended grapheme cluster (UAX #29, pinned UCD).
     | Just "g" <- qlPrefix ql ->
         case qlText ql of
           Just txt
             | isSingleGrapheme txt ->
-                pure (CLit (LitGrapheme txt), VGlobN (gPrel "Grapheme") [])
+                pure (CLit (LitGrapheme txt), VGlobN prelGrapheme [])
             | T.null txt -> badGrapheme sp "the payload is empty"
             | otherwise ->
                 badGrapheme sp
@@ -2516,12 +3102,12 @@ infer ctx expr = case expr of
     -- exactly one byte.
     | Just "b" <- qlPrefix ql ->
         case qlBytes ql of
-          Just [w] -> pure (CLit (LitByte w), VGlobN (gPrel "Byte") [])
+          Just [w] -> pure (CLit (LitByte w), VGlobN prelByte [])
           Just [] -> badByte sp "the payload is empty"
           Just _ -> badByte sp "the payload contains more than one byte"
           Nothing -> badByte sp "the payload has no single-byte view"
     | otherwise -> snd <$> ((,) () <$> unsupported ctx sp "this quoted-literal form")
-  EUnit _ -> pure (CCtor (gPrel "Unit") [], VGlobN (gPrel "Unit") [])
+  EUnit _ -> pure (CCtor prelUnit [], VGlobN prelUnit [])
   ETuple es _ -> do
     rs <- mapM (infer ctx) es
     let fields = [(tupleField i, tm) | (i, (tm, _)) <- zip [0 :: Int ..] rs]
@@ -2579,8 +3165,8 @@ infer ctx expr = case expr of
         -- §13.2.1/§16.1.7.1: a suspension-marked field declares the
         -- suspension type; literals insert the suspension at the field
         let t = case rtfSusp f of
-              Just SuspThunk -> CApp Expl (CGlob (gPrel "Thunk")) t0
-              Just SuspLazy -> CApp Expl (CGlob (gPrel "Need")) t0
+              Just SuspThunk -> CApp Expl (CGlob prelThunk) t0
+              Just SuspLazy -> CApp Expl (CGlob prelNeed) t0
               Nothing -> t0
         tV <- evalIn ctx t
         ((f, t) :) <$> goDep ((nameText (rtfName f), tV) : done) rest
@@ -2592,9 +3178,9 @@ infer ctx expr = case expr of
         Nothing -> pure (CRecordT (sortOn fst fields), VSort 0)
         -- §11.3.1A: open record with a contextual row tail
         Just tailE -> do
-          rowTm <- check ctx tailE (VGlobN (gPrel "RecRow") [])
+          rowTm <- check ctx tailE (VGlobN prelRecRow [])
           pure
-            ( CApp Expl (CApp Expl (CGlob (gPrel "__openRec")) rowTm)
+            ( CApp Expl (CApp Expl (CGlob prelOpenRec) rowTm)
                 (CRecordT (sortOn fst fields))
             , VSort 0
             )
@@ -2670,7 +3256,7 @@ infer ctx expr = case expr of
     pure (CPi Impl QW "_ev" cTm restTm, VSort 0)
   EOptionSugar t _ -> do
     (tm, _) <- inferType ctx t
-    pure (CApp Expl (CGlob (gPrel "Option")) tm, VSort 0)
+    pure (CApp Expl (CGlob prelOption) tm, VSort 0)
   EVariant arms mtail sp -> elabVariant ctx arms mtail sp Nothing
   -- §18.5.1: a lambda label names a return target consumable by
   -- @return@L@ inside the body.
@@ -2698,13 +3284,13 @@ infer ctx expr = case expr of
         infer ctx (EApp (EVar (Name "thunk" sp)) [ArgExplicit e])
     | otherwise -> do
         (tm, ty) <- infer ctx e
-        pure (CThunkE tm, VGlobN (gPrel "Thunk") [(Expl, ty)])
+        pure (CThunkE tm, VGlobN prelThunk [(Expl, ty)])
   ELazy e sp
     | Just _ <- lookupCtx "lazy" ctx ->
         infer ctx (EApp (EVar (Name "lazy" sp)) [ArgExplicit e])
     | otherwise -> do
         (tm, ty) <- infer ctx e
-        pure (CLazyE tm, VGlobN (gPrel "Need") [(Expl, ty)])
+        pure (CLazyE tm, VGlobN prelNeed [(Expl, ty)])
   EForce e sp | Just _ <- lookupCtx "force" ctx ->
     infer ctx (EApp (EVar (Name "force" sp)) [ArgExplicit e])
   EForce e sp -> do
@@ -2720,8 +3306,8 @@ infer ctx expr = case expr of
     elemT <- freshMetaV ctx
     tms <- mapM (\e -> check ctx e elemT) es
     pure
-      ( foldr (\h t -> CCtor (gPrel "::") [h, t]) (CCtor (gPrel "Nil") []) tms
-      , VGlobN (gPrel "List") [(Expl, elemT)]
+      ( foldr (\h t -> CCtor prelCons [h, t]) (CCtor prelNil []) tms
+      , VGlobN prelList [(Expl, elemT)]
       )
   -- §20.5/§20.5.1: a map literal resolves duplicate keys (default: keep last),
   -- mirroring the map-comprehension lowering, so `{ 1: 10, 1: 20 }` keeps 20.
@@ -2817,12 +3403,12 @@ infer ctx expr = case expr of
     (tTm, _) <- inferType ctx e
     rs <- forM regions $ \rn -> do
       (rTm, rTy) <- infer ctx (EVar rn)
-      expectType ctx (nameSpan rn) rTy (VGlobN (gPrel "Region") [])
+      expectType ctx (nameSpan rn) rTy (VGlobN prelRegion [])
       pure rTm
     let sorted = sortOn renderTerm (nub rs)
         capTm =
           foldl'
-            (\acc r -> CApp Expl (CApp Expl (CGlob (gPrel "__captures")) acc) r)
+            (\acc r -> CApp Expl (CApp Expl (CGlob prelCaptures) acc) r)
             tTm
             sorted
     pure (capTm, VSort 0)
@@ -2878,7 +3464,7 @@ check ctx expr expected0 = do
     -- (the would-be empty record), distinct from the unique `Unit` value
     -- it denotes in term position. A `()` checked against a universe is
     -- therefore the type `Unit`, which inhabits that universe.
-    (EUnit _, VSort _) -> pure (CGlob (gPrel "Unit"))
+    (EUnit _, VSort _) -> pure (CGlob prelUnit)
     -- §5.5.1: a bare parenthesized operator at a function-typed
     -- position selects the fixity the expected explicit arity calls
     -- for — unary `(-)` is the prefix reading (negate); otherwise the
@@ -2905,7 +3491,7 @@ check ctx expr expected0 = do
       | nameText pn == "pure"
       , Nothing <- lookupCtx "pure" ctx -> do
           tm <- check ctx pa aT
-          pure (CCtor (gPrel "__EffPure") [tm])
+          pure (CCtor prelEffPure [tm])
     -- §21.9: 'pure' in an Elab-typed position lifts a meta-phase value
     -- through the elaboration-time Applicative (the prelude 'pure' is
     -- the IO instance; carrier-polymorphic 'pure' is not modelled)
@@ -3344,7 +3930,7 @@ inferType ctx e = do
         -- missing error parameter becomes a fresh metavariable
         VPi Expl _ _ _ _
           | CApp Expl (CGlob g) argTm <- tm
-          , g == gPrel "IO" -> do
+          , g == prelIO -> do
               m <- freshMeta
               pure (CApp Expl (CApp Expl (CGlob g) m) argTm, 0)
         other -> do
@@ -3388,23 +3974,23 @@ inferT ctx e = case e of
     | nameText hd == "Array"
     , Nothing <- lookupCtx "Array" ctx -> do
         mg <- lookupGlobalName "Array"
-        if mg /= Just (gPrel "Array")
+        if mg /= Just prelArray
           then do
             (fTm, fTy) <- inferT ctx (EVar hd)
             elabSpine ctx (nameSpan hd) fTm fTy [ArgExplicit nE, ArgExplicit elemE]
           else do
-            nTm <- check ctx nE (VGlobN (gPrel "Nat") [])
+            nTm <- check ctx nE (VGlobN prelNat [])
             (elemTm, _) <- inferType ctx elemE
-            let sized = CApp Expl (CApp Expl (CGlob (gPrel "__sizedOf")) nTm) elemTm
-            pure (CApp Expl (CGlob (gPrel "Array")) sized, VSort 0)
+            let sized = CApp Expl (CApp Expl (CGlob prelSizedOf) nTm) elemTm
+            pure (CApp Expl (CGlob prelArray) sized, VSort 0)
   -- §11.3.1 row constraints take field labels: 'LacksRec r age'
   -- elaborates the label to a string literal
   EApp (EVar hd) [ArgExplicit rowE, ArgExplicit (EVar lbl)]
     | nameText hd == "LacksRec"
     , Nothing <- lookupCtx "LacksRec" ctx
     , Nothing <- lookupCtx (nameText lbl) ctx -> do
-        rowTm <- check ctx rowE (VGlobN (gPrel "RecRow") [])
-        let lacks = CApp Expl (CApp Expl (CGlob (gPrel "LacksRec")) rowTm) (CLit (LitStr (nameText lbl)))
+        rowTm <- check ctx rowE (VGlobN prelRecRow [])
+        let lacks = CApp Expl (CApp Expl (CGlob prelLacksRec) rowTm) (CLit (LitStr (nameText lbl)))
         pure (lacks, VSort 0)
   EApp f args -> do
     (fTm, fTy) <- inferT ctx f
@@ -3723,7 +4309,8 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
         _
           | [] <- as0 -> pure (Just (reverse acc, tyF))
           | otherwise -> pure Nothing
-    step tm (SlotKind m) = pure (CApp Impl tm m)
+    step tm (SlotKind m) = do
+      pure (CApp Impl tm m)
     step tm (SlotEvid q dom m mV) = do
       -- §3.2.3 proof obligations are postponed to the pending queue
       -- even when fully solved: the boolean branch facts they reduce
@@ -3743,7 +4330,19 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
             then pure m
           else resolveImplicitQ ctx sp q dom
       evV <- evalIn ctx ev
-      _ <- unify ctx mV evV
+      mVf <- forceM mV
+      case (m, mVf) of
+        -- The slot placeholder was introduced by 'peel' for this evidence
+        -- argument.  When it is still unconstrained, solving it directly is
+        -- the same flex case that 'unify' would take, but without running
+        -- conversion on a proof obligation whose branch-local facts may not
+        -- be available until 'flushPending'.  This is important for checked
+        -- operations: evidence insertion must not normalize user terms just to
+        -- wire a placeholder to a delayed proof.
+        (CMeta mid, VFlex meta []) | meta == mid -> do
+          ok <- solveMetaAcyclic mid evV
+          unless ok (void (unify ctx mVf evV))
+        _ -> void (unify ctx mVf evV)
       pure (CApp Impl tm ev)
     step tm (SlotExpl q e dom mid mV dep) = do
       aTm <- checkExplicitArg ctx q e dom
@@ -3758,14 +4357,19 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       -- costing O(size) per slot → O(n²) over a deep chain) yet keeps
       -- the meta-solution state byte-identical for downstream rendering
       -- and §3.1.11 cascade suppression.
-      if dep
-        then unify ctx mV aV >> pure ()
-        else do
-          -- match what 'unify'→'solveFlex' would store (the forced
-          -- value), just without its O(size) 'quote'/occurs check, which
-          -- is sound here because 'mid' is fresh and unreferenced.
-          aVf <- forceM aV
-          solveMeta mid aVf
+      mVf <- forceM mV
+      case mVf of
+        -- The placeholder was created for THIS explicit argument and is not
+        -- in scope for the argument's domain, so the checked argument cannot
+        -- contain it.  If result pre-unification did not constrain the
+        -- placeholder, direct solving is equivalent to unify's flex case but
+        -- avoids quoting the whole argument value.  This applies equally to
+        -- dependent slots: the later codomain/proof types will observe the
+        -- solution through the meta table.
+        VFlex m [] | m == mid -> do
+          ok <- solveMetaAcyclic mid aV
+          unless ok (void (unify ctx mVf aV))
+        _ -> when dep (void (unify ctx mVf aV))
       pure (CApp Expl tm aTm)
 
 -- | Is the value a (possibly parameterized) type former — i.e. is its
@@ -4372,7 +4976,7 @@ elabIntLit ctx v msuf sp mexp = case msuf of
       then badLiteralSuffix ctx suf
       else do
         (fTm, fTy) <- resolveName ctx suf
-        admits <- suffixDomAdmits ctx "FromInteger" ["Int", "Nat", "Integer"] fTy
+        admits <- suffixDomAdmits ctx traitFromInteger numericLitDomains fTy
         if admits
           then elabSpine ctx sp fTm fTy [ArgExplicit (EIntLit v Nothing sp)] -- payload : Nat
           else do
@@ -4389,17 +4993,17 @@ elabIntLit ctx v msuf sp mexp = case msuf of
         | isNumHead t -> pure (CLit (LitInt v), t)
         | Just other <- nonDefault t -> do
             -- FromInteger elaboration (§6.1.5)
-            dict <- resolveLiteralWitness ctx sp "FromInteger" "integer" other
+            dict <- resolveLiteralWitness ctx sp traitFromInteger "integer" other
             pure (CApp Expl (CProj dict "fromInteger") (CLit (LitInt v)), other)
-      _ -> pure (CLit (LitInt v), VGlobN (gPrel "Int") []) -- defaulting (§6.1.5)
+      _ -> pure (CLit (LitInt v), VGlobN prelInt []) -- defaulting (§6.1.5)
   where
     isNumHead = \case
-      VGlobN (GName _ n) [] -> n `elem` ["Int", "Nat", "Integer"]
+      VGlobN (GName _ n) [] -> n `elem` numericLitDomains
       _ -> False
     nonDefault = \case
       VFlex {} -> Nothing
       t@(VGlobN (GName _ n) [])
-        | n `elem` ["Float", "Double"] -> Just t
+        | n `elem` floatLitDomains -> Just t
       t@VGlobN {} -> Just t
       _ -> Nothing
 
@@ -4411,7 +5015,7 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
       then badLiteralSuffix ctx suf
       else do
         (fTm, fTy) <- resolveName ctx suf
-        admits <- suffixDomAdmits ctx "FromFloat" ["Float", "Double"] fTy
+        admits <- suffixDomAdmits ctx traitFromFloat floatLitDomains fTy
         if admits
           then elabSpine ctx sp fTm fTy [ArgExplicit (EFloatLit v Nothing sp)]
           else do
@@ -4425,12 +5029,12 @@ elabFloatLit ctx v msuf sp mexp = case msuf of
         | isFloatHead t -> pure (CLit (LitDouble v), t)
         | Just other <- nonDefault t -> do
             -- FromFloat elaboration (§6.1.5)
-            dict <- resolveLiteralWitness ctx sp "FromFloat" "float" other
+            dict <- resolveLiteralWitness ctx sp traitFromFloat "float" other
             pure (CApp Expl (CProj dict "fromFloat") (CLit (LitDouble v)), other)
-      _ -> pure (CLit (LitDouble v), VGlobN (gPrel "Double") []) -- defaulting (§6.1.5)
+      _ -> pure (CLit (LitDouble v), VGlobN prelDouble []) -- defaulting (§6.1.5)
   where
     isFloatHead = \case
-      VGlobN (GName _ n) [] -> n `elem` ["Float", "Double"]
+      VGlobN (GName _ n) [] -> n `elem` floatLitDomains
       _ -> False
     nonDefault = \case
       VFlex {} -> Nothing
@@ -4503,26 +5107,26 @@ elabString ctx sl parts sp = case (slPrefix sl, parts) of
   (Nothing, _) ->
     -- interpolation applies only to prefixed strings (§6.3.4)
     case slFragments sl of
-      [FragLit t] -> pure (CLit (LitStr t), VGlobN (gPrel "String") [])
-      [] -> pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
+      [FragLit t] -> pure (CLit (LitStr t), VGlobN prelString [])
+      [] -> pure (CLit (LitStr ""), VGlobN prelString [])
       _ -> do
         errAt sp "E_INTERNAL" Nothing "plain string with interpolation fragments"
         anyHole ctx
   (Just "f", _) -> do
     -- conventional f-string: concatenate shows of interpolations
-    let strTy = VGlobN (gPrel "String") []
+    let strTy = VGlobN prelString []
     pieces <- forM (zip [0 ..] (slFragments sl)) $ \(i, frag) -> case frag of
       FragLit t -> pure (CLit (LitStr t))
       FragInterp _ _ -> interpPiece i
       FragInterpFmt _ _ _ -> interpPiece i
-    let appendG a b = CApp Expl (CApp Expl (CGlob (gPrel "stringAppend")) a) b
+    let appendG a b = CApp Expl (CApp Expl (CGlob prelStringAppend) a) b
     pure (foldr appendG (CLit (LitStr "")) pieces, strTy)
     where
       interpPiece i = case [ipExpr p | p <- parts, ipIndex p == i] of
         [e] -> do
           (tm, ty) <- infer ctx e
           (tm1, ty1) <- insertAllImplicits ctx sp tm ty
-          showDict <- resolveImplicit ctx sp (VGlobN (gPrel "Show") [(Expl, ty1)])
+          showDict <- resolveImplicit ctx sp (VGlobN prelShow [(Expl, ty1)])
           pure (CApp Expl (CProj showDict "show") tm1)
         _ -> pure (CLit (LitStr ""))
   (Just "type", _)
@@ -4556,7 +5160,7 @@ elabString ctx sl parts sp = case (slPrefix sl, parts) of
       else do
         errAt sp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
           ("unresolved name '" <> p <> "' used as a string-literal prefix (Spec §6.3.4)")
-        pure (CLit (LitStr ""), VGlobN (gPrel "String") [])
+        pure (CLit (LitStr ""), VGlobN prelString [])
 
 -- | §6.3.4.3–5: run a prefixed string through its 'InterpolatedMacro'
 -- handler at elaboration time and splice the produced syntax.
@@ -4608,7 +5212,7 @@ elabPrefixHandler ctx sl parts sp p = do
     -- decoding already performed by the lexer)
     fragmentValues =
       forM (zip [0 ..] (slFragments sl)) $ \(i, frag) -> case frag of
-        FragLit t -> pure (VCtor (gPrel "Lit") [VLit (LitStr t)])
+        FragLit t -> pure (VCtor prelLit [VLit (LitStr t)])
         FragInterp _ isp -> interpValue i isp Nothing
         FragInterpFmt _ isp fmt -> interpValue i isp (Just fmt)
     interpValue i isp mfmt = do
@@ -4623,8 +5227,8 @@ elabPrefixHandler ctx sl parts sp p = do
       qs <- mkQuotedSyntax ctx payload isp
       let quoteV = VQuote qs []
       pure $ case mfmt of
-        Nothing -> VCtor (gPrel "Interp") [quoteV]
-        Just fmt -> VCtor (gPrel "InterpFmt") [quoteV, VLit (LitStr fmt)]
+        Nothing -> VCtor prelInterp [quoteV]
+        Just fmt -> VCtor prelInterpFmt [quoteV, VLit (LitStr fmt)]
 
 -- ── Records, projections, patches ────────────────────────────────────
 
@@ -4742,7 +5346,7 @@ elabKindQualified ctx sel (Name n nsp) sp = do
   -- label)
   SelEffectLabel
     | Just eli <- Map.lookup n merged ->
-        pure (CGlob (eliLabel eli), VGlobN (gPrel "EffLabel") [])
+        pure (CGlob (eliLabel eli), VGlobN prelEffLabel [])
   SelType
     | Just (i, e) <- lookupCtx n ctx -> do
         t <- forceM (ceType e)
@@ -4766,7 +5370,7 @@ elabKindQualified ctx sel (Name n nsp) sp = do
         case mt of
           Just tv ->
             forceM tv >>= \case
-              VGlobN lg [] -> pure (lg == gPrel "EffLabel")
+              VGlobN lg [] -> pure (lg == prelEffLabel)
               _ -> pure False
           Nothing -> pure False
       Nothing -> pure False
@@ -5233,8 +5837,8 @@ elabElvis ctx l r sp = do
     VGlobN (GName _ "Option") [(_, payloadTy)] -> do
       rTm <- check ctx r payloadTy
       let alts =
-            [ CaseAlt (CPCtor (gPrel "Some") [CPVar "__elvis"]) Nothing (CVar 0)
-            , CaseAlt (CPCtor (gPrel "None") []) Nothing rTm
+            [ CaseAlt (CPCtor prelSome [CPVar "__elvis"]) Nothing (CVar 0)
+            , CaseAlt (CPCtor prelNone []) Nothing rTm
             ]
       pure (CMatch lTm1 alts, payloadTy)
     _ -> do
@@ -5265,12 +5869,12 @@ elabSafeNav ctx e member = do
           errAt (memberSpan member) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
             "the result type of '?.' is undetermined; annotate the member type (§16.1.1.2)"
           pure (bodyTm, bodyT)
-        u -> pure (CCtor (gPrel "Some") [bodyTm], u)
+        u -> pure (CCtor prelSome [bodyTm], u)
       let alts =
-            [ CaseAlt (CPCtor (gPrel "Some") [CPVar "__nav"]) Nothing wrapTm
-            , CaseAlt (CPCtor (gPrel "None") []) Nothing (CCtor (gPrel "None") [])
+            [ CaseAlt (CPCtor prelSome [CPVar "__nav"]) Nothing wrapTm
+            , CaseAlt (CPCtor prelNone []) Nothing (CCtor prelNone [])
             ]
-      pure (CMatch pTm1 alts, VGlobN (gPrel "Option") [(Expl, resTy)])
+      pure (CMatch pTm1 alts, VGlobN prelOption [(Expl, resTy)])
     VFlex {} -> do
       errAt (exprSpan e) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
         "the receiver type of '?.' is undetermined here, so the navigation is ambiguous; annotate the receiver (§16.1.1.2)"
@@ -5293,10 +5897,10 @@ elabIs ctx e cref = do
     Just (g, ci) -> do
       let arity = length (ciFields ci)
           alts =
-            [ CaseAlt (CPCtor g (replicate arity CPWild)) Nothing (CCtor (gPrel "True") [])
-            , CaseAlt CPWild Nothing (CCtor (gPrel "False") [])
+            [ CaseAlt (CPCtor g (replicate arity CPWild)) Nothing (CCtor prelTrue [])
+            , CaseAlt CPWild Nothing (CCtor prelFalse [])
             ]
-      pure (CMatch tm1 alts, VGlobN (gPrel "Bool") [])
+      pure (CMatch tm1 alts, VGlobN prelBool [])
     Nothing -> anyHole ctx
 
 resolveCtor :: Ctx -> CtorRef -> CheckM (Maybe (GName, CtorInfo))
@@ -5591,7 +6195,7 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
           -- §13.2.1 uniqueness side condition: the residual row must
           -- be known to lack the new label
           let goal =
-                VGlobN (gPrel "LacksRec")
+                VGlobN prelLacksRec
                   [(Expl, rowV), (Expl, VLit (LitStr (nameText n)))]
           saved <- get
           _ <- resolveImplicitQ ctx (nameSpan n) QW goal
@@ -5623,14 +6227,14 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
               Just _ ->
                 CApp Expl
                   (CApp Expl
-                     (CApp Expl (CGlob (gPrel "__rowExtend")) acc)
+                     (CApp Expl (CGlob prelRowExtend) acc)
                      (CLit (LitStr n)))
                   vt
               Nothing -> acc
           )
           tm1
           entries
-  pure (tm', VGlobN (gPrel "__openRec") [(Expl, rowV), (Expl, prefixV')])
+  pure (tm', VGlobN prelOpenRec [(Expl, rowV), (Expl, prefixV')])
 
 -- | Projection-section update @lhs.{ (.member args) = rhs }@
 -- (§13.2.5, §30.2.2.4): the member must resolve to a stable field, a
@@ -6281,7 +6885,7 @@ elabLambda ctx0 bs0 body sp mexpected =
               (tyTm, _) <- inferType ctx tyE
               evalIn ctx tyTm
             Nothing
-              | bUnitBinder b -> pure (VGlobN (gPrel "Unit") [])
+              | bUnitBinder b -> pure (VGlobN prelUnit [])
               | otherwise -> freshMetaV ctx
           let bn = binderName b "_"
               ic = if bImplicit b then Impl else Expl
@@ -6523,7 +7127,7 @@ elabScopedEffectLabel ctx eff dsp = do
           st0 <- get
           suffix <- freshNameM "#efflbl"
           let labelG = GName (csModule st0) (lblName <> suffix <> ".label")
-          addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+          addGlobal labelG (GlobalDef (VGlobN prelEffLabel []) Nothing False)
           recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
           pure ctx {ctxEffLabels = Map.insert lblName (base {eliLabel = labelG}) (ctxEffLabels ctx)}
     _ -> do
@@ -6611,7 +7215,7 @@ elabScopedEffect ctx eff _dsp = do
   -- label is an opaque value of type EffLabel whose identity is its global
   -- name (§18.1.18 handler matching is by label identity)
   addGlobal ifaceG (GlobalDef ifaceKindV Nothing False)
-  addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+  addGlobal labelG (GlobalDef (VGlobN prelEffLabel []) Nothing False)
   -- §18.1.18: native string-token identity for the label (see elabTopEffect).
   recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
   let info = EffLabelInfo {eliLabel = labelG, eliIface = ifaceG, eliParams = params, eliOps = ops}
@@ -6656,7 +7260,7 @@ elabTopEffect eff _dsp = do
     (params, ifaceKindTm, ops) <- elabEffInterface emptyCtx eff
     ifaceKindV <- evalIn emptyCtx ifaceKindTm
     addGlobal ifaceG (GlobalDef ifaceKindV Nothing False)
-    addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+    addGlobal labelG (GlobalDef (VGlobN prelEffLabel []) Nothing False)
     -- §18.1.18: the label's runtime identity is its (unique) global name.
     -- The interpreter uses the neutral global; the native backend has no
     -- neutral globals, so record a string-token core body for it (label
@@ -6690,7 +7294,7 @@ elabTopEffectLabel eff sp = do
           unless already $ do
             st0 <- get
             let labelG = GName (csModule st0) (lblName <> ".label")
-            addGlobal labelG (GlobalDef (VGlobN (gPrel "EffLabel") []) Nothing False)
+            addGlobal labelG (GlobalDef (VGlobN prelEffLabel []) Nothing False)
             recordCoreBody labelG (CLit (LitStr (effLabelKey labelG)))
             -- same interface + operations as E, but a fresh label identity
             modify' $ \st ->
@@ -6714,14 +7318,14 @@ elabEffRow ctx entries mtail _sp = do
           ("unresolved effect label '" <> nameText ln <> "' (not a scoped (§9.3.1.1) or top-level (§18.1) effect)")
         pure Nothing
   tailTm <- case mtail of
-    Nothing -> pure (CGlob (gPrel "__effRowNil"))
-    Just te -> check ctx te (VGlobN (gPrel "EffRow") [])
+    Nothing -> pure (CGlob prelEffRowNil)
+    Just te -> check ctx te (VGlobN prelEffRow [])
   let row =
         foldr
-          (\(l, t) acc -> CApp Expl (CApp Expl (CApp Expl (CGlob (gPrel "__effRowCons")) l) t) acc)
+          (\(l, t) acc -> CApp Expl (CApp Expl (CApp Expl (CGlob prelEffRowCons) l) t) acc)
           tailTm
           parts
-  pure (row, VGlobN (gPrel "EffRow") [])
+  pure (row, VGlobN prelEffRow [])
 
 -- | A non-dependent function-type value (level-safe: the codomain is
 -- captured in the closure environment).
@@ -6729,7 +7333,7 @@ nonDepPiV :: Q -> Value -> Value -> Value
 nonDepPiV q dom cod = VPi Expl q "_" dom (Closure [cod] (CVar 1))
 
 effTyV :: Value -> Value -> Value
-effTyV row a = VGlobN (gPrel "Eff") [(Expl, row), (Expl, a)]
+effTyV row a = VGlobN prelEff [(Expl, row), (Expl, a)]
 
 -- | Instantiate an operation's payload and result types at concrete effect
 -- parameter VALUES (outer-to-inner). The stored types are de Bruijn under the
@@ -6767,12 +7371,12 @@ effOpSelection eli op = do
           (CGlob (eliIface eli)) [0 .. ne - 1]
       rowT extra =
         CApp Expl
-          (CApp Expl (CApp Expl (CGlob (gPrel "__effRowCons")) (CGlob (eliLabel eli))) (ifaceApp extra))
-          (CGlob (gPrel "__effRowNil"))
+          (CApp Expl (CApp Expl (CGlob prelEffRowCons) (CGlob (eliLabel eli))) (ifaceApp extra))
+          (CGlob prelEffRowNil)
       -- TYPE: forall params opImpls. A₁ -> … -> Aₙ -> Eff <[label : iface params]> B.
       -- Under the k-th argument binder, the implicit binders are shifted by k,
       -- and argument type Aₖ (de Bruijn under the implicit binders) by k.
-      effCod = CApp Expl (CApp Expl (CGlob (gPrel "Eff")) (rowT na)) (shiftTerm na 0 (eoiResT op))
+      effCod = CApp Expl (CApp Expl (CGlob prelEff) (rowT na)) (shiftTerm na 0 (eoiResT op))
       argArrows = foldr (\(k, aT) acc -> CPi Expl QW "__x" (shiftTerm k 0 aT) acc) effCod (zip [0 ..] argsT)
       tyTerm = foldr (\(nm, kT) acc -> CPi Impl Q0 nm kT acc) argArrows allParams
       -- TERM: \@params @opImpls -> \x₁ … \xₙ -> __EffOp label op PAYLOAD k,
@@ -6782,11 +7386,11 @@ effOpSelection eli op = do
         | otherwise = CRecordV [(effTupleField i, CVar (na - 1 - i)) | i <- [0 .. na - 1]]
       opCall =
         CCtor
-          (gPrel "__EffOp")
+          prelEffOp
           [ CGlob (eliLabel eli)
           , CLit (LitStr (eoiName op))
           , payload
-          , CLam Expl Q1 "__r" (CCtor (gPrel "__EffPure") [CVar 0])
+          , CLam Expl Q1 "__r" (CCtor prelEffPure [CVar 0])
           ]
       opBody = foldr (\_ acc -> CLam Expl QW "__x" acc) opCall argsT
       tm = foldr (\(nm, _) acc -> CLam Impl Q0 nm acc) opBody allParams
@@ -6808,7 +7412,7 @@ splitEffRow labelG row0 = do
           minner <- splitEffRow labelG rest
           pure $ case minner of
             Just (e', rest') ->
-              Just (e', VGlobN (gPrel "__effRowCons") [(Expl, l), (Expl, e), (Expl, rest')])
+              Just (e', VGlobN prelEffRowCons [(Expl, l), (Expl, e), (Expl, rest')])
             Nothing -> Nothing
     _ -> pure Nothing
 
@@ -6843,7 +7447,7 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
             Nothing -> do
               errAt (exprSpan scrutE) "E_EFFECT_LABEL_NOT_IN_ROW" (Just "kappa.effect.row-mismatch")
                 "the handled computation's effect row does not contain the handled label (§18.1.21)"
-              pure (VGlobN (gPrel "__effRowNil") [], [])
+              pure (VGlobN prelEffRowNil [], [])
           ecH <- ec_
           -- bind an operation's own implicit (forall-bound) parameters as fresh
           -- skolem rigids for the clause's typing context. They are NOT runtime
@@ -6878,11 +7482,11 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
             [] -> do
               errAt sp "E_HANDLER_RETURN_MISSING" (Just "kappa-hs.effect.handler")
                 "a handler requires exactly one 'case return x -> ...' clause (§18.1.21)"
-              pure (CLam Expl QW "__x" (CCtor (gPrel "__EffPure") [CVar 0]))
+              pure (CLam Expl QW "__x" (CCtor prelEffPure [CVar 0]))
             (_ : (_, _, csp2) : _) -> do
               errAt csp2 "E_HANDLER_RETURN_DUPLICATE" (Just "kappa-hs.effect.handler")
                 "a handler permits only one 'case return x -> ...' clause (§18.1.21)"
-              pure (CLam Expl QW "__x" (CCtor (gPrel "__EffPure") [CVar 0]))
+              pure (CLam Expl QW "__x" (CCtor prelEffPure [CVar 0]))
           -- one operation clause per declared operation (§18.1.21)
           let opClauses =
                 [(onm, argPats, kn, body, csp) | HandlerOp onm argPats kn body csp <- cases]
@@ -6931,11 +7535,11 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
                     pure (CLam Expl QW "__payload" (CMatch (CVar 0) [CaseAlt patC Nothing inner]))
                 pure (Just (eoiName op, lam))
           let opsRec = CRecordV (sortOn fst clauseTms)
-              deepTm = CCtor (gPrel (if deep then "True" else "False")) []
+              deepTm = CCtor (prelBoolV deep) []
               tm =
                 foldl'
                   (CApp Expl)
-                  (CGlob (gPrel "__handleEff"))
+                  (CGlob prelHandleEff)
                   [deepTm, CGlob (eliLabel eli), retLam, opsRec, scrutTm]
           pure (tm, resultTy)
         _ -> do
@@ -6971,7 +7575,7 @@ elabEffDo ctx0 row aT items0 sp = do
     go _ [] = do
       errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
         "a do block must end with an expression item (§18.2)"
-      pure (CCtor (gPrel "__EffPure") [CCtor (gPrel "Unit") []])
+      pure (CCtor prelEffPure [CCtor prelUnit []])
     go c [DoExpr e] = do
       -- final item: an Eff computation of the result type, or (corpus
       -- accommodation, as in the IO kernel) a pure result value
@@ -6985,7 +7589,7 @@ elabEffDo ctx0 row aT items0 sp = do
         else do
           put st0
           tm <- check c eD aT
-          pure (CCtor (gPrel "__EffPure") [tm])
+          pure (CCtor prelEffPure [tm])
     -- a final statement-if is the result expression (§18.2)
     go c [DoIf alts mels isp] =
       let toExpr its = case its of
@@ -7040,7 +7644,7 @@ elabEffDo ctx0 row aT items0 sp = do
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in an Eff-typed do block by this implementation"
         go c rest
-    effBindTm m f = CApp Expl (CApp Expl (CGlob (gPrel "__effBind")) m) f
+    effBindTm m f = CApp Expl (CApp Expl (CGlob prelEffBind) m) f
 
 -- | A @do@ block whose result type is a user monad @m@ (one with a
 -- @Monad@ instance) that is not one of the kernel carriers IO\/STM\/Eff\/
@@ -7134,13 +7738,13 @@ declSpan = \case
 checkIf :: Ctx -> [(Expr, Expr)] -> Maybe Expr -> Span -> Value -> CheckM Term
 checkIf ctx alts mels sp resT = go ctx alts
   where
-    boolT = VGlobN (gPrel "Bool") []
+    boolT = VGlobN prelBool []
     go c [] = case mels of
       Just e -> check c e resT
       Nothing -> do
         errAt sp "E_IF_MISSING_ELSE" (Just "kappa-hs.control.if-missing-else")
           "if without else is only permitted as a do-block statement (§16.4, §18.4)"
-        pure (CCtor (gPrel "Unit") [])
+        pure (CCtor prelUnit [])
     go c ((cnd, t) : rest) = do
       -- §7.4.1 flow refinement: constructor tests in the condition
       -- refine their subjects in the condition's own conjuncts and in
@@ -7162,10 +7766,9 @@ checkIf ctx alts mels sp resT = go ctx alts
             -- the condition's value is boolean branch-refinement
             -- evidence in the branch (a §3.2.3 proof source); rigid
             -- conditions additionally feed conversion's fact table
-            cv <- evalIn ctxR cTm
             oldBool <- gets csBoolFacts
             modify' $ \st ->
-              st {csBoolFacts = (cv, ctorName == ("True" :: Text)) : csBoolFacts st}
+              st {csBoolFacts = (cTm, ctorName == ("True" :: Text)) : csBoolFacts st}
             r <- case mLvl of
               Nothing -> act
               Just l -> do
@@ -7478,7 +8081,7 @@ checkMatchPlain ctx scrut cases sp resT = do
           oldFacts <- gets csFacts
           forM_ ((,) <$> mLvl <*> fact) $ \(l, f) ->
             modify' $ \st -> st {csFacts = Map.insert l f (csFacts st)}
-          gTm <- traverse (\g -> check ctx' g (VGlobN (gPrel "Bool") [])) mguard
+          gTm <- traverse (\g -> check ctx' g (VGlobN prelBool [])) mguard
           bTm <- check ctx' body resT
           modify' $ \st -> st {csFacts = oldFacts}
           let prior' = prior ++ [g | CPCtor g _ <- [patC]]
@@ -7726,7 +8329,7 @@ elabPattern ctx0 pat0 ty0 = do
           -- a Var pattern naming an in-scope nullary constructor is a
           -- constructor pattern (lowercase ctors exist, e.g. ω-free code)
           | otherwise -> pure (CPVar (nameText n), bindCtx (nameText n) False ty ctx)
-        PUnit _ -> pure (CPCtor (gPrel "Unit") [], ctx)
+        PUnit _ -> pure (CPCtor prelUnit [], ctx)
         PLit l _ -> do
           -- §17.2.1: a literal pattern's type must agree with a known
           -- concrete scrutinee type
@@ -7910,8 +8513,8 @@ elabPattern ctx0 pat0 ty0 = do
     -- conservatively: only flag literal/data disagreements where the
     -- data type is plainly not the literal's family
     litHeadAgrees lit h = case lit of
-      LitInt _ -> gnameText h `elem` ["Int", "Nat", "Integer"]
-      LitDouble _ -> gnameText h `elem` ["Float", "Double"]
+      LitInt _ -> gnameText h `elem` numericLitDomains
+      LitDouble _ -> gnameText h `elem` floatLitDomains
       LitStr _ -> gnameText h == "String"
       LitScalar _ -> gnameText h `elem` ["UnicodeScalar", "Char"]
       -- byte/bytes/grapheme literals have no surface pattern form
@@ -7945,7 +8548,7 @@ ctorFieldTypes ctx _ ci scrutTy _ = do
 -- ── try / do ─────────────────────────────────────────────────────────
 
 ioType :: Value -> Value -> Value
-ioType e a = VGlobN (gPrel "IO") [(Expl, e), (Expl, a)]
+ioType e a = VGlobN prelIO [(Expl, e), (Expl, a)]
 
 elabTry :: Ctx -> Expr -> [ExceptCase] -> Maybe Expr -> Span -> CheckM (Term, Value)
 elabTry ctx body excepts mfin sp = do
@@ -7965,17 +8568,17 @@ elabTry ctx body excepts mfin sp = do
             ctx' = bindCtx nm False errT' ctx
         alts <- forM excepts $ \(ExceptCase pat mguard hbody _) -> do
           (patC, ctx'', _) <- elabPattern ctx' pat errT'
-          gTm <- traverse (\g -> check ctx'' g (VGlobN (gPrel "Bool") [])) mguard
+          gTm <- traverse (\g -> check ctx'' g (VGlobN prelBool [])) mguard
           hTm <- check ctx'' hbody (ioType outErr resT)
           pure (CaseAlt patC gTm hTm)
         checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
         let handlerTm = CLam Expl QW nm (CMatch (CVar 0) alts)
-        pure (CApp Expl (CApp Expl (CGlob (gPrel "catchIO")) bodyTm) handlerTm)
+        pure (CApp Expl (CApp Expl (CGlob prelCatchIO) bodyTm) handlerTm)
   final <- case mfin of
     Nothing -> pure caught
     Just finE -> do
-      finTm <- check ctx finE (ioType outErr (VGlobN (gPrel "Unit") []))
-      pure (CApp Expl (CApp Expl (CGlob (gPrel "finallyIO")) caught) finTm)
+      finTm <- check ctx finE (ioType outErr (VGlobN prelUnit []))
+      pure (CApp Expl (CApp Expl (CGlob prelFinallyIO) caught) finTm)
   pure (final, ioType outErr resT)
 
 -- do blocks (§18.2): the carrier is IO in this implementation.
@@ -8009,9 +8612,9 @@ elabDo ctx0 mlabel items _sp mexpected = do
     -- desugaring to (>>=)/pure.
     Just t@(VGlobN g@(GName _ gn) spine)
       | not (null spine)
-      , gn `notElem` ["IO", "STM", "Eff", "Elab"] -> do
+      , gn `notElem` kernelMonadCarriers -> do
           let mV = VGlobN g (init spine)
-          hasMonad <- isJust <$> instanceSearch ctx _sp (VGlobN (gPrel "Monad") [(Expl, mV)])
+          hasMonad <- isJust <$> instanceSearch ctx _sp (VGlobN prelMonad [(Expl, mV)])
           if hasMonad then elabMonadDo ctx t items _sp else elabDoIO ctx me items
     _ -> elabDoIO ctx me items
   where
@@ -8045,7 +8648,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
     -- the underlying IO at runtime); otherwise IO of the scope's error type.
     wrapTy :: Value -> Value -> Value
     wrapTy errT x = case mexp of
-      Just (VGlobN (GName _ "STM") _) -> VGlobN (gPrel "STM") [(Expl, x)]
+      Just (VGlobN (GName _ "STM") _) -> VGlobN prelSTM [(Expl, x)]
       _ -> ioType errT x
     -- whether this do-scope is STM-typed (its items are STM actions, not
     -- IO) — the transparent nested-do path applies only to IO-shaped scopes
@@ -8185,7 +8788,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
         DoVar n rhs _ -> do
           (rhsTm, rhsTy) <- infer c rhs
           (rhsTm1, rhsTy1) <- insertAllImplicits c (nameSpan n) rhsTm rhsTy
-          let refTy = VGlobN (gPrel "Ref") [(Expl, rhsTy1)]
+          let refTy = VGlobN prelRef [(Expl, rhsTy1)]
               c' = bindCtxVar (nameText n) refTy c
           ks <- goItems loops c' errT resT rest
           pure (KVarItem (nameText n) rhsTm1 : ks)
@@ -8250,8 +8853,8 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   retT <- freshMetaV c
                   check c (desugarBang e) retT
             Nothing -> do
-              expectType c rsp (VGlobN (gPrel "Unit") []) resT
-              pure (CCtor (gPrel "Unit") [])
+              expectType c rsp (VGlobN prelUnit []) resT
+              pure (CCtor prelUnit [])
           ks <- goItems loops c errT resT rest
           pure (KReturn tm : ks)
         DoBreak ml bsp -> do
@@ -8274,24 +8877,24 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           let condD = desugarBang cond
           st0 <- get
           n0 <- gets (length . csDiags)
-          pureTm <- check c condD (VGlobN (gPrel "Bool") [])
+          pureTm <- check c condD (VGlobN prelBool [])
           n1 <- gets (length . csDiags)
           condTm <-
             if n1 == n0
               then pure pureTm
               else do
                 put st0
-                actTm <- check c condD (ioType errT (VGlobN (gPrel "Bool") []))
+                actTm <- check c condD (ioType errT (VGlobN prelBool []))
                 errTm <- quoteIn c errT
-                boolTm <- quoteIn c (VGlobN (gPrel "Bool") [])
+                boolTm <- quoteIn c (VGlobN prelBool [])
                 pure
                   ( CApp
                       Expl
-                      (CApp Impl (CApp Impl (CGlob (gPrel "__runIO")) errTm) boolTm)
+                      (CApp Impl (CApp Impl (CGlob prelRunIO) errTm) boolTm)
                       actTm
                   )
-          bodyKs <- goItems (withLoop ml) c errT (VGlobN (gPrel "Unit") []) body
-          elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
+          bodyKs <- goItems (withLoop ml) c errT (VGlobN prelUnit []) body
+          elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
           ks <- goItems loops c errT resT rest
           pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
         DoFor ml pat src body mels fsp -> do
@@ -8315,11 +8918,11 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                 SKQuery -> prelApp1 fsp "__queryToList" [src']
                 SKRange -> prelApp1 fsp "rangeToList" [src']
                 _ -> src'
-          srcTm <- check c listSrc (VGlobN (gPrel "List") [(Expl, elemT)])
+          srcTm <- check c listSrc (VGlobN prelList [(Expl, elemT)])
           checkIrrefutable c pat elemT fsp
           (patC, c', _) <- elabPattern c pat elemT
-          bodyKs <- goItems (withLoop ml) c' errT (VGlobN (gPrel "Unit") []) body
-          elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
+          bodyKs <- goItems (withLoop ml) c' errT (VGlobN prelUnit []) body
+          elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
           ks <- goItems loops c errT resT rest
           pure (KFor (nameText <$> ml) patC srcTm bodyKs elsKs : ks)
         DoIf alts mels _ -> do
@@ -8328,10 +8931,10 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           alts' <- forM alts $ \(cond, body) -> do
             refs <- condRefines c cond
             let cR = refineCtx refs c
-            condTm <- check cR (desugarBang cond) (VGlobN (gPrel "Bool") [])
-            bodyKs <- goItems loops cR errT (VGlobN (gPrel "Unit") []) body
+            condTm <- check cR (desugarBang cond) (VGlobN prelBool [])
+            bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
             pure (condTm, bodyKs)
-          elsKs <- traverse (goItems loops c errT (VGlobN (gPrel "Unit") [])) mels
+          elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
           -- §8.2.2A postdominating refinement: when every branch except
           -- one completes abruptly, the surviving branch's facts hold
           -- for the rest of this do-scope
@@ -8363,7 +8966,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
                 ("defer@" <> nameText l
                    <> " does not target an enclosing labeled do-scope (explicit 'do' or loop) of this do-scope (§18.7)")
-          eTm <- check c (desugarBang e) (ioType errT (VGlobN (gPrel "Unit") []))
+          eTm <- check c (desugarBang e) (ioType errT (VGlobN prelUnit []))
           ks <- goItems loops c errT resT rest
           pure (KDefer (nameText <$> ml) eTm : ks)
         DoUsing mq pat rhs usp -> do
@@ -8383,8 +8986,8 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           aT <- freshMetaV c
           acquireTm <- check c (desugarBang rhs) (ioType errT aT)
           -- Releasable (m := IO errT) (a := aT); `release : a -> m Unit`
-          let mTyV = VGlobN (gPrel "IO") [(Expl, errT)]
-          dictTm <- resolveImplicit c usp (VGlobN (gPrel "Releasable") [(Expl, mTyV), (Expl, aT)])
+          let mTyV = VGlobN prelIO [(Expl, errT)]
+          dictTm <- resolveImplicit c usp (VGlobN prelReleasable [(Expl, mTyV), (Expl, aT)])
           let releaseTm = CProj dictTm "release"
           checkIrrefutable c pat aT usp
           (patC, cBound, _) <- elabPattern c pat aT
@@ -8581,10 +9184,10 @@ trySpec act = do
   if n1 == n0 then pure (Just r) else put st0 >> pure Nothing
 
 synTV :: Value -> Value
-synTV t = VGlobN (gPrel "Syntax") [(Expl, t)]
+synTV t = VGlobN prelSyntax [(Expl, t)]
 
 elabTV :: Value -> Value
-elabTV t = VGlobN (gPrel "Elab") [(Expl, t)]
+elabTV t = VGlobN prelElab [(Expl, t)]
 
 elabPureTm :: Term -> Term
 elabPureTm = CApp Expl (CGlob (GName primModule "__elabPure"))
@@ -8640,7 +9243,7 @@ elabCodeQuote :: Ctx -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
 elabCodeQuote ctx e _sp mexp = do
   tV <- maybe (freshMetaV ctx) pure mexp
   tm <- check ctx {ctxCodeDepth = ctxCodeDepth ctx + 1} e tV
-  pure (CApp Expl (CGlob (gPrel "__codeQuote")) tm, codeTV tV)
+  pure (CApp Expl (CGlob prelCodeQuote) tm, codeTV tV)
 
 -- | Elaborate a §23.2 escape @.~c@: requires @c : Code t@ and an
 -- enclosing code quote.
@@ -8651,10 +9254,10 @@ elabCodeEscape ctx e sp = do
       "the escape '.~c' splices a staged subterm and is only meaningful inside a '.< ... >.' code quote (§23.2)"
   tV <- freshMetaV ctx
   tm <- check ctx {ctxCodeDepth = max 0 (ctxCodeDepth ctx - 1)} e (codeTV tV)
-  pure (CApp Expl (CGlob (gPrel "__codeEscape")) tm, tV)
+  pure (CApp Expl (CGlob prelCodeEscape) tm, tV)
 
 codeTV :: Value -> Value
-codeTV t = VGlobN (gPrel "Code") [(Expl, t)]
+codeTV t = VGlobN prelCode [(Expl, t)]
 
 -- | §21.4 hygiene metadata: rename quote-site local references to
 -- fresh hygienic spellings and record (spelling, original, level).
@@ -8998,7 +9601,7 @@ runElab ctx sp v0 = do
           v2 <- evalRT ctx2 tm2
           eq <- unify ctx v1 v2
           put st0
-          pure (Right (VCtor (gPrel (if eq then "True" else "False")) []))
+          pure (Right (VCtor (prelBoolV eq) []))
         _ -> pure (Left ())
     -- §21.6 'headSymbolSyntax': Some s only when the elaborated core
     -- has a global declaration head ('sameSymbol' then compares
@@ -9009,8 +9612,8 @@ runElab ctx sp v0 = do
       pure $ case m of
         Nothing -> Left ()
         Just (tm, _) -> Right $ case headGlobalOf tm of
-          Just g -> VCtor (gPrel "Some") [symbolValue g]
-          Nothing -> VCtor (gPrel "None") []
+          Just g -> VCtor prelSome [symbolValue g]
+          Nothing -> VCtor prelNone []
     VPrim "withSyntaxOrigin" [_, s] -> pure (Right s)
     VPrim "warnElab" [m] -> do
       msg <- strValue m
@@ -9056,7 +9659,7 @@ runElab ctx sp v0 = do
       pure (Left ())
   where
     literalQuote e = VQuote (QuotedSyntax e [] sp) []
-    unitValue = VCtor (gPrel "Unit") []
+    unitValue = VCtor prelUnit []
     strValue x = do
       xF <- forceRT x
       pure $ case xF of
@@ -9137,7 +9740,7 @@ shapeFamily :: Maybe DiagnosticFamily
 shapeFamily = Just "kappa.deriving.shape"
 
 listValue :: [Value] -> Value
-listValue = foldr (\x t -> VCtor (gPrel "::") [x, t]) (VCtor (gPrel "Nil") [])
+listValue = foldr (\x t -> VCtor prelCons [x, t]) (VCtor prelNil [])
 
 valueList :: Value -> CheckM [Value]
 valueList v = do
@@ -9150,7 +9753,7 @@ shapeFieldValue :: Maybe Text -> Int -> Value
 shapeFieldValue mname i =
   VCtor
     (gShape "ShapeField")
-    [ maybe (VCtor (gPrel "None") []) (\n -> VCtor (gPrel "Some") [VLit (LitStr n)]) mname
+    [ maybe (VCtor prelNone []) (\n -> VCtor prelSome [VLit (LitStr n)]) mname
     , VLit (LitStr renderName)
     ]
   where
@@ -9269,7 +9872,7 @@ shapeRequireFieldsOp ctx sp tcV tyV = do
           fieldTys <- concat <$> mapM (ctorFieldTypesOf t) (diCtors di)
           missing <- filterM (fmap not . satisfiable) fieldTys
           case missing of
-            [] -> pure (Right (VCtor (gPrel "Unit") []))
+            [] -> pure (Right (VCtor prelUnit []))
             ((cg, mname, fTy) : _) -> do
               fT <- quoteIn ctx fTy
               errAt sp "KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE" shapeFamily
@@ -9819,8 +10422,8 @@ planComp ctx0 clauses yld _sp = do
                   | not (null captured)
                   ]
                 qTy =
-                  VGlobN (gPrel "QueryCore")
-                    [ (Expl, VCtor (gPrel "QueryMode") [VCtor (gPrel "Reusable") [], VCtor (gPrel "QZeroOrMore") []])
+                  VGlobN prelQueryCore
+                    [ (Expl, VCtor prelQueryMode [VCtor prelReusable [], VCtor prelQZeroOrMore []])
                     , (Expl, VPrim "__omegaQ" [])
                     , (Expl, siItem si)
                     ]
@@ -10012,11 +10615,11 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
     Nothing -> builtinCarrier listTm0 listTy itemV candidate cand
   where
     sinkHook cand itemV = do
-      mRaw <- trySpec (instanceSearch ctx sp (VGlobN (gPrel "FromComprehensionRaw") [(Expl, cand)]))
+      mRaw <- trySpec (instanceSearch ctx sp (VGlobN prelFromComprehensionRaw [(Expl, cand)]))
       mPlan <-
         case mRaw of
           Just (Just _) -> pure Nothing
-          _ -> trySpec (instanceSearch ctx sp (VGlobN (gPrel "FromComprehensionPlan") [(Expl, cand)]))
+          _ -> trySpec (instanceSearch ctx sp (VGlobN prelFromComprehensionPlan [(Expl, cand)]))
       let chosen = case (mRaw, mPlan) of
             (Just (Just dict), _) -> Just (dict, "fromComprehensionRaw", "__rawComprehension")
             (_, Just (Just dict)) -> Just (dict, "fromComprehensionPlan", "__comprehensionPlan")
@@ -10074,16 +10677,16 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
           errAt sp "E_QUERY_ITEM_QUANTITY_MISMATCH" (Just "kappa-hs.query.item-quantity")
             "the yielded item is available only at linear quantity 1, but the carrier demands unrestricted (ω) items (§20.9)"
         listTm <- checkAsList listTm0 listTy a
-        pure (CApp Expl (CGlob (gPrel "__queryFromList")) listTm, candidate)
+        pure (CApp Expl (CGlob prelQueryFromList) listTm, candidate)
       VGlobN (GName _ "Array") [(_, a)] -> do
         listTm <- checkAsList listTm0 listTy a
-        pure (CApp Expl (CGlob (gPrel "__arrayFromList")) listTm, candidate)
+        pure (CApp Expl (CGlob prelArrayFromList) listTm, candidate)
       VGlobN (GName _ "List") [(_, a)] -> do
         listTm <- checkAsList listTm0 listTy a
         pure (listTm, candidate)
       VGlobN (GName _ "Set") [(_, a)] -> do
         listTm <- checkAsList listTm0 listTy a
-        pure (CApp Expl (CGlob (gPrel "__setFromList")) listTm, candidate)
+        pure (CApp Expl (CGlob prelSetFromList) listTm, candidate)
       _ -> unsupported ctx sp "this comprehension carrier"
     elemOfList ty = do
       t <- forceM ty
@@ -10091,7 +10694,7 @@ collectCarrier ctx kind plan lowered (prefTm, prefTy) sp = do
         VGlobN (GName _ "List") [(_, a)] -> pure a
         _ -> freshMetaV ctx
     checkAsList tm ty a = do
-      expectType ctx sp ty (VGlobN (gPrel "List") [(Expl, a)])
+      expectType ctx sp ty (VGlobN prelList [(Expl, a)])
       pure tm
 
 -- | Pass 2: desugar the clause pipeline over lists (§20.10.11 as-if).
@@ -10360,7 +10963,6 @@ checkModule st0 m =
    in -- 'report' prepends; restore emission (source) order here
       (st1 {csDiags = []}, reverse (csDiags st1))
 
-
 -- | Names of signature-governed term definitions in this module.  The SCC
 -- termination pass is concerned with definitions, not standalone signatures,
 -- so an unsatisfied signature is still reported by 'sigSatisfactionPass'.
@@ -10559,7 +11161,7 @@ elabAliasBody params rhs = do
         -- the §18.1 'IO a' accommodation of inferType
         VPi Expl _ _ _ _
           | CApp Expl (CGlob g) argTm <- tm0
-          , g == gPrel "IO" -> do
+          , g == prelIO -> do
               m <- freshMeta
               pure (CApp Expl (CApp Expl (CGlob g) m) argTm, CSort 0)
         VPi {} | former -> do
@@ -11060,7 +11662,16 @@ headerTrait (TraitDecl supers n params members) sp = do
   addGlobal g (GlobalDef tyV (Just dictV) False)
   let defaults = Map.fromList [(nameText dn, ld) | TraitDefault ld@(LetDef (Just dn) _ _ _ _ _ _ _) _ <- members]
       supTms = [(fn, foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) sTm paramTele) | (fn, sTm) <- supPairs]
-  modify' $ \st -> st {csTraits = Map.insert g (TraitInfo (length paramTele) (map fst ms) defaults supTms) (csTraits st)}
+  modify' $ \st ->
+    invalidateSemanticCaches
+      ( st
+          { csTraits =
+              Map.insert
+                g
+                (TraitInfo (length paramTele) (map fst ms) defaults supTms)
+                (csTraits st)
+          }
+      )
   -- member projection globals: m : forall params. (@d : Tr params) -> τ
   -- (occurrences of sibling members in τ become projections from the
   -- dict binder)
@@ -11141,57 +11752,6 @@ coreUsesVar0 = go 0
       CForceE e -> go d e
       CIf a b c -> go d a || go d b || go d c
       CQuote _ _ -> True
-
-shiftTerm :: Int -> Int -> Term -> Term
-shiftTerm by = go
-  where
-    go d = \case
-      CVar i
-        | i >= d -> CVar (i + by)
-        | otherwise -> CVar i
-      CGlob g -> CGlob g
-      CLam ic q n b -> CLam ic q n (go (d + 1) b)
-      CPi ic q n a b -> CPi ic q n (go d a) (go (d + 1) b)
-      CApp ic f a -> CApp ic (go d f) (go d a)
-      CSort s -> CSort s
-      CLit l -> CLit l
-      CCtor g as -> CCtor g (map (go d) as)
-      CMatch s alts ->
-        CMatch (go d s) [CaseAlt p (fmap (go (d + nb p)) gd) (go (d + nb p) b) | CaseAlt p gd b <- alts]
-        where
-          nb = patBindersC
-      CRecordT fs -> CRecordT [(n, go d t) | (n, t) <- fs]
-      CRecordV fs -> CRecordV [(n, go d t) | (n, t) <- fs]
-      CProj e f -> CProj (go d e) f
-      CProjAt e f i -> CProjAt (go d e) f i
-      CVariantT ms -> CVariantT (map (go d) ms)
-      CInject t e -> CInject t (go d e)
-      CLet q n a b c -> CLet q n (go d a) (go d b) (go (d + 1) c)
-      CLetRec q n a b c -> CLetRec q n (go d a) (go (d + 1) b) (go (d + 1) c)
-      CMeta m -> CMeta m
-      CDo lbl items -> CDo lbl items
-      CSealE ls e -> CSealE ls (go d e)
-      CSigT ls e -> CSigT ls (go d e)
-      CThunkE e -> CThunkE (go d e)
-      CLazyE e -> CLazyE (go d e)
-      CForceE e -> CForceE (go d e)
-      CIf a b c -> CIf (go d a) (go d b) (go d c)
-      CQuote qs slots -> CQuote qs (map (go d) slots)
-
-patBindersC :: CorePat -> Int
-patBindersC = \case
-  CPWild -> 0
-  CPVar _ -> 1
-  CPLit _ -> 0
-  CPCtor _ ps -> sum (map patBindersC ps)
-  CPTuple ps -> sum (map patBindersC ps)
-  CPRecord fs mr -> sum (map (patBindersC . snd) fs) + (case mr of Just nm | not (T.null nm) -> 1; _ -> 0)
-  CPInject _ p -> patBindersC p
-  CPInjectRest _ -> 1
-  CPOr ps _ -> case ps of
-    (p : _) -> patBindersC p
-    [] -> 0
-  CPAs _ p -> 1 + patBindersC p
 
 headerExpect :: ExpectForm -> Span -> CheckM ()
 headerExpect form sp = case form of
@@ -11420,7 +11980,7 @@ elabActivePatternDecl mods ld sp = do
         let kind = case resF of
               VGlobN (GName _ "Option") _ -> Right APOption
               VGlobN (GName _ "Match") _ -> Right APMatch
-              VGlobN (GName _ h) _ | h `elem` ["IO", "STM", "Elab"] -> Left h
+              VGlobN (GName _ h) _ | h `elem` kernelMonadCarriers -> Left h
               _ -> Right APTotal
         case kind of
           Left h ->
@@ -11531,7 +12091,7 @@ elabProjectionDecl _mods n binders resTyE body sp = do
         [] -> pure ()
         ((pName, pTyTm, pTyV) : _) -> do
           let ctxP = bindCtx pName False pTyV ctxD
-              zipperTm = CApp Expl (CApp Expl (CApp Expl (CGlob (gPrel "Zipper")) pTyTm) focusTm) focusTm
+              zipperTm = CApp Expl (CApp Expl (CApp Expl (CGlob prelZipper) pTyTm) focusTm) focusTm
           zipperV <- evalIn ctxD zipperTm
           let clauseOf k = [(mb, e) | (k', mb, e) <- clauses, k' == k]
               getC = clauseOf "get"
@@ -11847,64 +12407,11 @@ expandedGlobalsOfTermM tm = do
   pure (expandedGlobalsOfTerm st tm)
 
 expandedGlobalsOfTerm :: CheckState -> Term -> Set GName
-expandedGlobalsOfTerm st = go Set.empty
-  where
-    go seen tm =
-      Set.unions [expand seen g | g <- Set.toList (globalsOfTerm tm)]
-
-    expand seen g
-      | Set.member g seen = Set.singleton g
-      | otherwise =
-          Set.insert g $
-            case (Map.lookup g (csGlobals st), Map.lookup g (csCoreBodies st)) of
-              (Just gd, Just body) | gdReducible gd ->
-                go (Set.insert g seen) body
-              _ -> Set.empty
-
-globalsOfTerm :: Term -> Set GName
-globalsOfTerm = go
-  where
-    go = \case
-      CGlob g -> Set.singleton g
-      CApp _ f a -> go f `Set.union` go a
-      CLam _ _ _ b -> go b
-      CPi _ _ _ a b -> go a `Set.union` go b
-      CCtor g as -> Set.insert g (Set.unions (map go as))
-      CMatch s alts ->
-        Set.unions (go s : [maybe Set.empty go gd `Set.union` go b | CaseAlt _ gd b <- alts])
-      CRecordT fs -> Set.unions (map (go . snd) fs)
-      CRecordV fs -> Set.unions (map (go . snd) fs)
-      CProj e _ -> go e
-      CProjAt e _ _ -> go e
-      CVariantT ms -> Set.unions (map go ms)
-      CInject _ e -> go e
-      CLet _ _ a b c -> Set.unions [go a, go b, go c]
-      CLetRec _ _ a b c -> Set.unions [go a, go b, go c]
-      CIf a b c -> Set.unions [go a, go b, go c]
-      CThunkE e -> go e
-      CLazyE e -> go e
-      CForceE e -> go e
-      CSealE _ e -> go e
-      CSigT _ e -> go e
-      CQuote _ slots -> Set.unions (map go slots)
-      CDo _ items -> Set.unions (map goK items)
-      _ -> Set.empty
-    goK = \case
-      KBind _ _ t -> go t
-      KLet _ _ t -> go t
-      KLetQ _ t m -> go t `Set.union` maybe Set.empty (go . snd) m
-      KExpr t -> go t
-      KVarItem _ t -> go t
-      KAssign lhs _ rhs -> go lhs `Set.union` go rhs
-      KReturn t -> go t
-      KWhile _ c b e -> Set.unions (go c : map goK b ++ maybe [] (map goK) e)
-      KFor _ _ s b e -> Set.unions (go s : map goK b ++ maybe [] (map goK) e)
-      KIf alts e ->
-        Set.unions ([go c `Set.union` Set.unions (map goK b) | (c, b) <- alts] ++ maybe [] (map goK) e)
-      KDefer _ t -> go t
-      KUsing _ a r -> go a `Set.union` go r
-      KSubDo _ b -> Set.unions (map goK b)
-      _ -> Set.empty
+expandedGlobalsOfTerm st =
+  Termination.expandedGlobalsOfTerm $
+    Map.mapWithKey
+      (\g gd -> (gdReducible gd, Map.lookup g (csCoreBodies st)))
+      (csGlobals st)
 
 -- Termination verification (§15.3/§15.11, SCC-level).
 --
@@ -11955,7 +12462,8 @@ terminationSccPass = do
           results <- forM pending $ \tds -> do
             overrides <- gets csAssertReducible
             let forced = all (`Set.member` overrides) (map tdName tds)
-            result <- if forced then pure TerminationConversionSafe else withSccOpaque (map tdName tds) (verifyTerminationScc tds)
+            result <-
+              if forced then pure TerminationConversionSafe else withSccOpaque (map tdName tds) (verifyTerminationScc tds)
             case result of
               TerminationConversionSafe -> forM_ tds (\td -> setGlobalReducible (tdName td) True)
               TerminationTotalOnly -> forM_ tds (\td -> setGlobalReducible (tdName td) False)
@@ -11988,20 +12496,19 @@ withSccOpaque gs act = do
   let restore acc g = case Map.lookup g saved of
         Just gd -> Map.insert g gd acc
         Nothing -> acc
-  modify' $ \st -> st {csGlobals = foldr (Map.adjust (\gd -> gd {gdReducible = False})) (csGlobals st) gs}
+  modify' $ \st ->
+    invalidateSemanticCaches
+      (st {csGlobals = foldr (Map.adjust (\gd -> gd {gdReducible = False})) (csGlobals st) gs})
   r <- act
-  modify' $ \st -> st {csGlobals = foldl' restore (csGlobals st) gs}
+  modify' $ \st ->
+    invalidateSemanticCaches (st {csGlobals = foldl' restore (csGlobals st) gs})
   pure r
 
 setGlobalReducible :: GName -> Bool -> CheckM ()
 setGlobalReducible g ok =
-  modify' $ \st -> st {csGlobals = Map.adjust (\gd -> gd {gdReducible = ok}) g (csGlobals st)}
-
-data TerminationResult
-  = TerminationUnverified
-  | TerminationTotalOnly
-  | TerminationConversionSafe
-  deriving stock (Eq, Show)
+  modify' $ \st ->
+    invalidateSemanticCaches
+      (st {csGlobals = Map.adjust (\gd -> gd {gdReducible = ok}) g (csGlobals st)})
 
 verifyTerminationScc :: [TerminationDecl] -> CheckM TerminationResult
 verifyTerminationScc tds = do
@@ -12121,7 +12628,7 @@ ctxNatLevels ctx =
       ty <- forceM (ceType e)
       let lvl = ctxLen ctx - 1 - i
       pure $ case ty of
-        VGlobN g [] | g == gPrel "Nat" -> Just lvl
+        VGlobN g [] | g == prelNat -> Just lvl
         _ -> Nothing)
 
 prepareTermFun :: TerminationDecl -> CheckM TermFun
@@ -12232,7 +12739,7 @@ relationExpectedType ctx measureTy flavor = do
   mTyTm <- quoteIn ctx measureTy
   let cod = case flavor of
         RelationReturnsType -> CSort 0
-        RelationReturnsBool -> CGlob (gPrel "Bool")
+        RelationReturnsBool -> CGlob prelBool
         RelationUnknown -> CSort 0
       tyTm = CPi Expl QW "_x" mTyTm (CPi Expl QW "_y" (shiftTerm 1 0 mTyTm) cod)
   evalIn ctx tyTm
@@ -12296,32 +12803,36 @@ collectFunEdges funMap src =
   go (tfDepth src) Map.empty Map.empty Set.empty [] [] (tfBody src)
   where
     sccNames = Map.keysSet funMap
-    paramRoot = Map.fromList [(lvl, ix) | (ix, lvl) <- zip [0 :: Int ..] (tfExplParams src)]
+    paramRoot = Map.fromList [(lvl, lvl) | lvl <- tfExplParams src]
 
     rootOf lvl sub = Map.lookup lvl sub <|> Map.lookup lvl paramRoot
 
     go :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> Term -> CheckM (Maybe [CallEdge])
     go d sub ho esc facts boolFacts t = case t of
       CApp {} -> do
-        if containsSccReference d ho esc t
-          then do
-            tNorm <- normalizeTermAt d t
-            if tNorm /= t
-              -- §15.11: transparent higher-order helpers are part of the
-              -- semantic call shape.  Do not reject the pre-normalized term
-              -- just because it appears to pass a partial recursive closure
-              -- through a helper; unfold the helper first, then classify the
-              -- actual application that remains.  However, transparent
-              -- normalization must not erase recursive calls that occur while
-              -- evaluating strict helper arguments, such as `ignore (f n)`.
-              -- Collect complete recursive calls from the original strict
-              -- subterms and combine them with the normalized semantic edge.
-              -- Incomplete partial calls are not charged here; they are either
-              -- exposed by transparent normalization or rejected as opaque
-              -- higher-order escape by 'goArg'.
-              then joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts t <*> go d sub ho esc facts boolFacts tNorm
+        case partialCallOf d ho t of
+          Just pc | Set.member (pcTarget pc) sccNames, partialCallComplete pc ->
+            collectApplication d sub ho esc facts boolFacts t
+          _ ->
+            if containsSccReference d ho esc t
+              then do
+                tNorm <- normalizeTermAt d t
+                if tNorm /= t
+                  -- §15.11: transparent higher-order helpers are part of the
+                  -- semantic call shape.  Do not reject the pre-normalized term
+                  -- just because it appears to pass a partial recursive closure
+                  -- through a helper; unfold the helper first, then classify the
+                  -- actual application that remains.  However, transparent
+                  -- normalization must not erase recursive calls that occur while
+                  -- evaluating strict helper arguments, such as `ignore (f n)`.
+                  -- Collect complete recursive calls from the original strict
+                  -- subterms and combine them with the normalized semantic edge.
+                  -- Incomplete partial calls are not charged here; they are either
+                  -- exposed by transparent normalization or rejected as opaque
+                  -- higher-order escape by 'goArg'.
+                  then joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts t <*> go d sub ho esc facts boolFacts tNorm
+                  else collectApplication d sub ho esc facts boolFacts t
               else collectApplication d sub ho esc facts boolFacts t
-          else collectApplication d sub ho esc facts boolFacts t
       CGlob callee | Set.member callee sccNames -> pure Nothing
       CVar i
         | Set.member (d - 1 - i) esc -> pure Nothing
@@ -12369,8 +12880,10 @@ collectFunEdges funMap src =
       CIf c th el -> do
         rc <- go d sub ho esc facts boolFacts c
         c' <- normalizeTermAt d c
-        rt <- go d sub ho esc (assumeBool d True c' ++ facts) ((c', True) : boolFacts) th
-        re <- go d sub ho esc (assumeBool d False c' ++ facts) ((c', False) : boolFacts) el
+        trueFacts <- assumeBoolM d True c'
+        falseFacts <- assumeBoolM d False c'
+        rt <- go d sub ho esc (trueFacts ++ facts) ((c', True) : boolFacts) th
+        re <- go d sub ho esc (falseFacts ++ facts) ((c', False) : boolFacts) el
         pure (joinManyEdges [rc, rt, re])
       CMatch scrut alts -> do
         rs <- go d sub ho esc facts boolFacts scrut
@@ -12394,7 +12907,9 @@ collectFunEdges funMap src =
               ho' = ho
           rg <- maybe (pure (Just [])) (go d' sub' ho' esc facts boolFacts) gd
           gd' <- traverse (normalizeTermAt d') gd
-          let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd'
+          patFacts <- comparePatternFactsM d scrut pat
+          guardFacts <- maybe (pure []) (assumeBoolM d' True) gd'
+          let facts' = guardFacts ++ patFacts ++ facts
               boolFacts' = maybe boolFacts (\guardTm -> (guardTm, True) : boolFacts) gd'
           rb <- go d' sub' ho' esc facts' boolFacts' b
           pure (joinEdges rg rb)
@@ -12467,8 +12982,10 @@ collectFunEdges funMap src =
       CIf c th el -> do
         rc <- collectStrictSubtermEdges d sub ho facts boolFacts c
         c' <- normalizeTermAt d c
-        rt <- collectStrictSubtermEdges d sub ho (assumeBool d True c' ++ facts) ((c', True) : boolFacts) th
-        re <- collectStrictSubtermEdges d sub ho (assumeBool d False c' ++ facts) ((c', False) : boolFacts) el
+        trueFacts <- assumeBoolM d True c'
+        falseFacts <- assumeBoolM d False c'
+        rt <- collectStrictSubtermEdges d sub ho (trueFacts ++ facts) ((c', True) : boolFacts) th
+        re <- collectStrictSubtermEdges d sub ho (falseFacts ++ facts) ((c', False) : boolFacts) el
         pure (joinManyEdges [rc, rt, re])
       CMatch scrut alts -> do
         rs <- collectStrictSubtermEdges d sub ho facts boolFacts scrut
@@ -12491,7 +13008,9 @@ collectFunEdges funMap src =
                 Nothing -> sub
           rg <- maybe (pure (Just [])) (collectStrictSubtermEdges d' sub' ho facts boolFacts) gd
           gd' <- traverse (normalizeTermAt d') gd
-          let facts' = maybe facts (\guardTm -> assumeBool d' True guardTm ++ facts) gd'
+          patFacts <- comparePatternFactsM d scrut pat
+          guardFacts <- maybe (pure []) (assumeBoolM d' True) gd'
+          let facts' = guardFacts ++ patFacts ++ facts
               boolFacts' = maybe boolFacts (\guardTm -> (guardTm, True) : boolFacts) gd'
           rb <- collectStrictSubtermEdges d' sub' ho facts' boolFacts' b
           pure (joinEdges rg rb)
@@ -12531,7 +13050,8 @@ collectFunEdges funMap src =
         ralts <- forM alts $ \(c, b) -> do
           rc <- collectStrictSubtermEdges d sub ho facts boolFacts c
           c' <- normalizeTermAt d c
-          rb <- joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho (assumeBool d True c' ++ facts) ((c', True) : boolFacts)) b
+          trueFacts <- assumeBoolM d True c'
+          rb <- joinManyEdges <$> mapM (collectStrictSubtermEdgesK d sub ho (trueFacts ++ facts) ((c', True) : boolFacts)) b
           pure (joinEdges rc rb)
         relse <- maybe (pure []) (mapM (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e
         pure (joinManyEdges (ralts ++ relse))
@@ -12673,7 +13193,8 @@ collectFunEdges funMap src =
         ralts <- forM alts $ \(c, b) -> do
           rc <- go d sub ho esc facts boolFacts c
           c' <- normalizeTermAt d c
-          rb <- joinManyEdges <$> mapM (goK d sub ho esc (assumeBool d True c' ++ facts) ((c', True) : boolFacts)) b
+          trueFacts <- assumeBoolM d True c'
+          rb <- joinManyEdges <$> mapM (goK d sub ho esc (trueFacts ++ facts) ((c', True) : boolFacts)) b
           pure (joinEdges rc rb)
         relse <- maybe (pure []) (mapM (goK d sub ho esc facts boolFacts)) e
         pure (joinManyEdges (ralts ++ relse))
@@ -12796,7 +13317,7 @@ structuralArgChange _src selected d sub = go
 structuralArgRoot :: TermFun -> Int -> Map Int Int -> Term -> Maybe Int
 structuralArgRoot src d sub t = do
   lvl <- structuralArgRootLevel d t
-  let paramRoot = Map.fromList [(lvl0, ix) | (ix, lvl0) <- zip [0 :: Int ..] (tfExplParams src)]
+  let paramRoot = Map.fromList [(lvl0, lvl0) | lvl0 <- tfExplParams src]
   Map.lookup lvl sub <|> Map.lookup lvl paramRoot
 
 structuralArgRootLevel :: Int -> Term -> Maybe Int
@@ -12877,38 +13398,6 @@ data MeasureCall = MeasureCall
   , mcProof :: !(Maybe Expr)
   , mcSource :: !TermFun
   }
-
-data AExpr
-  = AConst !Integer
-  | AVar !Int
-  | AScale !Integer !AExpr
-  | AAdd !AExpr !AExpr
-  | ASub !AExpr !AExpr
-  | AMul !AExpr !AExpr
-  | ADiv !AExpr !AExpr
-  | AMod !AExpr !AExpr
-  | ANeg !AExpr
-  | AMax !AExpr !AExpr
-  | AMin !AExpr !AExpr
-  deriving stock (Eq, Ord, Show)
-
-data ACmp = ACmpLt | ACmpLe | ACmpEq
-  deriving stock (Eq, Ord, Show)
-
-data AFact = AFact !ACmp !AExpr !AExpr
-  deriving stock (Eq, Ord, Show)
-
-data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
-  deriving stock (Eq, Show)
-
-data ALin = ALin !Integer !(Map.Map Int Integer)
-  deriving stock (Eq, Show)
-
-newtype Monomial = Monomial (Map.Map Int Int)
-  deriving stock (Eq, Ord, Show)
-
-newtype Poly = Poly (Map.Map Monomial Integer)
-  deriving stock (Eq, Show)
 
 measureSccOK :: Map GName TermFun -> CheckM Bool
 measureSccOK funMap = do
@@ -13047,312 +13536,197 @@ relationCallHolds natLvls d facts rel oldM newM = do
     RelationReturnsType -> proveTypeRelationTrue natLvls facts d goal
     RelationUnknown -> pure False
 
-rankComponents :: Term -> [Term]
-rankComponents = \case
-  CRecordV fs
-    | Just components <- tupleComponents fs -> map snd components
-  t -> [t]
-  where
-    tupleComponents fs = do
-      indexed <- traverse tupleField fs
-      let sorted = sortOn fst indexed
-      if map fst sorted == [1 .. length sorted]
-        then Just sorted
-        else Nothing
-
-    tupleField (nm, tm) = do
-      raw <- T.stripPrefix "_" nm
-      ix <- readMaybe (T.unpack raw)
-      if ix >= (1 :: Int)
-        then Just (ix, tm)
-        else Nothing
-
-instantiateByLevelMaybe :: Int -> Int -> Map.Map Int Term -> Term -> Maybe Term
-instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
-  where
-    go curDepth = \case
-      CVar i ->
-        let lvl = curDepth - 1 - i
-         in if lvl >= oldDepth
-              then Just (CVar i)
-              else case Map.lookup lvl subst of
-                Just arg -> Just (shiftTerm (curDepth - oldDepth) 0 arg)
-                Nothing -> Nothing
-      CGlob x -> Just (CGlob x)
-      CLam ic q n b -> CLam ic q n <$> go (curDepth + 1) b
-      CPi ic q n a b -> CPi ic q n <$> go curDepth a <*> go (curDepth + 1) b
-      CApp ic f a -> CApp ic <$> go curDepth f <*> go curDepth a
-      CSort u -> Just (CSort u)
-      CLit l -> Just (CLit l)
-      CCtor cg as -> CCtor cg <$> traverse (go curDepth) as
-      CMatch s alts ->
-        CMatch <$> go curDepth s <*> traverse goAlt alts
-        where
-          goAlt (CaseAlt pat gd b) =
-            CaseAlt pat
-              <$> traverse (go (curDepth + patBindersC pat)) gd
-              <*> go (curDepth + patBindersC pat) b
-      CRecordT fs -> CRecordT <$> traverseField curDepth fs
-      CRecordV fs -> CRecordV <$> traverseField curDepth fs
-      CProj e f -> CProj <$> go curDepth e <*> pure f
-      CProjAt e f i -> CProjAt <$> go curDepth e <*> pure f <*> pure i
-      CVariantT ms -> CVariantT <$> traverse (go curDepth) ms
-      CInject tag e -> CInject tag <$> go curDepth e
-      CLet q n a b c -> CLet q n <$> go curDepth a <*> go curDepth b <*> go (curDepth + 1) c
-      CLetRec q n a b c -> CLetRec q n <$> go curDepth a <*> go (curDepth + 1) b <*> go (curDepth + 1) c
-      CMeta m -> Just (CMeta m)
-      CDo {} -> Nothing
-      CSealE ls e -> CSealE ls <$> go curDepth e
-      CSigT ls e -> CSigT ls <$> go curDepth e
-      CThunkE e -> CThunkE <$> go curDepth e
-      CLazyE e -> CLazyE <$> go curDepth e
-      CForceE e -> CForceE <$> go curDepth e
-      CIf a b c -> CIf <$> go curDepth a <*> go curDepth b <*> go curDepth c
-      CQuote qs slots -> CQuote qs <$> traverse (go curDepth) slots
-
-    traverseField curDepth fs = traverse (\(n, x) -> (,) n <$> go curDepth x) fs
-
 -- ── Normalization and arithmetic evidence ────────────────────────────
 
 normalizeTermAt :: Int -> Term -> CheckM Term
 normalizeTermAt d t = do
-  ec <- ec_
-  if maxFreeIndexTerm t >= d
-    then pure (simplifyDecisionTerm t)
-    else do
-      let env = [VRigid lvl [] | lvl <- [d - 1, d - 2 .. 0]]
-          v = force ec (eval ec env t)
-      pure (simplifyDecisionTerm (quote ec d v))
+  st <- get
+  -- 'csFacts' alters conversion-time reduction of rigids.  Rather than trying
+  -- to serialize arbitrary 'Value' facts into a cache key, bypass the cache
+  -- while such facts are active.  Boolean branch facts are handled at the
+  -- proposition-cache layer, not here.
+  let cacheable = Map.null (csFacts st) && null (unsolvedMetasOf st t)
+      key = NormCacheKey (csNormEpoch st) d (renderStructuralTermKey t)
+  case if cacheable then Map.lookup key (csNormCache st) else Nothing of
+    Just cached -> pure cached
+    Nothing -> do
+      ec <- ec_
+      let normalized =
+            if maxFreeIndexTerm t >= d
+              then simplifyDecisionTerm t
+              else
+                let env = [VRigid lvl [] | lvl <- [d - 1, d - 2 .. 0]]
+                    v = force ec (eval ec env t)
+                 in simplifyDecisionTerm (quote ec d v)
+      let storeable = cacheable && null (unsolvedMetasOf st normalized)
+      when storeable $
+        modify' $ \s ->
+          s {csNormCache = boundedInsert maxNormCacheEntries key normalized (csNormCache s)}
+      pure normalized
 
-maxFreeIndexTerm :: Term -> Int
-maxFreeIndexTerm = go 0
-  where
-    go depth = \case
-      CVar i -> if i >= depth then i - depth else -1
-      CGlob _ -> -1
-      CLam _ _ _ b -> go (depth + 1) b
-      CPi _ _ _ a b -> max (go depth a) (go (depth + 1) b)
-      CApp _ f a -> max (go depth f) (go depth a)
-      CSort _ -> -1
-      CLit _ -> -1
-      CCtor _ as -> maximum (-1 : map (go depth) as)
-      CMatch s alts ->
-        maximum
-          ( -1
-              : go depth s
-              : [ max (maybe (-1) (go (depth + patBindersC p)) gd) (go (depth + patBindersC p) b)
-                | CaseAlt p gd b <- alts
-                ]
-          )
-      CRecordT fs -> maximum (-1 : map (go depth . snd) fs)
-      CRecordV fs -> maximum (-1 : map (go depth . snd) fs)
-      CProj e _ -> go depth e
-      CProjAt e _ _ -> go depth e
-      CVariantT ms -> maximum (-1 : map (go depth) ms)
-      CInject _ e -> go depth e
-      CLet _ _ a b c -> maximum [go depth a, go depth b, go (depth + 1) c]
-      CLetRec _ _ a b c -> maximum [go depth a, go (depth + 1) b, go (depth + 1) c]
-      CMeta _ -> -1
-      CDo _ _ -> -1
-      CSealE _ e -> go depth e
-      CSigT _ e -> go depth e
-      CThunkE e -> go depth e
-      CLazyE e -> go depth e
-      CForceE e -> go depth e
-      CIf a b c -> maximum [go depth a, go depth b, go depth c]
-      CQuote _ slots -> maximum (-1 : map (go depth) slots)
-
-simplifyDecisionTerm :: Term -> Term
-simplifyDecisionTerm = go
-  where
-    go = \case
-      CIf c t e ->
-        let c' = go c
-            t' = go t
-            e' = go e
-         in case (c', t', e') of
-              (CCtor g [], _, _) | g == gPrel "True" -> t'
-              (CCtor g [], _, _) | g == gPrel "False" -> e'
-              (_, CCtor gt [], CCtor gf []) | gt == gPrel "True", gf == gPrel "False" -> c'
-              _ -> CIf c' t' e'
-      CMatch (CIf c t e) alts | all ((== 0) . patBindersC . caPat) alts ->
-        go (CIf c (CMatch t alts) (CMatch e alts))
-      CMatch s alts ->
-        let s' = go s
-            alts' = [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
-         in fromMaybe (CMatch s' alts') (reduceSimpleMatch s' alts')
-      CApp ic f a -> CApp ic (go f) (go a)
-      CLam ic q n b -> CLam ic q n (go b)
-      CPi ic q n a b -> CPi ic q n (go a) (go b)
-      CCtor g as -> CCtor g (map go as)
-      CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
-      CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
-      CProj e f -> CProj (go e) f
-      CProjAt e f i -> CProjAt (go e) f i
-      CVariantT ms -> CVariantT (map go ms)
-      CInject tag e -> CInject tag (go e)
-      CLet q n a b c -> CLet q n (go a) (go b) (go c)
-      CLetRec q n a b c -> CLetRec q n (go a) (go b) (go c)
-      CThunkE e -> CThunkE (go e)
-      CLazyE e -> CLazyE (go e)
-      CForceE e -> CForceE (go e)
-      CSealE ls e -> CSealE ls (go e)
-      CSigT ls e -> CSigT ls (go e)
-      CQuote qs slots -> CQuote qs (map go slots)
-      other -> other
-
-    reduceSimpleMatch s alts = firstJust (map fire alts)
-      where
-        fire (CaseAlt p Nothing b)
-          | patBindersC p == 0
-          , simplePatMatches p s = Just b
-        fire _ = Nothing
-
-    simplePatMatches p s = case (p, s) of
-      (CPWild, _) -> True
-      (CPLit l, CLit l') -> l == l'
-      (CPCtor g [], CCtor g' []) -> g == g'
-      (CPInject tag CPWild, CInject tag' _) -> tag == tag'
-      (CPOr ps _, _) -> any (`simplePatMatches` s) ps
-      (CPAs _ p', _) -> simplePatMatches p' s
-      _ -> False
-
-    firstJust [] = Nothing
-    firstJust (Just x : _) = Just x
-    firstJust (Nothing : xs) = firstJust xs
-
-assumeBool :: Int -> Bool -> Term -> [AFact]
-assumeBool d truth t = case boolRel d t of
-  Nothing -> []
-  Just fact -> case if truth then Just fact else negateFact fact of
+assumeBoolM :: Int -> Bool -> Term -> CheckM [AFact]
+assumeBoolM d truth t = do
+  mFact <- boolRelBranchM d t
+  pure $ case mFact >>= if truth then Just else negateFact of
     Just assumed -> [assumed]
     Nothing -> []
 
-negateFact :: AFact -> Maybe AFact
-negateFact = \case
-  AFact ACmpLt a b -> Just (AFact ACmpLe b a) -- not (a < b)  ==> b <= a
-  AFact ACmpLe a b -> Just (AFact ACmpLt b a) -- not (a <= b) ==> b < a
-  -- Disequality is useful, but not in the one-sided arithmetic fact language
-  -- used here.  Do not encode it as contradiction; an SMT backend would then
-  -- prove arbitrary goals on reachable `else` branches.
-  AFact ACmpEq _ _ -> Nothing
-
-data IntArithPrim
-  = PrimAddInt
-  | PrimSubInt
-  | PrimMulInt
-  | PrimDivInt
-  | PrimModInt
-  | PrimNegInt
-  | PrimNatToInt
-  | PrimNatOfInt
-  | PrimIntToNat
-  deriving stock (Eq, Show)
-
-data IntCmpPrim = PrimLtInt | PrimLeInt | PrimEqInt
-  deriving stock (Eq, Show)
-
--- | Trusted arithmetic semantics are attached only to kernel primitives and
--- their standard prelude primitive aliases. User helpers and overloaded
--- operators become visible to this table only by normalizing through their
--- definitions; their surface spelling is irrelevant.
-intArithPrim :: GName -> Maybe IntArithPrim
-intArithPrim (GName m p)
-  | not (trustedIntPrimModule m) = Nothing
-  | otherwise = case p of
-      "addInt" -> Just PrimAddInt
-      "subInt" -> Just PrimSubInt
-      "mulInt" -> Just PrimMulInt
-      "divInt" -> Just PrimDivInt
-      "modInt" -> Just PrimModInt
-      "negInt" -> Just PrimNegInt
-      "natToInt" -> Just PrimNatToInt
-      "natOfInt" -> Just PrimNatOfInt
-      "intToNat" -> Just PrimIntToNat
-      _ -> Nothing
-
-intCmpPrim :: GName -> Maybe IntCmpPrim
-intCmpPrim (GName m p)
-  | not (trustedIntPrimModule m) = Nothing
-  | otherwise = case p of
-      "ltInt" -> Just PrimLtInt
-      "leInt" -> Just PrimLeInt
-      "eqInt" -> Just PrimEqInt
-      _ -> Nothing
-
-trustedIntPrimModule :: ModuleName -> Bool
-trustedIntPrimModule m = m == primModule || m == preludeModule
-
-boolRel :: Int -> Term -> Maybe AFact
-boolRel d t0 = case simplifyDecisionTerm t0 of
+-- | Classify a boolean known from control flow into arithmetic evidence
+-- without normalizing arbitrary function calls.  Branch conditions may be
+-- recursive, effectful after erasure, or simply large; they are proof sources
+-- only when their surface Core shape is already an arithmetic comparison.
+-- Losing a branch fact is conservative, while unfolding a recursive condition
+-- during checked arithmetic can make elaboration non-terminating.
+boolRelBranchM :: Int -> Term -> CheckM (Maybe AFact)
+boolRelBranchM d t0 = case simplifyDecisionTerm t0 of
   CIf c th el
-    | isTrueTm th, isFalseTm el -> boolRel d c
-    | isFalseTm th, isTrueTm el -> boolRel d c >>= negateFact
+    | isTrueTm th, isFalseTm el -> boolRelBranchM d c
+    | isFalseTm th, isTrueTm el -> (>>= negateFact) <$> boolRelBranchM d c
     | isTrueTm th -> do
-        cFact <- boolRel d c
-        elFact <- boolRel d el
-        combineOr cFact elFact
-  t -> case spineOfTerm t of
-    (CGlob rg, args) -> do
-      let ex = [a | (Expl, a) <- args]
-      (a, b) <- last2 ex
-      aa <- arithOf d a
-      bb <- arithOf d b
-      case intCmpPrim rg of
-        Just PrimLtInt -> pure (AFact ACmpLt aa bb)
-        Just PrimLeInt -> pure (AFact ACmpLe aa bb)
-        Just PrimEqInt -> pure (AFact ACmpEq aa bb)
-        Nothing -> Nothing
-    _ -> Nothing
+        cFact <- boolRelBranchM d c
+        elFact <- boolRelBranchM d el
+        pure (cFact >>= \cf -> elFact >>= combineOr cf)
+  t -> case boolRel d t of
+    Just fact -> pure (Just fact)
+    Nothing -> compareMatchRelBranchM d t
   where
-    isTrueTm = \case CCtor g [] -> g == gPrel "True"; _ -> False
-    isFalseTm = \case CCtor g [] -> g == gPrel "False"; _ -> False
+    isTrueTm = \case CCtor g [] -> g == prelTrue; _ -> False
+    isFalseTm = \case CCtor g [] -> g == prelFalse; _ -> False
     combineOr (AFact ACmpLt a b) (AFact ACmpEq a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr (AFact ACmpEq a b) (AFact ACmpLt a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr _ _ = Nothing
 
-arithOf :: Int -> Term -> Maybe AExpr
-arithOf d t0 = case simplifyDecisionTerm t0 of
-  CLit (LitInt n) -> Just (AConst n)
-  CVar i -> Just (AVar (d - 1 - i))
-  CIf c th el -> arithIf c th el
-  t@CApp {} -> arithApp t
-  _ -> Nothing
+comparePatternFactsM :: Int -> Term -> CorePat -> CheckM [AFact]
+comparePatternFactsM d scrut pat = do
+  mArgs <- primitiveOrderedCompareArgs d scrut
+  pure $ case mArgs of
+    Just (aa, bb) -> maybeToList $ do
+      mkFact <- compareCtorFact pat
+      pure (mkFact aa bb)
+    Nothing -> []
   where
-    arithIf c th el = do
-      fact <- boolRel d c
-      aThen <- arithOf d th
-      aElse <- arithOf d el
-      case fact of
-        AFact cmp x y | cmp == ACmpLe || cmp == ACmpLt ->
-          if aThen == y && aElse == x
-            then Just (AMax x y)
-            else if aThen == x && aElse == y
-              then Just (AMin x y)
-              else Nothing
-        _ -> Nothing
-
-    arithApp t = case spineOfTerm t of
-      (CGlob fg, args) -> do
-        let ex = [a | (Expl, a) <- args]
-            bin f = do
-              (a, b) <- last2 ex
-              f <$> arithOf d a <*> arithOf d b
-            un f = do
-              a <- lastMaybe ex
-              f <$> arithOf d a
-        case intArithPrim fg of
-          Just PrimAddInt -> bin AAdd
-          Just PrimSubInt -> bin ASub
-          Just PrimMulInt -> bin AMul
-          Just PrimDivInt -> bin ADiv
-          Just PrimModInt -> bin AMod
-          Just PrimNegInt -> un ANeg
-          Just PrimNatToInt -> un id
-          Just PrimNatOfInt -> un id
-          Just PrimIntToNat -> un id
-          Nothing -> Nothing
+    compareCtorFact = \case
+      CPCtor g [] | g == prelLT -> Just (\a b -> AFact ACmpLt a b)
+      CPCtor g [] | g == prelEQ -> Just (\a b -> AFact ACmpEq a b)
+      CPCtor g [] | g == prelGT -> Just (\a b -> AFact ACmpLt b a)
       _ -> Nothing
+
+compareMatchRelBranchM :: Int -> Term -> CheckM (Maybe AFact)
+compareMatchRelBranchM d = \case
+  CMatch scrut alts -> do
+    mArgs <- primitiveOrderedCompareArgsRaw d scrut
+    pure $ do
+      (aa, bb) <- mArgs
+      cmp <- compareBoolMatch alts
+      pure $ case cmp of
+        CompareLt -> AFact ACmpLt aa bb
+        CompareLe -> AFact ACmpLe aa bb
+        CompareGt -> AFact ACmpLt bb aa
+        CompareGe -> AFact ACmpLe bb aa
+  _ -> pure Nothing
+
+data CompareBoolMatch = CompareLt | CompareLe | CompareGt | CompareGe
+  deriving stock (Eq, Show)
+
+compareBoolMatch :: [CaseAlt] -> Maybe CompareBoolMatch
+compareBoolMatch alts = do
+  branches <- traverse compareBoolBranch alts
+  let tags = sort [tag | (tag, _) <- branches]
+      expectedTags = ["EQ", "GT", "LT"] :: [Text]
+  unlessMaybe (tags == expectedTags)
+  lt <- lookup "LT" branches
+  eq <- lookup "EQ" branches
+  gt <- lookup "GT" branches
+  case (lt, eq, gt) of
+    (True, False, False) -> Just CompareLt
+    (True, True, False) -> Just CompareLe
+    (False, False, True) -> Just CompareGt
+    (False, True, True) -> Just CompareGe
+    _ -> Nothing
+  where
+    unlessMaybe True = Just ()
+    unlessMaybe False = Nothing
+
+    compareBoolBranch :: CaseAlt -> Maybe (Text, Bool)
+    compareBoolBranch (CaseAlt (CPCtor g []) Nothing body)
+      | g == prelLT = (\b -> ("LT", b)) <$> boolBody body
+      | g == prelEQ = (\b -> ("EQ", b)) <$> boolBody body
+      | g == prelGT = (\b -> ("GT", b)) <$> boolBody body
+    compareBoolBranch _ = Nothing
+
+    boolBody = \case
+      CCtor g [] | g == prelTrue -> Just True
+      CCtor g [] | g == prelFalse -> Just False
+      _ -> Nothing
+
+primitiveOrderedCompareArgs :: Int -> Term -> CheckM (Maybe (AExpr, AExpr))
+primitiveOrderedCompareArgs d t = do
+  raw <- primitiveOrderedCompareArgsRaw d t
+  case raw of
+    Just args -> pure (Just args)
+    Nothing -> do
+      t' <- normalizeTermAt d t
+      pure (primitiveCompareShape d t')
+
+primitiveOrderedCompareArgsRaw :: Int -> Term -> CheckM (Maybe (AExpr, AExpr))
+primitiveOrderedCompareArgsRaw d t =
+  case rawCompareArgs t of
+    Just (tyArg, dictArg, aa, bb) -> do
+      ok <- standardPrimitiveOrdDict tyArg dictArg
+      pure (if ok then Just (aa, bb) else Nothing)
+    Nothing -> pure Nothing
+  where
+    rawCompareArgs :: Term -> Maybe (Term, Term, AExpr, AExpr)
+    rawCompareArgs x = case spineOfTerm x of
+      (CGlob g, args)
+        | g == prelCompare -> do
+            let impls = [a | (Impl, a) <- args]
+                ex = [a | (Expl, a) <- args]
+            case (impls, last2 ex) of
+              (tyArg : dictArg : _, Just (a, b))
+                | primitiveOrderedType tyArg -> do
+                    aa <- arithOf d a
+                    bb <- arithOf d b
+                    Just (tyArg, dictArg, aa, bb)
+              _ -> Nothing
+      _ -> Nothing
+
+primitiveCompareShape :: Int -> Term -> Maybe (AExpr, AExpr)
+primitiveCompareShape d t0 = case simplifyDecisionTerm t0 of
+  CIf lt (CCtor ltG []) (CIf eq (CCtor eqG []) (CCtor gtG []))
+    | ltG == prelLT
+    , eqG == prelEQ
+    , gtG == prelGT -> do
+        AFact ACmpLt a b <- boolRel d lt
+        AFact ACmpEq a' b' <- boolRel d eq
+        if a == a' && b == b'
+          then Just (a, b)
+          else Nothing
+  _ -> Nothing
+
+primitiveOrderedType :: Term -> Bool
+primitiveOrderedType ty =
+  ty == CGlob prelInteger
+    || ty == CGlob prelNat
+
+standardPrimitiveOrdDict :: Term -> Term -> CheckM Bool
+standardPrimitiveOrdDict ty = \case
+  CGlob dictG -> do
+    instances <- gets csInstances
+    pure $
+      any
+        ( \ie ->
+            ieDict ie == dictG
+              && dictG `gnameInModule` preludeModule
+              && ieTrait ie == prelOrd
+              && null (iePremises ie)
+              && ieHead ie == [ty]
+        )
+        instances
+  _ -> pure False
+
+gnameInModule :: GName -> ModuleName -> Bool
+gnameInModule (GName m _) target = m == target
 
 proveLt :: Set Int -> [AFact] -> Int -> Term -> Term -> CheckM Bool
 proveLt natLvls facts d lhs rhs = do
@@ -13383,7 +13757,7 @@ proveBoolTrue :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
 proveBoolTrue natLvls facts d t = do
   t' <- normalizeTermAt d t
   case t' of
-    CCtor g [] | g == gPrel "True" -> pure True
+    CCtor g [] | g == prelTrue -> pure True
     _ -> case boolRel d t' of
       Just fact -> proveFact natLvls facts fact
       Nothing -> pure False
@@ -13403,12 +13777,12 @@ proveTypeRelationTrue natLvls facts d t = do
 boolEqualityTruePayload :: Term -> Maybe Term
 boolEqualityTruePayload t = case spineOfTerm t of
   (CGlob eqG, args)
-    | eqG == gPrel "=" -> do
+    | eqG == prelEqType -> do
         let ex = [a | (Expl, a) <- args]
         (lhs, rhs) <- last2 ex
         case (lhs, rhs) of
-          (_, CCtor g []) | g == gPrel "True" -> Just lhs
-          (CCtor g [], _) | g == gPrel "True" -> Just rhs
+          (_, CCtor g []) | g == prelTrue -> Just lhs
+          (CCtor g [], _) | g == prelTrue -> Just rhs
           _ -> Nothing
   _ -> Nothing
 
@@ -13417,348 +13791,6 @@ proveFact natLvls facts goal =
   if proveFactByBounds natLvls facts goal
     then pure True
     else pure False
-
-proveFactByBounds :: Set Int -> [AFact] -> AFact -> Bool
-proveFactByBounds natLvls facts = \case
-  AFact ACmpLt a b -> lowerBoundExpr natLvls facts (simplifyA natLvls facts (ASub b a)) >= Just 1
-  AFact ACmpLe a b -> lowerBoundExpr natLvls facts (simplifyA natLvls facts (ASub b a)) >= Just 0
-  AFact ACmpEq a b -> isZeroArithmetic (simplifyA natLvls facts (ASub a b))
-
-isZeroArithmetic :: AExpr -> Bool
-isZeroArithmetic expr =
-  case polyOf expr of
-    Just p -> polyIsZero p
-    Nothing -> case linOf expr of
-      Just (ALin c coeffs) -> c == 0 && all (== 0) (Map.elems coeffs)
-      Nothing -> False
-
-simplifyA :: Set Int -> [AFact] -> AExpr -> AExpr
-simplifyA natLvls facts = go
-  where
-    go = \case
-      AScale k a -> case go a of
-        AConst n -> AConst (k * n)
-        a'
-          | k == 0 -> AConst 0
-          | k == 1 -> a'
-          | k == -1 -> ANeg a'
-          | otherwise -> AScale k a'
-      AAdd a b -> foldConst AAdd (+) (go a) (go b)
-      ASub a b -> foldConst ASub (-) (go a) (go b)
-      AMul a b -> simplifyMul (go a) (go b)
-      ADiv a b -> simplifyDiv (go a) (go b)
-      AMod a b -> simplifyMod (go a) (go b)
-      ANeg a -> case go a of
-        AConst k -> AConst (negate k)
-        a' -> ANeg a'
-      AMax a b -> simplifyMax (go a) (go b)
-      AMin a b -> simplifyMin (go a) (go b)
-      other -> other
-
-    simplifyMul a b = case (a, b) of
-      (AConst x, AConst y) -> AConst (x * y)
-      (AConst 0, _) -> AConst 0
-      (_, AConst 0) -> AConst 0
-      (AConst 1, x) -> x
-      (x, AConst 1) -> x
-      (AConst (-1), x) -> ANeg x
-      (x, AConst (-1)) -> ANeg x
-      (AConst k, x) -> AScale k x
-      (x, AConst k) -> AScale k x
-      _ -> AMul a b
-
-    simplifyDiv a b = case (a, b) of
-      (AConst x, AConst y) | y /= 0 -> AConst (x `quot` y)
-      (x, AConst 1) -> x
-      _ -> ADiv a b
-
-    simplifyMod a b = case (a, b) of
-      (AConst x, AConst y) | y /= 0 -> AConst (x `rem` y)
-      (_, AConst 1) -> AConst 0
-      _ -> AMod a b
-
-    simplifyMax a b = case (a, b) of
-      (AConst x, AConst y) -> AConst (max x y)
-      (AConst 0, x)
-        | Just lb <- lowerBoundRaw natLvls facts x, lb >= 0 -> x
-        | Just ub <- upperBoundRaw natLvls facts x, ub <= 0 -> AConst 0
-      (x, AConst 0)
-        | Just lb <- lowerBoundRaw natLvls facts x, lb >= 0 -> x
-        | Just ub <- upperBoundRaw natLvls facts x, ub <= 0 -> AConst 0
-      _ -> AMax a b
-
-    simplifyMin a b = case (a, b) of
-      (AConst x, AConst y) -> AConst (min x y)
-      _ -> AMin a b
-
-    foldConst ctor op a b = case (a, b) of
-      (AConst x, AConst y) -> AConst (op x y)
-      _ -> ctor a b
-
-lowerBoundExpr :: Set Int -> [AFact] -> AExpr -> Maybe Integer
-lowerBoundExpr natLvls facts expr =
-  case linOf expr >>= lowerBoundLin natLvls facts of
-    Just lb -> Just lb
-    Nothing -> case polyOf expr >>= lowerBoundPoly natLvls facts of
-      Just lb -> Just lb
-      Nothing -> lowerBound natLvls facts expr
-
-lowerBoundLin :: Set Int -> [AFact] -> ALin -> Maybe Integer
-lowerBoundLin natLvls facts lin@(ALin c coeffs) =
-  bestMaybe $
-    foldM addCoeff c (Map.toList coeffs)
-      : map (factLowerBound lin) facts
-  where
-    addCoeff acc (v, k)
-      | k == 0 = Just acc
-      | k > 0 = (+ acc) . (* k) <$> lowerOf (varBounds natLvls facts v)
-      | otherwise = (+ acc) . (* k) <$> upperOf (varBounds natLvls facts v)
-
-    bestMaybe xs = case catMaybes xs of
-      [] -> Nothing
-      ys -> Just (maximum ys)
-
-    factLowerBound query fact =
-      case fact of
-        AFact ACmpLt a b -> affineDiffLower 1 query a b
-        AFact ACmpLe a b -> affineDiffLower 0 query a b
-        AFact ACmpEq a b ->
-          affineDiffLower 0 query a b <|> affineDiffLower 0 query b a
-
-    affineDiffLower base query smaller larger = do
-      diff <- linOf (ASub larger smaller)
-      queryAsDiffPlusConst base query diff
-
-    queryAsDiffPlusConst base (ALin qc qm) (ALin dc dm)
-      | qm == dm = Just (base + qc - dc)
-      | otherwise = Nothing
-
-lowerBound :: Set Int -> [AFact] -> AExpr -> Maybe Integer
-lowerBound natLvls facts = lowerOf . boundsA natLvls facts
-
-lowerBoundRaw :: Set Int -> [AFact] -> AExpr -> Maybe Integer
-lowerBoundRaw natLvls facts = lowerOf . boundsRaw natLvls facts
-
-upperBoundRaw :: Set Int -> [AFact] -> AExpr -> Maybe Integer
-upperBoundRaw natLvls facts = upperOf . boundsRaw natLvls facts
-
-boundsA :: Set Int -> [AFact] -> AExpr -> ABounds
-boundsA natLvls facts = boundsRaw natLvls facts . simplifyA natLvls facts
-
-boundsRaw :: Set Int -> [AFact] -> AExpr -> ABounds
-boundsRaw natLvls facts expr = case expr of
-  AConst k -> ABounds (Just k) (Just k)
-  AVar v -> varBounds natLvls facts v
-  AScale k a -> scaleBounds k (boundsRaw natLvls facts a)
-  AAdd a b -> addBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
-  ASub a b -> subBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
-  AMul a b -> mulBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
-  ADiv {} -> ABounds Nothing Nothing
-  AMod {} -> ABounds Nothing Nothing
-  ANeg a -> negBounds (boundsRaw natLvls facts a)
-  AMax a b -> maxBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
-  AMin a b -> minBounds (boundsRaw natLvls facts a) (boundsRaw natLvls facts b)
-
-varBounds :: Set Int -> [AFact] -> Int -> ABounds
-varBounds natLvls facts v =
-  let start = ABounds (if Set.member v natLvls then Just 0 else Nothing) Nothing
-   in foldl' addFact start facts
-  where
-    addFact b = \case
-      AFact ACmpLe (AVar x) (AConst c) | x == v -> tightenUpper c b
-      AFact ACmpLe (AConst c) (AVar x) | x == v -> tightenLower c b
-      AFact ACmpLt (AVar x) (AConst c) | x == v -> tightenUpper (c - 1) b
-      AFact ACmpLt (AConst c) (AVar x) | x == v -> tightenLower (c + 1) b
-      AFact ACmpEq (AVar x) (AConst c) | x == v -> tightenUpper c (tightenLower c b)
-      AFact ACmpEq (AConst c) (AVar x) | x == v -> tightenUpper c (tightenLower c b)
-      _ -> b
-
-addBounds, subBounds :: ABounds -> ABounds -> ABounds
-addBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds ((+) <$> l1 <*> l2) ((+) <$> u1 <*> u2)
-subBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds ((-) <$> l1 <*> u2) ((-) <$> u1 <*> l2)
-
-negBounds :: ABounds -> ABounds
-negBounds (ABounds l u) = ABounds (negate <$> u) (negate <$> l)
-
-scaleBounds :: Integer -> ABounds -> ABounds
-scaleBounds k b@(ABounds l u)
-  | k == 0 = ABounds (Just 0) (Just 0)
-  | k > 0 = ABounds ((* k) <$> l) ((* k) <$> u)
-  | otherwise = scaleBounds (negate k) (negBounds b)
-
-mulBounds :: ABounds -> ABounds -> ABounds
-mulBounds b1@(ABounds l1 u1) b2@(ABounds l2 u2)
-  | Just xs <- sequence [l1, u1, l2, u2] =
-      let products = [x * y | x <- take 2 xs, y <- drop 2 xs]
-       in ABounds (Just (minimum products)) (Just (maximum products))
-  | Just lo1 <- l1
-  , Just lo2 <- l2
-  , lo1 >= 0
-  , lo2 >= 0 = ABounds (Just (lo1 * lo2)) ((*) <$> u1 <*> u2)
-  | otherwise = conservativeMul b1 b2
-  where
-    conservativeMul (ABounds (Just 0) (Just 0)) _ = ABounds (Just 0) (Just 0)
-    conservativeMul _ (ABounds (Just 0) (Just 0)) = ABounds (Just 0) (Just 0)
-    conservativeMul _ _ = ABounds Nothing Nothing
-
-maxBounds, minBounds :: ABounds -> ABounds -> ABounds
-maxBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds (maxKnown l1 l2) (maxBoth u1 u2)
-minBounds (ABounds l1 u1) (ABounds l2 u2) = ABounds (minBoth l1 l2) (minKnown u1 u2)
-
-lowerOf, upperOf :: ABounds -> Maybe Integer
-lowerOf (ABounds l _) = l
-upperOf (ABounds _ u) = u
-
-tightenLower :: Integer -> ABounds -> ABounds
-tightenLower x (ABounds l u) = ABounds (maxKnown l (Just x)) u
-
-tightenUpper :: Integer -> ABounds -> ABounds
-tightenUpper x (ABounds l u) = ABounds l (minKnown u (Just x))
-
-maxKnown, minKnown, maxBoth, minBoth :: Maybe Integer -> Maybe Integer -> Maybe Integer
-maxKnown (Just a) (Just b) = Just (max a b)
-maxKnown a Nothing = a
-maxKnown Nothing b = b
-
-minKnown (Just a) (Just b) = Just (min a b)
-minKnown a Nothing = a
-minKnown Nothing b = b
-
-maxBoth (Just a) (Just b) = Just (max a b)
-maxBoth _ _ = Nothing
-
-minBoth (Just a) (Just b) = Just (min a b)
-minBoth _ _ = Nothing
-
-linOf :: AExpr -> Maybe ALin
-linOf = \case
-  AConst k -> Just (ALin k Map.empty)
-  AVar v -> Just (ALin 0 (Map.singleton v 1))
-  AScale k a -> scaleLin k <$> linOf a
-  AAdd a b -> addLin <$> linOf a <*> linOf b
-  ASub a b -> subLin <$> linOf a <*> linOf b
-  AMul (AConst k) a -> scaleLin k <$> linOf a
-  AMul a (AConst k) -> scaleLin k <$> linOf a
-  ANeg a -> scaleLin (-1) <$> linOf a
-  _ -> Nothing
-
-addLin, subLin :: ALin -> ALin -> ALin
-addLin (ALin c1 m1) (ALin c2 m2) = ALin (c1 + c2) (Map.filter (/= 0) (Map.unionWith (+) m1 m2))
-subLin x y = addLin x (scaleLin (-1) y)
-
-scaleLin :: Integer -> ALin -> ALin
-scaleLin k (ALin c m) = ALin (k * c) (Map.filter (/= 0) (Map.map (k *) m))
-
-polyOf :: AExpr -> Maybe Poly
-polyOf = \case
-  AConst k -> Just (polyConst k)
-  AVar v -> Just (polyVar v)
-  AScale k a -> polyScale k <$> polyOf a
-  AAdd a b -> polyAdd <$> polyOf a <*> polyOf b
-  ASub a b -> polySub <$> polyOf a <*> polyOf b
-  AMul a b -> polyMul <$> polyOf a <*> polyOf b
-  ANeg a -> polyScale (-1) <$> polyOf a
-  -- Max/min are piecewise arithmetic and division/remainder in Kappa use
-  -- host quot/rem semantics.  They are left to interval reasoning or rejected
-  -- by the SMT backend rather than silently assigned different mathematics.
-  AMax {} -> Nothing
-  AMin {} -> Nothing
-  ADiv {} -> Nothing
-  AMod {} -> Nothing
-
-polyConst :: Integer -> Poly
-polyConst 0 = Poly Map.empty
-polyConst k = Poly (Map.singleton (Monomial Map.empty) k)
-
-polyVar :: Int -> Poly
-polyVar v = Poly (Map.singleton (Monomial (Map.singleton v 1)) 1)
-
-polyAdd, polySub, polyMul :: Poly -> Poly -> Poly
-polyAdd (Poly a) (Poly b) = normalizePoly (Poly (Map.unionWith (+) a b))
-polySub p q = polyAdd p (polyScale (-1) q)
-polyMul (Poly a) (Poly b) =
-  normalizePoly $
-    Poly $
-      Map.fromListWith (+)
-        [ (mulMonomial ma mb, ca * cb)
-        | (ma, ca) <- Map.toList a
-        , (mb, cb) <- Map.toList b
-        ]
-
-polyScale :: Integer -> Poly -> Poly
-polyScale k (Poly p)
-  | k == 0 = Poly Map.empty
-  | otherwise = normalizePoly (Poly (Map.map (k *) p))
-
-normalizePoly :: Poly -> Poly
-normalizePoly (Poly p) = Poly (Map.filter (/= 0) p)
-
-polyIsZero :: Poly -> Bool
-polyIsZero (Poly p) = Map.null p
-
-mulMonomial :: Monomial -> Monomial -> Monomial
-mulMonomial (Monomial a) (Monomial b) = Monomial (Map.filter (> 0) (Map.unionWith (+) a b))
-
-lowerBoundPoly :: Set Int -> [AFact] -> Poly -> Maybe Integer
-lowerBoundPoly natLvls facts (Poly p) = foldM addTerm 0 (Map.toList p)
-  where
-    addTerm acc (mono, coeff)
-      | coeff == 0 = Just acc
-      | coeff > 0 = do
-          lb <- lowerOf (boundsMonomial natLvls facts mono)
-          pure (acc + coeff * lb)
-      | otherwise = do
-          ub <- upperOf (boundsMonomial natLvls facts mono)
-          pure (acc + coeff * ub)
-
-boundsMonomial :: Set Int -> [AFact] -> Monomial -> ABounds
-boundsMonomial natLvls facts (Monomial powers) =
-  foldl' mulBounds (ABounds (Just 1) (Just 1))
-    [ powBounds power (varBounds natLvls facts v)
-    | (v, pow) <- Map.toList powers
-    , let power = pow
-    ]
-
-powBounds :: Int -> ABounds -> ABounds
-powBounds e b
-  | e <= 0 = ABounds (Just 1) (Just 1)
-  | e == 1 = b
-powBounds e (ABounds (Just l) (Just u))
-  | l >= 0 = ABounds (Just (l ^ e)) (Just (u ^ e))
-  | u <= 0 =
-      let lo = if even e then min (l ^ e) (u ^ e) else l ^ e
-          hi = if even e then max (l ^ e) (u ^ e) else u ^ e
-       in ABounds (Just lo) (Just hi)
-  | even e = ABounds (Just 0) (Just (max (abs l) (abs u) ^ e))
-  | otherwise = ABounds (Just (l ^ e)) (Just (u ^ e))
-powBounds e (ABounds (Just l) Nothing)
-  | l >= 0 = ABounds (Just (l ^ e)) Nothing
-powBounds e (ABounds Nothing (Just u))
-  | u <= 0 && odd e = ABounds Nothing (Just (u ^ e))
-  | u <= 0 && even e = ABounds (Just 0) Nothing
-powBounds _ _ = ABounds Nothing Nothing
-
-lastMaybe :: [a] -> Maybe a
-lastMaybe [] = Nothing
-lastMaybe xs = Just (last xs)
-
-last2 :: [a] -> Maybe (a, a)
-last2 xs = case reverse xs of
-  b : a : _ -> Just (a, b)
-  _ -> Nothing
-
-nthMaybe :: Int -> [a] -> Maybe a
-nthMaybe i xs
-  | i < 0 = Nothing
-  | otherwise = case drop i xs of
-      x : _ -> Just x
-      [] -> Nothing
-
-spineOfTerm :: Term -> (Term, [(Icit, Term)])
-spineOfTerm = go []
-  where
-    go acc (CApp ic f a) = go ((ic, a) : acc) f
-    go acc f = (f, acc)
 
 checkAgainstSig :: Maybe Text -> Value -> [Binder] -> Expr -> Span -> CheckM Term
 checkAgainstSig retName sigTy binders body sp = do
@@ -13776,12 +13808,13 @@ checkAgainstSig retName sigTy binders body sp = do
     -- The function body do IS the return target's completion boundary, so
     -- elaborate it directly with ctxReturnTarget preserved (the generic
     -- EDo path would reset it, treating it as a nested do). §18.5.
-    go ctx ty [] = case body' of
-      EDo mlbl items isp -> do
-        (tm, ty') <- elabDo ctx mlbl items isp (Just ty)
-        expectType ctx isp ty' ty
-        pure tm
-      _ -> check ctx body' ty
+    go ctx ty [] = do
+      case body' of
+        EDo mlbl items isp -> do
+          (tm, ty') <- elabDo ctx mlbl items isp (Just ty)
+          expectType ctx isp ty' ty
+          pure tm
+        _ -> check ctx body' ty
     go ctx ty0 (b : rest) = do
       ty <- forceM ty0
       case ty of
@@ -13835,6 +13868,7 @@ checkAgainstSig retName sigTy binders body sp = do
       let ctx' = bindCtx bn (bImplicit b) dom ctx
       cod <- clApp clo (VRigid (ctxLen ctx) [])
       CLam ic q bn <$> go ctx' cod rest
+
 
 elabFunction :: [Binder] -> Maybe Expr -> Expr -> Span -> CheckM (Term, Value)
 elabFunction [] mResTy body _ = case mResTy of
@@ -13904,11 +13938,13 @@ registerInstanceHead premises hd sp = do
       dictTy <- instDictTy g fvs premTms argTms
       addGlobal dictG (GlobalDef dictTy Nothing False)
       modify' $ \s ->
-        s
-          { csInstances =
-              InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
-                : csInstances s
-          }
+        invalidateSemanticCaches
+          ( s
+              { csInstances =
+                  InstanceEntry g teleLen (map (shiftTerm (length premises) 0) premTms) argTms dictG
+                    : csInstances s
+              }
+          )
       pure (Just (PreInstance g fvs premTms argTms dictG))
 
 instSplitHead :: Expr -> CheckM (Maybe GName, [Expr])

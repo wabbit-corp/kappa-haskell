@@ -1,0 +1,14 @@
+-- §15.11: the halving rule must not certify calls that can fail to decrease.
+--! assertWarningCount 2
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+mayStayZero : Int -> Int
+let mayStayZero v decreases v =
+    if ltInt v 0 then 0
+    else addInt 1 (mayStayZero (divInt v 2))
+
+divisorOne : Int -> Int
+let divisorOne v decreases v =
+    if ltInt v 2 then 0
+    else addInt 1 (divisorOne (divInt v 1))

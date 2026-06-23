@@ -156,6 +156,9 @@ data ItemKind : Type =
     WandPolymorph
     HolySymbol
     Corpse
+    Bones
+    Mushroom
+    BoneCharm
     ChaosShard
     Amulet
 
@@ -173,6 +176,8 @@ data Item : Type =
         (identified : Bool)
         (charges : Int)
         (equipped : Bool)
+        (source : Species)
+        (cooked : Bool)
 
 data Species : Type =
     PlayerSpecies
@@ -381,6 +386,8 @@ data ActorDef : Type =
         (sightRange : Int)
         (hearing : Int)
         (language : String)
+        (corpseNutrition : Int)
+        (corpseEffect : String)
 
 data SpawnRule : Type =
     SpawnRule
@@ -727,6 +734,9 @@ let itemKindCode k =
     case Corpse -> 17
     case ChaosShard -> 18
     case Amulet -> 19
+    case Bones -> 20
+    case Mushroom -> 21
+    case BoneCharm -> 22
 
 instance Eq ItemKind =
     let (==) a b = itemKindCode a == itemKindCode b

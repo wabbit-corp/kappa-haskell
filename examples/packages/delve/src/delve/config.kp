@@ -285,7 +285,9 @@ let decodeActor value =
         sightRange <- intField "sight_range" value
         hearing <- intField "hearing" value
         language <- stringField "language" value
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language)
+        corpseNutrition <- intField "corpse_nutrition" value
+        corpseEffect <- stringField "corpse_effect" value
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition corpseEffect)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =
@@ -497,6 +499,9 @@ let decodeItemKind s =
     elif s == "WandPolymorph" then pure WandPolymorph
     elif s == "HolySymbol" then pure HolySymbol
     elif s == "Corpse" then pure Corpse
+    elif s == "Bones" then pure Bones
+    elif s == "Mushroom" then pure Mushroom
+    elif s == "BoneCharm" then pure BoneCharm
     elif s == "ChaosShard" then pure ChaosShard
     elif s == "Amulet" then pure Amulet
     else raise (ConfigError ("unknown item kind: " ++ s))

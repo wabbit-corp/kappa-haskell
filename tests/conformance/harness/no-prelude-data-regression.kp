@@ -1,0 +1,12 @@
+-- Same hang class, but with a tiny local type/constructor so the test covers
+-- module body checking beyond a single literal binding.
+--! noPrelude
+--! assertNoErrors
+--! assertNoWarnings
+
+@NoPrelude module no_prelude_data_regression
+
+data Box = MkBox
+
+make : Box
+let make = MkBox

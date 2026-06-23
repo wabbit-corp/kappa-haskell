@@ -26,6 +26,7 @@ import Data.List (foldl')
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import Kappa.Builtins
 import Kappa.Check
 import Kappa.Core (GName (..))
 import Kappa.Diagnostic
@@ -48,11 +49,7 @@ profileName = \case
 -- | The schema modules whose config-safe names a build manifest is
 -- checked under (§35.3): @std.config@ and @std.build@.
 manifestSchemaModules :: [ModuleName]
-manifestSchemaModules = [ModuleName ["std", "config"], ModuleName ["std", "build"]]
-
--- | §28: the implicit-prelude module name.
-preludeModuleName :: ModuleName
-preludeModuleName = ModuleName ["std", "prelude"]
+manifestSchemaModules = [modConfig, modBuild]
 
 -- | The config-admissible prelude names (§35.3): the schema scope
 -- provides "only the config-safe names required for literals, records,
@@ -62,15 +59,7 @@ preludeModuleName = ModuleName ["std", "prelude"]
 -- call, e.g., @map@. The build vocabulary itself comes from
 -- @std.build@/@std.config@ (the schema modules), not from this list.
 configAdmissiblePreludeNames :: [Text]
-configAdmissiblePreludeNames =
-  -- types
-  [ "Unit", "Bool", "Byte", "Bytes", "UnicodeScalar", "Grapheme"
-  , "String", "Int", "Nat", "Integer", "Float", "Double", "Ordering"
-  , "Option", "Result", "List", "Char"
-  -- data constructors / nullary values
-  , "True", "False", "Some", "None", "Ok", "Err", "Nil", "::"
-  , "LT", "EQ", "GT"
-  ]
+configAdmissiblePreludeNames = configSafeTypeNames ++ configSafeCtorNames
 
 -- | Build the §35.3 schema scope from a prelude 'CheckState' in which
 -- the schema modules have already been checked (their config-safe names
@@ -89,7 +78,7 @@ schemaScopeFor st = foldl' add preludeNames manifestSchemaModules
       Map.fromList
         [ (nm, g)
         | nm <- configAdmissiblePreludeNames
-        , let g = GName preludeModuleName nm
+        , let g = gPrel nm
         , inScope g
         ]
     add acc mn =
