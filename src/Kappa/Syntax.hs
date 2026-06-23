@@ -229,7 +229,8 @@ data Expr
   | ERecordType ![RecTypeField] !(Maybe Expr) !Span
   -- ^ @(x : A, y : B)@. The @Maybe Expr@ is the /row tail/ of an open
   -- (extensible) record: @(x : A | r)@ extends row @r@; 'Nothing' is a
-  -- closed record. ('EVariant' and 'EEffRow' carry the same kind of tail.)
+  -- closed record. ('EEffRow' has the same kind of tail; 'EVariant' has the
+  -- field too but the parser never fills it — open variant rows are unsupported.)
   -- Application, projection, sections, and operator chains ---------------
   | EApp !Expr ![Arg]
   | EDot !Expr !DotMember
@@ -274,7 +275,7 @@ data Expr
   | EExists ![Binder] !Expr !Span
   | ETraitArrow !Expr !Expr -- ^ @C => T@ (a constraint/trait arrow)
   | EEffRow ![(Name, Expr)] !(Maybe Expr) !Span -- ^ effect row @\<[ l : E, ... | r ]\>@ (tail @r@ optional)
-  | EVariant ![VariantArm] !(Maybe Expr) !Span -- ^ variant @(| ... |)@ (open if a tail is present)
+  | EVariant ![VariantArm] !(Maybe Expr) !Span -- ^ variant @(| ... |)@; the @Maybe Expr@ tail is always 'Nothing' (open variant rows are rejected in elaboration)
   | EOptionSugar !Expr !Span -- ^ @T?@
   -- Ascription and capture annotations -----------------------------------
   | EAscription !Expr !Expr !Span -- ^ @(e : T)@

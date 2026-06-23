@@ -1,10 +1,20 @@
 -- | Termination/totality support shared by the checker.
 --
--- This module deliberately contains the data model and pure analyses used by
--- termination checking: dependency scanning, arithmetic fact classification,
--- measure instantiation, and bounded arithmetic reasoning.  The monadic
--- checker integration remains in "Kappa.Check" because it needs diagnostics,
--- global reducibility state, normalization caches, and elaboration context.
+-- Kappa wants recursive definitions to be /total/ (to always halt) so that
+-- types-as-propositions stay sound. A definition passes when every recursive
+-- call makes some /measure/ strictly decrease on a well-founded ordering.
+-- This module is the pure machinery that decides that:
+--
+--   * dependency scanning, to find the mutually-recursive groups
+--     ('expandedGlobalsOfTerm', 'rankComponents');
+--   * measure instantiation at a call site ('instantiateByLevelMaybe'); and
+--   * a small abstract-arithmetic prover (the 'AExpr' \/ 'AFact' \/ 'ABounds'
+--     family) that decides goals like "this argument is smaller than that
+--     one" from the integer facts in scope.
+--
+-- The monadic checker integration stays in "Kappa.Check" because it needs
+-- diagnostics, global reducibility state, normalization caches, and
+-- elaboration context.
 module Kappa.Termination
   ( TerminationDecl (..)
   , TerminationResult (..)
@@ -237,9 +247,20 @@ simplifyDecisionTerm = go
       | all (== Just False) xs = Just False
       | otherwise = Nothing
 
+-- ── Abstract arithmetic (the measure prover) ──────────────────────────
+--
+-- To show a measure decreases, the checker reasons about integers
+-- symbolically rather than running them. It extracts an 'AExpr' (an abstract
+-- arithmetic expression) from a core term, gathers the 'AFact's known true
+-- at the call site (mostly from enclosing @if@ guards, e.g. @n > 0@), and
+-- proves the goal by bounding each side to an integer interval ('ABounds').
+-- 'ALin' and 'Poly' are the linear- and polynomial-normal forms used to
+-- compute those bounds.
+
+-- | A symbolic integer expression lifted out of a core term by 'arithOf'.
 data AExpr
   = AConst !Integer
-  | AVar !Int
+  | AVar !Int -- ^ a variable, by de Bruijn /level/ (so it's stable as we descend)
   | AScale !Integer !AExpr
   | AAdd !AExpr !AExpr
   | ASub !AExpr !AExpr
@@ -251,24 +272,35 @@ data AExpr
   | AMin !AExpr !AExpr
   deriving stock (Eq, Ord, Show)
 
+-- | A comparison relation: strictly-less, less-or-equal, equal.
 data ACmp = ACmpLt | ACmpLe | ACmpEq
   deriving stock (Eq, Ord, Show)
 
+-- | A known or to-be-proved comparison fact @lhs `cmp` rhs@.
 data AFact = AFact !ACmp !AExpr !AExpr
   deriving stock (Eq, Ord, Show)
 
+-- | An inclusive integer interval @[lo, hi]@; 'Nothing' on a side means
+-- unbounded there.
 data ABounds = ABounds !(Maybe Integer) !(Maybe Integer)
   deriving stock (Eq, Show)
 
+-- | A linear form: a constant plus a map from variable level to coefficient
+-- (@c + Σ kᵢ·xᵢ@).
 data ALin = ALin !Integer !(Map Int Integer)
   deriving stock (Eq, Show)
 
+-- | A product of variables with exponents (level ↦ power); the building
+-- block of 'Poly', used when reasoning isn't purely linear.
 newtype Monomial = Monomial (Map Int Int)
   deriving stock (Eq, Ord, Show)
 
+-- | A polynomial: a sum of monomials with integer coefficients.
 newtype Poly = Poly (Map Monomial Integer)
   deriving stock (Eq, Show)
 
+-- | Negate a fact (for the @else@ branch of a guard): @a < b@ becomes
+-- @b <= a@, etc. Equality has no single-fact negation, so 'Nothing'.
 negateFact :: AFact -> Maybe AFact
 negateFact = \case
   AFact ACmpLt a b -> Just (AFact ACmpLe b a)
@@ -317,6 +349,9 @@ intCmpPrim (GName m p)
 trustedIntPrimModule :: ModuleName -> Bool
 trustedIntPrimModule m = m == primModule || m == preludeModule
 
+-- | Read a comparison 'AFact' out of a /boolean/-valued core term @t0@ at
+-- depth @d@ (e.g. recognize @ltInt x y@ as @x < y@), seeing through @not@
+-- and boolean-encoded @if@. 'Nothing' if it isn't a recognized comparison.
 boolRel :: Int -> Term -> Maybe AFact
 boolRel d t0 = case simplifyDecisionTerm t0 of
   CIf c th el
@@ -357,6 +392,11 @@ boolNotArg t = case spineOfTerm t of
 lastExplicitArg :: [(Icit, Term)] -> Maybe Term
 lastExplicitArg args = lastMaybe [a | (Expl, a) <- args]
 
+-- | Lift an integer-valued core term @t0@ (at depth @d@) into a symbolic
+-- 'AExpr', recognizing literals, variables, the trusted int primitives
+-- (@addInt@, @subInt@, …), and @if@-as-@max@\/@min@. 'Nothing' if some part
+-- isn't understood arithmetically. The @d - 1 - i@ turns the variable's de
+-- Bruijn index into the level 'AVar' stores.
 arithOf :: Int -> Term -> Maybe AExpr
 arithOf d t0 = case simplifyDecisionTerm t0 of
   CLit (LitInt n) -> Just (AConst n)
@@ -400,6 +440,12 @@ arithOf d t0 = case simplifyDecisionTerm t0 of
           Nothing -> Nothing
       _ -> Nothing
 
+-- | Try to prove a goal 'AFact' from the facts in scope. @natLvls@ is the
+-- set of variable /levels/ known to be naturals (so they're @>= 0@ for
+-- free). The trick is to reduce every goal to a lower-bound question:
+-- @a < b@ holds iff @b - a >= 1@, @a <= b@ iff @b - a >= 0@, and @a == b@
+-- iff @a - b@ simplifies to zero. Conservative: 'False' means "couldn't
+-- prove it," not "false."
 proveFactByBounds :: Set Int -> [AFact] -> AFact -> Bool
 proveFactByBounds natLvls facts = \case
   AFact ACmpLt a b -> lowerBoundExpr natLvls facts (ASub b a) >= Just 1
@@ -477,6 +523,9 @@ simplifyA natLvls facts = go
       (AConst x, AConst y) -> AConst (op x y)
       _ -> ctor a b
 
+-- | Compute a lower bound (largest provable @>= n@) for @expr0@ given the
+-- nat-typed levels and facts in scope. Tries special-case reasoning, then a
+-- linear-form bound, then a polynomial bound. 'Nothing' = no bound found.
 lowerBoundExpr :: Set Int -> [AFact] -> AExpr -> Maybe Integer
 lowerBoundExpr natLvls facts expr0 =
   case lowerBoundSpecial natLvls facts expr of
@@ -704,6 +753,9 @@ polyIsZero (Poly p) = Map.null p
 mulMonomial :: Monomial -> Monomial -> Monomial
 mulMonomial (Monomial a) (Monomial b) = Monomial (Map.filter (> 0) (Map.unionWith (+) a b))
 
+-- | A lower bound for a whole polynomial: to minimize the sum, take the
+-- /lower/ bound of each positive-coefficient term and the /upper/ bound of
+-- each negative-coefficient term. 'Nothing' if any needed bound is unknown.
 lowerBoundPoly :: Set Int -> [AFact] -> Poly -> Maybe Integer
 lowerBoundPoly natLvls facts (Poly p) = foldM addTerm 0 (Map.toList p)
   where

@@ -3519,7 +3519,8 @@ infer ctx expr = case expr of
 -- body, a lambda checked against a function type). Knowing the expectation
 -- lets 'check' handle forms 'infer' cannot, so it matches on the /pair/
 -- @(expr, expected)@ to catch those (e.g. a lambda against a 'VPi'). Any
--- form with no special rule falls through to 'infer' and 'unify's the
+-- form with no rule for the @(expr, expected)@ pair falls through to
+-- 'infer', inserts any still-missing implicit arguments, then 'unify's the
 -- result against the expectation — the generic "switch direction" step.
 check :: Ctx -> Expr -> Value -> CheckM Term
 check ctx expr expected0 = do

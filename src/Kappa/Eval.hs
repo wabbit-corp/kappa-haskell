@@ -109,9 +109,10 @@ lookupEnv i env = case drop i env of
 
 -- | Evaluate a 'Term' to a 'Value' under an environment @env@ (one entry
 -- per enclosing binder, innermost first — so a 'CVar' index is just a list
--- lookup). Lambdas and Pi-binders don't recurse under their binder; they
--- capture @env@ in a 'Closure' and defer, which is what makes β-reduction
--- fall out of 'closApply'\/'vapp' for free.
+-- lookup). A lambda body and a Pi /codomain/ aren't entered here; they
+-- capture @env@ in a 'Closure' and defer (the Pi /domain/ is still evaluated
+-- eagerly). Deferring the body is what makes β-reduction fall out of
+-- 'closApply'\/'vapp' for free.
 eval :: HasCallStack => EvalCtx -> Env -> Term -> Value
 eval ctx env = \case
   CVar i -> lookupEnv i env

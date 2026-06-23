@@ -64,8 +64,8 @@ and run. Read the files in the order the data flows through them.
 | 12 | [`Interp.hs`](../src/Kappa/Interp.hs) | the runtime interpreter |
 | 13 | [`Pipeline.hs`](../src/Kappa/Pipeline.hs) | how all the phases are wired together |
 
-The best *first* file to read is `Token.hs`: it's short, every constructor has
-a concrete example, and it has no control flow to trip over.
+The best *first* file to read is `Token.hs`: it's short, nearly every
+constructor has a concrete example, and it has no control flow to trip over.
 
 ---
 
@@ -87,8 +87,8 @@ combined pass is the norm for dependently typed languages.
 
 ### Dependent types and universes
 Kappa is **dependently typed**: types can mention values, and types are
-themselves ordinary terms. Because "the type of a type" can't just be itself
-(that's paradoxical), types live in a tower of **universes**:
+themselves ordinary terms. Types live in a tower of **universes** (so the
+type of a type isn't itself):
 
 ```text
   3       : Int        : Type   (= Type0)
@@ -111,8 +111,9 @@ are `infer` and `check`:
   body of a typed `let`).
 
 The two trade off: `check` can handle things `infer` can't (e.g. a bare lambda),
-because it gets the expected type as extra information. When `check` runs out of
-expectations it falls back to `infer` and compares the result.
+because it gets the expected type as extra information. When `check` has no rule
+for the `(term, type)` pair it falls through to `infer` (inserting any implicit
+arguments) and unifies the inferred type with the expectation.
 
 ### de Bruijn indices vs. levels — *the* thing to understand
 Variables are not stored by name. They're stored by **counting binders**, which
@@ -148,8 +149,10 @@ The trick used here is **normalization by evaluation**:
   any solved metavariables and unfolding definitions as needed).
 - `convertible` compares two values for definitional equality.
 
-`Value` is the semantic domain: it has closures, neutral terms (`VRigid` /
-`VFlex` applied to a **spine** of arguments), and fully-evaluated data.
+`Value` is the semantic domain: it has closures, neutral terms (a neutral
+head — `VRigid` / `VFlex` / `VGlobN` — applied to a **spine** of arguments,
+plus stuck eliminators like `VMatchN` / `VProjN` / `VIfN`), and
+fully-evaluated data.
 
 ### Definitional equality: β, δ, ι, η
 Two terms are "the same" to the type checker if they reduce to the same normal
@@ -235,11 +238,11 @@ consistent across the whole codebase:
 | `C…` | a **core** `Term` constructor | `CVar`, `CLam`, `CPi`, `CApp` |
 | `V…` | a runtime/NbE **value** | `VRigid`, `VFlex`, `VPi`, `VRecordV` |
 | `K…` | a **do-kernel** item | (see `KItem` in `Core.hs`) |
-| `E…` | a **surface expression** (AST) | `EVar`, `EApp`, `ELam`, `EArrow` |
+| `E…` | a **surface expression** (AST) | `EVar`, `EApp`, `ELambda`, `EArrow` |
 | `Tok…` | a **token** | `TokArrow`, `TokIndent` |
 | `p…` | a **parser** function | `pExpr`, `pDecl`, `pParenExpr` |
 | `r…` / `go…` | a **resolver** / recursion traversal worker | `rExpr`, `goElem` |
-| `prel…` | a **prelude** global name | `prelUnit` |
+| `prel…` | a **prelude/builtin** global name (defined in `Builtins.hs`) | `prelUnit` |
 | `ctx` | the typing **context** (what's in scope + its types) | |
 | `sp` | a source **span** (file + start/end position) | |
 | `clo` | a **closure** | |

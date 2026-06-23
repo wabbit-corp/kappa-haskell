@@ -3,6 +3,13 @@
 -- completion records, LIFO exit actions run exactly once, loop @else@
 -- only on no-break completion, typed IO failures via catch\/finally.
 --
+-- Note the division of labour with "Kappa.Eval": that module /normalizes/
+-- terms for the type checker (pure, compile-time, no side effects); this
+-- module actually __runs__ a checked program — it executes @main@, performs
+-- real IO, spawns fibers, and drives the do-kernel ('KItem's) to completion.
+-- Eval answers "are these two types equal?"; Interp answers "what does this
+-- program do?".
+--
 -- Output goes through an 'RT' sink so the Appendix T harness can run
 -- programs in-process and capture stdout ('runMainCaptured').
 module Kappa.Interp

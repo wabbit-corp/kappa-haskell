@@ -241,12 +241,13 @@ data Closure = Closure !Env !Term
   deriving stock (Show)
 
 -- | The result of evaluating a 'Term' ('Kappa.Eval'). The first three are
--- /neutral/ values: a head that can't reduce yet (a variable, an unsolved
+-- the /neutral heads/: a head that can't reduce yet (a variable, an unsolved
 -- meta, or an unfolded-elsewhere global) applied to a 'Spine' of arguments.
--- They are how evaluation represents "stuck" computation. The distinction
--- between 'VRigid' (a real variable — stuck for good until substituted) and
--- 'VFlex' (a meta — could still reduce once the meta is solved) is what
--- unification keys off. Everything else is a fully-formed value.
+-- They are how evaluation represents "stuck" computation; the stuck
+-- /eliminators/ 'VMatchN', 'VProjN', and 'VIfN' (a match\/projection\/if on
+-- a neutral) are neutral too. The distinction between 'VRigid' (a real
+-- variable — stuck for good until substituted) and 'VFlex' (a meta — could
+-- still reduce once the meta is solved) is what unification keys off.
 data Value
   = VRigid !Int !Spine -- ^ neutral: a bound variable as a de Bruijn /level/ (0 = outermost) + its args
   | VFlex !MetaId !Spine -- ^ neutral: an unsolved metavariable + its args

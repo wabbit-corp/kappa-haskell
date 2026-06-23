@@ -167,8 +167,14 @@ opApply1 op x
   | nameText op == "-" = EApp (EVar op {nameText = "negate"}) [ArgExplicit x]
   | otherwise = EApp (EVar op) [ArgExplicit x]
 
--- | Re-associate one chain. On unknown operator fixity, emits the
--- §5.5.3 infix-gating diagnostic and associates left at precedence 9.
+-- | Turn one flat operator chain (the 'EOpChain' the parser left
+-- un-associated, e.g. @[a, +, b, *, c]@) into a proper application tree,
+-- now that fixities are known. The inner 'parseExprAt'\/'loopTight' worker
+-- is textbook /precedence climbing/: parse an operand, then keep folding in
+-- operators whose precedence is high enough, recursing for the right operand
+-- at a raised minimum so that, say, @*@ binds tighter than @+@. On unknown
+-- operator fixity it emits the §5.5.3 infix-gating diagnostic and associates
+-- left at precedence 9.
 reassoc :: FixityEnv -> Span -> [OpElem] -> RW Expr
 reassoc env sp els0 = do
   (e, rest) <- parseExprAt 0 els0
