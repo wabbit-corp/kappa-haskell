@@ -1,4 +1,7 @@
--- | Hand-rolled lexer with Python-style layout (Spec §5–§6).
+-- | Hand-rolled lexer with Python-style layout (Spec §5–§6): the first
+-- phase, turning source text into the 'Kappa.Token.Token' stream the parser
+-- consumes. The interesting, non-obvious parts are the layout algorithm and
+-- string\/number scanning, called out below. (Orientation: docs/CONCEPTS.md.)
 --
 -- Design notes:
 --

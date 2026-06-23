@@ -1,6 +1,19 @@
 -- | Core calculus (a pragmatic KCore subset, Spec §30.2) and its
 -- normalization-by-evaluation machinery (§31.1).
 --
+-- Two central types live here, and the difference between them is the key
+-- to the whole back half of the compiler:
+--
+--   * 'Term' is /syntax/ — what elaboration produces. Variables are de
+--     Bruijn __indices__ ('CVar', counting outward from the use site).
+--   * 'Value' is the /semantic/ domain used during evaluation. Variables
+--     are de Bruijn __levels__ ('VRigid', counting inward from the top),
+--     and functions are real Haskell 'Closure's.
+--
+-- 'Kappa.Eval' shuttles between them (@eval :: Term -> Value@,
+-- @quote :: Value -> Term@) to normalize and compare terms. See
+-- docs/CONCEPTS.md for the index-vs-level and NbE background.
+--
 -- Representation choices, mapped to the spec:
 --
 --   * Pi binders carry quantities; quantity is part of function-type
@@ -76,9 +89,10 @@ data Literal
   | LitGrapheme !Text -- §6.5 conventional 'g' handler payload (exact scalar sequence)
   deriving stock (Eq, Ord, Show)
 
--- | Core terms, de Bruijn indexed.
+-- | Core terms, de Bruijn indexed. Grouped into families below for reading.
 data Term
-  = CVar !Int
+  = -- Lambda-calculus core ------------------------------------------------
+    CVar !Int -- ^ a bound variable, as a de Bruijn /index/ (0 = nearest binder)
   | CGlob !GName
   | CLam !Icit !Q !Text !Term
   -- | Dependent function type. The 'Bool' is the binder's borrow marker
@@ -90,8 +104,10 @@ data Term
   | CApp !Icit !Term !Term
   | CSort !Int -- ^ @Type u@
   | CLit !Literal
+  -- Data and pattern matching --------------------------------------------
   | CCtor !GName ![Term] -- ^ saturated constructor application
   | CMatch !Term ![CaseAlt]
+  -- Records --------------------------------------------------------------
   | CRecordT ![(Text, Term)] -- ^ canonical (lexicographic) field order
   | CRecordV ![(Text, Term)]
   | CProj !Term !Text
@@ -104,17 +120,23 @@ data Term
     -- @VRecordT@ projection branch in elaboration; every other projection
     -- stays a plain @CProj@.
     CProjAt !Term !Text !Int
+  -- Variants -------------------------------------------------------------
   | CVariantT ![Term] -- ^ canonical member order
   | CInject !Text !Term -- ^ member-identity tag + payload
+  -- Binding and metavariables --------------------------------------------
   | CLet !Q !Text !Term !Term !Term -- ^ q, name, type, rhs, body
   | CLetRec !Q !Text !Term !Term !Term -- ^ recursive local let: rhs and body live under the binder
-  | CMeta !MetaId
+  | CMeta !MetaId -- ^ an unsolved unification variable (a "hole" the checker will fill)
+  -- Effectful do-kernel --------------------------------------------------
   | CDo !(Maybe Text) ![KItem] -- ^ §18.8 do kernel (optional scope label, §18.7); executed natively
+  -- Sealed packages / existentials ---------------------------------------
   | CSealE ![Text] !Term -- ^ §13.2.10 sealed package: opaque labels + record
   | CSigT ![Text] !Term -- ^ §13.2.10 signature type: opaque labels + record type
+  -- Suspensions (laziness) -----------------------------------------------
   | CThunkE !Term -- ^ Delay
   | CLazyE !Term -- ^ Memo
   | CForceE !Term
+  -- Conditional and metaprogramming --------------------------------------
   | CIf !Term !Term !Term
   | CQuote !QuotedSyntax ![Term] -- ^ §21.1 syntax quote: payload + in-quote splice slots
   deriving stock (Eq, Show)
@@ -218,9 +240,16 @@ type Spine = [(Icit, Value)]
 data Closure = Closure !Env !Term
   deriving stock (Show)
 
+-- | The result of evaluating a 'Term' ('Kappa.Eval'). The first three are
+-- /neutral/ values: a head that can't reduce yet (a variable, an unsolved
+-- meta, or an unfolded-elsewhere global) applied to a 'Spine' of arguments.
+-- They are how evaluation represents "stuck" computation. The distinction
+-- between 'VRigid' (a real variable — stuck for good until substituted) and
+-- 'VFlex' (a meta — could still reduce once the meta is solved) is what
+-- unification keys off. Everything else is a fully-formed value.
 data Value
-  = VRigid !Int !Spine -- ^ de Bruijn LEVEL + spine
-  | VFlex !MetaId !Spine
+  = VRigid !Int !Spine -- ^ neutral: a bound variable as a de Bruijn /level/ (0 = outermost) + its args
+  | VFlex !MetaId !Spine -- ^ neutral: an unsolved metavariable + its args
   | VGlobN !GName !Spine -- ^ neutral global (opaque or not yet unfolded)
   | VLam !Icit !Q !Text !Closure
   | VPi !Icit !Q !Bool !Text !Value !Closure -- ^ 'Bool': binder borrow marker (§12.3), see 'CPi'

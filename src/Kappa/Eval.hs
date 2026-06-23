@@ -1,10 +1,17 @@
 -- | Normalization by evaluation and definitional equality (Spec §31.1).
 --
--- Conversion includes β, δ (transparent conversion-reducible definitions
--- only), ι (match\/if reduction on known scrutinees), record\/variant
--- canonical-form equality, suspension reduction (@force (thunk e) ↦ e@),
--- and function η. Quantities participate in Pi identity. Normalization is
--- fuel-bounded for safety but only ever answers "equal" soundly.
+-- This is the engine the type checker leans on to decide when two types are
+-- "the same." The round-trip is: 'eval' a 'Term' into a 'Value' (β-reducing
+-- for free via Haskell 'Closure's), 'force' a value to expose its head, and
+-- 'quote' a value back into a normalized 'Term'. 'convertible' compares two
+-- values directly. (Background: docs/CONCEPTS.md.)
+--
+-- Conversion (definitional equality) includes β, δ (transparent
+-- conversion-reducible definitions only), ι (match\/if reduction on known
+-- scrutinees), record\/variant canonical-form equality, suspension
+-- reduction (@force (thunk e) ↦ e@), and function η. Quantities participate
+-- in Pi identity. Normalization is fuel-bounded for safety but only ever
+-- answers "equal" soundly.
 module Kappa.Eval
   ( Globals (..)
   , GlobalDef (..)
@@ -100,6 +107,11 @@ lookupEnv i env = case drop i env of
          ++ " out of range (environment has " ++ show (length env) ++ " entries)\n"
          ++ prettyCallStack callStack)
 
+-- | Evaluate a 'Term' to a 'Value' under an environment @env@ (one entry
+-- per enclosing binder, innermost first — so a 'CVar' index is just a list
+-- lookup). Lambdas and Pi-binders don't recurse under their binder; they
+-- capture @env@ in a 'Closure' and defer, which is what makes β-reduction
+-- fall out of 'closApply'\/'vapp' for free.
 eval :: HasCallStack => EvalCtx -> Env -> Term -> Value
 eval ctx env = \case
   CVar i -> lookupEnv i env
@@ -210,8 +222,10 @@ vforce ctx v = case force ctx v of
   where
     runSusp (Closure env body) = eval ctx env body
 
--- | Unfold solved metas and (reducible) global heads at the value root,
--- and re-reduce values that got stuck on a then-unsolved metavariable
+-- | Reduce a value to /weak-head normal form/: expose its outermost
+-- constructor so callers can pattern-match on the head. Concretely: unfold
+-- solved metas and (reducible) global heads at the value root, and
+-- re-reduce values that got stuck on a then-unsolved metavariable
 -- (projections, applications, ifs and matches re-fire once their head
 -- becomes canonical).
 force :: EvalCtx -> Value -> Value
@@ -422,6 +436,14 @@ forceQ ctx = go (1000 :: Int)
           VPrim p _ | p /= "__stuck_app" && p /= "__stuck_appI" -> True
           _ -> False
 
+-- | Read a 'Value' back into a normalized 'Term'. @lvl@ is the current
+-- depth (how many binders we're under). To go under a binder we apply the
+-- closure to a fresh variable at the current level (@VRigid lvl []@) and
+-- recurse at @lvl + 1@ — the standard NbE readback.
+--
+-- This is also where the de Bruijn /level/ → /index/ conversion happens:
+-- a 'VRigid' at level @l@ becomes @CVar (lvl - 1 - l)@. (Worked example in
+-- docs/CONCEPTS.md → "de Bruijn indices vs levels".)
 quote :: EvalCtx -> Int -> Value -> Term
 quote ctx lvl v = case forceQ ctx v of
   VRigid l sp -> quoteSpine (CVar (lvl - 1 - l)) sp

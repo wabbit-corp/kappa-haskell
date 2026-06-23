@@ -1,6 +1,23 @@
 -- | Bidirectional elaboration to the core (Spec §30.1; expressions §16,
 -- patterns §17, traits §14, literals §6.1.5, do blocks §18).
 --
+-- This is the largest and most central module: it type-checks a surface
+-- 'Expr' and simultaneously /elaborates/ it into a core 'Term'. The two
+-- jobs are done together because in a dependent language you can't check
+-- types without evaluating terms.
+--
+-- The whole file is organized around the __bidirectional__ pair (background:
+-- docs/CONCEPTS.md):
+--
+--   * 'infer' — synthesize a term's type from the term itself;
+--   * 'check' — verify a term against a type the context already expects.
+--
+-- They call each other, with 'unify' settling metavariables when an
+-- inferred type must match an expected one. Both thread a 'Ctx' (what's in
+-- scope, plus flow-refinement and scope bookkeeping) through the monad
+-- 'CheckM'. The 23 @-- ── … ──@ section dividers below mark the major
+-- topics; jump by them.
+--
 -- Implicit arguments are inserted per the application-spine rules
 -- (§16.1.7.1); trait goals follow the §16.3.3 ladder: local implicit
 -- context, then global instance search (§14.3.1, with a
@@ -459,7 +476,9 @@ unresolvedBuiltins st =
 
 type CheckM = State CheckState
 
--- local context
+-- | One entry in the local typing context: a variable in scope, with its
+-- type and the quantity\/borrow\/origin metadata the usage and diagnostic
+-- machinery needs. The list of these (innermost first) /is/ the scope.
 data CtxEntry = CtxEntry
   { ceName :: !Text
   , ceType :: !Value
@@ -477,6 +496,11 @@ data CtxEntry = CtxEntry
   -- this binder kind.
   }
 
+-- | The elaboration context threaded through 'infer'\/'check': everything
+-- that depends on /where/ in the program we are. 'ctxEntries' is the scope
+-- (and 'ctxEnv' its evaluated mirror, for NbE); the remaining fields carry
+-- flow refinement, scope barriers, effect labels, hygiene, and the current
+-- @return@ target. Helpers like @bindCtx@\/@pushCtxBarrier@ extend it.
 data Ctx = Ctx
   { ctxEntries :: ![CtxEntry]
   , ctxEnv :: !Env
@@ -969,6 +993,13 @@ qSubsumes qa qe = qa == qe || qInterval qa `contained` qInterval qe
         (Nothing, Just _) -> False
         (Just h1, Just h2) -> h1 <= h2
 
+-- | Make two types definitionally equal, solving metavariables as needed,
+-- and report whether it succeeded. This is how an /inferred/ type is
+-- reconciled with an /expected/ one. It first 'forceM's both heads, then
+-- compares structurally; when one side is an unsolved meta ('VFlex') it
+-- solves it (after the occurs check), and along the outer Pi spine it
+-- allows quantity subsumption ('qSubsumes', gated by @qok@). It only ever
+-- returns 'True' soundly — an undecidable comparison answers 'False'.
 unify :: Ctx -> Value -> Value -> CheckM Bool
 unify ctx = goTop True
   where
@@ -3048,6 +3079,12 @@ insertAllImplicits ctx sp tm ty = do
       insertAllImplicits ctx sp (CApp Impl tm arg) ty'
     _ -> pure (tm, t)
 
+-- | Synthesize a type for @expr@, elaborating it to a core 'Term' along the
+-- way. Used wherever the term determines its own type (a variable, literal,
+-- application, projection, …). The dual is 'check'. This is a long @case@
+-- over 'Expr' constructors — one (or a few) arms per surface form, in
+-- roughly the 'Expr' family order from "Kappa.Syntax"; the arms that need
+-- an expected type to proceed (a bare lambda, say) defer to 'check'.
 infer :: Ctx -> Expr -> CheckM (Term, Value)
 infer ctx expr = case expr of
   -- §21.4: a hygienic capture occurrence in spliced syntax refers to
@@ -3477,6 +3514,13 @@ infer ctx expr = case expr of
     lam1 sp nm f =
       ELambda Nothing [simpleBinder (Name nm sp)] (f (EVar (Name nm sp))) sp
 
+-- | Verify @expr@ against an @expected0@ type and elaborate it to a core
+-- 'Term'. Used wherever the context already knows the type (a typed @let@
+-- body, a lambda checked against a function type). Knowing the expectation
+-- lets 'check' handle forms 'infer' cannot, so it matches on the /pair/
+-- @(expr, expected)@ to catch those (e.g. a lambda against a 'VPi'). Any
+-- form with no special rule falls through to 'infer' and 'unify's the
+-- result against the expectation — the generic "switch direction" step.
 check :: Ctx -> Expr -> Value -> CheckM Term
 check ctx expr expected0 = do
   expected <- forceM expected0

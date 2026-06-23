@@ -1,4 +1,7 @@
--- | Recursive-descent parser for the Kappa surface grammar (Spec Part II–IV).
+-- | Recursive-descent parser for the Kappa surface grammar (Spec Part II–IV):
+-- 'Kappa.Token.Token' stream in, 'Kappa.Syntax' tree out. Runs on the
+-- backtracking 'Kappa.Parser.Monad' (read that first — it's small and
+-- explains what @<|>@, @try@, and the context flags do here).
 --
 -- Types and terms share one expression grammar (the language is
 -- dependently typed); the elaborator interprets expressions found in type
@@ -1727,6 +1730,13 @@ pCtorRef = do
 -- operators (collect them too), or an operand.
 data ChainEndKind = ChainEndStop | ChainEndMoreOps | ChainEndOperand
 
+-- | Parse an operator expression as a /flat/ alternating list of operands
+-- and operators — @a + b * c@ becomes @[a, +, b, *, c]@ — wrapped into
+-- 'EOpChain'. Precedence is deliberately ignored here: the parser doesn't
+-- know fixities (they're block-scoped and import-sensitive), so 'Kappa.Resolve'
+-- re-associates the chain into a proper tree later. The bulk of this
+-- function is just deciding where the chain ends, given layout and the
+-- possibility of a trailing postfix operator (see 'ChainEndKind').
 pChainElems :: P [OpElem]
 pChainElems = do
   pre <- many (ChainOp <$> pPrefixOp)
@@ -2200,8 +2210,13 @@ parseInterps sl _sp = go 0 (slFragments sl)
         Left d -> parseFailAt isp (dMessage d)
         Right e -> (InterpPart i e :) <$> go (i + 1) rest
 
--- Parenthesized forms: unit, grouping, ascription, tuples, record
--- literals, record types, sections, operator references.
+-- | Parse everything that can start with @(@ — and there's a lot, which is
+-- why this function is large. A leading paren may begin: unit @()@, a
+-- grouping, an ascription @(e : T)@, a tuple, a record literal or record
+-- /type/, an operator section @(e op)@\/@(op e)@, an operator reference
+-- @(op)@, or a receiver section @(.f args)@. They aren't distinguishable by
+-- the next token alone, so the alternatives are tried with backtracking
+-- ('try'\/@<|>@); their order is load-bearing (noted inline where it matters).
 pParenExpr :: Span -> P Expr
 pParenExpr start = do
   token TokLParen
