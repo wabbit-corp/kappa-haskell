@@ -135,6 +135,8 @@ let encodeActor a =
         , field "morale" (num a.morale)
         , field "loyalty" (num a.loyalty)
         , field "alive" (bool a.alive)
+        , field "resistances" (arr (map (\d -> str (damageTypeName d)) a.resistances))
+        , field "vulnerabilities" (arr (map (\d -> str (damageTypeName d)) a.vulnerabilities))
         ]
 
 encodeStats : Stats -> JsonValue
@@ -161,6 +163,7 @@ let encodeItem i =
         , field "equipped" (bool i.equipped)
         , field "source" (str (speciesName i.source))
         , field "cooked" (bool i.cooked)
+        , field "rarity" (str i.rarity)
         ]
 
 encodeGroundItem : GroundItem -> JsonValue
@@ -396,7 +399,11 @@ let decodeActor value =
         morale <- optIntField 8 "morale" value
         loyalty <- optIntField 0 "loyalty" value
         alive <- optBoolField True "alive" value
-        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive South)
+        resistJson <- optArrayField Nil "resistances" value
+        resistances <- traverse decodeDamageTypeJson resistJson
+        vulnJson <- optArrayField Nil "vulnerabilities" value
+        vulnerabilities <- traverse decodeDamageTypeJson vulnJson
+        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive South resistances vulnerabilities)
 
 decodeStats : JsonValue -> IO GameError Stats
 let decodeStats value =
@@ -433,7 +440,8 @@ let decodeItem value =
         sourceName0 <- optStringField "PlayerSpecies" "source" value
         source <- decodeSpeciesString sourceName0
         cooked <- optBoolField False "cooked" value
-        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped source cooked)
+        rarity <- optStringField "common" "rarity" value
+        pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped source cooked rarity)
 
 decodeGroundItem : JsonValue -> IO GameError GroundItem
 let decodeGroundItem value =
@@ -478,6 +486,21 @@ let decodeMutationJson value =
     do
         text <- decodeStringJson value
         decodeMutationString text
+
+decodeDamageTypeJson : JsonValue -> IO GameError DamageType
+let decodeDamageTypeJson value =
+    do
+        text <- decodeStringJson value
+        config.decodeDamageType text
+
+damageTypeName : DamageType -> String
+let damageTypeName d =
+    match d
+    case Physical -> "physical"
+    case Fire -> "fire"
+    case Cold -> "cold"
+    case Poison -> "poison"
+    case Chaos -> "chaos"
 
 -- Enum spellings are deliberately stable because save files are data contracts.
 -- Changing these names requires a versioned migration.
@@ -540,6 +563,7 @@ let tileKindName k =
     case ChaosVent -> "ChaosVent"
     case BranchDown -> "BranchDown"
     case Campfire -> "Campfire"
+    case Pool -> "Pool"
 
 speciesName : Species -> String
 let speciesName s =
@@ -684,6 +708,7 @@ let decodeTileKindString s =
     elif s == "ChaosVent" then pure ChaosVent
     elif s == "BranchDown" then pure BranchDown
     elif s == "Campfire" then pure Campfire
+    elif s == "Pool" then pure Pool
     else raise (SaveError ("unknown tile kind in save: " ++ s))
 
 decodeBeatitudeString : String -> IO GameError Beatitude

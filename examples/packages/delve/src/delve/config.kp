@@ -37,6 +37,22 @@ let loadRecipes path =
         xs <- arrayField "recipes" root
         traverse decodeRecipe xs
 
+decodeRarity : json.JsonValue -> IO GameError RarityDef
+let decodeRarity value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        color <- stringField "color" value
+        weight <- intField "weight" value
+        pure (RarityDef id name color weight)
+
+loadRarities : String -> IO GameError (List RarityDef)
+let loadRarities path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "rarities" root
+        traverse decodeRarity xs
+
 loadPack : String -> IO GameError ContentPack
 let loadPack packPath =
     do
@@ -53,6 +69,8 @@ let loadPack packPath =
         spawnPath <- filePath "spawns" filesObject
         lorePath <- filePath "lore" filesObject
         recipePath <- filePath "recipes" filesObject
+        rarityPath <- filePath "rarities" filesObject
+        colorPath <- filePath "colors" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -62,6 +80,8 @@ let loadPack packPath =
         spawns <- loadSpawns spawnPath
         lore <- loadLore lorePath
         recipes <- loadRecipes recipePath
+        rarities <- loadRarities rarityPath
+        colors <- loadColors colorPath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
         let pack =
@@ -84,7 +104,9 @@ let loadPack packPath =
                 branches = branches,
                 languages = systems.languages,
                 structures = spawns.structures,
-                recipes = recipes
+                recipes = recipes,
+                rarities = rarities,
+                colors = colors
             }
         validateContentPack pack
 
@@ -156,6 +178,74 @@ let objectField name obj =
     case Ok v -> pure v
     case Err e -> raise e
 
+optStringField : String -> String -> json.JsonValue -> IO GameError String
+let optStringField fallback name obj =
+    match json.objectField name obj
+    case None -> pure fallback
+    case Some v ->
+        match json.asString v
+        case Ok s -> pure s
+        case Err e -> raise e
+
+decodeDamageType : String -> IO GameError DamageType
+let decodeDamageType s =
+    if s == "physical" then pure Physical
+    elif s == "fire" then pure Fire
+    elif s == "cold" then pure Cold
+    elif s == "poison" then pure Poison
+    elif s == "chaos" then pure Chaos
+    else raise (ConfigError ("unknown damage type: " ++ s))
+
+optDamageType : String -> json.JsonValue -> IO GameError DamageType
+let optDamageType name obj =
+    match json.objectField name obj
+    case None -> pure Physical
+    case Some v ->
+        match json.asString v
+        case Ok s -> decodeDamageType s
+        case Err e -> raise e
+
+optDamageTypes : String -> json.JsonValue -> IO GameError (List DamageType)
+let optDamageTypes name obj =
+    match json.objectField name obj
+    case None -> pure Nil
+    case Some v ->
+        match json.asArray v
+        case Err e -> raise e
+        case Ok xs ->
+            do
+                strs <- traverse decodeStringFromJson xs
+                traverse decodeDamageType strs
+
+optDamageTypeOption : String -> json.JsonValue -> IO GameError (Option DamageType)
+let optDamageTypeOption name obj =
+    match json.objectField name obj
+    case None -> pure None
+    case Some v ->
+        match json.asString v
+        case Ok s ->
+            do
+                dt <- decodeDamageType s
+                pure (Some dt)
+        case Err e -> raise e
+
+decodeColor : json.JsonValue -> IO GameError ColorDef
+let decodeColor value =
+    do
+        id <- stringField "id" value
+        name <- stringField "name" value
+        r <- intField "r" value
+        g <- intField "g" value
+        b <- intField "b" value
+        pure (ColorDef id name r g b)
+
+loadColors : String -> IO GameError (List ColorDef)
+let loadColors path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "colors" root
+        traverse decodeColor xs
+
 loadWorldGen : String -> IO GameError WorldGenConfig
 let loadWorldGen path =
     do
@@ -182,6 +272,7 @@ let loadWorldGen path =
         chaosBase <- intField "chaos_vent_base_chance" features
         chaosDepth <- intField "chaos_vent_chance_per_depth" features
         chaosSpread <- intField "chaos_vent_spread_chance" features
+        poolChance <- intField "pool_chance" features
         if minWidth < 20 || maxWidth < minWidth || minHeight < 10 || maxHeight < minHeight then
             raise (ConfigError "worldgen map size limits are invalid")
         elif minSize < 3 || maxSize < minSize then
@@ -191,7 +282,7 @@ let loadWorldGen path =
         elif maxSize > minWidth - 6 || maxSize > minHeight - 6 then
             raise (ConfigError "worldgen max room size does not fit inside the minimum map size")
         else
-            pure (WorldGenConfig minWidth maxWidth minHeight maxHeight minSize maxSize attempts monsterBase monsterPerDepth itemChance altarChance loreChance trapBase trapDepth chaosBase chaosDepth chaosSpread)
+            pure (WorldGenConfig minWidth maxWidth minHeight maxHeight minSize maxSize attempts monsterBase monsterPerDepth itemChance altarChance loreChance trapBase trapDepth chaosBase chaosDepth chaosSpread poolChance)
 
 decodeBranch : json.JsonValue -> IO GameError BranchDef
 let decodeBranch value =
@@ -239,7 +330,8 @@ let decodeItem value =
         identified <- boolField "starts_identified" value
         beatitudeKnown <- boolField "beatitude_known" value
         flammable <- boolField "flammable" value
-        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown flammable)
+        damageType <- optDamageType "damage_type" value
+        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown flammable damageType)
 
 decodeAffix : json.JsonValue -> IO GameError ItemAffix
 let decodeAffix value =
@@ -313,7 +405,10 @@ let decodeActor value =
         language <- stringField "language" value
         corpseNutrition <- intField "corpse_nutrition" value
         corpseEffect <- stringField "corpse_effect" value
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition corpseEffect)
+        resistances <- optDamageTypes "resistances" value
+        vulnerabilities <- optDamageTypes "vulnerabilities" value
+        rangedElement <- optDamageType "ranged_element" value
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition corpseEffect resistances vulnerabilities rangedElement)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =
@@ -454,7 +549,8 @@ let decodeMutation value =
         defense <- optionalIntField 0 "def_bonus" value
         hunger <- intField "hunger_tax" value
         description <- stringField "description" value
-        pure (MutationDef mutation name hp mp strength dex defense hunger description)
+        dealsDamageType <- optDamageTypeOption "damage_type" value
+        pure (MutationDef mutation name hp mp strength dex defense hunger description dealsDamageType)
 
 decodeFaith : json.JsonValue -> IO GameError FaithDef
 let decodeFaith value =
@@ -649,6 +745,7 @@ let validateContentPack pack =
         elif listLength pack.tactics == 0 then raise (ConfigError "content pack has no tactics")
         elif listLength pack.starSigns == 0 then raise (ConfigError "content pack has no star signs")
         elif listLength pack.mutations == 0 then raise (ConfigError "content pack has no mutations")
+        elif listLength pack.colors == 0 then raise (ConfigError "content pack has no colors")
         else pure pack
 
 requireActor : String -> ContentPack -> IO GameError Unit

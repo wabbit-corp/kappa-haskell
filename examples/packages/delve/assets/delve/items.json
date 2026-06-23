@@ -194,7 +194,8 @@
       "charges": 3,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": false
+      "flammable": false,
+      "damage_type": "fire"
     },
     {
       "id": "wand_digging",

@@ -5,6 +5,7 @@ import delve.natutil.*
 import delve.natutil.*
 import delve.rng as rand
 import delve.tactics as tactics
+import delve.content as content
 
 partName : BodyPart -> String
 let partName part =
@@ -121,31 +122,55 @@ let awardXp killer victim =
             killer.{ stats = killer.stats.{ xp = gained, level = nextLevel, maxHp = killer.stats.maxHp + 5, hp = killer.stats.hp + 5, str = killer.stats.str + 1 }, loyalty = killer.loyalty + 2 }
         else killer.{ stats = killer.stats.{ xp = gained } }
 
-strikeWith : ContentPack -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
-let strikeWith pack attackTactic defenseTactic attacker defender r0 =
+listMember : DamageType -> List DamageType -> Bool
+let listMember x xs decreases listLength xs =
+    match xs
+    case Nil -> False
+    case y :: rest -> if x == y then True else listMember x rest
+
+-- Resistance halves (floored, min 1), vulnerability doubles. divInt stays in the
+-- body only (never a decreases metric) — this function is non-recursive.
+scaleDamage : DamageType -> Int -> Actor -> Int
+let scaleDamage dt dmg defender =
+    if listMember dt defender.resistances then max 1 (divInt dmg 2)
+    elif listMember dt defender.vulnerabilities then dmg * 2
+    else dmg
+
+-- Short combat-log clue so players LEARN resistances by watching (lore makes it
+-- explicit later). Physical hits stay unflavored.
+elementTag : DamageType -> Actor -> String
+let elementTag dt defender =
+    if dt == Physical then ""
+    elif listMember dt defender.resistances then " It shrugs off the " ++ content.damageTypeDisplayName dt ++ "."
+    elif listMember dt defender.vulnerabilities then " The " ++ content.damageTypeDisplayName dt ++ " bites deep!"
+    else ""
+
+strikeWith : ContentPack -> DamageType -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
+let strikeWith pack dt attackTactic defenseTactic attacker defender r0 =
     let roll = attackRoll pack attackTactic defenseTactic attacker defender r0
     in
         if not roll.hit then
             (attacker = attacker, defender = defender, log = attacker.name ++ " misses " ++ defender.name ++ ".", rng = roll.rng)
         else
+            let dmg = scaleDamage dt roll.damage defender
             let part = randomPart roll.rng
-            let defenderWounded = inflictWound part.part roll.damage defender
-            let hp2 = defenderWounded.stats.hp - roll.damage
+            let defenderWounded = inflictWound part.part dmg defender
+            let hp2 = defenderWounded.stats.hp - dmg
             let alive = hp2 > 0
             let defender2 = defenderWounded.{ stats = defenderWounded.stats.{ hp = max 0 hp2 }, alive = alive }
             let attacker2 = if alive then attacker else awardXp attacker defender2
             let woundText = " in the " ++ partName part.part
             let text =
-                if alive then attacker.name ++ " hits " ++ defender.name ++ woundText ++ " for " ++ show roll.damage ++ "."
+                if alive then attacker.name ++ " hits " ++ defender.name ++ woundText ++ " for " ++ show dmg ++ "." ++ elementTag dt defender
                 else attacker.name ++ " kills " ++ defender.name ++ "."
             in (attacker = attacker2, defender = defender2, log = text, rng = part.rng)
 
-strike : ContentPack -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
-let strike pack attacker defender r0 =
-    strikeWith pack Balanced Balanced attacker defender r0
+strike : ContentPack -> DamageType -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
+let strike pack dt attacker defender r0 =
+    strikeWith pack dt Balanced Balanced attacker defender r0
 
-targetedStrike : ContentPack -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
-let targetedStrike pack attacker defender r0 =
+targetedStrike : ContentPack -> DamageType -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
+let targetedStrike pack dt attacker defender r0 =
     let part = randomPart r0
     let roll = attackRoll pack Defensive Balanced attacker defender part.rng
     in
@@ -153,13 +178,14 @@ let targetedStrike pack attacker defender r0 =
             (attacker = attacker, defender = defender, log = attacker.name ++ " aims at " ++ defender.name ++ "'s " ++ partName part.part ++ " and misses.", rng = roll.rng)
         else
             let bonus = if part.part == Head then 2 else 0
-            let defenderWounded = inflictWound part.part (roll.damage + bonus) defender
-            let hp2 = defenderWounded.stats.hp - roll.damage - bonus
+            let dmg = scaleDamage dt (roll.damage + bonus) defender
+            let defenderWounded = inflictWound part.part dmg defender
+            let hp2 = defenderWounded.stats.hp - dmg
             let alive = hp2 > 0
             let defender2 = defenderWounded.{ stats = defenderWounded.stats.{ hp = max 0 hp2 }, alive = alive }
             let attacker2 = if alive then attacker else awardXp attacker defender2
             let text =
-                if alive then attacker.name ++ " maims " ++ defender.name ++ "'s " ++ partName part.part ++ " for " ++ show (roll.damage + bonus) ++ "."
+                if alive then attacker.name ++ " maims " ++ defender.name ++ "'s " ++ partName part.part ++ " for " ++ show dmg ++ "." ++ elementTag dt defender
                 else attacker.name ++ " drops " ++ defender.name ++ " with a targeted strike."
             in (attacker = attacker2, defender = defender2, log = text, rng = roll.rng)
 

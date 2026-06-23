@@ -137,7 +137,7 @@ let movePlayer dir game =
                 elif not (hostileTo p enemy) then message (enemy.name ++ " blocks your path.") game
                 else
                     let game0 = clearWardAt p.pos game
-                    let hit = combat.strikeWith game.content game.player.tactic Balanced p enemy (natToInt game0.rng)
+                    let hit = combat.strikeWith game.content (content.playerMeleeElement game.content p game.player) game.player.tactic Balanced p enemy (natToInt game0.rng)
                     let actors1 = replaceActor hit.attacker (replaceActor hit.defender game0.level.actors)
                     let g0 = game0.{ rng = intToNat hit.rng, level = game0.level.{ actors = removeDeadActors actors1 } }
                     let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0
@@ -155,13 +155,14 @@ let movePlayer dir game =
                     match tile.kind
                     case ClosedDoor -> openDoorAt target game
                     case Campfire -> openFire target game
+                    case Pool -> drinkPool game
                     case Wall -> message "You bump into a wall." game
                     case _ -> message "You cannot move there." game
 
 onEnteredTile : TileKind -> GameState -> GameState
 let onEnteredTile kind game =
     match kind
-    case Trap -> damagePlayer 2 (message "A trap bites your ankle." game)
+    case Trap -> damagePlayer Physical 2 (message "A trap bites your ankle." game)
     case Water -> message "You splash through dark water." game
     case Lava -> message "The lava burns you." game
     case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt 12 game)
@@ -176,11 +177,12 @@ let readLoreStone game =
     case Nil -> message "The lore-stone is blank." game
     case r :: rest -> message ("The stone says: " ++ r.text) (game.{ rumors = rest })
 
-damagePlayer : Int -> GameState -> GameState
-let damagePlayer amount game =
+damagePlayer : DamageType -> Int -> GameState -> GameState
+let damagePlayer dt amount0 game =
     match playerActor game
     case None -> game.{ mode = Dead }
     case Some p ->
+        let amount = combat.scaleDamage dt amount0 p
         let hp2 = p.stats.hp - amount
         let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
         let mode2 = if hp2 > 0 then game.mode else Dead
@@ -427,7 +429,9 @@ let zapWand wand before after p enemy game =
     let game0 = clearWardAt p.pos spent.state
     match wand.kind
     case WandFire ->
-        let hp2 = enemy.stats.hp - wand.power
+        let dt = content.damageTypeOf game.content wand.kind
+        let dmg = combat.scaleDamage dt wand.power enemy
+        let hp2 = enemy.stats.hp - dmg
         let enemy2 = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
         let attacker0 =
             match playerActor game0
@@ -436,7 +440,7 @@ let zapWand wand before after p enemy game =
         let attacker2 = if enemy2.alive then attacker0 else combat.awardXp attacker0 enemy2
         let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
         let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
-        message ("A line of fire hits " ++ enemy.name ++ " for " ++ show wand.power ++ ".") g1
+        message ("A line of " ++ content.damageTypeDisplayName dt ++ " hits " ++ enemy.name ++ " for " ++ show dmg ++ "." ++ combat.elementTag dt enemy) g1
     case WandPolymorph ->
         let pool = content.monsterTable game.content game0.level.branch game0.level.depth
         let pick = rand.choose pool (natToInt game0.rng)
@@ -486,7 +490,8 @@ let throwFirst game =
             case None -> message "You throw it into the dark." (game0.{ level = game0.level.{ actors = replaceActor p.{ inventory = taken.rest } game0.level.actors, items = (::) (GroundItem p.pos thrown) game0.level.items } })
             case Some enemy ->
                 let armor = combat.bestClassPower ArmorClass enemy.inventory
-                let dmg = max 1 (thrown.power - enemy.stats.def - armor)
+                let dt = content.damageTypeOf game.content thrown.kind
+                let dmg = combat.scaleDamage dt (max 1 (thrown.power - enemy.stats.def - armor)) enemy
                 let hp2 = enemy.stats.hp - dmg
                 let enemy2 = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
                 let p2 = p.{ inventory = taken.rest }
@@ -590,14 +595,138 @@ let craftRecipe r game =
                 let newCursor = max 0 (min game.invCursor (listLength p2.inventory - 1))
                 in message ("You craft " ++ know.visibleName game.content game.player out ++ ".") (game.{ player = game.player.{ crafting = min 6 (game.player.crafting + 1) }, invCursor = newCursor, level = game.level.{ actors = replaceActor p2 game.level.actors } })
 
+-- Where a thrown item comes to rest: it flies in the thrower's facing until it
+-- hits a wall (stops short) or a creature (lands on it), up to `steps`.
+flyPath : Vec2 -> Direction -> Int -> Level -> Vec2
+let flyPath origin dir steps level =
+    block
+        go : Vec2 -> Int -> Vec2
+        let go pos n decreases max 0 n =
+            if n <= 0 then pos
+            else
+                let nxt = addPos pos (moveDelta dir)
+                let blocked = not (grid.inBounds level.size nxt) || not (isWalkable (grid.getTile level nxt))
+                in
+                    if blocked then pos
+                    else
+                        match actorAt nxt level.actors
+                        case Some _ -> nxt
+                        case None -> go nxt (n - 1)
+        go origin steps
+
+-- Throw the selected item: it lands somewhere ahead and clatters loudly — the
+-- noise (heard via the sound system) draws monsters to investigate, so you can
+-- slip past them while they check the racket.
+throwSelected : GameState -> GameState
+let throwSelected game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some p ->
+        let r = inventory.removeAt game.invCursor p.inventory
+        in
+            match r.removed
+            case None -> game.{ mode = Playing }
+            case Some whole ->
+                let taken = inventory.takeOneFromStack whole r.rest
+                let landing = flyPath p.pos p.facing 6 game.level
+                let p2 = p.{ inventory = taken.rest }
+                let g = game.{ mode = Playing, invCursor = 0, level = game.level.{ actors = replaceActor p2 game.level.actors, items = (::) (GroundItem landing taken.picked) game.level.items }, noise = Sound landing fov.throwLoudness }
+                in message ("You throw the " ++ know.visibleName game.content game.player taken.picked ++ "; it clatters in the dark.") g
+
+butcherCorpse : GameState -> GameState
+let butcherCorpse game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let r = inventory.removeAt game.invCursor p.inventory
+        in
+            match r.removed
+            case None -> game
+            case Some corpse ->
+                let bone = content.mkBones game.content corpse.source
+                let p2 = p.{ inventory = inventory.addToInventory bone (inventory.addToInventory bone r.rest) }
+                let nc = max 0 (min game.invCursor (listLength p2.inventory - 1))
+                in message ("You butcher the " ++ corpse.name ++ " for bones.") (game.{ invCursor = nc, level = game.level.{ actors = replaceActor p2 game.level.actors } })
+
+isFloorKindleTarget : TileKind -> Bool
+let isFloorKindleTarget k =
+    match k
+    case Floor -> True
+    case _ -> False
+
+actorClearAt : Vec2 -> List Actor -> Bool
+let actorClearAt pos actors =
+    match actorAt pos actors
+    case None -> True
+    case Some _ -> False
+
+-- Build a campfire on the open floor you're facing, spending the fuel item.
+kindleFire : GameState -> GameState
+let kindleFire game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some p ->
+        let target = addPos p.pos (moveDelta p.facing)
+        let t = grid.getTile game.level target
+        in
+            if not (isFloorKindleTarget t.kind) || not (actorClearAt target game.level.actors) then
+                message "You need clear floor ahead to build a fire." (game.{ mode = Playing })
+            else
+                let r = inventory.removeAt game.invCursor p.inventory
+                in
+                    match r.removed
+                    case None -> game.{ mode = Playing }
+                    case Some whole ->
+                        let taken = inventory.takeOneFromStack whole r.rest
+                        let p2 = p.{ inventory = taken.rest }
+                        let level2 = grid.setTile target t.{ kind = Campfire } game.level
+                        in message "You kindle a campfire." (game.{ mode = Playing, invCursor = 0, level = level2.{ actors = replaceActor p2 level2.actors } })
+
+adjacentBeast : Vec2 -> List Actor -> Option Actor
+let adjacentBeast pos actors decreases listLength actors =
+    match actors
+    case Nil -> None
+    case a :: rest -> if a.alive && a.faction == BeastFaction && chebyshev pos a.pos <= 1 then Some a else adjacentBeast pos rest
+
+feedOutcome : Actor -> Int -> (actor : Actor, text : String)
+let feedOutcome beast roll =
+    if roll < 15 then (actor = beast.{ attitude = Friendly, faction = HeroFaction }, text = "The " ++ beast.name ++ " takes the food and falls in beside you!")
+    elif roll < 85 then (actor = beast.{ attitude = Neutral }, text = "The " ++ beast.name ++ " gulps the food down and loses interest in you.")
+    else (actor = beast, text = "The " ++ beast.name ++ " snatches the food but stays wary.")
+
+-- Offer food to a nearby wild beast: usually it eats and calms (pacifies); rarely
+-- it adopts you. Either way the food is spent.
+feedBeast : GameState -> GameState
+let feedBeast game =
+    match playerActor game
+    case None -> game.{ mode = Playing }
+    case Some p ->
+        match adjacentBeast p.pos game.level.actors
+        case None -> message "No wild beast is near enough to feed." (game.{ mode = Playing })
+        case Some beast ->
+            let r = inventory.removeAt game.invCursor p.inventory
+            in
+                match r.removed
+                case None -> game.{ mode = Playing }
+                case Some whole ->
+                    let taken = inventory.takeOneFromStack whole r.rest
+                    let pick = rand.range 0 99 (natToInt game.rng)
+                    let p2 = p.{ inventory = taken.rest }
+                    let g1 = game.{ rng = intToNat pick.rng, mode = Playing, invCursor = 0, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+                    let outcome = feedOutcome beast pick.value
+                    in message outcome.text (g1.{ level = g1.level.{ actors = replaceActor outcome.actor g1.level.actors } })
+
 executeVerb : Verb -> GameState -> GameState
 let executeVerb v game =
     match v
     case VUse -> useSelected game
     case VEquip -> (useSelected game).{ mode = InventoryMode }
     case VDrop -> (dropSelected game).{ mode = InventoryMode }
-    case VThrow -> game.{ mode = InventoryMode }
+    case VThrow -> throwSelected game
     case VCraft r -> (craftRecipe r game).{ mode = InventoryMode }
+    case VButcher -> (butcherCorpse game).{ mode = InventoryMode }
+    case VKindle -> kindleFire game
+    case VFeed -> feedBeast game
 
 actionCommand : Command -> GameState -> GameState
 let actionCommand cmd game =
@@ -613,6 +742,21 @@ let actionCommand cmd game =
                 case Some v -> executeVerb v game
                 case None -> game
         case _ -> game.{ mode = InventoryMode }
+
+-- Drink from a still pool: a gamble — usually refreshing or sickening, sometimes
+-- chaos-tainted, rarely something stranger.
+drinkOutcome : Int -> GameState -> GameState
+let drinkOutcome roll g =
+    if roll < 35 then message "The cool water refreshes you." (inventory.healPlayer 6 g)
+    elif roll < 60 then message "The water is foul; your gut twists." (damagePlayer Poison 3 g)
+    elif roll < 80 then message "The water is brackish and joyless." g
+    elif roll < 92 then message "An oily sheen coats it — it tastes of chaos." (corruption.corrupt 25 g)
+    else message "The water shimmers strangely as it goes down." (corruption.gainMutation g)
+
+drinkPool : GameState -> GameState
+let drinkPool game =
+    let roll = rand.range 0 99 (natToInt game.rng)
+    in drinkOutcome roll.value (game.{ rng = intToNat roll.rng })
 
 -- ── Fire interaction: walk into a campfire to open it, then add/take items ──
 openFire : Vec2 -> GameState -> GameState
@@ -839,7 +983,7 @@ let hazardTick game =
     case None -> game
     case Some p ->
         match (grid.getTile game.level p.pos).kind
-        case Lava -> damagePlayer 6 (message "The lava sears you." game)
+        case Lava -> damagePlayer Fire 6 (message "The lava sears you." game)
         case _ -> game
 
 isVentKind : TileKind -> Bool
@@ -944,7 +1088,7 @@ let tickWorld cmd before game =
         let hungerCost = 1 + tactics.hungerCost game.content game.player.tactic + corruption.mutationHungerTax game.content game.player.mutations
         let hungry = game.{ player = game.player.{ hunger = game.player.hunger - hungerCost }, level = game.level.{ turn = game.level.turn + 1 } }
         let wounded = tickPlayerWounds hungry
-        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then damagePlayer 1 (message "You are starving." wounded) else wounded
+        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then damagePlayer Physical 1 (message "You are starving." wounded) else wounded
         let hazard = if starving.mode == Playing then hazardTick starving else starving
         let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
         let spread = if corrupted.mode == Playing then spreadChaos corrupted else corrupted

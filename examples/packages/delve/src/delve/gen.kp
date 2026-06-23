@@ -147,7 +147,9 @@ let sprinkleFeatures levelConfig depth rooms level r decreases listLength rooms 
         let afterTrap = if trapRoll.value then placeFeature Trap room afterLore.level trapRoll.rng else (level = afterLore.level, rng = trapRoll.rng)
         let chaosRoll = rand.chance (levelConfig.chaosVentBaseChance + min 18 (depth * levelConfig.chaosVentChancePerDepth)) afterTrap.rng
         let afterChaos = if chaosRoll.value then placeFeature ChaosVent room afterTrap.level chaosRoll.rng else (level = afterTrap.level, rng = chaosRoll.rng)
-        sprinkleFeatures levelConfig depth rest afterChaos.level afterChaos.rng
+        let poolRoll = rand.chance levelConfig.poolChance afterChaos.rng
+        let afterPool = if poolRoll.value then placeFeature Pool room afterChaos.level poolRoll.rng else (level = afterChaos.level, rng = poolRoll.rng)
+        sprinkleFeatures levelConfig depth rest afterPool.level afterPool.rng
 
 occupiedAt : Vec2 -> List Actor -> Bool
 let occupiedAt pos actors =

@@ -72,6 +72,7 @@ let tileKindChar k =
     case ChaosVent -> "*"
     case BranchDown -> ">"
     case Campfire -> "▲"
+    case Pool -> "≈"
 
 litTileStyle : Tile -> (color : String, glyph : String)
 let litTileStyle t =
@@ -96,6 +97,7 @@ let litKindStyle k =
     case ChaosVent -> (color = sgrb 210 95 220, glyph = "*")
     case BranchDown -> (color = sgrb 210 95 220, glyph = ">")
     case Campfire -> (color = sgrb 230 140 40, glyph = "▲")
+    case Pool -> (color = sgr 80 150 225, glyph = "≈")
 
 -- ── Entities ────────────────────────────────────────────────────────────
 actorStyle : Actor -> (color : String, glyph : String)
@@ -108,8 +110,33 @@ let actorStyle a =
     elif a.faction == BeastFaction then (color = sgr 200 150 95, glyph = a.glyph)
     else (color = sgr 220 120 95, glyph = a.glyph)
 
-itemStyle : Item -> (color : String, glyph : String)
-let itemStyle item =
+findColor : List ColorDef -> String -> Option ColorDef
+let findColor cs name decreases listLength cs =
+    match cs
+    case Nil -> None
+    case c :: rest -> if c.id == name then Some c else findColor rest name
+
+-- Resolve a palette color NAME to a terminal SGR via the data-driven colors table.
+-- Unknown names fall back to neutral gray.
+colorNameToSgr : ContentPack -> String -> String
+let colorNameToSgr pack name =
+    match findColor pack.colors name
+    case Some c -> sgr c.r c.g c.b
+    case None -> sgr 225 225 225
+
+rarityGlyphColor : ContentPack -> String -> Option String
+let rarityGlyphColor pack rid =
+    if rid == "common" then None
+    else Some (colorNameToSgr pack (content.rarityColorName pack rid))
+
+itemStyle : ContentPack -> Item -> (color : String, glyph : String)
+let itemStyle pack item =
+    match rarityGlyphColor pack item.rarity
+    case Some c -> (color = c, glyph = item.glyph)
+    case None -> classItemStyle item
+
+classItemStyle : Item -> (color : String, glyph : String)
+let classItemStyle item =
     match item.class
     case CoinClass -> (color = sgrb 235 205 95, glyph = item.glyph)
     case PotionClass -> (color = sgr 225 110 165, glyph = item.glyph)
@@ -129,21 +156,21 @@ let actorStyleAt pos actors decreases listLength actors =
     case a :: rest ->
         if a.alive && eqPos a.pos pos then Some (actorStyle a) else actorStyleAt pos rest
 
-itemStyleAt : Vec2 -> List GroundItem -> Option (color : String, glyph : String)
-let itemStyleAt pos items decreases listLength items =
+itemStyleAt : ContentPack -> Vec2 -> List GroundItem -> Option (color : String, glyph : String)
+let itemStyleAt pack pos items decreases listLength items =
     match items
     case Nil -> None
-    case gi :: rest -> if eqPos pos gi.pos then Some (itemStyle gi.item) else itemStyleAt pos rest
+    case gi :: rest -> if eqPos pos gi.pos then Some (itemStyle pack gi.item) else itemStyleAt pack pos rest
 
-cellStyle : Level -> Vec2 -> Tile -> (color : String, glyph : String)
-let cellStyle level pos t =
+cellStyle : ContentPack -> Level -> Vec2 -> Tile -> (color : String, glyph : String)
+let cellStyle pack level pos t =
     if not t.seen then (color = "", glyph = " ")
     elif not t.lit then (color = memColor, glyph = tileChar t)
     else
         match actorStyleAt pos level.actors
         case Some s -> s
         case None ->
-            match itemStyleAt pos level.items
+            match itemStyleAt pack pos level.items
             case Some s -> s
             case None -> litTileStyle t
 
@@ -151,15 +178,15 @@ let cellStyle level pos t =
 -- is O(index); the old per-cell getTile made render O((w*h)^2)). The string is
 -- built by right-recursion (`piece ++ go rest`) so concatenation is O(total),
 -- and color is run-length-encoded per row (one SGR per color run, one reset/row).
-renderMap : Level -> String
-let renderMap level =
+renderMap : ContentPack -> Level -> String
+let renderMap pack level =
     block
         go : Int -> Int -> String -> List Tile -> String
         let go x y cur tiles decreases listLength tiles =
             match tiles
             case Nil -> ""
             case t :: rest ->
-                let s = cellStyle level (Vec2 x y) t
+                let s = cellStyle pack level (Vec2 x y) t
                 let piece = if s.color == cur then s.glyph else s.color ++ s.glyph
                 let x2 = x + 1
                 if x2 >= level.size.width then piece ++ reset ++ "\r\n" ++ go 0 (y + 1) "" rest
@@ -260,7 +287,7 @@ let invLines pack player cursor items =
         let go i xs acc decreases listLength xs =
             match xs
             case Nil -> reverse acc
-            case item :: rest -> go (i + 1) rest ((::) (invMark cursor i ++ show (i + 1) ++ ") " ++ know.visibleName pack player item ++ eqMark item) acc)
+            case item :: rest -> go (i + 1) rest ((::) (invMark cursor i ++ show (i + 1) ++ ") " ++ colorNameToSgr pack (content.rarityColorName pack item.rarity) ++ know.visibleName pack player item ++ reset ++ eqMark item) acc)
         go 0 items Nil
 
 -- Flavor for the selected item, assembled from its data (no hardcoded per-item
@@ -379,6 +406,7 @@ let terrainName k =
     case LoreStone -> "a lore-stone"
     case ChaosVent -> "a venting chaos rift"
     case Campfire -> "a crackling campfire"
+    case Pool -> "a still, dark pool"
     case VoidTile -> "the void"
 
 groundItemAt : Vec2 -> List GroundItem -> Option Item
@@ -387,11 +415,10 @@ let groundItemAt pos items decreases listLength items =
     case Nil -> None
     case gi :: rest -> if eqPos pos gi.pos then Some gi.item else groundItemAt pos rest
 
-lookActorLines : ContentPack -> Actor -> List String
-let lookActorLines pack a =
-    [ a.name ++ " — " ++ show a.stats.hp ++ "/" ++ show a.stats.maxHp ++ " hp"
-    , content.descriptionOf pack a.species
-    ]
+lookActorLines : ContentPack -> PlayerState -> Actor -> List String
+let lookActorLines pack player a =
+    let base = [ a.name ++ " — " ++ show a.stats.hp ++ "/" ++ show a.stats.maxHp ++ " hp", content.descriptionOf pack a.species ]
+    in listAppend base (know.revealActorLore pack player a)
 
 lookDescription : ContentPack -> PlayerState -> Level -> Vec2 -> List String
 let lookDescription pack player level pos =
@@ -401,7 +428,7 @@ let lookDescription pack player level pos =
         elif not t.lit then ["From memory: " ++ terrainName t.kind ++ ".", "You cannot see it clearly from here."]
         else
             match actorAt pos level.actors
-            case Some a -> listAppend (lookActorLines pack a) ["It stands on " ++ terrainName t.kind ++ "."]
+            case Some a -> listAppend (lookActorLines pack player a) ["It stands on " ++ terrainName t.kind ++ "."]
             case None ->
                 match groundItemAt pos level.items
                 case Some it -> [know.visibleName pack player it ++ " lies here.", "It rests on " ++ terrainName t.kind ++ "."]
@@ -429,15 +456,15 @@ let memberPos p ps decreases listLength ps =
     case Nil -> False
     case q :: rest -> if eqPos p q then True else memberPos p rest
 
-renderMapLook : Level -> Vec2 -> List Vec2 -> String
-let renderMapLook level cursor cone =
+renderMapLook : ContentPack -> Level -> Vec2 -> List Vec2 -> String
+let renderMapLook pack level cursor cone =
     block
         go : Int -> Int -> String -> List Tile -> String
         let go x y cur tiles decreases listLength tiles =
             match tiles
             case Nil -> ""
             case t :: rest ->
-                let s = cellStyle level (Vec2 x y) t
+                let s = cellStyle pack level (Vec2 x y) t
                 let here = x == cursor.x && y == cursor.y
                 let lit = memberPos (Vec2 x y) cone
                 let piece =
@@ -457,7 +484,7 @@ let renderLook game =
         case Some a -> fov.coneCells game.level a (content.sightRangeOf game.content a.species)
         case None -> Nil
     let panel = lookDescription game.content game.player game.level game.lookPos
-    in ansiClear ++ ansiHideCursor ++ renderMapLook game.level game.lookPos cone ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "look: move the cursor with the movement keys; ; or Esc to stop"
+    in ansiClear ++ ansiHideCursor ++ renderMapLook game.content game.level game.lookPos cone ++ ruleLine game.level.size.width ++ lookPanelText panel ++ ruleLine game.level.size.width ++ tc 150 150 160 "look: move the cursor with the movement keys; ; or Esc to stop"
 
 -- ── Item action menu (verbs: use/equip/drop + craft recipes) ─────────────
 letterFor : Int -> String
@@ -543,6 +570,6 @@ let renderGame game =
     case Playing ->
         match playerActor game
         case Some p ->
-            ansiClear ++ ansiHideCursor ++ renderMap game.level ++ ruleLine game.level.size.width ++
+            ansiClear ++ ansiHideCursor ++ renderMap game.content game.level ++ ruleLine game.level.size.width ++
             statusLine game.content game.player p game.audioMuted ++ "\r\n" ++ ruleLine game.level.size.width ++ renderMessages game.level.messages
-        case None -> ansiClear ++ renderMap game.level ++ "No player"
+        case None -> ansiClear ++ renderMap game.content game.level ++ "No player"

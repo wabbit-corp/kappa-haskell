@@ -78,7 +78,7 @@ let targetedAttack game =
         case None -> message "No adjacent target." game
         case Some enemy ->
             let game0 = clearWardAt p.pos game
-            let hit = combat.targetedStrike game.content p enemy (natToInt game0.rng)
+            let hit = combat.targetedStrike game.content (content.playerMeleeElement game.content p game.player) p enemy (natToInt game0.rng)
             let actors1 = replaceActor hit.attacker (replaceActor hit.defender game0.level.actors)
             let g0 = game0.{ rng = intToNat hit.rng, level = game0.level.{ actors = removeDeadActors actors1 } }
             let g1 = if hit.defender.alive then g0 else addCorpseFor hit.defender g0

@@ -8,7 +8,9 @@
     "systems": "assets/delve/systems.json",
     "spawns": "assets/delve/spawns.json",
     "lore": "assets/delve/lore.json",
-    "recipes": "assets/delve/recipes.json"
+    "recipes": "assets/delve/recipes.json",
+    "rarities": "assets/delve/rarities.json",
+    "colors": "assets/delve/colors.json"
   },
   "save": {
     "path": "saves/delve-save.json",

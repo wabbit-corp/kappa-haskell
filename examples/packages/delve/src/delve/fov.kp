@@ -137,6 +137,9 @@ let shoutLoudness = 78
 chatterLoudness : Int
 let chatterLoudness = 60
 
+throwLoudness : Int
+let throwLoudness = 70
+
 soundMaxRange : Int
 let soundMaxRange = 12
 

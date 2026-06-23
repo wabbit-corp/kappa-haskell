@@ -23,7 +23,8 @@
       "trap_chance_per_depth": 1,
       "chaos_vent_base_chance": 4,
       "chaos_vent_chance_per_depth": 1,
-      "chaos_vent_spread_chance": 6
+      "chaos_vent_spread_chance": 6,
+      "pool_chance": 10
     }
   },
   "branches": [

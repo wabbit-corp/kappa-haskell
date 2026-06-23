@@ -264,7 +264,11 @@
       "hearing": -2,
       "language": "",
       "corpse_nutrition": 0,
-      "corpse_effect": "none"
+      "corpse_effect": "none",
+      "resistances": [
+        "cold",
+        "poison"
+      ]
     },
     {
       "id": "troll",
@@ -302,7 +306,13 @@
       "hearing": -2,
       "language": "",
       "corpse_nutrition": 400,
-      "corpse_effect": "heal"
+      "corpse_effect": "heal",
+      "resistances": [
+        "cold"
+      ],
+      "vulnerabilities": [
+        "fire"
+      ]
     },
     {
       "id": "wizard",
@@ -340,7 +350,8 @@
       "hearing": 2,
       "language": "chaos",
       "corpse_nutrition": 130,
-      "corpse_effect": "taint"
+      "corpse_effect": "taint",
+      "ranged_element": "chaos"
     },
     {
       "id": "chaos_spawn",
@@ -376,7 +387,10 @@
       "hearing": 4,
       "language": "chaos",
       "corpse_nutrition": 150,
-      "corpse_effect": "taint"
+      "corpse_effect": "taint",
+      "resistances": [
+        "chaos"
+      ]
     },
     {
       "id": "dragon",
@@ -417,7 +431,11 @@
       "hearing": 6,
       "language": "draconic",
       "corpse_nutrition": 600,
-      "corpse_effect": "might"
+      "corpse_effect": "might",
+      "resistances": [
+        "fire"
+      ],
+      "ranged_element": "fire"
     },
     {
       "id": "pilgrim",

@@ -4,6 +4,13 @@ import delve.core.*
 import delve.natutil.*
 import delve.content as content
 
+-- Lore-gated reveal of a creature's resistances/vulnerabilities for look mode.
+-- The runtime Actor already carries a.resistances/a.vulnerabilities, so when a
+-- lore/knowledge skill exists this gates on it and formats via content.resistanceWords.
+-- Dormant (returns nothing) until that skill lands.
+revealActorLore : ContentPack -> PlayerState -> Actor -> List String
+let revealActorLore pack player a = Nil
+
 beatitudeText : Beatitude -> String
 let beatitudeText beatitude =
     match beatitude

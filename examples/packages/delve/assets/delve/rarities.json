@@ -1,0 +1,10 @@
+{
+  "rarities": [
+    { "id": "common",    "name": "Common",    "color": "white",  "weight": 6000 },
+    { "id": "uncommon",  "name": "Uncommon",  "color": "green",  "weight": 2500 },
+    { "id": "rare",      "name": "Rare",      "color": "blue",   "weight": 700 },
+    { "id": "epic",      "name": "Epic",      "color": "purple", "weight": 250 },
+    { "id": "legendary", "name": "Legendary", "color": "orange", "weight": 10 },
+    { "id": "mythic",    "name": "Mythic",    "color": "gold",   "weight": 3 }
+  ]
+}

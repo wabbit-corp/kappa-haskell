@@ -246,7 +246,8 @@
       "mp_bonus": 0,
       "str_bonus": 1,
       "dex_bonus": 0,
-      "def_bonus": 0
+      "def_bonus": 0,
+      "damage_type": "poison"
     },
     {
       "id": "Ravenous",
@@ -268,7 +269,8 @@
       "mp_bonus": 0,
       "str_bonus": 0,
       "dex_bonus": 0,
-      "def_bonus": 0
+      "def_bonus": 0,
+      "damage_type": "fire"
     },
     {
       "id": "WhisperingSkull",

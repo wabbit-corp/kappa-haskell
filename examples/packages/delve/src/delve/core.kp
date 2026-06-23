@@ -80,6 +80,7 @@ data TileKind : Type =
     ChaosVent
     BranchDown
     Campfire
+    Pool
 
 -- `warded` is the tiny Delve version of NetHack's defensive engraving idea:
 -- a temporary inscription that makes many monsters hesitate unless you attack.
@@ -177,6 +178,15 @@ data Species : Type =
     ChaosSpawn
     Pilgrim
 
+-- Elemental damage channels. Actors carry resistances/vulnerabilities (lists of
+-- these); items and mutations each deal one. Authored as strings in JSON.
+data DamageType : Type =
+    Physical
+    Fire
+    Cold
+    Poison
+    Chaos
+
 data Item : Type =
     Item
         (kind : ItemKind)
@@ -193,6 +203,7 @@ data Item : Type =
         (equipped : Bool)
         (source : Species)
         (cooked : Bool)
+        (rarity : String)
 
 data Faction : Type =
     HeroFaction
@@ -296,6 +307,8 @@ data Actor : Type =
         (loyalty : Int)
         (alive : Bool)
         (facing : Direction)
+        (resistances : List DamageType)
+        (vulnerabilities : List DamageType)
 
 data GroundItem : Type =
     GroundItem
@@ -361,6 +374,7 @@ data ItemDef : Type =
         (startsIdentified : Bool)
         (beatitudeKnownByDefault : Bool)
         (flammable : Bool)
+        (damageType : DamageType)
 
 data ItemAffix : Type =
     ItemAffix
@@ -390,6 +404,9 @@ data ActorDef : Type =
         (language : String)
         (corpseNutrition : Int)
         (corpseEffect : String)
+        (resistances : List DamageType)
+        (vulnerabilities : List DamageType)
+        (rangedElement : DamageType)
 
 data SpawnRule : Type =
     SpawnRule
@@ -461,6 +478,7 @@ data MutationDef : Type =
         (defBonus : Int)
         (hungerTax : Int)
         (description : String)
+        (dealsDamageType : Option DamageType)
 
 data LexEntry : Type =
     LexEntry
@@ -486,6 +504,24 @@ data RecipeDef : Type =
         (skill : String)
         (minLevel : Int)
 
+-- A loot-quality tier. Weight is a relative integer (data-driven in rarities.json);
+-- color is a name the renderer maps to a terminal hue.
+data RarityDef : Type =
+    RarityDef
+        (id : String)
+        (name : String)
+        (color : String)
+        (weight : Int)
+
+-- A named palette entry (mirrors datatron colors.clj): id -> display name -> rgb.
+data ColorDef : Type =
+    ColorDef
+        (id : String)
+        (name : String)
+        (r : Int)
+        (g : Int)
+        (b : Int)
+
 -- The actions offered for an item in its inventory action menu.
 data Verb : Type =
     VUse
@@ -493,6 +529,9 @@ data Verb : Type =
     VDrop
     VThrow
     VCraft (recipe : RecipeDef)
+    VButcher
+    VKindle
+    VFeed
 
 data FaithDef : Type =
     FaithDef
@@ -519,6 +558,7 @@ data WorldGenConfig : Type =
         (chaosVentBaseChance : Int)
         (chaosVentChancePerDepth : Int)
         (chaosVentSpreadChance : Int)
+        (poolChance : Int)
 
 data SaveConfig : Type =
     SaveConfig
@@ -553,6 +593,8 @@ data ContentPack : Type =
         (languages : List LanguageDef)
         (recipes : List RecipeDef)
         (structures : List StructureDef)
+        (rarities : List RarityDef)
+        (colors : List ColorDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is
@@ -706,6 +748,7 @@ let tileKindCode k =
     case ChaosVent -> 12
     case BranchDown -> 13
     case Campfire -> 14
+    case Pool -> 15
 
 instance Eq TileKind =
     let (==) a b = tileKindCode a == tileKindCode b
@@ -872,6 +915,18 @@ let mutationCode m =
 
 instance Eq Mutation =
     let (==) a b = mutationCode a == mutationCode b
+
+damageTypeCode : DamageType -> Int
+let damageTypeCode d =
+    match d
+    case Physical -> 0
+    case Fire -> 1
+    case Cold -> 2
+    case Poison -> 3
+    case Chaos -> 4
+
+instance Eq DamageType =
+    let (==) a b = damageTypeCode a == damageTypeCode b
 
 faithCode : Faith -> Int
 let faithCode f =

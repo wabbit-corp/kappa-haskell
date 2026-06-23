@@ -86,7 +86,7 @@ let friendlyTurn friend player game =
     match firstVisibleHostile friend game.level
     case Some enemy ->
         if chebyshev friend.pos enemy.pos <= 1 then
-            let hit = combat.strike game.content friend enemy (natToInt game.rng)
+            let hit = combat.strike game.content Physical friend enemy (natToInt game.rng)
             applyHit hit game
         else
             let dir = toward friend.pos enemy.pos
@@ -109,13 +109,14 @@ shouldFlee : Actor -> Bool
 let shouldFlee a =
     a.stats.hp * 4 < a.stats.maxHp && a.morale < 10
 
-castSpell : Int -> Actor -> Actor -> GameState -> GameState
-let castSpell dmg monster player game =
+castSpell : DamageType -> Int -> Actor -> Actor -> GameState -> GameState
+let castSpell dt dmg0 monster player game =
+    let dmg = combat.scaleDamage dt dmg0 player
     let hp2 = player.stats.hp - dmg
     let player2 = player.{ stats = player.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
     let monster2 = monster.{ stats = monster.stats.{ mp = max 0 (monster.stats.mp - 3) } }
     let actors1 = replaceActor player2 (replaceActor monster2 game.level.actors)
-    let g = message (monster.name ++ " hurls chaos at you for " ++ show dmg ++ ".") (game.{ level = game.level.{ actors = actors1 } })
+    let g = message (monster.name ++ " hurls " ++ content.damageTypeDisplayName dt ++ " at you for " ++ show dmg ++ ".") (game.{ level = game.level.{ actors = actors1 } })
     in if player2.alive then g else g.{ mode = Dead }
 
 -- Nearest visible actor this one is hostile to — could be the player OR a rival
@@ -200,7 +201,7 @@ let engageMonster monster foe game =
         let abil = content.abilitiesOf game.content monster.species
         let frenziedNow = content.hasFrenzy abil && monster.stats.hp * 2 < monster.stats.maxHp
         let tac = if frenziedNow then Berserk else Balanced
-        let hit = combat.strikeWith game.content tac Balanced monster foe (natToInt game.rng)
+        let hit = combat.strikeWith game.content Physical tac Balanced monster foe (natToInt game.rng)
         in applyHit hit game
     else
         let monster2 = tryMoveActor monster (chaseStep monster foe.pos game.level) game.level
@@ -223,14 +224,14 @@ let engagePlayer monster player game =
             else
                 let frenziedNow = content.hasFrenzy abil && monster.stats.hp * 2 < monster.stats.maxHp
                 let tac = if frenziedNow then Berserk else Balanced
-                let hit = combat.strikeWith game.content tac game.player.tactic monster player (natToInt game.rng)
+                let hit = combat.strikeWith game.content Physical tac game.player.tactic monster player (natToInt game.rng)
                 let g = applyHit hit game
                 if hit.defender.alive then g else g.{ mode = Dead }
         else
             let chase = fov.visibleFrom game.level monster.pos player.pos
             let pwr = content.rangedPower abil
             in if chase && pwr > 0 && monster.stats.mp >= 3 then
-                castSpell pwr monster player game
+                castSpell (content.rangedElementOf game.content monster.species) pwr monster player game
             else
                 if chase then
                     let monster2 = tryMoveActor monster (chaseStep monster player.pos game.level) game.level

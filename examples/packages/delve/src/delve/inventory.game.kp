@@ -6,6 +6,7 @@ import delve.grid as grid
 import delve.knowledge as know
 import delve.corruption as corruption
 import delve.content as content
+import delve.combat as combat
 
 itemsAt : Vec2 -> List GroundItem -> List GroundItem
 let itemsAt pos items decreases listLength items =
@@ -129,11 +130,12 @@ let healPlayerAndWounds amount game =
         let p2 = p.{ stats = p.stats.{ hp = hp2 }, wounds = Nil }
         game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
 
-damagePlayer : Int -> GameState -> GameState
-let damagePlayer amount game =
+damagePlayer : DamageType -> Int -> GameState -> GameState
+let damagePlayer dt amount0 game =
     match playerActor game
     case None -> game.{ mode = Dead }
     case Some p ->
+        let amount = combat.scaleDamage dt amount0 p
         let hp2 = p.stats.hp - amount
         let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
         let mode2 = if hp2 > 0 then game.mode else Dead
@@ -174,7 +176,7 @@ let usePotion item rest p game =
     let known = g0.{ player = know.identifyKind item.kind g0.player }
     match item.kind
     case PotionHealing ->
-        if item.beatitude == Cursed then message "The potion burns." (damagePlayer 4 known)
+        if item.beatitude == Cursed then message "The potion burns." (damagePlayer Poison 4 known)
         else message "Your wounds close." (healPlayerAndWounds (if item.beatitude == Blessed then item.power + 8 else item.power) known)
     case PotionMutation ->
         if item.beatitude == Blessed then corruption.gainMutation known
@@ -205,12 +207,31 @@ let boostStrength game =
 
 -- The effect a corpse has is named in data (actors.json corpse_effect); this just
 -- dispatches the named effect to its system. Most corpses are "none".
+-- Permanently add an elemental resistance to the player (idempotent).
+grantResistance : DamageType -> GameState -> GameState
+let grantResistance dt game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        if combat.listMember dt p.resistances then game
+        else message ("Something in the flesh wards you against " ++ content.damageTypeDisplayName dt ++ ".") (game.{ level = game.level.{ actors = replaceActor (p.{ resistances = (::) dt p.resistances }) game.level.actors } })
+
+grantResistancesList : List DamageType -> GameState -> GameState
+let grantResistancesList ds game decreases listLength ds =
+    match ds
+    case Nil -> game
+    case d :: rest -> grantResistancesList rest (grantResistance d game)
+
+grantSpeciesResistances : Species -> GameState -> GameState
+let grantSpeciesResistances species game =
+    grantResistancesList (content.speciesResistances game.content species) game
+
 corpseEffect : Item -> GameState -> GameState
 let corpseEffect item game =
     match content.corpseEffectOf game.content item.source
-    case "might" -> message "Terrible power floods you." (boostStrength (corruption.corrupt 60 game))
-    case "taint" -> message "The tainted meat sears you within." (corruption.corrupt (if item.cooked then 20 else 45) game)
-    case "heal" -> healPlayerAndWounds 8 (message "The rich meat knits your wounds." game)
+    case "might" -> grantSpeciesResistances item.source (message "Terrible power floods you." (boostStrength (corruption.corrupt 60 game)))
+    case "taint" -> grantSpeciesResistances item.source (message "The tainted meat sears you within." (corruption.corrupt (if item.cooked then 20 else 45) game))
+    case "heal" -> grantSpeciesResistances item.source (healPlayerAndWounds 8 (message "The rich meat knits your wounds." game))
     case _ -> game
 
 eatCorpse : Item -> List Item -> Actor -> GameState -> GameState

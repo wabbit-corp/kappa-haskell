@@ -44,7 +44,7 @@ let fallbackItemDef kind =
     -- Should be unreachable after config validation. Keeping a visible fallback
     -- makes accidental schema breakage noisy in-game rather than crashing the
     -- renderer with a missing glyph.
-    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True False
+    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True False Physical
 
 itemDef : ContentPack -> ItemKind -> ItemDef
 let itemDef pack kind =
@@ -93,17 +93,23 @@ itemVerbs : ContentPack -> Int -> Actor -> Item -> List Verb
 let itemVerbs pack crafting actor item =
     let useV = if verbUsable item.class then [VUse] else Nil
     let equipV = if verbEquip item.class then [VEquip] else Nil
+    let butcherV = if item.kind == Corpse then [VButcher] else Nil
+    let kindleV = if flammableOf pack item.kind then [VKindle] else Nil
+    let feedV = if item.kind == Corpse || item.class == FoodClass then [VFeed] else Nil
     let crafts = craftVerbsFor pack.recipes crafting actor.inventory item.kind
-    in listAppend (listAppend useV equipV) (listAppend crafts [VDrop])
+    in listAppend useV (listAppend equipV (listAppend butcherV (listAppend kindleV (listAppend feedV (listAppend crafts (listAppend [VThrow] [VDrop]))))))
 
 verbLabel : Verb -> String
 let verbLabel v =
     match v
     case VUse -> "Use"
-    case VEquip -> "Equip / wield"
+    case VEquip -> "Equip"
     case VDrop -> "Drop"
     case VThrow -> "Throw"
     case VCraft r -> r.label
+    case VButcher -> "Butcher"
+    case VKindle -> "Kindle a campfire"
+    case VFeed -> "Feed"
 
 trueName : ContentPack -> ItemKind -> String
 let trueName pack kind = (itemDef pack kind).trueName
@@ -138,7 +144,8 @@ let mkItem pack kind =
             charges = def.charges,
             equipped = False,
             source = PlayerSpecies,
-            cooked = False
+            cooked = False,
+            rarity = "common"
         }
 
 rollBeatitude : rand.Rng -> (beatitude : Beatitude, rng : rand.Rng)
@@ -178,6 +185,91 @@ let maybeAffix pack cls r0 =
         case Some c -> (affix = Some c.value, rng = c.rng)
         case None -> (affix = None, rng = roll.rng)
 
+-- Like maybeAffix but always tries to draw (used when rarity guarantees N affixes).
+-- Returns None only when the class has no affix pool at all.
+forcedAffix : ContentPack -> ItemClass -> rand.Rng -> (affix : Option ItemAffix, rng : rand.Rng)
+let forcedAffix pack cls r0 =
+    let pool = weightedAffixes (affixesForClass cls pack.affixes)
+    match rand.choose pool r0
+    case Some c -> (affix = Some c.value, rng = c.rng)
+    case None -> (affix = None, rng = r0)
+
+-- Rarity rolling: a relative-weight pick over the data-driven rarity table.
+sumRarityWeights : List RarityDef -> Int
+let sumRarityWeights rs decreases listLength rs =
+    match rs
+    case Nil -> 0
+    case r :: rest -> r.weight + sumRarityWeights rest
+
+rarityAt : Int -> List RarityDef -> Option RarityDef
+let rarityAt n rs decreases listLength rs =
+    match rs
+    case Nil -> None
+    case r :: rest -> if n < r.weight then Some r else rarityAt (n - r.weight) rest
+
+rollRarity : List RarityDef -> rand.Rng -> (rarity : Option RarityDef, rng : rand.Rng)
+let rollRarity rs r0 =
+    let total = sumRarityWeights rs
+    in
+        if total <= 0 then (rarity = None, rng = r0)
+        else
+            let roll = rand.range 0 (total - 1) r0
+            in (rarity = rarityAt roll.value rs, rng = roll.rng)
+
+findRarity : List RarityDef -> String -> Option RarityDef
+let findRarity rs rid decreases listLength rs =
+    match rs
+    case Nil -> None
+    case r :: rest -> if r.id == rid then Some r else findRarity rest rid
+
+rarityColorName : ContentPack -> String -> String
+let rarityColorName pack rid =
+    match findRarity pack.rarities rid
+    case Some rd -> rd.color
+    case None -> "white"
+
+rarityDisplayName : ContentPack -> String -> String
+let rarityDisplayName pack rid =
+    match findRarity pack.rarities rid
+    case Some rd -> rd.name
+    case None -> rid
+
+-- Only gear earns a rarity tier; consumables/coins/corpses stay common.
+rarityEligible : ItemClass -> Bool
+let rarityEligible cls =
+    match cls
+    case WeaponClass -> True
+    case ArmorClass -> True
+    case WandClass -> True
+    case _ -> False
+
+rarityAffixCount : String -> Int
+let rarityAffixCount rid =
+    if rid == "uncommon" then 1
+    elif rid == "rare" then 1
+    elif rid == "epic" then 2
+    elif rid == "legendary" then 3
+    elif rid == "mythic" then 4
+    else 0
+
+applyAffixes : ContentPack -> ItemClass -> Int -> Item -> rand.Rng -> (item : Item, rng : rand.Rng)
+let applyAffixes pack cls n item r0 decreases max 0 n =
+    if n <= 0 then (item = item, rng = r0)
+    else
+        let aff = forcedAffix pack cls r0
+        in
+            match aff.affix
+            case None -> (item = item, rng = aff.rng)
+            case Some a -> applyAffixes pack cls (n - 1) (item.{ power = item.power + a.powerBonus, name = a.name ++ " " ++ item.name }) aff.rng
+
+applyRarity : ContentPack -> ItemClass -> Item -> rand.Rng -> (item : Item, rng : rand.Rng)
+let applyRarity pack cls base r0 =
+    if not (rarityEligible cls) then (item = base, rng = r0)
+    else
+        let rr = rollRarity pack.rarities r0
+        let rid = match rr.rarity case Some rd -> rd.id case None -> "common"
+        in applyAffixes pack cls (rarityAffixCount rid) (base.{ rarity = rid }) rr.rng
+
 randomizedItem : ContentPack -> ItemKind -> rand.Rng -> (item : Item, rng : rand.Rng)
 let randomizedItem pack kind r0 =
     let b = rollBeatitude r0
@@ -201,11 +293,7 @@ let randomizedItem pack kind r0 =
     let knownBeatitude = item0.beatitudeKnown || item0.class == FoodClass || item0.class == CoinClass || item0.class == CorpseClass
     let baseName = if identifiedByClass then trueName pack kind else item0.name
     let base = item0.{ beatitude = fixedBeatitude, identified = identifiedByClass, beatitudeKnown = knownBeatitude, name = baseName }
-    let aff = maybeAffix pack item0.class b.rng
-    in
-        match aff.affix
-        case None -> (item = base, rng = aff.rng)
-        case Some a -> (item = base.{ power = base.power + a.powerBonus, name = a.name ++ " " ++ base.name }, rng = aff.rng)
+    in applyRarity pack item0.class base b.rng
 
 findActorDefBySpecies : ContentPack -> Species -> Option ActorDef
 let findActorDefBySpecies pack species =
@@ -229,7 +317,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 "none"
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 "none" Nil Nil Physical
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
@@ -284,6 +372,75 @@ let corpseNutritionOf pack species = (actorDefBySpecies pack species).corpseNutr
 
 corpseEffectOf : ContentPack -> Species -> String
 let corpseEffectOf pack species = (actorDefBySpecies pack species).corpseEffect
+
+-- The element an item deals (wands when zapped, weapons in melee). Data-driven
+-- via ItemDef.damageType (items.json), defaulting to Physical.
+damageTypeOf : ContentPack -> ItemKind -> DamageType
+let damageTypeOf pack kind = (itemDef pack kind).damageType
+
+-- The element a creature's ranged/breath attack carries (actors.json), Physical default.
+rangedElementOf : ContentPack -> Species -> DamageType
+let rangedElementOf pack species = (actorDefBySpecies pack species).rangedElement
+
+-- A species' own resistances (actors.json) — eating a powerful such corpse can pass these on.
+speciesResistances : ContentPack -> Species -> List DamageType
+let speciesResistances pack species = (actorDefBySpecies pack species).resistances
+
+-- The element a mutation rides on hit (e.g. BurningBlood -> Fire), if any.
+mutationDamageType : ContentPack -> Mutation -> Option DamageType
+let mutationDamageType pack m =
+    match findMutationDef pack m
+    case Some def -> def.dealsDamageType
+    case None -> None
+
+-- Palette color name for an element (resolved to a hue via the colors table).
+damageTypeColorName : DamageType -> String
+let damageTypeColorName d =
+    match d
+    case Physical -> "physical"
+    case Fire -> "fire"
+    case Cold -> "cold"
+    case Poison -> "poison"
+    case Chaos -> "chaos"
+
+damageTypeDisplayName : DamageType -> String
+let damageTypeDisplayName d =
+    match d
+    case Physical -> "blows"
+    case Fire -> "fire"
+    case Cold -> "cold"
+    case Poison -> "poison"
+    case Chaos -> "chaos"
+
+-- Comma-joined element names, for the (lore-gated) resistance reveal in look mode.
+resistanceWords : List DamageType -> String
+let resistanceWords ds decreases listLength ds =
+    match ds
+    case Nil -> ""
+    case d :: Nil -> damageTypeDisplayName d
+    case d :: rest -> damageTypeDisplayName d ++ ", " ++ resistanceWords rest
+
+weaponElement : ContentPack -> List Item -> DamageType
+let weaponElement pack inv decreases listLength inv =
+    match inv
+    case Nil -> Physical
+    case it :: rest -> if it.equipped && it.class == WeaponClass then damageTypeOf pack it.kind else weaponElement pack rest
+
+mutationElement : ContentPack -> List Mutation -> DamageType
+let mutationElement pack ms decreases listLength ms =
+    match ms
+    case Nil -> Physical
+    case m :: rest ->
+        match mutationDamageType pack m
+        case Some dt -> dt
+        case None -> mutationElement pack rest
+
+-- The element the player's blows carry: an equipped weapon's element if it has
+-- one, else a damaging mutation, else Physical.
+playerMeleeElement : ContentPack -> Actor -> PlayerState -> DamageType
+let playerMeleeElement pack actor player =
+    let w = weaponElement pack actor.inventory
+    in if w == Physical then mutationElement pack player.mutations else w
 
 languageOf : ContentPack -> Species -> String
 let languageOf pack species = (actorDefBySpecies pack species).language
@@ -428,7 +585,9 @@ let actorBase pack id def pos =
         morale = def.morale,
         loyalty = def.loyalty,
         alive = True,
-        facing = South
+        facing = South,
+        resistances = def.resistances,
+        vulnerabilities = def.vulnerabilities
     }
 
 mkPlayer : ContentPack -> Int -> Vec2 -> Actor
