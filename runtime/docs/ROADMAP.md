@@ -97,12 +97,17 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       `krt2_interrupt_as`, `__interruptNoWait`→`krt2_interrupt_fork_as` (nodes);
       `demonitor` a kpf no-op shim.  `scope`/`monitor`/`interrupt` conformance
       tests run native ≡ interpreter (`withscope`/`monitor`/`interrupt` cases).
-- [ ] **Native effects-suite coverage — remaining gaps** (from a full native
-      sweep of `tests/conformance/effects/`; ~18 run-tests pass native):
-      - `awaitPromise` — make it a `.kp` def over `awaitPromiseExit` (like `join`),
-        not a prim (no `krt2_await_promise` exists). Unblocks `promise`.
-      - `durationCompare` → `Ordering` — needs `LT`/`EQ`/`GT` fixed `KCT_` ids
-        (same pattern as the result ctors). Unblocks `timer-duration`.
+- [x] **`awaitPromise` native** (§18.11) — DONE: now a `.kp` def over
+      `awaitPromiseExit` (like `join`), and `awaitPromiseExit` gained a free error
+      channel (`forall e a r. … -> IO r (Exit e a)`, was fixed `Void`) so the
+      re-raise typechecks. `promise` runs native ≡ interpreter; full conformance
+      suite (1738) still green.
+- [x] **`durationCompare` + Duration/Instant arithmetic native** (§18.1) — DONE:
+      `Ordering` (`LT`/`EQ`/`GT`) given fixed `KCT_` ids; `durationCompare` builds
+      it; `durationAdd`/`durationSub`/`instantAdd`/`instantDiff` reuse
+      `kp_addInt`/`subInt`; `nowMonotonic` a `kpf_now` clock shim. `timer-duration`
+      runs native ≡ interpreter.
+- [ ] **Native effects-suite — remaining gaps**:
       - `newFiberRef` + FiberRef copy-on-fork (§18.1.7). Unblocks `fiber-local`.
       - `scheduler-retry` MISMATCH — needs REAL STM retry/parking (the journaled
         `krt2_atomically`/`OP_ATOMICALLY`, §18.1.13); the single-agent shim can't

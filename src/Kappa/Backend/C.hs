@@ -299,6 +299,10 @@ builtinCtorTag = \case
   "std.prelude.TimedOut" -> Just "KCT_IT_TIMED_OUT"
   "std.prelude.RaceLost" -> Just "KCT_IT_RACE_LOST"
   "std.prelude.External" -> Just "KCT_IT_EXTERNAL"
+  -- §11 Ordering (durationCompare builds it in the runtime)
+  "std.prelude.LT" -> Just "KCT_LT"
+  "std.prelude.EQ" -> Just "KCT_EQ"
+  "std.prelude.GT" -> Just "KCT_GT"
   _ -> Nothing
 
 -- | The C tag constant for a constructor, recording a user constructor's use
@@ -367,8 +371,9 @@ basePrims =
     [ -- integer
       "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
     , "eqInt", "ltInt", "leInt"
-      -- §18.1.6 Duration constructors
-    , "nanos", "micros", "millis", "seconds", "minutes"
+      -- §18.1.6 Duration/Instant constructors, compare, arithmetic, clock
+    , "nanos", "micros", "millis", "seconds", "minutes", "durationCompare"
+    , "durationAdd", "durationSub", "instantAdd", "instantDiff", "nowMonotonic"
       -- double
     , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
     , "eqDouble", "ltDouble", "floatEq"
@@ -1843,6 +1848,13 @@ primEntries = Map.fromList
   , ("millis", PrimEntry "kpf_millis" 1 False)
   , ("seconds", PrimEntry "kpf_seconds" 1 False)
   , ("minutes", PrimEntry "kpf_minutes" 1 False)
+  , ("durationCompare", PrimEntry "kpf_durationCompare" 2 False)
+    -- §18.1 Duration/Instant arithmetic = signed-ns Int add/sub (reuse kp_addInt/subInt)
+  , ("durationAdd", PrimEntry "kpf_addInt" 2 False)
+  , ("durationSub", PrimEntry "kpf_subInt" 2 False)
+  , ("instantAdd", PrimEntry "kpf_addInt" 2 False)
+  , ("instantDiff", PrimEntry "kpf_subInt" 2 False)
+  , ("nowMonotonic", PrimEntry "kpf_now" 0 True) -- UIO Instant: reads the monotonic clock
   , ("negRat", PrimEntry "kpf_negRat" 1 False)
   , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
   , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
@@ -1915,6 +1927,11 @@ primDirect = \case
   "millis" -> Just ("kp_millis", 1)
   "seconds" -> Just ("kp_seconds", 1)
   "minutes" -> Just ("kp_minutes", 1)
+  "durationCompare" -> Just ("kp_durationCompare", 2)
+  "durationAdd" -> Just ("kp_addInt", 2)
+  "durationSub" -> Just ("kp_subInt", 2)
+  "instantAdd" -> Just ("kp_addInt", 2)
+  "instantDiff" -> Just ("kp_subInt", 2)
   "eqInt" -> Just ("kp_eqInt", 2)
   "ltInt" -> Just ("kp_ltInt", 2)
   "leInt" -> Just ("kp_leInt", 2)

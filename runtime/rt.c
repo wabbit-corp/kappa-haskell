@@ -71,6 +71,9 @@ KValue *krt2_await(KValue *f)             { return op1(OP_AWAIT, "rt.await", f);
 KValue *krt2_cede(void)                   { return op0(OP_CEDE, "rt.cede"); }
 KValue *krt2_sleep_for(KValue *d)         { return op1(OP_SLEEP, "rt.sleep", d); }
 KValue *krt2_now_monotonic(void)          { return op0(OP_NOW, "rt.now"); }
+/* nowMonotonic as a kpf shim (reads the monotonic clock directly) so it works in
+ * a non-suspending do-block on the bridge, not only the CK-machine OP_NOW node. */
+KValue *kpf_now(KValue **a)               { (void)a; return kint((int64_t)uv_hrtime()); }
 KValue *krt2_new_promise(void)            { return op0(OP_NEW_PROMISE, "rt.newPromise"); }
 KValue *krt2_complete_promise(KValue *p, KValue *e) { return op2(OP_COMPLETE_PROMISE, "rt.completeP", p, e); }
 KValue *krt2_await_promise_exit(KValue *p){ return op1(OP_AWAIT_PROMISE_EXIT, "rt.awaitP", p); }

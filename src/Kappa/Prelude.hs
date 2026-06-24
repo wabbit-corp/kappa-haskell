@@ -547,13 +547,15 @@ builtinState =
         prim "newPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (io (tcon "Void") (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0))))))
       , -- awaitPromiseExit : forall e a. Promise e a -> UIO (Exit e a)
-        prim "awaitPromiseExit" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
-          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
-            ~> io (tcon "Void") (CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1))))))
-      , -- awaitPromise : forall e a. Promise e a -> IO e a
-        prim "awaitPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
-          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0) ~> io (CVar 2) (CVar 1)))))
-      , -- completePromise : forall e a. Promise e a -> Exit e a -> UIO Bool
+        -- forall e a r. Promise e a -> IO r (Exit e a) — never fails (the Exit
+        -- captures the outcome), so the error channel is free, like __awaitFiber;
+        -- this lets `awaitPromise` re-raise into the caller's channel (below).
+        prim "awaitPromiseExit" (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "r" tType
+          (CApp Expl (CApp Expl (tcon "Promise") (CVar 2)) (CVar 1)
+            ~> io (CVar 1) (CApp Expl (CApp Expl (tcon "Exit") (CVar 3)) (CVar 2)))))))
+      , -- awaitPromise (Promise e a -> IO e a) is a .kp def over awaitPromiseExit
+        -- (see the prelude library below), mirroring `join` for fibers.
+        -- completePromise : forall e a. Promise e a -> Exit e a -> UIO Bool
         prim "completePromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
             ~> CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1) ~> io (tcon "Void") tBool))))
@@ -1312,6 +1314,17 @@ preludeSource =
       "join : forall (e : Type) (a : Type). Fiber e a -> IO e a"
     , "let join fib ="
     , "    ioBind (await fib) (\\ex ->"
+    , "      match ex"
+    , "      case Success v -> ioPure v"
+    , "      case Failure (Fail e) -> throwIO e"
+    , "      case Failure c -> __reraiseCause c)"
+    , ""
+    , -- §18.11 awaitPromise: await a promise and project its Exit into the
+      -- caller, exactly as `join` does for a fiber (success returns the value,
+      -- a typed Fail re-fails, any other cause is re-raised).
+      "awaitPromise : forall (e : Type) (a : Type). Promise e a -> IO e a"
+    , "let awaitPromise p ="
+    , "    ioBind (awaitPromiseExit p) (\\ex ->"
     , "      match ex"
     , "      case Success v -> ioPure v"
     , "      case Failure (Fail e) -> throwIO e"

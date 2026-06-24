@@ -1487,6 +1487,12 @@ KValue *kp_micros(KValue *x)  { return kp_mulInt(x, kint(1000LL)); }
 KValue *kp_millis(KValue *x)  { return kp_mulInt(x, kint(1000000LL)); }
 KValue *kp_seconds(KValue *x) { return kp_mulInt(x, kint(1000000000LL)); }
 KValue *kp_minutes(KValue *x) { return kp_mulInt(x, kint(60000000000LL)); }
+/* §18.1.6 durationCompare: a Duration is a signed-nanosecond Int, so compare as
+ * ints and build the Ordering ctor with its fixed KCT_ id (matches a .kp match). */
+KValue *kp_durationCompare(KValue *x, KValue *y) {
+  int c = kint_cmp(x, y);
+  return c < 0 ? kctor0(KCT_LT, "LT") : (c == 0 ? kctor0(KCT_EQ, "EQ") : kctor0(KCT_GT, "GT"));
+}
 KValue *kp_eqInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) == 0); }
 KValue *kp_ltInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) < 0); }
 KValue *kp_leInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) <= 0); }
@@ -1572,6 +1578,7 @@ KValue *kpf_micros(KValue **a)  { return kp_micros(a[0]); }
 KValue *kpf_millis(KValue **a)  { return kp_millis(a[0]); }
 KValue *kpf_seconds(KValue **a) { return kp_seconds(a[0]); }
 KValue *kpf_minutes(KValue **a) { return kp_minutes(a[0]); }
+KValue *kpf_durationCompare(KValue **a) { return kp_durationCompare(a[0], a[1]); }
 KValue *kpf_eqInt(KValue **a) {
   return kp_eqInt(a[0], a[1]);
 }
