@@ -165,15 +165,14 @@ let movePlayer dir game =
 
 onEnteredTile : TileKind -> GameState -> GameState
 let onEnteredTile kind game =
-    match kind
-    case Trap -> inventory.damagePlayer Physical game.content.tuning.trapDamage (message "A trap bites your ankle." game)
-    case Water -> message "You splash through dark water." game
-    case Lava -> message "The lava burns you." game
-    case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt game.content.tuning.chaosVentCorruption game)
-    case LoreStone -> readLoreStone game
-    case Altar -> message "An altar waits here. Press p to pray or offer the first corpse in your pack." game
-    case BranchDown -> message "A side-passage branches off here. Press > to descend into it." game
-    case _ -> game
+    match tileEffectsFor game.content kind
+    case Some def -> runEffects (EffectContext game.player.actorId TSelf None) def.onEnter game
+    case None ->
+        match kind
+        case LoreStone -> readLoreStone game
+        case Altar -> message "An altar waits here. Press p to pray or offer the first corpse in your pack." game
+        case BranchDown -> message "A side-passage branches off here. Press > to descend into it." game
+        case _ -> game
 
 readLoreStone : GameState -> GameState
 let readLoreStone game =
@@ -564,7 +563,7 @@ let useSelected game =
                     case None -> game.{ mode = Playing }
                     case Some whole ->
                         let taken = inventory.takeOneFromStack whole r.rest
-                        in (inventory.applyUse taken.picked taken.rest p game).{ mode = Playing }
+                        in (applyUseE taken.picked taken.rest p game).{ mode = Playing }
 
 dropSelected : GameState -> GameState
 let dropSelected game =
@@ -972,7 +971,7 @@ let executeCast spell target game =
     case Some pl ->
         let spent = pl.{ stats = pl.stats.{ mp = max 0 (pl.stats.mp - spell.manaCost) } }
         let g1 = game.{ level = game.level.{ actors = replaceActor spent game.level.actors }, player = skill.trainSkill game.content "spellcraft" game.player }
-        in castEffect spell.effect target g1
+        in runEffects (EffectContext pl.id (if spell.needsTarget then TTile target else TSelf) None) spell.effects (g1.{ mode = Playing })
 
 nthSpell : ContentPack -> List String -> Int -> Option SpellDef
 let nthSpell pack ids n =
@@ -1198,6 +1197,47 @@ let applyEffects fuel ctx fxs game decreases fuel =
 runEffects : EffectContext -> List Effect -> GameState -> GameState
 let runEffects ctx fxs game = applyEffects 64 ctx fxs game
 
+-- Using a potion/scroll/tome: consume + identify, then run its beatitude-keyed
+-- effect list. One path for every such item — behavior is data.
+useItemEffects : Item -> List Item -> Actor -> GameState -> GameState
+let useItemEffects item rest p game =
+    let p2 = inventory.consumeFirst p rest
+    let g0 = game.{ level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let known = inventory.identifyAndAnnounce item g0
+    let def = content.itemDef game.content item.kind
+    let fxs = if item.beatitude == Blessed then def.useEffectsBlessed elif item.beatitude == Cursed then def.useEffectsCursed else def.useEffectsUncursed
+    in runEffects (EffectContext p.id TSelf (Some item)) fxs known
+
+-- Eating a corpse: nutrition + bones + survival training (item lifecycle), then
+-- run the source species' corpse effects (might/taint/heal as data).
+eatCorpseE : Item -> List Item -> Actor -> GameState -> GameState
+let eatCorpseE item rest p game =
+    let base = content.corpseNutritionOf game.content item.source
+    let nutrition = if item.cooked then base + divInt base 2 else base
+    let p2 = p.{ inventory = inventory.addToInventory (content.mkBones game.content item.source) rest }
+    let cookWord = if item.cooked then "cooked " else "raw "
+    let fed = game.{ player = skill.trainSkill game.content "survival" (game.player.{ hunger = game.player.hunger + nutrition }), level = game.level.{ actors = replaceActor p2 game.level.actors } }
+    let said = message ("You eat the " ++ cookWord ++ item.name ++ "; the bones remain.") fed
+    in runEffects (EffectContext p.id TSelf (Some item)) (content.corpseEffectsOf game.content item.source) said
+
+applyUseE : Item -> List Item -> Actor -> GameState -> GameState
+let applyUseE item rest p game =
+    match item.class
+    case PotionClass -> useItemEffects item rest p game
+    case ScrollClass -> useItemEffects item rest p game
+    case CorpseClass -> eatCorpseE item rest p game
+    case FoodClass -> inventory.useFood item rest p game
+    case _ -> message "You cannot use that." game
+
+useFirstE : GameState -> GameState
+let useFirstE game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        match inventory.firstUsable p.inventory
+        case None -> message "You have nothing usable." game
+        case Some found -> applyUseE found.picked found.rest p game
+
 applyModeCommand : Command -> GameState -> GameState
 let applyModeCommand cmd game =
     match game.mode
@@ -1230,7 +1270,7 @@ let applyModeCommand cmd game =
         case ToggleDoor -> toggleDoor game
         case PickUp -> inventory.pickUp game
         case DropFirst -> inventory.dropFirst game
-        case UseFirst -> inventory.useFirst game
+        case UseFirst -> useFirstE game
         case ZapFirst -> zapFirst game
         case ThrowFirst -> throwFirst game
         case Inventory -> game.{ mode = InventoryMode }
@@ -1320,9 +1360,9 @@ let hazardTick game =
     match playerActor game
     case None -> game
     case Some p ->
-        match (grid.getTile game.level p.pos).kind
-        case Lava -> inventory.damagePlayer Fire game.content.tuning.lavaDamage (message "The lava sears you." game)
-        case _ -> game
+        match tileEffectsFor game.content (grid.getTile game.level p.pos).kind
+        case Some def -> runEffects (EffectContext game.player.actorId TSelf None) def.perTurn game
+        case None -> game
 
 isVentKind : TileKind -> Bool
 let isVentKind k =

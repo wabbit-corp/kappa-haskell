@@ -385,6 +385,9 @@ let corpseNutritionOf pack species = (actorDefBySpecies pack species).corpseNutr
 corpseEffectOf : ContentPack -> Species -> String
 let corpseEffectOf pack species = (actorDefBySpecies pack species).corpseEffect
 
+corpseEffectsOf : ContentPack -> Species -> List Effect
+let corpseEffectsOf pack species = (actorDefBySpecies pack species).corpseEffects
+
 -- The element an item deals (wands when zapped, weapons in melee). Data-driven
 -- via ItemDef.damageType (items.json), defaulting to Physical.
 damageTypeOf : ContentPack -> ItemKind -> DamageType
