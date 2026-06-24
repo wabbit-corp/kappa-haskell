@@ -1,0 +1,16 @@
+-- §18.7 + §18.1.4: defers in a CPS do-block (one reaching fork/await) run LIFO
+-- and masked on scope exit, AFTER the body — even though the block suspends on
+-- await mid-flight.  The runtime drives it through OP_DOSCOPE/OP_DEFER, so this
+-- must print identically under the interpreter and the kappart2 native backend.
+module main
+
+child : UIO Unit
+let child = printlnString "child"
+
+main : UIO Unit
+let main = do
+    defer (printlnString "defer-1")
+    defer (printlnString "defer-2")
+    f <- fork child
+    r <- await f
+    printlnString "body-end"

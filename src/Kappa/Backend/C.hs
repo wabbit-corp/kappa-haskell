@@ -2675,10 +2675,26 @@ cpsEligible items = any itemSuspends items && all simpleLinear items
     itemSuspends (KBind _ _ t) = spineHeadSuspends t
     itemSuspends (KExpr t) = spineHeadSuspends t
     itemSuspends _ = False
+    -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
+    -- the runtime's OP_DOSCOPE/OP_DEFER).  Labeled defer / using / loops / if /
+    -- var / return are still Stage-2+ work (block stays on the legacy bridge).
     simpleLinear KBind {} = True
     simpleLinear KLet {} = True
     simpleLinear KExpr {} = True
+    simpleLinear (KDefer Nothing _) = True
     simpleLinear _ = False
+
+-- | Lower a CPS-eligible do-block: build its @krt2_*@ action tree, wrapping it
+-- in a @krt2_doscope@ when the block carries §18.7 defers (so they run LIFO and
+-- masked on every exit, via OP_DOSCOPE/KK_DOSCOPE).  With no defers there is no
+-- scope frame — just the bind tree.
+compileDoCps :: [KItem] -> Gen Text
+compileDoCps items = do
+  tree <- cpsItems items
+  pure $ if any hasScope items then "krt2_doscope(" <> tree <> ")" else tree
+  where
+    hasScope (KDefer _ _) = True
+    hasScope _ = False
 
 -- | Lower a CPS-eligible do-block to its @krt2_bind@/@krt2_then@ action tree.
 -- Each non-tail bind becomes @krt2_bind(action, kclo(kdok_N, env))@ with the
@@ -2703,6 +2719,15 @@ cpsItems items = case items of
     contFn <- emitCpsCont pat rest
     env <- gets gsEnv
     pure ("krt2_bind(krt2_pure(" <> te <> "), kclo(" <> contFn <> ", " <> env <> "))")
+  -- §18.7 plain defer: register the action on the enclosing do-scope's ExitStack
+  -- (OP_DEFER), then continue.  The whole block is wrapped in krt2_doscope
+  -- (compileDoCps), so cur_exits is this scope's stack — even in a continuation
+  -- that runs after a park, since OP_DOSCOPE set cur_exits and no suspending op
+  -- changes it.  Finalizers run LIFO, masked, on every exit (R1).
+  (KDefer Nothing t : rest) -> do
+    de <- compileDeferAction t
+    r <- cpsItems rest
+    pure ("krt2_then(krt2_defer(" <> de <> "), " <> r <> ")")
   (item : _) ->
     unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
   where
@@ -2737,7 +2762,7 @@ emitCpsCont pat rest = do
 -- suspending operation is CPS-lowered instead (see 'cpsEligible').
 compileDo :: Maybe Text -> [KItem] -> Gen Text
 compileDo lbl items
-  | cpsEligible items = cpsItems items
+  | cpsEligible items = compileDoCps items
 compileDo lbl items = do
   fnName <- freshFn "kdo_"
   env <- gets gsEnv
