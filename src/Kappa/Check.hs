@@ -7845,6 +7845,16 @@ elabMonadDo ctx me items0 sp = do
       DoAssign n True rhs _ -> mkBind (PVar n) (desugarBang rhs) <$> desugar rest
       DoLet lb@(LetBind _ _ _ _ _ bsp) -> (\r -> ELet [lb] r bsp) <$> desugar rest
       DoIf alts mels isp -> mkBind (PWild sp) (ifToExpr alts mels isp) <$> desugar rest
+      -- a refutable `let? p = rhs [else rp -> fe]` is a match over the pure rhs:
+      -- the bound continuation on a match, the else (or the monad's `empty` =
+      -- the failure of the Alternative/Monoid) on a miss.  This also drives the
+      -- §16.1 residue check on `p` (so a discarded relevant residue is rejected).
+      DoLetQ pat rhs mElse dsp -> do
+        rest' <- desugar rest
+        let elseArm = case mElse of
+              Just (rp, fe) -> MatchCase rp Nothing fe dsp
+              Nothing -> MatchCase (PWild dsp) Nothing (EVar (Name "empty" dsp)) dsp
+        pure (EMatch (desugarBang rhs) [MatchCase pat Nothing rest' dsp, elseArm] dsp)
       other -> do
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in a user-monad do block by this implementation (§18.8)"
@@ -8782,7 +8792,7 @@ elabDo ctx0 mlabel items _sp mexpected = do
     -- desugaring to (>>=)/pure.
     Just t@(VGlobN g@(GName _ gn) spine)
       | not (null spine)
-      , gn `notElem` kernelMonadCarriers -> do
+      , gn `notElem` doKernelCarriers -> do
           let mV = VGlobN g (init spine)
           hasMonad <- isJust <$> instanceSearch ctx _sp (VGlobN prelMonad [(Expl, mV)])
           if hasMonad then elabMonadDo ctx t items _sp else elabDoIO ctx me items

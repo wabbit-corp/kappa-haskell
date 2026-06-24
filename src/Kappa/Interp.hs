@@ -759,6 +759,12 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("ioThen", [m, k]) -> do
     _ <- runIOValue rt m
     runIOValue rt k
+  -- §18.1.13 STM monad bind/pure: STM actions run via runIOValue inside
+  -- 'stmAtomically's retry loop, so they sequence exactly like ioBind/ioPure.
+  ("stmBind", [m, k]) -> do
+    a <- runIOValue rt m
+    runIOValue rt (vapp ec k Expl a)
+  ("stmPure", [v]) -> pure v
   _ ->
     throwIO . KappaError . VLit . LitStr $
       "unhandled IO primitive: " <> p <> "/" <> T.pack (show (length args))

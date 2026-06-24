@@ -429,7 +429,7 @@ basePrims =
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
-    , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "check"
+    , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure"
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
     , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "sleepFor"
     , "newPromise", "completePromise", "awaitPromiseExit"
@@ -1896,14 +1896,12 @@ primEntries = Map.fromList
   , ("awaitMonitor", PrimEntry "kpf_await_monitor" 1 False)
   , ("demonitor", PrimEntry "kpf_demonitor" 1 True) -- §18.1.8 no-op -> Unit
 
-  -- §18.1.13 STM, single-agent semantics (TVar = cell, atomically runs the
-  -- transaction directly — matching the reference interpreter)
-  , ("newTVar", PrimEntry "kpf_io_newTVar" 1 True)
-  , ("readTVar", PrimEntry "kpf_io_readTVar" 1 True)
-  , ("writeTVar", PrimEntry "kpf_io_writeTVar" 2 True)
-  , ("atomically", PrimEntry "kpf_io_atomically" 1 True)
-  , ("retry", PrimEntry "kpf_io_retry" 0 True)
-  , ("check", PrimEntry "kpf_io_check" 1 True)
+  -- §18.1.13 STM (journaled): newTVar/readTVar/writeTVar/atomically/stmBind/
+  -- stmPure are STM_* / OP_ATOMICALLY node-builders (compileAppGlob); check is a
+  -- .kp def. Only `retry` keeps a primEntry — it is nullary (no explicit args, so
+  -- it never reaches the compileAppGlob spine), and fires kpf_retry immediately
+  -- to yield the STM_RETRY node.
+  , ("retry", PrimEntry "kpf_retry" 0 False)
   ]
 
 -- | QW1: the statically-known saturated pure primitives that have a direct C
@@ -2084,6 +2082,38 @@ compileAppGlob g sargs term = do
               cc <- compileErasableArg cause
               fc <- compileErasableArg fib
               pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
+        -- §18.1.13 STM: the journaled monad (stm.c).  The STM do-notation
+        -- desugars (via Monad STM) to stmBind/stmPure; the TVar ops + retry are
+        -- STM_* tree leaves; `atomically` runs the tree in a transaction
+        -- (OP_ATOMICALLY) that journals reads/writes, commits, and retry-parks
+        -- the fiber on its read TVars (woken on write).  stmBind/atomically are
+        -- ALWAYS nodes (STM is never on the synchronous bridge).
+        Just "stmBind"
+          | [m, k] <- [a | (Expl, a) <- sargs] -> do
+              mc <- compileErasableArg m
+              kc <- compileErasableArg k
+              pure ("krt2_stm_bind(" <> mc <> ", " <> kc <> ")")
+        Just "stmPure"
+          | [v] <- [a | (Expl, a) <- sargs] -> do
+              vc <- compileErasableArg v
+              pure ("krt2_stm_pure(" <> vc <> ")")
+        Just "newTVar"
+          | [v] <- [a | (Expl, a) <- sargs] -> do
+              vc <- compileErasableArg v
+              pure ("krt2_new_tvar(" <> vc <> ")")
+        Just "readTVar"
+          | [tv] <- [a | (Expl, a) <- sargs] -> do
+              tc <- compileErasableArg tv
+              pure ("krt2_read_tvar(" <> tc <> ")")
+        Just "writeTVar"
+          | [tv, v] <- [a | (Expl, a) <- sargs] -> do
+              tc <- compileErasableArg tv
+              vc <- compileErasableArg v
+              pure ("krt2_write_tvar(" <> tc <> ", " <> vc <> ")")
+        Just "atomically"
+          | [s] <- [a | (Expl, a) <- sargs] -> do
+              sc <- compileErasableArg s
+              pure ("krt2_atomically(" <> sc <> ")")
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
@@ -2489,6 +2519,8 @@ cpsNodeApp term = do
         (Just "withScope", [_]) -> True
         (Just "__interruptWait", [_, _]) -> True
         (Just "__interruptNoWait", [_, _]) -> True
+        (Just "atomically", [_]) -> True
+        (Just "stmBind", [_, _]) -> True
         _ -> False
     _ -> pure False
 
@@ -2846,6 +2878,7 @@ suspendingNames =
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
+    , "atomically", "stmBind" -- §18.1.13 STM: atomically retry-parks; stmBind builds the STM tree
     ]
 
 -- | Is g one of the suspending / CK-machine primitive ops, by module + name?

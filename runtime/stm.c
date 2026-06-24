@@ -54,6 +54,9 @@ KValue *krt2_new_tvar(KValue *init)             { return sop1(STM_NEW, "stm.newT
 KValue *krt2_read_tvar(KValue *tv)              { return sop1(STM_READ, "stm.readTVar", tv); }
 KValue *krt2_write_tvar(KValue *tv, KValue *v)  { return sop2(STM_WRITE, "stm.writeTVar", tv, v); }
 KValue *krt2_retry(void)                        { return kctor0(STM_RETRY, "stm.retry"); }
+/* nullary prim shim: `retry` fires immediately (codegen ar-0 pure path) to yield
+ * the STM_RETRY node, which an enclosing OP_ATOMICALLY parks on. */
+KValue *kpf_retry(KValue **a)                   { (void)a; return krt2_retry(); }
 KValue *krt2_or_else(KValue *l, KValue *r)      { return sop2(STM_ORELSE, "stm.orElse", l, r); }
 KValue *krt2_check(KValue *b)                   { return kas_bool(b) ? krt2_stm_pure(kunit()) : krt2_retry(); }
 KValue *krt2_atomically(KValue *stm)            { return sop1(OP_ATOMICALLY, "rt.atomically", stm); }

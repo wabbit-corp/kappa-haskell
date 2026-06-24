@@ -109,18 +109,17 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       runs native ≡ interpreter.
 - [ ] **Native effects-suite — remaining gaps**:
       - `newFiberRef` + FiberRef copy-on-fork (§18.1.7). Unblocks `fiber-local`.
-      - `scheduler-retry` MISMATCH — needs REAL STM retry/parking. ASSESSED: the
-        journaled runtime is DONE (`stm.c`: `OP_ATOMICALLY` with conflict re-run,
-        retry-park on every read TVar, wake-on-write; `STM_NEW/READ/WRITE/RETRY`
-        nodes built by `krt2_new_tvar`/`read_tvar`/`write_tvar`/`retry`). The
-        MISSING piece is the BACKEND STM-MONAD LOWERING: `STM : Type -> Type` is a
-        separate monad, but native compiles it like IO — `newTVar`/`readTVar`/… →
-        single-agent cell shims (`kpf_io_newTVar` = `kref_new`), `atomically` =
-        `krun_io` (runs the action synchronously). To use the journaled runtime,
-        lower the STM monad's bind + the TVar ops + `retry` to the `STM_*` nodes
-        and `atomically` to `OP_ATOMICALLY` (threading through the `Monad STM`
-        dictionary bind + do-block desugaring — analogous to the IO CPS do-kernel).
-        The LARGEST remaining item; a dedicated multi-step effort.
+      - [x] **REAL STM retry/parking — DONE** (`scheduler-retry` runs native ≡
+        interp, 42, cross-fiber). STM is now a real monad: prelude Functor/
+        Applicative/Monad/Monoid STM + stmBind/stmPure prims; it is removed from
+        the do-dispatcher carriers (`doKernelCarriers`, distinct from
+        `kernelMonadCarriers` which still rejects it as an active-pattern result)
+        so its do-notation desugars through `elabMonadDo`. The backend lowers
+        stmBind/stmPure/newTVar/readTVar/writeTVar to the journaled `STM_*` nodes,
+        `atomically` to `OP_ATOMICALLY`, and `retry` to the `STM_RETRY` node
+        (`kpf_retry`); `check` is a `.kp` def. Also extended `elabMonadDo` with
+        `let?` (DoLetQ → match + `empty`), a general win for all user monads.
+        Full conformance suite (1738) + native suite (61) + stm-tvar green.
       - **`bracket` finalizer-on-interrupt** — TWO causes, one fixed:
         1. [x] §3.3 HIGHER-ORDER: `bracketM = ioBind acquire (\r -> finallyIO
            (use r) …)` suspends through the `use`/`acquire` PARAMETERS (CVars), so

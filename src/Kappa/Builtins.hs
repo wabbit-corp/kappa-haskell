@@ -157,6 +157,7 @@ module Kappa.Builtins
 
     -- * Hardcoded name lists consulted by the checker/pipeline
   , kernelMonadCarriers
+  , doKernelCarriers
   , numericLitDomains
   , floatLitDomains
   , implicitPreludeCtorNames
@@ -407,14 +408,22 @@ traitFromFloat = "FromFloat"
 
 -- ── Hardcoded name lists ─────────────────────────────────────────────
 
--- | The kernel effect carriers that get dedicated do-block elaboration
--- (§18.8) and may not be an active pattern's result type (§17.3.1). These
--- are NOT "any type with a Monad instance" — pure monads like @Option@ /
--- @List@ / @Result@ are valid total views; only these effectful carriers
--- are special. One list shared by the do-block dispatcher and the
--- active-pattern check so the two cannot drift.
+-- | The kernel effect carriers that may not be an active pattern's result type
+-- (§17.3.1). These are NOT "any type with a Monad instance" — pure monads like
+-- @Option@ / @List@ / @Result@ are valid total views; only these effectful
+-- carriers (an action, not a view) are rejected as active-pattern results.
 kernelMonadCarriers :: [Text]
 kernelMonadCarriers = ["IO", "STM", "Eff", "Elab"]
+
+-- | The carriers that get dedicated KERNEL do-block elaboration (§18.8,
+-- 'elabDoIOItems'). STM is deliberately NOT here even though it is in
+-- 'kernelMonadCarriers' above: §18.1.13 STM has a real Monad instance (prelude
+-- Functor/Applicative/Monad STM), so its do-notation desugars through the
+-- ordinary user-monad path ('elabMonadDo' → stmBind/stmPure), which the native
+-- backend lowers to journaled STM_BIND/STM_PURE nodes. (It still may not be an
+-- active-pattern result — hence the two lists legitimately differ here.)
+doKernelCarriers :: [Text]
+doKernelCarriers = ["IO", "Eff", "Elab"]
 
 -- | Domains an integer literal defaults into / is admitted by directly,
 -- before falling back to @FromInteger@ witness resolution (§6.1.5).

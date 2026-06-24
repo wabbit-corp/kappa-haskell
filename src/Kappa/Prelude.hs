@@ -541,8 +541,15 @@ builtinState =
       , prim "readTVar" (tyV (piI Q0 "a" tType (CApp Expl (tcon "TVar") (CVar 0) ~> CApp Expl (tcon "STM") (CVar 1))))
       , prim "writeTVar" (tyV (piI Q0 "a" tType (CApp Expl (tcon "TVar") (CVar 0) ~> CVar 1 ~> CApp Expl (tcon "STM") tUnit)))
       , prim "retry" (tyV (piI Q0 "a" tType (CApp Expl (tcon "STM") (CVar 0))))
-      , prim "check" (tyV (tBool ~> CApp Expl (tcon "STM") tUnit))
       , prim "atomically" (tyV (piI Q0 "a" tType (CApp Expl (tcon "STM") (CVar 0) ~> io (tcon "Void") (CVar 1))))
+      , -- §18.1.13 STM monad bind/pure: the STM do-notation desugars through the
+        -- Monad STM instance (below) into these, which the native backend lowers
+        -- to journaled STM_BIND/STM_PURE nodes (stm.c). `check` is a .kp def.
+        prim "stmPure" (tyV (piI Q0 "a" tType (CVar 0 ~> CApp Expl (tcon "STM") (CVar 1))))
+      , prim "stmBind" (tyV (piI Q0 "a" tType (piI Q0 "b" tType
+          (CApp Expl (tcon "STM") (CVar 1)
+            ~> (CVar 2 ~> CApp Expl (tcon "STM") (CVar 2))
+            ~> CApp Expl (tcon "STM") (CVar 2)))))
       , -- §18.11 one-shot promises. newPromise : forall e a. UIO (Promise e a)
         prim "newPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (io (tcon "Void") (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0))))))
@@ -1228,11 +1235,33 @@ preludeSource =
     , "instance Monad (IO e) ="
     , "    let (>>=) m f = ioBind m f"
     , ""
+    , -- §18.1.13 STM is its own monad (journaled transactions); its do-notation
+      -- desugars through these instances into stmBind/stmPure.
+      "instance Functor STM ="
+    , "    let map f m = stmBind m (\\x -> stmPure (f x))"
+    , ""
+    , "instance Applicative STM ="
+    , "    let pureA x = stmPure x"
+    , "    let liftA2 f a b = stmBind a (\\x -> stmBind b (\\y -> stmPure (f x y)))"
+    , ""
+    , "instance Monad STM ="
+    , "    let (>>=) m f = stmBind m f"
+    , ""
+    , -- check c: succeed if c, else retry the transaction (§18.1.13).
+      "check : Bool -> STM Unit"
+    , "let check c = if c then stmPure Unit else retry"
+    , ""
     , -- §18.1.13: `empty` (the aborted alternative) resolves through
       -- Monoid, so STM-shaped do-scopes can sequence it as an action
       "instance Monoid (IO e a) ="
     , "    let empty = stmAbort"
     , "    let append x y = catchIO x (\\err -> y)"
+    , ""
+    , -- §18.1.13 STM alternative: `empty` retries the transaction; `append`
+      -- is left-biased over retry. Lets `let?`/refutable forms desugar in STM.
+      "instance Monoid (STM a) ="
+    , "    let empty = retry"
+    , "    let append x y = x"
     , ""
     , -- RC4 / §28: the mandated `IO e` error-handling instances.  Their
       -- members ARE the §18.1.25 / §19.1 surface operations, delegating to
