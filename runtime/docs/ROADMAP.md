@@ -72,10 +72,20 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 - [ ] **Masking surface** (§18.1.12). `mask`/`uninterruptible`/`poll` are runtime-
       only (`krt2_*`) — NOT yet exposed in the prelude. Requires prelude `prim`
       decls + interpreter handling FIRST, then the (trivial) backend wiring.
-- [ ] **General CPS for `ioBind` expressions** (CPS-DESIGN §3.1). Today only `CDo`
-      blocks are CPS-lowered; an `ioBind (await …) k` expression (e.g. the
-      prelude `join`/`race`/`timeout` bodies) still hits the bridge. Lower
-      `ioBind`/`ioThen` spines to `krt2_bind`/`krt2_then` when they may-suspend.
+- [x] **General CPS for `ioBind` expressions** (CPS-DESIGN §3.1) — DONE: a
+      saturated `ioBind`/`ioThen` whose FIRST action may-suspend (§3.3) lowers to
+      `krt2_bind`/`krt2_then` in `compileAppGlob`, so an `ioBind (await …) k`
+      EXPRESSION (not just a `CDo`) drives the head through the CK-machine
+      (`iobind-await` case). `join`/`race`/`timeout` still need `__reraiseCause`
+      + the dynamic-named result ctors (below).
+- [x] **Native result-ctor matching** (§28 shapes) — DONE: the runtime-built
+      `Exit`/`Cause` outcomes (`Success`/`Failure`/`Fail`/`Interrupt`/`Defect`/
+      `Both`/`Then`) + `Some`/`None` now carry FIXED `KCT_*` ids shared with
+      codegen (`builtinCtorTag`), so a runtime-delivered `await` result matches a
+      `.kp` id-based `case` (`await-exit` case). Was silently non-exhaustive
+      before (runtime built them with `KCT_OTHER`). Remaining: the DYNAMIC-named
+      runtime ctors (RaceResult sides, InterruptCause tags, TimeoutResult) — a
+      follow-up for full `race`/`timeout`/interrupt-cause matching.
 - [ ] **`atomically`/`retry` real parking** (§18.1.13). Switch the single-agent
       `Ref` STM shim to the journaled `krt2_atomically`/`OP_ATOMICALLY` so
       transactions park + retry across fibers ([`../stm.c`](../stm.c) already implements it).

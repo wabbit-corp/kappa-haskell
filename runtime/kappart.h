@@ -78,7 +78,14 @@ enum {
   KCT_SOME, KCT_NONE,
   KCT_RAT,
   KCT_EFFPURE, KCT_EFFOP,   /* §18.1 algebraic-effect tree nodes */
-  KCT_USER_BASE = 16
+  /* §18.1 runtime-built Exit/Cause result ctors (await/join/race/timeout
+   * outcomes).  FIXED ids so an Exit the RUNTIME delivers (krt2i_success/…)
+   * matches a codegen id-based `case Success`/`Failure`/`Fail`/… — without
+   * these, runtime-built results carry KCT_OTHER and every such match is
+   * non-exhaustive.  Names are retained for diagnostics; dispatch is by id. */
+  KCT_SUCCESS, KCT_FAILURE,                                /* Exit  */
+  KCT_FAIL, KCT_INTERRUPT, KCT_DEFECT, KCT_BOTH, KCT_THEN, /* Cause */
+  KCT_USER_BASE = 24
 };
 
 typedef struct KValue KValue;

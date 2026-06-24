@@ -277,6 +277,15 @@ builtinCtorTag = \case
   -- effect runtime in kappart.c, so they need fixed shared tags)
   "std.prelude.__EffPure" -> Just "KCT_EFFPURE"
   "std.prelude.__EffOp" -> Just "KCT_EFFOP"
+  -- §18.1 Exit/Cause outcomes the RUNTIME builds (await/join/race/timeout):
+  -- fixed ids so a runtime-delivered result matches a codegen id-based `case`.
+  "std.prelude.Success" -> Just "KCT_SUCCESS"
+  "std.prelude.Failure" -> Just "KCT_FAILURE"
+  "std.prelude.Fail" -> Just "KCT_FAIL"
+  "std.prelude.Interrupt" -> Just "KCT_INTERRUPT"
+  "std.prelude.Defect" -> Just "KCT_DEFECT"
+  "std.prelude.Both" -> Just "KCT_BOTH"
+  "std.prelude.Then" -> Just "KCT_THEN"
   _ -> Nothing
 
 -- | The C tag constant for a constructor, recording a user constructor's use
@@ -1946,7 +1955,27 @@ compileApp term = do
 compileAppGlob :: GName -> [(Icit, Term)] -> Term -> Gen Text
 compileAppGlob g sargs term = do
       mp <- globPrimName g
+      susp <- gets gsSuspenders
       case mp of
+        -- §3.1 general CPS: an @ioBind@/@ioThen@ EXPRESSION (not a do-block —
+        -- e.g. the prelude @join@/@race@/@timeout@ bodies) whose FIRST action may
+        -- suspend becomes a CK-machine bind/then node, so the head action can
+        -- park.  The synchronous @kpf_io_ioBind@ bridge cannot park, so a
+        -- suspending head there would mis-run; the CDo path is already CPS, this
+        -- is the same lowering for the raw @ioBind@ spine.  Gated on §3.3
+        -- ('gsSuspenders') — a sequential @ioBind@ stays on the cheap bridge.
+        Just "ioBind"
+          | [m, k] <- [a | (Expl, a) <- sargs]
+          , spineHeadSuspends susp m -> do
+              mc <- compileErasableArg m
+              kc <- compileErasableArg k
+              pure ("krt2_bind(" <> mc <> ", " <> kc <> ")")
+        Just "ioThen"
+          | [m, n] <- [a | (Expl, a) <- sargs]
+          , spineHeadSuspends susp m -> do
+              mc <- compileErasableArg m
+              nc <- compileErasableArg n
+              pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C

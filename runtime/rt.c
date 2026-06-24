@@ -28,18 +28,30 @@ static KValue *ctor2(const char *name, KValue *a, KValue *b) {
   return kctor(KRT2_RESULT_ID, name, 2, args);
 }
 KValue *krt2i_unit(void)            { return kunit(); }
-KValue *krt2i_success(KValue *v)    { return ctor1("Success", v); }
-KValue *krt2i_failure(KValue *c)    { return ctor1("Failure", c); }
-KValue *krt2i_cause_interrupt(KValue *ic) { return ctor1("Interrupt", ic); }
-KValue *krt2i_some(KValue *v)       { return ctor1("Some", v); }
-KValue *krt2i_none(void)            { return kctor0(KRT2_RESULT_ID, "None"); }
-KValue *krt2_success(KValue *v)     { return ctor1("Success", v); }
-KValue *krt2_failure(KValue *c)     { return ctor1("Failure", c); }
-KValue *krt2_cause_fail(KValue *e)  { return ctor1("Fail", e); }
-KValue *krt2_cause_interrupt(KValue *ic) { return ctor1("Interrupt", ic); }
-KValue *krt2_cause_defect(KValue *di)    { return ctor1("Defect", di); }
-KValue *krt2_cause_both(KValue *a, KValue *b) { return ctor2("Both", a, b); }
-KValue *krt2_cause_then(KValue *a, KValue *b) { return ctor2("Then", a, b); }
+/* idc1/idc2: like ctor1/ctor2 but with the ctor's FIXED KCT_ id (kappart.h), so
+ * a runtime-built Exit/Cause matches a codegen id-based `case` (not just the
+ * name-based harness matcher).  Without the id these carried KCT_OTHER and every
+ * such match from .kp was non-exhaustive. */
+static KValue *idc1(int id, const char *name, KValue *a) {
+  KValue *args[1] = { a };
+  return kctor(id, name, 1, args);
+}
+static KValue *idc2(int id, const char *name, KValue *a, KValue *b) {
+  KValue *args[2] = { a, b };
+  return kctor(id, name, 2, args);
+}
+KValue *krt2i_success(KValue *v)    { return idc1(KCT_SUCCESS, "Success", v); }
+KValue *krt2i_failure(KValue *c)    { return idc1(KCT_FAILURE, "Failure", c); }
+KValue *krt2i_cause_interrupt(KValue *ic) { return idc1(KCT_INTERRUPT, "Interrupt", ic); }
+KValue *krt2i_some(KValue *v)       { return idc1(KCT_SOME, "Some", v); }
+KValue *krt2i_none(void)            { return kctor0(KCT_NONE, "None"); }
+KValue *krt2_success(KValue *v)     { return idc1(KCT_SUCCESS, "Success", v); }
+KValue *krt2_failure(KValue *c)     { return idc1(KCT_FAILURE, "Failure", c); }
+KValue *krt2_cause_fail(KValue *e)  { return idc1(KCT_FAIL, "Fail", e); }
+KValue *krt2_cause_interrupt(KValue *ic) { return idc1(KCT_INTERRUPT, "Interrupt", ic); }
+KValue *krt2_cause_defect(KValue *di)    { return idc1(KCT_DEFECT, "Defect", di); }
+KValue *krt2_cause_both(KValue *a, KValue *b) { return idc2(KCT_BOTH, "Both", a, b); }
+KValue *krt2_cause_then(KValue *a, KValue *b) { return idc2(KCT_THEN, "Then", a, b); }
 KValue *krt2_interrupt_cause(const char *tag, KValue *by_opt) {
   return ctor2("InterruptCause", kctor0(KRT2_RESULT_ID, tag), by_opt);
 }
