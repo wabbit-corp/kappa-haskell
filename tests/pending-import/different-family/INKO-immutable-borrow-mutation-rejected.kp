@@ -1,0 +1,27 @@
+-- Source issues: docs/memory-management, inko#618
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a ref T (immutable borrow) cannot be used where a mut T (mutable
+-- borrow / exclusive ownership) is required. The immutable borrow does not
+-- have the exclusive access needed to perform modification.
+-- In Kappa, a borrowed (& T) argument does not satisfy a demand for
+-- exclusive (linear, quantity 1) access.
+
+--! mode check
+
+data Counter : Type = Counter Int
+
+-- increment requires exclusive (linear) access to replace the counter value.
+increment : (1 c : Counter) -> Counter
+let increment (Counter n) = Counter (n + 1)
+
+-- POSITIVE: incrementing an owned counter.
+addOne : (1 c : Counter) -> Counter
+let addOne c = increment c
+
+
+-- NEGATIVE: passing an immutable borrow where exclusive access is required.
+-- The borrow (& c) does not satisfy the linear (1 c) demand.
+mutThroughRef : (& c : Counter) -> Counter
+let mutThroughRef c = increment c   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

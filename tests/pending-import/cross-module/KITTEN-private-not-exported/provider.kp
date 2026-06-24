@@ -1,0 +1,9 @@
+module provider
+
+-- Default-exported (no @PrivateByDefault); explicit `public` is a no-op.
+publicValue : Int
+let publicValue = 42
+
+-- `private` hides this definition from importers per §8.5.1.
+private privateValue : Int
+private let privateValue = 7

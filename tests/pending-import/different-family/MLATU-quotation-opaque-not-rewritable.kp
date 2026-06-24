@@ -1,0 +1,34 @@
+-- Source issue: MLatu docs/docs/tutorial.md ("user-defined rules may
+--   not match on quotes"). A quotation in MLatu is opaque — the
+--   rewriting engine does not look inside it. The portable obligation
+--   for Kappa is that a suspended computation (`Thunk`) is opaque at the
+--   value level: the inner term is not directly observable without an
+--   explicit `force`.
+-- Spec: expressions.lambdas.suspension_expressions_forcing,
+--       expressions.application.
+--
+-- A function consuming a `Thunk Int` cannot be called with a bare `Int`,
+-- and a function consuming an `Int` cannot be called with a `Thunk Int`;
+-- the suspension boundary is enforced by the type system.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a quotation is passed through opaquely.
+identity : forall (a : Type) . Thunk a -> Thunk a
+let identity t = t
+
+passthrough : Thunk Int
+let passthrough = identity (thunk 7)
+
+--! assertType passthrough Thunk Int
+
+-- NEGATIVE: a function operating on Int cannot see inside a Thunk Int.
+addOne : Int -> Int
+let addOne n = n + 1
+
+peek : Int
+let peek = addOne (thunk 7)                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

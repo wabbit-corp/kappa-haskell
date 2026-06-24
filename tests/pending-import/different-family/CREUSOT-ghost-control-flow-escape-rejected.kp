@@ -1,0 +1,47 @@
+-- Source issues: CREUSOT-1400, CREUSOT-control_flow
+-- Spec: effects.monadic_core.exits_causes_typed_failure_interruption_defects,
+--       effects.loops, compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- Family: kappa.effect.row-mismatch (Kappa §3.2.9)
+-- Ghost / specification-only blocks must be ERASABLE: their effect row is
+-- pure, so abrupt-control forms (`return`, `break`, `continue`) inside a
+-- ghost block raise an effect-row mismatch.  Pending spec gap is
+-- CREUSOT-SA-03 (ghost erasure obligations).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `return` inside a ghost block leaks the ghost into the
+-- function's control flow.
+escapeReturn : Unit
+let escapeReturn =
+    do {
+        ghost { return () }                 --!! kappa.effect.row-mismatch
+        }
+
+-- NEGATIVE: `return` inside a ghost block can also smuggle a non-Unit
+-- value out of the function.
+escapeReturnValue : Int
+let escapeReturnValue =
+    do {
+        ghost { return 42 };                --!! kappa.effect.row-mismatch
+        0
+        }
+
+-- NEGATIVE: `break` inside a ghost block escapes the enclosing loop.
+escapeBreak : Unit
+let escapeBreak =
+    do {
+        for i in 0..10 do
+            ghost { break }                 --!! kappa.effect.row-mismatch
+        }
+
+-- NEGATIVE: `continue` is the same obligation.
+escapeContinue : Unit
+let escapeContinue =
+    do {
+        for i in 0..10 do
+            ghost { continue }              --!! kappa.effect.row-mismatch
+        }
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

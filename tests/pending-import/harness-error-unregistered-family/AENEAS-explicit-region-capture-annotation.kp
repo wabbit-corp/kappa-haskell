@@ -1,0 +1,60 @@
+-- Source issues: AENEAS-75, AENEAS-181
+-- Spec: types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types,
+--       types.universes.borrow_lifetimes_escape_prevention
+-- §12.3.1: `T captures (s)` is the mechanism for allowing a value whose
+-- hidden region environment mentions an explicit region variable `s` to cross
+-- an interface boundary.  The explicit `Region` binder `(s : Region)` makes
+-- the rigid region surface-visible; `captures (s)` on the return type
+-- declares the allowed capture set.
+-- This is the portable version of Rust lifetime-parameterized function
+-- signatures; Aeneas issues #75 and #181 motivate exposing this pattern.
+
+module test
+
+--! mode check
+
+data Container (a : Type) : Type = Container a
+
+-- POSITIVE: a function that borrows a Container and returns a closure whose
+-- capture set is explicitly declared as (s).
+-- The caller binds the region variable s and instantiates it.
+makeGetter :
+    forall (s : Region) (a : Type).
+    (&[s] c : Container a) -> ((() -> a) captures (s))
+let makeGetter c =
+    \() -> match c case Container x -> x
+
+--! assertType makeGetter (forall (s : Region) (a : Type). (&[s] c : Container a) -> ((() -> a) captures (s)))
+
+-- POSITIVE: composing two capture-annotated values.
+-- Given a getter and a transformer, produce a new getter in the same region.
+composeGetter :
+    forall (s : Region) (a : Type) (b : Type).
+    ((() -> a) captures (s)) ->
+    (a -> b) ->
+    ((() -> b) captures (s))
+let composeGetter getter f =
+    \() -> f (getter ())
+
+
+-- POSITIVE: a borrowed field access returning a capture-annotated thunk.
+data Record : Type = Record { x : Int, y : Int }
+
+fieldGetter :
+    forall (s : Region).
+    (&[s] r : Record) -> ((() -> Int) captures (s))
+let fieldGetter r =
+    let & xv = r.x
+    \() -> xv
+
+
+-- NEGATIVE: using `captures ()` (empty set) with a closure that captures s.
+-- The empty capture set is demanded; the inferred set contains s.
+badGetter :
+    forall (s : Region) (a : Type).
+    (&[s] c : Container a) -> ((() -> a) captures ())
+let badGetter c =
+    \() ->                    --!! kappa.capture.mismatch
+        match c case Container x -> x
+
+--! assertDiagnosticFamily error kappa.capture.mismatch

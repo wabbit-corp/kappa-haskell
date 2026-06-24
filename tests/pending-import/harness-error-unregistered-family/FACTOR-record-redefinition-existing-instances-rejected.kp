@@ -1,0 +1,35 @@
+-- Source issue: Factor #2446 (redefining `TUPLE: foo { lines read-only };`
+--   then `TUPLE: foo { #lines integer read-only };` leaves the existing
+--   instance reachable on the stack but with the slot renamed and the
+--   type changed; the issue requests a clearer behavior).
+-- Spec: data_types.data_declarations, content_addressed_identity,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- Kappa's data declarations are content-addressed and a redefinition
+-- across compilation units producing an incompatible representation
+-- must not silently coerce existing values. The incremental harness
+-- step suite exercises a redefinition between step0 and step1; the
+-- redefined declaration is rejected against the previously-elaborated
+-- consumer that depends on the old field name and type.
+
+module test
+
+--! mode check
+
+-- Two consecutive declarations of `Foo` in the same source are
+-- always a redefinition error in Kappa because there is exactly one
+-- declaration per spelling per compilation unit.
+data Foo : Type =
+    Foo { lines : Int }
+
+data Foo : Type =                       --!! E_RECOVERY_SKIPPED_INVALID_SYNTAX
+    Foo { numberOfLines : Int }
+
+--! assertDiagnostic error E_RECOVERY_SKIPPED_INVALID_SYNTAX
+
+-- A second module spelling the same declaration with a different
+-- field set is independent. The harness ensures the diagnostic for
+-- the duplicate declaration in this file is recoverable so subsequent
+-- declarations still elaborate.
+ok : Int
+let ok = 0

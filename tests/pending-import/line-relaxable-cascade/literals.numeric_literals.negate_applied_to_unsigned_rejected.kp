@@ -1,0 +1,38 @@
+-- Source issues: Noir#2583, Noir#8051
+-- Spec: literals.numeric_literals.typing, literals.numeric_literals.sign
+-- Integer literals are lexically nonnegative. A leading `-` is parsed as the
+-- prefix operator `negate`, NOT as part of the literal.
+-- Consequence: `-123 : Nat` elaborates as `negate (fromInteger 123)`, which
+-- requires a `Negatable Nat` instance. The portable prelude MUST NOT provide
+-- such an instance, so this elaboration MUST fail.
+-- Separately, a negative unary expression compared with another negative
+-- expression must not erroneously infer the base as `Nat`/unsigned.
+
+module test
+
+-- Rejected: `negate` applied to `Nat` requires `Negatable Nat`,
+-- which the portable prelude does not provide.
+negNat : Nat
+let negNat = -1   --!! kappa.implicit.unsolved
+
+--! mode check
+--! assertDiagnostic error kappa.implicit.unsolved
+
+-- Accepted: negation of an `Int` (signed) is valid because
+-- `Negatable Int` IS provided by the prelude.
+negInt : Int
+let negInt = -1
+
+
+-- Accepted: comparison of two negated integer literals infers signed `Int`.
+-- Neither operand should be inferred as `Nat`.
+negLitCompare : Bool
+let negLitCompare = (-2 : Int) <= (-1 : Int)
+
+
+-- Rejected: `-1` used where the annotation forces `Nat`; the unary negation
+-- operator cannot produce a value of type `Nat`.
+annotatedNat : Nat
+let annotatedNat = (-1 : Nat)   --!! kappa.type.mismatch
+
+--! assertDiagnostic error kappa.type.mismatch

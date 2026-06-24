@@ -1,0 +1,57 @@
+-- Source issues: apple/swift #52479 (switching over duplicate enum case names),
+--   apple/swift-evolution SE-0235 (Result pattern matching exhaustiveness).
+--   A match expression must cover all constructors of the scrutinee's data type.
+--   Omitting one or more constructors without a wildcard arm must produce
+--   kappa.pattern.non-exhaustive.
+-- Spec: expressions.match §17.1,
+--       expressions.match.exhaustiveness_indexed_types_gadts §17.1.1
+
+--! mode check
+
+data Direction : Type = North | South | East | West
+
+-- POSITIVE: exhaustive match covering all four constructors.
+turnRight : Direction -> Direction
+let turnRight North = East
+let turnRight East  = South
+let turnRight South = West
+let turnRight West  = North
+
+-- POSITIVE: exhaustive match with wildcard fallthrough.
+isNorth : Direction -> Bool
+let isNorth d = match d
+    case North -> True
+    case _     -> False
+
+data Expr : Type
+    = Lit Nat
+    | Add Expr Expr
+    | Mul Expr Expr
+    | Neg Expr
+
+-- POSITIVE: exhaustive recursive evaluation.
+eval : Expr -> Nat
+let eval (Lit n)     = n
+let eval (Add l r)   = eval l + eval r
+let eval (Mul l r)   = eval l * eval r
+let eval (Neg e)     = 0    -- simplified
+
+-- NEGATIVE: match missing West.
+describeDir : Direction -> String
+let describeDir d = match d    --!! kappa.pattern.non-exhaustive
+    case North -> "north"
+    case South -> "south"
+    case East  -> "east"
+
+-- NEGATIVE: match on Expr missing the Neg constructor.
+evalPartial : Expr -> Nat
+let evalPartial e = match e    --!! kappa.pattern.non-exhaustive
+    case Lit n     -> n
+    case Add l r   -> evalPartial l + evalPartial r
+
+-- NEGATIVE: match with only a single constructor covered.
+onlyLit : Expr -> Nat
+let onlyLit e = match e    --!! kappa.pattern.non-exhaustive
+    case Lit n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

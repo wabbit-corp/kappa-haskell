@@ -1,0 +1,43 @@
+-- Source: spec-derived fixture (deep-handler reinstallation semantics taken
+--   directly from effects.monadic_core.deep_handlers_deep_handle; no single
+--   tracker issue. Provenance made explicit 2026-06-11, audit FAB-016.)
+-- Spec: effects.monadic_core.deep_handlers_deep_handle
+-- A deep handler automatically reinstalls itself around each resumption.
+-- Unlike a shallow handler (where k has type (1 _ : B) -> Eff <[label : E | r]> a,
+-- resuming into the original unhandled row), a deep handler's k has type
+-- (1 _ : B) -> m b, where m b is the final target carrier.
+-- This means operations performed after k are still handled by the same handler,
+-- without needing explicit re-installation.
+
+module test
+
+effect Counter =
+    1 tick : Unit -> Unit
+
+-- Deep handler: k has type (1 _ : Unit) -> Eff <[ ]> Int (the target carrier).
+-- Each 'tick' increments the count; 'k ()' returns the remaining count.
+deepCount : Eff <[counter : Counter]> Unit -> Eff <[ ]> Int
+let deepCount comp =
+    deep handle counter comp with
+        case return _  -> pure 0
+        case tick () k -> do
+            let rest <- k ()       -- k : (1 _ : Unit) -> Eff <[ ]> Int
+            pure (1 + rest)
+
+--! mode check
+--! assertNoErrors
+--! assertType deepCount Eff <[counter : Counter]> Unit -> Eff <[ ]> Int
+
+-- Shallow handler of the same effect, for contrast.
+-- k has type (1 _ : Unit) -> Eff <[counter : Counter]> Unit (still in original row).
+-- To count all ticks, a shallow handler must re-install recursively.
+shallowCountOne : Eff <[counter : Counter]> Unit -> Eff <[ ]> Int
+let shallowCountOne comp =
+    handle counter comp with
+        case return _  -> pure 0
+        case tick () k ->
+            let rest = shallowCountOne (k ())   -- k returns into original row; must re-handle
+            rest >>= \n -> pure (1 + n)
+
+--! assertNoErrors
+--! assertType shallowCountOne Eff <[counter : Counter]> Unit -> Eff <[ ]> Int

@@ -1,0 +1,33 @@
+-- Source: Maude tests/Meta/metaWellFormed.maude (a reified fmod has
+--           `subsort 'Bar < 'Foo` but only `sorts 'Foo` is declared; the
+--           well-formedness predicate reports the missing 'Bar sort,
+--           specifically:
+--             red wellFormed(fmod 'FOO is
+--               protecting 'FLOAT .
+--               sorts 'Foo .
+--               subsort 'Bar < 'Foo .
+--               ...
+--             endfm) .
+--           returns false because 'Bar is referenced but not declared),
+--         tests/Misc/attributes.maude (op f : Bar Bar -> Bar requires Bar
+--           to be declared first).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Portable obligation: a type or sort name referenced in an operator/type
+--   declaration but never declared must be reported as unresolved.
+
+--! mode check
+
+module test
+
+-- POSITIVE: Foo is declared, and f's signature is well-formed.
+data Foo : Type = MkFoo
+
+f : Foo -> Foo
+let f x = x
+
+-- NEGATIVE: Bar is referenced but not declared.
+g : Bar -> Bar    --!! kappa.name.unresolved
+let g x = x
+
+--! assertDiagnosticFamily error kappa.name.unresolved

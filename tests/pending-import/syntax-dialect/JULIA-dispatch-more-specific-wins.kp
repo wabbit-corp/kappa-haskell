@@ -1,0 +1,63 @@
+-- Source: Julia manual, "Methods" — more specific method selected,
+--         Julia manual, "Method Specializations"
+-- Spec: traits.instances.resolution_algorithm,
+--       expressions.application.subsumption
+-- In Julia, when multiple methods are applicable for a given call, the
+-- most specific method wins. A method declared for a concrete type is
+-- more specific than one declared for an abstract supertype. In Kappa,
+-- a more-specific instance (with a more constrained head) takes priority
+-- over a less-specific one.
+
+--! mode check
+
+-- A trait hierarchy: Numeric is the "abstract" supertrait;
+-- Integral and Real are more specific subtypes.
+trait Numeric (a : Type)
+trait Integral (a : Type) -- subtype of Numeric
+trait Real     (a : Type) -- subtype of Numeric
+
+-- Supertrait relationship:
+-- @_ : Integral a implies @_ : Numeric a
+-- @_ : Real a implies @_ : Numeric a
+
+data MyInt   : Type = MyInt Int
+data MyFloat : Type = MyFloat Float
+data MyBig   : Type = MyBig Int Int  -- big integer
+
+instance Numeric  MyInt   = ()
+instance Integral MyInt   = ()
+instance Numeric  MyFloat = ()
+instance Real     MyFloat = ()
+instance Numeric  MyBig   = ()
+instance Integral MyBig   = ()
+
+-- A function with two overloads: one for the general Numeric case,
+-- one for the more specific Integral case.
+trait Describe (a : Type) =
+    describe : a -> String
+
+instance (@_ : Numeric a) => Describe a =
+    let describe _ = "numeric"
+
+-- More specific: overrides the Numeric instance for Integral types.
+instance (@_ : Integral a) => Describe a =
+    let describe _ = "integral"
+
+-- POSITIVE: MyInt has an Integral instance — the more specific describe wins.
+describeInt : String
+let describeInt = describe (MyInt 42)
+
+-- POSITIVE: MyFloat only has Numeric and Real — falls back to "numeric".
+describeFloat : String
+let describeFloat = describe (MyFloat 3.14)
+
+-- POSITIVE: MyBig has Integral — more specific wins.
+describeBig : String
+let describeBig = describe (MyBig 1 2)
+
+-- Assert types for positive cases.
+--! assertType describeInt String
+--! assertType describeFloat String
+--! assertType describeBig String
+
+--! assertNoErrors

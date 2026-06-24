@@ -1,0 +1,53 @@
+-- Source issues: PLUTUS-1434, PLUTUS-5769
+-- Spec: data_types.type_aliases (§10.3), types.universes (§11),
+-- expressions.application
+-- Source notes: Plinth supports type families but rejects data types whose
+-- fields mention them, because the type family application is "irreducible"
+-- at compile time (#1434, #5769). Kappa does not have a separate type-family
+-- machine: a type-level function is an ordinary type-level definition of
+-- shape `type F (a : Type) : Type = ...` (§10.3) or a function whose result
+-- universe is a type. Such a function is unfolded definitionally at
+-- elaboration time, and its applications in field types are well-formed
+-- whenever the result is well-formed.
+
+--! mode check
+
+-- A type-level function. Its body is parsed in type position.
+type Element (a : Type) : Type = a
+
+-- A data type whose field type uses the type-level function applied to a
+-- parameter. Definitional unfolding makes `Element a` reduce to `a`.
+data Holder (a : Type) : Type =
+    Holder (raw : Element a)
+
+-- POSITIVE: constructing a value at an instantiated parameter.
+intHolder : Holder Int
+let intHolder = Holder 42
+
+-- POSITIVE: projecting through the alias.
+takeOut : (@0 a : Type) -> Holder a -> a
+let takeOut _ h =
+    match h
+      case Holder r -> r
+
+readBack : Int
+let readBack = takeOut Int intHolder
+
+-- POSITIVE: a type-level function that performs a non-trivial computation
+-- (here it just chooses between two parameters by a Boolean tag, but the
+-- shape is the same as a type family).
+type Choose (flag : Bool) (a : Type) (b : Type) : Type =
+    match flag
+      case True  -> a
+      case False -> b
+
+data Either2 (flag : Bool) (a : Type) (b : Type) : Type =
+    Either2 (one : Choose flag a b)
+
+leftBranch : Either2 True Int String
+let leftBranch = Either2 7
+
+rightBranch : Either2 False Int String
+let rightBranch = Either2 "seven"
+
+--! assertNoErrors

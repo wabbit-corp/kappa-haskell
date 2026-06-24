@@ -1,0 +1,24 @@
+-- Stress test: universe levels are inferred when not explicitly annotated
+-- Spec: types.universes.inference_sketch
+
+--! mode check
+
+-- Universe of A is inferred from the argument.
+idType : (A : Type) -> Type
+let idType A = A
+
+-- Both A and B universe levels are inferred independently.
+const : (A : Type) -> (B : Type) -> A -> B -> A
+let const A B x _ = x
+
+-- Universe of the Box parameter is inferred.
+data Box (A : Type) : Type =
+    MkBox A
+
+-- Exercise inference at each site.
+let boxed   : Box Int  = MkBox 1
+let boxedT  : Box Type = MkBox Int
+
+let answer  : Int    = const Int String 42 "hello"
+
+--! assertNoErrors

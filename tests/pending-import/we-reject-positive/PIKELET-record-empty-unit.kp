@@ -1,0 +1,34 @@
+-- Source issue: PIKELET-25 (record keyword/sigil ambiguity bikeshedding).
+-- Spec: types.records.syntax, types.records.formation, literals.unit_tuples
+--
+-- An empty closed record `()` is identified with `Unit`. The Pikelet
+-- ambiguity discussion (`:t record {}` — value or type?) is resolved in
+-- Kappa by reusing the `()` surface form for both via bidirectional
+-- expected-type checking.
+
+--! mode check
+
+-- POSITIVE: the unit value at the unit type.
+u : Unit
+let u = ()
+
+-- POSITIVE: `()` used as a type position is the unit type.
+uTy : Type0
+let uTy = Unit
+
+-- POSITIVE: a one-element record literal uses the trailing comma form
+-- to disambiguate from grouping.
+type SingleX : Type0 = (x : Nat,)
+
+oneX : SingleX
+let oneX = (x = 1,)
+
+px : Nat
+let px = oneX.x
+
+-- POSITIVE: the unit type can serve as a return type for an effectful
+-- action whose meaningful result is its side effect.
+noop : Unit
+let noop = ()
+
+--! assertNoErrors

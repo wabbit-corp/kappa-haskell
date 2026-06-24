@@ -1,0 +1,34 @@
+-- Source issue: Uiua #360 ("Modulo 0 panics" — `◿ 0 10` in the pad
+--   produces "attempt to calculate the remainder with a divisor of
+--   zero" instead of a domain-typed error), Uiua #563 (`&sl ∞` panics
+--   with a Duration-overflow panic instead of an ordinary domain
+--   error).
+-- Spec: compiler.frontir.ordinary_errors_not_internal_failures,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.literal-domain-mismatch).
+--
+-- A numeric primitive applied with a value outside its documented
+-- domain must raise an ordinary error, not a panic. When the offending
+-- value is a literal that the elaborator can detect statically, the
+-- diagnostic is kappa.type.literal-domain-mismatch.
+
+module test
+
+--! mode check
+
+-- A user-declared modulo with the integer-domain contract.
+modulo : Int -> Int -> Int
+let modulo a b = a - (a / b) * b
+
+-- POSITIVE: ordinary modulo with a known nonzero divisor.
+modOk : Int
+let modOk = modulo 10 3
+
+--! assertType modOk Int
+
+-- NEGATIVE: a literal zero divisor is statically detectable; the
+-- elaborator MAY surface it as kappa.type.literal-domain-mismatch.
+modByZero : Int
+let modByZero = modulo 10 0                  --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch

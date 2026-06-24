@@ -1,0 +1,57 @@
+-- Source issue: MOJO-1383 (positive side)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.headers.supertraits,
+--       traits.instances
+-- A type that conforms to a sub-trait can be passed to a function that only
+-- requires the super-trait.  The supertrait evidence is carried transitively
+-- from the sub-trait instance.  This must be accepted without any additional
+-- explicit annotation.
+
+module test
+
+--! mode check
+
+-- Base trait.
+trait Describable (a : Type) =
+    describe : (& x : a) -> String
+
+-- Sub-trait that extends Describable.
+trait Describable a => NamedThing (a : Type) =
+    thingName : (& x : a) -> String
+
+data Widget : Type = Widget String
+
+instance Describable Widget =
+    let describe (Widget s) = "Widget:" ++ s
+
+instance NamedThing Widget =
+    let thingName (Widget s) = s
+
+-- POSITIVE: a function that only requires Describable can be called with Widget,
+-- because Widget has a Describable instance (required by the NamedThing instance).
+printDesc : forall (a : Type). Describable a => (& x : a) -> String
+let printDesc x = describe x
+
+callWithWidget : String
+let callWithWidget = printDesc (Widget "gear")
+
+--! assertType callWithWidget String
+
+-- POSITIVE: a function requiring both traits is satisfied by Widget.
+fullInfo : forall (a : Type). NamedThing a => (& x : a) -> String
+let fullInfo x = thingName x ++ ": " ++ describe x
+
+callFull : String
+let callFull = fullInfo (Widget "spring")
+
+--! assertType callFull String
+
+-- NEGATIVE: a type with only NamedThing cannot satisfy Describable alone if the
+-- NamedThing instance is missing the supertrait evidence.
+data NoDesc : Type = NoDesc Int
+
+-- Provides NamedThing without Describable → supertrait proof missing.
+instance NamedThing NoDesc =  --!! kappa.implicit.unsolved
+    let thingName (NoDesc n) = show n
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,46 @@
+-- Source issues: typespec_test.exs "redefined type"
+--   ("type foo/0 is already defined in test/elixir/typespec_test.exs:138"),
+--   typespec_test.exs "type variable unused (singleton type variable)",
+--   spec gap ESA-ELIXIR-03
+-- Spec: spec gap ESA-ELIXIR-03 (pending: kappa.name.redefinition)
+-- In Elixir, declaring the same @type name twice in the same module is a compile-time error:
+--   @type foo :: atom
+--   @type foo :: integer   -- Kernel.TypespecError: "type foo/0 is already defined"
+-- The error includes the source location of the first definition.
+-- The Kappa spec does not yet define a family for duplicate-definition collisions.
+-- Spec gap ESA-ELIXIR-03 proposes kappa.name.redefinition.
+-- This test records the expected behavior once that family is standardized.
+-- TODO spec gap ESA-ELIXIR-03: kappa.name.redefinition is not yet in §3.2.
+
+--! mode check
+
+-- POSITIVE: each data/type name defined exactly once.
+data Status : Type = Active | Inactive | Pending
+
+data Result (a : Type) : Type = Ok a | Err String
+
+-- POSITIVE: parametric types at different arities are distinct (no collision).
+data Box  (a : Type)          : Type = MkBox  a
+data Box2 (a : Type) (b : Type) : Type = MkBox2 a b
+
+-- POSITIVE: private and public types with different names; no collision.
+type PublicT = String
+private type PrivateT = Int
+
+-- NEGATIVE: 'Color' defined twice in the same module with different bodies.
+-- The second declaration collides with the first.
+data Color : Type = Red | Green | Blue
+data Color : Type = Cyan | Magenta | Yellow    -- ERROR EXPECTED: redefinition (counted below)
+
+-- NEGATIVE: 'Status' already defined above; redefining it with a different body.
+data Status : Type = Enabled | Disabled        -- ERROR EXPECTED: redefinition (counted below)
+
+-- NEGATIVE: 'Result' already defined above at arity 1; redefining with a different body.
+data Result (a : Type) : Type = Success a | Failure  -- ERROR EXPECTED: redefinition (counted below)
+
+--! assertErrorCount 3
+-- NOTE (2026-06-11, FAB-011): no registered diagnostic family/code exists yet
+-- for this spec-mandated error; the suite asserts an exact error count instead.
+-- Re-tag to assertDiagnosticFamily when the spec registers one.
+-- (behavior is spec-mandated: names.binding_groups 'a spelling may contribute
+-- at most one ordinary declaration of a given kind')

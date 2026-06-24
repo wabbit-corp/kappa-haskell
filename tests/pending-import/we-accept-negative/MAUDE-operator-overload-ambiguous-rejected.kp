@@ -1,0 +1,48 @@
+-- Source: Maude tests/Misc/renaming.maude (FOO' fmod has two distinct
+--           signatures for `_+_`:
+--             op _+_ : Foo Foo -> Foo [prec 31 gather (e E) assoc comm] .
+--             op _+_ : Baz Baz -> Foo [prec 31 gather (e E)] .
+--           Both signatures share a target sort `Foo`, so a call like
+--           `red a + a` where `a` has sort `Baz` but `Foo` would accept it
+--           by subsort would be ambiguous if both signatures applied. The
+--           Maude solution is precedence/gather plus order-sorted ranking),
+--         tests/Misc/unification.maude TEST fmod (op f : Nat Nat -> Nat
+--           plus op f : NzNat Nat -> NzNat means a call `f(X:Nat, Y:Nat)`
+--           is unambiguous because only one signature matches the argument
+--           sort tuple).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Portable obligation: when two declarations exist with the same name and
+--   neither argument-type-pattern nor explicit qualification disambiguates
+--   the call, the reference must be reported as ambiguous.
+
+--! mode check
+
+module test
+
+data Foo : Type = MkFoo
+data Bar : Type = MkBar
+
+-- Two trait methods sharing the name `combine`, both targeting Foo, both
+-- accepting two arguments of the same erased type. Without source-language
+-- disambiguation by qualification, a bare reference to `combine` is
+-- ambiguous.
+
+trait WithCombineA (a : Type) =
+    combine : a -> a -> a
+
+trait WithCombineB (a : Type) =
+    combine : a -> a -> a
+
+instance WithCombineA Foo =
+    let combine _ _ = MkFoo
+
+instance WithCombineB Foo =
+    let combine _ _ = MkFoo
+
+-- NEGATIVE: bare `combine` is ambiguous; both trait instances provide it
+-- with identical signature for the same data type.
+bad : Foo
+let bad = combine MkFoo MkFoo    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

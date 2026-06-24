@@ -1,0 +1,59 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (posFirstOrSecond zs = case zs of (x:_) | x>0 -> x ; (_:y:_) | y>0 -> y).
+-- Spec: expressions.match (§17.1), expressions.match.guarded_cases_introduce_guard_success_evidence (§17.1.9).
+--
+-- Pattern-with-guard fall-through. When a `case pat if guard -> body`
+-- clause matches the pattern but its guard evaluates to False, the
+-- match MUST continue with the next case as if the pattern had not
+-- matched. In the test below, scrutinee `[0, 2, 3]` matches the first
+-- case structurally (binding x=0) but its guard `x > 0` fails; the
+-- match must then try the second case (binding y=2) whose guard
+-- succeeds, producing 2.
+
+module test
+
+--! mode check
+
+data List : Type =
+    Nil
+  | Cons Int List
+
+posFirstOrSecond : List -> Int
+let posFirstOrSecond zs =
+    match zs
+    case Cons x _      if x > 0 -> x
+    case Cons _ (Cons y _) if y > 0 -> y
+    case _                              -> 0
+
+--! assertNoErrors
+--! assertType posFirstOrSecond (List -> Int)
+
+-- POSITIVE: scrutinee whose first head is positive — first clause fires.
+firstWins : Int
+let firstWins = posFirstOrSecond (Cons 3 (Cons 2 Nil))
+-- expected: 3
+
+--! assertNoErrors
+--! assertType firstWins Int
+
+-- POSITIVE: first guard fails (head = 0) → fall through to second clause.
+secondWins : Int
+let secondWins = posFirstOrSecond (Cons 0 (Cons 2 (Cons 3 Nil)))
+-- expected: 2
+
+--! assertNoErrors
+--! assertType secondWins Int
+
+-- POSITIVE: both guards fail → fall through to the catch-all `_`.
+allFail : Int
+let allFail = posFirstOrSecond (Cons 0 (Cons (0 - 1) Nil))
+-- expected: 0
+
+--! assertNoErrors
+
+-- POSITIVE: scrutinee is empty list — catch-all `_`.
+emptyHits : Int
+let emptyHits = posFirstOrSecond Nil
+-- expected: 0
+
+--! assertNoErrors

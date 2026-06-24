@@ -1,0 +1,47 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/ConditionalBinding.hylo
+--                   (diagnostic: "fallback branch of conditional binding cannot fall through")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/ConditionalBinding.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive), OSA-HYLO-02 (spec gap)
+-- Hylo: `let x? = Optional<T>.some(...) else { ... }` requires the fallback
+-- branch (the `else` block) to definitively exit — via a return, break,
+-- continue, or fatal error. A fallback branch that falls through into the
+-- succeeding code is rejected, because after a failed binding the bound
+-- variable is not in scope.
+
+--! mode check
+
+data Optional a : Type = None | Some a
+
+unwrapOrZero : Optional Int -> Int
+let unwrapOrZero o =
+    match o
+    case Some n -> n
+    case None   -> 0
+
+-- POSITIVE: exhaustive match with both branches returning a value.
+processOptional : Optional String -> Int
+let processOptional o =
+    match o
+    case Some s -> 42
+    case None   -> -1
+
+-- NEGATIVE: a conditional binding where the None arm falls through
+-- without exiting. After the else branch, execution would continue
+-- past the binding point with `x` undefined.
+-- This models the Hylo "fallback branch of conditional binding cannot fall through".
+fallthroughBinding : Optional Int -> Int
+let fallthroughBinding o =
+    match o
+    case Some x -> x
+    case None   ->      --!! kappa.pattern.non-exhaustive
+    -- falls through without returning
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: empty match — no arm covers None, so a None value has no handler.
+emptyMatch : Optional Bool -> Bool
+let emptyMatch o =
+    match o    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,54 @@
+-- Source: Racket guide define.scrbl (define-values for multiple values),
+--         Racket match.scrbl (let-values / destructuring bind)
+-- Source docs: racket guide define.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/define.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: declarations.let_in, expressions.patterns
+--
+-- A let binding may use a destructuring pattern on the left-hand side.
+-- In particular, a tuple (product type) can be bound by pattern in a let,
+-- making both components available as separate bindings.
+
+--! mode check
+
+-- POSITIVE: destructure a pair in a let binding.
+splitPair : (Int, Int) -> Int
+let splitPair p =
+    let (a, b) = p
+    a + b
+
+-- POSITIVE: destructure nested tuples.
+sumThree : (Int, (Int, Int)) -> Int
+let sumThree outer =
+    let (x, inner) = outer
+        (y, z)     = inner
+    x + y + z
+
+-- POSITIVE: destructure a tuple returned by a function.
+quotRem : Int -> Int -> (Int, Int)
+let quotRem n d = (n / d, n % d)
+
+useQuotRem : Int
+let useQuotRem =
+    let (q, r) = quotRem 17 5
+    q + r
+
+-- POSITIVE: tuple pattern in a function parameter.
+addPair : (Int, Int) -> Int
+let addPair (a, b) = a + b
+
+-- POSITIVE: nested tuple parameter.
+sumNested : ((Int, Int), (Int, Int)) -> Int
+let sumNested ((a, b), (c, d)) = a + b + c + d
+
+-- NEGATIVE: binding more components than the tuple has.
+badDestructure : Int
+let badDestructure =
+    let (a, b, c) = (1, 2)   --!! kappa.type.mismatch
+    a + b + c
+
+-- NEGATIVE: applying tuple pattern to a non-tuple type.
+badPairType : Int
+let badPairType =
+    let (x, y) = 42   --!! kappa.type.mismatch
+    x + y
+
+--! assertDiagnosticFamily error kappa.type.mismatch

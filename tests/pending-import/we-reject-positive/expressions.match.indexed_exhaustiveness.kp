@@ -1,0 +1,43 @@
+-- Source issue: Lean4 #1563
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.index_refinement_constructor_knowledge
+-- Two-case match over an indexed GADT where index unification makes the case set
+-- exhaustive.  When the scrutinee index is `False`, constructor `Mk2` requires
+-- `f i = False` but `Mk1 False` is the only constructor for index `False` that is
+-- explicitly covered; the catch-all `_, _` covers every remaining combination.
+-- Together the two arms are exhaustive over all `(a, T a)` pairs, so the match
+-- MUST be accepted without a missing-case error.
+
+module test
+
+-- Indexed type (GADT style): `T a` is a type indexed by `a : Bool`.
+data T : Bool -> Type =
+    Mk1 : (a : Bool) -> T a
+    Mk2 : (f : Bool -> Bool) -> (i : Bool) -> T (f i)
+
+-- The match has two arms:
+--   * `Mk1 False, False` — explicit case for index = False
+--   * `_, _`            — catch-all covering every other combination
+-- Index unification proves that when `a = False` the Mk1 arm is exhaustive for
+-- that index, and the catch-all covers the True index and all Mk2 cases.
+-- A conforming implementation MUST accept this as exhaustive.
+check1 : (a : Bool) -> T a -> Int
+let check1 _ scrutinee =
+    match scrutinee
+      case Mk1 False -> 0
+      case _         -> 1
+
+--! mode check
+--! assertNoErrors
+
+-- Variant: explicit coverage of both Bool index values via constructor patterns.
+-- Mk1 True and Mk1 False together cover all Mk1 arms; the Mk2 catch-all covers
+-- every Mk2 case regardless of `f` and `i`.
+check2 : (a : Bool) -> T a -> Int
+let check2 _ scrutinee =
+    match scrutinee
+      case Mk1 True  -> 1
+      case Mk1 False -> 0
+      case Mk2 _ _   -> 2
+
+--! assertNoErrors

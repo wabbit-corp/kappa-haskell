@@ -1,0 +1,64 @@
+-- Source issues: souffle-lang/souffle tests/semantic/extended_subtypes/extended_subtypes.dl,
+--   tests/semantic/extended_subtypes2/extended_subtypes2.dl,
+--   tests/semantic/extended_subtypes3/extended_subtypes3.dl,
+--   tests/semantic/union_types/union_types.dl.
+-- Spec: types.universes (§11),
+--       data_types.type_aliases (§10.3),
+--       declarations.signatures (§9.2).
+-- A subtype/specialisation chain A <: B <: C means a value of type A is usable
+-- where type C is expected, but a value of type C is NOT usable where A is expected
+-- (subtyping is directional). Kappa must correctly accept coercions in the allowed
+-- direction and reject them in the disallowed direction.
+
+--! mode check
+
+-- Declare a simple chain of type refinements.
+-- In Kappa, type aliases / subtypes expressed as narrower variants.
+data Animal : Type =
+    Cat
+    Dog
+    Fish
+
+data Pet : Type =
+    PetCat
+    PetDog
+
+-- Declare a union that is "wider" than Pet.
+type LivingThing = (| Animal | Pet |)
+
+-- POSITIVE: using an Animal value where LivingThing is expected (widening).
+let lt1 : LivingThing = (| Cat : Animal |)
+let lt2 : LivingThing = (| PetDog : Pet |)
+
+-- POSITIVE: a function accepting LivingThing can receive any member.
+let describe : LivingThing -> String
+let describe lt =
+    match lt
+        case (| a : Animal |) -> "animal"
+        case (| p : Pet    |) -> "pet"
+
+-- NEGATIVE: a function requiring Pet cannot receive an Animal directly.
+-- Using `Cat : Animal` where `Pet` is expected.
+let needsPet : Pet -> String
+let needsPet p =
+    match p
+        case PetCat -> "cat"
+        case PetDog -> "dog"
+
+let bad : String = needsPet Cat    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: three-level chain of wrapper types.
+data Level1 : Type = L1 Int
+data Level2 : Type = L2 Level1
+data Level3 : Type = L3 Level2
+
+let l1 : Level1 = L1 10
+let l2 : Level2 = L2 l1
+let l3 : Level3 = L3 l2
+
+-- NEGATIVE: using Level3 where Level1 is expected.
+let badL : Level1 = L3 (L2 (L1 1))    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,60 @@
+-- Source: Coalton issues #295 (predicates not being properly reduced in
+--   abstractions), #125 (self-recursive functions dropping predicates on
+--   recursive call).
+-- Spec: types.quantification.implicit_declaration_universalization (§11.3.3),
+--   traits.instances.resolution_algorithm (§14.3.1),
+--   declarations.terms.irrefutable_patterns_let_bindings (§9.1.2).
+--
+-- A local closure (lambda / let-bound function) that uses a typeclass method
+-- must capture the typeclass constraint from its enclosing context rather than
+-- generating a fresh, unresolvable obligation. The constraint must be reduced
+-- at the point where it is determined and not left dangling on the closure.
+
+--! mode check
+
+-- POSITIVE: a function that creates a local closure using `==`.
+-- The closure captures the `Eq a` evidence from the outer function's constraint.
+-- Both the outer function and the inner closure should type-check without error.
+closureWithEq : forall (a : Type). (@_ : Eq a) -> a -> (a -> Bool)
+let closureWithEq outer =
+    fn inner -> outer == inner
+
+--! assertNoErrors
+--! assertType closureWithEq (forall (a : Type). (@_ : Eq a) -> a -> (a -> Bool))
+
+-- POSITIVE: a higher-order function that takes a predicate and a list and
+-- returns a closure that filters using the predicate. The constraint on the
+-- predicate is propagated correctly from the outer function into the inner.
+filterWithPred : forall (a : Type). (a -> Bool) -> List a -> List a
+let filterWithPred pred xs =
+    let go : List a -> List a
+        let go Nil         = Nil
+        let go (h :: t)    = if pred h then h :: go t else go t
+    in go xs
+
+--! assertNoErrors
+
+-- POSITIVE: a locally defined function inside a let-block that uses a
+-- method from an enclosing typeclass constraint. The inner let-binding
+-- must have access to the class dictionary from the enclosing scope.
+applyTwice : forall (a : Type). (@_ : Eq a) -> a -> a -> Bool
+let applyTwice x y =
+    let bothEqual : Bool = (x == y) && (y == x)
+    in bothEqual
+
+--! assertNoErrors
+
+-- POSITIVE: self-recursive function with a class constraint. The recursive
+-- call must carry the same constraint as the outer binding — the constraint
+-- must not be dropped or duplicated on the recursive site.
+anyEq : forall (a : Type). (@_ : Eq a) -> a -> List a -> Bool
+let anyEq target xs =
+    match xs
+    case Nil        -> False
+    case h :: rest  ->
+        if h == target
+        then True
+        else anyEq target rest
+
+--! assertNoErrors
+--! assertType anyEq (forall (a : Type). (@_ : Eq a) -> a -> List a -> Bool)

@@ -1,0 +1,36 @@
+-- Source issue: carp-lang/Carp#1075
+-- Spec: types.unions.elimination_match,
+--       types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Carp #1075: an owned `match` that bound the scrutinee in a wildcard arm
+-- and then returned it caused a double-free: the match took ownership
+-- and so did the binding for the wildcard.  The portable Kappa obligation
+-- is that owned-form `match` consumes the scrutinee; reintroducing the
+-- scrutinee under a wildcard binder does not give back ownership of the
+-- original linear value.
+
+--! mode check
+
+data Mb : Type =
+    Nothing
+    | Just Int
+
+-- POSITIVE: an owned match consumes its scrutinee and produces a fresh
+-- Int.  No second owner of the original `Mb` remains.
+unwrap : (1 m : Mb) -> Int
+let unwrap m =
+    match m
+    case Nothing -> 0
+    case Just n  -> n
+
+
+-- NEGATIVE: the wildcard arm rebinds the scrutinee `m` and tries to
+-- return it from the match.  After ownership has transferred into the
+-- match form, the wildcard binder cannot reproduce the original `Mb`.
+returnFromWildcardBad : (1 m : Mb) -> Mb
+let returnFromWildcardBad m =
+    match m
+    case Nothing -> Nothing
+    case _       -> m                    --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed

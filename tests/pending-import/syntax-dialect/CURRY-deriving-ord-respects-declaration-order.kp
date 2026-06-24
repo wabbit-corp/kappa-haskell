@@ -1,0 +1,67 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDeriving.curry
+--   (data Color = Red | Blue deriving (Eq, Read, Show, Ord);
+--    testOrd1 = always (Red < Blue)).
+-- Spec: traits.deriving (§14.5), data_types.data_declarations (§10.1).
+--
+-- Derived `Ord` orders constructors by their declaration position:
+-- earlier-declared constructors compare less than later-declared
+-- constructors. This is the same rule Haskell uses and the rule the
+-- Curry test takes for granted.
+
+module test
+
+--! mode check
+
+data Color : Type =
+    Red
+  | Blue
+
+derive Eq Color
+derive Show Color
+derive Ord Color
+
+--! assertNoErrors
+
+-- POSITIVE: declaration order ⇒ `Red < Blue`.
+redIsLess : Bool
+let redIsLess = Red < Blue
+-- expected: True
+
+--! assertType redIsLess Bool
+
+blueIsGreater : Bool
+let blueIsGreater = Blue > Red
+-- expected: True
+
+-- POSITIVE: Ord on a recursive data type respects declaration order at
+-- the outer constructor first.
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+derive Eq (List a)
+derive Show (List a)
+derive Ord (List a)
+
+data Tree (a : Type) : Type =
+    Leaf a
+  | Node (List (Tree a))
+
+derive Eq (Tree a)
+derive Show (Tree a)
+derive Ord (Tree a)
+
+leafBeforeNode : Bool
+let leafBeforeNode = (Leaf Red : Tree Color) < Node Nil
+-- expected: True (Leaf is declared first)
+
+--! assertType leafBeforeNode Bool
+
+-- POSITIVE: within `Leaf`, the recursive Ord on the payload determines
+-- the answer.
+leafRedBeforeLeafBlue : Bool
+let leafRedBeforeLeafBlue =
+    (Leaf Red : Tree Color) < Leaf Blue
+-- expected: True
+
+--! assertNoErrors

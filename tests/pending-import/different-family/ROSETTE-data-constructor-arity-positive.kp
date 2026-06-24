@@ -1,0 +1,45 @@
+-- Source issue: ROSETTE-241 (Synthesising with grammar containing
+--                multiple instances of structs with different
+--                parameters returns unsat — same constructor reused at
+--                multiple sites)
+-- Spec: data_types.data_declarations,
+--       expressions.application.named_function_application,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- Kappa allows the same data constructor to appear at multiple call
+-- sites with different concrete arguments, as long as those arguments
+-- match the declared constructor signature. This fixture ensures that
+-- the elaboration does not assume that two appearances of the same
+-- constructor must have syntactically identical sub-expressions.
+
+--! mode check
+
+data Op : Type =
+    Reg Int
+    Broadcast Op Int Int Int Int
+
+-- POSITIVE: same constructor used twice with distinct concrete payloads.
+program1 : Op
+let program1 = Broadcast (Reg 0) 256 256 16 0
+
+program2 : Op
+let program2 = Broadcast (Reg 0) 512 512 32 0
+
+-- POSITIVE: pattern match covers both shapes generically.
+interp : Op -> Int
+let interp o =
+    match o
+    case (Reg id)              -> id
+    case (Broadcast v _ _ _ _) -> interp v
+
+-- POSITIVE: nested broadcasts are valid.
+nested : Op
+let nested =
+    Broadcast (Broadcast (Reg 1) 64 64 8 0) 128 128 16 0
+
+-- NEGATIVE: the constructor declares five integer payloads after the
+-- inner Op; supplying only four is an arity error.
+badArity : Op
+let badArity = Broadcast (Reg 0) 1 2 3              --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

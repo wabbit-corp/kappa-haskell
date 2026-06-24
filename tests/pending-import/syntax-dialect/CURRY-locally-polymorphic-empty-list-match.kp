@@ -1,0 +1,47 @@
+-- Source: Curry/KiCS2 testsuite/SpecialTests/TestPolySubExp.curry
+--   (poly3 = case [] of _ -> 42; testMatchingEmptyList = poly3 -=- 42).
+-- Spec: expressions.match (§17.1),
+--       expressions.match.exhaustiveness_indexed_types_gadts (§17.1.1),
+--       data_types.data_declarations (§10.1).
+--
+-- A match scrutinee with a polymorphic element type does not need to
+-- be instantiated when no case binds an element. The match `case [] of
+-- _ -> 42` must elaborate even though the element type is free.
+
+module test
+
+--! mode check
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+-- POSITIVE: wildcard catch-all on an empty list whose element type is
+-- existentially polymorphic — the elaborator must not need to commit
+-- to a particular element type.
+poly3 : Int
+let poly3 =
+    match (Nil : List (forall (a : Type). a -> a))
+    case _ -> 42
+
+--! assertNoErrors
+--! assertType poly3 Int
+
+-- POSITIVE: a polymorphic `null`-style check works regardless of the
+-- element type.
+nullList : forall (a : Type). List a -> Bool
+let nullList xs =
+    match xs
+    case Nil      -> True
+    case Cons _ _ -> False
+
+--! assertNoErrors
+--! assertType nullList (forall (a : Type). List a -> Bool)
+
+-- POSITIVE: applying nullList at a polymorphic instantiation.
+emptyOfFunctions : Bool
+let emptyOfFunctions = nullList (Nil : List (forall (a : Type). a -> a))
+-- expected: True
+
+--! assertNoErrors
+--! assertType emptyOfFunctions Bool

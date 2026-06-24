@@ -1,0 +1,24 @@
+-- Source issues: CREUSOT-166
+-- Spec: traits.headers, traits.members, traits.instances,
+--       declarations.totality.termination_certified_definitions,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- Kappa's grammar accepts `decreases` clauses uniformly at the function
+-- declaration site, including inside instance bodies; an instance
+-- method that calls itself without a decreases clause must be rejected
+-- for non-termination.  Pending spec gap CREUSOT-SA-05 covers the
+-- broader trait-impl modality obligations.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: an instance method that calls itself without a decreases
+-- clause must be rejected for non-termination.
+trait Diverge (a : Type) =
+    spin : a -> Int
+
+instance Diverge Unit =
+    let spin u = spin u + 1                  --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

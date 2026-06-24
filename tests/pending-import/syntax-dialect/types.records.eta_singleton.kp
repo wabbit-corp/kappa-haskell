@@ -1,0 +1,32 @@
+-- Source issue: Agda #396
+-- Spec: types.universes.cumulativity (eta for records), expressions.match.index_refinement_constructor_knowledge
+-- When a record type has a single constructor with no fields (unit-like type),
+-- all values of that type are definitionally equal by eta. The compiler MUST
+-- apply eta-expansion to unify terms of such types.
+
+module test
+
+-- Unit-like singleton record: all values of `Top` are definitionally equal.
+record Top : Type =
+    (no fields)
+
+-- Two distinct-looking bindings of Top values must be considered definitionally equal.
+-- f : (P : Top -> Type) -> ((x : Top) -> P x -> P x) -> (x y : Top) -> P x -> P y
+-- This MUST type-check because x and y are both values of a singleton record type,
+-- so P x = P y by eta.
+applyEta : (P : Top -> Type) ->
+           ((x : Top) -> P x -> P x) ->
+           (x y : Top) -> P x -> P y
+let applyEta P hyp x y = hyp x
+
+--! mode check
+--! assertNoErrors
+
+-- Variant: two explicit Top values are definitionally equal, so `refl` applies.
+data Eq : {A : Type} -> A -> A -> Type =
+    refl : {A : Type} -> {a : A} -> Eq a a
+
+topUnique : (x y : Top) -> Eq x y
+let topUnique x y = refl
+
+--! assertNoErrors

@@ -1,0 +1,26 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         Boomerang allows a local `let` to shadow a top-level binding
+--         (the manual's worked example reuses names like `c`, `cs`,
+--         `original_c`). Kappa's portable analog is that local shadowing
+--         is allowed but produces an kappa.name.shadowing diagnostic.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.shadowing).
+-- Portable obligation: a local `let` that shadows a top-level binding
+--   is reported as kappa.name.shadowing.
+
+module test
+
+--! mode check
+
+-- Top-level binding.
+c : Int
+let c = 1
+
+-- NEGATIVE: local `let c` shadows the top-level c; per §3.1 the
+-- compiler emits a warning of family `kappa.name.shadowing`.
+useShadow : Int -> Int
+let useShadow n =
+    let c = n + 1
+    c + c
+
+--! assertDiagnosticFamily warning kappa.name.shadowing

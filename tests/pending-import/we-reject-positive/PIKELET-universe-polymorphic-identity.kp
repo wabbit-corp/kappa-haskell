@@ -1,0 +1,45 @@
+-- Source issues: PIKELET-10 (cumulative universe hierarchy — motivating the
+--               polymorphic identity over levels),
+--               PIKELET-125 (universe shifting),
+--               PIKELET-237 (Andras Kovacs' universe lifting).
+-- Spec: types.universes.inference_sketch, types.universes.cumulativity,
+--       expressions.lambdas, types.quantification
+--
+-- Kappa exposes universe polymorphism via an explicit `forall (u : Universe)`
+-- binder (§11.3). `forall` introduces `@0`-implicit binders separated by
+-- `.` from the body. A single definition can then be applied at multiple
+-- universe levels, eliminating the Pikelet pain of needing a separate
+-- `id^1` for each level.
+
+--! mode check
+
+-- POSITIVE: identity polymorphic over both a universe level and a type
+-- using the implicit-binder `forall` sugar. Both `u` and `A` are `@0`.
+idAll : forall (u : Universe) (A : Type u). A -> A
+let idAll x = x
+
+-- POSITIVE: applied at Type0 by inferring `u`.
+useNat : Nat
+let useNat = idAll 7
+
+-- POSITIVE: applied at Type1 — passing a `Type0` as the argument.
+useTy : Type0
+let useTy = idAll Nat
+
+-- POSITIVE: applied at Type2 — passing `Type1` as the argument.
+useTy1 : Type1
+let useTy1 = idAll Type0
+
+-- POSITIVE: bare `Type` is universe-polymorphic surface syntax — each
+-- occurrence introduces a fresh inferred level. The compiler resolves the
+-- universe metavariable from the surrounding context.
+idBare : forall (A : Type). A -> A
+let idBare x = x
+
+useBareNat : Nat
+let useBareNat = idBare 1
+
+useBareTy : Type0
+let useBareTy = idBare Nat
+
+--! assertNoErrors

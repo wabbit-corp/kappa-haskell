@@ -1,0 +1,69 @@
+-- Source issues: leo#29309 (compiler panic in type checking: out-of-bounds tuple
+--               index access inside a `final` block), leo PR#29310 (fix).
+-- Spec: SA-LEO-02 (tuple index access out of bounds is a compile-time type error),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-LEO-02):
+--   "A statically-typed tuple access `t.k` where `t : (A₀, …, Aₙ₋₁)` must be
+--    rejected at type-checking time when k ≥ n. The index k is a compile-time
+--    constant; therefore the compiler can always determine validity. An
+--    out-of-range access must produce `kappa.type.mismatch` identifying the
+--    tuple type, its arity, and the requested index. The compiler must not panic."
+-- leo#29309: `let _ = y.8` where `y : (u32, u8, u16)` (arity 3) caused an
+--   index-out-of-bounds panic in the block rewriter instead of a type error.
+
+--! mode check
+
+-- POSITIVE: valid index accesses on tuples of various arities.
+t2 : (Int, Bool)
+let t2 = (42, True)
+
+okIdx0 : Int
+let okIdx0 = t2.0
+
+okIdx1 : Bool
+let okIdx1 = t2.1
+
+t3 : (Int, Bool, String)
+let t3 = (1, False, "hello")
+
+okT3A : Int
+let okT3A = t3.0
+
+okT3B : Bool
+let okT3B = t3.1
+
+okT3C : String
+let okT3C = t3.2
+
+
+-- NEGATIVE: accessing index 2 on a 2-tuple (valid indices are 0 and 1).
+badIdx2on2 : Int
+let badIdx2on2 = t2.2    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: accessing index 8 on a 3-tuple (valid indices are 0, 1, 2).
+badIdx8on3 : Int
+let badIdx8on3 = t3.8    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: accessing index 1 on a 1-tuple (valid index is only 0).
+-- A 1-element product is the unit-like case; only index 0 is valid.
+t1 : (Int,)
+let t1 = (99,)
+
+badIdx1on1 : Int
+let badIdx1on1 = t1.1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: accessing index 0 on a zero-element tuple (unit) — no valid index.
+unit : ()
+let unit = ()
+
+badIdx0onUnit : Int
+let badIdx0onUnit = unit.0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

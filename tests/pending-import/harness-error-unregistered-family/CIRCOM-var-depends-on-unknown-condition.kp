@@ -1,0 +1,41 @@
+-- Source issues: Circom control-flow.md — "Another compilation error is generated
+--               when the content of a var depends on some unknown condition: that is
+--               when the var takes its value inside an if-then-else or loop statement
+--               with an unknown condition. Then, the content of the variable is a
+--               non-quadratic expression and, as such, cannot be used in the
+--               generation of a constraint."
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-CIRCOM-03):
+--   "A 0-quantity binding whose value depends on a 1-quantity (runtime) condition
+--    violates the quantity obligation; the compiler must reject it with
+--    kappa.quantity.satisfies."
+
+--! mode check
+
+-- POSITIVE: variable whose value depends only on compile-time parameters.
+base : (0 _ : Int)
+let base = 3
+
+let goodVarBranch : Int =
+    let (0 t) = if base > 2 then 10 else 20
+    t
+
+
+-- NEGATIVE: 0-quantity binding initialized from a value that depends on a runtime
+-- condition; the compile-time content is not deterministic.
+let badVarBranch (runtimeInput : Int) : Int =
+    let (0 t) = if runtimeInput > 3 then 10 else 20   --!! kappa.quantity.satisfies
+    t
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: variable set in different branches of an unknown-conditioned if,
+-- then used in a 0-quantity context.
+let badLoopVar (sig : Int) : Int =
+    let acc : Int = 0
+    let (0 result) =                                  --!! kappa.quantity.satisfies
+        if sig > 0 then acc + 1 else acc
+    result
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

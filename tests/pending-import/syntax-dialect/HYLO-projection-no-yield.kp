@@ -1,0 +1,44 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/ProjectionWithNoYields.hylo
+--                   (diagnostic: "not all paths of the projection contain a yield"),
+--                   Tests/HyloTests/TestCases/Lowering/ProjectionYieldMissingOnSomePaths.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/Lowering/ProjectionWithNoYields.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive), OSA-HYLO-01 (spec gap)
+-- Hylo: a subscript or property accessor declared with `let { ... }` must
+-- yield on every execution path. If some control-flow paths lack a yield,
+-- the compiler rejects the accessor. In Kappa the nearest obligation is that
+-- a match expression must cover all constructors (pattern exhaustiveness).
+
+--! mode check
+
+trait Viewable a where
+    view : (& a) -> Int
+
+data Gauge : Type = Gauge Int
+
+-- POSITIVE: accessor yields on all paths.
+impl Viewable Gauge where
+    let view (Gauge n) = n
+
+readGauge : Gauge -> Int
+let readGauge g = view g
+
+data SafeValue : Type = SafeValue Int Bool
+
+-- POSITIVE: match covers all branches and each yields.
+safeRead : SafeValue -> Int
+let safeRead v =
+    match v
+    case SafeValue n True  -> n
+    case SafeValue _ False -> 0
+
+-- NEGATIVE: a match body that does not cover all paths.
+-- If the guard fails, no value is produced — the match is incomplete.
+-- Models the Hylo diagnostic "not all paths of the projection contain a yield".
+partialAccessor : SafeValue -> Int
+let partialAccessor v =
+    match v    --!! kappa.pattern.non-exhaustive
+    case SafeValue n True  -> n
+    -- Missing False branch — no yield on that path
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

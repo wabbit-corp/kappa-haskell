@@ -1,0 +1,41 @@
+-- Source issue: carp-lang/Carp#1143
+-- Spec: types.universes.inference_sketch,
+--       types.universes.trait_evidence,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Carp #1143: type inference sometimes failed to concretize a generic
+-- function call even when only one implementation was admissible from
+-- the surrounding context.  The portable Kappa obligation is that
+-- inference must use the surrounding context to select the only
+-- admissible implementation of an overloaded function; if no context
+-- pins the type variable, the trait obligation is left ambiguous.
+
+--! mode check
+
+trait Inc (a : Type) =
+    inc : a -> a
+
+instance Inc Int =
+    let inc x = x + 1
+
+instance Inc String =
+    let inc s = s
+
+-- POSITIVE: the surrounding type annotation forces `a = Int`, so
+-- inference picks `Inc Int` and concretizes without ambiguity.
+applyToInt : Int
+let applyToInt =
+    let r : Int = inc 1
+    r
+
+--! assertType applyToInt Int
+
+-- NEGATIVE: in a context where the argument is `forall a. a` and the
+-- expected result type does not further pin `a`, the `Inc a` obligation
+-- has multiple admissible solutions (`Inc Int`, `Inc String`).
+anyArg : forall a. a
+let anyArg = anyArg
+
+applyAmbiguous : forall a. a
+let applyAmbiguous = inc anyArg              --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

@@ -1,0 +1,43 @@
+-- Source artifacts: CHALK-12 (Elaborating where clauses on traits),
+--                   CHALK-DOC-book/src/clauses/wf.md,
+--                   CHALK-280 (Infinite stack growth in chalk),
+--                   CHALK-667 (Endless loop in recursive solver),
+--                   CHALK-773 (Recursive solver hangs on cyclic traits).
+-- Spec: traits.instances.search_termination.
+-- Kappa spec rule: "for every type variable, the number of occurrences of that
+-- variable in a premise must not exceed its number of occurrences in the head;
+-- the total constructor-and-variable size of each premise must be strictly
+-- smaller than that of the head."
+-- This test pins the *occurrence-count* clause: a premise mentioning a type
+-- variable more times than the head must be rejected even if the premise has
+-- smaller constructor depth.
+
+--! mode check
+
+trait Foo (a : Type) =
+    fooTag : a -> Int
+
+data Pair (a : Type) : Type =
+    Pair (left : a) (right : a)
+
+-- POSITIVE control: head `Foo (Pair a)` has 1 occurrence of `a`; premise
+-- `Foo a` has 1 occurrence. Constructor depth: head has Pair, premise has none;
+-- premise strictly smaller. Accepted.
+instance Foo a => Foo (Pair a) =
+    let fooTag _ = 0
+
+
+-- NEGATIVE: head `Foo a` has 1 occurrence of `a`; premise `Foo (Pair a)`
+-- has 1 occurrence of `a`. Wait — same occurrence count. Use a premise with
+-- *more* occurrences than the head.
+-- Construct: head `Foo (Pair a)` (1 occurrence of `a`), premise `Foo (Pair (Pair a))`
+-- ... still 1 occurrence. Use a binary helper to force multiple occurrences.
+trait BiFoo (a : Type) (b : Type) =
+    biFooTag : a -> b -> Int
+
+-- NEGATIVE: head `BiFoo a a` has 2 occurrences of `a`; premise
+-- `BiFoo (Pair a a) (Pair a a)` has 4 occurrences of `a`. Paterson rejects.
+instance BiFoo (Pair a a) (Pair a a) => BiFoo a a =    --!! kappa.termination.failure
+    let biFooTag _ _ = 0
+
+--! assertDiagnosticFamily error kappa.termination.failure

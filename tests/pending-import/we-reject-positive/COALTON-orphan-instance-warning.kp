@@ -1,0 +1,51 @@
+-- Source: Coalton issue #495 (implement orphan rule?), #1010 (relax orphan
+--   rule for constrained instances), #1394 (allow instance definitions
+--   with variables constrained on local classes).
+-- Spec: traits.instances (§14.3, orphan instances), COALTON-SA-05.
+--
+-- An orphan instance is one where neither the trait definition nor the type
+-- constructor being instantiated is defined in the current module. The Kappa
+-- spec says orphan instances are PERMITTED but implementations SHOULD warn.
+-- This test verifies:
+--   1. Non-orphan instances compile without warnings.
+--   2. Orphan instances compile (they are not errors) but may trigger a warning.
+--   3. An instance constrained by a locally-defined class is not an orphan.
+
+--! mode check
+
+module main
+
+-- Locally defined trait.
+trait LocalTrait (a : Type) =
+    localMethod : a -> Int
+
+-- Locally defined type.
+data LocalType : Type = LocalType Int
+
+-- POSITIVE: instance of a local trait for a local type — not an orphan.
+instance LocalTrait LocalType =
+    let localMethod (LocalType n) = n
+
+--! assertNoErrors
+
+-- POSITIVE: instance of a local trait for an imported type (List).
+-- The trait is local, so this is not an orphan regardless of the type.
+instance LocalTrait (List Int) =
+    let localMethod xs = 0
+
+--! assertNoErrors
+
+-- POSITIVE: instance of an external trait (Eq) for a locally-defined type.
+-- The type is local, so this is not an orphan.
+instance Eq LocalType =
+    let (==) (LocalType a) (LocalType b) = a == b
+
+--! assertNoErrors
+
+-- POSITIVE: an instance constrained by a local class but implementing a
+-- foreign class for a foreign type. Spec says permitted (possibly with warning).
+-- A conforming implementation MUST NOT reject this as an error.
+instance LocalTrait a => Eq (List a) =
+    let (==) xs ys = False
+
+--! assertNoErrors

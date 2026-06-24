@@ -1,0 +1,33 @@
+-- Source issue: Koka #649
+-- Spec: effects.monadic_core.shallow_handlers,
+--       effects.monadic_core.effect_declarations.resumption_quantity_interpretation
+-- An operation with the default resumption quantity 1 (one-shot) means the
+-- handler-bound resumption k has quantity 1: it may be applied exactly once.
+-- Applying k more than once in a handler clause is a quantity violation.
+
+module test
+
+effect Ask (a : Type) =
+    1 ask : Unit -> a
+
+-- LEGAL: one-shot resumption applied exactly once.
+handleAsk : Eff <[ask : Ask Int]> Int -> Eff <[ ]> Int
+let handleAsk comp =
+    handle ask comp with
+        case return x -> pure x
+        case ask () k -> k 42
+
+--! mode check
+
+-- ILLEGAL: one-shot resumption applied twice.
+-- k has quantity 1; the second use violates the quantity rule.
+handleAskDouble : Eff <[ask : Ask Int]> Int -> Eff <[ ]> (Int, Int)
+let handleAskDouble comp =
+    handle ask comp with
+        case return x -> pure (x, x)
+        case ask () k ->
+            let a = k 1   -- first use (ok)
+            let b = k 2   --!! kappa.quantity.unsatisfied  (k already consumed)
+            pure (a, b)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

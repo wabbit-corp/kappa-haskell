@@ -1,0 +1,71 @@
+-- Source issues: vale#101 (Example for using generics doesn't compile),
+--               vale#137 (Enforcing compile-time generic comparisons),
+--               vale#625 (Change `func` to `exists` in where clauses),
+--               docs/Generics.md (SROACSD — call-site vs definition rules)
+-- Spec: types.quantification,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- In Vale, a generic function with a `where func drop(T) void` clause
+-- requires that a drop function for the type argument exists at the call
+-- site. If no such function is visible, the call is rejected. In Kappa,
+-- a trait bound that cannot be satisfied by implicit resolution at the call
+-- site is rejected with kappa.implicit.unsolved.
+
+--! mode check
+
+-- A trait representing a type that has a measurable size.
+trait Measurable (a : Type) =
+    measure : (& x : a) -> Int
+
+-- A trait representing a type that has a printable label.
+trait Labeled (a : Type) =
+    label : (& x : a) -> String
+
+-- A generic function requiring both Measurable and Labeled.
+describe :
+    forall (a : Type).
+    (@_ : Measurable a) ->
+    (@_ : Labeled a) ->
+    (& x : a) -> String
+let describe x =
+    "size=" ++ show (measure x) ++ " label=" ++ label x
+
+-- A type with both instances.
+data Item : Type = Item Int String
+
+instance Measurable Item =
+    let measure (Item n _) = n
+
+instance Labeled Item =
+    let label (Item _ s) = s
+
+-- POSITIVE: calling describe with a type that has both required instances.
+okDescribe : String
+let okDescribe = describe (Item 3 "sword")
+
+-- A type with only Measurable, not Labeled.
+data Weight : Type = Weight Int
+
+instance Measurable Weight =
+    let measure (Weight n) = n
+
+-- NEGATIVE: calling describe with Weight — no Labeled instance exists.
+badDescribe : String
+let badDescribe = describe (Weight 5)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a function that only requires Measurable works with Weight.
+justMeasure :
+    forall (a : Type).
+    (@_ : Measurable a) ->
+    (& x : a) -> Int
+let justMeasure x = measure x
+
+okMeasureWeight : Int
+let okMeasureWeight = justMeasure (Weight 7)
+
+-- NEGATIVE: calling describe with a completely unconstrained type.
+data Opaque : Type = Opaque
+
+badOpaqueDescribe : String
+let badOpaqueDescribe = describe Opaque   --!! kappa.implicit.unsolved

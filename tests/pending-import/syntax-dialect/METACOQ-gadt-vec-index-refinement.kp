@@ -1,0 +1,46 @@
+-- Source issues: METACOQ-238, METACOQ-367, METACOQ-436
+-- Spec: data_types.gadts, expressions.match.index_refinement_constructor_knowledge,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+--
+-- GADT-style constructors force index equalities at the matched constructor.
+-- After matching VCons, the size index is refined to a successor, and the
+-- recursive call may use that refinement. MetaCoq's PCUIC formalizes this
+-- as part of the case type's predicate; the portable Kappa obligation is
+-- that the branch is checked under the refined index.
+
+module test
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : forall {n : Nat}. (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
+
+-- POSITIVE: head requires a non-empty vector by index refinement.
+-- The VNil branch is unreachable by index unification (0 ≠ n + 1).
+vhead : forall {a : Type} {n : Nat}. Vec a (n + 1) -> a
+let vhead v =
+    match v
+    case VCons x _ -> x
+    case impossible
+
+-- POSITIVE: zip on equal-length vectors. Both scrutinees must agree on the
+-- index at each branch; the off-diagonal cases are rejected by index
+-- unification and discharged with `case impossible`.
+data Pair (a : Type) (b : Type) : Type =
+    MkPair a b
+
+vzip : forall {a : Type} {b : Type} {n : Nat}. Vec a n -> Vec b n -> Vec (Pair a b) n
+let vzip xs ys decreases structural xs =
+    match xs
+    case VNil ->
+        match ys
+        case VNil -> VNil
+        case impossible
+    case (VCons x rest) ->
+        match ys
+        case (VCons y rest') -> VCons (MkPair x y) (vzip rest rest')
+        case impossible
+
+--! assertNoErrors
+--! assertType vhead forall {a : Type} {n : Nat}. Vec a (n + 1) -> a

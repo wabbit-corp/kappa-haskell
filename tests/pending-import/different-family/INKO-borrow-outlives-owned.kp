@@ -1,0 +1,26 @@
+-- Source issues: docs/memory-management, inko#842
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a borrow (ref T) must not outlive the owned value it was derived
+-- from. Returning a closure that captures a borrow of a locally-owned value
+-- causes the borrow to escape the region where the owned value lives.
+
+--! mode check
+
+data Node : Type = Node Int
+
+readNode : (& n : Node) -> Int
+let readNode (Node x) = x
+
+-- POSITIVE: the borrow is consumed within the owning scope.
+readOwned : (1 n : Node) -> Int
+let readOwned n = readNode n
+
+
+-- NEGATIVE: the closure borrows 'local' but the closure is returned to
+-- the caller, where 'local' no longer exists. The borrow escapes the region.
+danglingClosure : Unit -> (() -> Int)
+let danglingClosure _ =
+    let local = Node 42
+    \() -> readNode local   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

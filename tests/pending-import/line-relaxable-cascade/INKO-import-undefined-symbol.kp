@@ -1,0 +1,23 @@
+-- Source issues: docs/modules
+-- Spec: modules.names.lexical_lookup
+-- Inko: importing or referencing a name that is not defined in scope
+-- is a compile-time error. The compiler cannot resolve the identifier.
+
+--! mode check
+
+-- POSITIVE: using a locally defined symbol.
+data Known : Type = Known Int
+
+readKnown : (& k : Known) -> Int
+let readKnown (Known n) = n
+
+ok : Int
+let ok = readKnown (Known 42)
+
+
+-- NEGATIVE: 'missingFunc' is not defined anywhere in scope.
+-- The name resolver cannot find a binding for it.
+bad : Int
+let bad = missingFunc 42   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

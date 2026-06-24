@@ -1,0 +1,21 @@
+-- Source issue: FSTAR-418
+-- Spec: compiler.frontir.standard_diagnostic_families.termination
+-- When termination checking fails, the error span must point to the
+-- specific recursive call that cannot be shown to decrease, not to the
+-- top-level function definition.
+
+--! mode check
+
+data Nat2 : Type =
+    Z : Nat2
+    S : Nat2 -> Nat2
+
+-- NEGATIVE TEST: loop does not decrease on either branch.
+-- The error must be reported at the recursive calls, not the function header.
+loop : Nat2 -> Nat2
+let loop n decreases n =
+    match n
+      case Z     -> loop (S Z)        --!! kappa.termination.failure
+      case (S m) -> loop (S (S m))    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

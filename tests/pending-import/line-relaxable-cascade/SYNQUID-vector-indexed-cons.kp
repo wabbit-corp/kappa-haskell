@@ -1,0 +1,61 @@
+-- Source artifacts: synquid test/unit/Instantiation.sq —
+--                 `data Natural n where Zero :: Natural Z; Succ :: Natural n
+--                  -> Natural (S n)` and `ix :: xs: List a -> {Natural m |
+--                  (toNat _v) <= (len xs)} -> a` model length-indexed
+--                  access. Synquid's refinement spec is not portable; the
+--                  GADT skeleton is.
+-- Spec: data_types.gadts,
+--       types.unions.interaction_gadts_indexed_types,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.index_refinement_constructor_knowledge
+--
+-- The Kappa-portable obligation is a length-indexed Vec, where the
+-- constructor's result-index telescope expresses the bound that
+-- Synquid encodes refinement-side. Match on a Vec must recover the
+-- index in each branch.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- A length-indexed vector.
+data Vec (n : PNat) (a : Type) : Type =
+    VNil  : Vec Z a
+    VCons : (head : a) -> (tail : Vec k a) -> Vec (S k) a
+
+-- POSITIVE: building Vec (S Z) PNat via VCons VNil.
+oneVec : Vec (S Z) PNat
+let oneVec = VCons (S Z) VNil
+
+-- POSITIVE: matching on Vec recovers the inner index in the VCons arm.
+-- The Vec Z case is statically impossible because the constructor index
+-- excludes it; the empty remainder is accepted via `case impossible`.
+vhead : forall (k : PNat) (a : Type). Vec (S k) a -> a
+let vhead v =
+    match v
+      case (VCons x _) -> x
+      case impossible
+
+-- POSITIVE: tail decreases the index by one.
+vtail : forall (k : PNat) (a : Type). Vec (S k) a -> Vec k a
+let vtail v =
+    match v
+      case (VCons _ xs) -> xs
+      case impossible
+
+-- POSITIVE: empty match on Vec Z is justified by index refinement:
+-- VCons cannot inhabit Vec Z because its result index is S _.
+emptyVec : forall (a : Type). Vec Z a -> PNat
+let emptyVec v =
+    match v
+      case VNil -> Z
+      case impossible
+
+-- NEGATIVE: applying `vhead` to a Vec Z is rejected because the index
+-- does not unify with `S _`.
+badHead : PNat
+let badHead = vhead (VNil : Vec Z PNat)         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

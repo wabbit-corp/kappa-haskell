@@ -1,0 +1,48 @@
+-- Source artifacts: synquid test/comcom/AVL.sq, test/pldi16/AVL-Balance.sq,
+--                 test/pldi16/solution/BST-Sort.sq — rotation cases match an
+--                 already-known-non-Leaf subtree against Leaf and have to
+--                 emit `error` because the constructor is statically
+--                 impossible under the refinement context.
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.impossible_unreachable_branch_bodies,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       data_types.gadts
+--
+-- The Kappa-portable obligation is: an indexed-data scrutinee whose index has
+-- been refined to exclude a constructor's index pattern allows that branch
+-- to be marked `impossible` (or omitted via `case impossible`). A redundant
+-- non-impossible branch must be diagnosed as `kappa.pattern.unreachable`.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- A successor-only proof witness: inhabited only when the index is `S _`.
+data NonZero (n : PNat) : Type =
+    MkNonZero : NonZero (S m)
+
+-- POSITIVE: matching on a NonZero (S m) value need only handle MkNonZero.
+-- The implicit Z-indexed remainder is statically excluded by the index.
+predOf : forall (n : PNat). NonZero n -> PNat
+let predOf p =
+    match p
+      case MkNonZero -> Z
+
+-- POSITIVE: explicit empty-remainder match on a scrutinee whose type
+-- has no inhabitants under the current index refinement.
+absurdZero : NonZero Z -> PNat
+let absurdZero p =
+    match p
+      case impossible
+
+-- NEGATIVE: an explicit branch body of `impossible` whose remainder is
+-- still reachable is rejected with `kappa.proof.impossible-reachable`.
+unreachableBad : PNat -> PNat
+let unreachableBad n =
+    match n
+      case Z      -> Z
+      case (S _)  -> impossible                 --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable

@@ -1,0 +1,41 @@
+-- Source issues: BQN docs/arithmetic.md (*"Dyadic arithmetic functions use
+--   leading axis agreement"*), BQN docs/leading.md, SA-BQN-01.
+-- Spec: modules.prelude.contents (SizedArray n a is the indexed analog),
+--       expressions.application.
+-- A scalar added to a vector replicates the scalar along the trailing
+-- axis; a length-r vector added to an r-row matrix replicates the vector
+-- along the row axis. The shorter shape must be a prefix of the longer.
+-- Kappa's portable surface for the obligation is a pair of broadcast
+-- helpers whose types pin shape prefixhood at the type level.
+
+--! mode check
+
+-- POSITIVE: a scalar-on-vector broadcast helper.
+expect scalarBroadcast :
+    forall a b c (n : Nat).
+    (a -> b -> c) -> a -> SizedArray n b -> SizedArray n c
+
+-- POSITIVE: a vector-on-matrix broadcast helper whose vector shape is a
+-- *prefix* of the matrix shape (the vector replicates along the cell
+-- axis).
+expect matBroadcast :
+    forall a b c (rows : Nat) (cols : Nat).
+    (a -> b -> c) -> SizedArray rows a
+                  -> SizedArray rows (SizedArray cols b)
+                  -> SizedArray rows (SizedArray cols c)
+
+-- Usage exercises only the signature; the obligation is shape-prefix
+-- agreement, not a particular runtime evaluation.
+expect rowVec  : SizedArray 2 Integer
+expect mat2x3  : SizedArray 2 (SizedArray 3 Integer)
+expect scalarV : SizedArray 3 Integer
+
+broadcastedScalar : SizedArray 3 Integer
+let broadcastedScalar = scalarBroadcast (+) 10 scalarV
+
+broadcastedRows : SizedArray 2 (SizedArray 3 Integer)
+let broadcastedRows = matBroadcast (+) rowVec mat2x3
+
+--! assertNoErrors
+--! assertType broadcastedScalar (SizedArray 3 Integer)
+--! assertType broadcastedRows (SizedArray 2 (SizedArray 3 Integer))

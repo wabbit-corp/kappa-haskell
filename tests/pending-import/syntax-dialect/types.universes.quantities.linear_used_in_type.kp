@@ -1,0 +1,36 @@
+-- Source issue: Idris2 #1049
+-- Spec: types.universes.quantities, types.universes.erasure_elaboration_time
+-- A variable bound at an explicit quantity in a function signature may appear
+-- in type positions within that same signature (e.g., as an index in a
+-- subsequent parameter's type). Such appearances are at elaboration time and
+-- must not be counted against the variable's runtime quantity budget.
+-- Specifically, a linearly-bound variable appearing only in index positions in
+-- the types of subsequent parameters must not trigger a quantity violation.
+
+module test
+
+data Vect (n : Nat) (a : Type) : Type where
+  VNil  : Vect Zero a
+  VCons : a -> Vect n a -> Vect (Succ n) a
+
+-- Accepted: `n` appears only in type positions in the dependent types of `xs`
+-- and the return type. This is an elaboration-time use, not a runtime use.
+-- The explicit binder `(n : Nat)` does not need a quantity annotation here
+-- because n is used dependently (as an index); the compiler must not emit a
+-- spurious quantity error for such uses.
+appendVec : (n : Nat) -> (m : Nat) -> Vect n a -> Vect m a -> Vect (n + m) a
+let appendVec Zero     m VNil         ys = ys
+let appendVec (Succ k) m (VCons x xs) ys = VCons x (appendVec k m xs ys)
+    decreases n
+
+--! mode check
+--! assertNoErrors
+
+-- Accepted: a function that uses a natural-number parameter only as a type
+-- index (in the dependent type of subsequent args) is accepted without error.
+indexedFn : (n : Nat) -> Vect n Int -> Int
+let indexedFn Zero     VNil         = 0
+let indexedFn (Succ k) (VCons x xs) = x + indexedFn k xs
+    decreases n
+
+--! assertNoErrors

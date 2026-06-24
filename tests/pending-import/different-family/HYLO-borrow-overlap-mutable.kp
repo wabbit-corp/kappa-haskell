@@ -1,0 +1,48 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/Ownership.hylo,
+--                   Tests/HyloTests/TestCases/Lowering/Ownership2.hylo
+-- Spec: compiler.frontir.standard_diagnostic_families.borrow_capture_region
+--       (kappa.borrow.overlap), types.universes.quantities
+-- Hylo: two simultaneous projections of overlapping memory regions conflict
+-- when at least one is mutable. An active mutable (inout) borrow of a value
+-- precludes any concurrent access — mutable or immutable — of any overlapping
+-- part. The compiler must detect and reject such overlapping borrows.
+
+--! mode check
+
+data Pair : Type = Pair Int Int
+
+fstOf : (& p : Pair) -> Int
+let fstOf (Pair a _) = a
+
+-- Read-only access to a Pair field.
+readFst : (& p : Pair) -> Int
+let readFst p = fstOf p
+
+-- Modify access; requires unique ownership of the whole pair.
+modify : (1 p : Pair) -> Pair
+let modify (Pair _ b) = Pair 0 b
+
+-- POSITIVE: two immutable borrows of the same value do not conflict.
+twoReads : (& p : Pair) -> Int
+let twoReads p =
+    let a = fstOf p
+    let b = fstOf p
+    a + b
+
+-- POSITIVE: sequential mutable then immutable access (no overlap in time).
+sequentialAccess : (1 p : Pair) -> Int
+let sequentialAccess p =
+    let q = modify p
+    fstOf q
+
+-- NEGATIVE: a mutable borrow of `p` overlaps with a concurrent borrow of
+-- the same root. In Kappa this is modeled as: opening a unique (linear) view
+-- while a shared borrow of the same root already exists violates the
+-- disjointness rule.
+overlappingMutableAndBorrow :
+    (& p : Pair) -> (& q : Pair) -> Bool
+let overlappingMutableAndBorrow p q =
+    let _ = modify p    --!! kappa.borrow.overlap
+    True
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

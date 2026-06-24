@@ -1,0 +1,39 @@
+-- Source issues: PIKELET-230 (PR: allow dependencies between record term elements),
+--               PIKELET-2 (dependent records).
+-- Spec: types.records.values, types.records.syntax.record_field_order_lawful_reorderings,
+--       types.records.syntax
+--
+-- A record literal whose later field expressions mention earlier fields by
+-- bare label must be accepted. The compiler builds the dependency graph and
+-- canonicalizes field order (§13.2.1.1). The Pikelet upstream PR explicitly
+-- accepts `record { x = 1, y = x } : Record { x : S32, y : S32 }`. Kappa
+-- uses bare labels or `this.label` per §13.2.1.
+
+--! mode check
+
+-- POSITIVE: y depends on x by bare-label shorthand (resolves to `this.x`).
+type Pair : Type0 = (x : Nat, y : Nat)
+
+p1 : Pair
+let p1 = (x = 1, y = this.x)
+
+-- POSITIVE: `this.x` explicit form must be accepted at the same position.
+p2 : Pair
+let p2 = (x = 5, y = this.x)
+
+-- POSITIVE: three-field dependent value chain.
+type Chain : Type0 = (a : Nat, b : Nat, c : Nat)
+
+c0 : Chain
+let c0 = (a = 1, b = this.a, c = this.b)
+
+-- POSITIVE: the dependency graph is type-driven, so a literal written
+-- out of source order against a dependent type may be lawfully reordered
+-- (§13.2.1.1) and still typecheck. `List Nat` is used because Kappa has
+-- no portable bracket-literal form at `SizedArray n a`.
+type Bound : Type1 = (n : Nat, xs : List Nat)
+
+b0 : Bound
+let b0 = (xs = [], n = 0)
+
+--! assertNoErrors

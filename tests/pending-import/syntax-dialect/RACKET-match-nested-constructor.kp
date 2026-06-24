@@ -1,0 +1,49 @@
+-- Source: Racket guide match.scrbl (nested patterns),
+--         pkgs/racket-test-core/tests/racket/expand.rktl
+-- Spec: expressions.match, expressions.patterns.forms
+--
+-- A pattern may contain nested constructor sub-patterns. The type checker and
+-- exhaustiveness checker must handle nested constructors correctly.
+
+--! mode check
+
+data Expr : Type =
+    Lit  : Int -> Expr
+  | Add  : Expr -> Expr -> Expr
+  | Neg  : Expr -> Expr
+  | Mul  : Expr -> Expr -> Expr
+
+-- POSITIVE: evaluate a nested expression.
+eval : Expr -> Int
+let eval (Lit n)     = n
+let eval (Add l r)   = eval l + eval r
+let eval (Neg e)     = 0 - (eval e)
+let eval (Mul l r)   = eval l * eval r
+
+-- POSITIVE: nested pattern matching simplifies double negation.
+simplify : Expr -> Expr
+let simplify (Neg (Neg e)) = simplify e
+let simplify (Neg e)       = Neg (simplify e)
+let simplify (Add l r)     = Add (simplify l) (simplify r)
+let simplify (Mul l r)     = Mul (simplify l) (simplify r)
+let simplify e             = e
+
+-- POSITIVE: depth of an expression tree.
+depth : Expr -> Nat
+let depth (Lit _)   = zero
+let depth (Neg e)   = suc (depth e)
+let depth (Add l r) = suc (max (depth l) (depth r))
+let depth (Mul l r) = suc (max (depth l) (depth r))
+
+-- POSITIVE: match on nested pair of Maybe values.
+andBoth : Option Bool -> Option Bool -> Option Bool
+let andBoth (Some a) (Some b) = Some (a && b)
+let andBoth _        _        = None
+
+-- NEGATIVE: missing the Mul constructor in a match is non-exhaustive.
+partialEval : Expr -> Int
+let partialEval (Lit n)   = n     --!! kappa.pattern.non-exhaustive
+let partialEval (Add l r) = partialEval l + partialEval r
+let partialEval (Neg e)   = 0 - (partialEval e)
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

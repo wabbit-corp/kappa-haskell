@@ -1,0 +1,26 @@
+-- Source issue: GHC#366
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+-- When a GADT scrutinee has a refined index type, constructors whose index
+-- is incompatible with that type are impossible and must not be required
+-- for exhaustiveness. The match is complete when all possible constructors
+-- under the refined index are covered.
+
+module test
+
+data T (a : Type) : Type =
+  C1 : T UnicodeScalar
+  C2 : T Float
+
+-- Accepted: C1 is the only constructor consistent with T UnicodeScalar.
+-- C2 would require T Float and is impossible here — not required.
+exhaustive : T UnicodeScalar -> UnicodeScalar
+let exhaustive c =
+  match c
+    case C1 -> 'x'
+
+
+-- Rejected: no branch at all — C1 is possible and not covered.
+nonExhaustive : T UnicodeScalar -> UnicodeScalar
+let nonExhaustive c = match c  --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

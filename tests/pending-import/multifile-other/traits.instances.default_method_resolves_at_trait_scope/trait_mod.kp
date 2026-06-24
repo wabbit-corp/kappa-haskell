@@ -1,0 +1,16 @@
+-- Source issues: Noir#8632, Noir#9020
+-- Spec: traits.members, modules.visibility_opacity_private_opaque.private
+-- Defining module: a PRIVATE helper plus a trait whose default method body
+-- calls it. The default is checked once, here, at the trait definition site
+-- (Noir#8632: defaults wrongly resolved relative to the impl site instead).
+module trait_mod
+
+private privateHelper : Int -> Int -> Int
+private let privateHelper a b = a + b
+
+trait Combiner (a : Type) =
+    value : a -> Int
+
+    -- Default: uses `privateHelper`, in scope at the trait site only.
+    let combined : a -> a -> Int =
+        \x y -> privateHelper (value x) (value y)

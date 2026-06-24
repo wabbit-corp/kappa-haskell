@@ -1,0 +1,57 @@
+-- Source: Racket guide let.scrbl (named let, letrec),
+--         pkgs/racket-test-core/tests/racket/letrec.rktl
+-- Spec: declarations.let_in
+--
+-- Mutually recursive local definitions: a pair of functions in a let block
+-- each calling the other. Both names are in scope for both right-hand sides.
+-- This is Racket's letrec semantics: all bindings in the block are in scope
+-- for all right-hand sides (not just later ones).
+--
+-- Kappa let blocks support mutual recursion when both definitions are functions
+-- (since function bodies are not evaluated until called, the forward reference
+-- is safe).
+
+--! mode check
+
+-- POSITIVE: classic even/odd mutual recursion.
+isEven : Nat -> Bool
+let isEven zero    = True
+let isEven (suc n) = isOdd n
+
+isOdd : Nat -> Bool
+let isOdd zero    = False
+let isOdd (suc n) = isEven n
+
+-- POSITIVE: mutual recursion as inner helpers.
+checkParity : Nat -> String
+let checkParity n =
+    let
+        ev k =
+            match k
+            case zero    -> True
+            case (suc m) -> od m
+        od k =
+            match k
+            case zero    -> False
+            case (suc m) -> ev m
+    in
+    if ev n then "even" else "odd"
+
+-- POSITIVE: top-level mutually recursive ADT processors.
+data Tree : Type -> Type =
+    Leaf
+  | Node : (A : Type) -> A -> Forest A -> Tree A
+
+data Forest : Type -> Type =
+    Empty
+  | Cons : (A : Type) -> Tree A -> Forest A -> Forest A
+
+countTree : (A : Type) -> Tree A -> Nat
+let countTree _ Leaf           = zero
+let countTree A (Node _ _ fs)  = suc (countForest A fs)
+
+countForest : (A : Type) -> Forest A -> Nat
+let countForest _ Empty         = zero
+let countForest A (Cons _ t fs) = countTree A t + countForest A fs
+
+--! assertNoErrors

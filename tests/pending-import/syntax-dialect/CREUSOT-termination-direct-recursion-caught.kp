@@ -1,0 +1,33 @@
+-- Source issues: CREUSOT-1966
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.size_change_termination,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- A logic-mode function whose body is a self-recursive call has no
+-- decreasing measure.  Kappa's termination checker MUST reject it.
+-- Pending spec gap CREUSOT-SA-04 (termination over elaborated graph).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: zero-argument logic function that calls itself
+-- unconditionally.
+logic let falso : Unit
+let falso = falso                            --!! kappa.termination.failure
+
+-- NEGATIVE: parameterised recursion whose argument does not decrease
+-- (it flips sign each call).  The variant candidate `n` does not
+-- weakly decrease.
+logic let evil : Int -> Int
+let evil n = evil (- n) + 1                  --!! kappa.termination.failure
+    decreases n
+
+-- NEGATIVE: matching that introduces a non-strict subterm (the bound
+-- variable is the same as the scrutinee) is not a decrease.
+logic let nonstrict : Int -> Unit
+let nonstrict i =
+    match i case j -> nonstrict j            --!! kappa.termination.failure
+    decreases i
+
+--! assertDiagnosticFamily error kappa.termination.failure

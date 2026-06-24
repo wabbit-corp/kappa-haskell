@@ -1,0 +1,61 @@
+-- Source issues: odin#1079 (parametric struct accepted without specialization in
+--               cross-package context), odin#5015 (returning pointer to parapoly
+--               type without its parameters is not caught by the Checker),
+--               odin#6346 (missing error for pointers to unspecialized poly types),
+--               OSA-ODIN-04
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       types.quantification
+-- A polymorphic type constructor used without all required type arguments in
+-- any type or term position must be rejected. This applies within the same
+-- module and across module boundaries, and through pointer indirection.
+
+--! mode check
+
+data Container (a : Type) : Type =
+    Container a
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+-- POSITIVE: fully applied polymorphic type — accepted.
+let makeContainerInt (x : Int) : Container Int =
+    Container x
+
+
+-- POSITIVE: fully applied pair — accepted.
+let makePair (x : Int) (s : String) : Pair Int String =
+    Pair x s
+
+
+-- POSITIVE: polymorphic function using the type parameter correctly.
+let wrapAny {a : Type} (x : a) : Container a =
+    Container x
+
+let okWrap : Container Int = wrapAny 42
+
+
+-- NEGATIVE: using Container without a type argument in a function parameter.
+-- Container requires exactly one type argument; Container alone is not a type.
+let badParamUnspecialized (c : Container) : Int =    --!! kappa.type.mismatch
+    0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using Container without a type argument in a return-type annotation.
+let badReturnUnspecialized : Container =             --!! kappa.type.mismatch
+    Container 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using Pair with only one of two required type arguments.
+let badPairPartial (p : Pair Int) : Int =            --!! kappa.type.mismatch
+    0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: declaring a local variable with an unspecialized type.
+let badLocalVar : Int =
+    let x : Container = Container 0    --!! kappa.type.mismatch
+    in 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,100 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test00.dats
+--         (`abstype abc0: type == int`, `absimpl abc0 = int`),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`abstype foo(tbox+, prop-): type`, `absimpl $FOO.foo(x:int): type = bar`)
+-- Spec: modules.visibility_opacity_private_opaque (§8.5),
+--       modules.visibility_opacity_private_opaque.opaque_data (§8.5.3),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- ATS3 pattern: `abstype T == int` declares T as an abstract type with the
+--   same runtime representation as `int`, but outside the module that provides
+--   `absimpl T = int`, code cannot use T and int interchangeably. Inside the
+--   providing scope, the equality is known. Outside, pattern matching on the
+--   internal structure of T is rejected.
+-- Portable obligation: code outside the revealing scope of an opaque type
+--   must not pattern-match on its internal structure; doing so is
+--   kappa.type.mismatch.
+
+--! mode check
+
+module tokens
+
+-- Declare Token as an opaque type.
+opaque data Token : Type =
+    Token Int
+
+-- Smart constructor: public.
+public makeToken : Int -> Token
+let makeToken n = Token n
+
+-- Extractor: public.
+public tokenId : Token -> Int
+let tokenId (Token n) = n
+
+-- POSITIVE: using the public interface.
+t1 : Token
+let t1 = makeToken 42
+
+id1 : Int
+let id1 = tokenId t1
+
+-- POSITIVE: comparing tokens through the public interface.
+eqToken : Token -> Token -> Bool
+let eqToken t1 t2 = tokenId t1 == tokenId t2
+
+module consumer
+import tokens (Token, makeToken, tokenId)
+
+-- POSITIVE: consumer uses public interface normally.
+myToken : Token
+let myToken = makeToken 7
+
+myId : Int
+let myId = tokenId myToken
+
+-- POSITIVE: passing tokens to other functions.
+double : Token -> Int
+let double t = tokenId t * 2
+
+-- NEGATIVE: consumer tries to pattern-match on the internal constructor,
+-- which is not exported; the constructor `Token` is private.
+badPattern : Token -> Int
+let badPattern t =
+    match t
+    case Token n -> n                   --!! kappa.type.mismatch
+
+-- NEGATIVE: consumer tries to construct a Token by calling the private
+-- internal constructor directly.
+badConstruct : Token
+let badConstruct = Token 99             --!! kappa.type.mismatch
+
+-- NEGATIVE: treating a Token as if it were an Int directly.
+badCoerce : Int -> Token
+let badCoerce n = (n : Token)           --!! kappa.type.mismatch
+
+module vault
+
+-- Another opaque type with a more complex representation.
+opaque data Secret : Type =
+    Secret String Int
+
+public makeSecret : String -> Int -> Secret
+let makeSecret s n = Secret s n
+
+public revealKey : Secret -> Int
+let revealKey (Secret _ n) = n
+
+module attacker
+import vault (Secret, makeSecret, revealKey)
+
+-- POSITIVE: uses the public API only.
+s1 : Secret
+let s1 = makeSecret "pw" 1234
+
+-- NEGATIVE: destructures the internal representation.
+badReveal : Secret -> String
+let badReveal sec =
+    match sec
+    case Secret s _ -> s           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

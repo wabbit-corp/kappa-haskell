@@ -1,0 +1,56 @@
+-- Source issues: Chapel #6067, #6093, #13528
+-- Spec: modules.visibility_opacity_private_opaque.private
+-- A `private` item is not part of the module's export interface. An importing
+-- module cannot re-export a private item through an ordinary `export` statement.
+-- Only an explicit `unhide` import item (under the appropriate build flag) may
+-- reach a private item. This is the Kappa analog of Chapel's discussion about
+-- whether `public use` can expose symbols that were declared private in the
+-- original module.
+
+--! mode check
+
+-- Module A: has both public and private declarations.
+module chapel_private_source
+
+publicValue : Int
+let publicValue = 10
+
+private privateValue : Int
+let privateValue = 99
+
+
+---
+
+-- Module B: imports A and tries to re-export the private name.
+-- This must be rejected: private items are not part of the export surface.
+module chapel_private_reexport_rejected
+
+import chapel_private_source
+
+-- POSITIVE: re-exporting a public name is fine.
+export chapel_private_source.publicValue
+
+-- NEGATIVE: attempting to re-export a private name must fail.
+-- private items cannot be reached by ordinary export.
+export chapel_private_source.privateValue   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+---
+
+-- Module C: imports B (which properly re-exported publicValue).
+module chapel_private_consumer
+
+import chapel_private_reexport_rejected
+
+-- POSITIVE: publicValue was explicitly re-exported.
+usePublic : Int
+let usePublic = publicValue
+
+-- NEGATIVE: privateValue was never exported from A, so it is inaccessible
+-- even qualified as the original module's name.
+badPrivate : Int
+let badPrivate = chapel_private_source.privateValue   --!! kappa.name.unresolved
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved

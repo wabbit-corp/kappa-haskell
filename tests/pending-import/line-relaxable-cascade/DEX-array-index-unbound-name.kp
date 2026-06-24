@@ -1,0 +1,54 @@
+-- Source issues: dex-lang type-tests.dx
+--   (`for j:(Fin unboundName). 1.0` → `Error: variable not in scope: unboundName`),
+--   dex-lang #175 (let-bound variable escaping to type position),
+--   dex-lang uexpr-tests.dx (`:p x + x` → `Error: variable not in scope: x`).
+-- Spec: modules.names.lexical_lookup (§11.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- An identifier in a type-level position (index set, kind annotation, array
+-- element count) must be resolved in the current lexical scope. Referring to
+-- a name that has not been introduced — whether it was never declared, is
+-- declared in a different scope, or is a let-bound variable not yet in scope
+-- at the use site — must produce kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: a name introduced before use is in scope.
+n : Nat
+let n = 5
+
+okArray : Fin 5 => Nat
+let okArray = [0, 1, 2, 3, 4]
+
+-- NEGATIVE: using an unbound identifier as an index set.
+-- `UndefinedSet` is not declared anywhere in this file.
+badType : UndefinedSet => Nat    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using an unbound identifier inside a Fin application.
+-- `unboundSize` is never declared.
+badFin : Fin unboundSize => Float    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: referencing an undeclared name in a value expression.
+badExpr : Nat
+let badExpr = undeclaredVar + 1    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a function body referring to a name defined after its declaration.
+-- Forward references to later top-level definitions are allowed only if the
+-- language sorts declarations topologically; if strict top-to-bottom scoping
+-- is enforced, using `later` before its definition is an unresolved name.
+earlyUse : Nat
+let earlyUse = forwardDeclared    --!! kappa.name.unresolved
+
+forwardDeclared : Nat
+let forwardDeclared = 42
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: correct use of a locally bound name in a type annotation.
+withLocal : forall (n : Nat) -> Fin n => Nat -> Nat
+let withLocal xs = 0

@@ -1,0 +1,41 @@
+-- Source: Julia manual, "Module basics", Julia#1987 (name ambiguity via using)
+-- Spec: traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- In Julia, importing two modules that both export the same identifier causes
+-- an ambiguity error at the use site. In Kappa, two trait instances that both
+-- supply the same method name for the same type produce
+-- kappa.implicit.ambiguous when the method is invoked without explicit
+-- disambiguation.
+
+--! mode check
+
+-- Two traits that each declare an `encode` method.
+trait Serialise (a : Type) =
+    encode : a -> String
+
+trait Compress (a : Type) =
+    encode : a -> String
+
+data Payload : Type = Payload String
+
+instance Serialise Payload =
+    let encode (Payload s) = s
+
+instance Compress Payload =
+    let encode (Payload s) = s
+
+-- NEGATIVE: `encode` is ambiguous — Serialise and Compress both provide it.
+result : String
+let result = encode (Payload "data")   --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- POSITIVE: a type with only one `encode` instance has no conflict.
+data SafeData : Type = SafeData String
+
+instance Serialise SafeData =
+    let encode (SafeData s) = s
+
+okEncode : String
+let okEncode = encode (SafeData "safe")
+

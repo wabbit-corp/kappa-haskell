@@ -1,0 +1,32 @@
+-- Source issue: MLatu docs/docs/primitives.md ("`r` or `remove` removes
+--   the term below it"). MLatu's `remove` discards a value at any type;
+--   the portable obligation is that Kappa supports a polymorphic discard
+--   function returning unit.
+-- Spec: types.quantification, expressions.application,
+--       literals.unit_tuples.
+--
+-- A polymorphic drop function elaborates and the result has type unit;
+-- using its result where a non-unit type is expected is a type mismatch.
+
+module test
+
+--! mode check
+
+-- POSITIVE: drop discards any value.
+drop : forall (a : Type) . a -> ()
+let drop _ = ()
+
+dropInt : ()
+let dropInt = drop 7
+
+dropStr : ()
+let dropStr = drop "hi"
+
+--! assertType dropInt ()
+--! assertType dropStr ()
+
+-- NEGATIVE: using drop's unit result where an Int is expected.
+wantInt : Int
+let wantInt = drop 5                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,49 @@
+-- Source issues: vale#443 (Problem ignoring in a destructure),
+--               Vale PatternTests, Vale OwnershipTests
+-- Spec: expressions.patterns.forms, expressions.patterns.scoping_validity
+-- In Vale, struct destructuring (`Marine[hp, ammo] = m`) binds each field
+-- to a new variable. Using `_` as the pattern for a field is allowed when
+-- the field type is not linear. This test verifies that destructuring
+-- correctly binds all fields and that individual fields may be ignored
+-- with `_` when their types are droppable.
+
+--! mode check
+
+data Marine : Type = Marine Int Int String
+
+-- POSITIVE: destructuring and using all three fields.
+allFields : Marine -> String
+let allFields (Marine hp ammo name) =
+    name ++ " hp=" ++ show hp ++ " ammo=" ++ show ammo
+
+-- POSITIVE: ignoring the first field with `_` (Int is droppable).
+ignoreHp : Marine -> Int
+let ignoreHp (Marine _ ammo _) = ammo
+
+-- POSITIVE: ignoring the second and third fields with `_`.
+justHp : Marine -> Int
+let justHp (Marine hp _ _) = hp
+
+-- POSITIVE: a nested record destructuring.
+data Weapon : Type = Weapon Int
+data Soldier : Type = Soldier Marine Weapon
+
+getHpFromSoldier : Soldier -> Int
+let getHpFromSoldier (Soldier (Marine hp _ _) _) = hp
+
+-- POSITIVE: chained binding — bind intermediate name, then destructure.
+bindThenDestructure : Unit -> Int
+let bindThenDestructure () =
+    let m = Marine 100 50 "Sgt"
+    let Marine hp _ _ = m
+    hp
+
+-- POSITIVE: tuple destructuring (pair).
+swapPair : (Int, String) -> (String, Int)
+let swapPair (a, b) = (b, a)
+
+-- POSITIVE: nested tuple destructuring.
+nestedTuple : ((Int, Int), String) -> Int
+let nestedTuple ((x, y), _) = x + y
+
+--! assertNoErrors

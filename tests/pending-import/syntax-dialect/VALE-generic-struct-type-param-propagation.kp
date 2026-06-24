@@ -1,0 +1,64 @@
+-- Source issues: vale#101, vale#102 (Examples for using generic structs
+--               don't compile), Vale InferTemplateTests, docs/Generics.md
+-- Spec: types.quantification,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Vale generic structs can carry a type parameter that is propagated
+-- through field access and method calls. The compiler should be able to
+-- infer the type argument from the constructor expression. In Kappa, a
+-- parameterised record type is instantiated by applying its constructor to
+-- concrete values; the elaboration should propagate the instantiation
+-- through field projections without requiring explicit annotations.
+
+--! mode check
+
+-- A generic container with a single element.
+data Container (a : Type) : Type = Container a
+
+-- Extract the contained value.
+unwrap : forall (a : Type). (& c : Container a) -> & a
+let unwrap (Container x) = x
+
+-- A generic stack built from Containers.
+data Stack (a : Type) : Type = Stack (Container a) Int
+
+peek : forall (a : Type). (& s : Stack a) -> & a
+let peek (Stack c _) = unwrap c
+
+-- POSITIVE: building and reading a Container of Int.
+okIntContainer : Int
+let okIntContainer =
+    let c = Container 42
+    unwrap c
+
+-- POSITIVE: building and reading a Container of String.
+okStrContainer : String
+let okStrContainer =
+    let c = Container "hello"
+    unwrap c
+
+-- POSITIVE: a nested generic structure — Container inside Stack.
+okStack : Int
+let okStack =
+    let s = Stack (Container 7) 1
+    peek s
+
+-- POSITIVE: a function that is generic over the element type and builds a
+-- Container from its argument, then reads back.
+roundtrip :
+    forall (a : Type).
+    (x : a) -> a
+let roundtrip x = unwrap (Container x)
+
+okRoundtrip : Int
+let okRoundtrip = roundtrip 99
+
+-- POSITIVE: instantiating with a pair type.
+data Pair (a : Type) (b : Type) : Type = Pair a b
+
+okNestedContainer : Int
+let okNestedContainer =
+    let c = Container (Pair 1 2)
+    let Pair x _ = unwrap c
+    x
+
+--! assertNoErrors

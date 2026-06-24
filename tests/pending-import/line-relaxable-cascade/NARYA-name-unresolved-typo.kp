@@ -1,0 +1,39 @@
+-- Source artifacts: narya issue #3 (diagnostic spans include trailing
+--               whitespace — underlying portable obligation is the
+--               kappa.name.unresolved diagnostic family). Concrete
+--               narya example: `def problem : Type := alskdfjlkadjf`
+--               produces "unbound variable" on a misspelled identifier.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--
+-- A reference to an identifier that does not resolve in the current
+-- import environment is a name-resolution error of family
+-- kappa.name.unresolved (§3.2.2). The diagnostic carries the
+-- unresolved spelling and, when a close spelling exists in the same
+-- admissible kind set, a typo-fix suggestion (§3.1.6).
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+double : Nat -> Nat
+let double n = Suc (Suc n)
+
+-- POSITIVE: a correctly spelled reference resolves.
+useDouble : Nat
+let useDouble = double (Suc Zero)
+
+-- NEGATIVE: a misspelled function name does not resolve.
+useMisspelled : Nat
+let useMisspelled = doublle (Suc Zero)    --!! kappa.name.unresolved
+
+-- NEGATIVE: a completely unknown spelling.
+useUnknown : Nat
+let useUnknown = alskdfjlkadjf    --!! kappa.name.unresolved
+
+-- NEGATIVE: an unbound type name in a signature position via an
+-- expect-term declaration.
+expect term badConst : Nuumber    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

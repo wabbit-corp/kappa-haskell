@@ -1,0 +1,23 @@
+-- Source issues: METACOQ-237
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- Missing case on a closed type is rejected under the standard pattern
+-- non-exhaustive family (`kappa.pattern.non-exhaustive` per §3.2.10).
+
+module negative
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- NEGATIVE: missing case on a closed type is a compile-time error.
+incomplete : Color -> Nat
+let incomplete c =
+    match c                                 --!! kappa.pattern.non-exhaustive
+    case Red -> 0
+    case Green -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

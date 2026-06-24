@@ -1,0 +1,34 @@
+-- Source issue: Kitten #34 (resolve names into sets of possible
+--   overloads; require that the typechecker selects a *unique* overload
+--   when more than one matches, the call is ambiguous).
+-- Spec: traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.ambiguous).
+--
+-- When a trait method has multiple equally-applicable instances at a
+-- call site (and the surrounding context cannot disambiguate the
+-- type), the call must be rejected with kappa.implicit.ambiguous.
+
+module test
+
+--! mode check
+
+trait Conv (a : Type) =
+    convert : Int -> a
+
+instance Conv Int =
+    let convert n = n
+
+instance Conv Float =
+    let convert n = 0.0
+
+-- NEGATIVE: a call whose result type is consumed by a polymorphic
+-- argument cannot pick between the two instances; the call is
+-- ambiguous.
+ignoreIt : forall (a : Type) . a -> Int
+let ignoreIt _ = 0
+
+useAmbig : Int
+let useAmbig = ignoreIt (convert 1)        --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

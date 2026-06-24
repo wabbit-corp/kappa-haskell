@@ -1,0 +1,35 @@
+-- Source issues: effekt #813, #866, #1215 (via PR #1231, "Relax 'unifyEffects'")
+-- Spec: effects.monadic_core.eff_effect_rows, types.quantification.effect_row_syntax
+-- When an effect row carries a flexible residual variable, unification with another
+-- effect row must extend the residual through the LacksEff / SplitEff solver rather
+-- than rejecting eagerly. Two functions whose result rows share an open residual
+-- variable should compose, with the residual solved to the union of contributed
+-- entries.
+
+module test
+
+effect Log =
+    ω write : String -> Unit
+
+effect Counter =
+    1 tick : Unit -> Unit
+
+-- Producer with an open residual row.
+produceLog : forall (r : EffRow). Eff <[log : Log | r]> Unit
+let produceLog = log.write "step"
+
+-- Producer with a different open residual row.
+produceTick : forall (r : EffRow). Eff <[counter : Counter | r]> Unit
+let produceTick = counter.tick ()
+
+-- A sequence in a do block. The residual rows must unify by extending the open
+-- side: r1 and r2 both fix to include the other's named entry.
+combined : Eff <[log : Log, counter : Counter]> Unit
+let combined =
+    do
+        produceLog
+        produceTick
+
+--! mode check
+--! assertNoErrors
+--! assertType combined Eff <[log : Log, counter : Counter]> Unit

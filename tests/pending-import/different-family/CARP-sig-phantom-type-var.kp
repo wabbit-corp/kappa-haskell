@@ -1,0 +1,32 @@
+-- Source issue: carp-lang/Carp#693
+-- Spec: types.quantification,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #693: `sig` unification did not propagate constraints across
+-- indirections.  Given `ensure : (Fn [a (Phantom a)] a)`, calling
+-- `ensure (123 : T) (MkPhantom : Phantom U)` should fail when T and U
+-- are distinct concrete types because the `a` in the first argument and
+-- the `a` inside `(Phantom a)` must agree.  The portable Kappa obligation
+-- is that type-variable equality threads through parameterised
+-- constructors.
+
+--! mode check
+
+data Phantom (a : Type) : Type = MkPhantom
+data Tag : Type = MkTag
+
+-- POSITIVE: the type variable `a` is unified on both sides; calling
+-- with consistent types is admitted.
+ensure : forall a. a -> Phantom a -> a
+let ensure x p = x
+
+callOk : Int
+let callOk = ensure 10 MkPhantom
+
+--! assertType callOk Int
+
+-- NEGATIVE: the value argument is `Int` but the phantom is annotated
+-- `Phantom Tag`; `a` cannot be both `Int` and `Tag`.
+callBad : Int
+let callBad = ensure 10 (MkPhantom : Phantom Tag)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

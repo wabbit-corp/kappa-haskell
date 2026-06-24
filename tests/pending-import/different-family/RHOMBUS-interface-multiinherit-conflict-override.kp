@@ -1,0 +1,63 @@
+-- Source issues: interface.rhm in racket/rhombus
+-- Spec: traits.instances
+--   When two traits declare a method with the same name and a type has instances for both,
+--   calling that method without qualification is ambiguous: kappa.name.ambiguous.
+-- Note: Rhombus's "method supplied by multiple superinterfaces" error maps to
+--   Kappa's name ambiguity when both trait methods are in scope.
+
+--! mode check
+
+trait Painter (a : Type) =
+    render : a -> String
+
+trait Sculptor (a : Type) =
+    render : a -> String
+
+trait AbstractArtist (a : Type) =
+    render : a -> String
+
+-- POSITIVE: type implementing only one of the same-named-method traits — no conflict.
+data Watercolorist : Type =
+    MkWatercolorist { color : String }
+
+instance Painter Watercolorist =
+    let render w = "Watercolor: " ++ w.color
+
+-- POSITIVE: when both instances exist, a qualified call resolves the ambiguity.
+data MultiArtist : Type =
+    MkMultiArtist { style : String }
+
+instance Painter MultiArtist =
+    let render _ = "Painter"
+
+instance Sculptor MultiArtist =
+    let render _ = "Sculptor"
+
+renderAsPainter : (@_ : Painter a) -> a -> String
+let renderAsPainter x = render x
+
+renderMulti : String
+let renderMulti = renderAsPainter (MkMultiArtist { style = "mixed" })
+
+-- POSITIVE: type implementing only AbstractArtist — single trait, no conflict.
+data AbstractImpl : Type =
+    MkAbstractImpl { name : String }
+
+instance AbstractArtist AbstractImpl =
+    let render a = "Abstract: " ++ a.name
+
+-- NEGATIVE: `render c` where `c : ConflictedArtist` has both Painter and Sculptor
+-- instances. The name `render` resolves to two different methods — ambiguous.
+data ConflictedArtist : Type =
+    MkConflictedArtist { id : Int }
+
+instance Painter ConflictedArtist =
+    let render c = "Painter"
+
+instance Sculptor ConflictedArtist =
+    let render c = "Sculptor"
+
+badRender : ConflictedArtist -> String
+let badRender c = render c   --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

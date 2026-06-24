@@ -1,0 +1,39 @@
+-- Source issues: circom#189 (signal-indexed assignment fails in anonymous components
+--               with "Non-quadratic constraint was detected statically, using unknown
+--               index will cause the constraint to be non-quadratic"); constraint-
+--               generation.md (only quadratic expressions allowed in constraints).
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-CIRCOM-04):
+--   "Array access where the index is a runtime (1-quantity) value and the result
+--    is intended to participate in a 0-quantity (compile-time) obligation violates
+--    the quantity contract; such access must be rejected with
+--    kappa.quantity.satisfies."
+
+--! mode check
+
+-- POSITIVE: array indexed by a compile-time (0-quantity) constant.
+arrData : Array Int 5
+let arrData = [10, 20, 30, 40, 50]
+
+constIdx : (0 _ : Int)
+let constIdx = 2
+
+goodElem : (0 _ : Int)
+let goodElem = arrData[constIdx]
+
+
+-- NEGATIVE: array accessed with a runtime (1-quantity) index for a 0-quantity result.
+-- The runtime index makes the result quantity ≥ 1; binding it as 0 fails.
+let badIndexed (arr : Array Int 5) (idx : Int) : Int =
+    let (0 result) = arr[idx]   --!! kappa.quantity.satisfies
+    result
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: two signals used as both array size index and access index.
+let badDynAccess (vals : Array Int 8) (i : Int) (j : Int) : Int =
+    let (0 r) = vals[i + j]    --!! kappa.quantity.satisfies
+    r
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

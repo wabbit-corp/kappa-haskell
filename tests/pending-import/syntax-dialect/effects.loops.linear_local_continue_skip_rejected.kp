@@ -1,0 +1,40 @@
+-- Source issue: Move #1068
+-- Spec: effects.loops, types.universes.quantities.linear_discharge_discard_destructor_use
+-- A binding introduced inside a loop body with a positive lower-bound quantity
+-- must satisfy its usage obligation on every iteration path that exits that
+-- binding's scope, including `continue` paths.  `continue` exits the scope of
+-- all inner `let` bindings; a linear local cannot be silently dropped.
+
+--! mode check
+
+module move_1068_loop_continue_linear
+
+import std.io
+
+-- Rejected: linear token created inside loop, then `continue` is reached
+-- before the token is consumed on some iteration.  The `continue` exits the
+-- scope of `tok` without demanding it.
+badContinue : IO e Unit
+let badContinue =
+    do
+        var i = 0
+        while i < 10 do
+            let 1 tok = makeToken ()
+            if i == 5 then
+                continue        --!! kappa.quantity.unsatisfied
+            consumeToken tok
+            i := i + 1
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- Accepted: linear local is consumed on every path including the continue path.
+goodContinue : IO e Unit
+let goodContinue =
+    do
+        var i = 0
+        while i < 10 do
+            let 1 tok = makeToken ()
+            consumeToken tok    -- consumed before any continue
+            if i == 5 then
+                continue
+            i := i + 1

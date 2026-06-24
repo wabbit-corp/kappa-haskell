@@ -1,0 +1,39 @@
+-- Source artifacts: PURESCRIPT-PR-3500 (linked #715, #1228 — add named type
+--                   wildcards),
+--                   PURESCRIPT-PR-4437 (linked #4408 — account for typed
+--                   holes when checking declarations),
+--                   PURESCRIPT-PR-2247 (better context information for typed
+--                   hole errors).
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.hole.inconsistent).
+-- Kappa spec rule (§ expressions.implicit_parameters.expression_holes_named_holes):
+--   "Repeated occurrences of the same named hole within one enclosing
+--    declaration or local right-hand side refer to the same metavariable.
+--    Repeated occurrences of the same named hole MUST elaborate at
+--    definitionally equal expected types; otherwise compilation fails
+--    [...] with diagnostic family `kappa.hole.inconsistent`."
+
+--! mode check
+
+-- POSITIVE: a single named hole `?h` whose two occurrences share the same
+-- expected type (`Int`) refers to one metavariable; if unsolved, it would
+-- only emit `kappa.hole.unsolved`, not the inconsistency family.
+twice : Int -> Int
+let twice n = n + ?h * ?h                      --!! kappa.hole.unsolved
+
+-- NEGATIVE: a single named hole `?bad` is used at two distinct expected
+-- types in the same declaration. The compiler must emit
+-- `kappa.hole.inconsistent`.
+data Box (a : Type) : Type =
+    Box (val : a)
+
+mix : Box Int -> Box String
+let mix b =
+    -- First occurrence: expected `Int`.
+    let i : Int    = ?bad
+    -- Second occurrence in the same declaration: expected `String`.
+    let s : String = ?bad                       --!! kappa.hole.inconsistent
+    Box s
+
+--! assertDiagnosticFamily error kappa.hole.inconsistent

@@ -1,0 +1,47 @@
+-- Source issues: ponyc#5194, ponyc PR#5226, ponyc PR#5193
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       expressions.match
+-- Pony issue #5194: at the top level, `match x | true => ... | false => ...`
+-- on a `Bool` is exhaustive, but the same check inside a tuple pattern was
+-- not recognized as exhaustive, incorrectly generating a non-exhaustive error.
+-- In Kappa, Bool value patterns (True/False) inside tuple patterns must cover
+-- the whole Bool type just as they do at the top level.
+
+--! mode check
+
+data Bit : Type = Zero | One
+
+-- POSITIVE: matching two Bool-like constructors in a tuple covers all cases.
+-- Both (Zero, Zero), (Zero, One), (One, Zero), (One, One) are covered.
+combineBits : (Bit, Bit) -> Int
+let combineBits p =
+    match p
+    case (Zero, Zero) -> 0
+    case (Zero, One)  -> 1
+    case (One,  Zero) -> 2
+    case (One,  One)  -> 3
+
+-- POSITIVE: Bool is a two-constructor type; matching True and False in a
+-- tuple exhausts the Bool dimension completely.
+classifyPair : (Bool, String) -> String
+let classifyPair p =
+    match p
+    case (True,  s) -> "yes: " ++ s
+    case (False, s) -> "no: " ++ s
+
+-- POSITIVE: nested tuple with first element being Bool.
+nestedBool : (Bool, Bool) -> Int
+let nestedBool p =
+    match p
+    case (True,  True)  -> 3
+    case (True,  False) -> 2
+    case (False, True)  -> 1
+    case (False, False) -> 0
+
+-- NEGATIVE: omitting the False case in a tuple leaves Bool uncovered.
+incompleteInTuple : (Bool, Int) -> String
+let incompleteInTuple p =
+    match p
+    case (True, n) -> show n    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

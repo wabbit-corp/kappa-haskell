@@ -1,0 +1,24 @@
+-- Source issue: Kitten #5 (early Kitten silently ignored a duplicate
+--   `def` of the same name; the issue proposes to flag duplicate
+--   definitions as an error). Kitten #114 (REPL is separate: redefinition
+--   is allowed there, but in compiled mode duplicates are errors, with
+--   both sites in the diagnostic).
+-- Spec: declarations.terms, modules.exports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+--
+-- Two top-level definitions in the same module with the same name must
+-- be rejected. The diagnostic should identify both definition sites.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: two top-level definitions of `greet` in the same module.
+greet : String
+let greet = "Hello!"
+
+greet : String
+let greet = "Welcome!"                      --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

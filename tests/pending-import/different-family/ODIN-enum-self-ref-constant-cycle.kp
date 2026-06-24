@@ -1,0 +1,53 @@
+-- Source issues: odin#2233 (compiler segfault with declaration cycle in enum:
+--   `C = E.A | E.B` where E is being defined — C's value depends on A and B
+--   of the same enum being constructed)
+-- Spec: compiler.frontir.standard_diagnostic_families.termination (kappa.termination.failure),
+--       compiler.frontir.ordinary_errors_not_internal_failures, OSA-ODIN-07
+-- A value-level definition cycle (where a constant's evaluation depends on itself
+-- or on other values that depend back on it) must be detected and cleanly rejected.
+-- The compiler must not segfault or hang when encountering such cycles.
+
+--! mode check
+
+-- POSITIVE: a well-founded enum type with simple constructor definitions.
+data Status : Type =
+    Pending
+    Active
+    Done
+
+let statusCode (s : Status) : Int =
+    match s
+    case Pending -> 0
+    case Active  -> 1
+    case Done    -> 2
+
+
+-- POSITIVE: let bindings that are mutually independent.
+let valA : Int = 10
+let valB : Int = 20
+let valSum : Int = valA + valB
+
+
+-- POSITIVE: a function that takes its own type in a recursive manner (well-founded
+-- because the recursion is structural and there is a base case).
+data NatNum : Type =
+    Zero
+    Succ NatNum
+
+let natToInt (n : NatNum) : Int =
+    match n
+    case Zero   -> 0
+    case Succ m -> 1 + natToInt m
+
+
+-- NEGATIVE: a top-level let binding that directly refers to itself.
+-- This is the Kappa analog of `C = E.C | 0` in an enum definition.
+let cyclicVal : Int = cyclicVal + 1    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: a mutually cyclic pair of let bindings at the top level.
+let mutCycleX : Int = mutCycleY    --!! kappa.termination.failure
+let mutCycleY : Int = mutCycleX    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

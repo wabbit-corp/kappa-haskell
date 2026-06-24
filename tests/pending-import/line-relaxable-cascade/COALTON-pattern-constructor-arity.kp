@@ -1,0 +1,68 @@
+-- Source: Coalton tests/codegen-pattern-tests.lisp, general pattern-matching
+--   constructor arity contract.
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--   (kappa.pattern.constructor-arity §3.2.10).
+--
+-- A pattern applying a constructor to the wrong number of arguments must produce
+-- kappa.pattern.constructor-arity. This applies in both expression position
+-- (constructing a value) and pattern position (destructuring a value).
+
+--! mode check
+
+data Pair : Type =
+    MkPair Int String
+
+data Triple : Type =
+    MkTriple Int Int Int
+
+data Singleton : Type =
+    MkSingle Int
+
+-- POSITIVE: correct arities in expressions and patterns.
+p1 : Pair
+let p1 = MkPair 1 "hello"
+
+extractFirst : Pair -> Int
+let extractFirst (MkPair n _) = n
+
+t1 : Triple
+let t1 = MkTriple 1 2 3
+
+sumTriple : Triple -> Int
+let sumTriple (MkTriple a b c) = a + b + c
+
+s1 : Singleton
+let s1 = MkSingle 42
+
+getSingle : Singleton -> Int
+let getSingle (MkSingle n) = n
+
+-- NEGATIVE: Pair constructor applied to one argument (too few).
+badPair1 : Pair
+let badPair1 = MkPair 1        --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Pair constructor applied to three arguments (too many).
+badPair3 : Pair
+let badPair3 = MkPair 1 "x" True   --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Pair constructor pattern with too few fields.
+badPatternPair1 : Pair -> Int
+let badPatternPair1 (MkPair n) = n    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Pair constructor pattern with too many fields.
+badPatternPair3 : Pair -> Int
+let badPatternPair3 (MkPair a b c) = a   --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Singleton constructor pattern with an extra field.
+badPatternSingle : Singleton -> Int
+let badPatternSingle (MkSingle n x) = n   --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

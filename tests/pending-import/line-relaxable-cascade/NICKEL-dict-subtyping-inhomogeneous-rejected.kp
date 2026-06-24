@@ -1,0 +1,42 @@
+-- Source issue: nickel #2231
+-- Spec: types.records.dictionary_subtyping (NSA-03)
+-- NOTE: This test depends on NSA-03 (dict subtyping spec gap). The {_ : T} dict
+-- type syntax is proposed and not yet in the Kappa v1 spec.
+-- An inhomogeneous record (one with fields of different types) is NOT a subtype
+-- of any dict type {_ : T}. Attempting to use an inhomogeneous record where a
+-- dict type is expected must produce kappa.type.mismatch.
+-- Crucially, the error message must explain the homogeneity constraint —
+-- it must not report a confusing "expected Number but found String" without
+-- context about why the dict subtype check failed.
+
+module test
+
+-- NEGATIVE: a record with Number and String fields cannot be typed as {_ : Number}.
+inhomogNum : {_ : Number}
+let inhomogNum = (foo = 1, bar = "hello")      --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: cannot be typed as {_ : String} either — foo is a Number.
+inhomogStr : {_ : String}
+let inhomogStr = (foo = 1, bar = "hello")      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: even when only one field is wrong, the dict type is violated.
+almostHomog : {_ : Bool}
+let almostHomog = (a = True, b = False, c = 42)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: all fields Bool — conforms to {_ : Bool}.
+allBool : {_ : Bool}
+let allBool = (a = True, b = False, c = True)
+
+dictBoolFn : {_ : Bool} -> Bool
+let dictBoolFn _ = True
+
+allBoolOk : Bool
+let allBoolOk = dictBoolFn allBool
+

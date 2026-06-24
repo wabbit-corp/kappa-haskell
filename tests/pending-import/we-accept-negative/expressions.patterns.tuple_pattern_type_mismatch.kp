@@ -1,0 +1,31 @@
+-- Source issue: Noir#10478
+-- Spec: expressions.patterns, compiler.frontir.standard_diagnostic_families.type_equality
+-- A tuple pattern `(a, b)` expects the scrutinee to have a tuple type with
+-- matching arity. Applying a two-element tuple pattern to a scalar type (such
+-- as Int or Bool) is a type mismatch and MUST produce kappa.type.mismatch.
+
+module test
+
+-- Rejected: `Int` is not a two-element tuple type.
+badTuplePattern : Int -> Int
+let badTuplePattern x =
+    let (_a, _b) = x   --!! kappa.type.mismatch
+    0
+
+--! mode check
+--! assertDiagnostic error kappa.type.mismatch
+
+-- Rejected: three-element pattern against a two-element tuple.
+arityMismatch : (Int, Int) -> Int
+let arityMismatch t =
+    let (_a, _b, _c) = t   --!! kappa.type.mismatch
+    0
+
+--! assertDiagnostic error kappa.type.mismatch
+
+-- Accepted: arity matches.
+correctTuple : (Int, Int) -> Int
+let correctTuple t =
+    let (a, b) = t
+    a + b
+

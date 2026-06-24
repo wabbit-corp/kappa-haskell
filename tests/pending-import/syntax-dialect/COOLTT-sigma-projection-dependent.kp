@@ -1,0 +1,67 @@
+-- Source artifacts: cooltt test coercion.cooltt (sigma type, fst/snd projections),
+--               test path-types.cooltt (pairext), test com.cooltt (coe/sigma).
+-- Source tests: cooltt test/coercion.cooltt (corpus repos/github-redprl-cooltt/tests/test/coercion.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: types.quantification
+--
+-- A dependent pair (sigma) type `(x : A) × B x` has two projections:
+-- - `fst : (x : A) × B x -> A`
+-- - `snd : (p : (x : A) × B x) -> B (fst p)`
+-- The type of the second projection depends on the first projection. This
+-- dependency must be tracked correctly through all usages.
+
+--! mode check
+
+-- POSITIVE: basic sigma type with independent components.
+ex1 : (Nat, Bool)
+let ex1 = (42, True)
+
+fstEx1 : Nat
+let fstEx1 = ex1.1
+
+sndEx1 : Bool
+let sndEx1 = ex1.2
+
+-- POSITIVE: dependent sigma where the second component's type depends on the first.
+-- `(n : Nat) × Vec Nat n` — a vector whose length is carried in the pair.
+data Vec (A : Type) : Nat -> Type =
+    vnil  :                                   Vec A zero
+    vcons : forall {n : Nat} -> A -> Vec A n -> Vec A (suc n)
+
+-- A dependent pair carrying a length and a corresponding vector.
+VecPair : Type
+let VecPair = (n : Nat, Vec Nat n)
+
+pair0 : VecPair
+let pair0 = (zero, vnil)
+
+pair3 : VecPair
+let pair3 = (suc (suc (suc zero)), vcons 1 (vcons 2 (vcons 3 vnil)))
+
+-- POSITIVE: extracting the length from a VecPair.
+pairLen : VecPair -> Nat
+let pairLen p = p.1
+
+-- POSITIVE: extracting the vector — the return type depends on p.1.
+pairVec : (p : VecPair) -> Vec Nat (pairLen p)
+let pairVec p = p.2
+
+-- POSITIVE: a function that works over the dependent pair.
+headOfPair : (p : VecPair) -> pairLen p = zero -> Nat
+let headOfPair p eq = zero
+
+-- POSITIVE: constructing a dependent pair from existing components.
+makePair : (n : Nat) -> Vec Nat n -> VecPair
+let makePair n v = (n, v)
+
+-- POSITIVE: sigma type over types — `(A : Type0) × (A -> Nat)`.
+TypeAndFn : Type1
+let TypeAndFn = (A : Type0, A -> Nat)
+
+natAndId : TypeAndFn
+let natAndId = (Nat, \x -> x)
+
+-- NEGATIVE: providing the wrong type for the second component.
+badPair : (Nat, Bool)
+let badPair = (42, 42)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

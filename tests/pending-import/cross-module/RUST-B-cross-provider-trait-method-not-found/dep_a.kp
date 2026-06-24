@@ -1,0 +1,18 @@
+-- Source issues: rust#128569, rust#110926, rust#109161, rust#81659, rust#51458
+-- Spec: compiler.coreir.semantic_object_identities,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--
+-- Module providing one declaration of `Trait` and a type that implements it.
+-- This trait's semantic-object identity (§32.6) is distinct from any other
+-- same-spelled trait in a different module.
+
+module dep_a
+
+trait Trait (a : Type) =
+    foo : a -> Int
+
+data Container : Type =
+    Container Int
+
+instance Trait Container =
+    let foo (Container n) = n + 1

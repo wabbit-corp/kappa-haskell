@@ -1,0 +1,47 @@
+-- Source issue: Rocq #14703
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       traits.members.overloaded_member_names
+-- A trait member projection whose implicit trait-instance argument is
+-- synthesized from the surrounding implicit context.  When a function declares
+-- an implicit trait instance (@_ : TyWf ty), a bare reference to the trait
+-- member `lfts` must elaborate by synthesising that instance automatically.
+-- This is the Kappa portable obligation corresponding to Rocq's regression where
+-- `ty.(ty_lfts)` broke after Arguments changed implicit handling.
+
+module test
+
+-- A simple trait with one field: a list of labels.
+trait TyWf (ty : Type) =
+    lfts : List Bool
+
+-- A concrete type and its instance.
+data FooTy : Type =
+    FooTy
+
+instance TyWf FooTy =
+    lfts = [True, False]
+
+-- Case 1: bare use of `lfts` in a function that has @_ : TyWf ty in scope.
+-- `lfts` elaborates to the overloaded member name, which synthesises the
+-- implicit @TyWf FooTy from the bound @inst.
+getLifetimes : (@inst : TyWf FooTy) -> List Bool
+let getLifetimes = lfts
+
+--! mode check
+--! assertNoErrors
+
+-- Case 2: explicit ty passed, instance still synthesised.
+-- The member's implicit instance argument is not written; it comes from @inst.
+getLifetimesFor : (ty : Type) -> (@inst : TyWf ty) -> List Bool
+let getLifetimesFor _ = lfts
+
+--! assertNoErrors
+
+-- Case 3: nested function that shadows nothing still sees the outer instance.
+outerWrapper : (@_ : TyWf FooTy) -> List Bool
+let outerWrapper =
+    let inner : (@_ : TyWf FooTy) -> List Bool
+        let inner = lfts
+    inner
+
+--! assertNoErrors

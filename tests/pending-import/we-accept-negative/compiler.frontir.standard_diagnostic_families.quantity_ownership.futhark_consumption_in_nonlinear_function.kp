@@ -1,0 +1,39 @@
+-- Source issues: FUTHARK-2067, FUTHARK-466, FUTHARK-102
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       types.universes.quantities
+-- Futhark #2067: a loop parameter marked non-consuming was incorrectly
+-- inferred as consuming, leading to invalid IR.  Futhark #466: a uniqueness
+-- annotation in expression position was silently ignored.  Futhark #102:
+-- uniqueness annotations for loop merge parameters.
+-- In Kappa, passing an omega (unrestricted) value where a linear (1) quantity
+-- is demanded must be rejected as a quantity-satisfaction failure.
+-- Annotating a binder at omega and then consuming it at quantity 1 must
+-- produce a quantity.unsatisfied diagnostic, not silently accept the mismatch.
+
+--! mode check
+
+module test
+
+-- NEGATIVE: the function parameter is annotated omega (unrestricted) but the
+-- body tries to pass it to a function expecting quantity 1 (linear).
+-- This is a quantity-satisfaction failure: omega does not satisfy demand 1.
+consumeLinear : (1 _ : SizedArray 3 Int) -> Unit
+let consumeLinear (1 _xs) = ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+badConsume : (xs : SizedArray 3 Int) -> Unit   -- xs is omega
+let badConsume xs =
+  consumeLinear xs
+
+-- NEGATIVE: a function claims its parameter is non-consuming (omega)
+-- but the body performs a linear/consuming operation on it.
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+annotationMismatch : (xs : SizedArray 3 Int) -> Int
+let annotationMismatch xs =
+  -- xs is omega but we try to bind it at 1, which would consume it.
+  let (1 owned) = xs
+  in sizedArrayLength owned
+
+-- POSITIVE: explicitly linear parameter used linearly — accepted.
+linearUsedOnce : (1 xs : SizedArray 3 Int) -> Int
+let linearUsedOnce (1 xs) = sizedArrayLength xs

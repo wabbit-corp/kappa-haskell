@@ -1,0 +1,30 @@
+-- Source issues: docs/pattern-matching, inko#509
+-- Spec: expressions.patterns, types.universes.quantities
+-- Inko: matching on an owned (non-ref) value consumes it; the original
+-- binding is no longer valid after the match expression.
+-- In Kappa, destructuring a linear value in a match arm consumes it;
+-- using the original binding afterward is rejected.
+
+--! mode check
+
+data Payload : Type = Payload Int
+
+consumePayload : (1 p : Payload) -> Int
+let consumePayload (Payload n) = n
+
+-- POSITIVE: the owned payload is matched and consumed exactly once.
+matchOnce : (1 p : Payload) -> Int
+let matchOnce p = match p with
+    | Payload n -> n
+
+
+-- NEGATIVE: p is consumed by the match; the subsequent call to
+-- consumePayload uses an already-consumed binding.
+matchThenConsume : (1 p : Payload) -> Int
+let matchThenConsume p =
+    let n = match p with
+        | Payload x -> x
+    let _ = consumePayload p   --!! kappa.path.consumed
+    n
+
+--! assertDiagnosticFamily error kappa.path.consumed

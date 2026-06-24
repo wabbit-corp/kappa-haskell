@@ -1,0 +1,29 @@
+-- Source issues: Kitten #46 (typechecker accepts `def ; ([a] a -> [a]):
+--   prepend` even though prepend has type `(a [a] -> [a])`, then crashes
+--   at run time), Kitten #94 (declared `(-> a)` definition body produces
+--   a value; the body must agree with the declared signature).
+-- Spec: declarations.terms, declarations.signatures,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- A declared signature is a hard constraint on the body's inferred type;
+-- if the body's result type or arity disagrees with the signature, Kappa
+-- must reject the definition with kappa.type.mismatch rather than
+-- accepting it and failing later.
+
+module test
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+-- NEGATIVE: declared output Int, body produces a Pair value.
+declaredOneOutPair : Int
+let declaredOneOutPair = Pair 1 2          --!! kappa.type.mismatch
+
+-- NEGATIVE: declared base Int, body is a function value.
+declaredScalar : Int
+let declaredScalar = \x -> x               --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

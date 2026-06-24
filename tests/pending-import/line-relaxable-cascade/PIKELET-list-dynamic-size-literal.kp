@@ -1,0 +1,29 @@
+-- Source artifacts: Pikelet book reference/builtins.md (List : Type -> Type),
+--                   PIKELET-72 (PR: finish implementing array syntax).
+-- Spec: collections.literals, modules.prelude.contents (`data List`)
+--
+-- Kappa's portable prelude provides `data List a = Nil | (::) head tail`
+-- and a bracket literal `[e1, ...]` for List values (§20.1, §28).
+-- A literal `[e1, ...]` checked against `List T` is accepted regardless
+-- of length, provided every element has type `T`.
+
+--! mode check
+
+emptyL : List Nat
+let emptyL = []
+
+three : List Nat
+let three = [1, 2, 3]
+
+one : List String
+let one = ["alpha"]
+
+-- POSITIVE: nested lists.
+nested : List (List Nat)
+let nested = [[1, 2], [], [3]]
+
+-- NEGATIVE: heterogeneous element types are rejected.
+mixed : List Nat
+let mixed = [1, "two", 3]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

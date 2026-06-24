@@ -1,0 +1,62 @@
+-- Source issues: odin#6224 (type error when polymorphic default parameters are nil),
+--               odin#5101 (compiler - type check panics on nil value for para pointer)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch)
+-- The absent/nil value (None in Option, or the absent constructor of any Option-typed
+-- parameter) is a valid default for an Option-typed polymorphic parameter. Supplying
+-- a non-absent value correctly instantiates the type parameter; calling with the
+-- default (None) must also be accepted without a type error.
+
+--! mode check
+
+-- Uses the prelude Option type (constructors Some / None).
+
+-- A polymorphic function with an Option-typed parameter that has None as its default.
+let withDefault {a : Type} (x : a) (fallback : Option a) : a =
+    match fallback
+    case Some v -> v
+    case None   -> x
+
+-- POSITIVE: providing an explicit Some value — type is fully determined.
+let okWithSome : Int =
+    withDefault 0 (Some 42)
+
+
+-- POSITIVE: providing None — fallback is used; type is inferred from the first arg.
+let okWithNone : Int =
+    withDefault 5 None
+
+
+-- POSITIVE: a function whose optional parameter defaults to None.
+let safeDivide (numerator : Int) (denominator : Option Int) : Int =
+    match denominator
+    case Some d -> if d == 0 then 0 else numerator
+    case None   -> numerator
+
+-- POSITIVE: explicit denominator.
+let okDivide : Int = safeDivide 10 (Some 2)
+
+
+-- POSITIVE: default denominator (None) — should be accepted.
+let okDivideDefault : Int = safeDivide 10 None
+
+
+-- A more complex case: polymorphic function where the optional arg constrains
+-- the type parameter.
+let processOption {a : Type} (x : a) (extra : Option a) : a =
+    match extra
+    case Some v -> v
+    case None   -> x
+
+-- POSITIVE: all Int arguments.
+let okProcess : Int = processOption 1 (Some 2)
+
+
+-- POSITIVE: None does not introduce a type conflict.
+let okProcessNone : Int = processOption 7 None
+
+
+-- NEGATIVE: Some with wrong type — the Option argument doesn't match the first arg type.
+let badProcessMismatch : Int =
+    processOption 1 (Some "oops")    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

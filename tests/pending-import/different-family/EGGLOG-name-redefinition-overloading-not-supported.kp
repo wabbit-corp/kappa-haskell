@@ -1,0 +1,51 @@
+-- Source issues: egraphs-good/egglog #113 (Created map type is always first
+--   defined map type — multiple primitives under same name),
+--   egraphs-good/egglog #310 (Type errors for `set` not captured),
+--   egraphs-good/egglog #422 (Renaming `function` whose output is an E-class to
+--   `constructor`).
+-- Spec: modules.names.same_spelling_data_families_static_members (§7),
+--       declarations.terms (§9.1),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.ambiguous),
+--       see also EGGLOG-SA-07 in EGGLOG_SPEC_ADDITIONS.md.
+-- Egglog allowed two `(sort Map (Map K V))` registrations with the same head
+-- but different parameter types, and silently picked the first `create`. Kappa
+-- forbids two declarations in the same scope from sharing a head name with
+-- different signatures: there is no implicit ad-hoc overloading. The collision
+-- is reported as kappa.name.ambiguous.
+
+module test
+
+--! mode check
+
+-- POSITIVE: two distinctly-named container types.
+data MapIS : Type =
+    MIS (k : Int) (v : String)
+
+data MapII : Type =
+    MII (k : Int) (v : Int)
+
+m1 : MapIS
+let m1 = MIS 1 "one"
+
+m2 : MapII
+let m2 = MII 1 2
+
+-- NEGATIVE: declaring two `data` heads with the same name.
+data Coll : Type =
+    MkC1 (a : Int) (b : Int)
+
+data Coll : Type =                        --!! kappa.name.ambiguous
+    MkC2 (a : Int) (b : String)
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: declaring two top-level functions with the same name but different
+-- signatures (no implicit overloading).
+create : Int -> Int
+let create x = x
+
+create : String -> String                 --!! kappa.name.ambiguous
+let create s = s
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

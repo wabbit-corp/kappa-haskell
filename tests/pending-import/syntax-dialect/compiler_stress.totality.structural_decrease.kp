@@ -1,0 +1,28 @@
+-- Stress test: structural decrease on a recursive data type is accepted
+-- Spec: declarations.terms
+
+--! mode check
+
+data Nat : Type =
+    Z
+  | S Nat
+
+-- POSITIVE: add decreases structurally on n; each recursive call passes n', a sub-term of S n'.
+add : Nat -> Nat -> Nat
+let add n m decreases structural n =
+    match n
+    case Z    -> m
+    case S n' -> S (add n' m)
+
+-- POSITIVE: length decreases structurally on xs.
+data List a : Type =
+    Nil
+  | Cons a (List a)
+
+len : List a -> Nat
+let len xs decreases structural xs =
+    match xs
+    case Nil       -> Z
+    case Cons _ tl -> S (len tl)
+
+--! assertNoErrors

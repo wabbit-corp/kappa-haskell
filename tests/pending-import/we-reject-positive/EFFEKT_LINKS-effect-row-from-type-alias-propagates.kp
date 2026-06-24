@@ -1,0 +1,32 @@
+-- Source issue: links #1036 (via PR #1038, "Effect Sugar: Fix operations not propagating from within aliases")
+-- Spec: types.aliases (§10.3), effects.monadic_core.eff_effect_rows, types.quantification.effect_row_syntax
+-- A transparent type alias whose body mentions an effect row contributes those
+-- operations to the surface effect row of any function whose signature uses the alias.
+-- Per §10.3, "a type alias reifies as its alias body, subject to ordinary opacity and
+-- transparency rules". Row normalization at use sites MUST therefore see the
+-- operations contributed by the alias body, so that a handler for those operations
+-- resolves against the same effect-label values.
+
+module test
+
+effect Log =
+    ω write : String -> Unit
+
+-- Transparent type alias whose body carries the 'Log' effect.
+type Logging a = Eff <[log : Log]> a
+
+-- A function whose signature uses the alias and that performs the aliased effect.
+sayHello : Logging Unit
+let sayHello = log.write "hello"
+
+-- A handler for the 'log' effect matches against the alias's row.
+runLogging : Logging Unit -> Eff <[ ]> Unit
+let runLogging comp =
+    deep handle log comp with
+        case return _   -> pure ()
+        case write _s k -> k ()
+
+--! mode check
+--! assertNoErrors
+--! assertType sayHello Logging Unit
+--! assertType runLogging Logging Unit -> Eff <[ ]> Unit

@@ -1,0 +1,37 @@
+-- Source: Maude tests/Misc/renaming.maude
+--           fmod ONE is sorts Foo Bar . subsort Foo < Bar . endfm
+--           fmod TWO is inc ONE * (sort Foo to Baz) . sort Quux .
+--                       subsort Quux < Baz . endfm
+--         The rename is well-formed because `Baz` was not previously
+--         declared in TWO. But if a renaming target collides with a name
+--         already in scope, Maude reports the alias collision.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.module-alias-collision).
+-- Portable obligation: when an import alias spelling shadows or collides
+--   with an existing declaration spelling in scope and the resulting
+--   ambiguity drives a downstream mismatch, the diagnostic must use family
+--   kappa.name.module-alias-collision.
+
+--! mode check
+
+module producer
+
+data Foo : Type = MkFoo
+
+mk : Foo
+let mk = MkFoo
+
+module test
+
+-- A locally declared Foo type.
+data Foo : Type = LocalFoo
+
+-- NEGATIVE: importing producer.Foo with alias `Foo` collides with the
+-- locally declared Foo, producing module-alias-collision when the alias
+-- is used in a type position where both interpretations are admissible.
+import producer.(type Foo as Foo)    --!! kappa.name.module-alias-collision
+
+useFoo : Foo
+let useFoo = LocalFoo
+
+--! assertDiagnosticFamily error kappa.name.module-alias-collision

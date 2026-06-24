@@ -1,0 +1,52 @@
+-- Source issue: Factor #236 (M: method with declared effect that mismatches
+--   the generic's declared effect is silently accepted), Factor #62, #232
+--   (Stack effect declaration mismatched with inferred effect must be an
+--   error, not a warning).
+-- Spec: traits.members, traits.instances.associated_static_member_instance_checking,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- Factor's stack-effect declarations on M: method definitions are normally
+-- only informational unless they introduce a row-polymorphic effect; users
+-- can declare an instance method with a narrower effect than the generic
+-- and have it silently accepted. The portable Kappa obligation is that a
+-- trait instance member whose declared type does not match the trait's
+-- declared method type (after substitution of associated members) is a
+-- type mismatch.
+
+module test
+
+--! mode check
+
+trait Foo (a : Type) =
+    foo : a -> Int -> Int
+
+data Bar : Type =
+    Bar Int
+
+-- POSITIVE: instance method whose type matches the trait member is accepted.
+instance Foo Bar =
+    let foo (Bar n) k = n + k
+
+data Baz : Type =
+    Baz Int
+
+-- NEGATIVE: instance member declares a narrower type than the trait member.
+-- The trait says `foo : Baz -> Int -> Int` after substitution, but the body
+-- is `Baz -> Int` (one fewer parameter). The implementation type does not
+-- match the trait method type; this must be rejected by the instance
+-- coherence check, not silently accepted as "optional documentation".
+instance Foo Baz =
+    let foo (Baz n) = n          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+data Qux : Type =
+    Qux Int
+
+-- NEGATIVE: instance member declares an extra trailing parameter; trait
+-- method type is fixed.
+instance Foo Qux =
+    let foo (Qux n) k j = n + k + j   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

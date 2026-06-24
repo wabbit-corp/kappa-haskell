@@ -1,0 +1,49 @@
+-- Source: Racket PR #445 (Make : error on unbound identifiers in type annotations),
+--         Racket guide define.scrbl (function type annotations)
+-- Spec: declarations.signatures, declarations.terms
+--
+-- An explicitly annotated top-level definition must have a body consistent
+-- with its declared type. If the body expression type does not match the
+-- declared signature, an kappa.type.mismatch error is reported.
+-- A signature annotation refers to names that must be in scope at the annotation
+-- site.
+
+--! mode check
+
+-- POSITIVE: signature and body match.
+add : Int -> Int -> Int
+let add x y = x + y
+
+-- POSITIVE: polymorphic signature, polymorphic body.
+identity : (A : Type) -> A -> A
+let identity _ x = x
+
+-- POSITIVE: signature with a data type constructor in the return type.
+data Option : Type -> Type = None | Some : (A : Type) -> A -> Option A
+
+safeDiv : Int -> Int -> Option Int
+let safeDiv _ 0 = None
+let safeDiv n d = Some Int (n / d)
+
+-- POSITIVE: top-level constant with explicit type.
+maxInt : Int
+let maxInt = 9999
+
+-- POSITIVE: signature uses an imported type; body matches.
+stringify : Int -> String
+let stringify n = "n=" ++ show n
+
+-- NEGATIVE: body type is Bool but signature says Int.
+wrongBodyType : Int
+let wrongBodyType = True     --!! kappa.type.mismatch
+
+-- NEGATIVE: function returns a String but signature promises Int.
+badReturn : Int -> Int
+let badReturn x = "not an int"   --!! kappa.type.mismatch
+
+-- NEGATIVE: signature mentions an unresolved type name.
+badTypeSig : UnknownType -> Int   --!! kappa.name.unresolved
+let badTypeSig x = 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.name.unresolved

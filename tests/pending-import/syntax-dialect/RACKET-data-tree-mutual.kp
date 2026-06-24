@@ -1,0 +1,52 @@
+-- Source: Racket guide data structures, Racket letrec for mutual data types
+-- Source tests: racket letrec.rktl (corpus repos/github-racket-racket/tests/pkgs/racket-test-core/tests/racket/letrec.rktl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: data_types.data_declarations
+--
+-- Mutually recursive data type declarations: Tree and Forest are each defined
+-- in terms of the other. Both types must be declared before they can be used.
+-- Exhaustive pattern matching on mutually recursive types requires covering all
+-- constructors of each type at each use site.
+
+--! mode check
+
+-- Mutually recursive data type definitions.
+data MTree : Type -> Type =
+    MLeaf  : MTree A
+  | MNode  : (A : Type) -> A -> MForest A -> MTree A
+
+data MForest : Type -> Type =
+    MNil  : MForest A
+  | MCons : (A : Type) -> MTree A -> MForest A -> MForest A
+
+-- POSITIVE: count nodes in a tree (mutually recursive functions).
+countNodes : (A : Type) -> MTree A -> Nat
+let countNodes _ MLeaf          = zero
+let countNodes A (MNode _ _ fs) = suc (countForest A fs)
+
+countForest : (A : Type) -> MForest A -> Nat
+let countForest _ MNil            = zero
+let countForest A (MCons _ t fs)  = countNodes A t + countForest A fs
+
+-- POSITIVE: depth of a tree.
+treeDepth : (A : Type) -> MTree A -> Nat
+let treeDepth _ MLeaf           = zero
+let treeDepth A (MNode _ _ fs)  = suc (forestDepth A fs)
+
+forestDepth : (A : Type) -> MForest A -> Nat
+let forestDepth _ MNil            = zero
+let forestDepth A (MCons _ t fs)  = max (treeDepth A t) (forestDepth A fs)
+
+-- POSITIVE: map over a tree.
+mapTree : (A B : Type) -> (A -> B) -> MTree A -> MTree B
+let mapTree _ _ _ MLeaf           = MLeaf
+let mapTree A B f (MNode _ x fs)  = MNode B (f x) (mapForest A B f fs)
+
+mapForest : (A B : Type) -> (A -> B) -> MForest A -> MForest B
+let mapForest _ _ _ MNil            = MNil
+let mapForest A B f (MCons _ t fs)  = MCons B (mapTree A B f t) (mapForest A B f fs)
+
+-- NEGATIVE: non-exhaustive match on MTree (missing MLeaf case).
+badCount : (A : Type) -> MTree A -> Nat
+let badCount A (MNode _ _ _) = suc zero   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,46 @@
+-- Source issues: ponyc#52, ponyc FLIX-1554 analog, ponyc libponyc matchtype.cc
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match arm that follows a wildcard or a constructor that already covers
+-- every possible value can never be reached. The compiler must warn or error
+-- on such unreachable arms to help catch copy-paste mistakes and dead code.
+
+--! mode check
+
+data Direction : Type = North | South | East | West
+
+-- NEGATIVE: `West` arm follows a wildcard that covers everything including West.
+badOrder : Direction -> Int
+let badOrder d =
+    match d
+    case North -> 0
+    case _     -> -1
+    case West  -> 4    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: duplicate literal pattern — the second `North` is unreachable.
+duplicateCtor : Direction -> Int
+let duplicateCtor d =
+    match d
+    case North -> 1
+    case South -> 2
+    case North -> 3    --!! kappa.pattern.unreachable
+    case East  -> 4
+    case West  -> 5
+
+-- POSITIVE: each constructor appears exactly once, no wildcard before last.
+goodOrder : Direction -> Int
+let goodOrder d =
+    match d
+    case North -> 0
+    case South -> 1
+    case East  -> 2
+    case West  -> 3
+
+-- POSITIVE: wildcard at the end with no remaining named constructors.
+goodWild : Direction -> Int
+let goodWild d =
+    match d
+    case North -> 0
+    case _     -> 99
+

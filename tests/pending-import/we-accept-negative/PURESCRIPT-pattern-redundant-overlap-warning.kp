@@ -1,0 +1,45 @@
+-- Source artifacts: PURESCRIPT-PR-1218 (Exhaustivity Checker),
+--                   PURESCRIPT-PR-1314 (Redundancy Checker),
+--                   PURESCRIPT-PR-1854 (linked #1853 — redundancy checker
+--                   regression on enum-style ADTs),
+--                   PURESCRIPT-PR-2432 (exhaustive pattern match on JSAnnot).
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable).
+-- Kappa spec rule (§ expressions.match): residual constructor knowledge from
+-- earlier unguarded branches makes a later branch with the same constructor
+-- unreachable. Such redundancy must be diagnosed by the
+-- `kappa.pattern.unreachable` family.
+
+--! mode check
+
+data Tri : Type =
+    Foo | Bar | Baz
+
+-- NEGATIVE (warning): the second `Foo` branch is unreachable; the first
+-- already covers it.
+brokenPatternMatch : Tri -> Bool
+let brokenPatternMatch t =
+    match t
+    case Foo -> True
+    case Bar -> False
+    case Foo -> False                          --!! kappa.pattern.unreachable
+    case Baz -> True
+
+-- NEGATIVE (warning): a wildcard catch-all followed by a concrete
+-- constructor case is unreachable.
+shadowed : Tri -> Int
+let shadowed t =
+    match t
+    case _   -> 0
+    case Bar -> 1                              --!! kappa.pattern.unreachable
+
+-- POSITIVE: no redundancy here.
+ok_disjoint : Tri -> Int
+let ok_disjoint t =
+    match t
+    case Foo -> 0
+    case Bar -> 1
+    case Baz -> 2
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

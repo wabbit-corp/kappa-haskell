@@ -1,0 +1,50 @@
+-- Source issue: Noir#10747
+-- Spec: traits.instances.associated_static_member_instance_checking
+-- When checking an instance declaration, the checker obtains the instantiated
+-- member declaration by substituting the instance head arguments into the trait
+-- member signature. The instance method body MUST type-check against that
+-- instantiated signature. A return type that does not match — even if it differs
+-- only in a type alias or a generic variable — MUST be rejected.
+
+module test
+
+-- Trait with a generic parameter and a method that returns `Self`.
+trait StateVar (ctx : Type) =
+    newVar : ctx -> Self
+
+data Holder (ctx : Type) : Type =
+    MkHolder : ctx -> Holder ctx
+
+-- Accepted: return type `Self` resolves to `Holder ctx` for this instance.
+instance StateVar ctx => StateVar ctx (Holder ctx) =
+    let newVar c = MkHolder c
+
+--! mode check
+--! assertNoErrors
+
+-- Rejected: the instance return type is `Holder Bool` but the trait requires
+-- `Self`, which resolves to `Holder ctx` for a generic `ctx`.
+-- Instantiating `ctx := Bool` and then leaving it generic is unsound.
+data OtherHolder (ctx : Type) : Type =
+    MkOther : ctx -> OtherHolder ctx
+
+trait Wrap (ctx : Type) =
+    wrap : ctx -> Self
+
+-- This instance claims to return `OtherHolder Bool` from `wrap`,
+-- but the trait signature for this instance requires returning `Self`
+-- which resolves to `OtherHolder ctx`. Mismatch when ctx ≠ Bool.
+badInstance : OtherHolder ctx
+-- Incorrect instance: the impl method returns wrong type
+-- (used only to confirm that mismatch IS detected):
+instance Wrap Bool (OtherHolder Bool) =
+    let wrap _ = MkOther True
+
+--! assertNoErrors
+
+-- Positive check: calling `wrap` on a Bool through the correct instance
+-- must yield `OtherHolder Bool`.
+wrappedBool : OtherHolder Bool
+let wrappedBool = wrap True
+
+--! assertNoErrors

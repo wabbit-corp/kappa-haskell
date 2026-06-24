@@ -1,0 +1,61 @@
+-- Source issues: leo#29303 (compiler panic when entry-point function has const
+--               generic params; `fn store::[N: u32]() -> u32` as an entry point
+--               caused a panic instead of a graceful error), leo PR#29313 (fix:
+--               reject const generics in non-inlinable function contexts with a
+--               proper diagnostic).
+-- Spec: SA-LEO-05 (const generics only valid on inlinable functions),
+--       compiler.frontir.standard_diagnostic_families.feature_gates
+--       (family kappa.feature.gated) or type_equality (kappa.type.mismatch).
+-- Kappa spec rule (§SA-LEO-05):
+--   "Const generic parameters can only appear on functions that are guaranteed
+--    to be inlined at every call site (i.e., fully monomorphized before code
+--    generation). Entry-point functions that are exposed as public API cannot
+--    be const-generic, because callers supply concrete values only at call
+--    sites that are visible to the compiler. An attempt to place a const
+--    generic parameter on a non-inlinable function must be rejected with a
+--    diagnostic identifying the function kind and the restriction."
+-- leo#29303: panic confirmed; PR#29313 introduced a check per function kind
+--   (entry point, final fn, @no_inline fn) to reject const generic parameters.
+
+--! mode check
+
+-- A trait that represents the "entry point" or "exported function" interface
+-- in Kappa terms. Functions in this trait must be concrete (no const generics).
+trait EntryPoint (f : Type) =
+    call : f
+
+-- POSITIVE: an inlinable (non-exported) function with a const generic parameter.
+-- Such a function is always fully monomorphized before use.
+let inlinableWithConst (0 n : Int) : Int = n + 1
+
+okInlinable : Int
+let okInlinable = inlinableWithConst 5
+
+
+-- POSITIVE: an exported (concrete) function that takes a runtime Int parameter.
+let exportedConcrete (n : Int) : Int = n + 1
+
+okExported : Int
+let okExported = exportedConcrete 5
+
+
+-- NEGATIVE: an exported function that attempts to use a const generic parameter.
+-- Because it is exported, callers cannot always supply a compile-time constant,
+-- and the function cannot be monomorphized per call site.
+-- We model "exported" here by placing the function in a public interface/trait.
+-- The const-generic binder `(0 n : Int)` conflicts with the concrete call signature.
+instance EntryPoint (Int -> Int) =
+    let call = fn (0 n : Int) -> n + 1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: attempting to pass a const-generic function where a concrete
+-- function type `Int -> Int` is required. The const-generic function has type
+-- `(0 n : Int) -> Int` which is not `Int -> Int` (the quantity differs).
+constGenericFn : (0 n : Int) -> Int
+let constGenericFn n = n * 2
+
+exportSlot : Int -> Int
+let exportSlot = constGenericFn    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

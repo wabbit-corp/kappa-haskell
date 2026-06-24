@@ -1,0 +1,38 @@
+-- Source issues: CREUSOT-773
+-- Spec: traits.headers, traits.headers.supertraits,
+--       traits.instances, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Family: kappa.implicit.unsolved (Kappa §3.2.4)
+-- A "law" attached to a trait that requires bounds beyond the trait's own
+-- header MUST NOT be loaded into the proof context when those bounds are
+-- not satisfied at the use-site; doing so promises a fact about no
+-- witness.  Pending spec gap CREUSOT-SA-05 (trait member modality).
+
+module test
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, FAB-011): `law ... where` member surface is the
+-- CREUSOT-SA-05 proposal, not yet spec; portable harnesses report unsupported.
+
+trait Ord (a : Type) =
+    le : a -> a -> Bool
+
+trait OrderedAdd (a : Type) =
+    add : a -> a -> a
+
+trait Monoidal (a : Type) =
+    op : a -> a -> a
+    law assoc : forall (x : Int) (y : Int) (z : Int). x + (y + z) == (x + y) + z
+        where (Ord Int, OrderedAdd Int)
+
+-- NEGATIVE: projecting the law `assoc` out of Monoidal evidence demands the
+-- law's `where` bounds (Ord Int, OrderedAdd Int); no such instances exist
+-- here, so the projection is an unsolved implicit obligation.
+-- (Rewritten 2026-06-11, FAB-010: the previous marked line was a free-standing
+-- quantified formula that never referenced the law, so the asserted family
+-- had no trigger.)
+unsoundLaw : forall (a : Type). Monoidal a => (1 + (2 + 3) == (1 + 2) + 3)
+let unsoundLaw = assoc 1 2 3   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,39 @@
+-- Source issues: egraphs-good/egglog #463 (Bad error message for (+ 1 2 3)).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.application.argument-mismatch, kappa.type.mismatch),
+--       expressions.application (§16).
+-- Egglog's `+` is a binary primitive; an application like `(+ 1 2 3)` is an
+-- arity mismatch, but the engine reported an internal panic. Kappa requires
+-- arity mismatch on a function application to be reported with the
+-- kappa.application.argument-mismatch family at a proper source span.
+
+module test
+
+--! mode check
+
+plus : Int -> Int -> Int
+let plus a b = a + b
+
+-- POSITIVE: binary application.
+r2 : Int
+let r2 = plus 1 2
+
+-- NEGATIVE: three positional args to a 2-ary function.
+bad3 : Int
+let bad3 = plus 1 2 3            --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+
+-- NEGATIVE: one positional arg to a 2-ary function used in a value position.
+-- Partial application produces a function value of the residual type; using it
+-- where a non-function value is expected produces a type mismatch.
+bad1 : Int
+let bad1 = plus 1                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: zero args where a value is expected.
+bad0 : Int
+let bad0 = plus                  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

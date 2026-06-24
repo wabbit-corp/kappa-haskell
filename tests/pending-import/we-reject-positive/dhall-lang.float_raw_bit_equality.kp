@@ -1,0 +1,43 @@
+-- Source issue: dhall-lang #425
+-- Spec: literals.numeric_literals.float_double_semantics
+-- The canonical Eq Float instance uses raw-bit (IEEE-754 bit-pattern) equality.
+-- Consequences:
+--   +0.0 /= -0.0  (different bit patterns)
+--   NaN /= any other Float value (different bit patterns)
+--   NaN_bits == NaN_bits  if and only if bit patterns are identical
+-- Additionally, floatEq (IEEE numeric equality) treats +0.0 == -0.0
+-- and NaN /= anything including NaN.
+
+module test
+
+-- POSITIVE TEST 1: +0.0 is not raw-bit equal to -0.0.
+-- Under raw-bit equality, +0.0 == -0.0 must be False.
+pos_zero_ne_neg_zero : Bool
+let pos_zero_ne_neg_zero = not (0.0 == -0.0)
+
+check_pos_ne : Bool
+let check_pos_ne = pos_zero_ne_neg_zero
+
+-- POSITIVE TEST 2: floatEq (IEEE numeric equality) treats +0.0 == -0.0 as True.
+ieee_zero_eq : Bool
+let ieee_zero_eq = floatEq 0.0 (-0.0)
+
+-- POSITIVE TEST 3: raw-bit equal floats compare equal under ==.
+-- 1.5 == 1.5 must be True.
+same_float_eq : Bool
+let same_float_eq = 1.5 == 1.5
+
+-- POSITIVE TEST 4: distinct floats compare unequal.
+distinct_floats_ne : Bool
+let distinct_floats_ne = not (1.5 == 2.5)
+
+-- POSITIVE TEST 5: floatEq does not consider NaN equal to NaN (IEEE rule).
+-- floatEq NaN NaN must be False.
+nan_literal : Float
+let nan_literal = 0.0 / 0.0
+
+ieee_nan_ne_nan : Bool
+let ieee_nan_ne_nan = not (floatEq nan_literal nan_literal)
+
+--! mode check
+--! assertNoErrors

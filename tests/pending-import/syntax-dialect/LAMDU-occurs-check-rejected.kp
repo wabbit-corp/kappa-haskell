@@ -1,0 +1,53 @@
+-- Source issues: lamdu test occurs-fragment.json — unification must
+--   reject solutions that would create an infinite (cyclic) type.
+--   When a metavariable's solution would contain itself, the occurs
+--   check fires.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--   §3.2.3: a unification step that would introduce a cyclic type
+--   must fail with a structured diagnostic.
+--
+-- Self-applying a function whose argument and result types would
+-- have to unify with each other recursively must be rejected.
+
+--! mode check
+
+-- POSITIVE: ordinary unification has no cycles.
+applyOnce : forall (a b : Type). (a -> b) -> a -> b
+let applyOnce f x = f x
+
+useApply : Nat
+let useApply = applyOnce (\ n -> n + 1) 5
+
+-- POSITIVE: identity with no cyclic constraint.
+identity : forall (a : Type). a -> a
+let identity x = x
+
+-- POSITIVE: a higher-order function that does not require self-application.
+compose : forall (a b c : Type). (b -> c) -> (a -> b) -> a -> c
+let compose f g x = f (g x)
+
+useCompose : Nat
+let useCompose = compose (\ n -> n + 1) (\ n -> n * 2) 3
+
+-- NEGATIVE: self-application without a polymorphic argument type
+-- requires the argument's type to equal its own function type — an
+-- infinite type. The occurs check must reject this.
+omega : forall (a : Type). a -> a
+let omega x = x x    --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a function to itself when its parameter type
+-- is not a function type creates an unsatisfiable equation.
+selfApp : Nat
+let selfApp =
+    let f = \ x -> x + 1
+    f f    --!! kappa.type.mismatch
+
+-- NEGATIVE: a let-bound function that tries to call itself with
+-- itself as an argument at an inconsistent type.
+badSelfRef : Nat -> Nat
+let badSelfRef n =
+    let g : Nat -> Nat
+        g x = badSelfRef badSelfRef    --!! kappa.type.mismatch
+    g n
+
+--! assertDiagnosticFamily error kappa.type.mismatch

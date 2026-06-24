@@ -1,0 +1,34 @@
+-- Source issue: Factor #762 (Listener silently picks the most recently
+--   imported `foo` when two vocabularies both export `foo`; the design
+--   note says this should prompt about ambiguity instead).
+-- Spec: modules.imports, modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+--
+-- Two imported modules each export a term `foo`; an unqualified use
+-- of `foo` must be ambiguous and diagnose kappa.name.ambiguous.
+-- The user can disambiguate by qualifying the name.
+
+module consumer
+
+import vocabA
+import vocabB
+
+--! mode check
+
+-- NEGATIVE: bare `foo` is ambiguous because both vocabA and vocabB
+-- export a term spelled `foo`.
+useBare : Int
+let useBare = foo                         --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: explicit qualification selects one declaration unambiguously.
+useQualifiedA : Int
+let useQualifiedA = vocabA.foo
+
+useQualifiedB : Int
+let useQualifiedB = vocabB.foo
+
+--! assertType useQualifiedA Int
+--! assertType useQualifiedB Int

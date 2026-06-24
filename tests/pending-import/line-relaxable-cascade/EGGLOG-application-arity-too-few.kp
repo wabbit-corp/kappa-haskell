@@ -1,0 +1,55 @@
+-- Source issues: egraphs-good/egglog #80 (Type Inference Failure on partially
+--   applied function on RHS),
+--   egraphs-good/egglog PR#281 (Fix unexpected assertion failure when arity is
+--   mismatched).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.application.argument-mismatch, kappa.type.mismatch),
+--       expressions.application (§16),
+--       declarations.terms (§9).
+-- Applying a function to too few arguments in a context that requires the
+-- result value (not a function value) is rejected. Partial application returns
+-- a function value of the residual type; using it where a non-function value
+-- is expected produces a type mismatch.
+
+module test
+
+--! mode check
+
+triple : Int -> Int -> Int -> Int
+let triple a b c = a + b + c
+
+-- POSITIVE: full application.
+r3 : Int
+let r3 = triple 1 2 3
+
+-- POSITIVE: partial application as a function value.
+f2 : Int -> Int -> Int
+let f2 = triple 1
+
+r2 : Int
+let r2 = f2 2 3
+
+-- POSITIVE: partial application chained to full application.
+f1 : Int -> Int
+let f1 = triple 1 2
+
+r1 : Int
+let r1 = f1 3
+
+-- NEGATIVE: partial application used as a non-function value.
+bad1 : Int
+let bad1 = triple 1                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: partial application used as an Int via an arithmetic site.
+bad2 : Int
+let bad2 = triple 1 2 + 5          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: too many arguments to a 3-ary function.
+bad3 : Int
+let bad3 = triple 1 2 3 4          --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

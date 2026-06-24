@@ -1,0 +1,58 @@
+-- Stress test: Two traits share the same method name.  Disambiguation via
+--   explicit evidence projection (`summon` + dot access) must resolve
+--   correctly.  Omitting disambiguation when both instances are in scope
+--   produces kappa.implicit.ambiguous.
+-- Spec: traits.members.overloaded_member_names,
+--   compiler.frontir.standard_diagnostic_families.implicit_trait_proof.ambiguous_diagnostic
+
+--! mode check
+
+trait Readable (a : Type) =
+    read : a -> String
+
+trait Writable (a : Type) =
+    write : String -> a
+
+-- Both traits have a method named `read` / `write`.
+-- We also define two traits that BOTH have `format`.
+trait PrettyPrint (a : Type) =
+    format : a -> String
+
+trait DebugPrint (a : Type) =
+    format : a -> String
+
+data Config : Type = Config String Int
+
+instance PrettyPrint Config =
+    let format (Config name n) = name ++ "=" ++ int_to_string n
+
+instance DebugPrint Config =
+    let format (Config name n) = "[DBG:" ++ name ++ "@" ++ int_to_string n ++ "]"
+
+-- NEGATIVE: bare `format` is ambiguous when both instances are in scope.
+ambiguousFormat : Config -> String
+let ambiguousFormat c = format c   --!! kappa.implicit.ambiguous
+
+-- POSITIVE: disambiguation via explicit evidence.
+prettyFormat : Config -> String
+let prettyFormat c =
+    let ev : PrettyPrint Config = summon
+    ev.format c
+
+debugFormat : Config -> String
+let debugFormat c =
+    let ev : DebugPrint Config = summon
+    ev.format c
+
+-- POSITIVE: both disambiguated calls in one function.
+compareFormats : Config -> (String, String)
+let compareFormats c = (prettyFormat c, debugFormat c)
+
+-- POSITIVE: a function that explicitly requires one of the two traits.
+prettyOnly : forall {a : Type}. (@ev : PrettyPrint a) -> a -> String
+let prettyOnly x = ev.format x
+
+testPretty : String
+let testPretty = prettyOnly (Config "width" 80)
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

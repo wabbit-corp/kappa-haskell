@@ -1,0 +1,66 @@
+-- Source issues: CAIRO-2899, CAIRO-2995, CAIRO-3133
+-- Spec: traits.instances, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- Kappa spec rule (§14.3 "Instances"):
+--   "When solving an implicit goal G, trait evidence resolution applies only
+--    if G : Type u and IsTrait G is available. If no local candidate or
+--    global instance head matches the goal after full resolution, the
+--    implicit is unsolved and compilation fails."
+-- Cairo issue CAIRO-2899: trait/impl resolution failed for generic types
+-- where the required Drop-like instance could not be found in scope.
+-- Cairo issue CAIRO-2995: a generic struct with a trait-bound generic
+-- parameter could not be instantiated if the concrete bound instance was
+-- absent.
+-- CAIRO-3133: the same scenario caused a compiler cycle when an explicit
+-- instance was added but the premise couldn't be discharged.
+-- In Kappa: a trait declaration whose instance premise refers to another
+-- trait must find that other trait's instance in the compilation unit's
+-- instance environment; failing to do so must yield kappa.implicit.unsolved.
+
+--! mode check
+
+-- A simple "resource allocator" trait.
+trait Alloc (a : Type) =
+    alloc : Int -> a
+
+-- A "consumer" trait whose instances require Alloc.
+trait Alloc a => Consumer (a : Type) =
+    consume : (1 x : a) -> Int
+
+-- Concrete type with an Alloc instance but no Consumer.
+data Token : Type =
+    Token Int
+
+instance Alloc Token =
+    let alloc n = Token n
+
+-- POSITIVE: writing an instance for Consumer Token when Alloc Token exists
+-- must be accepted; the supertrait premise Alloc Token is satisfied.
+instance Consumer Token =
+    let consume (Token n) = n
+
+useConsumer : Int
+let useConsumer = consume (alloc 42 : Token)
+
+-- NEGATIVE: another type with NO Alloc instance cannot have Consumer.
+-- The supertrait premise Alloc Phantom is unsolvable.
+data Phantom : Type =
+    Phantom Int
+
+instance Consumer Phantom =           --!! kappa.implicit.unsolved
+    let consume (Phantom n) = n
+
+-- POSITIVE: a generic struct with a bound; the function that instantiates it
+-- can only be called when the required instance is in scope.
+data BoundedPair (a : Type) (@_ : Alloc a) : Type =
+    BoundedPair a a
+
+makePair : (@inst : Alloc Token) -> BoundedPair Token
+let makePair = BoundedPair (alloc 1) (alloc 2)
+
+-- POSITIVE: using BoundedPair with the concrete bound already satisfied.
+pairVal : BoundedPair Token
+let pairVal = makePair
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

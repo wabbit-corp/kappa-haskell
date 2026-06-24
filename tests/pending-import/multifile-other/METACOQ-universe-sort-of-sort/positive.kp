@@ -1,0 +1,23 @@
+-- Source issues: METACOQ-96
+-- Spec: types.universes, types.universes.cumulativity
+--
+-- The typing rule for sorts is `Type u : Type (u+1)`. Kappa's stratification
+-- ensures every universe is inhabited only by the next universe above it.
+
+module positive
+
+--! mode check
+
+-- POSITIVE: explicit stratification.
+ok0 : Type1
+let ok0 = Type0
+
+ok1 : Type2
+let ok1 = Type1
+
+ok2 : Type3
+let ok2 = Type2
+
+-- Suite-wide budget: exactly the 2 error(s) marked in negative.lang;
+-- every positive declaration in this file must elaborate cleanly.
+--! assertErrorCount 2

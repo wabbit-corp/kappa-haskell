@@ -1,0 +1,47 @@
+-- Source issues: carp-lang/Carp#363, #441, #1437
+-- Spec: types.universes.quantities,
+--       compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Carp #363/#441: after a linear value is moved into another binding,
+-- subsequent reads or `set!` of the original binding must be rejected
+-- with the same diagnostic regardless of whether the use is inside an
+-- `if` condition, a `while` condition, or any other expression context.
+-- Carp #1437: the same obligation rules out passing a moved value on a
+-- subsequent line.
+
+--! mode check
+
+data Buf : Type = Buf Int
+
+consume : (1 b : Buf) -> Int
+let consume (Buf n) = n
+
+-- POSITIVE: each Buf is consumed at most once on every path.
+useOnce : Int
+let useOnce =
+    let b = Buf 1
+    consume b
+
+
+-- NEGATIVE: the same binding is consumed twice on a single path; the
+-- second use is the violation.  This obligation applies regardless of
+-- whether the second use is in an `if` test, a `while` test, or a `do`
+-- sequence — it is the same `kappa.path.consumed`.
+doubleUse : Int
+let doubleUse =
+    let b = Buf 1
+    let first  : Int = consume b
+    let second : Int = consume b      --!! kappa.path.consumed
+    first + second
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: passing the same value to two consumers across two lines is
+-- rejected by the same rule; one `consume` empties the path, the second
+-- use is the diagnostic site.
+twoConsumersOneValue : (1 b : Buf) -> Int
+let twoConsumersOneValue b =
+    let x : Int = consume b
+    consume b                          --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed

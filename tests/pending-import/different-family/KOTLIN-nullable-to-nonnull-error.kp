@@ -1,0 +1,44 @@
+-- Source issues: KT-9282 (better diagnostic when passing T? to non-null), KT-153
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--   types.unions.optional_type_sugar
+
+--! mode check
+
+-- POSITIVE: passing a non-null value to a function that expects a non-null type.
+requireString : String -> Int
+let requireString s = s.length
+
+callOk : Int
+let callOk = requireString "hello"
+
+
+-- POSITIVE: unwrapping optional before passing to non-null function is fine.
+callWithUnwrap : String? -> Int
+let callWithUnwrap ms =
+    match ms
+    case Option.None   -> 0
+    case Option.Some s -> requireString s
+
+
+-- NEGATIVE: passing String? where String is expected.
+callBad : String? -> Int
+let callBad ms =
+    requireString ms   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing Int? where Int is expected.
+add : Int -> Int -> Int
+let add a b = a + b
+
+addBad : Int? -> Int
+let addBad mn =
+    add mn 1   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: Elvis ensures non-null before function call.
+callWithElvis : String? -> Int
+let callWithElvis ms =
+    requireString (ms ?: "default")
+

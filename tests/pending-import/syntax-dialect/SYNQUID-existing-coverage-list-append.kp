@@ -1,0 +1,48 @@
+-- Source artifacts: synquid test/pldi16/List-Append.sq, test/current/List-Append.sq.
+-- Spec: data_types.data_declarations,
+--       declarations.totality.portable_well_founded_measures,
+--       declarations.totality.structural_descent,
+--       expressions.match
+--
+-- Synquid's PLDI'16 worked example is a `List a -> List a -> List a`
+-- append whose refinement spec is
+-- `{List a | len _v == len xs + len ys && elems _v == elems xs + elems ys}`.
+-- The Kappa-portable counterpart, absent first-class refinement subset
+-- types, is a total polymorphic append that decreases structurally on its
+-- first argument. Kappa has no refinement subset for `len _v == len xs +
+-- len ys`; that obligation is recorded in SYNQUID_SPEC_ADDITIONS.md.
+-- This fixture pins down the still-portable totality + structural-descent
+-- portion of the example.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a total polymorphic append; the structural measure is `xs`.
+append : forall (a : Type). List a -> List a -> List a
+let append xs ys =
+    match xs
+      case Nil           -> ys
+      case (Cons x xs')  -> Cons x (append xs' ys)
+
+-- POSITIVE: length on a list at one concrete element type exercises
+-- the structural-descent termination certificate together with the
+-- recursive call.
+len : forall (a : Type). List a -> PNat
+let len xs =
+    match xs
+      case Nil          -> Z
+      case (Cons _ ys)  -> S (len ys)
+
+three : PNat
+let three =
+    len (append (Cons Z (Cons (S Z) Nil))
+                (Cons (S (S Z)) Nil))
+
+--! assertNoErrors

@@ -1,0 +1,30 @@
+-- Source issue: carp-lang/Carp#324
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp #324: using a non-symbol (numeric literal) on the left-hand side of
+-- a `let` binding crashed the compiler with a "Non-exhaustive patterns"
+-- Haskell-level error.  The portable Kappa obligation is that a `let`
+-- binder is an irrefutable binder pattern; a literal is a refutable
+-- pattern (matches only that literal) and a let with a refutable pattern
+-- must produce a structured diagnostic, not a compiler crash.
+
+--! mode check
+
+-- POSITIVE: an ordinary identifier binder is a well-formed irrefutable
+-- pattern; the program elaborates and the binding has the expected type.
+plainBinder : Int
+let plainBinder =
+    let x : Int = 2
+    x
+
+--! assertType plainBinder Int
+
+-- NEGATIVE: a literal in binder position is not a valid irrefutable
+-- pattern; rejection must come from the elaborator (a structured
+-- diagnostic) rather than from a downstream pipeline stage.
+literalBinder : Int
+let literalBinder =
+    let 1 : Int = 2   --!! kappa.pattern.non-exhaustive
+    0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

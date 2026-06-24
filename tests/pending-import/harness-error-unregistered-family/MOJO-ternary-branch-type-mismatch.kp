@@ -1,0 +1,53 @@
+-- Source issue: MOJO-49
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.conditionals,
+--       kappa.type.mismatch
+-- Both branches of a conditional expression must have the same type.
+-- A literal (FloatLiteral / IntLiteral) in one branch does not automatically
+-- coerce to the concrete numeric type of the other branch; the mismatch must
+-- be diagnosed as kappa.type.mismatch.
+
+module test
+
+--! mode check
+
+data F32 : Type = F32 Int    -- lightweight stand-in for a 32-bit float value
+data F64 : Type = F64 Int    -- stand-in for a 64-bit float value
+
+asF32 : Int -> F32
+let asF32 n = F32 n
+
+asF64 : Int -> F64
+let asF64 n = F64 n
+
+-- POSITIVE: both branches produce the same type F32.
+selectF32 : Bool -> F32
+let selectF32 cond = if cond then asF32 1 else asF32 2
+
+--! assertType selectF32 Bool -> F32
+
+-- NEGATIVE: left branch is an unlifted Int literal (resolves to Int),
+-- right branch is F32.  The two types are not unifiable without an
+-- explicit coercion → kappa.type.mismatch.
+mixedBranchBad : Bool -> F32
+let mixedBranchBad cond =
+    if cond
+    then 1          --!! kappa.type.mismatch   -- Int literal, not F32
+    else asF32 2
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: swapped: right branch is a raw Int literal.
+mixedBranchBad2 : Bool -> F64
+let mixedBranchBad2 cond =
+    if cond
+    then asF64 99
+    else 1          --!! kappa.type.mismatch   -- Int literal, not F64
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: explicit coercion on both sides resolves the types.
+selectCoerced : Bool -> F32
+let selectCoerced cond =
+    if cond then asF32 1 else asF32 0
+

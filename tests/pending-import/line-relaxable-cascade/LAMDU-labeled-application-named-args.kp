@@ -1,0 +1,72 @@
+-- Source issues: lamdu#124 — can't reorder params; lamdu#134 — missing
+--   operator disambiguation; lamdu#202 — new presentation mode editing.
+--   Lamdu calls multi-argument functions through a labeled-record
+--   parameter; in Kappa the portable equivalent is the named-application
+--   block `f { name = e1, age = e2 }` and the record-parameter form
+--   `f (a = e1, b = e2)`.
+-- Spec: expressions.application.named_function_application,
+--       data_types.data_declarations.constructor_application_named_arguments_c,
+--       types.records.function_parameters
+--   §16.1.7: a named application block `callee { fields... }` supplies
+--   the whole remaining explicit named binder suffix; field order
+--   inside the block is semantically insignificant. Duplicate or extra
+--   names are compile-time errors.
+--   §13.2.8: a record-parameter function `f (a : A, b : B) : R` is
+--   called with a record value `f (a = ..., b = ...)`.
+--
+-- Named-argument application must accept arguments in any order; the
+-- record-parameter form is fully equivalent at the call site.
+
+--! mode check
+
+data Person : Type =
+    MkPerson (name : String) (age : Nat)
+
+-- POSITIVE: constructor applied with a named-application block in
+-- declared order.
+alice : Person
+let alice = MkPerson { name = "Alice", age = 30 }
+
+-- POSITIVE: constructor applied with named arguments in reversed order.
+bob : Person
+let bob = MkPerson { age = 25, name = "Bob" }
+
+-- POSITIVE: positional application of the same constructor.
+charlie : Person
+let charlie = MkPerson "Charlie" 35
+
+-- POSITIVE: record-parameter form — fully equivalent to labeled
+-- application.
+addArgs : (a : Nat, b : Nat) -> Nat
+let addArgs r = r.a + r.b
+
+useAddArgs : Nat
+let useAddArgs = addArgs (b = 2, a = 1)
+
+-- POSITIVE: punned field shorthand at the call site (§13.2.3 — bare
+-- `label` is sugar for `label = label`).
+makePoint : (x : Nat, y : Nat) -> Nat
+let makePoint r = r.x + r.y
+
+useMake : Nat
+let useMake =
+    let x = 3
+    let y = 4
+    makePoint (x = x, y = y)
+
+-- NEGATIVE: a label that does not match any declared parameter.
+badLabel : Person
+let badLabel = MkPerson { name = "Z", height = 1 }    --!! kappa.name.unresolved
+
+-- NEGATIVE: a duplicate name in a named-application block.
+dupLabel : Person
+let dupLabel = MkPerson { name = "X", name = "Y", age = 0 }    --!! kappa.name.ambiguous
+
+-- NEGATIVE: missing required named argument — named blocks must supply
+-- the whole remaining suffix.
+missingLabel : Person
+let missingLabel = MkPerson { name = "X" }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.name.ambiguous
+--! assertDiagnosticFamily error kappa.type.mismatch

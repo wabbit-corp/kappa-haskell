@@ -1,0 +1,59 @@
+-- Source issues: apple/swift #67564 (private declarations in extension
+--   inaccessible to original type in certain cases), apple/swift #47359
+--   (no error when public member in internal class), apple/swift #79176
+--   (unresolvable access control diagnostics for import specifiers).
+--   Names not declared in scope produce kappa.name.unresolved.
+--   A private declaration is restricted to other modules but remains
+--   accessible within its defining module.
+-- Spec: modules.visibility_opacity_private_opaque §8.5,
+--       modules.visibility_opacity_private_opaque.private §8.5.1
+-- Note: cross-module private restrictions cannot be tested in a single-file
+--       test; this test covers intra-module usage and genuine undeclared names.
+
+--! mode check
+
+-- POSITIVE: public declarations are visible everywhere.
+publicHelper : Nat -> Nat
+let publicHelper n = n + 1
+
+result1 : Nat
+let result1 = publicHelper 5
+
+-- POSITIVE: a data type and its constructors visible in this module.
+data Config : Type = Config Nat String
+
+getPort : Config -> Nat
+let getPort (Config p _) = p
+
+cfg : Config
+let cfg = Config 8080 "localhost"
+
+portVal : Nat
+let portVal = getPort cfg
+
+-- POSITIVE: private declarations are accessible within their defining module.
+private internalKey : Nat
+let internalKey = 42
+
+useInternal : Nat
+let useInternal = internalKey + 1
+
+-- POSITIVE: a private type constructor is accessible within this module.
+private data Secret : Type = Secret Nat
+
+unwrapSecret : Secret -> Nat
+let unwrapSecret (Secret n) = n
+
+-- NEGATIVE: referencing a name that is not declared anywhere.
+undeclaredVal : Nat
+let undeclaredVal = noSuchBinding    --!! kappa.name.unresolved
+
+-- NEGATIVE: calling an undeclared function.
+badCall : Nat
+let badCall = noSuchFunction 5    --!! kappa.name.unresolved
+
+-- NEGATIVE: using an undeclared type name.
+undeclaredType : NoSuchType    --!! kappa.name.unresolved
+let undeclaredType = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

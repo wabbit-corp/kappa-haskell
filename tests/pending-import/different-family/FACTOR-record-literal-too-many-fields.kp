@@ -1,0 +1,39 @@
+-- Source issue: Factor #1443 (`T{ foo f 1 2 3 4 5 }` for a 3-slot tuple
+--   currently emits an internal "Cannot create slice" error; the
+--   patch in the issue introduces a proper `too-many-slots` error).
+-- Spec: expressions.application, data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.constructor.arity),
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_CONSTRUCTOR_ARITY_MISMATCH).
+--
+-- A constructor application that supplies more positional arguments than
+-- the constructor declares must fire kappa.constructor.arity with the
+-- portable alias E_CONSTRUCTOR_ARITY_MISMATCH. The diagnostic must
+-- identify the constructor and the expected/actual positional counts.
+
+module test
+
+--! mode check
+
+data Foo : Type =
+    Foo Int Int Int
+
+-- POSITIVE: correct positional arity.
+ok : Foo
+let ok = Foo 1 2 3
+
+--! assertType ok Foo
+
+-- NEGATIVE: supplied five positional arguments where three are expected.
+tooMany : Foo
+let tooMany = Foo 1 2 3 4 5               --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: supplied two positional arguments where three are expected.
+tooFew : Foo
+let tooFew = Foo 1 2                       --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH

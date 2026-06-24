@@ -1,0 +1,60 @@
+-- Source issues: data type parameter scoping in constructor argument types;
+--   type parameters must be in scope regardless of whether the data type
+--   is defined with an eliminator form or a plain clause list.
+-- Source issues: jetbrains/arend#332 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: modules.names.lexical_lookup,
+--       data_types.data_declarations
+--
+-- All parameters of a `data` declaration are in lexical scope throughout
+-- the entire body of the declaration, including all constructor argument
+-- types. This must hold whether the declaration uses a flat constructor
+-- list or a conditional/case-analysis form.
+
+--! mode check
+
+-- POSITIVE: standard parameterized data type. Parameter `A` is in scope
+-- in constructor `cons` argument types.
+data List (A : Type) : Type =
+    nil  : List A
+    cons : A -> List A -> List A
+
+-- POSITIVE: indexed data type where both the index and the parameter
+-- are in scope in each constructor argument type.
+data Vec (A : Type) : Nat -> Type =
+    vnil  : Vec A zero
+    vcons : forall {n : Nat} -> A -> Vec A n -> Vec A (suc n)
+
+-- POSITIVE: a parameterized indexed type defined via pattern-based
+-- constructor selection (conditional form). The parameter `X` must be
+-- in scope in all constructor argument types, regardless of the form.
+data Foo (X : Type) : Nat -> Type =
+    nilFoo  : Foo X zero
+    consFoo : X -> Foo X zero -> Foo X (suc zero)
+
+-- POSITIVE: using the parameterized type correctly.
+exFoo : Foo Nat (suc zero)
+let exFoo = consFoo 42 nilFoo
+
+-- POSITIVE: a data type whose constructors use an implicit type parameter.
+data Either (A B : Type) : Type =
+    left  : A -> Either A B
+    right : B -> Either A B
+
+exLeft : Either Nat Bool
+let exLeft = left 42
+
+exRight : Either Nat Bool
+let exRight = right True
+
+-- POSITIVE: pattern matching on parameterized data uses the parameter
+-- from the scrutinee's type.
+mapEither : forall {A B C : Type} -> (A -> C) -> Either A B -> Either C B
+let mapEither f (left a)  = left (f a)
+let mapEither _ (right b) = right b
+
+-- NEGATIVE: referencing an undeclared type name in a type annotation
+-- demonstrates that out-of-scope names are rejected.
+badTypeRef : UndeclaredType    --!! kappa.name.unresolved
+let badTypeRef = consFoo 42 nilFoo
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,70 @@
+-- Source issues: merging.md (default values section), nickel #908
+-- Spec: types.records.merge.priority (NSA-04)
+-- NOTE: This test depends on NSA-04 (merge priority spec gap). The `&` merge
+-- operator and `| default` field annotation are proposed syntax not yet in Kappa v1.
+-- A field annotated with `default` has the lowest merge priority. When merged with
+-- a field that has no special priority (priority 0), the plain value wins and the
+-- default value is discarded. The final value satisfies any contracts accumulated
+-- from both the default-annotated side and the plain side.
+
+module test
+
+-- POSITIVE: default value is overridden by a plain value.
+-- `base.firewall_enabled | default = True` loses to `patch.firewall_enabled = False`.
+baseConfig : (firewall_enabled : Bool | default)
+let baseConfig = (firewall_enabled = True)
+
+patchConfig : (firewall_enabled : Bool)
+let patchConfig = (firewall_enabled = False)
+
+mergedConfig : (firewall_enabled : Bool)
+let mergedConfig = baseConfig & patchConfig
+
+resolvedFirewall : Bool
+let resolvedFirewall = mergedConfig.firewall_enabled
+
+--! mode check
+--! assertNoErrors
+--! assertType resolvedFirewall Bool
+
+-- The resolved value must be False (from the patch), not True (from the default).
+-- We verify by type, not by value assertion; a conforming test suite would check
+-- the runtime value equals False.
+
+-- POSITIVE: default numeric priority loses to priority 0.
+defaultNum : (x : Number | default)
+let defaultNum = (x = 10)
+
+overrideNum : (x : Number)
+let overrideNum = (x = 99)
+
+mergedNum : (x : Number)
+let mergedNum = defaultNum & overrideNum
+
+numResult : Number
+let numResult = mergedNum.x
+
+--! assertNoErrors
+--! assertType numResult Number
+
+-- POSITIVE: merging in the opposite order (plain & default) also works
+-- because merge is symmetric: default always loses to plain regardless of order.
+reverseOrderNum : (x : Number)
+let reverseOrderNum = overrideNum & defaultNum
+
+reverseResult : Number
+let reverseResult = reverseOrderNum.x
+
+--! assertNoErrors
+--! assertType reverseResult Number
+
+-- POSITIVE: default value is used when there is nothing to override it.
+-- A default field that is never merged with a plain value retains its default.
+onlyDefault : (y : String | default)
+let onlyDefault = (y = "fallback")
+
+defaultRetained : String
+let defaultRetained = onlyDefault.y
+
+--! assertNoErrors
+--! assertType defaultRetained String

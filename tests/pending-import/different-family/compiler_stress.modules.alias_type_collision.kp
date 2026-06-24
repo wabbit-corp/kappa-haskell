@@ -1,0 +1,18 @@
+-- Stress test: A module alias that collides with an existing type name produces a diagnostic
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+
+--! mode check
+
+-- Importing a module under an alias that clashes with a type name already in scope
+-- must produce kappa.name.module-alias-collision.
+
+-- The prelude exports `Int` as a type. Importing any module `as Int` creates a
+-- collision between the module declaration kind `Int` and the prelude type `Int`.
+import std.math as Int   --!! kappa.name.module-alias-collision
+
+-- Using the name `Int` in a type position is now ambiguous: it may refer to
+-- the prelude type or to the module alias.
+useInt : Int -> Int   --!! kappa.name.module-alias-collision
+let useInt x = x
+
+--! assertDiagnosticFamily error kappa.name.module-alias-collision

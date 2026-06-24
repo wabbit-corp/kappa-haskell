@@ -1,0 +1,55 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (h x = case x of [1,2] -> True ; _ -> False is exhaustive, but a
+--   match without a catch-all on a non-trivial input must be rejected
+--   per Kappa §17.1).
+-- Spec: expressions.match (§17.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       kappa.pattern.non-exhaustive.
+--
+-- A `match` on a closed Bool that fails to cover both `True` and
+-- `False` must be rejected as non-exhaustive.
+
+module test
+
+--! mode check
+
+-- POSITIVE: an exhaustive Bool match is accepted.
+boolToInt : Bool -> Int
+let boolToInt b =
+    match b
+    case True  -> 1
+    case False -> 0
+
+--! assertType boolToInt (Bool -> Int)
+
+-- POSITIVE: a Bool match with a catch-all is accepted.
+boolKindLabel : Bool -> String
+let boolKindLabel b =
+    match b
+    case True -> "yes"
+    case _    -> "no"
+
+
+-- NEGATIVE: a Bool match missing the `False` case is not exhaustive.
+partialBool : Bool -> Int
+let partialBool b =
+    match b
+    case True -> 1
+    -- missing False arm — covered by the directive below.
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+data Color : Type =
+    Red
+  | Green
+  | Blue
+
+-- NEGATIVE: a Color match missing one constructor is not exhaustive.
+partialColor : Color -> Int
+let partialColor c =
+    match c
+    case Red   -> 1
+    case Green -> 2
+    -- missing Blue arm — covered by the directive below.
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

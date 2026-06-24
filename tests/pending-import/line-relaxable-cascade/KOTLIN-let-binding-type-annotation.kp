@@ -1,0 +1,43 @@
+-- Source issues: KT-147, KT-4294 (forward access, unnecessary cast warnings)
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings, declarations.let_in
+
+--! mode check
+
+-- POSITIVE: explicit type annotation on a let binding is checked.
+annotated : Int
+let annotated = (42 : Int)
+
+--! assertType annotated Int
+
+-- POSITIVE: let binding with type annotation in a local expression.
+localAnnotated : String
+let localAnnotated =
+    let x : Int = 10
+    let y : Int = 20
+    toString (x + y)
+
+
+-- POSITIVE: annotated binding can be used in downstream expressions.
+useAnnotated : Int -> Int
+let useAnnotated base =
+    let offset : Int = 5
+    base + offset
+
+
+-- POSITIVE: annotation on a nested binding is consistent with its use.
+sumWithAnnotations : Int
+let sumWithAnnotations =
+    let a : Int = 1
+    let b : Int = 2
+    let c : Int = 3
+    a + b + c
+
+--! assertType sumWithAnnotations Int
+
+-- NEGATIVE: annotation that disagrees with the binding type is an error.
+wrongAnnotation : String
+let wrongAnnotation =
+    let x : Int = "not an int"   --!! kappa.type.mismatch
+    "ok"
+
+--! assertDiagnosticFamily error kappa.type.mismatch

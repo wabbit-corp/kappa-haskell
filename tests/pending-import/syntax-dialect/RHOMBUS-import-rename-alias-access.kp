@@ -1,0 +1,58 @@
+-- Source issues: import.rhm in racket/rhombus
+-- Spec: modules.imports (§8.3)
+--   `import M.(x as y)` brings `y` into scope; the original name `x` is not in scope.
+--   An item not imported at all is also not in scope.
+-- Note: Rhombus's whole-module alias `import M as N` is SA-RHOMBUS-04 (not in Kappa §8.3).
+--   Kappa uses the `import M.(x as y)` form for member-level renaming.
+
+--! mode check
+
+module ModA
+    let alpha : String = "alpha-value"
+    let beta  : Int    = 42
+    let gamma : String -> Int = \ s -> String.length s
+
+-- POSITIVE: import with rename — access via the new alias name.
+module ImportRename
+    import ModA.(alpha as renamed_alpha)
+
+    useRenamed : String
+    let useRenamed = renamed_alpha
+
+-- POSITIVE: import two members with renames.
+module ImportTwo
+    import ModA.(alpha as a1, beta as b1)
+
+    combined : Int
+    let combined = String.length a1 + b1
+
+-- POSITIVE: same member imported under a different alias in a different module.
+module ImportAltName
+    import ModA.(alpha as label)
+
+    useLabel : String
+    let useLabel = label
+
+-- POSITIVE: import a function member and apply it.
+module ImportFunc
+    import ModA.(gamma as strLen)
+
+    lenOfHello : Int
+    let lenOfHello = strLen "hello"
+
+-- NEGATIVE: after `import ModA.(alpha as renamed_alpha)`, the original name `alpha`
+-- is not in scope — only `renamed_alpha` is.
+module BadOriginalName
+    import ModA.(alpha as renamed_alpha)
+
+    badOriginal : String
+    let badOriginal = alpha   --!! kappa.name.unresolved
+
+-- NEGATIVE: `beta` was not imported; referencing it is an unresolved name.
+module ImportMissing
+    import ModA.(alpha as a)
+
+    badBeta : Int
+    let badBeta = beta   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

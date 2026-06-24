@@ -1,0 +1,26 @@
+-- Stress test: discriminating an erased scrutinee valid only when constructor is forced by index
+-- Spec: expressions.match.discriminating_erased_scrutinees
+
+--! mode check
+
+data Tag : Bool -> Type =
+  IsTrue  : Tag True
+  IsFalse : Tag False
+
+-- POSITIVE: erased scrutinee of type `Tag True`.
+-- Only IsTrue is reachable (IsFalse would require index False = True).
+-- The forced constructor shape makes discriminating the erased value valid.
+useTag : (0 t : Tag True) -> Int
+let useTag t = match t
+  case IsTrue  -> 1
+  case IsFalse -> impossible
+
+
+-- NEGATIVE: erased scrutinee of type `Tag b` where `b` is an unresolved variable.
+-- The constructor is not forced, so runtime discrimination is not permitted.
+badUseTag : (0 t : Tag b) -> Int
+let badUseTag t = match t   --!! kappa.type.mismatch
+  case IsTrue  -> 1
+  case IsFalse -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch

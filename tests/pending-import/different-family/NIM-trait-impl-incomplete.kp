@@ -1,0 +1,61 @@
+-- Source: nim-lang/Nim#15251 (new-style concepts — incomplete implementation
+--         of a concept must be detected), nim-lang/Nim variant of missing
+--         method from interface (see also vale#374 cross-signal)
+-- Spec: traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- A trait instance that omits a required method is incomplete. Kappa must
+-- reject any instance declaration that fails to provide all declared members.
+
+--! mode check
+module test
+
+trait Serializable (a : Type) =
+    serialize   : (& x : a) -> String
+    deserialize : String -> a
+
+trait Measurable (a : Type) =
+    width  : (& x : a) -> Int
+    height : (& x : a) -> Int
+    area   : (& x : a) -> Int
+
+-- POSITIVE: complete Serializable instance.
+data Point : Type = Point Int Int
+
+instance Serializable Point =
+    let serialize (Point x y) = show x ++ "," ++ show y
+    let deserialize _ = Point 0 0
+
+-- NEGATIVE: Serializable instance missing deserialize.
+data Color : Type = Color Int Int Int
+
+instance Serializable Color =     --!! kappa.implicit.unsolved
+    let serialize (Color r g b) = show r ++ "," ++ show g ++ "," ++ show b
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: complete Measurable instance.
+data Box : Type = Box Int Int
+
+instance Measurable Box =
+    let width  (Box w _) = w
+    let height (Box _ h) = h
+    let area   (Box w h) = w * h
+
+-- NEGATIVE: Measurable instance missing area.
+data Circle : Type = Circle Int
+
+instance Measurable Circle =    --!! kappa.implicit.unsolved
+    let width  (Circle r) = r * 2
+    let height (Circle r) = r * 2
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: generic function that uses a complete instance.
+describeSize : forall a. (@_ : Measurable a) -> (& x : a) -> String
+let describeSize x =
+    show (width x) ++ "x" ++ show (height x)
+
+goodBox : String
+let goodBox = describeSize (Box 10 20)
+

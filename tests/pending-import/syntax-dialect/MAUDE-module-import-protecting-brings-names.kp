@@ -1,0 +1,53 @@
+-- Source: Maude tests/Misc/dataStructures.maude
+--           fmod SET-TEST is
+--             inc SET{Nat} .
+--             ... red intersection(gen(100, 13), gen(100, 4)) .
+--           where `intersection`, `gen`, `insert`, `union` come from the
+--           imported SET{Nat} module via `inc` (including),
+--         tests/Misc/sreduce.maude (fmod LIST-BENCH is pr NAT' . ... uses
+--           +, *, s_, 0 brought in by `pr NAT'`).
+-- Spec: modules.imports,
+--       modules.names.lexical_lookup.
+-- Portable obligation: when module B imports module A, A's public
+--   declarations must be visible in B by their unqualified spellings (subject
+--   to the import form selected).
+
+--! mode check
+
+-- File `lib.lang` would in a real suite live in a separate file. In this
+-- single-file fixture, we declare the producer module first, then reference
+-- it from a second module via `import`.
+
+module lib
+
+data Nat : Type = Z | S Nat
+
+zero : Nat
+let zero = Z
+
+one : Nat
+let one = S Z
+
+succ : Nat -> Nat
+let succ n = S n
+
+module test
+
+import lib.*
+
+-- POSITIVE: zero, one, succ, and Nat are brought into scope by `import lib.*`.
+two : Nat
+let two = succ one
+
+three : Nat
+let three = succ two
+
+isZero : Nat -> Bool
+let isZero n = match n
+    case Z   -> True
+    case S _ -> False
+
+ok : Bool
+let ok = isZero zero
+
+--! assertNoErrors

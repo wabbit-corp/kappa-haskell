@@ -1,0 +1,53 @@
+-- Source issues: egraphs-good/egglog #94 (Parser might mishandle differently-named
+--   values constrained to be equal — `__bogus__` type panic),
+--   egraphs-good/egglog #105 (Unioned values found to be `!=`),
+--   egraphs-good/egglog #298 (Clarifying Valid Types — `=`/`!=` typing rules).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch — §3.2.3).
+-- Equality and inequality `==` / `!=` require both sides to have the same type.
+-- Egglog originally panicked with `__bogus__` when both sides came from
+-- different sorts; Kappa requires kappa.type.mismatch at the comparison site.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Var (s : String)
+
+-- POSITIVE: same-type equality.
+eqA : Bool
+let eqA = (Num 1) == (Num 2)
+
+eqB : Bool
+let eqB = 1 == 2
+
+eqC : Bool
+let eqC = "a" == "b"
+
+eqD : Bool
+let eqD = (Var "x") != (Var "y")
+
+-- NEGATIVE: comparing Int and String.
+badIS : Bool
+let badIS = (1 : Int) == "1"               --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: comparing Math and Int.
+badMI : Bool
+let badMI = (Num 1) == (1 : Int)           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: comparing Math and String through `!=`.
+badMS : Bool
+let badMS = (Var "x") != "x"               --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: comparing two values of the same user-defined data type is
+-- well-typed.
+eqMath : Bool
+let eqMath = (Var "x") == (Var "x")

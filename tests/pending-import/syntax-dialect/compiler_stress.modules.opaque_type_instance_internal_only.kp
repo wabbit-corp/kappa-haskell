@@ -1,0 +1,61 @@
+-- Stress test: An opaque type's constructors are accessible only within the
+--   module that defines them.  External code (or code in the same file but
+--   after the module boundary) must use the published smart-constructor API.
+--   Direct constructor access and pattern matching are rejected from outside.
+-- Spec: modules.visibility_opacity_private_opaque.opaque,
+--   compiler.frontir.standard_diagnostic_families.name_import
+
+--! mode check
+
+module currency
+
+-- Hidden representation: constructor is not exported.
+public opaque data Currency : Type =
+    Currency Int
+
+-- Smart constructor: validates and wraps.
+public mkCurrency : Int -> Option Currency
+let mkCurrency n =
+    if n >= 0 then Just (Currency n)
+    else Nothing
+
+-- Accessor: exposes the wrapped value.
+public getAmount : Currency -> Int
+let getAmount (Currency n) = n
+
+-- Internal arithmetic (constructor visible here).
+public addCurrency : Currency -> Currency -> Currency
+let addCurrency (Currency a) (Currency b) = Currency (a + b)
+
+public zeroCurrency : Currency
+let zeroCurrency = Currency 0
+
+-- POSITIVE: internal test.
+internalTest : Bool
+let internalTest = getAmount (addCurrency zeroCurrency (Currency 5)) == 5
+
+---
+
+module client
+
+import currency
+
+-- POSITIVE: using public API.
+validAmount : Option Currency
+let validAmount = currency.mkCurrency 100
+
+getVal : Currency -> Int
+let getVal c = currency.getAmount c
+
+-- NEGATIVE: direct construction with the hidden constructor.
+-- `currency.Currency` is not exported; using it must fail.
+badConstruct : Currency
+let badConstruct = currency.Currency 500   --!! kappa.name.unresolved
+
+-- NEGATIVE: pattern matching on the hidden constructor.
+badPatMatch : Currency -> Int
+let badPatMatch c =
+    match c
+    case currency.Currency n -> n   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,47 @@
+-- Source issue: MOJO-1633
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       declarations.terms,
+--       kappa.type.mismatch
+-- An explicit type annotation on a binding (`let x : T = expr`) must be
+-- checked: if `expr` does not have type T, the compiler must diagnose
+-- kappa.type.mismatch rather than silently accepting the declaration.
+-- In a generic context (bound by trait constraints), the annotation still
+-- constrains the RHS.
+
+module test
+
+--! mode check
+
+-- POSITIVE: annotation matches the expression type.
+goodAnnotation : Int
+let goodAnnotation =
+    let n : Int = 42
+    n
+
+--! assertType goodAnnotation Int
+
+-- NEGATIVE: annotation says Int but the RHS produces Bool.
+wrongTypeLiteral : Int
+let wrongTypeLiteral =
+    let n : Int = True   --!! kappa.type.mismatch
+    n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: in a generic function, the annotation T is concrete for the
+-- instantiation but the RHS is of the wrong generic type S.
+-- Let T and S be two independent Copyable types; assigning an S value into a
+-- T-annotated binding has no evidence of T ~ S and must be rejected.
+checkedGeneric : forall (T S : Type). Copyable T => Copyable S => S -> T
+let checkedGeneric s =
+    let x : T = s    --!! kappa.type.mismatch
+    x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: annotation is the correct type for the bound variable.
+correctGeneric : forall (T : Type). Copyable T => T -> T
+let correctGeneric v =
+    let x : T = v
+    x
+

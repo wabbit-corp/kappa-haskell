@@ -1,0 +1,29 @@
+-- Source: Boomerang docs/docs/main.src "Operators" / "Postfix operators"
+--         tables. Boomerang's postfix `*`, `+`, `?` desugar to
+--         regexp_iter / lens_star / lens_plus / lens_option depending on
+--         the operand type. In Kappa, postfix operator use requires a
+--         `postfix` fixity declaration in scope per §5.5.3.
+-- Spec: lexical.operator_identifiers_fixity,
+--       lexical.operator_identifiers_fixity.declarations,
+--       lexical.operator_identifiers_fixity.infix_gating.
+-- Spec gap: BSA-BOOMERANG-09 — Kappa spec lacks a dedicated diagnostic
+--   family for "operator token used in postfix position without an
+--   in-scope postfix fixity"; the obligation is recorded as a generic
+--   compile-time rejection.
+-- Portable obligation: using a postfix operator without an in-scope
+--   `postfix` fixity declaration is rejected.
+
+module test
+
+--! mode check
+
+data Regex : Type =
+    Regex String
+
+-- NEGATIVE: postfix `*` has no `postfix` fixity in scope. Per §5.5.3,
+-- postfix position requires a `postfix` fixity in scope; without one
+-- the form is rejected.
+starApplied : Regex
+let starApplied = (Regex "a")*
+
+--! assertErrorCount 1

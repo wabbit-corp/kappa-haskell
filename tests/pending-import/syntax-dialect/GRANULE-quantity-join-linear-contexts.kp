@@ -1,0 +1,46 @@
+-- Source: granule-project/granule PR #196 (Fix #195 — linearity bug)
+-- Spec: expressions.match.narrowing_is_consuming (GSA-10),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- When a `match` narrows control flow, the linear post-context of every
+-- branch MUST agree. A linear binding consumed in one branch but not the
+-- other is a join-time error surfacing `kappa.quantity.unsatisfied`.
+
+module test
+
+--! mode check
+
+data Tag : Type =
+    TagA
+    TagB
+
+data Token : Type =
+    MkToken Int
+
+intrinsic burn : (1 t : Token) -> Int
+
+-- POSITIVE: both branches consume the linear `t` exactly once.
+balanced : (1 t : Token) -> Tag -> Int
+let balanced t tag =
+    match tag
+      case TagA -> burn t
+      case TagB -> burn t
+
+--! assertType balanced ((1 t : Token) -> Tag -> Int)
+
+-- NEGATIVE: branch TagA consumes `t`; branch TagB silently drops it.
+unbalancedDrop : (1 t : Token) -> Tag -> Int
+let unbalancedDrop t tag =
+    match tag
+      case TagA -> burn t
+      case TagB -> 0             --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: branch TagA consumes `t` once; branch TagB consumes twice.
+unbalancedDup : (1 t : Token) -> Tag -> Int
+let unbalancedDup t tag =
+    match tag
+      case TagA -> burn t
+      case TagB -> burn t + burn t   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

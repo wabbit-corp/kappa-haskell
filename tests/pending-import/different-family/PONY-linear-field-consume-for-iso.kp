@@ -1,0 +1,40 @@
+-- Source issues: ponyc#50, ponyc#2857, ponyc#1964
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.linear_discharge_discard_destructor_use
+-- In Pony, a class with an iso field must consume the field (destructive read)
+-- when the field value needs to be extracted as an iso. Simply reading the
+-- field without consuming yields a tag (opaque) reference, not an iso.
+-- In Kappa, a record with a linear (quantity-1) field: projecting the field
+-- as a borrow gives read access; consuming the field transfers ownership.
+-- Returning a linear field from a borrowed container without consuming it
+-- violates the uniqueness invariant.
+
+--! mode check
+
+data Counter : Type = Counter Int
+
+data Container : Type =
+    Container (1 inner : Counter)
+
+-- POSITIVE: consuming the whole container to get ownership of inner.
+-- Because the Container is linear (consumed in the pattern), `inner` is
+-- available at quantity 1 and can be returned.
+goodExtract : (1 c : Container) -> Counter
+let goodExtract (Container inner) = inner
+
+-- POSITIVE: reading from a borrowed container.
+-- The borrow provides a borrowed projection of `inner`; extracting the
+-- integer field through a borrowed Counter is fine.
+readValue : (& c : Container) -> Int
+let readValue (Container inner) =
+    match inner
+    case Counter n -> n
+
+-- NEGATIVE: trying to extract the linear inner field from a borrowed
+-- container and return it at quantity 1. The borrow only allows read
+-- access; the caller cannot give up ownership of the inner field it
+-- does not hold linearly.
+badExtract : (& c : Container) -> Counter
+let badExtract (Container inner) = inner   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

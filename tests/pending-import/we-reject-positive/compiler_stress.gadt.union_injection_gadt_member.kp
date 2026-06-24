@@ -1,0 +1,32 @@
+-- Stress test: GADT type used as member of a union; injection where member is GADT-typed
+-- Spec: types.unions.interaction_gadts_indexed_types, types.unions.introduction_injection
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+  VNil  : Vec a 0
+  VCons : a -> Vec a n -> Vec a (n+1)
+
+-- Result is a union of String, a zero-length Vec, or a one-length Vec.
+type Result (a : Type) : Type = (| String | Vec a 0 | Vec a 1 |)
+
+-- Inject VNil as the Vec a 0 member of Result.
+emptyResult : Result Int
+let emptyResult = (| VNil : Vec Int 0 |)
+
+-- Inject a singleton Vec as the Vec a 1 member of Result.
+singleResult : Result Int
+let singleResult = (| VCons 5 VNil : Vec Int 1 |)
+
+-- Inject a String error as the String member of Result.
+errResult : Result Int
+let errResult = (| "error" : String |)
+
+-- Dispatch on a Result; each GADT-indexed branch is live.
+describeResult : {a : Type} -> Result a -> String
+let describeResult r = match r
+  case (| _ : String |)    -> "error"
+  case (| _ : Vec a 0 |)   -> "empty"
+  case (| _ : Vec a 1 |)   -> "singleton"
+
+--! assertNoErrors

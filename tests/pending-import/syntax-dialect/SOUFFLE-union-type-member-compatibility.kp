@@ -1,0 +1,52 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system3/type_system3.dl,
+--   tests/semantic/type_system11/type_system11.dl,
+--   souffle-lang #201 (type system fails on union type expanding to different primitive types),
+--   souffle-lang #838 (crash on union of symbol and number types).
+-- Spec: types.unions (§13.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- In Kappa, a union type `(| T1 | T2 |)` is well-formed when its members are valid types.
+-- Injecting a value into a union requires the value's type to be a member of the union.
+-- Injecting from outside the union's member set must produce kappa.type.mismatch.
+-- This test also verifies positive cases for well-formed unions.
+
+--! mode check
+
+-- Well-formed union types.
+type IntOrString = (| Int | String |)
+type MaybeInt    = (| Unit | Int |)
+type ABool       = (| Bool | Int | String |)
+
+-- POSITIVE: injecting values of the correct member types.
+let a : IntOrString = (| 42 : Int |)
+let b : IntOrString = (| "hello" : String |)
+let c : MaybeInt    = (| () : Unit |)
+let d : MaybeInt    = (| 7 : Int |)
+
+-- POSITIVE: matching over union members.
+let showIS : IntOrString -> String
+let showIS v =
+    match v
+        case (| n : Int    |) -> "int"
+        case (| s : String |) -> "str"
+
+-- NEGATIVE: Float is not a member of IntOrString.
+let bad1 : IntOrString = (| 1.5 : Float |)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: Bool is not a member of MaybeInt.
+let bad2 : MaybeInt = (| True : Bool |)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: widening from a narrower union to a wider one.
+type Narrow = (| Int | String |)
+type Wide   = (| Int | String | Bool |)
+
+let narrow : Narrow = (| 1 : Int |)
+let wide   : Wide   = (| narrow : Narrow |)   -- widening injection
+
+-- NEGATIVE: assigning an incompatible concrete type to a union.
+let bad3 : ABool = 3.14    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

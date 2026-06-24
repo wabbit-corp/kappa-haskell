@@ -1,0 +1,51 @@
+-- Source issues: narya #4 (absurd that lives in check), narya PR #6 (allow
+--               case trees in arbitrary positions); harvested tests
+--               test/black/errors.t / data-types.rst (def ⊥ : Type ≔ data []).
+-- Spec: data_types.data_declarations,
+--       expressions.match.case_impossible_empty_remainder,
+--       compiler.coreir.inhabitance_summaries
+--
+-- A data type with zero constructors is empty. A function whose scrutinee
+-- belongs to such a type may be defined by a `match` whose only clause is
+-- `case impossible` (§17.1.5): the empty-remainder is accepted because the
+-- refined case type has inhabitance summary Empty.
+
+--! mode check
+
+data Empty : Type =
+
+-- POSITIVE: any type can be produced from an inhabitant of Empty by an
+-- empty-remainder match.
+absurd : forall (a : Type). Empty -> a
+let absurd e =
+    match e
+      case impossible
+
+-- POSITIVE: Empty in a contradictory hypothesis position; the well-typed
+-- forward witness can still be returned.
+explosion : forall (a : Type). Empty -> a -> a
+let explosion _ x = x
+
+-- POSITIVE: combining a closed sum branch with absurd on the empty side.
+data Either (a : Type) (b : Type) : Type =
+    Left  : a -> Either a b
+    Right : b -> Either a b
+
+unwrapLeft : forall (a : Type). Either a Empty -> a
+let unwrapLeft x =
+    match x
+      case Left a  -> a
+      case Right e -> absurd a e
+
+-- NEGATIVE: a `case impossible` whose remaining uncovered scrutinee
+-- remainder is still inhabited is rejected as non-exhaustive (§17.1.5).
+data Bit : Type =
+    B0 : Bit
+    B1 : Bit
+
+badMatch : Bit -> Bit
+let badMatch b =
+    match b
+      case impossible    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

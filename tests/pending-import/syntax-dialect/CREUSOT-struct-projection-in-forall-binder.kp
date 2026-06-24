@@ -1,0 +1,34 @@
+-- Source issues: CREUSOT-1538
+-- Spec: expressions.patterns.forms, types.records.formation,
+--       types.quantification
+-- Struct member projection (record-field access) is a valid term inside
+-- a universally quantified body; Kappa's spec elaboration preserves the
+-- projection.  No spec gap; this test asserts current portable behavior.
+
+module test
+
+--! mode check
+
+data Foo : Type = Foo { bar : () }
+
+-- POSITIVE: trivial quantifier with a struct projection on the body.
+let trivialProjectionInForall : Foo -> Bool
+let trivialProjectionInForall foo =
+    forall (_x : Unit). foo.bar == ()
+
+-- POSITIVE: nested record projection inside a quantifier body.
+data Outer : Type = Outer { inner : Foo }
+
+let nestedProjection : Outer -> Bool
+let nestedProjection o =
+    forall (_x : Unit). o.inner.bar == ()
+
+-- POSITIVE: projection appearing in a binary spec relation.
+data Pair : Type = Pair { fst : Int, snd : Int }
+
+let projectionInEquality : Pair -> Bool
+let projectionInEquality p =
+    forall (k : Int). p.fst + k == p.fst + k
+
+--! assertNoErrors
+--! assertType trivialProjectionInForall (Foo -> Bool)

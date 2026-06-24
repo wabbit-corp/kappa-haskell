@@ -1,0 +1,75 @@
+-- Source issues: CAIRO-6889, CAIRO-PR-6714 (Handling Visibility Use Star Semantic),
+--               CAIRO-PR-8514 (allow for recursive glob imports)
+-- Spec: modules.imports (§8.3), modules.imports.item_kind_selectors (§8.3.2),
+--       modules.visibility_opacity_private_opaque (§8.5),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§8.3 "Imports"):
+--   "A glob import `import M.*` introduces every exported name from M into
+--    the local scope. It does NOT introduce private items from M. If a glob-
+--    introduced name shadows a prelude or other in-scope name and both are
+--    visible, the result is an ambiguity diagnostic."
+-- Cairo issue CAIRO-6889: `use core::keccak::*` failed because it tried to
+--   import `core::keccak::Span` which was a re-export of a private type;
+--   the implementation rejected the glob because it could not navigate
+--   through the private re-export.
+-- In Kappa: a glob import only brings in names that are publicly exported.
+-- Private items are not included. If the module has a private re-export of
+-- a public type, that type is still accessible via its original path, but
+-- the private re-export name is not introduced.
+
+--! mode check
+
+-- A module that exports some public and some private items.
+module lib
+
+public type Widget = Int
+public widgetOp : (& w : Widget) -> Int
+let widgetOp w = w
+
+private type Secret = Bool
+private secretVal : Secret
+let secretVal = True
+
+-- A public re-export alias.
+public type W = Widget
+
+-- A module that uses a glob import of lib.
+module consumer
+import lib.*
+
+-- POSITIVE: `Widget` and `widgetOp` are in scope via the glob.
+useWidget : Int
+let useWidget = widgetOp (5 : Widget)
+
+-- POSITIVE: `W` (public alias) is also in scope.
+useAlias : Int
+let useAlias = widgetOp (3 : W)
+
+-- NEGATIVE: `Secret` is private and NOT imported by the glob.
+useSecret : Secret
+let useSecret = secretVal                --!! kappa.name.unresolved
+
+-- NEGATIVE: `secretVal` is also private and not in scope.
+badVal : Secret
+let badVal = secretVal                   --!! kappa.name.unresolved
+
+-- POSITIVE: glob import of a module with no private items imports everything.
+module all_public
+public alpha : Int
+let alpha = 1
+public beta : Int
+let beta = 2
+
+module useAll
+import all_public.*
+
+sumAlphaBeta : Int
+let sumAlphaBeta = alpha + beta
+
+-- NEGATIVE: glob import does not re-introduce names with different visibility;
+-- an unqualified use of a name that only exists in a sub-module still fails.
+badNested : Int
+let badNested = lib.Secret            --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

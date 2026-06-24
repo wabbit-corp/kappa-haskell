@@ -1,0 +1,4 @@
+module foundation
+
+fortyTwo : Int
+let fortyTwo = 42

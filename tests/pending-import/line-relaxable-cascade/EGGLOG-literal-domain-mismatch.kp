@@ -1,0 +1,47 @@
+-- Source issues: egraphs-good/egglog #131 (what are the current semantics for
+--   under/overflow in the built in number types?),
+--   egraphs-good/egglog #148 (Integer overflow in semi_naive_set_function),
+--   egraphs-good/egglog #240 (Overflow when adding durations during pop),
+--   egraphs-good/egglog PR#502 (Fix the behaviour of i64 primitives on overflow).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.literal-domain-mismatch, kappa.type.mismatch),
+--       compiler.frontir.portable_diagnostic_code_aliases (§3.1.4,
+--       E_NUMERIC_LITERAL_DOMAIN_MISMATCH).
+-- A literal whose magnitude exceeds the declared numeric domain must be
+-- rejected with kappa.type.literal-domain-mismatch, not silently wrap or
+-- panic. Egglog originally returned silent overflow for i64 primitives.
+
+module test
+
+--! mode check
+
+-- POSITIVE: literals inside i64 range.
+okMax : Int
+let okMax = 9223372036854775807     -- 2^63 - 1
+
+okMin : Int
+let okMin = -9223372036854775808    -- -2^63
+
+-- NEGATIVE: literal one past i64 max.
+badPos : Int
+let badPos = 9223372036854775808     --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: literal one past i64 min (after sign).
+badNeg : Int
+let badNeg = -9223372036854775809    --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: passing a float literal where an Int is expected.
+badF : Int
+let badF = 3.14                       --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: passing a numeric literal where a String is expected.
+badS : String
+let badS = 42                         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

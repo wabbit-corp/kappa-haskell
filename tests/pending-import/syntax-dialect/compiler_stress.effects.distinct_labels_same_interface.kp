@@ -1,0 +1,46 @@
+-- Stress test: Two distinct effect labels carrying the same interface are handled independently
+-- Spec: effects.monadic_core.effect_labels.identity_and_handler_matching,
+--       effects.monadic_core.effect_label_identity_handler_matching.examples
+
+--! mode check
+
+-- A single effect interface with get and put operations.
+effect State =
+    1 get : Unit -> Int
+    1 put : Int  -> Unit
+
+-- POSITIVE TEST: two distinct labels 'outer' and 'inner' both carry State.
+-- Nested handlers: 'outer' handles label 'outer'; 'inner' handles label 'inner'.
+-- Each handler sees only operations dispatched under its own label.
+
+let runInner
+    (forall (r : EffRow))
+    (comp : Eff <[inner : State | r]> Int)
+    : Eff r Int =
+    handle inner comp with
+        case return x   -> pure x
+        case get _ k    -> k 0
+        case put _ k    -> k ()
+
+let runOuter
+    (forall (r : EffRow))
+    (comp : Eff <[outer : State | r]> Int)
+    : Eff r Int =
+    handle outer comp with
+        case return x   -> pure x
+        case get _ k    -> k 100
+        case put _ k    -> k ()
+
+-- Computation using both labels independently.
+let program : Eff <[outer : State, inner : State]> Int =
+    do
+        let a = outer.get ()
+        inner.put 42
+        let b = inner.get ()
+        pure (a + b)
+
+-- Eliminating inner first, then outer leaves a pure Int.
+let result : Int =
+    runOuter (runInner program)
+
+--! assertNoErrors

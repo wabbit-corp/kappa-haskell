@@ -1,0 +1,30 @@
+-- Source issues: inko#787, inko#811
+-- Spec: types.universes.quantities, traits.instances.associated_static_member_instance_checking
+-- Inko: inside a trait implementation, casting 'self' to a different type
+-- (including the trait type itself) is rejected. The concrete type of 'self'
+-- and the target type are distinct; no implicit coercion between them exists.
+-- In Kappa, assigning a value of one concrete type to a binding declared with
+-- a different type is a type mismatch.
+
+--! mode check
+
+data Celsius : Type = Celsius Float
+data Fahrenheit : Type = Fahrenheit Float
+
+trait Temperature (a : Type) =
+    asCelsius : (& self : a) -> Float
+
+instance Temperature Celsius =
+    let asCelsius (Celsius c) = c
+
+-- POSITIVE: correctly implemented conversion.
+toFahrenheit : Celsius -> Float
+let toFahrenheit (Celsius c) = c
+
+
+-- NEGATIVE: the declared return type is Fahrenheit but the implementation
+-- returns a Celsius value — the concrete types do not match.
+convertWrong : Celsius -> Fahrenheit
+let convertWrong c = c   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

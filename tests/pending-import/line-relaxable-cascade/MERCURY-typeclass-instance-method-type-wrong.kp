@@ -1,0 +1,76 @@
+-- Source issues: invalid/method_impl.m (instance method has wrong return type)
+-- Spec: traits.instances.associated_static_member_instance_checking
+--       (kappa.type.mismatch)
+-- When an instance body provides a method implementation whose type does not
+-- match the trait method's required type after substituting the instance
+-- type argument, the checker must reject the instance with a type mismatch.
+
+module test
+
+-- A trait requiring a method `m1 : a -> Int`.
+trait ClassA (a : Type) =
+    m1 : a -> Int
+
+data Foo : Type = Foo
+
+-- Helper with WRONG return type: returns String instead of Int.
+fooM1Wrong : Foo -> String
+let fooM1Wrong _ = "forty-two"
+
+-- NEGATIVE: instance provides a method of type `Foo -> String`,
+-- but the trait requires `Foo -> Int`.
+instance ClassA Foo =
+    let m1 = fooM1Wrong    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: instance for a different type with a correctly-typed method.
+data Baz : Type = Baz Int
+
+baz_m1 : Baz -> Int
+let baz_m1 (Baz n) = n
+
+instance ClassA Baz =
+    let m1 = baz_m1
+
+--! assertType m1 Baz -> Int
+
+-- NEGATIVE: inline wrong-type implementation.
+-- The trait method `m1 : Bar -> Int` cannot be satisfied by a body that
+-- returns a Bool.
+data Bar : Type = Bar
+
+instance ClassA Bar =
+    let m1 (_ : Bar) = True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: correct inline implementation.
+data Qux : Type = Qux String
+
+instance ClassA Qux =
+    let m1 (Qux _) = 0
+
+
+-- A two-parameter trait: method `convert : a -> b`.
+trait Convert (a : Type) (b : Type) =
+    convert : a -> b
+
+data X : Type = X Int
+data Y : Type = Y String
+
+-- NEGATIVE: convert returns X when instance head says b=Y.
+instance Convert X Y =
+    let convert (X n) = X n    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: correct implementation for a different combination.
+data P : Type = P Bool
+data Q : Type = Q Int
+
+instance Convert P Q =
+    let convert (P b) = Q (if b then 1 else 0)
+
+
+--! mode check

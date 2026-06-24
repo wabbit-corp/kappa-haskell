@@ -1,0 +1,50 @@
+-- Source issue: Koka #164
+-- Spec: effects.monadic_core.eff_effect_rows
+-- Parametric effect row weakening: a computation with abstract effect row
+-- can be used in a context that adds concrete labels to that row.
+-- For row variable `row : EffRow`, the coercion
+--   Eff row a  →  Eff <[console : Console | row]> a
+-- is valid because row ⊆ <[console : Console | row]>.
+-- This is the polymorphic form of effect row weakening, complementing the
+-- concrete-row case tested in koka_857_row_weakening.lang.
+
+module test
+
+effect Console =
+    ω print : String -> Unit
+
+effect Log =
+    ω logStr : String -> Unit
+
+-- f has abstract row `row`; calling it inside a function returning
+-- Eff <[console : Console | row]> a is accepted by row weakening.
+callInConsoleContext : (f : Unit -> Eff row a) -> Eff <[console : Console | row]> a
+let callInConsoleContext f = f ()
+
+--! mode check
+--! assertNoErrors
+--! assertType callInConsoleContext (f : Unit -> Eff row a) -> Eff <[console : Console | row]> a
+
+-- Lifting a pure (empty-row) computation into any extended row.
+-- Eff <[ ]> a is the smallest element, coercible to any row by weakening.
+liftIntoExtended : Eff <[ ]> a -> Eff <[console : Console | row]> a
+let liftIntoExtended comp = comp
+
+--! assertNoErrors
+
+-- Double extension: adding two concrete labels to an abstract row.
+callInLogConsoleContext : (f : Unit -> Eff row a) -> Eff <[log : Log, console : Console | row]> a
+let callInLogConsoleContext f = f ()
+
+--! assertNoErrors
+
+-- Practical usage: a computation returning Eff <[log : Log]> Unit
+-- is admitted in context Eff <[log : Log, console : Console]> Unit
+-- by instantiating row := <[log : Log]> in callInConsoleContext.
+logOnlyComp : Eff <[log : Log]> Unit
+let logOnlyComp = log.logStr "hello"
+
+widenedComp : Eff <[log : Log, console : Console]> Unit
+let widenedComp = callInConsoleContext (fun _ -> logOnlyComp)
+
+--! assertNoErrors

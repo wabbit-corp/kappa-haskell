@@ -1,0 +1,83 @@
+-- Source artifacts: cooltt test typeclass.cooltt (functor, applicative, monad
+--               hierarchy with `include`), test algebra.cooltt (monoid,
+--               commutative-monoid with `include monoid`).
+-- Source tests: cooltt test/typeclass.cooltt (corpus repos/github-redprl-cooltt/tests/test/typeclass.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: traits.instances, declarations.signatures
+--
+-- A trait hierarchy models inclusion: a more specific trait `Applicative`
+-- includes all methods of a weaker trait `Functor`. An instance of `Applicative`
+-- must supply all methods of both `Functor` and `Applicative`.
+-- Key obligations:
+-- - Including a trait inherits all its methods.
+-- - An instance of a derived trait automatically satisfies the parent trait.
+-- - Methods may be called at the parent trait's interface when only the parent
+--   is required.
+
+--! mode check
+
+-- POSITIVE: base trait with one method.
+trait Functor (F : Type -> Type) where
+    fmap : forall {A B : Type} -> (A -> B) -> F A -> F B
+end
+
+-- POSITIVE: derived trait that includes Functor and adds a method.
+trait Applicative (F : Type -> Type) extends Functor F where
+    pure : forall {A : Type} -> A -> F A
+    ap   : forall {A B : Type} -> F (A -> B) -> F A -> F B
+end
+
+-- POSITIVE: further derived trait.
+trait Monad (F : Type -> Type) extends Applicative F where
+    bind : forall {A B : Type} -> F A -> (A -> F B) -> F B
+end
+
+-- POSITIVE: Maybe type for instances.
+data Maybe (A : Type) : Type =
+    nothing :       Maybe A
+    just    : A -> Maybe A
+
+-- POSITIVE: Functor instance for Maybe.
+instance functorMaybe : Functor Maybe where
+    let fmap _ nothing  = nothing
+    let fmap f (just x) = just (f x)
+end
+
+-- POSITIVE: Applicative instance for Maybe (includes Functor methods).
+instance applicativeMaybe : Applicative Maybe where
+    let fmap _ nothing  = nothing
+    let fmap f (just x) = just (f x)
+
+    let pure x = just x
+    let ap nothing    _        = nothing
+    let ap _          nothing  = nothing
+    let ap (just f)   (just x) = just (f x)
+end
+
+-- POSITIVE: Monad instance for Maybe (includes Applicative and Functor).
+instance monadMaybe : Monad Maybe where
+    let fmap _ nothing  = nothing
+    let fmap f (just x) = just (f x)
+
+    let pure x = just x
+    let ap nothing    _        = nothing
+    let ap _          nothing  = nothing
+    let ap (just f)   (just x) = just (f x)
+
+    let bind nothing  _ = nothing
+    let bind (just x) f = f x
+end
+
+-- POSITIVE: using a Functor method on a Monad instance.
+-- The Monad instance satisfies Functor; `fmap` is available.
+mappedMaybe : Maybe Nat
+let mappedMaybe = fmap suc (just 5)
+
+-- POSITIVE: using Monad's bind.
+doCompute : Maybe Nat
+let doCompute = bind (just 3) (\n -> just (n + n))
+
+-- NEGATIVE: applying a method from a trait to an incompatible type.
+badFmap : Nat
+let badFmap = fmap suc 42    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

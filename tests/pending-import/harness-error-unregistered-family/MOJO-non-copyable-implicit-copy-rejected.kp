@@ -1,0 +1,47 @@
+-- Source issue: MOJO-1739
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       types.universes.quantities,
+--       kappa.quantity.unsatisfied
+-- A type that does not implement Copyable must not be silently copied by the
+-- compiler when bound to a quantity-ω (unrestricted) position.
+-- Implicitly copying a linear value — for example by binding it twice from a
+-- non-copying source — must be rejected with kappa.quantity.unsatisfied.
+
+module test
+
+--! mode check
+
+-- A non-copyable resource type (no Copyable instance provided).
+data Resource : Type =
+    Resource Int
+
+-- `Resource` is intentionally not copyable; it has no Copyable instance.
+-- A function that consumes a Resource exactly once.
+useResource : (1 r : Resource) -> Int
+let useResource (Resource n) = n
+
+-- POSITIVE: use the resource once.
+useOnce : Int
+let useOnce =
+    let r = Resource 10
+    useResource r
+
+--! assertType useOnce Int
+
+-- NEGATIVE: assign the same resource into two separate ω-bindings.
+-- Because Resource is not Copyable, duplicating it is a quantity violation.
+duplicateBad : Int
+let duplicateBad =
+    let r = Resource 99
+    let a = r              --!! kappa.quantity.unsatisfied  -- implicit copy
+    let b = r              -- second use of non-copyable linear value
+    useResource a + useResource b
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: move r into a function that consumes it; afterwards r is gone.
+moveThenUse : Int
+let moveThenUse =
+    let r = Resource 5
+    useResource r
+

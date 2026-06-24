@@ -1,0 +1,74 @@
+-- Source issues: rzk docs (getting-started/dependent-types.rzk.md) —
+--   attempting to write the second projection of a Sigma type as
+--   `(Σ (a : A), B a) → B a` is an error because `a` is not in scope
+--   outside the Sigma type binder. The correct type uses a dependent function.
+-- Spec: modules.names.lexical_lookup, types.quantification
+--   §7.1: a variable bound inside a type expression is not in scope at the
+--   enclosing return-type position.
+--   §11.3: dependent function types thread the binding correctly.
+--
+-- When defining the second projection of a dependent pair, the bound variable
+-- from the Sigma binder is not in scope in the return type if written naively.
+-- The correct approach uses a dependent return type `B (first p)` or a
+-- dependent function `(z : Σ (a : A), B a) → B (first z)`.
+
+--! mode check
+
+-- POSITIVE: defining pr₁ (first projection) correctly — return type is A,
+-- which does not reference the bound variable `a`.
+data Sigma (a : Type) (b : a -> Type) : Type =
+    MkSigma : (x : a) -> b x -> Sigma a b
+
+pr1 : forall (a : Type) (b : a -> Type). Sigma a b -> a
+let pr1 (MkSigma x _) = x
+
+-- POSITIVE: defining pr₂ (second projection) correctly — the return type
+-- uses `pr1 p` to refer to the first component, keeping `a` in scope.
+pr2 : forall (a : Type) (b : a -> Type). (p : Sigma a b) -> b (pr1 p)
+let pr2 (MkSigma _ y) = y
+
+-- POSITIVE: using the correct projections.
+sigmaExample : Sigma Nat (\n -> n = n)
+let sigmaExample = MkSigma 42 refl
+
+proj1Result : Nat
+let proj1Result = pr1 sigmaExample
+
+proj2Result : 42 = 42
+let proj2Result = pr2 sigmaExample
+
+-- POSITIVE: pattern-matching style second projection — also correct.
+sndPat : forall (a : Type) (b : a -> Type). Sigma a b -> Sigma a b -> Sigma a b
+let sndPat p q =
+    match p
+    case MkSigma x y ->
+        match q
+        case MkSigma _ y2 -> MkSigma x y2
+
+-- POSITIVE: a dependent function whose argument type is a Sigma type;
+-- the return type correctly depends on the first component.
+useDepPair : forall (a : Type) (b : a -> Type) (p : Sigma a b). b (pr1 p)
+let useDepPair p = pr2 p
+
+-- POSITIVE: the total type of a Sigma with constant fiber is a product.
+prodViaSigma : forall (a b : Type). Type
+let prodViaSigma a b = Sigma a (\_ -> b)
+
+mkProd : forall (a b : Type). a -> b -> prodViaSigma a b
+let mkProd x y = MkSigma x y
+
+-- NEGATIVE: attempting to write the second projection return type using the
+-- bound variable `a` from the binder in a position where it is not in scope.
+-- This is analogous to the "undefined variable" error in the Rzk docs.
+-- The annotation `b a` uses `a` which is bound inside the sigma binder
+-- but not in scope as an argument name of the function.
+badPr2 : forall (a : Type) (b : a -> Type). Sigma a b -> b a    --!! kappa.name.unresolved
+let badPr2 (MkSigma _ y) = y
+
+-- NEGATIVE: attempting to reference the second component's type variable
+-- outside the Sigma scope in a plain pair annotation.
+badAnnotation : (Nat, Bool) -> Bool
+let badAnnotation p = p.1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,49 @@
+-- Source issue: Uiua #287 ("Unable to row sum [n] + [x_n] shapes ?" —
+--   row-wise addition of arrays with different row counts fails with a
+--   confusing message), Uiua #301 ("Unclear error message when calling
+--   rows" — `Cannot 4 arrays with different number of rows 3 and ≡
+--   rows`; the diagnostic includes raw operator glyphs).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       collections.lowering.built_in_collection_obligations,
+--       compiler.frontir.diagnostic_quality_invariants.
+--
+-- Two operations over collections that demand matching shapes are
+-- type-checked at the documented surface contract. Kappa does not
+-- currently track list lengths in the standard `List` type, so the
+-- Uiua-specific "different number of rows" diagnostic cannot be
+-- expressed at the type level without a length-indexed collection.
+-- See UIUA-SA-03 for the spec gap covering shape-aware obligations.
+-- This fixture pins down the positive case (matching-length zip is
+-- accepted) plus the type-domain mismatch case (element-type
+-- disagreement is rejected with kappa.type.mismatch).
+
+module test
+
+--! mode check
+
+-- A user-declared zip with explicit Int domain.
+zipInts : List Int -> List Int -> List (Int, Int)
+let zipInts xs ys = []
+
+-- A user-declared row-wise add.
+addRows : List Int -> List Int -> List Int
+let addRows xs ys = []
+
+-- POSITIVE: matching-length zip of two Int lists.
+zipOk : List (Int, Int)
+let zipOk = zipInts [1, 2, 3] [10, 20, 30]
+
+-- POSITIVE: row-wise add over Int lists.
+addOk : List Int
+let addOk = addRows [1, 2, 3] [10, 20, 30]
+
+--! assertType zipOk List (Int, Int)
+--! assertType addOk List Int
+
+-- NEGATIVE: row-wise add applied to a String list where Int is
+-- expected. The element-type mismatch is reported at the call site as
+-- kappa.type.mismatch (carrying portable alias E_APPLICATION_ARGUMENT_MISMATCH).
+addBadElement : List Int
+let addBadElement = addRows ["a", "b"] [1, 2]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

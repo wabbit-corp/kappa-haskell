@@ -1,0 +1,44 @@
+-- Source issues: Vale OwnershipTests (Custom drop result is an owning ref,
+--               calls destructor), Vale PatternTests (matching mutable struct)
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       expressions.patterns.validity
+-- In Vale, destructuring an owned struct via pattern matching consumes the
+-- struct and introduces bindings for each field at the appropriate quantity.
+-- Any field that is itself at quantity 1 must then be consumed by the
+-- pattern body. In Kappa, a constructor pattern on a linear value
+-- discharges the outer obligation and introduces a new linear obligation
+-- for each runtime-relevant field.
+
+--! mode check
+
+data Payload : Type = Payload Int
+data Wrapper : Type = Wrapper (1 Payload) Int
+
+-- POSITIVE: destructuring a Wrapper consumes it and produces one linear
+-- Payload and one unrestricted Int; both are consumed in the body.
+unpackBoth : (1 w : Wrapper) -> Int
+let unpackBoth (Wrapper p n) =
+    let Payload x = p
+    x + n
+
+-- POSITIVE: passing the inner Payload to a consuming call.
+forwardPayload : (1 w : Wrapper) -> (Payload, Int)
+let forwardPayload (Wrapper p n) = (p, n)
+
+-- NEGATIVE: destructuring a Wrapper but then ignoring the inner Payload
+-- leaves a linear obligation unfulfilled for field `p`.
+badIgnorePayload : (1 w : Wrapper) -> Int
+let badIgnorePayload (Wrapper p n) =   --!! kappa.quantity.unsatisfied
+    n
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: a struct with no linear fields can be pattern-matched and
+-- individual fields discarded freely.
+data SimpleRecord : Type = SimpleRecord Int Int
+
+getFirst : SimpleRecord -> Int
+let getFirst (SimpleRecord x _) = x
+
+getSecond : SimpleRecord -> Int
+let getSecond (SimpleRecord _ y) = y

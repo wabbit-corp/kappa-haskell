@@ -1,0 +1,43 @@
+-- Source issues: KT-3175, KT-5907, KT-2336
+-- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
+--   types.unions.optional_type_sugar
+
+--! mode check
+
+-- POSITIVE: null check on an optional local binding introduces a non-null flow type
+-- in the success branch. Projecting fields on the narrowed type must be accepted.
+getName : String? -> String
+let getName mx =
+    if mx is Option.None then
+        "unknown"
+    else
+        mx.value   -- mx : Option.Some narrowed here; .value is valid
+
+--! assertType getName (String? -> String)
+
+-- POSITIVE: checking `x != Option.None` (i.e. x is not None) narrows x to Some in
+-- the then branch. Accessing the payload is safe.
+getLength : String? -> Int
+let getLength s =
+    if s != Option.None then
+        s.value.length   -- s is narrowed to Some String here
+    else
+        0
+
+
+-- POSITIVE: negated null check narrows to None in the negated branch.
+describeOpt : Int? -> String
+let describeOpt n =
+    if n is Option.None then
+        "no value"
+    else
+        "value present"
+
+
+-- NEGATIVE: using an optional value without narrowing in a non-null context
+-- must produce a type mismatch.
+badUse : String? -> Int
+let badUse s =
+    s.length   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,48 @@
+-- Source issue: Move #732
+-- Spec: data_types.type_aliases
+-- A type alias may have type parameters.  `type Alias a = RHS` declares a
+-- type-level function from types to types.  Inside the defining module the
+-- alias is transparent (definitional equality unfolds it); outside it is
+-- transparent unless marked `opaque`.
+
+--! mode check
+
+module move_732_type_alias_generic
+
+-- A simple generic type alias.
+type Pair (a : Type) (b : Type) = (a, b)
+
+-- A specialized alias.
+type IntPair = Pair Int Int
+
+-- Accepted: using the alias in a type position.
+-- Components accessed via pattern matching (tuples have no named fields).
+swap : Pair Int Bool -> Pair Bool Int
+let swap p =
+    match p
+    case (x, y) -> (y, x)
+
+--! assertNoErrors
+
+-- Accepted: the alias unfolds transparently, so `Pair Int Bool` and
+-- `(Int, Bool)` are definitionally equal inside this module.
+mkPair : Int -> Bool -> Pair Int Bool
+let mkPair x y = (x, y)
+
+--! assertNoErrors
+
+-- Accepted: nested alias application.
+type Triple (a : Type) = Pair a (Pair a a)
+
+mkTriple : Int -> Triple Int
+let mkTriple x = (x, (x, x))
+
+--! assertNoErrors
+
+-- Accepted: type alias with a single parameter used as a type constructor.
+type Box (a : Type) = { content : a }
+
+unwrap : Box Int -> Int
+let unwrap b = b.content
+
+--! assertNoErrors

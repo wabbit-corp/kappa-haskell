@@ -1,0 +1,49 @@
+-- Source issues: WebPPL #467 (clearer error when flip is given an
+--   impossible argument like flip(1.1)), #332 (run-time argument
+--   checks for distribution params).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-03
+--   (proposed portable alias E_CONSTRUCTOR_PARAMETER_DOMAIN — not yet a
+--    registered alias under §3.1.4).
+--
+-- A distribution constructor that declares a parameter with a documented
+-- numeric domain (such as a probability p in [0,1]) MUST reject literal
+-- values outside that domain at the constructor call site, not at
+-- score/sample time. This obligation is currently a spec gap; the test
+-- pins the proposed code so it can be enabled once SA-03 is registered.
+
+module test
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+
+data Bernoulli : Type =
+    Bernoulli { p : Float }
+
+-- POSITIVE: p inside [0, 1].
+bOk : Bernoulli
+let bOk = Bernoulli { p = 0.5 }
+
+
+-- POSITIVE: boundary p = 0 and p = 1 are admitted.
+bZero : Bernoulli
+let bZero = Bernoulli { p = 0.0 }
+
+bOne : Bernoulli
+let bOne = Bernoulli { p = 1.0 }
+
+
+-- NEGATIVE: p > 1 is a domain error at construction.
+bTooBig : Bernoulli
+let bTooBig = Bernoulli { p = 1.1 }           --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+-- NEGATIVE: p < 0 is a domain error.
+bNegative : Bernoulli
+let bNegative = Bernoulli { p = -0.1 }        --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN

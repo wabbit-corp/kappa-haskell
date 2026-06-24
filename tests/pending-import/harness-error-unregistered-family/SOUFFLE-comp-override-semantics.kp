@@ -1,0 +1,48 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_override/comp_override.dl,
+--   tests/semantic/comp_relation/comp_relation.dl,
+--   tests/semantic/inherit_instance/inherit_instance.dl,
+--   tests/semantic/comp_clauses/comp_clauses.dl.
+-- Spec: modules.imports (§8.3),
+--       compiler.frontir.warning_hygiene (§3.1.12, kappa.name.shadowing).
+-- Spec gap: SSA-SOUFFLE-04 (component override semantics have no direct Kappa analogue).
+-- In Souffle, a component can override an inherited relation with `.override`. In Kappa,
+-- module imports bring names into the importing scope; redefining an imported name in
+-- the same module merely shadows the imported binding. This is legal but may produce
+-- a suspicious-shadowing WARNING (kappa.name.shadowing, W_SUSPICIOUS_TOPLEVEL_SHADOWING).
+-- Note: `override` is not an Kappa keyword; Souffle's `.override` mechanism has no
+-- portable Kappa equivalent.
+
+--! mode check
+
+module base
+
+let compute : Int -> Int
+let compute x = x * 2
+
+let describe : Int -> String
+let describe x = "base"
+
+module extend_ok
+
+import base
+
+-- POSITIVE: extending without redefining imported exports is fine.
+let extra : Int -> Bool
+let extra x = x > 0
+
+-- POSITIVE: using the imported definition.
+let v1 : Int    = base.compute 21
+let v2 : String = base.describe 0
+
+module extend_shadow
+
+import base
+
+-- POSITIVE (with warning): locally redefining `compute` shadows the imported binding.
+-- Kappa allows this as ordinary lexical shadowing (§3.1.12); a warning may be emitted.
+let compute : Int -> Int
+let compute x = x + 1
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+--! assertNoErrors

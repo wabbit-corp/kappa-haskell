@@ -1,0 +1,56 @@
+-- Source: granule-project/granule PR #157, #180, #181 (Sessions);
+--         tests/cases/positive/concurrent/session.gr
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Session-typed channels are linear: a channel must be used exactly once,
+-- and the protocol must be followed to End before close. Violation surfaces
+-- `kappa.quantity.unsatisfied` (missing use) or `kappa.path.consumed`
+-- (use after consume).
+
+module test
+
+--! mode check
+
+type LChan : Type -> Type
+
+-- Protocol constructors (phantom-typed protocol indices).
+type Send : Type -> Type -> Type
+type Recv : Type -> Type -> Type
+type SEnd : Type
+
+intrinsic send  : forall (a : Type) (s : Type). (1 c : LChan (Send a s)) -> (1 x : a) -> LChan s
+intrinsic recv  : forall (a : Type) (s : Type). (1 c : LChan (Recv a s)) -> (a, LChan s)
+intrinsic close : (1 c : LChan SEnd) -> Unit
+
+data Unit2 : Type =
+    MkU
+
+-- POSITIVE: a sender that sends one Unit2 and closes.
+sender : (1 c : LChan (Send Unit2 SEnd)) -> Unit
+let sender c =
+    let c' = send c MkU in
+    close c'
+
+--! assertType sender ((1 c : LChan (Send Unit2 SEnd)) -> Unit)
+
+-- POSITIVE: a receiver that receives one Unit2 and closes.
+receiver : (1 c : LChan (Recv Unit2 SEnd)) -> Unit
+let receiver c =
+    let (_, c') = recv c in
+    close c'
+
+
+-- NEGATIVE: forget to close the channel.
+badNoClose : (1 c : LChan SEnd) -> Unit
+let badNoClose c = ()         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: use the same channel twice (linearity violation).
+badReuse : (1 c : LChan (Send Unit2 SEnd)) -> Unit
+let badReuse c =
+    let _  = send c MkU in
+    let c' = send c MkU in            --!! kappa.path.consumed
+    close c'
+
+--! assertDiagnosticFamily error kappa.path.consumed

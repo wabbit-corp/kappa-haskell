@@ -1,0 +1,43 @@
+-- Source issue: UNISON#6090 (fixes UNISON#4463) — Disallow duplicate binders
+-- Spec: expressions.patterns.scoping_validity
+-- §17.2.2: "Duplicate binders within the same pattern are an error (e.g. (x, x))".
+-- The Unison fix closed an oversight where patterns of the form `Foo x x` or
+-- `(x, x)` were silently accepted with the second binder shadowing the first.
+-- Kappa must reject duplicate binders at pattern elaboration with a diagnostic
+-- that identifies both binder occurrences. The portable code spelling used
+-- here matches the existing convention in GLEAM-pattern-duplicate-binder-rejected.
+
+--! mode check
+
+data Pair (a : Type) : Type =
+    Pair a a
+
+-- POSITIVE: distinct binders are accepted.
+let first_of_pair (forall (a : Type)) (p : Pair a) : a =
+    match p
+        case Pair x _ -> x
+
+-- NOTE (2026-06-11, FAB-011): no registered diagnostic family/code exists yet
+-- for this spec-mandated error; the suite asserts an exact error count instead.
+-- Re-tag to assertDiagnosticFamily when the spec registers one.
+-- Suite-wide budget: exactly the 3 duplicate-binder errors marked below;
+-- the positive clause above must elaborate cleanly.
+--! assertErrorCount 3
+
+-- NEGATIVE: the same binder name on both fields of a tuple pattern.
+let dup_tuple (p : (Int, Int)) : Int =
+    match p
+        case (x, x) -> x   -- ERROR EXPECTED: duplicate binder (counted below)
+        case _      -> 0
+
+-- NEGATIVE: the same binder name on both fields of a constructor pattern.
+let dup_ctor (forall (a : Type)) (p : Pair a) : a =
+    match p
+        case Pair x x -> x   -- ERROR EXPECTED: duplicate binder (counted below)
+
+-- NEGATIVE: duplicate binders across a nested pattern. The two `x` binders
+-- live in the same match clause's pattern, so the prohibition applies.
+let dup_nested (p : (Int, Pair Int)) : Int =
+    match p
+        case (x, Pair x _) -> x   -- ERROR EXPECTED: duplicate binder (counted below)
+        case _              -> 0

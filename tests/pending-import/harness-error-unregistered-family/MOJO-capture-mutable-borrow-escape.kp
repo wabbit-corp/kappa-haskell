@@ -1,0 +1,49 @@
+-- Source issues: MOJO-1900, MOJO-217
+-- Spec: compiler.frontir.standard_diagnostic_families.borrow_capture_region,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape,
+--       kappa.capture.mismatch
+-- A closure returned from a function that carries an inferred hidden-region
+-- capture must be checked against the demanded capture annotation on the
+-- return type.  Returning a closure that captures a borrowed binding without
+-- an explicit captures (s) annotation on the return type means the inferred
+-- capture set is not a subset of the demanded (empty) set → kappa.capture.mismatch.
+
+module test
+
+--! mode check
+
+data Counter : Type =
+    Counter Int
+
+-- NEGATIVE: closure captures the borrowed `c`; the return type `() -> Int`
+-- has no capture annotation (demanding an empty capture set), but the closure
+-- carries the rigid region of `c` → capture set mismatch.
+makeCapture : (& c : Counter) -> (() -> Int)
+let makeCapture c =
+    \() ->                    --!! kappa.capture.mismatch
+        match c
+        case Counter n -> n
+
+--! assertDiagnosticFamily error kappa.capture.mismatch
+
+-- POSITIVE: a closure that captures only an Int copy is region-free.
+-- The return type `() -> Int` with no capture annotation is satisfied because
+-- the inferred capture set is empty.
+data Pure : Type = Pure Int
+
+makeConstFn : (& c : Pure) -> (() -> Int)
+let makeConstFn c =
+    let (Pure n) = c           -- extract Int; n carries no region
+    \() -> n                   -- captures n : Int only
+
+
+-- NEGATIVE: a separate local closure that also captures a borrowed binding.
+-- Shows the diagnostic fires wherever a captured borrow escapes the scope.
+borrowEscapeLocal : (& x : Counter) -> (() -> Int)
+let borrowEscapeLocal x =
+    let f = \() ->             --!! kappa.capture.mismatch
+                match x
+                case Counter n -> n
+    f
+
+--! assertDiagnosticFamily error kappa.capture.mismatch

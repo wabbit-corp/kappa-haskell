@@ -1,0 +1,61 @@
+-- Source issues: dex-lang type-tests.dx
+--   (`for i:Foo. 0` → `Error: variable not in scope: Foo`),
+--   dex-lang uexpr-tests.dx (`:p x + x` → `Error: variable not in scope: x`),
+--   dex-lang #175 (let-bound variable `n` escaping to type annotation scope).
+-- Spec: modules.names.lexical_lookup (§11.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- An identifier used in a type annotation, index set position, data constructor
+-- application, or expression position must be in scope at the use point.
+-- Using a name that has never been declared or is out of scope must produce
+-- kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: a type that exists in scope.
+okVal : Int
+let okVal = 42
+
+-- NEGATIVE: referencing a type that does not exist.
+badTypeRef : NonExistentType    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using an unknown name in a type argument position.
+badApply : List UndeclaredElem    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using an undeclared variable in a value expression.
+badValueExpr : Int
+let badValueExpr = undeclaredVar + 1    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a function body using a name that was introduced by a let binding
+-- in a different (already-closed) scope.
+leakTest : Int
+let leakTest =
+    let inner =
+        let secret = 100
+        secret + 1
+    secret + inner    --!! kappa.name.unresolved  (`secret` is out of scope here)
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: the name is correctly in scope.
+inScope : Int
+let inScope =
+    let x = 10
+    x + 1
+
+-- NEGATIVE: a name used in a type annotation that is only defined later
+-- (strict top-to-bottom scoping; no topological sorting of declarations).
+earlyAnnotation : FutureType    --!! kappa.name.unresolved
+
+data FutureType : Type = MkFuture
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: name used after definition.
+laterUse : FutureType
+let laterUse = MkFuture

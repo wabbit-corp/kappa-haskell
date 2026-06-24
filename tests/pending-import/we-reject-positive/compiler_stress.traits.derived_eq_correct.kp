@@ -1,0 +1,35 @@
+-- Stress test: `derive Eq` produces a correct structural equality instance
+-- Spec: traits.deriving
+
+--! mode check
+
+data Shape : Type =
+    Circle Int
+    Square Int Int
+    Triangle Int Int Int
+
+-- derive Eq generates a structural equality instance for Shape.
+-- This is accepted only if the compiler can synthesize eqSound and eqComplete.
+derive Eq Shape
+
+-- Use the derived instance in expressions.
+sameCircle : Bool
+let sameCircle = (Circle 5) == (Circle 5)
+
+diffCircle : Bool
+let diffCircle = (Circle 3) == (Circle 4)
+
+sameSquare : Bool
+let sameSquare = (Square 2 2) == (Square 2 2)
+
+diffShapes : Bool
+let diffShapes = (Circle 1) == (Square 1 1)
+
+sameTriangle : Bool
+let sameTriangle = (Triangle 3 4 5) == (Triangle 3 4 5)
+
+-- Verify reflexivity: any shape equals itself
+reflShape : Shape -> Bool
+let reflShape s = s == s
+
+--! assertNoErrors

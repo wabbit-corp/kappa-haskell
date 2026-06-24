@@ -1,0 +1,48 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         A Boomerang composite lens carries extra parameters at the
+--         use site:  Xml.elt NL2 "composer" body — the NL2 spacing-level
+--         and the "composer" tag name are pattern arguments, the body is
+--         the inner lens. Kappa's active patterns accept multiple explicit
+--         parameters; the last is the scrutinee, the preceding ones are
+--         pattern arguments supplied at the use site.
+-- Spec: expressions.active_patterns.declaration_grammatical_restrictions
+-- Portable obligation: a `pattern` with N+1 explicit binders is used
+--   in pattern position with N argument expressions before the parenthe-
+--   sized subpattern.
+
+module test
+
+--! mode check
+
+data Option a : Type =
+    None
+    Some a
+
+-- A parametric view: matches a string of the form "<tag>: <body>" and
+-- extracts the body. The tag name and a minimum-body-length threshold
+-- are pattern arguments supplied at the use site.
+pattern TaggedString (tag : String) (minLen : Int) (& s : String) : Option String =
+    -- Toy implementation: succeed only when s equals "<tag>: <fixed-body>"
+    -- and the body length passes the threshold.
+    if s == "" then None
+    else if s == tag ++ ": Some Body" then
+        if minLen <= 9 then Some "Some Body" else None
+    else None
+
+-- POSITIVE: pattern args supplied at the use site.
+extractComposer : String -> Option String
+let extractComposer s =
+    match s
+    case TaggedString "composer" 1 (body) -> Some body
+    case _                                -> None
+
+-- POSITIVE: different pattern args bind a different tag.
+extractYear : String -> Option String
+let extractYear s =
+    match s
+    case TaggedString "years" 1 (body) -> Some body
+    case _                             -> None
+
+--! assertNoErrors
+--! assertType extractComposer (String -> Option String)
+--! assertType extractYear (String -> Option String)

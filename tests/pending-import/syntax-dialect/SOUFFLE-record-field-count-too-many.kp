@@ -1,0 +1,43 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system2/type_system2.dl,
+--   souffle-lang #293 (type checker fails to give errors for records of lesser size),
+--   tests/semantic/fact_arity/fact_arity.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- A struct or record constructor applied with more arguments than declared must be
+-- rejected with kappa.constructor.arity. Souffle rejects records of the wrong
+-- size (either too many or too few fields) with a type error.
+
+--! mode check
+
+struct Single =
+    x : Int
+
+struct Double =
+    x : Int
+    y : Int
+
+struct Triple =
+    x : Int
+    y : Int
+    z : Int
+
+-- POSITIVE: exact field counts.
+let s : Single = Single { x = 1 }
+let d : Double = Double { x = 1, y = 2 }
+let t : Triple = Triple { x = 1, y = 2, z = 3 }
+
+-- NEGATIVE: Single given two fields.
+let badS : Single = Single { x = 1, y = 2 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Double given three fields.
+let badD : Double = Double { x = 1, y = 2, z = 3 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Triple given four fields.
+let badT : Triple = Triple { x = 1, y = 2, z = 3, w = 4 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

@@ -1,0 +1,44 @@
+-- Source issue: PLUTUS-1737
+-- Spec: literals.byte_literals (§6.6), expressions.match (§17.1)
+-- Source notes: Plinth fails to compile a pattern match against a bytestring
+-- literal because the equality comparison for bytestrings is not inlined
+-- across modules (#1737). Kappa has no first-class bytestring literal, but
+-- it does have single-byte `Byte` literals (§6.6) and these are valid
+-- literal patterns under §17.1. Matching a `Byte` scrutinee against literal
+-- patterns should be accepted and decided structurally without requiring an
+-- in-scope user-defined equality instance.
+
+--! mode check
+
+-- POSITIVE: a `Byte` scrutinee may be matched against literal patterns.
+-- Per §6.6 each byte literal has type `Byte`, so the case patterns are
+-- well-typed and the catch-all `_` covers the remaining domain.
+classify : Byte -> Int
+let classify b =
+    match b
+      case b'\x00' -> 0
+      case b'a'    -> 1
+      case b'Z'    -> 2
+      case _       -> 3
+
+-- POSITIVE: results agree with byte values.
+zeroCase : Int
+let zeroCase = classify b'\x00'
+
+aCase : Int
+let aCase = classify b'a'
+
+defaultCase : Int
+let defaultCase = classify b'\x10'
+
+
+-- NEGATIVE: omitting the catch-all over the open `Byte` domain is a
+-- non-exhaustive match per §17.1 ("for open/infinite domains you must
+-- include a catch-all").
+nonExhaustive : Byte -> Int
+let nonExhaustive b =
+    match b
+      case b'\x00' -> 0
+      case b'a'    -> 1   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

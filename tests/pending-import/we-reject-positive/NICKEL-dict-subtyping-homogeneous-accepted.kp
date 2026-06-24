@@ -1,0 +1,60 @@
+-- Source issues: nickel #936, #892, #1161, #2231
+-- Spec: types.records.dictionary_subtyping (NSA-03)
+-- NOTE: This test depends on NSA-03 (dict subtyping spec gap). The {_ : T} dict
+-- type syntax is proposed and not yet in the Kappa v1 spec.
+-- A record type where all fields have the same type T is a subtype of the
+-- dictionary type {_ : T}. A function expecting {_ : T} may be called with
+-- such a homogeneous record. The result of applying a dictionary contract to a
+-- record with recursive dependencies must also satisfy the contract lazily.
+
+module test
+
+-- A function expecting a dict type.
+dictFn : {_ : Number} -> Number
+let dictFn d = 42
+
+-- POSITIVE: a record with two Number fields is a subtype of {_ : Number}.
+homogeneousRecord : {_ : Number}
+let homogeneousRecord = (x = 1, y = 2)
+
+homogeneousDictOk : Number
+let homogeneousDictOk = dictFn homogeneousRecord
+
+--! mode check
+--! assertNoErrors
+--! assertType homogeneousDictOk Number
+
+-- POSITIVE: a single-field record with the correct type conforms to the dict type.
+singleFieldOk : Number
+let singleFieldOk = dictFn (a = 99)
+
+--! assertNoErrors
+
+-- POSITIVE: a record with three fields all of type Bool conforms to {_ : Bool}.
+threeBoolFields : {_ : Bool}
+let threeBoolFields = (p = True, q = False, r = True)
+
+boolDictFn : {_ : Bool} -> Bool
+let boolDictFn d = True
+
+threeBoolOk : Bool
+let threeBoolOk = boolDictFn threeBoolFields
+
+--! assertNoErrors
+
+-- POSITIVE: an empty record is a subtype of any dict type {_ : T}
+-- (vacuously, there are no fields to violate the constraint).
+emptyRecord : {_ : Number}
+let emptyRecord = ()
+
+emptyDictOk : Number
+let emptyDictOk = dictFn emptyRecord
+
+--! assertNoErrors
+
+-- POSITIVE: dict subtyping is covariant — if T <: U, then {_ : T} <: {_ : U}.
+-- Concretely: {_ : Number} <: {_ : Dyn} because Number <: Dyn.
+numDictAsDyn : {_ : Dyn}
+let numDictAsDyn = (homogeneousRecord : {_ : Dyn})
+
+--! assertNoErrors

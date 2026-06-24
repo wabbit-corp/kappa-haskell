@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDefault.curry
+--   (`default (Int, Float)`; without it the program is ambiguous).
+-- Spec: traits.instances.resolution_algorithm (§14.3.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- Spec gap: CURRY-SA-07 (numeric defaulting).
+--
+-- Kappa does not adopt Haskell's `default` declaration. Programs that
+-- rely on numeric defaulting to commit to a specific instance MUST be
+-- rejected as ambiguous with `kappa.type.ambiguity-check`.
+
+module test
+
+--! mode check
+
+trait Numeric (a : Type) =
+    fromInt : Int -> a
+    addN    : a -> a -> a
+
+instance Numeric Int =
+    let fromInt n = n
+    let addN x y = x + y
+
+data MyFloat : Type =
+    MyFloat Int   -- toy fixed-point: scaled integer
+
+instance Numeric MyFloat =
+    let fromInt n = MyFloat (n * 1000)
+    let addN x y =
+        match (x, y)
+        case (MyFloat a, MyFloat b) -> MyFloat (a + b)
+
+
+-- POSITIVE: an explicit type annotation resolves the ambiguity.
+annotatedInt : Int
+let annotatedInt = addN (fromInt 3 : Int) (fromInt 4 : Int)
+-- expected: 7
+
+--! assertType annotatedInt Int
+
+annotatedMyFloat : MyFloat
+let annotatedMyFloat =
+    addN (fromInt 3 : MyFloat) (fromInt 4 : MyFloat)
+
+--! assertType annotatedMyFloat MyFloat
+
+-- NEGATIVE: without an annotation, the expression `addN (fromInt 3)
+-- (fromInt 4)` has type `Numeric a => a` for some unresolved `a`. Kappa
+-- has no defaulting rule, so the elaboration must reject the
+-- ambiguity. We assert the diagnostic family by directive only; the
+-- diagnostic origin may be at the use site, the let binding, or the
+-- signature line, and the family-level assertion succeeds in any case.
+ambiguousNumeric : Bool
+let ambiguousNumeric =
+    let unused = addN (fromInt 3) (fromInt 4)
+    True
+
+--! assertDiagnosticFamily error kappa.type.ambiguity-check

@@ -1,0 +1,55 @@
+-- Source issues: elm #287, #1976
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match on a product type (tuple) must be exhaustive over all combinations.
+-- Missing combinations must be reported as kappa.pattern.non-exhaustive.
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+data Flag : Type =
+    On
+    Off
+
+-- NEGATIVE: match on (Color, Flag) missing several combinations.
+-- (Green, On), (Blue, On), (Blue, Off) are not covered.
+bad_partial : Color -> Flag -> String
+let bad_partial c f = match (c, f)   --!! kappa.pattern.non-exhaustive
+    case (Red, On)    -> "red-on"
+    case (Red, Off)   -> "red-off"
+    case (Green, Off) -> "green-off"
+
+-- POSITIVE: match on (Color, Flag) with wildcard covering remaining combinations.
+good_wildcard : Color -> Flag -> String
+let good_wildcard c f = match (c, f)
+    case (Red, On)  -> "red-on"
+    case (Red, Off) -> "red-off"
+    case (_, _)     -> "other"
+
+-- POSITIVE: fully exhaustive explicit match on (Color, Flag).
+good_full : Color -> Flag -> String
+let good_full c f = match (c, f)
+    case (Red,   On)  -> "red-on"
+    case (Red,   Off) -> "red-off"
+    case (Green, On)  -> "green-on"
+    case (Green, Off) -> "green-off"
+    case (Blue,  On)  -> "blue-on"
+    case (Blue,  Off) -> "blue-off"
+
+-- NEGATIVE: missing the (False, _) family of combinations.
+bad_bool_tuple : Bool -> Bool -> Int
+let bad_bool_tuple a b = match (a, b)   --!! kappa.pattern.non-exhaustive
+    case (True, True)  -> 1
+    case (True, False) -> 2
+
+-- POSITIVE: bool pair with wildcard for remaining cases.
+good_bool_tuple : Bool -> Bool -> Int
+let good_bool_tuple a b = match (a, b)
+    case (True, True)  -> 1
+    case (True, False) -> 2
+    case (False, _)    -> 3
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

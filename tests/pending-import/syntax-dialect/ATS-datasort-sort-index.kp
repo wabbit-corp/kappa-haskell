@@ -1,0 +1,96 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`datasort ilist = ilist_nil | ilist_cons of (int, ilist)`,
+--          `datasort ilist2 = ilist2_nil | ilist2_cons of (int, int, ilist2)`),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats
+--         (sort-level definitions, `#abssort view`, sort-indexed types)
+-- Spec: types.universes.classifiers (§11.1),
+--       spec_addition ATS-SA-01 (sort-level inductive definitions),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- ATS3 pattern: `datasort ilist = ilist_nil | ilist_cons of (int, ilist)` is
+--   a sort-level inductive definition. Its constructors are static terms, not
+--   runtime values. A type indexed by an `ilist` sort must be instantiated
+--   with a static `ilist` term, not with a runtime value of another sort.
+--   Passing the wrong sort (e.g., `int` where `ilist` is expected) is rejected.
+-- Portable obligation: using a sort-level value of the wrong sort in a
+--   type-index position must produce kappa.type.mismatch.
+
+--! mode check
+
+-- A type indexed by a compile-time list of integers (models datasort ilist).
+-- We represent the "ilist index" as a type-level list of Nats.
+data TypedByList : List Nat -> Type =
+    TBLNil  : TypedByList []
+    TBLCons : forall (n : Nat) (ns : List Nat). TypedByList ns -> TypedByList (n :: ns)
+
+-- POSITIVE: constructing a TypedByList with the right index.
+tbl0 : TypedByList []
+let tbl0 = TBLNil
+
+tbl1 : TypedByList [3]
+let tbl1 = TBLCons TBLNil
+
+tbl2 : TypedByList [3, 5]
+let tbl2 = TBLCons (TBLCons TBLNil)
+
+-- POSITIVE: a function that takes the index and a carrier.
+lengthOfIndex : forall (ns : List Nat). TypedByList ns -> Nat
+let lengthOfIndex t =
+    match t
+    case TBLNil     -> 0
+    case TBLCons t' -> 1 + lengthOfIndex t'
+
+-- POSITIVE: appending two indexed carriers.
+appendTBL : forall (ns ms : List Nat).
+            TypedByList ns -> TypedByList ms -> TypedByList (ns ++ ms)
+let appendTBL t1 t2 =
+    match t1
+    case TBLNil     -> t2
+    case TBLCons t' -> TBLCons (appendTBL t' t2)
+
+-- POSITIVE: correct append.
+tbl3 : TypedByList [3, 5]
+let tbl3 = appendTBL tbl1 (TBLCons TBLNil)
+
+-- A different kind of sort-indexed type: indexed by a Nat pair.
+data Indexed2 : Nat -> Nat -> Type =
+    I2 : forall (m n : Nat). Indexed2 m n
+
+-- POSITIVE: constructing Indexed2 at known indices.
+i2_3_4 : Indexed2 3 4
+let i2_3_4 = I2
+
+-- A function that swaps the two index positions.
+swapIdx : forall (m n : Nat). Indexed2 m n -> Indexed2 n m
+let swapIdx _ = I2
+
+-- POSITIVE: swap is well-typed.
+swapped : Indexed2 4 3
+let swapped = swapIdx i2_3_4
+
+-- NEGATIVE: claiming the swapped result has the original order.
+badSwap : Indexed2 3 4
+let badSwap = swapIdx i2_3_4     --!! kappa.type.mismatch
+
+-- NEGATIVE: claiming a two-element indexed carrier has only one element.
+badLen : TypedByList [42]
+let badLen = tbl2                 --!! kappa.type.mismatch
+
+-- A higher-order sort-indexed witness.
+data Matrix : Nat -> Nat -> Type =
+    MatZero : Matrix 0 0
+    MatRow  : forall (rows cols : Nat). Matrix rows cols -> Matrix (rows + 1) cols
+
+-- POSITIVE: building a matrix.
+m2x3 : Matrix 2 3
+let m2x3 = MatRow (MatRow MatZero)
+
+-- NEGATIVE: claiming 2x3 is 3x3 is wrong.
+badMatrix : Matrix 3 3
+let badMatrix = MatRow (MatRow MatZero)   --!! kappa.type.mismatch
+
+-- NEGATIVE: claiming 2x3 has 2 rows but 4 cols.
+badCols : Matrix 2 4
+let badCols = m2x3                        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

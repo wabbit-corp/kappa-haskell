@@ -1,0 +1,27 @@
+-- Source issues: FSTAR-953, FSTAR-689, FSTAR-2106
+-- Spec: types.universes.quantities
+-- When a function is polymorphic in two independent type parameters,
+-- the unifier must instantiate both independently. Conflating the two
+-- holes to the same type is wrong.
+
+--! mode check
+
+-- An abstract relation type parameterized by two independent types.
+expect term Rel : (A : Type) -> (B : Type) -> Type
+
+-- A function that extracts the carrier of a relation.
+expect term carrier : {A : Type} -> {B : Type} -> Rel A B -> Type
+
+-- POSITIVE TEST: using carrier with two *different* type parameters.
+-- Both implicit parameters must be instantiated independently.
+use_carrier : (A : Type) -> (B : Type) -> Rel A B -> Type
+let use_carrier A B r = carrier r
+
+--! assertNoErrors
+
+-- POSITIVE TEST: a recursive function that returns a type must preserve
+-- its type parameter in the body.
+rec_type : (a : Type) -> Type
+let rec_type a decreases 0 = a
+
+--! assertNoErrors

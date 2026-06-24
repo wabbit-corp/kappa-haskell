@@ -1,0 +1,66 @@
+-- Source issues: vale#376 (Exported non-sealed interfaces don't work),
+--               vale#405 (Consider making interfaces sealed by default)
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- In Vale, a `sealed interface` guarantees that only implementations from
+-- the same module exist, enabling exhaustive matching. In Kappa, closed data
+-- types are exhaustively matchable; a partial match on a known closed type
+-- is rejected with kappa.pattern.non-exhaustive. The "open interface vs
+-- sealed interface" contrast is covered by VSA-05 (spec gap): Kappa does not
+-- yet define per-trait openness, so this test focuses on the portable
+-- closed-type partial-match obligation.
+
+--! mode check
+
+-- A closed (sealed) data type with four known constructors.
+sealed data Direction : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: a match on a sealed type that covers every constructor.
+oppositeOf : Direction -> Direction
+let oppositeOf d =
+    match d
+    case North -> South
+    case South -> North
+    case East  -> West
+    case West  -> East
+
+-- POSITIVE: a match with a wildcard arm always succeeds.
+anyDir : Direction -> Int
+let anyDir d =
+    match d
+    case North -> 1
+    case _     -> 0
+
+-- NEGATIVE: a partial match on a sealed type — West and East are not covered.
+partialDir : Direction -> Int
+let partialDir d =
+    match d                 --!! kappa.pattern.non-exhaustive
+    case North -> 1
+    case South -> 2
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- A second closed type to show the same rule applies.
+sealed data Coin : Type =
+    Heads
+    Tails
+
+-- NEGATIVE: missing one arm of a two-constructor sealed type.
+badCoin : Coin -> Int
+let badCoin c =
+    match c                 --!! kappa.pattern.non-exhaustive
+    case Heads -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: both arms covered.
+fullCoin : Coin -> Int
+let fullCoin c =
+    match c
+    case Heads -> 1
+    case Tails -> 0

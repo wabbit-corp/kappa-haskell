@@ -1,0 +1,40 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/DuplicateCapture.hylo
+--                   (diagnostics: "duplicate capture name 'z'", "ambiguous use of 'z'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ExplicitCapture.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/DuplicateCapture.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.ambiguous)
+-- Hylo: a lambda capture list with two entries sharing the same name is
+-- rejected because uses of the captured name inside the lambda body would
+-- be ambiguous. In Kappa this maps to a duplicate binding in a capture
+-- environment.
+
+--! mode check
+
+let outerA : Int = 10
+let outerB : Int = 20
+
+-- POSITIVE: distinct capture names.
+validCapture : Int
+let validCapture =
+    let add = \(x : Int) -> x + outerA
+    add 5
+
+-- NEGATIVE: two captures with the same name in one lambda capture list.
+-- Any use of `captured` inside the body is ambiguous.
+duplicateCapture : Int
+let duplicateCapture =
+    let ambig = \[let captured = outerA, let captured = outerB] (x : Int) ->    --!! kappa.name.ambiguous
+                    captured + x
+    ambig 1
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: capturing the same outer binding under the same local name twice.
+doubleSameName : Int
+let doubleSameName =
+    let f = \[let z = outerA, let z = outerA] () ->    --!! kappa.name.ambiguous
+                z
+    f unit
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

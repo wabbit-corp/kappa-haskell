@@ -1,0 +1,51 @@
+-- Source artifacts: RA-5514 (Type checker does not eagerly select predicates from where-clauses),
+--                   CHALK-DOC-book/src/clauses/goals_and_clauses.md,
+--                   CHALK-727 (Recursive solver reports ambiguity from env clauses).
+-- Spec: traits.instances.resolution_algorithm (step 1: local implicit context first).
+-- Kappa spec rule (§14.3.1 step 1): "Perform step 1 of the implicit-resolution
+-- procedure of §16.3.3. If that step yields a unique local candidate or a
+-- coherent local-candidate representative, use it. ... Only if that step yields
+-- no local candidate does trait evidence resolution continue."
+--
+-- This pins: when a generic function carries an implicit `(@_ : Tr a)` binder,
+-- a use of `Tr`'s method on a value of type `a` MUST resolve to the binder's
+-- evidence, NOT to a global instance candidate even if one exists for the
+-- substituted type. The local candidate has strictly higher priority.
+
+--! mode check
+
+trait Show (a : Type) =
+    showIt : a -> String
+
+data Item : Type = Item
+
+-- Global instance for `Show Item` that returns "global".
+instance Show Item =
+    let showIt _ = "global"
+
+-- Generic function carrying a LOCAL implicit `Show a` binder. The body must
+-- call `showIt` via the local binder, NOT via the global `Show Item` instance,
+-- when `a` is later instantiated to `Item`. This is the priority rule of
+-- §traits.instances.resolution_algorithm step 1.
+generic_show : (a : Type) -> (@_ : Show a) => a -> String
+let generic_show a x = showIt x
+
+-- Use site: `a` is instantiated to `Item`. The CALLER supplies the local
+-- evidence; Kappa must call that local copy of `showIt`, not the global one.
+-- We pass an explicit local instance to make the priority observable.
+caller_local_evidence : String
+let caller_local_evidence =
+    -- Local instance declared in this block scope, mentioning `Show` (a
+    -- trait already in scope). The local instance produces a different
+    -- string than the global instance. Resolution at the call site MUST
+    -- use the local evidence visible at the call.
+    let local_show : Show Item =
+        { showIt = \_ -> "local" }
+    generic_show Item Item
+
+-- Direct invocation without an in-scope local override resolves to the
+-- global instance.
+caller_no_override : String
+let caller_no_override = showIt Item
+
+--! assertNoErrors

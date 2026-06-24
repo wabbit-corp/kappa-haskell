@@ -1,0 +1,47 @@
+-- Source issues: Factor #62 (declared effect (x x -- x) but inferred (x x -- x x)),
+--   Factor #232 (Stack effect declaration is wrong: declared (superclass uniforms
+--   -- quot), inferred (x x -- x x x)), Factor #544 (locals word outputs wrong
+--   number of values), Factor #572 (Inlined words can have incorrect stack
+--   effects but no error is thrown).
+-- Spec: declarations.term_definitions, declarations.top_level_signatures,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- Factor reports cases where the body of a definition produces a different
+-- number of outputs than the declared stack effect, but only does so
+-- sometimes; portable Kappa requires that the declared signature of a
+-- definition is a hard constraint on the body's type, not advisory.
+
+module test
+
+--! mode check
+
+-- POSITIVE: declared and actual output arity agree.
+addPair : Int -> Int -> Int
+let addPair x y = x + y
+
+--! assertType addPair Int -> Int -> Int
+
+-- NEGATIVE: declared one Int output, body produces a pair (record value
+-- with two fields). Anonlang must report type.mismatch on the definition's
+-- right-hand side, not silently accept a wider body type.
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+singleOut : Int -> Int
+let singleOut x = Pair x x         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: declared two-parameter function, body is nullary.
+twoIn : Int -> Int -> Int
+let twoIn = 0                      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: declared one-output Int, body returns a function value
+-- (i.e. produces an extra "callable" on the stack).
+extraOnStack : Int -> Int
+let extraOnStack x = (\y -> x + y) --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,34 @@
+-- Source issue: MLatu #10 ("define print (for t. -> +io): show Mlatu.print")
+--   and #25 ("the current permission-based IO `define print[T] (T -> +IO)`").
+--   MLatu's pre-substructural model carried an algebraic effect row
+--   `+IO` on side-effecting functions. The portable Kappa obligation is
+--   that a definition performing an effect operation must declare the
+--   relevant effect label in its effect row.
+-- Spec: effects.monadic_core.eff_effect_rows,
+--       effects.monadic_core.effect_declarations,
+--       types.quantification.effect_row_syntax,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+--       (family kappa.effect.row-mismatch).
+
+module test
+
+-- Declare an algebraic IO-style effect that prints a string.
+effect Console =
+    1 print : String -> Unit
+
+--! mode check
+
+-- POSITIVE: a function whose effect row includes Console may perform print.
+greet : String -> Eff <[ Console ]> Unit
+let greet name = do
+    print name
+    pure ()
+
+-- NEGATIVE: a function declared with the empty effect row cannot
+-- perform a Console operation.
+greetPure : String -> Eff <[ ]> Unit
+let greetPure name = do                    --!! kappa.effect.row-mismatch
+    print name
+    pure ()
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

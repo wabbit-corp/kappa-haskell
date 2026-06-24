@@ -1,0 +1,24 @@
+-- Source issues: FUTHARK-1300, FUTHARK-1271
+-- Spec: types.universes.quantities
+-- Futhark #1300: `dup (copy xs)` where `dup x = (x, x)` should be rejected
+-- because a unique value (copy result) cannot alias itself.
+-- Futhark #1271: `zip xs xs` where `xs : *[]i32` must fail since xs is
+-- consumed twice.
+-- In Kappa, a binder at quantity 1 (linear) must be used exactly once.
+-- Using it in two positions of a tuple is a double-consumption error.
+-- Spec §12.2: "1 ≜ [1,1] — Linear; exactly one runtime-relevant demand".
+
+--! mode check
+--! assertDiagnosticFamily error kappa.path.consumed
+
+module test
+
+-- NEGATIVE: tuple construction uses the linear binder in two positions.
+-- Both tuple components demand ownership of xs, but xs can only be given once.
+badDup : (1 xs : SizedArray 3 Int) -> (SizedArray 3 Int, SizedArray 3 Int)
+let badDup (1 xs) = (xs, xs)
+
+-- NEGATIVE: passing the same linear value to two arguments of a function.
+-- Analogous to Futhark #1271: zip xs xs where xs is unique.
+badSameArg : (1 xs : SizedArray 3 Int) -> SizedArray 3 (Int, Int)
+let badSameArg (1 xs) = zip xs xs

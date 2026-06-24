@@ -1,0 +1,11 @@
+-- Source issue: ROSETTE-115 (`optable` misses `^` — name collision and
+--                resolution behaviour),
+--                ROSETTE-295 (Adding (require racket/base) changes
+--                behaviour — illustrates name shadowing across imports)
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+
+module addLib
+
+public combine : Int -> Int -> Int
+let combine x y = x + y

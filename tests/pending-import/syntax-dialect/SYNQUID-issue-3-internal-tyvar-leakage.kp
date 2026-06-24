@@ -1,0 +1,49 @@
+-- Source artifacts: synquid issue #3 — running a variant of replicate via
+--                 the web demo produced "Cannot match shape 'List (A4)'
+--                 with shape 'Int'". The token `A4` is an internal type-
+--                 variable name; exposing it in user-facing diagnostics is
+--                 the same internal-tyvar leakage class as exposing
+--                 `'_'`. The reporter believed this was a synthesis bug,
+--                 not a portable user error.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch),
+--       compiler.frontir.human_readable_rendering,
+--       compiler.frontir.diagnostic_quality_invariants
+--
+-- The Kappa-portable obligation is: type-equality diagnostics whose
+-- payload references implementation-internal metavariables MUST use the
+-- standard payload fields (expected, actual, mismatch path, blocked
+-- metavariables) rather than embed raw internal names in the rendered
+-- message. The compact human-readable form MUST be backed by structured
+-- payload sufficient to re-render with stable variable names.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a polymorphic identity, then a use that fixes `a`.
+id : forall (a : Type). a -> a
+let id x = x
+
+useId : PNat
+let useId = id (S Z)
+
+-- NEGATIVE: forcing a List position to receive a PNat is a type
+-- mismatch; the diagnostic's expected/actual payload must contain
+-- stable types (List PNat vs PNat), not internal `A4`-style tokens.
+badBindShape : List PNat
+let badBindShape = S Z                          --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a List PNat where PNat is expected.
+badInstantiate : PNat
+let badInstantiate =
+    let xs : List PNat = id Nil in
+    id xs                                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

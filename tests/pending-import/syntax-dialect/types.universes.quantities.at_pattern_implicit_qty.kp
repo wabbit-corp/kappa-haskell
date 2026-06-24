@@ -1,0 +1,45 @@
+-- Source issue: Idris2 #490
+-- Spec: types.universes.quantities, expressions.patterns.forms
+-- An as-pattern (`name@pat`) must not retroactively change the quantities of
+-- implicit arguments that are brought into scope by the matched constructor.
+-- If a constructor implicitly introduces a type parameter `a : Type`, and
+-- the outer binding is at quantity ω, then `a` should remain at quantity ω
+-- in the branch body, regardless of whether an as-pattern is used.
+
+module test
+
+-- A cons-list where the element type is implicitly introduced by constructors.
+data MyList (a : Type) : Type where
+  Nil  : MyList a
+  Cons : a -> MyList a -> MyList a
+
+-- Accepted: ordinary pattern match on `Cons` introduces `a : Type` at ω.
+headOrd : MyList a -> Option a
+let headOrd xs =
+  match xs
+    case Nil         -> None
+    case (Cons x _)  -> Some x
+
+--! mode check
+--! assertNoErrors
+
+-- Accepted: as-pattern must not change the quantity of `a`.
+-- `l@(Cons x rest)` binds `l` at the same quantity as the scrutinee.
+-- The implicit `a : Type` in scope inside the branch must still be at ω.
+headAs : MyList a -> (MyList a, Option a)
+let headAs xs =
+  match xs
+    case Nil            -> (Nil, None)
+    case l@(Cons x _)   -> (l, Some x)
+
+-- If `a` were incorrectly forced to quantity 0 inside the Cons branch,
+-- using `a` in a type annotation would fail. We use it here.
+headWithType : MyList a -> Option a
+let headWithType xs =
+  match xs
+    case Nil          -> None
+    case l@(Cons x _) ->
+      let result : Option a = Some x
+      result
+
+--! assertNoErrors

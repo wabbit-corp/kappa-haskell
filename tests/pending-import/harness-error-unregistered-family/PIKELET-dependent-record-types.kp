@@ -1,0 +1,46 @@
+-- Source issues: PIKELET-2 (dependent records), PIKELET-24 (dependent records first pass),
+--               PIKELET-47 (PR: dependent records first pass).
+-- Spec: types.records.syntax, types.records.formation, types.records.values
+--
+-- A closed record type may be a dependent telescope: a later field's type
+-- may refer to earlier fields via `this.label` (§13.2.1). The canonical
+-- example in Pikelet's reference is `Record { A : Type, a : A }` — a
+-- record carrying a type and a value of that type, useful for
+-- module-style packaging.
+
+--! mode check
+
+-- POSITIVE: simple dependent record type with one element-type field and
+-- one value field of that type.
+type Box : Type1 = (A : Type0, a : this.A)
+
+mkBox : Box
+let mkBox = (A = Nat, a = 7)
+
+aField : Nat
+let aField = mkBox.a
+
+-- POSITIVE: dependent record with three fields where the third refers to
+-- both earlier fields' values. `List this.A` (not `SizedArray`) is used
+-- because Kappa has no portable bracket-literal form at `SizedArray n a`;
+-- the dependent-record obligation is independent of that gap.
+type Sized : Type1 = (n : Nat, A : Type0, xs : List this.A)
+
+empty3 : Sized
+let empty3 = (n = 0, A = Nat, xs = [])
+
+-- POSITIVE: extracting the type field is a Type0 value.
+typeField : Type0
+let typeField = mkBox.A
+
+-- POSITIVE: a function over a dependent record can name `this`-projections
+-- in its return type without naming them explicitly first.
+unbox : (b : Box) -> b.A
+let unbox b = b.a
+
+-- NEGATIVE: a record literal that omits a field declared in the type is
+-- a structure mismatch (per PIKELET-SA-04 + §3.2.8 `record_projection_*`).
+short : Box
+let short = (A = Nat,)        --!! kappa.type.hidden-structure-mismatch
+
+--! assertDiagnosticFamily error kappa.type.hidden-structure-mismatch

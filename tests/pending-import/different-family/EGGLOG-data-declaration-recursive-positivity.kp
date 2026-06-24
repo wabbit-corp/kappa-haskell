@@ -1,0 +1,44 @@
+-- Source issues: egraphs-good/egglog #386 (User Defined Generics),
+--   egraphs-good/egglog #397 (Mutually recursive datatypes),
+--   egraphs-good/egglog #298 (Clarifying Valid Types).
+-- Spec: data_types.data_declarations (§10.1),
+--       data_types.well_formedness (§10.4, strict positivity).
+-- A `data` declaration's constructor signatures must be well-formed and the
+-- recursive use of the type must respect strict positivity (no occurrence of
+-- the type to the left of an arrow inside a constructor argument), otherwise
+-- the elaborator must reject the declaration with kappa.type.mismatch
+-- (the strict-positivity violation is reported as a type-level well-formedness
+-- failure).
+
+module test
+
+--! mode check
+
+-- POSITIVE: ordinary recursive data type (positive recursion).
+data Nat : Type =
+    Zero
+    Succ (n : Nat)
+
+toInt : Nat -> Int
+let toInt n =
+    match n
+    case Zero      -> 0
+    case (Succ m)  -> toInt m + 1
+
+-- POSITIVE: rose tree with List is strictly positive (List is a built-in
+-- positively-parameterised constructor per §10.4).
+data Rose (a : Type) : Type =
+    Node a (List (Rose a))
+
+-- NEGATIVE: constructor argument with the type on the left of an arrow violates
+-- strict positivity.
+data Bad : Type =
+    MkBad (k : Bad -> Bad)                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: indirect negative occurrence inside another constructor argument.
+data BadCont : Type =
+    MkBadCont (k : (BadCont -> Int) -> Int)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

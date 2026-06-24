@@ -1,0 +1,50 @@
+-- Source: Racket PR #854 (Fix is_arity_list), Racket guide apply.scrbl
+-- Spec: expressions.application
+--
+-- Applying a non-function value to arguments is a type mismatch. The
+-- expression in callee position must be a function type. Attempting to
+-- apply a constant, a data constructor used as a value, or a plain Int
+-- is an kappa.type.mismatch error.
+
+--! mode check
+
+myConst : Int
+let myConst = 42
+
+-- POSITIVE: normal function application works.
+double : Int -> Int
+let double x = x * 2
+
+useDouble : Int
+let useDouble = double 5
+
+-- POSITIVE: applying a constructor (which is a function).
+data Box : Type -> Type = MkBox : (A : Type) -> A -> Box A
+
+makeBox : Int -> Box Int
+let makeBox x = MkBox Int x
+
+-- POSITIVE: applying a lambda directly.
+applyLambda : Int
+let applyLambda = (\x -> x + 1) 10
+
+-- NEGATIVE: applying an Int to arguments — Int is not a function.
+badApply : Int
+let badApply = myConst 10     --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a Bool to an argument.
+myBool : Bool
+let myBool = True
+
+badBoolApply : Int
+let badBoolApply = myBool 5   --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a string literal.
+badStrApply : Int
+let badStrApply = "hello" 5   --!! kappa.type.mismatch
+
+-- NEGATIVE: applying the result of a function that returns Int.
+badChain : Int
+let badChain = double 5 3     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

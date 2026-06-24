@@ -1,0 +1,28 @@
+-- Source issue: Kitten #46 (`def ; ([a] a -> [a]): prepend` should be
+--   rejected because `prepend` has type `(a [a] -> [a])`; the two input
+--   positions are swapped). Kitten #94 (declared `(Int a -> a a)` but
+--   body has a different shape).
+-- Spec: declarations.terms, declarations.signatures, types.functions,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- Reordering the declared inputs relative to what the body actually
+-- consumes is a type error, not a runtime failure.
+
+module test
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+-- POSITIVE: declared (Int, Pair Int Int) order matches body usage.
+prependOk : Int -> Pair Int Int -> Pair Int Int
+let prependOk x xs = Pair x x
+
+-- NEGATIVE: declared (Pair Int Int, Int) but body uses the first
+-- parameter as if it were an Int and the second as if it were the pair.
+prependBad : Pair Int Int -> Int -> Pair Int Int
+let prependBad x xs = Pair x x             --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,46 @@
+-- Source issues: WebPPL #686 (Categorical should normalize ps or warn),
+--   #729 (Multinomial scorer returns NaN when an element of ps is 0),
+--   PR #706 (Categorical accepts unnormalized probs).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-03
+--   (proposed portable aliases E_CONSTRUCTOR_PARAMETER_DOMAIN,
+--    W_CONSTRUCTOR_PARAMETER_NORMALIZED — not yet registered under §3.1.4).
+--
+-- A finite-support distribution constructor that declares a probability
+-- vector MAY accept unnormalized non-negative arrays and normalize them
+-- at construction time. The constructor MUST reject a vector whose entries
+-- are not all non-negative or that sums to zero.
+
+module test
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+
+data Categorical (a : Type) : Type =
+    Categorical { ps : List Float, vs : List a }
+
+-- POSITIVE: a normalized vector is accepted.
+catNormalized : Categorical Int
+let catNormalized = Categorical { ps = [0.25, 0.25, 0.5], vs = [1, 2, 3] }
+
+
+-- POSITIVE: an unnormalized non-negative vector is accepted; the constructor
+-- normalizes it. The implementation MAY emit W_CONSTRUCTOR_PARAMETER_NORMALIZED.
+catUnnormalized : Categorical Int
+let catUnnormalized = Categorical { ps = [1.0, 1.0, 2.0], vs = [1, 2, 3] }
+
+
+-- NEGATIVE: a vector containing a negative entry is a domain error.
+catNegative : Categorical Int
+let catNegative = Categorical { ps = [0.5, -0.25, 0.75], vs = [1, 2, 3] }    --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+-- NEGATIVE: an all-zero vector cannot be normalized and is a domain error.
+catAllZero : Categorical Int
+let catAllZero = Categorical { ps = [0.0, 0.0, 0.0], vs = [1, 2, 3] }    --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN

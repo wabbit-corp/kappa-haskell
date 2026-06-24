@@ -1,0 +1,44 @@
+-- Source issue: ROSETTE-PR-240 (Disallow define-symbolic with different types)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--       declarations.terms
+--
+-- The Rosette PR forbids two `define-symbolic` declarations of the
+-- same identifier with different types (the cache used to return the
+-- prior term and silently propagate a type-confused value). The
+-- portable Kappa obligation is that a top-level identifier may only
+-- bind one type — re-declaring it with an incompatible signature
+-- (or any signature) at the same scope is rejected as shadowing.
+-- Kappa does not have term caching; the rule follows directly from
+-- declarations.terms's unique-signature requirement.
+
+--! mode check
+
+-- POSITIVE: a name is declared once with a definite type.
+theX : Int
+let theX = 0
+
+-- POSITIVE: separate names with the same shape but distinct identities
+-- coexist.
+theY : Int
+let theY = 1
+
+theYBool : Bool
+let theYBool = True
+
+-- NEGATIVE: the same identifier declared twice with conflicting type
+-- signatures at top level.
+theZ : Int
+let theZ = 0
+
+theZ : Bool                            --!! kappa.name.shadowing
+let theZ = True
+
+-- NEGATIVE: redeclaration at the same scope, even with a matching
+-- type, must be reported.
+theW : Int
+let theW = 0
+
+theW : Int                             --!! kappa.name.shadowing
+let theW = 1
+
+--! assertDiagnosticFamily error kappa.name.shadowing

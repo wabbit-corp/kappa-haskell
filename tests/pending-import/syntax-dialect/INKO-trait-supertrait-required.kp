@@ -1,0 +1,35 @@
+-- Source issues: docs/traits
+-- Spec: traits.instances.associated_static_member_instance_checking
+-- Inko: a derived trait (trait B: A) requires the supertrait A to also be
+-- implemented for the same type. Providing only the derived instance without
+-- the supertrait instance is a compile-time error.
+-- In Kappa, the implicit search for the supertrait constraint fails.
+
+--! mode check
+
+trait Named (a : Type) =
+    name : (& self : a) -> String
+
+trait Greeter (a : Type) :
+    Named a
+=
+    greet : (& self : a) -> String
+
+data Widget : Type = Widget
+
+-- POSITIVE: a type that satisfies both the supertrait and the derived trait.
+data Button : Type = Button
+
+instance Named Button =
+    let name _ = "button"
+
+instance Greeter Button =
+    let greet _ = "hello from button"
+
+
+-- NEGATIVE: Widget implements Greeter but has no Named instance.
+-- The supertrait Named Widget is unsatisfied, making Greeter Widget unsolvable.
+instance Greeter Widget =
+    let greet _ = "hello"   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

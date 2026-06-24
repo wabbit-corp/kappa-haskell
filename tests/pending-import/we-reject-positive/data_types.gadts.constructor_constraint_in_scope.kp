@@ -1,0 +1,22 @@
+-- Source issues: GHC#289, GHC#301
+-- Spec: data_types.gadts
+-- A GADT constructor can carry a trait obligation (Show a => ...).
+-- When that constructor is matched, the carried evidence must be automatically
+-- available in the match branch body — no explicit annotation required.
+
+module test
+
+-- Show is a built-in trait; no redefinition needed.
+
+data Expr (a : Type) : Type =
+  Lit  : Show a => a -> Expr a
+  Pair : Expr a -> Expr b -> Expr (a, b)
+
+-- Accepted: Show evidence is in scope from the Lit constructor's carried constraint.
+showExpr : Expr a -> String
+let showExpr e =
+  match e
+    case (Lit x)    -> show x
+    case (Pair l r) -> "(" ++ showExpr l ++ ", " ++ showExpr r ++ ")"
+
+--! assertNoErrors

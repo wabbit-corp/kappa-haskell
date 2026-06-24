@@ -1,0 +1,58 @@
+-- Source issues: nickel #1284, enum_row_conflict tests in typecheck/
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant (kappa.row.lacks-failed)
+-- Variant row types obey the Lacks constraint: extending a union row with a member
+-- type that already exists in that row violates LacksVar and must be rejected.
+-- Kappa note: Union type members are structural types; each "tag" is a singleton type.
+-- Duplicate member types in a union row violate the LacksVar constraint.
+
+module test
+
+-- Singleton data types used as union members.
+data MyTag  : Type = MyTag
+data OtherTag : Type = OtherTag
+
+-- NEGATIVE: a union type that contains the same member type twice.
+-- `(| MyTag | MyTag |)` violates `LacksVar {MyTag} MyTag`.
+-- The second MyTag entry is a duplicate; the row is ill-formed.
+dupMemberType : (| MyTag | MyTag |) -> String    --!! kappa.row.lacks-failed
+let dupMemberType v = "bad"
+
+--! mode check
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- NEGATIVE: using a polymorphic function that extends a row with a member type that
+-- already exists in the concrete row violates the LacksVar constraint.
+-- `addMyTag : forall r. LacksVar r MyTag => (| r |) -> (| MyTag | r |)` applied
+-- to `(| MyTag |)` fails because `LacksVar {MyTag} MyTag` does not hold.
+addMyTag : forall r. LacksVar r MyTag => (| r |) -> (| MyTag | r |)
+let addMyTag v = (| MyTag : MyTag |)
+
+alreadyHasMyTag : (| MyTag |)
+let alreadyHasMyTag = (| MyTag : MyTag |)
+
+-- Rejected: extending a union that already contains MyTag with another MyTag.
+badExtend : (| MyTag | MyTag |)
+let badExtend = addMyTag alreadyHasMyTag     --!! kappa.row.lacks-failed
+
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- POSITIVE: extending a union that does NOT contain the target type — fine.
+noMyTag : (| OtherTag |)
+let noMyTag = (| OtherTag : OtherTag |)
+
+goodExtend : (| MyTag | OtherTag |)
+let goodExtend = addMyTag noMyTag
+
+--! assertType goodExtend (| MyTag | OtherTag |)
+
+-- POSITIVE: distinct member types in the same union — well-formed.
+data Active   : Type = Active
+data Inactive : Type = Inactive
+data Pending  : Type = Pending
+
+statusFn : (| Active | Inactive | Pending |) -> String
+let statusFn s = match s
+    case (| _ : Active   |) -> "active"
+    case (| _ : Inactive |) -> "inactive"
+    case (| _ : Pending  |) -> "pending"
+

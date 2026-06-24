@@ -1,0 +1,69 @@
+-- Stress test: Trait whose method has an effectful result type; function
+--   constrained by both the trait and the effect row interacts correctly.
+-- Spec: traits.headers, effects.monadic_core.eff_effect_rows,
+--   compiler.frontir.standard_diagnostic_families.effect_row_variant
+
+--! mode check
+
+-- A "Logger" trait: the `logLine` method must run in any row that contains `log`.
+effect Log =
+    1 emit : String -> Unit
+
+-- Trait parameterized by both the data type and the residual effect row.
+-- Methods are allowed to use a fixed label `log` from the row.
+trait Loggable (a : Type) =
+    describe : a -> String
+
+-- Two instances
+data Point : Type = Point Int Int
+data Color : Type = Red | Green | Blue
+
+instance Loggable Point =
+    let describe (Point x y) =
+        "Point(" ++ int_to_string x ++ "," ++ int_to_string y ++ ")"
+
+instance Loggable Color =
+    let describe c =
+        match c
+        case Red   -> "Red"
+        case Green -> "Green"
+        case Blue  -> "Blue"
+
+-- A function that requires Loggable and a log effect row.
+-- It describes the value, emits the description, and returns it.
+logDescribe :
+    forall (a : Type) (r : EffRow).
+    (@_ : Loggable a) ->
+    a ->
+    Eff <[log : Log | r]> String
+let logDescribe x =
+    let msg = describe x
+    do
+        Log.emit msg
+        pure msg
+
+-- POSITIVE: calling logDescribe with both effects satisfied.
+runLogging : Eff <[ ]> String
+let runLogging =
+    handle log
+        (logDescribe (Point 3 4))
+    with
+        case return v  -> pure v
+        case emit _ k  -> k ()
+
+-- POSITIVE: logDescribe with Color
+runColorLog : Eff <[ ]> String
+let runColorLog =
+    handle log
+        (logDescribe Green)
+    with
+        case return v  -> pure v
+        case emit _ k  -> k ()
+
+-- NEGATIVE: calling logDescribe in a context missing the `log` effect row
+-- should fail because `emit` needs the `log` label.
+pureDescribe : String
+let pureDescribe = describe (Point 1 2)   -- pure use of describe, no effect needed
+
+--! assertNoErrors
+--! assertType runLogging (Eff <[ ]> String)

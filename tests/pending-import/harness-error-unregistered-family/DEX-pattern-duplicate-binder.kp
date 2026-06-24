@@ -1,0 +1,67 @@
+-- Source issues: dex-lang shadow-tests.dx
+--   (`(x, x) = (1, 1)` → `Error: variable already defined within pattern: x`),
+--   (`\p. (x, x) = p; x` → `Error: variable already defined within pattern: x`).
+-- Spec: expressions.patterns.binder_uniqueness (§16.2),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.shadowing).
+-- Within a single pattern, each binder name must be unique. Binding the same
+-- variable name twice in the same pattern — whether in a tuple, a constructor
+-- application, or nested patterns — must be rejected at compile time.
+
+--! mode check
+
+-- NEGATIVE: pair pattern with the same name used twice.
+badTuplePat : (Int, Int) -> Int
+let badTuplePat p =
+    let (x, x) = p    --!! kappa.name.shadowing
+    x
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: a pair pattern with distinct names.
+goodTuplePat : (Int, Int) -> Int
+let goodTuplePat p =
+    let (a, b) = p
+    a + b
+
+-- NEGATIVE: constructor pattern with the same name in two argument positions.
+data Pair2 (a : Type) : Type = Pair2 a a
+
+badConPat : Pair2 Int -> Int
+let badConPat q =
+    let Pair2 y y = q    --!! kappa.name.shadowing
+    y
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: constructor pattern with distinct names.
+goodConPat : Pair2 Int -> Int
+let goodConPat q =
+    let Pair2 m n = q
+    m + n
+
+-- NEGATIVE: nested tuple pattern reusing a name across levels.
+badNested : ((Int, Int), Int) -> Int
+let badNested p =
+    let ((z, _), z) = p    --!! kappa.name.shadowing
+    z
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: nested tuple pattern with distinct names.
+goodNested : ((Int, Int), Int) -> Int
+let goodNested p =
+    let ((a, b), c) = p
+    a + b + c
+
+-- NEGATIVE: function argument patterns with duplicates.
+badFunPat : (Int, Int) -> Int
+let badFunPat (n, n) = n    --!! kappa.name.shadowing
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: underscore wildcards do not conflict with each other.
+goodWild : (Int, Int) -> Int
+let goodWild (n, _) = n
+
+goodWild2 : (Int, Int, Int) -> Int
+let goodWild2 (_, _, k) = k

@@ -1,0 +1,60 @@
+-- Source issues: Vale WeakTests, vale#398 (Add borrow references),
+--               docs/hgm/HGM Pointers and Borrows.md (tether/overlap)
+-- Spec: types.universes.disjoint_path_borrowing_records,
+--       compiler.diagnostics.path_sensitive_diagnostics.overlapping_borrow_or_update_footprints
+-- In Vale's HGM model, when an owned value is held in a local and a borrow
+-- is also live on that same root, passing the owned value to a consuming
+-- call while the borrow is tethered is a constraint violation. In Kappa,
+-- introducing two borrows whose footprints overlap (or passing an owned
+-- value to a consuming call while a borrow on it is live) must be rejected
+-- with kappa.borrow.overlap.
+
+--! mode check
+
+data Resource : Type = Resource Int
+
+readValue : (& r : Resource) -> Int
+let readValue (Resource n) = n
+
+consume : (1 r : Resource) -> Int
+let consume (Resource n) = n
+
+-- POSITIVE: borrowing and reading a resource, then consuming it after
+-- the borrow scope ends.
+borrowThenConsume : (1 r : Resource) -> Int
+let borrowThenConsume r =
+    let borrowed = readValue r
+    let val = consume r
+    borrowed + val
+
+-- NEGATIVE: passing an owned resource to a consuming call while a live
+-- borrow of that same resource is still in scope.  The footprints of the
+-- consuming demand and the live borrow overlap on `r`.
+overlapConsumeAndBorrow : (1 r : Resource) -> Int
+let overlapConsumeAndBorrow r =
+    let & b = r
+    let n   = consume r   --!! kappa.borrow.overlap
+    readValue b
+
+--! assertDiagnosticFamily error kappa.borrow.overlap
+
+-- NEGATIVE: two simultaneous mutable inout footprints on the same root.
+data Counter : Type = Counter Int
+
+increment : (1 c : Counter) -> Counter
+let increment (Counter n) = Counter (n + 1)
+
+doubleIncrement : (1 c : Counter) -> (Counter, Counter)
+let doubleIncrement c =
+    let c2 = increment c
+    let c3 = increment c   --!! kappa.path.consumed
+    (c2, c3)
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: two sequential (non-overlapping) borrows of the same value.
+sequentialBorrows : (& r : Resource) -> Int
+let sequentialBorrows r =
+    let a = readValue r
+    let b = readValue r
+    a + b

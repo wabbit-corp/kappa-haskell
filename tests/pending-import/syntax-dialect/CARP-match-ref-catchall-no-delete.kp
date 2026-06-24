@@ -1,0 +1,49 @@
+-- Source issue: carp-lang/Carp#843
+-- Spec: types.unions.elimination_match,
+--       types.universes.quantities.linear_discharge_discard_destructor_use
+--       (see also CARP_SPEC_ADDITIONS.md SA-CARP-01).
+-- Carp #843: a `match-ref` whose catch-all arm bound the wildcard to a
+-- name then tried to delete that name as if it were an owned value.
+-- The portable Kappa obligation is that under borrow-form union
+-- elimination the wildcard binder is itself a borrow; the destructor for
+-- the scrutinee or its arms is NOT invoked at the join.
+
+--! mode check
+
+data Ex : Type =
+    One
+    | Two String
+
+-- POSITIVE: the catch-all binder under a reference scrutinee is a
+-- borrow; the body uses it as a read-only reference and the scrutinee
+-- is not consumed.
+catchAllBorrow : (& Ex) -> Int
+let catchAllBorrow ex =
+    match ex
+    case Two s -> stringLength s
+    case _     -> 0                       -- `_` is a borrow; no delete
+
+stringLength : (& String) -> Int
+let stringLength s = 0
+
+--! assertNoErrors
+--! assertType catchAllBorrow (& Ex) -> Int
+
+-- POSITIVE: the underlying `Ex` value remains alive after the borrow-
+-- form elimination; the owner can still consume it later.
+useAfterMatchRef : (1 ex : Ex) -> Int
+let useAfterMatchRef ex =
+    let n : Int =
+        match &ex
+        case Two _ -> 1
+        case _     -> 0
+    let _ : Int = unwrap ex
+    n
+
+unwrap : (1 ex : Ex) -> Int
+let unwrap ex =
+    match ex
+    case One   -> 0
+    case Two _ -> 1
+
+--! assertNoErrors

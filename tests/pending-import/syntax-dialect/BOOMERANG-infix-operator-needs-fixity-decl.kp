@@ -1,0 +1,32 @@
+-- Source: Boomerang docs/docs/main.src "Operators" table.
+--         Boomerang reserves a fixed set of infix operators (., |, &, -,
+--         ~, <->, <=>, &&, ||, =, etc.) with built-in resolution rules.
+--         User-defined infix operators do not exist as a surface notion.
+--         Kappa allows user-defined infix operators but requires a fixity
+--         declaration before use (§5.5.3 infix gating).
+-- Spec: lexical.operator_identifiers_fixity.declarations,
+--       lexical.operator_identifiers_fixity.infix_gating.
+-- Spec gap: BSA-BOOMERANG-09 — Kappa spec lacks a dedicated diagnostic
+--   family for "operator token used in operator position without an
+--   in-scope fixity"; the obligation is recorded as a generic
+--   compile-time rejection.
+-- Portable obligation: an operator token without a corresponding fixity
+--   declaration in scope is rejected when used in infix position; the
+--   same operator remains usable as a normal name via `(op)`.
+
+module test
+
+--! mode check
+
+data Lens : Type =
+    Lens String
+
+-- NEGATIVE: `<~>` is used in infix position but no infix fixity for it
+-- is in scope. Per §5.5.3, infix use of an operator token without an
+-- in-scope infix fixity is rejected at parse/elaboration time. Kappa
+-- has no dedicated diagnostic family for "fixity not in scope" so the
+-- assertion below is the generic compile-error count.
+composed : Lens
+let composed = (Lens "a") <~> (Lens "b")
+
+--! assertErrorCount 1

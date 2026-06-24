@@ -1,0 +1,72 @@
+-- Source issues: Noir#11548, Noir#11376, Noir#11551
+-- Spec: traits.instances.supertrait_projection_path_selection
+-- Associated static members declared in a grandparent (or deeper ancestor)
+-- trait MUST be accessible in impl bodies and generic functions that are
+-- constrained by a descendant trait. Supertrait evidence is available via
+-- implicit projection regardless of chain depth.
+
+module test
+
+-- Three-level hierarchy.
+trait Level1 =
+    A : Type
+
+trait Level1 => Level2 =
+    transform : Self.A -> Int
+
+trait Level2 => Level3 =
+    wrap : Self.A -> (Int, Int)
+
+-- Instance providing A = String at level 1.
+data Val : Type = Val
+
+instance Level1 Val =
+    let A = String
+
+instance Level2 Val =
+    let transform _ = 0
+
+instance Level3 Val =
+    -- `Self.A` resolves to `String` through the Level1 supertrait chain.
+    let wrap _ = (0, 1)
+
+--! mode check
+--! assertNoErrors
+
+-- Generic function: Level3 constraint gives access to `a.A` through the chain.
+useChain : (@_ : Level3 a) => a.A -> (Int, Int)
+let useChain x = wrap x
+
+--! assertNoErrors
+
+result : (Int, Int)
+let result = useChain "hello"
+
+--! assertNoErrors
+
+-- A trait with an associated type whose own supertrait has an associated type,
+-- and the associated type of the parent is used as a bound on a child's member.
+trait HasQux =
+    Qux : Type
+
+trait HasBar : HasQux =
+    Bar : HasQux.Qux -> Int
+
+-- Accessing `<T::Bar as HasQux>::Qux` via a nested associated type bound.
+trait Foo =
+    InnerBar : Type
+
+trait Foo => UsesNested =
+    -- Return type mentions associated type of a constrained associated type.
+    getInner : Self.InnerBar -> Int
+
+instance Foo Val =
+    let InnerBar = Int
+
+instance UsesNested Val =
+    let getInner n = n
+
+nestedResult : Int
+let nestedResult = getInner (42 : Int)
+
+--! assertNoErrors

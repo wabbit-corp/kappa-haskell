@@ -1,0 +1,50 @@
+-- Source issue: FLIX-7456
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Duplicate literal patterns in a match make the second (and later) duplicate
+-- branches unreachable. The compiler must emit `kappa.pattern.unreachable`
+-- for each unreachable branch; it must not silently accept the program.
+
+--! mode check
+
+-- NEGATIVE TEST: two branches with the same integer literal.
+-- The second `case 1` is unreachable.
+let classify_bad (x : Int) : String =
+    match x
+    case 1 -> "first"
+    case 1 -> "second"              --!! kappa.pattern.unreachable
+    case _ -> "other"
+
+-- NEGATIVE TEST: three duplicate branches.
+let classify_three_dupes (x : Int) : String =
+    match x
+    case 42 -> "a"
+    case 42 -> "b"                  --!! kappa.pattern.unreachable
+    case 42 -> "c"                  --!! kappa.pattern.unreachable
+    case _  -> "other"
+
+-- NEGATIVE TEST: duplicate string literal branches.
+let classify_string_dupe (s : String) : String =
+    match s
+    case "hello" -> "greeting"
+    case "hello" -> "duplicate"     --!! kappa.pattern.unreachable
+    case _       -> "other"
+
+-- POSITIVE TEST: distinct literal branches with wildcard are exhaustive.
+let classify_ok (x : Int) : String =
+    match x
+    case 1 -> "one"
+    case 2 -> "two"
+    case _ -> "other"
+
+-- POSITIVE TEST: no duplicate constructors.
+data Flag : Type =
+    On
+    Off
+
+let flag_desc (f : Flag) : String =
+    match f
+    case On  -> "on"
+    case Off -> "off"
+
+-- expect: classify_bad, classify_three_dupes, classify_string_dupe rejected with unreachable;
+--         classify_ok, flag_desc accepted

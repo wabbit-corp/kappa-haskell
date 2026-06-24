@@ -1,0 +1,52 @@
+-- Source issues: zig compile_errors/comptime_param_coersion.zig,
+--               zig#23319 (Sema: fix in-memory coercion of functions with generic parameters),
+--               zig#21099 (function coercion with generic params)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.functions, types.quantification
+-- A function that has compile-time (implicit/erased) type parameters is a
+-- generic function; it is not coercible to a monomorphic function type in a
+-- position where a concrete function is demanded. The other direction — a
+-- concrete function coerced to a generic position — is also disallowed when
+-- it would introduce new generic parameters that were not present in the
+-- source. Both directions emit `kappa.type.mismatch`.
+
+--! mode check
+
+-- Monomorphic functions (no implicit parameters):
+let intAdd (x : Int) (y : Int) : Int = x + y
+let strLen (s : String) : Int = 0
+
+-- POSITIVE: assigning a monomorphic fn to a matching function type.
+let okAssign : (Int -> Int -> Int) = intAdd
+
+
+-- POSITIVE: higher-order function accepts a matching concrete fn type.
+let applyToTen (f : Int -> Int) : Int = f 10
+
+let callApply : Int = applyToTen strLen
+
+
+-- Generic function (has an implicit type parameter):
+let identity {a : Type} (x : a) : a = x
+
+-- POSITIVE: generic function called at a specific instantiation.
+let identityInt : Int = identity 42
+
+
+-- NEGATIVE: a concrete (non-generic) function slot expects exactly `Int -> Int`
+-- but a fully generic `{a} -> a -> a` is passed. The parameter telescope
+-- differs (implicit binder vs. none), so the coercion is rejected.
+let demandsConcrete (f : Int -> Int) : Int = f 0
+
+let passGeneric : Int = demandsConcrete identity    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a generic slot `{a} -> a -> a` is given a concrete fn `Int -> Int`.
+-- The concrete fn can only handle Int, but the generic position demands
+-- universality, which the concrete fn does not provide.
+let demandsGeneric {a : Type} (f : a -> a) (x : a) : a = f x
+
+let passConcreteAsGeneric : Int = demandsGeneric strLen 0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

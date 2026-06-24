@@ -1,0 +1,48 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_grounded/rule_grounded.dl,
+--   souffle-lang #183 (better error message for unground variable),
+--   souffle-lang #730 (negations with relatively grounded variables),
+--   souffle-lang #2318 (problem about ungrounded variable),
+--   souffle-lang #2379 (insufficient checking on unground variable).
+-- Spec: modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Spec gap: SSA-SOUFFLE-01 (relation/rule grounding semantics).
+-- In Souffle, every variable in a rule head must be "grounded" by appearing in at
+-- least one positive body atom. Negated atoms and constraints do not ground variables.
+-- In Kappa, the direct analogue is that every variable used in a binding expression
+-- must be in scope (bound earlier in the same binding group or by a pattern). This
+-- test covers the Kappa scope rule using function bodies as the analogue of rule heads.
+
+--! mode check
+
+-- POSITIVE: function body uses only bound variables.
+let grounded : Int -> Int -> Int
+let grounded x y = x + y
+
+let conditionalUse : Bool -> Int -> Int
+let conditionalUse flag n =
+    if flag then n * 2 else n
+
+-- POSITIVE: let-bound intermediate values are grounded.
+let withLet : Int -> Int
+let withLet x =
+    let doubled = x * 2
+    let shifted = doubled + 1
+    shifted
+
+-- NEGATIVE: `z` appears in the result expression but was never bound.
+let ungroundedVar : Int -> Int
+let ungroundedVar x =
+    x + z    --!! kappa.name.unresolved
+    -- `z` was never bound; analogous to Souffle's ungrounded variable in head.
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a name mentioned only inside a negation expression is not bound in
+-- the outer scope (analogous to Souffle: !R(x) does not ground x).
+let notGrounded : Int -> Int
+let notGrounded x =
+    let _ = not (x > 0)    -- `not` sub-expression does not introduce `result`
+    result + x              --!! kappa.name.unresolved
+    -- `result` was never bound in the outer scope
+
+--! assertDiagnosticFamily error kappa.name.unresolved

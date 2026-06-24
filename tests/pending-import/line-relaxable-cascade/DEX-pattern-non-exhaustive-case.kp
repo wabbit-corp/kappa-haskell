@@ -1,0 +1,84 @@
+-- Source issues: dex-lang adt-tests.dx
+--   (`for i. case myTab[i] of { MyLeft val -> val }` →
+--   runtime error on `MyRight` input),
+--   dex-lang exception-tests.dx (`catch \. for i:(Fin 5). if ordinal i > 3 then throw() else 23` → Nothing),
+--   dex-lang #307 (support nested refutable patterns).
+-- Spec: expressions.match.exhaustiveness (§16.4),
+--       compiler.frontir.standard_diagnostic_families.pattern (kappa.pattern.non-exhaustive).
+-- A `match` expression must cover all constructors of the scrutinee's type.
+-- If any constructor is missing and no wildcard branch is present, the
+-- compiler must reject the program with kappa.pattern.non-exhaustive.
+-- The diagnostic must list the uncovered constructors.
+
+--! mode check
+
+data Shape : Type =
+    Circle Float
+    Rectangle Float Float
+    Triangle Float Float Float
+
+-- NEGATIVE: missing `Triangle` branch.
+areaApprox : Shape -> Float
+let areaApprox s = match s    --!! kappa.pattern.non-exhaustive
+    case Circle r       -> 3.14159 * r * r
+    case Rectangle w h  -> w * h
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: all constructors covered.
+describeShape : Shape -> String
+let describeShape s = match s
+    case Circle _       -> "circle"
+    case Rectangle _ _  -> "rectangle"
+    case Triangle _ _ _ -> "triangle"
+
+-- POSITIVE: wildcard branch covers the rest.
+isCircle : Shape -> Bool
+let isCircle s = match s
+    case Circle _ -> True
+    case _        -> False
+
+-- NEGATIVE: two-constructor type with only one arm.
+data Bit : Type = Zero | One
+
+bitToInt_bad : Bit -> Int
+let bitToInt_bad b = match b    --!! kappa.pattern.non-exhaustive
+    case Zero -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: two-arm complete match.
+bitToInt : Bit -> Int
+let bitToInt b = match b
+    case Zero -> 0
+    case One  -> 1
+
+-- NEGATIVE: three-constructor enum, two covered.
+data Direction : Type = North | South | East | West
+
+turnRight : Direction -> Direction
+let turnRight d = match d    --!! kappa.pattern.non-exhaustive
+    case North -> East
+    case East  -> South
+    case South -> West
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: all four directions covered.
+turnLeft : Direction -> Direction
+let turnLeft d = match d
+    case North -> West
+    case West  -> South
+    case South -> East
+    case East  -> North
+
+-- NEGATIVE: nested sum type, inner pattern incomplete.
+data Outer : Type = OutA (Either Int String) | OutB
+
+processOuter : Outer -> Int
+let processOuter o = match o    --!! kappa.pattern.non-exhaustive
+    case OutA (Left n) -> n
+    case OutB          -> -1
+    -- OutA (Right _) is not covered
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

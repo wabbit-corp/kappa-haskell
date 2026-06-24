@@ -1,0 +1,54 @@
+-- Source issues: egraphs-good/egglog #94 (Parser might mishandle differently-named
+--   values constrained to be equal),
+--   egraphs-good/egglog #401 (Rewrite regardless of variant).
+-- Spec: expressions.patterns.validity
+--       (§17.2.3 — "Each alternative must bind the same set of names. Each
+--       bound name must have definitionally equal types across alternatives.").
+-- Or-patterns require each alternative to bind the same set of names. §17.2.3
+-- specifies the rule but does not name a dedicated diagnostic family; Kappa
+-- implementations therefore surface the failure as kappa.name.unresolved
+-- against the alternatives that bind a name absent from a sibling alternative.
+-- See EGGLOG-SA-09 in EGGLOG_SPEC_ADDITIONS.md for a proposed dedicated
+-- family.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Var (s : String)
+    Add (e1 : Math) (e2 : Math)
+    Sub (e1 : Math) (e2 : Math)
+
+-- POSITIVE: both alternatives bind `l` and `r` at the same types.
+leftChild : Math -> Math
+let leftChild m =
+    match m
+    case (Add l r | Sub l r) -> l
+    case other               -> other
+
+-- POSITIVE: nullary alternatives bind nothing on either side.
+isLeaf : Math -> Bool
+let isLeaf m =
+    match m
+    case (Num _ | Var _) -> True
+    case _               -> False
+
+-- NEGATIVE: alternatives bind different name sets.
+mixed : Math -> Math
+let mixed m =
+    match m
+    case (Add l r | Sub a b) -> l    --!! kappa.name.unresolved
+    case other               -> other
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: one alternative binds a name the other does not.
+onlyOne : Math -> Math
+let onlyOne m =
+    match m
+    case (Add l r | Num _) -> l      --!! kappa.name.unresolved
+    case other             -> other
+
+--! assertDiagnosticFamily error kappa.name.unresolved

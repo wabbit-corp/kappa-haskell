@@ -1,0 +1,68 @@
+-- Source issues: lamdu#141 — nominals should have separate disambiguation
+--   tags namespace; the constructor "Maybe" needn't get a disambiguation
+--   tag when used as a nominal constructor since the kind context
+--   already distinguishes it from a variable called "maybe".
+-- Spec: modules.names.kind_qualified_name_expressions,
+--       data_types.data_declarations.naming_diagnostics
+--   §10.x: a nominal type constructor's name lives in the type-name
+--   namespace, distinct from term and tag namespaces.
+--
+-- Distinct namespaces (type-constructor vs term vs tag) permit
+-- spelling reuse across kinds without ambiguity diagnostics.
+
+--! mode check
+
+-- POSITIVE: a nominal type and a term variable with the same spelling.
+data Maybe (a : Type) : Type =
+    Nothing
+    Just a
+
+maybe : Nat
+let maybe = 0
+
+testMaybe : Maybe Nat
+let testMaybe = Just maybe
+
+-- POSITIVE: a nominal type with a single constructor whose name
+-- matches the type name (Haskell-style).
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+usePair : Pair Nat Nat
+let usePair = Pair 1 2
+
+-- POSITIVE: distinct nominals with the same constructor spelling.
+-- A bare `Wrap` would be ambiguous, but qualified static-member
+-- selection `Box.Wrap` and `Bag.Wrap` resolves uniquely per §7.3.
+data Box : Type =
+    Wrap Nat
+
+data Bag : Type =
+    Wrap Nat
+
+useBox : Box
+let useBox = Box.Wrap 1
+
+useBag : Bag
+let useBag = Bag.Wrap 2
+
+-- POSITIVE: a parameter named like a nominal type — no conflict.
+useShadowParam : Nat -> Nat
+let useShadowParam (Maybe : Nat) = Maybe + 1
+
+callShadow : Nat
+let callShadow = useShadowParam 5
+
+-- NEGATIVE: two nominal types with the same name in the same scope.
+data Same : Type =
+    A
+
+data Same : Type =                         --!! kappa.name.ambiguous
+    B
+
+-- NEGATIVE: two constructors with the same name in the *same* nominal.
+data Dup2 : Type =
+    DupConst                               --!! kappa.name.ambiguous
+    DupConst
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

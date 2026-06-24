@@ -1,0 +1,55 @@
+-- Source issues: ELIXIR-PR-7069 (translate clauses for boolean check),
+--   kernel/warning_test.exs "clause not match" (clause cannot match because previous
+--   clause always matches), module/types/expr_test.exs "warns on redundant clauses"
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable)
+-- Kappa spec rule (§3.2.10):
+--   "Used when a branch, case, or impossible assertion is unreachable."
+-- In the Elixir compiler: "this clause cannot match because a previous clause at line N
+-- always matches." This is a warning in Elixir; in Kappa it is flagged as
+-- kappa.pattern.unreachable at WARNING severity.
+-- Note: inline --!! markers are omitted (they imply error severity); only the
+-- assertDiagnosticFamily warning directive is used.
+
+--! mode check
+
+data Color : Type =
+    Red | Green | Blue
+
+-- POSITIVE: non-overlapping constructors; all clauses reachable.
+colorName : Color -> String
+let colorName c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- POSITIVE: wildcard at end; all named arms are reachable.
+colorAlt : Color -> String
+let colorAlt c =
+    match c
+    case Red -> "red"
+    case _   -> "other"
+
+-- NEGATIVE: wildcard arm appears first; Red-specific arm after it is dead.
+badOrder : Color -> String
+let badOrder c =
+    match c
+    case _ -> "unknown"
+    case Red -> "red"
+
+-- NEGATIVE: duplicate identical constructor patterns; second occurrence is unreachable.
+dupConstructor : Color -> Int
+let dupConstructor c =
+    match c
+    case Red  -> 1
+    case Red  -> 2
+    case Green -> 3
+    case Blue  -> 4
+
+-- NEGATIVE: first clause is a catch-all; the Red-specific clause after it is dead.
+catchAllFirst : Color -> Bool
+let catchAllFirst _   = True
+let catchAllFirst Red = False
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

@@ -1,0 +1,31 @@
+-- Source issue: carp-lang/Carp#685
+-- Spec: types.quantification,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #685: a `sig` declared `(Fn [a a] a)` but the unifier did not
+-- enforce that both parameter positions referred to the same type
+-- variable.  A call with two different concrete types was admitted
+-- even though both arguments must share the same `a`.  The portable
+-- Kappa obligation is that a single universally-quantified type variable
+-- appearing in two positions of a signature unifies once across all
+-- occurrences in a single elaboration.
+
+--! mode check
+
+data Tag : Type = MkTag
+
+-- POSITIVE: both arguments share the type variable `a`; calling with two
+-- arguments of the same concrete type elaborates.
+firstArg : forall a. a -> a -> a
+let firstArg x y = x
+
+callOk : Int
+let callOk = firstArg 10 20
+
+--! assertType callOk Int
+
+-- NEGATIVE: calling `firstArg` with two different concrete types
+-- violates the shared `a` constraint; the unifier rejects.
+callBad : Int
+let callBad = firstArg 10 MkTag           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

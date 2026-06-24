@@ -1,0 +1,27 @@
+-- Source issue: Move #955
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       expressions.lambdas.closure_capture_quantities
+-- A lambda body that ignores a linear argument must be rejected at the lambda
+-- definition site, not deferred to call sites.  Move's inline-function
+-- expansion checked this only at expansion time; Kappa must enforce it at the
+-- point where the lambda is formed, because the lambda's inferred capture
+-- quantity determines whether it can be used at all.
+
+--! mode check
+
+module move_955_lambda_drop
+
+-- Rejected: lambda body silently drops the linear argument.
+-- `x` is demanded at quantity 1; the body `unit` demands it 0 times.
+dropLinear : (1 x : Int) -> Unit
+let dropLinear = \ (1 x : Int) -> unit   --!! kappa.quantity.unsatisfied
+
+-- Accepted: linear argument consumed exactly once.
+consumeLinear : (1 x : Int) -> Int
+let consumeLinear = \ (1 x : Int) -> x
+
+-- Rejected: lambda ignores a linear argument while returning a constant.
+constDrop : (1 x : Int) -> Int
+let constDrop = \ (1 x : Int) -> 42   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

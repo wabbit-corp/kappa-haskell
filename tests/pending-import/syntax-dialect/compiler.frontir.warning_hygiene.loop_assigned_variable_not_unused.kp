@@ -1,0 +1,44 @@
+-- Source issue: Move #251
+-- Spec: compiler.frontir.warning_hygiene
+-- A variable that is written inside a loop body but also read after the loop
+-- must NOT be reported as unused.  Source-oriented warnings must be computed
+-- against the user's apparent declarations and uses, not naively over
+-- transformed IR where the loop-body write may look like a dead store.
+-- Move gave a false "unused variable" error for a variable updated inside a
+-- loop.
+
+--! mode check
+
+module move_251_loop_write_not_unused
+
+import std.io
+
+-- Accepted with no unused-variable warning.
+-- `result` is written inside the loop and read after it.
+sumLoop : Int -> IO e Unit
+let sumLoop limit =
+    do
+        var result = 0
+        var i = 0
+        while i < limit do
+            result := result + i    -- result IS used: written each iteration
+            i := i + 1
+        print result                -- result IS used: read here
+
+--! assertNoErrors
+
+-- Accepted: a variable modified by both branches of an if inside a loop.
+conditionalUpdate : IO e Unit
+let conditionalUpdate =
+    do
+        var counter = 0
+        var i = 0
+        while i < 100 do
+            if i % 2 == 0 then
+                counter := counter + i
+            else
+                counter := counter + 1
+            i := i + 1
+        print counter
+
+--! assertNoErrors

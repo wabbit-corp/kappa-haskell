@@ -1,0 +1,75 @@
+-- Stress test: Generic function requiring three simultaneous constraints on
+--   different type variables; instance search must satisfy all three
+--   independently and propagate the evidence correctly.
+-- Spec: traits.headers, traits.instances.resolution_algorithm
+
+--! mode check
+
+trait Printable (a : Type) =
+    render : a -> String
+
+trait Comparable (a : Type) =
+    lessThan : a -> a -> Bool
+
+trait Countable (a : Type) =
+    count : a -> Nat
+
+-- Three independent instances for the same type.
+data Item : Type = Item String Nat
+
+instance Printable Item =
+    let render (Item s n) = s ++ ":" ++ int_to_string n
+
+instance Comparable Item =
+    let lessThan (Item _ n1) (Item _ n2) = n1 < n2
+
+instance Countable Item =
+    let count (Item _ n) = n
+
+-- Generic function with three distinct constraints.
+summarize :
+    forall (a : Type).
+    (@_ : Printable a) ->
+    (@_ : Comparable a) ->
+    (@_ : Countable a) ->
+    a -> a -> String
+let summarize x y =
+    let rx = render x
+    let ry = render y
+    let smaller = if lessThan x y then rx else ry
+    let total = count x + count y
+    smaller ++ "(total=" ++ int_to_string total ++ ")"
+
+-- POSITIVE: using summarize with all three instances satisfied.
+testSummarize : String
+let testSummarize = summarize (Item "alpha" 3) (Item "beta" 7)
+
+-- A second type with all three instances.
+data Score : Type = Score Nat
+
+instance Printable Score =
+    let render (Score n) = "Score(" ++ int_to_string n ++ ")"
+
+instance Comparable Score =
+    let lessThan (Score a) (Score b) = a < b
+
+instance Countable Score =
+    let count (Score n) = n
+
+testScore : String
+let testScore = summarize (Score 10) (Score 5)
+
+-- NEGATIVE: a type with only two out of three constraints cannot use summarize.
+data Tag : Type = Tag String
+
+instance Printable Tag =
+    let render (Tag s) = s
+
+instance Comparable Tag =
+    let lessThan (Tag s1) (Tag s2) = s1 < s2
+
+-- Missing Countable Tag instance; this call must fail.
+badSummarize : String
+let badSummarize = summarize (Tag "a") (Tag "b")   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

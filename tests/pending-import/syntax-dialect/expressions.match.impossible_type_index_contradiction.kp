@@ -1,0 +1,49 @@
+-- Source issues: Idris2 #1022, #2159
+-- Spec: expressions.match.impossible_unreachable_branch_bodies
+-- The pattern `refl` for a propositional equality `a = b` is impossible when
+-- `a` and `b` have distinct head constructors (type-level or term-level).
+-- The pattern-match checker MUST accept `-> impossible` for such branches using
+-- index unification to detect the contradiction, as required by §17.1.4.
+-- Idris2 bug #1022: the checker incorrectly raised an error while checking
+-- an `impossible` branch instead of silently accepting it.
+
+module test
+
+data ColorA : Type =
+  Red   : ColorA
+  Green : ColorA
+  Blue  : ColorA
+
+data Shape : Type =
+  Circle : Shape
+  Square : Shape
+
+data MyNat : Type =
+  MZero : MyNat
+  MSucc : (n : MyNat) -> MyNat
+
+-- Accepted: ColorA and Shape are distinct type constructors.
+-- `refl : ColorA = Shape` would require unifying ColorA with Shape,
+-- which fails by index unification. The branch is unreachable.
+notColorEqShape : (ColorA = Shape) -> Void
+let notColorEqShape refl = -> impossible
+
+--! mode check
+
+-- Accepted: MZero and MSucc are distinct constructors of the same type.
+-- `refl : MZero = MSucc n` requires unifying MZero with MSucc n, which fails.
+notZeroSucc : {n : MyNat} -> (MZero = MSucc n) -> Void
+let notZeroSucc refl = -> impossible
+
+
+-- Accepted: reflexivity is always provable for identical terms.
+zeroIsZero : MZero = MZero
+let zeroIsZero = refl
+
+
+-- Rejected: `refl : MZero = MZero` IS inhabited — the branch is reachable.
+-- `-> impossible` must be rejected when the equality is satisfiable.
+badImpossible : (MZero = MZero) -> Void
+let badImpossible refl = -> impossible  --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable

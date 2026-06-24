@@ -1,0 +1,77 @@
+-- Source issues: rzk#190 — tuples not treated as valid patterns in parameter
+--   declarations; rzk#192 — unusual syntax for tuple patterns; PR#191, PR#193
+--   — fix tuple patterns in parameter declarations and syntax.
+--   In Rzk, `((a, b, c) : Σ (a : A, b : B), C a b) → U` should desugar
+--   to nested pair patterns, but was producing an error "expected a pattern".
+-- Spec: declarations.terms, declarations.terms.irrefutable_patterns_let_bindings
+--   §6.3: function and parameter declarations may use irrefutable patterns.
+--   §6.3.2: tuple patterns in parameter position are irrefutable when the
+--   type is a product type.
+--
+-- Tuple patterns of arbitrary nesting depth must be accepted in function
+-- parameter declarations (after `:` in a type signature). The pattern
+-- must desugar to nested projections/matchings consistently.
+
+--! mode check
+
+-- POSITIVE: a simple pair type.
+data Pair (a b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- POSITIVE: tuple pattern in a top-level function parameter (irrefutable).
+addComponents : (Nat, Nat) -> Nat
+let addComponents (x, y) = x + y
+
+-- POSITIVE: nested pair pattern in a parameter declaration.
+sumNested : ((Nat, Nat), Nat) -> Nat
+let sumNested ((a, b), c) = a + b + c
+
+-- POSITIVE: deeply nested tuple pattern.
+sumDeep : (Nat, (Nat, (Nat, Nat))) -> Nat
+let sumDeep (a, (b, (c, d))) = a + b + c + d
+
+-- POSITIVE: tuple pattern in a parametric function — pattern on a pair
+-- whose type contains type variables.
+swapPair : forall (a b : Type). (a, b) -> (b, a)
+let swapPair (x, y) = (y, x)
+
+-- POSITIVE: user-defined constructor pattern in a parameter.
+pairSum : Pair Nat Nat -> Nat
+let pairSum (MkPair x y) = x + y
+
+-- POSITIVE: mixed: tuple pattern and constructor pattern in the same function.
+mixedPattern : Pair (Nat, Nat) Nat -> Nat
+let mixedPattern (MkPair (x, y) z) = x + y + z
+
+-- POSITIVE: pattern in a lambda inside a let — same desugaring rules apply.
+lambdaPattern : (Nat, Nat) -> Nat
+let lambdaPattern = \ (a, b) -> a * b
+
+-- POSITIVE: pattern in a where-clause helper.
+transformPairs : forall (a b c : Type). (a -> b -> c) -> (a, b) -> c
+let transformPairs f = \ (x, y) -> f x y
+
+-- POSITIVE: all three ways of writing a function over a pair should typecheck
+-- and produce the same result.
+way1 : (Nat, Nat) -> Nat
+let way1 p = p.1 + p.2
+
+way2 : (Nat, Nat) -> Nat
+let way2 (x, y) = x + y
+
+way3 : (Nat, Nat) -> Nat
+let way3 = \ (x, y) -> x + y
+
+testAll : (Nat, Nat, Nat)
+let testAll = (way1 (1, 2), way2 (1, 2), way3 (1, 2))
+
+-- NEGATIVE: pattern that cannot match the actual type — using a pair
+-- pattern on a non-pair type must fail.
+badPairPattern : Nat -> Nat
+let badPairPattern (x, y) = x + y    --!! kappa.type.mismatch
+
+-- NEGATIVE: using a constructor of a different type in a pattern position.
+badCtorPattern : (Nat, Nat) -> Nat
+let badCtorPattern (MkPair x y) = x + y    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

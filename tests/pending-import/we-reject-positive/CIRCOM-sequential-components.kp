@@ -1,0 +1,47 @@
+-- Source issues: Circom templates-and-components.md (positive: sequential component
+--               instantiation is valid; components can be instantiated and used in
+--               sequence within a template, with outputs from one feeding inputs of
+--               the next, as long as all inputs are set before outputs are read).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (positive).
+-- Kappa spec rule (§SA-CIRCOM-01, positive):
+--   "Sequential use of independently-instantiated components within the same
+--    template, where each component is fully initialized before its outputs are
+--    accessed, must be accepted without error."
+
+--! mode check
+
+data Multiplier : Type =
+    Multiplier { in1 : Int, in2 : Int, out : Int }
+
+data Adder : Type =
+    Adder { in1 : Int, in2 : Int, out : Int }
+
+let multiply (a b : Int) : Multiplier =
+    Multiplier { in1 = a, in2 = b, out = a * b }
+
+let add (a b : Int) : Adder =
+    Adder { in1 = a, in2 = b, out = a + b }
+
+-- POSITIVE: two independent components used sequentially.
+let twoComponents (a b c d : Int) : Int =
+    let mult1 = multiply a b
+    let mult2 = multiply c d
+    let adder = add mult1.out mult2.out
+    adder.out
+
+-- POSITIVE: chain where output of one component feeds input of the next.
+let chainedComponents (x y z : Int) : Int =
+    let step1 = multiply x y
+    let step2 = add step1.out z
+    step2.out
+
+-- POSITIVE: array of components all initialized before use.
+let arrayOfComponents (a b c : Int) : Int =
+    let comps : Array Multiplier 3 =
+        [ multiply a b
+        , multiply b c
+        , multiply a c
+        ]
+    comps[0].out + comps[1].out + comps[2].out
+
+--! assertNoErrors

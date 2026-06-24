@@ -1,0 +1,60 @@
+-- Source issue: OCaml#6801
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       kappa.pattern.exhaustiveness-residual
+-- When a GADT match is non-exhaustive, the diagnostic payload must identify the
+-- specific constructors or indexed shapes that are missing, not a content-free skeleton.
+-- In particular, the residual must be filtered by the scrutinee's known index
+-- constraints: constructors whose index is incompatible with the scrutinee index
+-- must not appear in the suggestions.
+--
+-- From OCaml#6801: OCaml suggested `Any` as a missing case for a scrutinee of type
+-- `string value` even though `Any` is the only possible missing constructor —
+-- but OCaml also suggested `String` and `Float` constructors that were not missing.
+-- The Kappa spec at `kappa.pattern.exhaustiveness-residual` forbids collapsing
+-- residuals to a content-free skeleton; it also (per OSA-02) should require that
+-- only index-compatible constructors appear in the residual.
+
+module test
+
+-- An indexed GADT with three constructors.
+data Value (a : Type) : Type =
+    VString : String -> Value String
+    VFloat  : Float  -> Value Float
+    VAny    : Value a
+
+-- Match over `Value String`: VFloat is impossible (index Float ≠ String).
+-- VAny is missing (index `a` unifies with String).
+-- The diagnostic must fire; its residual must not include VFloat.
+printString : Value String -> String
+let printString v =
+    match v                          --!! kappa.pattern.non-exhaustive
+      case VString s -> s
+
+--! mode check
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- Full coverage at `Value String`: VString covers the String-indexed case;
+-- VAny covers the polymorphic case. VFloat is excluded by index.
+-- This match MUST be accepted as exhaustive.
+fullPrint : Value String -> String
+let fullPrint v =
+    match v
+      case VString s -> s
+      case VAny      -> "<any>"
+
+
+-- Full coverage at `Value Float`: VFloat + VAny are exhaustive.
+fullFloat : Value Float -> String
+let fullFloat v =
+    match v
+      case VFloat f -> "float"
+      case VAny     -> "<any>"
+
+
+-- Partial coverage at `Value Float`: only VAny covered; VFloat is missing.
+partialFloat : Value Float -> String
+let partialFloat v =
+    match v                          --!! kappa.pattern.non-exhaustive
+      case VAny -> "<any>"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

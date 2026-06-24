@@ -1,0 +1,49 @@
+-- Source issues: nickel #407, #409, #799, #1090, #1443
+-- Spec: modules.acyclic_imports, modules.imports (kappa.query.cycle)
+-- A cyclic import graph (A imports B which imports A) must be detected and
+-- rejected at the import resolution phase. The diagnostic must be
+-- kappa.query.cycle (per §3.2.16) and must include all participant module
+-- identities in the cycle. The implementation MUST NOT loop infinitely when
+-- encountering a cycle.
+-- Additionally, when a transitively imported file contains a parse error or
+-- type error, that error must propagate back to the root importer with
+-- appropriate blame attribution pointing to both sites.
+
+--! mode check
+
+-- A direct two-module cycle: cycleA imports cycleB, which imports cycleA.
+module cycleA
+import cycleB    --!! kappa.query.cycle
+
+module cycleB
+import cycleA    --!! kappa.query.cycle
+
+--! assertDiagnosticFamily error kappa.query.cycle
+
+-- A three-module cycle: cycleP -> cycleQ -> cycleR -> cycleP.
+module cycleP
+import cycleQ    --!! kappa.query.cycle
+
+module cycleQ
+import cycleR    --!! kappa.query.cycle
+
+module cycleR
+import cycleP    --!! kappa.query.cycle
+
+--! assertDiagnosticFamily error kappa.query.cycle
+
+-- POSITIVE: a non-cyclic import chain must be accepted.
+module leaf
+val : Number
+let val = 42
+
+module middle
+import leaf
+derived : Number
+let derived = leaf.val + 1
+
+module root
+import middle
+result : Number
+let result = middle.derived + 1
+

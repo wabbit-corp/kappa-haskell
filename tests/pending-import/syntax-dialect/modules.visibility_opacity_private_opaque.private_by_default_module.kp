@@ -1,0 +1,44 @@
+-- Source issues: Move #417, Move #1027
+-- Spec: modules.visibility_opacity_private_opaque
+-- In a module annotated with `@PrivateByDefault`, every top-level item is
+-- private unless marked `public`.  Outside modules cannot import or use
+-- items that are not `public`.  Conversely, `public` items are accessible
+-- normally.
+-- Move users requested `public const` (#417) and `import const` (#1027) to
+-- share constants across modules.  Kappa's `@PrivateByDefault` annotation plus
+-- ordinary `public` modifiers express this directly.
+
+--! mode check
+
+module internal_module @PrivateByDefault
+
+-- Private by default: not importable from outside.
+secret : Int
+let secret = 42
+
+-- Explicitly public: importable from outside.
+public sharedConst : Int
+let sharedConst = 100
+
+public mkPair : Int -> (Int, Int)
+let mkPair x = (x, sharedConst)
+
+---
+
+module consumer
+
+import internal_module
+
+-- Accepted: using a public item from a @PrivateByDefault module.
+result : Int
+let result = internal_module.sharedConst
+
+-- Accepted: calling a public function.
+pair : (Int, Int)
+let pair = internal_module.mkPair 7
+
+-- Rejected: accessing a private (non-public) item from outside.
+bad : Int
+let bad = internal_module.secret   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

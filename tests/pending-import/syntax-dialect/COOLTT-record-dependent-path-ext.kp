@@ -1,0 +1,74 @@
+-- Source artifacts: cooltt test record.cooltt (depend/ext, basic/ext),
+--               test isos.cooltt (iso/symm, iso/trans), test prelude.cooltt
+--               (path, path-p, refl, symm, trans).
+-- Source tests: cooltt test/record.cooltt (corpus repos/github-redprl-cooltt/tests/test/record.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: declarations.signatures,
+--       types.propositions.propositional_equality_type_positions
+--
+-- A dependent record (sigma) type has a second field whose type depends on
+-- the first. Two elements of a dependent record are propositionally equal if
+-- and only if their corresponding fields are propositionally equal (pointwise
+-- equality). This is the "pair extensionality" principle: eta on sigma types
+-- combined with propositional equality.
+
+--! mode check
+
+-- POSITIVE: basic record type (dependent pair / sigma type).
+data Dep : Type =
+    MkDep : (tp : Type0) -> (val : tp) -> Dep
+
+depTp  : Dep -> Type0
+depTp  (MkDep t _) = t
+
+depVal : (d : Dep) -> depTp d
+depVal (MkDep _ v) = v
+
+-- POSITIVE: constructing and projecting from a dependent record.
+ex1 : Dep
+let ex1 = MkDep Nat 42
+
+checkTp : Type0
+let checkTp = depTp ex1
+
+checkVal : Nat
+let checkVal = depVal ex1
+
+-- POSITIVE: two Dep values with the same tp and val are propositionally equal.
+-- Pair extensionality: equality of records reduces to equality of fields.
+depExt :
+    forall (d0 d1 : Dep) ->
+    (p : depTp d0 = depTp d1) ->
+    d0 = d1
+let depExt (MkDep t0 _) (MkDep t1 _) p = ?depExtHole    --!! kappa.hole.unsolved
+
+-- POSITIVE: a function extracting both components of a record is well-typed.
+splitDep : Dep -> (Type0, Nat)
+let splitDep (MkDep Nat v) = (Nat, v)
+let splitDep (MkDep _   _) = (Nat, zero)
+
+-- POSITIVE: a record type with a function field.
+data Endo : Type =
+    MkEndo : (t : Type0) -> (fn : t -> t) -> Endo
+
+endoT  : Endo -> Type0
+endoT  (MkEndo t _) = t
+
+endoFn : (e : Endo) -> endoT e -> endoT e
+endoFn (MkEndo _ f) = f
+
+natEndo : Endo
+let natEndo = MkEndo Nat suc
+
+apply3 : Nat
+let apply3 = endoFn natEndo (endoFn natEndo (endoFn natEndo zero))
+
+-- POSITIVE: equality of endomorphisms is pointwise equality of their function
+-- component. Here we state it as an expectation (hole shows the proof obligation).
+endoExt :
+    forall (e0 e1 : Endo) ->
+    endoT e0 = endoT e1 ->
+    (forall (x : endoT e0) -> endoFn e0 x = ?_) ->
+    e0 = e1
+let endoExt e0 e1 _ _ = ?endoHole    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

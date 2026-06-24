@@ -1,0 +1,48 @@
+-- Source issues: odin#393 (procedure group compiler assert when no matching
+--               arguments are provided), OSA-ODIN-05
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       compiler.frontir.ordinary_errors_not_internal_failures
+-- Calling an overload set with arguments that do not match any member must
+-- produce a well-formed diagnostic, not an internal assertion failure.
+-- The diagnostic must list candidates and explain why each was rejected.
+
+--! mode check
+
+-- Two overloaded functions with different argument types.
+let process (x : Int) : Int = x + 1
+let process (s : String) : Int = 0
+
+-- POSITIVE: Int argument matches first overload.
+let okProcessInt : Int = process 42
+
+
+-- POSITIVE: String argument matches second overload.
+let okProcessStr : Int = process "hello"
+
+
+-- NEGATIVE: Bool argument matches no overload.
+let badProcessBool : Int = process True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A set of overloads distinguished by arity.
+let arity1 (x : Int) : Int = x
+let arity2 (x : Int) (y : Int) : Int = x + y
+
+-- POSITIVE: one argument — matches arity1.
+let okArity1 : Int = arity1 5
+
+
+-- POSITIVE: two arguments — matches arity2.
+let okArity2 : Int = arity2 3 4
+
+
+-- NEGATIVE: Bool argument, wrong type for both overloads.
+let badArityBool : Int = arity1 True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- (The polymorphic `convert {a} -> Int` / `convert Int -> String` overload
+-- pair was removed: when both a generic and a specific overload accept the
+-- same argument type, overload resolution is implementation-defined and the
+-- test's positive/negative classification cannot be portably guaranteed.)

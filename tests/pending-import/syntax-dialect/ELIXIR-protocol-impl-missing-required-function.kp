@@ -1,0 +1,64 @@
+-- Source issues: kernel/warning_test.exs "undefined function for protocol"
+--   ("function foo/1 required by protocol Sample1 is not implemented in module Sample1.Atom"),
+--   ELIXIR-PR-14115 (type checking of protocol implementations),
+--   ELIXIR-PR-14117 (type checking of protocol dispatch), spec gap ESA-ELIXIR-04
+-- Spec: traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved)
+-- Kappa spec rule (§3.2.6 kappa.implicit.unsolved):
+--   "Used when an implicit argument, constraint, instance, or proof obligation remains
+--    unsatisfied after elaboration."
+-- In Elixir, defimpl declares that a module implements a protocol. If the defimpl block
+-- does not define all functions required by the protocol, a warning is emitted. In Kappa,
+-- a trait instance that does not implement all required trait methods leaves a proof
+-- obligation unsatisfied, producing kappa.implicit.unsolved (ERROR per §3.2.6).
+-- Per spec gap ESA-ELIXIR-04, the original Elixir severity is warning; Kappa treats this
+-- as an error.
+
+--! mode check
+
+-- A trait with three required methods.
+trait Container (a : Type) =
+    empty  : a
+    insert : (& x : a) -> Int -> a
+    toList : (& x : a) -> List Int
+
+-- POSITIVE: complete implementation of Container.
+record Stack =
+    items : List Int
+
+instance Container Stack =
+    let empty = Stack { items = [] }
+    let insert s n = Stack { items = n :: s.items }
+    let toList s = s.items
+
+-- POSITIVE: complete implementation with a different backing structure.
+record Bag =
+    count : Int
+    elems : List Int
+
+instance Container Bag =
+    let empty = Bag { count = 0, elems = [] }
+    let insert b n = Bag { count = b.count + 1, elems = n :: b.elems }
+    let toList b = b.elems
+
+-- NEGATIVE: instance body is empty; none of the three required methods are provided.
+record Queue =
+    front : List Int
+    back  : List Int
+
+instance Container Queue =      --!! kappa.implicit.unsolved
+
+-- NEGATIVE: instance provides 'empty' and 'insert' but omits 'toList'.
+record Set =
+    elems : List Int
+
+instance Container Set =        --!! kappa.implicit.unsolved
+    let empty = Set { elems = [] }
+    let insert s n =
+        if List.member n s.elems
+        then s
+        else Set { elems = n :: s.elems }
+    -- toList is intentionally omitted
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

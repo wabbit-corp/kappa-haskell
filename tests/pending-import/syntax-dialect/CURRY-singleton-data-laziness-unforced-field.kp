@@ -1,0 +1,62 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
+--   (headIfTrue (LIST xs) b = if b then head xs else 42;
+--    testNonStrictNT = headIfTrue failed False -=- 42).
+-- Spec: data_types.data_declarations (§10.1),
+--       expressions.application (§11.2 suspension typing),
+--       expressions.conditionals (§16.4),
+--       effects.monadic_core.exits_causes_typed_failure_interruption_defects.
+--
+-- A single-constructor wrapper's field is not forced merely by pattern
+-- matching the constructor — the body decides whether the field is
+-- demanded. To make the obligation portable, we express the wrapped
+-- value as a suspension thunk; if the conditional branch that returns
+-- a constant value did not require the thunk, the program must
+-- complete without forcing it.
+
+module test
+
+--! mode check
+
+data IntList : Type =
+    INil
+  | ICons Int IntList
+
+data Susp (a : Type) : Type =
+    Susp (() -> a)
+
+-- A wrapper whose payload is a suspended IntList; forcing it would
+-- diverge if the suspension is the non-terminating `forever` below.
+data Wrapped : Type =
+    Wrapped (Susp IntList)
+
+forever : Susp IntList
+let forever = Susp (\u -> diverge u)
+
+diverge : () -> IntList
+let diverge u = diverge u
+
+-- The consumer takes a Wrapped and a Bool. It only forces the payload
+-- when the Bool is True. The False branch returns a default constant
+-- without inspecting the payload.
+headIfTrue : Wrapped -> Bool -> Int
+let headIfTrue w b =
+    match w
+    case Wrapped (Susp thunk) ->
+        if b
+        then
+            match thunk ()
+            case INil       -> 0 - 1
+            case ICons h _  -> h
+        else 42
+
+--! assertNoErrors
+--! assertType headIfTrue (Wrapped -> Bool -> Int)
+
+-- POSITIVE: even when the wrapped suspension would diverge if forced,
+-- the False branch must produce 42 without forcing it.
+defaultedResult : Int
+let defaultedResult = headIfTrue (Wrapped forever) False
+-- expected: 42
+
+--! assertNoErrors
+--! assertType defaultedResult Int

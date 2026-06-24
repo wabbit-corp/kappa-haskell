@@ -1,0 +1,38 @@
+-- Source issues: Circom data-types.md ("the following case will produce a compilation
+--               error, since the size of the array should be explicitly given:
+--               `var z = [2,8,4]`"); array declarations must have explicit sizes
+--               that match the initializer length.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-05):
+--   "An array literal's length must match the declared array size. A literal with
+--    N elements assigned to an Array T M type where N ≠ M must be rejected with
+--    kappa.type.mismatch."
+
+--! mode check
+
+-- POSITIVE: array literal length matches declared size.
+arr3 : Array Int 3
+let arr3 = [1, 2, 3]
+
+arr1 : Array Int 1
+let arr1 = [42]
+
+
+-- NEGATIVE: 3-element literal assigned to Array Int 2.
+badArr1 : Array Int 2
+let badArr1 = [1, 2, 3]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: 5-element literal assigned to Array Int 3.
+badArr2 : Array Int 3
+let badArr2 = [10, 20, 30, 40, 50]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: 1-element literal assigned to Array Int 4.
+badArr3 : Array Int 4
+let badArr3 = [7]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

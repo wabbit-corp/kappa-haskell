@@ -1,0 +1,51 @@
+-- Source issues: KT-2127, KT-6819 (smart cast in multiple conditions of one arm)
+-- Spec: expressions.conditionals.flow_typing_through_short_circuit_short_circuit_not
+
+--! mode check
+
+data Box : Type =
+    Full (contents : String)
+    Empty
+
+-- POSITIVE: `&&` desugars to nested if; right operand checked under left's refinement.
+-- If left side proves Box is Full, right side may access .contents.
+checkAndUse : Box -> String -> Bool
+let checkAndUse b expected =
+    if b is Full && b.contents == expected then
+        True
+    else
+        False
+
+--! assertNoErrors
+--! assertType checkAndUse (Box -> String -> Bool)
+
+-- POSITIVE: two independent null checks joined by `&&`.
+bothPresent : String? -> Int? -> Bool
+let bothPresent s n =
+    if s != Option.None && n != Option.None then
+        True   -- both are narrowed inside then
+    else
+        False
+
+--! assertNoErrors
+
+-- POSITIVE: right operand of `&&` is only in scope under success of left.
+-- This means the right operand is checked inside a narrowed context.
+safeLength : String? -> Int -> Bool
+let safeLength ms threshold =
+    if ms != Option.None && ms.value.length > threshold then
+        True
+    else
+        False
+
+--! assertNoErrors
+
+-- POSITIVE: `not` of a constructor test flips the branch.
+notEmpty : Box -> Bool
+let notEmpty b =
+    if not (b is Empty) then
+        True   -- b is narrowed to Full in the then (two-ctor: Full, Empty)
+    else
+        False
+
+--! assertNoErrors

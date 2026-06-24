@@ -1,0 +1,33 @@
+-- Source issues: elm #279, #1773
+-- Spec: expressions.patterns_chapter, literals.numeric_literals.sign
+-- Negative integer literals are valid patterns in match expressions.
+-- Elm #279 reported a parse error with negative literals in case patterns.
+
+--! mode check
+
+-- POSITIVE: negative integer literal patterns are accepted.
+classify : Int -> String
+let classify n = match n
+    case -1  -> "negative one"
+    case 0   -> "zero"
+    case 1   -> "one"
+    case _   -> "other"
+
+-- POSITIVE: mix of positive and negative literal patterns.
+sign : Int -> Int
+let sign n = match n
+    case -2 -> -1
+    case -1 -> -1
+    case 0  -> 0
+    case 1  -> 1
+    case 2  -> 1
+    case _  -> 0
+
+-- POSITIVE: negative literals in a nested tuple pattern.
+firstNegative : (Int, String) -> Bool
+let firstNegative pair = match pair
+    case (-1, _) -> True
+    case (-2, _) -> True
+    case (_, _)  -> False
+
+--! assertNoErrors

@@ -1,0 +1,55 @@
+-- Source artifacts: PURESCRIPT-PR-1614 (linked #1335 — track scoped type
+--                   variables when skolemizing),
+--                   PURESCRIPT-PR-2643 (linked #2567, #2310 — improved
+--                   skolem escape check),
+--                   PURESCRIPT-PR-2624 (disallow polymorphic types in binders,
+--                   prevent internalError),
+--                   PURESCRIPT-PR-1656 (add information about skolems to
+--                   type errors).
+-- Spec: types.quantification (§11.3),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (families kappa.type.mismatch, kappa.type.unsolved-metavariable).
+-- Kappa spec rule (§11.3): `forall (s : Region). T` introduces a fresh skolem
+-- bound to the lifetime of the body. A skolem variable bound by an inner
+-- `forall` may not appear in the result type of the enclosing context — it
+-- must remain hidden inside its scope.
+-- This is the analogue of PureScript's STRef-style escape:
+--   `runST :: forall a. (forall s. ST s a) -> a` rejects callers that try to
+--   let the `s`-bound resource escape.
+
+--! mode check
+
+-- A region-parameterized mutable cell — uses Kappa's borrow/region machinery
+-- to make the escape rule visible.
+data CellRef (s : Region) : Type =
+    CellRef (1 raw : Int)
+
+-- A rank-2 wrapper: the inner `forall (s : Region)` ensures the cell does
+-- not outlive the inner computation.
+type Run : Type =
+    (run :
+        forall (a : Type).
+        (forall (s : Region). CellRef s) ->
+        a)
+
+mkRun : Run
+let mkRun =
+    (run = \(forall (a : Type))
+           (mk : forall (s : Region). CellRef s) ->
+           -- inside `run`, instantiating `mk` at any fresh region is fine,
+           -- but the cell value never escapes.
+           ())
+
+-- NEGATIVE: a function that *returns* a `CellRef s` from inside the inner
+-- `forall (s : Region)` body would let the skolem `s` escape. The signature
+-- below cannot be discharged for any concrete return type, because the
+-- result mentions `s`, which is bound below.
+bad_escape :
+    (forall (s : Region). CellRef s) ->
+    CellRef ?escaped                            --!! kappa.type.mismatch
+let bad_escape mk =
+    -- Even if we did `let c = mk in c`, the resulting type would mention
+    -- the inner skolem `s`, which is not in scope here.
+    mk
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,49 @@
+-- Source issue: effekt PR #1380 (name-based implicits design context),
+--                Kappa spec §18.1.18-§18.1.19 worked examples for label binders
+-- Spec: effects.monadic_core.effect_labels.identity_and_handler_matching,
+--       effects.monadic_core.effect_label_identity_handler_matching.examples,
+--       effects.monadic_core.effect_declarations
+-- Per §18.1.15-19: a binder of compile-time type EffLabel is admissible in
+-- effect-row positions, in 'deep handle label expr with ...', and in operation
+-- selection 'label.op'. Rebinding an effect label preserves its label identity.
+-- A 'let'-bound alias of a label is therefore equivalent to the original label
+-- as a handler selector.
+
+module test
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int  -> Unit
+
+-- A handler using the original label.
+-- Deep handler with identity carrier (m = id) returns Int directly.
+runViaOriginal : Eff <[State : State]> Int -> Int -> Int
+let runViaOriginal comp init =
+    deep handle State comp with
+        case return x -> x
+        case get _ k  -> k init
+        case put _ k  -> k ()
+
+-- A handler using a let-bound alias of the same label.
+runViaAlias : Eff <[State : State]> Int -> Int -> Int
+let runViaAlias comp init =
+    let alias = State
+    deep handle alias comp with
+        case return x -> x
+        case get _ k  -> k init
+        case put _ k  -> k ()
+
+-- A computation that uses the rebinding to select the same operation.
+prog : Eff <[State : State]> Int
+let prog =
+    let alias = State
+    do
+        let v <- alias.get ()
+        State.put (v + 1)
+        alias.get ()
+
+--! mode check
+--! assertNoErrors
+--! assertType runViaOriginal Eff <[State : State]> Int -> Int -> Int
+--! assertType runViaAlias Eff <[State : State]> Int -> Int -> Int
+--! assertType prog Eff <[State : State]> Int

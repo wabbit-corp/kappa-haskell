@@ -1,0 +1,31 @@
+-- Source issues: BQN-54 (`⍋1‿2‿5‿2‿3` returned the wrong permutation),
+-- BQN-PR-78 (Correct Grade Down). Grade Up `⍋xs` must return a stable
+-- permutation `p` such that `p`-indexed-into `xs` is sorted.
+-- Spec: modules.prelude.contents (List a, Nil, (::)).
+-- Kappa's prelude does not yet pin a portable `sortIndex` contract
+-- (SA-BQN-02). This test pins the obligation as a signature contract:
+-- the helper takes a list and returns a list of indices of the same
+-- length, with no claim about the precise sort discipline beyond what
+-- the type encodes.
+
+--! mode check
+
+-- The portable contract: `sortIndex` returns a list of indices the same
+-- length as its input. A stronger contract (stable permutation that
+-- sorts the input) is documented in SA-BQN-02 and not yet expressible
+-- portably in Kappa.
+expect sortIndex : forall a. (a -> a -> Bool) -> List a -> List Nat
+
+-- POSITIVE: BQN-54 example input. The expected permutation
+-- `[0, 1, 3, 4, 2]` would produce the sorted ascending list
+-- `[1, 2, 2, 3, 5]` from the source `[1, 2, 5, 2, 3]`.
+example : List Nat
+let example = sortIndex (<=) [1, 2, 5, 2, 3]
+
+-- POSITIVE: sortIndex applies generically over an arbitrary ordered
+-- element type given an explicit comparator.
+sortedNats : List Nat
+let sortedNats = sortIndex (<=) [3, 1, 4, 1, 5, 9, 2, 6]
+
+--! assertNoErrors
+--! assertType sortIndex (forall a. (a -> a -> Bool) -> List a -> List Nat)

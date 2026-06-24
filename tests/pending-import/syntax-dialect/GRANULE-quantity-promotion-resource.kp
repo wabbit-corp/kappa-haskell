@@ -1,0 +1,42 @@
+-- Source: granule-project/granule PR #196 (linearity bug);
+--         tests/cases/negative/concurrent/resourceAllocator.gr
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.linear_discharge_discard_destructor_use,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- A value carrying an exclusive resource (channel, file handle) cannot
+-- be silently dropped or duplicated. The portable obligation is that a
+-- non-trivial coeffect on a type containing such a resource is rejected
+-- at the promotion / weakening / duplication site. See GSA-03.
+
+module test
+
+--! mode check
+
+-- An opaque resource type. Its only consumer is `close`.
+type Channel : Type
+
+intrinsic close : (1 c : Channel) -> Unit
+
+-- POSITIVE: a channel can be passed linearly.
+useChannel : (1 c : Channel) -> Unit
+let useChannel c = close c
+
+--! assertType useChannel ((1 c : Channel) -> Unit)
+
+-- NEGATIVE: silently dropping a linear channel (no `close`).
+dropChan : (1 c : Channel) -> Unit
+let dropChan c = ()           --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: attempt to duplicate a linear channel.
+dupChan : (1 c : Channel) -> (Channel, Channel)
+let dupChan c = (c, c)        --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: attempt to weaken a linear channel binding by ignoring it.
+discardChan : (1 c : Channel) -> Int
+let discardChan c = 0         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

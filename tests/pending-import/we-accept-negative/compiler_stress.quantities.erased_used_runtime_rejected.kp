@@ -1,0 +1,12 @@
+-- Stress test: a quantity-0 (erased) binding cannot appear in a runtime-relevant position
+-- Spec: types.universes.quantities, types.universes.erasure_elaboration_time
+
+--! mode check
+
+-- NEGATIVE: n is erased (quantity 0) so it must not be used at runtime;
+-- returning n + 1 is a runtime use of an erased binding
+bad : (0 n : Nat) -> Nat
+let bad n =
+    n + 1  --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

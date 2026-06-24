@@ -1,0 +1,37 @@
+-- Stress test: Overloaded trait member names resolved by expected type context
+-- Spec: traits.members.overloaded_member_names
+
+--! mode check
+
+-- Two traits share the overloaded member name `show`.
+trait Show (a : Type) =
+    show : a -> String
+
+trait Debug (a : Type) =
+    show : a -> String
+
+data Widget : Type = Widget Int String
+
+instance Show Widget =
+    let show (Widget n s) = "Widget(" ++ int_to_string n ++ "," ++ s ++ ")"
+
+instance Debug Widget =
+    let show (Widget n s) = "DBG[" ++ int_to_string n ++ "|" ++ s ++ "]"
+
+-- Disambiguate via explicit evidence projection.
+showWidget : Widget -> String
+let showWidget w =
+    let ev : Show Widget = summon
+    ev.show w
+
+debugWidget : Widget -> String
+let debugWidget w =
+    let ev : Debug Widget = summon
+    ev.show w
+
+-- Both disambiguated uses work without ambiguity error.
+example : String
+let example =
+    showWidget (Widget 1 "hello") ++ " / " ++ debugWidget (Widget 1 "hello")
+
+--! assertNoErrors

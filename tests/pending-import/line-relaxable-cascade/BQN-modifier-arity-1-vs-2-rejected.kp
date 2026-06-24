@@ -1,0 +1,52 @@
+-- Source issues: BQN docs/expression.md ("Kinds of application" table:
+--   1-modifier `F _m` produces a function from one operand; 2-modifier
+--   `F _c_ G` consumes two operands);
+-- BQN tests/test/cases/syntax.bqn rejected: `_a_←○_b_←∘` (2-modifier
+--   declarations missing operands), `+∘∘-` (operand-arity mismatch),
+--   `(+)∘`, `+(∘)`.
+-- Spec: expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- A 1-modifier takes exactly one operand, a 2-modifier exactly two.
+-- Kappa does not have BQN's syntactic roles, but the portable analog is
+-- a higher-order helper that expects exactly k arguments of function
+-- type; under-application binds at a different (curried) type than the
+-- declared site expects, surfacing as a type mismatch.
+
+--! mode check
+
+-- A "1-modifier" analog: a higher-order combinator that takes one fn arg.
+eachList : forall a b. (a -> b) -> List a -> List b
+let eachList f xs =
+    match xs
+      case Nil      -> Nil
+      case h :: t   -> (f h) :: (eachList f t)
+
+-- A "2-modifier" analog: a combinator that takes two fn args.
+under : forall a b c. (b -> b) -> (a -> b) -> (b -> c) -> a -> c
+let under g f post x = post (g (f x))
+
+-- POSITIVE: `eachList` applied with exactly one function operand.
+inc : Nat -> Nat
+let inc n = n + 1
+
+okEach : List Nat
+let okEach = eachList inc [1, 2, 3]
+
+-- POSITIVE: `under` applied with exactly two function operands.
+double : Nat -> Nat
+let double n = 2 * n
+
+show : Nat -> String
+let show n = "n"
+
+okUnder : Nat -> String
+let okUnder = under double inc show
+
+-- NEGATIVE: `under` requires two function operands plus the final
+-- result-callback; supplying just one and binding to `Nat -> String`
+-- is a type mismatch (the partial type is
+-- `(Nat -> Nat) -> (Nat -> String) -> Nat -> String`).
+badUnder : Nat -> String
+let badUnder = under double           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

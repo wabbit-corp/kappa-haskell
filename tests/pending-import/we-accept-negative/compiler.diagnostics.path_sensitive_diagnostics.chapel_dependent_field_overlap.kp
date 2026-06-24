@@ -1,0 +1,50 @@
+-- Source issues: Chapel #9181, #13291 (dependent generic record fields)
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.overlapping_borrow_or_update_footprints,
+--       types.universes.disjoint_path_borrowing_records
+-- When a record has dependent fields (field B's type depends on field A), a borrow
+-- of field B expands its footprint to also include field A. Attempting to also
+-- borrow or update field A while B is borrowed is rejected with
+-- `kappa.borrow.overlap` because the footprints are not disjoint.
+-- Chapel's dependent record fields (e.g. a size field + a buffer sized by it)
+-- require the same overlapping-footprint tracking in Kappa.
+
+--! mode check
+
+-- A dependent record: `buf` depends on `len`.
+type SizedBuf : Type =
+    ( len : Nat
+    , buf : Array len Int
+    )
+
+-- POSITIVE: borrowing two independent fields of a non-dependent record is allowed.
+type Point : Type =
+    ( x : Int
+    , y : Int
+    )
+
+readBothFields : (& p : Point) -> Int
+let readBothFields p =
+    let & bx = p.x
+    let & by = p.y
+    bx + by    -- both borrows coexist; x and y are disjoint
+
+
+---
+
+-- POSITIVE: borrowing the whole dependent record is fine when not decomposed.
+readWhole : (& sb : SizedBuf) -> Nat
+let readWhole sb = sb.len
+
+
+---
+
+-- NEGATIVE: borrowing `sb.buf` creates a footprint that includes `sb.len`
+-- (because buf's type depends on len). Simultaneously borrowing `sb.len`
+-- overlaps that footprint.
+badOverlap : (1 sb : SizedBuf) -> Nat
+let badOverlap sb =
+    let & buf_ref = sb.buf      -- footprint: {sb.buf, sb.len}
+    let & len_ref = sb.len      --!! kappa.borrow.overlap
+    len_ref
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

@@ -1,0 +1,73 @@
+-- Source issues: AENEAS-938, AENEAS-29
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings,
+--       expressions.patterns.forms
+-- §6.5 (declarations.terms.irrefutable_patterns_let_bindings): a `let`
+-- binding may use an irrefutable pattern on the left-hand side.  Tuple and
+-- record patterns are irrefutable for single-constructor types.
+-- Aeneas issue #938 (wrong translation with tuple update) and #29 (implicit
+-- type parameters in generated functions) both involve tuple and record
+-- destructuring in binding positions.
+
+module test
+
+--! mode check
+
+-- POSITIVE: tuple destructuring in a let binding.
+swapInts : Int -> Int -> (Int, Int)
+let swapInts a b =
+    let (x, y) = (b, a)
+    (x, y)
+
+--! assertNoErrors
+--! assertType swapInts (Int -> Int -> (Int, Int))
+
+-- POSITIVE: nested tuple destructuring.
+flatten3 : (Int, (Int, Int)) -> (Int, Int, Int)
+let flatten3 t =
+    let (a, (b, c)) = t
+    (a, b, c)
+
+--! assertNoErrors
+
+-- POSITIVE: record destructuring in a let binding.
+data Point : Type = Point { x : Int, y : Int }
+
+addCoords : Point -> Int
+let addCoords p =
+    let Point { x = px, y = py } = p
+    px + py
+
+--! assertNoErrors
+--! assertType addCoords (Point -> Int)
+
+-- POSITIVE: function returning a tuple used via pattern in let.
+splitAt_ : Int -> List Int -> (List Int, List Int)
+let splitAt_ n xs =
+    let (pre, suf) = ([], xs)
+    (pre, suf)   -- simplified
+
+useSplit : Int
+let useSplit =
+    let (l, r) = splitAt_ 2 [1, 2, 3, 4]
+    0
+
+--! assertNoErrors
+
+-- POSITIVE: pattern in function parameter position (irrefutable).
+addPair : (Int, Int) -> Int
+let addPair (a, b) = a + b
+
+result : Int
+let result = addPair (3, 4)
+
+--! assertNoErrors
+--! assertType result Int
+
+-- POSITIVE: multiple tuple bindings in sequence.
+multiLet : Int
+let multiLet =
+    let (a, b) = (1, 2)
+    let (c, d) = (b + 1, a + 10)
+    a + b + c + d
+
+--! assertNoErrors

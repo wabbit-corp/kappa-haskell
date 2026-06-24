@@ -1,0 +1,37 @@
+-- Source issues: BQN tests/test/cases/prim.bqn rejected:
+--   `F←-⋄f+2` (Function plus Number), `+'x'` (monadic plus on Char),
+--   `F←-⋄+f` (Conjugate of a function), `2×'a'` (Number times Char).
+-- Spec: expressions.application, modules.prelude.contents,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- An arithmetic primitive must reject operands that are neither numeric
+-- nor (in BQN's case for `+`/`-`) characters when char-arithmetic is in
+-- scope. Kappa has no char-arithmetic by default; both arguments must be
+-- numeric.
+
+--! mode check
+
+-- POSITIVE: ordinary integer arithmetic.
+sum : Integer
+let sum = 1 + 2
+
+product : Integer
+let product = 3 * 4
+
+-- NEGATIVE: adding an Integer and a String — must be a type mismatch.
+mixedAdd : Integer
+let mixedAdd = 1 + "two"          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying a function value (not a Number) as the right
+-- argument of `+`.
+withFn : Integer
+let withFn = 1 + (\x -> x)         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: multiplying a Bool by an Integer.
+boolTimes : Integer
+let boolTimes = True * 3           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

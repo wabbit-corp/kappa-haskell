@@ -1,0 +1,47 @@
+-- Source issue: nickel #2124
+-- Spec: types.records.dictionary_subtyping (NSA-03)
+-- NSA-03: Dict type {_ : T} is not in Kappa v1 spec. Test exercises the homogeneity
+-- constraint and NSA-03 false-positive gap. See NICKEL_SPEC_ADDITIONS.md NSA-03.
+-- Nickel #2124 showed that records with dynamic field names (computed string keys)
+-- bypassed the dict type check when the value type conflicted with the declared dict
+-- type. The typechecker silently accepted `{ "%{x}" = 1, bar = false } : {_ : Bool}`
+-- even though field `"%{x}"` has value 1 of type Number, not Bool.
+-- A conforming implementation must detect the type mismatch even when the field key
+-- is computed dynamically. Kappa v1 does not have surface-level dynamic field
+-- construction (string-interpolated keys); the cases below model the same homogeneity
+-- constraint violation using statically-known field names.
+
+module test
+
+-- NEGATIVE: a record with a Number value where Bool is required by the dict type.
+-- The field type Number conflicts with the dict constraint {_ : Bool}.
+numberAsBool : {_ : Bool}
+let numberAsBool = (myfield = 1)              --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a mixed-type record where one field has the wrong type for the dict.
+-- {foo : Number, bar : Bool} cannot be typed as {_ : Bool} because foo is not Bool.
+mixedAsBool : {_ : Bool}
+let mixedAsBool = (foo = 1, bar = True)       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a record with a Number value conforms to {_ : Number}.
+numberAsNumber : {_ : Number}
+let numberAsNumber = (n = 42)
+
+
+-- POSITIVE: a statically known record with all Bool values conforms to {_ : Bool}.
+staticBoolRecord : {_ : Bool}
+let staticBoolRecord = (a = True, b = False, c = True)
+
+--! assertType staticBoolRecord {_ : Bool}
+
+-- NEGATIVE: a record with mixed static types does not conform to any single dict type.
+-- {foo : Number, bar : String} cannot be typed as {_ : Number} or {_ : String}.
+inhomogeneousAsDictNum : {_ : Number}
+let inhomogeneousAsDictNum = (foo = 1, bar = "oops")    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

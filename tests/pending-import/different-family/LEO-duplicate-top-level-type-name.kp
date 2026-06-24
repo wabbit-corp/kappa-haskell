@@ -1,0 +1,58 @@
+-- Source issues: leo#2611 (duplicate mapping/struct/record definitions accepted
+--               silently; no error for two `struct Row`, two `record Token`, two
+--               `mapping A`), leo#370 (duplicate `main` function allowed),
+--               leo PR#28893 (multi-span error reporting for struct/record members).
+-- Spec: SA-LEO-03 (duplicate top-level name definitions must produce
+--       `kappa.name.ambiguous`),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§SA-LEO-03, §3.2.2):
+--   "Two declarations with the same name at the same lexical scope must produce
+--    `kappa.name.ambiguous`. The payload must include both declaration sites
+--    (roles: `previous-definition` and `redefinition`). The first definition
+--    remains canonical for subsequent type-checking. A compilation unit may
+--    contain multiple such errors without the first suppressing the rest."
+-- leo#2611: `struct Row { … } struct Row { … }` compiled without error; the
+--   duplicate was silently accepted, making programs non-deterministic.
+
+--! mode check
+
+-- POSITIVE: a single data type definition with a unique name.
+data Point : Type =
+    Point Int Int
+
+-- POSITIVE: another unique name.
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: a unique function name.
+makePoint : Int -> Int -> Point
+let makePoint x y = Point x y
+
+
+-- NEGATIVE: redefining `Point` at the top level.
+data Point : Type =                    --!! kappa.name.ambiguous
+    Point Bool
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: redefining `Color` with a different body.
+data Color : Type =                    --!! kappa.name.ambiguous
+    Cyan
+    Magenta
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: after the duplicate errors, the original `Point` definition is
+-- still valid for use; the redefinitions do not replace the originals.
+validUse : Point
+let validUse = makePoint 3 4
+
+
+-- NEGATIVE: redefining `makePoint` as a different function.
+makePoint : Bool -> Point              --!! kappa.name.ambiguous
+let makePoint b = Point 0 0
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

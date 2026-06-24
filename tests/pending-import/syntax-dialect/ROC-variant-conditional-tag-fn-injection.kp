@@ -1,0 +1,49 @@
+-- Source issue: Roc #4150
+-- Spec: types.unions.expected_type_directed_injection_widening,
+--       types.unions.introduction_injection
+-- A conditional expression whose two branches inject different variant members
+-- must produce a variant containing both members. The result must be callable
+-- as a function value (or applicable as a value carrying the appropriate row),
+-- without requiring an explicit type annotation.
+
+module test
+
+data H : Type =
+    H : String -> H
+
+data J : Type =
+    J : String -> J
+
+--! mode check
+
+-- POSITIVE: each branch yields a distinct variant member; the if-expression's
+-- inferred type is a closed variant containing both.
+-- Both members carry a `String` payload (constructor-style), so they may share
+-- the same surface "shape" for the conditional.
+choice : Bool -> (| H | J |)
+let choice cond =
+    if cond
+        then (| H "h-built" : H |)
+        else (| J "j-built" : J |)
+
+--! assertNoErrors
+--! assertType choice Bool -> (| H | J |)
+
+-- POSITIVE: the inferred variant can be eliminated by exhaustive match.
+labelOf : Bool -> String
+let labelOf cond =
+    match (choice cond)
+      case (| _ : H |) -> "H"
+      case (| _ : J |) -> "J"
+
+--! assertNoErrors
+
+-- POSITIVE: widening into an open variant via expected-type-directed insertion
+-- is accepted when the target row has the residual variable.
+widened : forall (r : VarRow). LacksVar r H => LacksVar r J => Bool -> (| H | J | r |)
+let widened cond =
+    if cond
+        then (| H "open" : H |)
+        else (| J "open" : J |)
+
+--! assertNoErrors

@@ -1,0 +1,48 @@
+-- Source issue: Koka #129
+-- Spec: expressions.application.short_circuit
+-- The || and && operators must short-circuit semantically.
+-- || evaluates the right operand only when the left is False.
+-- && evaluates the right operand only when the left is True.
+-- Short-circuit behavior is preserved regardless of what effects the right
+-- operand may have. The static type of (e1 || e2) includes the effects of e2
+-- because e2 may run (when e1 = False), but when e1 = True, e2 is never evaluated.
+
+module test
+
+effect Exn =
+    0 throw : String -> Unit
+
+effect Log =
+    ω logStr : String -> Unit
+
+-- Using || with an effectful right operand.
+-- The result type must include 'exn' (the right operand may be evaluated).
+orWithThrow : Bool -> Eff <[exn : Exn]> Bool
+let orWithThrow b =
+    b || (exn.throw "right side"; pure False)
+
+--! mode check
+--! assertNoErrors
+--! assertType orWithThrow Bool -> Eff <[exn : Exn]> Bool
+
+-- Using && with an effectful right operand.
+andWithLog : Bool -> Eff <[log : Log]> Bool
+let andWithLog b =
+    b && (log.logStr "evaluated"; pure True)
+
+--! assertNoErrors
+
+-- Pure short-circuit: no effects on either side; result is pure.
+pureSC : Bool
+let pureSC = True || False
+
+--! assertNoErrors
+--! assertType pureSC Bool
+
+-- A pure left operand that is statically True.
+-- Short-circuit means the right (effectful) side is not evaluated at runtime,
+-- but the compiler still accepts the expression with the right's effects in the type.
+staticTrue : Bool -> Eff <[exn : Exn]> Bool
+let staticTrue _ = True || (exn.throw "never"; pure False)
+
+--! assertNoErrors

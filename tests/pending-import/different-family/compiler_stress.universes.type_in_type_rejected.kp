@@ -1,0 +1,10 @@
+-- Stress test: Type : Type must be rejected without a feature gate
+-- Spec: types.universes, compiler.frontir.standard_diagnostic_families.feature_gates
+
+--! mode check
+
+-- NEGATIVE: asserting that Type inhabits itself is a universe inconsistency.
+-- Without the type-in-type feature gate this must be rejected.
+let bad : Type = Type   --!! kappa.feature.gated
+
+--! assertDiagnosticFamily error kappa.feature.gated

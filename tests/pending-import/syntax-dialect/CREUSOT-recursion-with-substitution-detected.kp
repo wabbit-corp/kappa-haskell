@@ -1,0 +1,38 @@
+-- Source issues: CREUSOT-recursion_with_substitution, CREUSOT-1232
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       traits.instances.search_termination,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- Kappa's termination check operates on the call graph AFTER instance
+-- resolution / generic substitution; cycles visible only after
+-- substitution must be detected.  Pending spec gap CREUSOT-SA-04.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: at the source level, `callMe` does not recurse - it calls
+-- a generic method `Go::go`.  After substitution at the callsite
+-- `callMe Int`, `go` resolves to the instance for `Int`, which calls
+-- `callMe` again.  The termination checker must close the call graph
+-- after substitution.
+trait Go (a : Type) =
+    go : a -> Unit
+
+instance Go Int =
+    let go _ = callMe                         --!! kappa.termination.failure
+
+logic let callMe : Unit
+let callMe = go (0 : Int)                     --!! kappa.termination.failure
+
+-- NEGATIVE: the cycle is more obvious when made explicit through a
+-- higher-order helper that takes the instance as an explicit witness;
+-- substitution at the call site lands back in `callMe2`.
+let runGo : forall (a : Type). Go a => a -> Unit
+let runGo x = go x
+
+logic let callMe2 : Unit
+let callMe2 = runGo (0 : Int)                 --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

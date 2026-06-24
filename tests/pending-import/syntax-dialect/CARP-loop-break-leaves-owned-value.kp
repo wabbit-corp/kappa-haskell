@@ -1,0 +1,50 @@
+-- Source issue: carp-lang/Carp#1052
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       types.universes.quantities.positive_lower_bounds,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Carp #1052: `break` inside a `for`/`while` loop was not seen by the
+-- memory-management system, so a linear value allocated in the loop body
+-- could be leaked when the loop exited early.  The portable Kappa
+-- obligation is that every non-local exit from a scope still triggers
+-- the destructors of values owned in that scope; an early exit cannot
+-- leave a positive lower-bound obligation unsatisfied.
+
+--! mode check
+
+data Buf : Type = Buf Int
+
+consume : (1 b : Buf) -> Int
+let consume (Buf n) = n
+
+-- POSITIVE: the linear allocated in the loop body is consumed before any
+-- early exit; the loop variant always discharges its obligation.
+loopOk : Int -> Int
+let loopOk n =
+    let acc = 0
+    -- forEach (range 0 n) consumes `b` each iteration:
+    forEach (range 0 n) (\i ->
+        let b = Buf i
+        consume b)
+    acc
+
+forEach : Range -> (Int -> Int) -> Unit
+let forEach r f = ()
+
+range : Int -> Int -> Range
+let range a b = MkRange
+
+data Range : Type = MkRange
+
+
+-- NEGATIVE: the loop body allocates a linear `b` and early-exits with
+-- `break` before consuming it.  The early-exit path leaves the positive
+-- lower-bound obligation on `b` unsatisfied.
+loopLeak : Int -> Int
+let loopLeak n =
+    let acc = 0
+    forEach (range 0 n) (\i ->
+        let b = Buf i                   --!! kappa.quantity.positive-lower-bound
+        0)                              -- `b` never reaches `consume`
+    acc
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

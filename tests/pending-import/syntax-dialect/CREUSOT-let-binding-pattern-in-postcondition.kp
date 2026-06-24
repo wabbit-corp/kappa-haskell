@@ -1,0 +1,28 @@
+-- Source issues: CREUSOT-605, CREUSOT-911
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings,
+--       expressions.patterns.forms,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Family: kappa.pattern.non-exhaustive (Kappa §3.2.10)
+-- Only IRREFUTABLE patterns may be used in `let` bindings inside a
+-- specification expression; a refutable pattern (multi-constructor
+-- variant) does not bind unconditionally and must be rejected with the
+-- ordinary non-exhaustiveness diagnostic.  `ensures` is placeholder
+-- syntax for the proposed contract surface (CREUSOT-SA-02 / SA-13).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: a refutable pattern (two-constructor sum) in a spec `let`
+-- must be rejected because it does not bind unconditionally.
+data Two : Type =
+  | TA : Int -> Two
+  | TB : Int -> Two
+
+getA : Two -> Int
+let getA t =
+    match t case TA n -> n case TB n -> n
+    ensures
+        let TA n = t in result == n     --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

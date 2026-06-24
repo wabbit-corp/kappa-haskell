@@ -1,0 +1,45 @@
+-- Source issues: KT-7606, KT-4565 (is-based when on sealed with object literals)
+-- Spec: expressions.match.constructor_branches_introduce_explicit_refinement_evidence,
+--   expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions
+
+--! mode check
+
+data Shape : Type =
+    Circle  (radius : Int)
+    Rect    (w : Int) (h : Int)
+    Triangle (base : Int) (height : Int)
+
+-- POSITIVE: `is`-based match on a sealed type gives constructor evidence.
+area : Shape -> Int
+let area s =
+    match s
+    case Circle  r   -> r * r   -- approximation
+    case Rect    w h -> w * h
+    case Triangle b h -> (b * h) / 2
+
+--! assertType area (Shape -> Int)
+
+-- POSITIVE: constructor narrowing in if — area calculation using field access.
+circleRadius : Shape -> Int
+let circleRadius s =
+    if s is Circle then
+        s.radius      -- Circle field accessible
+    else
+        0
+
+
+-- POSITIVE: match extracts fields precisely.
+shapeDesc : Shape -> String
+let shapeDesc s =
+    match s
+    case Circle r      -> "circle r=" ++ toString r
+    case Rect w h      -> "rect " ++ toString w ++ "x" ++ toString h
+    case Triangle b h  -> "triangle b=" ++ toString b ++ " h=" ++ toString h
+
+
+-- NEGATIVE: accessing a field from a different constructor arm outside a narrowed branch.
+wrongField : Shape -> Int
+let wrongField s =
+    s.radius   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

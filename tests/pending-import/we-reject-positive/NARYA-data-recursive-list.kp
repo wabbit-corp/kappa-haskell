@@ -1,0 +1,50 @@
+-- Source artifacts: narya docs/data-types.rst (def List (A:Type) : Type
+--               := data [ nil. | cons. (x : A) (xs: List A) ]).
+-- Spec: data_types.data_declarations,
+--       data_types.well_formedness
+--
+-- A recursive data type may mention itself in the arguments of a
+-- constructor. Strict positivity is required for soundness (occurrences
+-- must appear only as the bare type, never in a negative position of a
+-- function arrow). Recursive data types support pattern matching that
+-- recurses structurally.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data List (a : Type) : Type =
+    Nil  : List a
+    Cons : a -> List a -> List a
+
+-- POSITIVE: length, defined by structural recursion.
+length : forall (a : Type). List a -> Nat
+let length xs =
+    match xs
+      case Nil       -> Zero
+      case Cons _ ys -> Suc (length a ys)
+
+-- POSITIVE: concatenation.
+append : forall (a : Type). List a -> List a -> List a
+let append xs ys =
+    match xs
+      case Nil        -> ys
+      case Cons x xs2 -> Cons x (append a xs2 ys)
+
+-- POSITIVE: map.
+mapList : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
+let mapList f xs =
+    match xs
+      case Nil        -> Nil
+      case Cons x xs2 -> Cons (f x) (mapList a b f xs2)
+
+-- POSITIVE: a recursive identity-like function on lists.
+idList : forall (a : Type). List a -> List a
+let idList xs =
+    match xs
+      case Nil        -> Nil
+      case Cons x xs2 -> Cons x (idList a xs2)
+
+--! assertNoErrors

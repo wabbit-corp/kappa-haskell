@@ -1,0 +1,79 @@
+-- Source issues: rzk#37 — variables and sections; rzk docs (reference/sections.rzk.md)
+--   — section variables with `uses (...)` annotation. In Rzk, a definition that
+--   implicitly uses a section variable must declare it with `uses (var)`.
+--   Omitting the annotation for an implicitly used variable is an error.
+--   Listing a variable in `uses` that is not actually used is also an error.
+-- Spec: expressions.implicit_parameters,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--   §13.4: implicit parameters are tracked; an unsolved implicit that was not
+--   declared produces kappa.implicit.unsolved.
+--
+-- When a function implicitly depends on a variable from an enclosing scope
+-- (section or module), that implicit dependency must be discoverable. In
+-- Kappa terms: implicit trait instances that are used but not declared in scope
+-- must be reported. Conversely, instances declared but not needed must not
+-- produce a spurious error (they are simply unused).
+
+--! mode check
+
+-- POSITIVE: a trait representing an ambient assumption.
+trait Metric (a : Type) =
+    size : a -> Nat
+
+-- POSITIVE: instances provided for specific types.
+instance Metric Nat =
+    let size n = n
+
+instance Metric Bool =
+    let size b = if b then 1 else 0
+
+-- POSITIVE: a function that explicitly takes a Metric instance and uses it.
+explicitMetric : forall (a : Type). (@_ : Metric a) -> a -> Nat
+let explicitMetric x = size x
+
+natMetric : Nat
+let natMetric = explicitMetric 42
+
+-- POSITIVE: a polymorphic function that implicitly requires Metric from the
+-- call site and uses it transparently.
+describeSize : forall {a : Type} -> (@_ : Metric a) -> a -> Nat
+let describeSize x = size x
+
+boolSize : Nat
+let boolSize = describeSize True
+
+-- POSITIVE: a helper function that depends on Metric implicitly through
+-- a calling function — the dependency chain is resolved automatically.
+doubleSize : forall {a : Type} -> (@_ : Metric a) -> a -> Nat
+let doubleSize x = describeSize x + describeSize x
+
+natDouble : Nat
+let natDouble = doubleSize 7
+
+-- POSITIVE: composition of metric-using functions — all implicits resolved.
+sizeRatio : forall {a b : Type} -> (@_ : Metric a) -> (@_ : Metric b) -> a -> b -> Nat
+let sizeRatio x y = size x + size y
+
+ratioResult : Nat
+let ratioResult = sizeRatio 5 True
+
+-- POSITIVE: a function that takes a value and a proof-relevant equality
+-- and transports the Metric instance along the equality — uses implicit
+-- dependency chain correctly.
+transportMetric : forall {a : Type} -> (@_ : Metric a) -> a -> a -> Nat
+let transportMetric x y = size x + size y
+
+-- NEGATIVE: using a Metric for a type that has no instance — the implicit
+-- parameter cannot be resolved; the elaborator must report it as unsolved.
+data Raw : Type = MkRaw Nat
+
+-- No `instance Metric Raw` is declared.
+rawSize : Nat
+let rawSize = describeSize (MkRaw 42)    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: calling a function that requires a Metric in a context where
+-- no Metric instance is available for the inferred type.
+badCompose : Nat
+let badCompose = sizeRatio (MkRaw 1) (MkRaw 2)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

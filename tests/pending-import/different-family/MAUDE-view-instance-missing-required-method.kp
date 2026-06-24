@@ -1,0 +1,42 @@
+-- Source: Maude tests/Misc/parameterization.maude
+--           fth T is
+--             sort Elt .
+--             op f : Elt -> Elt .
+--           endfth
+--           view V from T to NAT is
+--             sort Elt to Nat .
+--             op f(X:Elt) to term X:Nat + 1 .
+--           endv
+--         The theory T requires a sort `Elt` and an operation `f : Elt ->
+--         Elt`. A view V from T to a target module M must supply mappings
+--         for every required theory operator. Omitting a required mapping
+--         is rejected.
+-- Spec: traits.instances,
+--       traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- Portable obligation: an instance declaration that omits a required trait
+--   method must be rejected.
+
+--! mode check
+
+module test
+
+trait HasIdentity (a : Type) =
+    identity : a
+    combine  : a -> a -> a
+
+data Bag : Type = MkBag
+
+-- NEGATIVE: instance omits `combine`, which the trait requires.
+instance HasIdentity Bag =    --!! kappa.implicit.unsolved
+    let identity = MkBag
+
+-- POSITIVE: complete instance.
+data Set : Type = MkSet
+
+instance HasIdentity Set =
+    let identity = MkSet
+    let combine _ _ = MkSet
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,37 @@
+-- Source: granule-project/granule PR #286 (Fix #275 by disallowing
+--         ⊕ at type Int)
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- A grade-position binder expects an element of classifier `Quantity`,
+-- not a plain `Int`. Annotating a quantity binder with a parameter of
+-- type `Int` is a type-mismatch obligation under §11 / §12.2.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+-- POSITIVE: a grade at type Nat — Nat is a valid quantity-shaped semiring.
+data Nat : Type =
+    Z
+    S Nat
+
+useNat : forall (a : Type). (3 x : a) -> (a, a, a)
+let useNat x = (x, x, x)
+
+
+-- POSITIVE: a quantity-poly binder ranges over `Quantity`, the classifier
+-- for quantity-position elements.
+useQ : forall (a : Type) (q : Quantity). (q x : a) -> Unit
+let useQ _ = ()
+
+
+-- NEGATIVE: a quantity-poly binder annotated with `Int` is rejected: the
+-- expected classifier in quantity position is `Quantity`, not `Int`.
+useIntGrade : forall (a : Type) (q : Int). (q x : a) -> a   --!! kappa.type.mismatch
+let useIntGrade x = x
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,20 @@
+-- Source issue: GHC#16839
+-- Spec: expressions.match.impossible_unreachable_branch_bodies, expressions.match.case_impossible_empty_remainder
+-- A match expression with zero branches is valid only when the scrutinee's type is
+-- provably empty (uninhabited). Matching over a non-empty type with no alternatives
+-- must be a compile-time error.
+
+module test
+
+data NonEmpty : Type = A | B
+
+-- Accepted: match over an empty type (Void) with no branches.
+-- absurd : Void -> Int
+-- let absurd v = match v case impossible
+--! mode check
+
+-- Rejected: match over a non-empty type with no branches is ill-typed.
+badMatch : NonEmpty -> Int
+let badMatch x = match x  --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

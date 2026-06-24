@@ -1,0 +1,69 @@
+-- Source: nim-lang/Nim#11474 (Case does not check all cases), nim-lang/Nim#24430
+--         (fix subtype match of generic object types — nested variant exhaustiveness)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive), expressions.match
+-- In Nim, the exhaustiveness checker missed some cases for string- and object-
+-- variant case expressions. In Kappa, every match on a closed ADT must cover all
+-- constructors or have a catch-all; omitting any arm is kappa.pattern.non-exhaustive.
+
+--! mode check
+module test
+
+data Color : Type =
+    Red
+    Green
+    Blue
+    Yellow
+
+-- POSITIVE: all four arms — fully exhaustive.
+colorHex : Color -> String
+let colorHex c =
+    match c
+    case Red    -> "#FF0000"
+    case Green  -> "#00FF00"
+    case Blue   -> "#0000FF"
+    case Yellow -> "#FFFF00"
+
+-- NEGATIVE: Yellow is missing and no wildcard.
+incompleteHex : Color -> String
+let incompleteHex c =
+    match c                --!! kappa.pattern.non-exhaustive
+    case Red   -> "#FF0000"
+    case Green -> "#00FF00"
+    case Blue  -> "#0000FF"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only Green is covered.
+onlyGreen : Color -> String
+let onlyGreen c =
+    match c                --!! kappa.pattern.non-exhaustive
+    case Green -> "#00FF00"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: using a wildcard covers remaining arms.
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red -> True
+    case _   -> False
+
+-- POSITIVE: a three-constructor ADT with all three arms covered.
+data Answer : Type = Yes | No | Maybe
+
+answerToInt : Answer -> Int
+let answerToInt a =
+    match a
+    case Yes   -> 1
+    case No    -> 0
+    case Maybe -> -1
+
+-- NEGATIVE: two-arm match on three-constructor ADT.
+yesOrNo : Answer -> Bool
+let yesOrNo a =
+    match a               --!! kappa.pattern.non-exhaustive
+    case Yes -> True
+    case No  -> False
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,49 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension2.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension3.hylo
+--                   (diagnostic: "reference to 'koala' requires that 'Int8' be equal to 'Bool'")
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- Hylo: a method added to a generic type via a conditional extension (where
+-- clause) can only be used when the constraint is satisfied at the call site.
+-- Attempting to call the method with a type argument that violates the
+-- constraint is rejected.
+
+--! mode check
+
+trait Serializable a where
+    serialize : a -> String
+
+data Wrapper a : Type = Wrapper a
+
+unwrap : forall (a : Type). Wrapper a -> a
+let unwrap (Wrapper x) = x
+
+-- Conditional extension: `describe` is available only when the element is Serializable.
+describe : forall (a : Type). Serializable a => Wrapper a -> String
+let describe w = serialize (unwrap w)
+
+data SerialInt : Type = SerialInt Int
+
+impl Serializable SerialInt where
+    let serialize (SerialInt n) = "int:" ++ show n
+
+data Opaque : Type = Opaque Int
+
+-- No Serializable instance for Opaque.
+
+-- POSITIVE: SerialInt is Serializable, so describe is available.
+describeSerial : Wrapper SerialInt -> String
+let describeSerial w = describe w
+
+-- NEGATIVE: Opaque is not Serializable, so describe is unavailable for Wrapper<Opaque>.
+describeOpaque : Wrapper Opaque -> String
+let describeOpaque w = describe w    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: Bool does not have a Serializable instance.
+describeBool : Wrapper Bool -> String
+let describeBool w = describe w    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

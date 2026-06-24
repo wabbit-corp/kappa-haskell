@@ -1,0 +1,46 @@
+-- Source: Racket guide match.scrbl (struct patterns in match)
+-- Source docs: racket guide match.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/match.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: expressions.match, expressions.patterns.forms, data_types.data_declarations
+--
+-- A match expression on a user-defined data type must cover all constructors.
+-- Each constructor pattern binds the constructor's fields. Omitting a constructor
+-- from the match produces kappa.pattern.non-exhaustive.
+
+--! mode check
+
+data Shape : Type =
+    Circle  : Float -> Shape
+  | Rect    : Float -> Float -> Shape
+  | Triangle : Float -> Float -> Float -> Shape
+
+-- POSITIVE: all three constructors covered.
+area : Shape -> Float
+let area (Circle r)       = 3.14159 * r * r
+let area (Rect w h)       = w * h
+let area (Triangle a b c) =
+    let s = (a + b + c) / 2.0
+    (s * (s - a) * (s - b) * (s - c))
+
+-- POSITIVE: match with wildcard covers remaining cases.
+isCircle : Shape -> Bool
+let isCircle (Circle _) = True
+let isCircle _          = False
+
+-- POSITIVE: match returns same type in each branch.
+describe : Shape -> String
+let describe s =
+    match s
+    case (Circle _)       -> "circle"
+    case (Rect _ _)       -> "rectangle"
+    case (Triangle _ _ _) -> "triangle"
+
+-- NEGATIVE: match missing the Triangle case — non-exhaustive.
+badArea : Shape -> Float
+let badArea (Circle r)  = 3.14159 * r * r   --!! kappa.pattern.non-exhaustive
+let badArea (Rect w h)  = w * h
+
+-- NEGATIVE: single-constructor match on a three-constructor type.
+onlyCircle : Shape -> Float
+let onlyCircle (Circle r) = r   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

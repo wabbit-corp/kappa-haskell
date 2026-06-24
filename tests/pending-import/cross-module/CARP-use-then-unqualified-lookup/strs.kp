@@ -1,0 +1,7 @@
+-- Provider module: defines `length` over `String`.
+module strs
+
+export length
+
+length : String -> Int
+let length s = 0

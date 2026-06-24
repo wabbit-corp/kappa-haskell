@@ -1,0 +1,41 @@
+-- Source issues: KT-5002, KT-2819 (equals/hashCode for data class with generics)
+-- Spec: data_types.data_declarations, traits.hashable, traits.deriving
+
+--! mode check
+
+-- POSITIVE: a generic data type derives structural equality via Eq.
+data Pair (a : Type) (b : Type) : Type =
+    Pair (fst : a) (snd : b)
+
+derive Eq (Pair a b)
+
+-- POSITIVE: comparing two Pair values with the same types.
+pairsEqual : Pair Int String -> Pair Int String -> Bool
+let pairsEqual p q = p == q
+
+--! assertNoErrors
+
+-- POSITIVE: structural equality on an Option type.
+optEq : Int? -> Int? -> Bool
+let optEq a b = a == b
+
+--! assertNoErrors
+
+-- POSITIVE: equality on a recursive data type.
+data Tree (a : Type) : Type =
+    Leaf
+    Node (left : Tree a) (value : a) (right : Tree a)
+
+derive Eq (Tree a)
+
+treesEqual : Tree Int -> Tree Int -> Bool
+let treesEqual t1 t2 = t1 == t2
+
+--! assertNoErrors
+--! assertType treesEqual (Tree Int -> Tree Int -> Bool)
+
+-- POSITIVE: comparing lists structurally.
+listsEqual : List Int -> List Int -> Bool
+let listsEqual xs ys = xs == ys
+
+--! assertNoErrors

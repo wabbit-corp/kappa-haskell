@@ -1,0 +1,77 @@
+-- Source issues: infix operators used in prefix position without
+--   parenthesization; infix constructors usable in patterns in both
+--   prefix and infix form.
+-- Source issues: jetbrains/arend#92 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: lexical.operator_identifiers_fixity,
+--       lexical.operator_identifiers_fixity.operator_tokens,
+--       lexical.operator_identifiers_fixity.operator_tokens.operator_sections,
+--       expressions.match
+--
+-- Operator identifiers declared as infix must be written in infix position
+-- (between their arguments) or parenthesized when used as a prefix function.
+-- Using an infix operator in plain prefix position (without parentheses)
+-- must be rejected with a parse or type error.
+-- Infix constructors should be usable in patterns in both prefix and infix forms.
+
+--! mode check
+
+-- Declaration of an infix natural-number addition operator (right-associative).
+infixr 6 +
+
+(+) : Nat -> Nat -> Nat
+let zero    + y = y
+let (suc x) + y = suc (x + y)
+
+-- POSITIVE: infix usage of the operator between its two arguments.
+result1 : Nat
+let result1 = 3 + 4
+
+-- POSITIVE: parenthesized prefix form of the infix operator.
+result2 : Nat
+let result2 = (+) 3 4
+
+-- POSITIVE: operator section — partially applying by providing the right arg.
+addThree : Nat -> Nat
+let addThree = (3 +)
+
+result3 : Nat
+let result3 = addThree 7
+
+-- An infix list-cons constructor.
+infixr 5 :::
+
+data List (A : Type) : Type =
+    nil  : List A
+    (:::) : A -> List A -> List A
+
+-- POSITIVE: infix constructor form in a value-returning match.
+listLength : forall {A : Type} -> List A -> Nat
+let listLength nil        = zero
+let listLength (_ ::: xs) = suc (listLength xs)
+
+-- POSITIVE: prefix constructor form in pattern (x ::: _ is also infix form).
+listFirst : forall {A : Type} -> A -> List A -> A
+let listFirst def nil        = def
+let listFirst _   (x ::: _) = x
+
+-- POSITIVE: infix constructor form in pattern.
+listRest : forall {A : Type} -> List A -> List A
+let listRest nil        = nil
+let listRest (_ ::: xs) = xs
+
+myList : List Nat
+let myList = 1 ::: 2 ::: 3 ::: nil
+
+-- POSITIVE: list length via infix constructor pattern.
+myLen : Nat
+let myLen = listLength myList    -- 3
+
+-- POSITIVE: section applied to an argument (fine, this is a section).
+result4 : Nat
+let result4 = (3 +) 4    -- 7
+
+-- POSITIVE: parenthesized prefix form — always fine.
+result5 : Nat
+let result5 = (+) 3 4    -- 7
+
+--! assertNoErrors

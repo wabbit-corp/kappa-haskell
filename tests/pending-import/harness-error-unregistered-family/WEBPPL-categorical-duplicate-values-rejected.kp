@@ -1,0 +1,47 @@
+-- Source issues: WebPPL #798 (Categorical doesn't handle duplicate values),
+--   PR #813 (handle duplicates in Categorical).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-05
+--   (distribution-value identity), WEBPPL-SA-03 (proposed portable alias
+--    E_CONSTRUCTOR_PARAMETER_DOMAIN — not yet registered under §3.1.4).
+--
+-- A finite-support distribution constructor that declares an injective
+-- support vector MUST reject duplicates in that vector. (The alternate
+-- semantics — sum the probabilities — would be selected by a different
+-- constructor that declares a multi-set-valued `vs` parameter; that
+-- constructor is out of scope for this fixture.)
+
+module test
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+
+data Categorical (a : Type) : Type =
+    Categorical { ps : List Float, vs : List a }
+
+-- POSITIVE: all `vs` entries are distinct.
+catOk : Categorical Int
+let catOk = Categorical { ps = [0.2, 0.3, 0.5], vs = [1, 2, 3] }
+
+
+-- NEGATIVE: duplicate values in `vs`.
+catDup : Categorical Int
+let catDup = Categorical { ps = [0.2, 0.3, 0.5], vs = [1, 1, 2] }    --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+-- NEGATIVE: duplicate via a structurally-equal value.
+data Tag : Type =
+    Tag { id : Int }
+
+catTagDup : Categorical Tag
+let catTagDup =
+    Categorical
+        { ps = [0.5, 0.5]
+        , vs = [Tag { id = 1 }, Tag { id = 1 }]
+        }                                     --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN

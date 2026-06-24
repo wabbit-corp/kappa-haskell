@@ -1,0 +1,57 @@
+-- Source issues: termination checker treating let-bindings opaquely;
+--   a let-binding that is a transparent alias to a function argument
+--   should not prevent the termination checker from accepting the call.
+-- Source issues: jetbrains/arend#284 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.size_change_termination,
+--       declarations.totality.hidden_phase_components
+--
+-- Let-bindings in function bodies that introduce transparent aliases
+-- to structurally smaller sub-terms must be treated as such by the
+-- termination checker. The call `f r` where `let r = q2 in f r` and
+-- `q2` is a strict sub-term of the matched argument must be accepted.
+
+--! mode check
+
+-- POSITIVE: simple structural recursion without let.
+data Q : Type =
+    qCon : Q -> Q
+
+recNoLet : Q -> Nat
+let recNoLet (qCon x) = recNoLet x
+
+-- POSITIVE: structural recursion where the recursive argument is bound
+-- in a let before the recursive call. The let-binding `r = x` is a
+-- transparent alias; `r` and `x` are the same structurally smaller term.
+recWithLet : Q -> Nat
+let recWithLet (qCon x) = let r = x in recWithLet r
+
+-- POSITIVE: deeper let nesting — the alias chain is still transparent.
+recWithDeepLet : Q -> Nat
+let recWithDeepLet (qCon x) =
+    let r1 = x
+    in let r2 = r1
+       in recWithDeepLet r2
+
+-- POSITIVE: mutual recursion where let-transparency matters.
+-- `stepA` destructs its argument and passes the sub-term via a let alias;
+-- `stepB` receives the sub-term and calls `stepA` — both decrease strictly.
+data P : Type =
+    pCon : P -> P
+
+stepA : P -> Nat
+let stepA (pCon x) = let smaller = x in stepB smaller
+
+stepB : P -> Nat
+let stepB (pCon x) = stepA x
+
+-- NEGATIVE: a non-terminating loop: `loop p = loop p` has a recursive
+-- call with an argument equal to the input, not strictly smaller.
+loop : Q -> Nat
+let loop p = loop p    --!! kappa.termination.failure
+
+-- NEGATIVE: recursive call on an argument that is not structurally smaller.
+growRec : Q -> Nat
+let growRec x = growRec (qCon x)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

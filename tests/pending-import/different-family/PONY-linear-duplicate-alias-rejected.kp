@@ -1,0 +1,39 @@
+-- Source issues: ponyc#1798, ponyc#1952, ponyc#3953
+-- Spec: types.universes.quantities, types.universes.quantities.linear_discharge_discard_destructor_use
+-- Pony's iso guarantees unique ownership: aliasing an iso reference is
+-- unsound because two live references to the same object would coexist.
+-- In Kappa, a quantity-1 binder may appear in exactly one demand position;
+-- placing it into two positions simultaneously violates the uniqueness
+-- invariant and must be rejected with kappa.quantity.unsatisfied
+-- (for dropping) or kappa.path.consumed (for duplicate use after move).
+
+--! mode check
+
+data Box : Type =
+    Box Int
+
+-- NEGATIVE: returning the same linear argument in two fields creates two
+-- independent claims to the same owned value.
+badPair : (1 b : Box) -> (Box, Box)
+let badPair b = (b, b)   --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: binding the linear argument under two names and then returning
+-- both.
+badTwoNames : (1 b : Box) -> (Box, Box)
+let badTwoNames b =
+    let b1 = b
+    let b2 = b   --!! kappa.path.consumed
+    (b1, b2)
+
+-- POSITIVE: splitting the linear value into two distinct pieces (not the
+-- same object) is fine if the destructor produces two new values.
+goodDestructure : (1 b : Box) -> Int
+let goodDestructure (Box n) = n
+
+-- POSITIVE: threading a linear value through a chain of transformations,
+-- each consuming and producing exactly one new value.
+transform : (1 b : Box) -> Box
+let transform (Box n) = Box (n + 1)
+

@@ -1,0 +1,75 @@
+-- Source issues: dex-lang module-tests.dx
+--   (`:p test_module_amb` →
+--   `Error: ambiguous variable: test_module_amb is defined: in test_module_A; in test_module_B`),
+--   dex-lang shadow-tests.dx (`:p arr` after double definition →
+--   `Error: ambiguous variable: arr is defined in this file twice`).
+-- Spec: modules.imports.name_collision (§11.4),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.ambiguous).
+-- When two imports both introduce the same unqualified name into scope,
+-- any unqualified use of that name is ambiguous and must be rejected.
+-- The diagnostic must list all modules that define the conflicting name
+-- and explain how to disambiguate (qualification or selective import).
+
+--! mode check
+
+module Alpha =
+    export valX : Int = 10
+    export greeting : String = "hello"
+    export ambig : Int = 1
+
+module Beta =
+    export valY : Int = 20
+    export ambig : Int = 2       -- same exported name as Alpha.ambig
+
+module Gamma =
+    export helper : String -> Int = \_ -> 0
+    export ambig : Bool = True   -- same name, different type
+
+-- Open-import both Alpha and Beta.
+import Alpha (valX, greeting, ambig)
+import Beta  (valY, ambig)
+
+-- POSITIVE: using a name unique to one module.
+useValX : Int
+let useValX = valX
+
+useValY : Int
+let useValY = valY
+
+useGreeting : String
+let useGreeting = greeting
+
+-- NEGATIVE: `ambig` is defined in both Alpha and Beta.
+useAmbig : Int
+let useAmbig = ambig    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: disambiguate by qualification.
+useAlphaAmbig : Int
+let useAlphaAmbig = Alpha.ambig
+
+useBetaAmbig : Int
+let useBetaAmbig = Beta.ambig
+
+-- NEGATIVE: importing from three modules where two share the same name.
+import Gamma (helper, ambig)
+
+useAmbigFromGamma : Bool
+let useAmbigFromGamma = ambig    --!! kappa.name.ambiguous
+-- Now ambig is in scope from Alpha, Beta, AND Gamma.
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: using a name only in Gamma, which is unambiguous.
+useHelper : Int
+let useHelper = helper "test"
+
+-- POSITIVE: selective import avoids the collision.
+module Delta =
+    export ambig : String = "delta"
+
+import Delta (ambig as deltaAmbig)   -- renamed to avoid collision
+
+useDeltaAmbig : String
+let useDeltaAmbig = deltaAmbig       -- unique name, no ambiguity

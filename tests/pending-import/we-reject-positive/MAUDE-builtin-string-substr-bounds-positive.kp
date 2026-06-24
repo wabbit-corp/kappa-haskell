@@ -1,0 +1,40 @@
+-- Source: Maude tests/BuiltIn/string.maude
+--           red substr("abcdefghijklmnopqrstuvwxyz", 10, 5) .  -- "klmno"
+--           red substr("abc", 0, 100) .                       -- "abc"
+--           red substr("abc", 100, 5) .                       -- ""
+--           red find("catcat", "tc", 0) .                     -- 2
+--           red find("catcat", "jr", 0) .                     -- notFound
+--           red length("") .                                  -- 0
+--           red ascii("A") .                                  -- 65
+--         The Maude STRING module exercises substring, find, rfind, ascii,
+--         char, length, comparison, concatenation, and bounds. Out-of-range
+--         indices for substr/find return well-defined sentinel results
+--         (empty string for substr past end; notFound for find).
+-- Spec: literals.string_literals,
+--       literals.string_literals.text_model.
+-- Portable obligation: Kappa's String prelude must provide length,
+--   concatenation, and comparison operations with well-defined behaviour.
+
+--! mode check
+
+module test
+
+len1 : Int
+let len1 = String.length "abc"
+
+len0 : Int
+let len0 = String.length ""
+
+concat1 : String
+let concat1 = "abc" ++ "def"
+
+eq1 : Bool
+let eq1 = ("abc" ++ "") == "abc"
+
+eq2 : Bool
+let eq2 = ("" ++ "abc") == "abc"
+
+eq3 : Bool
+let eq3 = "AAA" < "aardvark"   -- ASCII-order positive
+
+--! assertNoErrors

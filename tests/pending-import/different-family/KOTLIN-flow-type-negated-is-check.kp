@@ -1,0 +1,51 @@
+-- Source issues: KT-4403, KT-3996 (type narrowing after negative is-check / early return)
+-- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions
+
+--! mode check
+
+data Expr : Type =
+    Lit  (n : Int)
+    Neg  (e : Expr)
+    Add  (l : Expr) (r : Expr)
+
+-- POSITIVE: after `if e is Lit then return ...` the code after the if block has
+-- LacksCtor evidence for Lit. With a two-constructor subtype (Neg|Add), this
+-- would narrow further; here we demonstrate the accepted pattern.
+describe : Expr -> String
+let describe e =
+    if e is Lit then
+        "literal"
+    elif e is Neg then
+        "negation"
+    else
+        "addition"
+
+--! assertType describe (Expr -> String)
+
+-- POSITIVE: accessing constructor fields after a positive is-check.
+evalLit : Expr -> Int
+let evalLit e =
+    if e is Lit then
+        e.n    -- Lit field accessible
+    else
+        0
+
+
+-- POSITIVE: a chain of is-checks covering all constructors is accepted.
+toInt : Expr -> Int
+let toInt e =
+    if e is Lit then
+        e.n
+    elif e is Neg then
+        0
+    else
+        0
+
+
+-- NEGATIVE: accessing a constructor field outside the narrowed branch fails.
+badFieldAccess : Expr -> Int
+let badFieldAccess e =
+    let _ = e.n   --!! kappa.type.mismatch
+    0
+
+--! assertDiagnosticFamily error kappa.type.mismatch

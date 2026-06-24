@@ -1,0 +1,36 @@
+-- Source issues: CREUSOT-400
+-- Spec: traits.headers, traits.headers.abstract_evidence_records,
+--       traits.members,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Family: kappa.implicit.unsolved (Kappa §3.2.4)
+-- The modality / role of a trait member (logic vs program) is part of
+-- the trait declaration's externally visible signature.  An instance
+-- that flips, omits, or contradicts the modality leaves an unsolved
+-- implicit (modality) obligation.  Pending spec gap CREUSOT-SA-05.
+
+module test
+
+--! mode check
+
+-- A trait declaring one logic member and one program member.
+trait Modal (a : Type) =
+    logic la : Unit
+    program lo : Unit
+
+-- NEGATIVE: instance flips the modality of `la` (declared logic, impl
+-- is program).
+data Bad : Type = Bad
+
+instance Modal Bad =
+    program let la = ()                  --!! kappa.implicit.unsolved
+    logic   let lo = ()                  --!! kappa.implicit.unsolved
+
+-- NEGATIVE: an instance that omits a modality keyword entirely must
+-- be rejected, not silently treated as program.
+data Bad2 : Type = Bad2
+
+instance Modal Bad2 =
+    let la = ()                          --!! kappa.implicit.unsolved
+    program let lo = ()
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

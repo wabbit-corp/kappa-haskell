@@ -1,0 +1,47 @@
+-- Source issues: apple/swift #87566 (overload resolution with protocol vs concrete
+--   extension ambiguity), apple/swift #63428 (wrong overload selected for Decimal).
+--   When two trait instances are equally applicable to resolve an implicit
+--   parameter, the checker must produce kappa.implicit.ambiguous and reject
+--   the program rather than silently choosing one candidate.
+-- Spec: traits.instances.resolution_algorithm §14.3.1,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+
+--! mode check
+
+trait Serialize (a : Type) =
+    toBytes : a -> List Nat
+
+-- POSITIVE: two non-overlapping instances.
+data IntVal  : Type = IntVal Nat
+data StrVal  : Type = StrVal String
+
+instance Serialize IntVal =
+    let toBytes (IntVal n) = [n]
+
+instance Serialize StrVal =
+    let toBytes (StrVal _) = [0]
+
+-- POSITIVE: choosing the right instance is unambiguous.
+encodeInt : List Nat
+let encodeInt = toBytes (IntVal 42)
+
+encodeStr : List Nat
+let encodeStr = toBytes (StrVal "hello")
+
+-- Conditional instance using correct header syntax.
+data Tagged (a : Type) : Type = Tagged String a
+
+instance Serialize a => Serialize (Tagged a) =
+    let toBytes (Tagged _ x) = 0 :: toBytes x
+
+-- POSITIVE: Tagged IntVal is Serializable (via conditional instance).
+encodeTaggedInt : List Nat
+let encodeTaggedInt = toBytes (Tagged "key" (IntVal 7))
+
+-- NEGATIVE: two equally-ranked local Serialize candidates at the same scope level.
+-- Both @s1 and @s2 match when the resolver tries to discharge `Serialize a`;
+-- neither takes priority, so the solver must report ambiguity.
+ambiguousSerialize : forall {a : Type} -> (@s1 : Serialize a) -> (@s2 : Serialize a) -> a -> List Nat
+let ambiguousSerialize x = toBytes x    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

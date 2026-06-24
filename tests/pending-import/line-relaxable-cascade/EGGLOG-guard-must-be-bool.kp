@@ -1,0 +1,51 @@
+-- Source issues: egraphs-good/egglog #243 (The `:when` syntax is easy to make
+--   mistakes — non-Bool subject silently truthy).
+-- Spec: expressions.match.guarded_cases_introduce_guard_success_evidence
+--       (§17.1.9 — "guard must have type Bool"),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch).
+-- Egglog's `:when` clause accepted any expression and treated non-Bool values
+-- as truthy. Kappa requires every guard in a `case pat if guard -> body` clause
+-- to have type Bool; a non-Bool guard is a type mismatch.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Var (s : String)
+
+-- POSITIVE: guard is Bool.
+pos1 : Math -> Int
+let pos1 m =
+    match m
+    case (Num n) if n > 0 -> n
+    case _                -> 0
+
+-- NEGATIVE: guard expression is Int, not Bool.
+bad1 : Math -> Int
+let bad1 m =
+    match m
+    case (Num n) if n + 1 -> n           --!! kappa.type.mismatch
+    case _                -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: guard expression is String.
+bad2 : Math -> Int
+let bad2 m =
+    match m
+    case (Var s) if s -> 0               --!! kappa.type.mismatch
+    case _            -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: guard expression is a value of a user data type.
+bad3 : Math -> Int
+let bad3 m =
+    match m
+    case (Var s) if (Var s) -> 0         --!! kappa.type.mismatch
+    case _                  -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch

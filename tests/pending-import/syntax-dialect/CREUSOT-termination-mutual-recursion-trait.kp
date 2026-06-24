@@ -1,0 +1,44 @@
+-- Source issues: CREUSOT-910, CREUSOT-1232
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       traits.instances.search_termination,
+--       traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- The recursion group used by the termination checker MUST include calls
+-- that go THROUGH trait method dispatch.  Mutual recursion via instance
+-- resolution must be detected.  Pending spec gap CREUSOT-SA-04.
+
+module test
+
+--! mode check
+
+trait Tr1 (a : Type) =
+    f : a -> Int
+
+-- NEGATIVE: two traits whose impls form a cycle.  `Tr2 for u32` calls
+-- `h ()`; `h` calls `Tr1::f` instantiated at `u32`; that resolves back
+-- through `Tr1 for T where T : Tr2` to `Tr2 for u32`.
+trait Tr2 (a : Type) =
+    g : a -> Int
+
+instance forall (t : Type). Tr2 t => Tr1 t =
+    let f x = g x                            --!! kappa.termination.failure
+
+let h : Int
+let h = 0
+
+instance Tr2 Int =
+    let g _x = h                             --!! kappa.termination.failure
+
+-- NEGATIVE: a single trait with a default that calls a method whose
+-- instance, in turn, calls the default.  Same obligation, simpler setup.
+trait LoopTr (a : Type) =
+    fA : a -> Int
+    default fB : a -> Int = \x -> fA x
+
+instance LoopTr Bool =
+    let fA b = fB b                          --!! kappa.termination.failure
+    -- fB inherits default; default calls fA; fA calls fB.
+
+--! assertDiagnosticFamily error kappa.termination.failure

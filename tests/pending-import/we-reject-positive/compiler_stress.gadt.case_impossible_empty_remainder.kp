@@ -1,0 +1,33 @@
+-- Stress test: `case impossible` as final case when prior cases exhaust all indices
+-- Spec: expressions.match.case_impossible_empty_remainder
+
+--! mode check
+
+data Val : Bool -> Type =
+  TrueVal  : Val True
+  FalseVal : Val False
+
+-- After matching TrueVal the remainder is empty; `case impossible` closes it.
+extractTrue : Val True -> Int
+let extractTrue v = match v
+  case TrueVal  -> 42
+  case impossible
+
+-- After matching FalseVal the remainder is empty; `case impossible` closes it.
+extractFalse : Val False -> Int
+let extractFalse v = match v
+  case FalseVal -> 0
+  case impossible
+
+-- Three-constructor Bool-indexed type; exhausted by two live cases + impossible.
+data ThreeTag : Nat -> Type =
+  Tag0 : ThreeTag 0
+  Tag1 : ThreeTag 1
+  Tag2 : ThreeTag 2
+
+useTag01 : ThreeTag 0 -> Int
+let useTag01 v = match v
+  case Tag0      -> 10
+  case impossible
+
+--! assertNoErrors

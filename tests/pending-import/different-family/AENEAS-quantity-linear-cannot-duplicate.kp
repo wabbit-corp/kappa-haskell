@@ -1,0 +1,56 @@
+-- Source issues: AENEAS-118, AENEAS-802
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       kappa.path.consumed
+-- §12.2: a value bound with quantity 1 (linear) must be used exactly once.
+-- Attempting to use it a second time after the first use has consumed it
+-- produces kappa.path.consumed.  Aeneas issue #118 (non-primitive Copy
+-- types) and #802 (borrow checking error on valid code using Clone) both
+-- reduce to: the system must track whether a value has been consumed and
+-- reject subsequent uses.
+
+module test
+
+--! mode check
+
+data Token : Type = Token Int
+
+consume_ : (1 t : Token) -> Int
+let consume_ (Token n) = n
+
+-- POSITIVE: a linear value used exactly once — accepted.
+useOnce : (1 t : Token) -> Int
+let useOnce t = consume_ t
+
+--! assertType useOnce ((1 t : Token) -> Int)
+
+-- NEGATIVE: attempt to use the linear value twice.
+usetwice : (1 t : Token) -> Int
+let usetwice t =
+    consume_ t + consume_ t   --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: extract a value from a linear binding, then use the original.
+extractAndReuse : (1 t : Token) -> Int
+let extractAndReuse t =
+    let n = consume_ t     -- t is consumed here
+    consume_ t             --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: linear value passed to two different functions.
+data Resource : Type = Resource String
+
+useResource : (1 r : Resource) -> String
+let useResource (Resource s) = s
+
+duplicate_resource : (1 r : Resource) -> (String, String)
+let duplicate_resource r =
+    (useResource r, useResource r)  --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: generic linear function — can wrap/unwrap without copying.
+wrapUnwrap : forall (a : Type). (1 x : a) -> a
+let wrapUnwrap x = x
+

@@ -1,0 +1,54 @@
+-- Source issues: vale#169 (More concise error/fix for failure to convert
+--               mutable array to immutable), Vale IntegrationTests
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.universes.quantities
+-- In Vale, converting a mutable object to an immutable one requires an
+-- explicit conversion step; simply assigning a mutable value to an
+-- immutable binding does not automatically perform the conversion.
+-- In Kappa, assigning a mutable-quantity value to a position that demands
+-- a read-only quantity without an explicit coercion is kappa.type.mismatch.
+
+--! mode check
+
+data Entry : Type = Entry Int String
+
+-- A type that wraps an Entry with a read-only interface.
+data ReadOnlyEntry imm : Type = ReadOnlyEntry Int String
+
+readField : (& e : ReadOnlyEntry) -> Int
+let readField (ReadOnlyEntry n _) = n
+
+-- POSITIVE: constructing a ReadOnlyEntry directly — no mutation capability
+-- is introduced, so the value is immediately immutable.
+buildReadOnly : Unit -> ReadOnlyEntry
+let buildReadOnly () = ReadOnlyEntry 42 "hello"
+
+-- POSITIVE: reading from an immutable record.
+okRead : Int
+let okRead = readField (ReadOnlyEntry 7 "world")
+
+-- POSITIVE: explicitly constructing an immutable from an owned mutable by
+-- destructuring and reconstructing.
+convertExplicitly : Entry -> ReadOnlyEntry
+let convertExplicitly (Entry n s) = ReadOnlyEntry n s
+
+-- NEGATIVE: passing a mutable Entry where a ReadOnlyEntry is expected
+-- without explicit conversion. The mutation capability on Entry is wider
+-- than what ReadOnlyEntry accepts.
+badConvert : Entry -> Int
+let badConvert e = readField e   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: assigning an owned (linear) Entry to a binding expected to
+-- hold an immutable ReadOnlyEntry.
+badAssign : Unit -> ReadOnlyEntry
+let badAssign () =
+    let mut : ReadOnlyEntry = Entry 10 "wrong"   --!! kappa.type.mismatch
+    mut
+
+-- POSITIVE: applying the explicit conversion helper is accepted.
+okConvert : Unit -> Int
+let okConvert () =
+    let ro = convertExplicitly (Entry 5 "ok")
+    readField ro

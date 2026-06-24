@@ -1,0 +1,66 @@
+-- Stress test: A trait with a higher-kinded parameter; instances for concrete
+--   constructors and a parameterized constructor (Wrap f).  Instance search must
+--   correctly handle f-level evidence when looking up Functor (Wrap f).
+-- Spec: traits.headers, traits.instances.resolution_algorithm,
+--   types.universes (kind polymorphism)
+
+--! mode check
+
+trait Functor (f : Type -> Type) =
+    fmap : forall {a b : Type}. (a -> b) -> f a -> f b
+
+-- Concrete instance: Maybe.
+data Maybe (a : Type) : Type =
+    Nothing : Maybe a
+    Just    : a -> Maybe a
+
+instance Functor Maybe =
+    let fmap f Nothing  = Nothing
+    let fmap f (Just x) = Just (f x)
+
+-- Concrete instance: List.
+data List (a : Type) : Type =
+    Nil  : List a
+    Cons : a -> List a -> List a
+
+instance Functor List =
+    let fmap f Nil         = Nil
+    let fmap f (Cons x xs) = Cons (f x) (fmap f xs)
+
+-- Parameterized instance: Wrap f is a Functor when f is a Functor.
+data Wrap (f : Type -> Type) (a : Type) : Type =
+    Wrap (f a)
+
+instance Functor f => Functor (Wrap f) =
+    let fmap g (Wrap fa) = Wrap (fmap g fa)
+
+-- A higher-order function polymorphic over any Functor.
+increment : forall {f : Type -> Type}. (@_ : Functor f) -> f Int -> f Int
+let increment xs = fmap (fn n -> n + 1) xs
+
+-- POSITIVE: increment at each concrete Functor.
+incMaybe : Maybe Int
+let incMaybe = increment (Just 41)
+
+incList : List Int
+let incList = increment (Cons 1 (Cons 2 Nil))
+
+-- POSITIVE: increment at Wrap Maybe — instance is derived via Functor f.
+incWrapMaybe : Wrap Maybe Int
+let incWrapMaybe = increment (Wrap (Just 10))
+
+incWrapList : Wrap List Int
+let incWrapList = increment (Wrap (Cons 5 Nil))
+
+-- NEGATIVE: a type that is NOT a Functor cannot use increment.
+data Fixed (a : Type) : Type = Fixed a
+
+-- No Functor Fixed instance; this must be rejected.
+badIncrement : Fixed Int
+let badIncrement = increment (Fixed 7)   --!! kappa.implicit.unsolved
+
+-- POSITIVE: double-Wrap also works via two levels of the parameterized instance.
+incDoubleWrap : Wrap (Wrap Maybe) Int
+let incDoubleWrap = increment (Wrap (Wrap (Just 3)))
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,49 @@
+-- Source issues: carp-lang/Carp#470, #1260
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- Carp #470: a reference taken before its origin was moved out remained
+-- usable later — a use-after-move on the underlying memory.  Carp #1260:
+-- a `let s = ...; &s` leaked out of the surrounding test body.  The
+-- portable Kappa obligation is that the lifetime of a reference is bounded
+-- by the lexical scope of its origin and by the live region of the origin.
+-- A reference may not outlive its origin's scope, nor be used after the
+-- origin has been moved.
+
+--! mode check
+
+data Buf : Type = Buf Int
+
+consume : (1 b : Buf) -> Int
+let consume (Buf n) = n
+
+-- POSITIVE: take a reference, read through it, then move the origin.
+-- Reading happens while the reference is alive; the move is after.
+borrowThenMove : Int
+let borrowThenMove =
+    let b = Buf 5
+    let r : & Buf = &b
+    let n : Int = peek r
+    consume b + n
+
+peek : (& Buf) -> Int
+let peek r = 0
+
+
+-- NEGATIVE: a reference is taken before the origin is moved; using the
+-- reference after the move is invalid.
+useAfterMoveBad : Int
+let useAfterMoveBad =
+    let b = Buf 5
+    let r : & Buf = &b
+    let _ : Int = consume b              -- moves b
+    peek r                                --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE: a reference to a let-local escapes its lexical scope.
+escapeLocalBad : & Buf
+let escapeLocalBad =
+    let b = Buf 1
+    &b                                    --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

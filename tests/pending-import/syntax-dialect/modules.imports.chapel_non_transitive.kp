@@ -1,0 +1,79 @@
+-- Source issues: Chapel #6093, #13118, #13831
+-- Spec: modules.imports, modules.exports
+-- Kappa imports are NOT transitive. When module B imports module A, the names
+-- from A are available to B internally but are NOT automatically visible to
+-- module C that imports B. Re-exporting requires an explicit `export` statement.
+-- Chapel spent significant effort moving from transitive `use` chains to an
+-- explicit `import`/`export` model; Kappa has always required explicit re-export.
+
+--! mode check
+
+-- Module A: defines a publicly available constant.
+module chapel_lib_a
+
+pubFromA : Int
+let pubFromA = 42
+
+
+---
+
+-- Module B: imports A but does NOT re-export A's names.
+module chapel_lib_b
+
+import chapel_lib_a
+
+-- B can use A's names internally.
+internalUse : Int
+let internalUse = chapel_lib_a.pubFromA + 1
+
+-- B does NOT re-export pubFromA. Downstream modules importing B do not see it.
+
+
+---
+
+-- Module C: imports B. Should NOT be able to see A's names.
+module chapel_lib_c_rejected
+
+import chapel_lib_b
+
+-- NEGATIVE: pubFromA is NOT re-exported from B, so C cannot access it.
+badUse : Int
+let badUse = chapel_lib_a.pubFromA   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+---
+
+-- Module D: imports B and also explicitly imports A.
+-- This is the correct way for D to access A's names.
+module chapel_lib_d_accepted
+
+import chapel_lib_b
+import chapel_lib_a
+
+goodUse : Int
+let goodUse = chapel_lib_a.pubFromA
+
+
+---
+
+-- Module E: B re-exports A's name explicitly; E can then see it.
+module chapel_lib_b_reexports
+
+import chapel_lib_a
+export chapel_lib_a.pubFromA
+
+bOwn : Int
+let bOwn = 0
+
+
+---
+
+module chapel_lib_e_can_see
+
+import chapel_lib_b_reexports
+
+-- POSITIVE: pubFromA was explicitly re-exported by the intermediate module.
+acceptedUse : Int
+let acceptedUse = pubFromA
+

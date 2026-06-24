@@ -1,0 +1,37 @@
+-- Source issue: MOJO-1735
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.quantification,
+--       types.universes
+-- Two distinct universally-quantified type variables T and U are not the same
+-- type even when they carry the same constraints.
+-- Returning a value of type T where the return annotation says U must be
+-- diagnosed as kappa.type.mismatch because T and U are independent variables
+-- with no evidence of T ~ U.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `magic` claims to convert T to U merely because both are Copyable,
+-- but the body returns the T value in a U position.  T and U are independent
+-- universals; there is no coercion from T to U.
+magic : forall (T U : Type). Copyable T => Copyable U => T -> U
+let magic v = v      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: identity — T -> T is fine because the same variable is used.
+identity : forall (T : Type). T -> T
+let identity v = v
+
+--! assertType identity forall (T : Type). T -> T
+
+-- POSITIVE: if U is fixed to equal T by the caller the constraint is dischargeable,
+-- but the polymorphic signature itself is correctly rejected when body converts T→U.
+
+-- NEGATIVE: symmetric case — two separate variables, AnyType bound;
+-- assigning a value of T into position U under no further constraint.
+coerceAny : forall (T U : Type). T -> U
+let coerceAny v = v  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

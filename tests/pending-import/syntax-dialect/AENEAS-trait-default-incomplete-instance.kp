@@ -1,0 +1,60 @@
+-- Source issues: AENEAS-70, AENEAS-133
+-- Spec: traits.members, traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       kappa.implicit.unsolved
+-- §14.2, §14.3: an instance that relies on a default method which in turn
+-- calls a required method must still provide that required method.  Omitting
+-- a required method leaves the default's internal call unsolvable.
+
+module test
+
+--! mode check
+
+trait Formattable (a : Type) =
+    rawStr  : (& x : a) -> String       -- required
+
+    -- default: calls rawStr
+    let formatted : (& x : a) -> String =
+        \x -> "[" ++ rawStr x ++ "]"
+
+    -- default: calls formatted, which calls rawStr
+    let quoted : (& x : a) -> String =
+        \x -> "\"" ++ formatted x ++ "\""
+
+data Good : Type = Good Int
+
+-- POSITIVE: provides rawStr; inherits both defaults.
+instance Formattable Good =
+    let rawStr (Good n) = show n
+
+goodFormatted : String
+let goodFormatted = formatted (Good 5)
+
+--! assertType goodFormatted String
+
+goodQuoted : String
+let goodQuoted = quoted (Good 5)
+
+
+-- NEGATIVE: declares Formattable but provides no rawStr.
+-- The default methods `formatted` and `quoted` call rawStr, which has
+-- no implementation → the instance is incomplete → kappa.implicit.unsolved.
+data Bad : Type = Bad String
+
+instance Formattable Bad =    --!! kappa.implicit.unsolved
+    ()
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: overrides only the first default, not the second; rawStr is present.
+data Partial : Type = Partial Int
+
+instance Formattable Partial =
+    let rawStr (Partial n) = show n
+    let formatted (Partial n) = "{" ++ show n ++ "}"
+    -- `quoted` is inherited and calls the overridden `formatted`
+
+partialQuoted : String
+let partialQuoted = quoted (Partial 9)
+
+--! assertType partialQuoted String

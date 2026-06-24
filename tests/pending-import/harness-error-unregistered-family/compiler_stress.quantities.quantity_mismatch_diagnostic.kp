@@ -1,0 +1,15 @@
+-- Stress test: quantity mismatch - ignoring a linear binding in the body produces a diagnostic
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+
+--! mode check
+
+-- NEGATIVE: x is linear (quantity 1) but the body () ignores x entirely;
+-- the compiler must diagnose that the linear obligation is unsatisfied
+bad :
+    forall (a : Type).
+    (1 x : a) -> Unit
+
+let bad x =
+    ()  --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

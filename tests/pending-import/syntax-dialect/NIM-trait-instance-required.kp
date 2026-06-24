@@ -1,0 +1,73 @@
+-- Source: nim-lang/Nim#15251 (new-style concepts implementation),
+--         nim-lang/Nim#9156 (Nim prefers type over proc when ambiguous from
+--         two different modules — related to instance resolution priority),
+--         nim-lang/RFCs#346 (overload resolution for generics)
+-- Spec: traits.instances, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- When a generic function requires a trait instance, calling it with a type
+-- that has no instance must be rejected. The diagnostic must identify the
+-- missing instance obligation.
+
+--! mode check
+module test
+
+trait Container (f : Type -> Type) =
+    empty : forall a. f a
+    insert : forall a. a -> f a -> f a
+    toList : forall a. f a -> List a
+
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+-- POSITIVE: Container instance for List.
+instance Container List =
+    let empty = Nil
+    let insert x xs = Cons x xs
+    let toList xs = xs
+
+-- POSITIVE: using Container with List.
+fromSingle : forall f a. (@_ : Container f) -> a -> f a
+let fromSingle x = insert x empty
+
+singleList : List Int
+let singleList = fromSingle 42
+
+-- A type with no Container instance.
+data Queue (a : Type) : Type =
+    Queue (List a)
+
+-- NEGATIVE: calling fromSingle with Queue — no Container Queue instance.
+badQueue : Queue Int
+let badQueue = fromSingle 42  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: Container instance for Queue makes it valid.
+instance Container Queue =
+    let empty = Queue Nil
+    let insert x (Queue xs) = Queue (Cons x xs)
+    let toList (Queue xs) = xs
+
+goodQueue : Queue Int
+let goodQueue = fromSingle 42
+
+-- NEGATIVE: calling a two-constraint function when only one constraint is met.
+trait Printable (a : Type) =
+    prettyPrint : (& x : a) -> String
+
+instance Printable Int =
+    let prettyPrint _ = "<int>"
+
+-- printAndInsert requires both Container and Printable.
+printAndInsert : forall f a. (@_ : Container f) -> (@_ : Printable a) -> a -> f a
+let printAndInsert x =
+    let _ = prettyPrint x in
+    insert x empty
+
+-- Bool has no Printable instance — fails even though Container List exists.
+badBool : List Bool
+let badBool = printAndInsert True  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

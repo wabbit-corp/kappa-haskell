@@ -1,0 +1,32 @@
+-- Stress test: A handler whose target carrier is polymorphic over a computation type
+-- Spec: effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Abortive operation: 'nothing' is polymorphic over the return type 'a'.
+-- Resumption quantity 0 means the computation is abandoned.
+effect Maybe =
+    0 nothing : Unit -> a
+
+-- POSITIVE TEST: a handler for Maybe produces an Option a for any result type a.
+-- The return clause wraps the result in Some; the nothing clause returns None.
+let runMaybe
+    (forall (a : Type))
+    (comp : Eff <[maybe : Maybe]> a)
+    : Option a =
+    handle maybe comp with
+        case return x    -> Some x
+        case nothing _ _ -> None
+
+-- A computation that succeeds.
+let succeed : Eff <[maybe : Maybe]> Int =
+    pure 42
+
+-- A computation that fails.
+let failComp : Eff <[maybe : Maybe]> Int =
+    do Maybe.nothing ()
+
+let okResult   : Option Int = runMaybe succeed
+let failResult : Option Int = runMaybe failComp
+
+--! assertNoErrors

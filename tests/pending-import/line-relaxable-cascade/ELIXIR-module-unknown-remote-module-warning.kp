@@ -1,0 +1,46 @@
+-- Source issues: kernel/warning_test.exs "unknown remote call"
+--   ("Unknown.call/0 is undefined (module Unknown is not available or is yet to be
+--    defined)"), errors_test.exs "unloaded module",
+--   errors_test.exs "cascading from undefined variables"
+-- Source tests: elixir kernel/warning_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/kernel/warning_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved)
+-- Kappa spec rule (§3.2.2 kappa.name.unresolved):
+--   "Used when an identifier, operator name, module path, field name, constructor name,
+--    effect label, or kind-qualified name cannot be resolved."
+--   Payload MUST include: nearest scopes searched; whether reified static-object fallback
+--   was attempted; candidate spellings for typo suggestions.
+-- In Elixir, calling a function on a module that does not exist produces a warning during
+-- compilation: "Unknown.call/0 is undefined (module Unknown is not available or is yet to
+-- be defined)". The compiler still warns (rather than errors) because the module might be
+-- provided at runtime. In Kappa, referencing an unresolvable module path is always an error
+-- at the name-resolution phase: kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: calling a function on a known, in-scope module.
+useString : String -> Int
+let useString s = String.length s
+
+-- POSITIVE: calling a qualified function where the module is available.
+useList : List Int -> Int
+let useList xs = List.length xs
+
+-- NEGATIVE: the module 'Unknown' is not defined anywhere in the build.
+callUnknownModule : Int -> String
+let callUnknownModule n =
+    Unknown.format n                    --!! kappa.name.unresolved
+
+-- NEGATIVE: the module path 'Deep.Nested.Missing' is not available.
+callMissingNested : String -> Int
+let callMissingNested s =
+    Deep.Nested.Missing.parse s         --!! kappa.name.unresolved
+
+-- NEGATIVE: cascading — using an undefined variable as a module qualifier makes
+-- both the variable reference and the resulting dotted access unresolvable.
+cascadingUnresolved : Int -> String
+let cascadingUnresolved n =
+    let result = undeclaredVar.toString n  --!! kappa.name.unresolved
+    result
+
+--! assertDiagnosticFamily error kappa.name.unresolved

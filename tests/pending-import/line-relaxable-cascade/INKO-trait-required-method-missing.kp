@@ -1,0 +1,28 @@
+-- Source issues: docs/traits
+-- Spec: traits.instances.associated_static_member_instance_checking
+-- Inko: every required method in a trait must be implemented by an instance.
+-- Omitting a required method is a compile-time error.
+-- In Kappa, a missing required method makes the implicit instance unsolvable.
+
+--! mode check
+
+trait Displayable (a : Type) =
+    display : (& self : a) -> String
+
+trait Measurable (a : Type) =
+    size : (& self : a) -> Int
+
+data Point : Type = Point Int Int
+
+-- POSITIVE: a complete instance satisfying all required methods.
+instance Displayable Point =
+    let display (Point x y) = "point"
+
+
+-- NEGATIVE: the instance for Measurable is declared but provides
+-- no implementation of the required 'size' method.
+-- The compiler rejects the declaration because the required member is absent.
+instance Measurable Point =   --!! kappa.associated.member-undeclared
+    let unrelatedHelper = 0
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

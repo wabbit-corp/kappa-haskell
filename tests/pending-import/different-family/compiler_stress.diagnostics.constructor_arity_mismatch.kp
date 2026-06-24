@@ -1,0 +1,12 @@
+-- Stress test: a constructor applied with wrong arity produces kappa.constructor.arity
+-- Spec: compiler.frontir.standard_diagnostic_families.constructor_arity
+
+--! mode check
+
+data Pair a b : Type =
+    MkPair a b
+
+-- NEGATIVE: MkPair expects two arguments but only one is supplied.
+let bad : Pair Int String = MkPair 42   --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

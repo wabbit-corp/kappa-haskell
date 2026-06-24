@@ -1,0 +1,32 @@
+-- Stress test: `private opaque` combined - private controls visibility, opaque controls transparency
+-- Spec: modules.visibility_opacity_private_opaque.modifier_combinations
+
+--! mode check
+
+-- `private opaque` combines both modifiers:
+--   private: the name is not exported; outside modules cannot resolve it by name.
+--   opaque:  if accessed via an escape hatch (unhide + clarify), the definition
+--            still does not unfold for definitional equality outside this module.
+
+private opaque let internalHelper : Int -> Int
+let internalHelper x = x * x
+
+-- Inside this module, `internalHelper` is fully transparent and accessible.
+publicSquare : Int -> Int
+let publicSquare x = internalHelper x
+
+publicSumOfSquares : Int -> Int -> Int
+let publicSumOfSquares x y = internalHelper x + internalHelper y
+
+-- Using `internalHelper` directly in computation within this module.
+exampleResult : Int
+let exampleResult = internalHelper 6
+
+exampleSum : Int
+let exampleSum = publicSumOfSquares 3 4
+
+-- Document: outside this module,
+--   `internalHelper` is not name-resolvable (private).
+--   Even with `unhide` + `clarify`, the definition does not reduce (opaque).
+
+--! assertNoErrors

@@ -1,0 +1,16 @@
+-- Stress test: a refutable pattern in a let binding must be rejected
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+
+--! mode check
+
+data Option a : Type =
+    None
+  | Some a
+
+someValue : Option Int
+let someValue = Some 42
+
+-- NEGATIVE: Some is a refutable pattern; the binding could fail if someValue is None.
+let Some x = someValue   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

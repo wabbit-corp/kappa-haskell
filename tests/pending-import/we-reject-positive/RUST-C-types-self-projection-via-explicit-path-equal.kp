@@ -1,0 +1,39 @@
+-- Source artifacts: RA-3249 (Unknown type deduction when using `Self::Type` vs
+--                            `<Struct as Trait>::Type` in a trait impl),
+--                   RA-2603 (Does not infer associated type in another associated type).
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       traits.members.overloaded_member_names.
+-- Kappa spec rule (§14.3.4): "The check uses ordinary elaboration. In
+-- particular, it may use: ... transparent aliases and transparent family
+-- reduction; associated-member normalization whose governing evidence is
+-- available; ordinary type and kind inference."
+-- This test pins that inside an instance body for `Tr Foo`, projecting an
+-- associated static member of the instance head (`Foo.M`) is definitionally
+-- equal to projecting the same member from explicit evidence
+-- (`(d : Tr Foo).M`), and inference can resolve both forms.
+
+--! mode check
+
+trait Tr (a : Type) =
+    M : Type
+    op : a -> a.M -> Int
+
+data Foo : Type = Foo
+data Bar : Type = Bar
+
+instance Tr Foo =
+    let M = Bar
+    -- Inside this body, the argument type `a.M` of `op` substitutes to
+    -- `Foo.M`, which normalizes to `Bar`. So an explicit annotation `Bar`
+    -- and a self-projection `Foo.M` are equivalent.
+    let op _ (b : Foo.M) =
+        -- self-projection
+        let _ : Foo.M = b
+        -- explicit projection equal to the self-projection
+        let _ : Bar = b
+        0
+
+useTr : Int
+let useTr = op Foo Bar
+
+--! assertNoErrors

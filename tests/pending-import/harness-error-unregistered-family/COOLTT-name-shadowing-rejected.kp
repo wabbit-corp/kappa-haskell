@@ -1,0 +1,69 @@
+-- Source artifacts: cooltt PR #340 (support def and !def, close issue #319),
+--               issue #319 (introduce `!def` and make `def` non-shadowing).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.shadowing lint, W_SUSPICIOUS_TOPLEVEL_SHADOWING)
+--
+-- CoolTT's non-shadowing `def` rejects rebinding a name that is already in scope
+-- without an explicit `shadowing` annotation. In Kappa, the corresponding
+-- obligation is the suspicious-shadowing lint: when a new declaration shadows
+-- an existing top-level name, the implementation SHOULD emit `kappa.name.shadowing`
+-- (code W_SUSPICIOUS_TOPLEVEL_SHADOWING) as a warning.
+--
+-- Ordinary lexical shadowing (parameter shadowing, let-binding shadowing) is
+-- legal and does not produce a lint.
+
+--! mode check
+
+-- POSITIVE: first definition of a name at top level is always accepted.
+first : Nat
+let first = zero
+
+-- POSITIVE: a second definition with a distinct name is accepted.
+second : Nat
+let second = suc zero
+
+-- POSITIVE: a function may shadow a parameter name only in its own body;
+-- local let shadowing is permitted without lint.
+shadowParam : Nat -> Nat
+let shadowParam x =
+    let x : Nat = suc x    -- shadows the parameter `x` locally; no lint
+    x
+
+-- POSITIVE: a local binding shadows an outer binding in a nested scope.
+-- This is expected and does not produce a warning.
+localShadow : Nat
+let localShadow =
+    let first : Nat = 99   -- shadows top-level `first` locally; warn level
+    first
+
+-- SUSPICIOUS: redefining a top-level name. The second `first` shadows the first.
+-- A conforming implementation SHOULD warn with kappa.name.shadowing.
+first : Nat    --!! kappa.name.shadowing
+let first = suc (suc zero)
+
+-- POSITIVE: after the shadowing definition, `first` resolves to the latest binding.
+useFirst : Nat
+let useFirst = first    -- resolves to the shadowing `first = suc (suc zero)`
+
+-- POSITIVE: importing a module does not shadow existing names unless explicitly opened.
+module M where
+    second : Nat
+    let second = 999
+end
+
+-- M.second is a qualified name; it does not shadow top-level `second` unless opened.
+useSecond : Nat
+let useSecond = second    -- still the original top-level `second`
+
+-- SUSPICIOUS: explicitly opening M brings M.second into scope, shadowing top-level `second`.
+open M    --!! kappa.name.shadowing
+
+useAfterOpen : Nat
+let useAfterOpen = second    -- now resolves to M.second = 999
+
+-- NEGATIVE: using a name that is genuinely unresolved is still an error.
+badName : Nat
+let badName = completelyUnknown    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+--! assertDiagnosticFamily error kappa.name.unresolved

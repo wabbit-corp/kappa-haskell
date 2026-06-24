@@ -1,0 +1,52 @@
+-- Source issue: Uiua #872 ("un complex returns real and imaginary parts
+--   in opposite orders in array" — `°ℂ[a+bi c+di e]` returns the real
+--   parts in source order but the imaginary parts in REVERSE order, so
+--   `ℂ°ℂ` is not the identity).
+-- Spec: declarations.terms, types.records,
+--       (gap UIUA-SA-02 — user-declared inverse contracts).
+--
+-- A primitive whose documented contract is "split a complex value into
+-- (real, imaginary) parts" must preserve the source-array order on
+-- both components. Round-tripping (re-combine then re-split) yields the
+-- original value.
+
+module test
+
+--! mode check
+
+-- A record modeling a complex number.
+data Complex : Type =
+    Complex { real : Float, imag : Float }
+
+-- "Combine" and "split" must be mutual inverses.
+combine : Float -> Float -> Complex
+let combine r i = Complex { real = r, imag = i }
+
+splitReal : Complex -> Float
+let splitReal c = c.real
+
+splitImag : Complex -> Float
+let splitImag c = c.imag
+
+-- POSITIVE: round-trip on a single value.
+roundTripValue : Complex
+let roundTripValue =
+    let z = combine 0.5 (0.0 - 0.866) in
+    combine (splitReal z) (splitImag z)
+
+--! assertNoErrors
+--! assertType combine Float -> Float -> Complex
+--! assertType splitReal Complex -> Float
+--! assertType splitImag Complex -> Float
+--! assertType roundTripValue Complex
+
+-- POSITIVE: round-trip on a list of values must preserve element order
+-- on BOTH the real and imaginary parts. The Uiua bug was that the
+-- imaginary parts were reversed while the real parts were kept.
+roundTripList : List Complex -> List Complex
+let roundTripList zs =
+    let reals = map splitReal zs in
+    let imags = map splitImag zs in
+    map2 combine reals imags
+
+--! assertType roundTripList List Complex -> List Complex

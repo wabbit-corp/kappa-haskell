@@ -1,0 +1,91 @@
+-- Source issues: CAIRO-7610 (Better impl missing implementations Diagnostics),
+--               CAIRO-2114, CAIRO-2805
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved),
+--       compiler.frontir.messages_notes_help_fixits (§3.1.6),
+--       compiler.frontir.obligation_provenance_diagnostic_selection (§3.1.10).
+-- Kappa spec rule (§3.2.4 "Implicit, trait, and proof-search diagnostics"):
+--   "The kappa.implicit.unsolved payload MUST include instance candidates
+--    considered (including those rejected by head mismatch and those rejected
+--    by failed premises). The payload MUST include the candidates that nearly
+--    matched (near-miss candidates) so the user can identify what is missing."
+-- Cairo issue CAIRO-7610: when a trait impl was missing, the error only said
+--   'no implementation found' without listing partial matches or what was
+--   needed for nearby candidates to succeed.
+-- Cairo issue CAIRO-2805: method resolution searched only in current context;
+--   the error did not say which use site needed an import.
+
+--! mode check
+
+-- A layered trait hierarchy to test near-miss diagnostics.
+trait Show (a : Type) =
+    show : (& x : a) -> String
+
+trait Show a => Debug (a : Type) =
+    debugShow : (& x : a) -> String
+
+trait Debug a => FullShow (a : Type) =
+    fullShow : (& x : a) -> String
+    let fullShow x = debugShow x
+
+-- Type A: has Show and Debug but not FullShow.
+data TypeA : Type = TypeA Int
+
+instance Show TypeA =
+    let show (TypeA n) = "TypeA"
+
+instance Debug TypeA =
+    let debugShow (TypeA n) = "TypeA(debug)"
+
+-- Type B: has only Show (missing Debug and FullShow).
+data TypeB : Type = TypeB String
+
+instance Show TypeB =
+    let show (TypeB s) = "TypeB"
+
+-- Type C: has no instances at all.
+data TypeC : Type = TypeC
+
+-- POSITIVE: TypeA can use FullShow if we provide the instance.
+instance FullShow TypeA =
+    let fullShow (TypeA n) = "TypeA(full)"
+
+useFullA : String
+let useFullA = fullShow (TypeA 5)
+
+-- NEGATIVE: calling debugShow on TypeB — Debug TypeB is absent.
+-- The diagnostic must mention that Show TypeB exists (near-miss) but Debug
+-- TypeB is missing.
+useDebugB : String
+let useDebugB = debugShow (TypeB "x")   --!! kappa.implicit.unsolved
+
+-- NEGATIVE: calling fullShow on TypeA when FullShow TypeA is not yet provided
+-- in this example context (but we did provide it above; this tests a different
+-- type). Calling fullShow on TypeB must fail.
+useFullB : String
+let useFullB = fullShow (TypeB "y")     --!! kappa.implicit.unsolved
+
+-- NEGATIVE: calling show on TypeC — no instances exist at all.
+-- The diagnostic must indicate no candidates were found, not a near-miss.
+useShowC : String
+let useShowC = show TypeC               --!! kappa.implicit.unsolved
+
+-- POSITIVE: a function generic over Show; works with TypeA and TypeB.
+printAny :
+    forall (a : Type).
+    (@_ : Show a) ->
+    (& x : a) ->
+    String
+let printAny x = show x
+
+okA : String
+let okA = printAny (TypeA 1)
+
+okB : String
+let okB = printAny (TypeB "hi")
+
+-- NEGATIVE: calling printAny on TypeC still fails.
+badC : String
+let badC = printAny TypeC              --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

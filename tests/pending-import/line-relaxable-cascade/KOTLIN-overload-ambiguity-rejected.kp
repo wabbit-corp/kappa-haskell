@@ -1,0 +1,45 @@
+-- Source issues: KT-880, KT-3303, KT-1358, KT-1998
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--   expressions.application.named_function_application
+--
+-- Kappa does not support ad hoc top-level overloading: each top-level name binds
+-- exactly one definition. The portable analog of "two same-named callees with
+-- different signatures" is trait-based dispatch, where the compiler looks for a
+-- matching `instance` to satisfy the implicit constraint. If no instance fits
+-- the goal at the call site, the diagnostic family is `kappa.implicit.unsolved`.
+
+--! mode check
+
+trait Show (a : Type) =
+    show : a -> String
+
+instance Show Int =
+    let show n = toString n
+
+instance Show String =
+    let show s = s
+
+-- POSITIVE: trait dispatch with a known argument type.
+showInt : String
+let showInt = show (42 : Int)
+
+
+-- POSITIVE: trait dispatch with a String argument.
+showStr : String
+let showStr = show ("hello" : String)
+
+
+-- POSITIVE: explicit type application for `Show` resolves dispatch unambiguously.
+useShowInt : String
+let useShowInt = show @Int 42
+
+
+-- NEGATIVE: `show` applied to a value of a type that has no `Show` instance.
+-- The implicit trait argument has no candidate at the goal `Show NoShowType`,
+-- so resolution fails with `kappa.implicit.unsolved`.
+data NoShowType : Type = NoShow
+
+needsShow : String
+let needsShow = show NoShow   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

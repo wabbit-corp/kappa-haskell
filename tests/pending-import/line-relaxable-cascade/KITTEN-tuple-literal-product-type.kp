@@ -1,0 +1,39 @@
+-- Source issue: Kitten #75 (`(1, "two", 3.0)` should have type
+--   `Int & String & Float`; 1-tuples don't exist; tuple type syntax is
+--   redundant). Kitten #31 (some kind of product type).
+-- Spec: literals.unit_tuples, types.records, types.records.syntax.
+--
+-- An n-tuple literal (n ≥ 2) elaborates as an anonymous product. A
+-- single-element parenthesized expression is just that expression, not
+-- a 1-tuple. The unit value `()` is the canonical zero-element product.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a 2-tuple.
+pair : (Int, String)
+let pair = (1, "two")
+
+-- POSITIVE: a 3-tuple.
+triple : (Int, String, Float)
+let triple = (1, "two", 3.0)
+
+-- POSITIVE: a single-parenthesized expression is the expression itself.
+notATuple : Int
+let notATuple = (1)
+
+-- POSITIVE: the unit value.
+nothing : ()
+let nothing = ()
+
+--! assertType pair (Int, String)
+--! assertType triple (Int, String, Float)
+--! assertType notATuple Int
+--! assertType nothing ()
+
+-- NEGATIVE: shape mismatch between declared tuple arity and the value.
+shapeBad : (Int, String, Float)
+let shapeBad = (1, "two")                  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

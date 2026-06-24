@@ -1,0 +1,58 @@
+-- Source issues: vale#374 (Anonymous substructs don't make forwarders for
+--               methods defined outside), vale#151 (Add error when an
+--               interface method doesn't contain a virtual interface param)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances
+-- In Vale, when a struct implicitly or explicitly implements a sealed
+-- interface, every abstract method declared on that interface must be
+-- covered by the implementing struct, either via an inline method or an
+-- external function with the matching signature. Failing to provide a
+-- required method means the impl is incomplete and the compiler should
+-- reject it with a suitable error. In Kappa, an instance body that omits
+-- a method required by its governing trait is rejected with
+-- kappa.implicit.unsolved at the use site (or kappa.implicit.unsolved
+-- if the instance itself is presented for evidence synthesis).
+
+--! mode check
+
+trait Vehicle (a : Type) =
+    speed    : (& v : a) -> Int
+    fuelType : (& v : a) -> String
+
+data Car : Type = Car Int
+
+-- POSITIVE: an instance that provides all required methods.
+instance Vehicle Car =
+    let speed    (Car n) = n
+    let fuelType _       = "gasoline"
+
+vroom : Int
+let vroom = speed (Car 120)
+
+-- A type that only partially implements Vehicle (missing fuelType).
+data Bicycle : Type = Bicycle Int
+
+instance Vehicle Bicycle =     --!! kappa.implicit.unsolved
+    let speed (Bicycle n) = n
+    -- fuelType is missing
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: calling a trait method on a type that has no instance at all.
+data Boat : Type = Boat Int
+
+-- No instance Vehicle Boat declared.
+badBoatSpeed : Int
+let badBoatSpeed = speed (Boat 30)   --!! kappa.implicit.unsolved
+
+-- POSITIVE: a generic function that requires a Vehicle instance — works
+-- when the instance is complete.
+describeVehicle :
+    forall (a : Type).
+    (@_ : Vehicle a) ->
+    (& v : a) -> String
+let describeVehicle v =
+    "speed=" ++ show (speed v) ++ " fuel=" ++ fuelType v
+
+okCar : String
+let okCar = describeVehicle (Car 100)

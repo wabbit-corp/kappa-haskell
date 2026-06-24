@@ -1,0 +1,48 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_name_resolution/comp_name_resolution.dl,
+--   tests/semantic/comp_params/comp_params.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- Spec gap: SSA-SOUFFLE-04 (parameterised module wrong param count).
+-- In Souffle, instantiating a component with the wrong number of type parameters is
+-- an error. In Kappa, the analogous error is applying a type constructor to the wrong
+-- number of type arguments; kappa.constructor.arity covers this.
+-- Souffle: "Invalid number of type parameters for component A".
+
+--! mode check
+
+-- A type taking no type parameters.
+data Plain : Type = MkPlain Int
+
+-- A type taking one type parameter.
+data Container (a : Type) : Type =
+    MkContainer a
+
+-- A type taking two type parameters.
+data Pair (a : Type) (b : Type) : Type =
+    MkPair a b
+
+-- POSITIVE: correct parameter counts.
+let ok1 : Plain               = MkPlain 42
+let ok2 : Container Int       = MkContainer 1
+let ok3 : Pair String Bool    = MkPair "yes" True
+
+-- NEGATIVE: Plain takes 0 type args, given 1.
+let bad1 : Plain Int = MkPlain 42    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Container takes 1 type arg, given 2.
+let bad2 : Container Int String = MkContainer 1    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Pair takes 2 type args, given 1.
+let bad3 : Pair Int = MkPair 1 True    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Pair takes 2 type args, given 3.
+let bad4 : Pair Int String Bool = MkPair 1 "x"    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

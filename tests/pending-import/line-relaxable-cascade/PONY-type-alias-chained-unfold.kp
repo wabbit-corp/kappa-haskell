@@ -1,0 +1,53 @@
+-- Source issues: ponyc PR#5195, ponyc PR#5193, ponyc PR#5196,
+--   ponyc full-program-tests/type-alias-chained-*
+-- Spec: data_types.type_aliases, expressions.match
+-- Pony PR #5195: after a compiler change stopped expanding type aliases during
+-- name resolution, aliases persisted as TK_TYPEALIASREF. Every dispatch site
+-- that needed the underlying type had to call typealias_unfold. Missing an
+-- unfold caused match exhaustiveness to fail for aliased union types (PR #5193).
+-- In Kappa, a transparent type alias must be unfolded on demand at each use site;
+-- match exhaustiveness must use the unfolded type to count constructors correctly.
+
+--! mode check
+
+data Status : Type = Active | Inactive | Pending
+
+-- A transparent type alias for Status.
+type StatusAlias = Status
+
+-- POSITIVE: match on the aliased type covers all constructors.
+describeStatus : StatusAlias -> String
+let describeStatus s =
+    match s
+    case Active   -> "active"
+    case Inactive -> "inactive"
+    case Pending  -> "pending"
+
+-- POSITIVE: chained aliases.
+type StatusAlias2 = StatusAlias
+
+describeStatus2 : StatusAlias2 -> String
+let describeStatus2 s =
+    match s
+    case Active   -> "a"
+    case Inactive -> "b"
+    case Pending  -> "c"
+
+-- NEGATIVE: non-exhaustive match on an aliased union.
+badAlias : StatusAlias -> String
+let badAlias s =
+    match s
+    case Active -> "active"   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: using a type alias in a generic constraint.
+processStatus :
+    forall (a : Type).
+    (@_ : (a -> String)) ->
+    a -> String
+let processStatus f x = f x
+
+r1 : String
+let r1 = processStatus describeStatus Active
+

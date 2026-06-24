@@ -1,0 +1,46 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CallMemberwiseInit.hylo
+--                   (diagnostic: "not enough contextual information to infer generic arguments"),
+--                   Tests/HyloTests/TestCases/TypeChecking/LambdaCoercion.hylo
+--                   (diagnostic: "not enough contextual information"),
+--                   PR#614 (catch underspecialized uses of generics)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.unsolved-metavariable)
+-- Hylo: when a generic function or type is applied but type inference cannot
+-- determine a concrete value for a type parameter, the compiler reports that
+-- it lacks enough information. In Kappa the corresponding type metavariable
+-- remains unsolved.
+
+--! mode check
+
+data Box a : Type = Box a
+
+makeBox : forall (a : Type). a -> Box a
+let makeBox x = Box x
+
+unwrap : forall (a : Type). Box a -> a
+let unwrap (Box x) = x
+
+-- POSITIVE: type argument is inferred from the value argument.
+boxInt : Box Int
+let boxInt = makeBox 42
+
+boxBool : Box Bool
+let boxBool = makeBox True
+
+-- POSITIVE: explicit type annotation provides the missing context.
+boxWithAnnotation : Box String
+let boxWithAnnotation = makeBox "hello"
+
+-- NEGATIVE: no value argument and no annotation — type parameter cannot be inferred.
+-- The type variable `a` in `Box a` has no ground witness at this call site.
+underspecifiedBox : Box _
+let underspecifiedBox = makeBox _    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- NEGATIVE: generic function called without any type information.
+-- `unwrap` needs to know the element type to type-check the result.
+underspecifiedUnwrap : _
+let underspecifiedUnwrap = unwrap (Box 42)    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

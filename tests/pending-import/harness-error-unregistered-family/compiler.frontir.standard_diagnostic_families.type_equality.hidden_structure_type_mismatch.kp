@@ -1,0 +1,41 @@
+-- Source issues: elm #1739, #2124, #959
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+-- When a type mismatch arises and both sides print identically under the
+-- compact renderer, the implementation MUST use kappa.type.hidden-structure-mismatch
+-- rather than kappa.type.mismatch alone.
+-- The spec says: "A human renderer MUST NOT emit a primary message equivalent
+-- to: cannot match T with T"
+
+--! mode check
+
+module Subsystem1 =
+    data Status : Type =
+        Active
+        Inactive
+
+module Subsystem2 =
+    data Status : Type =
+        Running
+        Stopped
+
+-- A function expecting Subsystem1.Status
+requireSys1 : Subsystem1.Status -> Bool
+let requireSys1 s = match s
+    case Subsystem1.Active   -> True
+    case Subsystem1.Inactive -> False
+
+-- A value of Subsystem2.Status
+sys2val : Subsystem2.Status
+let sys2val = Subsystem2.Running
+
+-- NEGATIVE: passing sys2val where Subsystem1.Status is expected.
+-- Both types print as "Status" in compact form, so the diagnostic must use
+-- hidden-structure-mismatch to distinguish them.
+bad : Bool
+let bad = requireSys1 sys2val    --!! kappa.type.hidden-structure-mismatch
+
+-- POSITIVE: correct type is accepted.
+good : Bool
+let good = requireSys1 Subsystem1.Active
+
+--! assertDiagnosticFamily error kappa.type.hidden-structure-mismatch

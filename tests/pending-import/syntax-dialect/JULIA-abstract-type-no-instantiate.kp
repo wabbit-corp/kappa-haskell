@@ -1,0 +1,70 @@
+-- Source: Julia#4617, Julia#1953, Julia manual, "Abstract Types",
+--         Julia "cannot instantiate abstract type" error
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       data_types.data_declarations
+-- In Julia, abstract types (`abstract type Number end`) define type
+-- hierarchies but cannot be instantiated directly. Calling `Number()` is
+-- a MethodError. In Kappa, a type declared with no constructors (abstract)
+-- cannot appear at the head of a constructor application; such an
+-- application must be rejected with kappa.type.mismatch.
+
+--! mode check
+
+-- A trait (representing Julia's abstract type) with no constructors.
+-- Concrete subtypes provide implementations.
+trait ANumber (a : Type)
+trait AReal   (a : Type)
+trait AInt    (a : Type)
+
+-- Concrete types.
+data MyFloat64 : Type = MyFloat64 Float
+data MyInt32   : Type = MyInt32 Int
+
+instance ANumber MyFloat64 = ()
+instance AReal   MyFloat64 = ()
+instance ANumber MyInt32   = ()
+instance AInt    MyInt32   = ()
+
+-- A function that accepts any ANumber.
+toDouble :
+    forall (a : Type).
+    (@_ : ANumber a) ->
+    a -> Float
+let toDouble _ = 0.0  -- simplified
+
+-- POSITIVE: constructing and using a concrete type.
+x : MyFloat64
+let x = MyFloat64 3.14
+
+y : MyInt32
+let y = MyInt32 7
+
+okFloat : Float
+let okFloat = toDouble x
+
+okInt : Float
+let okInt = toDouble y
+
+-- NEGATIVE: attempting to directly construct an ANumber value.
+-- The trait has no constructors; you cannot `new ANumber(...)`.
+-- This is the Julia "cannot instantiate abstract type" error.
+badAbstract : ANumber Int
+let badAbstract = ANumber 1   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using an abstract trait directly as a return type that
+-- requires a constructor.
+badReturn : ANumber Int
+let badReturn = ANumber 42   --!! kappa.type.mismatch
+
+-- POSITIVE: a function polymorphic over ANumber types can still be called.
+sumDoubles :
+    forall (a : Type).
+    (@_ : ANumber a) ->
+    a -> a -> Float
+let sumDoubles x y = toDouble x + toDouble y
+
+okSum : Float
+let okSum = sumDoubles (MyFloat64 1.0) (MyFloat64 2.0)
+

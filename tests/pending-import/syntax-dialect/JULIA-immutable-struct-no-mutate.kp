@@ -1,0 +1,50 @@
+-- Source: Julia manual, "Composite Types" (structs immutable by default),
+--         Julia "setfield! immutable struct" MethodError
+-- Spec: data_types.mutability,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region
+-- In Julia, plain `struct` fields are immutable; assigning to a field raises
+-- a MethodError. In Kappa, a borrowed (&) reference to a data value grants
+-- only read access; returning that borrow as a linear (owned) value causes
+-- the borrow to escape its scope, which is kappa.borrow.escape.
+
+--! mode check
+
+data Point : Type = Point Float Float
+
+-- POSITIVE: construct and read a Point.
+p : Point
+let p = Point 1.0 2.0
+
+getX : Point -> Float
+let getX (Point x _) = x
+
+xVal : Float
+let xVal = getX p
+
+-- POSITIVE: functional update — construct a new value without mutating the original.
+withX : Float -> Point -> Point
+let withX newX (Point _ y) = Point newX y
+
+moved : Point
+let moved = withX 5.0 p
+
+--! assertType xVal  Float
+--! assertType moved Point
+
+-- POSITIVE: pass by borrow and compute a new Point from the borrowed fields.
+cloneShifted :
+    forall (pt : & Point).
+    Float -> Point
+let cloneShifted (Point x y) dx = Point (x + dx) y
+
+shifted : Point
+let shifted = cloneShifted p 1.0
+
+-- NEGATIVE: returning a borrowed reference as an owned value causes a borrow
+-- escape — the borrow lifetime does not extend to the caller's scope.
+extractOwned :
+    (& pt : Point) -> Point   --!! kappa.borrow.escape
+let extractOwned pt = pt
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+

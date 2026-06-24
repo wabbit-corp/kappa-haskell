@@ -1,0 +1,68 @@
+-- Source issues: rzk#22 — name conflicts with global declarations;
+--   a global name was interfering with a local variable of the same spelling,
+--   causing the typechecker to report a spurious error when the local binding
+--   should shadow the global one.
+-- Spec: modules.names.lexical_lookup
+--   §7.1: inner bindings shadow outer bindings of the same spelling
+--         for admissible declaration kinds at the use site.
+--
+-- When a function parameter introduces a variable whose spelling matches
+-- a top-level declaration, the local binding must shadow the global one
+-- within the function body. The global declaration must remain accessible
+-- outside of the function scope.
+
+--! mode check
+
+-- POSITIVE: a top-level definition named `x`.
+x : Nat
+let x = 0
+
+-- POSITIVE: a function that uses `x` from the global scope — no conflict.
+useGlobal : Nat
+let useGlobal = x
+
+-- POSITIVE: a function whose parameter is also named `x`.
+-- Within `shadowX`, the parameter `x` must shadow the global `x`.
+shadowX : Nat -> Nat
+let shadowX x = x + 1
+
+-- POSITIVE: after the function body, the global `x` is still visible.
+afterShadow : Nat
+let afterShadow = x
+
+-- POSITIVE: lambda parameter shadows a global name inside its scope only.
+shadowInLambda : Nat -> Nat
+let shadowInLambda = \ x -> x * 2
+
+-- POSITIVE: local let binding shadows global within the let scope.
+localLet : Nat
+let localLet =
+    let x : Nat = 99
+    x + 1
+
+-- POSITIVE: the global `x` is still 0 outside of all local scopes.
+globalStillZero : Nat
+let globalStillZero = x
+
+-- POSITIVE: a type with the same name as a term — different declaration
+-- kinds coexist in the same binding group and are resolved by position.
+data Pair (a b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+first : forall (a b : Type). Pair a b -> a
+let first (MkPair a _) = a
+
+-- When the same spelling is used in a parameter list with the same kind
+-- as an outer declaration, the inner binding wins inside the function body.
+shadowFirst : Nat -> (Nat, Bool) -> Nat
+let shadowFirst first (MkPair n _) = first + n
+
+-- POSITIVE: the original `first` is still accessible after the function.
+callFirst : Nat
+let callFirst = first (MkPair 5 True)
+
+-- NEGATIVE: using an undefined name (not shadowed, not global) is an error.
+badUse : Nat
+let badUse = undeclaredVar    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

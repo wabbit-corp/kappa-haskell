@@ -1,0 +1,29 @@
+-- Stress test: Every operation declared in the effect must have a clause in the handler
+-- Spec: effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Three-operation effect.
+effect Triple =
+    1 a : Unit -> Int
+    1 b : Unit -> String
+    1 c : Unit -> Bool
+
+-- NEGATIVE TEST: handler covers only 'a' and 'b', missing 'c'.
+-- Must be rejected because 'c' has no handler clause.
+let partial_handler (comp : Eff <[Triple : Triple]> Int) : Int =
+    handle Triple comp with  --!! kappa.effect.row-mismatch
+        case return x -> x
+        case a _ k    -> k 0
+        case b _ k    -> k ""
+    -- 'c' clause absent; handler is incomplete.
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE TEST: handler covers all three operations; must be accepted.
+let full_handler (comp : Eff <[Triple : Triple]> Int) : Int =
+    handle Triple comp with
+        case return x -> x
+        case a _ k    -> k 0
+        case b _ k    -> k ""
+        case c _ k    -> k False

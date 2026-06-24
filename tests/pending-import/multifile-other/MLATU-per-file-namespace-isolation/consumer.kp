@@ -1,0 +1,20 @@
+-- Source issue: MLatu #11 ("Currently you have to define everything in
+--   an implicit global namespace. I'd prefer for every file to be an
+--   implicit namespace"). The portable Kappa obligation is that
+--   top-level declarations belong to their containing module and are
+--   not visible in another module by an unqualified bare reference
+--   unless explicitly imported.
+-- Spec: modules.files, modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+
+module consumer
+
+--! mode check
+
+-- NEGATIVE: `helper` is defined in the sibling module `provider` but
+-- is not imported here; an unqualified reference is unresolved.
+useIt : Int
+let useIt = helper                         --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

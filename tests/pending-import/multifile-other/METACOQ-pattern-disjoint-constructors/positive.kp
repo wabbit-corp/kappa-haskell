@@ -1,0 +1,37 @@
+-- Source issues: METACOQ-237
+-- Spec: expressions.match.constructor_branches_introduce_explicit_refinement_evidence,
+--       expressions.patterns.forms
+--
+-- Each constructor branch introduces positive constructor-tag evidence;
+-- distinct constructors are disjoint. MetaCoq #237 asks for a helper to
+-- build tCase nodes; the underlying portable obligation is that pattern
+-- matching cleanly discriminates each constructor with refinement evidence.
+
+module positive
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: exhaustive match on a closed enum.
+intensity : Color -> Nat
+let intensity c =
+    match c
+    case Red   -> 3
+    case Green -> 2
+    case Blue  -> 1
+
+-- POSITIVE: catch-all branch introduces negative evidence (the prior
+-- constructors are excluded).
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red -> True
+    case _   -> False
+
+-- Suite-wide budget: exactly the 1 error(s) marked in negative.lang;
+-- every positive declaration in this file must elaborate cleanly.
+--! assertErrorCount 1

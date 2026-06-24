@@ -1,0 +1,60 @@
+-- Source issues: leo test `const_generic_structs_fail.leo` (regression test:
+--               `let f = Foo::[x] { y: 0 }` where `x` is a runtime parameter
+--               must be rejected), leo#28665, leo#28668 (const generics feature).
+-- Spec: SA-LEO-04 (compile-time constant bindings from compile-time-known
+--       expressions), SA-LEO-05 (const generic parameters are 0-quantity),
+--       compiler.frontir.standard_diagnostic_families.quantity_obligations
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-LEO-04, §SA-LEO-05):
+--   "A const generic parameter in a type application must be supplied with a
+--    0-quantity (compile-time-known) argument. Supplying a 1-quantity (runtime)
+--    value as the const argument must produce `kappa.quantity.satisfies`."
+-- leo test confirms: `let f = Foo::[x] { y: 0 }` where `x : u32` is a runtime
+--   variable is rejected with a type error.
+
+--! mode check
+
+-- A const-generic data type.
+data Buf (0 n : Int) : Type =
+    Buf { capacity : Int }
+
+-- POSITIVE: instantiating with a compile-time literal.
+buf5 : Buf 5
+let buf5 = Buf { capacity = 5 }
+
+buf10 : Buf 10
+let buf10 = Buf { capacity = 10 }
+
+-- POSITIVE: a function that receives a compile-time argument and constructs.
+let makeBuf (0 n : Int) : Buf n = Buf { capacity = n }
+
+ok5 : Buf 5
+let ok5 = makeBuf 5
+
+
+-- NEGATIVE: instantiating Buf with a runtime variable.
+-- `x` has quantity 1 (it is a function parameter supplied at call time).
+badInstantiate (x : Int) : Buf x    --!! kappa.quantity.satisfies
+let badInstantiate x = Buf { capacity = x }
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: passing a runtime argument as a const generic index.
+let runtimeConst (x : Int) : Int =
+    let b : Buf x = Buf { capacity = x }    --!! kappa.quantity.satisfies
+    b.capacity
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: a const generic function called with a runtime argument.
+let needsConst (0 n : Int) : Int = n + 1
+
+let passRuntimeToConst (x : Int) : Int =
+    needsConst x    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- POSITIVE: a const-generic function called with a compile-time literal.
+okCall : Int
+let okCall = needsConst 7
+

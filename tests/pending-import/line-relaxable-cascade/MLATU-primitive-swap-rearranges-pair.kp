@@ -1,0 +1,32 @@
+-- Source issue: MLatu docs/docs/primitives.md ("`s` or `swap` swaps the
+--   two terms below it"). The portable obligation is that Kappa supports
+--   a polymorphic swap function whose result type interchanges the
+--   element types of its input pair.
+-- Spec: types.quantification, literals.unit_tuples, expressions.application.
+--
+-- A polymorphic swap function flips the order of pair components;
+-- declaring a body that returns the input shape directly is a mismatch.
+
+module test
+
+--! mode check
+
+-- POSITIVE: swap interchanges the components.
+swap : forall (a : Type) (b : Type) . (a, b) -> (b, a)
+let swap p =
+    let (x, y) = p
+    in (y, x)
+
+swapped : (String, Int)
+let swapped = swap (3, "hi")
+
+--! assertType swapped (String, Int)
+
+-- NEGATIVE: body returns components in original order, but the signature
+-- declares the swapped pair type.
+badSwap : forall (a : Type) (b : Type) . (a, b) -> (b, a)
+let badSwap p =
+    let (x, y) = p
+    in (x, y)                              --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

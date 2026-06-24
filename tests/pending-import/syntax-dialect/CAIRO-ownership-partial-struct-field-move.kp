@@ -1,0 +1,77 @@
+-- Source issues: CAIRO-2530, CAIRO-3658, CAIRO-5629
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.dependent_record_update_repair_failure
+--       (§3.3.1), compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure
+--       (§3.3.2, family kappa.path.consumed),
+--       types.universes.quantities (§12.2).
+-- Kappa spec rule (§3.3.1):
+--   "After a partial update `r.{ f = e }`, the compiler tracks that field `f`
+--    has been replaced. Other fields copied from `r` are still live from the
+--    original. If a field `g` that was not updated depends on `f` at the
+--    type level and the updated `f` makes `g`'s stored value ill-typed, the
+--    compiler rejects the update and reports which field caused the conflict."
+-- Cairo issue CAIRO-2530: passing `my_struct.value` (a copyable field) to a
+--   function moved the entire struct, preventing subsequent field assignments.
+-- Cairo issue CAIRO-3658: accessing a copyable field via `self.copyable`
+--   across an if-branch incorrectly flagged the whole struct as moved.
+-- Cairo issue CAIRO-5629: struct update syntax `{ a: "4", ..v }` after
+--   consuming field `v.a` was incorrectly rejected.
+-- In Kappa: accessing a non-linear field of a record does not consume the
+-- record. The field itself may be copied; the parent record remains live.
+
+--! mode check
+
+-- A record type whose `code` field is copyable (Int) and `buf` is linear.
+data Request : Type =
+    (code : Int, buf : List Int)
+
+-- A function that reads the code — copyable, does not consume Request.
+getCode : (& r : Request) -> Int
+let getCode r = r.code
+
+-- A function that consumes the whole buf.
+drainBuf : (1 buf : List Int) -> Int
+let drainBuf xs = foldl (+) 0 xs
+
+foldl : forall (a b : Type). (a -> b -> a) -> a -> List b -> a
+let foldl f z xs = match xs
+    case []      -> z
+    case y :: ys -> foldl f (f z y) ys
+
+-- POSITIVE: accessing the `code` field by borrow leaves `r` intact so that
+-- further operations on `r` are valid.
+processRequest : (1 r : Request) -> Int
+let processRequest r =
+    let c = r.code               -- borrow-read of a copyable field
+    let total = drainBuf r.buf   -- consume buf (linear field)
+    c + total                    -- r is now fully consumed
+
+-- POSITIVE: updating one field via record update syntax; other fields are
+-- copied from the original and the record is re-constituted.
+updateCode : (1 r : Request) -> (1 _ : Request) -> Request
+let updateCode old new =
+    let r2 = (code = new.code, buf = old.buf)
+    r2
+
+-- POSITIVE: the struct update `{ code = x, ..rest }` copies the linear field
+-- `buf` from `rest` without double-consumption as long as only one use of `rest`
+-- follows.
+withNewCode : Int -> (1 rest : Request) -> Request
+let withNewCode c rest = (code = c, buf = rest.buf)
+
+-- NEGATIVE: after destructuring `r.buf` into a consumed binding, accessing
+-- `r.buf` a second time fails because buf was already consumed.
+doubleConsumeBuf : (1 r : Request) -> Int
+let doubleConsumeBuf r =
+    let n1 = drainBuf r.buf
+    let n2 = drainBuf r.buf    --!! kappa.path.consumed
+    n1 + n2
+
+-- NEGATIVE: if we pattern-match and fully consume `r`, using `r` afterward
+-- fails.
+moveAndUse : (1 r : Request) -> Int
+let moveAndUse r =
+    let (code = c, buf = b) = r
+    let _ = drainBuf b
+    getCode r                  --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed

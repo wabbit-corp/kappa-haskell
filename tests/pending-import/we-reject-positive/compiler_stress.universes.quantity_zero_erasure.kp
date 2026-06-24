@@ -1,0 +1,23 @@
+-- Stress test: quantity-0 bindings in function parameters are erased at runtime
+-- Spec: types.universes.quantities, types.universes.erasure_elaboration_time.compile_time_bindings_fields
+
+--! mode check
+
+-- Phantom type: erased type parameter carries no runtime payload.
+data Phantom (0 a : Type) : Type =
+    MkPhantom Int
+
+-- POSITIVE: construct a Phantom; the type parameter is erased.
+mkPhantom : (0 a : Type) -> Int -> Phantom a
+let mkPhantom (0 a) n = MkPhantom n
+
+-- POSITIVE: deconstruct a Phantom; the erased parameter is not needed at runtime.
+unPhantom : (0 a : Type) -> Phantom a -> Int
+let unPhantom (0 a) p =
+    match p
+    case MkPhantom n -> n
+
+-- Exercise both functions.
+let val : Int = unPhantom (0 Int) (mkPhantom (0 Int) 99)
+
+--! assertNoErrors

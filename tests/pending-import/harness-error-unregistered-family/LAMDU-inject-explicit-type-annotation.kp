@@ -1,0 +1,58 @@
+-- Source issues: lamdu#156 — redundant value annotation for injections;
+--   lamdu#147 — applying an inject that generates the correct type gets
+--   an incorrect wrapper fragment. The portable obligation: an
+--   injection's expected type determines the destination union, so the
+--   inner expression's annotation is redundant when the expected union
+--   is fully determined.
+-- Spec: types.unions.introduction_injection,
+--       types.unions.expected_type_directed_injection_widening
+--   §13.1.2 / §13.1.3: union injection `(| e : T |)` requires the
+--   expected union to contain `T`; the inferred form `(| e |)` is
+--   permitted only when the member type is unambiguous from context.
+--
+-- Lamdu's anonymous tag-label namespace (LAMDU-SA-01) is *not* current
+-- Kappa syntax; this test uses Kappa's portable structural variant of
+-- distinct member types.
+
+--! mode check
+
+-- POSITIVE: a two-member structural union of distinct types.
+type IntOrStr = (| Nat | String |)
+
+withAnno : IntOrStr
+let withAnno = (| 5 : Nat |)
+
+-- POSITIVE: the inferred form (member type is unambiguously Nat from
+-- the expected union).
+inferred : IntOrStr
+let inferred = (| 5 |)
+
+-- POSITIVE: explicit String injection.
+strInjected : IntOrStr
+let strInjected = (| "hi" : String |)
+
+-- POSITIVE: widening — every member of Narrow is in Wide.
+type Narrow = (| Nat |)
+type Wide   = (| Nat | String |)
+
+widening : Narrow -> Wide
+let widening x = x
+
+-- NEGATIVE: explicit annotation whose type is not a member of the
+-- expected union.
+type IntOnly = (| Nat |)
+
+badAnno : IntOnly
+let badAnno = (| True : Bool |)    --!! kappa.type.mismatch
+
+-- NEGATIVE: the inferred form when the expected union has two members
+-- that the literal could inject into. `5` is acceptable at both Int
+-- and Nat, so the injection is ambiguous without an explicit
+-- annotation.
+type IntOrNat = (| Int | Nat |)
+
+ambiguous : IntOrNat
+let ambiguous = (| 5 |)    --!! kappa.variant.injection-ambiguous
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.variant.injection-ambiguous

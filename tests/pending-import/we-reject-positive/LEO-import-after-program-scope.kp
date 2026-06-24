@@ -1,0 +1,40 @@
+-- Source issues: leo#28376 (the parser allows import statements after the
+--               program scope; `import foo.aleo;` appearing after the
+--               `program bar.aleo { … }` block was accepted by the parser).
+-- Spec: §8.1 (module structure), §8.3 (import declarations).
+-- NOTE: Kappa §8.1/§8.3 imposes NO ordering constraint on import declarations
+-- relative to other top-level declarations. Leo requires all imports to
+-- precede the `program { … }` block, but this is Leo-specific. Kappa has no
+-- such rule, so this test is positive-only. The original negative cases used
+-- `kappa.syntax.generated-invalid` (the family for macro/elaboration-
+-- generated syntax) incorrectly. Spec gap: a dedicated import-ordering rule
+-- would require a new Kappa spec addition (not covered by SA-LEO-01…SA-LEO-07).
+
+--! mode check
+
+-- POSITIVE: import declarations before any body content.
+import Prelude.Basics
+import Prelude.Types
+
+data Foo : Type = Foo Int
+
+let useFoo (f : Foo) : Int =
+    let Foo n = f
+    n
+
+-- POSITIVE: a body declaration followed by another import — valid in Kappa
+-- because §8.1/§8.3 place no ordering constraint on imports.
+data Bar : Type = Bar Bool
+
+import Prelude.Extra
+
+-- POSITIVE: further declarations and imports interleaved.
+makeBar : Bar
+let makeBar = Bar True
+
+import Prelude.List
+
+validDecl : Int
+let validDecl = 42
+
+--! assertNoErrors

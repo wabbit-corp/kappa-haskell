@@ -1,0 +1,82 @@
+-- Source issues: CAIRO-1116, CAIRO-PR-825 (Copy/Drop impls for felt/bool),
+--               CAIRO-PR-923 (Check copy and drop impls)
+-- Spec: types.universes.quantities (§12.2),
+--       compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure
+--       (§3.3.2, family kappa.path.consumed).
+-- Kappa spec rule (§12.2 "Quantities"):
+--   "A value of a copyable type (one for which a `Duplicate` or equivalent
+--    intrinsic trait instance exists) may be used at quantity ω (unrestricted).
+--    A non-copyable type bound at quantity 1 may be used exactly once; a
+--    second use of the same path is rejected with kappa.path.consumed."
+-- Cairo issue CAIRO-1116: a struct with `#[derive(Copy, Drop)]` should allow
+--   reusing the bound variable; the compiler incorrectly rejected it.
+-- In Kappa: a value whose type has a `Duplicate` instance can be passed
+-- multiple times; a value whose type has no such instance is linear by
+-- default and cannot be reused.
+
+--! mode check
+
+-- A copyable (duplicatable) type.
+data Point : Type =
+    Point Int Int
+
+-- Declare that Point is duplicatable.
+instance Duplicate Point =
+    let dup (Point x y) = (Point x y, Point x y)
+
+trait Duplicate (a : Type) =
+    dup : (& x : a) -> (a, a)
+
+-- POSITIVE: using a Point value twice is allowed because it's duplicatable.
+addPoints : (& p : Point) -> Int
+let addPoints p =
+    let Point x1 _ = p
+    let Point _  y2 = p
+    x1 + y2
+
+-- POSITIVE: passing the same Point to two separate functions.
+printTwice : (& p : Point) -> Unit
+let printTwice p =
+    let _ = addPoints p
+    let _ = addPoints p
+    ()
+
+-- A non-copyable (linear) type: no Duplicate instance.
+data Buffer : Type =
+    Buffer Int
+
+-- POSITIVE: using a Buffer exactly once is fine.
+consumeBuffer : (1 b : Buffer) -> Int
+let consumeBuffer (Buffer n) = n
+
+-- POSITIVE: passing a Buffer to exactly one function consumes it.
+onceUse : Int
+let onceUse =
+    let 1 b = Buffer 5
+    consumeBuffer b
+
+-- NEGATIVE: trying to use a linear Buffer twice at the second use site.
+doubleBuffer : Int
+let doubleBuffer =
+    let 1 b = Buffer 5
+    let n1 = consumeBuffer b
+    let n2 = consumeBuffer b   --!! kappa.path.consumed
+    n1 + n2
+
+-- POSITIVE: a function generic over copyable a may use its argument freely.
+readTwice :
+    forall (a : Type).
+    (@_ : Duplicate a) ->
+    (& x : a) ->
+    (a, a)
+let readTwice x = dup x
+
+useCopy : (Point, Point)
+let useCopy = readTwice (Point 1 2)
+
+-- NEGATIVE: calling readTwice on a Buffer (no Duplicate) must fail.
+badCopy : (Buffer, Buffer)
+let badCopy = readTwice (Buffer 1)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.path.consumed
+--! assertDiagnosticFamily error kappa.implicit.unsolved

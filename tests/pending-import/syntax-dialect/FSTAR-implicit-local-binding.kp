@@ -1,0 +1,34 @@
+-- Source issue: FSTAR-807
+-- Spec: types.universes.quantities.reified_quantity_satisfaction
+-- An implicit type argument to a locally-defined function must be
+-- resolved at the call site the same way it would be at the top level.
+-- A local `let` binding must not prevent implicit instantiation.
+
+--! mode check
+
+-- A function with an implicit type parameter, defined at top level.
+-- Calling it with an empty list must resolve `A` to the correct type.
+top_find : {A : Type} -> Nat -> List (Nat, A) -> Maybe (Nat, A)
+let top_find x l =
+    match l
+      case Nil      -> Nothing
+      case (h :: _) -> Just h
+
+-- Top-level call: implicit `A` must be resolved from the argument type.
+test_top : Maybe (Nat, Bool)
+let test_top = top_find 0 (Nil : List (Nat, Bool))
+
+--! assertNoErrors
+
+-- Local binding: the same function defined locally.
+-- The implicit `A` must still be resolved at the call site.
+test_local : Maybe (Nat, Bool)
+let test_local =
+    let local_find : {A : Type} -> Nat -> List (Nat, A) -> Maybe (Nat, A)
+        let local_find x l =
+              match l
+                case Nil      -> Nothing
+                case (h :: _) -> Just h
+    local_find 0 (Nil : List (Nat, Bool))
+
+--! assertNoErrors

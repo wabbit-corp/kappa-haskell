@@ -1,0 +1,54 @@
+-- Source: WebPPL #803 (named IIFE optimized away — the inner self
+--   reference inside the immediately-invoked function expression must be
+--   preserved, otherwise recursive IIFEs are broken).
+-- Spec: declarations.let_in (§9.3), declarations.let_in.pure_block_expressions
+--   (§9.3.1), declarations.let_in.pure_block_expressions
+--   "Local recursion" rule (a local named binding is recursive only if a
+--   preceding local signature is present in the same block scope).
+--
+-- A locally-defined recursive function must keep its self reference. Kappa
+-- spells the recursive local form with `block`, a preceding local
+-- signature, and a named `let` definition; a plain `let ... in` simple-name
+-- binding is non-recursive by default.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a locally recursive function defined inside a `block`, with a
+-- preceding signature so the binding is recursive per §9.3.1.
+factorial3 : Int
+let factorial3 =
+    block
+        fact : Int -> Int
+        let fact n = if n == 0 then 1 else n * fact (n - 1)
+        fact 3
+
+--! assertNoErrors
+--! assertType factorial3 Int
+
+-- POSITIVE: the same local recursion at a deeper recursion depth.
+factorial5 : Int
+let factorial5 =
+    block
+        fact : Int -> Int
+        let fact n = if n == 0 then 1 else n * fact (n - 1)
+        fact 5
+
+--! assertNoErrors
+--! assertType factorial5 Int
+
+-- POSITIVE: a mutually recursive local group with preceding local
+-- signatures. The `block` form admits mutual recursion exactly as the
+-- top-level recursive group rule of §15.
+mutualResult : Bool
+let mutualResult =
+    block
+        even : Nat -> Bool
+        odd  : Nat -> Bool
+        let even n = if n == 0 then True  else odd  (n - 1)
+        let odd  n = if n == 0 then False else even (n - 1)
+        odd 7
+
+--! assertNoErrors
+--! assertType mutualResult Bool

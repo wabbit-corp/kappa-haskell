@@ -1,0 +1,43 @@
+-- Source: WebPPL #422 (incorrect support binning when distribution is
+--   over functions — should expose both function values rather than
+--   collapsing via JSON.stringify).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-05
+--   (distribution-value identity uses declared Eq instance),
+--   traits.deriving.
+--
+-- A finite-support distribution constructor whose `vs` parameter is
+-- expected to support equality comparison must constrain that element
+-- type by `Eq`. A tag-type with `derive Eq` is the recommended Kappa
+-- surface; encoding distributions over closure-typed elements via an
+-- intermediate tag type avoids relying on closure identity.
+
+module test
+
+--! mode check
+
+-- An Eq-constrained categorical constructor: support-element Eq is part
+-- of the constructor's contract.
+data Categorical (a : Type) : Type =
+    Categorical { ps : List Float, vs : List a }
+
+-- A discriminated tag type with derived Eq. Distributions over functions
+-- are encoded by representing each function value by a tag and applying
+-- the tag through a dispatcher (Kappa-side; not a JSON.stringify identity).
+data FnTag : Type =
+    Inc
+    Dbl
+
+derive Eq FnTag
+
+applyFn : FnTag -> Int -> Int
+let applyFn t x =
+    match t
+    case Inc -> x + 1
+    case Dbl -> x * 2
+
+catOverTags : Categorical FnTag
+let catOverTags = Categorical { ps = [0.5, 0.5], vs = [Inc, Dbl] }
+
+--! assertNoErrors
+--! assertType catOverTags (Categorical FnTag)
+--! assertType applyFn (FnTag -> Int -> Int)

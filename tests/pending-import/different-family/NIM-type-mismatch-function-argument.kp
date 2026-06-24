@@ -1,0 +1,81 @@
+-- Source: nim-lang/Nim overload resolution and argument type checking —
+--         false-positive ambiguity (nim#24783), cross-module name collision
+--         (nim#9156), wrong-type argument at call site
+-- Spec: compiler.frontir.standard_diagnostic_families (kappa.type.mismatch,
+--       kappa.application.argument-mismatch)
+-- Applying a function to an argument whose type does not match the declared
+-- parameter type must be rejected. This covers simple one-argument mismatches,
+-- mismatches at higher-order positions, and mismatches in curried argument chains.
+
+--! mode check
+module test
+
+data Color : Type = Red | Green | Blue
+data Shape : Type = Circle | Square
+
+colorName : Color -> String
+let colorName c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+shapeName : Shape -> String
+let shapeName s =
+    match s
+    case Circle -> "circle"
+    case Square -> "square"
+
+-- POSITIVE: correct argument types.
+goodColor : String
+let goodColor = colorName Red
+
+goodShape : String
+let goodShape = shapeName Circle
+
+-- NEGATIVE: passing a Shape where Color is expected.
+badColor : String
+let badColor = colorName Circle    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing a Color where Shape is expected.
+badShape : String
+let badShape = shapeName Red       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing an Int where a String is expected.
+badStrArg : Int
+let badStrArg = String.length 42   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: higher-order function with correct argument types.
+applyToRed : (Color -> String) -> String
+let applyToRed f = f Red
+
+goodApply : String
+let goodApply = applyToRed colorName
+
+-- NEGATIVE: passing colorName where shapeName is expected (function type mismatch).
+badHigherOrder : String
+let badHigherOrder = applyToRed shapeName  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: curried application with correct types at each step.
+add : Int -> Int -> Int
+let add x y = x + y
+
+addFive : Int -> Int
+let addFive = add 5
+
+result : Int
+let result = addFive 3
+
+-- NEGATIVE: curried application with wrong first argument type.
+badCurried : Int -> Int
+let badCurried = add "five"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

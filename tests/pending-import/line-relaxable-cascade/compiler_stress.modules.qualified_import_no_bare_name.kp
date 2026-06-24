@@ -1,0 +1,39 @@
+-- Stress test: An import using a module alias exposes members only via the
+--   alias, not via the original module path or unqualified bare names.
+--   Using a bare name from an aliased import must fail with unresolved name.
+-- Spec: modules.imports,
+--   compiler.frontir.standard_diagnostic_families.name_import
+
+--! mode check
+
+-- Import the math module under alias `M`; its members are accessible as
+-- `M.sin`, `M.cos`, etc.  The bare names `sin`, `cos` are NOT in scope.
+import std.math as M
+
+-- POSITIVE: qualified access via the alias is accepted.
+sineValue : Float
+let sineValue = M.sin 1.0
+
+cosineValue : Float
+let cosineValue = M.cos 0.0
+
+piValue : Float
+let piValue = M.pi
+
+-- NEGATIVE: unqualified bare `sin` is not in scope — the import was aliased.
+badSin : Float
+let badSin = sin 1.0   --!! kappa.name.unresolved
+
+-- NEGATIVE: the original module path without alias is also not available
+-- as a bare qualifier if the alias replaced it.
+-- (Depends on semantics: if the original `std.math` path is still accessible,
+--  `std.math.sin` might work. The test focuses on bare `sin` being absent.)
+badBareCos : Float
+let badBareCos = cos 0.0   --!! kappa.name.unresolved
+
+-- POSITIVE: a local rebinding from the aliased module is in scope.
+let sin = M.sin
+localSin : Float
+let localSin = sin 1.0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

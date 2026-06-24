@@ -1,0 +1,41 @@
+-- Source: granule-project/granule PR #224 (Fixes bug in `flatten` for `Sec`)
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- The `flatten` combinator on a doubly-graded value `Sec p (Sec q a)`
+-- yields `Sec (p * q) a`. Asserting an incorrect composition (e.g.
+-- claiming `Sec Public Bool` when the witness's composition is
+-- `Sec (Public * Private) Bool`) is a type-equality failure.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+type Sec : Quantity -> Type -> Type
+
+intrinsic boxAt   : forall (q : Quantity) (a : Type). (1 x : a) -> Sec q a
+intrinsic unboxAt : forall (q : Quantity) (a : Type). (1 s : Sec q a) -> a
+intrinsic flatten : forall (p : Quantity) (q : Quantity) (a : Type).
+    (1 s : Sec p (Sec q a)) -> Sec (p * q) a
+
+intrinsic Public  : Quantity
+intrinsic Private : Quantity
+
+-- POSITIVE: flattening Sec Public (Sec Public Bool) yields Sec Public Bool
+-- by `Public * Public = Public` (semiring annihilator/identity).
+flatPubPub : Sec Public Bool
+let flatPubPub =
+    flatten (boxAt (boxAt True : Sec Public Bool) : Sec Public (Sec Public Bool))
+
+
+-- NEGATIVE: claiming flatten produces a Public result when one of the
+-- nested levels was Private is a type-equality leak.
+badFlat : Sec Public Bool
+let badFlat =
+    flatten (boxAt (boxAt True : Sec Private Bool)
+             : Sec Public (Sec Private Bool))   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,85 @@
+-- Stress test: Constraint propagation through multiple levels of generic
+--   abstraction.  A top-level function with a constraint on `a` passes it
+--   to a mid-level helper, which passes it to a low-level function.
+--   The chain must type-check; missing any link in the chain must fail.
+-- Spec: traits.headers, traits.instances.resolution_algorithm,
+--   types.quantification.implicit_declaration_universalization
+
+--! mode check
+
+trait Eq (a : Type) =
+    eqCheck : a -> a -> Bool
+
+trait Eq a => Hashable (a : Type) =
+    hashCode : a -> Int
+
+trait Hashable a => Bucketable (a : Type) =
+    bucket : a -> Int -> Nat
+    let bucket x size = hashCode x `mod` size
+
+-- A three-level chain: Bucketable → Hashable → Eq
+
+-- Low-level: only needs Eq.
+countDuplicates :
+    forall {a : Type}.
+    (@_ : Eq a) ->
+    a -> List a -> Nat
+let countDuplicates x xs decreases structural xs =
+    match xs
+    case Nil      -> 0
+    case h :: rest ->
+        let n = countDuplicates x rest
+        if eqCheck x h then n + 1 else n
+
+-- Mid-level: needs Hashable (which implies Eq via supertrait).
+bucketize :
+    forall {a : Type}.
+    (@_ : Hashable a) ->
+    List a -> Int -> List (Nat, a)
+let bucketize xs size decreases structural xs =
+    match xs
+    case Nil       -> Nil
+    case h :: rest ->
+        let b = hashCode h `mod` size
+        (b, h) :: bucketize rest size
+
+-- Top-level: needs Bucketable (implies Hashable implies Eq).
+distribute :
+    forall {a : Type}.
+    (@_ : Bucketable a) ->
+    List a -> Int -> List (Nat, a)
+let distribute xs size = bucketize xs size
+
+-- Instances for a concrete type.
+data Token : Type = Token String Int
+
+instance Eq Token =
+    let eqCheck (Token s1 n1) (Token s2 n2) = s1 == s2 && n1 == n2
+
+instance Hashable Token =
+    let hashCode (Token _ n) = n * 31
+
+instance Bucketable Token =
+    () -- uses default bucket implementation
+
+-- POSITIVE: full chain works.
+tokens : List Token
+let tokens = Token "a" 1 :: Token "b" 2 :: Token "a" 3 :: Nil
+
+distributed : List (Nat, Token)
+let distributed = distribute tokens 7
+
+-- NEGATIVE: calling distribute with a type that only has Hashable, not Bucketable.
+data SimpleTag : Type = Tag String
+
+instance Eq SimpleTag =
+    let eqCheck (Tag s1) (Tag s2) = s1 == s2
+
+instance Hashable SimpleTag =
+    let hashCode (Tag s) = 0   -- trivial
+
+-- No Bucketable SimpleTag instance; distribute must fail.
+badDistribute : List (Nat, SimpleTag)
+let badDistribute = distribute (Tag "x" :: Nil) 4   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

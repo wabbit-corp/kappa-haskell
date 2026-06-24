@@ -1,0 +1,84 @@
+-- Source issues: CAIRO-7038, CAIRO-7060, CAIRO-6954 (roadmap: associated items constraints)
+-- Spec: traits.members (§14.2), traits.members.overloaded_member_names,
+--       traits.instances.associated_static_member_instance_checking (§14.3.4),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved, kappa.associated.normalization-blocked).
+-- Kappa spec rule (§14.3.4):
+--   "When an instance body omits a member that has a default definition in
+--    the trait, the trait's default definition is used. The default definition
+--    is checked in the instance context: associated static members declared by
+--    the same trait are substituted before the check."
+-- Cairo issue CAIRO-7038: default trait fn bodies that invoked the trait's
+-- own associated functions (via trait-qualified call) failed to find impl
+-- aliases in the default body context.
+-- Cairo issue CAIRO-7060: a default function whose signature mentioned
+-- `Self::S` (an associated type) failed to resolve the bound `+Drop<Self::S>`
+-- in the default body.
+-- In Kappa: a trait with an associated type and a default method referencing
+-- that type must accept instances that override the associated type only.
+
+--! mode check
+
+-- Trait with an associated type and a default method referencing it.
+trait Container (self : Type) =
+    Item : Type
+    -- default: returns a fresh container by consuming item
+    let inject : (1 x : Item) -> self
+    let inject x = emptyWith x
+
+    -- abstract method the instance must provide
+    emptyWith : (1 x : Item) -> self
+
+-- A minimal concrete implementation that keeps the default inject.
+data Bag : Type =
+    Bag Int
+
+instance Container Bag =
+    let Item = Int
+    let emptyWith x = Bag x
+
+-- POSITIVE: calling inject on a Bag uses the default definition; it resolves
+-- `Item` to `Int` via the Bag instance.
+bagVal : Bag
+let bagVal = inject (42 : Int)
+
+-- Another instance overrides the associated type to a different type.
+data Basket : Type =
+    Basket Bool
+
+instance Container Basket =
+    let Item = Bool
+    let emptyWith x = Basket x
+
+-- POSITIVE: calling inject on a Basket resolves Item to Bool.
+basketVal : Basket
+let basketVal = inject True
+
+-- NEGATIVE: trying to call inject with an argument type that doesn't match
+-- the associated Item for the target container must fail.
+-- Specifically, calling inject at type Bag but supplying a Bool is rejected.
+badBag : Bag
+let badBag = inject True                       --!! kappa.type.mismatch
+
+-- NEGATIVE: a second trait whose default method references an associated type
+-- that an instance body leaves unsatisfied (no instance for the required bound).
+trait Transformable (self : Type) =
+    Out : Type
+    (@_ : Eq Out)                 -- bound on associated type
+    transform : (& x : self) -> Out
+    let summarize : (& x : self) -> Bool
+    let summarize x = eq (transform x) (transform x)
+
+trait Eq (a : Type) =
+    eq : (& x : a) -> (& y : a) -> Bool
+
+data Gauge : Type = Gauge Int
+data Reading : Type = Reading Int
+
+-- No Eq Reading instance declared — the default `summarize` body should fail.
+instance Transformable Gauge =
+    let Out = Reading              --!! kappa.implicit.unsolved
+    let transform (Gauge n) = Reading n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.implicit.unsolved

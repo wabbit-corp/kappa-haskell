@@ -1,0 +1,52 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestAsPattern.curry
+--   (f1 v@(x:_) = x : v, testSimple = (f1 [1,2]) -=- [1,1,2]).
+-- Spec: expressions.patterns.forms (§17.2.1), expressions.patterns.scoping_validity (§17.2.2),
+--       expressions.match (§17.1).
+--
+-- An as-pattern `name @ pat` binds both `name` (the whole scrutinee value)
+-- and the inner binders of `pat`. The Curry program demonstrates the
+-- canonical use: match a cons cell, name it `v`, also bind its head as
+-- `x`, then re-use `v` in the body to rebuild a list. Kappa §17.2.1
+-- explicitly admits the as-pattern form.
+
+module test
+
+--! mode check
+
+data List : Type =
+    Nil
+  | Cons Int List
+
+-- POSITIVE: simple as-pattern over a cons cell.
+duplicateHead : List -> List
+let duplicateHead xs =
+    match xs
+    case Nil               -> Nil
+    case v @ (Cons x rest) -> Cons x v
+
+--! assertNoErrors
+--! assertType duplicateHead (List -> List)
+
+-- POSITIVE: the rebuilt list preserves the whole original tail.
+sampleResult : List
+let sampleResult = duplicateHead (Cons 1 (Cons 2 Nil))
+-- expected shape: Cons 1 (Cons 1 (Cons 2 Nil))
+
+--! assertNoErrors
+--! assertType sampleResult List
+
+-- POSITIVE: the as-pattern binder is in scope in the guard, too.
+keepIfNonempty : List -> List
+let keepIfNonempty xs =
+    match xs
+    case v @ (Cons _ _) if listNonEmpty v -> v
+    case _                                 -> Nil
+
+listNonEmpty : List -> Bool
+let listNonEmpty xs =
+    match xs
+    case Nil       -> False
+    case Cons _ _  -> True
+
+--! assertNoErrors
+--! assertType keepIfNonempty (List -> List)

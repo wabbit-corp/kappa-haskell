@@ -1,0 +1,49 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system6/type_system6.dl,
+--   tests/semantic/type_system_negation/type_system_negation.dl,
+--   souffle-lang #201 (unable to deduce type for variable X),
+--   souffle-lang #876 (excessive aggregates cause well-typed programs to fail).
+-- Spec: declarations.signatures (§9.2),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- A function whose body produces a value of a type that does not match the declared
+-- return type must be rejected. Souffle's "Float constant (type mismatch)" error for
+-- `FloatConv(1.0)` maps to Kappa's return type mismatch check.
+
+--! mode check
+
+-- POSITIVE: function returning exactly the declared type.
+let toInt : String -> Int
+let toInt s = 0
+
+let addFloat : Float -> Float -> Float
+let addFloat x y = x + y
+
+-- NEGATIVE: declared return type is Int but body returns Float.
+let convertBad : Float -> Int
+let convertBad x = x + 1.0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: declared return type is String but body returns Int.
+let showBad : Int -> String
+let showBad n = n + 1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: body computes Float but declared as returning Nat.
+let badNat : Nat -> Nat
+let badNat n = 1.5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: explicit type annotation on body matches declaration.
+let compute : Int -> Int
+let compute x =
+    let y : Int = x + 1
+    y
+
+-- NEGATIVE: conditional branches have inconsistent return types.
+let branchBad : Bool -> Int
+let branchBad b =
+    if b then 42 else "not an int"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

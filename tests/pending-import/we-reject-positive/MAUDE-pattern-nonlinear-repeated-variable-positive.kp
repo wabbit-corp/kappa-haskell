@@ -1,0 +1,43 @@
+-- Source: Maude tests/Misc/attributes.maude
+--           eq f(X, X) = g(X) .
+--         Maude permits non-linear left-hand sides in equations: the
+--         repeated occurrence of X means that the equation fires only
+--         when both positional arguments are syntactically (or modulo
+--         declared axioms) equal. Kappa expresses the same semantics with
+--         a guarded match where the guard tests binding-equality of two
+--         separately-bound variables.
+-- Spec: expressions.patterns.forms,
+--       expressions.match.guarded_cases_introduce_guard_success_evidence.
+-- Portable obligation: non-linear matching is not a primitive Kappa
+--   pattern form; the user expresses the obligation explicitly with
+--   distinct variable bindings and a guard. The fixture asserts that the
+--   guard-based encoding is accepted.
+
+--! mode check
+
+module test
+
+data Color : Type = Red | Green | Blue
+
+equalColor : Color -> Color -> Bool
+let equalColor a b = match a
+    case Red   -> match b case Red   -> True case _ -> False
+    case Green -> match b case Green -> True case _ -> False
+    case Blue  -> match b case Blue  -> True case _ -> False
+
+data Pair : Type = MkPair Color Color
+
+-- POSITIVE: guard reproduces non-linear-LHS semantics: fires only if
+-- both fields are bound to equal colors.
+diag : Pair -> Bool
+let diag p = match p
+    case MkPair x y if equalColor x y -> True
+    case _                            -> False
+
+ok1 : Bool
+let ok1 = diag (MkPair Red Red)      -- True
+
+ok2 : Bool
+let ok2 = diag (MkPair Red Green)    -- False
+
+--! assertNoErrors

@@ -1,0 +1,91 @@
+-- Source issues: invalid/constructor_warning.m (wrong number of args in clause head pattern),
+--   invalid/bad_inst_for_type.m
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.constructor-arity)
+-- A constructor pattern that supplies the wrong number of positional arguments
+-- must be rejected. The error must identify the constructor, its expected
+-- arity, and the supplied arity in the pattern.
+
+module test
+
+data Point : Type = Point Int Int    -- expects 2 args in patterns
+data Named : Type = Named String     -- expects 1 arg in patterns
+data Unit2 : Type = Unit2            -- expects 0 args in patterns
+
+-- POSITIVE: correct arity patterns.
+getX : Point -> Int
+let getX (Point x _) = x
+
+getName : Named -> String
+let getName (Named s) = s
+
+isUnit2 : Unit2 -> Bool
+let isUnit2 Unit2 = True
+
+
+-- NEGATIVE: Point pattern with 1 argument (expects 2).
+badGetX1 : Point -> Int
+let badGetX1 (Point x) = x    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Point pattern with 3 arguments (expects 2).
+badGetX3 : Point -> Int
+let badGetX3 (Point x y z) = x    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Named pattern with 0 arguments (expects 1).
+-- This would be mistaken for the nullary constructor `Named` if it existed,
+-- but since `Named` always takes 1 argument, the checker must report the
+-- arity mismatch.
+badGetName0 : Named -> String
+let badGetName0 Named = "oops"    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Named pattern with 2 arguments (expects 1).
+badGetName2 : Named -> String
+let badGetName2 (Named s t) = s    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Unit2 pattern with 1 argument (expects 0).
+badUnit2_1 : Unit2 -> Bool
+let badUnit2_1 (Unit2 x) = True    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- POSITIVE: patterns in match expressions also checked.
+describePoint : Point -> String
+let describePoint p = match p
+    case Point x y -> show x ++ "," ++ show y
+
+
+-- NEGATIVE: wrong arity in match arm.
+describePointBad : Point -> String
+let describePointBad p = match p
+    case Point x -> show x    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- POSITIVE: parameterised constructor patterns.
+data Tree (a : Type) : Type =
+    Leaf
+    Node a (Tree a) (Tree a)
+
+leftSubtree : Tree a -> Option (Tree a)
+let leftSubtree t = match t
+    case Leaf        -> None
+    case Node _ l _  -> Some l
+
+
+-- NEGATIVE: Node pattern with 2 args (expects 3: value, left, right).
+badTreePattern : Tree a -> Option a
+let badTreePattern t = match t
+    case Leaf       -> None
+    case Node x l   -> Some x    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! mode check

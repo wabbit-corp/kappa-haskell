@@ -1,0 +1,28 @@
+-- Stress test: a helper function in scope used in a decreases measure
+-- Spec: declarations.terms
+
+--! mode check
+
+data List a : Type =
+    Nil
+  | Cons a (List a)
+
+-- Helper measure function: list length as a Nat.
+data Nat : Type =
+    Z
+  | S Nat
+
+listLen : List a -> Nat
+let listLen xs decreases structural xs =
+    match xs
+    case Nil       -> Z
+    case Cons _ tl -> S (listLen tl)
+
+-- POSITIVE: allPositive uses listLen as the explicit decreasing measure.
+allPositive : List Int -> Bool
+let allPositive xs decreases listLen xs =
+    match xs
+    case Nil        -> True
+    case Cons h tl  -> h > 0 && allPositive tl
+
+--! assertNoErrors

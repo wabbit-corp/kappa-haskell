@@ -1,0 +1,20 @@
+-- Stress test: a match missing at least one constructor is rejected
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+data Direction : Type =
+    North
+  | South
+  | East
+  | West
+
+-- NEGATIVE: West is not covered; the match is non-exhaustive.
+partial : Direction -> Int
+let partial d =
+    match d
+    case North -> 0
+    case South -> 1
+    case East  -> 2   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

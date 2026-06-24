@@ -1,0 +1,32 @@
+-- Source issue: MLatu docs/docs/primitives.md ("`d` or `duplicate`
+--   duplicates the term below it"). MLatu's `dup` is the first of six
+--   primitives. The portable obligation is that Kappa supports a
+--   parametrically polymorphic duplication function whose result is a
+--   pair containing two copies of the same value at the same type.
+-- Spec: types.quantification, literals.unit_tuples, expressions.application.
+--
+-- A polymorphic dup function elaborates and applies at multiple ground
+-- types; the result is a pair of the same value.
+
+module test
+
+--! mode check
+
+-- POSITIVE: dup is parametrically polymorphic.
+dup : forall (a : Type) . a -> (a, a)
+let dup x = (x, x)
+
+dupInt : (Int, Int)
+let dupInt = dup 7
+
+dupStr : (String, String)
+let dupStr = dup "hi"
+
+--! assertType dupInt (Int, Int)
+--! assertType dupStr (String, String)
+
+-- NEGATIVE: assigning a dup'd Int pair where a String pair is declared.
+mismatch : (String, String)
+let mismatch = dup 7                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

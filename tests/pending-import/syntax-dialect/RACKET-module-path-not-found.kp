@@ -1,0 +1,47 @@
+-- Source: Racket PR #5044 (improve error message when require/provide transformers
+--         used outside require/provide), Racket module resolution errors
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved)
+--
+-- Importing from a module path that does not resolve to a known module is an
+-- error. The error should identify the unresolvable module path.
+-- Using `require`/`provide` forms outside their expected context is also rejected;
+-- the Kappa analogue is using import items in the wrong syntactic context.
+
+--! mode check
+
+module knownModule
+
+public knownFn : Int -> Int
+let knownFn x = x + 1
+
+-- POSITIVE: import from a known module path works.
+module goodImporter
+import knownModule.(knownFn)
+
+useKnown : Int
+let useKnown = knownFn 5
+
+-- POSITIVE: qualified access to a known module.
+module qualImporter
+import knownModule
+
+useQual : Int
+let useQual = knownModule.knownFn 10
+
+-- NEGATIVE: importing from an unknown/non-existent module path.
+module badImporter
+import unknownModule.someFunction   --!! kappa.name.unresolved
+
+-- NEGATIVE: importing a name that does not exist in a known module.
+module missingName
+import knownModule.(doesNotExist)   --!! kappa.name.unresolved
+
+-- NEGATIVE: qualified access to a non-existent member of a known module.
+module badQualAccess
+import knownModule
+
+badFn : Int
+let badFn = knownModule.nonExistent 5   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

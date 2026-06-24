@@ -1,0 +1,26 @@
+-- Stress test: GADT where the return-type index is a function applied to constructor args
+-- Spec: data_types.gadts, expressions.match.index_refinement_constructor_knowledge
+
+--! mode check
+
+-- WrapDouble's constructor takes n and returns WrapDouble (n + n).
+-- The index is a type-level function application, not a plain variable.
+data WrapDouble : Nat -> Type =
+  Wrap : (n : Nat) -> WrapDouble (n + n)
+
+-- Matching on WrapDouble k forces k = n + n for the n bound by Wrap.
+-- The refinement must make n available in the branch body.
+extractHalf : {k : Nat} -> WrapDouble k -> Nat
+let extractHalf w = match w
+  case Wrap n -> n
+
+-- doubleCheck: construct and immediately deconstruct; round-trip must typecheck.
+doubleCheck : (n : Nat) -> WrapDouble (n + n)
+let doubleCheck n = Wrap n
+
+-- size: the index of a WrapDouble is always even; return it.
+doubledIndex : {k : Nat} -> WrapDouble k -> Nat
+let doubledIndex w = match w
+  case Wrap n -> n + n
+
+--! assertNoErrors

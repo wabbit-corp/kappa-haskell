@@ -1,0 +1,30 @@
+-- Source issue: Kitten #119 (Resource types: whether a resource must be
+--   consumed, disposed, or leaked). Kitten #156 (copy constructors and
+--   destructors; destructor calls inserted when a linear variable is
+--   not used; linear resources must not be silently leaked).
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.linear_discharge_discard_destructor_use,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+--
+-- A binder of linear quantity (`1`) must be demanded exactly once. A
+-- function declared with `(1 x : T)` whose body ignores `x` cannot
+-- satisfy the linear demand.
+
+module test
+
+--! mode check
+
+data Handle : Type =
+    Handle Int
+
+-- POSITIVE: a linear binder demanded exactly once is accepted.
+useOnce : (1 h : Handle) -> Int
+let useOnce (Handle n) = n
+
+-- NEGATIVE: a linear binder whose body ignores the parameter violates
+-- the linear-quantity obligation.
+leakBad : (1 h : Handle) -> Unit
+let leakBad h = ()                         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

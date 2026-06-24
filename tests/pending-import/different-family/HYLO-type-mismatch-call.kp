@@ -1,0 +1,45 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/ArgumentLabels.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/CallGenericFunction.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/CallMemberwiseInit.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/ArgumentLabels.hylo and CallGenericFunction.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- Hylo: passing an argument whose type does not match the declared parameter
+-- type is rejected with "cannot pass value of type X to parameter Y".
+-- In Kappa this is a straightforward type mismatch at the application site.
+
+--! mode check
+
+requiresInt : Int -> Int
+let requiresInt x = x + 1
+
+requiresBool : Bool -> Bool
+let requiresBool x = not x
+
+requiresString : String -> String
+let requiresString x = x ++ "!"
+
+-- POSITIVE: argument types match.
+callInt : Int
+let callInt = requiresInt 42
+
+callBool : Bool
+let callBool = requiresBool True
+
+-- NEGATIVE: passing Bool where Int is required.
+wrongTypeInt : Int
+let wrongTypeInt = requiresInt True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing Int where Bool is required.
+wrongTypeBool : Bool
+let wrongTypeBool = requiresBool 0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing a String where Int is required.
+wrongTypeString : Int
+let wrongTypeString = requiresInt "hello"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

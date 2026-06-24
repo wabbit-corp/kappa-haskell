@@ -1,0 +1,44 @@
+-- Source issues: KT-2127, KT-4565, KT-44 (safe call / ?. chaining)
+-- Spec: expressions.application.dotted_forms.safe_navigation_safe_navigation
+
+--! mode check
+
+data Address : Type =
+    Address (street : String) (city : String?)
+
+data Person : Type =
+    Person (name : String) (address : Address?)
+
+-- POSITIVE: single ?. on an optional field; result is Option String.
+getStreet : Person -> String?
+let getStreet p =
+    p.address?.street
+
+--! assertType getStreet (Person -> String?)
+
+-- POSITIVE: chained ?. navigation; intermediate Nones propagate.
+getCity : Person -> String??
+let getCity p =
+    p.address?.city
+
+
+-- POSITIVE: ?. on direct optional binding.
+getLength : String? -> Int?
+let getLength ms =
+    ms?.length
+
+--! assertType getLength (String? -> Int?)
+
+-- POSITIVE: safe navigation result used with Elvis to provide a default.
+streetOrDefault : Person -> String
+let streetOrDefault p =
+    p.address?.street ?: "unknown street"
+
+--! assertType streetOrDefault (Person -> String)
+
+-- NEGATIVE: applying ordinary (.) to an optional value is a type error.
+unsafeProject : Person -> String
+let unsafeProject p =
+    p.address.street   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

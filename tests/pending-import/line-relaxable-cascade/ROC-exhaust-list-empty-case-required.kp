@@ -1,0 +1,40 @@
+-- Source issue: Roc #8931
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       expressions.match
+-- A match on a `List a` value must cover both the empty-list case and at
+-- least one non-empty pattern (or include a catch-all) to be exhaustive.
+-- A single `[head, ..]` arm omits the empty list and must be rejected.
+
+module test
+
+data List (a : Type) : Type =
+    Nil  : List a
+    Cons : a -> List a -> List a
+
+--! mode check
+
+-- POSITIVE: both cases covered.
+firstOrZero : List Int -> Int
+let firstOrZero xs =
+    match xs
+      case Nil         -> 0
+      case Cons h _    -> h
+
+--! assertType firstOrZero List Int -> Int
+
+-- NEGATIVE: only the Cons case is covered. The empty-list arm is uncovered
+-- and exhaustiveness must reject this.
+firstOnly : List Int -> Int
+let firstOnly xs =
+    match xs                                 --!! kappa.pattern.non-exhaustive
+      case Cons h _ -> h
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only `Nil` is covered, no non-empty arm.
+emptyOnly : List Int -> Int
+let emptyOnly xs =
+    match xs                                 --!! kappa.pattern.non-exhaustive
+      case Nil -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

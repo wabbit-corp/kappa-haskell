@@ -1,0 +1,27 @@
+-- Source issues: docs/concurrency, inko#682
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: the 'recover' expression creates a unique (uni T) value by sealing
+-- off all borrows. Any value that captures a borrow from outside the recover
+-- block cannot be returned from it, because the borrow makes the result
+-- non-sendable across process boundaries.
+-- In Kappa, a function that must return a region-free value but instead
+-- borrows from an outer scope causes the borrow to escape its region.
+
+--! mode check
+
+data State : Type = State Int
+
+readState : (& s : State) -> Int
+let readState (State n) = n
+
+-- POSITIVE: consuming the state linearly produces a region-free result.
+consumeState : (1 s : State) -> Int
+let consumeState (State n) = n
+
+
+-- NEGATIVE: the function accepts a borrow and then tries to return it
+-- as if it were region-free. The borrow escapes the sendability boundary.
+badSend : (& s : State) -> (& State)
+let badSend s = s   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

@@ -1,0 +1,59 @@
+-- Source issue: Roc #9010
+-- Spec: types.unions.expected_type_directed_injection_widening,
+--       types.quantification.rows_labels
+-- A closed variant `(| Bar |)` must be acceptable in a position expecting
+-- an open variant `(| Bar | rest |)` (with `LacksVar rest Bar`): zero-cost
+-- widening should insert a coercion that extends the closed row with the
+-- empty residual. The test also checks the symmetric injection direction
+-- and the negative flow into a type that lacks Bar entirely.
+
+module test
+
+data Bar : Type =
+    Bar : Int -> Bar
+
+data Foo : Type =
+    Foo : Int -> Foo
+
+--! mode check
+
+-- A function that produces a closed variant containing exactly Bar.
+producesClosedBar : Int -> (| Bar |)
+let producesClosedBar n =
+    (| Bar n : Bar |)
+
+-- POSITIVE: a function expecting `(| Bar | rest |)` can receive a closed
+-- `(| Bar |)` at a call site, because the closed row widens to the open
+-- row by extending with the (empty) residual.
+acceptsOpenBar :
+    forall (rest : VarRow). LacksVar rest Bar =>
+    (| Bar | rest |) -> Int
+let acceptsOpenBar _ = 0
+
+callWithClosed : Int
+let callWithClosed = acceptsOpenBar (producesClosedBar 42)
+
+
+-- POSITIVE: a definition whose return type is the open `(| Bar | rest |)`
+-- can be satisfied by returning the closed `(| Bar |)`, because widening
+-- inserts the empty residual.
+wideSlot :
+    forall (rest : VarRow). LacksVar rest Bar =>
+    Int -> (| Bar | rest |)
+let wideSlot n = producesClosedBar n
+
+--! assertType wideSlot forall (rest : VarRow). LacksVar rest Bar => Int -> (| Bar | rest |)
+
+-- POSITIVE: direct injection — a Bar value injected into the open row.
+bareInjection :
+    forall (rest : VarRow). LacksVar rest Bar =>
+    Bar -> (| Bar | rest |)
+let bareInjection b = (| b : Bar |)
+
+
+-- NEGATIVE: `(| Bar |)` cannot flow into `(| Foo |)` because Bar ≠ Foo
+-- and the closed target has no room for Bar.
+flowsIntoClosedFoo : Int -> (| Foo |)
+let flowsIntoClosedFoo n = producesClosedBar n     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

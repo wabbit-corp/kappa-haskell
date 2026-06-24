@@ -1,0 +1,39 @@
+-- Source issues: BQN-3 (Question about reshape; `3‿4 ⥊ ↕12` for a 3×4
+--   matrix), BQN docs/reshape.md (*"reflow the data in an array, giving it
+--   a different shape"*), SA-BQN-01.
+-- Spec: modules.prelude.contents (SizedArray n a; r*c shape product),
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- Reshape requires the product of the target shape to equal the product
+-- of the source shape (the "bound" in BQN terminology). When the source
+-- and target shapes are statically known and their products disagree,
+-- elaboration must reject the program with kappa.type.mismatch.
+
+--! mode check
+
+-- POSITIVE: a hypothetical reshape signature whose source length `r*c`
+-- matches the destination shape exactly.
+expect sizedReshape :
+    forall (r : Nat) (c : Nat) (a : Type).
+    SizedArray (r * c) a -> SizedArray r (SizedArray c a)
+
+-- POSITIVE: helpers exposing the obligation as a type signature only;
+-- we never construct concrete SizedArray values, since the portable
+-- obligation is the type-level shape bound, not a runtime layout.
+expect v12 : SizedArray 12 Nat
+
+mat3x4 : SizedArray 3 (SizedArray 4 Nat)
+let mat3x4 = sizedReshape v12
+
+-- POSITIVE: a 6-element source reshaped into a 2×3 matrix.
+expect v6 : SizedArray 6 Integer
+
+mat2x3 : SizedArray 2 (SizedArray 3 Integer)
+let mat2x3 = sizedReshape v6
+
+-- NEGATIVE: passing a 6-element source as if it were 12 (3*4) is a
+-- type-level shape mismatch; the inferred argument `SizedArray 12 a`
+-- does not unify with the expected `SizedArray 6 a` at the call site.
+badShape : SizedArray 3 (SizedArray 4 Integer)
+let badShape = sizedReshape v6       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

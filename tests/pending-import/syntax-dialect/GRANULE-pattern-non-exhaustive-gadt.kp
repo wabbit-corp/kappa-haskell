@@ -1,0 +1,39 @@
+-- Source: granule-project/granule
+--         tests/cases/negative/indexed/badIndexingMatch.gr,
+--         tests/cases/positive/indexed/PromoteData.gr
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A `match` on a GADT-indexed scrutinee refines constructors by index;
+-- under a polymorphic index, both constructors are reachable and a
+-- missing constructor must surface `kappa.pattern.non-exhaustive`.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+data InOrOut (b : Bool) (a : Type) : Type =
+    InC : forall (a' : Type). (1 x : a') -> InOrOut True a'
+    OutC : forall (a' : Type). InOrOut False a'
+
+-- POSITIVE: matching against an InOrOut True a is total when only `InC` is
+-- considered, because OutC's index is False ≠ True.
+unwrap : forall (a : Type). (1 i : InOrOut True a) -> a
+let unwrap (InC x) = x
+
+--! assertType unwrap (forall (a : Type). (1 i : InOrOut True a) -> a)
+
+-- POSITIVE: a polymorphic-index variant must cover both constructors.
+doubleOrZero : forall (b : Bool). (1 i : InOrOut b Int) -> Int
+let doubleOrZero (InC x) = x + x
+let doubleOrZero OutC    = 0
+
+
+-- NEGATIVE: an incomplete cover under polymorphic index.
+badPartial : forall (b : Bool). (1 i : InOrOut b Int) -> Int
+let badPartial (InC x) = x    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

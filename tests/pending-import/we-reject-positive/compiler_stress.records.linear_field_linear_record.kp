@@ -1,0 +1,24 @@
+-- Stress test: a record with a linear field makes the whole-record usage linear
+-- Spec: types.records, types.universes.quantities
+
+--! mode check
+
+-- Handle has a linear field fd; the entire Handle must be consumed exactly once
+type Handle : Type = (1 fd : Int, name : String)
+
+-- POSITIVE: construct a Handle value
+openHandle : (name : String) -> (fd : Int) -> Handle
+let openHandle name fd = (fd = fd, name = name)
+
+-- POSITIVE: consume the linear Handle, returning the non-linear name field;
+-- the linear fd field is consumed by the pattern match, satisfying the >=1 obligation
+closeHandle : (1 h : Handle) -> String
+let closeHandle (fd = _, name = n) = n
+
+-- POSITIVE: full round-trip: open and then close
+useHandle : (name : String) -> (fd : Int) -> String
+let useHandle name fd =
+    let h : Handle = openHandle name fd
+    closeHandle h
+
+--! assertNoErrors

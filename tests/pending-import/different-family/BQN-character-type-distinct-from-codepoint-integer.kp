@@ -1,0 +1,22 @@
+-- Source issues: BQN docs/types.md (*"a character is a Unicode code point …
+--   however, it is distinct from this number as a BQN value"*);
+-- BQN tests/test/cases/prim.bqn rejected: `97-'a'` (Integer minus Char is
+--   the wrong direction; `'a'-97` is fine).
+-- Spec: literals.unicode_scalar_literals,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- A Unicode scalar literal is *not* the same value as its code-point
+-- integer, even if they have the same numeric content. Kappa exposes the
+-- type `UnicodeScalar` distinct from `Nat`/`Integer`.
+
+--! mode check
+
+-- POSITIVE: a UnicodeScalar literal binds at the right type.
+letterA : UnicodeScalar
+let letterA = 'a'
+
+-- NEGATIVE: comparing UnicodeScalar to Integer with `==` is a type
+-- mismatch because the operands have unrelated types.
+isSame : Bool
+let isSame = letterA == 97        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,63 @@
+-- Source issues: Scala3 #12125 (supertrait projection angle)
+-- Spec: traits.instances.supertrait_projection_path_selection
+-- When multiple local trait evidence values are in scope and each can project
+-- evidence for the same normalized supertrait goal via different projection paths,
+-- the checker must either:
+--   (a) prove the projected evidence values coherent (same HardIdentity) and select
+--       a deterministic representative; or
+--   (b) reject the goal as ambiguous / incoherent.
+-- The implementation MUST NOT choose arbitrarily among multiple paths.
+
+module test
+
+trait Base (a : Type) =
+    baseName : String
+
+trait Extended1 (a : Type) =
+    Base a =>
+    ext1 : Int
+
+trait Extended2 (a : Type) =
+    Base a =>
+    ext2 : Bool
+
+data MyType : Type = MyValue
+
+-- A single globally-coherent Base instance.
+instance Base MyType =
+    let baseName = "mytype"
+
+instance Extended1 MyType =
+    let ext1 = 1
+
+instance Extended2 MyType =
+    let ext2 = True
+
+-- Positive: when a single Base instance exists and both Extended1 and Extended2
+-- project it, the supertrait projection paths are coherent (same Base evidence).
+-- A function needing Base MyType must succeed unambiguously.
+getBaseName : String
+let getBaseName = baseName @(Base MyType)
+
+--! mode check
+
+-- Positive: in a context with both Extended1 and Extended2, projecting Base from
+-- either should yield the same coherent evidence.
+useBaseFromExtended : (@_ : Extended1 MyType) -> (@_ : Extended2 MyType) -> String
+let useBaseFromExtended _ _ = baseName @(Base MyType)
+
+
+-- Negative: two LOCAL evidence values with DIFFERENT Base implementations
+-- are explicitly in scope. Supertrait path selection must reject as ambiguous.
+incoherentBase : String
+let incoherentBase =
+    let @e1 : Base MyType =
+        instance = let baseName = "version-A"
+    let @e2 : Base MyType =
+        instance = let baseName = "version-B"
+    -- Both @e1 and @e2 are local candidates for `Base MyType`.
+    -- They have different HardIdentity (different baseName implementations).
+    -- The implicit goal `Base MyType` is ambiguous / incoherent.
+    baseName @(Base MyType)   --!! kappa.implicit.ambiguous
+
+--! assertDiagnostic error kappa.implicit.ambiguous

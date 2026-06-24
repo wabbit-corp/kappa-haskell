@@ -1,0 +1,45 @@
+-- Source issue: Uiua #34 ("Binding inside functions would be very
+--   useful" — Uiua syntactically forbids `Var ← ...` inside a
+--   parenthesized function body, even though local bindings are a
+--   familiar construct).
+-- Spec: declarations.let_in, declarations.let_in.pure_block_expressions,
+--       expressions.lambdas.
+--
+-- Kappa supports local `let` bindings inside any block-expression. A
+-- function body that uses local `let` to factor out subexpressions
+-- elaborates with the same type as the inline version.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a function with local let bindings.
+myAdd : Int -> Int -> Int
+let myAdd a b =
+    let v = a in
+    let w = b in
+    v + w
+
+--! assertNoErrors
+--! assertType myAdd Int -> Int -> Int
+
+-- POSITIVE: a function with nested local let inside a lambda body.
+withLambda : Int -> Int
+let withLambda x =
+    (\y ->
+        let z = y * 2 in
+        z + 1
+    ) x
+
+--! assertType withLambda Int -> Int
+
+-- POSITIVE: a let-in inside a let-rhs.
+nestedLet : Int
+let nestedLet =
+    let outer =
+        let inner = 7 in
+        inner + 1
+    in
+    outer * 2
+
+--! assertType nestedLet Int

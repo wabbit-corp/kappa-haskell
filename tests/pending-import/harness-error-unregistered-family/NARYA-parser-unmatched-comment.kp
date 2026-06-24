@@ -1,0 +1,39 @@
+-- Source artifacts: narya issue #96 (Narya gets confused by unmatched
+--               "{`" — an unterminated block-comment opener should be a
+--               clean parser diagnostic, not a silent cascade or crash),
+--               narya PR #97 (rewrite narya-parse-cmdstart, fix #96).
+-- Spec: lexical.comments,
+--       compiler.frontir.recovery_salvage_mode,
+--       compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.ordinary_errors_not_internal_failures
+--
+-- An unterminated block-comment opener is a lexical error. The
+-- implementation must emit an ordinary error diagnostic (not an
+-- internal failure), and recovery must not silently consume the
+-- remainder of the source as if nothing were wrong. The spec does not
+-- name a single canonical family identifier for this case; the
+-- portable obligation is that at least one error of an appropriate
+-- shape is reported and that the implementation does NOT raise an
+-- internal-compiler diagnostic.
+
+--! mode check
+
+--! assertDiagnosticMatch (?i)comment|unterminated|unmatched
+--! assertNoWarnings
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+ok1 : Nat
+let ok1 = Suc Zero
+
+{- a properly closed block comment -}
+
+ok2 : Nat
+let ok2 = ok1
+
+-- The next block comment is unterminated. Everything below it is
+-- consumed by the lexer until end-of-file, and the implementation must
+-- report an ordinary error diagnostic rather than crash.
+{- this comment never closes

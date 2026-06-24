@@ -1,0 +1,47 @@
+-- Source issues: Noir#10828, Noir#11359, Noir#11362
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+-- When a name in a type annotation position cannot be resolved, the diagnostic
+-- MUST belong to `kappa.name.unresolved`. The payload MUST include:
+--   * the unresolved spelling;
+--   * admissible declaration kinds at the use site (type context);
+--   * nearest scopes searched.
+-- The diagnostic MUST NOT report an internal identity-mismatch or claim the
+-- name "is not in scope" as if it were a value reference when the name appears
+-- in an explicit type annotation.
+
+module test
+
+-- Rejected: `i128` is not a known Kappa type.
+-- The diagnostic must clearly state that `i128` is an unresolved type name,
+-- not produce a confusing "identifier not found in value scope" message.
+badTypeAnnotation : Int
+let badTypeAnnotation =
+    let _ : i128 = 1   --!! kappa.name.unresolved
+    0
+
+--! mode check
+--! assertDiagnostic error kappa.name.unresolved
+
+-- Rejected: accessing an associated type through direct `Type::Member` syntax
+-- when no impl exists for that type must emit kappa.name.unresolved,
+-- not a cryptic internal error.
+trait MyTrait =
+    AssocType : Type
+
+data MyType : Type = MyType
+
+-- No impl of MyTrait for MyType is declared.
+-- `MyType::AssocType` must fail with kappa.name.unresolved.
+badAssocAccess : Int
+let badAssocAccess =
+    let _ : MyType.AssocType = MyType   --!! kappa.name.unresolved
+    0
+
+--! assertDiagnostic error kappa.name.unresolved
+
+-- Accepted: valid type annotation with a known type.
+goodAnnotation : Int
+let goodAnnotation =
+    let _ : Int = 42
+    42
+

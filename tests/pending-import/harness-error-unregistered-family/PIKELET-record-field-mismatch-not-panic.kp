@@ -1,0 +1,34 @@
+-- Source issues: PIKELET-129 (don't panic on mismatched number of record fields),
+--               PIKELET-130 (PR: check record size before Scope::unbind2).
+-- Spec: compiler.frontir.ordinary_errors_not_internal_failures,
+--       types.records.values,
+--       compiler.frontir.standard_diagnostic_families.record_projection_accessor_inout
+--
+-- A record literal whose field count or label set disagrees with its
+-- expected record type MUST produce an ordinary structured diagnostic, not
+-- an internal compiler panic. The original Pikelet bug triggered a panic
+-- inside Scope::unbind2; Kappa conformance forbids this class of failure.
+
+--! mode check
+
+type XY : Type0 = (x : Nat, y : Nat)
+
+-- NEGATIVE: too few fields — only `x` supplied.
+tooFew : XY
+let tooFew = (x = 1,)          --!! kappa.type.hidden-structure-mismatch
+
+-- NEGATIVE: too many fields — extra `z` not in type.
+tooMany : XY
+let tooMany = (x = 1, y = 2, z = 3)    --!! kappa.type.hidden-structure-mismatch
+
+-- NEGATIVE: same arity but wrong label.
+wrongLabel : XY
+let wrongLabel = (x = 1, z = 2)    --!! kappa.type.hidden-structure-mismatch
+
+-- The implementation MUST NOT panic. The portable harness has no
+-- `assertDiagnosticAbsent`; this test relies on the fact that
+-- `kappa.internal.compiler` is reserved for true implementation
+-- defects (§3.1.16, §3.2.16). A conforming implementation surfaces
+-- the mismatch via `kappa.type.hidden-structure-mismatch` only.
+--! assertDiagnosticFamily error kappa.type.hidden-structure-mismatch
+--! assertErrorCount 3

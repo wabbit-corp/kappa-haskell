@@ -1,0 +1,34 @@
+-- Source issue: carp-lang/Carp#349
+-- Spec: declarations.terms (mutually recursive groups),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #349: a recursive function returned an Int in the base case but
+-- treated the recursive call's result as `&Int` in the recursive case.
+-- The compiler accepted the program and segfaulted at runtime.  The
+-- portable Kappa obligation is that the return type of every recursive
+-- call site MUST be unified with the function's declared return type at
+-- elaboration time; a mismatch between an owned `Int` arm and a
+-- `& Int`-treating arm is rejected as a type error.
+
+--! mode check
+
+-- POSITIVE: every branch returns the same Int; recursion is accepted.
+countdownOk : Int -> Int
+let countdownOk n =
+    if n == 0 then 0 else countdownOk (n - 1)
+
+--! assertType countdownOk Int -> Int
+
+-- NEGATIVE: the base case returns `Int`, the recursive arm dereferences
+-- a `&Int` (which the function doesn't actually return), producing
+-- arms of incompatible type at the join.
+countdownBad : Int -> Int
+let countdownBad n =
+    if n == 0 then
+        0
+    else
+        deref (countdownBad (n - 1))     --!! kappa.type.mismatch
+
+deref : (& Int) -> Int
+let deref r = 0   -- placeholder; the body is irrelevant to the test
+
+--! assertDiagnosticFamily error kappa.type.mismatch

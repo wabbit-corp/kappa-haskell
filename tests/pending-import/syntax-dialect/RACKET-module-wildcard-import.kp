@@ -1,0 +1,47 @@
+-- Source: Racket guide module-require.scrbl (importing all exported names)
+-- Source docs: racket guide module-require.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-require.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: modules.imports
+--
+-- A wildcard import (`import M.*`) brings all public names from M into scope
+-- without naming them individually. Private names of M are not brought in.
+-- This is analogous to Racket's `(require M)` which imports all provided names.
+
+--! mode check
+
+module strings
+
+public concat : String -> String -> String
+let concat a b = a ++ b
+
+public length : String -> Int
+let length s = s.length
+
+public empty : String
+let empty = ""
+
+private internalBuf : String
+let internalBuf = "<<buf>>"
+
+module user
+import strings.*
+
+-- POSITIVE: all public names from strings are in scope.
+greeting : String
+let greeting = concat "Hello, " "World"
+
+len : Int
+let len = length greeting
+
+-- POSITIVE: empty is available too.
+emptyTest : String
+let emptyTest = concat empty "tail"
+
+-- NEGATIVE: internalBuf is private in strings; wildcard import does not expose it.
+badAccess : String
+let badAccess = internalBuf   --!! kappa.name.unresolved
+
+-- NEGATIVE: a completely unknown name is still not in scope.
+badName : String
+let badName = nonExistentFn "x"  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

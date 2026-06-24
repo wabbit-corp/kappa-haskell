@@ -1,0 +1,30 @@
+-- Source issue: links PR #614 ([Handlers] Generalise parameterised handlers; rectifies a bug where the empty clause set was not allowed in shallow handlers)
+-- Spec: effects.monadic_core.shallow_handlers, effects.monadic_core.deep_handlers_deep_handle, effects.monadic_core.effect_declarations
+-- An effect interface that declares zero operations is well-formed. A handler for
+-- such an interface satisfies "exactly one operation clause for each operation
+-- declared by E" vacuously: only the return clause is required. Both shallow and
+-- deep handlers MUST accept this form.
+
+module test
+
+-- An effect interface with zero declared operations (a marker / phantom effect).
+effect Marker
+
+-- Shallow handler with only a return clause.
+handleMarkerShallow : Eff <[mark : Marker]> Int -> Eff <[ ]> Int
+let handleMarkerShallow comp =
+    handle mark comp with
+        case return x -> pure x
+
+--! mode check
+--! assertNoErrors
+--! assertType handleMarkerShallow Eff <[mark : Marker]> Int -> Eff <[ ]> Int
+
+-- Deep handler with only a return clause.
+handleMarkerDeep : Eff <[mark : Marker]> Int -> Eff <[ ]> Int
+let handleMarkerDeep comp =
+    deep handle mark comp with
+        case return x -> pure x
+
+--! assertNoErrors
+--! assertType handleMarkerDeep Eff <[mark : Marker]> Int -> Eff <[ ]> Int

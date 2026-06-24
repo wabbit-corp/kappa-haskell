@@ -1,0 +1,37 @@
+-- Source issue: carp-lang/Carp#1107
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- Carp #1107: an `if` branching between two references — `(if true &id &id)`
+-- — produced code that freed the joined reference before it was used.
+-- The portable Kappa obligation is that at the join of an `if`, the
+-- resulting reference's lifetime is the meet of the two arm lifetimes;
+-- if either arm's source is dead at the join, the joined reference is
+-- not alive at that point.
+
+--! mode check
+
+-- POSITIVE: both arms return a reference to the same module-scope value;
+-- the joined reference is alive in the body.
+globalChoice : Int -> & Int
+let globalChoice flag =
+    if flag == 0 then &globalA else &globalB
+
+globalA : Int
+let globalA = 1
+
+globalB : Int
+let globalB = 2
+
+
+-- NEGATIVE: one arm returns a borrow of a let-bound local whose lifetime
+-- ends at the `if`'s join; the resulting reference is not alive after
+-- the `if`.
+joinDeadBad : Int -> & Int
+let joinDeadBad flag =
+    if flag == 0 then
+        let local : Int = 1
+        &local                            --!! kappa.borrow.escape
+    else
+        &globalA
+
+--! assertDiagnosticFamily error kappa.borrow.escape

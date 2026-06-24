@@ -1,0 +1,58 @@
+-- Source issues: vale#482 (Wildcard binding `_` in foreach loop crashes
+--               compiler), Vale PatternTests
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       expressions.patterns.validity
+-- In Vale, the wildcard pattern `_` discards a value without calling its
+-- destructor. For ordinary (non-linear) values this is fine. For owned
+-- (linear) values it is not: discarding a linear value without consuming
+-- it is a quantity violation. In Kappa, discarding a linear (quantity-1)
+-- value through a wildcard or similar discard position is rejected with
+-- kappa.quantity.unsatisfied unless every runtime-relevant field is
+-- accounted for.
+
+--! mode check
+
+data Handle : Type = Handle Int
+
+releaseHandle : (1 h : Handle) -> Unit
+let releaseHandle (Handle _) = ()
+
+-- POSITIVE: explicitly releasing a Handle via its destructor.
+goodRelease : (1 h : Handle) -> Unit
+let goodRelease h = releaseHandle h
+
+-- POSITIVE: destructuring a Handle and consuming the inner Int (no linear
+-- component remains after the Int is extracted).
+goodDestructure : (1 h : Handle) -> Int
+let goodDestructure (Handle n) = n
+
+-- NEGATIVE: using wildcard `_` to discard a linear Handle without going
+-- through a destructor. The inner Handle is linear, so this is rejected.
+badWildcard : (1 h : Handle) -> Unit
+let badWildcard h =
+    let _ = h   --!! kappa.quantity.unsatisfied
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: a match arm that uses `case _ ->` to ignore a linear scrutinee.
+-- Wildcard in a case arm does not discharge the linear obligation.
+badCaseWild : (1 h : Handle) -> Unit
+let badCaseWild h =
+    match h
+    case _ -> ()   --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: a match arm that explicitly names and then consumes the payload.
+goodCaseDestructure : (1 h : Handle) -> Int
+let goodCaseDestructure h =
+    match h
+    case Handle n -> n
+
+-- POSITIVE: a non-linear (unrestricted) value may be freely discarded
+-- through wildcard patterns.
+data Label : Type = Label String
+
+ignoreLabel : Label -> Unit
+let ignoreLabel l =
+    let _ = l
+    ()

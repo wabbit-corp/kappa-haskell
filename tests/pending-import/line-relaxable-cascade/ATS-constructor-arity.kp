@@ -1,0 +1,100 @@
+-- Source: ATS-Xanadu PR #19 (wrap lists with square brackets in tree output,
+--           noting IR0Vcon with list_nil(6); [] ),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--           (list_cons{a}{n}(_, xs) pattern, constructor pattern shapes),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats
+--           (mylist_nil(a)(0) of (), mylist_cons(a)(n+1) of (a, mylist_(a)(n)))
+-- Spec: algebraic_data_types.data_declarations (§10.1),
+--       pattern.constructor_arity (§3.2.10),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.constructor-arity, kappa.constructor.arity).
+-- ATS3 pattern: `mylist_nil(a)(0) of ()` takes no value arguments; applying
+--   it to one argument in a pattern is an arity error. Similarly,
+--   `list_cons{a}{n}(_, xs)` takes exactly two value arguments. Providing
+--   a different number is a compile-time error.
+-- Portable obligation: applying a constructor to the wrong number of
+--   arguments in an expression or pattern must produce the constructor-arity
+--   or pattern-constructor-arity diagnostic.
+
+--! mode check
+
+-- A two-field constructor.
+data Point : Type =
+    Point Int Int
+
+-- A nullary constructor.
+data Empty : Type =
+    Empty
+
+-- A three-field constructor.
+data Triple : Type =
+    Triple Int Int Int
+
+-- POSITIVE: correct arities in expressions.
+p1 : Point
+let p1 = Point 1 2
+
+e1 : Empty
+let e1 = Empty
+
+t1 : Triple
+let t1 = Triple 1 2 3
+
+-- POSITIVE: correct arities in patterns.
+getX : Point -> Int
+let getX (Point x _) = x
+
+isEmpty : Empty -> Bool
+let isEmpty Empty = True
+
+sumTriple : Triple -> Int
+let sumTriple (Triple a b c) = a + b + c
+
+-- A variant type with different arities.
+data Shape : Type =
+    Circle Int
+    Rectangle Int Int
+    Dot
+
+-- POSITIVE: correct pattern arity for each variant.
+describeShape : Shape -> String
+let describeShape s =
+    match s
+    case Circle r     -> "circle"
+    case Rectangle w h -> "rectangle"
+    case Dot           -> "dot"
+
+-- NEGATIVE: applying a two-argument constructor with one argument (expression).
+badPoint1 : Point
+let badPoint1 = Point 1           --!! kappa.constructor.arity
+
+-- NEGATIVE: applying a two-argument constructor with three arguments (expression).
+badPoint3 : Point
+let badPoint3 = Point 1 2 3       --!! kappa.constructor.arity
+
+-- NEGATIVE: applying a nullary constructor with one argument (expression).
+badEmpty : Empty
+let badEmpty = Empty ()            --!! kappa.constructor.arity
+
+-- NEGATIVE: pattern with wrong arity for two-argument constructor.
+badPatternPoint : Point -> Int
+let badPatternPoint (Point x) = x   --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: pattern with too many fields.
+badPatternPoint3 : Point -> Int
+let badPatternPoint3 (Point x y z) = x  --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: nullary constructor used as a pattern with an argument.
+badPatternEmpty : Empty -> Bool
+let badPatternEmpty (Empty x) = True    --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: variant pattern with wrong field count.
+badShapePattern : Shape -> String
+let badShapePattern s =
+    match s
+    case Circle r h   -> "circle"      --!! kappa.pattern.constructor-arity
+    case Rectangle w  -> "rectangle"   --!! kappa.pattern.constructor-arity
+    case Dot _        -> "dot"         --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

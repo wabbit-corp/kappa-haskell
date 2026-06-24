@@ -1,0 +1,31 @@
+-- Source issue: Move #674
+-- Spec: compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.recovery_salvage_mode,
+--       compiler.frontir.minimum_recovery_contract
+-- After a parse error the compiler must continue analysis to report additional
+-- errors in later declarations.  Stopping at the first error would leave the
+-- rest of the file unanalyzed.  Recovery must not accept the invalid program;
+-- it must emit the first error and still detect subsequent independent errors.
+
+--! mode check
+
+module move_674_parse_recovery
+
+-- First error: missing `=` in let binding (malformed declaration).
+-- No standard diagnostic family code for parse errors; presence of the
+-- second error (type mismatch on goodDecl) proves recovery happened.
+badDecl : Int
+let badDecl
+
+-- Despite the parse error above, the following independent type error is
+-- still reported.  Both errors appear in the same `analyze` run.
+goodDecl : Int
+let goodDecl = "not an int"   --!! kappa.type.mismatch
+
+-- A syntactically valid declaration after the errors.
+ok : Int
+let ok = 42
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+-- The assertDiagnosticFamily succeeds only when the compiler recovered from
+-- the parse error on badDecl and continued to type-check goodDecl.

@@ -1,0 +1,42 @@
+-- Source issues: gleam#349, gleam#892
+-- Spec: declarations.signatures
+-- Recursive and mutually recursive top-level definitions must have an
+-- explicit preceding top-level signature declaration. Without one the
+-- compiler must reject the definition with kappa.type.missing-signature
+-- (§12.636, §3.2.3). Non-recursive private definitions may omit signatures.
+
+--! mode check
+
+-- Three definitions without signatures that require one: bad_fib (self-recursive),
+-- ping and pong (mutually recursive).
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.type.missing-signature
+
+-- NEGATIVE: recursive definition without a top-level signature.
+let bad_fib n =    --!! kappa.type.missing-signature
+    match n
+    case 0 -> 0
+    case 1 -> 1
+    case k -> bad_fib (k - 1) + bad_fib (k - 2)
+
+-- POSITIVE: recursive definition with a top-level signature.
+bad_fib2 : Int -> Int
+let bad_fib2 n =
+    match n
+    case 0 -> 0
+    case 1 -> 1
+    case k -> bad_fib2 (k - 1) + bad_fib2 (k - 2)
+
+-- NEGATIVE: mutually recursive pair without signatures.
+let ping x = pong x    --!! kappa.type.missing-signature
+let pong x = ping x    --!! kappa.type.missing-signature
+
+-- POSITIVE: mutually recursive pair with signatures.
+ping2 : Int -> Int
+let ping2 x = pong2 x
+
+pong2 : Int -> Int
+let pong2 x = ping2 x
+
+-- POSITIVE: non-recursive private definition may omit signature.
+let helper x = x + 1

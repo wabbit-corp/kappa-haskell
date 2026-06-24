@@ -1,0 +1,40 @@
+-- Source: granule-project/granule PR #227 (Algebraic effect handlers);
+--         tests/cases/positive/effect-handlers/effects_state.gr
+-- Spec: effects.monadic_core.effect_declarations,
+--       effects.monadic_core.deep_handlers_deep_handle,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- Kappa §18.1.15 specifies operations may carry a resumption-quantity
+-- annotation; `1 op : ...` is the one-shot default. The handler syntax is
+-- `handle label expr with case return x -> ... case op args k -> ...`
+-- (§18.1.21 / §18.1.22).
+
+module test
+
+--! mode check
+
+-- POSITIVE: declaring a one-shot State effect (canonical form per §18.1.15).
+effect State (s : Type) =
+    1 get : Unit -> s
+    1 put : s -> Unit
+
+-- POSITIVE: a State-using program in the `state` label.
+useState : Eff <[state : State Int]> Int
+let useState =
+    state.put 7
+
+
+-- POSITIVE: a shallow handler that discharges `state` and returns Int.
+runState0 : Eff <[]> Int
+let runState0 =
+    handle state useState with
+        case return _ -> 0
+        case get _ k  -> k 0
+        case put _ k  -> k ()
+
+
+-- NEGATIVE: invoking a State operation on an undeclared label gives a
+-- row-mismatch obligation under the `<[]>` empty row context.
+badRowMismatch : Eff <[]> Unit
+let badRowMismatch = state.put 1     --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

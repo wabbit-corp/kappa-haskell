@@ -1,0 +1,23 @@
+-- Stress test: GADT constructor with linear (quantity-1) field and index refinement
+-- Spec: data_types.gadts, types.universes.quantities
+
+--! mode check
+
+data LinBuf : Nat -> Type =
+  Empty : LinBuf 0
+  Push  : (1 x : Int) -> LinBuf n -> LinBuf (n+1)
+
+-- pop consumes a linear LinBuf (n+1) exactly once and returns the head and tail.
+-- The quantity-1 annotation on the argument ensures single-use.
+pop : {n : Nat} -> (1 b : LinBuf (n+1)) -> (Int, LinBuf n)
+let pop (Push x rest) = (x, rest)
+let pop Empty         = impossible
+
+-- peek reads from a non-empty buffer; the linear buffer is returned unconsumed.
+-- Because b is linear, we return it alongside the value.
+peek : {n : Nat} -> (1 b : LinBuf (n+1)) -> (Int, LinBuf (n+1))
+let peek b = match b
+  case Push x rest -> (x, Push x rest)
+  case Empty       -> impossible
+
+--! assertNoErrors

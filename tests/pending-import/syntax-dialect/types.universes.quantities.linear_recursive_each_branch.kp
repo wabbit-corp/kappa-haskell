@@ -1,0 +1,43 @@
+-- Source issues: Idris2 #1560, #1333
+-- Spec: types.universes.quantities
+-- In a linearly-typed recursive function, linearity is checked per-clause, not
+-- globally. Each clause must consume each linear parameter exactly once.
+-- A clause that returns a linear parameter directly (Nil branch) and a clause that
+-- passes it to a recursive call once (Cons branch) both satisfy linearity.
+-- Idris2 bugs #1560 and #1333: `ys` in `append (Cons x xs) ys = Cons x (append xs ys)`
+-- was incorrectly flagged as used in a non-linear context.
+
+module test
+
+data List (a : Type) : Type =
+  Nil  : List a
+  Cons : (head : a) -> (tail : List a) -> List a
+
+-- Accepted: linear list append.
+-- Nil branch: `xs` is consumed by the Nil pattern (no fields to extract);
+--   `ys` is returned directly — exactly one use.
+-- Cons branch: `xs` is consumed by extracting `head` and `tail`;
+--   `ys` is passed to the recursive call once — exactly one use.
+append : {a : Type} -> (1 xs : List a) -> (1 ys : List a) -> List a
+let append Nil          ys = ys
+let append (Cons x xs') ys = Cons x (append xs' ys)
+
+--! mode check
+
+-- Accepted: linear map — each branch uses xs and f each exactly once.
+linMap : {a b : Type} -> (f : a -> b) -> (1 xs : List a) -> List b
+let linMap f Nil          = Nil
+let linMap f (Cons x xs') = Cons (f x) (linMap f xs')
+
+
+-- Accepted: single-clause linear identity.
+linId : {a : Type} -> (1 xs : List a) -> List a
+let linId xs = xs
+
+
+-- Rejected: discarding a linear list violates the linearity obligation.
+-- The wildcard `_` discards `xs` without consuming it.
+dropLinear : {a : Type} -> (1 xs : List a) -> List a
+let dropLinear _ = Nil  --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

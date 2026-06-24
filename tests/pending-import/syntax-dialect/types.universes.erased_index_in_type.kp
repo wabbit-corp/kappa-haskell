@@ -1,0 +1,35 @@
+-- Source issue: Agda #3853
+-- Spec: types.universes.erasure_elaboration_time, types.universes.quantities
+-- An erased (quantity-0) parameter of a function type MAY still appear in the
+-- result type, because type positions are elaboration-time only. This MUST be
+-- accepted: `(@0 x : A) -> B x` where B depends on x is well-formed even
+-- though x is erased at runtime.
+
+module test
+
+postulate
+    A : Type
+    B : A -> Type
+
+-- An erased parameter x : A appears in the return type B x.
+-- This MUST be accepted: x is available at elaboration time even though
+-- it is erased (quantity 0) at runtime.
+erased_dep_fun : (@0 x : A) -> B x
+let erased_dep_fun x = ?
+
+--! mode check
+-- The declaration itself should be accepted; the hole is left unresolved.
+-- Only checking that the type annotation is well-formed.
+--! assertNoErrors
+
+-- Variant: a function using an erased index in a dependent return type.
+data Vec : (n : Int) -> Type -> Type =
+    Nil  : {A : Type} -> Vec 0 A
+    Cons : {A : Type} -> {n : Int} -> A -> Vec n A -> Vec (n+1) A
+
+-- head takes an erased length argument n; the return type depends on n.
+-- This MUST be accepted.
+safeHead : (@0 n : Int) -> Vec (n+1) Int -> Int
+let safeHead _ (Cons x _) = x
+
+--! assertNoErrors

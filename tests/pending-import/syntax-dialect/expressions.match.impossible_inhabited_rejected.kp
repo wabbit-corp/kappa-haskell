@@ -1,0 +1,41 @@
+-- Source issue: Idris2 #899
+-- Spec: expressions.match.impossible_unreachable_branch_bodies
+-- A branch body `impossible` is accepted only if the compiler can prove the
+-- corresponding case is unreachable. If the case IS reachable (the refined
+-- type is inhabited), the `impossible` must be rejected as a compile-time error.
+-- Accepting a false `impossible` creates a soundness hole (proof of Void).
+
+module test
+
+-- An indexed type for bounded natural numbers where the only constructor
+-- requires a strictly positive bound.
+data BoundedNat : Nat -> Type where
+  MkBounded : BoundedNat (Succ n)
+
+-- Accepted: the case `BoundedNat Zero` has no inhabitant, so `impossible` is
+-- correct here — there is no constructor of type `BoundedNat Zero`.
+absurdZero : BoundedNat Zero -> a
+let absurdZero b = match b
+  case impossible
+
+--! mode check
+
+-- Rejected: `BoundedNat (Succ n)` is inhabited (by `MkBounded`). Writing
+-- `impossible` here is incorrect and must be a compile-time error.
+falseClaim : BoundedNat (Succ n) -> Int
+let falseClaim b = match b
+  case MkBounded -> impossible  --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable
+
+-- A two-constructor type: both constructors are reachable, so `impossible`
+-- on either is rejected.
+data Choice : Type = ChoiceA | ChoiceB
+
+badImpossibleA : Choice -> Int
+let badImpossibleA c =
+  match c
+    case ChoiceA -> impossible  --!! kappa.proof.impossible-reachable
+    case ChoiceB -> 1
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable

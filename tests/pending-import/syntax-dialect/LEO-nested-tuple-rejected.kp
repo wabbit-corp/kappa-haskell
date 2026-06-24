@@ -1,0 +1,71 @@
+-- Source issues: leo#2610 and related; leo test `bad_tuples_fail.leo` explicitly
+--               tests that "A tuple expression cannot contain another tuple
+--               expression" (error ETYC0372052) and "A tuple type cannot contain
+--               a tuple" (error ETYC0372049). Leo tuples are flat — nesting is
+--               not supported.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§10, §SA-LEO-01):
+--   "In a language where tuple types are required to be flat (non-nested), a
+--    tuple expression or tuple type that contains another tuple as a component
+--    must be rejected with `kappa.type.mismatch`. The error must identify
+--    the inner tuple that violates the flatness constraint."
+-- Note: Kappa itself does not impose this flatness constraint; this test
+--   exercises the general kappa.type.mismatch family in the context of
+--   a concrete structural type incompatibility, grounded in the Leo corpus.
+--   The portable obligation is that structural type constraints on tuple shape
+--   must be caught at type-checking time, not silently accepted or deferred to
+--   code generation.
+
+--! mode check
+
+-- POSITIVE: flat 2-tuple.
+flatPair : (Int, Bool)
+let flatPair = (1, True)
+
+-- POSITIVE: flat 3-tuple.
+flatTriple : (Int, Bool, String)
+let flatTriple = (1, True, "ok")
+
+-- POSITIVE: using a 2-tuple where a 2-tuple is expected.
+let usePair (p : (Int, Bool)) : Int = p.0
+
+okUsePair : Int
+let okUsePair = usePair flatPair
+
+
+-- NEGATIVE: a tuple expression that contains another tuple expression as a
+-- component, where a flat tuple is expected.
+-- Type context demands (Int, Bool) but the second element is itself a tuple.
+badNestedExpr : (Int, Bool)
+let badNestedExpr = (1, (True, False))    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a tuple type annotation that names a nested tuple.
+-- The type `(Int, (Bool, String))` specifies a nested tuple, but we declare
+-- the binding against a context expecting flat `(Int, Bool)`.
+let expectsFlat (p : (Int, Bool)) : Int = p.0
+
+badPassNested : Int
+let badPassNested = expectsFlat (1, (True, False))    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: assigning a nested tuple expression to a flat-tuple annotation.
+badAnnotated : (Int, Bool)
+let badAnnotated = (42, (False, True))    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a nested structure expressed using named record types rather than
+-- nested tuples. Named record nesting is always valid.
+data Inner : Type =
+    Inner Bool Bool
+
+data Outer : Type =
+    Outer Int Inner
+
+validNested : Outer
+let validNested = Outer 1 (Inner True False)
+

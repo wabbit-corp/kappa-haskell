@@ -1,0 +1,45 @@
+-- Source issues: souffle-lang/souffle tests/semantic/adt_invalid_arity/adt_invalid_arity.dl,
+--   souffle-lang #1775.
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- An ADT constructor applied with fewer arguments than declared must be rejected with
+-- kappa.constructor.arity. Partial application of a data constructor produces a
+-- function type, not a value of the ADT type; in a position expecting the fully-applied
+-- ADT value this is a type or arity mismatch.
+
+--! mode check
+
+data Shape : Type =
+    Circle   (radius : Float)
+    Rect     (width : Float) (height : Float)
+    Triangle (a : Float) (b : Float) (c : Float)
+
+-- POSITIVE: all constructors fully applied.
+let c : Shape = Circle 3.0
+let r : Shape = Rect 4.0 5.0
+let t : Shape = Triangle 3.0 4.0 5.0
+
+-- NEGATIVE: Rect takes 2 args, given 1 — type mismatch because partial application
+-- has type (Float -> Shape), not Shape.
+let badRect : Shape = Rect 4.0    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Triangle takes 3 args, given 1.
+let badTri1 : Shape = Triangle 3.0    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Triangle takes 3 args, given 2.
+let badTri2 : Shape = Triangle 3.0 4.0    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair a b
+
+-- NEGATIVE: MkPair Int Int applied to only one value.
+let badPair : Pair Int Int = MkPair 1    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

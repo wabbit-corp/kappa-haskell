@@ -1,0 +1,24 @@
+-- Source issue: MLatu docs/docs/primitives.md ("There are six
+--   primitives of mlatu") combined with #11 (vocabulary system). A
+--   user-defined word cannot silently take over a primitive name in
+--   the same scope without an explicit shadowing acknowledgment. The
+--   portable Kappa obligation is that two top-level definitions of the
+--   same name in the same module produce a name-resolution conflict.
+-- Spec: declarations.terms, modules.exports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+
+module test
+
+--! mode check
+
+-- A first definition of a user word `mapList`.
+mapList : forall (a : Type) (b : Type) . (a -> b) -> List a -> List b
+let mapList f xs = xs
+
+-- NEGATIVE: redefining `mapList` in the same module is an ambiguous
+-- top-level binding group.
+mapList : forall (a : Type) (b : Type) . (a -> b) -> List a -> List b
+let mapList g ys = ys                      --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

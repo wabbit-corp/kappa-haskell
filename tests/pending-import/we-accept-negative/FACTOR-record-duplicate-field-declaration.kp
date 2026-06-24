@@ -1,0 +1,29 @@
+-- Source issue: Factor #395 (boa constructor walks all slots including
+--   shadowed superclass slots, leading to "Data stack underflow"; the
+--   issue requests that shadowing be forbidden or boa be disabled for
+--   shadowed-slot tuples).
+-- Spec: data_types.data_declarations, types.records.formation,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+--       (family kappa.row.lacks-failed).
+--
+-- Kappa records use row-style label sets; two fields with the same name
+-- in a single record declaration must be rejected by the row-lacks
+-- constraint, since each label must appear at most once.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a record with distinct field labels.
+data Ok : Type =
+    Ok { a : Int, b : Int, c : Int }
+
+okVal : Ok
+let okVal = Ok { a = 1, b = 2, c = 3 }
+
+-- NEGATIVE: a record declared with two fields named `a`. The duplicate
+-- label is a row-lacks violation, not just an internal slot-count bug.
+data Dup : Type =
+    Dup { a : Int, b : Int, a : Int }    --!! kappa.row.lacks-failed
+
+--! assertDiagnosticFamily error kappa.row.lacks-failed

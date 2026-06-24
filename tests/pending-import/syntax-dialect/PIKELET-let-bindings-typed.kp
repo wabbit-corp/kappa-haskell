@@ -1,0 +1,37 @@
+-- Source issues: PIKELET-26 (let and where bindings),
+--               PIKELET-133 (PR: preliminary implementation of let-bindings),
+--               PIKELET-201 (PR: initial surface syntax for let).
+-- Spec: declarations.let_in, declarations.let_in.pure_block_expressions
+--
+-- Kappa supports local `let` bindings inside expressions. The general
+-- shape is `let bindPat [: Type] = expr in body` (§9.3); the body's type
+-- is the result of `body`.
+
+--! mode check
+
+-- POSITIVE: simple typed local binding.
+top1 : Nat
+let top1 =
+  let x : Nat = 5
+  in x
+
+-- POSITIVE: local binding whose type is inferred from the expression.
+top2 : Nat
+let top2 =
+  let y = 7
+  in y
+
+-- POSITIVE: nested let bindings; inner binding may reference outer.
+top3 : Nat
+let top3 =
+  let a : Nat = 1
+  in let b : Nat = a
+     in b
+
+-- NEGATIVE: a let-bound identifier is not visible outside its `in` body.
+outOfScope : Nat
+let outOfScope =
+  let z : Nat = 1 in
+  z + zzz    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,53 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_grounded/rule_grounded.dl,
+--   tests/semantic/var_single/var_single.dl,
+--   souffle-lang #183 (better error for unground variable),
+--   souffle-lang #2435 (weird ungrounded variable error reporting),
+--   souffle-lang #2379 (insufficient checking on unground variable).
+-- Spec: modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Using a variable that has not been bound in the current scope must produce
+-- kappa.name.unresolved. In Souffle, the "ungrounded variable" error fires when
+-- a head variable does not appear in any positive body atom. In Kappa the analogue is
+-- a free variable used in an expression without a binding in scope.
+
+--! mode check
+
+-- POSITIVE: all variables bound before use.
+let square : Int -> Int
+let square x = x * x
+
+let addBoth : Int -> Int -> Int
+let addBoth a b = a + b
+
+-- NEGATIVE: body uses `z` which is not bound anywhere.
+let badExpr : Int -> Int
+let badExpr x =
+    let y = x + 1
+    y + z    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NOTE: In Kappa (§11.3.3), free lowercase identifiers in term signatures are
+-- implicitly universally quantified. So `let id : t -> t` is valid: `t` is
+-- universalized to `forall (t : Type). t -> t`. This is NOT an unresolved name.
+
+-- NEGATIVE: pattern match arm introduces a variable that leaks out.
+data Result : Type =
+    Ok  Int
+    Err String
+
+let extractOk : Result -> Int
+let extractOk r =
+    match r
+        case Ok  n  -> n
+        case Err msg -> length    --!! kappa.name.unresolved
+        -- `length` is not bound in this scope
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: all paths use correctly bound variables.
+let safe : Result -> Int
+let safe r =
+    match r
+        case Ok  n   -> n
+        case Err msg -> 0

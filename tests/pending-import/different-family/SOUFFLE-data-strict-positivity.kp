@@ -1,0 +1,53 @@
+-- Source issues: souffle-lang/souffle tests/semantic/recursive_unions/recursive_unions.dl,
+--   souffle-lang #891 (recursive unions cause segfault).
+-- Spec: data_types.well_formedness (§10.4),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- Every `data` declaration must satisfy strict positivity (§10.4). A constructor
+-- argument type that places the defined type in a negative (contravariant) position
+-- must be rejected. Kappa §10.4: "Implementations MUST reject non-strictly-positive
+-- data declarations." No dedicated diagnostic family is specified for this check;
+-- kappa.type.mismatch is used as the closest standardized family (the non-positive
+-- occurrence produces a type-level inconsistency). See SOUFFLE_SPEC_ADDITIONS.md for
+-- a potential spec gap note.
+
+--! mode check
+
+-- POSITIVE: strictly positive recursive data types.
+data Nat : Type =
+    Zero
+    Succ Nat
+
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+data Tree (a : Type) : Type =
+    Leaf
+    Branch a (Tree a) (Tree a)
+
+-- POSITIVE: mutually recursive strictly positive types.
+data Even : Type =
+    EZero
+    ESucc (Odd)
+
+data Odd : Type =
+    OSucc (Even)
+
+-- NEGATIVE: strict positivity violation — T in negative position (left side of ->).
+data Bad : Type =
+    MkBad (Bad -> Bad)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: type occurring under negation in a function argument.
+data Rose (a : Type) : Type =
+    Node a ((Rose a -> a) -> Rose a)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: using a previously defined type as a container (positive position).
+data Boxed (a : Type) : Type =
+    MkBoxed (List a)
+
+data DeepBoxed : Type =
+    MkDeepBoxed (Boxed (List Int))

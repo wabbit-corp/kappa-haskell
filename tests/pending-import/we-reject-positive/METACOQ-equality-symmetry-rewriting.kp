@@ -1,0 +1,34 @@
+-- Source issues: METACOQ-154
+-- Spec: types.propositions.propositional_equality_type_positions,
+--       core_semantics.definitional_equality
+--
+-- MetaCoq #154 reports that `eq_term` did not parameterize cumulativity
+-- separately on domain and codomain. The portable obligation is that
+-- propositional equality is symmetric and that the elaborator can rewrite
+-- along an equality proof in both directions where the spec permits it.
+
+module test
+
+--! mode check
+
+-- POSITIVE: reflexivity for propositional equality at Nat.
+reflNat : 1 = 1
+let reflNat = refl
+
+-- POSITIVE: symmetry on equality.
+sym : forall {a : Type} {x : a} {y : a}. x = y -> y = x
+let sym e =
+    match e
+    case refl -> refl
+
+-- POSITIVE: a rewrite uses the equality witness as evidence; Kappa's
+-- propositional-equality elimination permits substitution in either
+-- direction.
+transport : forall {a : Type} {x : a} {y : a} (P : a -> Type). x = y -> P x -> P y
+let transport _ e px =
+    match e
+    case refl -> px
+
+--! assertNoErrors
+--! assertType sym forall {a : Type} {x : a} {y : a}. x = y -> y = x
+--! assertType transport forall {a : Type} {x : a} {y : a} (P : a -> Type). x = y -> P x -> P y

@@ -1,0 +1,74 @@
+-- Source issues: leo PR#28893 (implement multi-span error reporting for
+--               structs/records; duplicate struct/record member name detection
+--               with "first declared here" + "redefined here" multi-span),
+--               leo#2611 (duplicate struct/record member names).
+-- Spec: SA-LEO-03 (duplicate name must produce kappa.name.ambiguous with
+--       multi-span payload), §13.1 (record field uniqueness),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§13.1, §SA-LEO-03):
+--   "Each field in a record declaration must have a unique name within that
+--    record. A duplicate field name must produce `kappa.name.ambiguous`.
+--    The payload must include both field declaration sites (roles:
+--    `previous-definition` for the first occurrence and `redefinition` for
+--    the duplicate). A record may contain multiple duplicate pairs; each must
+--    be reported independently."
+-- leo PR#28893: before this PR, the error showed only the duplicate location;
+--   after, it also shows the first-declared location.
+
+--! mode check
+
+-- POSITIVE: a record with all unique field names.
+data Person : Type =
+    Person { name : String, age : Int, active : Bool }
+
+-- POSITIVE: a record with many unique fields.
+data Config : Type =
+    Config { host : String, port : Int, debug : Bool, timeout : Int }
+
+p : Person
+let p = Person { name = "Alice", age = 30, active = True }
+
+
+-- NEGATIVE: a record with a duplicate field name `name`.
+data BadRecord : Type =
+    BadRecord
+        { name  : String
+        , age   : Int
+        , name  : Bool          --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: a record with two duplicate pairs.
+data DoublyBad : Type =
+    DoublyBad
+        { x     : Int
+        , y     : Int
+        , x     : Bool          --!! kappa.name.ambiguous
+        , z     : String
+        , y     : String        --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: duplicate at the third occurrence (two duplicates of the same name).
+data TripleDup : Type =
+    TripleDup
+        { field  : Int
+        , field  : Bool         --!! kappa.name.ambiguous
+        , field  : String       --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: different records may have the same field name.
+data A : Type = A { x : Int }
+data B : Type = B { x : Bool }
+
+a : A
+let a = A { x = 1 }
+
+b : B
+let b = B { x = True }
+

@@ -1,0 +1,58 @@
+-- Source: Julia manual, "Varargs Functions",
+--         Julia `f(xs::T...)` homogeneous variadic constraint
+-- Spec: types.quantification, expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- In Julia, a vararg parameter `f(xs::T...)` requires all supplied arguments
+-- to share the same type T; mixing types is a type error. In Kappa, a function
+-- taking two arguments of the same type parameter enforces homogeneity; mixing
+-- incompatible types at the call site is kappa.type.mismatch.
+
+--! mode check
+
+trait Addable (a : Type) =
+    zero  : a
+    add   : a -> a -> a
+
+instance Addable Int =
+    let zero    = 0
+    let add x y = x + y
+
+instance Addable Float =
+    let zero      = 0.0
+    let add x y   = x + y
+
+-- A function requiring both arguments to share the same Addable type.
+sum2 :
+    forall (a : Type).
+    (@_ : Addable a) ->
+    a -> a -> a
+let sum2 x y = add x y
+
+-- POSITIVE: both arguments are Int.
+okInt : Int
+let okInt = sum2 1 2
+
+-- POSITIVE: both arguments are Float.
+okFloat : Float
+let okFloat = sum2 1.0 2.0
+
+-- NEGATIVE: mixing Int and Float at a monomorphic call site.
+badMix : Int
+let badMix = sum2 1 2.0   --!! kappa.type.mismatch
+
+-- NEGATIVE: wrong type entirely — String where Int is expected.
+badWrong : Int
+let badWrong = sum2 1 "two"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: three-argument fold with uniform type.
+sum3 :
+    forall (a : Type).
+    (@_ : Addable a) ->
+    a -> a -> a -> a
+let sum3 x y z = add (add x y) z
+
+ok3 : Int
+let ok3 = sum3 1 2 3
+

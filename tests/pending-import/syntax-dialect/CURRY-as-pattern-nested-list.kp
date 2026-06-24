@@ -1,0 +1,55 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestAsPattern.curry
+--   (nested as-pattern positive cases adapted to a constructor-pattern form;
+--   the Curry "functional pattern" non-linear cases are intentionally
+--   excluded — see CURRY-SA-03).
+-- Spec: expressions.patterns.forms (§17.2.1),
+--       expressions.patterns.scoping_validity (§17.2.2).
+--
+-- Nested as-patterns: a binder `outer @ pat` may itself contain another
+-- `inner @ pat'` deeper in the pattern. Each binder is in scope in the
+-- body and each shares its scrutinee with its surrounding pattern.
+
+module test
+
+--! mode check
+
+data Pair : Type =
+    Pair Int Int
+
+data PairList : Type =
+    PNil
+  | PCons Pair PairList
+
+-- POSITIVE: nested as-pattern. `whole` names the outer list, `first`
+-- names its head, and `pair` names the inner pair structure.
+firstPair : PairList -> (Pair, PairList)
+let firstPair xs =
+    match xs
+    case PNil                                          -> (Pair 0 0, PNil)
+    case whole @ (PCons (first @ (Pair a b)) _rest)    ->
+        (first, whole)
+
+--! assertNoErrors
+--! assertType firstPair (PairList -> (Pair, PairList))
+
+-- POSITIVE: as-pattern inside a tuple pattern. The outer tuple is
+-- destructured and the cons cell inside gets its own as-binder.
+peelLeft : (PairList, Int) -> (Pair, Int)
+let peelLeft input =
+    match input
+    case (PNil, n)                              -> (Pair 0 0, n)
+    case (PCons (whole @ (Pair a b)) _rest, n)  -> (whole, a + b + n)
+
+--! assertNoErrors
+--! assertType peelLeft ((PairList, Int) -> (Pair, Int))
+
+-- POSITIVE: the binder of an outer as-pattern is visible alongside the
+-- nested binders of the inner pattern.
+sumWithHead : PairList -> Int
+let sumWithHead xs =
+    match xs
+    case PNil                                                  -> 0
+    case _whole @ (PCons (Pair a b) _rest)                     -> a + b
+
+--! assertNoErrors
+--! assertType sumWithHead (PairList -> Int)

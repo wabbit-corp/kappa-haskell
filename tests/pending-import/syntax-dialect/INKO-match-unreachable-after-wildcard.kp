@@ -1,0 +1,25 @@
+-- Source issues: inko#707, docs/pattern-matching
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Inko: a wildcard pattern (_) covers all remaining cases. Any arm that
+-- appears after a wildcard is unreachable and is flagged as an error.
+
+--! mode check
+
+data Shape : Type = Circle | Square | Triangle
+
+-- POSITIVE: wildcard as the final arm.
+classifyOk : Shape -> String
+let classifyOk s = match s with
+    | Circle -> "circle"
+    | Square -> "square"
+    | _      -> "other"
+
+
+-- NEGATIVE: Triangle appears after the wildcard _ which already covers it.
+classifyBad : Shape -> String
+let classifyBad s = match s with
+    | Circle   -> "circle"
+    | _        -> "other"
+    | Triangle -> "triangle"   --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

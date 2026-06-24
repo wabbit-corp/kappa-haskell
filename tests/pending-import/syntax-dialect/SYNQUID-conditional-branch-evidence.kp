@@ -1,0 +1,67 @@
+-- Source artifacts: synquid test/checking/List-Replicate.sq —
+--                 `if n == 0 then Nil else Cons x (replicate n' x)`. The
+--                 then-branch is reached only when `n == 0`; the else-branch
+--                 only when `n /= 0`. Synquid uses this boolean refinement
+--                 to discharge the synthesis goal.
+-- Spec: expressions.conditionals,
+--       expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
+--       expressions.conditionals.stable_aliases_transport_refinement_evidence
+--
+-- The Kappa-portable obligation is: a boolean conditional introduces
+-- branch evidence into its then- and else-arms; the negation of the
+-- condition is available in the else-arm.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- A simple structural test on PNat: true iff the argument is Z.
+isZero : PNat -> Bool
+let isZero n =
+    match n
+      case Z     -> True
+      case (S _) -> False
+
+-- POSITIVE: a function whose branches differ structurally but agree on
+-- the joined type. The branch evidence on `isZero n = True` is consumed
+-- implicitly by the then-arm; the else-arm uses the complementary
+-- evidence.
+make : PNat -> PNat -> List PNat
+let make n x =
+    if isZero n then
+        Nil
+    else
+        Cons x Nil
+
+-- POSITIVE: nested conditional; the inner else inherits the outer
+-- branch evidence.
+classify : PNat -> Bool
+let classify n =
+    if isZero n then
+        True
+    else
+        if isZero (S n) then True else False
+
+-- POSITIVE: a stable alias of a tested value transports the branch
+-- evidence (the alias `m` shares the place identity of `n`).
+useAlias : PNat -> PNat
+let useAlias n =
+    let m : PNat = n in
+    if isZero m then
+        Z
+    else
+        S Z
+
+-- NEGATIVE: branch types must agree at the join. Returning Bool from
+-- the then-arm and PNat from the else-arm is a type mismatch.
+badBranches : PNat -> PNat
+let badBranches n =
+    if isZero n then True else Z                  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

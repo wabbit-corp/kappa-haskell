@@ -1,0 +1,66 @@
+-- Source issues: CAIRO-3037, CAIRO-indirect_impl_alias (test file),
+--               CAIRO-PR-2812, CAIRO-PR-2813, CAIRO-PR-2815
+-- Spec: traits.instances (§14.3), modules.imports (§8.3),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof.
+-- Kappa spec rule (§14.3):
+--   "Top-level instances from any module in the compilation unit's module
+--    closure contribute to instance resolution regardless of whether names
+--    from that module are imported."
+-- Cairo issue CAIRO-3037: using an impl alias led to a cycle and compiler
+--   crash; the compiler must detect and reject the cycle gracefully.
+-- indirect_impl_alias.cairo: demonstrated that impl aliases for generic
+--   impls (Impl1<felt252> aliased to ImplAlias1) could be used to call
+--   trait functions through two levels of alias indirection.
+-- In Kappa: an import alias for an instance (re-binding a specialized
+-- instance from another module) must expose the instance methods through
+-- the alias name, and cyclic instance alias chains must be rejected.
+
+--! mode check
+
+-- Module with generic implementations and aliases
+module impls
+
+trait Describable (a : Type) =
+    describe : (& x : a) -> String
+
+-- Generic implementation
+instance Describable Int =
+    let describe n = "an integer"
+
+instance Describable Bool =
+    let describe b = "a boolean"
+
+-- An instance alias type: a specialized re-binding of a more general impl.
+-- In Kappa, `import` makes the instance from `impls` visible by bringing the
+-- module into scope; we then call through the trait method.
+module main
+import impls
+
+-- POSITIVE: after importing impls, both instances are available.
+describeInt : String
+let describeInt = describe (42 : Int)
+
+describeBool : String
+let describeBool = describe True
+
+-- POSITIVE: a function polymorphic over Describable can be called with Int.
+printAll :
+    forall (a : Type).
+    (@_ : Describable a) ->
+    (& x : a) ->
+    String
+let printAll x = describe x
+
+result1 : String
+let result1 = printAll (10 : Int)
+
+result2 : String
+let result2 = printAll False
+
+-- NEGATIVE: calling describe on a type with no Describable instance fails.
+data Mystery : Type = Mystery
+
+badDescribe : String
+let badDescribe = describe Mystery           --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

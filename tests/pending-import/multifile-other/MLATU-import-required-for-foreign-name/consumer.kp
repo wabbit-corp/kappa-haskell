@@ -1,0 +1,18 @@
+-- Source issue: MLatu #11 ("you have to `import foundation` for
+--   example, to import everything from `foundation.mlt`'s namespace
+--   into the current file's namespace"). The portable Kappa obligation
+--   is that names from another module become visible only after an
+--   explicit `import`.
+-- Spec: modules.imports, modules.imports.item_kind_selectors.
+
+module consumer
+
+import foundation.(fortyTwo)
+
+--! mode check
+
+-- POSITIVE: the imported name is in scope.
+useIt : Int
+let useIt = fortyTwo
+
+--! assertNoErrors

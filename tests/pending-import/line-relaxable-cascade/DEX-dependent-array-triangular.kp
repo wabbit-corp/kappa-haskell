@@ -1,0 +1,73 @@
+-- Source issues: dex-lang type-tests.dx (triangular table regression #833,
+--   `val = for i:(Fin 2). \x:Float . for j:(..i). 1`),
+--   dex-lang #239 (! operator with dependent types),
+--   dex-lang #841 (linearization fails on triangular table),
+--   dex-lang #286 (return type depending on pattern-matched component).
+-- Spec: types.dependent.index_type_array (§DSA-DEX-01),
+--       types.functions.
+-- An array whose element type depends on the index — written
+-- `(i : n) => f i` — is a dependent array (dependent table in Dex terminology).
+-- The outer index `i` is in scope for the element type. Triangular/pyramidal
+-- arrays are the key example: `(i : Fin n) => (RangeTo (Fin n) i) => Float`
+-- gives a lower-triangular matrix where row `i` has exactly `i` elements.
+-- Type-checking must preserve this dependency end-to-end.
+
+--! mode check
+
+-- Helper type families for bounded ranges.
+-- RangeTo n i = {j : n | j < i} (the prefix of n up to index i).
+-- We model this as a type family parameterized by the bound.
+
+data Fin : Nat -> Type =
+    FZ : forall (n : Nat). Fin (n + 1)
+    FS : forall (n : Nat). Fin n -> Fin (n + 1)
+
+-- A lower-triangular matrix type.
+-- Row i (with i : Fin n) has exactly i elements (indices < i).
+-- The inner index type depends on the outer index `i`.
+LowerTri : forall (n : Nat) -> (a : Type) -> Type
+let LowerTri n a = (i : Fin n) => (Fin (ordinal i) => a)
+
+-- ordinal : Fin n -> Nat
+ordinal : forall (n : Nat). Fin n -> Nat
+let ordinal FZ     = 0
+let ordinal (FS i) = ordinal i + 1
+
+-- POSITIVE: constructing a lower-triangular zero matrix.
+-- Row 0 is empty, row 1 has one element, etc.
+zeroLowerTri : LowerTri 3 Float
+let zeroLowerTri = tabulate (\i -> tabulate (\_ -> 0.0))
+
+-- tabulate : forall (n : Nat) (a : Type) -> (Fin n -> a) -> (Fin n => a)
+tabulate : forall (n : Nat) (a : Type). (Fin n -> a) -> Fin n => a
+let tabulate f = tabulate f
+
+-- POSITIVE: a function accepting a lower-triangular array and reading an element.
+-- The access pattern i[j] is valid only when ordinal j < ordinal i.
+readLower : forall (n : Nat). LowerTri n Float -> Fin n -> Nat -> Float
+let readLower mat row col =
+    -- mat[row] has type Fin (ordinal row) => Float
+    -- accessing element col requires col < ordinal row
+    0.0   -- placeholder: exact bounds-checking is separate concern
+
+-- POSITIVE: the type of a function producing a triangular result from a
+-- plain input preserves the dependent structure.
+mkTriTable : forall (n : Nat) (a : Type). (Fin n => a) -> LowerTri n a
+let mkTriTable xs = tabulate (\i -> tabulate (\_ -> xs ! i))
+  -- Subscript xs ! i uses the outer index; inner tabulation ignores its arg.
+  -- The result type is fully dependent on the outer binder.
+
+-- POSITIVE: round-trip: summing all elements of a triangular table
+-- must type-check despite the dependent inner type.
+sumLower : forall (n : Nat). LowerTri n Float -> Float
+let sumLower mat = 0.0   -- placeholder; full iteration requires effect or fold
+
+-- NEGATIVE: a plain (non-dependent) array type cannot hold a triangular array.
+-- `Fin 3 => (Fin 3 => Float)` expects each row to have exactly 3 elements,
+-- but `zeroLowerTri` has rows of sizes 0, 1, 2.
+badFlatten : Fin 3 => (Fin 3 => Float)
+let badFlatten = zeroLowerTri    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertType zeroLowerTri (LowerTri 3 Float)

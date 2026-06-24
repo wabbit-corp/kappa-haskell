@@ -1,0 +1,81 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`fun fact{n:nat}(x: int(n)): int(fact(n))`,
+--          `fun fact: {n:nat} int(n) -> int(fact(n))`,
+--          declared vs. actual type),
+--         ATS-Xanadu issue #15 (parsing impldecl; `{a}<b> ident (funargs) = ...`)
+-- Spec: declarations.term_declarations (§9.1),
+--       declarations.signatures_definitions (§9.2),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: `fun fact{n:nat}(x: int(n)): int(fact(n))` declares a
+--   dependent type for factorial. The implementation must produce a value of
+--   type `int(fact(n))`, not `int(n)` or `int(n+1)`. A mismatch between the
+--   declared return index and the actual return type is rejected.
+-- Portable obligation: the declared signature's index constraint on the return
+--   type must be satisfied by the implementation; a wrong return index or
+--   wrong argument index is kappa.type.mismatch.
+
+--! mode check
+
+-- A Peano-natural: exactly represents a compile-time known Nat.
+data PeanoNat : Nat -> Type =
+    PZero : PeanoNat 0
+    PSucc  : forall (n : Nat). PeanoNat n -> PeanoNat (n + 1)
+
+-- POSITIVE: declared return type matches the actual construction.
+toNat : forall (n : Nat). PeanoNat n -> Nat
+let toNat p =
+    match p
+    case PZero     -> 0
+    case PSucc p'  -> 1 + toNat p'
+
+-- A type family for factorial at compile time.
+-- factorial(0) = 1, factorial(n+1) = (n+1) * factorial(n)
+-- We model this as a GADT that witnesses the factorial.
+data FactWitness : Nat -> Nat -> Type =
+    FactZero : FactWitness 0 1
+    FactSucc : forall (n r : Nat). FactWitness n r -> FactWitness (n + 1) ((n + 1) * r)
+
+-- POSITIVE: building factorial witnesses.
+fact0 : FactWitness 0 1
+let fact0 = FactZero
+
+fact1 : FactWitness 1 1
+let fact1 = FactSucc FactZero
+
+fact2 : FactWitness 2 2
+let fact2 = FactSucc fact1
+
+fact3 : FactWitness 3 6
+let fact3 = FactSucc fact2
+
+fact4 : FactWitness 4 24
+let fact4 = FactSucc fact3
+
+-- POSITIVE: extract the result from a factorial witness.
+factVal : forall (n r : Nat). FactWitness n r -> Nat
+let factVal FactZero = 1
+let factVal (FactSucc w) = factVal w
+
+-- NEGATIVE: claiming fact(3) = 5 (wrong result index).
+badFact3 : FactWitness 3 5
+let badFact3 = FactSucc fact2         --!! kappa.type.mismatch
+
+-- NEGATIVE: claiming fact(4) = 24 but using the wrong predecessor.
+-- fact(4) = 4 * fact(3) = 4 * 6 = 24, but fact3 has result 6;
+-- trying to build FactWitness 4 25 is wrong.
+badFact4 : FactWitness 4 25
+let badFact4 = FactSucc fact3         --!! kappa.type.mismatch
+
+-- NEGATIVE: type signature says return PeanoNat (n+2) but body returns PeanoNat (n+1).
+succTwice : forall (n : Nat). PeanoNat n -> PeanoNat (n + 2)
+let succTwice p = PSucc p             --!! kappa.type.mismatch
+
+-- NEGATIVE: type signature says argument index n but body uses n+1.
+predPeano : forall (n : Nat). PeanoNat (n + 1) -> PeanoNat n
+let predPeano PZero = PZero           --!! kappa.type.mismatch
+
+-- POSITIVE: correct predecessor.
+predPeanoOk : forall (n : Nat). PeanoNat (n + 1) -> PeanoNat n
+let predPeanoOk (PSucc p) = p
+
+--! assertDiagnosticFamily error kappa.type.mismatch

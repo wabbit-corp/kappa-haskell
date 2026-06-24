@@ -1,0 +1,47 @@
+-- Stress test: A closure (lambda) with a linear parameter must be called at
+--   most once; calling the closure twice violates the linear quantity constraint.
+--   Conversely, a closure with a quantity-polymorphic parameter may be called
+--   multiple times.
+-- Spec: types.universes.quantities,
+--   declarations.terms.irrefutable_patterns_let_bindings
+
+--! mode check
+
+-- POSITIVE: a linear closure used exactly once.
+applyLinear : (1 f : Int -> Int) -> Int -> Int
+let applyLinear f x = f x
+
+result1 : Int
+let result1 = applyLinear (fn n -> n + 1) 41
+
+-- POSITIVE: a higher-order function that takes and calls a linear closure.
+withLinear : (1 k : Int -> String) -> String
+let withLinear k = k 42
+
+-- The closure is created fresh each call; each closure is used linearly.
+call1 : String
+let call1 = withLinear (fn n -> int_to_string n)
+
+call2 : String
+let call2 = withLinear (fn n -> "val=" ++ int_to_string n)
+
+-- NEGATIVE: calling a linear closure twice violates quantity.
+useTwice : (1 f : Int -> Int) -> Int
+let useTwice f = f 1 + f 2   --!! kappa.quantity.unsatisfied
+
+-- NEGATIVE: storing a linear closure and using it in two places.
+doubleUse : (1 f : Int -> Int) -> (Int, Int)
+let doubleUse f = (f 0, f 1)   --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: an affine closure may be used zero or one time.
+applyAffine : (<=1 f : Int -> Int) -> Option Int -> Option Int
+let applyAffine f opt =
+    match opt
+    case Nothing -> Nothing
+    case Just x  -> Just (f x)
+
+-- POSITIVE: an unrestricted closure may be used any number of times.
+applyMany : (f : Int -> Int) -> Int -> Int -> Int
+let applyMany f x y = f x + f y
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

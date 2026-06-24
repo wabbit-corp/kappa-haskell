@@ -1,0 +1,47 @@
+-- Source issue: Move #460
+-- Spec: modules.names.method_call_receiver_projection_sugar,
+--       expressions.application.dotted_forms
+-- When a function `f` in a module has exactly one receiver-marked explicit
+-- binder, the call `recv.f args` is sugar for `f recv args`.
+-- This lets Move-style `t.method()` calls be expressed in Kappa without
+-- wrapping every call in `MyModule::method(&t)`.
+
+--! mode check
+
+module move_460_method_call
+
+data Counter : Type =
+    Counter (value : Int)
+
+-- The receiver-marked binder `(this c : Counter)` makes this eligible
+-- for method-call sugar.
+increment : (this c : Counter) -> Counter
+let increment c = Counter (c.value + 1)
+
+get : (this c : Counter) -> Int
+let get c = c.value
+
+-- Accepted: traditional call form.
+traditionalCall : Int
+let traditionalCall =
+    let c0 = Counter 0
+    let c1 = increment c0
+    get c1
+
+--! assertNoErrors
+
+-- Accepted: method-call sugar form.
+methodCallSugar : Int
+let methodCallSugar =
+    let c0 = Counter 0
+    let c1 = c0.increment
+    c1.get
+
+--! assertNoErrors
+
+-- Both forms produce the same result.
+-- (This tests that `c.increment` elaborates to `increment c`.)
+formsAgree : Bool
+let formsAgree = traditionalCall == methodCallSugar
+
+--! assertNoErrors

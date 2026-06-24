@@ -1,0 +1,72 @@
+-- Source issues: apple/swift #82628 (spurious circular reference in implicit
+--   Sendable derivation), apple/swift #87255 (incorrect warning about
+--   non-Sendable metatype for unapplied function), apple/swift #62753
+--   (@Sendable does not peer through typealiases).
+--   Concurrency safety (Sendable) is a conditional trait: a composite type
+--   is safe to share across isolation boundaries only when all its stored
+--   components are also safe. Attempting to share a type that contains
+--   non-safe fields must produce kappa.implicit.unsolved for the
+--   missing safety evidence.
+-- Spec: traits.instances §14.3, traits.instances.resolution_algorithm §14.3.1
+
+--! mode check
+
+-- Model concurrency safety as a marker trait.
+trait SafeShare (a : Type) =
+
+-- Instances for primitive safe types.
+instance SafeShare Nat =
+instance SafeShare Bool =
+instance SafeShare String =
+
+-- Conditional instance: a pair is safe when both components are.
+data Pair (a b : Type) : Type = Pair a b
+
+instance SafeShare a, SafeShare b => SafeShare (Pair a b) =
+
+-- Conditional instance: Maybe is safe when its payload is.
+data Maybe (a : Type) : Type = Nothing | Just a
+
+instance SafeShare a => SafeShare (Maybe a) =
+
+-- A function that requires safe sharing.
+crossBoundary : forall {a : Type} -> (@_ : SafeShare a) -> a -> a
+let crossBoundary x = x
+
+-- POSITIVE: primitive types are safe.
+safeNat : Nat
+let safeNat = crossBoundary 42
+
+safePair : Pair Nat Bool
+let safePair = crossBoundary (Pair 1 True)
+
+safeMaybe : Maybe String
+let safeMaybe = crossBoundary (Just "hello")
+
+-- POSITIVE: nested safe types.
+nestedSafe : Maybe (Pair Nat Bool)
+let nestedSafe = crossBoundary (Just (Pair 1 True))
+
+-- NEGATIVE: a mutable container with no SafeShare instance.
+data MutableRef (a : Type) : Type = MutableRef a
+
+-- No `instance SafeShare (MutableRef a)` — represents a reference type.
+badShare : MutableRef Nat
+let badShare = crossBoundary (MutableRef 42)    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a pair containing a non-safe component.
+badPairShare : Pair Nat (MutableRef Bool)
+let badPairShare =
+    crossBoundary (Pair 1 (MutableRef True))    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a Maybe wrapping a non-safe type.
+badMaybeShare : Maybe (MutableRef String)
+let badMaybeShare = crossBoundary (Just (MutableRef "oops"))    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a type with no SafeShare instance.
+data Closure : Type = Closure Nat Nat
+
+badClosure : Closure
+let badClosure = crossBoundary (Closure 1 2)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

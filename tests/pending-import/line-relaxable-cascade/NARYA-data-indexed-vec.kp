@@ -1,0 +1,58 @@
+-- Source artifacts: narya docs/data-types.rst (def Vec : Type -> Nat -> Type),
+--               harvested tests test/black/vec.t/vec.ny.
+-- Spec: data_types.data_declarations,
+--       data_types.data_declarations.constructor_application_named_arguments_c,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.index_refinement_constructor_knowledge
+--
+-- An indexed (GADT-style) data type carries one or more index arguments
+-- in its kind. Each constructor's GADT signature specifies the index
+-- value for its result; pattern matching refines those indices in each
+-- branch, which can also make sibling branches unreachable.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a Zero
+    VCons : (n : Nat) -> a -> Vec a n -> Vec a (Suc n)
+
+data Eq (a : Type) (x : a) : a -> Type =
+    Refl : Eq a x x
+
+-- POSITIVE: a Vec at index (Suc n) forces only the VCons constructor;
+-- VNil is excluded by index refinement (§17.1.1).
+headV : forall (a : Type) (n : Nat). Vec a (Suc n) -> a
+let headV v =
+    match v
+      case VCons _ x _ -> x
+
+-- POSITIVE: tail similarly refines the index.
+tailV : forall (a : Type) (n : Nat). Vec a (Suc n) -> Vec a n
+let tailV v =
+    match v
+      case VCons _ _ xs -> xs
+
+-- POSITIVE: an equality at the same index value introduces no obligation
+-- beyond Refl.
+lengthIsIndex :
+    forall (a : Type) (n : Nat). Vec a n -> Eq Nat n n
+let lengthIsIndex _ = Refl
+
+-- NEGATIVE: supplying VCons in a context that requires Vec a Zero fails
+-- because the constructor forces the result index to (Suc n).
+badEmpty : Vec Nat Zero
+let badEmpty = VCons Zero Zero VNil    --!! kappa.type.mismatch
+
+-- NEGATIVE: a Vec a n match that omits the VNil branch is non-exhaustive
+-- when n is not refined to (Suc _) by context.
+firstOrZero : forall (a : Type) (n : Nat). a -> Vec a n -> a
+let firstOrZero d v =
+    match v
+      case VCons _ x _ -> x    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

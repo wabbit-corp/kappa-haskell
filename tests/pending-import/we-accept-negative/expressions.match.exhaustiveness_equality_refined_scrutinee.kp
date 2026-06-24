@@ -1,0 +1,34 @@
+-- Source issue: Idris2 #2690
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.impossible_unreachable_branch_bodies
+-- An equality proof `Nothing = Just BTrue` is uninhabited; matching on it
+-- with `-> impossible` correctly handles the Nothing case. However, the
+-- coverage checker must still require explicit clauses for every remaining
+-- constructor compatible with the equality witness. The equality constraint
+-- narrows the required cases but does NOT waive exhaustiveness.
+
+module test
+
+data Maybe (a : Type) : Type =
+  Nothing : Maybe a
+  Just    : (x : a) -> Maybe a
+
+data Bool : Type = BTrue | BFalse
+
+-- Accepted: all cases covered.
+-- Nothing branch: prf : Nothing = Just BTrue is uninhabited → impossible match.
+-- Just BTrue branch: prf is Refl so x is returned.
+safeHandle : (mb : Maybe Bool) -> (mb = Just BTrue) -> Bool
+let safeHandle Nothing   prf = match prf case impossible
+let safeHandle (Just x)  _   = x
+
+--! mode check
+
+-- Rejected: the Just BTrue case is missing.
+-- Coverage checking must NOT be satisfied by the impossible Nothing branch alone.
+-- The remaining reachable case (Just BTrue with Refl) must still be demanded.
+badHandle : (mb : Maybe Bool) -> (mb = Just BTrue) -> Void
+let badHandle Nothing prf = match prf case impossible
+-- Missing: clause for (Just BTrue) with Refl — badHandle (Just BTrue) Refl has no branch
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

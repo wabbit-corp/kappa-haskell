@@ -1,0 +1,63 @@
+-- Source issue: FLIX-1132
+-- Spec: types.unions.variant_row_polymorphism, types.unions.elimination_match
+-- Open unions (open enums in Flix) cannot be exhaustively matched with only
+-- named arms: a residual-row pattern `(| ..rest |)` or a wildcard is required.
+-- A closed match on an open union type must be rejected.
+-- Conversely, a function polymorphic over the residual union row must correctly
+-- handle the residual with a `(| ..rest |)` arm.
+
+--! mode check
+
+-- Declare some data types for use as union members.
+data IOErr  : Type = IOErr  String
+data NetErr : Type = NetErr String
+data ParseErr : Type = ParseErr String
+
+-- An open union type: may carry IOErr, NetErr, ParseErr, or something else.
+type OpenError (r : VarRow) = (| IOErr | NetErr | ParseErr | r |)
+
+-- NEGATIVE TEST: match on open union with only named arms (no residual).
+-- Must be rejected: the residual row `r` is uncovered.
+let handle_named_only
+    (forall (r : VarRow))
+    (err : OpenError r)
+    : String =
+    match err    --!! kappa.pattern.non-exhaustive
+    case (| e : IOErr  |) -> "io"
+    case (| e : NetErr |) -> "net"
+    case (| e : ParseErr |) -> "parse"
+    -- residual `r` is not covered
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+
+-- POSITIVE TEST: match with residual-row arm covers everything.
+let handle_with_residual
+    (forall (r : VarRow))
+    (err : OpenError r)
+    : String =
+    match err
+    case (| _ : IOErr    |) -> "io"
+    case (| _ : NetErr   |) -> "net"
+    case (| _ : ParseErr |) -> "parse"
+    case (| ..rest |)       -> "other"
+
+-- POSITIVE TEST: match with wildcard also covers the residual.
+let handle_with_wildcard
+    (forall (r : VarRow))
+    (err : OpenError r)
+    : String =
+    match err
+    case (| _ : IOErr |) -> "io"
+    case _               -> "other"
+
+-- POSITIVE TEST: closed union can be matched exhaustively without residual arm.
+type ClosedError = (| IOErr | NetErr |)
+
+let handle_closed (err : ClosedError) : String =
+    match err
+    case (| _ : IOErr  |) -> "io"
+    case (| _ : NetErr |) -> "net"
+
+-- expect: handle_named_only rejected; handle_with_residual, handle_with_wildcard,
+--         handle_closed all accepted

@@ -1,0 +1,24 @@
+-- Source issues: carp-lang/Carp#414, #1374
+-- Spec: lexical.identifiers,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Carp #414: identifiers beginning with a digit were accepted, generating
+-- nonsense C identifiers and uncallable definitions.  Carp #1374: the
+-- same issue surfaced for the `register` primitive (`(register 1Foo Int
+-- "1Foo")`).  The portable Kappa obligation is that identifiers conform to
+-- the lexical identifier grammar; a leading digit is a lexical error.
+
+--! mode check
+
+-- POSITIVE: a well-formed identifier is admitted at every binder position.
+flag4 : Int
+let flag4 = 4
+
+--! assertType flag4 Int
+
+-- NEGATIVE: an identifier whose first lexeme character is a digit must be
+-- rejected at the lexer or at name resolution, not silently mangled.
+-- Using such a name in binder position is the canonical site of the
+-- diagnostic.
+let 4flag : Int = 4                      --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

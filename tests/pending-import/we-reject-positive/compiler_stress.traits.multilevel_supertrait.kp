@@ -1,0 +1,38 @@
+-- Stress test: Multi-level supertrait chain; methods from all levels accessible at leaf
+-- Spec: traits.headers.supertraits
+
+--! mode check
+
+trait Base (a : Type) =
+    base : a -> Int
+
+trait Base a => Mid (a : Type) =
+    mid : a -> String
+
+trait Mid a => Leaf (a : Type) =
+    leaf : a -> Bool
+
+data MyNum : Type = MkNum Int
+
+instance Base MyNum =
+    let base (MkNum n) = n
+
+instance Mid MyNum =
+    let mid (MkNum n) = "num:" ++ int_to_string n
+
+instance Leaf MyNum =
+    let leaf (MkNum n) = n > 0
+
+-- Function requires only Leaf a, but can call mid (from Mid) and base (from Base)
+-- because Leaf implies Mid implies Base via supertrait chains.
+allThree : forall (a : Type). (@_ : Leaf a) -> a -> String
+let allThree x =
+    let b : Int    = base x
+    let m : String = mid x
+    let l : Bool   = leaf x
+    int_to_string b ++ m ++ (if l then "true" else "false")
+
+testChain : String
+let testChain = allThree (MkNum 7)
+
+--! assertNoErrors

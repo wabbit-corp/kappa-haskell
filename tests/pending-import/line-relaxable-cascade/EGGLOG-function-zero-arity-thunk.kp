@@ -1,0 +1,42 @@
+-- Source issues: egraphs-good/egglog #67 (Define command vs define action — zero
+--   arity functions / thunks),
+--   egraphs-good/egglog #319 (`:default` of a function is evaluated every time
+--   it is called).
+-- Spec: declarations.terms (§9),
+--       expressions.application (§16),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch, kappa.application.argument-mismatch).
+-- A zero-arity function is a function taking the unit-shaped argument list and
+-- returning a value. Defining and calling such a thunk must be permitted. The
+-- type of a zero-arity function `f : () -> A` is distinct from the type of its
+-- result `A`, and applying it requires the explicit `()` argument.
+
+module test
+
+--! mode check
+
+-- POSITIVE: zero-arity (thunk) function defined and applied.
+one : () -> Int
+let one () = 1
+
+two : () -> Int
+let two () = one () + one ()
+
+r1 : Int
+let r1 = one ()
+
+r2 : Int
+let r2 = two ()
+
+-- NEGATIVE: forgetting `()` leaves us with the function value, not the result.
+bad1 : Int
+let bad1 = one                   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying a zero-arity function with an extra argument is an arity
+-- mismatch.
+bad2 : Int
+let bad2 = two 5                 --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

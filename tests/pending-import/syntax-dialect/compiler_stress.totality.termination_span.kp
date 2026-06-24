@@ -1,0 +1,18 @@
+-- Stress test: when termination fails, the error span points to the recursive call
+-- Spec: compiler.frontir.termination_modality_diagnostics
+
+--! mode check
+
+data Nat2 : Type =
+    Z
+  | S Nat2
+
+-- NEGATIVE: bad calls itself with a strictly larger argument; the error must
+-- be reported at the specific recursive call site.
+bad : Nat2 -> Nat2
+let bad n =
+    match n
+    case Z   -> S Z
+    case S m -> bad (S (S m))   --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

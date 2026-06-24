@@ -1,0 +1,24 @@
+-- Source issue: Kitten #46 (the typechecker missed cases where a value
+--   was applied as if it were callable; later interpretation failed
+--   with a pattern-match crash). The portable signal is that applying
+--   a value whose type is not callable must be a static error.
+-- Spec: expressions.application, types.functions,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (alias E_APPLICATION_NON_CALLABLE).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: applying an Int as if it were a function.
+applyInt : Int
+let applyInt = 1 2                         --!! E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: applying a constructed record value as if it were callable.
+data Box (a : Type) : Type =
+    Box a
+
+applyRecord : Int
+let applyRecord = (Box 1) 2                --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE

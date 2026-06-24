@@ -1,0 +1,22 @@
+-- Stress test: explicit QuantitySatisfies premise makes the quantity obligation manifest
+-- Spec: types.universes.quantities
+
+--! mode check
+
+-- POSITIVE: useOnce requires q satisfies 1 (linear), so x must be used exactly once
+useOnce :
+    forall (q : Quantity) (a : Type).
+    QuantitySatisfies q 1 =>
+    (q x : a) -> a
+
+let useOnce x = x
+
+-- POSITIVE: ignore requires q satisfies 0 (erased), so x must not be used at runtime
+ignore :
+    forall (q : Quantity) (a : Type).
+    QuantitySatisfies q 0 =>
+    (q x : a) -> Unit
+
+let ignore x = ()
+
+--! assertNoErrors

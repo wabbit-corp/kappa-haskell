@@ -1,0 +1,40 @@
+-- Source issues: souffle-lang/souffle tests/semantic/recursive_unions/recursive_unions.dl
+--   (types U1, U2 mutually referencing each other),
+--   tests/semantic/recursive_unions2/recursive_unions2.dl (types C, D cyclic),
+--   souffle-lang #891.
+-- Spec: data_types.type_aliases (§10.3),
+--       compiler.frontir.standard_diagnostic_families.termination (kappa.termination.failure).
+-- Mutually cyclic type aliases (A = ... B ..., B = ... A ...) have no finite normal
+-- form. Souffle reports "Infinite descent in the definition of type U1" and "... U2"
+-- when two union type aliases refer to each other. Kappa must reject mutually cyclic
+-- type aliases with kappa.termination.failure.
+
+--! mode check
+
+-- NEGATIVE: two-step cycle: P refers to Q, Q refers to P.
+type P = (| Int | Q |)    --!! kappa.termination.failure
+type Q = (| String | P |)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: three-step cycle: E → F → G → E.
+type E = (| Int | F |)    --!! kappa.termination.failure
+type F = (| String | G |)    --!! kappa.termination.failure
+type G = (| Bool | E |)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- POSITIVE: a chain that terminates at concrete types is fine.
+type Base1 = Int
+type Base2 = String
+type Combined = (| Base1 | Base2 |)
+type Outer = (| Combined | Bool |)
+
+-- POSITIVE: mutually recursive data types (not aliases) are fine when strictly positive.
+data EvenTree : Type =
+    ELeaf
+    ENode Int (OddTree)
+
+data OddTree : Type =
+    OLeaf
+    ONode Int (EvenTree)

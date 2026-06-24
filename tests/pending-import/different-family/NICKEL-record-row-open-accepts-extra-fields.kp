@@ -1,0 +1,46 @@
+-- Source issues: nickel #217, #303, row subtyping in typing.md
+-- Spec: types.records.row_polymorphism
+-- An open record type `(x : T | r)` accepts values with additional fields beyond `x`.
+-- A closed record type `(x : T)` (no tail) accepts only records with exactly `x`.
+-- Subtyping: a record `(x : T, y : U)` is a subtype of `(x : T | r)` when `r` can be
+-- bound to `(y : U)`. A function expecting an open record may be called with a
+-- record that has more fields; a function expecting a closed record may not.
+
+module test
+
+-- Open record function: requires at minimum field `name` of type String.
+-- A record with extra fields is accepted.
+greet : forall (r : RecRow). LacksRec r name => (name : String | r) -> String
+let greet rec = rec.name
+
+-- POSITIVE: exact match.
+greetExact : String
+let greetExact = greet (name = "Alice")
+
+-- POSITIVE: extra field present — open record subtyping allows this.
+greetExtra : String
+let greetExtra = greet (name = "Bob", age = 30)
+
+-- POSITIVE: multiple extra fields.
+greetManyExtra : String
+let greetManyExtra = greet (name = "Carol", id = 99, active = True)
+
+--! mode check
+--! assertType greetExact String
+--! assertType greetExtra String
+--! assertType greetManyExtra String
+
+-- NEGATIVE: closed record function: requires exactly `(name : String)`.
+-- Passing a record with extra fields violates the closed-record contract.
+greetClosed : (name : String) -> String
+let greetClosed rec = rec.name
+
+badClosedCall : String
+let badClosedCall = greetClosed (name = "Dave", extra = True)     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: exact match is fine even for closed functions.
+goodClosedCall : String
+let goodClosedCall = greetClosed (name = "Eve")
+

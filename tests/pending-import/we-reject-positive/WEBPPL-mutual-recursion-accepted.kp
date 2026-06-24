@@ -1,0 +1,47 @@
+-- Source: WebPPL #4 (enable mutually recursive functions).
+-- Spec: declarations.totality.recursive_group_elaboration_invariance,
+--   declarations.terms, expressions.application.
+--
+-- Two functions defined in the same declaration group may refer to each
+-- other freely. Elaboration of each definition sees the signature of the
+-- other, so forward references within the group resolve.
+
+module test
+
+--! mode check
+
+-- POSITIVE: classic isEven/isOdd mutual recursion.
+isEven : Nat -> Bool
+let isEven n =
+    if n == 0 then True
+    else isOdd (n - 1)
+
+isOdd : Nat -> Bool
+let isOdd n =
+    if n == 0 then False
+    else isEven (n - 1)
+
+--! assertNoErrors
+--! assertType isEven (Nat -> Bool)
+--! assertType isOdd  (Nat -> Bool)
+
+-- POSITIVE: a three-way mutual recursion across function group.
+classifyA : Nat -> Bool
+let classifyA n =
+    if n == 0 then True
+    else classifyB (n - 1)
+
+classifyB : Nat -> Bool
+let classifyB n =
+    if n == 0 then False
+    else classifyC (n - 1)
+
+classifyC : Nat -> Bool
+let classifyC n =
+    if n == 0 then True
+    else classifyA (n - 1)
+
+--! assertNoErrors
+--! assertType classifyA (Nat -> Bool)
+--! assertType classifyB (Nat -> Bool)
+--! assertType classifyC (Nat -> Bool)

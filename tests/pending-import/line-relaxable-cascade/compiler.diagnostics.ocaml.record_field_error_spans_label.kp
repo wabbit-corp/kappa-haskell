@@ -1,0 +1,42 @@
+-- Source issues: OCaml#5073, OCaml#5657
+-- Spec: compiler.frontir.origins_ranges_labels,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- When a record field expression has the wrong type, the primary blame origin
+-- must be located at the field's label (or at minimum at the field item), not
+-- at a larger span covering neighboring field items.
+-- When a record field label is unresolved, the error must span the label token,
+-- not the value expression.
+
+module test
+
+data Rec : Type =
+    Rec : (a : Int, b : Int) -> Rec
+
+-- Unbound field: the error must span the label `z`, not the expression `1`.
+unboundField : Rec
+let unboundField = Rec (a = 1, z = 2)     --!! kappa.name.unresolved
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- Type mismatch in field `b`: the error must blame the `b = "hello"` item,
+-- not the entire record literal or the neighboring `a = 1` item.
+badField : Rec
+let badField = Rec (a = 1, b = "hello")   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- With field punning: when `b` has type `String` in scope but field type is `Int`,
+-- the error must blame the punned label `b`, not a larger enclosing span.
+b : String
+let b = "hello"
+
+badPun : Rec
+let badPun = Rec (a = 1, b)               --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Accepted: all fields correct.
+okRec : Rec
+let okRec = Rec (a = 1, b = 2)
+

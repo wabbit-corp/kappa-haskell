@@ -1,0 +1,43 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CircularRefinement.hylo
+--                   (diagnostic: "circular trait refinement")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/CircularRefinement.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.termination
+--       (kappa.termination.failure)
+-- Hylo: a cycle in trait refinement (T: U: V: T) is rejected because the
+-- compiler cannot build a finite conformance proof. In Kappa this is a
+-- termination failure: constructing the proof would loop forever.
+
+--! mode check
+
+-- POSITIVE: linear, non-circular trait hierarchy.
+trait Base a where
+    base : a -> Int
+
+trait Extended a : Base a where
+    extra : a -> String
+
+data Value : Type = Value Int
+
+impl Base Value where
+    let base (Value n) = n
+
+impl Extended Value where
+    let extra (Value n) = "v" ++ show n
+
+-- NEGATIVE: direct self-refinement — T: T.
+trait SelfRefined a : SelfRefined a where    --!! kappa.termination.failure
+    foo : a -> Int
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: mutual refinement cycle T: U, U: V, V: T.
+trait CycleA a : CycleB a where    --!! kappa.termination.failure
+    methodA : a -> Int
+
+trait CycleB a : CycleC a where    --!! kappa.termination.failure
+    methodB : a -> Int
+
+trait CycleC a : CycleA a where    --!! kappa.termination.failure
+    methodC : a -> Int
+
+--! assertDiagnosticFamily error kappa.termination.failure

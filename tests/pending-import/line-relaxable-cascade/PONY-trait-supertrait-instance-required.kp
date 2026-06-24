@@ -1,0 +1,45 @@
+-- Source issues: ponyc#1964, ponyc#2881, ponyc traits.cc (TransitiveTraits)
+-- Spec: traits.headers.supertraits, traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- In Pony, if a trait T2 has supertrait T1, then a class providing T2 must
+-- also provide T1. In Kappa, `instance Sub T` requires that a `Super T`
+-- instance exists in scope (the supertrait obligation). Without it, the
+-- Sub instance artifact cannot record supertrait evidence.
+
+--! mode check
+
+trait HasSize (a : Type) =
+    size : (& x : a) -> Int
+
+trait HasSize a => HasCapacity (a : Type) =
+    capacity : (& x : a) -> Int
+    let isFull : (& x : a) -> Bool =
+        \x -> size x >= capacity x
+
+data Buffer : Type = Buffer Int Int
+data BadBuf : Type = BadBuf Int Int
+
+-- POSITIVE: providing HasSize first, then HasCapacity with supertrait satisfied.
+instance HasSize Buffer =
+    let size (Buffer s _) = s
+
+instance HasCapacity Buffer =
+    let capacity (Buffer _ c) = c
+
+-- NEGATIVE: HasCapacity for BadBuf without HasSize for BadBuf.
+-- The HasCapacity instance cannot discharge the HasSize supertrait obligation.
+instance HasCapacity BadBuf =   --!! kappa.implicit.unsolved
+    let capacity (BadBuf _ c) = c
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: using the supertrait method through the subtype constraint.
+fullCheck :
+    forall (a : Type).
+    (@_ : HasCapacity a) ->
+    (& x : a) -> Bool
+let fullCheck x = isFull x
+
+result : Bool
+let result = fullCheck (Buffer 5 10)
+

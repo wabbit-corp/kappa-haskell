@@ -1,0 +1,39 @@
+-- Source: granule-project/granule PR #164 (uniqueness semiring),
+--         PR #296 (Improve Rename in clone, fix uniqueness laws)
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.are_ownership,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- A Unique-graded value cannot be silently shared, duplicated, or dropped;
+-- the obligation is enforced via the ordinary quantity rules of §12.2.6
+-- and surfaces `kappa.quantity.unsatisfied`.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+type Unq : Type -> Type
+
+intrinsic mkUnq    : forall (a : Type). (1 x : a) -> Unq a
+intrinsic openUnq  : forall (a : Type). (1 u : Unq a) -> a
+
+-- POSITIVE: open a Unique value once.
+useOnce : (1 u : Unq Bool) -> Bool
+let useOnce u = openUnq u
+
+--! assertType useOnce ((1 u : Unq Bool) -> Bool)
+
+-- NEGATIVE: attempt to duplicate a Unique value directly.
+badDup : (1 u : Unq Bool) -> (Unq Bool, Unq Bool)
+let badDup u = (u, u)         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: attempt to drop a Unique value silently.
+badDrop : (1 u : Unq Bool) -> Unit
+let badDrop u = ()            --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

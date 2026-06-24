@@ -1,0 +1,48 @@
+-- Source issue: Factor #2306 (`MACRO: bitfield* ( bitspec -- quot )
+--   reverse bitfield ;` does not work, but inlining its body works.
+--   The portable symptom is that a macro invocation whose static
+--   argument is replaced by a runtime-bound name fails opaquely
+--   instead of with a clear "macro input not statically known"
+--   diagnostic).
+-- Spec: types.macros, types.macros.top_level_syntax_splicing,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved),
+--       compiler.frontir.standard_diagnostic_families.macro_elaboration
+--       (family kappa.macro.failure).
+--
+-- Kappa macros are ordinary Syntax-valued functions; there is no
+-- separate `macro` declaration form. A function at type
+-- `Syntax T -> Elab (Syntax U)` acts as a macro when invoked via
+-- splice syntax `$(f '{ ... })`. A macro body that references a name
+-- not in scope at definition time fails with kappa.name.unresolved;
+-- a splice that names an unresolved qualified path fails similarly.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a Syntax function whose body uses only valid names.
+passThrough : Syntax Int -> Elab (Syntax Int)
+let passThrough e = pure e
+
+useId : Int
+let useId = $(passThrough '{ 42 })
+
+-- NEGATIVE: a Syntax function body that references a name not in scope
+-- fails at definition time with kappa.name.unresolved.
+broken : Syntax Int -> Elab (Syntax Int)
+let broken e =
+    undefinedHelper e             --!! kappa.name.unresolved
+
+useForward : Int
+let useForward = $(broken '{ 10 })
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a splice that names an unresolved qualified path fails
+-- with kappa.name.unresolved at the use site.
+useWithoutImport : Int
+let useWithoutImport =
+    $(OtherModule.specialMacro '{ 10 })  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

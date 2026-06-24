@@ -1,0 +1,39 @@
+-- Source issues: ponyc FLIX-1748 analog, ponyc traits.cc (TraitMethodAndCLassFieldNamesDoClash)
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- An instance body must not define members not declared in the trait.
+-- Extra members in the instance body are not valid because there is no
+-- declared slot for them in the trait's interface. This is diagnosed as
+-- kappa.associated.member-undeclared.
+
+--! mode check
+
+trait Printable (a : Type) =
+    display : (& x : a) -> String
+
+data Item : Type = Item Int
+
+-- NEGATIVE: `extra` is not declared in `Printable`.
+-- The instance body defines a method not in the trait.
+instance Printable Item =
+    let display (Item n) = show n
+    let extra (Item _) = 42   --!! kappa.associated.member-undeclared
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared
+
+-- POSITIVE: instance provides exactly the required member.
+data Label : Type = Label String
+
+instance Printable Label =
+    let display (Label s) = s
+
+-- Using the trait dispatch.
+printAll :
+    forall (a : Type).
+    (@_ : Printable a) ->
+    (& x : a) -> String
+let printAll x = display x
+
+result1 : String
+let result1 = printAll (Label "hello")
+

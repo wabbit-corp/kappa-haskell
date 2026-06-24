@@ -1,0 +1,75 @@
+-- Source issues: CAIRO-2454, CAIRO-PR-2089 (Basic snapshot capabilities),
+--               CAIRO-PR-2120 (Snapshot e2e support),
+--               CAIRO-PR-2136 (Lowering snapshot support),
+--               CAIRO-PR-2140 (Support snapshot coercions for self),
+--               CAIRO-PR-5662 (Re-peel snapshots post solving variables)
+-- Spec: types.universes.quantities (§12.2),
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+--       (§3.3.3, family kappa.borrow.escape).
+-- Kappa spec rule (§12.2 "Borrowed binder access"):
+--   "A borrowed binder `(& x : A)` introduces a shared read access to `x`
+--    without consuming it. Multiple borrowed accesses to the same value may
+--    coexist. The borrowed name `x` may not be consumed inside the borrow
+--    scope; attempting to consume a borrowed path is rejected."
+-- Cairo's `@T` (snapshot) is analogous to Kappa's `& x : T`: a read-only
+-- reference that does not consume the original.
+-- Cairo issue CAIRO-2454: a recursive function using snapshots of an array
+--   created dangling references because the snapshot was not properly tracked.
+
+--! mode check
+
+-- A non-copyable collection type.
+data Span : Type =
+    Span (items : List Int)
+
+-- A function that reads from a Span via borrow — does not consume.
+sumSpan : (& s : Span) -> Int
+let sumSpan (Span xs) = foldl (+) 0 xs
+
+foldl : forall (a b : Type). (a -> b -> a) -> a -> List b -> a
+let foldl f z xs = match xs
+    case []      -> z
+    case y :: ys -> foldl f (f z y) ys
+
+-- POSITIVE: a borrowed Span can be read multiple times because borrowing
+-- does not consume the original.
+borrowTwice : (& s : Span) -> Int
+let borrowTwice s =
+    let n1 = sumSpan s      -- first nested borrow
+    let n2 = sumSpan s      -- second nested borrow; `s` is still available
+    n1 + n2
+
+-- POSITIVE: nested borrows are fine.
+nestedBorrow : (& outer : Span) -> Int
+let nestedBorrow outer =
+    let inner : (& s : Span) = outer
+    sumSpan inner
+
+-- POSITIVE: passing a borrow into a helper multiple times is allowed.
+triple : (& s : Span) -> Int
+let triple s =
+    let a = sumSpan s
+    let b = sumSpan s
+    let c = sumSpan s
+    a + b + c
+
+-- NEGATIVE: consuming a borrowed binder (trying to pass it at quantity 1)
+-- is rejected.
+consumeBorrow : (& s : Span) -> Span
+let consumeBorrow s = s                         --!! kappa.borrow.escape
+
+-- POSITIVE: a recursive function using borrows does not create dangling refs
+-- because each recursive call re-borrows the same live value.
+count : (& s : Span) -> Int -> Int
+let count s acc =
+    let Span xs = s
+    match xs
+    case []     -> acc
+    case _ :: _ -> count s (acc + 1)
+
+result : Int
+let result =
+    let mySpan = Span [1, 2, 3]    -- ω quantity: droppable after use
+    count mySpan 0                  -- borrow-only; mySpan dropped at end of scope
+
+--! assertDiagnosticFamily error kappa.borrow.escape

@@ -1,0 +1,37 @@
+-- Source issues: elm #216, #2104, #2107
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+-- In a type mismatch diagnostic, the "expected type" MUST come from the context
+-- (what was demanded), and the "actual type" MUST come from the expression
+-- (what was supplied). These must not be swapped.
+-- The spec requires: "expected type; actual type; expected-type origin when
+-- available; actual-expression origin"
+
+--! mode check
+
+-- NEGATIVE: a function expects String but receives Int.
+-- Expected: String (from annotation context)
+-- Actual:   Int (from the literal)
+needsString : String -> Int
+let needsString s = String.length s
+
+bad1 : Int
+let bad1 = needsString 42   --!! kappa.type.mismatch
+
+-- NEGATIVE: a record field expects Bool but receives Int.
+type alias Config = (enabled : Bool, count : Int)
+
+bad2 : Config
+let bad2 = (enabled = 1, count = 5)   --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a non-function to an argument.
+badApply : Int
+let badApply = (42 : Int) 99   --!! kappa.type.mismatch
+
+-- POSITIVE: correct types are accepted.
+good1 : Int
+let good1 = needsString "hello"
+
+good2 : Config
+let good2 = (enabled = True, count = 3)
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,33 @@
+-- Source artifacts: CHALK-280 (Infinite stack growth in chalk),
+--                   CHALK-667 (Endless loop in recursive solver),
+--                   CHALK-773 (Recursive solver hangs on cyclic traits),
+--                   RA-1269 (Infinite loop in trait solving),
+--                   RA-4215 (Infinite recursion in chalk solving).
+-- Spec: traits.instances.search_termination,
+--       traits.instances.resolution_algorithm.
+-- An instance declaration whose premise involves the SAME constructor depth
+-- as the head MUST be rejected at instance-check time. The Paterson check
+-- guarantees that instance resolution always terminates; an implementation
+-- that ICEs or loops on such a declaration is non-conforming.
+--
+-- This is the "head and premise are the same constructor" obligation.
+
+--! mode check
+
+trait Trans (a : Type) =
+    transTag : a -> Int
+
+data Box (a : Type) : Type =
+    Box (val : a)
+
+-- NEGATIVE: head `Trans (Box a)`, premise `Trans (Box a)` — identical head and
+-- premise, so the size of the premise is not strictly smaller than that of
+-- the head. Paterson rejects.
+instance Trans (Box a) => Trans (Box a) =       --!! kappa.termination.failure
+    let transTag _ = 0
+
+-- POSITIVE: head `Trans (Box a)`, premise `Trans a` — strictly smaller, OK.
+instance Trans a => Trans (Box a) =
+    let transTag _ = 1
+
+--! assertDiagnosticFamily error kappa.termination.failure

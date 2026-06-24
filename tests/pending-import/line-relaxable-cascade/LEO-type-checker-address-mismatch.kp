@@ -1,0 +1,63 @@
+-- Source issues: leo#28608 (type checker should error for `let x: u32 =
+--               self.caller`; the type checker did not compare the type of
+--               `self.caller` — an address — against the declared annotation
+--               `u32`), leo PR#28616 (fix: compare self.caller and self.signer
+--               types against expected type in type checker).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch), §13.2 (record projections and typing).
+-- Kappa spec rule (§3.2.3):
+--   "When a let binding carries an explicit type annotation `T`, the compiler
+--    must verify that the initializer expression has type `T` (or a type
+--    coercible to `T`). A mismatch between the initializer's inferred type
+--    and the annotation must produce `kappa.type.mismatch` identifying both
+--    the expected type (from the annotation) and the actual type (from the
+--    initializer). This check applies to all initializer forms, including
+--    record projections."
+-- leo#28608: `let x: u32 = self.caller` was accepted without error because
+--   the type checker's handler for the `self.caller` expression skipped the
+--   comparison against the expected type annotation.
+
+--! mode check
+
+-- We model the address/u32 scenario using distinct Kappa types.
+data Address : Type = Address String
+data Uint32  : Type = Uint32  Int
+
+data Context : Type =
+    Context { caller : Address, signer : Address, value : Uint32 }
+
+-- POSITIVE: binding `caller` (an Address) to an Address-typed variable.
+let getCaller (ctx : Context) : Address = ctx.caller
+
+-- POSITIVE: binding `value` (a Uint32) to a Uint32-typed variable.
+let getValue (ctx : Context) : Uint32 = ctx.value
+
+
+-- NEGATIVE: binding `caller : Address` to a variable annotated `Uint32`.
+-- The annotation says Uint32 but the field type is Address.
+let badCallerType (ctx : Context) : Uint32 =
+    let x : Uint32 = ctx.caller    --!! kappa.type.mismatch
+    x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using `caller : Address` directly as a return value where Uint32
+-- is expected.
+let returnCallerAsUint (ctx : Context) : Uint32 =
+    ctx.caller                     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: binding `value : Uint32` to an Address-typed variable.
+let badValueType (ctx : Context) : Address =
+    let a : Address = ctx.value    --!! kappa.type.mismatch
+    a
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: arithmetic over values of the correct type.
+let addValues (ctx1 : Context) (ctx2 : Context) : Uint32 =
+    let Uint32 v1 = ctx1.value
+    let Uint32 v2 = ctx2.value
+    Uint32 (v1 + v2)
+

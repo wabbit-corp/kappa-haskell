@@ -1,0 +1,64 @@
+-- Source: Coalton issues #249 (incorrect type inference -- let-bound function
+--   gets wrong inferred type), #295 (predicates not properly reduced in
+--   abstractions), general HM let-polymorphism.
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings (§9.1.2),
+--   types.quantification.implicit_declaration_universalization (§11.3.3).
+--
+-- In Hindley-Milner, let bindings are generalized: a let-bound function is
+-- given a polymorphic type that can be instantiated independently at each use
+-- site. Specifically:
+--   - `let id = fn x -> x` gives `id` the type `forall a. a -> a`.
+--   - Using `id` on two different types in the same scope is valid.
+--   - A let-bound function that returns a pair should infer the correct
+--     polymorphic type, not a monomorphic one.
+
+--! mode check
+
+-- POSITIVE: the identity function inferred from a let binding must be
+-- genuinely polymorphic — usable on multiple types in the same scope.
+polyId : Int
+let polyId =
+    let identity = fn x -> x
+    in (identity 42 : Int)
+
+--! assertNoErrors
+--! assertType polyId Int
+
+-- POSITIVE: a let-bound pair-maker should get a polymorphic type that
+-- allows the first component to be independent of the second.
+pairTest : (Int, String)
+let pairTest =
+    let mkPair = fn x -> fn y -> (x, y)
+    in mkPair 1 "hello"
+
+--! assertNoErrors
+--! assertType pairTest (Int, String)
+
+-- POSITIVE: a let-bound function used at two different types in the same
+-- expression (classic HM let-polymorphism test). This must type-check.
+twoTypeUse : (Int, String)
+let twoTypeUse =
+    let wrap = fn x -> x
+    in (wrap 42, wrap "hello")
+
+--! assertNoErrors
+
+-- POSITIVE: a let-bound constant that captures an outer variable.
+-- The closure over `a` correctly preserves the type of `a`.
+closureCapture : forall (a : Type). a -> (a, a)
+let closureCapture outerVal =
+    let dup = fn () -> (outerVal, outerVal)
+    in dup ()
+
+--! assertNoErrors
+--! assertType closureCapture (forall (a : Type). a -> (a, a))
+
+-- POSITIVE: nested let-bindings. The inner binding must remain polymorphic
+-- independent of the outer one.
+nestedLet : Int
+let nestedLet =
+    let f = fn x -> x
+    in let g = fn x -> f (f x)
+    in g 5
+
+--! assertNoErrors

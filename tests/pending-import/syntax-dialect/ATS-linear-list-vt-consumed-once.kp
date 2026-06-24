@@ -1,0 +1,98 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/dtcon.dats
+--         (list_vt_cons/list_vt_nil, linear lists with ! borrow patterns),
+--         tests/srcgen1/TEST/DATA/test01.dats (list_vt_length, list_make_elt),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats (vtypedef fint, cons_vt/nil_vt),
+--         issues: ATS-Xanadu #15 (impl declarations), PR #4 (cblist tests)
+-- Spec: functions.binders.quantities (§12.2),
+--       quantities.linear_discharge (§12.2.6),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied, kappa.path.consumed).
+-- ATS3 pattern: `list_vt(a)` is a linear list type; values of this type
+--   carry ownership and must be consumed exactly once. Silently dropping
+--   a `list_vt` value (letting it fall out of scope) is a compile-time error.
+--   Using a `list_vt` value in two places (after the first use consumes it)
+--   is also a compile-time error.
+-- Portable obligation: linear (quantity-1) values must be used exactly once.
+
+--! mode check
+
+-- A linear resource that models ATS3's vtype linear list node.
+data LinearNode : Type =
+    LinearNode Int
+
+-- Explicit destructor / consumer.
+destroyNode : (1 n : LinearNode) -> Unit
+let destroyNode _ = ()
+
+-- POSITIVE: explicit consumption via destructor.
+useOnce : Unit
+let useOnce =
+    let 1 n = LinearNode 42
+    destroyNode n
+
+-- POSITIVE: passing the linear value through to another function.
+passThrough : (1 n : LinearNode) -> Unit
+let passThrough n = destroyNode n
+
+usedViaPassThrough : Unit
+let usedViaPassThrough =
+    let 1 n = LinearNode 7
+    passThrough n
+
+-- POSITIVE: returning a linear value (transfer of ownership).
+makeAndReturn : LinearNode
+let makeAndReturn = LinearNode 100
+
+-- A linear pair: both components are linear.
+data LinearPair : Type =
+    LinearPair (1 first : LinearNode) (1 second : LinearNode)
+
+consumePair : (1 p : LinearPair) -> Unit
+let consumePair (LinearPair a b) =
+    destroyNode a
+    destroyNode b
+
+-- POSITIVE: constructing and consuming a linear pair.
+pairOk : Unit
+let pairOk =
+    let 1 p = LinearPair (LinearNode 1) (LinearNode 2)
+    consumePair p
+
+-- NEGATIVE: silently dropping a linear value (goes out of scope unconsumed).
+silentDrop : Unit
+let silentDrop =
+    let 1 n = LinearNode 5   --!! kappa.quantity.unsatisfied
+    ()
+
+-- NEGATIVE: creating a linear value inside a conditional where one branch
+-- consumes it and the other does not.
+conditionalDrop : Bool -> Unit
+let conditionalDrop flag =
+    let 1 n = LinearNode 3
+    if flag
+    then destroyNode n
+    else ()                  --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: both branches consume the value.
+conditionalOk : Bool -> Unit
+let conditionalOk flag =
+    let 1 n = LinearNode 3
+    if flag
+    then destroyNode n
+    else destroyNode n
+
+-- NEGATIVE: using a linear value after it has already been consumed.
+doubleUse : Unit
+let doubleUse =
+    let 1 n = LinearNode 9
+    destroyNode n
+    destroyNode n            --!! kappa.path.consumed
+
+-- NEGATIVE: silently dropping a linear pair (neither component consumed).
+pairDrop : Unit
+let pairDrop =
+    let 1 p = LinearPair (LinearNode 10) (LinearNode 20)  --!! kappa.quantity.unsatisfied
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.path.consumed

@@ -1,0 +1,50 @@
+-- Source: Julia manual, "Union Types", Julia#31483 (union method coverage)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances
+-- In Julia, dispatching a method over a Union requires every variant to have
+-- an applicable method; a missing variant causes a MethodError at runtime.
+-- In Kappa, calling a trait-constrained function on a type with no instance
+-- is kappa.implicit.unsolved.
+
+--! mode check
+
+trait Describable (a : Type) =
+    describe : a -> String
+
+data IntVal  : Type = IntVal Int
+data StrVal  : Type = StrVal String
+data BoolVal : Type = BoolVal Bool
+
+instance Describable IntVal =
+    let describe (IntVal _) = "int"
+
+instance Describable StrVal =
+    let describe (StrVal s) = s
+
+-- POSITIVE: both IntVal and StrVal have Describable instances.
+r1 : String
+let r1 = describe (IntVal 1)
+
+r2 : String
+let r2 = describe (StrVal "hello")
+
+-- NEGATIVE: BoolVal has no Describable instance.
+r3 : String
+let r3 = describe (BoolVal True)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- A higher-order function dispatching over Describable.
+describeTwo :
+    forall (a : Type).
+    (@_ : Describable a) ->
+    a -> a -> String
+let describeTwo x _ = describe x
+
+ok : String
+let ok = describeTwo (IntVal 1) (IntVal 2)
+
+-- NEGATIVE: called with uncovered type.
+bad : String
+let bad = describeTwo (BoolVal True) (BoolVal False)   --!! kappa.implicit.unsolved
+

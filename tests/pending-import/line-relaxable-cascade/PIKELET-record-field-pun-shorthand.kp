@@ -1,0 +1,29 @@
+-- Source issue: PIKELET-156 (PR: add record field puns).
+-- Spec: types.records.values
+--
+-- A record value entry written as just a label `name` is sugar for
+-- `name = name`, where `name` resolves in the surrounding scope. The
+-- value's type must be the field's expected type.
+
+--! mode check
+
+type XY : Type0 = (x : Nat, y : Nat)
+
+mkPair : Nat -> Nat -> XY
+let mkPair x y = (x, y)
+
+px : Nat
+let px = (mkPair 1 2).x
+
+py : Nat
+let py = (mkPair 3 4).y
+
+-- POSITIVE: punning can be mixed with explicit `=` form.
+mkPair2 : Nat -> XY
+let mkPair2 x = (x, y = 0)
+
+-- NEGATIVE: punning is rejected when the named identifier is not in scope.
+bad : XY
+let bad = (x, y)    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

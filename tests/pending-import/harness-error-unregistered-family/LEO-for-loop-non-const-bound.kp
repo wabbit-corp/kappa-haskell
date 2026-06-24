@@ -1,0 +1,61 @@
+-- Source issues: leo#749 (non-constant loop bounds allowed; `for i in 0..x`
+--               where `x` is a runtime parameter compiled without error even
+--               though the spec required constant bounds), leo#923 (failure to
+--               evaluate loop index at compile time when `const length: u32 = 4`
+--               was used as both array size and loop bound — issue#28923).
+-- Spec: SA-LEO-04 (compile-time constant bindings), SA-LEO-06 (for-loop type
+--       restriction), compiler.frontir.standard_diagnostic_families.quantity_obligations
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-LEO-04, §SA-LEO-06):
+--   "In a language where for-loop bounds must be compile-time-known, both `lo`
+--    and `hi` in `for i in lo..hi` must have quantity 0. Using a runtime value
+--    (quantity 1) as a loop bound must produce `kappa.quantity.satisfies`."
+-- Rewrite note: Leo's `for i : T in lo..hi { acc = acc + i }` is Leo-specific
+-- syntax; Kappa has no range-for form. Mutable accumulation (`acc = acc + i`) is
+-- also not valid Kappa. The obligation is modeled by a helper that demands
+-- 0-quantity bounds; passing a 1-quantity value triggers the expected error.
+
+--! mode check
+
+-- A compile-time-bounded iteration helper: both bounds must be 0-quantity.
+iterN : (0 lo : Int) -> (0 hi : Int) -> Int
+let iterN lo hi = hi - lo
+
+-- POSITIVE: literal (compile-time, 0-quantity) bounds.
+ok1 : Int
+let ok1 = iterN 0 10
+
+-- POSITIVE: named compile-time constant as the upper bound.
+upperBound : (0 _ : Int)
+let upperBound = 8
+
+ok2 : Int
+let ok2 = iterN 0 upperBound
+
+
+-- NEGATIVE: runtime (1-quantity) upper bound — models `for i in 0..x`
+-- where `x` is a function argument.
+let badRuntimeUpper (x : Int) : Int =
+    iterN 0 x    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: runtime lower bound.
+let badRuntimeLower (start : Int) : Int =
+    iterN start 10    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: both bounds are runtime.
+let badBothRuntime (lo : Int) (hi : Int) : Int =
+    iterN lo hi    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- POSITIVE: a compile-time derived constant satisfies the bound requirement.
+compLen : (0 _ : Int)
+let compLen = 4
+
+ok3 : Int
+let ok3 = iterN 0 compLen
+

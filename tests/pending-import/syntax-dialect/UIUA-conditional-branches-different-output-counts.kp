@@ -1,0 +1,41 @@
+-- Source issue: Uiua #122 ("Cannot infer function signature: if's
+--   branches with signatures |0.0 and |1.1 have a different numbers of
+--   outputs"), Uiua #130 ("If condition value can change stack
+--   signature" — the two if branches `∘` and `(.+)` push different
+--   numbers of stack values).
+-- Spec: expressions.conditionals, types.functions,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- The two arms of a conditional must produce values of the same type
+-- (and, for a stack-effect Source language, the same output count). A
+-- branch arity mismatch must be reported as kappa.type.mismatch at
+-- the if-expression, not deferred to runtime.
+
+module test
+
+--! mode check
+
+-- POSITIVE: both arms produce Int.
+condOk : Bool -> Int -> Int
+let condOk flag x = if flag then x + 1 else x - 1
+
+--! assertType condOk Bool -> Int -> Int
+
+-- NEGATIVE: one arm produces Int, the other produces a tuple.
+condBad : Bool -> Int -> Int
+let condBad flag x =
+    if flag
+        then x + 1
+        else (x, x + 1)                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: the two arms produce values of unrelated types (Int vs
+-- String).
+condBad2 : Bool -> Int -> Int
+let condBad2 flag x =
+    if flag
+        then x + 1
+        else "no answer"                      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

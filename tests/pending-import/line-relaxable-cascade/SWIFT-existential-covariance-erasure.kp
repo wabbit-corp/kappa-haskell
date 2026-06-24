@@ -1,0 +1,65 @@
+-- Source issues: apple/swift-evolution SE-0309 (unlock existentials for all
+--   protocols), SE-0352 (implicitly opened existentials), SE-0309 member-access
+--   gating rule: members accessible in covariant positions, blocked in contra.
+--   When an abstract type variable is opened from a polymorphic binder,
+--   its type cannot be unified with a specific concrete type. Attempting to
+--   coerce such a value to a concrete type produces kappa.type.mismatch.
+-- Spec: types.records.langymous_existential_packages_exists §13.2.11,
+--       traits.instances §14.3, types.quantification §11.3
+
+--! mode check
+
+trait Describable (a : Type) =
+    describe : a -> String
+    size     : a -> Nat
+
+data Circle : Type = Circle Nat
+data Square : Type = Square Nat
+
+instance Describable Circle =
+    let describe _ = "circle"
+    let size (Circle r) = r
+
+instance Describable Square =
+    let describe _ = "square"
+    let size (Square s) = s
+
+-- POSITIVE: a polymorphic function uses the trait interface — result is String.
+describeAny : forall {a : Type} -> (@_ : Describable a) -> a -> String
+let describeAny x = describe x
+
+-- POSITIVE: size returns Nat (concrete type, no erasure issue).
+sizeAny : forall {a : Type} -> (@_ : Describable a) -> a -> Nat
+let sizeAny x = size x
+
+circleDesc : String
+let circleDesc = describeAny (Circle 5)
+
+squareDesc : String
+let squareDesc = describeAny (Square 3)
+
+circleSize : Nat
+let circleSize = sizeAny (Circle 5)
+
+-- POSITIVE: composing polymorphic calls stays within the trait interface.
+describeAndSize : forall {a : Type} -> (@_ : Describable a) -> a -> (String, Nat)
+let describeAndSize x = (describe x, size x)
+
+-- NEGATIVE: trying to return the abstract value as a concrete Circle.
+-- `a` is universally abstract; it cannot be unified with Circle.
+toCircle : forall {a : Type} -> (@_ : Describable a) -> a -> Circle
+let toCircle x = x    --!! kappa.type.mismatch
+
+-- NEGATIVE: annotating the abstract value as Circle at a let binding.
+-- Opening the binder gives an abstract `a`, not Circle.
+useAsCircle : forall {a : Type} -> (@_ : Describable a) -> a -> Nat
+let useAsCircle x =
+    let c : Circle = x    --!! kappa.type.mismatch
+    size c
+
+-- NEGATIVE: coercing between two unrelated concrete types.
+-- Assigning a Square where Circle is expected is a type error.
+squareAsCircle : Circle
+let squareAsCircle = Square 3    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

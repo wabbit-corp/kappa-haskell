@@ -1,0 +1,27 @@
+-- Source issues: inko#599, inko#679
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Inko: a pattern arm with a guard does not contribute to exhaustiveness
+-- coverage. The guard may be false at runtime, so the arm cannot be relied
+-- upon to match. A match that relies solely on guarded arms is non-exhaustive.
+
+--! mode check
+
+data Level : Type = Low | Mid | High
+
+-- POSITIVE: un-guarded wildcard provides full coverage.
+classifyOk : Level -> String
+let classifyOk lvl = match lvl with
+    | Low  -> "low"
+    | Mid  -> "mid"
+    | High -> "high"
+
+
+-- NEGATIVE: the only arm covering High has a guard. The guard may fail,
+-- leaving High unhandled. The match is non-exhaustive.
+classifyBad : Level -> Bool -> String
+let classifyBad lvl flag = match lvl with   --!! kappa.pattern.non-exhaustive
+    | Low            -> "low"
+    | Mid            -> "mid"
+    | High if flag   -> "high (flagged)"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

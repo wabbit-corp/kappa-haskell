@@ -1,0 +1,23 @@
+-- Source issue: FSTAR-1418
+-- Spec: types.universes.quantities.reified_quantity_satisfaction
+-- When a GADT constructor has an erased implicit field (e.g. an erased length
+-- index), the implicit must be inferred from the return type of the constructor,
+-- not from the call site. The checker must propagate the expected return type
+-- into constructor argument inference.
+
+--! mode check
+
+-- Vector type with an erased length index.
+-- The implicit `n` in Cons is erased (not available at runtime).
+data Vec (a : Type) : Nat -> Type =
+    Nil  : Vec a 0
+    Cons : (@0 n : Nat) -> a -> Vec a n -> Vec a (n + 1)
+
+-- POSITIVE TEST: constructing `Cons () Nil` must infer `n = 0` from
+-- the expected type `Vec Unit 1` and the tail `Nil : Vec Unit 0`.
+let v1 : Vec Unit 1 = Cons () Nil
+
+-- POSITIVE TEST: nested cons.
+let v2 : Vec Unit 2 = Cons () (Cons () Nil)
+
+--! assertNoErrors

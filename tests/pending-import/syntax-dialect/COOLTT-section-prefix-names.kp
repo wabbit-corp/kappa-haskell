@@ -1,0 +1,77 @@
+-- Source artifacts: cooltt test section.cooltt (section with/without prefix,
+--               shadowing section, section with pattern), test names.cooltt.
+-- Source tests: cooltt test/section.cooltt (corpus repos/github-redprl-cooltt/tests/test/section.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--
+-- A `section X begin ... end` block (or analogous module block) groups
+-- declarations under a namespace prefix. All declarations inside the block
+-- are accessible under the fully-qualified path `X.decl`. Declarations
+-- after the block see the prefixed names. Declarations inside the block
+-- may see each other directly (without the prefix).
+--
+-- An anonymous section `section begin ... end` does not add a prefix;
+-- declarations are exported directly. With a `shadowing` annotation,
+-- bindings inside may shadow outer bindings.
+
+--! mode check
+
+-- POSITIVE: simple namespace grouping; declarations inside use the module path.
+module M1 where
+    x : Nat
+    let x = 0
+
+    y : Nat
+    let y = 10
+end
+
+-- POSITIVE: accessing M1's contents with the qualified path.
+fromM1x : Nat
+let fromM1x = M1.x
+
+fromM1y : Nat
+let fromM1y = M1.y
+
+-- POSITIVE: two modules with the same member name are disambiguated by path.
+module M2 where
+    x : Nat
+    let x = 20
+end
+
+m1x : Nat
+let m1x = M1.x
+
+m2x : Nat
+let m2x = M2.x
+
+-- POSITIVE: unqualified access after `open`.
+open M1
+
+unqualX : Nat
+let unqualX = x    -- M1.x
+
+-- POSITIVE: nested modules.
+module Outer where
+    module Inner where
+        val : Nat
+        let val = 99
+    end
+end
+
+outerInner : Nat
+let outerInner = Outer.Inner.val
+
+-- POSITIVE: module alias.
+module Alias = M1
+
+aliasX : Nat
+let aliasX = Alias.x
+
+-- NEGATIVE: accessing a non-existent member of a module.
+badMember : Nat
+let badMember = M1.z    --!! kappa.name.unresolved
+
+-- NEGATIVE: accessing a module that does not exist.
+badModule : Nat
+let badModule = UnknownModule.x    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

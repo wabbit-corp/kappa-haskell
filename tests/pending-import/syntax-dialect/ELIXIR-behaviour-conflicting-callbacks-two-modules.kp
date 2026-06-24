@@ -1,0 +1,69 @@
+-- Source issues: kernel/warning_test.exs "conflicting behaviour"
+--   ("conflicting behaviours found. Callback function foo/0 is defined by both Sample1
+--    and Sample2 (in module Sample3)"),
+--   warning_test.exs "duplicate behaviour"
+--   ("the behaviour Sample1 has been declared twice"),
+--   spec gap ESA-ELIXIR-04
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous)
+-- Kappa spec rule (§3.2.2 kappa.name.ambiguous):
+--   "Used when lookup finds multiple admissible declarations."
+-- In Elixir, when a module implements two behaviours that both declare a callback with the
+-- same name and arity, the compiler warns: "conflicting behaviours found. Callback function
+-- foo/0 is defined by both Module1 and Module2". In Kappa, when a type must simultaneously
+-- satisfy two traits that both declare a method with the same name, the method name is
+-- ambiguous; both candidates are equally applicable. This is kappa.name.ambiguous.
+
+--! mode check
+
+-- Two traits that both declare a method with the same name.
+trait Serializer (a : Type) =
+    encode : (& x : a) -> String
+
+trait Formatter (a : Type) =
+    encode : (& x : a) -> String
+
+-- POSITIVE: module implements only Serializer; no ambiguity.
+record Packet =
+    data : String
+
+instance Serializer Packet =
+    let encode p = "packet:" ++ p.data
+
+-- POSITIVE: module implements only Formatter; no ambiguity.
+record Frame =
+    size : Int
+
+instance Formatter Frame =
+    let encode f = "frame:" ++ Int.show f.size
+
+-- NEGATIVE: module declares it implements both Serializer and Formatter.
+-- Both traits export 'encode'; the name is ambiguous when both are in scope simultaneously.
+record Message =
+    body : String
+    seq  : Int
+
+instance Serializer Message =
+    let encode m = "ser:" ++ m.body    --!! kappa.name.ambiguous
+
+instance Formatter Message =
+    let encode m = "fmt:" ++ m.body    --!! kappa.name.ambiguous
+
+-- NEGATIVE: module imports two modules that both export a function 'render'.
+-- The name 'render' is ambiguous at the call site.
+module Renderer1
+
+let render x = "r1: " ++ show x
+
+module Renderer2
+
+let render x = "r2: " ++ show x
+
+module Consumer
+import Renderer1
+import Renderer2
+
+badCall : Int -> String
+let badCall n = render n           --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

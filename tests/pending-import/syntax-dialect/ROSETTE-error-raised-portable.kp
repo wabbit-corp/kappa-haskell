@@ -1,0 +1,59 @@
+-- Source issue: ROSETTE-215 (Raising hard errors — distinguishing
+--                infeasibility from user-visible failure)
+-- Spec: data_types.data_declarations,
+--       expressions.match,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- The Rosette report asks for a way to surface unrecoverable input
+-- errors rather than letting the symbolic engine "mark a path
+-- infeasible". Kappa's portable answer is the `Result`/`Either` data
+-- pattern: errors are explicit values that flow through the type
+-- system, never silently elided by a downstream rewriter. This
+-- fixture pins down the typing rule that an `Err` constructor carries
+-- a typed payload and that the wrong-typed payload is rejected
+-- statically.
+--
+-- (A monadic `raise` form exists in the standard library under
+-- `errors.raise`, but it requires a `MonadError m` and so is not the
+-- right vehicle for a pure Kappa fixture.)
+
+--! mode check
+
+data Result (a : Type) : Type =
+    Ok a
+    Err String
+
+data InputShape : Type =
+    ShapeOk
+    ShapeBad String
+
+-- POSITIVE: a library function exhaustively decides shape; failure is
+-- a typed `Err`.
+process : InputShape -> Result Int
+let process s =
+    match s
+    case ShapeOk        -> Ok 0
+    case (ShapeBad msg) -> Err msg
+
+-- POSITIVE: a guarded computation produces `Err` for the failure case.
+mustPositive : Int -> Result Int
+let mustPositive n =
+    if n > 0 then Ok n else Err "must be positive"
+
+-- POSITIVE: combining results with explicit dispatch.
+fetch : Int -> Result (Int, Int)
+let fetch i =
+    if i < 0
+        then Err "negative key"
+        else Ok (i, i * 2)
+
+-- POSITIVE: higher-order use with an explicit error path.
+applyOrFail : (Int -> Int) -> Int -> Result Int
+let applyOrFail f x =
+    if x == 0 then Err "zero input" else Ok (f x)
+
+-- NEGATIVE: `Err` expects a String payload, not an Int.
+badErr : Result Int
+let badErr = Err 42                                 --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

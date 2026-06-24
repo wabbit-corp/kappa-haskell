@@ -1,0 +1,68 @@
+-- Source issues: odin#4504 (struct containing a maybe of the same type leads to
+--               hung compilation), odin#4847 (infinite loop in compiler when
+--               hiding cyclic dependency with polymorphism), OSA-ODIN-07
+-- Spec: compiler.frontir.standard_diagnostic_families.termination (kappa.termination.failure),
+--       compiler.frontir.ordinary_errors_not_internal_failures
+-- A data type that directly contains itself without pointer indirection has
+-- infinite value-representation size and is not well-founded. The compiler must
+-- detect and reject such definitions rather than hanging or crashing.
+
+--! mode check
+
+-- POSITIVE: a well-founded recursive type using a wrapper that provides
+-- structural indirection. The recursion terminates because each `TreeNode`
+-- contains a finite list of sub-trees.
+-- (Named TList/TCons/TNil to avoid shadowing the prelude List/Cons/Nil.)
+data TList (a : Type) : Type =
+    TCons a (TList a)
+    TNil
+
+data TreeNode : Type =
+    Leaf Int
+    Branch (TList TreeNode)
+
+let treeDepth (t : TreeNode) : Int =
+    match t
+    case Leaf _    -> 1
+    case Branch _  -> 2
+
+
+-- POSITIVE: a type that references itself only through a list (indirection).
+-- Because TList provides its own recursive structure, this is well-founded
+-- for representational purposes.
+let countLeaves (t : TreeNode) : Int =
+    match t
+    case Leaf _      -> 1
+    case Branch kids ->
+        match kids
+        case TNil        -> 0
+        case TCons _ _   -> 1
+
+
+-- NEGATIVE: a directly self-referential type with no indirection.
+-- `BadLoop` contains a field of type `BadLoop` directly, making its
+-- representation infinitely large. This must be rejected.
+data BadLoop : Type =        --!! kappa.termination.failure
+    BadLoop BadLoop
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: a mutual cycle: A contains B, B contains A, with no indirection.
+data CycleA : Type =         --!! kappa.termination.failure
+    CycleA CycleB
+
+data CycleB : Type =         --!! kappa.termination.failure
+    CycleB CycleA
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: self-reference hidden behind a container that doesn't break cycles.
+-- If `Wrap` is a struct that just holds a field of type `a`, then
+-- `Cyclic = Cyclic (Wrap Cyclic)` is still infinitely recursive.
+data Wrap (a : Type) : Type =
+    Wrap a
+
+data CyclicWrapped : Type =   --!! kappa.termination.failure
+    CyclicWrapped (Wrap CyclicWrapped)
+
+--! assertDiagnosticFamily error kappa.termination.failure

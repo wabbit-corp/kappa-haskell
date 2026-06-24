@@ -1,0 +1,44 @@
+-- Source: granule-project/granule PR #108 (Approximation for lambda
+--         and better abilities for poly coeffect types)
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.reified_quantity_satisfaction,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- §12.2: a polymorphic quantity binder `(q : Quantity)` introduces a
+-- symbolic capability `q`. The body cannot prove `QuantitySatisfies q 1`
+-- nor `QuantitySatisfies q 0` without an explicit premise. The unsolved
+-- symbolic obligation surfaces family `kappa.quantity.satisfies`.
+
+module test
+
+--! mode check
+
+-- POSITIVE: linear use is OK when an explicit premise asserts `QuantitySatisfies q 1`.
+useOnce : forall (q : Quantity) (a : Type).
+    QuantitySatisfies q 1 => (q x : a) -> a
+let useOnce x = x
+
+--! assertType useOnce (forall (q : Quantity) (a : Type). QuantitySatisfies q 1 => (q x : a) -> a)
+
+-- POSITIVE: ignoring is OK when an explicit premise asserts `QuantitySatisfies q 0`.
+ignoreVal : forall (q : Quantity) (a : Type).
+    QuantitySatisfies q 0 => (q x : a) -> Unit
+let ignoreVal x = ()
+
+
+-- POSITIVE: ω capability satisfies every demand without an explicit premise.
+ignoreOmega : forall (a : Type). (ω x : a) -> Unit
+let ignoreOmega x = ()
+
+
+-- NEGATIVE: symbolic q without premise — body uses x once but q may be 0.
+badUseOnce : forall (q : Quantity) (a : Type). (q x : a) -> a
+let badUseOnce x = x          --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: symbolic q without premise — body ignores x but q may have
+-- a positive lower bound (e.g., 1 or >=1).
+badDrop : forall (q : Quantity) (a : Type). (q x : a) -> Unit
+let badDrop x = ()            --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

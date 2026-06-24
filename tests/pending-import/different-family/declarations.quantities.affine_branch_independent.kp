@@ -1,0 +1,45 @@
+-- Source issue: (original — affine quantity in branching)
+-- Spec: types.universes.quantities
+-- An affine (<=1) binding may be used at most once across ALL paths of a
+-- conditional expression.  Using it in only one branch satisfies the constraint
+-- because the maximum number of uses across any execution path is still <=1.
+-- A linear (=1) binding, by contrast, must be used in ALL branches.
+
+--! mode check
+
+-- POSITIVE: affine value used in one branch and ignored in the other.
+-- The value is used 0 times (Nothing path) or 1 time (Just path) — both <=1.
+safeUseAffine : (<=1 x : Int) -> Option Int -> Int
+let safeUseAffine x opt =
+    match opt
+    case Nothing -> 0
+    case Just n  -> x + n
+
+-- POSITIVE: affine value ignored entirely — zero uses satisfies <=1.
+discardAffine : (<=1 x : Int) -> Unit
+let discardAffine x = ()
+
+-- POSITIVE: affine value used in exactly one branch of an if.
+conditionalUse : (<=1 x : Int) -> Bool -> Int
+let conditionalUse x flag =
+    if flag then x * 2 else 99
+
+-- NEGATIVE: linear value used in only one branch — the other branch uses it
+-- zero times, violating the =1 requirement.
+badLinearBranch : (1 x : Int) -> Bool -> Int
+let badLinearBranch x flag =
+    if flag then x + 1 else 0   --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: linear value used in BOTH branches.
+goodLinearBranch : (1 x : Int) -> Bool -> Int
+let goodLinearBranch x flag =
+    if flag then x + 1 else x + 2
+
+-- POSITIVE: affine used in each branch of a match (each path uses it once).
+matchAffine : (<=1 x : Int) -> Option Int -> Int
+let matchAffine x opt =
+    match opt
+    case Nothing -> x      -- x used here
+    case Just n  -> n      -- x not used; 0 uses is fine for <=1
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

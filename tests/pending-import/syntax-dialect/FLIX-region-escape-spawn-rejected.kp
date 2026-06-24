@@ -1,0 +1,50 @@
+-- Source issues: FLIX-8015, FLIX-7348, FLIX-8781
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- A reference (or other resource) bound to a region must not escape that region.
+-- In particular, capturing a region-tied value in a `spawn` expression that
+-- outlives the region creates an illegal region escape and must be rejected.
+
+--! mode check
+
+-- POSITIVE TEST: a region-local reference used and discarded inside the region.
+let safe_region : Int =
+    region r
+        let ref_val = Ref.fresh r 42
+        Ref.get ref_val
+
+-- NEGATIVE TEST: a reference tied to an inner region escapes via return.
+-- The region `r2` ends before the function returns, so the reference is dangling.
+let escape_via_return : Ref Int =
+    region r
+        let ref_val = Ref.fresh r 42
+        ref_val                   -- escapes r --!! kappa.borrow.escape
+
+-- NEGATIVE TEST: a reference tied to an inner region is captured by a spawn.
+-- The spawned fiber may execute after `r` has been collected.
+let escape_via_spawn : Unit =
+    region r
+        let ref_val = Ref.fresh r 0
+        spawn
+            -- `ref_val` is tied to `r`, which may end before the fiber runs
+            let _ = Ref.get ref_val   --!! kappa.borrow.escape
+            ()
+
+-- NEGATIVE TEST: nested regions; reference from inner escapes to outer spawn.
+let escape_nested : Unit =
+    region outer
+        region inner
+            let inner_ref = Ref.fresh inner "hello"
+            spawn
+                -- inner_ref escapes `inner` via `outer`'s spawn
+                let _ = Ref.get inner_ref   --!! kappa.borrow.escape
+                ()
+
+-- POSITIVE TEST: spawn with no captured region-local values is fine.
+let safe_spawn : Unit =
+    let x = 42
+    spawn
+        let _ = x    -- x is not region-local
+        ()
+
+-- expect: safe_region, safe_spawn accepted;
+--         escape_via_return, escape_via_spawn, escape_nested rejected

@@ -1,0 +1,37 @@
+-- Source: Julia manual, "Union Types", Julia exhaustiveness proposals
+-- Spec: expressions.patterns.exhaustiveness,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- In Julia, matching over a union without covering all variants risks a
+-- MethodError at runtime. In Kappa, a match on a sum type that omits one or
+-- more constructors is kappa.pattern.non-exhaustive.
+
+--! mode check
+
+data Shape : Type = Circle Float | Square Float | Triangle Float Float
+
+-- POSITIVE: all three constructors handled.
+area : Shape -> Float
+let area s =
+    match s with
+    | Circle r     -> 3.14159 * r * r
+    | Square side  -> side * side
+    | Triangle b h -> 0.5 * b * h
+
+-- NEGATIVE: Triangle arm is missing.
+badArea : Shape -> Float    --!! kappa.pattern.non-exhaustive
+let badArea s =
+    match s with
+    | Circle r    -> 3.14159 * r * r
+    | Square side -> side * side
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one arm — Circle and Triangle not handled.
+nameOnly : Shape -> String   --!! kappa.pattern.non-exhaustive
+let nameOnly s =
+    match s with
+    | Square _ -> "square"
+
+ok : Float
+let ok = area (Circle 2.0)
+

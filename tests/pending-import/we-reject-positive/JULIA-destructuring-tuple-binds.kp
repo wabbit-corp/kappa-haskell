@@ -1,0 +1,61 @@
+-- Source: Julia manual, "Tuple Destructuring",
+--         Julia multiple-return-value idiom via tuples
+-- Spec: expressions.patterns.tuples, expressions.let_bindings
+-- In Julia, `(a, b) = (1, 2)` binds both components in one step. In Kappa,
+-- a tuple pattern on the left-hand side of a let binding expands to
+-- per-element bindings; the arity must match the tuple type.
+
+--! mode check
+
+-- POSITIVE: simple pair destructuring.
+pair : (Int, String)
+let pair = (42, "hello")
+
+first : Int
+second : String
+let (first, second) = pair
+
+--! assertType first  Int
+--! assertType second String
+
+-- POSITIVE: triple.
+triple : (Int, Bool, Float)
+let triple = (1, True, 3.14)
+
+n : Int
+b : Bool
+f : Float
+let (n, b, f) = triple
+
+--! assertType n Int
+--! assertType b Bool
+--! assertType f Float
+
+-- POSITIVE: nested tuple destructuring.
+nested : (Int, (String, Bool))
+let nested = (0, ("x", False))
+
+outer : Int
+innerPair : (String, Bool)
+let (outer, innerPair) = nested
+
+s : String
+flag : Bool
+let (s, flag) = innerPair
+
+--! assertType outer Int
+--! assertType s String
+--! assertType flag Bool
+
+-- POSITIVE: using destructured components in expressions.
+sumPair : (Int, Int) -> Int
+let sumPair p =
+    let (a, b) = p
+    a + b
+
+total : Int
+let total = sumPair (3, 4)
+
+--! assertType total Int
+
+--! assertNoErrors

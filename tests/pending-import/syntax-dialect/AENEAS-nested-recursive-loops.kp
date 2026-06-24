@@ -1,0 +1,79 @@
+-- Source issues: AENEAS-80, AENEAS-148
+-- Spec: declarations.terms, expressions.match
+-- Aeneas translates nested Rust loops as nested `_loop` functions — each
+-- loop body becomes its own tail-recursive auxiliary function.  The portable
+-- obligation is that mutually independent recursive functions (modeling an
+-- outer and inner loop) are well-typed and their result types are consistent.
+-- Issue #80: double-loop compilation error; issue #148: failure when
+-- extracting a loop.
+
+module test
+
+--! mode check
+
+-- POSITIVE: inner-loop tail-recursive function (models a while loop body).
+innerLoop : Int -> Int -> Int
+let innerLoop j limit =
+    if j >= limit then 0
+    else 1 + innerLoop (j + 1) limit
+
+--! assertNoErrors
+--! assertType innerLoop (Int -> Int -> Int)
+
+-- POSITIVE: outer-loop tail-recursive function that calls innerLoop.
+-- This models nested loops where the inner loop runs to completion on
+-- each iteration of the outer loop.
+outerLoop : Int -> Int -> Int -> Int
+let outerLoop i outerLimit innerLimit =
+    if i >= outerLimit then 0
+    else innerLoop 0 innerLimit + outerLoop (i + 1) outerLimit innerLimit
+
+--! assertNoErrors
+--! assertType outerLoop (Int -> Int -> Int -> Int)
+
+result : Int
+let result = outerLoop 0 5 3
+
+--! assertNoErrors
+--! assertType result Int
+
+-- POSITIVE: inner loop with an accumulator passed through.
+sumRowLoop : Int -> Int -> Int -> Int
+let sumRowLoop j limit acc =
+    if j >= limit then acc
+    else sumRowLoop (j + 1) limit (acc + j)
+
+sumTableLoop : Int -> Int -> Int -> Int
+let sumTableLoop i outerLimit innerLimit =
+    if i >= outerLimit then 0
+    else
+        let rowSum = sumRowLoop 0 innerLimit 0
+        rowSum + sumTableLoop (i + 1) outerLimit innerLimit
+
+--! assertNoErrors
+
+tableSum : Int
+let tableSum = sumTableLoop 0 4 4
+
+--! assertNoErrors
+--! assertType tableSum Int
+
+-- POSITIVE: nested loop with early exit from inner (models break in inner loop).
+searchMatrix : List (List Int) -> Int -> Bool
+let searchMatrix rows target =
+    match rows
+    case [] -> False
+    case row :: rest ->
+        let rowContains =
+            match row
+            case [] -> False
+            case h :: t ->
+                if h == target then True
+                else
+                    match searchMatrix [t] target
+                    case True  -> True
+                    case False -> False
+        if rowContains then True
+        else searchMatrix rest target
+
+--! assertNoErrors

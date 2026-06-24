@@ -1,0 +1,40 @@
+-- Source issues: CREUSOT-bad_borrow
+-- Source tests: creusot should_fail/bad_borrow.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/bad_borrow.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.disjoint_path_borrowing_records,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region,
+--       compiler.diagnostics.path_sensitive_diagnostics.overlapping_borrow_or_update_footprints
+-- Family: kappa.borrow.overlap (Kappa §3.2.7 / §3.3)
+-- Two simultaneously live mutable borrow handles to the same root place
+-- must overlap and be rejected.  This single fixture exercises only the
+-- negative case (mixed positive cases moved to sibling pattern fixtures).
+-- Surface forms `&mut`, `& x`, `var ... := ...` are placeholder spelling
+-- pending CREUSOT-SA-12 (path-sensitive borrow obligations) - see
+-- CREUSOT_SPEC_ADDITIONS.md.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: two `&mut` borrows of `x` are alive at the same time.
+twoMutOfSame : Unit
+let twoMutOfSame =
+    do {
+        var x = 0;
+        let a = &mut x in
+        let b = &mut x in           --!! kappa.borrow.overlap
+        a := !a + !b
+        }
+
+-- NEGATIVE: one mutable and one shared borrow of the same place also
+-- overlaps and must be rejected.
+mutAndShared : Unit
+let mutAndShared =
+    do {
+        var x = 0;
+        let a = &mut x in
+        let b = & x in              --!! kappa.borrow.overlap
+        a := !a + !b
+        }
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

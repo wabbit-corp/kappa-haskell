@@ -1,0 +1,29 @@
+-- Source issues: CREUSOT-173
+-- Spec: effects.loops, effects.elaboration_model.while_loops,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Family: kappa.name.unresolved (Kappa §3.2.1)
+-- An invariant clause is name-resolved at the LOOP HEADER scope; any
+-- free variable in the invariant body must be in scope at that header.
+-- A reference to a name introduced AFTER the loop (or only inside the
+-- body) is an unresolved name.  Pending spec gap CREUSOT-SA-06.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: the invariant references a name `q` that is not in scope at
+-- the loop header (it is declared after the loop).  Resolution must fail.
+outOfScopeName : Int -> Int
+let outOfScopeName n =
+    do {
+        var w = 1;
+        while !w <= n
+            invariant { !q < n }                  --!! kappa.name.unresolved
+        do
+            w = !w + 1
+        ;
+        var q = 0;
+        !q
+        }
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,18 @@
+-- Source issue: carp-lang/Carp#467
+-- Provider module: defines a private binding and a default-exported one.
+-- Carp #467 portable obligation: a `private` binding is invisible
+-- outside its module.
+module provider
+
+-- (2026-06-11, FAB-010: removed invalid `export publicAnswer` line — §8.4
+-- `export` re-exports module paths; items are exported by default. Added the
+-- required `private` marker below: §8.4/§8.5.1 export every top-level item
+-- unless marked private, so the unmarked original could never be unresolved.)
+
+publicAnswer : Int
+let publicAnswer = secretAnswer
+
+-- secretAnswer is private (§8.5.1): not name-resolvable outside this module,
+-- so qualified access from consumer must fail name resolution.
+private secretAnswer : Int
+private let secretAnswer = 42

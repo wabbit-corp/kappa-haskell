@@ -1,0 +1,40 @@
+-- Source issues: METACOQ-1120, METACOQ-1108
+-- Spec: data_types.data_declarations, data_types.gadts,
+--       data_types.well_formedness
+--
+-- A `data` declaration distinguishes uniform parameters (bound on the
+-- header, fixed across constructors) from indices (mentioned only on the
+-- right of `:`, varying per constructor). MetaCoq #1120 calls out that
+-- quoting must preserve this split. Kappa's `data_types.data_declarations`
+-- requires that header-bound names act as uniform parameters and that
+-- GADT-style indices may differ per constructor.
+
+module test
+
+--! mode check
+
+-- POSITIVE: uniform parameter `a` is constant across constructors; index
+-- `n : Nat` varies per constructor.
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : forall {n : Nat}. (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
+
+-- POSITIVE: same data type used at different uniform parameters.
+boolVec : Vec Bool 2
+let boolVec = VCons True (VCons False VNil)
+
+natVec : Vec Nat 1
+let natVec = VCons 1 VNil
+
+-- POSITIVE: a constructor that introduces an index dependency between
+-- parameters (Geq x y ≡ x ≥ y).
+data Geq : Nat -> Nat -> Type =
+    EqBase : forall {m : Nat}. Geq m 0
+    EqSuc  : forall {n : Nat} {m : Nat}. (proof : Geq n m) -> Geq (n + 1) (m + 1)
+
+ok : Geq 2 1
+let ok = EqSuc EqBase
+
+--! assertNoErrors
+--! assertType boolVec Vec Bool 2
+--! assertType natVec Vec Nat 1

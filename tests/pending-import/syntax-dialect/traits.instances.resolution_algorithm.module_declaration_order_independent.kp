@@ -1,0 +1,48 @@
+-- Source issue: Noir#11915
+-- Spec: traits.instances.resolution_algorithm
+-- Trait instance resolution MUST NOT depend on the textual declaration order
+-- of modules. Even when a module's instance is declared before the module
+-- containing an instance it depends on, the checker must still resolve the
+-- dependency by collecting all instances globally before type-checking.
+--
+-- Concretely: if module B declares `instance Eq Widget` where Widget has a
+-- field of type Color from module A, and module A's `instance Eq Color`
+-- appears later in the file, the overall check must still succeed.
+
+module test
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+-- Module B is declared first. Its instance for Widget depends on `Eq Color`
+-- which comes from module A declared below.
+module B =
+    data Widget : Type = Widget A.Color
+
+    instance Eq Widget =
+        let eq (Widget c1) (Widget c2) = A.eq c1 c2
+
+-- Module A is declared second.
+module A =
+    data Color : Type = Red | Blue
+
+    instance Eq Color =
+        let eq c1 c2 =
+            match (c1, c2)
+            case (Red, Red) -> True
+            case (Blue, Blue) -> True
+            case _ -> False
+
+--! mode check
+
+-- Both instances must resolve despite B appearing before A.
+widgetsEqual : Bool
+let widgetsEqual = B.eq (B.Widget A.Red) (B.Widget A.Red)
+
+--! assertNoErrors
+
+-- Inequality case.
+widgetsDiffer : Bool
+let widgetsDiffer = B.eq (B.Widget A.Red) (B.Widget A.Blue)
+
+--! assertNoErrors

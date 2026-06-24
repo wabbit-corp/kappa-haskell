@@ -1,0 +1,38 @@
+-- Source issues: BQN-PR-109 (under.md fix: `5↑↕3` is `0,1,2,0,0` because
+--   Take beyond the length pads with the array's fill element);
+-- BQN docs/take.md (Take with positive `𝕨` larger than length fills with
+--   the fill element).
+-- Spec: expressions.match, modules.prelude.contents.
+-- Take is a partial primitive: with a length larger than the source it
+-- must produce a defined output, not an error. Kappa's portable analog
+-- uses a default-filled `take` helper on List a, defined recursively.
+
+--! mode check
+
+-- A portable `take` that returns a list of length n, padding with `fill`.
+takeWithFill : forall a. a -> Nat -> List a -> List a
+let takeWithFill fill n xs =
+    match n
+      case 0 -> Nil
+      case _ ->
+          match xs
+            case Nil      -> fill :: (takeWithFill fill (n - 1) Nil)
+            case h :: t   -> h    :: (takeWithFill fill (n - 1) t)
+
+-- POSITIVE: take 5 from `[0, 1, 2]` with fill 0 yields `[0, 1, 2, 0, 0]`.
+short : List Nat
+let short = [0, 1, 2]
+
+taken : List Nat
+let taken = takeWithFill 0 5 short
+
+-- POSITIVE: take 2 from a longer list truncates without using the fill.
+truncated : List Nat
+let truncated = takeWithFill 0 2 [10, 20, 30, 40]
+
+-- POSITIVE: take 0 yields the empty list regardless of input.
+emptied : List Nat
+let emptied = takeWithFill 99 0 short
+
+--! assertNoErrors
+--! assertType takeWithFill (forall a. a -> Nat -> List a -> List a)

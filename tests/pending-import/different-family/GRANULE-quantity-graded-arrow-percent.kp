@@ -1,0 +1,47 @@
+-- Source: granule-project/granule PR #199 (Graded base extension) and
+--         PR #83 (usage bound intervals); tests/cases/positive/graded-base/gradedBase1.gr
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.reified_quantity_satisfaction,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Granule writes graded arrows as `a % q -> b`; Kappa's canonical form is
+-- `(q x : A) -> B` (§12.1.1). Programs that violate the declared usage
+-- count surface family `kappa.quantity.unsatisfied` (§3.2.5).
+
+module test
+
+--! mode check
+
+-- POSITIVE: linear (quantity 1) — used exactly once.
+identity1 : forall (a : Type). (1 x : a) -> a
+let identity1 x = x
+
+--! assertType identity1 (forall (a : Type). (1 x : a) -> a)
+
+-- POSITIVE: ω (unrestricted) — may be used any number of times.
+duplicate : forall (a : Type). (ω x : a) -> (a, a)
+let duplicate x = (x, x)
+
+--! assertType duplicate (forall (a : Type). (ω x : a) -> (a, a))
+
+-- POSITIVE: a quantity-2 binder used exactly twice via tuple build.
+useTwice : forall (a : Type). (2 x : a) -> (a, a)
+let useTwice x = (x, x)
+
+
+-- NEGATIVE: declared linear but used twice — must fail.
+badDup : forall (a : Type). (1 x : a) -> (a, a)
+let badDup x = (x, x)         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: declared linear but unused — must fail.
+badWeak : forall (a : Type). (1 x : a) -> Unit
+let badWeak x = ()            --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: declared 0 but body demands the variable.
+badErased : forall (a : Type). (0 x : a) -> a
+let badErased x = x           --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

@@ -1,0 +1,82 @@
+-- Stress test: An abortive effect operation (quantity 0 continuation) has a
+--   polymorphic return type — it can be used where any result type is expected.
+--   This is the key semantic property: `abort : Unit -> a` where `a` is the
+--   enclosing computation's result type, not a rigid type.
+-- Spec: effects.monadic_core.effect_declarations,
+--   effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Two abortive effects: one for early return, one for failure.
+effect EarlyReturn (r : Type) =
+    0 returnNow : r -> a
+
+effect Fail =
+    0 fail : String -> a
+
+-- POSITIVE: using EarlyReturn inside a computation returning Int.
+earlyInt : Eff <[early : EarlyReturn Int]> Int
+let earlyInt =
+    do
+        EarlyReturn.returnNow 42
+        pure 0   -- never reached
+
+-- POSITIVE: using EarlyReturn inside a computation returning String.
+earlyString : Eff <[early : EarlyReturn String]> String
+let earlyString =
+    do
+        EarlyReturn.returnNow "done"
+        pure "never"
+
+-- Handler for EarlyReturn: returns the early value.
+runEarly : forall {r : Type}. Eff <[early : EarlyReturn r]> r -> r
+let runEarly comp =
+    handle early comp with
+        case return v        -> v
+        case returnNow val _ -> val
+
+-- POSITIVE: using Fail, which can appear in any computation type.
+mayFail : Int -> Eff <[fail : Fail]> Int
+let mayFail n =
+    if n < 0 then Fail.fail "negative"
+    else pure (n * 2)
+
+-- Handler for Fail: returns Option.
+runFail : forall {a : Type}. Eff <[fail : Fail]> a -> Option a
+let runFail comp =
+    handle fail comp with
+        case return v    -> Just v
+        case fail _ _    -> Nothing
+
+-- POSITIVE: combining EarlyReturn and Fail.
+combined : Eff <[early : EarlyReturn Int, fail : Fail]> Int
+let combined =
+    do
+        let n <- mayFail 5
+        if n > 9 then EarlyReturn.returnNow n
+        else pure n
+
+-- Eliminate effects in order.
+runCombined : Option Int
+let runCombined =
+    runFail (runEarly combined)
+
+-- POSITIVE: Fail inside a List computation — a can be List something.
+failInList : Eff <[fail : Fail]> (List Int)
+let failInList =
+    do
+        Fail.fail "always fails"
+        pure (1 :: 2 :: Nil)
+
+result1 : Option Int
+let result1 = runFail (mayFail 3)
+
+result2 : Option Int
+let result2 = runFail (mayFail (-1))
+
+result3 : Int
+let result3 = runEarly earlyInt
+
+--! assertNoErrors
+--! assertType result1 (Option Int)
+--! assertType result3 Int

@@ -1,0 +1,8 @@
+-- Source: Boomerang docs/docs/main.src "Coercions" + module surface.
+-- Spec: modules.imports, modules.names.dotted_name_resolution_dotted.
+-- Helper module: provides `elt` for the ambiguous consumer.
+
+module Xml
+
+elt : String -> String
+let elt tag = tag

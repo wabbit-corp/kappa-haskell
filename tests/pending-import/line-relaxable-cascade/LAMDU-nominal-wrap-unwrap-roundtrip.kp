@@ -1,0 +1,63 @@
+-- Source issues: lamdu#43 — creating data types; lamdu#138 — higher-order
+--   function question; lamdu#141 — nominals should have separate
+--   disambiguation. Lamdu has explicit nominal types with `Nom value`
+--   (wrap) and `value.Nom` (unwrap); the round-trip is the identity.
+-- Spec: data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §10.1: a nominal type wrap and unwrap are inverse operations; the
+--   round-trip preserves the inner type.
+--
+-- Wrapping then unwrapping a value of a nominal type yields the same
+-- value at the inner type; cross-nominal coercion is rejected.
+
+--! mode check
+
+-- POSITIVE: declare two distinct nominals with the same underlying type.
+data Age : Type = MkAge Nat
+data Score : Type = MkScore Nat
+
+-- POSITIVE: wrap a value into a nominal.
+myAge : Age
+let myAge = MkAge 30
+
+myScore : Score
+let myScore = MkScore 100
+
+-- POSITIVE: unwrap to recover the underlying value via pattern match.
+unAge : Age -> Nat
+let unAge a =
+    match a
+    case MkAge n -> n
+
+unScore : Score -> Nat
+let unScore s =
+    match s
+    case MkScore n -> n
+
+-- POSITIVE: round-trip — wrap then unwrap yields the original value.
+roundTrip : Nat -> Nat
+let roundTrip n = unAge (MkAge n)
+
+useRoundTrip : Nat
+let useRoundTrip = roundTrip 7
+
+-- POSITIVE: distinct nominals with the same payload are NOT
+-- interchangeable — type system enforces nominal identity.
+identityAge : Age -> Age
+let identityAge a = a
+
+-- NEGATIVE: assigning a Score where an Age is expected.
+ageNotScore : Age
+let ageNotScore = MkScore 30    --!! kappa.type.mismatch
+
+-- NEGATIVE: pattern matching with the wrong constructor.
+wrongConstructor : Age -> Nat
+let wrongConstructor a =
+    match a
+    case MkScore n -> n    --!! kappa.type.mismatch
+
+-- NEGATIVE: comparing a wrapped value to a raw value.
+badCompare : Bool
+let badCompare = MkAge 30 == 30    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

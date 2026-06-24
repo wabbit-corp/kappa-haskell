@@ -1,0 +1,55 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
+--   (newtype LIST a = LIST [a] deriving (Eq, Read, Show); testReadShowNT).
+-- Spec: data_types.data_declarations (§10.1),
+--       traits.deriving (§14.5).
+-- Spec gap: CURRY-SA-12 (no portable `Read` trait or string-parse
+-- counterpart of `Show`). The Curry `read . show = id` round-trip is
+-- reduced here to a structural-equality witness on derived `Eq`.
+--
+-- Kappa expresses a Curry `newtype` as a single-constructor
+-- single-field `data` declaration. Eq and Show may be derived via
+-- standalone `derive` declarations; structural equality on equal
+-- payloads holds by definition of the derived instance.
+
+module test
+
+--! mode check
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+derive Eq (List a)
+derive Show (List a)
+
+-- A transparent wrapper around `List Int`.
+data IntListW : Type =
+    IntListW (List Int)
+
+derive Eq IntListW
+derive Show IntListW
+
+--! assertNoErrors
+--! assertType IntListW (List Int -> IntListW)
+
+-- POSITIVE: equality on wrapped lists is the equality on their contents.
+twoCopies : IntListW
+let twoCopies = IntListW (Cons 1 (Cons 2 Nil))
+
+twoCopiesAgain : IntListW
+let twoCopiesAgain = IntListW (Cons 1 (Cons 2 Nil))
+
+eqWrapped : Bool
+let eqWrapped = twoCopies == twoCopiesAgain
+-- expected: True
+
+--! assertType eqWrapped Bool
+
+-- POSITIVE: wrapped lists with different contents are unequal.
+oneCopy : IntListW
+let oneCopy = IntListW (Cons 1 Nil)
+
+distinct : Bool
+let distinct = oneCopy /= twoCopies
+
+--! assertType distinct Bool

@@ -1,0 +1,10 @@
+-- Stress test: a record type with a cyclic field dependency must be rejected
+-- Spec: types.records
+
+--! mode check
+
+-- NEGATIVE: y depends on this.z and z depends on this.y - a cycle in sibling references
+-- The compiler must reject this as the field types are not well-founded
+type Cyclic : Type = (x : Int, y : this.z + 1, z : this.y + 1)  --!! kappa.type.mismatch
+
+--! assertErrorCount 1

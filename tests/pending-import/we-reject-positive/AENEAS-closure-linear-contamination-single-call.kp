@@ -1,0 +1,51 @@
+-- Source issue: AENEAS-86
+-- Spec: expressions.lambdas.closure_capture_quantities
+-- §16.2.1: "Linear contamination: if the lambda captures one or more
+-- variables bound with quantity 1, the resulting closure value must itself
+-- be treated as a quantity-1 resource in the surrounding context."
+-- A closure over a linear variable is itself linear — it must be called
+-- exactly once.
+
+module test
+
+--! mode check
+
+data Resource : Type = Resource Int
+
+consume : (1 r : Resource) -> Int
+let consume (Resource n) = n
+
+-- POSITIVE: closure captures a linear Resource; called exactly once.
+linearClosure : (1 r : Resource) -> Int
+let linearClosure r =
+    let f = \() -> consume r    -- f is linear (captures linear r)
+    f ()                        -- called exactly once: OK
+
+--! assertNoErrors
+--! assertType linearClosure ((1 r : Resource) -> Int)
+
+-- POSITIVE: closure over a linear value, returned and called by caller.
+-- The closure is itself linear; the caller must call it exactly once.
+returnLinearClosure : (1 r : Resource) -> (1 () -> Int)
+let returnLinearClosure r =
+    \() -> consume r
+
+caller : Int
+let caller =
+    let r = Resource 42
+    let f = returnLinearClosure r
+    f ()    -- called exactly once
+
+--! assertNoErrors
+--! assertType caller Int
+
+-- POSITIVE: the closure captures, but the linear variable is only demanded
+-- once (via the single call to f).
+linearCaptureThenUse : (1 r : Resource) -> Int
+let linearCaptureThenUse r =
+    let f = \() ->              -- f is linear
+                let v = consume r
+                v + 1
+    f ()                        -- single call satisfies the demand on r
+
+--! assertNoErrors

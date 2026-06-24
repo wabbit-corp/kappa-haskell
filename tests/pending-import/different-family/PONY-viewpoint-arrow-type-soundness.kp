@@ -1,0 +1,44 @@
+-- Source issues: ponyc#1798, ponyc#1952, ponyc PR#4963, ponyc PR#4975
+-- Spec: types.universes.quantities, types.universes.borrow_lifetimes_escape_prevention
+-- Pony issue #1798: `this->X!` (ephemeral viewpoint arrow) should not be a
+-- subtype of `this->X` (non-ephemeral). If allowed, aliasing an ephemeral
+-- reference would bypass uniqueness guarantees, allowing two iso references
+-- to the same object. In Kappa, an ephemeral (consumed) borrow MUST NOT be
+-- subsumed to a non-ephemeral borrow without an explicit consume.
+-- PR #4963: the subtype checker had a bug where `this->X!` and `this->X`
+-- appeared equal during pairwise comparison, enabling unsound duplication.
+
+--! mode check
+
+data Node : Type = Node Int
+
+-- A linear sink that takes ownership.
+consume1 : (1 n : Node) -> Int
+let consume1 (Node v) = v
+
+-- POSITIVE: consuming a linear node exactly once.
+okOnce : (1 n : Node) -> Int
+let okOnce n = consume1 n
+
+-- NEGATIVE: a borrow is used as if it were an owned value.
+-- The `&` binder is read-only; passing it where quantity 1 is demanded
+-- is a capability mismatch.
+badBorrowAsOwned : (& n : Node) -> Int
+let badBorrowAsOwned n = consume1 n   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: reading from a borrowed node without consuming it.
+readNode : (& n : Node) -> Int
+let readNode (Node v) = v
+
+-- NEGATIVE: constructing two aliases to the same linear value by threading it
+-- through two paths simultaneously.
+dupLinear : (1 n : Node) -> (Int, Int)
+let dupLinear n =
+    let a = readNode n    -- borrows n (ok)
+    let b = consume1 n    -- consumes n (ok)
+    let c = consume1 n    --!! kappa.path.consumed
+    (b, c)
+
+--! assertDiagnosticFamily error kappa.path.consumed

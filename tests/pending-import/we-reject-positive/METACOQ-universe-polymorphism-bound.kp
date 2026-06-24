@@ -1,0 +1,33 @@
+-- Source issues: METACOQ-79, METACOQ-449, METACOQ-1108
+-- Spec: types.universes, types.universes.inference_sketch
+--
+-- When `forall (u : Universe). T` is written, every occurrence of `Type u`
+-- inside `T` refers to that same bound level. Independent occurrences of
+-- bare `Type` introduce fresh universe metavariables that may be solved to
+-- different levels. MetaCoq's quote/unquote round-trip exposes this
+-- distinction by reifying explicit universe instances.
+
+module test
+
+--! mode check
+
+-- POSITIVE: identity on a polymorphic level.
+-- Both occurrences of `a` use the same level introduced by `u`.
+idAt : forall (u : Universe) (a : Type u). a -> a
+let idAt _ _ x = x
+
+usageNat : Nat
+let usageNat = idAt _ Nat 42
+
+usageType : Type0
+let usageType = idAt _ Type1 Nat
+
+-- POSITIVE: a pair living in one explicit level shared across components.
+data Pair (u : Universe) (a : Type u) (b : Type u) : Type u =
+    MkPair a b
+
+mkBoth : Pair _ Nat Nat
+let mkBoth = MkPair 1 2
+
+--! assertNoErrors
+--! assertType idAt forall (u : Universe) (a : Type u). a -> a

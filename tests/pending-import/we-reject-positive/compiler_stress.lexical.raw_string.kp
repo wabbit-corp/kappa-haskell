@@ -1,0 +1,18 @@
+-- Stress test: raw string literals (no escape processing) are accepted
+-- Spec: literals.string_literals.raw_strings
+
+--! mode check
+
+-- POSITIVE: backslashes are not treated as escape sequences in a raw string.
+let path : String = r#"C:\Users\foo\bar.txt"#
+
+-- POSITIVE: multi-hash delimiter allows a single '#' inside the literal.
+let withHash : String = r##"key#value"##
+
+-- POSITIVE: a regex-like string with special characters.
+let regex : String = r#"[a-z]+\d{2,4}"#
+
+-- POSITIVE: raw string with embedded double-quotes.
+let quoted : String = r#"He said "hello"."#
+
+--! assertNoErrors

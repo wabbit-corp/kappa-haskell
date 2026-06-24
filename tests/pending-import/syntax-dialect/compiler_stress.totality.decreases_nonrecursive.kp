@@ -1,0 +1,20 @@
+-- Stress test: a decreases clause on a non-recursive function is harmless
+-- Spec: declarations.terms
+
+--! mode check
+
+data Nat : Type =
+    Z
+  | S Nat
+
+-- POSITIVE: notRecursive is not recursive; the decreases clause has no effect and is not an error.
+notRecursive : Nat -> Nat
+let notRecursive n decreases n =
+    S (S n)
+
+-- POSITIVE: another non-recursive function with a decreases clause.
+double : Int -> Int
+let double x decreases x =
+    x + x
+
+--! assertNoErrors

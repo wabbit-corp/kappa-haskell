@@ -1,0 +1,87 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/foldl.dats
+--         (#impltmp foldl$fopr<a><int>(r0, x0) = r0 + 1 inside where block),
+--         tests/srcgen1/TEST/DATA/test02.dats (impltmp g_foldl, local where overrides),
+--         tests/srcgen1/xatslib/TEST/test01_miscell.dats (#impltmp ... inside where)
+-- Spec: implicit.resolution_algorithm (§14.3.1),
+--       declarations.let_binding (§9.3),
+--       spec_addition ATS-SA-04 (locally scoped implicit implementation),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- ATS3 pattern: `impltmp {env} list_iforitm$work<a><env> (i, x, env) = ...`
+--   inside a `let` block provides a locally scoped implementation for a
+--   parameterized template slot. The outer implementation does not conflict.
+--   Without such a local override when none exists in outer scope, the
+--   template slot is unresolved.
+-- Portable obligation: a locally scoped instance overrides outer-scope ones
+--   within its block; absence of any implementation is
+--   kappa.implicit.unsolved.
+
+--! mode check
+
+-- A parameterized "folder" trait with a worker slot.
+trait FoldWith (a : Type) (r : Type) =
+    foldWorker : r -> a -> r
+
+-- Fold using the worker.
+foldList : forall (a r : Type). FoldWith a r => List a -> r -> r
+let foldList xs acc =
+    match xs
+    case []      -> acc
+    case x :: tl -> foldList tl (foldWorker acc x)
+
+-- POSITIVE: local instance inside a where block overrides for that scope.
+countElements : forall (a : Type). List a -> Int
+let countElements xs =
+    foldList xs 0
+    where
+        instance FoldWith a Int =
+            let foldWorker acc _ = acc + 1
+
+-- POSITIVE: local instance computing sum.
+sumList : List Int -> Int
+let sumList xs =
+    foldList xs 0
+    where
+        instance FoldWith Int Int =
+            let foldWorker acc x = acc + x
+
+-- POSITIVE: different local instances for different calls in same scope.
+countAndSum : List Int -> (Int, Int)
+let countAndSum xs =
+    let cnt = foldList xs 0
+              where
+                  instance FoldWith Int Int =
+                      let foldWorker acc _ = acc + 1
+    let sm  = foldList xs 0
+              where
+                  instance FoldWith Int Int =
+                      let foldWorker acc x = acc + x
+    (cnt, sm)
+
+-- A trait with a required sub-slot that must be filled.
+trait MapWith (a : Type) (b : Type) =
+    mapWorker : a -> b
+
+mapList : forall (a b : Type). MapWith a b => List a -> List b
+let mapList xs =
+    match xs
+    case []      -> []
+    case x :: tl -> mapWorker x :: mapList tl
+
+-- POSITIVE: local instance for mapList.
+doubleAll : List Int -> List Int
+let doubleAll xs =
+    mapList xs
+    where
+        instance MapWith Int Int =
+            let mapWorker x = x * 2
+
+-- NEGATIVE: calling foldList without any FoldWith instance in scope or locally.
+noInstance : List Int -> Int
+let noInstance xs = foldList xs 0   --!! kappa.implicit.unsolved
+
+-- NEGATIVE: calling mapList without MapWith instance.
+noMapInstance : List Int -> List String
+let noMapInstance xs = mapList xs   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

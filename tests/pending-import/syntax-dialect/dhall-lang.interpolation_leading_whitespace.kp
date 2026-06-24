@@ -1,0 +1,42 @@
+-- Source issue: dhall-lang #131
+-- Spec: literals.string_literals.prefixed_strings.interpolation_parsing
+-- The expression inside ${...} uses ordinary Kappa parsing; leading and trailing
+-- whitespace inside the interpolation braces is valid and must be accepted.
+-- "${  expr  }" is identical to "${expr}".
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+show_nat : Nat -> String
+let show_nat _ = "n"
+
+-- POSITIVE TEST 1: whitespace before expression inside ${...} is valid.
+with_leading_ws : String
+let with_leading_ws = "${ show_nat Zero }"
+
+-- POSITIVE TEST 2: whitespace after expression inside ${...} is valid.
+with_trailing_ws : String
+let with_trailing_ws = "${show_nat Zero }"
+
+-- POSITIVE TEST 3: whitespace on both sides is valid.
+with_both_ws : String
+let with_both_ws = "${ show_nat Zero  }"
+
+-- POSITIVE TEST 4: newlines inside ${...} are valid (ordinary Kappa is
+-- whitespace-insensitive; the expression just continues).
+with_newline_ws : String
+let with_newline_ws = "${
+    show_nat Zero
+}"
+
+-- POSITIVE TEST 5: nested interpolation with whitespace.
+prefix_str : String
+let prefix_str = "value is: ${ show_nat Zero } end"
+
+-- All of the above must be well-typed strings.
+concat_all : String
+let concat_all = with_leading_ws ++ with_trailing_ws ++ with_both_ws
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,60 @@
+-- Source issues: lamdu test if-with-mismatch.json; Tests/Sugar.hs
+--   testInsistIf. When an if branch has a type that does not match
+--   the expected type (or the sibling branch), Lamdu's behavior is to
+--   surface the mismatch at the branch site with enough information
+--   to choose which side to repair.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--   §3.2.3: a type-mismatch diagnostic must include both expected
+--   and actual types and an actionable origin.
+--
+-- A branch of an if whose type does not match the other branch must
+-- produce a precise type-mismatch diagnostic at the branch position.
+
+--! mode check
+
+-- POSITIVE: well-typed if-else with consistent branch types.
+firstNat : Bool -> Nat -> Nat -> Nat
+let firstNat b x y = if b then x else y
+
+useFirst : Nat
+let useFirst = firstNat True 1 2
+
+-- POSITIVE: branches that return a parameterized result type.
+mapIf : forall (a : Type). Bool -> a -> a -> a
+let mapIf b x y = if b then x else y
+
+useMapIf : Bool
+let useMapIf = mapIf True True False
+
+-- POSITIVE: branches both return the same nominal type.
+data Result : Type =
+    Ok Nat
+    Err String
+
+choose : Bool -> Result
+let choose b = if b then Ok 1 else Err "no"
+
+-- NEGATIVE: then-branch returns a different type than else.
+mismatch1 : Nat
+let mismatch1 =
+    if True then 1 else "x"    --!! kappa.type.mismatch
+
+-- NEGATIVE: then-branch returns a different nominal type than else.
+mismatch2 : Result
+let mismatch2 =
+    if True then 1 else Err "no"    --!! kappa.type.mismatch
+
+-- NEGATIVE: branches have incompatible structural-union types.
+type NatOrUnit = (| Nat | Unit |)
+
+mismatch3 : NatOrUnit
+let mismatch3 =
+    if True then (| 1 : Nat |) else (| "x" : String |)    --!! kappa.type.mismatch
+
+-- NEGATIVE: the overall if-expression's type does not match what the
+-- declaration expects.
+declMismatch : String
+let declMismatch =
+    if True then 1 else 2    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

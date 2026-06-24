@@ -1,0 +1,27 @@
+-- Source issues: carp-lang/Carp#1022, #470
+-- Spec: types.universes.disjoint_path_borrowing_records,
+--       types.universes.disjoint_path_borrowing_records.stable_places_place_preserving_bindings,
+--       types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types
+-- Carp #1022 proposed allowing references as fields in user-defined
+-- types; today Carp rejects this because it would require lifetime
+-- annotations on the record and cross-call lifetime propagation.  The
+-- portable Kappa obligation is that a record may have a reference field
+-- iff the record itself carries an explicit region/lifetime annotation
+-- and the field's lifetime is bound by that annotation.
+
+--! mode check
+
+-- POSITIVE: a record parameterised by a region `s` may carry a borrow
+-- field of that region; constructing such a record requires the
+-- region annotation to be in scope.
+data View (s : Region) : Type = MkView (&[s] Int)
+
+borrowField : forall s. (&[s] Int) -> View s
+let borrowField r = MkView r
+
+
+-- NEGATIVE: a record without a region parameter cannot have a
+-- reference field — the field's lifetime would be unbounded.
+data BadView : Type = MkBadView (& Int)   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

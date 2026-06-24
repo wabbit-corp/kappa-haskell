@@ -1,0 +1,40 @@
+-- Source issue: nickel #1027
+-- Spec: types.records.row_polymorphism, types.quantification.implicit_declaration_universalization
+-- A record type may contain a field whose type is itself polymorphic: `forall a. a -> a`.
+-- The typechecker must successfully unify `forall a. a -> a` with a unification
+-- variable `_a -> _a` that arises when the field is accessed and applied.
+-- Nickel #1027 showed this produced a spurious "incompatible rows declaration" error
+-- because the typechecker tried to directly unify a `forall` binder with a concrete
+-- unification variable. The fix requires the checker to instantiate the `forall`
+-- before comparing with the unification variable.
+
+module test
+
+-- A record that contains a polymorphic identity function.
+type ContainsId = (id : forall a. a -> a)
+
+wrapper : ContainsId
+let wrapper = (id = \x -> x)
+
+-- POSITIVE: using the polymorphic `id` field at type `String -> String`.
+-- This requires instantiating `forall a. a -> a` at `String`.
+result1 : String
+let result1 = wrapper.id "hello"
+
+-- POSITIVE: using the same polymorphic `id` field at type `Number -> Number`.
+-- Both uses at different instantiations must type-check.
+result2 : Number
+let result2 = wrapper.id 42
+
+-- POSITIVE: a function parameterized by a record containing a polymorphic field.
+applyId : forall r. (id : forall a. a -> a | r) -> String
+let applyId rec = rec.id "test"
+
+result3 : String
+let result3 = applyId wrapper
+
+--! mode check
+--! assertNoErrors
+--! assertType result1 String
+--! assertType result2 Number
+--! assertType result3 String

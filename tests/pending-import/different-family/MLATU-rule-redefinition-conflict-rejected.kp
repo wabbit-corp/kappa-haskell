@@ -1,0 +1,22 @@
+-- Source issue: MLatu docs/docs/tutorial.md ("find the longest rewrite
+--   rule starting at the first term"). MLatu's rule lookup requires a
+--   single resolution per pattern; defining the same pattern twice in
+--   the same scope is ambiguous. The portable Kappa obligation is that
+--   two definitions of the same top-level name in the same module are
+--   rejected.
+-- Spec: declarations.terms, modules.exports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: two definitions of the same top-level name.
+foo : Int
+let foo = 1
+
+foo : Int
+let foo = 2                                --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

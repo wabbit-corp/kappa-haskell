@@ -1,0 +1,60 @@
+-- Source issues: Rocq #21053 (RSA-03), Rocq #21682 (RSA-10), Rocq #21701
+-- Spec: declarations.totality.structural_descent (§15.3)
+-- When a recursive function pattern-matches on a constructor with multiple
+-- arguments, every constructor-bound name is a structural subterm of the
+-- scrutinee (§15.3 rule 1). The termination checker MUST accept recursive
+-- calls on any (or all) of those structural subterms in the same branch.
+-- This includes binary-tree recursion where BOTH subtrees are consumed in
+-- one branch, and other multi-subterm cases.
+
+module test
+
+data Nat : Type =
+  Z : Nat
+  S : Nat -> Nat
+
+addNat : Nat -> Nat -> Nat
+let addNat m n decreases structural m =
+  match m with
+  | Z   -> n
+  | S k -> S (addNat k n)
+
+-- Binary tree: two structural subterms (left and right) from each Node.
+data BTree (a : Type) : Type =
+  Leaf : BTree a
+  Node : BTree a -> a -> BTree a -> BTree a
+
+-- Both `size left` and `size right` are recursive calls on structural subterms.
+-- The termination checker must accept both simultaneously.
+size : BTree a -> Nat
+let size t decreases structural t =
+  match t with
+  | Leaf           -> Z
+  | Node left _ right -> S (addNat (size left) (size right))
+
+--! mode check
+--! assertNoErrors
+
+-- mirror: two recursive calls on swapped subterms are both structural.
+mirror : BTree a -> BTree a
+let mirror t decreases structural t =
+  match t with
+  | Leaf               -> Leaf
+  | Node left val right -> Node (mirror right) val (mirror left)
+
+--! assertNoErrors
+
+-- A ternary tree: three structural subterms from one constructor.
+data TTree (a : Type) : Type =
+  TLeaf : TTree a
+  TNode : TTree a -> a -> TTree a -> a -> TTree a -> TTree a
+
+-- All three recursive calls are on structural subterms of t.
+tsize : TTree a -> Nat
+let tsize t decreases structural t =
+  match t with
+  | TLeaf                    -> Z
+  | TNode l1 _ l2 _ l3 ->
+      S (addNat (tsize l1) (addNat (tsize l2) (tsize l3)))
+
+--! assertNoErrors

@@ -1,0 +1,50 @@
+-- Source issues: ponyc PR#4975, ponyc PR#4588, ponyc#4579
+-- Spec: expressions.match, types.universes.quantities,
+--       compiler.diagnostics.path_sensitive_diagnostics
+-- Pony PR #4975: match let bindings with viewpoint-adapted or generic types
+-- could bypass the capability check, allowing creation of multiple iso
+-- references to the same object. The fix ensures that in a match arm
+-- `case x -> ...`, if `x` has a linear (quantity-1) type, consuming
+-- it in the arm body moves it out. A subsequent arm using the same binding
+-- must see it as consumed.
+-- In Kappa, match arm bindings of linear type must follow the same quantity
+-- rules as ordinary let bindings.
+
+--! mode check
+
+data Owned : Type = Owned Int
+
+sink : (1 x : Owned) -> Int
+let sink (Owned n) = n
+
+-- POSITIVE: binding a linear value in a match arm and consuming it once.
+matchOnce : (1 x : Owned) -> Int
+let matchOnce x =
+    match x
+    case Owned n -> n + 1
+
+-- NEGATIVE: consuming the match binding twice in the same arm.
+matchDouble : (1 x : Owned) -> Int
+let matchDouble x =
+    match x
+    case v ->
+        let a = sink v
+        let b = sink v   --!! kappa.path.consumed
+        a + b
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: match arms are alternatives; a linear value is consumed in
+-- at most one arm (the selected arm at runtime).
+matchAlts : (1 x : Owned) -> Int
+let matchAlts x =
+    match x
+    case Owned 0 -> 0
+    case Owned n -> sink (Owned n)
+
+-- POSITIVE: re-wrapping the value in the arm is fine.
+matchTransform : (1 x : Owned) -> Owned
+let matchTransform x =
+    match x
+    case Owned n -> Owned (n * 2)
+

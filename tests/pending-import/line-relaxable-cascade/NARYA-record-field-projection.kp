@@ -1,0 +1,66 @@
+-- Source artifacts: narya docs/record-types.rst ("Accessing fields"
+--               section). Field projections behave like a tight infix
+--               operator and can be intermixed with applications.
+-- Spec: types.records.field_projection,
+--       expressions.application.dotted_forms.projection_sections_receiver_projection_sections
+--
+-- A record-like value M with a declared field permits projection by
+-- field name. In Kappa, single-constructor data types are the portable
+-- record form (§10.1, §13.2). The projection is bidirectional: the
+-- synthesizing direction requires the projected term's type to expose
+-- the named field. Projecting on a term whose type is not a record is
+-- a type mismatch; using a hole in a place where a value of a specific
+-- type is required leaves the hole unsolved at compile time.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : (fst : a) -> (snd : b) -> Pair a b
+
+pairFst : forall (a : Type) (b : Type). Pair a b -> a
+let pairFst p =
+    match p
+      case MkPair x _ -> x
+
+pairSnd : forall (a : Type) (b : Type). Pair a b -> b
+let pairSnd p =
+    match p
+      case MkPair _ y -> y
+
+-- POSITIVE: a chain of projections from a nested record value.
+nested : Pair Nat (Pair Nat Nat)
+let nested = MkPair Zero (MkPair (Suc Zero) (Suc (Suc Zero)))
+
+innerSnd : Nat
+let innerSnd = pairSnd Nat Nat (pairSnd Nat (Pair Nat Nat) nested)
+
+-- POSITIVE: a projection applied to a constructor application — the
+-- "record redex" pattern.
+useLiteral : Bool
+let useLiteral = pairFst Bool Bool (MkPair True False)
+
+-- POSITIVE: projecting via a function that returns a record.
+makePair : Nat -> Nat -> Pair Nat Nat
+let makePair x y = MkPair x y
+
+useFn : Nat
+let useFn = pairFst Nat Nat (makePair (Suc Zero) Zero)
+
+-- NEGATIVE: an unsolved hole at a known expected type is rejected as
+-- an unsolved-hole compile-time error.
+badProj : Nat
+let badProj = ?fakeField    --!! kappa.hole.unsolved
+
+-- NEGATIVE: projecting a record accessor on a non-record term is a
+-- type mismatch.
+expect term n : Nat
+
+badOnNat : Nat
+let badOnNat = pairFst Nat Nat n    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.hole.unsolved

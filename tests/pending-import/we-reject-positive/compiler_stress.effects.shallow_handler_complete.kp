@@ -1,0 +1,29 @@
+-- Stress test: A complete shallow handler with all operations covered must be accepted
+-- Spec: effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Two-operation effect: log a message and read a message back.
+effect Log =
+    1 logMsg : String -> Unit
+    1 readLog : Unit -> String
+
+-- POSITIVE TEST: handler provides both operations plus return clause.
+-- Both 'logMsg' and 'readLog' are handled; the return clause lifts the pure value.
+let run_log (comp : Eff <[Log : Log]> String) : String =
+    handle Log comp with
+        case return x   -> x
+        case logMsg _ k -> k ()
+        case readLog _ k -> k "default"
+
+-- A simple computation that uses both operations.
+let log_program : Eff <[Log : Log]> String =
+    do
+        Log.logMsg "hello"
+        Log.readLog ()
+
+-- Invoking the complete handler must be accepted.
+let result : String =
+    run_log log_program
+
+--! assertNoErrors

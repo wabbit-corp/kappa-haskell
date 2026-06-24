@@ -1,0 +1,27 @@
+-- Source issues: FSTAR-32, FSTAR-33
+-- Spec: data_types.gadts
+-- When the index of an indexed type is a refinement type (e.g. Nat = {n:Int | n >= 0}),
+-- the constructor's return type must not generate a spurious precondition.
+-- Specifically, VNil : Vec a 0 must NOT require a proof that 0 >= 0
+-- as a precondition to constructing the value.
+
+--! mode check
+
+-- Length-indexed vector with index type Nat.
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : a -> (n : Nat) -> Vec a n -> Vec a (n + 1)
+
+-- POSITIVE TEST: constructing a nil vector must not require any proof.
+let nil_vec : Vec Int 0 = VNil
+
+-- POSITIVE TEST: constructing a singleton vector.
+let one_vec : Vec Int 1 = VCons 42 0 VNil
+
+-- POSITIVE TEST: head of a non-empty vector.
+head : (a : Type) -> (n : Nat) -> Vec a (n + 1) -> a
+let head a n v =
+    match v
+      case VCons x _ _ -> x
+
+--! assertNoErrors

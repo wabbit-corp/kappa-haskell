@@ -1,0 +1,35 @@
+-- Source artifacts: CHALK-11 (Well-formedness checking of declarations),
+--                   CHALK-DOC-book/src/clauses/wf.md,
+--                   CHALK-DOC-book/src/clauses/implied_bounds.md,
+--                   CHALK-556 (Incorrect elaboration of WellFormed clauses).
+-- Spec: data_types.well_formedness, traits.headers,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof.
+-- A record type whose field requires a trait constraint may not be declared
+-- without listing that constraint in its own header. The constraint is part of
+-- the well-formedness predicate of the declaration; it is not implicit. A
+-- declaration that hides such a requirement must be rejected because uses of
+-- the type may not be able to discharge it later.
+
+--! mode check
+
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+    eqSound    : (& x : a) -> (& y : a) -> ((x == y) = True -> x = y)
+    eqComplete : (& x : a) -> (& y : a) -> (x = y -> (x == y) = True)
+    eqIsSet    : IsSet a
+
+-- NEGATIVE: `Bar a` requires `Eq a` on its field but does not list it in its
+-- header. The declaration is not well-formed: the `Eq a` obligation for the
+-- field cannot be discharged from `Bar`'s header alone.
+data Bar (a : Type) : Type =
+    Bar (eqDict : Eq a) (x : a)    --!! kappa.implicit.unsolved
+
+-- POSITIVE: the well-formed version lists `Eq a` so the field obligation is
+-- discharged from the header.
+data Good (a : Type) (@_ : Eq a) : Type =
+    Good (x : a)
+
+mkGood : (a : Type) -> (@_ : Eq a) => a -> Good a
+let mkGood a (x : a) = Good x
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

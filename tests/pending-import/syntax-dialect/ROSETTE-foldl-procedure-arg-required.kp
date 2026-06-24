@@ -1,0 +1,42 @@
+-- Source issue: ROSETTE-202 (`apply` / `foldl` over a non-callable
+--                argument)
+-- Spec: expressions.application,
+--       expressions.lambdas,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- The Rosette example expects `foldl` to receive a binary procedure as
+-- its first argument. Kappa's `foldl` is parameterised by an
+-- `(Int -> Int -> Int)` accumulator function; passing a non-procedure
+-- value is a static type mismatch.
+
+--! mode check
+
+foldlInt : (Int -> Int -> Int) -> Int -> List Int -> Int
+let foldlInt f acc xs =
+    match xs
+    case []       -> acc
+    case (h :: t) -> foldlInt f (f acc h) t
+
+-- POSITIVE: passing a binary lambda.
+sumAll : Int
+let sumAll = foldlInt (\acc x -> acc + x) 0 [1, 2, 3, 4, 5]
+
+-- POSITIVE: passing a named binary function.
+addAcc : Int -> Int -> Int
+let addAcc a b = a + b
+
+sumNamed : Int
+let sumNamed = foldlInt addAcc 0 [10, 20, 30]
+
+-- NEGATIVE: passing an Int as the accumulator function.
+badProc : Int
+let badProc = foldlInt 0 0 [1, 2, 3]                --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a unary function where two-argument is expected.
+unaryFn : Int -> Int
+let unaryFn x = x + 1
+
+badArity : Int
+let badArity = foldlInt unaryFn 0 [1, 2, 3]         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

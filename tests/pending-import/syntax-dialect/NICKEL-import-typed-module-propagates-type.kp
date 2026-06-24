@@ -1,0 +1,58 @@
+-- Source issues: nickel #316, #430, #1482
+-- Spec: modules.imports, modules.imports.compilation_modes (NSA-07)
+-- When a module with statically typed values is imported, the importer's
+-- typechecker must see the static types of the imported values, not treat them
+-- as `Dyn`. Nickel #430 showed that `import "foo.ncl"` was always inferred as
+-- `Dyn` regardless of the static type annotation in `foo.ncl`. A conforming
+-- implementation must propagate types from imported module interfaces.
+
+-- Library module with typed exports.
+module ConfigLib
+
+type ServerAddr = (host : String, port : Number)
+
+defaultAddr : ServerAddr
+let defaultAddr = (host = "localhost", port = 8080)
+
+mkAddr : String -> Number -> ServerAddr
+let mkAddr h p = (host = h, port = p)
+
+-- Importing module that exercises NSA-07: type information must propagate
+-- from ConfigLib across the import boundary.
+module test
+import ConfigLib
+
+-- POSITIVE: the importer uses ConfigLib.defaultAddr at its static type.
+-- The typechecker must know the type is ServerAddr, not Dyn.
+importedAddr : ConfigLib.ServerAddr
+let importedAddr = ConfigLib.defaultAddr
+
+hostFromImport : String
+let hostFromImport = importedAddr.host
+
+portFromImport : Number
+let portFromImport = importedAddr.port
+
+--! mode check
+--! assertType importedAddr ConfigLib.ServerAddr
+--! assertType hostFromImport String
+--! assertType portFromImport Number
+
+-- POSITIVE: calling a typed function from the imported module.
+createdAddr : ConfigLib.ServerAddr
+let createdAddr = ConfigLib.mkAddr "api.example.com" 443
+
+--! assertType createdAddr ConfigLib.ServerAddr
+
+-- NEGATIVE: passing a wrong type to an imported typed function must be
+-- rejected — even after the import, the type information is available.
+badAddrCall : ConfigLib.ServerAddr
+let badAddrCall = ConfigLib.mkAddr 12345 "not-a-port"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: using an imported type alias in a type annotation in the importing module.
+localAlias : ConfigLib.ServerAddr -> String
+let localAlias addr = addr.host
+
+--! assertType localAlias ConfigLib.ServerAddr -> String

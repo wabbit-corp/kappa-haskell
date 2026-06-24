@@ -1,0 +1,37 @@
+-- Source issues: kernel/errors_test.exs "guard without definition"
+--   ("implementation not provided for predefined defmacro foo/1"),
+--   errors_test.exs "function without definition"
+-- Source tests: elixir kernel/errors_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/kernel/errors_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.missing-signature, closest available),
+--       spec gap ESA-ELIXIR-05
+-- Kappa spec rule (§3.2.7 kappa.type.missing-signature):
+--   "Used when a declaration is required to carry a type annotation that is absent."
+-- In Elixir: a guard declared with `defguard foo(bar)` without a `when` body is a header
+-- with no implementation, which is rejected: "implementation not provided for predefined
+-- defmacro foo/1". Similarly, `def foo` without a body is a declaration without a body.
+-- In Kappa, a macro or function declaration that provides a header but no body is treated
+-- as an incomplete declaration and rejected.
+
+--! mode check
+
+-- POSITIVE: macro with a complete body.
+macro isPositive(n) = n > 0
+
+-- POSITIVE: function with a complete body.
+double : Int -> Int
+let double n = n * 2
+
+-- POSITIVE: function that squares its argument.
+square : Int -> Int
+let square n = n * n
+
+-- NEGATIVE: macro declared as a header with no implementation anywhere.
+-- There is no body or follow-up definition for isNonNegative.
+macro isNonNegative(n)          --!! kappa.type.missing-signature
+
+-- NEGATIVE: function declared as a signature but never given a body.
+-- No follow-up definition provides the implementation for tripled.
+tripled : Int -> Int            --!! kappa.type.missing-signature
+
+--! assertDiagnosticFamily error kappa.type.missing-signature

@@ -1,0 +1,69 @@
+-- Source: nim-lang/Nim#16303 (func doesn't check for side effects in proc
+--         parameters), nim-lang/RFCs#408 (Parametric effects proposal),
+--         nim-lang/RFCs#435 (effect tracking broken for inner routines),
+--         nim-lang/Nim#12862 (Defect exceptions inconsistently tracked)
+-- Spec: effects.monadic_core.eff_effect_rows, effects.monadic_core.effect_declarations,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+--       (kappa.effect.row-mismatch)
+-- In Nim, a `func` (no-side-effect procedure) was not enforcing the side-effect
+-- check through procedural parameters. In Kappa, a computation with a declared
+-- effect row must not perform effects not listed in that row. Using an
+-- effectful computation in a pure context is kappa.effect.row-mismatch.
+
+--! mode check
+module test
+
+-- Declare an algebraic effect for reading from an external source.
+effect Read =
+    1 readLine : Unit -> String
+
+-- Declare an algebraic effect for writing to an external sink.
+effect Write =
+    1 writeLine : String -> Unit
+
+-- POSITIVE: a function that only uses Read — correctly typed.
+echoInput : Eff <[ Read : Read ]> String
+let echoInput = do
+    let s <- Read .readLine ()
+    pure s
+
+-- POSITIVE: a function that uses both Read and Write.
+readAndWrite : Eff <[ Read : Read, Write : Write ]> Unit
+let readAndWrite = do
+    let s <- Read .readLine ()
+    Write .writeLine s
+
+-- POSITIVE: a computation using both effects declared in the row.
+bothEffects : Eff <[ Read : Read, Write : Write ]> String
+let bothEffects = do
+    let s <- Read .readLine ()
+    Write .writeLine s
+    pure s
+
+-- NEGATIVE: declaring a computation as having no effects but using Read inside.
+-- Effect row is empty but body performs Read.
+badPure : Eff <[ ]> String    --!! kappa.effect.row-mismatch
+let badPure = do
+    let s <- Read .readLine ()
+    pure s
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: declaring only Write in row but body also uses Read.
+badWriteOnly : Eff <[ Write : Write ]> Unit   --!! kappa.effect.row-mismatch
+let badWriteOnly = do
+    let s <- Read .readLine ()
+    Write .writeLine s
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE: a higher-order function that correctly propagates effects from
+-- its argument. The effect row is parametric over the argument.
+runTwice : forall (r : EffRow) a. Eff r a -> Eff r (a, a)
+let runTwice action = do
+    let x <- action
+    let y <- action
+    pure (x, y)
+
+readTwice : Eff <[ Read : Read ]> (String, String)
+let readTwice = runTwice echoInput

@@ -1,0 +1,47 @@
+-- Source issues: CREUSOT-235
+-- Spec: effects.loops, lexical.keywords,
+--       compiler.frontir.standard_diagnostic_families.macro_elaboration
+-- Family: kappa.macro.failure (Kappa §3.2.12)
+-- Loop-invariant labels are emitted by an invariant macro; a reserved
+-- keyword used as the label name must be rejected at the macro-
+-- elaboration boundary so the offending token never reaches the back
+-- end (Creusot #235 - the surface label "end" / "module" reaching Why3
+-- triggered a downstream syntax error).  Pending spec gap CREUSOT-SA-06
+-- (loop-invariant scope / label hygiene).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `end` is a reserved keyword and must not be accepted as a
+-- macro-introduced label.
+sumToBadLabel : Int -> Int
+let sumToBadLabel n =
+    do {
+        var i = 0;
+        var s = 0;
+        while !i < n
+            invariant end { !s >= 0 }                 --!! kappa.macro.failure
+        do
+            s = !s + !i;
+            i = !i + 1
+        ;
+        !s
+        }
+
+-- NEGATIVE: `module` is also reserved.
+sumToBadLabel2 : Int -> Int
+let sumToBadLabel2 n =
+    do {
+        var i = 0;
+        var s = 0;
+        while !i < n
+            invariant module { !s >= 0 }              --!! kappa.macro.failure
+        do
+            s = !s + !i;
+            i = !i + 1
+        ;
+        !s
+        }
+
+--! assertDiagnosticFamily error kappa.macro.failure

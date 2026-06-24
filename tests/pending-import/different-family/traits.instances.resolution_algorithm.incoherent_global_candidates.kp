@@ -1,0 +1,41 @@
+-- Source issues: Scala3 #12125, #9103
+-- Spec: traits.instances.resolution_algorithm
+-- When two globally visible instance candidates survive instance resolution for
+-- the same normalized trait goal, the compiler compares their HardIdentity
+-- (traits.instances.resolution_algorithm step 6). If the surviving candidates
+-- have DIFFERENT canonical HardIdentity values, the program MUST be rejected
+-- as incoherent. The diagnostic MUST be kappa.implicit.ambiguous.
+
+module test
+
+trait Serialize (a : Type) =
+    serialize : a -> String
+
+data Color : Type =
+    Red | Green | Blue
+
+-- Two distinct instances for the same type in the same compilation unit.
+-- Their evidence artifacts produce different `serialize` implementations,
+-- so their HardIdentity values differ: the program is incoherent.
+instance Serialize Color =
+    let serialize c =
+        match c
+        case Red   -> "red"
+        case Green -> "green"
+        case Blue  -> "blue"
+
+-- A second instance with different behavior: incoherent with the first.
+instance Serialize Color =    --!! kappa.implicit.ambiguous
+    let serialize c =
+        match c
+        case Red   -> "RED"
+        case Green -> "GREEN"
+        case Blue  -> "BLUE"
+
+-- Using the instance at a call site where both candidates are active:
+-- the call MUST fail because no unique coherent candidate exists.
+colorStr : String
+let colorStr = serialize Red   --!! kappa.implicit.ambiguous
+
+--! mode check
+--! assertDiagnostic error kappa.implicit.ambiguous

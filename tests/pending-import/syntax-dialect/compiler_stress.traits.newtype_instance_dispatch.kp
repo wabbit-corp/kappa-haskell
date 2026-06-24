@@ -1,0 +1,55 @@
+-- Stress test: A newtype wrapper defines a distinct trait instance that differs
+--   from the underlying type's instance.  Instance resolution selects the
+--   newtype instance when the wrapper type is used and the underlying instance
+--   when the inner type is used.
+-- Spec: traits.instances.resolution_algorithm, data_types.data_declarations
+
+--! mode check
+
+trait Show (a : Type) =
+    show : a -> String
+
+-- Underlying type with a basic instance.
+data Nat : Type = Zero | Succ Nat
+
+instance Show Nat =
+    let show n =
+        let rec go : Nat -> Nat -> String
+            let go acc Zero     = int_to_string acc
+            let go acc (Succ m) = go (acc + 1) m
+        in go 0 n
+
+-- Newtype wrapper: a `Size` is a `Nat` under a different name.
+data Size : Type = Size Nat
+
+-- The Size instance uses a different format than the Nat instance.
+instance Show Size =
+    let show (Size n) =
+        let inner = show n   -- recursively uses Show Nat
+        "Size(" ++ inner ++ ")"
+
+-- POSITIVE: show at type Nat uses the Nat instance.
+showNat : String
+let showNat = show (Succ (Succ Zero))
+
+-- POSITIVE: show at type Size uses the Size instance, not the Nat instance.
+showSize : String
+let showSize = show (Size (Succ (Succ Zero)))
+
+-- POSITIVE: a generic function constrained by Show dispatches correctly.
+printBoth : forall {a : Type}. (@_ : Show a) -> a -> a -> String
+let printBoth x y = show x ++ " and " ++ show y
+
+natPair : String
+let natPair = printBoth Zero (Succ Zero)
+
+sizePair : String
+let sizePair = printBoth (Size Zero) (Size (Succ Zero))
+
+-- Verify the two instances produce different results at runtime.
+differentOutputs : Bool
+let differentOutputs = showNat /= showSize
+
+--! assertNoErrors
+--! assertType showNat String
+--! assertType showSize String

@@ -1,0 +1,56 @@
+-- Source: WebPPL PR #858 ("expand docs on conditioning") states the
+--   equivalences condition(b) ≡ factor(if b then 0 else -Infinity) and
+--   observe(d, v) ≡ { factor(d.score(v)); v }.
+--   PR #607 added observe; #602 documented the operators.
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-01,
+--   effects.monadic_core.effect_declarations,
+--   effects.monadic_core.eff_effect_rows.
+--
+-- `condition` and `observe` are derived operations of the Prob family.
+-- A hand-written derived form for either operation typechecks against
+-- the same effect row as the primitive form.
+
+module test
+
+--! mode check
+
+data Distribution (a : Type) : Type =
+    DistBernoulli { p : Float }
+
+effect Prob =
+    1 sample    : forall a. Distribution a -> a
+    1 factor    : Float -> Unit
+    1 condition : Bool  -> Unit
+    1 observe   : forall a. Distribution a -> a -> a
+
+score : forall a. Distribution a -> a -> Float
+let score _ _ = 0.0
+
+negInfinity : Float
+let negInfinity = 0.0 - 1.0e308
+
+-- POSITIVE: a hand-written derived form for `condition` typechecks against
+-- the same effect row as the primitive `prob.condition`.
+conditionDerived : Bool -> Eff <[prob : Prob]> Unit
+let conditionDerived b = prob.factor (if b then 0.0 else negInfinity)
+
+--! assertNoErrors
+--! assertType conditionDerived (Bool -> Eff <[prob : Prob]> Unit)
+
+-- POSITIVE: a hand-written derived form for `observe` typechecks.
+observeDerived : forall a. Distribution a -> a -> Eff <[prob : Prob]> a
+let observeDerived d v = do
+    prob.factor (score d v)
+    pure v
+
+--! assertNoErrors
+
+-- POSITIVE: both derived forms compose with the primitive `prob.sample`.
+exampleModel : Eff <[prob : Prob]> Bool
+let exampleModel = do
+    let x <- prob.sample (DistBernoulli { p = 0.5 })
+    conditionDerived x
+    pure x
+
+--! assertNoErrors
+--! assertType exampleModel (Eff <[prob : Prob]> Bool)

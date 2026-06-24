@@ -1,0 +1,46 @@
+-- Source artifacts: narya docs/imports-and-scoping.rst (import modifiers
+--               via Yuujinchou: renaming / restrict / rename imported
+--               subtrees), narya PR #12 (import command), PR #14 (import
+--               also imports notations), PR #15 (Yuujinchou modifiers).
+-- Spec: modules.imports,
+--       modules.imports.item_kind_selectors,
+--       modules.imports.item_kind_selectors.unhide_clarify_import_items
+--
+-- Kappa's import command supports renaming a selected item with `as`
+-- (§8.3 "Selective import aliases") and excluding a wildcard-imported
+-- name with `except` (§8.3 valid import forms). After a selective
+-- rename, the original spelling is not in scope unqualified; after
+-- `* except (...)`, the excluded names are not visible unqualified.
+
+module consumer
+
+-- Combined selective import: bring libOne in as `uno`, libTwo as-is.
+-- The original spelling libOne is NOT brought into scope by this
+-- form; only the alias uno is, per §8.3.
+import source_mod.(libOne as uno, libTwo)
+
+-- POSITIVE: the renamed binding is reachable under its new spelling.
+useUno : Int
+let useUno = uno
+
+-- POSITIVE: an unaliased selective import keeps the original spelling.
+useLibTwo : Int
+let useLibTwo = libTwo
+
+-- POSITIVE: a qualified reference still reaches all public items via
+-- the module name. To enable qualified access we also import the
+-- module name itself.
+import source_mod
+
+useQualified : Int -> Int
+let useQualified n = source_mod.libDouble n
+
+-- NEGATIVE: after the selective rename, the original libOne spelling
+-- is not in scope unqualified.
+useOldName : Int
+let useOldName = libOne    --!! kappa.name.unresolved
+
+-- NEGATIVE: libDouble was not selectively imported, so it is not
+-- visible unqualified (only via source_mod.libDouble).
+useHidden : Int -> Int
+let useHidden n = libDouble n    --!! kappa.name.unresolved

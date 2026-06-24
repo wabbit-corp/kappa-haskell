@@ -1,0 +1,39 @@
+-- Source issues: Noir#10530, Noir#7424
+-- Spec: expressions.patterns.scoping_validity
+-- Duplicate binders within the same pattern are an error.
+-- This applies to nested tuple patterns, constructor patterns, and any
+-- irrefutable let-binding form. A binder name introduced in a nested
+-- sub-pattern that collides with a binder already introduced in the same
+-- enclosing pattern MUST be rejected.
+
+module test
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- Rejected: `x` appears twice in the same let pattern.
+-- The second occurrence reuses the name already bound by the first.
+dupInNestedTuple : (Int, (Int, Int)) -> Int
+let dupInNestedTuple t =
+    let (x, (x, y)) = t   -- ERROR EXPECTED: duplicate binder (counted below)
+    x + y
+
+--! mode check
+--! assertErrorCount 2
+-- NOTE (2026-06-11, FAB-011): no registered diagnostic family/code exists yet
+-- for this spec-mandated error; the suite asserts an exact error count instead.
+-- Re-tag to assertDiagnosticFamily when the spec registers one.
+
+-- Rejected: duplicate binder at the same tuple level.
+dupSameLevel : (Int, Int) -> Int
+let dupSameLevel t =
+    let (x, x) = t         -- ERROR EXPECTED: duplicate binder (counted below)
+    x
+
+
+-- Accepted: different binder names — no duplicate.
+noDup : (Int, (Int, Int)) -> Int
+let noDup t =
+    let (a, (b, c)) = t
+    a + b + c
+

@@ -1,0 +1,67 @@
+-- Source issues: kernel/warning_test.exs "unused alias"
+--   ("Foo is unused"), warning_test.exs "unused alias when also import",
+--   ELIXIR-PR-7240 (unused variable checks during expansion), spec gap ESA-ELIXIR-01
+-- Spec: modules.names.lexical_lookup, spec gap ESA-ELIXIR-01
+--       (pending: kappa.import.unused-declaration)
+-- Elixir's compiler warns when an alias declaration introduces a name into scope but
+-- that name is never referenced in the enclosing scope. Example:
+--   alias Foo.Bar, as: FooBar   -- warning if FooBar never used in this module
+-- This is a dead lexical declaration. The Kappa spec currently has no standard family
+-- for this diagnostic. Spec gap ESA-ELIXIR-01 proposes kappa.import.unused-declaration.
+-- This test records the EXPECTED behavior once that family is standardized.
+-- The --!! annotations use the proposed family name as a placeholder.
+-- TODO spec gap ESA-ELIXIR-01: kappa.import.unused-declaration is not yet in §3.2.
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+-- (--!! markers removed 2026-06-11: inline markers assert ERROR severity
+-- per T.5.1; this suite expects warnings.)
+
+module Utils
+
+let format n = "value: " ++ Int.show n
+let double n = n * 2
+
+module MathHelpers
+
+let square n = n * n
+let cube n = n * n * n
+
+-- POSITIVE: import-alias introduced and then used within the same scope.
+module Consumer1
+
+import Utils as U
+
+doWork : Int -> String
+let doWork n = U.format (U.double n)
+
+-- POSITIVE: import-alias introduced and used; no warning expected.
+module Consumer2
+
+import MathHelpers as Math
+
+compute : Int -> Int
+let compute n = Math.square n + Math.cube n
+
+-- NEGATIVE: import-alias introduced but never referenced — dead declaration.
+-- The alias 'U' is never used anywhere in Consumer3's scope.
+module Consumer3
+
+import Utils as U   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+doOtherWork : Int -> Int
+let doOtherWork n = n + 1
+
+-- NEGATIVE: import-alias introduced with an explicit short name that is never used.
+module Consumer4
+
+import MathHelpers as Mh   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+run : Int -> Int
+let run n = n * 3
+
+--! assertDiagnosticFamily warning kappa.import.unused-declaration

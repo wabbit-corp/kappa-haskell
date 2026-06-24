@@ -1,0 +1,51 @@
+-- Source artifacts: narya PR #8 (multiple and deep matches),
+--               docs/data-types.rst (Multiple matches and deep matches).
+-- Spec: expressions.match,
+--       expressions.patterns.forms
+--
+-- A deep pattern is a constructor applied to other patterns; a "multiple
+-- match" in Kappa is expressed as a match on a tuple scrutinee. Tuple
+-- patterns and nested constructor patterns are both forms of §17.2.1
+-- and combine to form deep patterns. Coverage check applies to the
+-- expanded case tree.
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- POSITIVE: a deep pattern on a nested constructor.
+firstOfTwo : forall (a : Type) (b : Type). Pair (Pair a b) b -> a
+let firstOfTwo p =
+    match p
+      case MkPair (MkPair a _) _ -> a
+
+-- POSITIVE: a tuple-scrutinee match covering all four combinations of
+-- two Bool inputs.
+and_ : Bool -> Bool -> Bool
+let and_ x y =
+    match (x, y)
+      case (True,  True)  -> True
+      case (True,  False) -> False
+      case (False, _)     -> False
+
+-- POSITIVE: a deep tuple match combining three Bool inputs.
+xor3 : Bool -> Bool -> Bool -> Bool
+let xor3 a b c =
+    match (a, b, c)
+      case (True,  True,  c0)    -> c0
+      case (True,  False, True)  -> False
+      case (True,  False, False) -> True
+      case (False, True,  True)  -> False
+      case (False, True,  False) -> True
+      case (False, False, c0)    -> c0
+
+-- NEGATIVE: a deep tuple match that omits the (True, False) combination
+-- is non-exhaustive on the closed Bool x Bool product.
+nandTrue : Bool -> Bool -> Bool
+let nandTrue x y =
+    match (x, y)
+      case (True,  True)  -> False
+      case (False, _)     -> True    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

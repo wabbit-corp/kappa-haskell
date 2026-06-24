@@ -1,0 +1,24 @@
+-- Source issue: FSTAR-919
+-- Spec: compiler.frontir.diagnostics_records
+-- Duplicate declarations of the same name (type or function) must produce a
+-- clear diagnostic identifying the original declaration site and the
+-- conflicting site. The compiler must not crash or emit an internal error.
+
+--! mode check
+
+-- NEGATIVE TEST: duplicate type declaration.
+data Pair : Type =
+    MkPair : Nat -> Nat -> Pair
+
+-- Redefining the same name must produce a clear error, not a crash.
+data Pair : Type =                --!! kappa.name.ambiguous
+    MkPair2 : Nat -> Pair
+
+-- NEGATIVE TEST (separate): duplicate function declaration.
+double : Nat -> Nat
+let double x = x + x
+
+double : Nat -> Nat               --!! kappa.name.ambiguous
+let double x = x * 2
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

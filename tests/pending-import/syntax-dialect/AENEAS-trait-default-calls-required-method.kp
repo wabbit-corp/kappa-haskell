@@ -1,0 +1,79 @@
+-- Source issues: AENEAS-100, AENEAS-70
+-- Spec: traits.members, traits.instances
+-- §14.2: a trait default method body may call other methods of the same
+-- trait, including required (non-default) ones.  Inside the trait body,
+-- supertrait evidence and peer methods are all in scope.
+-- Aeneas issue #100 (crash when extracting reference to `Self`) exposes
+-- the obligation that a default method using the constrained type (the `Self`
+-- analogue — the trait parameter) must be accepted.
+
+module test
+
+--! mode check
+
+trait Summable (a : Type) =
+    zero  : a
+    add   : a -> a -> a
+
+    -- default: sum a list using the required zero and add
+    let sumList : List a -> a =
+        \xs ->
+            match xs
+            case []      -> zero
+            case x :: t  -> add x (sumList t)
+
+    -- default: double a value using add
+    let double : a -> a =
+        \x -> add x x
+
+data SumInt : Type = SumInt Int
+
+instance Summable SumInt =
+    let zero = SumInt 0
+    let add (SumInt a) (SumInt b) = SumInt (a + b)
+
+-- POSITIVE: default methods `sumList` and `double` work via the required add/zero.
+useSumList : SumInt
+let useSumList = sumList [SumInt 1, SumInt 2, SumInt 3]
+
+--! assertNoErrors
+--! assertType useSumList SumInt
+
+useDouble : SumInt
+let useDouble = double (SumInt 5)
+
+--! assertNoErrors
+--! assertType useDouble SumInt
+
+data SumBool : Type = SumBool Bool
+
+instance Summable SumBool =
+    let zero = SumBool False
+    let add (SumBool a) (SumBool b) = SumBool (a || b)
+
+-- POSITIVE: second instance; both defaults dispatch through the correct instance.
+useBoolSum : SumBool
+let useBoolSum = sumList [SumBool True, SumBool False]
+
+--! assertNoErrors
+--! assertType useBoolSum SumBool
+
+-- POSITIVE: a default that uses another default method (chaining).
+trait Grouped (a : Type) =
+    unit  : a
+    times : a -> a -> a
+
+    let square  : a -> a = \x -> times x x
+    let fourth  : a -> a = \x -> square (square x)
+
+data Prod : Type = Prod Int
+
+instance Grouped Prod =
+    let unit = Prod 1
+    let times (Prod a) (Prod b) = Prod (a * b)
+
+prodFourth : Prod
+let prodFourth = fourth (Prod 2)
+
+--! assertNoErrors
+--! assertType prodFourth Prod

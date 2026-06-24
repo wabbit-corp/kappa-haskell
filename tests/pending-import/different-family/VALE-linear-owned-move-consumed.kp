@@ -1,0 +1,45 @@
+-- Source issues: vale#395 (Redo ownership, remove permissions),
+--               Vale OwnershipTests (owning ref method call)
+-- Spec: types.universes.quantities,
+--       compiler.diagnostics.path_sensitive_diagnostics
+-- In Vale, owning references convey unique ownership. Passing an owning
+-- reference to a function or storing it in two places simultaneously is
+-- rejected because it would duplicate ownership. In Kappa, a value bound at
+-- quantity 1 (linear) may be demanded exactly once; using it in two
+-- demand positions produces kappa.path.consumed.
+
+--! mode check
+
+data Ship : Type = Ship Int
+
+-- A consuming sink: takes ownership and returns nothing.
+sink : (1 s : Ship) -> Int
+let sink (Ship n) = n
+
+-- POSITIVE: consuming an owned value exactly once is accepted.
+goodConsume : (1 s : Ship) -> Int
+let goodConsume s = sink s
+
+-- POSITIVE: threading an owned value through a single transformation.
+transform : (1 s : Ship) -> Ship
+let transform (Ship n) = Ship (n + 1)
+
+-- NEGATIVE: passing the same owned value to two different sinks
+-- simultaneously duplicates ownership.
+doubleConsume : (1 s : Ship) -> Int
+let doubleConsume s =
+    let a = sink s
+    let b = sink s   --!! kappa.path.consumed
+    a + b
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: placing the same owned value into both branches of a tuple
+-- duplicates the ownership at the same program point.
+tupleDuplicate : (1 s : Ship) -> (Ship, Ship)
+let tupleDuplicate s = (s, s)   --!! kappa.path.consumed
+
+-- POSITIVE: destructuring an owned value and reconstructing with one of
+-- its extracted components does not duplicate ownership.
+reshapeShip : (1 s : Ship) -> Int
+let reshapeShip (Ship n) = n

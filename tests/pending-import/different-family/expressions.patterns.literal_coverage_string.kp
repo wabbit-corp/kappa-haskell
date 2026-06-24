@@ -1,0 +1,34 @@
+-- Source issue: Agda #708
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       literals.string_literals
+-- String literal patterns must contribute to the exhaustiveness state. A match
+-- that covers the empty-string case with explicit literal patterns and all other
+-- cases with a wildcard MUST be accepted as exhaustive without a spurious
+-- residual diagnostic.
+
+module test
+
+-- A type whose inhabitants depend on whether a string is empty.
+-- (Approximated here with a concrete match.)
+
+-- Accepted: empty-string case handled explicitly; wildcard covers the rest.
+-- The exhaustiveness checker MUST accept this as covering all String values.
+stringTag : String -> Int
+let stringTag ""  = 0
+let stringTag _   = 1
+
+--! mode check
+
+-- Variant: multiple explicit string literals plus wildcard.
+classifyStr : String -> Int
+let classifyStr "hello" = 1
+let classifyStr "world" = 2
+let classifyStr _       = 0
+
+
+-- Negative: no wildcard and only one literal — NOT exhaustive over all strings.
+-- MUST produce a non-exhaustive diagnostic.
+badStringMatch : String -> Int
+let badStringMatch "" = 0   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnostic error kappa.pattern.non-exhaustive

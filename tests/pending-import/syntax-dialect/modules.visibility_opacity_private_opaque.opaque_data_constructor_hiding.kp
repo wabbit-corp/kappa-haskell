@@ -1,0 +1,53 @@
+-- Source issues: Move #139, Move #458, Move #959
+-- Spec: modules.visibility_opacity_private_opaque.data
+-- An `opaque data` declaration exports the type constructor but hides the
+-- data constructors from outside the defining module.  External code cannot
+-- pattern-match on the hidden constructors and cannot construct values
+-- directly; it must use the module's published smart-constructor API.
+-- This is the representation-hiding analogue of Move's proposal that struct
+-- fields should be private by default.
+
+--! mode check
+
+module defining_module
+
+-- opaque data: type constructor is public; constructors are hidden outside.
+opaque data Color : Type =
+    Red
+    Green
+    Blue (intensity : Int)
+
+-- Inside the defining module constructors are accessible.
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red    -> True
+    case Green  -> False
+    case Blue _ -> False
+
+-- Smart constructor published as part of the API.
+mkBlue : Int -> Color
+let mkBlue n = Blue n
+
+---
+
+module use_site
+
+import defining_module
+
+-- Rejected: pattern-matching on a hidden constructor outside the module.
+badMatch : defining_module.Color -> Bool
+let badMatch c =
+    match c
+    case defining_module.Red -> True   --!! kappa.name.unresolved
+    case _                   -> False
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- Accepted: using the published smart constructor.
+myColor : defining_module.Color
+let myColor = defining_module.mkBlue 128
+
+-- Rejected: direct construction of a hidden constructor.
+badConstruct : defining_module.Color
+let badConstruct = defining_module.Green   --!! kappa.name.unresolved

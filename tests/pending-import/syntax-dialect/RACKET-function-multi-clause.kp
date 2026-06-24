@@ -1,0 +1,46 @@
+-- Source: Racket guide define.scrbl (function shorthand, multiple clauses)
+-- Source docs: racket guide define.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/define.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: declarations.terms
+--
+-- A function may be defined using multiple pattern clauses, each matching a
+-- different shape of its argument. All clauses must have consistent types.
+-- The clauses are tried in order.
+
+--! mode check
+
+-- POSITIVE: classic factorial with two clauses.
+factorial : Nat -> Nat
+let factorial zero    = suc zero
+let factorial (suc n) = suc n * factorial n
+
+-- POSITIVE: Fibonacci with base cases first.
+fib : Nat -> Nat
+let fib zero           = zero
+let fib (suc zero)     = suc zero
+let fib (suc (suc n))  = fib (suc n) + fib n
+
+-- POSITIVE: pattern matching on a custom ADT across multiple clauses.
+data Weekday : Type = Mon | Tue | Wed | Thu | Fri | Sat | Sun
+
+isWeekend : Weekday -> Bool
+let isWeekend Sat = True
+let isWeekend Sun = True
+let isWeekend _   = False
+
+workHours : Weekday -> Int
+let workHours Sat = 0
+let workHours Sun = 0
+let workHours _   = 8
+
+-- POSITIVE: function with multiple arguments and patterns in each.
+zipWith : (A B C : Type) -> (A -> B -> C) -> List A -> List B -> List C
+let zipWith _ _ _ _ []       _         = []
+let zipWith _ _ _ _ _        []        = []
+let zipWith A B C f (a :: as) (b :: bs) = f a b :: zipWith A B C f as bs
+
+-- NEGATIVE: clauses with inconsistent return types; declared String but first clause returns Int.
+inconsistentReturn : Bool -> String
+let inconsistentReturn True  = 42      --!! kappa.type.mismatch
+let inconsistentReturn False = "hello"
+
+--! assertDiagnosticFamily error kappa.type.mismatch

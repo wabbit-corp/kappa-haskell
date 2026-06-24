@@ -1,0 +1,58 @@
+-- Stress test: Effect row weakening — a function producing fewer effects may
+--   be used where more effects are expected.  Specifically, a pure function
+--   (empty row) may be passed as an argument expecting an effectful function.
+-- Spec: effects.monadic_core.eff_effect_rows,
+--   effects.monadic_core.eff_effect_rows.effect_row_weakening
+
+--! mode check
+
+effect Log =
+    1 logMsg : String -> Unit
+
+-- A higher-order function that expects a computation in a row including Log.
+runWithLog :
+    forall (r : EffRow) (a : Type).
+    Eff <[log : Log | r]> a ->
+    Eff r a
+let runWithLog comp =
+    handle log comp with
+        case return v    -> pure v
+        case logMsg _ k  -> k ()
+
+-- POSITIVE: passing a pure computation where an effectful one is expected.
+-- `pure 42` has type `Eff <[]> Int`; weakening allows it to be used
+-- as `Eff <[log : Log]> Int`.
+purePassedAsLogging : Eff <[ ]> Int
+let purePassedAsLogging = runWithLog (pure 42)
+
+-- POSITIVE: a function that logs may be used where logging is expected.
+loggedComp : Eff <[log : Log]> Int
+let loggedComp =
+    do
+        Log.logMsg "hello"
+        pure 10
+
+result1 : Eff <[ ]> Int
+let result1 = runWithLog loggedComp
+
+-- POSITIVE: a helper that takes a function with fewer effects than the row.
+-- applyInRow requires `Eff <[log : Log]>`; we supply `Eff <[]>` and it weakens.
+applyInRow :
+    forall (a : Type).
+    Eff <[log : Log]> a ->
+    Eff <[ ]> a
+let applyInRow comp = runWithLog comp
+
+useApply : Eff <[ ]> Int
+let useApply = applyInRow (pure 99)
+
+-- NEGATIVE: missing a required effect — the computation needs 'log' in its
+-- row but the context provides no handler, so the result type doesn't match
+-- the expected pure type.
+missingLog : Eff <[ ]> Int
+let missingLog =
+    do
+        Log.logMsg "oops"   --!! kappa.effect.row-mismatch
+        pure 1
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

@@ -1,0 +1,37 @@
+-- Source issues: METACOQ-1129
+-- Spec: data_types.data_declarations, data_types.well_formedness,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Mutually defined data types are elaborated as one recursive SCC: each
+-- member's header is visible while checking sibling signatures. Strict
+-- positivity must be checked over the whole group. MetaCoq's mutual
+-- inductive types use the same scheme.
+
+module test
+
+--! mode check
+
+-- POSITIVE: two mutually recursive data types where each occurrence of the
+-- other is strictly positive.
+data ListOdd : Type =
+    NilO
+    ConsO Nat ListEven
+
+data ListEven : Type =
+    NilE
+    ConsE Nat ListOdd
+
+-- POSITIVE: a mutually defined forest/tree.
+data Forest : Type =
+    FNil
+    FCons MTree Forest
+
+data MTree : Type =
+    MLeaf Nat
+    MNode Forest
+
+--! assertNoErrors
+--! assertType NilO ListOdd
+--! assertType NilE ListEven
+--! assertType FNil Forest
+--! assertType MLeaf Nat -> MTree

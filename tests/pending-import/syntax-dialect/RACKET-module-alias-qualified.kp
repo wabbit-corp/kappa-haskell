@@ -1,0 +1,49 @@
+-- Source: Racket guide module-require.scrbl (prefix-in, module alias for qualified access)
+-- Source docs: racket guide module-require.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-require.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: modules.names, modules.imports
+--
+-- A module may be imported under an alias (`import M as m`), after which its
+-- names are accessible as `m.name` but not as bare `name`. This is analogous
+-- to Racket's `prefix-in` which adds a prefix to all required identifiers.
+-- The alias does not introduce unqualified names into scope.
+
+--! mode check
+
+module arithmetic
+
+public add : Int -> Int -> Int
+let add x y = x + y
+
+public sub : Int -> Int -> Int
+let sub x y = x - y
+
+public mul : Int -> Int -> Int
+let mul x y = x * y
+
+module calculator
+import arithmetic as arith
+
+-- POSITIVE: qualified access through the alias works.
+sumResult : Int
+let sumResult = arith.add 10 5
+
+diffResult : Int
+let diffResult = arith.sub 10 5
+
+prodResult : Int
+let prodResult = arith.mul 3 4
+
+-- POSITIVE: chained qualified calls work.
+combined : Int
+let combined = arith.add (arith.mul 3 4) (arith.sub 10 5)
+
+-- NEGATIVE: the alias introduces only qualified names; unqualified names are not in scope.
+badAdd : Int
+let badAdd = add 1 2     --!! kappa.name.unresolved
+
+-- NEGATIVE: the original module path is also not directly usable as prefix
+-- when only the alias was declared.
+badQual : Int
+let badQual = arithmetic.add 1 2   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

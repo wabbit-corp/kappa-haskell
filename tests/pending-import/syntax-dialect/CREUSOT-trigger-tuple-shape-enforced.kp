@@ -1,0 +1,26 @@
+-- Source issues: CREUSOT-1180
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.macro_elaboration
+-- Family: kappa.macro.failure (Kappa §3.2.12)
+-- Kappa's optional trigger annotation on `forall`/`exists` is syntactically
+-- a TUPLE of patterns; a bare expression is rejected with a macro-failure
+-- diagnostic naming the shape obligation.  Pending spec gap CREUSOT-SA-08.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: a bare expression (not a tuple) is rejected with a clear
+-- diagnostic.
+let badTrigger : Bool
+let badTrigger =
+    forall (x : Int) where trigger (x + 1 - 1) :     --!! kappa.macro.failure
+        x + 1 - 1 == x
+
+-- NEGATIVE: a literal as a trigger is also a shape failure (no patterns
+-- to match).
+let literalTrigger : Bool
+let literalTrigger =
+    forall (x : Int) where trigger (42,) :           --!! kappa.macro.failure
+        x + 0 == x
+
+--! assertDiagnosticFamily error kappa.macro.failure

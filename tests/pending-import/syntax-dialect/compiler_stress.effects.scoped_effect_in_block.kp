@@ -1,0 +1,28 @@
+-- Stress test: A scoped effect declared inside a block scope is local to that scope
+-- Spec: effects.monadic_core.effect_declarations,
+--       declarations.let_in.pure_block_expressions.scoped_local_nominal_effect_declarations
+
+--! mode check
+
+-- POSITIVE TEST: a scoped effect is declared and fully handled within the same block.
+-- The scoped label does not escape the block; the outer result is pure.
+let withLocalLog : Int =
+    let result =
+        scoped effect LocalLog =
+            1 log : String -> Unit
+        in
+        handle localLog
+            (do
+                LocalLog.log "begin"
+                LocalLog.log "end"
+                pure 99)
+        with
+            case return x  -> x
+            case log _ k   -> k ()
+    result
+
+-- A second function demonstrating the scoped effect does not leak.
+let outerCaller : Int =
+    withLocalLog + 1
+
+--! assertNoErrors

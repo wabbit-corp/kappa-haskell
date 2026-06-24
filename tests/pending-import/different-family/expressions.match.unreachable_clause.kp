@@ -1,0 +1,35 @@
+-- Source issue: Agda #135
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- When a clause is dominated by earlier clauses (will never be reached at runtime),
+-- the compiler MUST emit kappa.pattern.unreachable for that clause.
+
+module test
+
+data Bool : Type =
+    True  : Bool
+    False : Bool
+
+-- Accepted: exhaustive, no redundant clauses.
+classify : Bool -> Int
+let classify True  = 1
+let classify False = 0
+
+--! mode check
+
+-- REJECTED: third clause `True` is unreachable — the first clause already matches all
+-- True values. The compiler MUST report kappa.pattern.unreachable.
+redundant : Bool -> Int
+let redundant True  = 1
+let redundant False = 0
+let redundant True  = 99   --!! kappa.pattern.unreachable
+
+--! assertDiagnostic error kappa.pattern.unreachable
+
+-- Variant: wildcard dominates all following clauses.
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+dominated : Nat -> Int
+let dominated _    = 0
+let dominated Zero = 1   --!! kappa.pattern.unreachable
+
+--! assertDiagnostic error kappa.pattern.unreachable

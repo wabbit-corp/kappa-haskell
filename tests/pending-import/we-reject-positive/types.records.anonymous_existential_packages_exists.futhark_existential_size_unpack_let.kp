@@ -1,0 +1,45 @@
+-- Source issues: FUTHARK-1176, FUTHARK-1924
+-- Spec: types.records.langymous_existential_packages_exists,
+--       declarations.terms.irrefutable_patterns_let_bindings
+-- Futhark #1176: unpacking sizes in let-binding — `let [n] (xs': [n]i32) = filter p xs`
+-- gives a symbolic name to the otherwise-existential size.
+-- Futhark #1924: variables of type i64 going out of scope should be allowed
+-- to "witness" the existential size when the type is `?[k].([k]a, ...)`.
+-- In Kappa, the analogous pattern is unpacking an existential package
+-- (`exists (n : Nat). SizedArray n Int`) using an irrefutable record pattern
+-- in a let binding.  The `arrayAsSized` primitive converts a dynamic array
+-- into such an existential, and the let pattern binds the witness.
+
+--! mode check
+--! assertNoErrors
+
+module test
+
+-- POSITIVE: unpacking an existential size from arrayAsSized.
+-- arrayAsSized : Array a -> exists (n : Nat). SizedArray n a
+-- We unpack to get a symbolic name for the length.
+unpackLen : Array Int -> Int
+let unpackLen arr =
+  let pkg = arrayAsSized arr
+  -- Unpack the existential via an irrefutable record pattern.
+  -- The witness field names are implementation-internal, so we project .value
+  -- to get the SizedArray; the length is carried by the type.
+  let xs = pkg.value
+  -- Use the statically-known length.
+  in sizedArrayLength xs
+
+-- POSITIVE: passing the existential value to a function that consumes SizedArray.
+-- This demonstrates that the unpacked witness participates in type checking.
+processAndCount : Array Int -> Nat
+let processAndCount arr =
+  let pkg : exists (n : Nat). SizedArray n Int = arrayAsSized arr
+  let xs  : SizedArray _ Int = pkg.value
+  in sizedArrayLength xs
+
+-- POSITIVE: existential introduction.
+-- Packaging a statically-sized array as existential.
+packAndUnpack : SizedArray 5 Int -> Nat
+let packAndUnpack xs =
+  let pkg : exists (n : Nat). SizedArray n Int =
+        seal (value = xs) as exists (n : Nat). SizedArray n Int
+  in sizedArrayLength pkg.value

@@ -1,0 +1,44 @@
+-- Source issue: carp-lang/Carp#481, #624
+-- Spec: declarations.terms.projection_definitions,
+--       types.universes.disjoint_path_borrowing_records.stable_places_place_preserving_bindings,
+--       types.universes.quantities.linear_discharge_discard_destructor_use,
+--       effects.inout
+--       (see also CARP_SPEC_ADDITIONS.md SA-CARP-05).
+-- Carp #481: mutating setter `set-<member>!` did not destruct the
+-- previous value, leaking memory.  Carp #624: nested generic setters
+-- failed to find the dependent destructor type.  The portable Kappa
+-- obligation is that overwriting a linear-typed record field with a
+-- mutating setter destructs the old value exactly once before installing
+-- the new value.  Kappa expresses the mutating-setter receiver as
+-- `(inout b : Bag)`, not `&mut Bag`.
+
+--! mode check
+
+data Buf : Type = Buf Int
+data Bag : Type = MkBag { item : Buf }
+
+-- POSITIVE: replacing a linear-typed field with a fresh value via the
+-- functional setter consumes the old field exactly once (it is dropped
+-- inside the setter's body) and moves the new field into the slot.
+replaceFunctional : (1 b : Bag) -> (1 fresh : Buf) -> Bag
+let replaceFunctional b fresh = setItem b fresh
+
+setItem : (1 b : Bag) -> (1 v : Buf) -> Bag
+let setItem b v = MkBag { item = v }
+
+--! assertType replaceFunctional (1 b : Bag) -> (1 fresh : Buf) -> Bag
+
+-- NEGATIVE: the mutating setter (declared with `inout`) requires its
+-- receiver to be a path the caller may open in place.  Passing a
+-- reference taken from an immutable binding does not produce an
+-- openable inout path, so the call site is rejected.  The diagnostic
+-- family is `kappa.inout.restoration` per §3.2.8.
+setBangBad : (1 fresh : Buf) -> Unit
+let setBangBad fresh =
+    let frozen : Bag = MkBag { item = Buf 0 }
+    setItemBang &frozen fresh                 --!! kappa.inout.restoration
+
+setItemBang : (inout b : Bag) -> (1 v : Buf) -> Unit
+let setItemBang b v = ()
+
+--! assertDiagnosticFamily error kappa.inout.restoration

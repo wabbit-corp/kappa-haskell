@@ -1,0 +1,97 @@
+-- Source issues: invalid/cyclic_typeclass_1.m, invalid/cyclic_typeclass_2.m,
+--   invalid/cyclic_typeclass_3.m
+-- Spec: traits.headers.supertraits, traits.headers.supertraits.refinement_graph_cycles
+--       (instance search termination)
+-- A trait's supertrait (superclass) relation must be acyclic. If a trait
+-- is its own direct or indirect supertrait, any attempt to use or instantiate
+-- the trait creates an infinite implicit-goal chain that must be rejected.
+
+module test
+
+-- NEGATIVE: direct 2-cycle: Foo requires Bar and Bar requires Foo.
+-- Both trait declarations form a cycle in the refinement graph and must be rejected.
+trait Bar a => Foo (a : Type) =
+    fooMethod : a -> Int
+
+trait Foo a => Bar (a : Type) =
+    barMethod : a -> Int
+
+data CycleT : Type = CycleT
+
+-- Declaring an instance for Foo requires solving Bar, which requires Foo: cycle.
+instance Foo CycleT =
+    let fooMethod _ = 1
+
+instance Bar CycleT =
+    let barMethod _ = 2
+
+-- Calling fooMethod requires Foo CycleT, which requires Bar CycleT, which
+-- requires Foo CycleT — the checker must detect this cycle and reject.
+useFoo : CycleT -> Int
+let useFoo x = fooMethod x    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: indirect 3-cycle: Alpha <= Beta <= Gamma <= Alpha.
+trait Gamma a => Alpha (a : Type) =
+    alphaOp : a -> Bool
+
+trait Alpha a => Beta (a : Type) =
+    betaOp : a -> Bool
+
+trait Beta a => Gamma (a : Type) =
+    gammaOp : a -> Bool
+
+data Cycle3T : Type = Cycle3T
+
+instance Alpha Cycle3T =
+    let alphaOp _ = True
+
+instance Beta Cycle3T =
+    let betaOp _ = True
+
+instance Gamma Cycle3T =
+    let gammaOp _ = True
+
+useAlpha : Cycle3T -> Bool
+let useAlpha x = alphaOp x    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a linear (non-cyclic) superclass chain is valid.
+-- SimpleEq <= SimpleOrd <= SimpleBounded is a valid chain with no cycle.
+infix 50 (===)
+
+trait SimpleEq (a : Type) =
+    (===) : a -> a -> Bool
+
+trait SimpleEq a => SimpleOrd (a : Type) =
+    lt : a -> a -> Bool
+
+trait SimpleOrd a => SimpleBounded (a : Type) =
+    minBound : a
+    maxBound : a
+
+data Small : Type = S1 | S2 | S3
+
+instance SimpleEq Small =
+    let (===) S1 S1 = True
+    let (===) S2 S2 = True
+    let (===) S3 S3 = True
+    let (===) _  _  = False
+
+instance SimpleOrd Small =
+    let lt S1 S2 = True
+    let lt S1 S3 = True
+    let lt S2 S3 = True
+    let lt _  _  = False
+
+instance SimpleBounded Small =
+    let minBound = S1
+    let maxBound = S3
+
+useChain : Small -> Bool
+let useChain x = lt x maxBound && x === minBound
+
+
+--! mode check

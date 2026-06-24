@@ -1,0 +1,54 @@
+-- Source: nim-lang/RFCs#450 (Allow borrowing all operations on distinct type),
+--         nim-lang/Nim distinct type design where distinct types do not coerce
+--         to their underlying type without an explicit cast
+-- Spec: data_types.data_declarations, compiler.frontir.standard_diagnostic_families
+--       (kappa.type.mismatch)
+-- In Nim, `distinct T` creates a new nominal type that wraps T. An Int and a
+-- `distinct Int` are not interchangeable without an explicit conversion. In Kappa,
+-- nominal wrapping via a single-constructor data type enforces the same discipline:
+-- the wrapped type does not implicitly coerce to the underlying type.
+
+--! mode check
+module test
+
+-- A nominal wrapper for Int — equivalent to Nim's `distinct Int`.
+data Meters : Type = Meters Int
+data Seconds : Type = Seconds Int
+data MeterPerSecond : Type = MeterPerSecond Int
+
+-- POSITIVE: constructing and destructuring correctly.
+mkMeters : Int -> Meters
+let mkMeters n = Meters n
+
+getMeters : Meters -> Int
+let getMeters m =
+    match m
+    case Meters n -> n
+
+-- POSITIVE: combining two nominally-different quantities via explicit unwrap.
+velocity : Meters -> Seconds -> MeterPerSecond
+let velocity dist time =
+    MeterPerSecond (getMeters dist / match time case Seconds n -> n)
+
+-- NEGATIVE: passing an Int where Meters is expected — no implicit coercion.
+badDistance : Meters
+let badDistance = 100      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing Meters where Seconds is expected — distinct types do not unify.
+badTime : Seconds
+let badTime = Meters 5     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: arithmetic on Meters using bare Int result without wrapping.
+addMeters : Meters -> Meters -> Meters
+let addMeters a b = getMeters a + getMeters b  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: explicitly wrapping the Int result in the Meters constructor.
+addMetersCorrect : Meters -> Meters -> Meters
+let addMetersCorrect a b = Meters (getMeters a + getMeters b)
+

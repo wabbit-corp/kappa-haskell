@@ -1,0 +1,28 @@
+-- Source issues: CREUSOT-261, CREUSOT-380
+-- Spec: compiler.frontir.standard_diagnostic_families.macro_elaboration,
+--       declarations.terms.irrefutable_patterns_let_bindings
+-- Family: kappa.macro.failure (Kappa §3.2.12)
+-- Spec-only macros (`predicate`, `logic`, `proof_assert`, `pearlite`) are
+-- not legal in a program-evaluation context.  The front-end MUST diagnose
+-- the misuse at the macro-elaboration boundary, before macro expansion
+-- propagates the malformed term downstream.  Pending spec gap
+-- CREUSOT-SA-01 covers the proposed spec-only macros.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: spec macro `pearlite` used at program top level.
+program let badPearlite : Bool
+let badPearlite = pearlite { 0 === 0 }      --!! kappa.macro.failure
+
+-- NEGATIVE: `proof_assert` outside a ghost / logic scope must be
+-- diagnosed at the same boundary.
+program let badProofAssert : Int
+let badProofAssert =
+    do {
+        proof_assert (True);                --!! kappa.macro.failure
+        0
+        }
+
+--! assertDiagnosticFamily error kappa.macro.failure

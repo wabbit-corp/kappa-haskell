@@ -1,0 +1,50 @@
+-- Source: Racket guide define.scrbl (local define / inner function)
+-- Source docs: racket guide define.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/define.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: declarations.let_in, declarations.let_in.pure_block_expressions
+--
+-- Inside a function body, local helper functions can be defined using let
+-- bindings. These helpers are scoped to the enclosing let block and are not
+-- visible outside. This is analogous to Racket's internal define.
+
+--! mode check
+
+-- POSITIVE: local helper used only inside its defining function.
+sumList : List Int -> Int
+let sumList xs =
+    let
+        go acc rest =
+            match rest
+            case []      -> acc
+            case (h :: t) -> go (acc + h) t
+    in
+    go 0 xs
+
+-- POSITIVE: two local helpers that call each other (mutual recursion in let).
+describeNumber : Int -> String
+let describeNumber n =
+    let
+        isEven k = (k % 2) == 0
+        parity k = if isEven k then "even" else "odd"
+    in
+    parity n
+
+-- POSITIVE: local binding shadows the outer function name inside a helper.
+applyTwice : (Int -> Int) -> Int -> Int
+let applyTwice f x =
+    let
+        step = f x
+    in
+    f step
+
+-- NEGATIVE: a local helper name is not accessible outside its let block.
+localHelper : Int -> Int
+let localHelper n =
+    let
+        increment = \x -> x + 1
+    in
+    increment n
+
+badAccess : Int
+let badAccess = increment 5   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

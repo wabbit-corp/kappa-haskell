@@ -1,0 +1,63 @@
+-- Source artifacts: narya docs/observational.rst ("every function preserves
+--               equality: given f : A -> B and a₂ : Id A a₀ a₁, we have
+--               ap f a₂ : Id B (f a₀) (f a₁)").
+-- Spec: types.propositions.propositional_equality_type_positions
+--
+-- Functions are congruent for propositional equality: any function
+-- f : a -> b can be applied to a witness of `Eq a x y` to produce a
+-- witness of `Eq b (f x) (f y)`. This is the elementary congruence
+-- principle from which higher-dimensional structure is built in HoTT;
+-- the portable obligation here is the propositional-equality form.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Eq (a : Type) (x : a) : a -> Type =
+    Refl : Eq a x x
+
+-- POSITIVE: congruence by pattern matching on Refl.
+ap1 :
+    forall (a : Type) (b : Type) (x : a) (y : a).
+    (f : a -> b) -> Eq a x y -> Eq b (f x) (f y)
+let ap1 f e =
+    match e
+      case Refl -> Refl
+
+-- POSITIVE: congruence on Suc preserves equality.
+sucCong : forall (m : Nat) (n : Nat). Eq Nat m n -> Eq Nat (Suc m) (Suc n)
+let sucCong e =
+    match e
+      case Refl -> Refl
+
+-- POSITIVE: equality is symmetric.
+symEq : forall (a : Type) (x : a) (y : a). Eq a x y -> Eq a y x
+let symEq e =
+    match e
+      case Refl -> Refl
+
+-- POSITIVE: equality is transitive when both witnesses are Refl.
+transEq :
+    forall (a : Type) (x : a) (y : a) (z : a).
+    Eq a x y -> Eq a y z -> Eq a x z
+let transEq e1 e2 =
+    match e1
+      case Refl ->
+          match e2
+            case Refl -> Refl
+
+-- NEGATIVE: cannot conclude Eq b (f a0) (g a1) for different functions
+-- f and g — the body Refl forces (f a0) and (g a0) to be definitionally
+-- equal, which the elaborator cannot establish.
+expect term f : Nat -> Nat
+expect term g : Nat -> Nat
+
+apMismatch :
+    forall (x : Nat) (y : Nat). Eq Nat x y -> Eq Nat (f x) (g y)
+let apMismatch e =
+    match e
+      case Refl -> Refl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

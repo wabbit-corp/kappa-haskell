@@ -1,0 +1,33 @@
+-- Source issues: CREUSOT-487, CREUSOT-463
+-- Spec: expressions.lambdas.closure_capture_quantities,
+--       traits.headers, traits.members,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Family: kappa.name.unresolved (Kappa §3.2.1)
+-- A closure literal's specification clause names the closure's positional
+-- arguments by their lambda binders, not by tuple projections from a
+-- packed Fn-trait argument.  Pending spec gap CREUSOT-SA-10 covers the
+-- proposed `ensures` / `requires` surface; this fixture asserts only the
+-- portable name-resolution rejection of arg-out-of-scope references.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: writing the postcondition as if the lambda were a single
+-- tuple-argument function is rejected: the names `arg.0` / `arg.1` are
+-- not in scope, only `x` and `y`.
+addClosureBad : Int -> Int -> Int
+let addClosureBad =
+    \(x : Int) (y : Int).
+        x + y
+    ensures result == arg.0 + arg.1          --!! kappa.name.unresolved
+
+-- NEGATIVE: a spec clause that references an argument name not present
+-- in the lambda binder list must be rejected.
+badName : Int -> Int
+let badName =
+    \(x : Int).
+        x + 1
+    ensures result == z + 1                  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

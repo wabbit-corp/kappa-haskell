@@ -1,0 +1,43 @@
+-- Source issues: egraphs-good/egglog #236 (Type checking context is reused for
+--   all facts in `run-schedule`),
+--   egraphs-good/egglog #316 (Confusing scopes of globals & locals in egglog).
+-- Spec: declarations.let_in (§9.3),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved).
+-- A `let` binder is scoped to the enclosing block; variables introduced in one
+-- block do not leak into a sibling block. Egglog's original type-checker reused
+-- a single context across all facts in `run-schedule`, so a variable `a` in one
+-- block aliased to `a` in another. Kappa requires each block to have its own
+-- fresh scope.
+
+module test
+
+--! mode check
+
+-- POSITIVE: distinct `a` bindings in different bindings.
+useA : Int
+let useA =
+    let a = 1 in
+    a + 1
+
+useB : String
+let useB =
+    let a = "hi" in
+    a ++ "!"
+
+-- NEGATIVE: variable `b` introduced in inner block is not visible outside it.
+badLeak : Int
+let badLeak =
+    let outerVal =
+        let b = 7 in
+        b + 1
+    in
+    b + 1                              --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: two non-nested blocks cannot share a binder.
+badSibling : Int
+let badSibling = (let p = 1 in p) + p   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,38 @@
+-- Source issue: RUST-4055 (and the closely related coherence variant RUST-4006)
+-- Spec: traits.instances, traits.headers.supertraits,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- The instance artifact for `instance Sub T` (where `Sub` has supertrait `Super`)
+-- MUST record evidence for `Super T`. Therefore writing `instance Sub T` without
+-- a corresponding `instance Super T` (or supertrait evidence otherwise
+-- discharged) is ill-formed: instance check cannot synthesize the required
+-- supertrait evidence value.
+
+--! mode check
+
+trait Super (a : Type) =
+    superOp : (& x : a) -> Int
+
+trait Super a => Sub (a : Type) =
+    subOp : (& x : a) -> Int
+
+data Good : Type = Good Int
+data Bad  : Type = Bad Int
+
+-- POSITIVE: providing Super first, then Sub. The Sub instance can discharge
+-- its supertrait obligation by finding the Super instance in the closure.
+instance Super Good =
+    let superOp (Good n) = n
+
+instance Sub Good =
+    let subOp (Good n) = n + 1
+
+useGood : Int
+let useGood = subOp (Good 3) + superOp (Good 3)
+
+-- NEGATIVE: writing the Sub instance without any Super Bad instance must be
+-- rejected. The instance artifact cannot record supertrait evidence for
+-- `Super Bad` because no such evidence exists.
+instance Sub Bad =                     --!! kappa.implicit.unsolved
+    let subOp (Bad n) = n + 1
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

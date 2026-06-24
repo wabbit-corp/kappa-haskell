@@ -1,0 +1,36 @@
+-- Source: spec-derived fixture (abortive resumption-quantity semantics from
+--   effects.monadic_core.effect_declarations.resumption_classes; referenced as
+--   coverage by EFFEKT_LINKS_CANDIDATE_LEDGER.md. Provenance made explicit
+--   2026-06-11, audit FAB-016.)
+-- Spec: effects.monadic_core.effect_declarations.resumption_classes,
+--       effects.monadic_core.effect_declarations.resumption_quantity_interpretation
+-- An operation declared with resumption quantity 0 is abortive.
+-- In an abortive handler clause, the bound resumption value k has quantity 0
+-- and is therefore unusable by the ordinary quantity rules.
+-- Using k in an abortive clause is a quantity violation.
+
+module test
+
+-- Abortive operation: '0 failWith' means the resumption quantity is 0.
+effect Fail =
+    0 failWith : String -> Unit
+
+-- LEGAL: abortive handler ignores k (discards it, which is legal for quantity 0).
+handleFail : Eff <[fail : Fail]> Int -> Eff <[ ]> (Maybe Int)
+let handleFail comp =
+    handle fail comp with
+        case return x          -> pure (Just x)
+        case failWith _msg _k  -> pure Nothing
+
+--! mode check
+--! assertType handleFail Eff <[fail : Fail]> Int -> Eff <[ ]> (Maybe Int)
+
+-- ILLEGAL: attempting to apply k in an abortive handler clause.
+-- k has quantity 0 and cannot be applied.
+handleFailBad : Eff <[fail : Fail]> Int -> Eff <[ ]> Int
+let handleFailBad comp =
+    handle fail comp with
+        case return x      -> pure x
+        case failWith _ k  -> k ()   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

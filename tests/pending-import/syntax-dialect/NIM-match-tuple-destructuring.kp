@@ -1,0 +1,67 @@
+-- Source: nim-lang/Nim#13793 (unify tuple expressions — AST inconsistency
+--         for tuple expressions), nim-lang/RFCs#339 (Allow to specify type
+--         for unpacking assignment `let (c, d): (int, int) = (1, 2)`)
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings,
+--       expressions.patterns.forms
+-- Nim allows tuple destructuring in let bindings and case arms. In Kappa,
+-- tuple patterns are a standard irrefutable pattern form. A tuple match
+-- must cover all tuple components; each component is bound to its field.
+
+--! mode check
+module test
+
+-- POSITIVE: let binding destructures a 2-tuple.
+swapPair : (Int, String) -> (String, Int)
+let swapPair pair =
+    let (n, s) = pair in
+    (s, n)
+
+--! assertType swapPair ((Int, String) -> (String, Int))
+
+-- POSITIVE: destructuring in a match arm.
+describePoint : (Int, Int) -> String
+let describePoint pt =
+    match pt
+    case (0, 0) -> "origin"
+    case (x, 0) -> "on x-axis at " ++ show x
+    case (0, y) -> "on y-axis at " ++ show y
+    case (x, y) -> "general point"
+
+-- POSITIVE: nested tuple patterns.
+fstOfTriple : (Int, String, Bool) -> Int
+let fstOfTriple t =
+    let (n, _, _) = t in n
+
+-- POSITIVE: tuple pattern in a function argument position via let.
+addPair : (Int, Int) -> Int
+let addPair p =
+    let (a, b) = p in
+    a + b
+
+result1 : Int
+let result1 = addPair (3, 4)
+
+--! assertType result1 Int
+
+-- POSITIVE: type-annotated let binding for tuple — RFC#339 style.
+annotatedPair : Int
+let annotatedPair =
+    let (x, y) : (Int, Int) = (10, 20) in
+    x + y
+
+-- POSITIVE: function returning a tuple, destructured at call site.
+divMod : Int -> Int -> (Int, Int)
+let divMod n d =
+    let q = n / d in
+    (q, n - q * d)
+
+useDiv : Int
+let useDiv =
+    let (q, r) = divMod 17 5 in
+    q + r
+
+-- NEGATIVE: type mismatch in tuple component.
+badTuple : (Int, String)
+let badTuple = (True, "hi")  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

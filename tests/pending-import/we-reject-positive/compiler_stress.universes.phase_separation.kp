@@ -1,0 +1,20 @@
+-- Stress test: compile-time (erased) binding cannot escape into a runtime value
+-- Spec: types.universes.erasure_elaboration_time.phase_separation_elab
+
+--! mode check
+
+-- POSITIVE: erased type argument used only at the type level in the signature;
+-- the runtime witness is a separate argument.
+trait Show (a : Type) =
+    toString : a -> String
+
+show : (0 A : Type) -> Show A -> A -> String
+let show (0 A) inst x = inst.toString x
+
+-- Calling with explicit erased argument is valid.
+showInt : Show Int
+let showInt = Show { toString = \n -> "Int" }
+
+let result : String = show (0 Int) showInt 42
+
+--! assertNoErrors

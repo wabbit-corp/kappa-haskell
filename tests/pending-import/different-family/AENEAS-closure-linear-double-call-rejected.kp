@@ -1,0 +1,54 @@
+-- Source issue: AENEAS-86
+-- Spec: expressions.lambdas.closure_capture_quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       kappa.path.consumed
+-- §16.2.1: a closure contaminated by a linear capture is itself linear.
+-- Calling it twice uses the closure (and its captured linear value) twice —
+-- the second call operates on a path that was consumed by the first.
+
+module test
+
+--! mode check
+
+data Resource : Type = Resource Int
+
+consume : (1 r : Resource) -> Int
+let consume (Resource n) = n
+
+-- NEGATIVE: calling a linear closure twice.
+-- f is linear (captures Resource which is linear).
+-- The first f() consumes f; the second f() uses a consumed path.
+doubleCallLinear : (1 r : Resource) -> Int
+let doubleCallLinear r =
+    let f = \() -> consume r    -- f is linear
+    f () + f ()                 --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: storing a linear closure and calling it twice via let.
+doubleLet : (1 r : Resource) -> Int
+let doubleLet r =
+    let f = \() -> consume r    -- linear
+    let a = f ()                -- first call: consumes f
+    let b = f ()                --!! kappa.path.consumed
+    a + b
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+data Val : Type = Val Int
+
+take : (1 v : Val) -> Int
+let take (Val n) = n
+
+-- NEGATIVE: passing a linear closure to a higher-order function expecting ω.
+-- An ω parameter may invoke the closure any number of times; passing a linear
+-- closure there violates the quantity demanded by the parameter.
+applyManyTimes : (() -> Int) -> Int   -- demands ω closure
+let applyManyTimes f = f () + f ()
+
+badPass : (1 v : Val) -> Int
+let badPass v =
+    let g = \() -> take v       -- g is linear
+    applyManyTimes g            --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

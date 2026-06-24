@@ -1,0 +1,70 @@
+-- Source issues: rust#118876 (`&'a T` → `&'static T` in safe code, slice > 50000),
+--                rust#103676 (covariance of reference type), rust#84366
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types
+--
+-- Kappa explicit borrowed types are covariant in their region parameter under
+-- the subsumption rule: a borrow at a region that is at least as long as the
+-- demanded region may be supplied where the demanded region is required.
+-- Conversely, a borrow at a *shorter* (rigid local) region MUST NOT be
+-- accepted where a longer region is demanded; the skolem-escape rule
+-- enforces this locally.
+--
+-- The rust#118876 unsoundness lifted a non-static borrow to a `&'static`
+-- borrow through a struct that hid the lifetime obligation. Kappa's
+-- well-formedness obligation requires that every region mentioned in a
+-- composite type be explicit in its surface type, so the analogous hiding
+-- through a nested type is rejected.
+
+module test
+
+-- An explicit static region in scope. In Kappa, `static` is a predeclared
+-- region that lives for the whole program.
+
+--! mode check
+
+-- POSITIVE: subsumption from longer to shorter. A borrow at the static region
+-- may be supplied where any region `s` is expected. This is the only direction
+-- of subsumption admissible for borrows.
+useAtAny :
+    forall (a : Type) (s : Region).
+    (&[static] x : a) -> (&[s] a)
+let useAtAny x = x
+
+
+-- NEGATIVE: subsumption from shorter to longer is rejected.
+-- Returning an explicit borrow at a local region `s` as if it were at static
+-- violates the escape rule for `s`.
+extendBorrow :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> (&[static] a)
+let extendBorrow x = x   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE (rust#118876 analog): hiding a non-static borrow inside a composite
+-- type does NOT shed the region obligation. The composite type must mention
+-- every region it carries.
+data Bounded (a : Type) (s : Region) : Type =
+    Bounded : (&[s] x : a) -> Bounded a s
+
+extendViaBox :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> Bounded a static   -- claims static, but the body carries s
+let extendViaBox x = Bounded x   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- POSITIVE: same composite type used at the matching region — accepted.
+keepRegion :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> Bounded a s
+let keepRegion x = Bounded x
+
+
+-- POSITIVE: composite type used at static when the borrow is also static.
+keepStatic :
+    forall (a : Type).
+    (&[static] x : a) -> Bounded a static
+let keepStatic x = Bounded x
+

@@ -1,0 +1,43 @@
+-- Source issues: KT-3 (declarations parsed as expressions), KT-147 (forward access error)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--   modules.names.lexical_lookup
+
+--! mode check
+
+-- POSITIVE: using a name that is defined in scope is accepted.
+defined : Int
+let defined = 42
+
+useDefinedName : Int
+let useDefinedName = defined
+
+--! assertType useDefinedName Int
+
+-- POSITIVE: using a locally-defined function name is accepted.
+double : Int -> Int
+let double n = n + n
+
+callDefined : Int
+let callDefined = double 5
+
+
+-- NEGATIVE: using a name that is not defined anywhere is an error.
+useUndefined : Int
+let useUndefined = noSuchName   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: forward reference in a top-level initializer is an error.
+forwardRef : Int
+let forwardRef = laterDef   --!! kappa.name.unresolved
+
+laterDef : Int
+let laterDef = 10
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using a misspelled name is also unresolved.
+typo : Int
+let typo = doublee 3   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

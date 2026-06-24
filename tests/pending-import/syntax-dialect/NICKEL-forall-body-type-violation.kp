@@ -1,0 +1,57 @@
+-- Source: nickel tests/typecheck/mismatch_forall_variable.ncl,
+--         mismatch_forall_var_concrete_type.ncl, nickel PR #1320
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch)
+-- A function body must return a value whose type is consistent with the declared
+-- return type. When the return type is a type variable `a`, the body must not
+-- return a value of type `b` (a different type variable). The diagnostic must
+-- report the type variable names as declared by the programmer — not internal
+-- unifier names — so the error is actionable. PR #1320 improved error messages
+-- for polymorphic tail parametricity violations.
+
+module test
+
+-- NEGATIVE: declared `forall a. (forall b. a -> b -> a)` but body returns `y : b`
+-- where the return type should be `a`. Type variable `b` is not `a`.
+badForallBody : forall a. forall b. a -> b -> a
+let badForallBody x y = y    --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using a concrete-typed function to implement a polymorphic one.
+-- `g : Number -> Number` is too specific to implement `forall a. a -> a`.
+-- The body `\x -> g x` requires `a ~ Number`, but `a` is universally quantified.
+concreteInPoly : forall a. a -> a
+let concreteInPoly =
+    let g : Number -> Number = \x -> x in
+    \x -> g x    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a function body that correctly returns the declared type variable.
+correctForallBody : forall a. forall b. a -> b -> a
+let correctForallBody x y = x
+
+--! assertType correctForallBody (forall a. forall b. a -> b -> a)
+
+-- POSITIVE: implementing a polymorphic function with a correctly polymorphic body.
+polyImpl : forall a. a -> a
+let polyImpl x = x
+
+
+-- NEGATIVE: in a recursive let, the declared type must be preserved across
+-- the recursive call. Calling `f "hmm"` when `f : Number -> Number` is
+-- a type mismatch, even within the same recursive binding group.
+badRecursive : Number
+let badRecursive =
+    let rec f : Number -> Number = \x -> f "hmm" in    --!! kappa.type.mismatch
+    f 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: recursive let with correct type usage.
+goodRecursive : Number
+let goodRecursive =
+    let rec fact : Number -> Number = \n -> if n == 0 then 1 else n * fact (n - 1) in
+    fact 5
+

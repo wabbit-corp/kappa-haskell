@@ -1,0 +1,26 @@
+-- Source issue: MLatu #21 ("Switch from traits to type classes"). The
+--   proposed `instance Eq Int { define = (Int, Int -> Bool) ... }`
+--   states that the method type is fixed by the instance head; passing
+--   a value of the wrong instance type is a static error. The portable
+--   Kappa obligation is that the inferred instance type is enforced at
+--   each call site.
+-- Spec: traits.instances, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+
+module test
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+instance Eq Int =
+    let eq x y = x == y
+
+-- NEGATIVE: dispatch picks Eq Int from the first argument; the second
+-- argument is then required to have type Int but is given as String.
+mixed : Bool
+let mixed = eq 7 "seven"                   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

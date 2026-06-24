@@ -1,0 +1,30 @@
+-- Source issue: dhall-lang #230, #246
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+-- A type mismatch diagnostic (kappa.type.mismatch) MUST include both the
+-- expected type and the actual type in its structured payload under the
+-- "expected-actual" payload kind. This ensures tooling can render
+-- "expected X, got Y" messages rather than opaque error codes.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+data Bool : Type = False : Bool | True : Bool
+
+-- NEGATIVE TEST 1: passing Bool where Nat is expected.
+-- Diagnostic: kappa.type.mismatch with expected=Nat, actual=Bool.
+bad_app : Nat
+let bad_app = Succ True    --!! kappa.type.mismatch
+
+-- NEGATIVE TEST 2: returning wrong type from function body.
+-- Function annotated Nat -> Nat but body has type Bool.
+bad_return : Nat -> Nat
+let bad_return _ = False    --!! kappa.type.mismatch
+
+-- Structured payload assertions:
+-- The mismatch payload must have kind "expected-actual", and must expose
+-- labels for both the expected and actual types.
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticPayload error kappa.type.mismatch /kind "expected-actual"
+--! assertDiagnosticLabel error kappa.type.mismatch expected
+--! assertDiagnosticLabel error kappa.type.mismatch actual

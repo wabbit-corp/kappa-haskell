@@ -1,0 +1,37 @@
+-- Source issue: Agda #552
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.index_refinement_constructor_knowledge
+-- When a constructor forces implicit-argument equalities, matching on that
+-- constructor must introduce those equalities into the branch environment.
+-- The right-hand side must type-check under the forced implicit equalities.
+-- Here `refl3` forces a = b = c; the RHS reuse of `refl3` must be accepted.
+
+module test
+
+-- Identity type for three arguments: `Id3 a b c` is inhabited only when a = b = c.
+data Id3 : {A : Type} -> A -> A -> A -> Type =
+    refl3 : {A : Type} -> {x : A} -> Id3 x x x
+
+-- Dependent pattern matching forces a = b = c from the constructor `refl3`.
+-- The right-hand side `refl3` must be accepted at the forced-equal type.
+identityId3 : {A : Type} -> {a b c : A} -> Id3 a b c -> Id3 a b c
+let identityId3 refl3 = refl3
+
+--! mode check
+--! assertNoErrors
+
+-- Variant: matching on a reflexivity proof forces the two argument positions equal.
+data Eq : {A : Type} -> A -> A -> Type =
+    refl : {A : Type} -> {x : A} -> Eq x x
+
+-- symmetry: if a = b then b = a, witnessed by dependent match.
+sym : {A : Type} -> {a b : A} -> Eq a b -> Eq b a
+let sym refl = refl
+
+--! assertNoErrors
+
+-- Transitivity: chain two equalities; both pattern matches force index equalities.
+trans : {A : Type} -> {a b c : A} -> Eq a b -> Eq b c -> Eq a c
+let trans refl refl = refl
+
+--! assertNoErrors

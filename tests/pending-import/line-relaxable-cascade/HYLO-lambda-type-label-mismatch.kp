@@ -1,0 +1,41 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/LambdaTypeInference.hylo
+--                   (diagnostics: "cannot initialize object of type ... with value of type ...",
+--                    "cannot infer complex return type"),
+--                   Tests/HyloTests/TestCases/TypeChecking/LambdaCoercion.hylo
+--                   (diagnostic: "cannot pass value of type ... to parameter ...")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/LambdaTypeInference.hylo and LambdaCoercion.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- Hylo: a lambda expression stored in a typed variable must match the declared
+-- function type exactly — including parameter types and return type. A lambda
+-- whose parameter or return type does not match the annotation is rejected.
+
+--! mode check
+
+-- POSITIVE: lambda type exactly matches annotation.
+let addOne : Int -> Int = \(x : Int) -> x + 1
+
+-- POSITIVE: annotated lambda with correct parameter and return type.
+let negate : Bool -> Bool = \(b : Bool) -> not b
+
+-- NEGATIVE: lambda has Bool parameter but Int is expected.
+-- The annotation says `Int -> Int` but the lambda takes Bool.
+let wrongParam : Int -> Int = \(x : Bool) -> 0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: lambda has wrong return type.
+-- The annotation says `Int -> Bool` but the lambda returns an Int.
+let wrongReturn : Int -> Bool = \(x : Int) -> x + 1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A higher-order function accepting Int -> Int.
+applyTwice : (Int -> Int) -> Int -> Int
+let applyTwice f x = f (f x)
+
+-- NEGATIVE: passing a Bool -> Int lambda where Int -> Int is required.
+badLambda : Int
+let badLambda = applyTwice (\(b : Bool) -> 0) 5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

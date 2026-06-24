@@ -1,0 +1,39 @@
+-- Source issue: ROSETTE-187 (Unsound simplification of (/ x x) to 1)
+-- Spec: effects.monadic_core.portable_defect_classes,
+--       expressions.application
+--
+-- The Rosette report describes a host-level rewrite that simplified
+-- `(/ x x)` to `1` without proving `x != 0`. Kappa treats integer
+-- division by zero as a portable defect class; any optimization must
+-- preserve the defect when `x = 0`. This fixture pins down the
+-- portable obligation that an Int division is well-typed and that the
+-- defect arises at runtime, not at compile time — the elaborator does
+-- not silently equate `x / x` with `1`.
+
+--! mode check
+
+-- POSITIVE: a guarded division compiles and is well-typed.
+safeDiv : Int -> Int -> Int
+let safeDiv n d =
+    if d == 0 then 0 else n / d
+
+-- POSITIVE: a self-division guarded by the zero check yields a value
+-- whose static type is Int — the compiler does not commit to a single
+-- algebraic identity for it.
+divSelfGuarded : Int -> Int
+let divSelfGuarded x =
+    if x == 0 then 0 else x / x
+
+-- POSITIVE: a Boolean witness that the unguarded result lives in the
+-- two-element set {0, 1} after explicitly guarding the zero case.
+classify : Int -> Bool
+let classify x =
+    let g = if x == 0 then 0 else x / x
+    in (g == 0) || (g == 1)
+
+-- POSITIVE: an unguarded division is still well-typed — the defect
+-- only arises at runtime evaluation, never at elaboration.
+unguarded : Int -> Int -> Int
+let unguarded n d = n / d
+
+--! assertNoErrors

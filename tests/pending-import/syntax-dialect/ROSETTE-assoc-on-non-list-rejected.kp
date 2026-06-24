@@ -1,0 +1,38 @@
+-- Source issue: ROSETTE-111 (Broken error message for assoc — host-language
+--                contract violation surfaces through a different
+--                identifier)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.application
+--
+-- The Rosette report observes that misordering `assoc` arguments yields
+-- a host contract failure on an unrelated internal identifier. Kappa's
+-- portable obligation: a library function is annotated with precise
+-- argument types, and a static type mismatch — not an internal
+-- failure — is raised when the argument types do not match.
+
+--! mode check
+
+assocInt : Int -> List (Int, String) -> Option String
+let assocInt k xs =
+    match xs
+    case []                  -> None
+    case ((kp, v) :: rest)   ->
+        if k == kp then Some v else assocInt k rest
+
+-- POSITIVE: well-typed assoc.
+ok : Option String
+let ok = assocInt 1 [(1, "one"), (2, "two")]
+
+-- NEGATIVE: arguments swapped — passing a List as the key.
+badSwap : Option String
+let badSwap = assocInt [(1, "one")] 1               --!! kappa.type.mismatch
+
+-- NEGATIVE: passing an Int as the table argument.
+badNonList : Option String
+let badNonList = assocInt 1 0                       --!! kappa.type.mismatch
+
+-- NEGATIVE: table contains the wrong inner type.
+badEntries : Option String
+let badEntries = assocInt 1 [(1, 2), (2, 3)]        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

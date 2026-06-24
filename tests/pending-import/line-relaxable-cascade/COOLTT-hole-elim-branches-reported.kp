@@ -1,0 +1,47 @@
+-- Source issues: cooltt issue #192 (automatically unleashed holes in eliminator
+--               cases are not displayed), PR #193 (fix holes and probes).
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes
+--
+-- When a pattern match is written with no branches (an empty eliminator), the
+-- elaborator generates one goal per constructor. Those goals must be exposed as
+-- holes — the user must see each unfilled branch as an unsolved hole diagnostic.
+-- Suppressing holes in generated match arms is a spec violation.
+--
+-- More generally, any expression hole (`?` or `_` or a named hole `?name`)
+-- that appears in a match arm must be reported. The hole's expected type is
+-- the return type of the match restricted to the branch's constructor pattern.
+
+--! mode check
+
+-- POSITIVE: complete match on Nat; no holes.
+doubleNat : Nat -> Nat
+let doubleNat zero    = zero
+let doubleNat (suc n) = suc (suc (doubleNat n))
+
+-- POSITIVE: match with all branches filled; no diagnostics expected.
+isZero : Nat -> Bool
+let isZero zero    = True
+let isZero (suc _) = False
+
+-- POSITIVE: named holes in match arms are reported as unsolved.
+-- The user writes `?zeroCase` and `?sucCase`; both must appear in diagnostics.
+incompleteMatch : Nat -> Nat
+let incompleteMatch zero    = ?zeroCase     --!! kappa.hole.unsolved
+let incompleteMatch (suc n) = ?sucCase      --!! kappa.hole.unsolved
+
+-- POSITIVE: a hole in one arm and a filled term in the other;
+-- only the hole arm generates a diagnostic.
+halfComplete : Nat -> Nat
+let halfComplete zero    = zero
+let halfComplete (suc n) = ?sucBranch       --!! kappa.hole.unsolved
+
+-- POSITIVE: a hole at the top level of a definition is reported.
+topHole : Nat
+let topHole = ?x                            --!! kappa.hole.unsolved
+
+-- POSITIVE: a named hole used twice at the same type refers to one metavariable;
+-- both occurrences are reported as a single unsolved hole.
+doubleHole : Nat -> Nat -> Nat
+let doubleHole a b = ?sum + ?sum            --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

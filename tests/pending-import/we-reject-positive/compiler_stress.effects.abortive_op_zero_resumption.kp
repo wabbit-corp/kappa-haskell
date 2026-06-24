@@ -1,0 +1,26 @@
+-- Stress test: An abortive operation (resumption quantity 0) cannot resume the computation
+-- Spec: effects.monadic_core.effect_declarations.resumption_classes
+
+--! mode check
+
+-- Abortive operation: '0 fail' means the resumption quantity is 0.
+-- The handler for 'fail' may NOT call k.
+effect Fail =
+    0 fail : String -> Int
+
+-- POSITIVE TEST: abortive handler uses the message and returns a default
+-- without invoking k.  Discarding k is legal when its quantity is 0.
+let handleFail (comp : Eff <[fail : Fail]> Int) : Int =
+    handle fail comp with
+        case return x        -> x
+        case fail msg _k     -> 0   -- _k has quantity 0; not called (legal)
+
+-- A computation that may fail.
+let riskyComp : Eff <[fail : Fail]> Int =
+    do Fail.fail "something went wrong"
+
+-- Eliminating the Fail effect yields a pure Int (the default 0).
+let safeResult : Int =
+    handleFail riskyComp
+
+--! assertNoErrors

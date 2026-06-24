@@ -1,0 +1,49 @@
+-- Source issue: MOJO-1383
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances, traits.headers.supertraits
+-- A trait that declares a supertrait requires evidence that the supertrait
+-- is satisfied for any type bound to the sub-trait.
+-- If a type satisfies only the child trait but the super-trait instance is
+-- absent, the implicit proof obligation is unsolved and must be reported as
+-- kappa.implicit.unsolved.
+
+module test
+
+--! mode check
+
+-- Supertrait with one required operation.
+trait Printable (a : Type) =
+    display : (& x : a) -> String
+
+-- Sub-trait that extends Printable; any conforming type must also be Printable.
+trait Printable a => Labeled (a : Type) =
+    label : (& x : a) -> String
+
+data Good : Type = Good Int
+
+-- POSITIVE: both instances are provided; Labeled Good can find Printable Good.
+instance Printable Good =
+    let display (Good n) = "Good " ++ show n
+
+instance Labeled Good =
+    let label (Good n) = "label:" ++ show n
+
+useLabeledGood : String
+let useLabeledGood = label (Good 7)
+
+--! assertType useLabeledGood String
+
+data Bad : Type = Bad Int
+
+-- NEGATIVE: Labeled Bad instance without a Printable Bad instance;
+-- the supertrait evidence is unsolvable → kappa.implicit.unsolved.
+instance Labeled Bad =            --!! kappa.implicit.unsolved
+    let label (Bad n) = show n
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a function constrained to Labeled can always discharge Printable
+-- because the constraint is carried transitively.
+showLabeled : forall (a : Type). Labeled a => (& x : a) -> String
+let showLabeled x = display x ++ "/" ++ label x
+

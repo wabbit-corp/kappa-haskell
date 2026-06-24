@@ -1,0 +1,44 @@
+-- Source artifacts: narya docs/mutual-definitions.rst (def Even / and Odd
+--               with mutually referring constructors).
+-- Spec: data_types.data_declarations,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Kappa checks a strongly connected component of declarations from its
+-- semantic fixpoint (§15.16). Headers of every member are published
+-- into the group environment before any body is checked, so two data
+-- types may reference each other in constructor argument types without
+-- a special `mutual` keyword. The portable obligation is that the
+-- group elaborates as a fixpoint rather than relying on source order.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: a pair of mutually inductive predicates. Each constructor
+-- of Even references Odd and vice versa; the SCC publishes both
+-- headers before checking either body.
+data Even : Nat -> Type =
+    EvenZero : Even Zero
+    EvenSuc  : (n : Nat) -> Odd n -> Even (Suc n)
+
+data Odd : Nat -> Type =
+    OddSuc : (n : Nat) -> Even n -> Odd (Suc n)
+
+-- POSITIVE: a witness of Even 2.
+two_is_even : Even (Suc (Suc Zero))
+let two_is_even = EvenSuc (Suc Zero) (OddSuc Zero EvenZero)
+
+-- POSITIVE: a witness of Odd 3.
+three_is_odd : Odd (Suc (Suc (Suc Zero)))
+let three_is_odd =
+    OddSuc (Suc (Suc Zero))
+      (EvenSuc (Suc Zero) (OddSuc Zero EvenZero))
+
+-- NEGATIVE: OddSuc requires the predecessor witness to be Even; passing
+-- an Odd witness produces a type mismatch.
+bad_odd : Odd (Suc (Suc (Suc Zero)))
+let bad_odd = OddSuc (Suc (Suc Zero)) three_is_odd    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

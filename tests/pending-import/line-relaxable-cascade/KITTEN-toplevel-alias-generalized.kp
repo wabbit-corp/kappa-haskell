@@ -1,0 +1,47 @@
+-- Source issue: Kitten #68 (`def my_id(a -> a): ->x x` is generalized
+--   correctly, but `def my_id_alias: my_id` is *not* generalized; using
+--   the alias at two different types produces `cannot solve scalar type
+--   constraint [Char] = Int`).
+-- Spec: declarations.terms, declarations.signatures,
+--       types.quantification, compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- A top-level definition declared with a polymorphic signature must be
+-- generalized; an unannotated alias of a polymorphic definition must
+-- inherit the polymorphic type so it can be used at multiple
+-- instantiations.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a polymorphic identity.
+myId : forall (a : Type) . a -> a
+let myId x = x
+
+-- POSITIVE: an alias of a polymorphic definition is itself polymorphic.
+myIdAlias : forall (a : Type) . a -> a
+let myIdAlias = myId
+
+-- POSITIVE: each call instantiates the type independently.
+useInt : Int
+let useInt = myIdAlias 10
+
+useStr : String
+let useStr = myIdAlias "x"
+
+--! assertType useInt Int
+--! assertType useStr String
+
+-- NEGATIVE: a definition whose body forces it to a single instantiation
+-- cannot subsequently be used at a different type.
+intOnly : Int -> Int
+let intOnly = myId
+
+useIntOnlyOk : Int
+let useIntOnlyOk = intOnly 7
+
+useIntOnlyBad : String
+let useIntOnlyBad = intOnly "x"            --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

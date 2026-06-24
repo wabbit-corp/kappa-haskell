@@ -1,0 +1,61 @@
+-- Source artifacts: cooltt test hlevel.cooltt (has-hlevel, contr, prop, set,
+--               contr-prop, prop-set, raise-hlevel), test prelude.cooltt.
+-- Source tests: cooltt test/hlevel.cooltt (corpus repos/github-redprl-cooltt/tests/test/hlevel.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: types.universes, types.propositions.propositional_equality_type_positions
+--
+-- Homotopy levels (h-levels) form a hierarchy:
+-- - Level -2 (contractible / contr): there exists a center with a path from any point.
+-- - Level -1 (propositional / prop): any two elements are equal.
+-- - Level 0 (set): any two proofs of equality are equal.
+-- - Level n (n-groupoid): higher coherences.
+--
+-- Key obligation: contractible implies propositional.
+-- If `A` is contractible (has a unique point up to path), then for any
+-- `a b : A`, we can produce `a = b` via the contractibility center.
+-- This is a pure dependent type theory fact; no cubical primitives needed.
+
+--! mode check
+
+-- POSITIVE: contractibility: a type is contractible if it has a center
+-- and a path from every element to the center.
+data IsContr (A : Type) : Type =
+    MkContr : (center : A) -> (paths : forall (x : A) -> center = x) -> IsContr A
+
+-- POSITIVE: propositionality: a type is propositional if any two elements
+-- are equal.
+data IsProp (A : Type) : Type =
+    MkProp : (eq : forall (a b : A) -> a = b) -> IsProp A
+
+-- POSITIVE: sethood: a type is a set if any two equality proofs are equal.
+data IsSet (A : Type) : Type =
+    MkSet : (setEq : forall (a b : A) (p q : a = b) -> p = q) -> IsSet A
+
+-- POSITIVE: Unit is contractible.
+isContrUnit : IsContr ()
+let isContrUnit = MkContr () (\_ -> refl)
+
+-- POSITIVE: contractible implies propositional.
+-- If A is contractible with center c, then for any a b : A,
+-- `sym (paths a) ∘ paths b : a = b`.
+contrImpliesProp : forall {A : Type} -> IsContr A -> IsProp A
+let contrImpliesProp (MkContr c paths) =
+    MkProp (\a b -> trans (symm (paths a)) (paths b))
+
+-- POSITIVE: propositional implies set (squash/truncation argument).
+-- Any prop has unique equality proofs because equality in a prop is also a prop.
+propImpliesSet : forall {A : Type} -> IsProp A -> IsSet A
+let propImpliesSet p =
+    let prop : forall (a b : A) -> a = b = IsProp.eq p in
+    MkSet (\a b pq1 pq2 -> ?setProof)    --!! kappa.hole.unsolved
+
+-- POSITIVE: Bool is NOT contractible; there are two distinct elements.
+-- We can state this as the non-existence of a center that is equal to all elements.
+notContrBool : IsContr Bool -> False
+let notContrBool (MkContr True  paths) = ?trueCase    --!! kappa.hole.unsolved
+let notContrBool (MkContr False paths) = ?falseCase   --!! kappa.hole.unsolved
+
+-- POSITIVE: Unit is also propositional.
+isPropUnit : IsProp ()
+let isPropUnit = contrImpliesProp isContrUnit
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

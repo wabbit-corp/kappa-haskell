@@ -1,0 +1,37 @@
+-- Source issues: OCaml#8414, OCaml#2633
+-- Spec: types.unions.variant_row_polymorphism, types.unions.elimination_match,
+--       types.quantification.rows_labels
+-- An open union requires a residual arm for exhaustive matching.
+-- A row-polymorphic function over an open union must be accepted.
+-- Absence of the residual arm in a match on an open union is non-exhaustive.
+
+module test
+
+-- A row-polymorphic function over an open union `(| Int | r |)`.
+-- LacksVar r Int ensures Int is not already in r.
+project : forall (r : VarRow). LacksVar r Int => (| Int | r |) -> Int?
+let project u =
+    match u
+      case (| x : Int |) -> Some x
+      case (| ..rest |)  -> None
+
+--! mode check
+
+-- A closed union type: both member types must be covered for exhaustiveness.
+type TwoCase = (| Int | String |)
+
+matchBoth : TwoCase -> Int
+let matchBoth u =
+    match u
+      case (| n : Int |)    -> n
+      case (| s : String |) -> 0
+
+
+-- Rejected: open union match missing the residual arm is non-exhaustive.
+-- `(| Int | r |)` with row variable r requires either a catch-all or (| ..rest |).
+bad : forall (r : VarRow). LacksVar r Int => (| Int | r |) -> Int
+let bad u =
+    match u                      --!! kappa.pattern.non-exhaustive
+      case (| x : Int |) -> x
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

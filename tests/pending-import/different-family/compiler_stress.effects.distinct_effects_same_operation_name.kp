@@ -1,0 +1,61 @@
+-- Stress test: Two effect declarations with the same operation name but
+--   different labels — they are distinct effects and must not be confused.
+--   Using the wrong label in an effect call must produce a row mismatch.
+--   Disambiguation is by label, not by operation name.
+-- Spec: effects.monadic_core.effect_declarations,
+--   effects.monadic_core.eff_effect_rows
+
+--! mode check
+
+-- Two effects both having an operation called `emit`.
+effect TextLog =
+    1 emit : String -> Unit
+
+effect BinaryLog =
+    1 emit : Int -> Unit
+
+-- POSITIVE: using TextLog's emit with the `text` label.
+textLogging : Eff <[text : TextLog]> Unit
+let textLogging =
+    do
+        TextLog.emit "hello"
+        TextLog.emit "world"
+
+-- POSITIVE: using BinaryLog's emit with the `bin` label.
+binaryLogging : Eff <[bin : BinaryLog]> Unit
+let binaryLogging =
+    do
+        BinaryLog.emit 42
+        BinaryLog.emit 99
+
+-- POSITIVE: both effects active simultaneously under different labels.
+combined : Eff <[text : TextLog, bin : BinaryLog]> Unit
+let combined =
+    do
+        TextLog.emit "starting"
+        BinaryLog.emit 1
+        TextLog.emit "done"
+        BinaryLog.emit 0
+
+-- NEGATIVE: using BinaryLog.emit where TextLog is expected.
+-- BinaryLog's emit expects Int; TextLog's emit expects String.
+wrongPayload : Eff <[text : TextLog]> Unit
+let wrongPayload =
+    BinaryLog.emit 7   --!! kappa.effect.row-mismatch
+
+-- Handlers.
+let runText (comp : Eff <[text : TextLog]> Unit) : Unit =
+    handle text comp with
+        case return _    -> ()
+        case emit _ k    -> k ()
+
+let runBin (comp : Eff <[bin : BinaryLog]> Unit) : Unit =
+    handle bin comp with
+        case return _    -> ()
+        case emit _ k    -> k ()
+
+-- POSITIVE: run combined by handling each label separately.
+runCombined : Unit
+let runCombined = runBin (runText combined)
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

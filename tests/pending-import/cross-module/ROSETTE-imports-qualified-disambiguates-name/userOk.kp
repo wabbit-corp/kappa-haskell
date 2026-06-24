@@ -1,0 +1,11 @@
+module userOk
+
+import addLib as A
+import mulLib as M
+
+-- POSITIVE: both names are reachable through their module aliases.
+ok1 : Int
+let ok1 = A.combine 3 4
+
+ok2 : Int
+let ok2 = M.combine 3 4

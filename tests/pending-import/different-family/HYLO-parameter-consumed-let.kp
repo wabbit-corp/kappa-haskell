@@ -1,0 +1,46 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/ParameterEscape.hylo,
+--                   Tests/HyloTests/TestCases/Lowering/BindingEscape.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/Lowering/ParameterEscape.hylo and BindingEscape.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (kappa.path.consumed), types.universes.quantities
+-- Hylo: a `let` parameter receives a borrowed (non-owning) access.
+-- Consuming such a parameter — passing it to a `sink` (linear) callee or
+-- returning it as a moved value — is rejected because the caller still owns
+-- the value. In Kappa this maps to: a borrow-access parameter has quantity
+-- that cannot satisfy a linear demand.
+
+--! mode check
+
+data Resource : Type = Resource Int
+
+-- Requires ownership (linear).
+take : (1 r : Resource) -> Int
+let take (Resource n) = n
+
+-- Borrow-only access: does not consume.
+peek : (& r : Resource) -> Int
+let peek (Resource n) = n
+
+-- POSITIVE: passing a linear parameter to a consumer.
+ownedConsume : (1 r : Resource) -> Int
+let ownedConsume r = take r
+
+-- POSITIVE: borrowing a linear parameter without consuming it.
+ownedPeek : (& r : Resource) -> Int
+let ownedPeek r = peek r
+
+-- NEGATIVE: attempting to consume a borrowed parameter.
+-- `r` arrives as a borrow; `take` requires ownership.
+-- The borrow does not satisfy the linear demand.
+borrowedConsume : (& r : Resource) -> Int
+let borrowedConsume r = take r   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: returning a borrowed parameter as an owned value.
+-- Returning it as a linear value would transfer ownership the caller
+-- never gave up.
+borrowedReturn : (& r : Resource) -> Resource
+let borrowedReturn r = r    --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

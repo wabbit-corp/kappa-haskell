@@ -1,0 +1,44 @@
+-- Source: Julia manual, "Tuple Destructuring",
+--         Julia BoundsError on mismatched destructuring
+-- Spec: expressions.patterns.tuples,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- In Julia, destructuring a tuple with the wrong number of variables raises a
+-- BoundsError at runtime. In Kappa, a tuple pattern whose element count differs
+-- from the actual tuple type is a static type error: kappa.type.mismatch.
+
+--! mode check
+
+triple : (Int, Int, Int)
+let triple = (1, 2, 3)
+
+-- POSITIVE: exact arity — three binders for a triple.
+a : Int
+b : Int
+c : Int
+let (a, b, c) = triple
+
+-- NEGATIVE: too few binders (2 for a 3-tuple).
+x : Int
+y : Int
+let (x, y) = triple   --!! kappa.type.mismatch
+
+-- NEGATIVE: too many binders (4 for a 3-tuple).
+p : Int
+q : Int
+r : Int
+s : Int
+let (p, q, r, s) = triple   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a pair correctly destructured.
+pair : (String, Bool)
+let pair = ("yes", True)
+
+ps : String
+pb : Bool
+let (ps, pb) = pair
+
+--! assertType ps String
+--! assertType pb Bool
+

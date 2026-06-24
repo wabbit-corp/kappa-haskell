@@ -1,0 +1,54 @@
+-- Stress test: Structurally-recursive functions over a length-indexed GADT
+--   (Vec n) must be accepted; non-structural recursion or direct divergence
+--   on the indexed type must be rejected.
+-- Spec: declarations.totality, declarations.totality.termination_checking_structural
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : {n : Nat} -> a -> Vec a n -> Vec a (n + 1)
+
+-- POSITIVE: structurally recursive — decreases on the second argument.
+vecLength : forall {a : Type} {n : Nat}. Vec a n -> Nat
+let vecLength v decreases structural v =
+    match v
+    case VNil        -> 0
+    case VCons _ xs  -> 1 + vecLength xs
+
+-- POSITIVE: map over a Vec; structurally recursive.
+vecMap : forall {a b : Type} {n : Nat}. (a -> b) -> Vec a n -> Vec b n
+let vecMap f v decreases structural v =
+    match v
+    case VNil       -> VNil
+    case VCons x xs -> VCons (f x) (vecMap f xs)
+
+-- POSITIVE: foldr over Vec; structurally recursive.
+vecFoldr :
+    forall {a b : Type} {n : Nat}.
+    (a -> b -> b) -> b -> Vec a n -> b
+let vecFoldr f z v decreases structural v =
+    match v
+    case VNil       -> z
+    case VCons x xs -> f x (vecFoldr f z xs)
+
+-- POSITIVE: computing a sum from a Vec Int.
+vecSum : forall {n : Nat}. Vec Int n -> Int
+let vecSum v = vecFoldr (fn x acc -> x + acc) 0 v
+
+-- Example values.
+v3 : Vec Int 3
+let v3 = VCons 1 (VCons 2 (VCons 3 VNil))
+
+len3 : Nat
+let len3 = vecLength v3
+
+sum3 : Int
+let sum3 = vecSum v3
+
+-- NEGATIVE: a function that ignores the structural argument and recurses on
+-- an unbounded term — no decreasing measure provided.
+badRecurse : forall {a : Type} {n : Nat}. Vec a n -> Int
+let badRecurse v = 1 + badRecurse v   --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

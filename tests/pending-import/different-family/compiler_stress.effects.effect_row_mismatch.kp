@@ -1,0 +1,19 @@
+-- Stress test: Using an operation from an effect not in the row must be rejected
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant
+
+--! mode check
+
+-- An effect for printing strings.
+effect Printer =
+    1 print : String -> Unit
+
+-- NEGATIVE TEST: a pure function (no effect row) attempts to call 'printer.print'.
+-- The 'printer' label is absent from the function's effect row; must be rejected.
+let noPrint : Unit =
+    printer.print "hello"  --!! kappa.effect.row-mismatch
+
+-- POSITIVE TEST: a function that declares 'printer' in its row may call the operation.
+let canPrint : Eff <[printer : Printer]> Unit =
+    printer.print "world"
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

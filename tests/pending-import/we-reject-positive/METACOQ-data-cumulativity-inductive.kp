@@ -1,0 +1,39 @@
+-- Source issues: METACOQ-83, METACOQ-46, METACOQ-815, METACOQ-1120
+-- Spec: types.universes.cumulativity, data_types.data_declarations
+--
+-- Cumulative inductive types: MetaCoq PRs #46 and #83 added support for
+-- cumulative inductive declarations to PCUIC. Kappa's `types.universes`
+-- treats every `data` declaration as living at the universe where its
+-- parameters and constructors are largest; values are usable at any
+-- larger universe via cumulativity.
+
+module test
+
+--! mode check
+
+-- POSITIVE: an inductive container at Type0 may be used where Type1 is
+-- expected.
+data Box (a : Type0) : Type0 =
+    MkBox a
+
+useSmall : Box Nat
+let useSmall = MkBox 1
+
+-- POSITIVE: at a higher universe, the same constructor application is
+-- accepted by cumulativity.
+useLarger : Type1
+let useLarger = Box Nat
+
+-- POSITIVE: a universe-polymorphic container.
+data UBox (u : Universe) (a : Type u) : Type u =
+    MkUBox a
+
+useUBoxAtNat : UBox _ Nat
+let useUBoxAtNat = MkUBox 1
+
+useUBoxAtType : UBox _ Type0
+let useUBoxAtType = MkUBox Nat
+
+--! assertNoErrors
+--! assertType useSmall Box Nat
+--! assertType useLarger Type1

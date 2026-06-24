@@ -1,0 +1,42 @@
+-- Source issues: CREUSOT-recursion_through_contract
+-- Source issues: creusot-rs/creusot#1588; harvested tests/should_fail/terminates/recursion_through_contract.rs (restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- The recursive group used by the termination checker MUST include
+-- calls that appear in contract clauses (`requires`, `ensures`,
+-- `proof_assert`).  Pending spec gap CREUSOT-SA-04.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `withProofAssert` and `f1` form a cycle that passes through
+-- a `proof_assert` in `withProofAssert`.  The termination checker must
+-- consider that edge.
+logic let withProofAssert : Int -> Unit
+let withProofAssert x =
+    proof_assert ( x == f1 () )
+    decreases x
+
+logic let f1 : Unit -> Int
+let f1 _ =                                  --!! kappa.termination.failure
+    do {
+        withProofAssert 5;
+        3
+        }
+
+-- NEGATIVE: cycle through `requires` clause.
+logic let withRequires : Int -> Unit
+let withRequires x = ()
+    requires x == f2 ()
+
+logic let f2 : Unit -> Int
+let f2 _ =                                  --!! kappa.termination.failure
+    do {
+        withRequires 5;
+        3
+        }
+
+--! assertDiagnosticFamily error kappa.termination.failure

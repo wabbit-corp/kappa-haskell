@@ -1,0 +1,76 @@
+-- Source issues: apple/swift-evolution SE-0235 (Result conditional conformances),
+--   apple/swift #57017 (protocol refinement must satisfy all inherited requirements).
+--   When a trait B inherits from trait A (B is a supertrait of A), an instance of B
+--   implicitly requires all A obligations to also be satisfied.
+--   Failing to provide an instance for the supertrait produces
+--   kappa.implicit.unsolved.
+-- Spec: traits.headers.supertraits §14.1.4,
+--       traits.instances §14.3
+
+--! mode check
+
+-- Base trait.
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+-- Supertrait: Ord requires Eq (constraint in header).
+trait Eq a => Ord (a : Type) =
+    lt : a -> a -> Bool
+
+-- POSITIVE: full chain — Eq then Ord, both instances provided.
+data Priority : Type = Low | Medium | High
+
+instance Eq Priority =
+    let eq Low    Low    = True
+    let eq Medium Medium = True
+    let eq High   High   = True
+    let eq _      _      = False
+
+instance Ord Priority =
+    let lt Low    Medium = True
+    let lt Low    High   = True
+    let lt Medium High   = True
+    let lt _      _      = False
+
+-- POSITIVE: using Ord implies Eq.
+sameOrLower : Priority -> Priority -> Bool
+let sameOrLower x y = eq x y || lt x y
+
+-- A three-level chain.
+trait Eq a => Hash (a : Type) =
+    hash : a -> Nat
+
+trait Ord a, Hash a => OrdHash (a : Type) =
+
+data Score : Type = Score Nat
+
+instance Eq Score =
+    let eq (Score x) (Score y) = x = y
+
+instance Ord Score =
+    let lt (Score x) (Score y) = x < y
+
+instance Hash Score =
+    let hash (Score n) = n
+
+instance OrdHash Score =
+
+-- POSITIVE: all three levels satisfied.
+compareAndHash : Score -> Score -> Nat
+let compareAndHash x y =
+    if lt x y then hash x else hash y
+
+-- NEGATIVE: instance of Ord without satisfying Eq supertrait.
+-- No `instance Eq Rank` is provided; the Eq a supertrait constraint is unmet.
+data Rank : Type = Rank Nat
+
+instance Ord Rank =    --!! kappa.implicit.unsolved
+    let lt (Rank x) (Rank y) = x < y
+
+-- NEGATIVE: OrdHash declared without Ord or Hash instances provided.
+-- Both supertrait constraints (Ord Level, Hash Level) are unmet.
+data Level : Type = Level Nat
+
+instance OrdHash Level =    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

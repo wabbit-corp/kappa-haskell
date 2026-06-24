@@ -1,0 +1,32 @@
+-- Source issue: Kitten #118 (Effect system; `Fail` = "computations that
+--   may cause task failure"). Kitten #167 (handling multiple return
+--   types, including the failure case, should be statically tracked).
+-- Spec: effects.monadic_core.exits_causes_typed_failure_interruption_defects,
+--       effects.monadic_core.eff_effect_rows,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+--       (family kappa.effect.row-mismatch).
+--
+-- A definition declared with an empty effect row cannot perform a
+-- failure operation; the demanded row must include the failure effect.
+
+module test
+
+-- Declare an algebraic failure effect.
+effect FailMsg =
+    1 failWith : String -> Unit
+
+--! mode check
+
+-- POSITIVE: with `FailMsg` in the row, calling failWith is allowed.
+maybeOk : Int -> Eff <[ FailMsg ]> Int
+let maybeOk n = do
+    if n < 0 then failWith "negative" else pure ()
+    pure n
+
+-- NEGATIVE: a pure declaration (empty row) cannot use failWith.
+maybeBad : Int -> Eff <[ ]> Int
+let maybeBad n = do                                       --!! kappa.effect.row-mismatch
+    if n < 0 then failWith "negative" else pure ()
+    pure n
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

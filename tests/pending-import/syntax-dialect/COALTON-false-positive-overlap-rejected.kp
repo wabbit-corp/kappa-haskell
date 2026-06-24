@@ -1,0 +1,55 @@
+-- Source: Coalton issue #1445 (false positive overlapping instance).
+--   A superclass-constrained instance `(Tr1 a => Tr2 a)` and a specific
+--   instance `(Tr2 Concrete)` were incorrectly flagged as overlapping even
+--   though `Concrete` has no `Tr1` instance, so the two can never both apply.
+-- Spec: traits.instances.normalized_instance_heads (§14.3.2),
+--   traits.instances.resolution_algorithm (§14.3.1), COALTON-SA-04.
+--
+-- Two instance declarations overlap only when there exists a type `T` for
+-- which BOTH instance heads could match AND all premises of both instances
+-- could be satisfied simultaneously. A correct checker must evaluate the
+-- premises before deciding overlap. If the premises of one instance cannot
+-- be satisfied for the types matched by the other, the instances do not
+-- overlap and must both be accepted.
+
+--! mode check
+
+-- A "marker" trait with no methods.
+trait Performing (a : Type) =
+
+-- A target trait.
+trait Art (a : Type) =
+    perform : a -> String
+
+-- A concrete type with no Performing instance.
+data Sculpting : Type = Sculpting
+
+-- An instance rule: anything that is Performing is also Art.
+instance Performing a => Art a =
+    let perform _ = "performing art"
+
+-- A direct Art instance for Sculpting.
+-- These two instances do NOT overlap because Sculpting has no Performing
+-- instance, so the premise `Performing Sculpting` can never be satisfied.
+-- A conforming checker MUST accept both declarations.
+instance Art Sculpting =
+    let perform _ = "sculpture"
+
+--! assertNoErrors
+
+-- POSITIVE: using the Art instance for Sculpting is unambiguous.
+sculptResult : String
+let sculptResult = perform Sculpting
+
+--! assertNoErrors
+--! assertType sculptResult String
+
+-- POSITIVE: a type that IS Performing gets the general Art instance.
+data Theatre : Type = Theatre
+
+instance Performing Theatre =
+
+getTheatreArt : String
+let getTheatreArt = perform Theatre
+
+--! assertNoErrors

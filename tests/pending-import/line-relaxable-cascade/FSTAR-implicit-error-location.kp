@@ -1,0 +1,21 @@
+-- Source issue: FSTAR-1806
+-- Spec: compiler.frontir.diagnostics_records,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Errors arising from implicit argument resolution must cite the specific
+-- implicit binder, not just the enclosing definition.
+
+--! mode check
+
+-- A function with an unsolved hole body.
+ghostValue : {A : Type} -> A
+let ghostValue = _                       --!! kappa.hole.unsolved
+
+-- A call site where the implicit cannot be resolved from context.
+badCall : Int
+let badCall = ghostValue                 --!! kappa.implicit.unsolved
+
+-- The diagnostic for the unresolved implicit must include a span identifying
+-- the specific binder {A : Type}, not just the enclosing definition.
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+--! assertDiagnosticFamily error kappa.implicit.unsolved

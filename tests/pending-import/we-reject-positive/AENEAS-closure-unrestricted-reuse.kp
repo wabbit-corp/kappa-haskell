@@ -1,0 +1,63 @@
+-- Source issues: AENEAS-86, AENEAS-924
+-- Spec: expressions.lambdas.closure_capture_quantities
+-- §16.2.1: "Unrestricted closures: a closure may be used unrestrictedly (ω)
+-- only if every computationally relevant captured variable is itself
+-- unrestricted."  Aeneas issue #86 (closure support) and #924 (closure with
+-- if-then-else) both require that closures over ω-quantified free variables
+-- are themselves ω.
+
+module test
+
+--! mode check
+
+-- POSITIVE: closure captures a plain Int (ω quantity).
+-- The closure itself is ω — it can be called any number of times.
+makeAdder : Int -> (() -> Int)
+let makeAdder n =
+    \() -> n + 1
+
+result1 : Int
+let result1 =
+    let f = makeAdder 5
+    f () + f () + f ()    -- called three times: OK because ω
+
+--! assertNoErrors
+--! assertType result1 Int
+
+-- POSITIVE: closure over two ω values — still ω.
+makeSummer : Int -> Int -> (() -> Int)
+let makeSummer a b =
+    \() -> a + b
+
+result2 : Int
+let result2 =
+    let f = makeSummer 3 4
+    f () + f ()
+
+--! assertNoErrors
+
+-- POSITIVE: closure with if-then-else body capturing an ω variable.
+-- Aeneas issue #924 showed a crash for this pattern.
+conditionalCapture : Int -> Bool -> (() -> Int)
+let conditionalCapture a flag =
+    \() -> if flag then a else a + 10
+
+useConditional : Int
+let useConditional =
+    let f = conditionalCapture 7 True
+    f () + f ()
+
+--! assertNoErrors
+--! assertType useConditional Int
+
+-- POSITIVE: higher-order function that calls an ω closure multiple times.
+applyN : Int -> (() -> Int) -> Int
+let applyN n f =
+    if n <= 0 then 0
+    else f () + applyN (n - 1) f
+
+useApplyN : Int
+let useApplyN = applyN 3 (makeAdder 10)
+
+--! assertNoErrors
+--! assertType useApplyN Int

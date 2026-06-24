@@ -1,0 +1,69 @@
+-- Source issues: apple/swift-evolution SE-0235 (Result conditional conformances),
+--   apple/swift #46668 (tuples lack conditional Equatable conformance).
+--   A sum type `Result S F` may derive a trait instance only when both type
+--   parameters independently satisfy the same trait. Attempting to use the
+--   derived instance when either parameter fails the constraint must produce
+--   kappa.implicit.unsolved.
+-- Spec: traits.instances §14.3, traits.instances.resolution_algorithm §14.3.1
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+instance Eq Nat =
+    let eq x y = x = y
+
+instance Eq Bool =
+    let eq True  True  = True
+    let eq False False = True
+    let eq _     _     = False
+
+instance Eq String =
+    let eq s1 s2 = s1 = s2
+
+-- A sum type with two type parameters.
+data Result (s f : Type) : Type
+    = Ok s
+    | Err f
+
+-- Conditional instance: Eq (Result s f) when both s and f have Eq.
+instance Eq s, Eq f => Eq (Result s f) =
+    let eq (Ok x)  (Ok y)  = eq x y
+    let eq (Err x) (Err y) = eq x y
+    let eq _       _       = False
+
+-- POSITIVE: both Nat and Bool have Eq — conditional instance holds.
+eqNatBoolResult : Bool
+let eqNatBoolResult = eq (Ok 1 : Result Nat Bool) (Ok 1)
+
+-- POSITIVE: nested — Result (Result Nat Bool) String, all three have Eq.
+nestedResult : Bool
+let nestedResult =
+    eq (Ok (Ok 1) : Result (Result Nat Bool) String)
+       (Ok (Ok 1))
+
+-- NEGATIVE: a type with no Eq instance.
+data Raw : Type = Raw Nat String
+
+-- No `instance Eq Raw` declared.
+
+-- Using Result Nat Raw requires Eq Raw, which is absent.
+badResultEq : Bool
+let badResultEq = eq (Ok 1 : Result Nat Raw) (Ok 1)    --!! kappa.implicit.unsolved
+
+-- Using Result Raw Bool requires Eq Raw, which is absent.
+badResultEq2 : Bool
+let badResultEq2 = eq (Ok (Raw 1 "x") : Result Raw Bool) (Ok (Raw 1 "x"))    --!! kappa.implicit.unsolved
+
+-- Pair-like: a product that also conditionally derives Eq.
+data Both (a b : Type) : Type = Both a b
+
+instance Eq a, Eq b => Eq (Both a b) =
+    let eq (Both x1 y1) (Both x2 y2) = eq x1 x2 && eq y1 y2
+
+-- NEGATIVE: Both Nat Raw cannot use Eq because Raw has no Eq.
+badBothEq : Bool
+let badBothEq = eq (Both 1 (Raw 2 "x")) (Both 1 (Raw 2 "x"))    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

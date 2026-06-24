@@ -1,0 +1,64 @@
+-- Source issues: odin#2042 (parapoly procedure group selection not disambiguated
+--               by where clause), odin#1962 (matrix proc overload return value
+--               failure prevents other overload from being chosen)
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- A constraint (trait bound / where clause) on a polymorphic overload is part
+-- of its signature for overload resolution purposes. Two overloads that are
+-- structurally identical in their generic parameter sets but whose constraints
+-- are mutually exclusive are disambiguated by the constraint, not considered
+-- to be the "same type."
+
+--! mode check
+
+trait Numeric (a : Type) =
+    add : a -> a -> a
+    zero : a
+
+trait Textual (a : Type) =
+    concat : a -> a -> a
+    empty  : a
+
+data Nat : Type = Nat Int
+data Text : Type = Text String
+
+instance Numeric Nat =
+    let add (Nat x) (Nat y) = Nat (x + y)
+    let zero = Nat 0
+
+instance Textual Text =
+    let concat (Text s) (Text t) = Text (s ++ t)
+    let empty = Text ""
+
+-- Two overloaded functions distinguished by their trait constraints.
+let combine {a : Type} (@_ : Numeric a) (x : a) (y : a) : a = add x y
+let combine {a : Type} (@_ : Textual a) (x : a) (y : a) : a = concat x y
+
+-- POSITIVE: Nat satisfies Numeric — selects the first overload.
+let okCombineNat : Nat =
+    combine (Nat 3) (Nat 4)
+
+
+-- POSITIVE: Text satisfies Textual — selects the second overload.
+let okCombineText : Text =
+    combine (Text "hello") (Text " world")
+
+
+-- A separate pair of overloads with mutual-exclusion constraints.
+let process {a : Type} (@_ : Numeric a) (x : a) : a = add x zero
+let process {a : Type} (@_ : Textual a) (x : a) : a = concat x empty
+
+-- POSITIVE: Nat → Numeric overload.
+let okProcessNat : Nat = process (Nat 5)
+
+
+-- POSITIVE: Text → Textual overload.
+let okProcessText : Text = process (Text "hi")
+
+
+-- NEGATIVE: a type with no instances satisfies neither constraint.
+data Raw : Type = Raw Int
+
+let badCombineRaw : Raw =
+    combine (Raw 1) (Raw 2)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

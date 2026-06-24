@@ -1,0 +1,43 @@
+-- Source issues: egraphs-good/egglog #94 (Parser might mishandle differently-named
+--   values constrained to be equal),
+--   egraphs-good/egglog #133 (Duplicate literals in query cause egglog to panic),
+--   egraphs-good/egglog tests/fail-typecheck/repro-duplicated-var.egg.
+-- Spec: expressions.patterns.scoping_validity
+--       (§17.2.2 — "Duplicate binders within the same pattern are an error").
+-- Duplicate variable binders in a single pattern are an error. §17.2.2 mandates
+-- the rejection but does not name a dedicated diagnostic family; Kappa
+-- implementations therefore report it under kappa.name.ambiguous (two
+-- bindings of the same spelling visible in the same pattern's scope). See
+-- EGGLOG-SA-08 in EGGLOG_SPEC_ADDITIONS.md for a proposed dedicated family.
+
+module test
+
+--! mode check
+
+data Pair : Type =
+    MkPair (a : Int) (b : Int)
+
+-- POSITIVE: distinct binder names with explicit equality via guard.
+bothSame : Pair -> Bool
+let bothSame p =
+    match p
+    case (MkPair x y) if x == y -> True
+    case _                       -> False
+
+-- NEGATIVE: duplicate binder name `x` in one constructor pattern.
+dupTuple : Pair -> Int
+let dupTuple p =
+    match p
+    case (MkPair x x) -> x       --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: repeated `_` (wildcards) is NOT a duplicate binder; each `_` is
+-- a fresh independent discard pattern (§17.2.1).
+data Triple : Type =
+    MkTriple (a : Int) (b : Int) (c : Int)
+
+twoWild : Triple -> Bool
+let twoWild t =
+    match t
+    case (MkTriple _ _ _) -> True

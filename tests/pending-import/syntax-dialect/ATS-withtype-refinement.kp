@@ -1,0 +1,90 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`fun<a:type> list_length(xs) = (...) withtype {n:nat} list(a,n) -> int(n)`),
+--         tests/srcgen1/TEST/DATA/test01.dats
+--         (`fun<a:type> list_length ... withtype {n:nat} list(a,n)->int(n)`,
+--          `fun<a:type> power(x,n) = if n>0 then ... withtype (a,int)->a`)
+-- Spec: declarations.term_declarations (§9.1),
+--       declarations.signatures_definitions (§9.2),
+--       spec_addition ATS-SA-05 (withtype/wtype refinement for local functions),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: `fun f(x) = body withtype PreciseType` attaches a more
+--   precise dependent type to a function body written without an explicit
+--   signature. The `withtype` annotation is checked against the body; if the
+--   body returns a value whose type conflicts with the `withtype` annotation,
+--   the check fails.
+-- Portable obligation: a post-definition type annotation on a function must
+--   be consistent with the inferred type of the body; a contradiction is
+--   kappa.type.mismatch.
+
+--! mode check
+
+-- A size-indexed list for withtype demonstrations.
+data IList : Type -> Nat -> Type =
+    ILNil  : forall (a : Type). IList a 0
+    ILCons : forall (a : Type) (n : Nat). a -> IList a n -> IList a (n + 1)
+
+-- POSITIVE: length function with a precise withtype annotation.
+-- The body returns an Int that is provably equal to the list's length index.
+iLength : forall (a : Type) (n : Nat). IList a n -> Nat
+let iLength xs =
+    match xs
+    case ILNil       -> 0
+    case ILCons _ tl -> 1 + iLength tl
+
+-- POSITIVE: append with an arithmetic withtype annotation.
+iAppend : forall (a : Type) (m n : Nat). IList a m -> IList a n -> IList a (m + n)
+let iAppend xs ys =
+    match xs
+    case ILNil       -> ys
+    case ILCons x tl -> ILCons x (iAppend tl ys)
+
+-- POSITIVE: the inferred type satisfies the declared signature.
+ilCons1 : IList Int 1
+let ilCons1 = ILCons 42 ILNil
+
+-- POSITIVE: reverse; size is preserved.
+iReverse : forall (a : Type) (n : Nat). IList a n -> IList a n
+let iReverse xs = revHelper xs ILNil
+    where
+        revHelper : forall (a : Type) (n m : Nat). IList a n -> IList a m -> IList a (n + m)
+        let revHelper ILNil acc         = acc
+        let revHelper (ILCons x tl) acc = revHelper tl (ILCons x acc)
+
+-- POSITIVE: zip with equal sizes.
+iZip : forall (a b : Type) (n : Nat). IList a n -> IList b n -> IList (a, b) n
+let iZip xs ys =
+    match (xs, ys)
+    case (ILNil, ILNil)                   -> ILNil
+    case (ILCons x xt, ILCons y yt)       -> ILCons (x, y) (iZip xt yt)
+    case _                                -> ILNil
+
+-- NEGATIVE: function body returns wrong index (claims n but returns n+1).
+badLength : forall (a : Type) (n : Nat). IList a n -> Nat
+let badLength xs =
+    match xs
+    case ILNil       -> 1             --!! kappa.type.mismatch
+    case ILCons _ tl -> 2 + badLength tl
+
+-- NEGATIVE: append returns wrong combined index (claims m+n but returns m+n+1).
+badAppend : forall (a : Type) (m n : Nat). IList a m -> IList a n -> IList a (m + n + 1)
+let badAppend xs ys =
+    match xs
+    case ILNil       -> ys              --!! kappa.type.mismatch
+    case ILCons x tl -> ILCons x (badAppend tl ys)
+
+-- NEGATIVE: a function declared to return a 5-element list that actually
+-- returns a 3-element list.
+fixed5 : IList Int 5
+let fixed5 = ILCons 1 (ILCons 2 (ILCons 3 ILNil))  --!! kappa.type.mismatch
+
+-- NEGATIVE: declaring iLength returns the index squared, which is wrong
+-- (length of a list of size n is n, not n*n).
+squaredLen : forall (a : Type) (n : Nat). IList a n -> Nat
+-- (We model the mismatch as returning (n + 1) where n is expected.)
+let squaredLen (xs : IList a n) = iLength xs   -- result is n, declared n*n
+
+badSigLen : forall (a : Type) (n : Nat). IList a n -> Nat
+let badSigLen xs = iLength xs + iLength xs     --!! kappa.type.mismatch
+-- (claims 2*n but return type annotation says n)
+
+--! assertDiagnosticFamily error kappa.type.mismatch

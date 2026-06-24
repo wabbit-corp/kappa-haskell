@@ -1,0 +1,67 @@
+-- Source issues: rzk#56 — undefined variable: Eq;
+--   a definition body referenced a name `Eq` that was not in scope, producing
+--   an "undefined variable" error. The fix was to ensure required definitions
+--   were loaded before the referencing definition.
+-- Spec: modules.names.lexical_lookup
+--   §7.1: if no admissible declaration is found for a spelling in any lexical
+--   scope, the use is unresolved and produces kappa.name.unresolved.
+--
+-- Any reference to a name that does not resolve to any declaration in scope
+-- must be rejected with kappa.name.unresolved. This applies to type-level
+-- positions, term-level positions, and pattern positions alike.
+
+--! mode check
+
+-- POSITIVE: a simple function that references only declared names.
+increment : Nat -> Nat
+let increment n = n + 1
+
+-- POSITIVE: referencing a built-in type name is valid.
+wrapNat : Nat -> (Nat, Nat)
+let wrapNat n = (n, increment n)
+
+-- POSITIVE: a parametric function — all names are in scope from parameters.
+applyTwice : forall (a : Type). (a -> a) -> a -> a
+let applyTwice f x = f (f x)
+
+-- POSITIVE: a local let binding introduces a name into the local scope.
+localScope : Nat
+let localScope =
+    let helper : Nat = 42
+    helper + helper
+
+-- POSITIVE: a data type introduces its constructor names.
+data Maybe (a : Type) : Type =
+    Nothing : Maybe a
+    Just    : a -> Maybe a
+
+fromMaybe : forall (a : Type). a -> Maybe a -> a
+let fromMaybe def Nothing  = def
+let fromMaybe _   (Just x) = x
+
+-- POSITIVE: names introduced in the current file are in scope transitively.
+doubleApply : Nat -> Nat
+let doubleApply = applyTwice increment
+
+-- NEGATIVE: referencing an undeclared name at term level.
+badRef : Nat
+let badRef = undeclaredFunction 42    --!! kappa.name.unresolved
+
+-- NEGATIVE: referencing an undeclared name in a type annotation position.
+typeRef : UndeclaredType -> Nat    --!! kappa.name.unresolved
+let typeRef x = 0
+
+-- NEGATIVE: referencing an undeclared name inside a let binding body.
+letBadRef : Nat
+let letBadRef =
+    let result = missingHelper 10    --!! kappa.name.unresolved
+    result
+
+-- NEGATIVE: pattern matching on an undeclared constructor.
+badPattern : Maybe Nat -> Nat
+let badPattern x =
+    match x
+    case NoSuchConstructor -> 0    --!! kappa.name.unresolved
+    case _                 -> 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved

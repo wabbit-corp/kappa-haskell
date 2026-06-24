@@ -1,0 +1,28 @@
+-- Source issue: Noir#11578
+-- Spec: modules.names.lexical_lookup, modules.imports
+-- A user-defined module whose name collides with a well-known module segment
+-- (e.g., `std`) MUST NOT prevent prelude items from being resolved.
+-- Prelude injection resolves the canonical prelude path, not a user-shadowed
+-- alias. The lookup for prelude items uses the absolute canonical module
+-- identity, not the surface spelling `std.prelude`.
+
+module test
+
+-- Even though a module named `myStd` is declared here,
+-- the prelude items (Int, Bool, True, False, etc.) must still be in scope.
+module myStd =
+    -- Empty sub-module that might shadow in a poorly implemented resolver.
+    let nothing = ()
+
+-- Prelude items are available despite the user `myStd` sub-module.
+usePrelude : Int -> Bool
+let usePrelude n = n > 0
+
+--! mode check
+--! assertNoErrors
+
+-- The user module does not cause prelude lookup failures.
+check : Bool
+let check = True
+
+--! assertNoErrors

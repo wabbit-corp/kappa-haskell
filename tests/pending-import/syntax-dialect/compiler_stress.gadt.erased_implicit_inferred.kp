@@ -1,0 +1,29 @@
+-- Stress test: GADT constructor with erased (quantity-0) implicit index, inferred from return type
+-- Spec: data_types.gadts, types.universes.quantities, expressions.implicit_parameters
+
+--! mode check
+
+-- Fin n represents a finite number less than n.
+-- The bound n is erased at runtime; it is only needed for type-checking.
+data Fin : Nat -> Type =
+  FZ : @erased (n : Nat) -> Fin (n+1)
+  FS : @erased (n : Nat) -> Fin n -> Fin (n+1)
+
+-- FZ : Fin 3 — erased n=2 is inferred from the return type annotation.
+toFin2 : Fin 3
+let toFin2 = FZ
+
+-- FS FZ : Fin 3 — inner FZ : Fin 2 (erased n=1), outer FS : Fin 3 (erased n=2).
+toFin3 : Fin 3
+let toFin3 = FS FZ
+
+-- FS (FS FZ) : Fin 4 — three levels of erased implicit inference.
+toFin4 : Fin 4
+let toFin4 = FS (FS FZ)
+
+-- A function converting Fin to Nat, using the erased index only at type level.
+toNat : {n : Nat} -> Fin n -> Nat
+let toNat (FZ)    = 0
+let toNat (FS k)  = 1 + toNat k
+
+--! assertNoErrors

@@ -1,0 +1,37 @@
+-- Source issues: Circom functions.md (positive: functions with a return statement
+--               in every execution path are accepted; "every execution trace must
+--               end in a return statement").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (positive).
+-- Kappa spec rule (§SA-CIRCOM-07, positive):
+--   "A function where every execution path terminates with a return expression
+--    must be accepted. Multiple return statements in different branches are
+--    acceptable as long as all branches return."
+
+--! mode check
+
+-- POSITIVE: simple function with a single return.
+let nbits (a : Int) : Int =
+    let r : Int = 0
+    r
+
+-- POSITIVE: function with if-then-else, both branches return.
+let maxVal (a b : Int) : Int =
+    if a > b then a else b
+
+-- POSITIVE: function with multiple return paths via nested if-else.
+let classify (n : Int) : Int =
+    if n < 0 then
+        0
+    else if n == 0 then
+        1
+    else
+        2
+
+-- POSITIVE: recursive function with return in all paths.
+let power (base exp : Int) : Int =
+    if exp == 0 then
+        1
+    else
+        base * power base (exp - 1)
+
+--! assertNoErrors

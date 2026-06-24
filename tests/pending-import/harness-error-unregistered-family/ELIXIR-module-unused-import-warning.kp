@@ -1,0 +1,77 @@
+-- Source issues: kernel/warning_test.exs "unused import"
+--   ("unused import Record"), warning_test.exs "unused import of one of the functions in :only",
+--   warning_test.exs "unknown import" (importing a function that doesn't exist),
+--   warning_test.exs "unused require",
+--   ELIXIR-PR-1026 (warn on unused imports), spec gap ESA-ELIXIR-01
+-- Spec: modules.imports, spec gap ESA-ELIXIR-01
+--       (pending: kappa.import.unused-declaration)
+-- In Elixir, importing a function or module that is never subsequently used produces a warning:
+--   import Record              -- warning if no Record.* function is ever called
+--   import Foo, only: [bar: 0] -- warning if bar/0 is never called
+-- This prevents dead import declarations from accumulating. The Kappa spec does not yet
+-- define a family for this; spec gap ESA-ELIXIR-01 proposes kappa.import.unused-declaration.
+-- This test records the expected behavior once that family is standardized.
+-- TODO spec gap ESA-ELIXIR-01: kappa.import.unused-declaration is not yet in §3.2.
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+-- (--!! markers removed 2026-06-11: inline markers assert ERROR severity
+-- per T.5.1; this suite expects warnings.)
+
+module TextUtils
+
+let upper s = String.toUpper s
+let lower s = String.toLower s
+let length s = String.length s
+
+module NumberUtils
+
+let show n = Int.show n
+let parse s = Int.parse s
+
+-- POSITIVE: import used — TextUtils.upper is called after import.
+module UseAll
+
+import TextUtils
+
+process : String -> String
+let process s = upper (lower s)
+
+-- POSITIVE: selective import, all imported names used.
+module UseSelective
+
+import NumberUtils.(show)
+
+display : Int -> String
+let display n = show n
+
+-- NEGATIVE: import statement present but no name from the imported module is ever used.
+module ImportAndIgnore
+
+import TextUtils   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+doNothing : Int -> Int
+let doNothing n = n + 0
+
+-- NEGATIVE: selective import but the imported function 'parse' is never called.
+module ImportButSkip
+
+import NumberUtils.(parse)   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+justShow : Int -> String
+let justShow n = Int.show n
+
+-- NEGATIVE: specific name 'upper' imported but never referenced.
+module PartialUnused
+
+import TextUtils.(upper)   -- WARNING EXPECTED: unused declaration (family pinned below)
+import TextUtils.(lower)
+
+onlyLower : String -> String
+let onlyLower s = lower s
+
+--! assertDiagnosticFamily warning kappa.import.unused-declaration

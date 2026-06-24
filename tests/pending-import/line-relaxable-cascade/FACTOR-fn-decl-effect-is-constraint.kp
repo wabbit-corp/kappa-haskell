@@ -1,0 +1,40 @@
+-- Source issue: Factor #572 (declared stack effect of a higher-order word
+--   was (a c -- c) but body really takes a quotation and calls it, yet
+--   no error is reported), Factor #236 (a method's declared optional
+--   effect is silently ignored even when wrong).
+-- Spec: declarations.term_definitions, types.functions,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- Factor needed clarification that a declared stack effect is a contract
+-- and not just documentation. In Kappa, a declared signature constrains
+-- the body's elaborated type; a body that uses its first parameter as a
+-- callable but is declared as taking a non-callable Int must fail
+-- type checking, not be silently accepted.
+
+module test
+
+--! mode check
+
+-- POSITIVE: declared signature matches body usage.
+callIt : (Int -> Int) -> Int -> Int
+let callIt f x = f x
+
+--! assertType callIt (Int -> Int) -> Int -> Int
+
+-- NEGATIVE: the first parameter is declared `Int`, but the body uses it
+-- as a callable (`f x`). The declared signature is a hard constraint;
+-- attempting to apply a non-callable value must fire E_APPLICATION_NON_CALLABLE
+-- (and/or kappa.type.mismatch).
+misuseAsCallable : Int -> Int -> Int
+let misuseAsCallable f x = f x           --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: the signature says the function returns Int, but the body
+-- returns a callable. A body that is wider than its declared shape must
+-- be rejected; declared signatures are not optional documentation.
+declNarrow : Int -> Int
+let declNarrow x = (\y -> x + y)        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

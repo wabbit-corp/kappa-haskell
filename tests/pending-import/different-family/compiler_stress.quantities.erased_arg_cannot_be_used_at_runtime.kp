@@ -1,0 +1,48 @@
+-- Stress test: A binding with quantity 0 (erased/compile-time-only) must not
+--   appear in a runtime-relevant position.  Using an erased argument in a
+--   computation that returns a value depending on it at runtime must be
+--   rejected.
+-- Spec: types.universes.quantities,
+--   types.universes.erasure_elaboration_time
+
+--! mode check
+
+-- POSITIVE: erased type argument used only at compile time (in type positions).
+identity : forall (0 a : Type). a -> a
+let identity x = x
+
+-- POSITIVE: erased proof used only in types.
+castBool : forall (0 p : Bool). Int -> Int
+let castBool n = n   -- p is not used at runtime; it is erased
+
+-- POSITIVE: a function taking an erased proof as a compile-time witness.
+data Nat : Type = Zero | Succ Nat
+
+castNat : forall (0 n : Nat). Int -> Int
+let castNat x = x   -- n is compile-time only
+
+-- NEGATIVE: erased binding used in a runtime expression.
+badUseErasedType : forall (0 a : Type). a -> String
+let badUseErasedType x =
+    -- Attempting to pattern-match on the erased type `a` at runtime is illegal.
+    -- `a` is a compile-time-only quantity-0 value; it cannot influence runtime.
+    int_to_string 42   -- This is fine...
+
+-- The truly illegal case: passing the erased value to a function that needs it
+-- at runtime.
+useErasedAtRuntime : forall (0 n : Nat) (x : Int). Int
+let useErasedAtRuntime x =
+    -- `n` is erased (qty 0) but we're trying to use it in a runtime computation.
+    match n   --!! kappa.quantity.unsatisfied
+    case Zero    -> x
+    case Succ _  -> x + 1
+
+-- NEGATIVE: erased value used where a non-erased value is expected.
+passErasedAsRuntime : (0 x : Int) -> Int
+let passErasedAsRuntime x = x   --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: erased value used only to compute a type annotation.
+withErasedIndex : forall (0 n : Nat). Int -> Int
+let withErasedIndex x = x   -- n only appears in types, never runtime
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

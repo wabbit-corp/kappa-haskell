@@ -1,0 +1,66 @@
+-- Source issues: apple/swift-evolution SE-0267 (where clauses on contextually
+--   generic declarations), apple/swift #46378 (constraint on associated type
+--   not checked at use site).
+--   A generic function with a `where`-style constraint must reject calls that
+--   do not satisfy the constraint. The obligation is encoded as an implicit
+--   trait parameter; an unresolved implicit must produce kappa.implicit.unsolved.
+-- Spec: traits.instances §14.3, traits.instances.resolution_algorithm §14.3.1,
+--       types.quantification §11.3
+
+--! mode check
+
+trait Sortable (a : Type) =
+    lt : a -> a -> Bool
+
+instance Sortable Nat =
+    let lt x y = x < y
+
+instance Sortable Bool =
+    let lt False True = True
+    let lt _     _    = False
+
+-- A generic sort that requires Sortable.
+insertSorted : forall {a : Type} -> (@_ : Sortable a) -> a -> List a -> List a
+let insertSorted x [] = [x]
+let insertSorted x (y :: ys) =
+    if lt x y
+    then x :: y :: ys
+    else y :: insertSorted x ys
+
+-- POSITIVE: Nat has a Sortable instance.
+sortedNats : List Nat
+let sortedNats = insertSorted 3 (insertSorted 1 (insertSorted 5 []))
+
+-- POSITIVE: Bool has a Sortable instance.
+sortedBools : List Bool
+let sortedBools = insertSorted True [False]
+
+-- Generic min using Sortable.
+minOf : forall {a : Type} -> (@_ : Sortable a) -> a -> a -> a
+let minOf x y = if lt x y then x else y
+
+minNats : Nat
+let minNats = minOf 3 7
+
+-- NEGATIVE: data type with no Sortable instance.
+data Record : Type = Record String Nat
+
+-- No `instance Sortable Record` declared.
+badSort : List Record
+let badSort = insertSorted (Record "a" 1) []    --!! kappa.implicit.unsolved
+
+badMin : Record
+let badMin = minOf (Record "x" 0) (Record "y" 1)    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a polymorphic container wrapping a non-Sortable.
+data Box (a : Type) : Type = Box a
+
+-- No `instance Sortable (Box a)` declared.
+sortedBoxes : List (Box Nat)
+let sortedBoxes = insertSorted (Box 1) []    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: chained generic — requires Sortable but outer type lacks instance.
+minPairs : (Nat, Record)
+let minPairs = minOf (1, Record "a" 1) (2, Record "b" 2)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

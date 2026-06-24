@@ -1,0 +1,80 @@
+-- Source issues: PR#85 — fix subshape definitions; the bug was that subshape
+--   type definitions (e.g. `Λ : Δ² → TOPE`) did not check that the subshape
+--   is actually contained in the ambient shape. A definition declaring a tope
+--   as a subshape of another shape failed to verify the inclusion constraint,
+--   allowing incorrect coercions later (e.g. treating `Λ-alt` as a subshape
+--   of `wrong-Λ` when it is not).
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.type_equality
+--   §11.3: predicate subtype checks must be preserved through coercions.
+--
+-- A function from a subtype (a predicate-restricted type) to a base type
+-- cannot be silently coerced to a function from a different subtype unless
+-- the inclusion can be established. Using a function at a subtype that does
+-- not include its source produces a type mismatch.
+
+--! mode check
+
+-- Simulating subshape/subtype checks portably using predicate-restricted
+-- record types and explicit coercions.
+
+-- A "shape" is a predicate on a base type.
+-- A "subshape" is a predicate that implies another.
+
+data BaseShape : Type =
+    Pt : Nat -> BaseShape
+
+-- A function on all points of the base shape.
+allPoints : BaseShape -> Nat
+let allPoints (Pt n) = n
+
+-- POSITIVE: a predicate-restricted type defined as a subset of BaseShape.
+data TopHalf : Type =
+    TH : (n : Nat) -> n = 0 -> TopHalf
+
+topHalfToBase : TopHalf -> BaseShape
+let topHalfToBase (TH n _) = Pt n
+
+-- POSITIVE: a function accepting TopHalf can be applied to TopHalf values.
+useTopHalf : TopHalf -> Nat
+let useTopHalf (TH n _) = n
+
+v1 : TopHalf
+let v1 = TH 0 refl
+
+r1 : Nat
+let r1 = useTopHalf v1
+
+-- POSITIVE: coercion from the subtype to the supertype is safe.
+r2 : Nat
+let r2 = allPoints (topHalfToBase v1)
+
+-- POSITIVE: a second disjoint predicate-restricted type.
+data BotHalf : Type =
+    BH : (n : Nat) -> n = 1 -> BotHalf
+
+botHalfToBase : BotHalf -> BaseShape
+let botHalfToBase (BH n _) = Pt n
+
+v2 : BotHalf
+let v2 = BH 1 refl
+
+r3 : Nat
+let r3 = allPoints (botHalfToBase v2)
+
+-- NEGATIVE: passing a TopHalf value where BotHalf is expected — these
+-- subsets have no established coercion even though both project into BaseShape.
+useBotHalf : BotHalf -> Nat
+let useBotHalf (BH n _) = n
+
+badCoerce : Nat
+let badCoerce = useBotHalf v1    --!! kappa.type.mismatch
+
+-- NEGATIVE: using the function `useTopHalf : TopHalf -> Nat` where
+-- `BotHalf -> Nat` is expected — the subshapes are unrelated.
+wrongSubshape : (BotHalf -> Nat) -> BotHalf -> Nat
+let wrongSubshape f b = f b
+
+badFn : Nat
+let badFn = wrongSubshape useTopHalf v2    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

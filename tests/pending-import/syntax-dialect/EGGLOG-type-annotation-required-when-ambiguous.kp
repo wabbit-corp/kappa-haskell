@@ -1,0 +1,40 @@
+-- Source issues: egraphs-good/egglog #80 (Type Inference Failure),
+--   egraphs-good/egglog #298 (Clarifying Valid Types),
+--   egraphs-good/egglog PR#400 (Infer types of functions values based on names),
+--   egraphs-good/egglog #767 (Typechecking of CustomCommand).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.missing-signature — §3.2.3),
+--       declarations.signatures (§9),
+--       see also EGGLOG-SA-06 in EGGLOG_SPEC_ADDITIONS.md.
+-- An unannotated top-level definition whose principal type cannot be uniquely
+-- inferred must produce kappa.type.missing-signature, not silently default.
+
+module test
+
+--! mode check
+
+data ListI : Type =
+    NilI
+    ConsI (h : Int) (t : ListI)
+
+-- POSITIVE: explicit annotation makes the type unambiguous.
+okEmpty : ListI
+let okEmpty = NilI
+
+-- NEGATIVE: top-level let without a type signature whose RHS has no constraint
+-- to determine its element type (in a generic, e.g. a polymorphic Nil — here
+-- we approximate the obligation using a polymorphic Option-like Nil from a
+-- generic list, which would require an explicit signature).
+data ListA (a : Type) : Type =
+    NilA
+    ConsA (h : a) (t : ListA a)
+
+-- NEGATIVE: top-level definition with free type metavariable in its principal
+-- type triggers the missing-signature requirement.
+badEmpty = NilA                          --!! kappa.type.missing-signature
+
+--! assertDiagnosticFamily error kappa.type.missing-signature
+
+-- POSITIVE: a top-level definition with a complete signature passes.
+twoEmptyList : ListA Int
+let twoEmptyList = NilA

@@ -1,0 +1,49 @@
+-- Source artifacts: synquid test/checking/List-Append-Bad.sq, test/comcom/List-Replicate.sq,
+--                 test/pldi16/List-Append.sq — every example uses
+--                 `termination measure len :: List a -> Nat`.
+-- Spec: declarations.totality.portable_well_founded_measures,
+--       declarations.totality.structural_descent,
+--       declarations.totality.primitive_measure_language
+--
+-- The Synquid recipe for total recursion is: define a primitive Nat-valued
+-- measure on the recursive data type, then ensure every recursive call
+-- strictly decreases that measure. The Kappa-portable counterpart is the
+-- primitive measure language: a Nat-valued measure together with structural
+-- descent (each recursive call applies to a strict structural subterm) is
+-- sufficient to discharge termination.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a PNat-valued primitive measure `len` over List.
+-- The definition decreases structurally on the `tail` field of Cons.
+len : forall (a : Type). List a -> PNat
+let len xs =
+    match xs
+      case Nil          -> Z
+      case (Cons _ ys)  -> S (len ys)
+
+-- POSITIVE: a second recursion that maps over the same structural argument.
+-- Termination is justified by structural descent on `xs`.
+appendNil : forall (a : Type). List a -> List a
+let appendNil xs =
+    match xs
+      case Nil          -> Nil
+      case (Cons x ys)  -> Cons x (appendNil ys)
+
+-- POSITIVE: a lexicographic-style descent: the outer recursion decreases
+-- on `xs` regardless of the inner argument.
+appendBoth : forall (a : Type). List a -> List a -> List a
+let appendBoth xs ys =
+    match xs
+      case Nil           -> ys
+      case (Cons x xs')  -> Cons x (appendBoth xs' ys)
+
+--! assertNoErrors

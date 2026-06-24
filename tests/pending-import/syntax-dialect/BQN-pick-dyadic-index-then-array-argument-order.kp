@@ -1,0 +1,34 @@
+-- Source issues: BQN-PR-69 (Fix docs for first_pick's dyadic form:
+--   *"Dyadic ⊑ takes an index as its first argument and the list as its
+--   second"*); BQN docs/pick.md.
+-- Spec: modules.prelude.contents (sizedArrayIndex takes the array then
+--   index, but the user-level pick takes (index, array) — both forms
+--   are signature-derivable),
+--       expressions.application.
+-- The portable obligation: a "pick" / "index" operation takes the index
+-- first (left), the array second (right). This is the same convention
+-- used by APL `⌷`, BQN `⊑`, and most curry-friendly index APIs.
+
+--! mode check
+
+-- A user-level pick whose signature pins the (index, array) order.
+expect pick :
+    forall a (n : Nat).
+    Nat -> SizedArray n a -> a
+
+expect xs5 : SizedArray 5 Integer
+
+-- POSITIVE: pick element 0.
+firstElt : Integer
+let firstElt = pick 0 xs5
+
+-- POSITIVE: pick element 3.
+fourth : Integer
+let fourth = pick 3 xs5
+
+-- NEGATIVE: arguments swapped (array first, index second) is a type
+-- mismatch because the first parameter is `Nat`, not `SizedArray ...`.
+swapped : Integer
+let swapped = pick xs5 0        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,15 @@
+-- Declares the `Showable Color` instance. This module is NOT re-exported by
+-- any other module and `consumer.lang` does NOT import this module. Per
+-- §traits.instances the instance still participates in instance search
+-- everywhere in the compilation unit's module closure.
+module instances
+
+import trait_decl
+import data_decl
+
+instance trait_decl.Showable data_decl.Color =
+    let showIt c =
+        match c
+        case data_decl.Red   -> "red"
+        case data_decl.Green -> "green"
+        case data_decl.Blue  -> "blue"

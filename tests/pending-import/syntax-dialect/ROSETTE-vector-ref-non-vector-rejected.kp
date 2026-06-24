@@ -1,0 +1,53 @@
+-- Source issue: ROSETTE-133 (no type checking in `verify`?)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.application.named_function_application
+--
+-- The Rosette report observes that `(verify (vector-ref 3 4))` silently
+-- accepts an obviously ill-typed expression because Rosette's
+-- elaboration does not type-check inside a query body. Kappa's portable
+-- obligation is the opposite: every expression — regardless of whether
+-- it lives inside an assertion, a verification request, or a normal
+-- declaration — must satisfy the typing rules of its surrounding
+-- context. Applying a vector accessor to a non-vector is therefore a
+-- compile-time error.
+
+--! mode check
+
+-- A minimal vector-like type used to drive the typing obligation.
+data Vec (a : Type) : Type =
+    VNil
+    VCons a (Vec a)
+
+vecRef : forall (a : Type). Vec a -> Int -> Option a
+let vecRef v i =
+    match v
+    case VNil           -> None
+    case (VCons h rest) -> if i == 0 then Some h else vecRef rest (i - 1)
+
+-- POSITIVE: vecRef applied to a Vec value.
+ok : Option Int
+let ok = vecRef (VCons 10 (VCons 20 (VCons 30 VNil))) 1
+
+-- POSITIVE: even inside a Boolean expression that mirrors an assertion,
+-- the index argument must be Int.
+checked : Bool
+let checked =
+    let v = VCons 1 (VCons 2 VNil)
+    in
+    match vecRef v 0
+    case (Some x) -> x == 1
+    case None     -> False
+
+-- NEGATIVE: applying vecRef to an Int literal as the vector parameter.
+badVec : Option Int
+let badVec = vecRef 3 4                     --!! kappa.type.mismatch
+
+-- NEGATIVE: the obligation also fires inside a Boolean assertion-style
+-- expression.
+badInsideAssertion : Bool
+let badInsideAssertion =
+    match vecRef 3 4                        --!! kappa.type.mismatch
+    case (Some _) -> True
+    case None     -> False
+
+--! assertDiagnosticFamily error kappa.type.mismatch

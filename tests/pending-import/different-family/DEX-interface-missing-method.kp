@@ -1,0 +1,61 @@
+-- Source issues: dex-lang typeclass-tests.dx
+--   (`instance InterfaceTest4(Float) { foo = 1 }` →
+--   `Type error: Missing method: bar`),
+--   dex-lang #267 (effect-polymorphic HOF compiler crash involving missing methods).
+-- Spec: traits.instances.completeness_check (§14.3),
+--       compiler.frontir.standard_diagnostic_families.implicit (kappa.implicit.unsolved).
+-- Every trait instance must provide a definition for every method declared in
+-- the trait. An instance that omits one or more required methods must be
+-- rejected at compile time. The diagnostic must name each missing method.
+
+--! mode check
+
+trait Describable (a : Type) =
+    describe : a -> String
+    shortName : a -> String
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- NEGATIVE: instance provides only `describe`, omitting `shortName`.
+instance Describable Color =    --!! kappa.implicit.unsolved
+    let describe c = match c
+        case Red   -> "red color"
+        case Green -> "green color"
+        case Blue  -> "blue color"
+    -- shortName is missing
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: complete instance providing all methods.
+data Shape : Type =
+    Circle Float
+    Rectangle Float Float
+
+instance Describable Shape =
+    let describe s = match s
+        case Circle r    -> "circle"
+        case Rectangle _ _ -> "rectangle"
+    let shortName s = match s
+        case Circle _    -> "C"
+        case Rectangle _ _ -> "R"
+
+-- NEGATIVE: an instance body that is entirely empty for a non-empty trait.
+data Tag : Type = TagA | TagB
+
+instance Describable Tag =    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a trait with only one method — easy to complete.
+trait Named (a : Type) =
+    name : a -> String
+
+data Animal : Type = Cat | Dog
+
+instance Named Animal =
+    let name a = match a
+        case Cat -> "cat"
+        case Dog -> "dog"

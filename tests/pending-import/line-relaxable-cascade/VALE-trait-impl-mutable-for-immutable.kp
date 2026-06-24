@@ -1,0 +1,51 @@
+-- Source issues: vale#548 (Implementing mutable interface for immutable
+--               struct crashes compiler)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       traits.instances, types.universes.quantities
+-- In Vale, the compiler crashed when a struct declared `imm` (immutable)
+-- tried to impl an interface whose method signature required a mutable
+-- (`mut`) self reference. The mutable self in the interface signature
+-- means the method can mutate the receiver, but an immutable struct cannot
+-- provide that capability. In Kappa, an instance body that provides a method
+-- at a weaker capability than the trait demands is rejected with
+-- kappa.type.mismatch.
+
+--! mode check
+
+-- A trait whose method demands a mutable (owned/linear) receiver so it
+-- can modify the value.
+trait Resettable (a : Type) =
+    reset : (1 x : a) -> a
+
+-- A mutable record — can implement Resettable because a linear receiver
+-- means the method consumes and reconstructs.
+data MutableCounter : Type = MutableCounter Int
+
+instance Resettable MutableCounter =
+    let reset _ = MutableCounter 0
+
+okReset : MutableCounter
+let okReset = reset (MutableCounter 99)
+
+-- An immutable record — declared with no mutation capability.
+data ImmutableLabel imm : Type = ImmutableLabel String
+
+-- NEGATIVE: trying to implement Resettable for ImmutableLabel. The trait
+-- demands a linear (owned) receiver, but the record is immutable and
+-- cannot offer a linear receiver because its fields cannot be mutated.
+-- The method signature mismatch is kappa.type.mismatch.
+instance Resettable ImmutableLabel =      --!! kappa.type.mismatch
+    let reset (ImmutableLabel _) = ImmutableLabel ""
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A second trait whose method only borrows the receiver read-only.
+trait Readable (a : Type) =
+    readValue : (& x : a) -> String
+
+-- POSITIVE: an immutable record implementing a read-only trait.
+instance Readable ImmutableLabel =
+    let readValue (ImmutableLabel s) = s
+
+okRead : String
+let okRead = readValue (ImmutableLabel "hello")

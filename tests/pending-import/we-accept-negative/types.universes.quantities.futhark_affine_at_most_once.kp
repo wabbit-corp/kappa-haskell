@@ -1,0 +1,27 @@
+-- Source issue: FUTHARK-689, FUTHARK-691
+-- Spec: types.universes.quantities
+-- Futhark #689: proposal to rethink uniqueness types so that parameters can
+-- be "unique" (consumed at most once).  Futhark #691: constrained aliasing
+-- (return can alias at most the argument).
+-- In Kappa, the affine quantity `<=1` (at most one demand) captures the
+-- "may be used zero or one times" semantics.  Using an affine value in two
+-- positions must be rejected.  Using it zero or one times must be accepted.
+
+--! mode check
+
+module test
+
+-- POSITIVE: affine value used exactly once — accepted.
+useOnce : (<=1 x : Int) -> Int
+let useOnce (<=1 x) = x + 1
+
+-- POSITIVE: affine value dropped (used zero times) — accepted.
+-- Dropping an affine (<=1) value is allowed per spec §12.2.
+dropAffine : (<=1 x : Int) -> Int
+let dropAffine (<=1 _x) = 0
+
+-- NEGATIVE: affine value used twice — rejected.
+-- <=1 permits at most one demand; two uses violate the upper bound.
+--! assertDiagnosticFamily error kappa.path.consumed
+badAffine : (<=1 x : Int) -> (Int, Int)
+let badAffine (<=1 x) = (x, x)

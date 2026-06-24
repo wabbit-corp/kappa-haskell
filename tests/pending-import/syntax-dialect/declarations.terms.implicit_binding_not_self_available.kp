@@ -1,0 +1,52 @@
+-- Source issue: Scala3 #6114
+-- Spec: traits.instances.resolution_algorithm, declarations.let_in
+-- A local implicit binding (let @x : T = ...) is NOT in the implicit context
+-- for its own right-hand-side. During elaboration of the RHS of `@x`, the
+-- binding `@x` is not yet established; using it (directly or via implicit demand)
+-- would be a recursive definition. The compiler MUST NOT treat the currently-being-
+-- defined binding as an implicit candidate for its own initialization expression.
+
+module test
+
+trait Provider (a : Type) =
+    provide : a
+
+-- Positive: an implicit binding whose RHS does not depend on itself.
+-- This must be accepted: `@n` is not used in its own initializer.
+selfFree : Int
+let selfFree =
+    let @n : Provider Int =
+        instance = let provide = 42
+    provide
+
+--! mode check
+
+-- Positive: a function that takes an explicit Provider and uses it.
+-- No circularity here.
+useProvider : (@_ : Provider Int) -> Int
+let useProvider = provide
+
+explicitCall : Int
+let explicitCall =
+    let @inst : Provider Int =
+        instance = let provide = 100
+    useProvider
+
+
+-- Negative: a local implicit binding whose initializer uses the same implicit goal
+-- for which this binding would be the only candidate. The binding is not yet in
+-- scope for its own RHS; the search must fail (no candidate), not succeed via
+-- premature self-reference.
+-- In Scala, `implicit val x: Int = get` where `get` needs an `Int` implicit
+-- caused undefined behavior. Kappa MUST reject or report unsolved.
+circularImplicit : Int
+let circularImplicit =
+    let @x : Provider Int =
+        -- Initializing @x requires Provider Int, but @x is not yet in scope.
+        -- The only globally available candidate is whatever the outer scope has.
+        -- If there is no outer Provider Int, this MUST fail with kappa.implicit.unsolved
+        -- rather than finding @x itself.
+        instance = let provide = provide  --!! kappa.implicit.unsolved
+    provide
+
+--! assertDiagnostic error kappa.implicit.unsolved

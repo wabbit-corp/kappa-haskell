@@ -1,0 +1,35 @@
+-- Source issues: Circom templates-and-components.md ("The output signals of a
+--               component can only be used when all inputs are set, otherwise a
+--               compiler error is generated"); accessing a component's output before
+--               all its input signals have been assigned produces an error.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-01):
+--   "A component that is only partially initialized (not all input signals assigned)
+--    is of a different type from a fully-initialized component. Using a partially-
+--    initialized component where a complete component is required must produce
+--    kappa.type.mismatch."
+
+--! mode check
+
+-- Model two states: PartialComp (inputs not fully set) and CompleteComp (all set).
+data PartialComp : Type =
+    Partial { in1 : Int }
+
+data CompleteComp : Type =
+    Complete { in1 : Int, in2 : Int, out : Int }
+
+let runCircuit (c : CompleteComp) : Int = c.out
+
+-- POSITIVE: all inputs assigned before accessing output.
+let goodUse (a b : Int) : Int =
+    let c = Complete { in1 = a, in2 = b, out = a * b }
+    runCircuit c
+
+
+-- NEGATIVE: partially-initialized component passed where complete is required.
+let badUse (a : Int) : Int =
+    let partialC = Partial { in1 = a }
+    runCircuit partialC    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

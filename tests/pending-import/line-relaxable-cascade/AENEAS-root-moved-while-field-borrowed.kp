@@ -1,0 +1,54 @@
+-- Source issues: AENEAS-134, AENEAS-615
+-- Spec: types.universes.disjoint_path_borrowing_records,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region,
+--       kappa.borrow.overlap
+-- §12.4 states that a live borrow of r.f forbids any operation requiring @1
+-- ownership of r as a whole until that borrow ends.  Attempting to consume
+-- (move) the record root while a field borrow is still live produces a
+-- footprint-overlap conflict — kappa.borrow.overlap.
+
+module test
+
+--! mode check
+
+data Box : Type = Box { value : Int, tag : Int }
+
+-- POSITIVE: the borrow of c.value ends before c is consumed.
+-- The borrow scope is the body of the let-binding.
+-- After xRef goes out of scope (end of its let-binding body), c is again
+-- fully available.
+borrowThenConsume : (1 c : Box) -> Int
+let borrowThenConsume c =
+    let & xRef = c.value
+    let v = xRef        -- read through the borrow
+                        -- borrow ends here (xRef no longer live)
+    -- Now c is fully available again.
+    match c case Box { value = _, tag = t } -> v + t
+
+
+data Node : Type = Node { data_ : Int, next : Int }
+
+-- NEGATIVE: consuming the root Node while the borrow of data_ is still live.
+-- The borrow footprint is n.data_; moving n requires @1 on all of n
+-- (which includes n.data_), so the move overlaps with the active borrow.
+moveRootWhileBorrowed : (1 n : Node) -> Int
+let moveRootWhileBorrowed n =
+    let & d = n.data_
+    let moved = n              --!! kappa.borrow.overlap
+    d
+
+--! assertDiagnosticFamily error kappa.borrow.overlap
+
+data Counter : Type = Counter { count : Int, limit : Int }
+
+-- NEGATIVE: passing the root to a consuming function while a field is borrowed.
+consume_ : (1 c : Counter) -> Unit
+let consume_ _ = ()
+
+borrowThenPassConsuming : (1 c : Counter) -> Int
+let borrowThenPassConsuming c =
+    let & lim = c.limit
+    let _ = consume_ c    --!! kappa.borrow.overlap
+    lim
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

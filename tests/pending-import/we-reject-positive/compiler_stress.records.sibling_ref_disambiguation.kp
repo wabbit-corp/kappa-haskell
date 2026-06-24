@@ -1,0 +1,24 @@
+-- Stress test: a bare identifier in a field type that shadows an outer binding refers to the sibling
+-- Spec: types.records (sibling reference disambiguation)
+
+--! mode check
+
+data Vec : (n : Nat) -> Type -> Type =
+    VNil  : {a : Type} -> Vec 0 a
+    VCons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (n + 1) a
+
+-- An outer binding named len
+let len = 42
+
+-- POSITIVE: inside the record type, the bare identifier `len` refers to the sibling
+-- field this.len (not the outer let-binding), because sibling references shadow outer scope
+type R : Type = (len : Nat, elems : Vec Int len)
+
+-- POSITIVE: use the record; elems is indexed by the len field (not the outer 42)
+makeR : (n : Nat) -> Vec Int n -> R
+let makeR n v = (len = n, elems = v)
+
+getLen : R -> Nat
+let getLen r = r.len
+
+--! assertNoErrors

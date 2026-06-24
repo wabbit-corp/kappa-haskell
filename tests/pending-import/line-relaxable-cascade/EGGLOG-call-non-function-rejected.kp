@@ -1,0 +1,56 @@
+-- Source issues: egraphs-good/egglog #420 (Disallowing looking up non-constructor
+--   functions in actions),
+--   egraphs-good/egglog #810 (Disallow `set` and equalities on the output of
+--   relations),
+--   egraphs-good/egglog #818 (Can't refer to relation in higher order functions
+--   anymore),
+--   egraphs-good/egglog #422 (Renaming `function` whose output is an E-class to
+--   `constructor`).
+-- Spec: expressions.application (§16),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- Applying a non-callable value is a type error. Egglog conflated "constructor"
+-- (returns an eclass) with "function" (returns a primitive) and "relation"
+-- (returns nothing) and let users call any of them indiscriminately. Kappa
+-- treats function application uniformly: the head must have a function type;
+-- applying an inert value (Int, String, a nullary data value) is rejected with
+-- kappa.type.mismatch, and applying a nullary constructor with positional
+-- args produces kappa.constructor.arity.
+
+module test
+
+--! mode check
+
+one : Int
+let one = 1
+
+id : Int -> Int
+let id x = x
+
+-- POSITIVE: applying a function value.
+r1 : Int
+let r1 = id 5
+
+-- NEGATIVE: applying an Int.
+bad1 : Int
+let bad1 = one 5                 --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying a String literal.
+bad2 : Int
+let bad2 = "hi" 7                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying a nullary data constructor with positional args.
+data Color : Type =
+    Red
+    Green
+
+bad3 : Color
+let bad3 = Red 7                 --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

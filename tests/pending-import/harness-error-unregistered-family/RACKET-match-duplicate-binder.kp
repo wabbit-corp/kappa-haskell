@@ -1,0 +1,45 @@
+-- Source: Racket PR #5464 (duplicate ID handling),
+--         Racket PR #2000 (match: check duplicate identifiers across patterns)
+-- Spec: expressions.patterns.scoping_validity
+--
+-- A single pattern clause may not bind the same identifier twice. If the same
+-- variable name appears twice in one pattern, the second occurrence is a
+-- duplicate binder and must be rejected. The diagnostic is kappa.name.shadowing
+-- (when used as a warning) or kappa.pattern.constructor-arity (when
+-- the pattern is structurally invalid).
+--
+-- A safe alternative: use a guard to test equality of two sub-expressions.
+
+--! mode check
+
+data Pair : Type -> Type -> Type =
+    MkPair : (A B : Type) -> A -> B -> Pair A B
+
+-- POSITIVE: two distinct variable names in a pattern; no duplication.
+fstPair : (A B : Type) -> Pair A B -> A
+let fstPair _ _ (MkPair _ _ a _) = a
+
+sndPair : (A B : Type) -> Pair A B -> B
+let sndPair _ _ (MkPair _ _ _ b) = b
+
+-- POSITIVE: wildcard `_` may appear multiple times; it binds nothing.
+bothWild : (A B : Type) -> Pair A B -> Bool
+let bothWild _ _ (MkPair _ _ _ _) = True
+
+-- POSITIVE: using a guard to check equality instead of duplicate binder.
+equalPair : Pair Int Int -> Bool
+let equalPair (MkPair _ _ x y) | x == y = True
+let equalPair _                          = False
+
+-- NEGATIVE: duplicate variable name `x` in a single pattern is invalid.
+badDuplicate : Pair Int Int -> Bool
+let badDuplicate (MkPair _ _ x x) = True
+let badDuplicate _                 = False
+
+-- NEGATIVE: duplicate binder in a list pattern.
+badListDup : List Int -> Bool
+let badListDup (x :: x :: _) = True
+let badListDup _              = False
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+--! assertNoErrors

@@ -1,0 +1,38 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CallNonCallable.hylo
+--                   (diagnostic: "cannot call value of type 'Int' as a function"),
+--                   Tests/HyloTests/TestCases/TypeChecking/CallOperator.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/CallNonCallable.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- Hylo: applying a value that is not a function (or callable) to arguments
+-- is a type error. The compiler must reject the call and report the actual
+-- type of the non-callable value.
+
+--! mode check
+
+validFn : Int -> Int
+let validFn x = x + 1
+
+-- POSITIVE: applying a function to an argument.
+let callValid : Int = validFn 10
+
+-- NEGATIVE: applying an Int value as if it were a function.
+let notAFunction : Int = 42
+
+let callInt : Int = notAFunction 5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying a Bool value as a function.
+let boolValue : Bool = True
+
+let callBool : Bool = boolValue False    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying a String as a function.
+let strValue : String = "hello"
+
+let callString : String = strValue "world"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

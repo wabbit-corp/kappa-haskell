@@ -1,0 +1,46 @@
+-- Source issues: Circom buses.md (bus field names must be distinct within a
+--               bus definition; docs are the sole source for this obligation).
+--               (2026-06-11, FAB-009: a phantom analogy citation was removed
+--               here — the issue number it named exists neither locally nor
+--               upstream; preserved in reports/FABLE_AUDIT_FINDINGS.jsonl.)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§SA-CIRCOM-06):
+--   "Each field in a bus or record type declaration must have a distinct name.
+--    Duplicate field names must be rejected with kappa.name.ambiguous, with
+--    both the first and second definition identified."
+
+--! mode check
+
+-- POSITIVE: bus/record with all distinct field names.
+data Coordinate : Type =
+    Coordinate { x : Int, y : Int, z : Int }
+
+data Packet : Type =
+    Packet { header : Int, payload : Int, checksum : Int }
+
+coord : Coordinate
+let coord = Coordinate { x = 1, y = 2, z = 3 }
+
+
+-- NEGATIVE: bus definition with a duplicate field name.
+data BadBus : Type =
+    BadBus
+        { value  : Int
+        , label  : String
+        , value  : Bool       --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: record with three occurrences of the same field name.
+data TripleField : Type =
+    TripleField
+        { count  : Int
+        , name   : String
+        , count  : Bool       --!! kappa.name.ambiguous
+        , extra  : Int
+        , count  : String     --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

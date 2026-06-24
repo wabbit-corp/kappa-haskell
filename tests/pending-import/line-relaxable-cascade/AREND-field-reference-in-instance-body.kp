@@ -1,0 +1,78 @@
+-- Source issues: field access on a parameter whose type is known from
+--   its declared type in the method signature; field projection sugar
+--   should not require an explicit type annotation when the type is
+--   inferrable from context.
+-- Source issues: jetbrains/arend#235 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: modules.names.method_call_receiver_projection_sugar,
+--       traits.instances, modules.names.lexical_lookup
+--
+-- When a function parameter has a known record type, field access via
+-- dot notation (`x.field`) should resolve without requiring the user
+-- to write an explicit type annotation on `x`. The elaborator has the
+-- type of `x` from the declared parameter type and must use it to
+-- desugar `x.field` to `Record.field {x}`.
+
+--! mode check
+
+-- A record type with a field.
+data XRec : Type =
+    mkXRec : Nat -> XRec
+
+xField : XRec -> Nat
+let xField (mkXRec n) = n
+
+-- A trait with a method that takes an XRec.
+trait UsesX =
+    extract : XRec -> Nat
+
+-- POSITIVE: the method body uses `x.xField` (field access on `x`).
+-- The type of `x` is `XRec` from the trait declaration, so the
+-- elaborator must resolve `xField x` without an extra annotation.
+inst1 : UsesX
+let inst1 = instance UsesX =
+    let extract x = xField x
+
+-- POSITIVE: field access through a trait field projection.
+data Container : Type =
+    mkContainer : Nat -> Bool -> Container
+
+getSize : Container -> Nat
+let getSize (mkContainer n _) = n
+
+getFlag : Container -> Bool
+let getFlag (mkContainer _ b) = b
+
+trait ContainerOp =
+    process : Container -> Nat
+
+inst2 : ContainerOp
+let inst2 = instance ContainerOp =
+    let process c = getSize c + (if getFlag c then 1 else 0)
+
+-- POSITIVE: a class whose method returns a field of its argument,
+-- when the argument type is declared in the method signature.
+trait Mirror =
+    reflect : XRec -> XRec
+
+mirrorInst : Mirror
+let mirrorInst = instance Mirror =
+    let reflect x = mkXRec (xField x + 1)
+
+-- POSITIVE: using the instance methods.
+testInst1 : Nat
+let testInst1 = inst1.extract (mkXRec 42)    -- 42
+
+testInst2 : Nat
+let testInst2 = inst2.process (mkContainer 10 True)    -- 11
+
+testMirror : Nat
+let testMirror = xField (mirrorInst.reflect (mkXRec 5))    -- 6
+
+-- NEGATIVE: field access on a value whose type is not a record
+-- produces a name-not-found error.
+badAccess : Nat
+let badAccess =
+    let n : Nat = 42
+    in n.xField    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

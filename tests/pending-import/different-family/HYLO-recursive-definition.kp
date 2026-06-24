@@ -1,0 +1,47 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/RecursiveParameter.hylo
+--                   (diagnostic: "definition recursively depends on itself"),
+--                   PR#1416 (gracefully diagnose recursive definitions, fixes #1409)
+-- Spec: compiler.frontir.standard_diagnostic_families.termination
+--       (kappa.termination.failure)
+-- Hylo: a value definition whose type depends on itself (e.g., a parameter
+-- whose type uses the parameter's own name) creates a circular dependency
+-- that cannot be resolved. The compiler must detect the cycle and report
+-- a termination failure rather than looping or crashing.
+
+--! mode check
+
+-- POSITIVE: well-founded recursive data type (via a list wrapper).
+data Tree : Type = Leaf Int | Node Tree Tree
+
+depth : Tree -> Int
+let depth t =
+    match t
+    case Leaf _   -> 0
+    case Node l r -> 1 + max (depth l) (depth r)
+
+-- POSITIVE: mutually recursive functions with structural recursion.
+data Nat : Type = Zero | Succ Nat
+
+isEven : Nat -> Bool
+let isEven n =
+    match n
+    case Zero   -> True
+    case Succ m -> isOdd m
+
+isOdd : Nat -> Bool
+let isOdd n =
+    match n
+    case Zero   -> False
+    case Succ m -> isEven m
+
+-- NEGATIVE: a top-level let binding that refers directly to itself.
+-- `cyclicVal`'s type computation depends on `cyclicVal`.
+let cyclicVal : Int = cyclicVal + 1    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: mutually recursive let definitions with no base case.
+let mutA : Int = mutB    --!! kappa.termination.failure
+let mutB : Int = mutA    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

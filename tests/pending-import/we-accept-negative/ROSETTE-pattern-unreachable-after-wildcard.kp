@@ -1,0 +1,41 @@
+-- Source issue: ROSETTE-216 (match behavior with nested struct patterns)
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- A pattern clause placed after a wildcard or universally-matching clause
+-- is unreachable. Kappa reports unreachable branches so users cannot
+-- silently lose semantics (the Rosette report describes a real
+-- miscompilation where the placement of clauses changed runtime
+-- behavior under symbolic execution).
+
+--! mode check
+
+data Shape : Type =
+    Circle Int
+    Square Int
+    Rect Int Int
+
+-- POSITIVE: wildcard catches the remainder; no clause follows it.
+area : Shape -> Int
+let area s =
+    match s
+    case (Circle r) -> r * r * 3
+    case (Square s) -> s * s
+    case _          -> 0
+
+-- NEGATIVE: a specific clause appears after a wildcard catch-all.
+classify : Shape -> Int
+let classify s =
+    match s
+    case _          -> 0
+    case (Circle _) -> 1            --!! kappa.pattern.unreachable
+
+-- NEGATIVE: a variable pattern catches everything; the next clause is
+-- unreachable.
+score : Shape -> Int
+let score s =
+    match s
+    case x          -> 0
+    case (Rect _ _) -> 99           --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

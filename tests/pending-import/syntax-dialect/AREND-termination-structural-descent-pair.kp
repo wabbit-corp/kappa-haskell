@@ -1,0 +1,50 @@
+-- Source issues: termination checking with non-primary argument descent;
+--   sigma-typed scrutinee structural descent; size-change termination.
+-- Source issues: jetbrains/arend#15, #121 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: declarations.totality.size_change_termination,
+--       declarations.totality.structural_descent,
+--       declarations.totality.portable_conformance_boundary
+--
+-- A conforming termination checker must accept recursive definitions where
+-- *some* argument decreases structurally on every recursive call, even if
+-- another argument may increase or change to an arbitrary value.
+-- This is required by the size-change principle (§15.7):
+--   a definition is terminating if, for every infinite call sequence, at
+--   least one argument position decreases strictly infinitely often.
+
+--! mode check
+
+-- POSITIVE: `plus` decreases on its second argument `y` on every recursive
+-- call. The first argument `x` increases (suc x), but the call matrix has
+-- a strictly decreasing entry on the y-column: `suc y' > y'`.
+-- Size-change termination accepts this: `y` is the decreasing measure.
+plus : Nat -> Nat -> Nat
+let plus x zero     = x
+let plus x (suc y') = plus (suc x) y'
+
+-- POSITIVE: adding by reducing the second argument while accumulating.
+plusAcc : Nat -> Nat -> Nat
+let plusAcc x zero    = x
+let plusAcc x (suc y) = plusAcc (suc x) y
+
+-- POSITIVE: sigma-typed parameter where the second component decreases.
+-- The first component changes to 7 (arbitrary); the second component
+-- strictly decreases on every recursive call. Size-change principle accepts.
+foo : (Nat, Nat) -> Nat
+let foo (_, zero)  = zero
+let foo (_, suc m) = foo (7, m)
+
+-- POSITIVE: standard Ackermann function accepted by size-change termination.
+ack : Nat -> Nat -> Nat
+let ack zero    y       = suc y
+let ack (suc x) zero    = ack x (suc zero)
+let ack (suc x) (suc y) = ack (suc x) y
+
+-- NEGATIVE: both the first and second arguments grow on the recursive call;
+-- `bad x (suc y) = bad (suc x) (suc y)` does not decrease on either argument.
+-- The termination checker must reject this.
+bad : Nat -> Nat -> Nat
+let bad x zero    = x
+let bad x (suc y) = bad (suc x) (suc y)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

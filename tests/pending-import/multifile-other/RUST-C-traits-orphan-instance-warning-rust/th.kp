@@ -1,0 +1,13 @@
+-- Source artifacts: CHALK-10 (Coherence: overlap and orphan check),
+--                   CHALK-DOC-book/src/clauses/coherence.md,
+--                   RUST-PR-4640 (libstd: Remove "dual impls" and enforce coherence),
+--                   RUST-PR-5252 (cross-crate coherence inconsistency),
+--                   RUST-PR-5515 (Update coherence rules to be more flexible).
+-- Spec: traits.instances, traits.instances.resolution_algorithm.
+-- Defines the trait `Th`. Together with `ty.lang` (defining the type) and
+-- `orphan.lang` (defining an instance neither in this module nor in the
+-- type's module), this suite exercises the orphan-instance warning.
+module th
+
+trait Th (a : Type) =
+    thLabel : a -> String

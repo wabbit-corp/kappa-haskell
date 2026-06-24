@@ -1,0 +1,21 @@
+-- Source issue: ROSETTE-79 (Undocumented `symbolics` — was an
+--                internal/private definition not exported as public API),
+--                ROSETTE-194 (`asserts` unbound id — module's public
+--                surface area must be explicit)
+-- Spec: modules.visibility_opacity_private_opaque.private,
+--       modules.imports
+--
+-- The Rosette reports illustrate the cost of accidentally relying on
+-- private bindings: the host module ships `symbolics`/`asserts` as
+-- internal helpers, but users discover or fail to discover them
+-- inconsistently. Kappa requires that only `public` bindings cross
+-- module boundaries; `private` bindings are not visible to importers
+-- even by qualified path.
+
+@PrivateByDefault module internals
+
+public reflect : Int -> Int
+let reflect n = n + privateHelper
+
+privateHelper : Int
+let privateHelper = 41

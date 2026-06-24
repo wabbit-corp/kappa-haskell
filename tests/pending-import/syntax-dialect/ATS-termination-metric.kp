@@ -1,0 +1,74 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`fun fact{n:int}(*.<n+1>.*)(x: int(n)): intGte(1)`),
+--         tests/srcgen1/TEST/DATA/test01.dats (list_make_elt with .<i>. metric,
+--          loop{i:nat|i<=n} .<i>. termination annotation),
+--         tests/srcgen1/TEST/DATA/test02.dats (g_pow impltmp with Z/S)
+-- Spec: totality.termination (§15.1),
+--       declarations.totality.explicit_decreases (§15.11),
+--       compiler.frontir.standard_diagnostic_families.termination
+--       (family kappa.termination.failure).
+-- ATS3 pattern: a termination metric `.<expr>.` is a natural-number-valued
+--   expression that must strictly decrease at every recursive call. If the
+--   metric is not strictly decreasing, the termination checker rejects.
+-- Kappa mapping: `decreases measure` clause placed in the `let` definition
+--   immediately before `=`. Measure must elaborate to `Nat` or a tuple of `Nat`.
+-- Portable obligation: a `decreases` metric that fails to strictly decrease
+--   at some recursive call must produce kappa.termination.failure.
+
+--! mode check
+
+-- POSITIVE: countdown from n; metric decreases by 1 each call.
+countdown : Nat -> Int
+let countdown n decreases n =
+    if n == 0 then 0
+    else 1 + countdown (n - 1)
+
+-- POSITIVE: structurally recursive over a list (no explicit decreases needed).
+listLen : forall (a : Type). List a -> Nat
+let listLen xs =
+    match xs
+    case []      -> 0
+    case _ :: tl -> 1 + listLen tl
+
+-- POSITIVE: mutual recursion with a shared Nat metric.
+isEven : Nat -> Bool
+isOdd  : Nat -> Bool
+
+let isEven n decreases n =
+    if n == 0 then True else isOdd (n - 1)
+
+let isOdd n decreases n =
+    if n == 0 then False else isEven (n - 1)
+
+-- POSITIVE: lexicographic metric (pair of Nats).
+ack : Nat -> Nat -> Nat
+let ack m n decreases (m, n) =
+    if m == 0      then n + 1
+    else if n == 0 then ack (m - 1) 1
+    else                ack (m - 1) (ack m (n - 1))
+
+-- NEGATIVE: metric stays the same on the recursive call — no decrease.
+badSame : Nat -> Int
+let badSame n decreases n =
+    if n == 0 then 0
+    else 1 + badSame n    --!! kappa.termination.failure
+
+-- NEGATIVE: metric increases on the recursive call.
+badInc : Nat -> Int
+let badInc n decreases n =
+    if n == 0 then 0
+    else 1 + badInc (n + 1)   --!! kappa.termination.failure
+
+-- NEGATIVE: no metric provided and recursion is non-structural on Int.
+-- Structural descent requires an inductive type; Int is infinite.
+diverge : Int -> Int
+let diverge x = diverge x     --!! kappa.termination.failure
+
+-- NEGATIVE: mutual recursion where the metric is preserved, not decreased.
+badEven : Nat -> Bool
+badOdd  : Nat -> Bool
+
+let badEven n decreases n = badOdd n   --!! kappa.termination.failure
+let badOdd  n decreases n = badEven n  --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

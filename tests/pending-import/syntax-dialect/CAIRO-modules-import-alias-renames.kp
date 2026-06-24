@@ -1,0 +1,59 @@
+-- Source issues: CAIRO-2786, CAIRO-PR-2844 (Import alias)
+-- Spec: modules.imports (§8.3),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved, kappa.import.ambiguous-dotted).
+-- Kappa spec rule (§8.3 "Imports"):
+--   "An import form may specify a local alias: `import M.(X as Y)` binds
+--    the name `Y` in the local scope to the same semantic object as `M.X`.
+--    The original name `X` is not introduced into the local scope by this
+--    form. An alias of `_` suppresses the original name without introducing
+--    a local binding."
+-- Cairo issue CAIRO-2786: aliases for imports (`use X as Y`) were not yet
+--   supported; when added they should allow renaming imports locally.
+
+--! mode check
+
+module names
+
+-- Two functions with similar purposes but different names.
+public double : Int -> Int
+let double n = n * 2
+
+public triple : Int -> Int
+let triple n = n * 3
+
+public type Val = Int
+
+module consumer
+import names.(double as twice, triple as thrice, Val as Amount)
+
+-- POSITIVE: the aliased name `twice` is in scope; original `double` is not.
+result : Amount
+let result = twice 5
+
+-- POSITIVE: `thrice` is in scope.
+big : Amount
+let big = thrice 4
+
+-- NEGATIVE: `double` (original name) is not bound since the import used `as`.
+notInScope : Amount
+let notInScope = double 3          --!! kappa.name.unresolved
+
+-- NEGATIVE: `triple` is also not bound.
+alsoGone : Amount
+let alsoGone = triple 3            --!! kappa.name.unresolved
+
+-- POSITIVE: using the aliased type name `Amount` is valid.
+typedVal : Amount
+let typedVal = 10
+
+-- Demonstrate that a second import can bring in the original if needed.
+module consumer2
+import names.(double as twice, double)
+
+-- POSITIVE: now both `twice` and `double` are in scope (different bindings
+-- for the same semantic object).
+sum : Int
+let sum = twice 5 + double 5
+
+--! assertDiagnosticFamily error kappa.name.unresolved

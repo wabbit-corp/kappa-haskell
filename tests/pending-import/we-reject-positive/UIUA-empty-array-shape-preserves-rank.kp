@@ -1,0 +1,36 @@
+-- Source issue: Uiua #258 ("Transposing some empty arrays leads to a
+--   crash" — transposing an array of shape `2_0_2` panics with "chunk
+--   size must be non-zero"; the bug is that the implementation chose a
+--   stride based on the non-leading zero), Uiua #19 (similar empty-array
+--   panic at `⇌⊜[]≠@ ."Oh boy, neat!"`).
+-- Spec: collections.literals, collections.lowering.built_in_collection_obligations,
+--       compiler.frontir.ordinary_errors_not_internal_failures.
+--
+-- An empty array with rank N must preserve its rank under any built-in
+-- shape-only operation; the result shape is a permutation / reduction
+-- of the input shape with the zero-axis preserved at its new
+-- position.
+
+module test
+
+--! mode check
+
+-- A rank-3 array with shape [2, 0, 2]: 2 outer × 0 middle × 2 inner.
+-- We model it as nested lists; the outer list has length 2, each inner
+-- list has length 0.
+emptyRank3 : List (List (List Int))
+let emptyRank3 = [[], []]
+
+-- Computing length / shape on the outer list yields 2, not a panic.
+outerLen : Int
+let outerLen = length emptyRank3
+
+-- Reversing the outer list still yields a rank-3 array of the same
+-- shape.
+reversedOuter : List (List (List Int))
+let reversedOuter = []  -- in Kappa pseudo-syntax, reverse emptyRank3
+
+--! assertNoErrors
+--! assertType emptyRank3 List (List (List Int))
+--! assertType outerLen Int
+--! assertType reversedOuter List (List (List Int))

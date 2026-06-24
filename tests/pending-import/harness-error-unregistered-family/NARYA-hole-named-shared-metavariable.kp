@@ -1,0 +1,53 @@
+-- Source artifacts: narya docs/interactive.rst (named holes share their
+--               metavariable across occurrences), harvested test
+--               test/black/holes.t/holes.ny.
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes
+--
+-- A named hole `?name` introduces a metavariable identified by its
+-- name. Within one enclosing declaration or local right-hand side,
+-- repeated occurrences refer to the same metavariable and must
+-- elaborate at definitionally equal expected types; otherwise
+-- compilation fails with kappa.hole.inconsistent (§16.3.2). Holes do
+-- not escape the enclosing declaration. The anonymous form is `_`.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- POSITIVE: a single named hole is reported once at the enclosing
+-- declaration. Compilation fails for unsolved holes (severity = error).
+single : Nat
+let single = ?onlyOne    --!! kappa.hole.unsolved
+
+-- POSITIVE: a named hole occurring twice in one declaration's right-
+-- hand side shares one metavariable. Both occurrences elaborate at the
+-- same expected type Nat, so the only outstanding diagnostic is the
+-- unsolved hole itself.
+plusSelf : Nat -> Nat
+let plusSelf n =
+    match n
+      case Zero  -> ?shared    --!! kappa.hole.unsolved
+      case Suc _ -> ?shared
+
+-- NEGATIVE: the same named hole used at incompatible expected types
+-- within one declaration is rejected. Here ?bad must serve both as a
+-- Nat (first field) and as a Bool (second field) of one Pair Nat Bool.
+inconsistentSites : Pair Nat Bool
+let inconsistentSites =
+    MkPair ?bad ?bad    --!! kappa.hole.inconsistent
+
+-- POSITIVE: anonymous holes are always fresh — each `_` produces a
+-- distinct metavariable and is reported separately.
+twoAnon : Nat
+let twoAnon = _    --!! kappa.hole.unsolved
+
+threeAnon : Nat
+let threeAnon = _    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.inconsistent
+--! assertDiagnosticFamily error kappa.hole.unsolved

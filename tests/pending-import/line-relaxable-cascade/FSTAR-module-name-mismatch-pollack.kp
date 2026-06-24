@@ -1,0 +1,16 @@
+-- Source issue: FSTAR-560
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+-- Importing a module that does not exist must produce a diagnostic, not
+-- silent acceptance. This is a Pollack-consistency requirement: the checker
+-- must not report success when the imported module cannot be found.
+
+--! mode check
+
+-- Attempt to import a non-existent module.
+-- The compiler must detect the missing provider and produce an error.
+import WrongName.Module                --!! kappa.name.unresolved
+
+use_it : Nat
+let use_it = WrongName.Module.someValue
+
+--! assertDiagnosticFamily error kappa.name.unresolved

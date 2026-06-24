@@ -1,0 +1,72 @@
+-- Source issues: kernel/warning_test.exs "unused variable that could be pinned"
+--   ("variable compare_local is unused (there is a variable with the same name in the
+--    context, use the pin operator (^) to match on it or prefix this variable with
+--    underscore if it is not meant to be used)"),
+--   warning_test.exs "unused variable",
+--   warning_test.exs "underscored variable on match"
+-- Source tests: elixir kernel/warning_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/kernel/warning_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: compiler.frontir.standard_diagnostic_families, §3.1.12 Suspicious shadowing
+--       (family kappa.name.shadowing, code W_SUSPICIOUS_TOPLEVEL_SHADOWING)
+-- Kappa spec §3.1.12:
+--   "If an implementation exposes a suspicious-shadowing lint, it SHOULD use family
+--    kappa.name.shadowing for a local pattern binder, function parameter, local
+--    binding, or implicit binder that shadows a visible top-level declaration of the
+--    same spelling."
+-- In Elixir, when a pattern variable has the same name as an already-bound variable in
+-- the enclosing scope, the compiler warns that the new binding shadows the outer one.
+-- The message suggests either using the pin operator (^var) to test for equality, or
+-- prefixing with _ to explicitly mark it as intentionally unused. In Kappa, this is a
+-- suspicious-shadowing warning: kappa.name.shadowing.
+-- Note: Elixir's pin operator (^x) has no Kappa equivalent; equality testing uses 'if'
+-- guards. inline --!! markers are omitted (shadowing is WARNING severity).
+
+--! mode check
+
+-- POSITIVE: inner binding has a different name from outer; no shadowing.
+noShadowing : Int -> Int
+let noShadowing outerX =
+    let innerY = outerX + 1
+    innerY
+
+-- POSITIVE: using a wildcard prefix (_) explicitly marks the variable as intentionally
+-- shadowing without a warning (underscore signals "I know I'm not using this").
+intentionalUnderscore : Int -> Bool
+let intentionalUnderscore outerVal =
+    match outerVal
+    case _outerVal -> True
+    case _         -> False
+
+-- POSITIVE: equality test uses a guard 'if' — no shadowing because 'expected' is not
+-- rebound; the outer binding is used directly in the guard expression.
+pinEquality : Int -> Int -> Bool
+let pinEquality expected actual =
+    match actual
+    case _ if actual == expected -> True
+    case _                       -> False
+
+-- NEGATIVE: pattern variable 'compareLocal' shadows an outer binding of the same name.
+-- The inner 'compareLocal' creates a new binding that shadows the outer one.
+-- This is suspicious because the user likely intended to test equality, not rebind.
+suspiciousShadow1 : Int -> Bool
+let suspiciousShadow1 outerX =
+    let compareLocal = 42
+    match outerX
+    case compareLocal -> True
+    case _            -> False
+
+-- NEGATIVE: nested case where outer variable 'compareNested' is shadowed in a pattern.
+-- The inner pattern arm introduces a new 'compareNested' binding hiding the outer one.
+suspiciousShadow2 : String -> String -> Bool
+let suspiciousShadow2 compareNested target =
+    match target
+    case compareNested -> True
+    case _             -> False
+
+-- NEGATIVE: function parameter 'val' is shadowed by a binding in a sub-expression.
+-- The new 'val' binding in the let is likely unintentional.
+shadowInLet : Int -> Int
+let shadowInLet val =
+    let val = val + 1
+    val
+
+--! assertDiagnosticFamily warning kappa.name.shadowing

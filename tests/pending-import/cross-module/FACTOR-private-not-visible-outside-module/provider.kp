@@ -1,0 +1,6 @@
+module provider
+
+publicValue : Int
+let publicValue = 42
+
+private let privateValue : Int = 7

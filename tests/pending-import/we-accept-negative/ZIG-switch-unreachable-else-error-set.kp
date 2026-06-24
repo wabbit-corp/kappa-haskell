@@ -1,0 +1,50 @@
+-- Source issues: zig compile_errors/switch_expression-unreachable_else_prong_error.zig,
+--               zig compile_errors/switch_expression-unreachable_else_prong_bool.zig
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- When all members of a closed error-set (or Bool) are covered by explicit
+-- arms, a trailing catch-all is unreachable. Compilers must reject it with
+-- `kappa.pattern.unreachable`. This symmetrically extends the enum rule
+-- to the error-set domain.
+
+--! mode check
+
+-- Model an error set as a closed variant/enum.
+data AppError : Type =
+    FooErr
+    BarErr
+    BazErr
+
+-- POSITIVE: all three error members covered without a catch-all.
+let handleAll (e : AppError) : Int =
+    match e
+    case FooErr -> 1
+    case BarErr -> 2
+    case BazErr -> 3
+
+
+-- NEGATIVE: `else`-equivalent catch-all is unreachable when all three are covered.
+let handleAllElse (e : AppError) : Int =
+    match e
+    case FooErr -> 1
+    case BarErr -> 2
+    case BazErr -> 3
+    case _      -> 0    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- Bool exhaustiveness: True+False already covers everything.
+let boolToInt (b : Bool) : Int =
+    match b
+    case True  -> 1
+    case False -> 0
+
+
+-- NEGATIVE: catch-all after both Bool arms is unreachable.
+let boolToIntElse (b : Bool) : Int =
+    match b
+    case True  -> 1
+    case False -> 0
+    case _     -> 99    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

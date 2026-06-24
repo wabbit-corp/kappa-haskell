@@ -1,0 +1,106 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/sieve.dats
+--         ($lazy(cons(x0, sieve(filter(xs, x0)))), $eval(xs), case- xs of cons),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats (`val- cons(x0,xs) = $eval(xs)`),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (`datatype strmcon(a:type+)`)
+-- Spec: types.suspension (§11.2),
+--       expressions.let_binding (§9.3),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: `$lazy(e)` suspends an expression into a thunk; `$eval(s)`
+--   forces a suspension back to its value. `strm(a)` is a lazy list.
+--   `val- cons(x0, xs) = $eval(xs)` is an irrefutable pattern on a forced
+--   stream (the `-` means "assume this pattern matches").
+-- Kappa mapping: `thunk e` introduces a `Thunk A` suspension; `force t` forces
+--   it back to `A`. `delay`/`$lazy` both map to `thunk`.
+-- Portable obligation: positive-only test demonstrating that suspension (thunk)
+--   and forcing follow the expected type rules without error.
+
+--! mode check
+
+-- A lazy stream: either empty or a head with a suspended tail.
+data Stream : Type -> Type =
+    SEmpty : forall (a : Type). Stream a
+    SCons  : forall (a : Type). a -> Thunk (Stream a) -> Stream a
+
+-- Force the suspension (eval).
+forceStream : forall (a : Type). Thunk (Stream a) -> Stream a
+let forceStream t = force t
+
+-- POSITIVE: constructing a finite lazy stream.
+finiteStream : Stream Int
+let finiteStream =
+    SCons 1 (thunk (SCons 2 (thunk (SCons 3 (thunk SEmpty)))))
+
+-- POSITIVE: taking the head of a stream.
+headStream : forall (a : Type). Stream a -> Maybe a
+let headStream s =
+    match s
+    case SEmpty      -> Nothing
+    case SCons x _   -> Just x
+
+-- POSITIVE: taking the first n elements of a stream.
+take : forall (a : Type). Nat -> Stream a -> List a
+let take n s =
+    if n == 0 then []
+    else
+        match s
+        case SEmpty     -> []
+        case SCons x tl -> x :: take (n - 1) (forceStream tl)
+
+-- POSITIVE: the infinite stream of naturals.
+nats : Stream Int
+let nats = go 0
+    where
+        go : Int -> Stream Int
+        let go n = SCons n (thunk (go (n + 1)))
+
+-- POSITIVE: take 5 from infinite nats.
+first5 : List Int
+let first5 = take 5 nats
+
+-- POSITIVE: Sieve of Eratosthenes as a lazy stream.
+sieve : Stream Int -> Stream Int
+let sieve s =
+    match s
+    case SEmpty     -> SEmpty
+    case SCons p tl ->
+        SCons p (thunk (sieve (filterStream p (forceStream tl))))
+
+filterStream : Int -> Stream Int -> Stream Int
+let filterStream p s =
+    match s
+    case SEmpty     -> SEmpty
+    case SCons x tl ->
+        if x `mod` p == 0
+        then filterStream p (forceStream tl)
+        else SCons x (thunk (filterStream p (forceStream tl)))
+
+primes : Stream Int
+let primes = sieve (go 2)
+    where
+        go : Int -> Stream Int
+        let go n = SCons n (thunk (go (n + 1)))
+
+-- POSITIVE: first 5 primes = [2, 3, 5, 7, 11].
+first5Primes : List Int
+let first5Primes = take 5 primes
+
+-- POSITIVE: zip two streams element-wise.
+zipWith : forall (a b c : Type). (a -> b -> c) -> Stream a -> Stream b -> Stream c
+let zipWith f s1 s2 =
+    match (s1, s2)
+    case (SEmpty, _)              -> SEmpty
+    case (_, SEmpty)              -> SEmpty
+    case (SCons x tx, SCons y ty) ->
+        SCons (f x y) (thunk (zipWith f (forceStream tx) (forceStream ty)))
+
+-- POSITIVE: Fibonacci via zipWith.
+fibs : Stream Int
+let fibs = SCons 0 (thunk (SCons 1 (thunk (zipWith (+) fibs (forceStream (thunk (drop1 fibs)))))))
+    where
+        drop1 : Stream Int -> Stream Int
+        let drop1 s =
+            match s
+            case SEmpty     -> SEmpty
+            case SCons _ tl -> forceStream tl
+
+--! assertNoErrors

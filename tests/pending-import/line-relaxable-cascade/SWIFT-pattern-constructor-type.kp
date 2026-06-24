@@ -1,0 +1,54 @@
+-- Source issues: apple/swift #65650 (bad diagnostic for non-tuple matched as tuple),
+--   apple/swift #60808 (casting pattern doesn't work in certain positions),
+--   apple/swift #63993 (out-of-place binding diagnostic wrong).
+--   When a pattern's constructor or field types do not match the scrutinee's
+--   declared constructor signature, the checker must produce kappa.type.mismatch
+--   rather than an internal error or misleading diagnostic.
+-- Spec: expressions.match §17.1
+
+--! mode check
+
+data Point : Type = Point Nat Nat
+data Named : Type = Named String Nat
+
+-- POSITIVE: correct field types in patterns.
+getX : Point -> Nat
+let getX (Point x _) = x
+
+-- POSITIVE: string and nat fields matched correctly.
+getName : Named -> String
+let getName (Named s _) = s
+
+data Either (a b : Type) : Type = Left a | Right b
+
+-- POSITIVE: pattern distinguishing constructor and payload type.
+fromLeft : Either Nat Bool -> Nat
+let fromLeft (Left n)  = n
+let fromLeft (Right _) = 0
+
+-- POSITIVE: nested pattern with correct types.
+nestedGet : Either (Either Nat Bool) String -> Nat
+let nestedGet (Left (Left n)) = n
+let nestedGet _               = 0
+
+-- NEGATIVE: pattern expects two Nat fields but constructor only has one.
+badPoint : Nat -> Nat
+let badPoint p = match p
+    case Point x y -> x    --!! kappa.type.mismatch
+
+-- NEGATIVE: matching a Named with a Point pattern — constructor name mismatch.
+badNamed : Named -> Nat
+let badNamed n = match n
+    case Point x y -> x    --!! kappa.type.mismatch
+
+-- NEGATIVE: matching a Nat as if it were an Either.
+badEither : Nat -> String
+let badEither n = match n
+    case Left s -> s    --!! kappa.type.mismatch
+
+-- NEGATIVE: tuple decomposition on a non-tuple type.
+notATuple : Point -> Nat
+let notATuple p = match p
+    case (x, y) -> x    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

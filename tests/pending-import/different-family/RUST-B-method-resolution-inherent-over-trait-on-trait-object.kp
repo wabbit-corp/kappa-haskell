@@ -1,0 +1,70 @@
+-- Source issues: rust#51402, rust#139732, rust#50781 (slice > 50000)
+-- Spec: expressions.application.dotted_forms.projection_sections_receiver_projection_sections,
+--       modules.names.method_call_receiver_projection_sugar,
+--       modules.names.dotted_name_resolution_dotted,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--
+-- Kappa's dotted-name resolution (§7.3) and method-call receiver-projection
+-- sugar (§7.4) are unified: a receiver-projection `recv.name` first attempts
+-- ordinary member selection on the receiver's type (static members,
+-- constructor-field projection, record/package members) and falls back to
+-- the sugar only when no ordinary member matches.
+--
+-- The Rust analog "inherent method takes precedence over trait method" is
+-- expressed in Kappa as: ordinary member selection on the receiver type is
+-- attempted before method-call sugar's trait-evidence lookup. When two
+-- in-scope traits expose a same-named member and no ordinary selection
+-- succeeds, the receiver-projection is ambiguous.
+
+module test
+
+trait Show (a : Type) =
+    show : a -> String
+
+trait Render (a : Type) =
+    show : a -> String
+
+data Foo : Type =
+    Foo
+
+-- An ordinary same-spelling static member declared on Foo's namespace via
+-- the data-family rules of §7.2 is NOT how Kappa exposes inherent methods.
+-- Instead, distinct-spelling constructors and explicit module members serve
+-- that role. The ambiguity test focuses on the case Kappa's spec actually
+-- decides: two traits providing `show`.
+
+instance Show Foo =
+    let show _ = "show"
+
+--! mode check
+
+-- POSITIVE: only one trait (`Show`) provides `show` for `Foo` in scope.
+-- The dotted form resolves via method-call sugar.
+useOneTrait : String
+let useOneTrait =
+    let f : Foo = Foo
+    f.show
+
+
+-- NEGATIVE: two traits in scope provide `show` for the same receiver type.
+-- The receiver-projection sugar's eligibility rule (§7.4) keeps both
+-- candidates, and the call is ambiguous.
+instance Render Foo =
+    let show _ = "render"
+
+useAmbiguous : String
+let useAmbiguous =
+    let f : Foo = Foo
+    f.show   --!! kappa.implicit.ambiguous
+
+--! assertDiagnostic error kappa.implicit.ambiguous
+
+-- POSITIVE: explicit trait disambiguation. The user writes the trait
+-- name with kind-qualification (§7.1.1) and the dotted form resolves to
+-- exactly that trait's `show`.
+useDisambiguated : String
+let useDisambiguated =
+    let f : Foo = Foo
+    let ev : Show Foo = summon
+    ev.show f
+

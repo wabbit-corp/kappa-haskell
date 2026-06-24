@@ -1,0 +1,29 @@
+-- Source issue: FLIX-1139
+-- Spec: types.records, compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- A record type with duplicate field names is ill-formed. The compiler must
+-- reject both record type annotations and record literal expressions that
+-- contain the same field name more than once.
+
+--! mode check
+
+-- NEGATIVE TEST: record type with duplicate field name.
+let bad_type : (x : Int, x : String) =         --!! kappa.row.lacks-failed
+    (x = 1, x = "hello")
+
+-- NEGATIVE TEST: record literal with duplicate field name.
+let bad_literal : (x : Int, y : Int) =
+    (x = 1, x = 2, y = 3)                     --!! kappa.row.lacks-failed
+
+-- NEGATIVE TEST: duplicate label in open record type.
+let bad_open_type (r : (x : Int, x : String | r)) : Int =  --!! kappa.row.lacks-failed
+    r.x
+
+-- POSITIVE TEST: distinct field names are well-formed.
+let good_record : (x : Int, y : String) =
+    (x = 42, y = "hello")
+
+-- POSITIVE TEST: row extension with a label not in the tail.
+let add_field (r : (x : Int | rest)) : (x : Int, z : Bool | rest) =
+    (z = True | r)
+
+-- expect: bad_type, bad_literal, bad_open_type rejected; good_record, add_field accepted

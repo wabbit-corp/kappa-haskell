@@ -1,0 +1,46 @@
+-- Source issues: nickel #1315, #1312, #1354
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch)
+-- In a type mismatch diagnostic, the "expected type" MUST come from the context
+-- (the type demanded at the use site) and the "actual type" MUST come from the
+-- expression (the type inferred for the supplied value). These must not be
+-- swapped. Nickel #1315 showed that for certain expression forms (e.g., array
+-- literals with a type annotation), expected and found were reversed.
+
+module test
+
+-- NEGATIVE: a function expects String but receives Number.
+-- Expected: String (from the annotation context)
+-- Actual:   Number (from the literal)
+needsString : String -> Number
+let needsString s = String.length s
+
+bad1 : Number
+let bad1 = needsString 42          --!! kappa.type.mismatch
+
+-- NEGATIVE: a record field expects Bool but receives Number.
+-- The type annotation demands Bool; the supplied value 1 has type Number.
+type Cfg = (enabled : Bool, count : Number)
+
+bad2 : Cfg
+let bad2 = (enabled = 1, count = 5)     --!! kappa.type.mismatch
+
+-- NEGATIVE: a typed array expects String elements but one element is Number.
+-- Expected element type: String; Actual element: 99 : Number.
+-- The diagnostic must show "expected String, found Number",
+-- not "expected Number, found String" (which would be inverted).
+bad3 : Array String
+let bad3 = ["ok", 99, "also-ok"]        --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: all types match correctly.
+ok1 : Number
+let ok1 = needsString "hello"
+
+ok2 : Cfg
+let ok2 = (enabled = True, count = 3)
+
+ok3 : Array String
+let ok3 = ["a", "b", "c"]
+

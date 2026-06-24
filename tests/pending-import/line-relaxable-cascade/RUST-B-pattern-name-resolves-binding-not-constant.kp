@@ -1,0 +1,83 @@
+-- Source issues: rust#55631, rust#48062 (constants in pattern position),
+--                rust#118555 (assoc const with same name as variant)
+-- Spec: expressions.patterns.scoping_validity,
+--       modules.names.kind_qualified_name_expressions,
+--       modules.names.same_spelling_data_families_static_members
+--
+-- A bare LOWERCASE identifier in pattern head position is ALWAYS a fresh
+-- binder, even if a top-level constant of the same name exists. To match
+-- against the constant, the user must use a qualified or kind-qualified
+-- form.
+--
+-- The rust#55631 / rust#48062 bug was the inverse: rustc allowed a bare
+-- lowercase identifier to silently match against a constant of the same
+-- name, surprising the user. Kappa's pattern-resolution rule is unambiguous:
+-- bare lowercase = binder; uppercase or qualified = constructor or
+-- explicit static member.
+
+module test
+
+data Foo : Type =
+    A
+    B Int
+
+let myConst : Int = 42
+
+--! mode check
+
+-- POSITIVE: bare lowercase `f` is a fresh binder, regardless of any
+-- top-level constant. The branch binds `f : Foo` locally.
+bindLocalAlways : Foo -> Foo
+let bindLocalAlways x =
+    match x
+    case f -> f      -- `f` is a binder, NOT a reference to any constant
+
+
+-- POSITIVE: uppercase bare identifier in pattern head resolves to the
+-- in-scope constructor `A` of `Foo`.
+matchUnitCtor : Foo -> Int
+let matchUnitCtor x =
+    match x
+    case A   -> 0    -- resolves to the constructor `A` of `Foo`
+    case B n -> n
+
+
+-- POSITIVE: qualified constructor form. Equivalent to the bare uppercase
+-- form when `Foo.A` is in scope.
+matchQualified : Foo -> Int
+let matchQualified x =
+    match x
+    case Foo.A   -> 0
+    case Foo.B n -> n
+
+
+-- POSITIVE: a lowercase bare identifier that shadows the top-level
+-- constant `myConst`. The constant is NOT referenced; the binder shadows
+-- it. The body sees `myConst : Foo` (the freshly bound scrutinee).
+shadowsConstant : Foo -> Foo
+let shadowsConstant x =
+    match x
+    case myConst -> myConst   -- shadowing binder, type Foo
+
+
+-- POSITIVE: explicit reference to the top-level constant `myConst`
+-- inside the body, not the pattern. To match against a specific value
+-- of the constant requires an explicit guard.
+matchConstantValue : Int -> Int
+let matchConstantValue x =
+    match x
+    case n when n == myConst -> 0   -- explicit guard reference
+    case _                   -> 1
+
+
+-- NEGATIVE: an uppercase bare identifier that does NOT name any in-scope
+-- constructor or kind-qualified static member is unresolved. Kappa's
+-- pattern resolution does not silently introduce binders for uppercase
+-- names.
+matchUnknownUpper : Foo -> Int
+let matchUnknownUpper x =
+    match x
+    case Q -> 0   --!! kappa.name.unresolved
+    case _ -> 1
+
+--! assertDiagnostic error kappa.name.unresolved

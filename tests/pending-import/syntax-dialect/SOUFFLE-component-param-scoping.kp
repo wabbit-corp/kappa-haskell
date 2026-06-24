@@ -1,0 +1,55 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_params/comp_params.dl,
+--   tests/semantic/comp_params_inheritance/comp_params_inheritance.dl,
+--   souffle-lang #151 (component parameter name clash),
+--   souffle-lang #2341 (component type parameter name collision with init site).
+-- Spec: modules.imports (§8.3),
+--       modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Spec gap: SSA-SOUFFLE-04 (parameterised module scoping).
+-- In Souffle, type parameters of a component are in scope inside its body. In Kappa,
+-- the analogous mechanism is declaring polymorphic functions and data types using
+-- explicit type parameters. Kappa §11.3.3 (implicit universalization) also introduces
+-- type variables from free lowercase identifiers in term signatures.
+-- This test covers the Kappa scoping obligation: a name used in a type signature must
+-- be in scope — either as an explicit parameter, as an implicitly universalized name,
+-- or as a previously declared type in lexical scope.
+
+--! mode check
+
+-- POSITIVE: polymorphic function — type param `a` is implicitly universalized (§11.3.3).
+let container : a -> List a
+let container x = [x]
+
+let identity : a -> a
+let identity x = x
+
+-- POSITIVE: concrete types are in scope.
+let wrappedInt  : List Int    = container 42
+let wrappedStr  : List String = container "hi"
+
+-- POSITIVE: explicit type parameter in data declaration.
+data Box (a : Type) : Type =
+    MkBox a
+
+let makeBox : a -> Box a
+let makeBox x = MkBox x
+
+-- POSITIVE: nested parameterisation.
+let pairOf : a -> b -> (a, b)
+let pairOf x y = (x, y)
+
+let intStrPair : (Int, String) = pairOf 1 "x"
+
+-- NEGATIVE: function signature references a name not in scope and not a free lowercase
+-- type variable that can be implicitly universalized (using a backtick identifier
+-- prevents implicit universalization per §11.3.3).
+let badRef : `UnknownTypeParam` -> Int    --!! kappa.name.unresolved
+let badRef x = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using an undefined type in an annotation.
+let useUndeclared : UndeclaredConcreteType -> Int    --!! kappa.name.unresolved
+let useUndeclared _ = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,17 @@
+-- Source issue: FSTAR-2646
+-- Spec: types.universes.erasure_elaboration_time
+-- Record with universe-polymorphic field types must compile without U_name error.
+
+--! mode check
+
+-- POSITIVE TEST: a record parameterized by a functor F.
+-- Universe-polymorphic field types are accepted when properly scoped.
+type Functor (F : Type -> Type) =
+    (fmap : {A : Type} -> {B : Type} -> (A -> B) -> F A -> F B)
+
+
+-- NEGATIVE TEST: a record field referencing an undefined universe-level type.
+-- Level is not a built-in name in Kappa; this must produce a diagnostic.
+type BrokenFunctor = (lift : Level -> Type)   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

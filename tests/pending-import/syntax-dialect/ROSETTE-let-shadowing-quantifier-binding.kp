@@ -1,0 +1,43 @@
+-- Source issue: ROSETTE-196 (Unsoundness with quantifiers due to
+--                interaction with lexical scope, path conditions, and
+--                rewrite rules)
+-- Spec: declarations.let_in,
+--       expressions.lambdas.closure_capture_quantities
+--
+-- The Rosette report depends on the rule that a quantifier-bound
+-- variable shadows any same-named outer binding. The portable Kappa
+-- analogue: a lambda parameter shadows any outer let binding of the
+-- same name, and references inside the lambda body resolve to the
+-- innermost binding. This rule is what makes a flow-insensitive
+-- rewriter sound.
+
+--! mode check
+
+-- POSITIVE: the inner lambda parameter `x` shadows the outer let-bound
+-- `x = 5`; the lambda's body uses the parameter, not the outer x.
+shadowLambda : Int
+let shadowLambda =
+    let x = 5
+        f = \x -> x + 1               -- inner x shadows outer x
+    in f 100                          -- result is 101, not 6
+
+-- POSITIVE: a nested let binding is shadowed by an even more nested
+-- one.
+nested : Int
+let nested =
+    let x = 1
+    in let x = 2
+       in let x = 3
+          in x                        -- inner-most wins
+
+-- POSITIVE: outer x is still reachable from a sibling expression that
+-- predates the shadowing.
+sibling : Int
+let sibling =
+    let x = 7
+        f = \y -> y + x               -- captures outer x = 7
+    in
+    let x = 99
+    in f 1                            -- closure result is 8, not 100
+
+--! assertNoErrors

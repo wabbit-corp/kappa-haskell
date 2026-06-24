@@ -1,0 +1,46 @@
+-- Source: Coalton issue #94 (fix instance overlap issues with multiparam
+--   typeclasses), Coalton general coherence contract.
+-- Spec: traits.instances.normalized_instance_heads (§14.3.2),
+--   traits.instances.resolution_algorithm (§14.3.1),
+--   compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--   (kappa.implicit.ambiguous §3.2.4).
+--
+-- Two instance declarations for the same trait and head type genuinely overlap
+-- when there exists a type `T` for which both instance heads match and both
+-- premise sets could simultaneously be satisfied. A correct checker must
+-- reject genuinely overlapping instances as a coherence failure.
+
+--! mode check
+
+trait Serialize (a : Type) =
+    serialize : a -> String
+
+data ValueA : Type = ValueA Int
+data ValueB : Type = ValueB String
+
+-- POSITIVE: two non-overlapping instances for different concrete types.
+instance Serialize ValueA =
+    let serialize (ValueA n) = "A"
+
+instance Serialize ValueB =
+    let serialize (ValueB s) = "B"
+
+-- NEGATIVE: two instances for the same concrete type are genuinely overlapping.
+-- The checker must detect the conflict and reject one (or both).
+instance Serialize Int =
+    let serialize _ = "int-first"
+
+instance Serialize Int =                 --!! kappa.implicit.ambiguous
+    let serialize _ = "int-second"
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- NEGATIVE: two parametric instances with the same head variable overlap.
+-- Both `instance Serialize a` declarations match any type, so they conflict.
+instance Serialize a =                   --!! kappa.implicit.ambiguous
+    let serialize _ = "generic-first"
+
+instance Serialize a =
+    let serialize _ = "generic-second"
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

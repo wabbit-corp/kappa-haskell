@@ -1,0 +1,84 @@
+-- Source issues: CAIRO-2114, CAIRO-2899, CAIRO-3867
+-- Spec: traits.headers.supertraits (§14.1.4),
+--       traits.instances (§14.3),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- Kappa spec rule (§14.1.4):
+--   "An instance of trait T where T has supertrait S must record evidence for S.
+--    If the supertrait evidence cannot be found in the compilation unit's
+--    instance environment, the instance declaration is ill-formed."
+-- Cairo issue CAIRO-2114: Serde impl required a missing instance in context.
+-- Cairo issue CAIRO-2899: trait/impl resolution failed when a generic type's
+--   supertrait instance couldn't be found.
+-- Cairo issue CAIRO-3867: generic impl param inference for a two-level
+--   supertrait chain (BashState -> Bash -> BashStateEx) failed to find the
+--   intermediate evidence.
+-- In Kappa: a three-level supertrait chain A => B => C must have all three
+-- instances present for C to typecheck.
+
+--! mode check
+
+-- Three-level trait hierarchy
+trait Base (a : Type) =
+    baseOp : (& x : a) -> Int
+
+trait Base a => Mid (a : Type) =
+    midOp : (& x : a) -> Int
+
+trait Mid a => Top (a : Type) =
+    topOp : (& x : a) -> Int
+
+-- A type with all three instances.
+data Complete : Type = Complete Int
+
+instance Base Complete =
+    let baseOp (Complete n) = n
+
+instance Mid Complete =
+    let midOp (Complete n) = n + 1
+
+instance Top Complete =
+    let topOp (Complete n) = n + 2
+
+-- POSITIVE: a function requiring Top Complete can be called.
+useTop : Int
+let useTop = topOp (Complete 5)
+
+-- POSITIVE: Mid and Base evidence is also available.
+useMid : Int
+let useMid = midOp (Complete 5)
+
+-- NEGATIVE: Partial type has Base but no Mid; writing Top Partial must fail.
+data Partial : Type = Partial Int
+
+instance Base Partial =
+    let baseOp (Partial n) = n
+
+-- Mid Partial is absent, so Top Partial's premise is unsatisfiable.
+instance Top Partial =             --!! kappa.implicit.unsolved
+    let topOp (Partial n) = n + 2
+
+-- NEGATIVE: a completely bare type with no instances cannot have any tier.
+data Bare : Type = Bare Int
+
+instance Mid Bare =                --!! kappa.implicit.unsolved
+    let midOp (Bare n) = n + 1
+
+-- POSITIVE: generic function whose premise is a trait chain; when concrete
+-- type satisfies the full chain the call compiles.
+genericTop :
+    forall (a : Type).
+    (@_ : Top a) ->
+    (& x : a) ->
+    Int
+let genericTop x = topOp x
+
+callGeneric : Int
+let callGeneric = genericTop (Complete 7)
+
+-- NEGATIVE: calling genericTop with Partial must fail since Top Partial
+-- instance doesn't exist (we rejected it above).
+badGeneric : Int
+let badGeneric = genericTop (Partial 7)       --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

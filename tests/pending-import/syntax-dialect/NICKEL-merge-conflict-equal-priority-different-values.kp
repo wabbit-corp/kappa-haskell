@@ -1,0 +1,64 @@
+-- Source issues: merging.md (merge priorities section), nickel #1187
+-- Spec: types.records.merge.priority (NSA-04)
+-- NOTE: This test depends on NSA-04 (merge priority lattice spec gap). The `&`
+-- merge operator is proposed syntax not yet in the Kappa v1 spec.
+-- When two records with the same field at the same priority (default: 0) have
+-- different primitive values for that field, the merge MUST fail with an error.
+-- Primitive types (Number, Bool, String) can only be merged if the values are equal.
+-- Arrays can be merged only if they are equal (checked via an equality contract).
+-- Records at the same priority are recursively merged.
+-- This test verifies that non-equal primitives at the same priority are always rejected.
+
+module test
+
+-- NEGATIVE: same field, priority 0 (plain), different Number values.
+-- {foo = 1} & {foo = 2} must fail because 1 ≠ 2.
+numConflict : (foo : Number)
+let numConflict = (foo = 1) & (foo = 2)    --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: same field, Bool values that differ.
+boolConflict : (flag : Bool)
+let boolConflict = (flag = True) & (flag = False)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: same field, String values that differ.
+strConflict : (name : String)
+let strConflict = (name = "alice") & (name = "bob")    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: same field, same Number value — merging equal numbers succeeds.
+numEqual : (foo : Number)
+let numEqual = (foo = 42) & (foo = 42)
+
+numEqualResult : Number
+let numEqualResult = numEqual.foo
+
+--! assertType numEqualResult Number
+
+-- POSITIVE: same field, same Bool — merging equal booleans succeeds.
+boolEqual : (flag : Bool)
+let boolEqual = (flag = True) & (flag = True)
+
+
+-- POSITIVE: same field, same String — merging equal strings succeeds.
+strEqual : (name : String)
+let strEqual = (name = "carol") & (name = "carol")
+
+
+-- NEGATIVE: non-equal arrays at the same priority must fail.
+-- Nickel #1187: arrays are checked by contract-based equality, not identity.
+-- Two unequal arrays at the same priority cannot be merged.
+arrConflict : (xs : Array Number)
+let arrConflict = (xs = [1, 2, 3]) & (xs = [4, 5, 6])   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: equal arrays can be merged.
+arrEqual : (xs : Array Number)
+let arrEqual = (xs = [1, 2, 3]) & (xs = [1, 2, 3])
+

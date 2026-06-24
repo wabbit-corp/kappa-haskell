@@ -1,0 +1,54 @@
+-- Source artifacts: narya docs/built-in-types.rst (dependent function
+--               type), docs/typechecking.rst (bidirectionality of pi
+--               formation).
+-- Spec: types.functions,
+--       types.universes,
+--       expressions.lambdas
+--
+-- A dependent function type `(x : A) -> B x` is formed by listing one
+-- or more annotated binders before an arrow (§16.2, §11). The
+-- argument's annotation must denote a valid type; the codomain may
+-- mention the binder. A bare abstraction `\x -> body` is checking; a
+-- domain-annotated lambda `\(x : A) -> body` synthesizes when the body
+-- synthesizes under that binder.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: a closed Pi Nat -> Nat — the codomain does not mention x.
+double : Nat -> Nat
+let double n =
+    match n
+      case Zero  -> Zero
+      case Suc k -> Suc (Suc (double k))
+
+-- POSITIVE: a dependent Pi where the codomain depends on the argument.
+expect term P : Nat -> Type
+
+constP : (n : Nat) -> P n -> P n
+let constP _ p = p
+
+-- POSITIVE: nested Pis combine multiple binders.
+addNat : (m : Nat) -> (n : Nat) -> Nat
+let addNat m n =
+    match m
+      case Zero  -> n
+      case Suc k -> Suc (addNat k n)
+
+-- POSITIVE: a higher-order function takes a dependent function as an
+-- argument.
+applyDep :
+    forall (a : Type) (b : a -> Type).
+    ((x : a) -> b x) -> (x : a) -> b x
+let applyDep f x = f x
+
+-- NEGATIVE: a non-type expression in a type position is a type
+-- mismatch (here `Zero`, a value of Nat, is supplied where a Type is
+-- required).
+badPi : (z : Zero) -> Nat    --!! kappa.type.mismatch
+let badPi _ = Zero
+
+--! assertDiagnosticFamily error kappa.type.mismatch

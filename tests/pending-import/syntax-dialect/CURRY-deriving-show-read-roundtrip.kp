@@ -1,0 +1,89 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDeriving.curry
+--   (showOfRead x = read (show x) -=- x; showOfReadNat / TreeColor / ...).
+-- Spec: traits.deriving (§14.5), data_types.data_declarations (§10.1),
+--       traits.headers (§14.1), traits.instances (§14.3).
+-- Spec gap: CURRY-SA-12 (no portable `Read` trait or string-parse
+-- counterpart of `Show`; the Curry `read . show = id` round-trip
+-- cannot be expressed in Kappa's portable subset). Reduced here to a
+-- structural-equality witness over derived Show + Eq.
+--
+-- Derived `Eq` and `Show` are portable in Kappa via standalone
+-- `derive` declarations. The Curry test's `read . show` round-trip
+-- cannot be ported until Kappa specifies a Read counterpart; we keep
+-- the test as a fixture for derived `Eq`/`Show` over recursive and
+-- parameterized ADTs, with explicit equality witnesses on
+-- representative values.
+
+module test
+
+--! mode check
+
+data Color : Type =
+    Red
+  | Blue
+
+derive Eq Color
+derive Show Color
+
+data NatLike : Type =
+    NLZero
+  | NLSucc NatLike
+
+derive Eq NatLike
+derive Show NatLike
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+derive Eq (List a)
+derive Show (List a)
+
+data Tree (a : Type) : Type =
+    Leaf a
+  | Node (List (Tree a))
+
+derive Eq (Tree a)
+derive Show (Tree a)
+
+--! assertNoErrors
+
+-- POSITIVE: derived Eq witnesses structural equality for Color.
+sampleColor : Color
+let sampleColor = Red
+
+sampleColorAgain : Color
+let sampleColorAgain = Red
+
+colorsEqual : Bool
+let colorsEqual = sampleColor == sampleColorAgain
+
+--! assertType colorsEqual Bool
+
+-- POSITIVE: derived Eq witnesses structural equality for a recursive
+-- ADT.
+sampleNat : NatLike
+let sampleNat = NLSucc (NLSucc (NLSucc NLZero))
+
+sampleNatAgain : NatLike
+let sampleNatAgain = NLSucc (NLSucc (NLSucc NLZero))
+
+natsEqual : Bool
+let natsEqual = sampleNat == sampleNatAgain
+
+--! assertType natsEqual Bool
+
+-- POSITIVE: derived Eq witnesses structural equality for a
+-- parameterised ADT containing another parameterised ADT.
+sampleTree : Tree Color
+let sampleTree =
+    Node (Cons (Leaf Red) (Cons (Leaf Blue) Nil))
+
+sampleTreeAgain : Tree Color
+let sampleTreeAgain =
+    Node (Cons (Leaf Red) (Cons (Leaf Blue) Nil))
+
+treesEqual : Bool
+let treesEqual = sampleTree == sampleTreeAgain
+
+--! assertType treesEqual Bool

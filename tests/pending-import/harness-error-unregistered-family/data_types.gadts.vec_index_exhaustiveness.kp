@@ -1,0 +1,46 @@
+-- Source issue: (original — GADT index-driven exhaustiveness)
+-- Spec: expressions.match, data_types.gadts,
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+-- Length-indexed vector.
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : {n : Nat} -> a -> Vec a n -> Vec a (n + 1)
+
+-- POSITIVE: matching on Vec a 0 — only VNil is possible, VCons is impossible.
+headOfNonempty : forall {a : Type} {n : Nat}. Vec a (n + 1) -> a
+let headOfNonempty (VCons x _) = x
+
+-- POSITIVE: safe head — pattern match with index refinement.
+safeHead : forall {a : Type} {n : Nat}. Vec a (n + 1) -> a
+let safeHead v =
+    match v
+    case VCons x _ -> x
+
+-- POSITIVE: tail of a non-empty vector.
+safeTail : forall {a : Type} {n : Nat}. Vec a (n + 1) -> Vec a n
+let safeTail v =
+    match v
+    case VCons _ xs -> xs
+
+-- POSITIVE: zip two same-length vectors.
+zipVec :
+    forall {a b : Type} {n : Nat}.
+    Vec a n -> Vec b n -> Vec (a, b) n
+let zipVec va vb =
+    match (va, vb)
+    case (VNil, VNil)                     -> VNil
+    case (VCons x xs, VCons y ys)         -> VCons (x, y) (zipVec xs ys)
+
+-- NEGATIVE: matching Vec a 0 against VCons — the index 0 makes VCons
+-- impossible; the branch is unreachable.
+-- Note: the index constraint 0 means only VNil is valid at this type.
+badZero : forall {a : Type}. Vec a 0 -> Int
+let badZero v =
+    match v
+    case VNil       -> 0
+    case VCons _ _  -> 1   --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

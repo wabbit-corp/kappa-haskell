@@ -1,0 +1,31 @@
+-- Source issues: CREUSOT-1439, CREUSOT-114
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.impossible_unreachable_branch_bodies,
+--       expressions.match.case_impossible_empty_remainder
+-- For a visibly uninhabited (empty) ADT, a `match` with zero arms is the
+-- canonical exhaustive form.  Kappa's exhaustiveness rule already permits
+-- this directly under expressions.match.exhaustiveness_indexed_types_gadts
+-- and expressions.match.case_impossible_empty_remainder; no spec gap.
+
+module test
+
+--! mode check
+
+-- Visibly uninhabited ADT.
+data Void : Type =
+
+-- POSITIVE: any function from Void may use the zero-arm match form.
+absurd : forall (a : Type). Void -> a
+let absurd v = match v
+
+-- POSITIVE: composing absurd elimination through a constructor wrapper
+-- preserves the obligation.
+data WrapVoid : Type = Wrap Void
+
+unwrapAbsurd : forall (a : Type). WrapVoid -> a
+let unwrapAbsurd w =
+    match w
+    case Wrap v -> match v
+
+--! assertNoErrors
+--! assertType absurd (forall (a : Type). Void -> a)

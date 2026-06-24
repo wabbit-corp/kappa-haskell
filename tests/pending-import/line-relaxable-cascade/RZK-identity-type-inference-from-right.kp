@@ -1,0 +1,64 @@
+-- Source issues: rzk#130 — better local inference for identity types;
+--   the typechecker only considered inferring the identity type from the left
+--   argument, but there are cases where it must be inferred from the right
+--   argument instead. Rzk example: `(τ, refl) =_{T} th` where `T` must be
+--   inferred from the right-hand side `th`.
+-- Spec: types.propositions.propositional_equality_type_positions,
+--       expressions.implicit_parameters
+--   §11.4.1: propositional equality `x = y` is a built-in inductive family;
+--   the type index must be inferrable from either the left or right argument.
+--
+-- The elaborator must be able to infer the equality type index from either
+-- side of the identity type. When the left argument does not determine the
+-- type but the right argument does (or vice versa), inference must still
+-- succeed.
+
+--! mode check
+
+-- POSITIVE: identity type inferred from the left argument.
+leftInferred : (42 : Nat) = 42
+let leftInferred = refl
+
+-- POSITIVE: identity type inferred from the right argument via expected type.
+-- The type annotation forces the elaborator to resolve the equality type from
+-- the right-hand side argument `True`.
+rightInferred : True = True
+let rightInferred = refl
+
+-- POSITIVE: symmetry of equality — infer type from a variable.
+sym : forall {A : Type} {x y : A} -> x = y -> y = x
+let sym refl = refl
+
+-- POSITIVE: transitivity — infer type from the middle argument.
+trans : forall {A : Type} {x y z : A} -> x = y -> y = z -> x = z
+let trans refl q = q
+
+-- POSITIVE: congruence — type inferred from function application.
+cong : forall {A B : Type} {x y : A} -> (f : A -> B) -> x = y -> f x = f y
+let cong f refl = refl
+
+natCong : 42 + 1 = 43
+let natCong = cong (\n -> n + 1) refl
+
+-- POSITIVE: a pair type with an equality component; both sides inferrable.
+data EqPair (a : Type) : Type =
+    MkEqPair : (x : a) -> (y : a) -> x = y -> EqPair a
+
+reflPair : EqPair Nat
+let reflPair = MkEqPair 0 0 refl
+
+-- POSITIVE: equality with explicit type annotation — unambiguous.
+explicitEq : (10 : Nat) = 10
+let explicitEq = refl
+
+-- NEGATIVE: a claimed equality between two terms that are not definitionally
+-- equal — using refl for a false equality.
+falseEq : (0 : Nat) = 1    --!! kappa.type.mismatch
+let falseEq = refl
+
+-- NEGATIVE: a symmetry proof applied at the wrong type — the left/right
+-- sides are swapped in the annotation, contradicting the refl proof.
+badSym : (True : Bool) = False    --!! kappa.type.mismatch
+let badSym = refl
+
+--! assertDiagnosticFamily error kappa.type.mismatch

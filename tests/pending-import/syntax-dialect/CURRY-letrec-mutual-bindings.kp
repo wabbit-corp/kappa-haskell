@@ -1,0 +1,71 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestLetRec.curry
+--   (let ones = 1 : ones; mutual let ones2 = 1 : twos1; twos1 = 2 : ones2).
+-- Spec: declarations.let_in (§9.3),
+--       declarations.let_in.pure_block_expressions (§9.3.1),
+--       expressions.application (§11.2 suspension),
+--       data_types.data_declarations (§10.1).
+-- Spec gap: CURRY-SA-06 (productive corecursion under suspension typing).
+--
+-- Recursive and mutually-recursive local bindings. Per §9.3.1, a local
+-- named binding (or mutually recursive local group) is recursive only
+-- if each recursively referenced name has a preceding local signature
+-- in the same block scope. We use an explicit unit-arrow thunk so the
+-- obligation is observable without depending on automatic non-strict
+-- binders.
+
+module test
+
+--! mode check
+
+data Stream (a : Type) : Type =
+    SCons a (() -> Stream a)
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+takeStream : forall (a : Type). Int -> Stream a -> List a
+let takeStream n s =
+    if n <= 0
+    then Nil
+    else
+        match s
+        case SCons x rest -> Cons x (takeStream (n - 1) (rest ()))
+
+-- POSITIVE: a self-recursive local binding. The preceding local
+-- signature `ones : Stream Int` activates §9.3.1's recursive-group
+-- rule for the named def that follows.
+ones5 : List Int
+let ones5 =
+    ones : Stream Int
+    let ones = SCons 1 (\_ -> ones)
+    takeStream 5 ones
+
+--! assertNoErrors
+--! assertType ones5 (List Int)
+
+-- POSITIVE: mutually recursive local bindings. Both `ones2` and
+-- `twos1` carry preceding local signatures so the named defs form a
+-- mutually recursive group per §9.3.1.
+onetwo6 : List Int
+let onetwo6 =
+    ones2 : Stream Int
+    twos1 : Stream Int
+    let ones2 = SCons 1 (\_ -> twos1)
+    let twos1 = SCons 2 (\_ -> ones2)
+    takeStream 6 ones2
+-- expected shape: Cons 1 (Cons 2 (Cons 1 (Cons 2 (Cons 1 (Cons 2 Nil)))))
+
+--! assertNoErrors
+--! assertType onetwo6 (List Int)
+
+-- POSITIVE: a `where`-style self-mutual binding equivalent, expressed
+-- via a local signature followed by a recursive named def.
+twoListBuilder : Int -> List Int
+let twoListBuilder n =
+    twos : Stream Int
+    let twos = SCons 2 (\_ -> twos)
+    takeStream n twos
+
+--! assertNoErrors
+--! assertType twoListBuilder (Int -> List Int)

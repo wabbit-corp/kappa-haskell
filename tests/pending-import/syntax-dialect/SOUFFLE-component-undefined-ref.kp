@@ -1,0 +1,46 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_nonexistent_type/comp_nonexistent_type.dl,
+--   souffle-lang #885 (component errors do not refer to instance).
+-- Spec: modules.imports (§8.3),
+--       modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Importing or referencing an undefined module must produce kappa.name.unresolved.
+-- Souffle reports "Referencing undefined component TThatDoesNotExist".
+
+--! mode check
+
+module call_graph
+
+let edge : Int -> Int -> Bool
+let edge caller callee = False
+
+module cha_graph
+
+import call_graph
+
+let edge : Int -> Int -> Bool
+let edge c k = True
+
+module use_cha
+
+import cha_graph
+
+-- POSITIVE: importing a known module.
+let ok : Bool = cha_graph.edge 1 2
+
+module bad1
+
+import non_existent_module    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+module consumer
+
+import call_graph
+
+-- POSITIVE: explicit qualified reference to a known module member.
+let knownRef : Bool = call_graph.edge 1 2
+
+-- NEGATIVE: using a name that refers to a module that doesn't exist.
+let missingRef : Bool = unknown_module.some_value    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

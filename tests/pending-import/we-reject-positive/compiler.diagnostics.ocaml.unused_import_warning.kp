@@ -1,0 +1,23 @@
+-- Source issue: OCaml#5357
+-- Spec: compiler.frontir.warning_hygiene
+-- The warning hygiene spec names "unused import" as a source-oriented lint family.
+-- When a conforming implementation emits such a warning, it must obey the
+-- source-orientation rules: generated references must not suppress the warning,
+-- and the blame site must be the import item itself, not a generated consumer.
+--
+-- This test asserts the positive (non-warning) side: an import that IS used must
+-- not produce an unused-import warning. The negative (warn-on-unused) assertion
+-- is deferred to OSA-03 which defines the specific diagnostic family.
+
+module test
+
+-- Import a name that is used below; no warning expected.
+import std.math.(abs)
+
+-- Use abs so the import is not unused.
+result : Int
+let result = abs (-5)
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings

@@ -1,0 +1,26 @@
+-- Stress test: a function polymorphic over an open record row passes through extra fields
+-- Spec: types.records, types.quantification.rows_labels
+
+--! mode check
+
+-- POSITIVE: extract the name field from any record that has it, ignoring remaining fields
+let getName (forall (r : RecRow)) (rec : (name : String | r)) : String =
+    rec.name
+
+-- POSITIVE: call site 1 - record with exactly one extra field
+test1 : String
+let test1 =
+    let person = (name = "Alice", age = 30)
+    getName person
+
+-- POSITIVE: call site 2 - record with multiple extra fields
+test2 : String
+let test2 =
+    let employee = (name = "Bob", age = 25, dept = "Engineering", active = True)
+    getName employee
+
+-- POSITIVE: row-polymorphic passthrough - return open record unchanged
+let identity (forall (r : RecRow)) (rec : (name : String | r)) : (name : String | r) =
+    rec
+
+--! assertNoErrors

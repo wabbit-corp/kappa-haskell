@@ -1,0 +1,32 @@
+-- Source: Boomerang docs/docs/main.src § "Lens record-style projection"
+--         Boomerang's lens.get / lens.put / lens.create are pure
+--         functions returning ordinary string / regexp / lens values.
+--         Kappa correspondingly requires `pattern` declarations to return
+--         a non-monadic result type (Option T, Match a r, a data type,
+--         or a variant type).
+-- Spec: expressions.active_patterns.declaration_grammatical_restrictions
+--       ("a pattern declaration is ill-formed if its result type is
+--       monadic.").
+-- Spec gap: BSA-BOOMERANG-08 — Kappa has no dedicated diagnostic family
+--   for "pattern declaration with monadic result type"; obligation is
+--   recorded as a generic compile-time rejection.
+-- Portable obligation: declaring a `pattern` whose result type is a
+--   monadic effect type must be rejected.
+
+module test
+
+--! mode check
+
+data Option a : Type =
+    None
+    Some a
+
+-- A monadic effect-like type stand-in for the test.
+data MyIO a : Type =
+    MyIO (Unit -> a)
+
+-- NEGATIVE: pattern with monadic result type is ill-formed (§17.3.1).
+pattern BadIOView (& s : String) : MyIO (Option String) =
+    MyIO (\u -> if s == "" then None else Some s)
+
+--! assertErrorCount 1

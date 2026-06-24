@@ -1,0 +1,33 @@
+-- Source issues: CREUSOT-1204
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.size_change_termination,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- The variant check that establishes termination MUST NOT assume the
+-- function's precondition.  A precondition `false` plus a recursive
+-- call without decrease would otherwise admit any "variant" trivially.
+-- Pending spec gap CREUSOT-SA-04 covers the proposed contract surface.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: a function with precondition `False` and a non-decreasing
+-- recursive call.  If the variant check WERE allowed to use `requires`,
+-- it would discharge "trivially" - Kappa rejects the cycle on its own.
+logic let evil : Int -> Int
+let evil x =
+    evil (- x) + 1                            --!! kappa.termination.failure
+    requires False
+    decreases x
+    ensures False
+
+-- NEGATIVE: an even simpler case: `requires false` plus straight
+-- self-call.  Must still be a termination failure.
+logic let evilSimple : Unit
+let evilSimple =
+    evilSimple                                --!! kappa.termination.failure
+    requires False
+    ensures False
+
+--! assertDiagnosticFamily error kappa.termination.failure

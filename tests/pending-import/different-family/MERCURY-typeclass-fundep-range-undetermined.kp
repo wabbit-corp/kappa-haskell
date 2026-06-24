@@ -1,0 +1,61 @@
+-- Source issues: invalid/range_restrict.m, invalid/fundeps_coverage.m
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       traits.headers (functional dependency / coverage obligation)
+--       (kappa.type.ambiguity-check)
+-- A functional dependency on a multi-parameter trait constrains how type
+-- variables may appear in instance heads. If an instance's range type
+-- variable is not determined by its domain type variables (i.e. range vars
+-- are free in the domain), the instance violates the functional dependency
+-- and must be rejected.
+
+module test
+
+-- A two-parameter trait `Coll e c` with a functional dependency `c -> e`:
+-- given the container type `c`, the element type `e` is fully determined.
+trait Coll (e : Type) (c : Type) =
+    insert : e -> c -> c
+    member : e -> c -> Bool
+
+-- NEGATIVE: instance where the container argument is a parameterized type
+-- `Map k v` but the range type variable (`e`) is free — i.e., not determined
+-- by the concrete container type alone when `k` and `v` are unrelated to `e`.
+-- This violates the functional dependency c -> e.
+
+data Map (k : Type) (v : Type) : Type = EmptyMap | Entry k v (Map k v)
+
+-- An instance of Coll(String, Map k v) where `k` and `v` are both free:
+-- the element type is `String`, which is determined by the instance head alone
+-- (good), but the intended dependency requires that for any fixed `c = Map k v`,
+-- the element type `e` be uniquely determined. If there were two such instances
+-- with different element types, the functional dependency would be violated.
+
+-- POSITIVE: single instance does not by itself violate a functional dependency.
+instance Coll String (Map String String) =
+    let insert k m = Entry k k m
+    let member k EmptyMap = False
+    let member k (Entry k2 _ rest) = k == k2 || member k rest
+
+
+-- NEGATIVE: a second instance for Coll(Int, Map String String) violates the
+-- functional dependency `c -> e` because `Map String String` now maps to
+-- both `String` and `Int` as element types.
+instance Coll Int (Map String String) =
+    let insert _ m = m
+    let member _ _ = False
+
+-- Now the implicit goal `Coll e (Map String String)` is ambiguous: two
+-- candidates exist for distinct element types.
+ambiguousInsert : String -> Map String String -> Map String String
+let ambiguousInsert k m = insert k m   --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- POSITIVE: using a uniquely-determined instance is unambiguous with
+-- an explicit evidence binding.
+knownInsert : String -> Map String String -> Map String String
+let knownInsert k m =
+    let d : Coll String (Map String String) = summon
+    d.insert k m
+
+
+--! mode check

@@ -1,0 +1,33 @@
+-- Source issues: METACOQ-326, METACOQ-369
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c
+--
+-- Kappa allows constructors declared with named binders to be applied in
+-- positional or named form. MetaCoq's `tmQuote` over records with primitive
+-- projections (#326) and `tmMkDefinition` over inductives (#369) revealed
+-- that named-field syntax must not collapse into positional silently.
+
+module positive
+
+--! mode check
+
+data User : Type =
+    MkUser (name : String) (age : Nat)
+
+-- POSITIVE: positional application.
+u1 : User
+let u1 = MkUser "Alice" 30
+
+-- POSITIVE: named application using the binder names.
+u2 : User
+let u2 = MkUser { name = "Bob", age = 25 }
+
+-- POSITIVE: punning when local names match field names.
+ada : User
+let ada =
+    let name = "Ada"
+    let age = 36
+    MkUser { name, age }
+
+-- Suite-wide budget: exactly the 2 error(s) marked in negative.lang;
+-- every positive declaration in this file must elaborate cleanly.
+--! assertErrorCount 2

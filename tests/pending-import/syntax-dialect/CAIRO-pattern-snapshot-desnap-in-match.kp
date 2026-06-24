@@ -1,0 +1,81 @@
+-- Source issues: CAIRO-PR-2097 (Added sierra snapshot type),
+--               CAIRO-PR-2098 (Added snapshot signature for match/destructure),
+--               CAIRO-PR-2278 (Tuple destructuring for snapshots),
+--               CAIRO-PR-2367 (Type inference for snapshot(TypeVar)),
+--               CAIRO-PR-4253 (Added match_nullable_snapshot),
+--               CAIRO-PR-5662 (Re-peel snapshots post solving)
+-- Spec: types.universes.quantities (§12.2),
+--       expressions.patterns (§ data_types patterns),
+--       expressions.match (§17).
+-- Kappa spec rule (§12.2 "Borrowed binder access"):
+--   "A borrowed binder `(& x : A)` may appear as the scrutinee of a match.
+--    Pattern branches against a borrowed scrutinee introduce borrowed bindings
+--    for sub-patterns: the match does not consume the value."
+-- In Cairo, the `@T` snapshot type allows matching without consuming the
+-- value. Destructuring `@(Some(x))` in a match arm yields `x : @Inner`,
+-- not `x : Inner`.
+
+--! mode check
+
+-- A simple option-like type.
+data Opt : Type =
+    None | Some Int
+
+-- POSITIVE: matching a borrowed Opt does not consume it; the binding in the
+-- `Some` branch is a borrowed Int.
+peekOpt : (& o : Opt) -> Int
+let peekOpt o =
+    match o
+    case None    -> 0
+    case Some n  -> n   -- n : & Int via borrow propagation
+
+-- POSITIVE: after a borrowed match, the original value is still live.
+useOptTwice : (& o : Opt) -> (Int, Int)
+let useOptTwice o =
+    let first  = peekOpt o
+    let second = peekOpt o
+    (first, second)
+
+-- POSITIVE: nested borrowed destructuring.
+data Nested : Type =
+    Nested (Opt) (Opt)
+
+peekNested : (& n : Nested) -> (Int, Int)
+let peekNested nd =
+    match nd
+    case Nested o1 o2 -> (peekOpt o1, peekOpt o2)
+
+-- POSITIVE: a function that takes a borrowed list and collects all inner
+-- values without consuming the list.
+countSomes : (& xs : List Opt) -> Int
+let countSomes xs =
+    match xs
+    case []      -> 0
+    case x :: rest ->
+        let n = match x
+            case Some _ -> 1
+            case None   -> 0
+        n + countSomes rest
+
+-- NEGATIVE: trying to consume a borrowed binding (passing `o` at quantity 1
+-- to a function that requires a linear Opt) must be rejected.
+consumeBorrowed : (& o : Opt) -> Opt
+let consumeBorrowed o = o            --!! kappa.borrow.escape
+
+-- POSITIVE: matching on a tuple of borrows works component-wise.
+peekPair : (& p : (Opt, Opt)) -> (Int, Int)
+let peekPair p =
+    match p
+    case (o1, o2) -> (peekOpt o1, peekOpt o2)
+
+-- POSITIVE: recursive borrowed match on a list without consuming elements.
+data IList : Type =
+    INil | ICons Int IList
+
+sumBorrowed : (& xs : IList) -> Int
+let sumBorrowed xs =
+    match xs
+    case INil        -> 0
+    case ICons n rest -> n + sumBorrowed rest
+
+--! assertDiagnosticFamily error kappa.borrow.escape

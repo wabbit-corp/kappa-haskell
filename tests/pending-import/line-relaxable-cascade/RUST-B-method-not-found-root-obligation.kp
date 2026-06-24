@@ -1,0 +1,62 @@
+-- Source issues: rust#52523, rust#61661, rust#68131, rust#64417 (slice > 50000)
+-- Spec: compiler.frontir.obligation_provenance_diagnostic_selection,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       compiler.frontir.diagnostic_related_origins
+--
+-- When method resolution fails because of a missing trait bound, the
+-- diagnostic must surface the *root* obligation — the trait the user
+-- expected the receiver to implement — not an intermediate solver leaf.
+-- Kappa's obligation-provenance rule (§3.1.6) requires picking the
+-- introduction-cause closest to user-written source. The standardized
+-- related-origin role `obligation-introduced-here` (§3.1.1A) marks
+-- the source-level demand point so the diagnostic can blame the trait
+-- the user actually wrote.
+
+module test
+
+trait Display (a : Type) =
+    show : a -> String
+
+trait Container (c : Type) =
+    Item : Type
+    iterDisplay : (@_ : Display Item) -> c -> List String
+
+data Vec (a : Type) : Type =
+    Empty
+    Cons a (Vec a)
+
+instance Container (Vec a) =
+    let Item = a
+    let iterDisplay v = match v
+        case Empty       -> Nil
+        case Cons x xs   -> Cons (show x) (iterDisplay xs)
+
+data Widget : Type =
+    Widget Int
+
+instance Display Int =
+    let show n = "int-shown"
+
+-- Note: `Widget` does NOT have a `Display` instance.
+
+--! mode check
+
+-- POSITIVE: `Container (Vec Int)` resolves; `Display Int` is the leaf
+-- obligation that succeeds; no diagnostic.
+goodCall : Vec Int -> List String
+let goodCall v = iterDisplay v
+
+
+-- NEGATIVE: the user wrote `iterDisplay v` where `v : Vec Widget`. The
+-- intermediate solver obligation is `Display (Container.Item (Vec Widget))`
+-- = `Display Widget`. The root obligation closest to user intent is the
+-- demand introduced at `iterDisplay v`: `Display` is required, but no
+-- instance exists for the element type. The diagnostic family
+-- `kappa.implicit.unsolved` must include a related-origin pointing at
+-- the user-written call site that introduced the obligation.
+badCall : Vec Widget -> List String
+let badCall v = iterDisplay v   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertDiagnosticRelated error kappa.implicit.unsolved obligation-introduced-here
+--! assertDiagnosticRelated error kappa.implicit.unsolved trait-declaration-site

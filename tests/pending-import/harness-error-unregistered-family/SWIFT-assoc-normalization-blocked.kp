@@ -1,0 +1,50 @@
+-- Source issues: apple/swift #84884 (constraint solver with opaque + constrained
+--   generics), apple/swift #88434 (pack conformance for associated type packs),
+--   apple/swift #46378 (protocol extension associated type normalization).
+--   When a projected associated static member appears in a type signature but
+--   no governing trait evidence is in scope to normalize it, the checker MUST
+--   produce kappa.associated.normalization-blocked before reporting any
+--   secondary type mismatch.
+-- Spec: traits.instances.normalized_instance_heads §14.3,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+
+--! mode check
+
+trait Iter (it : Type) =
+    Item : Type
+    next : it -> Option it.Item
+
+-- NEGATIVE: function that references `it.Item` in its return type
+-- without a governing `Iter it` evidence binder.
+use_item : (it : Type) -> it -> it.Item    --!! kappa.associated.normalization-blocked
+let use_item _ x = x
+
+--! assertDiagnosticFamily error kappa.associated.normalization-blocked
+
+-- POSITIVE: with the governing evidence in scope, the projection normalizes.
+use_item_ok :
+    (it : Type) ->
+    (@_ : Iter it) =>
+    it -> Option it.Item
+let use_item_ok _ x = next x
+
+-- POSITIVE: a concrete instance resolves normalization completely.
+data NumList : Type = NumList (List Nat)
+
+instance Iter NumList =
+    let Item = Nat
+    let next (NumList [])       = Nothing
+    let next (NumList (x :: _)) = Just x
+
+firstNum : NumList -> Option Nat
+let firstNum xs = next xs
+
+-- NEGATIVE: type alias using an unresolved projection.
+-- `ItemOf c` cannot be normalized without a concrete `c` with `Iter` evidence.
+ItemOf : forall {c : Type} -> (@_ : Iter c) => Type
+let ItemOf = c.Item
+
+badAlias : (c : Type) -> c.Item    --!! kappa.associated.normalization-blocked
+let badAlias _ = _
+
+--! assertDiagnosticFamily error kappa.associated.normalization-blocked

@@ -1,0 +1,37 @@
+-- Source issue: Kitten #27 (`def apply (A... (A... -> B...) -> B...):
+--   __apply`, and analogously for `compose`; the Kitten obligation is
+--   that higher-order callable positions are row-polymorphic so that
+--   callable arguments preserve the surrounding stack).
+-- Spec: types.functions, types.quantification,
+--       expressions.application.
+--
+-- The portable Kappa obligation is that higher-order combinators
+-- (apply, compose) elaborate with rank-1 universally quantified
+-- callable parameters; the *row-polymorphism-over-arrow-stacks* flavour
+-- of Kitten is itself a spec gap (see KSA-02).
+
+module test
+
+--! mode check
+
+-- POSITIVE: rank-1 polymorphic apply and compose.
+apply : forall (a : Type) (b : Type) . (a -> b) -> a -> b
+let apply f x = f x
+
+compose : forall (a : Type) (b : Type) (c : Type) .
+          (b -> c) -> (a -> b) -> a -> c
+let compose g f x = g (f x)
+
+useApply : Int
+let useApply = apply (\y -> y + 1) 10
+
+useCompose : Int
+let useCompose = compose (\y -> y * 2) (\y -> y + 1) 5
+
+-- NEGATIVE: the two callables passed to `compose` have incompatible
+-- chaining types: the inner returns String, but the outer demands Int.
+useBad : Int
+let useBad =
+    compose (\y -> y + 1) (\s -> "x") "hi"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

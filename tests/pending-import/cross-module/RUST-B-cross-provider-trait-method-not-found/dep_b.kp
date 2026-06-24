@@ -1,0 +1,8 @@
+-- Module providing a DIFFERENT trait whose source spelling collides with
+-- `dep_a.Trait`. Kappa's semantic-object identity rule (§32.6) keeps the
+-- two traits distinct despite the same spelling.
+
+module dep_b
+
+trait Trait (a : Type) =
+    bar : a -> Int

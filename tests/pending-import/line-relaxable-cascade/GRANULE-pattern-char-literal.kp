@@ -1,0 +1,58 @@
+-- Source: granule-project/granule PR #322 (pattern matching for character
+--         literals); PR #324 (sequential pattern matches fix);
+--         tests/cases/positive/simple/charcase.gr,
+--         tests/cases/positive/simple/charmatchnl.gr
+-- Spec: expressions.match, expressions.patterns (GSA-09),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A `match` on a Char scrutinee may pattern-match on character literals.
+-- A literal-only match on Char without a wildcard is non-exhaustive,
+-- surfacing `kappa.pattern.non-exhaustive` (§3.2.10).
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+-- POSITIVE: match on a newline literal and a tab literal.
+classify : (ω c : Char) -> Int
+let classify '\n' = 1
+let classify '\t' = 2
+let classify _    = 0
+
+--! assertType classify ((ω c : Char) -> Int)
+
+-- POSITIVE: match on Char scrutinee with multiple literals + wildcard.
+isVowel : (ω c : Char) -> Bool
+let isVowel c =
+    match c
+      case 'a' -> True
+      case 'e' -> True
+      case 'i' -> True
+      case 'o' -> True
+      case 'u' -> True
+      case _   -> False
+
+
+-- POSITIVE: when the literal patterns do not match, the wildcard branch
+-- must be evaluated (PR #324 — sequential pattern correctness).
+caseFallThrough : (ω n : Int) -> Int
+let caseFallThrough n =
+    match n
+      case 0 -> 100
+      case 1 -> 200
+      case _ -> n
+
+--! assertType caseFallThrough ((ω n : Int) -> Int)
+
+-- NEGATIVE: a match on Char that omits the wildcard and the literal set
+-- is not exhaustive over Char.
+incomplete : Char -> Int
+let incomplete c =
+    match c                   --!! kappa.pattern.non-exhaustive
+      case 'a' -> 0
+      case 'b' -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

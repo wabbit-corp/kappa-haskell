@@ -1,0 +1,31 @@
+-- Source issues: gleam#378, gleam#4578
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+-- When a type mismatch occurs at a type-parameter position, the diagnostic
+-- must show the full parameterized outer type, not only the mismatched
+-- inner type. The user must be able to see that the mismatch is, e.g.,
+-- List2 Int vs List2 Float, not merely Int vs Float.
+
+--! mode check
+
+data List2 (a : Type) : Type =
+    Nil2
+    Cons2 a (List2 a)
+
+data Pair2 (a : Type) (b : Type) : Type =
+    Pair2 a b
+
+-- NEGATIVE: passing List2 Float where List2 Int expected shows full outer type.
+let bad_list_arg (xs : List2 Int) (ys : List2 Float) : List2 Int =
+    ys              --!! kappa.type.mismatch
+
+-- NEGATIVE: Pair with mismatched second param shows full Pair type.
+let bad_pair (p : Pair2 Int String) : Pair2 Int Int =
+    p               --!! kappa.type.mismatch
+
+-- POSITIVE: same List2 element type is accepted.
+let ok_list_id (xs : List2 Int) : List2 Int =
+    xs
+
+-- POSITIVE: same Pair types are accepted.
+let ok_pair_id (p : Pair2 Int String) : Pair2 Int String =
+    p

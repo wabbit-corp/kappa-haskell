@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (testh3 = (h [2,div 1 0]) -=- False, where h [1,2] = True; h _ = False).
+-- Spec: expressions.match (§17.1), expressions.lambdas.suspension_expressions_forcing (§16.2),
+--       effects.monadic_core.exits_causes_typed_failure_interruption_defects (§18.1.x).
+--
+-- Non-demanded undivided expression. The Curry test verifies that an
+-- expression in a list position that is not required by the pattern
+-- (here `div 1 0` in the second slot, when the first slot already
+-- disagrees with the pattern `[1,2]`) does not need to be evaluated.
+-- Kappa guarantees the same in §17.1.1: a constructor pattern that
+-- fails at the head MUST NOT force the rest of the scrutinee.
+--
+-- This test phrases the obligation without using a partial division
+-- function (since Kappa's `Int / Int` may be total in some profiles).
+-- Instead, the head-discriminating function uses a suspended-tail
+-- closure that, if forced, would panic via a deliberate `assert`.
+-- Because the head pattern fails, the tail must not be forced and the
+-- program must produce `False` without observing the assertion.
+
+module test
+
+--! mode check
+
+data List : Type =
+    Nil
+  | Cons Int (() -> List)
+-- The second field is a thunk; forcing it could be expensive or fail.
+-- Kappa's suspension binder sugar would express the same idea more
+-- directly; this explicit form makes the obligation observable.
+
+-- A list-head check that only inspects the first cell.
+isHeadOne : List -> Bool
+let isHeadOne xs =
+    match xs
+    case Cons 1 _   -> True
+    case _          -> False
+
+--! assertNoErrors
+--! assertType isHeadOne (List -> Bool)
+
+-- The tail of the cons cell is bound to a thunk that we never want to
+-- evaluate. If the implementation correctly does not demand the tail
+-- when the head pattern fails, the program type-checks and runs.
+suspendedTail : () -> List
+let suspendedTail u = suspendedTail u  -- non-terminating if forced
+
+twoThenSuspended : List
+let twoThenSuspended = Cons 2 suspendedTail
+
+-- POSITIVE: head pattern disagrees → match returns False without
+-- forcing the suspended tail.
+result : Bool
+let result = isHeadOne twoThenSuspended
+-- expected: False
+
+--! assertNoErrors
+--! assertType result Bool

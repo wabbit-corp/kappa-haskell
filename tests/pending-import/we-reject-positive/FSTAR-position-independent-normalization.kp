@@ -1,0 +1,30 @@
+-- Source issues: FSTAR-1571, FSTAR-2615
+-- Spec: core_semantics.definitional_equality.position_independent_transparent_normalization
+-- Constructor-headed equality `C args1 = D args2` where C ≠ D must normalize
+-- to Void even when the arguments contain free variables.
+-- Type aliases used as type arguments must be unfolded before equality is checked.
+
+--! mode check
+
+data T : Type =
+    V : Nat -> T
+    W : T
+
+-- POSITIVE TEST 1: V 5 = W must reduce to Void (disjoint constructors).
+concrete_discriminate : (V 5 = W) -> Void
+let concrete_discriminate pf = match pf case impossible
+
+-- POSITIVE TEST 2: with a variable n, V n = W also reduces to Void.
+-- The normalizer must not block on the variable argument.
+variable_discriminate : (n : Nat) -> (V n = W) -> Void
+let variable_discriminate n pf = match pf case impossible
+
+-- POSITIVE TEST 3: type aliases unfolded before equality.
+-- Int1 and Int are definitionally equal; Just 0 : Maybe Int = Just 0 : Maybe Int1
+-- must reduce to refl (not be left unreduced).
+type Int1 = Int
+
+alias_eq_reduces : (Just 0 : Maybe Int) = (Just 0 : Maybe Int1)
+let alias_eq_reduces = refl
+
+--! assertNoErrors

@@ -1,0 +1,50 @@
+-- Source issues: ponyc#548, ponyc#807, ponyc#2881
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- A type argument that does not satisfy its constraint must be rejected at
+-- the instantiation site. In Pony, `class Foo[A, C: Seq[A]]` required that
+-- C satisfies the Seq[A] interface. Using an incompatible type for C was
+-- rejected. In Kappa, a type argument that does not satisfy the declared
+-- constraint bound is rejected with kappa.type.mismatch.
+
+--! mode check
+
+trait Measurable (a : Type) =
+    measure : (& x : a) -> Int
+
+data Ring : Type = Ring Int Int
+
+-- A generic function that requires its argument to be Measurable.
+totalMeasure :
+    forall (a : Type).
+    (@_ : Measurable a) ->
+    (& x : a) -> (& y : a) -> Int
+let totalMeasure x y = measure x + measure y
+
+-- POSITIVE: providing an instance and calling with constrained type.
+instance Measurable Ring =
+    let measure (Ring r _) = r
+
+okCall : Int
+let okCall = totalMeasure (Ring 3 0) (Ring 5 0)
+
+-- NEGATIVE: trying to call totalMeasure with a type that has no Measurable instance.
+data Plain : Type = Plain Int
+
+-- No instance Measurable Plain defined.
+badCall : Int
+let badCall = totalMeasure (Plain 1) (Plain 2)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a generic container that carries a Measurable constraint.
+data Bin (a : Type) : Type = Bin a
+
+binMeasure :
+    forall (a : Type).
+    (@_ : Measurable a) ->
+    (& b : Bin a) -> Int
+let binMeasure (Bin x) = measure x
+
+binResult : Int
+let binResult = binMeasure (Bin (Ring 7 0))
+

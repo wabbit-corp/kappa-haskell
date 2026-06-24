@@ -1,0 +1,104 @@
+-- Source issues: invalid/ho_type_arity_bug.m, invalid/ho_type_mode_bug.m,
+--   invalid/higher_order_mode_mismatch.m
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- When a higher-order value is passed or called with a function type whose
+-- arity does not match the expected arity at the use site, the checker must
+-- report a type mismatch. A function of 3 arguments cannot satisfy a demand
+-- for a function of 2 arguments, and vice versa.
+
+module test
+
+-- A record containing a higher-order field.
+data OpTable : Type =
+    OpTable
+        (Int -> Int -> Int)       -- binary op
+        (Int -> String)           -- unary formatter
+
+-- POSITIVE: building OpTable with correctly typed fields.
+makeAddTable : OpTable
+let makeAddTable =
+    OpTable (\x y -> x + y) (\n -> show n)
+
+
+-- NEGATIVE: supplying a 3-argument function where a 2-argument function
+-- is expected.
+ternaryOp : Int -> Int -> Int -> Int
+let ternaryOp x y z = x + y + z
+
+badTable1 : OpTable
+let badTable1 = OpTable ternaryOp (\n -> show n)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: supplying a 0-argument function (constant) where a 2-argument
+-- function is expected.
+constOp : Int
+let constOp = 0
+
+badTable2 : OpTable
+let badTable2 = OpTable constOp (\n -> show n)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A higher-order function that expects a specific arity.
+applyBinary :
+    (Int -> Int -> Int) ->
+    Int -> Int -> Int
+let applyBinary f x y = f x y
+
+-- POSITIVE: passing a binary function.
+sumViaApply : Int -> Int -> Int
+let sumViaApply x y = applyBinary (\a b -> a + b) x y
+
+
+-- NEGATIVE: passing a unary function where a binary function is expected.
+unaryOp : Int -> Int
+let unaryOp x = x + 1
+
+badApply : Int -> Int -> Int
+let badApply x y = applyBinary unaryOp x y    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing a binary function where a unary function is expected.
+applyUnary :
+    (Int -> Int) ->
+    Int -> Int
+let applyUnary f x = f x
+
+binaryOp : Int -> Int -> Int
+let binaryOp x y = x + y
+
+badApplyUnary : Int -> Int
+let badApplyUnary x = applyUnary binaryOp x    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: functions partially applied to the correct arity.
+plus3 : Int -> Int
+let plus3 = binaryOp 3
+
+goodApply : Int -> Int
+let goodApply x = applyUnary plus3 x
+
+
+-- Higher-order with type parameter: map-like function.
+myMap :
+    forall (a : Type) (b : Type).
+    (a -> b) -> List a -> List b
+let myMap _ [] = []
+let myMap f (x :: xs) = f x :: myMap f xs
+
+-- NEGATIVE: using a binary function as the mapper.
+badMap : List Int -> List Int
+let badMap xs = myMap binaryOp xs    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: using a unary function as the mapper.
+goodMap : List Int -> List Int
+let goodMap xs = myMap (\x -> x + 1) xs
+
+
+--! mode check

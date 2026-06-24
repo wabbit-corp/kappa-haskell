@@ -1,0 +1,54 @@
+-- Source: Racket guide module-require.scrbl (only-in)
+-- Source docs: racket guide module-require.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-require.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: modules.imports
+--
+-- A selective import (`import M.(x, y)`) brings only the listed names into scope.
+-- Other names from M remain accessible only via qualified M.name access.
+-- Names not listed and not accessed via qualification are simply absent.
+
+--! mode check
+
+module geometry
+
+public pi : Float
+let pi = 3.14159
+
+public area : Float -> Float
+let area r = pi * r * r
+
+public circumference : Float -> Float
+let circumference r = 2.0 * pi * r
+
+public diameter : Float -> Float
+let diameter r = 2.0 * r
+
+module circleOnly
+import geometry.(area, pi)
+
+-- POSITIVE: area and pi were imported and are directly in scope.
+circleArea : Float
+let circleArea = area 5.0
+
+piValue : Float
+let piValue = pi
+
+-- POSITIVE: circumference is accessible via qualified name.
+circ : Float
+let circ = geometry.circumference 5.0
+
+-- NEGATIVE: diameter was not imported and is not in scope as unqualified name.
+badDiameter : Float
+let badDiameter = diameter 5.0    --!! kappa.name.unresolved
+
+-- NEGATIVE: using qualified module.name for a name that wasn't imported is fine
+-- but accessing via a non-imported unqualified name is not.
+module strictImport
+import geometry.(area)
+
+strictArea : Float
+let strictArea = area 3.0
+
+badPi : Float
+let badPi = pi      --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,46 @@
+-- Source issue: PLUTUS-967 (Note about recursive newtypes)
+-- Spec: data_types.well_formedness (§10.4)
+-- Source notes: Plinth notes that a recursive newtype like `newtype EmptyRose
+-- = EmptyRose [EmptyRose]` has "no underlying type" and the implementation
+-- has to "bail if we see the recursion" (#967). In Kappa this construct is
+-- not special: it is a `data` declaration with one constructor and one
+-- field whose type contains the recursive type in a strictly positive
+-- position (under the built-in `List` constructor, which is declared
+-- positive). §10.4 accepts strictly positive recursive `data` declarations
+-- regardless of constructor arity.
+
+--! mode check
+
+-- POSITIVE: single-constructor recursive type whose payload contains the
+-- defined type under `List`. `List` is built in and its element parameter
+-- is marked positive, so the recursive occurrence is strictly positive.
+data Rose : Type =
+    Rose (List Rose)
+
+-- POSITIVE: a constant value of a recursive newtype-like type.
+emptyRose : Rose
+let emptyRose = Rose Nil
+
+-- POSITIVE: a fold over the recursive structure terminates structurally
+-- because each recursive call is applied to a substructure of the input.
+countNodes : Rose -> Nat
+let countNodes r decreases structural r =
+    match r
+      case Rose children -> 1 + sumChildren children
+
+sumChildren : List Rose -> Nat
+let sumChildren xs decreases structural xs =
+    match xs
+      case Nil       -> 0
+      case Cons y ys -> countNodes y + sumChildren ys
+
+countEmpty : Nat
+let countEmpty = countNodes emptyRose
+
+
+-- NEGATIVE: a single-constructor wrapper that places the defined type
+-- directly in a negative position is rejected by §10.4.
+data BadFn : Type =
+    BadFn (BadFn -> BadFn)   --!! kappa.type.mismatch
+
+--! assertErrorCount 1

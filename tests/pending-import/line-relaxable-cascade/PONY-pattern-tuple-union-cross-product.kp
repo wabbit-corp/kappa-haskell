@@ -1,0 +1,53 @@
+-- Source issues: ponyc PR#4939 (Fix exhaustive match on tuples of union types),
+--   ponyc PR#5193 (Fix match exhaustiveness for tuples of aliased unions),
+--   ponyc#5194
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       expressions.match
+-- A tuple of union types requires cross-product coverage. Each element
+-- of the tuple is a union, and the combined space is the Cartesian product
+-- of those unions. All cells in the product must be covered by at least one arm.
+-- Pony's PR #4939 fixed a case where the compiler did not distribute the union
+-- correctly and rejected valid exhaustive matches as non-exhaustive.
+
+--! mode check
+
+data Tag : Type = A | B | C
+data Side : Type = Left | Right
+
+-- POSITIVE: 3 × 2 = 6 cells, all covered by explicit arms.
+fullCrossProduct : (Tag, Side) -> Int
+let fullCrossProduct p =
+    match p
+    case (A, Left)  -> 0
+    case (A, Right) -> 1
+    case (B, Left)  -> 2
+    case (B, Right) -> 3
+    case (C, Left)  -> 4
+    case (C, Right) -> 5
+
+-- POSITIVE: wildcard on second element collapses the Right column.
+wildcardSecond : (Tag, Side) -> Int
+let wildcardSecond p =
+    match p
+    case (A, _) -> 0
+    case (B, _) -> 1
+    case (C, _) -> 2
+
+-- POSITIVE: wildcard on first element.
+wildcardFirst : (Tag, Side) -> Int
+let wildcardFirst p =
+    match p
+    case (_, Left)  -> 0
+    case (_, Right) -> 1
+
+-- NEGATIVE: the (C, Right) cell is uncovered.
+missingCell : (Tag, Side) -> Int
+let missingCell p =
+    match p
+    case (A, Left)  -> 0
+    case (A, Right) -> 1
+    case (B, Left)  -> 2
+    case (B, Right) -> 3
+    case (C, Left)  -> 4    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

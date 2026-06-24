@@ -1,0 +1,59 @@
+-- Source issues: rzk#173 — unused variables reported incorrectly;
+--   PR#179 — improve error reporting for unused variables. Rzk was reporting
+--   unused variables as "impossible errors" (internal compiler errors) rather
+--   than as user-facing warnings, making them confusing to diagnose.
+-- Spec: compiler.frontir.warning_hygiene, modules.names.lexical_lookup
+--
+-- Unused variable bindings (in function parameters, let bindings, or lambda
+-- arguments) should produce a warning, not an error. The program must still
+-- compile. An internal compiler error must not be emitted for unused variables.
+
+--! mode check
+
+-- POSITIVE: a function where all parameters are used — no warning.
+addOne : Nat -> Nat
+let addOne n = n + 1
+
+-- POSITIVE: a function where an unused parameter is explicitly wildcarded.
+ignoreArg : Nat -> Nat
+let ignoreArg _ = 42
+
+-- POSITIVE: a higher-order function where a closure argument is partially used.
+applyFst : forall (a b : Type) -> (a -> b) -> a -> b -> b
+let applyFst f x _ = f x
+
+-- POSITIVE: a let binding where the bound name is used.
+usedLet : Nat
+let usedLet =
+    let v = 10
+    v + v
+
+-- POSITIVE: function parameters matching a constructor — unused projections
+-- are explicitly wildcarded.
+usedPair : (Nat, Bool) -> Nat
+let usedPair (n, _) = n
+
+-- These definitions have genuinely unused variables. They should produce
+-- a warning rather than an error or an internal compiler error.
+
+-- WARNING expected: parameter `extraParam` is declared but never used.
+withUnusedParam : Nat -> Nat -> Nat
+let withUnusedParam n extraParam = n
+
+-- WARNING expected: let-bound variable `unused` is never referenced.
+withUnusedLet : Nat
+let withUnusedLet =
+    let unused : Bool = True
+    let result : Nat  = 5
+    result
+
+-- WARNING expected: lambda captures a variable it never uses.
+withUnusedCapture : Nat -> Nat -> Nat
+let withUnusedCapture = \ _ n -> n
+
+-- POSITIVE: after warning-producing definitions, the program continues.
+finalResult : Nat
+let finalResult = addOne (withUnusedParam 3 0)
+
+-- No errors should be produced; warnings are acceptable.
+--! assertNoErrors

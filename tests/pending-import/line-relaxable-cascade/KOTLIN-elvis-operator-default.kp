@@ -1,0 +1,39 @@
+-- Source issues: KT-5773, KT-11649 (Elvis operator default, Nothing on rhs)
+-- Spec: expressions.application.elvis
+
+--! mode check
+
+-- POSITIVE: basic Elvis: T? ?: T  returns the payload or the default.
+orDefault : String? -> String
+let orDefault ms =
+    ms ?: "default"
+
+--! assertType orDefault (String? -> String)
+
+-- POSITIVE: chained Elvis expressions are right-associative.
+firstPresent : String? -> String? -> String? -> String
+let firstPresent a b c =
+    a ?: b ?: c ?: "none"
+
+--! assertType firstPresent (String? -> String? -> String? -> String)
+
+-- POSITIVE: Elvis with an Int default for Int?.
+orZero : Int? -> Int
+let orZero mn =
+    mn ?: 0
+
+--! assertType orZero (Int? -> Int)
+
+-- POSITIVE: Elvis result type is the payload type when rhs is the same.
+describeMaybe : String? -> String
+let describeMaybe ms =
+    let s = ms ?: "empty"
+    "value: " ++ s
+
+
+-- NEGATIVE: Elvis rhs must match the payload type.
+wrongDefault : Int? -> String
+let wrongDefault mn =
+    mn ?: "zero"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

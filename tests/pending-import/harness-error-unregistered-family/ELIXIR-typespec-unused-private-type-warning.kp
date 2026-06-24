@@ -1,0 +1,57 @@
+-- Source issues: kernel/warning_test.exs describe "typespecs" test "unused types"
+--   ("type priv/0 is unused", "type priv_args/2 is unused"),
+--   warning_test.exs (pub and opaque types are NOT warned; only @typep triggers warning),
+--   spec gap ESA-ELIXIR-02
+-- Spec: types.typespecs (visibility), spec gap ESA-ELIXIR-02
+--       (pending: kappa.import.unused-declaration with kind=private-type)
+-- In Elixir, private type declarations (@typep) that are never referenced — directly or
+-- indirectly from any exported type or spec — produce a warning: "type priv/0 is unused".
+-- Public types (@type) and opaque types (@opaque) do NOT produce this warning because they
+-- form part of the module's external API surface.
+-- The Kappa spec does not currently define a diagnostic family for unused private type
+-- declarations. Spec gap ESA-ELIXIR-02 proposes using kappa.import.unused-declaration
+-- with kind=private-type.
+-- TODO spec gap ESA-ELIXIR-02: kappa.import.unused-declaration is not yet in §3.2.
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+-- (--!! markers removed 2026-06-11: inline markers assert ERROR severity
+-- per T.5.1; this suite expects warnings.)
+
+-- Helper types.
+type PublicBase = String
+
+-- POSITIVE: private type is referenced by a public type — not unused.
+private type InternalId = Int
+type UserId = InternalId
+
+-- POSITIVE: private type is referenced in a function spec — not unused.
+private type Score = Float
+topScore : List Score -> Score
+let topScore xs = List.maximum xs
+
+-- POSITIVE: private types referenced by another private type that is itself used.
+private type RawBytes = List Int
+private type Packet = RawBytes
+decodePacket : Packet -> String
+let decodePacket _ = "decoded"
+
+-- POSITIVE: public type — never warned even if not directly referenced externally.
+type ExportedStatus = String
+
+-- NEGATIVE: private type declared but never referenced anywhere in the module.
+private type UnusedPrivate = String   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+-- NEGATIVE: private parametric type declared but never used.
+private type UnusedPair a b = (a, b)   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+-- NEGATIVE: two private types that only reference each other but neither is used
+-- by any exported declaration — the whole cluster is dead.
+private type DeadA = Int
+private type DeadB = String   -- WARNING EXPECTED: unused declaration (family pinned below)
+
+--! assertDiagnosticFamily warning kappa.import.unused-declaration

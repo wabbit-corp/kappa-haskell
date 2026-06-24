@@ -1,0 +1,51 @@
+-- Source issue: Factor #1943 (`DEFER: ok-matrix?` then a predicate class
+--   `PREDICATE: matrix < sequence ok-matrix? ;` then a `TUPLE: bad-matrix
+--   { m matrix };` fails to compile because the predicate body's word
+--   is deferred; the issue asks whether this is a real bug or just a
+--   "must be a separate recursive group" requirement).
+-- Spec: declarations.term_definitions, recursive_groups,
+--       modules.names.lexical_lookup.
+--
+-- Kappa allows forward references within the same declaration group;
+-- the positive test confirms that a record using a predicate type
+-- whose underlying definition is declared later in the same group
+-- elaborates correctly.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a record uses a predicate type whose witness `isMatrix`
+-- is defined later in the same recursive declaration group. Kappa
+-- resolves the forward reference within the group, so the record
+-- declaration elaborates without error.
+data Matrix : Type =
+    Matrix { rows : Int, cols : Int }
+
+isMatrix : Matrix -> Bool
+let isMatrix _ = True
+
+data Holder : Type =
+    Holder { m : Matrix }
+
+example : Holder
+let example = Holder { m = Matrix { rows = 2, cols = 2 } }
+
+--! assertNoErrors
+--! assertType example Holder
+
+-- POSITIVE: mutually-recursive type and predicate.
+data Even : Type =
+    EvenZero
+    | EvenSucc Odd
+
+data Odd : Type =
+    OddSucc Even
+
+isOdd : Odd -> Bool
+let isOdd (OddSucc _) = True
+
+threeOdd : Bool
+let threeOdd = isOdd (OddSucc (EvenSucc (OddSucc EvenZero)))
+
+--! assertNoErrors

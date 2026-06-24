@@ -1,0 +1,67 @@
+-- Source: Racket guide module-basics.scrbl (submodules), modules.scrbl
+-- Source docs: racket guide module-basics.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-basics.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: modules.names, modules.names.module_declarations_reified_module_values
+--
+-- A module may contain nested module declarations. Members of nested modules
+-- are accessed via dotted qualified paths. A nested module name does not
+-- introduce its members into the outer module's unqualified scope unless
+-- explicitly imported.
+
+--! mode check
+
+module collections
+
+module collections.list
+
+public empty : (A : Type) -> List A
+let empty _ = []
+
+public cons : (A : Type) -> A -> List A -> List A
+let cons _ h t = h :: t
+
+public head : (A : Type) -> List A -> Option A
+let head _ []      = None
+let head _ (h :: _) = Some h
+
+module collections.map
+
+public lookupKey : String -> List (String, Int) -> Option Int
+let lookupKey _ []            = None
+let lookupKey k ((k2, v) :: rest) =
+    if k == k2 then Some v else lookupKey k rest
+
+public insertKey : String -> Int -> List (String, Int) -> List (String, Int)
+let insertKey k v m = (k, v) :: m
+
+-- Module client using qualified access to nested modules
+module client
+import collections.list
+import collections.map
+
+-- POSITIVE: qualified access to collections.list members.
+myList : List Int
+let myList = collections.list.cons Int 1 (collections.list.empty Int)
+
+-- POSITIVE: import the nested module and use unqualified access.
+module clientImported
+import collections.list.(cons, empty, head)
+
+listA : List Int
+let listA = cons Int 42 (empty Int)
+
+headA : Option Int
+let headA = head Int listA
+
+-- NEGATIVE: members of collections.list not accessible via unqualified name
+-- when not imported.
+module clientBad
+import collections.map
+
+badAccess : List Int
+let badAccess = empty Int    --!! kappa.name.unresolved
+
+-- NEGATIVE: accessing a non-existent member of a submodule.
+badMember : Int
+let badMember = collections.list.sort []   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

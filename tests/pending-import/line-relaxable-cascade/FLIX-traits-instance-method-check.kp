@@ -1,0 +1,40 @@
+-- Source issues: FLIX-1747, FLIX-1748, FLIX-1749
+-- Spec: traits.instances, traits.instances.associated_static_member_instance_checking
+-- When an instance does not provide a required trait method, instance checking must fail.
+-- When an instance provides a method not declared in the trait, it must be rejected
+-- (diagnostic: kappa.associated.member-undeclared; defined in spec §14.3.4).
+-- When an instance provides a method with a signature that doesn't match the trait
+-- declaration, it must be rejected (kappa.type.mismatch; spec gap #16 tracks stable
+-- codes kappa.instance.missing-method and kappa.instance.signature-mismatch).
+
+--! mode check
+
+trait Printable (a : Type) =
+    display : a -> String
+
+data Point : Type = Point Int Int
+data Foo : Type = Foo
+data Bar : Type = Bar String
+
+-- NEGATIVE TEST: instance body is missing required method `display`.
+-- The entire instance declaration must be rejected.
+instance Printable Point =
+    let bad_extra = 0   --!! kappa.type.mismatch
+
+-- NEGATIVE TEST: instance defines `extra`, which is not declared in `Printable`.
+instance Printable Foo =
+    let display _ = "foo"
+    let extra _ = "not in trait"  --!! kappa.associated.member-undeclared
+
+-- NEGATIVE TEST: `display` provided but with wrong argument type (Int instead of Foo).
+-- Signature mismatch: trait says `display : Foo -> String` but instance gives `Int -> String`.
+instance Printable Bar =
+    let display (n : Int) = "bar"  --!! kappa.type.mismatch
+
+-- POSITIVE TEST: correct instance with exactly the required method at the right type.
+data Good : Type = Good String
+
+instance Printable Good =
+    let display (Good s) = s
+
+-- expect: Point, Foo, Bar instances rejected; Good instance accepted

@@ -1,0 +1,80 @@
+-- Source issue: dhall-lang #877
+-- Spec: identity.hash_system.easy_hash_structural_identity_hash
+-- Alpha-normalization converts all binders to De Bruijn indices for hashing.
+-- Consequently, let-bindings that differ only in the bound variable name
+-- produce identical Easy Hash values and are definitionally equal.
+-- Additionally, unused let-bindings of unused variables are inlined/eliminated
+-- before hashing; the name of the eliminated binding is irrelevant.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+data Bool : Type = False : Bool | True : Bool
+
+-- POSITIVE TEST 1: let with different names for the bound variable.
+-- let x = Zero in x  and  let y = Zero in y  must be definitionally equal.
+expr_x : Nat
+let expr_x =
+    let x = Zero in x
+
+expr_y : Nat
+let expr_y =
+    let y = Zero in y
+
+-- Since expr_x and expr_y are definitionally equal, a function accepting
+-- one must accept the other as a value.
+expects_expr : Nat -> Bool
+let expects_expr _ = True
+
+check_x : Bool
+let check_x = expects_expr expr_x
+
+check_y : Bool
+let check_y = expects_expr expr_y
+
+-- POSITIVE TEST 2: nested let, different names at each level.
+nested_a : Nat
+let nested_a =
+    let a = Zero in
+    let b = Succ a in
+    b
+
+nested_p : Nat
+let nested_p =
+    let p = Zero in
+    let q = Succ p in
+    q
+
+-- Both must denote the same value: Succ Zero.
+use_nested : Nat -> Nat
+let use_nested n = n
+
+check_nested_a : Nat
+let check_nested_a = use_nested nested_a
+
+check_nested_p : Nat
+let check_nested_p = use_nested nested_p
+
+-- POSITIVE TEST 3: let in function body, different variable names.
+fn_a : Nat -> Nat
+let fn_a input =
+    let a = input in
+    Succ a
+
+fn_b : Nat -> Nat
+let fn_b input =
+    let b = input in
+    Succ b
+
+-- fn_a and fn_b are alpha-equivalent and must be interchangeable.
+higher : (Nat -> Nat) -> Nat -> Nat
+let higher f n = f n
+
+apply_a : Nat -> Nat
+let apply_a = higher fn_a
+
+apply_b : Nat -> Nat
+let apply_b = higher fn_b
+
+--! mode check
+--! assertNoErrors

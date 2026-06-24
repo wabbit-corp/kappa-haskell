@@ -1,0 +1,40 @@
+-- Source issues: circom#95 (stack overflow on recursive template: `template T() {
+--               component comp = T(); }` causes a stack overflow in the compiler;
+--               direct self-instantiation of a template creates an infinite
+--               instantiation cycle).
+-- Spec: compiler.frontir.standard_diagnostic_families.termination
+--       (family kappa.query.cycle).
+-- Kappa spec rule (§SA-CIRCOM-08):
+--   "A template (data type) that directly or transitively instantiates itself as a
+--    sub-component creates a non-terminating instantiation cycle. Such cycles must
+--    be detected and rejected with kappa.query.cycle rather than causing a
+--    compiler stack overflow."
+
+--! mode check
+
+-- POSITIVE: non-recursive templates that reference each other via composition
+-- but form a finite DAG.
+data Inner : Type =
+    Inner { value : Int }
+
+data Outer : Type =
+    Outer { sub : Inner, output : Int }
+
+let makeOuter (x : Int) : Outer =
+    Outer { sub = Inner { value = x }, output = x + 1 }
+
+
+-- NEGATIVE: direct self-instantiation (template T contains a component of type T).
+data SelfRef : Type =
+    SelfRef { inner : SelfRef }    --!! kappa.query.cycle
+
+--! assertDiagnosticFamily error kappa.query.cycle
+
+-- NEGATIVE: mutual instantiation cycle: A uses B which uses A.
+data CycleA : Type =
+    CycleA { child : CycleB }    --!! kappa.query.cycle
+
+data CycleB : Type =
+    CycleB { child : CycleA }    --!! kappa.query.cycle
+
+--! assertDiagnosticFamily error kappa.query.cycle

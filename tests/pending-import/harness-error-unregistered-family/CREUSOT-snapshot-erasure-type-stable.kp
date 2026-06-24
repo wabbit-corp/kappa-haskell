@@ -1,0 +1,37 @@
+-- Source issues: CREUSOT-1455
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       traits.instances, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Family: kappa.type.unsolved-metavariable (Kappa §3.2.3)
+-- Ghost / snapshot blocks are erased before runtime.  Type inference
+-- must be INVARIANT under erasure: the program's chosen instance and
+-- numeric defaulting must NOT depend on terms inside a ghost block.
+-- If erasing the ghost block would leave an unresolved metavariable,
+-- the program is rejected.  Pending spec gap CREUSOT-SA-03.
+
+module test
+
+--! mode check
+
+-- Two trait instances on disjoint numeric types.
+trait Tag (a : Type) =
+    tag : a -> Int
+
+instance Tag Int =
+    let tag _ = 1
+
+instance Tag U8 =
+    let tag _ = 2
+
+-- NEGATIVE: a ghost block that says "if x == 0u8 {}" must NOT be
+-- allowed to force `x : U8` purely through type inference.  After
+-- ghost-block erasure, the metavariable for `x`'s type is unsolved.
+program let ghostDrivenInference : Int
+let ghostDrivenInference =
+    let x = 0 in
+    do {
+        ghost { if x == (0 : U8) then () else () };   --!! kappa.type.unsolved-metavariable
+        tag x
+        }
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

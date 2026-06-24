@@ -1,0 +1,60 @@
+-- Source issues: rust#75323, rust#74447, rust#73375 (slice > 50000)
+-- Spec: types.universes.erasure_elaboration_time.compile_time_bindings_fields,
+--       types.universes.borrow_lifetimes_escape_prevention
+--
+-- Compile-time bindings live in the static-object position. Their types must
+-- be compile-time types (Type, Universe, Quantity, Region, RecRow, etc.).
+-- A compile-time term must NOT mention a non-static rigid region: rigid
+-- regions are scoped to a runtime block, and the static position has no
+-- access to such regions.
+--
+-- The rust#75323 case is a `const` expression appearing inside a function body
+-- whose lifetime parameters are in scope. The compile-time term's type cannot
+-- depend on those non-static lifetime parameters.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a compile-time binding whose type mentions the predeclared
+-- `static` region is well-formed.
+data StaticTag (s : Region) : Type =
+    StaticTag
+
+let 0 staticEvidence : StaticTag static = StaticTag
+
+
+-- POSITIVE: a runtime function may receive a non-static region parameter.
+-- Within the function body, runtime values may mention `s` freely.
+usesRegion :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> a
+let usesRegion x = x   -- borrow returned by value; quantity-discharge handled
+
+
+-- NEGATIVE: a compile-time binding (quantity 0) whose type mentions a
+-- non-static runtime-introduced region. The region `s` is rigid and scoped
+-- to the enclosing function; it cannot be referenced from a compile-time
+-- position.
+inAnonConst :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> Int
+let inAnonConst x =
+    -- An anonymous const at compile-time of type indexed by the non-static
+    -- region `s` is rejected. The compile-time position cannot read `s`.
+    let 0 evidence : StaticTag s = StaticTag   --!! kappa.borrow.escape
+    0
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE: a const literal whose value would carry the non-static region
+-- through a refinement. Hidden region capture is also rejected.
+indexedByLocal :
+    forall (s : Region).
+    (&[s] r : Int) -> Int
+let indexedByLocal r =
+    -- A compile-time binding of value-region-tagged type fails the same way.
+    let 0 lenTag : StaticTag s = StaticTag   --!! kappa.borrow.escape
+    r
+
+--! assertDiagnosticFamily error kappa.borrow.escape

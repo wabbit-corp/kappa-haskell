@@ -1,0 +1,54 @@
+-- Source issues: MOJO-1632, MOJO-1922
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.projection_or_accessor_missing_capability,
+--       compiler.frontir.standard_diagnostic_families.record_projection_accessor_inout,
+--       declarations.terms.projection_definitions,
+--       kappa.accessor.missing-capability
+-- An expanded-form projection that declares only a `get` clause provides read
+-- capability only.  Using such a projection as an update target (projection-section
+-- update syntax `r.{ (.p) = e }`) demands `set` capability, which the projection
+-- does not have, and must fire kappa.accessor.missing-capability.
+
+module test
+
+--! mode check
+
+data Scale : Type =
+    Scale { raw : Int }
+
+-- Stubs for unit conversion (types are what matters for checking).
+toPercent : Int -> Int
+let toPercent r = r
+
+fromPercent : Int -> Int
+let fromPercent p = p
+
+-- Read-only computed projection: only a `get` clause, no `set`.
+projection percent (place this : Scale) : Int =
+    get -> toPercent this.raw
+
+-- POSITIVE: reading through a get-only projection requires only `read` capability.
+readPercent : Scale -> Int
+let readPercent s = s.percent
+
+--! assertType readPercent Scale -> Int
+
+-- NEGATIVE: projection-section update `s.{ (.percent) = 50 }` demands `set`
+-- capability; the `percent` projection provides only `get`.
+badUpdate : Scale -> Scale
+let badUpdate s =
+    s.{ (.percent) = 50 }   --!! kappa.accessor.missing-capability
+
+--! assertDiagnosticFamily error kappa.accessor.missing-capability
+
+-- A projection that provides both `get` and `set` capability.
+projection rawView (place this : Scale) : Int =
+    get -> this.raw
+    set (new_value : Int) ->
+        this.{ raw = new_value }
+
+-- POSITIVE: projection-section update on a projection with a `set` clause is accepted.
+goodUpdate : Scale -> Scale
+let goodUpdate s =
+    s.{ (.rawView) = 42 }
+
+--! assertType goodUpdate Scale -> Scale

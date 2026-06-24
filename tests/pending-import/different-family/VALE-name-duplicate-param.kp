@@ -1,0 +1,34 @@
+-- Source issues: vale#551 (Duplicate parameter name causes exception)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--       declarations.terms
+-- In Vale, defining a function with two parameters that share the same
+-- name caused an internal compiler exception rather than a user-facing
+-- diagnostic. In Kappa, two parameters with the same name in the same
+-- function binder list must be rejected with kappa.name.ambiguous,
+-- not with an internal failure.
+
+--! mode check
+
+-- POSITIVE: a function with two distinct parameter names.
+add : Int -> Int -> Int
+let add x y = x + y
+
+-- NEGATIVE: a function with duplicate parameter names.
+-- Both parameters are named `x`, which is ambiguous in the body.
+badDuplicate : Int -> Int -> Int
+let badDuplicate x x = x   --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: a three-argument function where the second and third names
+-- collide.
+tripleParam : Int -> Int -> Int -> Int
+let tripleParam a b b = a + b   --!! kappa.name.ambiguous
+
+-- POSITIVE: a function where all parameter names are distinct.
+combine : Int -> Int -> Int -> Int
+let combine a b c = a + b + c
+
+-- NEGATIVE: a lambda expression with duplicate binders.
+badLambda : Int -> Int
+let badLambda = \x x -> x   --!! kappa.name.ambiguous

@@ -1,0 +1,111 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`typedef fint = int -<cloref> int`, `sexpdef cfun0(x,y) = x -<cloref0> y`),
+--         tests/srcgen1/TEST/DATA/test01.dats
+--         (`val:rec fact = lam(x:int):int =<cloref1> ...`,
+--          `fun<a:type><b:type> map(xs, f0: a -<cloref> b)`),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats (`vtypedef lcptr = ... -<lin,cloptr> int`)
+-- Spec: functions.binders.quantities (§12.2),
+--       quantities.captures (§12.3.1),
+--       quantities.linear_discharge (§12.2.6),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied, kappa.path.consumed).
+-- ATS3 pattern: `-<cloref>` is a closure function type that captures the
+--   free variables by shared reference (non-linear). `-<lin,cloptr>` is a
+--   linear closure that can be called at most once (its captured environment
+--   is linear). Calling a linear closure twice consumes the environment twice,
+--   which is rejected.
+-- Portable obligation: a linear closure (captured under linear quantity) must
+--   be invoked exactly once; duplicate invocation is kappa.path.consumed;
+--   dropping it unconsumed is kappa.quantity.unsatisfied.
+
+--! mode check
+
+-- A shared (non-linear) closure: can be called any number of times.
+type SharedFn = Int -> Int
+
+-- A linear closure: must be called exactly once.
+-- Modeled as a data type wrapping a function that consumes its environment.
+data LinearFn : Type =
+    LinearFn (1 call : Int -> Int)
+
+runLinear : (1 f : LinearFn) -> Int -> Int
+let runLinear (LinearFn call) x = call x
+
+-- POSITIVE: shared closure called multiple times.
+double : SharedFn
+let double x = x * 2
+
+useDouble : Int
+let useDouble = double (double 3)
+
+-- POSITIVE: building and running a shared closure.
+adder : Int -> SharedFn
+let adder n = \x -> x + n
+
+add5 : SharedFn
+let add5 = adder 5
+
+used : Int
+let used = add5 (add5 1)
+
+-- POSITIVE: linear closure called exactly once.
+makeLinear : Int -> LinearFn
+let makeLinear n = LinearFn (\x -> x + n)
+
+runOnce : Int
+let runOnce =
+    let 1 lf = makeLinear 10
+    runLinear lf 3
+
+-- POSITIVE: linear closure returned (transferred, not called).
+passLinear : LinearFn -> LinearFn
+let passLinear lf = lf
+
+-- NEGATIVE: calling a linear closure twice.
+callTwice : Unit
+let callTwice =
+    let 1 lf = makeLinear 10
+    let _ = runLinear lf 1
+    let _ = runLinear lf 2    --!! kappa.path.consumed
+    ()
+
+-- NEGATIVE: dropping a linear closure without calling it.
+dropLinear : Unit
+let dropLinear =
+    let 1 lf = makeLinear 7   --!! kappa.quantity.unsatisfied
+    ()
+
+-- NEGATIVE: storing a linear closure in a shared binding and then using it twice.
+sharedAlias : Unit
+let sharedAlias =
+    let 1 lf = makeLinear 3
+    let _ = runLinear lf 0
+    let _ = runLinear lf 1    --!! kappa.path.consumed
+    ()
+
+-- A closure that captures a linear resource.
+data Resource : Type =
+    Resource Int
+
+consume : (1 r : Resource) -> Int
+let consume (Resource n) = n
+
+makeResourceClosure : (1 r : Resource) -> LinearFn
+let makeResourceClosure r = LinearFn (\_ -> consume r)
+
+-- POSITIVE: calling the resource closure consumes the captured resource.
+resourceOnce : Int
+let resourceOnce =
+    let 1 r = Resource 99
+    let 1 lf = makeResourceClosure r
+    runLinear lf 0
+
+-- NEGATIVE: linear closure that captures a resource is dropped without calling.
+resourceDrop : Unit
+let resourceDrop =
+    let 1 r = Resource 42
+    let 1 lf = makeResourceClosure r   --!! kappa.quantity.unsatisfied
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.path.consumed

@@ -1,0 +1,57 @@
+-- Source issues: lamdu test suspended-hole-result.json, lam-in-fragment.json;
+--   docs/doc/Language.md "Suspended computations". Lamdu represents lazy
+--   computations as Unit-parameter lambdas: `\() -> body`. Kappa has
+--   thunk/lazy/force as the canonical surface, but a Unit-parameter
+--   lambda applied to () should be the equivalent forcing operation
+--   at the calculus level.
+-- Spec: expressions.lambdas, expressions.lambdas.suspension_expressions_forcing
+--   §16.2.2: thunk/lazy/force are first-class suspension primitives;
+--   a Unit-parameter lambda is an explicit suspension at the surface.
+--
+-- A Unit-parameter lambda type-checks at the unit-arrow type; applying
+-- it to () forces the body.
+
+--! mode check
+
+-- POSITIVE: a unit-parameter lambda has function type Unit -> A.
+forty : Unit -> Nat
+let forty = \() -> 40
+
+useForty : Nat
+let useForty = forty ()
+
+-- POSITIVE: a thunk introduced via the thunk keyword.
+thunked : Thunk Nat
+let thunked = thunk 99
+
+useThunked : Nat
+let useThunked = force thunked
+
+-- POSITIVE: a higher-order function over suspensions.
+applyDelayed : forall (a : Type). (Unit -> a) -> a
+let applyDelayed f = f ()
+
+useDelayed : Nat
+let useDelayed = applyDelayed (\() -> 7)
+
+-- POSITIVE: suspending a recursive computation.
+infiniteLoop : Unit -> Nat
+let infiniteLoop _ = infiniteLoop ()
+
+-- POSITIVE: passing the suspension only when forced.
+takeWhenForced : (Unit -> Nat) -> Nat
+let takeWhenForced k = k () + 1
+
+useTake : Nat
+let useTake = takeWhenForced (\() -> 5)
+
+-- NEGATIVE: applying a non-suspended value as if it were a suspension.
+badForce : Nat
+let badForce = (\() -> 1) 5    --!! kappa.type.mismatch
+
+-- NEGATIVE: returning a Unit-parameter lambda where a plain Nat is
+-- required.
+mustForce : Nat
+let mustForce = \() -> 5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

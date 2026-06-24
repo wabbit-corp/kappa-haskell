@@ -1,0 +1,56 @@
+-- Source issues: kernel/expansion_test.exs "errors on directly recursive definitions"
+--   (= describe), errors_test.exs "recursive variables on definition",
+--   errors_test.exs "complex recursive variable definitions"
+-- Source tests: elixir kernel/expansion_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/kernel/expansion_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch)
+-- In Elixir, a pattern that forms a cycle of variable bindings is rejected at compile time:
+--   def foo(x = y, y = z, z = x) -- rejected: "the following variables form a cycle"
+--   {x = {:ok, x}} -- rejected: "x is defined in function of itself"
+-- The cycle imposes contradictory type-equality constraints that cannot be simultaneously
+-- satisfied. In Kappa, this corresponds to patterns that impose mutually exclusive type
+-- constraints on the same variable, producing kappa.type.mismatch.
+-- Note: the Elixir `=` binding-alias pattern syntax (x = y meaning "match and also bind")
+-- has no direct Kappa analogue; this test uses Kappa-native constructs to demonstrate
+-- comparable impossible-constraint diagnostics.
+-- Original family kappa.syntax.quotation was incorrect; kappa.type.mismatch is used.
+
+--! mode check
+
+-- POSITIVE: non-cyclic pair-matching; distinct variables in each binder.
+swapPair : (Int, Int) -> (Int, Int)
+let swapPair (a, b) = (b, a)
+
+-- POSITIVE: nested destructuring where inner and outer variables are distinct.
+data Box : Type = Box Int
+
+unbox : Box -> Int
+let unbox (Box n) = n
+
+-- POSITIVE: simultaneous binding to the same tuple; variables do not depend on each other.
+bothFromPair : (Int, Int) -> (Int, Int)
+let bothFromPair p =
+    let (a, b) = p
+    (a, b)
+
+-- NEGATIVE: type-annotated binding forces an Int value into a String slot — impossible.
+intAsString : Int -> String
+let intAsString n =
+    let s : String = n      --!! kappa.type.mismatch
+    s
+
+-- NEGATIVE: Box contains an Int payload; matching against a String literal is impossible.
+badBoxMatch : Box -> String
+let badBoxMatch b =
+    match b
+    case Box "hello" -> "string"  --!! kappa.type.mismatch
+    case _           -> "other"
+
+-- NEGATIVE: let binding annotates the result as Bool but the expression has type Int.
+-- The type constraint contradicts the inferred type.
+wrongReturn : Int -> Bool
+let wrongReturn n =
+    let result : Bool = n + 1  --!! kappa.type.mismatch
+    result
+
+--! assertDiagnosticFamily error kappa.type.mismatch

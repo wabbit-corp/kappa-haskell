@@ -1,0 +1,28 @@
+-- Source issues: METACOQ-238, METACOQ-436
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+--
+-- The constructor VCons forces the size index to be `n + 1`. A scrutinee
+-- with index `0` cannot match VCons; an explicit `-> impossible` body
+-- is accepted when the elaborator proves the case unreachable from index
+-- unification alone.
+
+module positive
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : forall {n : Nat}. (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
+
+-- POSITIVE: a function on `Vec a 0` can claim VCons is impossible.
+-- The branch body uses the `impossible` expression (§17.1.4).
+zeroOnly : forall (a : Type). Vec a 0 -> Bool
+let zeroOnly v =
+    match v
+    case VNil        -> True
+    case VCons _ _   -> impossible
+
+-- Suite-wide budget: exactly the 1 error(s) marked in negative.lang;
+-- every positive declaration in this file must elaborate cleanly.
+--! assertErrorCount 1

@@ -1,0 +1,67 @@
+-- Source issues: dex-lang adt-tests.dx
+--   (`:p (MyLeft x') = x` →
+--   `Type error: sum type constructor in can't-fail pattern`),
+--   dex-lang eval-tests.dx (irrefutable let patterns must not include
+--   sum-type constructors).
+-- Spec: expressions.patterns.refutability (§16.3),
+--       compiler.frontir.standard_diagnostic_families.pattern (kappa.pattern.non-exhaustive).
+-- An irrefutable pattern (used in a `let` binding, function argument, or
+-- other non-exhaustive-checking position) must not be a sum-type constructor
+-- that could fail to match. Using a single constructor of a multi-constructor
+-- type in an irrefutable position must be rejected at compile time.
+
+--! mode check
+
+data Either (a : Type) (b : Type) : Type =
+    Left  a
+    Right b
+
+data MaybeInt : Type =
+    Just Int
+    Nothing
+
+-- NEGATIVE: irrefutable let binding that uses a sum constructor.
+-- `Left x = e` fails to match if `e` is `Right _`.
+badIrrefLeft : Either Int String -> Int
+let badIrrefLeft e =
+    let Left x = e    --!! kappa.pattern.non-exhaustive
+    x
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: function argument pattern using a single sum constructor.
+badArgPat : MaybeInt -> Int
+let badArgPat (Just n) = n    --!! kappa.pattern.non-exhaustive
+-- The `Nothing` constructor is not covered.
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: exhaustive pattern match via `match`.
+safeMatch : Either Int String -> Int
+let safeMatch e = match e
+    case Left  n -> n
+    case Right _ -> -1
+
+-- POSITIVE: a single-constructor data type may be used in irrefutable position.
+data Wrapper (a : Type) : Type = Wrap a
+
+unwrapOk : Wrapper Int -> Int
+let unwrapOk (Wrap n) = n   -- safe: Wrap is the only constructor
+
+-- POSITIVE: a wildcard irrefutable pattern matches anything.
+ignoreArg : Int -> Int
+let ignoreArg _ = 42
+
+-- POSITIVE: a nested product pattern inside a single constructor is irrefutable.
+data Triple : Type = Triple Int String Bool
+
+getFirst : Triple -> Int
+let getFirst (Triple n _ _) = n
+
+-- NEGATIVE: using a sum constructor in a let binding inside a do-block.
+extractLeft : Either Int String -> Int
+let extractLeft e =
+    let Right s = e    --!! kappa.pattern.non-exhaustive
+    0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

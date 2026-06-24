@@ -1,0 +1,37 @@
+-- Source issue: Idris2 #484
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- The presence of an accepted `impossible` branch must NOT cause the coverage
+-- checker to skip verification of the remaining cases. Exhaustiveness checking
+-- must still confirm that every other (non-impossible) case is covered.
+
+module test
+
+-- A three-constructor type with a type family that computes which cases are
+-- reachable at runtime.
+data Three : Type = Vrai | Faux | Indef
+
+getPayload : Three -> Type
+let getPayload Vrai  = Unit
+let getPayload Faux  = Unit
+let getPayload Indef = Void
+
+-- Accepted: swap covers all three constructors.
+-- The Indef branch is impossible (getPayload Indef = Void has no values),
+-- and the Vrai and Faux branches are explicitly handled.
+swapComplete : (t : Three) -> getPayload t -> Three
+let swapComplete Indef _  = match _ case impossible
+let swapComplete Vrai  () = Faux
+let swapComplete Faux  () = Vrai
+
+--! mode check
+
+-- Rejected: the Faux case is missing.
+-- The presence of the impossible Indef branch must NOT suppress the diagnostic
+-- about the missing Faux branch.
+swapIncomplete : (t : Three) -> getPayload t -> Three
+let swapIncomplete Indef _  = match _ case impossible
+let swapIncomplete Vrai  () = Faux
+-- Faux is missing — coverage checker must still report this
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,49 @@
+-- Source issues: leo#28706 (shadowing errors for const generics; a local `let N`
+--               inside a function with const generic `N` gave a confusing error),
+--               leo test `local_shadows_const_generic_fail.leo` (regression test
+--               verifying that `let N: u32 = 10u32` inside `fn foo::[N: u32]`
+--               is rejected as a redefinition of the const parameter `N`).
+-- Spec: SA-LEO-05 (const generic parameters are immutable; local variable of
+--       same name is a redefinition),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§SA-LEO-05):
+--   "A local variable declaration whose name is identical to a const generic
+--    parameter in the enclosing function is a redefinition of that parameter.
+--    The compiler must reject it with `kappa.name.ambiguous` and the payload
+--    must include both the const-parameter introduction site and the local
+--    redefinition site."
+-- leo#28706: `let N: u32 = 10u32` inside `fn foo::[N: u32]()` was accepted or
+--   gave an incomplete error. Leo's regression test confirms this must be rejected.
+
+--! mode check
+
+-- POSITIVE: a function with a const generic parameter where no local name
+-- conflicts with the parameter.
+let safeUse (0 n : Int) (x : Int) : Int = n + x
+
+ok : Int
+let ok = safeUse 4 10
+
+
+-- NEGATIVE: a local binding inside the function body has the same name as the
+-- const generic parameter `n`. This is a redefinition of the parameter.
+let shadowsParam (0 n : Int) : Int =
+    let n : Int = 99    --!! kappa.name.ambiguous
+    n
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: a local binding named `k` shadows a const parameter named `k`.
+let shadowsK (0 k : Int) (x : Int) : Int =
+    let k : Int = x + 1   --!! kappa.name.ambiguous
+    k
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: using the const parameter `k` in the body without rebinding it.
+let usesK (0 k : Int) (x : Int) : Int = k + x
+
+okK : Int
+let okK = usesK 3 7
+

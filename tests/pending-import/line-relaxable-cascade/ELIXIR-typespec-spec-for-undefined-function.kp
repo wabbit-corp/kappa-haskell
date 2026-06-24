@@ -1,0 +1,46 @@
+-- Source issues: typespec_test.exs "spec for undefined function"
+--   ("spec for undefined function omg/0"),
+--   typespec_test.exs "spec variable used only once (singleton type variable)"
+-- Source tests: elixir typespec_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/typespec_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved)
+-- Kappa spec rule (§3.2.2 kappa.name.unresolved):
+--   "Used when an identifier... cannot be resolved."
+-- In Elixir, an @spec annotation that names a function that is not defined in the
+-- same module produces a compile-time error: "spec for undefined function omg/0".
+-- The @spec is a declaration that must correspond to an existing definition.
+-- In Kappa, a type signature annotation that names a nonexistent function is an
+-- unresolved reference: kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: spec annotation correctly matches the function it annotates.
+add : Int -> Int -> Int
+let add a b = a + b
+
+-- POSITIVE: spec with a type parameter correctly matches a polymorphic function.
+identity : a -> a
+let identity x = x
+
+-- POSITIVE: multiple clauses, spec matches the name.
+safeDivide : Int -> Int -> Int
+let safeDivide _ 0 = 0
+let safeDivide a b = a / b
+
+-- NEGATIVE: spec annotation for 'omg' but no function 'omg' is defined.
+-- The annotation is a dangling reference to a nonexistent declaration.
+omg : Unit -> String                   --!! kappa.name.unresolved
+-- (no 'let omg' definition follows)
+
+-- NEGATIVE: spec for 'helper' but the actual function is named 'helperFn'.
+-- The name in the spec does not match any defined function.
+helper : Int -> Int                    --!! kappa.name.unresolved
+let helperFn n = n + 1
+
+-- NEGATIVE: spec annotation references the correct name but with a different arity
+-- than the actual definition. 'triple : Int -> Int -> Int' (arity 2) does not exist;
+-- only 'triple : Int -> Int' (arity 1) is defined.
+triple : Int -> Int -> Int             --!! kappa.name.unresolved
+let triple n = n * 3
+
+--! assertDiagnosticFamily error kappa.name.unresolved

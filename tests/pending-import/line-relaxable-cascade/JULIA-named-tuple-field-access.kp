@@ -1,0 +1,50 @@
+-- Source: Julia manual, "Named Tuples",
+--         Julia NamedTuple field access and missing-field errors
+-- Spec: data_types.records, expressions.patterns,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Julia, accessing a field that does not exist on a NamedTuple raises a
+-- FieldError. In Kappa, a reference to a function or accessor that was never
+-- declared for the data type is kappa.name.unresolved.
+
+--! mode check
+
+-- A record type analogous to a Julia NamedTuple.
+data Person : Type = Person String Int   -- name, age
+
+-- POSITIVE: constructing and reading fields via pattern matching.
+alice : Person
+let alice = Person "Alice" 30
+
+getName : Person -> String
+let getName (Person name _) = name
+
+getAge : Person -> Int
+let getAge (Person _ age) = age
+
+aliceName : String
+let aliceName = getName alice
+
+aliceAge : Int
+let aliceAge = getAge alice
+
+--! assertType aliceName String
+--! assertType aliceAge  Int
+
+-- POSITIVE: a function that reads both fields.
+greet : Person -> String
+let greet (Person name _) = name
+
+ok : String
+let ok = greet alice
+
+-- NEGATIVE: calling a nonexistent field accessor — analogous to nt.email on a
+-- NamedTuple that has no :email field.
+aliceEmail : String
+let aliceEmail = getEmail alice   --!! kappa.name.unresolved
+
+-- NEGATIVE: another missing accessor.
+aliceAddress : String
+let aliceAddress = getAddress alice   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+

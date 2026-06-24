@@ -1,0 +1,49 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_udef/type_udef.dl,
+--   tests/semantic/rule_undeclared_relation/rule_undeclared_relation.dl,
+--   tests/semantic/rule_undeclared_relation2/rule_undeclared_relation2.dl.
+-- Spec: modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- A type annotation or record/function declaration that references an undefined type
+-- name must produce kappa.name.unresolved. Souffle reports "Undefined type in
+-- attribute type2:XType" and "Undefined type B in definition of union type U".
+
+--! mode check
+
+-- POSITIVE: type annotations referencing defined types.
+let validInt : Int = 42
+let validStr : String = "hello"
+
+data Known : Type =
+    MkKnown Int String
+
+let useKnown : Known -> Int
+let useKnown (MkKnown n _) = n
+
+-- NEGATIVE: function signature references undefined type `Colour`.
+let useUndef : Colour -> Int    --!! kappa.name.unresolved
+let useUndef c = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: struct field references undefined type.
+struct WithBadField =
+    good : Int
+    bad  : UnknownType    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: union type references undefined member.
+type BadUnion = (| Int | UndeclaredType |)    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: return type of let binding is undefined.
+let result : MissingReturnType = 0    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: forward-declaring a type before use.
+data Forward : Type = FwdCtor Int
+
+let useFwd : Forward -> Int
+let useFwd (FwdCtor n) = n

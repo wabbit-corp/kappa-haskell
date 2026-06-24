@@ -1,0 +1,53 @@
+-- Source issues: OCaml#5689, OCaml#5724, OCaml#5948
+-- Spec: types.unions.interaction_gadts_indexed_types, data_types.gadts,
+--       types.unions.elimination_match
+-- Union member types may be indexed data types. Injection is valid when the
+-- expected union contains the specific indexed member. Exhaustiveness and
+-- reachability for matches over such unions use index unification exactly as
+-- in ordinary GADT matches.
+
+module test
+
+-- An indexed data type (GADT-style).
+data Tag : Bool -> Type =
+    IsInt  : Tag True
+    IsStr  : Tag False
+
+-- A union whose member types are indexed.
+-- (| Tag True | Tag False |) is a closed union of two indexed types.
+type AnyTag = (| Tag True | Tag False |)
+
+-- Injection of an indexed value into the union.
+wrapTrue : AnyTag
+let wrapTrue = (| IsInt : Tag True |)
+
+wrapFalse : AnyTag
+let wrapFalse = (| IsStr : Tag False |)
+
+--! mode check
+
+-- Exhaustive match over the indexed union: both member types covered.
+describeTag : AnyTag -> String
+let describeTag t =
+    match t
+      case (| _ : Tag True  |) -> "int tag"
+      case (| _ : Tag False |) -> "string tag"
+
+
+-- A row-polymorphic function over an indexed union member.
+-- LacksVar r (Tag True) ensures Tag True is not already in r.
+-- The residual row `r` is abstract, so we use a wildcard catch-all for it.
+extractTrue : forall (r : VarRow). LacksVar r (Tag True) =>
+              (| Tag True | r |) -> Tag True
+let extractTrue u =
+    match u
+      case (| t : Tag True |) -> t
+      case _                  -> IsInt  -- residual: return default Tag True value
+
+
+-- Rejected: injecting at an incompatible index is a type error.
+-- `Tag False` cannot be used where `Tag True` is expected in this union slot.
+badInject : (| Tag True |)
+let badInject = (| IsStr : Tag False |)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

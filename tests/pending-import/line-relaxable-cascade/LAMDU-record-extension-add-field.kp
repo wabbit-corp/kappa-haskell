@@ -1,0 +1,59 @@
+-- Source issues: lamdu#164 — there's no way to RecExtend a (non-literal
+--   record) expression; lamdu#190 — backspace after "," in record deletes
+--   entire record. The underlying obligation is that records support
+--   structural extension, and the row type tracks added fields.
+-- Spec: types.records.row_extension, types.records.row_polymorphism
+--   §13.2.6: a row extension `rec.{ ℓ := e }` adds a fresh field `ℓ`
+--   to the record; the receiver's row must lack `ℓ`. §13.2.7: an open
+--   record `(f : T | r)` is polymorphic in the residual row `r` with
+--   the implicit constraint `LacksRec r f`.
+--
+-- Record extension must produce a new record whose row contains the
+-- new field; extending with a duplicate field name must be rejected.
+
+--! mode check
+
+-- POSITIVE: row extension via `.{ ... := ... }` on a closed record.
+type Point2D = (x : Nat, y : Nat)
+type Point3D = (x : Nat, y : Nat, z : Nat)
+
+origin2D : Point2D
+let origin2D = (x = 0, y = 0)
+
+extend3D : Point2D -> Nat -> Point3D
+let extend3D p z = p.{ z := z }
+
+origin3D : Point3D
+let origin3D = extend3D origin2D 0
+
+-- POSITIVE: row polymorphism — accept any record that contains the
+-- named field; the residual row constraint is implicit.
+getX : forall (r : RecRow). LacksRec r x => (x : Nat | r) -> Nat
+let getX r = r.x
+
+usePoint : Nat
+let usePoint = getX origin2D
+
+-- POSITIVE: adding two fields by literal construction.
+withName : Point2D -> String -> (name : String, x : Nat, y : Nat)
+let withName p n = (name = n, x = p.x, y = p.y)
+
+-- POSITIVE: row extension on an open-row receiver.
+extendZ : forall (r : RecRow). LacksRec r z => (x : Nat | r) -> Nat -> (x : Nat, z : Nat | r)
+let extendZ r z = r.{ z := z }
+
+-- NEGATIVE: a record literal declaring two fields with the same name.
+type Labeled = (label : String, value : Nat)
+
+duplicate : Labeled
+let duplicate = (label = "a", label = "b", value = 1)    --!! kappa.name.ambiguous
+
+-- NEGATIVE: passing a record missing a required field.
+needsBoth : Point3D -> Nat
+let needsBoth p = p.x + p.y + p.z
+
+bad : Nat
+let bad = needsBoth (x = 1, y = 2)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+--! assertDiagnosticFamily error kappa.type.mismatch

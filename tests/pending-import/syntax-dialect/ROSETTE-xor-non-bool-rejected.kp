@@ -1,0 +1,48 @@
+-- Source issue: ROSETTE-44 (xor broken? — non-boolean arguments accepted),
+--                Rosette PR #149 (Add logical xor operation)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.application.short_circuit
+--
+-- The Rosette report shows that the unsafe `xor` host operator
+-- silently returns symbolic terms when fed non-Boolean arguments,
+-- producing internal contract violations. Kappa's portable boolean
+-- operators (`&&`, `||`, `not`) and any user `xor` helper are typed as
+-- `Bool -> Bool -> Bool`; passing a non-Bool is a type error.
+
+--! mode check
+
+xor : Bool -> Bool -> Bool
+let xor a b = (a || b) && not (a && b)
+
+-- POSITIVE: well-typed Boolean operator usage.
+ok : Bool
+let ok = xor True False
+
+ok2 : Bool
+let ok2 = xor (1 > 0) (2 < 0)
+
+allOps : Bool
+let allOps =
+    let a = True && False
+        b = True || False
+        c = not a
+        d = xor a b
+    in c && d
+
+-- NEGATIVE: xor with an Int operand.
+bad1 : Bool
+let bad1 = xor True 11                      --!! kappa.type.mismatch
+
+-- NEGATIVE: xor with a String operand.
+bad2 : Bool
+let bad2 = xor "x" False                    --!! kappa.type.mismatch
+
+-- NEGATIVE: && with an Int operand.
+bad3 : Bool
+let bad3 = 1 && True                        --!! kappa.type.mismatch
+
+-- NEGATIVE: not on a non-Bool.
+bad4 : Bool
+let bad4 = not 0                            --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,49 @@
+-- Source: Racket PR #2843 (expander: improve error reporting of conflicts during require)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import (kappa.name.ambiguous)
+--
+-- When two modules both export the same name and both are imported with wildcard
+-- (or overlapping selective imports), the name becomes ambiguous in the importing
+-- module. A use of that ambiguous name must be an kappa.name.ambiguous error.
+-- Disambiguation requires a kind-qualified import or explicit module qualification.
+
+--! mode check
+
+module alpha
+
+public common : Int
+let common = 1
+
+public onlyInAlpha : Int
+let onlyInAlpha = 10
+
+module beta
+
+public common : Int
+let common = 2
+
+public onlyInBeta : Int
+let onlyInBeta = 20
+
+module importer
+import alpha.*
+import beta.*
+
+-- POSITIVE: names unique to each module are unambiguous.
+fromAlpha : Int
+let fromAlpha = onlyInAlpha
+
+fromBeta : Int
+let fromBeta = onlyInBeta
+
+-- NEGATIVE: `common` is exported by both alpha and beta; wildcard imports conflict.
+badCommon : Int
+let badCommon = common    --!! kappa.name.ambiguous
+
+-- POSITIVE: qualification resolves the ambiguity.
+resolvedAlpha : Int
+let resolvedAlpha = alpha.common
+
+resolvedBeta : Int
+let resolvedBeta = beta.common
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

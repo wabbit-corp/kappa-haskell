@@ -1,0 +1,50 @@
+-- Source issues: kernel/guard_test.exs "defguardp defines private guards that work inside
+--   and outside guard clauses" (positive part), and "cannot find or invoke local is_even/1"
+--   (negative: importing defguardp fails).
+-- Source tests: elixir kernel/guard_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/kernel/guard_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: modules.visibility_opacity_private_opaque,
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved)
+-- Kappa spec rule (§3.2.2 kappa.name.unresolved):
+--   "Used when an identifier, operator name, module path, field name, constructor name, effect
+--    label, or kind-qualified name cannot be resolved."
+-- In Elixir, defguardp defines a private guard macro. It can be used within the defining
+-- module (both inside guard clauses and in non-guard positions), but it cannot be imported
+-- or invoked from outside. Attempting to do so produces "undefined function is_even/1".
+-- In Kappa, private declarations are not visible outside their defining module; references to
+-- them from outside produce kappa.name.unresolved.
+
+--! mode check
+
+module Filters
+
+-- Private predicate: visible only within this module.
+private let isEven n = rem n 2 == 0
+
+-- POSITIVE: private predicate used within the same module — valid.
+filterEvens : List Int -> List Int
+let filterEvens xs = List.filter (fn x -> isEven x) xs
+
+-- POSITIVE: private predicate used in a guard within the same module — valid.
+describeEven : Int -> String
+let describeEven n =
+    match n
+    case _ if isEven n -> "even"
+    case _             -> "odd"
+
+module Consumer
+
+import Filters
+
+-- NEGATIVE: private predicate isEven is not exported from Filters; this reference
+-- is unresolvable from outside the defining module.
+externalUseOfPrivateGuard : Int -> Bool
+let externalUseOfPrivateGuard n = Filters.isEven n  --!! kappa.name.unresolved
+
+-- NEGATIVE: attempting to use private predicate in a guard from outside the module.
+externalGuardClause : Int -> String
+let externalGuardClause n =
+    match n
+    case _ if Filters.isEven n -> "even"  --!! kappa.name.unresolved
+    case _                     -> "odd"
+
+--! assertDiagnosticFamily error kappa.name.unresolved

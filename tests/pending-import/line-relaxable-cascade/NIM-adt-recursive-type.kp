@@ -1,0 +1,57 @@
+-- Source: nim-lang/Nim generics/variants design; Nim's recursive object types
+--         and recursive generic types exposed by multiple issues including #219
+--         (identifier construction fails with generics) and #11992 (first-class
+--         symbols enabling recursive ADTs)
+-- Spec: data_types.data_declarations, expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Kappa supports recursive ADTs. Pattern matching over a recursive ADT must be
+-- exhaustive and must correctly handle both the base case and recursive case.
+
+--! mode check
+module test
+
+-- A classic singly-linked list.
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+-- POSITIVE: length function covers both arms.
+listLength : forall a. List a -> Int
+let listLength xs =
+    match xs
+    case Nil      -> 0
+    case Cons _ t -> 1 + listLength t
+
+-- POSITIVE: map function preserves List structure.
+mapList : forall a b. (a -> b) -> List a -> List b
+let mapList f xs =
+    match xs
+    case Nil      -> Nil
+    case Cons h t -> Cons (f h) (mapList f t)
+
+-- NEGATIVE: non-exhaustive match on List — Cons arm missing.
+headOrZero : List Int -> Int
+let headOrZero xs =
+    match xs                --!! kappa.pattern.non-exhaustive
+    case Nil -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: a binary tree ADT with recursive constructors.
+data Tree (a : Type) : Type =
+    Leaf
+    Node a (Tree a) (Tree a)
+
+treeSize : forall a. Tree a -> Int
+let treeSize t =
+    match t
+    case Leaf         -> 0
+    case Node _ l r   -> 1 + treeSize l + treeSize r
+
+-- NEGATIVE: missing Leaf arm.
+badTreeSize : forall a. Tree a -> Int
+let badTreeSize t =
+    match t               --!! kappa.pattern.non-exhaustive
+    case Node _ l r -> 1 + badTreeSize l + badTreeSize r
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

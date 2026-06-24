@@ -1,0 +1,45 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_name_resolution/comp_name_resolution.dl
+--   (.comp E : E {} — invalid cycle in inheritance for component D/E),
+--   souffle-lang #891-style: cycles in type/module inheritance.
+-- Spec: modules.acyclic_imports (§8.2),
+--       compiler.frontir.standard_diagnostic_families.termination (kappa.termination.failure).
+-- Kappa §8.2 requires that the module dependency graph be acyclic; implementations
+-- MUST reject programs with cyclic module dependencies. The closest standardized
+-- family for a rejected cyclic-dependency SCC is kappa.termination.failure.
+
+--! mode check
+
+module base
+
+let baseFn : Int -> Int
+let baseFn x = x
+
+module derived
+
+import base
+
+let derivedFn : Int -> Int
+let derivedFn x = base.baseFn x + 1
+
+module leaf
+
+import derived
+
+-- POSITIVE: linear dependency chain (base <- derived <- leaf) is acyclic.
+let ok : Int = derived.derivedFn 5
+
+module self_import
+
+import self_import    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+module cycle_a
+
+import cycle_b    --!! kappa.termination.failure
+
+module cycle_b
+
+import cycle_a    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

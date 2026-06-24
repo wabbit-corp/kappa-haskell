@@ -1,0 +1,64 @@
+-- Source issues: lamdu#164 — there's no way to RecExtend a (non-literal
+--   record) expression; the corresponding question for variants is
+--   whether a partial case can carry a residual row to be handled
+--   downstream. Lamdu calls this an "open case".
+-- Spec: types.unions.variant_row_polymorphism,
+--       types.unions.elimination_match
+--   §13.1.5: a function can be polymorphic over the residual row of
+--   an open variant scrutinee. Members are types; the residual row
+--   variable appears after the last `|` separator.
+--
+-- An open case must bind the residual row to a fresh variant value
+-- and forward it explicitly; the residual row constraint must hold.
+
+--! mode check
+
+-- POSITIVE: open match — peel one member type, leave the rest.
+peelNat : forall (r : VarRow).
+    LacksVar r Nat => (| Nat | r |) -> (| r |)
+let peelNat u =
+    match u
+    case (| _x : Nat |)    -> u
+    case (| ..rest |)      -> rest
+
+-- POSITIVE: row polymorphism — accept any union that contains a Nat
+-- member.
+firstInt : forall (r : VarRow).
+    LacksVar r Nat => (| Nat | r |) -> Bool
+let firstInt u =
+    match u
+    case (| _x : Nat |)    -> True
+    case (| ..rest |)      -> False
+
+-- POSITIVE: peel one tag and forward the rest unchanged. The residue
+-- pattern binds a value of the residual row variant type.
+firstString : forall (r : VarRow).
+    LacksVar r String => (| String | r |) -> Bool
+let firstString u =
+    match u
+    case (| _x : String |) -> True
+    case (| ..rest |)      -> False
+
+-- NEGATIVE: forwarding a residue at a row that requires a member the
+-- residue does not have. After peeling Nat, the residue has type
+-- `(| r |)`, but the function's expected return is `Nat`, so returning
+-- `rest` is a type mismatch.
+forwardWrong : forall (r : VarRow).
+    LacksVar r Nat => (| Nat | r |) -> Nat
+let forwardWrong u =
+    match u
+    case (| x : Nat |)     -> x
+    case (| ..rest |)      -> rest    --!! kappa.type.mismatch
+
+-- NEGATIVE: returning the residue at the wrong concrete union — a
+-- residual-row value cannot widen to a union it does not subsume.
+type IntOnly = (| Nat |)
+
+widenWrong : forall (r : VarRow).
+    LacksVar r String => (| String | r |) -> IntOnly
+let widenWrong u =
+    match u
+    case (| _s : String |) -> (| 0 : Nat |)
+    case (| ..rest |)      -> rest    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

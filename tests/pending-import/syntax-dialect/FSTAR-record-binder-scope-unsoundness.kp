@@ -1,0 +1,20 @@
+-- Source issue: FSTAR-1908
+-- Spec: types.records.formation
+-- A record field refinement that references another field in its predicate
+-- must be typechecked in the correct scope: the referenced field must be
+-- the record field, not a coincidentally named outer binding.
+
+--! mode check
+
+-- POSITIVE TEST: well-typed record with cross-field refinement.
+-- The refinement `x < size` refers to the earlier field `size` of the same record.
+type BoundedInt = (size : Nat, value : { x : Nat | x < size })
+
+mk_bounded : (s : Nat) -> { x : Nat | x < s } -> BoundedInt
+let mk_bounded s v = (s, v)
+
+
+-- NEGATIVE TEST: refinement references a name that is not in scope.
+type BadRef = (m : Nat, n : { x : Nat | x < outer_undef })   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

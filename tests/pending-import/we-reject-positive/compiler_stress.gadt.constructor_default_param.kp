@@ -1,0 +1,37 @@
+-- Stress test: GADT constructor with named binder and default expression
+-- Spec: data_types.gadts
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+  VNil  : Vec a 0
+  VCons : a -> Vec a n -> Vec a (n+1)
+
+-- VecBox wraps a Vec of any length; the length is existentially hidden.
+-- The named binder `n` carries a default expression (spec 10.1 "Defaulted
+-- constructor parameters"), and `xs`'s type depends on `n` — the stress
+-- point: the default participates in the dependent telescope.
+-- (Rewritten 2026-06-11, FAB-010: previous form used per-argument
+-- `MkVecBox (n = 0) (xs = VNil)` application syntax, which is not in the
+-- spec — named application is one brace block per 10.1.1 — and despite the
+-- test's name no default expression existed.)
+data VecBox (a : Type) : Type =
+  MkVecBox { n : Nat = 0, xs : Vec a n }
+
+-- Create a VecBox using named application; `n` comes from its default.
+emptyBox : VecBox Int
+let emptyBox = MkVecBox { xs = VNil }
+
+singleBox : VecBox Int
+let singleBox = MkVecBox { n = 1, xs = VCons 42 VNil }
+
+-- Extract the length from a VecBox.
+boxLen : {a : Type} -> VecBox a -> Nat
+let boxLen (MkVecBox n _) = n
+
+-- Extract and re-wrap with the same length.
+identity : {a : Type} -> VecBox a -> VecBox a
+let identity b = match b
+  case MkVecBox n xs -> MkVecBox { n = n, xs = xs }
+
+--! assertNoErrors

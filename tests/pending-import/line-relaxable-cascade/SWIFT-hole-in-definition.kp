@@ -1,0 +1,50 @@
+-- Source issues: apple/swift-evolution SE-0235 (Result init catching),
+--   apple/swift #74986 (circular definition through existential compiles).
+--   A `_` (hole/wildcard) that appears in a non-pattern position where a
+--   concrete term is required must produce kappa.hole.unsolved. This
+--   prevents accidentally shipping an incomplete implementation.
+-- Spec: declarations.signatures §6.2, types.quantification §11.3
+
+--! mode check
+
+-- POSITIVE: function fully implemented.
+increment : Nat -> Nat
+let increment n = n + 1
+
+-- POSITIVE: record with all fields initialized.
+data Config : Type = Config Nat String Bool
+
+mkConfig : Config
+let mkConfig = Config 8080 "localhost" True
+
+-- POSITIVE: pattern wildcard is fine — it is a valid irrefutable pattern.
+dropSnd : (Nat, String) -> Nat
+let dropSnd (n, _) = n
+
+-- POSITIVE: hole in type annotation position is fine as a type metavariable
+-- that can be inferred (some checkers allow this; negative cases below are
+-- where the checker cannot fill the hole).
+inferredId : _ -> Nat
+let inferredId _ = 0
+
+-- NEGATIVE: function body is a hole — implementation not provided.
+unimplemented : Nat -> Bool
+let unimplemented n = _    --!! kappa.hole.unsolved
+
+-- NEGATIVE: struct field initializer left as a hole.
+incompleteConfig : Config
+let incompleteConfig = Config _ "host" True    --!! kappa.hole.unsolved
+
+-- NEGATIVE: function that returns a hole in all branches.
+alwaysHole : Nat -> Nat
+let alwaysHole n =
+    if n = 0
+    then _    --!! kappa.hole.unsolved
+    else n + 1
+
+-- NEGATIVE: a recursive function whose base case is a hole.
+sumTo : Nat -> Nat
+let sumTo 0 = _    --!! kappa.hole.unsolved
+let sumTo n = n + sumTo (n - 1)
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

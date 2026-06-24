@@ -1,0 +1,70 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestMaybeMonad.curry
+--   (doMaybe1 = do x <- return True ; Nothing ; y <- return 42 ; return (x,y);
+--    testDoMaybe1 = doMaybe1 -=- Nothing).
+-- Spec: effects.monadic_core (§18.x),
+--       expressions.match (§17.1), data_types.data_declarations (§10.1).
+--
+-- The `Maybe` monad short-circuits on `Nothing`: any `do` block whose
+-- intermediate expression evaluates to `Nothing` immediately returns
+-- `Nothing`, regardless of subsequent steps. The positive doMaybe2
+-- continues with `Just`s and yields a paired result.
+
+module test
+
+--! mode check
+
+data Maybe (a : Type) : Type =
+    Nothing
+  | Just a
+
+trait Monad (m : Type -> Type) =
+    bind  : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b
+    pureM : forall (a : Type). a -> m a
+
+instance Monad Maybe =
+    let bind m k =
+        match m
+        case Nothing -> Nothing
+        case Just x  -> k x
+    let pureM x = Just x
+
+--! assertNoErrors
+
+-- POSITIVE: a `Nothing` in the middle of a `do` block short-circuits.
+shortCircuit : Maybe (Bool, Int)
+let shortCircuit =
+    do
+        let x <- pureM True
+        let _ <- (Nothing : Maybe Int)
+        let y <- pureM 42
+        pureM (x, y)
+-- expected: Nothing
+
+--! assertNoErrors
+--! assertType shortCircuit (Maybe (Bool, Int))
+
+-- POSITIVE: no `Nothing` ⇒ the block produces a `Just` of the paired
+-- result.
+threadsThrough : Maybe (Bool, Int)
+let threadsThrough =
+    do
+        let x <- pureM True
+        let y <- pureM 42
+        pureM (x, y)
+-- expected: Just (True, 42)
+
+--! assertNoErrors
+--! assertType threadsThrough (Maybe (Bool, Int))
+
+-- POSITIVE: a chain of three Justs commits to the final pair.
+threeStep : Maybe Int
+let threeStep =
+    do
+        let a <- Just 1
+        let b <- Just 2
+        let c <- Just (a + b)
+        pureM (c + 100)
+-- expected: Just 103
+
+--! assertNoErrors
+--! assertType threeStep (Maybe Int)

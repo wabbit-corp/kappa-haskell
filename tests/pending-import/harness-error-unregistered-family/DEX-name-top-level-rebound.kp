@@ -1,0 +1,59 @@
+-- Source issues: dex-lang shadow-tests.dx
+--   (`arr = 10; arr = 20` → `Error: variable already defined: arr`),
+--   (`Shadow1; Shadow1` in data constructors → `Error: variable already defined: Shadow1`),
+--   dex-lang #16 (function redefinition is ignored — should be error),
+--   dex-lang #252 (shadowing through data types).
+-- Spec: modules.names.top_level_uniqueness (§11.2),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.shadowing).
+-- Top-level declarations must have unique names within their scope. Defining
+-- the same name twice at the top level is an error. The diagnostic must
+-- identify the second definition as the offending site and point to the first.
+
+--! mode check
+
+-- POSITIVE: a single definition.
+myVal : Int
+let myVal = 10
+
+-- NEGATIVE: redefining myVal at the top level.
+let myVal = 20    --!! kappa.name.shadowing
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- NEGATIVE: a top-level function defined twice.
+greet : String -> String
+let greet name = "Hello, " <> name
+
+let greet name = "Hi, " <> name    --!! kappa.name.shadowing
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- NEGATIVE: a data constructor defined twice in two separate data declarations.
+data Status : Type =
+    Active
+    Inactive
+
+-- Reusing the constructor name `Active` in a different type.
+data Progress : Type =
+    Active     --!! kappa.name.shadowing
+    Done
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- NEGATIVE: a constructor name clashing with a value binding.
+theLabel : String
+let theLabel = "thing"
+
+data LabeledItem : Type =
+    theLabel Int    --!! kappa.name.shadowing
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: distinct names in different data types do not conflict.
+data Alpha : Type = Alpha1 | Alpha2
+data Beta  : Type = Beta1  | Beta2
+
+-- POSITIVE: a local let binding in a function body may shadow a top-level name
+-- (local shadowing is allowed).
+shadowLocal : Int -> Int
+let shadowLocal myVal = myVal + 1   -- `myVal` parameter shadows the top-level binding; allowed locally

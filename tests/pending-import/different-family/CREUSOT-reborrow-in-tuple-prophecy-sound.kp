@@ -1,0 +1,29 @@
+-- Source issues: CREUSOT-492
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- Family: kappa.borrow.escape (Kappa §3.2.7 / §3.3)
+-- A mutable reference packaged inside a returned tuple still carries its
+-- rigid region.  The borrow-region-escape obligation is insensitive to
+-- container shape; tuples and records do not hide an escaping reborrow.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: returning a mutable reborrow inside a tuple - the reborrow's
+-- region is rigid and would escape the return boundary.  The fact that it
+-- sits inside a tuple does not change the obligation.
+reborrowInTuple : (inout x : Int) -> (inout Int, Int)
+let reborrowInTuple x =
+    (x, 32)                          --!! kappa.borrow.escape
+
+-- NEGATIVE: nesting the escaping borrow inside a record instead of a
+-- tuple does not help.
+data RecOut : Type = RecOut (inout Int) Int
+
+reborrowInRecord : (inout x : Int) -> RecOut
+let reborrowInRecord x =
+    RecOut x 99                      --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

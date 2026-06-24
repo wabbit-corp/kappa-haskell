@@ -1,0 +1,30 @@
+-- Source issue: Move #806
+-- Spec: expressions.lambdas
+-- Lambda expressions permit explicit type annotations on binders.
+-- `\ (x : T) -> e` is well-formed whenever `T` is a valid type and `e`
+-- is well-typed under the assumption `x : T`.  This is part of the core
+-- lambda syntax; the annotation is not optional for this test.
+-- (Move's inline-function lambda form initially lacked type annotations,
+-- requiring an awkward workaround.  Kappa does not have this restriction.)
+
+--! mode check
+
+module move_806_lambda_typed_binder
+
+-- Accepted: lambda with explicit Int annotation on binder.
+addOne : Int -> Int
+let addOne = \ (x : Int) -> x + 1
+
+-- Accepted: multi-parameter lambda with annotated binders.
+add : Int -> Int -> Int
+let add = \ (x : Int) (y : Int) -> x + y
+
+-- Accepted: mixing annotated and bare binders.
+mixedBinders : Int -> Int -> Bool
+let mixedBinders = \ (x : Int) y -> x == y
+
+-- Rejected: annotation that contradicts the inferred type at the use site.
+badAnnotation : Bool
+let badAnnotation = (\ (x : Int) -> x) True   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

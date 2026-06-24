@@ -1,0 +1,49 @@
+-- Source issues: egraphs-good/egglog #316 (Confusing scopes of globals & locals
+--   — let-rebinding in rule body did not produce a type error),
+--   egraphs-good/egglog #329 (Disallow shadowing between let bindings and
+--   constructors),
+--   egraphs-good/egglog #67 (Define command vs define action — `(let x 2)`
+--   versus mutation),
+--   egraphs-good/egglog PR#68 (Rename define action to let).
+-- Spec: declarations.let_in (§9.3),
+--       declarations.terms (§9.1, signature must be satisfied by exactly one
+--       matching definition),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.ambiguous),
+--       see also EGGLOG-SA-07 in EGGLOG_SPEC_ADDITIONS.md (no standardized
+--       family for duplicate top-level declaration is currently named).
+-- `let` introduces a fresh immutable binding; it is not assignment. Egglog's
+-- `(let x 0) ... (rule () ((let x 2) (extract x)))` returned 0 because the
+-- rule's `let` was a separate binding; Kappa requires a same-scope re-decl to
+-- be rejected.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a single binding is used.
+x : Int
+let x = 0
+
+useX : Int
+let useX = x + 1
+
+-- NEGATIVE: re-declaring `x` at the same top-level scope. Kappa requires the
+-- signature to be satisfied by exactly one matching definition (§9.1); a
+-- second declaration of the same name is ambiguous.
+x : Int                                  --!! kappa.name.ambiguous
+let x = 2
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: nested let introduces a new binding in a new scope, shadowing
+-- only the inner block. Under default profile this MAY emit
+-- kappa.name.shadowing as a warning (§3.1.10).
+useShadow : Int
+let useShadow =
+    let xInner = 10 in
+    xInner + 1
+
+-- POSITIVE: outside the inner block, the outer binding is unchanged.
+recheck : Int
+let recheck = x

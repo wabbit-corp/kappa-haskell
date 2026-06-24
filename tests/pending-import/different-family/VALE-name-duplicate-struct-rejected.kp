@@ -1,0 +1,36 @@
+-- Source issues: vale#176 (Better error message for two structs with the
+--               same name), Vale ErrorTests (Report type not found)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--       data_types.data_declarations.naming_diagnostics
+-- In Vale, defining two structs with the same name in the same module
+-- is an error. The compiler should produce a clear diagnostic rather than
+-- an internal exception. In Kappa, declaring two data types or records with
+-- the same name in the same module is rejected with kappa.name.ambiguous
+-- (if both are visible at the use site) or kappa.name.unresolved
+-- (if the redefinition shadows in an unexpected way).
+
+--! mode check
+
+-- POSITIVE: a unique struct definition.
+data Spaceship : Type = Spaceship Int String
+
+getHull : (& s : Spaceship) -> Int
+let getHull (Spaceship n _) = n
+
+-- NEGATIVE: redefining a type with the same name in the same scope.
+-- This redefinition creates ambiguity for any subsequent use of the
+-- name Spaceship.
+data Spaceship : Type = Spaceship Bool   --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: a type with a different but similar name is fine.
+data Starship : Type = Starship Int
+
+getStarHull : (& s : Starship) -> Int
+let getStarHull (Starship n) = n
+
+-- POSITIVE: using the first Spaceship definition should remain valid
+-- before the redefinition site.
+hull1 : Int
+let hull1 = getHull (Spaceship 100 "Enterprise")

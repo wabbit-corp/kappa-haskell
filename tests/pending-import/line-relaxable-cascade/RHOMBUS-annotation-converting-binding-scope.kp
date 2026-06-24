@@ -1,0 +1,50 @@
+-- Source issues: rhombus#676 (bindings from `converting` annotations can have the wrong scope)
+-- Spec: declarations.let_in, §1.1.4 (boundary contracts)
+--   The inner binder of a function (including a converter/coercion lambda) is scoped
+--   only within that function's body. After a let binding completes, the binder name
+--   from the function parameter is NOT in scope in the surrounding definition context.
+-- Note: Rhombus's `converting` annotation is a spec gap (SA-RHOMBUS-05). This test
+--   captures the underlying Kappa obligation: function-parameter scope isolation.
+--   A parameter `x` of `\ (x : T) -> body` is lexically scoped to `body`; it does not
+--   escape into the continuation.
+-- See also: SA-RHOMBUS-05.
+
+--! mode check
+
+-- POSITIVE: a lambda parameter `v` is accessible inside the lambda body.
+convertedLength : Int
+let convertedLength =
+    let n : Int = (\ (v : String) -> String.length v) "hello"
+    n
+
+-- POSITIVE: a lambda parameter name can shadow an outer binding within the lambda body.
+-- The inner binder `x` in `\ (x : String) -> ...` is a new binding scoped to the lambda body.
+shadowInConverter : Int
+let shadowInConverter =
+    let x : Int = (\ (x : String) -> String.length x) "world"
+    x
+
+-- POSITIVE: chained function applications — each lambda sees only its own parameter.
+chainConvert : Int
+let chainConvert =
+    let s : String = "test"
+    let n : Int = (\ (s2 : String) -> String.length s2) s
+    n
+
+-- POSITIVE: a function application in a let binding — the parameter does not affect
+-- surrounding bindings with the same name.
+preservedOuter : Int
+let preservedOuter =
+    let length : Int = 5
+    let result : Int = (\ (length : Int) -> length * 2) 3
+    length
+
+-- NEGATIVE: a lambda parameter `x` is NOT in scope after the application expression.
+-- The application `(\ (x : String) -> String.length x) "abc"` binds `x` only within
+-- the lambda body. Referencing `x` afterwards in the enclosing scope is a name error.
+escapedBinder : Int
+let escapedBinder =
+    let z : Int = (\ (x : String) -> String.length x) "abc"
+    x   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

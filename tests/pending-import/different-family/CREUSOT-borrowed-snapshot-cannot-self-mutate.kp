@@ -1,0 +1,30 @@
+-- Source issues: CREUSOT-borrowed_ghost, CREUSOT-869
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.diagnostics.path_sensitive_diagnostics.overlapping_borrow_or_update_footprints
+-- Family: kappa.borrow.overlap (Kappa §3.2.7)
+-- A snapshot/ghost expression captures the LOGICAL value of a place at
+-- snapshot time; the snapshot's free-variable footprint must overlap any
+-- live mutable borrow whose target is the same place.  Kappa spec gap is
+-- recorded as CREUSOT-SA-12.  `snapshot { e }` is placeholder spelling for
+-- the proposed pure-erasable block from CREUSOT-SA-03/CREUSOT-SA-12.
+
+module test
+
+--! mode check
+
+data Snap : Type = Snap Bool
+
+-- NEGATIVE: storing into `*r` a snapshot whose body reads `x` while `r`
+-- is the live mutable borrow of `x` creates a self-referential update.
+selfReferentialSnapshot : Unit
+let selfReferentialSnapshot =
+    do {
+        var x = Snap True;
+        let r = &mut x in
+        r := snapshot { negate x }   --!! kappa.borrow.overlap
+        }
+    where
+    let negate s =
+        match s case Snap b -> Snap (not b)
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

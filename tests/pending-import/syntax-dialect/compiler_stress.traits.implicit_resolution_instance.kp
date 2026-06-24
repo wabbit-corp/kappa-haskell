@@ -1,0 +1,37 @@
+-- Stress test: Implicit resolution finds the correct instance from scope
+-- Spec: expressions.implicit_parameters.implicit_resolution_instance_proof_search
+
+--! mode check
+
+trait Describable (a : Type) =
+    describe : (& x : a) -> String
+
+data Pair (a b : Type) : Type =
+    MkPair a b
+
+-- Composed instance: requires Describable for both components
+instance Describable a => Describable b => Describable (Pair a b) =
+    let describe (MkPair x y) = describe x ++ ", " ++ describe y
+
+data Tag : Type = TagA | TagB
+
+instance Describable Tag =
+    let describe t = match t
+        case TagA -> "tag-a"
+        case TagB -> "tag-b"
+
+data Flag : Type = On | Off
+
+instance Describable Flag =
+    let describe f = match f
+        case On  -> "on"
+        case Off -> "off"
+
+-- Nested Pair: implicit resolution must compose multiple instances
+describeNested : String
+let describeNested =
+    let inner : Pair Tag Flag = MkPair TagA On
+    let outer : Pair (Pair Tag Flag) Flag = MkPair inner Off
+    describe outer
+
+--! assertNoErrors

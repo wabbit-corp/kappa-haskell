@@ -1,0 +1,54 @@
+-- Source issue: rust#152884 (Unused generic in struct allowed when used only
+--                in invariant position, slice > 50000)
+-- Spec: data_types.well_formedness, data_types.data_declarations
+--
+-- Kappa's well-formedness rule (§10.4) requires strict positivity: every
+-- occurrence of the type being defined must be in a strictly positive
+-- position in every constructor argument. The portable obligation pinned
+-- by this fixture: a data declaration whose only constructor takes a
+-- *negative-position* function-typed argument involving the self-reference
+-- is rejected.
+--
+-- The rust#152884 unused-parameter angle (a parameter that appears only in
+-- a recursive self-reference) is recorded in RUST_B_SPEC_ADDITIONS.md
+-- Note 4 because Kappa's current §10.4 text does not explicitly forbid
+-- recursive-only parameter usage; the strict-positivity rule below is
+-- what the spec currently requires.
+
+module test
+
+--! mode check
+
+-- POSITIVE: parameter `a` in a strictly positive position.
+data Cell (a : Type) : Type =
+    Cell a
+
+
+-- POSITIVE: a recursive type whose self-reference is in a strictly
+-- positive position in every constructor argument.
+data Tree (a : Type) : Type =
+    Leaf a
+    Branch (Tree a) (Tree a)
+
+
+-- NEGATIVE: a self-reference appearing in a NEGATIVE position. The
+-- function argument type `Bad -> Bad` puts `Bad` to the left of an
+-- arrow, which is non-positive. §10.4 example rejected.
+data Bad : Type =
+    MkBad : (Bad -> Bad) -> Bad   --!! kappa.deriving.shape
+
+--! assertDiagnosticFamily error kappa.deriving.shape
+
+-- NEGATIVE: `Rose a` example from §10.4 — `(Rose a -> a)` is a negative
+-- occurrence of `Rose`.
+data Rose (a : Type) : Type =
+    Node : a -> ((Rose a -> a) -> Rose a) -> Rose a   --!! kappa.deriving.shape
+
+--! assertDiagnosticFamily error kappa.deriving.shape
+
+-- POSITIVE: a compile-time-only phantom parameter is admitted even when
+-- it appears only in a tag-level role. The parameter is recorded at
+-- elaboration time and never participates in runtime layout.
+data Phantom (@0 a : Type) : Type =
+    Phantom
+

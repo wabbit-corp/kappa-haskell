@@ -1,0 +1,47 @@
+-- Source issue: dhall-lang #134, #1376
+-- Spec: identity.hash_system.easy_hash_structural_identity_hash
+-- Eta-equivalence: \x -> f x  reduces to  f  when x is not free in f.
+-- The Easy Hash computation applies exhaustive eta-reduction, so
+-- \x -> f x  and  f  are considered identical for hashing and definitional equality.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+-- POSITIVE TEST 1: \x -> f x is eta-equivalent to f.
+-- A function that expects f : Nat -> Nat should accept \x -> f x in its place.
+apply : (Nat -> Nat) -> Nat -> Nat
+let apply f n = f n
+
+-- Both of these must be well-typed as the same type.
+eta_expanded : (Nat -> Nat) -> Nat -> Nat
+let eta_expanded f = \x -> f x
+
+eta_contracted : (Nat -> Nat) -> Nat -> Nat
+let eta_contracted f = f
+
+-- A higher-order function expecting the contracted form must accept the expanded form.
+use_contracted : ((Nat -> Nat) -> Nat -> Nat) -> (Nat -> Nat) -> Nat -> Nat
+let use_contracted higher = higher eta_expanded
+
+-- POSITIVE TEST 2: eta at higher order.
+-- \f -> \x -> f x  eta-reduces to  \f -> f  (first eta), then to  id  (second eta).
+twice_eta : ((Nat -> Nat) -> Nat -> Nat) -> (Nat -> Nat) -> Nat -> Nat
+let twice_eta h = \f -> \x -> h f x
+
+-- Should be accepted as inhabiting the same type as `h` directly.
+passthrough : ((Nat -> Nat) -> Nat -> Nat) -> (Nat -> Nat) -> Nat -> Nat
+let passthrough h = h
+
+-- Combining: both twice_eta and passthrough must be interchangeable.
+eta_check : (((Nat -> Nat) -> Nat -> Nat) -> (Nat -> Nat) -> Nat -> Nat) -> Bool
+let eta_check _ = True
+
+check1 : Bool
+let check1 = eta_check twice_eta
+
+check2 : Bool
+let check2 = eta_check passthrough
+
+--! mode check
+--! assertNoErrors

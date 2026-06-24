@@ -1,0 +1,35 @@
+-- Source issues: gleam#473, gleam#355
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+-- A constructor pattern in a plain `let` binding IS irrefutable when the
+-- scrutinee type has exactly one constructor. Such bindings must be accepted
+-- without error.
+
+--! mode check
+--! assertNoErrors
+
+data Wrapper (a : Type) : Type =
+    Wrap a
+
+data Point : Type =
+    Point (x : Int) (y : Int)
+
+data Unit2 : Type =
+    MkUnit2
+
+-- POSITIVE: single-constructor type; the pattern is irrefutable.
+let unwrap (w : Wrapper Int) : Int =
+    let Wrap v = w in v
+
+-- POSITIVE: positional single-constructor pattern.
+let get_x (p : Point) : Int =
+    let Point x _ = p in x
+
+-- POSITIVE: named-field single-constructor pattern (all fields named explicitly).
+let get_x_named (p : Point) : Int =
+    let Point { x = px, y = _ } = p in px
+
+-- POSITIVE: nullary single-constructor (no fields to bind).
+let unit2_ok (u : Unit2) : Unit2 =
+    let MkUnit2 = u in MkUnit2
+
+--! assertType unwrap (Wrapper Int -> Int)

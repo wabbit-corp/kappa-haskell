@@ -1,0 +1,47 @@
+-- Source: granule-project/granule PR #120 (Holes),
+--         PR #141 (Hole rewriting and automated case-splitting),
+--         PR #146 (Several bug fixes related to case splitting);
+--         tests/cases/negative/holes/hole0.gr ... hole2.gr
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes (GSA-06),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Kappa has `_` (anonymous hole) and `?ident` (named hole). An unsolved
+-- hole MUST surface family `kappa.hole.unsolved` (portable alias
+-- `E_HOLE_UNSOLVED`).
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+data Maybe (a : Type) : Type =
+    Nothing
+    Just a
+
+-- POSITIVE: an ordinary fully-specified declaration has no holes.
+const42 : (ω b : Bool) -> Int
+let const42 _ = 42
+
+
+-- NEGATIVE: a named hole at goal `Int` produces an unsolved diagnostic.
+holeAtInt : Int
+let holeAtInt = ?goalInt          --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+-- NEGATIVE: a hole whose context mentions a free variable triggers the
+-- same unsolved-hole report; the diagnostic exposes the scrutinee for
+-- case-split tooling (GSA-06).
+splitHole : (ω b : Bool) -> Int
+let splitHole b = ?goalWithB      --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+-- POSITIVE: after manual case-splitting, both branches have concrete bodies.
+splitFilled : (ω b : Bool) -> Int
+let splitFilled True  = 1
+let splitFilled False = 0
+
+--! assertType splitFilled ((ω b : Bool) -> Int)

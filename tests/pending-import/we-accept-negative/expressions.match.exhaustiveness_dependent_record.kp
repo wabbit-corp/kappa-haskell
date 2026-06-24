@@ -1,0 +1,35 @@
+-- Source issue: Idris2 #430
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.index_refinement_constructor_knowledge
+-- When pattern matching a value whose type is a dependent record pairing a
+-- value with an indexed proof, the coverage checker must account for index
+-- refinement: if the proof type constrains the value's shape, only the
+-- constructors of the proof type that are compatible with the matched value
+-- are required.
+
+module test
+
+-- An indexed predicate on lists of natural numbers.
+data IsSpecial : List Nat -> Type where
+  IsJust2       : IsSpecial (Succ (Succ Zero) :: Nil)
+  HasTwoElems   : IsSpecial (a :: b :: Nil)
+
+-- A dependent record pairing a list with a proof that it is "special".
+data SpecialList : Type =
+  MkSpecial : (elems : List Nat) -> IsSpecial elems -> SpecialList
+
+-- Accepted: both constructors of IsSpecial are covered.
+-- The pattern on the first component is refined by the IsSpecial constructor,
+-- so no additional cases are possible.
+swapSpecial : SpecialList -> SpecialList
+let swapSpecial (MkSpecial _ IsJust2)     = MkSpecial (_ :: _ :: Nil) HasTwoElems
+let swapSpecial (MkSpecial _ HasTwoElems) = MkSpecial (_ :: Nil) IsJust2
+
+--! mode check
+
+-- Rejected: only one constructor of IsSpecial is covered.
+incompleteSwap : SpecialList -> SpecialList
+let incompleteSwap (MkSpecial _ IsJust2) = MkSpecial (_ :: _ :: Nil) HasTwoElems
+-- HasTwoElems case is missing
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

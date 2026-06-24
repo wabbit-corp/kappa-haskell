@@ -1,0 +1,34 @@
+-- Source issues: PIKELET-11 (pretty error messages with source snippets),
+--               PIKELET-14 (error recovery in the type checker),
+--               PIKELET-189 (PR: make span required in unbound variable error),
+--               PIKELET-212 (PR: parse error improvements).
+-- Spec: compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.ordinary_errors_not_internal_failures,
+--       compiler.frontir.portable_diagnostic_code_aliases (`E_RECOVERY_MISSING_NODE`)
+--
+-- A missing right-hand side after `=` must produce a structured recovery
+-- diagnostic, not a panic. The implementation MUST construct a recovery
+-- node (§3.1.14A) and continue elaborating subsequent declarations.
+-- `E_RECOVERY_MISSING_NODE` is the portable alias (§3.1.4) for the
+-- "recovery inserted a missing node" case.
+
+--! mode check
+
+ok1 : Nat
+let ok1 = 1
+
+-- NEGATIVE: missing rhs after `=`. The recovery contract requires that
+-- the parser insert a synthetic placeholder so that ok2 below still
+-- typechecks.
+broken : Nat
+let broken =       --!! E_RECOVERY_MISSING_NODE
+
+ok2 : Nat
+let ok2 = 2
+
+-- The recovery diagnostic for `broken` is an ordinary structured error.
+-- A conforming implementation MUST NOT escalate to the
+-- `kappa.internal.compiler` family for ordinary recovery; §3.1.16
+-- already mandates this. ok2 above must still typecheck without error.
+--! assertDiagnostic error E_RECOVERY_MISSING_NODE

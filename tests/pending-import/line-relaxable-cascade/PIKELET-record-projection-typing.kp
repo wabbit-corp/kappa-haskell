@@ -1,0 +1,40 @@
+-- Source issue: PIKELET-251 (PR: fix bug in type checking of record eliminations).
+-- Spec: types.records.field_projection, types.records.values
+--
+-- The bug: a record elimination was using the wrong label in its lookup,
+-- so `(record { A = S32, a = 1 } : Record { A : Type, a : A }).a`
+-- yielded `1 : 1` (the value re-typed as a singleton) instead of
+-- `1 : S32` (the value typed at the projected field type). The Kappa spec
+-- requires that field projection yields a term whose type is the field's
+-- declared type instantiated at the projected record's earlier fields.
+
+--! mode check
+
+type Box : Type1 = (A : Type0, a : this.A)
+
+-- POSITIVE: projecting `a` from a value `Box` whose `A = Nat` yields a
+-- term of type `Nat`, not a singleton or some other malformed type.
+b0 : Box
+let b0 = (A = Nat, a = 1)
+
+a0 : Nat
+let a0 = b0.a
+
+-- POSITIVE: chained projection through a nested dependent record.
+type Outer : Type1 = (inner : Box, label : Nat)
+
+o0 : Outer
+let o0 = (inner = (A = Nat, a = 5), label = 9)
+
+innerA : Type0
+let innerA = o0.inner.A
+
+innerVal : Nat
+let innerVal = o0.inner.a
+
+-- NEGATIVE: projecting a label that does not exist must be rejected as
+-- name resolution, not as a panic.
+oops : Nat
+let oops = b0.notAField    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

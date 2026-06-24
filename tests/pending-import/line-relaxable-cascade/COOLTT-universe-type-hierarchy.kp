@@ -1,0 +1,70 @@
+-- Source artifacts: cooltt issue #15 (add universe a la Tarski),
+--               issue #189 (consider returning to strict universes),
+--               PR #367 (make the universe strict).
+-- Spec: types.universes, types.universes.cumulativity,
+--       types.universes.inference_sketch
+--
+-- The universe hierarchy `Type0 : Type1 : Type2 : ...` is cumulative upward:
+-- a value of type `Type_n` may be used where `Type_{n+1}` is expected, but
+-- not the reverse. `Type_n` cannot be used where `Type_n` is expected in the
+-- sense of membership: `Type_n` is not a member of `Type_n`.
+--
+-- CoolTT's strict universe (PR #367) enforces that type codes and their
+-- decoded types are definitionally equal (`El (el_out T) = T`), preventing
+-- spurious coercions. In Kappa's Russell-style hierarchy, this corresponds to
+-- the requirement that universe membership is strict: `T : Type_n` implies
+-- `T` is directly usable as a type without any explicit decoding step.
+
+--! mode check
+
+-- POSITIVE: Type0 is a member of Type1.
+kind0in1 : Type1
+let kind0in1 = Type0
+
+-- POSITIVE: Type1 is a member of Type2.
+kind1in2 : Type2
+let kind1in2 = Type1
+
+-- POSITIVE: Nat is in Type0 (base types live at level 0).
+natType : Type0
+let natType = Nat
+
+-- POSITIVE: Bool is in Type0.
+boolType : Type0
+let boolType = Bool
+
+-- POSITIVE: A function type stays at the same level as its components.
+-- `Nat -> Nat : Type0`.
+funType : Type0
+let funType = Nat -> Nat
+
+-- POSITIVE: A polymorphic function over `Type0` lives at `Type1`.
+poly1 : Type1
+let poly1 = forall (A : Type0) -> A -> A
+
+-- POSITIVE: cumulativity — a term of type `Type0` used where `Type1` is expected.
+liftedNat : Type1
+let liftedNat = Nat
+
+-- POSITIVE: universe-polymorphic identity function.
+-- Quantifying over `Type` introduces a fresh level variable inferred at each use.
+idPoly : forall {A : Type} -> A -> A
+let idPoly x = x
+
+-- POSITIVE: applying the polymorphic identity at Nat.
+useId : Nat
+let useId = idPoly 42
+
+-- POSITIVE: applying the polymorphic identity at Type0 (universe as argument).
+useIdType : Type0
+let useIdType = idPoly Nat
+
+-- NEGATIVE: Type0 cannot be used where Nat is expected — universe mismatch.
+badUniverse : Nat
+let badUniverse = Type0    --!! kappa.type.mismatch
+
+-- NEGATIVE: Type1 cannot classify itself (predicativity: Type1 ∉ Type1).
+selfClass : Type1
+let selfClass = Type1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,50 @@
+-- Source issues: Circom control-flow.md (for loops with unknown signal bounds
+--               produce errors when the body generates constraints); circom#59
+--               (adjacent: conditional component instantiation inside a loop
+--               crashed the compiler — static loop-bound discipline evidence).
+--               (2026-06-11, FAB-009: a second citation was removed here —
+--               the issue number it named exists neither locally nor
+--               upstream; the number is preserved in reports/FABLE_AUDIT_FINDINGS.jsonl.)
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-CIRCOM-03):
+--   "A for-loop body that contains a 0-quantity binding obligation requires the
+--    loop variable to be 0-quantity. Using an ω-quantity (runtime) upper bound
+--    makes the loop variable ω-quantity; the subsequent 0-quantity binding then
+--    fires kappa.quantity.satisfies."
+-- Note: Kappa requires `for` inside `do` blocks (§18.6). A runtime lower bound
+--   with a pure (no 0-quantity obligation) body is accepted — the obligation only
+--   arises when the body forces a 0-quantity check.
+
+--! mode check
+
+-- POSITIVE: loop with compile-time constant upper bound.
+loopLen : (0 _ : Int)
+let loopLen = 10
+
+let sumToConst : IO e Int = do
+    var acc = 0
+    for i in 0 ..< loopLen do
+        acc = !(readRef acc) + i
+    readRef acc
+
+-- POSITIVE: runtime lower bound with a pure body is accepted (no 0-quantity
+-- obligation inside the body, so the runtime bound causes no violation).
+let sumFromStart (start : Int) : IO e Int = do
+    var acc = 0
+    for i in start .. 10 do
+        acc = !(readRef acc) + i
+    readRef acc
+
+
+-- NEGATIVE: runtime upper bound n with a 0-quantity body obligation.
+-- i is ω-quantity (bound is ω), so i * 2 is ω-quantity; binding it as (0 _)
+-- violates the quantity contract.
+let badLoopBound (n : Int) : IO e Int = do
+    var acc = 0
+    for i in 0 ..< n do
+        let (0 _) = i * 2        --!! kappa.quantity.satisfies
+        acc = !(readRef acc) + i
+    readRef acc
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

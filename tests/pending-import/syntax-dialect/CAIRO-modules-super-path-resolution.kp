@@ -1,0 +1,68 @@
+-- Source issues: CAIRO-2438
+-- Spec: modules.names.lexical_lookup (§7.1), modules.imports (§8.3),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§7.1 "Lexical lookup"):
+--   "A qualified name `Parent.X` resolves `X` in module `Parent`. The
+--    segment `parent` (or an equivalent ancestor-access keyword) selects
+--    the immediately enclosing non-anonymous module. If no item named `X`
+--    is exported from `Parent`, the reference is unresolved."
+-- Cairo issue CAIRO-2438: using `super::ArrayTrait` in an inner module to
+--   access the parent's imports failed with "Unknown function"; the
+--   dependency from the parent module should be accessible via super.
+-- In Kappa: a `parent.X` path (parent-module-qualified name) that resolves
+--   to a visible item succeeds; one that names a non-exported item fails
+--   with kappa.name.unresolved.
+
+--! mode check
+
+-- Outer module exports a function and a helper.
+module outer
+
+exported : Int
+let exported = 42
+
+private hiddenHelper : Int -> Int
+let hiddenHelper n = n + 1
+
+-- An inner module that imports items from its parent.
+module outer.inner
+import outer.(exported)
+
+-- POSITIVE: accessing the imported parent item works.
+useExported : Int
+let useExported = exported
+
+-- POSITIVE: re-exporting the parent item to callers of inner.
+public reExported : Int
+let reExported = exported
+
+-- NEGATIVE: trying to use the parent's private item via a re-qualified path.
+-- `outer.hiddenHelper` is private and not accessible from inner.
+badAccess : Int
+let badAccess = outer.hiddenHelper 5           --!! kappa.name.unresolved
+
+-- A sibling module that imports from outer as well.
+module outer.sibling
+import outer (exported)
+
+useInSibling : Int
+let useInSibling = exported
+
+-- NEGATIVE: sibling cannot access inner's items without explicit import.
+crossSibling : Int
+let crossSibling = outer.inner.useExported     --!! kappa.name.unresolved
+
+-- Top-level consumer that imports both exported and reExported.
+module consumer
+import outer (exported)
+import outer.inner.(reExported)
+
+combine : Int
+let combine = exported + reExported
+
+-- NEGATIVE: consumer cannot see outer.inner's private items directly.
+badFromConsumer : Int
+let badFromConsumer = outer.inner.useExported  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

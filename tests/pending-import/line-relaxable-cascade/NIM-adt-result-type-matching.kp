@@ -1,0 +1,76 @@
+-- Source: nim-lang/Nim#2515 (Add optionals module Maybe[T]),
+--         nim-lang/Nim#8358 (Add a safe pattern and special forms for options),
+--         nim-lang/Nim#6638 (default 'not nil'; repo corrected 2026-06-11 —
+--         previously misattributed to nim-lang/RFCs, verified upstream title
+--         "Thinking about default 'not nil'")
+-- Spec: data_types.data_declarations, expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Nim proposed Option[T] and safer access patterns to replace nil checks. In
+-- Kappa, Option and Result are ordinary ADTs; accessing their payload requires
+-- a match expression that covers all constructors.
+
+--! mode check
+module test
+
+data Option (a : Type) : Type =
+    None
+    Some a
+
+data Result (e : Type) (a : Type) : Type =
+    Err e
+    Ok a
+
+-- POSITIVE: safe unwrap via exhaustive match.
+unwrapOr : forall a. Option a -> a -> a
+let unwrapOr opt def =
+    match opt
+    case None   -> def
+    case Some v -> v
+
+-- POSITIVE: map over Option.
+mapOption : forall a b. (a -> b) -> Option a -> Option b
+let mapOption f opt =
+    match opt
+    case None   -> None
+    case Some v -> Some (f v)
+
+-- POSITIVE: extracting Ok payload with error short-circuit.
+getOrDefault : forall e a. Result e a -> a -> a
+let getOrDefault res def =
+    match res
+    case Err _  -> def
+    case Ok v   -> v
+
+-- NEGATIVE: non-exhaustive match on Option — None arm missing.
+unsafeGet : forall a. Option a -> a
+let unsafeGet opt =
+    match opt             --!! kappa.pattern.non-exhaustive
+    case Some v -> v
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: non-exhaustive match on Result — Ok arm missing.
+errorOnly : forall e a. Result e a -> e
+let errorOnly res =
+    match res             --!! kappa.pattern.non-exhaustive
+    case Err e -> e
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: chaining Option values through let-match.
+flatMapOption : forall a b. Option a -> (a -> Option b) -> Option b
+let flatMapOption opt f =
+    match opt
+    case None   -> None
+    case Some v -> f v
+
+-- POSITIVE: nested Result inside Option — both matches exhaustive.
+nestedMatch : Option (Result String Int) -> Int
+let nestedMatch outer =
+    match outer
+    case None     -> -1
+    case Some res ->
+        match res
+        case Err _  -> 0
+        case Ok n   -> n
+

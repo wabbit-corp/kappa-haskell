@@ -1,0 +1,31 @@
+-- Source issue: MLatu PR#30 ("Added words: cat, i, ifz"). `ifz`
+--   ("if zero") is a conditional rewrite primitive: it inspects the
+--   top of the stack and selects one of two quotations to execute.
+--   The portable Kappa obligation is that a conditional expression
+--   selects between two branches of the same result type based on a
+--   scrutinee.
+-- Spec: expressions.conditionals, expressions.application.
+
+module test
+
+--! mode check
+
+ifz : forall (a : Type) . Int -> a -> a -> a
+let ifz n th el = if n == 0 then th else el
+
+-- POSITIVE: zero selects the "then" branch.
+zeroBranch : String
+let zeroBranch = ifz 0 "zero" "nonzero"
+
+-- POSITIVE: nonzero selects the "else" branch.
+oneBranch : String
+let oneBranch = ifz 1 "zero" "nonzero"
+
+--! assertType zeroBranch String
+--! assertType oneBranch String
+
+-- NEGATIVE: the two branches have different types.
+mixed : String
+let mixed = ifz 0 "zero" 7                 --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

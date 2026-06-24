@@ -1,0 +1,34 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_grounded/rule_grounded.dl
+--   (warning: "No rules/facts defined for relation B"),
+--   tests/semantic/rule_typecompat/rule_typecompat.dl,
+--   tests/semantic/rule_undeclared_relation/rule_undeclared_relation.dl.
+-- Spec: compiler.frontir.warning_hygiene (§3.1.12),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Declaring a function signature without providing a definition must produce a
+-- diagnostic (warning or error). Souffle warns when a relation is declared with
+-- `.decl` but has no facts or rules. In Kappa, a declared-but-unimplemented function
+-- produces an kappa.hole.unsolved diagnostic.
+
+--! mode check
+
+-- POSITIVE: fully declared and defined functions.
+let implemented : Int -> Int
+let implemented x = x + 1
+
+-- POSITIVE: definition provided.
+let alsoGood : String -> Bool
+let alsoGood _ = True
+
+-- NEGATIVE: declaration without implementation.
+let noImpl : Int -> String    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+-- NEGATIVE: signature without body for a recursive function.
+let recNoImpl : Nat -> Nat    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+-- POSITIVE: using a hole placeholder to mark in-progress work (accepted but flagged).
+let withHole : Int -> Int
+let withHole x = ?    -- explicit hole

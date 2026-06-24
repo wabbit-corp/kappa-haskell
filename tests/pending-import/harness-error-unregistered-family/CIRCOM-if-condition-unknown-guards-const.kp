@@ -1,0 +1,40 @@
+-- Source issues: Circom control-flow.md — "when constraints are generated in any
+--               block inside an if-then-else or loop statement, the condition cannot
+--               be unknown (see Unknowns). This is because the constraint generation
+--               must be unique and cannot depend on unknown input signals."
+--               Error: "There are constraints depending on the value of the condition
+--               and it can be unknown during the constraint generation phase."
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-CIRCOM-03):
+--   "A branch condition that is runtime (1-quantity) must not guard a block that
+--    produces 0-quantity obligations; the compile-time structure of constraints
+--    must be deterministic regardless of runtime input values."
+
+--! mode check
+
+-- POSITIVE: condition depends only on compile-time (0-quantity) parameters.
+compileN : (0 _ : Int)
+let compileN = 5
+
+let goodBranch : Int =
+    let x : Int = if compileN > 3 then 1 else 0
+    x
+
+
+-- NEGATIVE: condition is a runtime (1-quantity) signal; the true-branch produces
+-- a 0-quantity binding.  The compile-time layout of constraints is non-deterministic.
+let badBranch (runtimeSig : Int) : Int =
+    let (0 result) =                               --!! kappa.quantity.satisfies
+        if runtimeSig > 0 then 1 else 0
+    result
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: runtime condition guards a block containing a 0-quantity instantiation.
+let badInstBranch (flag : Int) (n : Int) : Int =
+    let (0 constVal) =                             --!! kappa.quantity.satisfies
+        if flag == 0 then n else 0
+    constVal
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

@@ -1,0 +1,52 @@
+-- Source issues: egraphs-good/egglog #80 (Type Inference Failure on rewrite RHS),
+--   egraphs-good/egglog #310 (Type errors for `set` not captured by type checker),
+--   egraphs-good/egglog tests/fail-typecheck/set-a-primitive.egg.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch — §3.2.3),
+--       declarations.terms (§9.1).
+-- Type errors on the right-hand side of a definition must be reported at
+-- type-checking time, not after lowering. Egglog's original type checker let
+-- bad RHS expressions pass and panicked later. Kappa requires
+-- kappa.type.mismatch at the assignment site.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Var (s : String)
+
+-- POSITIVE: well-typed RHS.
+okA : Int
+let okA = 1 + 2
+
+okB : Math
+let okB = Num 3
+
+okC : Math -> Math
+let okC m = m
+
+-- NEGATIVE: RHS type is Math, LHS expects Int.
+badA : Int
+let badA = Num 1                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: RHS type is Int, LHS expects Math.
+badB : Math
+let badB = 1 + 2                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: function returns the wrong type.
+badF : Math -> Math
+let badF _ = "literal"                 --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: branch arms disagree in type.
+badC : Bool -> Int
+let badC b = if b then 0 else "zero"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,28 @@
+-- Source issues: inko#509, docs/memory-management
+-- Spec: expressions.application.subsumption, types.universes.quantities
+-- Inko: assigning an owned value transfers ownership; the source variable
+-- becomes unusable after the move ("moved" compile-time error).
+-- In Kappa, a linear (quantity 1) value is consumed on first use;
+-- any subsequent use of the same binding is rejected.
+
+--! mode check
+
+data Box : Type = Box Int
+
+useBox : (1 b : Box) -> Int
+let useBox (Box n) = n
+
+-- POSITIVE: using a linear value exactly once.
+useOnce : (1 b : Box) -> Int
+let useOnce b = useBox b
+
+
+-- NEGATIVE: b is consumed by the first call to useBox;
+-- the second call uses an already-consumed path.
+doubleUse : (1 b : Box) -> Int
+let doubleUse b =
+    let x = useBox b
+    let y = useBox b   --!! kappa.path.consumed
+    x
+
+--! assertDiagnosticFamily error kappa.path.consumed

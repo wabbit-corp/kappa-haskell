@@ -1,0 +1,59 @@
+-- Source issues: dex-lang type-tests.dx (commented-out ambiguous-type tests):
+--   (`:t \x. x` → `Type error:Ambiguous type variables: [?]`),
+--   (`:t \x. sum for i. x.i` → `Type error:Ambiguous type variables: [?3]`),
+--   dex-lang #1076 ("Ambiguous Type Variable" error message improvement),
+--   dex-lang #1077 (support incomplete explicit type binders).
+-- Spec: types.inference.ambiguity_check (§7.3),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.unsolved-metavariable).
+-- When type inference cannot determine a unique type for a metavariable after
+-- processing all constraints in the enclosing declaration, the metavariable is
+-- ambiguous and the program must be rejected. The diagnostic must identify
+-- which metavariable is ambiguous, its use site, and what constraints exist.
+
+--! mode check
+
+-- NEGATIVE: a bare identity lambda with no annotation — the type of `x` is a
+-- free metavariable that appears in both the argument and result, but there is
+-- no use site to fix it.
+let bareId = \x -> x    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: annotating the lambda resolves the metavariable.
+intId : Int -> Int
+let intId x = x
+
+-- POSITIVE: annotating the binding resolves the metavariable.
+typedId : forall (a : Type). a -> a
+let typedId x = x
+
+-- NEGATIVE: a function whose argument type is not constrained by any use.
+-- `f` accepts something of type `a` and returns `True`; `a` is not determined.
+let alwaysTrue = \x -> True    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: same function with an explicit type variable.
+alwaysTrueTyped : forall (a : Type). a -> Bool
+let alwaysTrueTyped x = True
+
+-- NEGATIVE: a function that uses `zero` (a trait method) without constraining
+-- the type — `zero` requires `Add a` but `a` is not determined.
+let withZero = zero    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: `zero` with an explicit type annotation.
+intZero : Int
+let intZero = zero
+
+-- NEGATIVE: two arguments of unknown types with no constraints between them.
+-- Neither `a` nor `b` can be determined.
+let swapUnknown = \x -> \y -> (y, x)    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: explicitly typed swap.
+swapTyped : forall (a : Type) (b : Type). a -> b -> (b, a)
+let swapTyped x y = (y, x)
+

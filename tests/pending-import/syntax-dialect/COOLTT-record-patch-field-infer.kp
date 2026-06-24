@@ -1,0 +1,76 @@
+-- Source artifacts: cooltt issue #266 (record patching like SML `where type`),
+--               issue #326 (infer the value of patched record fields),
+--               issue #387 (problem with patching and names),
+--               PR #274 (record patches), PR #327 (infer value of patched fields).
+-- Spec: declarations.signatures (spec-gap COOLTT-SA-05)
+--
+-- Record patching fixes some fields of a record type at the type level.
+-- A patched record type `R # [field := val]` is a subtype of `R` whose
+-- elements agree with the patch on the named field. When constructing a
+-- value of a patched type, the fixed field may be omitted and inferred.
+--
+-- In Kappa, this maps to subtype constraints on record fields. The closest
+-- portable analogue is refinement types or dependent record types where
+-- a field's value is constrained to a specific term.
+
+--! mode check
+
+-- POSITIVE: a record type with three fields.
+data Config : Type =
+    MkConfig :
+        (host    : String) ->
+        (port    : Nat)    ->
+        (timeout : Nat)    ->
+        Config
+
+configHost    : Config -> String
+configHost    (MkConfig h _ _) = h
+
+configPort    : Config -> Nat
+configPort    (MkConfig _ p _) = p
+
+configTimeout : Config -> Nat
+configTimeout (MkConfig _ _ t) = t
+
+-- POSITIVE: a record where one field is fixed at a specific value.
+-- Models `Config # [port := 8080]`.
+-- The `port` field must equal `8080`; other fields are free.
+LocalConfig : Type
+let LocalConfig = (c : Config, configPort c = 8080)
+
+-- POSITIVE: constructing a LocalConfig; the port is fixed.
+defaultLocalConfig : LocalConfig
+let defaultLocalConfig = (MkConfig "localhost" 8080 30, refl)
+
+-- POSITIVE: extracting the fixed field from a constrained config.
+localPort : LocalConfig -> Nat
+let localPort (c, _) = configPort c
+
+-- POSITIVE: the constraint implies the port is 8080.
+portIs8080 : (lc : LocalConfig) -> configPort (lc.1) = 8080
+let portIs8080 (_, eq) = eq
+
+-- POSITIVE: a function that only works on configs with port 8080.
+onLocalhost : LocalConfig -> String
+let onLocalhost (c, _) = configHost c
+
+-- POSITIVE: patching with two fields fixed.
+-- Models `Config # [port := 443, timeout := 60]`.
+HttpsConfig : Type
+let HttpsConfig =
+    (c : Config,
+     configPort c = 443,
+     configTimeout c = 60)
+
+httpsDefault : HttpsConfig
+let httpsDefault = (MkConfig "api.example.com" 443 60, refl, refl)
+
+-- POSITIVE: inferring constrained fields when multiple fields are fixed.
+httpsHost : HttpsConfig -> String
+let httpsHost (c, _, _) = configHost c
+
+-- NEGATIVE: constructing a LocalConfig with the wrong port violates the constraint.
+badLocal : LocalConfig
+let badLocal = (MkConfig "evil.com" 9999 30, refl)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

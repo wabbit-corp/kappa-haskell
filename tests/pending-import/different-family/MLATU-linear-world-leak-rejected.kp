@@ -1,0 +1,23 @@
+-- Source issue: MLatu #25 ("Add a substructural type system"); PR#26
+--   ("Linear types"). A linear World handle must be consumed; dropping
+--   it without using it violates the substructural discipline. The
+--   portable Kappa obligation is that a linear-quantity binder left
+--   unused at the end of its scope is rejected.
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.linear_discharge_discard_destructor_use,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+
+module test
+
+--! mode check
+
+data World : Type =
+    World
+
+-- NEGATIVE: a linear World parameter is ignored in the body — the
+-- linear obligation is never satisfied.
+leak : (1 w : World) -> Unit
+let leak w = ()                            --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

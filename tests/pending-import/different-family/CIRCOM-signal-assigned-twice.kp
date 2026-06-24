@@ -1,0 +1,34 @@
+-- Source issues: Circom signals doc (signals.md) — signals are immutable: once a
+--               signal has been assigned a value it cannot be reassigned. Assigning
+--               twice produces a compilation error.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule:
+--   "If the same name is defined more than once in a scope where names must be
+--    unique, the compiler must emit kappa.name.ambiguous identifying both
+--    definition sites."
+
+--! mode check
+
+-- POSITIVE: a module-level binding assigned exactly once (signal written once).
+sigOnce : Int
+let sigOnce = 42
+
+let useOnce : Int = sigOnce
+
+
+-- NEGATIVE: the same name defined twice at module level.
+-- In circuit terms: signal `sigTwice` is assigned a second time.
+sigTwice : Int
+let sigTwice = 10
+
+let sigTwice = 20          --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: duplicate binding for an output signal name.
+outSig : Int
+let outSig = 0
+let outSig = 99            --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

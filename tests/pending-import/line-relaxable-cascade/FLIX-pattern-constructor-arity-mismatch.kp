@@ -1,0 +1,46 @@
+-- Source issue: FLIX-9381
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- When a pattern matches a constructor with the wrong number of arguments, the
+-- compiler must emit a structured arity error rather than a confusing unification
+-- error involving function types.
+
+--! mode check
+
+data Pair (a b : Type) : Type =
+    Pair a b
+
+data Triple (a b c : Type) : Type =
+    Triple a b c
+
+data Unit2 : Type = Unit2
+
+-- NEGATIVE TEST: Pair constructor takes 2 arguments but pattern gives 3.
+let bad_pair_arity (p : Pair Int String) : Int =
+    match p
+    case Pair x y z -> x  --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE TEST: Pair constructor takes 2 arguments but pattern gives 1.
+let bad_pair_too_few (p : Pair Int String) : Int =
+    match p
+    case Pair x -> x  --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE TEST: Unit2 takes 0 arguments but gets 1.
+let bad_unit_arity (u : Unit2) : Int =
+    match u
+    case Unit2 x -> 0  --!! kappa.pattern.constructor-arity
+
+-- POSITIVE TEST: correct arity for all constructors.
+let good_pair (p : Pair Int String) : Int =
+    match p
+    case Pair x _ -> x
+
+let good_triple (t : Triple Int String Bool) : Int =
+    match t
+    case Triple x _ _ -> x
+
+let good_unit (u : Unit2) : Int =
+    match u
+    case Unit2 -> 0
+
+-- expect: bad_pair_arity, bad_pair_too_few, bad_unit_arity rejected with arity errors;
+--         good_pair, good_triple, good_unit accepted

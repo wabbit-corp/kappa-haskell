@@ -1,0 +1,54 @@
+-- Source artifacts: narya PR #24 (accumulate and report multiple errors
+--               when possible — when one component of a tuple, branch of
+--               a match, or field of a record fails to typecheck, save
+--               the error and continue with the other branches).
+-- Spec: compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.diagnostics_records
+--
+-- When typechecking a compound construct (constructor application,
+-- match arm list, sibling data constructor declarations), the
+-- implementation must continue past one failing component and report
+-- errors from later independent components in the same compilation
+-- invocation. Each independent failure is its own diagnostic; they are
+-- not merged. The assertion below uses a family-only check (not a code-
+-- count) so that implementations short-circuiting a single compound
+-- failure are not penalised; the assertion family is kappa.type.mismatch.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- NEGATIVE: a constructor application where both fields are at the wrong
+-- type — both errors should surface independently.
+twoErrors : Pair Nat Bool
+let twoErrors =
+    MkPair
+      True     --!! kappa.type.mismatch
+      Zero     --!! kappa.type.mismatch
+
+-- NEGATIVE: independent branches of a match each fail at incompatible
+-- result types.
+twoBranches : Bool -> Nat
+let twoBranches b =
+    match b
+      case True  -> True     --!! kappa.type.mismatch
+      case False -> False    --!! kappa.type.mismatch
+
+-- NEGATIVE: a data declaration where two GADT-style constructors have
+-- ill-formed argument annotations (here a value `Zero` and the literal
+-- `True` are used in type positions).
+data BadFamily : Type =
+    ConstrOne : (z : Zero) -> BadFamily      --!! kappa.type.mismatch
+    ConstrTwo : (b : True) -> BadFamily      --!! kappa.type.mismatch
+
+-- A family-only assertion: the implementation must report at least one
+-- type-mismatch error; multiple independent ones SHOULD be accumulated,
+-- but the precise count is implementation-defined where short-circuiting
+-- of single compound failures is plausible.
+--! assertDiagnosticFamily error kappa.type.mismatch

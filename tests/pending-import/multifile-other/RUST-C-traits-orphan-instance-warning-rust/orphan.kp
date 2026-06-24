@@ -1,0 +1,31 @@
+-- Kappa spec rule (§ traits.instances): "Orphan instances are permitted. An
+-- instance is an orphan when neither the trait definition nor the type
+-- constructor being instantiated is defined in the same module as the instance
+-- declaration. Implementations SHOULD emit a warning for each orphan instance
+-- declaration."
+-- This file declares the orphan instance: this module owns neither `Th` nor
+-- `TyVal`; the instance is therefore an orphan. The declaration is accepted
+-- (instance environment is global over the compilation unit's module closure)
+-- but the implementation MUST emit at least one warning.
+--
+-- No portable diagnostic family has been registered for the orphan-instance
+-- warning (the spec's standard_diagnostic_families catalogue does not name
+-- one). The test therefore asserts only that a warning is produced and no
+-- error fires — using the SHOULD-level obligation as a warning-count check
+-- rather than a family check.
+module orphan
+
+import th
+import ty
+
+instance th.Th ty.TyVal =
+    let thLabel _ = "orphan"
+
+-- The instance still participates in instance search. A use of the trait
+-- method on `TyVal` resolves uniquely to the orphan instance.
+useOrphan : String
+let useOrphan = th.thLabel ty.TyVal
+
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1

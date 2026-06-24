@@ -1,0 +1,66 @@
+-- Source issues: mutual recursion where one SCC member is not defined
+--   by pattern matching; size-change termination through the
+--   pattern-matching member.
+-- Source issues: jetbrains/arend#272 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: declarations.totality.size_change_termination,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       declarations.totality.portable_conformance_boundary
+--   (ARSA-07: mutual recursion with partial pattern-matching members)
+--
+-- In a mutually recursive SCC, a member function that does not itself
+-- perform pattern matching is termination-certified if the full call
+-- graph shows a decreasing measure. The size-change principle applies
+-- to the SCC as a whole: it is sufficient that every cycle in the call
+-- graph has at least one strictly decreasing edge.
+
+--! mode check
+
+-- POSITIVE: `foo` decreases on `n` (pattern-matching on Nat).
+-- `bar` calls `foo` with the same `n` (identity call, no growth).
+-- The SCC {foo, bar} has cycle: foo → bar → foo.
+-- The call matrix on the cycle: foo(n) → bar(n) → foo(n) → ...
+-- Since `bar` passes `n` unchanged to `foo`, and `foo` reduces `n`
+-- in the suc-branch, the overall cycle has a decreasing entry.
+-- Size-change termination (or structural descent through the SCC) must accept.
+foo : Nat -> Nat
+let foo zero    = zero
+let foo (suc n) = bar n
+
+bar : Nat -> Nat
+let bar n = foo n
+
+testFooBar : Nat
+let testFooBar = foo 5    -- terminates: foo 5 → bar 4 → foo 4 → ... → foo 0
+
+-- POSITIVE: a mutual triple where only the first member pattern-matches.
+alpha : Nat -> Nat
+let alpha zero    = zero
+let alpha (suc n) = beta n
+
+beta : Nat -> Nat
+let beta n = gamma n
+
+gamma : Nat -> Nat
+let gamma n = alpha n
+
+testAlpha : Nat
+let testAlpha = alpha 3
+
+-- POSITIVE: a more complex example where the non-pattern-matching function
+-- passes a structurally smaller argument.
+step : Nat -> Nat -> Nat
+let step zero    _ = zero
+let step (suc n) k = combine n k
+
+combine : Nat -> Nat -> Nat
+let combine n k = step n (k + 1)
+
+-- NEGATIVE: a mutual pair where neither member decreases: both grow
+-- their argument and the cycle has no decreasing edge.
+neverDecA : Nat -> Nat
+let neverDecA n = neverDecB (suc n)    --!! kappa.termination.failure
+
+neverDecB : Nat -> Nat
+let neverDecB n = neverDecA n
+
+--! assertDiagnosticFamily error kappa.termination.failure

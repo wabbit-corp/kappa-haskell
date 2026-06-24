@@ -1,0 +1,25 @@
+-- Source issues: METACOQ-326, METACOQ-369
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- Negative cases for named-argument constructor application. Both extra
+-- and missing required fields are rejected under the constructor-arity
+-- family (`kappa.constructor.arity` per §3.2.10; portable alias
+-- `E_CONSTRUCTOR_ARITY_MISMATCH`).
+
+module negative
+
+--! mode check
+
+data User : Type =
+    MkUser (name : String) (age : Nat)
+
+-- NEGATIVE: extra field name not declared on the constructor.
+uBad : User
+let uBad = MkUser { name = "X", age = 20, role = "admin" }   --!! kappa.constructor.arity
+
+-- NEGATIVE: missing required field (no default).
+uMissing : User
+let uMissing = MkUser { name = "Y" }   --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

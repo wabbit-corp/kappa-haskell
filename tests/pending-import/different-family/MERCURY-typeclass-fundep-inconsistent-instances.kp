@@ -1,0 +1,69 @@
+-- Source issues: invalid/inconsistent_instances.m, invalid/range_restrict.m
+-- Spec: traits.instances (coherence), compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.ambiguous)
+-- When two instances are provided for a two-parameter trait and they are
+-- inconsistent with a functional dependency `a -> b` (i.e., the same `a` maps
+-- to two different `b`s), the program is incoherent and must be rejected.
+
+module test
+
+-- A two-parameter trait with an implied functional dependency.
+-- The convention: for a fixed container type `c`, the element type `e` is
+-- uniquely determined. Two instances mapping the same `c` to different `e`
+-- violate coherence.
+trait Container (c : Type) (e : Type) =
+    empty : c
+    push  : e -> c -> c
+    peek  : c -> Option e
+
+data Stack (a : Type) : Type = EmptyStack | StackCons a (Stack a)
+
+-- POSITIVE: a single instance for Stack Int → element Int.
+instance Container (Stack Int) Int =
+    let empty = EmptyStack
+    let push x s = StackCons x s
+    let peek EmptyStack     = None
+    let peek (StackCons x _) = Some x
+
+
+-- NEGATIVE: a conflicting second instance for Stack Int → element String.
+-- Now `Container (Stack Int) e` has two candidates with e=Int and e=String.
+-- Any call to `push` or `peek` on `Stack Int` is ambiguous.
+
+instance Container (Stack Int) String =
+    let empty = EmptyStack
+    let push _ s = s
+    let peek _ = None
+
+ambiguousPush : Int -> Stack Int -> Stack Int
+let ambiguousPush x s = push x s    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- NEGATIVE: calling `peek` on `Stack Int` is also ambiguous.
+ambiguousPeek : Stack Int -> Option _
+let ambiguousPeek s = peek s    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- POSITIVE: explicit disambiguation resolves the ambiguity.
+disambiguatedPush : Int -> Stack Int -> Stack Int
+let disambiguatedPush x s =
+    let d : Container (Stack Int) Int = summon
+    d.push x s
+
+
+-- POSITIVE: a different parameterized type is unaffected.
+data Queue (a : Type) : Type = EmptyQueue | QueueSnoc (Queue a) a
+
+instance Container (Queue Bool) Bool =
+    let empty = EmptyQueue
+    let push x q = QueueSnoc q x
+    let peek EmptyQueue      = None
+    let peek (QueueSnoc _ x) = Some x
+
+unambiguousPeek : Queue Bool -> Option Bool
+let unambiguousPeek q = peek q
+
+
+--! mode check

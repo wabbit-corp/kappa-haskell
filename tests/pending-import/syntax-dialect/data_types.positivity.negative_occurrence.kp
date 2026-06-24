@@ -1,0 +1,31 @@
+-- Source issues: Idris2 #1988, Idris2 #1771
+-- Spec: data_types.well_formedness
+-- A data constructor whose argument type contains the data type being defined
+-- in a strictly-negative position (i.e., to the left of a function arrow that
+-- is inside the constructor argument) is not strictly positive and must be
+-- rejected by the positivity checker.
+-- Accepting such types can lead to non-termination and proofs of False.
+
+module test
+
+-- Rejected: D appears in negative position inside the constructor argument.
+-- `D -> Type` has `D` to the left of `->`, so `Abs : (D -> Type) -> D` is
+-- non-strictly-positive and must be rejected.
+data D : Type where
+  Abs : (D -> Type) -> D   --!! kappa.type.mismatch
+
+--! mode check
+--! assertErrorCount 2
+
+-- Rejected: Fix defined via a type parameter that appears negatively.
+-- `f (Fix f)` may expand to a type that has `Fix f` in a negative position,
+-- depending on `f`. The checker must reject this as non-strictly-positive
+-- without inspecting `f`'s definition.
+data Fix (f : Type -> Type) : Type where
+  MkFix : f (Fix f) -> Fix f   --!! kappa.type.mismatch
+
+-- Accepted: a strictly-positive recursive type is fine.
+data Nat2 : Type where
+  Zero2 : Nat2
+  Succ2 : Nat2 -> Nat2
+

@@ -1,0 +1,99 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/gpats.dats
+--         (case+ patterns on bool/int/char, digit function with wildcard),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats (list_nil | list_cons patterns),
+--         tests/srcgen2/TEST/JS/DATA/bool000.dats
+-- Spec: expressions.match (§17),
+--       pattern.exhaustiveness (§3.2.10),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive, kappa.pattern.unreachable).
+-- ATS3 pattern: `case+` requires an exhaustive match (the `+` means "must be
+--   exhaustive"); `case-` means "assume exhaustive" and suppresses the check.
+--   Matching on a 3-constructor datatype and omitting one constructor is
+--   rejected. ATS3 enforces this at the static layer.
+-- Portable obligation: pattern match on a known finite-constructor datatype
+--   must cover all constructors or include a wildcard; non-exhaustive match
+--   must produce kappa.pattern.non-exhaustive.
+
+--! mode check
+
+-- A three-variant type.
+data Color : Type =
+    Red | Green | Blue
+
+-- POSITIVE: all three variants covered.
+describeColor : Color -> String
+let describeColor c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- POSITIVE: wildcard covers the rest.
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red -> True
+    case _   -> False
+
+-- NEGATIVE: only two out of three variants.
+notExhaustive2 : Color -> Bool
+let notExhaustive2 c =
+    match c
+    case Red   -> True
+    case Green -> False    --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one variant.
+notExhaustive1 : Color -> Bool
+let notExhaustive1 c =
+    match c
+    case Blue -> True      --!! kappa.pattern.non-exhaustive
+
+-- A size-indexed list type.
+data SList : Type -> Nat -> Type =
+    SNil  : forall (a : Type). SList a 0
+    SCons : forall (a : Type) (n : Nat). a -> SList a n -> SList a (n + 1)
+
+-- POSITIVE: match on SList covers both constructors.
+headOpt : forall (a : Type) (n : Nat). SList a n -> Maybe a
+let headOpt xs =
+    match xs
+    case SNil       -> Nothing
+    case SCons x _  -> Just x
+
+-- POSITIVE: nested match; both outer and inner are exhaustive.
+data Pair : Type =
+    Pair Color Color
+
+matchPair : Pair -> String
+let matchPair p =
+    match p
+    case Pair Red Red     -> "rr"
+    case Pair Red Green   -> "rg"
+    case Pair Red Blue    -> "rb"
+    case Pair Green Red   -> "gr"
+    case Pair Green Green -> "gg"
+    case Pair Green Blue  -> "gb"
+    case Pair Blue Red    -> "br"
+    case Pair Blue Green  -> "bg"
+    case Pair Blue Blue   -> "bb"
+
+-- NEGATIVE: nested match where the inner match is incomplete.
+badNested : Pair -> String
+let badNested p =
+    match p
+    case Pair Red c  ->
+        match c
+        case Red   -> "rr"
+        case Green -> "rg"    --!! kappa.pattern.non-exhaustive
+    case Pair _ _    -> "other"
+
+-- POSITIVE: unreachable branch after wildcard — warns, not an error.
+-- The suite-level assertDiagnosticFamily warning below asserts the warning.
+wildcardFirst : Color -> Bool
+let wildcardFirst c =
+    match c
+    case _   -> True
+    case Red -> False
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

@@ -1,0 +1,51 @@
+-- Source: Racket pattern matching exhaustiveness, Racket guide match.scrbl
+-- Source docs: racket guide match.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/match.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- A function defined by pattern clauses must cover all possible inhabitants
+-- of the scrutinee type. Omitting any constructor from the case set causes
+-- an kappa.pattern.non-exhaustive error. Adding a wildcard clause at the
+-- end makes the match exhaustive.
+
+--! mode check
+
+data Color : Type = Red | Green | Blue
+
+-- POSITIVE: all three constructors covered.
+colorCode : Color -> Int
+let colorCode Red   = 0xFF0000
+let colorCode Green = 0x00FF00
+let colorCode Blue  = 0x0000FF
+
+-- POSITIVE: wildcard covers all remaining cases.
+isRed : Color -> Bool
+let isRed Red = True
+let isRed _   = False
+
+-- POSITIVE: nested data type, all paths covered.
+data Direction : Type = North | South | East | West
+
+oppositeDir : Direction -> Direction
+let oppositeDir North = South
+let oppositeDir South = North
+let oppositeDir East  = West
+let oppositeDir West  = East
+
+-- NEGATIVE: missing Blue constructor.
+badColorCode : Color -> Int
+let badColorCode Red   = 0xFF0000   --!! kappa.pattern.non-exhaustive
+let badColorCode Green = 0x00FF00
+
+-- NEGATIVE: missing South and West constructors.
+isNorthOrEast : Direction -> Bool
+let isNorthOrEast North = True   --!! kappa.pattern.non-exhaustive
+let isNorthOrEast East  = True
+
+-- NEGATIVE: a pattern after a wildcard is unreachable.
+unreachableBlue : Color -> Int
+let unreachableBlue _ = 0
+let unreachableBlue Blue = 0x0000FF
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

@@ -1,0 +1,53 @@
+-- Source issues: positivity checker treating let-bindings opaquely;
+--   let-bindings that reduce to a known type should be transparent to
+--   the positivity checker.
+-- Source issues: jetbrains/arend#283 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: types.universes.quantities.positive_lower_bounds,
+--       compiler.frontir.positive_lower_bound_diagnostics,
+--       declarations.totality
+--
+-- A data constructor whose argument type contains a let-binding that
+-- reduces to the enclosing data type is strictly positive (not negative).
+-- The positivity checker must substitute through let-bindings when
+-- computing the positivity of each constructor argument position.
+
+--! mode check
+
+-- POSITIVE: `data Y = bar Y` is strictly positive (Y appears positively
+-- in the argument type of `bar`).
+data Y : Type =
+    bar : Y -> Y
+
+-- POSITIVE: the argument type of `barLet` is a let that evaluates to `Y`.
+-- After substitution, this is equivalent to `data Z | barLet Z`.
+-- The positivity checker must accept this.
+data Z : Type =
+    barLet : (let _ = 1 in Z) -> Z
+
+-- POSITIVE: let introducing a type alias that equals the enclosing data type.
+data W : Type =
+    wCon : (let Self = W in Self) -> W
+
+-- POSITIVE: constructor with no recursive argument (always positive).
+data Base : Type =
+    leaf : Nat -> Base
+
+-- POSITIVE: strictly positive nested occurrence via a non-recursive type former.
+data Tree (A : Type) : Type =
+    node : A -> Tree A -> Tree A -> Tree A
+    leaf : A -> Tree A
+
+-- POSITIVE: let-binding in a return type annotation (not in a data constructor)
+-- must not affect positivity of the data type itself.
+data Q : Type =
+    q : Q -> Q
+
+f : Q -> Nat
+let f (q x) = let r = x in f r    -- let in function body, not in data constructor
+
+-- NEGATIVE: a data type that has a negative occurrence (function type
+-- from itself to another type). The positivity checker must reject this.
+data Bad : Type =
+    badCon : (Bad -> Nat) -> Bad    --!! kappa.quantity.positive-lower-bound
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

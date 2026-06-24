@@ -1,0 +1,44 @@
+-- Source issue: UNISON#3915 (Add pattern match coverage checking for ability handlers)
+-- Spec: effects.monadic_core.shallow_handlers,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- §18.1.21: "there is exactly one operation clause for each operation declared
+-- by E, there are no extra operation clauses". This fixture pins the
+-- *bidirectional* obligation: omitting an operation and supplying a clause
+-- for an undeclared operation are both rejected. The two errors use
+-- different diagnostic families because the omission is a coverage failure
+-- (pattern.non-exhaustive) while the spurious clause is an unresolved-name
+-- failure (the operation name is not in the effect's interface).
+
+--! mode check
+
+effect Console =
+    1 read    : Unit -> String
+    1 write   : String -> Unit
+
+-- POSITIVE: complete handler — both operations + return clause.
+let complete (comp : Eff <[lC : Console]> Int) : Int =
+    handle lC comp with
+        case return v   -> v
+        case read  _ k  -> k "default"
+        case write _ k  -> k ()
+
+-- NEGATIVE: missing `write` operation. The handler set does not cover all
+-- operations of the declared effect interface, so coverage rejects it.
+let missing_write (comp : Eff <[lC : Console]> Int) : Int =
+    handle lC comp with --!! kappa.pattern.non-exhaustive
+        case return v   -> v
+        case read  _ k  -> k "default"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: extra clause for an undeclared operation `flush`. The operation
+-- name is not in `Console`'s interface so it resolves as unbound.
+let extra_clause (comp : Eff <[lC : Console]> Int) : Int =
+    handle lC comp with
+        case return v   -> v
+        case read  _ k  -> k "default"
+        case write _ k  -> k ()
+        case flush _ k  -> k ()   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,23 @@
+-- Source issue: dhall-lang #129, #242, #1375
+-- Spec: modules.imports.compilation_modes
+-- In package mode, every URL import MUST include a sha256: or ref: pin.
+-- An unpinned URL import in package mode is a compile-time error with
+-- diagnostic family kappa.package.reproducibility.
+
+--! mode check
+--! packageMode
+
+-- NEGATIVE TEST 1: unpinned https:// import in package mode must be rejected.
+-- No #sha256: or #ref: suffix means the import is not pinned.
+import "https://example.com/mylib"    --!! kappa.package.reproducibility
+    as mylib_unpinned
+
+-- NEGATIVE TEST 2: another unpinned import.
+import "https://example.com/other/lib"    --!! kappa.package.reproducibility
+    as other_unpinned
+
+-- POSITIVE TEST: pinned import with sha256: in package mode is allowed.
+-- (Requires mock fetch; on implementations without urlMock this is unsupported.)
+-- We only assert the error count for the unpinned cases above.
+
+--! assertDiagnosticFamily error kappa.package.reproducibility

@@ -1,0 +1,93 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (prfun lemma_list_param, castfn list_vt2t, primplmnt),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (#absview, #absprop)
+-- Spec: types.universes.classifiers.propositions (§11.4),
+--       functions.binders.quantities.linear_discharge (§12.2.6),
+--       implicit.proof_search (§3.2.4),
+--       proof_irrelevance (§14.4),
+--       compiler.frontir.standard_diagnostic_families.proof_impossible
+--       (family kappa.proof.impossible-reachable).
+-- ATS3 pattern: `prfun lemma_list_param{x:type}{n:int}(xs: list(INV(x), n)): [n>=0] void`
+--   is a proof function that takes a list and returns a proof (at quantity 0,
+--   erased) that its length index is non-negative. Proof functions are erased
+--   at runtime. A branch claimed to be impossible (an empty match `| _`) is
+--   rejected if the scrutinee type is still inhabited at that point.
+-- Portable obligation: a proof of `False` (or a proposition with no
+--   constructor) in a reachable branch is rejected as impossible-reachable.
+
+--! mode check
+
+-- A propositional equality proof: witnesses that two indices are equal.
+-- Quantity 0 means it is erased at runtime (proof irrelevant).
+data PropEq : Int -> Int -> Type =
+    Refl : forall (n : Int). PropEq n n
+
+-- Symmetry proof: if n = m then m = n.
+symProof : forall (n m : Int). (0 eq : PropEq n m) -> PropEq m n
+let symProof Refl = Refl
+
+-- Transitivity proof.
+transProof : forall (a b c : Int).
+             (0 eq1 : PropEq a b) -> (0 eq2 : PropEq b c) -> PropEq a c
+let transProof Refl Refl = Refl
+
+-- POSITIVE: using Refl at the same index on both sides.
+reflOk : PropEq 5 5
+let reflOk = Refl
+
+-- POSITIVE: symmetry of a known equality.
+symOk : PropEq 3 3
+let symOk = symProof (Refl : PropEq 3 3)
+
+-- A proof that a Nat index is non-negative (trivially true by construction).
+data NatNonNeg : Nat -> Type =
+    NatNNProof : forall (n : Nat). NatNonNeg n
+
+extractNonNeg : forall (n : Nat). (0 pf : NatNonNeg n) -> Unit
+let extractNonNeg _ = ()
+
+-- POSITIVE: proof function consumes a quantity-0 evidence and returns Unit.
+useNNProof : Unit
+let useNNProof = extractNonNeg (NatNNProof : NatNonNeg 42)
+
+-- An "absurd" proposition: no constructor, cannot be inhabited.
+data Void : Type
+
+-- A function from Void to anything (ex falso).
+absurd : forall (a : Type). (1 v : Void) -> a
+let absurd v = match v
+
+-- POSITIVE: absurd is accepted because Void has no constructors;
+-- the match is exhaustive over zero branches.
+exFalso : Int
+let exFalso v = absurd v
+
+-- A proof that 0 = 1 is Void-like; building it directly is impossible.
+-- We represent this as a data type with a contradictory GADT index.
+data FalseEq : Type =
+    FalseEqProof : PropEq 0 1 -> FalseEq
+
+-- NEGATIVE: trying to "prove" PropEq 0 1 with Refl is rejected because
+-- 0 ≠ 1; the constructor Refl only works when both indices are the same.
+impossible0eq1 : PropEq 0 1
+let impossible0eq1 = Refl                 --!! kappa.type.mismatch
+
+-- NEGATIVE: a match that claims an inhabitable type is impossible is
+-- rejected with proof.impossible-reachable when the branch is reachable.
+-- Here Unit is clearly inhabited; treating it as vacuous is wrong.
+badImpossible : Unit -> Int
+let badImpossible x =
+    match x
+    case _ -> 42         -- reachable
+    -- (no further branches; this is fine as the above covers Unit)
+
+-- This variant tries the impossible in an explicit way:
+-- calling absurd with a non-Void value (wrong type) is a type error.
+badAbsurd : Int
+let badAbsurd = absurd ()              --!! kappa.type.mismatch
+
+-- NEGATIVE: using a proof at the wrong index (PropEq 3 5 used as PropEq 3 3).
+wrongProof : PropEq 3 3
+let wrongProof = (Refl : PropEq 3 5)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

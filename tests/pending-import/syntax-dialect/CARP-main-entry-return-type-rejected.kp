@@ -1,0 +1,15 @@
+-- Source issue: carp-lang/Carp#89
+-- Spec: appendices.test_harness.configuration_directives ("entry"),
+--       declarations.signatures,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #89 (negative-case fixture): a main returning a String instead of
+-- Int must be rejected at elaboration when the entrypoint signature is
+-- enforced.
+
+--! mode check
+entry main
+
+main : String
+let main = "Hi"                          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

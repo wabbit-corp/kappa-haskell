@@ -1,0 +1,40 @@
+-- Source issues: docs/traits (conditional impls), inko#579
+-- Spec: traits.instances.associated_static_member_instance_checking
+-- Inko: a type may conditionally implement a trait only when its type
+-- parameter satisfies additional constraints. Using the conditional impl
+-- in a context where the constraint is not met is rejected.
+-- In Kappa, the implicit search fails when the auxiliary constraint is absent.
+
+--! mode check
+
+trait Equal (a : Type) =
+    eq : (& x : a) -> (& a) -> Bool
+
+data Pair (a : Type) (b : Type) : Type = Pair a b
+
+-- Pair[A, B] implements Equal only when both A and B implement Equal.
+-- (Conditional instance: instance Equal (Pair a b) if (Equal a, Equal b))
+instance Equal (Pair a b) :
+    (@_ : Equal a) ->
+    (@_ : Equal b)
+=
+    let eq (Pair x1 y1) other =
+        let Pair x2 y2 = other
+        eq x1 x2
+
+data Blob : Type = Blob Int
+-- Blob has no Equal instance.
+
+-- checkEq uses Equal constraint.
+checkEq :
+    forall (a : Type).
+    (@_ : Equal a) ->
+    (& x : a) -> (& a) -> Bool
+let checkEq x y = eq x y
+
+-- NEGATIVE: Pair[Int, Blob] cannot satisfy Equal because Blob lacks Equal.
+-- The conditional instance's auxiliary constraint (Equal Blob) is unsatisfied.
+bad : (& Pair Int Blob) -> (& Pair Int Blob) -> Bool
+let bad p q = checkEq p q   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

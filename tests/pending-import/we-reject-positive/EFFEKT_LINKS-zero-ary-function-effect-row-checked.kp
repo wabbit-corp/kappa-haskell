@@ -1,0 +1,32 @@
+-- Source issue: links #873 (via PR #972, "Sugartoir: Fix setting ambient effect when traversing zero-ary function")
+-- Spec: effects.monadic_core.eff_effect_rows, expressions.application
+-- A function with zero value parameters whose result type is an Eff carrier must
+-- have its body checked under the function's declared effect row, not under the
+-- enclosing context's row. This obligation is independent of parameter count.
+
+module test
+
+effect Yield (a : Type) =
+    1 yield : a -> Unit
+
+-- Zero-ary function: no value parameters. Body invokes 'yield', which must be
+-- accepted because the declared result type carries the yield effect.
+emitOne : Unit -> Eff <[y : Yield Int]> Unit
+let emitOne _ = y.yield 7
+
+-- Same shape via a literal block (the function's body is a single operation call).
+emitTwo : Unit -> Eff <[y : Yield Int]> Unit
+let emitTwo _ = y.yield 9
+
+-- A handler accepts either zero-ary emitter and projects out the yielded value.
+collectFirst : Eff <[y : Yield Int]> Unit -> Eff <[ ]> Int
+let collectFirst comp =
+    handle y comp with
+        case return _   -> pure 0
+        case yield x _k -> pure x
+
+--! mode check
+--! assertNoErrors
+--! assertType emitOne Unit -> Eff <[y : Yield Int]> Unit
+--! assertType emitTwo Unit -> Eff <[y : Yield Int]> Unit
+--! assertType collectFirst Eff <[y : Yield Int]> Unit -> Eff <[ ]> Int

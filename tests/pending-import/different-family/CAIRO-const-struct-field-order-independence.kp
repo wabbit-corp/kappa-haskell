@@ -1,0 +1,83 @@
+-- Source issues: CAIRO-6623, CAIRO-3130, CAIRO-PR-6977 (Refactored const evaluation),
+--               CAIRO-PR-6993 (Added support for == != < <= > >= in const eval),
+--               CAIRO-PR-6995 (Added support for const eval div_rem)
+-- Spec: data_types.data_declarations (§10.1),
+--       data_types.data_declarations.constructor_application_named_arguments_c (§10.1.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§10.1.1):
+--   "A constructor application with named arguments `C { f1 = e1, f2 = e2 }`
+--    may list fields in any order; the compiler normalizes to the declaration
+--    order before elaboration. The constructed value has the same meaning
+--    regardless of listed order."
+-- Cairo issue CAIRO-6623: const `X: S = S { b: 31, a: 252 }` with fields
+--   listed in reverse order (b before a) gave the wrong values — the fields
+--   were incorrectly swapped in the compiled constant.
+
+--! mode check
+
+-- A two-field struct; fields declared in order a, b.
+data Config : Type =
+    Config (alpha : Int) (beta : Int)
+
+-- POSITIVE: const with fields in declaration order.
+cfg1 : Config
+let cfg1 = Config (alpha = 10) (beta = 20)
+
+-- POSITIVE: const with fields in reverse order must produce the same values.
+cfg2 : Config
+let cfg2 = Config (beta = 20) (alpha = 10)
+
+-- POSITIVE: both should have alpha = 10 and beta = 20.
+checkAlpha1 : Int
+let checkAlpha1 = cfg1.alpha       -- should be 10
+
+checkBeta1 : Int
+let checkBeta1 = cfg1.beta         -- should be 20
+
+checkAlpha2 : Int
+let checkAlpha2 = cfg2.alpha       -- should be 10 (not 20)
+
+checkBeta2 : Int
+let checkBeta2 = cfg2.beta         -- should be 20 (not 10)
+
+-- POSITIVE: a three-field struct with fields in various orders.
+data Triple : Type =
+    Triple (x : Int) (y : Int) (z : Int)
+
+t1 : Triple
+let t1 = Triple (x = 1) (y = 2) (z = 3)
+
+t2 : Triple
+let t2 = Triple (z = 3) (x = 1) (y = 2)
+
+t3 : Triple
+let t3 = Triple (y = 2) (z = 3) (x = 1)
+
+-- All three should give the same field values.
+check1 : Bool
+let check1 = t1.x == t2.x && t2.x == t3.x
+
+check2 : Bool
+let check2 = t1.y == t2.y && t2.y == t3.y
+
+check3 : Bool
+let check3 = t1.z == t2.z && t2.z == t3.z
+
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+instance Eq Int =
+    let (==) _ _ = True   -- placeholder
+
+instance Eq Bool =
+    let (==) x y = match (x, y)
+        case (True,  True ) -> True
+        case (False, False) -> True
+        case _              -> False
+
+-- NEGATIVE: providing a field name that doesn't exist in Config is rejected.
+badCfg : Config
+let badCfg = Config (alpha = 1) (gamma = 9)   --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

@@ -1,0 +1,57 @@
+-- Source issues: lamdu#53 — "Unknown Prelude function sqrt" crash;
+--   referring to a name that does not exist in the prelude or current
+--   scope must produce a structured `kappa.name.unresolved`
+--   diagnostic, not a runtime crash.
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--   §7.1: a name reference that does not resolve to any declaration
+--   produces an `kappa.name.unresolved` diagnostic.
+--
+-- Unresolved name references must produce diagnostics; the compiler
+-- must not crash on a missing-name lookup.
+
+--! mode check
+
+-- POSITIVE: ordinary uses of in-scope prelude names.
+double : Nat -> Nat
+let double n = n + n
+
+triple : Nat -> Nat
+let triple n = n * 3
+
+useArith : Nat
+let useArith = double 4 + triple 2
+
+-- POSITIVE: defining and using a local name.
+withLocal : Nat
+let withLocal =
+    let helper : Nat -> Nat
+        helper n = n + 1
+    helper 9
+
+-- POSITIVE: using a parameterized nominal from a hypothetical user
+-- module — declared in the same file so the name resolves.
+data Box (a : Type) : Type = MkBox a
+
+useBox : Box Nat
+let useBox = MkBox 1
+
+-- NEGATIVE: reference to a name that does not exist in scope.
+useSqrt : Nat
+let useSqrt = sqrt 4    --!! kappa.name.unresolved
+
+-- NEGATIVE: a top-level reference that is misspelled.
+useTwice : Nat
+let useTwice = duoble 3    --!! kappa.name.unresolved
+
+-- NEGATIVE: applying an undefined operator.
+unknownOp : Nat
+let unknownOp = 1 ?? 2    --!! kappa.name.unresolved
+
+-- NEGATIVE: an unresolved name inside a nested expression.
+nestedUnknown : Nat
+let nestedUnknown =
+    let f = \ x -> x + unknown_helper x    --!! kappa.name.unresolved
+    f 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved

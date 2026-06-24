@@ -1,0 +1,38 @@
+-- Source issues: Circom scoping.md ("signals, buses and components must have global
+--               scoping and hence they should be defined at the top-level block of
+--               the template"; signal declared inside a for-loop body produces
+--               "'aux' Is outside the initial scope").
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§SA-CIRCOM-06):
+--   "A binding declared inside a for-loop body is only in scope for that body.
+--    Accessing that binding after the loop must produce kappa.name.unresolved."
+-- Note: Kappa requires `for` inside `do` blocks (§18.6). The positive case uses
+--   `var` declared before the loop so it remains in scope after.
+
+--! mode check
+
+-- POSITIVE: binding declared before the loop is visible after it.
+let goodScope : IO e Int = do
+    var acc = 0
+    for i in 0 ..< 10 do
+        acc = !(readRef acc) + i
+    readRef acc
+
+
+-- NEGATIVE: binding declared inside a for-loop body leaks out of scope.
+-- `inner` is introduced inside the loop body and not accessible after the loop.
+let loopScopeLeaks : IO e Int = do
+    for i in 0 ..< 5 do
+        let inner : Int = i * 2
+    pure inner                    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a binding declared in the for-loop body and used after the loop.
+let signalLoopScope : IO e Int = do
+    for i in 0 ..< 3 do
+        let aux : Int = i + 1
+    pure (aux + 10)               --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

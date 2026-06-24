@@ -1,0 +1,58 @@
+-- Source: Julia MethodError behavior (JuliaLang/julia, dispatch core),
+--         Julia manual, "Methods"
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances.resolution_algorithm
+-- In Julia, calling a function with argument types for which no method has
+-- been defined produces a MethodError at runtime (or a static error from
+-- advanced type checkers). In Kappa, calling a function when no trait
+-- instance provides an applicable evidence value for the argument types
+-- must be rejected with kappa.implicit.unsolved.
+
+--! mode check
+
+-- A trait that models Julia's dispatch: `Show` is satisfied only by types
+-- with an explicit show instance.
+trait Show (a : Type) =
+    show : a -> String
+
+data Celsius  : Type = Celsius Float
+data Kelvin   : Type = Kelvin Float
+data Rankine  : Type = Rankine Float
+
+-- Only Celsius and Kelvin have Show instances.
+instance Show Celsius =
+    let show _ = "celsius"
+
+instance Show Kelvin =
+    let show _ = "kelvin"
+
+-- POSITIVE: calling show on a type that has an instance.
+printCelsius : String
+let printCelsius = show (Celsius 100.0)
+
+printKelvin : String
+let printKelvin = show (Kelvin 373.15)
+
+-- NEGATIVE: calling show on Rankine, which has no Show instance.
+-- Analogous to a Julia MethodError: no method matching show(::Rankine).
+printRankine : String
+let printRankine = show (Rankine 671.67)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- A two-argument dispatch trait (multi-method in Julia style).
+trait Add (a : Type) (b : Type) =
+    add : a -> b -> a
+
+instance Add Celsius Celsius =
+    let add (Celsius x) (Celsius y) = Celsius (x + y)
+
+-- POSITIVE: adding two Celsius values.
+addCelsius : Celsius
+let addCelsius = add (Celsius 10.0) (Celsius 5.0)
+
+-- NEGATIVE: no instance Add Celsius Kelvin — MethodError analog.
+addMixed : Celsius
+let addMixed = add (Celsius 10.0) (Kelvin 5.0)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

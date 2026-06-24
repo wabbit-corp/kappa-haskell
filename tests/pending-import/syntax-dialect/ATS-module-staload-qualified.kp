@@ -1,0 +1,83 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`#staload N = $ADD`, `$ME.foo`, qualified `$A.foo`),
+--         tests/srcgen1/TEST/DATA/test02.dats (`#staload M = $FOO$S2E`, `$ME.foo`),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`#staload List = "prelude/SATS/list.sats"`, `$List.foo`),
+--         ATS-Xanadu issue #11 (xatsopt binary location / module path resolution)
+-- Spec: modules.imports (§8.3),
+--       modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- ATS3 pattern: `#staload A = "file.sats"` makes everything in file.sats
+--   accessible under the qualified prefix `$A.`. Without the staload, `$A.foo`
+--   is unresolved. Using an unqualified name from a staloaded file that was
+--   only imported as an alias is also unresolved unless a plain `#staload`
+--   (without alias) was used.
+-- Portable obligation: accessing a declaration from a module that was not
+--   imported (or only imported under a different alias) must produce
+--   kappa.name.unresolved.
+
+--! mode check
+
+module math
+
+-- A public function in module `math`.
+public square : Int -> Int
+let square x = x * x
+
+public cube : Int -> Int
+let cube x = x * x * x
+
+-- A private helper not exported from math.
+private helper : Int -> Int
+let helper x = x + 1
+
+module geometry
+
+import math (square, cube)
+
+-- POSITIVE: using imported names from `math`.
+area : Int -> Int
+let area r = square r
+
+volume : Int -> Int
+let volume r = cube r
+
+-- NEGATIVE: accessing the private `helper` via qualified module path.
+badAccess : Int
+let badAccess = math.helper 5         --!! kappa.name.unresolved
+
+module algebra
+
+-- POSITIVE: import with alias; access via alias.
+import math as M (square)
+
+squareViaAlias : Int -> Int
+let squareViaAlias x = M.square x
+
+-- NEGATIVE: trying to use the original module name after aliased import.
+badAlias : Int
+let badAlias = math.square 3          --!! kappa.name.unresolved
+
+-- NEGATIVE: using an unimported name directly (not in scope at all).
+unknownFun : Int
+let unknownFun = nonExistent 0        --!! kappa.name.unresolved
+
+module physics
+
+-- import math but NOT `cube`; only `square` is imported.
+import math (square)
+
+-- POSITIVE: square is in scope.
+squareOk : Int
+let squareOk = square 4
+
+-- NEGATIVE: cube was not imported into physics scope.
+cubeNotImported : Int
+let cubeNotImported = cube 4          --!! kappa.name.unresolved
+
+-- NEGATIVE: fully qualified access to something never exported.
+missingQualified : Int
+let missingQualified = math.nonExistent 1   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

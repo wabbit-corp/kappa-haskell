@@ -1,0 +1,28 @@
+-- Source artifacts: PURESCRIPT-PR-1651 (linked #1507).
+-- Spec: modules.imports.item_kind_selectors,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§ modules.imports.item_kind_selectors):
+--   "`import M.* except (...)` removes declarations after wildcard expansion.
+--    An unqualified item `x` removes every imported declaration of spelling
+--    `x`."
+-- After an `except`-clause import, the excepted name must not be
+-- name-resolvable through unqualified lookup.
+module consumer
+
+import lib.* except (beta)
+
+-- POSITIVE: `alpha` and `gamma` are unqualified-imported.
+ok_alpha : Int
+let ok_alpha = alpha
+
+ok_gamma : Int
+let ok_gamma = gamma
+
+-- NEGATIVE: `beta` was removed by the `except` clause; unqualified `beta`
+-- must not resolve.
+bad_use : Int
+let bad_use = beta                              --!! kappa.name.unresolved
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.unresolved

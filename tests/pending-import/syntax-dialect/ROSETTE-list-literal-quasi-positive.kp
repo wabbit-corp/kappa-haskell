@@ -1,0 +1,51 @@
+-- Source issue: ROSETTE-47 (Quasiquote and length don't work well together),
+--                ROSETTE-131 (quasiquote and unquote-slicing's handling
+--                of symbolic list)
+-- Spec: collections.literals,
+--       expressions.application
+--
+-- The Rosette reports describe surprising behaviour where ``(foo
+-- ,@lst)`` produced a dotted pair that broke `length`. Kappa has no
+-- quasiquote: list construction uses the cons operator `::` and the
+-- list literal `[ ... ]`. The portable obligation is that a list
+-- prepended via cons is still a proper `List a`, and `length` works on
+-- it. This fixture pins down the well-formedness of list construction
+-- across an arbitrary tail, including a tail produced by a function.
+
+--! mode check
+
+len : forall (a : Type). List a -> Int
+let len xs =
+    match xs
+    case []       -> 0
+    case (_ :: t) -> 1 + len t
+
+-- POSITIVE: cons makes a proper list.
+prependFoo : List String -> List String
+let prependFoo xs = "foo" :: xs
+
+-- POSITIVE: length is defined on the result.
+prependLen : Int
+let prependLen = len (prependFoo ["bar"])
+
+-- POSITIVE: cons-and-append composition.
+glue : List Int -> List Int -> List Int
+let glue xs ys = 0 :: (xs ++ ys)
+
+-- POSITIVE: list literal interpolation through let.
+withTail : List Int -> List Int
+let withTail t =
+    let base = [1, 2, 3]
+    in base ++ t
+
+-- POSITIVE: pattern matching on a cons-prepended list.
+firstSym : List String -> String
+let firstSym xs =
+    match xs
+    case []         -> "empty"
+    case (h :: _)   -> h
+
+useFirstSym : String
+let useFirstSym = firstSym (prependFoo ["bar"])
+
+--! assertNoErrors

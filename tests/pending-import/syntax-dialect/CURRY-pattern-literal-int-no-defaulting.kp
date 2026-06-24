@@ -1,0 +1,52 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (h x = case x of [1,2] -> True ; _ -> False) — literal integers
+--   inside list/tuple patterns are matched against the corresponding
+--   numeric type of the scrutinee.
+-- Spec: expressions.patterns.forms (§17.2.1, literal patterns),
+--       expressions.match (§17.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality,
+--       kappa.type.literal-domain-mismatch.
+--
+-- Literal patterns in Kappa are typed by the scrutinee: an `Int`
+-- scrutinee admits Int literal patterns; using a literal of a
+-- different numeric domain must be rejected.
+
+module test
+
+--! mode check
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+-- POSITIVE: an integer list pattern is accepted by an `Int`-scrutinee
+-- match.
+sumOnePlusTwo : List Int -> Bool
+let sumOnePlusTwo xs =
+    match xs
+    case (Cons 1 (Cons 2 Nil)) -> True
+    case _                       -> False
+
+--! assertType sumOnePlusTwo (List Int -> Bool)
+
+-- POSITIVE: equality on an Int literal pattern returns True for the
+-- matching list.
+twoElementResult : Bool
+let twoElementResult = sumOnePlusTwo (Cons 1 (Cons 2 Nil))
+-- expected: True
+
+
+-- POSITIVE: head difference ⇒ catch-all.
+threeElementResult : Bool
+let threeElementResult = sumOnePlusTwo (Cons 1 (Cons 3 Nil))
+-- expected: False
+
+
+-- NEGATIVE: a string literal pattern cannot match a `List Int`.
+typoMatch : List Int -> Bool
+let typoMatch xs =
+    match xs
+    case (Cons "abc" _) -> True   --!! kappa.type.literal-domain-mismatch
+    case _                -> False
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch

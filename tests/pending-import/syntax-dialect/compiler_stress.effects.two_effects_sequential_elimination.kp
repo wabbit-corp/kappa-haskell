@@ -1,0 +1,69 @@
+-- Stress test: Two independent effects handled sequentially; each handler
+--   leaves the other's labels in the residual row.  The composition type-checks
+--   only when both handles are in the right order.
+-- Spec: effects.monadic_core.eff_effect_rows,
+--   effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- First effect: stateful counter.
+effect Counter =
+    1 tick   : Unit -> Unit
+    1 getCount : Unit -> Int
+
+-- Second effect: choice of abort.
+effect Abort =
+    0 abort : Unit -> a
+
+-- Handle Counter, leave Abort residual.
+-- Returns the count after the computation finishes (or aborts before that).
+let runCounter
+    (forall (r : EffRow))
+    (init : Int)
+    (comp : Eff <[counter : Counter | r]> Int)
+    : Eff <[r]> Int =
+    handle counter comp with
+        case return v      -> pure (v + init)
+        case tick _ k      -> runCounter (init + 1) (k ())
+        case getCount _ k  -> k init
+
+-- Handle Abort, leave Counter residual.
+-- Converts an abort into a Nothing, wrapping successful results in Just.
+let runAbort
+    (forall (r : EffRow))
+    (comp : Eff <[abort : Abort | r]> Int)
+    : Eff <[r]> (Option Int) =
+    handle abort comp with
+        case return v    -> pure (Just v)
+        case abort _ _   -> pure Nothing
+
+-- POSITIVE: a computation using both effects.
+computation : Eff <[counter : Counter, abort : Abort]> Int
+let computation =
+    do
+        Counter.tick ()
+        Counter.tick ()
+        let n <- Counter.getCount ()
+        if n > 1 then pure n
+        else Abort.abort ()
+
+-- Eliminate Counter first (leaves Abort), then Abort.
+result1 : Eff <[ ]> (Option Int)
+let result1 = runAbort (runCounter 0 computation)
+
+-- Eliminate Abort first (leaves Counter), then Counter.
+-- (order of composition matters for the counter value seen)
+result2 : Eff <[ ]> (Option Int)
+let result2 =
+    let abortHandled : Eff <[counter : Counter]> (Option Int) =
+            runAbort computation
+    runCounter 0
+        (do
+            let mVal <- abortHandled
+            match mVal
+            case Nothing  -> pure 0
+            case Just v   -> pure v)
+
+--! assertNoErrors
+--! assertType result1 (Eff <[ ]> (Option Int))
+--! assertType result2 (Eff <[ ]> (Option Int))

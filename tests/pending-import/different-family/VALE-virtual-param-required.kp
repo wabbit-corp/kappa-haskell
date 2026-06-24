@@ -1,0 +1,56 @@
+-- Source issues: vale#151 (Add error message when an interface method
+--               doesn't contain a virtual interface param),
+--               Vale VirtualTests
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances
+-- In Vale, an interface method must include at least one parameter whose
+-- type is (or is a reference to) the virtual interface type. This ensures
+-- dispatch can occur over the receiver. A method that takes no such
+-- parameter cannot serve as a polymorphic dispatch entry and must be
+-- rejected. In Kappa, a trait method must refer to the trait's type
+-- variable as the type of at least one parameter so that dispatch is
+-- possible; a method that does not is effectively a module-level function
+-- and should be rejected or diagnosed when placed in a trait context.
+
+--! mode check
+
+-- A well-formed trait: the method takes the trait's own type parameter
+-- as a borrowed receiver.
+trait Printable (a : Type) =
+    printIt : (& x : a) -> Unit
+
+data Widget : Type = Widget Int
+
+instance Printable Widget =
+    let printIt _ = ()
+
+-- POSITIVE: calling the trait method with a proper receiver argument.
+doPrint : Unit
+let doPrint = printIt (Widget 5)
+
+-- A trait that attempts to declare a method without any reference to its
+-- own type parameter — effectively a static method, which is disallowed
+-- as a dispatch target.
+trait BadTrait (a : Type) =
+    badMethod : Int -> Int   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- A trait with a method that refers to the type parameter in its return
+-- type but not in its parameter type. This is also insufficient for
+-- virtual dispatch and should be rejected.
+trait ReturnOnly (a : Type) =
+    produce : Int -> a   --!! kappa.implicit.unsolved
+
+-- POSITIVE: a trait method that takes the type parameter as an owned
+-- argument (linear receiver pattern).
+trait Drainable (a : Type) =
+    drain : (1 x : a) -> Int
+
+data Tank : Type = Tank Int
+
+instance Drainable Tank =
+    let drain (Tank n) = n
+
+okDrain : Int
+let okDrain = drain (Tank 42)

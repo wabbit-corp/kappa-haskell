@@ -1,0 +1,9 @@
+module userBad
+
+import addLib.*
+import mulLib.*
+
+-- NEGATIVE: unqualified `combine` is ambiguous because two distinct
+-- imports both expose the name without an `as` rename.
+bad : Int
+let bad = combine 3 4                                --!! kappa.name.ambiguous

@@ -1,0 +1,66 @@
+-- Source issue: Lean4 #860
+-- Spec: declarations.totality.explicit_decreases,
+--       declarations.let_in.pure_block_expressions
+-- Local recursive named definitions inside a `block` expression may carry an
+-- explicit `decreases` clause, exactly as top-level named definitions do.
+-- The clause appears immediately before `=` on the recursive equation (§15.11).
+-- A conforming implementation MUST accept a local recursive function whose
+-- termination is established by an explicit `decreases` measure.
+
+module test
+
+-- Case 1: Nat countdown with an explicit `decreases n` on the local helper.
+-- Single-equation form using match to avoid ambiguity about which equation
+-- carries the decreases clause.  The preceding local signature `go : Nat -> Nat`
+-- enables recursion (§9.3.1: a name is recursive only when a preceding local
+-- signature is present).
+countdown : Nat -> Nat
+let countdown start =
+    block
+        go : Nat -> Nat
+        let go n decreases n =
+            match n
+              case 0 -> 0
+              case k -> k + go (k - 1)
+        go start
+
+--! mode check
+--! assertNoErrors
+
+-- Case 2: Mutually recursive local helpers both carrying `decreases` clauses.
+-- Per §15.11, every member of a recursive SCC must have a `decreases` clause
+-- when any member has one, and all clauses must be of the same kind.
+evenOdd : Nat -> (Bool, Bool)
+let evenOdd n =
+    block
+        isEven : Nat -> Bool
+        isOdd  : Nat -> Bool
+
+        let isEven k decreases k =
+            match k
+              case 0 -> True
+              case m -> isOdd (m - 1)
+
+        let isOdd k decreases k =
+            match k
+              case 0 -> False
+              case m -> isEven (m - 1)
+
+        (isEven n, isOdd n)
+
+--! assertNoErrors
+
+-- Case 3: Local recursive function with a structural decreases clause.
+-- `decreases structural xs` selects the structural parameter of an inductive
+-- argument; valid when `xs : List Nat`.
+sumList : List Nat -> Nat
+let sumList xs =
+    block
+        loop : List Nat -> Nat
+        let loop xs decreases structural xs =
+            match xs
+              case []          -> 0
+              case (x :: rest) -> x + loop rest
+        loop xs
+
+--! assertNoErrors

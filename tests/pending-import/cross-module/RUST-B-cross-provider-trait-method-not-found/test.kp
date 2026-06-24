@@ -1,0 +1,30 @@
+-- Source issues: rust#128569, rust#110926, rust#109161, rust#81659, rust#51458 (slice > 50000)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       compiler.coreir.semantic_object_identities,
+--       compiler.frontir.diagnostic_related_origins
+--
+-- The user's compilation unit imports `Trait` from `dep_b`, but the value's
+-- type has its `Trait` instance declared against `dep_a.Trait` — a distinct
+-- semantic object despite the same source spelling. Method resolution must
+-- fail with a diagnostic that surfaces both traits' declaration sites so the
+-- user can see that the in-scope name does not denote the same semantic
+-- object as the trait the receiver type implements.
+
+module test
+
+import dep_a
+import dep_b.Trait as Trait
+
+--! mode check
+
+useMismatched : Int
+let useMismatched =
+    let value : dep_a.Container = dep_a.Container 41
+    -- The receiver-projection `value.foo` looks up `foo` in scope. Only
+    -- `dep_a.Trait` declares `foo`, but `dep_a.Trait` is not imported as
+    -- `Trait`; the in-scope `Trait` is `dep_b.Trait`, which declares `bar`.
+    -- Method resolution therefore fails to find a callable `foo`.
+    value.foo   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticRelated error kappa.name.unresolved trait-declaration-site

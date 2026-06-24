@@ -1,0 +1,57 @@
+-- Source: Coalton issues #1273 (ambiguous method error in multi-param class when
+--   method doesn't include both parameterized types), #521 (methods type signatures
+--   need to have all type class variables).
+-- Spec: traits.members (§14.2), compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.ambiguity-check, §3.2.3), COALTON-SA-03.
+--
+-- A trait with two type parameters where a method mentions only one of them
+-- cannot be called unambiguously unless additional context determines the missing
+-- parameter. A compliant checker must detect that the omission makes the method
+-- call ambiguous when the missing parameter cannot be resolved.
+
+--! mode check
+
+-- Two-parameter trait. m1 mentions only `a`; m2 mentions both `a` and `b`.
+trait TwoParam (a : Type) (b : Type) =
+    m1 : a -> Bool
+    m2 : a -> b -> Bool
+
+-- A concrete instance that ties both parameters.
+data Alpha : Type = Alpha
+data Beta  : Type = Beta
+
+instance TwoParam Alpha Beta =
+    let m1 _ = True
+    let m2 _ _ = True
+
+-- POSITIVE: calling m2 at a site where both `a` and `b` are known via annotation.
+-- The evidence `TwoParam Alpha Beta` is fully determined.
+testM2 : Bool
+let testM2 = m2 (Alpha) (Beta)
+
+--! assertType testM2 Bool
+
+-- POSITIVE: calling m1 in a context where evidence is supplied explicitly
+-- (both type parameters are fixed by the concrete instance TwoParam Alpha Beta).
+testM1WithKnownEvidence : Bool
+let testM1WithKnownEvidence = m1 (Alpha)
+
+-- NEGATIVE: a local helper annotated as `Alpha -> Bool` without any TwoParam
+-- constraint in scope. The body `m1 x` needs `TwoParam Alpha ?b` for some `?b`,
+-- but `?b` does not appear in the helper's declared type, so the ambiguity check
+-- must fail.
+ambiguousM1Call : Bool
+let ambiguousM1Call =
+    let helper : Alpha -> Bool = fn x -> m1 x in    --!! kappa.type.ambiguity-check
+    helper Alpha
+
+--! assertDiagnosticFamily error kappa.type.ambiguity-check
+
+-- NEGATIVE: a top-level function with no TwoParam constraint where the second
+-- type variable `b` does not appear anywhere in the declared type. The body uses
+-- `m1 x`, which needs `TwoParam a ?b`, but `?b` is unresolvable — the declared
+-- type `forall (a : Type). a -> Bool` provides no way to determine `b`.
+orphanB : forall (a : Type). a -> Bool
+let orphanB x = m1 x    --!! kappa.type.ambiguity-check
+
+--! assertDiagnosticFamily error kappa.type.ambiguity-check

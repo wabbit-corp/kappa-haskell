@@ -1,0 +1,64 @@
+-- Source: Julia manual, "Parametric Methods" and §12.3 multi-arg dispatch,
+--         Julia multiple dispatch on all argument positions
+-- Spec: traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- In Julia, specificity for multi-argument dispatch is computed jointly
+-- across all argument positions: method A beats method B when A's types
+-- are all subtypes of B's and at least one is strictly smaller. In Kappa,
+-- a multi-parameter trait instance with more constrained heads takes
+-- priority.
+
+--! mode check
+
+trait Combine (a : Type) (b : Type) =
+    combine : a -> b -> String
+
+data Exact   : Type = Exact Int
+data General : Type = General String
+
+-- Instance with both positions concrete (most specific for Exact-Exact).
+instance Combine Exact Exact =
+    let combine _ _ = "exact-exact"
+
+-- Instance with one position General (less specific on first arg).
+instance Combine General Exact =
+    let combine _ _ = "general-exact"
+
+-- Instance with both positions General (least specific).
+instance Combine General General =
+    let combine _ _ = "general-general"
+
+-- POSITIVE: (Exact, Exact) → picks "exact-exact" (most specific).
+combineEE : String
+let combineEE = combine (Exact 1) (Exact 2)
+
+-- POSITIVE: (General, Exact) → picks "general-exact".
+combineGE : String
+let combineGE = combine (General "hi") (Exact 3)
+
+-- POSITIVE: (General, General) → picks "general-general".
+combineGG : String
+let combineGG = combine (General "x") (General "y")
+
+--! assertType combineEE String
+--! assertType combineGE String
+--! assertType combineGG String
+
+-- A single-dispatch fallback demonstrates that more constrained beats less.
+trait Identity (a : Type) =
+    identity : a -> a
+
+instance Identity Exact =
+    let identity x = x
+
+instance (@_ : Identity a) => Identity (Maybe a) =
+    let identity (Just x) = Just (identity x)
+    let identity Nothing  = Nothing
+
+okIdentityExact : Exact
+let okIdentityExact = identity (Exact 7)
+
+okIdentityMaybe : Maybe Exact
+let okIdentityMaybe = identity (Just (Exact 9))
+
+--! assertNoErrors

@@ -1,0 +1,64 @@
+-- Source issues: dex-lang typeclass-tests.dx (overlapping instances section):
+--   (`def f3(x: n=>Int) -> Int given (n|Ix) = a_ x` →
+--   `Type error: Multiple candidate class dictionaries for: (A (n => Int32))`),
+--   dex-lang #669 (catch instantiation-dependent overlap),
+--   dex-lang #340 (overlapping/default type class instances).
+-- Spec: traits.coherence.overlap_detection (§14.4),
+--       compiler.frontir.standard_diagnostic_families.implicit (kappa.implicit.ambiguous).
+-- When implicit resolution finds more than one applicable instance with
+-- distinct proofs, the resolution is ambiguous and must be rejected.
+-- The diagnostic must list all ambiguous candidates.
+
+--! mode check
+
+trait Measure (a : Type) =
+    measure : a -> Int
+
+-- Two instances for arrays of Int: a generic one and a specific one.
+-- Both apply when `a = Int`, so using `measure` on `List Int` (or similar)
+-- is ambiguous.
+data Box (a : Type) : Type = Box a
+
+instance Measure (Box Int) =
+    let measure (Box n) = n
+
+instance Measure (Box a) given (Measure a) =
+    let measure (Box x) = measure x
+
+-- This instance for Int is needed so that `Box Int` and `Box (Box Int)` have
+-- candidates from the generic path too.
+instance Measure Int =
+    let measure x = x
+
+-- NEGATIVE: both `Measure (Box Int)` (specific) and `Measure (Box a)` (generic
+-- with `Measure a := Measure Int`) apply to `Box Int`.
+-- The resolution is ambiguous between the two candidates.
+callMeasureBoxInt : Box Int -> Int
+let callMeasureBoxInt b = measure b    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- POSITIVE: a type for which only one instance applies.
+data Wrap (a : Type) : Type = Wrap a
+
+instance Measure (Wrap Int) =
+    let measure (Wrap n) = n
+
+callMeasureWrapInt : Wrap Int -> Int
+let callMeasureWrapInt w = measure w
+
+-- POSITIVE: explicit disambiguation by providing the instance argument.
+-- Using `measure @(Box Int)` (explicit instance argument) selects the specific one.
+-- This is the Dex pattern of explicit instance selection.
+callMeasureBoxIntExplicit : Box Int -> Int
+let callMeasureBoxIntExplicit b =
+    measure @Measure(Box Int) b
+
+-- NEGATIVE: the same ambiguity exists when calling through a polymorphic function.
+callMeasureGeneric : forall (a : Type). Measure a => a -> Int
+let callMeasureGeneric x = measure x
+
+ambiguousCall : Int
+let ambiguousCall = callMeasureGeneric (Box (3 : Int))    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

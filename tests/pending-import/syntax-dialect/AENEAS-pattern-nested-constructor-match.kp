@@ -1,0 +1,70 @@
+-- Source issues: AENEAS-161, AENEAS-30 (background context only — #161 is
+--   extraction policy, #30 internal value representation; the nested-pattern
+--   obligations here are grounded directly in spec 17.2.1. Citation role
+--   clarified 2026-06-11, audit FAB-026.)
+-- Spec: expressions.patterns, expressions.match,
+--       expressions.patterns.forms
+-- §expressions.patterns.forms: patterns may be nested — a constructor pattern
+-- may contain sub-patterns that are themselves constructors or variable
+-- patterns.  Aeneas generates code with nested ADT patterns; the portable
+-- obligation is that arbitrary nesting is accepted.
+
+module test
+
+--! mode check
+
+data Color : Type = Red | Green | Blue
+
+data Shape : Type =
+    Circle Int
+  | Rect Int Int
+  | Colored Color Shape
+
+-- POSITIVE: nested constructor pattern — Color inside Shape.
+describeColored : Shape -> String
+let describeColored s =
+    match s
+    case (Colored Red   (Circle r))  -> "red-circle:" ++ show r
+    case (Colored Green (Rect w h))  -> "green-rect:" ++ show w ++ "x" ++ show h
+    case (Colored Blue  _)           -> "blue-shape"
+    case (Circle r)                  -> "circle:" ++ show r
+    case (Rect w h)                  -> "rect:" ++ show w ++ "x" ++ show h
+    case (Colored _ _)               -> "other-colored"
+
+--! assertNoErrors
+--! assertType describeColored (Shape -> String)
+
+-- POSITIVE: Option wrapping another ADT — two-level nesting.
+data Result_ (a : Type) : Type = Ok_ a | Err_ String
+
+unwrapOr : forall (a : Type). Result_ (Option a) -> a -> a
+let unwrapOr r def =
+    match r
+    case (Ok_ (Some x)) -> x
+    case (Ok_ None)     -> def
+    case (Err_ _)       -> def
+
+--! assertNoErrors
+
+-- POSITIVE: matching on a list of Options.
+countSomes : forall (a : Type). List (Option a) -> Int
+let countSomes xs =
+    match xs
+    case []          -> 0
+    case Some _ :: t -> 1 + countSomes t
+    case None :: t   -> countSomes t
+
+--! assertNoErrors
+
+-- POSITIVE: simple binary tree with nested match.
+data Tree (a : Type) : Type =
+    Leaf
+  | Node (Tree a) a (Tree a)
+
+depth : forall (a : Type). Tree a -> Int
+let depth t =
+    match t
+    case Leaf           -> 0
+    case (Node l _ r)   -> 1 + (if depth l > depth r then depth l else depth r)
+
+--! assertNoErrors

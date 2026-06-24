@@ -1,0 +1,49 @@
+-- Source issue: MOJO-98
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure,
+--       kappa.path.consumed
+-- Updating record fields while threading a value through a recursive loop
+-- must not be misdiagnosed as a use-after-consume.  The compiler must accept
+-- field updates when the accumulator is threaded intact from one iteration to
+-- the next without being consumed mid-recursion.
+
+module test
+
+--! mode check
+
+data Accumulator : Type =
+    Accumulator { count : Int, total : Int }
+
+-- POSITIVE: thread an accumulator through a tail-recursive loop updating both
+-- fields.  The accumulator is consumed exactly once per iteration and rebuilt;
+-- no spurious consumed-path diagnostic should fire.
+sumLoop : Int -> Accumulator
+let sumLoop n =
+    let go acc i =
+        if i >= n then acc
+        else go (acc.{ count = acc.count + 1, total = acc.total + i }) (i + 1)
+    go (Accumulator { count = 0, total = 0 }) 0
+
+--! assertType sumLoop Int -> Accumulator
+
+-- POSITIVE: update a single field by returning a new value; ownership
+-- is retained through the whole expression.
+incrementCount : Accumulator -> Accumulator
+let incrementCount a = a.{ count = a.count + 1 }
+
+
+-- NEGATIVE: attempt to consume a linear value twice through distinct paths.
+-- The second call to `takeVal` after `v` has already been consumed must fire
+-- kappa.path.consumed.
+data Val : Type = Val Int
+
+takeVal : (1 v : Val) -> Int
+let takeVal (Val n) = n
+
+fieldConsumedMidValue : Int
+let fieldConsumedMidValue =
+    let v = Val 10
+    let x = takeVal v     -- v consumed here
+    let y = takeVal v     --!! kappa.path.consumed
+    x + y
+
+--! assertDiagnosticFamily error kappa.path.consumed

@@ -1,0 +1,51 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system1/type_system1.dl,
+--   tests/semantic/fact_number2/fact_number2.dl,
+--   souffle-lang #238 (type checker fails to detect negative numbers where record expected),
+--   souffle-lang #293 (type checker fails to give errors for records of lesser size).
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- A record or struct constructor applied with field values of the wrong type must
+-- be rejected. Using a String literal where an Int field is expected, or vice versa,
+-- must produce kappa.type.mismatch. Kappa checks field types at the constructor
+-- call site against the declared field types.
+
+--! mode check
+
+struct Pair =
+    first  : Int
+    second : Int
+
+struct Named =
+    label : String
+    value : Int
+
+-- POSITIVE: correct field types.
+let goodPair : Pair = Pair { first = 1, second = 2 }
+let goodNamed : Named = Named { label = "ok", value = 42 }
+
+-- NEGATIVE: String literal where Int field expected.
+let badFirst : Pair = Pair { first = "oops", second = 2 }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: Int literal where String field expected.
+let badLabel : Named = Named { label = 99, value = 10 }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: both fields have wrong types.
+let bothWrong : Pair = Pair { first = "a", second = "b" }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a struct where a Bool field is given correctly.
+struct Flag =
+    name   : String
+    active : Bool
+
+let goodFlag : Flag = Flag { name = "feature", active = True }
+
+-- NEGATIVE: Bool where String expected.
+let badFlag : Flag = Flag { name = False, active = True }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

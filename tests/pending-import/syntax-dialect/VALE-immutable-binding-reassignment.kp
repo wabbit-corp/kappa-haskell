@@ -1,0 +1,60 @@
+-- Source issues: vale#128 (Immutable locals (finals) can be changed — bug),
+--               vale#96 (Better error when immutable variable changed),
+--               vale#130 (Better error changing final field of struct)
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- In Vale 0.1.x, the compiler failed to reject reassignment to immutable
+-- (non-mut) local variables; the variable could be silently mutated.
+-- In Kappa, a binding declared at quantity ω (unrestricted read-only) or
+-- at quantity 1 (linear) may not be assigned to a second time. A second
+-- assignment to a read-only binding, or a set to a consumed linear binding,
+-- must be rejected with kappa.quantity.unsatisfied.
+
+--! mode check
+
+data Counter : Type = Counter Int
+
+readCounter : (& c : Counter) -> Int
+let readCounter (Counter n) = n
+
+-- POSITIVE: binding an unrestricted (ω) value and using it multiple times
+-- in a read-only way.
+simpleRead : Unit -> Int
+let simpleRead () =
+    let x = Counter 4
+    readCounter x + readCounter x
+
+-- POSITIVE: a linear local used exactly once.
+linearUsedOnce : Unit -> Int
+let linearUsedOnce () =
+    let 1 c = Counter 9
+    readCounter c
+
+-- NEGATIVE: a let-binding is not a var; rebinding the same name via a
+-- second let shadows but the original binding was immutable.
+-- Attempting to write to the original immutable binding directly is rejected.
+badReassignImmutable : Unit -> Int
+let badReassignImmutable () =
+    let x = Counter 4
+    set x = Counter 5   --!! kappa.quantity.unsatisfied
+    readCounter x
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: a linear binding used twice (second use is after first consume).
+linearUsedTwice : Unit -> Int
+let linearUsedTwice () =
+    let 1 c = Counter 7
+    let a = readCounter c
+    let b = readCounter c   --!! kappa.path.consumed
+    a + b
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: a mutable var binding that explicitly allows reassignment.
+-- (val is purely functional, var is stateful but explicitly declared.)
+mutableVar : Unit -> Int
+let mutableVar () =
+    let var x = 0
+    set x = 5
+    x

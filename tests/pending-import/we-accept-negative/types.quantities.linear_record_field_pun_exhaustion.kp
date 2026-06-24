@@ -1,0 +1,19 @@
+-- Source issue: GHC#24961
+-- Spec: types.universes.quantities, expressions.patterns.forms
+-- When pattern-matching a linearly-bound record, all fields must be consumed.
+-- Using named-field puns that omit some fields must be rejected as a quantity error.
+
+module test
+
+data R : Type = R (x : Int) (y : Int)
+
+-- Correct: consume both fields.
+consumeBoth : (1 & r : R) -> (Int, Int)
+let consumeBoth (R { x, y }) = (x, y)
+
+
+-- Incorrect: omit field y when r is linear.
+consumeOne : (1 & r : R) -> Int
+let consumeOne (R { x }) = x
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

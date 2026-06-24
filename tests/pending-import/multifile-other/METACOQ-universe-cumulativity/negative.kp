@@ -1,0 +1,22 @@
+-- Source issues: METACOQ-13, METACOQ-16, METACOQ-74, METACOQ-79, METACOQ-96
+-- Spec: types.universes, types.universes.cumulativity,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- Type1 does not inhabit Type1 (Type u : Type (u+1)), and cumulativity is
+-- one-directional: a value at a larger universe cannot be coerced down.
+-- Both rejections use family `kappa.type.mismatch` (§3.2.3).
+
+module negative
+
+--! mode check
+
+-- NEGATIVE: Type1 does not inhabit Type1; the spec requires Type u : Type (u+1).
+typeInItself : Type1
+let typeInItself = Type1   --!! kappa.type.mismatch
+
+-- NEGATIVE: cumulativity is one-directional. Type1 cannot be coerced down
+-- to Type0.
+downCoerce : Type0
+let downCoerce = Type1   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

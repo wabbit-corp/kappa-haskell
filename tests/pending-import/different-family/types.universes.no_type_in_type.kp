@@ -1,0 +1,29 @@
+-- Source issue: Agda #485
+-- Spec: types.universes, types.universes.cumulativity
+-- Universes are stratified: Type u : Type (u+1), not Type u : Type u.
+-- A function declared to operate on `Type0` values MUST NOT be applied to
+-- `Type0` itself (that would require Type0 : Type0). The compiler MUST
+-- reject any use that would require a universe to contain itself.
+
+module test
+
+-- Accepted: applying a function (A : Type0) -> A -> A to a runtime value
+-- of type Type0. The argument `x : A` is an ordinary value, not a type.
+idAtType0 : (A : Type0) -> A -> A
+let idAtType0 A x = x
+
+someNat : Int
+let someNat = idAtType0 Int 42
+
+--! mode check
+
+-- Rejected: using Type0 itself as the value argument where `A = Type0` would
+-- be required — this forces Type0 : Type0 (type-in-type), which violates §11.1.
+-- The function signature says `f : (A : Type0) -> A -> A`; calling `f _ Type0`
+-- would need `_ = Type0 : Type0`, violating universe stratification.
+badTypeInType : (f : (A : Type0) -> A -> A) -> Type0 -> Type0
+let badTypeInType f a = f _ a  --!! kappa.type.mismatch
+
+-- We expect a type/universe error because the wildcard _ cannot be filled
+-- with Type0 without causing Type0 : Type0.
+--! assertDiagnosticFamily error kappa.type.mismatch

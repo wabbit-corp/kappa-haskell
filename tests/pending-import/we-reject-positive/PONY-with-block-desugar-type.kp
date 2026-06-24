@@ -1,0 +1,53 @@
+-- Source issues: ponyc#3759
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       effects.elaboration_model.defer_using
+-- Pony issue #3759: `with` blocks without an `else` clause were desugared
+-- incorrectly, wrapping the body in a try-else that returns None on the
+-- else path, causing the return type to always become a union with None
+-- even when the body never raises an error. The correct desugar should
+-- only introduce the else path if the block can fail.
+-- In Kappa, a `with`-like resource-management pattern expressed via
+-- try/cleanup semantics must not widen the result type with an extra
+-- None alternative when no error can occur.
+
+--! mode check
+
+-- Simulate resource management: a disposable resource type.
+data Resource : Type = Resource Int
+
+acquire : Int -> Resource
+let acquire n = Resource n
+
+release : (1 r : Resource) -> Unit
+let release _ = ()
+
+useResource : Resource -> Int
+let useResource (Resource n) = n * 2
+
+-- POSITIVE: explicit resource management with guaranteed cleanup.
+-- The body type is Int; cleanup returns Unit. The whole expression is Int.
+withResource : Int -> Int
+let withResource capacity =
+    let res = acquire capacity
+    let result = useResource res
+    let _ = release res
+    result
+
+ok : Int
+let ok = withResource 5
+
+-- POSITIVE: chained resource operations without widening to Optional.
+withTwo : Int -> Int
+let withTwo cap =
+    let r1 = acquire cap
+    let r2 = acquire (cap + 1)
+    let v1 = useResource r1
+    let v2 = useResource r2
+    let _ = release r1
+    let _ = release r2
+    v1 + v2
+
+ok2 : Int
+let ok2 = withTwo 3
+
+--! assertNoErrors

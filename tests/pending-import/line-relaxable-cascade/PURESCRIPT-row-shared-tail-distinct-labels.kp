@@ -1,0 +1,55 @@
+-- Source artifacts: PURESCRIPT-PR-4048 (linked #3765 — fix row unification
+--                   with shared unknown in tails),
+--                   PURESCRIPT-PR-3680 (closed — earlier attempt at the same
+--                   record-unification issue),
+--                   PURESCRIPT-PR-4000 (linked #3983 — don't mention unknowns
+--                   in unification errors when coercing misaligned rows).
+-- Spec: types.records.row_polymorphism,
+--       types.quantification.rows_labels,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§ types.quantification.rows_labels):
+--   "`RecRow` and `EffRow` are finite maps with unique labels ... Row equality
+--    is modulo permutation after row normalization."
+-- Two row-polymorphic uses that *share* the same `r : RecRow` tail unknown
+-- must therefore agree on the *full set of explicit labels they each pin*, not
+-- just on the labels common to both. Pinning `x` on one side and `y` on the
+-- other while reusing the same `r` would silently let `r` contain both — which
+-- is fine — but if the two uses also commit to the *whole* shape of the row
+-- (closed-record use), the tail unknown cannot absorb the differing labels.
+
+--! mode check
+
+-- Pair of functions sharing the same tail unknown via a single `forall (r)`.
+both_x_and_y :
+    forall (r : RecRow).
+    (rx : (x : Int | r)) ->
+    (ry : (y : Int | r)) ->
+    Int
+let both_x_and_y rx ry = rx.x + ry.y
+
+-- POSITIVE: when both arguments share the same residual row, calls work.
+ok_call : Int
+let ok_call =
+    let r : (x : Int, y : Int) = (x = 10, y = 20)
+    -- here `r` has *both* explicit fields `x` and `y` already; the residual
+    -- row for each use is the same empty row.
+    both_x_and_y r r
+
+-- NEGATIVE: a use where the two arguments must share the tail unknown but
+-- contribute structurally incompatible explicit labels for the same residual.
+-- Concretely we ask the implementation to unify two open rows with shared
+-- tail `r` but distinct explicit labels: this is exactly the #4048 / #3765
+-- regression — the row unifier must not assume the tails absorb the
+-- differences and must reject.
+bad_call : Int
+let bad_call =
+    let r1 : (x : Int, foo : Bool)    = (x = 1, foo = True)
+    let r2 : (y : Int, bar : String)  = (y = 2, bar = "no")
+    -- The two arguments cannot share the same residual `r`: the first
+    -- demands `LacksRec r x` and offers explicit `foo` to fill `r`, while the
+    -- second demands `LacksRec r y` and offers explicit `bar` to fill `r`.
+    -- Their tail rows cannot agree.
+    both_x_and_y r1 r2                          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

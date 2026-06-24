@@ -1,0 +1,74 @@
+-- Source artifacts: narya docs/record-types.rst (def Σ : record sig with
+--               fst : A, snd : B fst), narya issue #27 (signature with
+--               dependent record fields formerly crashed with Invalid_argument).
+-- Spec: declarations.signatures,
+--       types.records.formation,
+--       types.records.values,
+--       types.records.syntax.record_field_order_lawful_reorderings
+--
+-- A dependent record (or single-constructor data) type lets later
+-- fields' types reference earlier fields. The canonical example is
+-- the dependent pair Σ A B. The portable obligation is that the
+-- elaborator accepts dependent telescopes in data constructor
+-- signatures and projects them via field-name accessors (§13.2.4).
+-- Narya issue #27 (Invalid_argument anomaly on a deeply nested
+-- dependent signature) is evidence for the
+-- ordinary_errors_not_internal_failures obligation: such a program
+-- must produce a structured ordinary error, never an internal failure.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Sigma (a : Type) (b : a -> Type) : Type =
+    MkSigma : (fst : a) -> (snd : b fst) -> Sigma a b
+
+projFst : forall (a : Type) (b : a -> Type). Sigma a b -> a
+let projFst s =
+    match s
+      case MkSigma x _ -> x
+
+projSnd :
+    forall (a : Type) (b : a -> Type).
+    (s : Sigma a b) -> b (projFst a b s)
+let projSnd s =
+    match s
+      case MkSigma _ y -> y
+
+-- POSITIVE: construct a Sigma whose second field's type depends on the
+-- first.
+expect term Vec : Nat -> Type
+expect term mkVec : (n : Nat) -> Vec n
+
+aPair : Sigma Nat Vec
+let aPair = MkSigma (Suc Zero) (mkVec (Suc Zero))
+
+-- POSITIVE: a nested dependent record models a PreCat-like signature
+-- (see narya issue #27 — under the Kappa obligation this signature
+-- must elaborate cleanly, not raise an internal anomaly).
+data PreCat : Type =
+    MkPreCat :
+        (ob  : Type) ->
+        (hom : ob -> ob -> Type) ->
+        PreCat
+
+obP : PreCat -> Type
+let obP c =
+    match c
+      case MkPreCat o _ -> o
+
+homP : (c : PreCat) -> obP c -> obP c -> Type
+let homP c =
+    match c
+      case MkPreCat _ h -> h
+
+-- POSITIVE: a sanity application of the projections at a concrete
+-- witness.
+expect term s : Sigma Nat Vec
+
+fstOfS : Nat
+let fstOfS = projFst Nat Vec s
+
+--! assertNoErrors

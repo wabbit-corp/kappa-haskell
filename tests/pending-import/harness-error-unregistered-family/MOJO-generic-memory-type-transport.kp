@@ -1,0 +1,52 @@
+-- Source issues: MOJO-1188, MOJO-516, MOJO-1187
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.application.equality_based_subsumption_automatic_transport_insertion,
+--       kappa.type.transport-failed
+-- Generic functions parameterised by T may require implicit transport
+-- evidence (e.g., that T satisfies a Copyable constraint).  Calling such a
+-- function with a type for which the required evidence cannot be constructed
+-- must be rejected with kappa.type.transport-failed.
+
+module test
+
+--! mode check
+
+-- A constraint marking a type as safe to copy/transport.
+trait Copyable (T : Type) =
+    copy : T -> T
+
+-- A type with a Copyable instance.
+data Managed : Type = Managed Int
+
+instance Copyable Managed =
+    let copy x = x
+
+-- A type intentionally lacking a Copyable instance.
+data Unmanaged : Type = Unmanaged Int
+
+-- A container that requires its element type to be Copyable.
+data CopyableBox (T : Type) : Type = CopyableBox T
+
+store : forall (T : Type). Copyable T => T -> CopyableBox T
+let store x = CopyableBox x
+
+-- POSITIVE: Managed satisfies the Copyable constraint; store succeeds.
+goodBox : CopyableBox Managed
+let goodBox = store (Managed 42)
+
+--! assertType goodBox CopyableBox Managed
+
+-- NEGATIVE: Unmanaged has no Copyable instance; the required transport
+-- evidence is unavailable.
+badBox : CopyableBox Unmanaged
+let badBox = store (Unmanaged 99)   --!! kappa.type.transport-failed
+
+--! assertDiagnosticFamily error kappa.type.transport-failed
+
+-- POSITIVE: a container without transport constraints accepts Unmanaged.
+data AnyBox (T : Type) : Type = AnyBox T
+
+openBox : AnyBox Unmanaged
+let openBox = AnyBox (Unmanaged 1)
+
+--! assertType openBox AnyBox Unmanaged

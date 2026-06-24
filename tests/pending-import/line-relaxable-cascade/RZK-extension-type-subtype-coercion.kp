@@ -1,0 +1,87 @@
+-- Source issues: rzk#206 — incorrect type checking for extension types;
+--   PR#207 — fix subtyping (automatic coercion for extension types and tope
+--   disjunction elimination). A program that provided an argument of the wrong
+--   type (a wider extension type) to a function expecting a narrower extension
+--   type was accepted incorrectly. The coercion/subtyping logic was unsound.
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.type_equality
+--   §11.3: function types; Pi types must check covariant/contravariant
+--   positions correctly.
+--
+-- Subtype coercions in argument and return positions of function types must
+-- be checked carefully. A value of type `f : A -> B` cannot be used where
+-- `A' -> B` is expected if `A` is strictly wider than `A'` — the coercion
+-- would accept inputs outside the expected domain. This must be rejected.
+
+--! mode check
+
+-- POSITIVE: a simple subtype coercion at a function argument — correct usage.
+data Animal  : Type = Cat | Dog | Bird
+data Pet     : Type = PetCat | PetDog
+
+asPet : Animal -> Animal
+let asPet a = a
+
+-- POSITIVE: applying a function at the declared argument type is always safe.
+identity : forall (a : Type). a -> a
+let identity x = x
+
+useId : Animal
+let useId = identity Cat
+
+-- POSITIVE: explicit record (dependent pair) subtype — all fields used.
+data NatPair : Type = NP : (fst : Nat) -> (snd : Nat) -> NatPair
+
+addNP : NatPair -> Nat
+let addNP (NP a b) = a + b
+
+result : Nat
+let result = addNP (NP 3 4)
+
+-- POSITIVE: covariant usage — a function `Nat -> Nat` used where
+-- `Nat -> Nat` is expected (trivially correct).
+applyFn : (Nat -> Nat) -> Nat -> Nat
+let applyFn f x = f x
+
+callApply : Nat
+let callApply = applyFn (\n -> n + 1) 5
+
+-- POSITIVE: a well-typed use of a more specific type in a covariant position.
+data Color : Type = Red | Green | Blue
+
+colorToNat : Color -> Nat
+let colorToNat Red   = 0
+let colorToNat Green = 1
+let colorToNat Blue  = 2
+
+applyColor : (Color -> Nat) -> Color -> Nat
+let applyColor f c = f c
+
+okApply : Nat
+let okApply = applyColor colorToNat Red
+
+-- NEGATIVE: supplying a value of a wider type where a narrower type is required.
+-- A `Nat -> Nat` function cannot be used as a `Bool -> Nat` function.
+narrowExpected : Bool -> Nat
+let narrowExpected = (\n -> n + 1)    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a `Animal -> Nat` function where `Pet -> Nat` is expected
+-- without any registered coercion — types are unrelated.
+animalToNat : Animal -> Nat
+let animalToNat Cat  = 1
+let animalToNat Dog  = 2
+let animalToNat Bird = 3
+
+usePetFn : (Pet -> Nat) -> Pet -> Nat
+let usePetFn f p = f p
+
+badCoerce : Nat
+let badCoerce = usePetFn animalToNat PetCat    --!! kappa.type.mismatch
+
+-- NEGATIVE: providing a term whose inferred type is strictly less than required.
+-- Rzk#206 demonstrates returning a value at a wider type than declared,
+-- allowing the caller to use it at the narrower (wrong) type. In Kappa terms:
+-- using a Nat where Bool is expected is a mismatch.
+mustBeBool : Bool
+let mustBeBool = 42    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

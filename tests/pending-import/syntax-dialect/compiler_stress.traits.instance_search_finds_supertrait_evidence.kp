@@ -1,0 +1,79 @@
+-- Stress test: When a function requires evidence for a supertrait, the
+--   implementation must find that evidence via the leaf (more-specific)
+--   instance's supertrait obligations, not require a separate instance
+--   declaration for the supertrait alone.
+-- Spec: traits.headers.supertraits, traits.instances.resolution_algorithm
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+-- Ord is a supertrait of Eq.
+trait Eq a => Ord (a : Type) =
+    lt : a -> a -> Bool
+    le : a -> a -> Bool
+    let le x y = lt x y || eq x y
+
+-- Bounded is a supertrait of Ord.
+trait Ord a => Bounded (a : Type) =
+    minBound : a
+    maxBound : a
+
+data Priority : Type = Low | Medium | High
+
+-- Only one explicit Bounded instance; Ord and Eq are implied by supertraits.
+-- The instance must supply all methods for Bounded, Ord, and Eq because the
+-- supertrait chain requires them.
+
+instance Eq Priority =
+    let eq p1 p2 =
+        match (p1, p2)
+        case (Low,    Low)    -> True
+        case (Medium, Medium) -> True
+        case (High,   High)   -> True
+        case _                -> False
+
+instance Ord Priority =
+    let lt p1 p2 =
+        match (p1, p2)
+        case (Low,    Medium) -> True
+        case (Low,    High)   -> True
+        case (Medium, High)   -> True
+        case _                -> False
+
+instance Bounded Priority =
+    let minBound = Low
+    let maxBound = High
+
+-- POSITIVE: a function requiring only Eq — found via Bounded → Ord → Eq chain.
+isEqual : forall {a : Type}. (@_ : Eq a) -> a -> a -> Bool
+let isEqual x y = eq x y
+
+testEq : Bool
+let testEq = isEqual Low Low
+
+-- POSITIVE: a function requiring Ord — found via Bounded → Ord chain.
+isSorted : forall {a : Type}. (@_ : Ord a) -> a -> a -> Bool
+let isSorted x y = lt x y || eq x y
+
+testOrd : Bool
+let testOrd = isSorted Low High
+
+-- POSITIVE: using Bounded directly.
+getRange : forall {a : Type}. (@_ : Bounded a) -> (a, a)
+let getRange = (minBound, maxBound)
+
+testBound : (Priority, Priority)
+let testBound = getRange
+
+-- NEGATIVE: a type with only Eq, not Ord; calling isSorted must fail.
+data Tag : Type = Tag String
+
+instance Eq Tag =
+    let eq (Tag s1) (Tag s2) = s1 == s2
+
+badSort : Bool
+let badSort = isSorted (Tag "a") (Tag "b")   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

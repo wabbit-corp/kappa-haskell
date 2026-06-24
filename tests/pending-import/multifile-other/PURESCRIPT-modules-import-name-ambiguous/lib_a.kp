@@ -1,0 +1,13 @@
+-- Source artifacts: PURESCRIPT-PR-1105 (Correct ConflictingImport error,
+--                   linked #1088), PURESCRIPT-PR-4405 (DuplicateDeclarationsInLet
+--                   variable spans — evidence that conflicting name resolution
+--                   is a first-class source-language obligation).
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- This module exports `foo`; `lib_b` also exports `foo`.
+-- A consumer importing both with `*` makes `foo` ambiguous.
+module lib_a
+
+foo : Int
+let foo = 1

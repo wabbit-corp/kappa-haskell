@@ -1,0 +1,32 @@
+-- Source issues: Scala3 #7248, #6796, #6119, #7249, #9330
+-- Spec: traits.instances.search_termination
+-- The Paterson condition requires that "no premise may be identical to the head"
+-- and that the total size of each premise is strictly smaller than the head.
+-- An identity instance `instance Foo a => Foo a` has its premise identical to its
+-- head: the compiler MUST reject this declaration at instance-check time.
+-- The original bugs showed compilers crashing or looping; a conforming
+-- implementation must detect the violation and emit an error instead.
+
+module test
+
+trait Foo (a : Type) =
+    tag : String
+
+-- Positive control: a well-founded instance MUST be accepted.
+-- The head is `Foo (List a)`, premises are `Foo a` — structurally smaller.
+data List (a : Type) : Type =
+    Nil  : List a
+    Cons : a -> List a -> List a
+
+instance Foo a => Foo (List a) =
+    let tag = "list"
+
+--! mode check
+
+-- REJECTED: premise `Foo a` is identical to the head `Foo a`.
+-- Paterson condition: "no premise may be identical to the head."
+-- The compiler MUST reject this with an error, not loop or crash.
+instance Foo a => Foo a =    --!! kappa.termination.failure
+    let tag = tag
+
+--! assertDiagnosticFamily error kappa.termination.failure

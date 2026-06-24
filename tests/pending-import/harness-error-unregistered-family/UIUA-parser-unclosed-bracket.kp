@@ -1,0 +1,35 @@
+-- Source issue: Uiua #14 (Disturbing error message for unbalanced
+--   brackets — the parser's diagnostic for an unclosed `[[1 2 3] [4 5 6]`
+--   was hard to read and ambiguously placed), Uiua #178 (errors emitted
+--   twice for unbalanced delimiters).
+-- Spec: compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_RECOVERY_MISSING_NODE),
+--       compiler.frontir.diagnostic_quality_invariants
+--       (single primary diagnostic per source error).
+--
+-- An unclosed bracket / list literal must produce a recoverable parser
+-- diagnostic carrying portable code E_RECOVERY_MISSING_NODE. The
+-- diagnostic must point at the opening token (or the expected closing
+-- position) and MUST NOT be duplicated.
+
+module test
+
+--! mode check
+
+-- POSITIVE: balanced list literal.
+ok : List Int
+let ok = [1, 2, 3]
+
+--! assertType ok List Int
+
+-- NEGATIVE: unclosed list literal. The parser MUST emit exactly one
+-- recovery-class diagnostic carrying E_RECOVERY_MISSING_NODE, and MUST
+-- NOT panic. This pins down the recovery contract: a single primary
+-- error for the unclosed delimiter and no internal-compiler failure.
+bad : List Int
+let bad = [1, 2, 3                            --!! E_RECOVERY_MISSING_NODE
+
+--! assertDiagnostic error E_RECOVERY_MISSING_NODE
+--! assertErrorCount 1

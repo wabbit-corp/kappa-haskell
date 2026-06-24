@@ -1,0 +1,54 @@
+-- Source issue: (original — nested constructor exhaustiveness)
+-- Spec: expressions.match,
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Pattern matching on nested constructors must check exhaustiveness at
+-- every level of nesting, not just the outermost.
+
+--! mode check
+
+data Tree (a : Type) : Type =
+    Leaf : a -> Tree a
+    Node : Tree a -> Tree a -> Tree a
+
+-- POSITIVE: fully exhaustive match on Tree.
+treeHeight : forall {a : Type}. Tree a -> Nat
+let treeHeight t =
+    match t
+    case Leaf _     -> 0
+    case Node l r   -> 1 + max (treeHeight l) (treeHeight r)
+  where
+    let max (a : Nat) (b : Nat) : Nat = if a > b then a else b
+
+-- POSITIVE: exhaustive match on nested Tree pattern.
+leftmostLeaf : forall {a : Type}. Tree a -> a
+let leftmostLeaf t =
+    match t
+    case Leaf x         -> x
+    case Node (Leaf x) _ -> x
+    case Node (Node l _) _ -> leftmostLeaf (Node l (Leaf (leftmostLeaf l)))
+
+-- POSITIVE: match over a pair of data types — both must be covered.
+data Color : Type = Red | Green | Blue
+data Size  : Type = Small | Large
+
+label : Color -> Size -> String
+let label c s =
+    match (c, s)
+    case (Red,   Small) -> "small-red"
+    case (Red,   Large) -> "large-red"
+    case (Green, Small) -> "small-green"
+    case (Green, Large) -> "large-green"
+    case (Blue,  Small) -> "small-blue"
+    case (Blue,  Large) -> "large-blue"
+
+-- NEGATIVE: non-exhaustive match on nested Tree — missing the case where
+-- both subtrees are Nodes.
+nonExhaustive : forall {a : Type}. Tree a -> Int
+let nonExhaustive t =
+    match t
+    case Leaf _             -> 0
+    case Node (Leaf _) _    -> 1
+    -- Missing: Node (Node _ _) _ is unreachable only if the recursion is bounded.
+    -- Actually the pattern is non-exhaustive: no case for Node with left=Node.
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

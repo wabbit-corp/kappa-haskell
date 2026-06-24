@@ -1,0 +1,79 @@
+-- Source issues: rzk#140 — syntax sugar for nested Sigma types; PR#183 —
+--   implement nested sigma sugar. In Rzk, `Σ (a : A) (b : B), C a b` should
+--   desugar to the left-associative `Σ ((a, b) : Σ (a : A), B), C a b`.
+--   Correspondingly, tuple patterns `(a, b, c)` should desugar to `((a, b), c)`.
+-- Spec: types.quantification, declarations.terms.irrefutable_patterns_let_bindings
+--   §11.3: Pi/Sigma formation; multi-binder sugar.
+--   §6.3.2: irrefutable patterns in let bindings.
+--
+-- Nested dependent pair types (Sigma types) with multi-component patterns
+-- must be accepted and must desugar correctly to nested binary pairs.
+-- Patterns on nested pairs must allow the same syntax in function parameters,
+-- let bindings, and lambda arguments.
+
+--! mode check
+
+-- POSITIVE: a simple dependent pair type.
+data DPair (a : Type) (b : a -> Type) : Type =
+    MkDPair : (x : a) -> b x -> DPair a b
+
+-- POSITIVE: a triple represented as a nested pair (right-associative).
+Triple : forall (a b c : Type). Type
+let Triple a b c = (a, (b, c))
+
+mkTriple : forall {a b c : Type} -> a -> b -> c -> Triple a b c
+let mkTriple x y z = (x, (y, z))
+
+-- POSITIVE: deconstructing a nested pair with right-associative pattern.
+fst3 : forall {a b c : Type} -> Triple a b c -> a
+let fst3 (x, _) = x
+
+snd3 : forall {a b c : Type} -> Triple a b c -> b
+let snd3 (_, (y, _)) = y
+
+thd3 : forall {a b c : Type} -> Triple a b c -> c
+let thd3 (_, (_, z)) = z
+
+-- POSITIVE: a triple represented as a left-associative nested pair.
+Triple' : forall (a b c : Type). Type
+let Triple' a b c = ((a, b), c)
+
+mkTriple' : forall {a b c : Type} -> a -> b -> c -> Triple' a b c
+let mkTriple' x y z = ((x, y), z)
+
+fst3' : forall {a b c : Type} -> Triple' a b c -> a
+let fst3' ((x, _), _) = x
+
+-- POSITIVE: a function that takes a nested pair and extracts all components.
+sumTriple : Triple Nat Nat Nat -> Nat
+let sumTriple (a, (b, c)) = a + b + c
+
+testSum : Nat
+let testSum = sumTriple (1, (2, 3))
+
+-- POSITIVE: a dependent pair where the second type depends on the first value.
+sigmaExample : DPair Nat (\n -> n = n)
+let sigmaExample = MkDPair 42 refl
+
+-- POSITIVE: pattern match on a dependent pair.
+projectFst : forall {a : Type} {b : a -> Type} -> DPair a b -> a
+let projectFst (MkDPair x _) = x
+
+-- POSITIVE: nested let patterns deconstructing a nested pair.
+nestedLetPattern : Nat
+let nestedLetPattern =
+    let triple : (Nat, Nat, Nat) = (10, 20, 30)
+    let (a, (b, c)) = triple
+    a + b + c
+
+-- NEGATIVE: trying to access a non-existent third projection on a plain pair.
+badAccess : (Nat, Bool) -> Nat
+let badAccess p = p.3    --!! kappa.name.unresolved
+
+-- NEGATIVE: constructing a dependent pair with a body whose type disagrees
+-- with the declared second-component type family.
+badDPair : DPair Nat (\_ -> Bool)
+let badDPair = MkDPair 0 refl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.type.mismatch

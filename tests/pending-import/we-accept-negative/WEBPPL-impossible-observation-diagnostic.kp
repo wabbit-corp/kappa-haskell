@@ -1,0 +1,56 @@
+-- Source issues: WebPPL #621 (have observe issue a warning if factor score
+--   is -Infinity), PR #870 (warn when impossible observations are made),
+--   #731 / PR #736 (warn when method='forward' used with observes).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-06
+--   (proposed: handler advertises which operations it can interpret;
+--    reaching an unsupported operation yields a portable diagnostic of
+--    family `kappa.effect.handler-unsupported-operation` — that family
+--    is NOT currently in ANON_SPEC §3.2; it is a pure spec gap).
+-- Related existing spec: effects.monadic_core.shallow_handlers,
+--   compiler.frontir.standard_diagnostic_families.effect_row_variant
+--   (kappa.effect.row-mismatch).
+--
+-- A model that performs only `prob.sample` is interpretable by a forward
+-- handler that interprets only `sample`. A model that additionally
+-- performs `prob.observe` or `prob.factor` is incompatible with such a
+-- handler. Until WEBPPL-SA-06 is adopted, this fixture pins the
+-- spec-gap-only positive cases and asserts only the existing effect-row
+-- discipline for the negative case.
+
+module test
+
+--! mode check
+
+data Distribution (a : Type) : Type =
+    DistBernoulli { p : Float }
+
+effect Prob =
+    1 sample  : forall a. Distribution a -> a
+    1 observe : forall a. Distribution a -> a -> a
+    1 factor  : Float -> Unit
+
+-- POSITIVE: a model that only uses `prob.sample` has the Prob row.
+modelSampleOnly : Eff <[prob : Prob]> Bool
+let modelSampleOnly = do
+    let x <- prob.sample (DistBernoulli { p = 0.5 })
+    pure x
+
+--! assertType modelSampleOnly (Eff <[prob : Prob]> Bool)
+
+-- POSITIVE: a model that adds `observe` and `factor` still has the same
+-- Prob row — operations of the same effect contribute to one label.
+modelWithObserve : Eff <[prob : Prob]> Bool
+let modelWithObserve = do
+    let x <- prob.sample (DistBernoulli { p = 0.5 })
+    let _ <- prob.observe (DistBernoulli { p = 0.5 }) True
+    prob.factor 0.0
+    pure x
+
+
+-- NEGATIVE: reaching any Prob operation in a pure context (empty row) is
+-- the existing-spec analogue of "no installed handler interprets this
+-- operation": it fires kappa.effect.row-mismatch.
+modelUnhandled : Eff <[ ]> Bool
+let modelUnhandled = prob.sample (DistBernoulli { p = 0.5 })
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

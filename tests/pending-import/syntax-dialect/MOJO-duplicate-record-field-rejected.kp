@@ -1,0 +1,40 @@
+-- Source issue: MOJO-1675
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--       declarations.terms,
+--       kappa.name.ambiguous
+-- A record (struct/data) declaration that contains two fields with the same
+-- name is ill-formed.  The duplicate field name must be rejected at the
+-- declaration site with kappa.name.ambiguous.
+
+module test
+
+--! mode check
+
+-- POSITIVE: all field names are distinct.
+data Point : Type =
+    Point { x : Int, y : Int }
+
+origin : Point
+let origin = Point { x = 0, y = 0 }
+
+--! assertType origin Point
+
+-- NEGATIVE: duplicate field name `value` in the same record constructor.
+-- The second `value` field shadows or collides with the first.
+data BadRecord : Type =          --!! kappa.name.ambiguous
+    BadRecord { value : Int, value : String }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: duplicate field names across two fields of different types.
+data AlsoBad : Type =            --!! kappa.name.ambiguous
+    AlsoBad { tag : Bool, tag : Int }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: two constructors (variants) in a sum type may each have their own
+-- fields; no duplication within either constructor.
+data Either : Type =
+    Left  { val : Int }
+  | Right { val : String }
+

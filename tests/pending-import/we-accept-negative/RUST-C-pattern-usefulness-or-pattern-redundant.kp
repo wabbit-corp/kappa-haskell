@@ -1,0 +1,34 @@
+-- Source artifacts: RUST-PR-66612 (Initial or-pattern usefulness checking),
+--                   RUST-PR-69891 (Matrix::push: recursively expand or-patterns),
+--                   RUST-PR-65160 (Refactor pattern-matching usefulness algorithm),
+--                   RA-4416 (Index out of bounds in `_match::is_useful`).
+-- Spec: expressions.patterns, expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable).
+-- An or-pattern in which the second alternative is entirely covered by the
+-- first alternative is unreachable. The diagnostic family
+-- kappa.pattern.unreachable applies and must name the redundant
+-- alternative.
+
+--! mode check
+
+data Color : Type =
+    Red | Green | Blue
+
+dispatch_or_pattern_redundant : Color -> Int
+let dispatch_or_pattern_redundant c =
+    match c
+    -- The two alternatives of the or-pattern overlap on `Red`.
+    case Red | Red -> 1            --!! kappa.pattern.unreachable
+    case Green     -> 2
+    case Blue      -> 3
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- POSITIVE: a non-overlapping or-pattern is accepted.
+dispatch_or_pattern_ok : Color -> Int
+let dispatch_or_pattern_ok c =
+    match c
+    case Red | Green -> 1
+    case Blue        -> 2
+

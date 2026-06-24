@@ -1,0 +1,26 @@
+-- Source issues: BQN-98 (`0⊸↕·⋄{0}` invalid LHS),
+-- BQN tests/test/cases/syntax.bqn rejected: `-⟜a←1`, `(A b)←@`.
+-- Spec: expressions.patterns.scoping_validity,
+--       expressions.application — an applied function is not a pattern.
+-- An expression of the form `(F x) ← e` is not a valid binding LHS:
+-- function application is not a pattern. See SA-BQN-04 for the spec gap
+-- on a stable invalid-LHS diagnostic family; in the meantime we assert
+-- at least one error.
+
+--! mode check
+
+-- POSITIVE: a binding whose RHS is a function application is fine.
+square : Nat -> Nat
+let square x = x * x
+
+answer : Nat
+let answer = square 4
+
+-- NEGATIVE: applying a function on the LHS is not a binding form.
+-- BQN's `-⟜a←1` and `(A b)←@` are rejected at parse time. Kappa must
+-- reject the analog. The Kappa pattern grammar
+-- (expressions.patterns.forms) does not admit applied functions in
+-- pattern-head position, so the parser/elaborator rejects this.
+let (square x) = 16
+
+--! assertErrorCount 1

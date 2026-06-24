@@ -1,0 +1,86 @@
+-- Source artifacts: cooltt PR #388 (bring record types to parity with the OCaml
+--               module system; `include sig renaming [...]`), test algebra.cooltt,
+--               test typeclass.cooltt.
+-- Spec: declarations.signatures
+--
+-- A record type may include all fields of another record type via an `include`
+-- declaration. Fields can be renamed during inclusion, allowing the derived
+-- record to present a different interface. The resulting record type contains all
+-- fields of the included type (possibly renamed) plus any new fields.
+-- This models ML-style `where type` / `include ... renaming [...]`.
+
+--! mode check
+
+-- POSITIVE: base record type with three fields.
+data Monoid : Type =
+    MkMonoid :
+        (t   : Type0)       ->
+        (op  : t -> t -> t) ->
+        (emp : t)           ->
+        Monoid
+
+monoidT   : Monoid -> Type0
+monoidT   (MkMonoid t _ _) = t
+
+monoidOp  : (m : Monoid) -> monoidT m -> monoidT m -> monoidT m
+monoidOp  (MkMonoid _ op _) = op
+
+monoidEmp : (m : Monoid) -> monoidT m
+monoidEmp (MkMonoid _ _ e) = e
+
+-- POSITIVE: instantiate the Monoid with natural numbers under addition.
+natAddMonoid : Monoid
+let natAddMonoid = MkMonoid Nat (\a -> \b -> a + b) zero
+
+-- POSITIVE: a function parameterized by a Monoid uses its fields.
+fold : (m : Monoid) -> List (monoidT m) -> monoidT m
+let fold m nil         = monoidEmp m
+let fold m (cons x xs) = monoidOp m x (fold m xs)
+
+-- POSITIVE: record extension — new record with an additional field.
+-- Models `include Monoid renaming [op -> add; emp -> zer]` + new field `neg`.
+data Group : Type =
+    MkGroup :
+        (t   : Type0)       ->
+        (add : t -> t -> t) ->
+        (zer : t)           ->
+        (neg : t -> t)      ->
+        Group
+
+groupT   : Group -> Type0
+groupT   (MkGroup t _ _ _) = t
+
+groupAdd : (g : Group) -> groupT g -> groupT g -> groupT g
+groupAdd (MkGroup _ add _ _) = add
+
+groupZer : (g : Group) -> groupT g
+groupZer (MkGroup _ _ z _) = z
+
+groupNeg : (g : Group) -> groupT g -> groupT g
+groupNeg (MkGroup _ _ _ n) = n
+
+-- POSITIVE: extract the underlying Monoid from a Group.
+-- (rename `add` back to `op` and `zer` back to `emp`)
+groupAsMonoid : Group -> Monoid
+let groupAsMonoid g = MkMonoid (groupT g) (groupAdd g) (groupZer g)
+
+-- POSITIVE: a nested hierarchy — ring extends two monoids.
+-- Demonstrates that multi-level include/rename composition is coherent.
+data Ring : Type =
+    MkRing :
+        (t   : Type0)       ->
+        (add : t -> t -> t) ->
+        (zer : t)           ->
+        (neg : t -> t)      ->
+        (mul : t -> t -> t) ->
+        (one : t)           ->
+        Ring
+
+ringAddGroup : Ring -> Group
+let ringAddGroup (MkRing t add zer neg _ _) = MkGroup t add zer neg
+
+-- NEGATIVE: applying a Monoid field operation to the wrong type.
+badMono : Nat
+let badMono = monoidOp natAddMonoid True zero    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

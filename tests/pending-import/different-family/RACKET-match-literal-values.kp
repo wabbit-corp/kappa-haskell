@@ -1,0 +1,44 @@
+-- Source: Racket guide match.scrbl (literal patterns)
+-- Source docs: racket guide match.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/match.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: expressions.patterns.forms, expressions.match
+--
+-- Patterns may be literal values (integers, booleans, strings). A literal
+-- pattern matches only when the scrutinee equals that literal. A match on
+-- a finite set of literals must include a wildcard or cover all possible values
+-- to be exhaustive over an infinite type like Int.
+
+--! mode check
+
+-- POSITIVE: match specific integer literals with a wildcard fallthrough.
+dayName : Int -> String
+let dayName 1 = "Monday"
+let dayName 2 = "Tuesday"
+let dayName 3 = "Wednesday"
+let dayName 4 = "Thursday"
+let dayName 5 = "Friday"
+let dayName 6 = "Saturday"
+let dayName 7 = "Sunday"
+let dayName _ = "Unknown"
+
+-- POSITIVE: match on Bool literals (exhaustive — both values covered).
+boolToStr : Bool -> String
+let boolToStr True  = "yes"
+let boolToStr False = "no"
+
+-- POSITIVE: match on string literals with wildcard.
+greet : String -> String
+let greet "Alice" = "Hello, Alice!"
+let greet "Bob"   = "Hi, Bob!"
+let greet name    = "Hey, " ++ name ++ "!"
+
+-- POSITIVE: literal plus variable pattern in the same match.
+describeInt : Int -> String
+let describeInt 0 = "zero"
+let describeInt 1 = "one"
+let describeInt n = "many"
+
+-- NEGATIVE: match on Bool without covering False is non-exhaustive.
+onlyTrue : Bool -> String
+let onlyTrue True = "yes"   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,53 @@
+-- Source issues: ELIXIR-PR-13518 (type inference for structs and type checking for
+--   dot/remote), module/types/pattern_test.exs "unknown field", errors_test.exs
+--   "struct fields on defstruct"
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.constructor-arity)
+-- Kappa spec rule (§3.2.10):
+--   "Used when a constructor pattern supplies the wrong number of positional arguments,
+--    duplicates named fields, omits required fields in a context where omission is not
+--    permitted, or supplies fields not declared by the constructor."
+-- In Elixir's type checker (PR#13518): struct patterns referencing undeclared fields
+-- produce an error diagnostic — "unknown key :field for struct MyStruct".
+-- In Kappa, supplying a field not declared by the record/struct constructor is rejected
+-- with kappa.pattern.constructor-arity.
+
+--! mode check
+
+record Point =
+    x : Int
+    y : Int
+
+-- POSITIVE: pattern uses exactly the declared fields.
+isOrigin : Point -> Bool
+let isOrigin p =
+    match p
+    case Point { x = 0, y = 0 } -> True
+    case _                       -> False
+
+-- POSITIVE: pattern with explicit wildcard on unused field (no rest-syntax needed).
+getX : Point -> Int
+let getX (Point { x = n, y = _ }) = n
+
+-- NEGATIVE: 'z' is not a field of Point; this pattern must be rejected.
+badField : Point -> Int
+let badField p =
+    match p
+    case Point { z = n }  -> n  --!! kappa.pattern.constructor-arity
+    case _                -> 0
+
+-- NEGATIVE: duplicate field 'x' in the same pattern — the second occurrence is invalid.
+dupField : Point -> Int
+let dupField p =
+    match p
+    case Point { x = a, x = b } -> a + b  --!! kappa.pattern.constructor-arity
+    case _                       -> 0
+
+-- NEGATIVE: pattern references an extra nonexistent field 'label' in addition to valid fields.
+mixedBadField : Point -> Int
+let mixedBadField p =
+    match p
+    case Point { x = n, label = _ } -> n  --!! kappa.pattern.constructor-arity
+    case _                           -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

@@ -1,0 +1,43 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/InvalidRvalue.hylo,
+--                   Tests/HyloTests/TestCases/Lowering/ProjectionEscape.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/Lowering/InvalidRvalue.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.record_projection_accessor_inout
+--       (kappa.accessor.missing-capability)
+-- Hylo: a subscript or property that only provides a `let` (read-only) accessor
+-- cannot be used in a consuming (`sink`) position, because no `sink`
+-- implementation exists. Attempting to move or return the projected value
+-- is rejected. In Kappa this maps to: an accessor declaration lacks the
+-- required capability (`sink` / consume) for the demanded context.
+
+--! mode check
+
+trait Readable a where
+    readField : (& a) -> Int
+
+data Container : Type = Container Int
+
+-- The readable accessor only yields a borrow, not an owned value.
+-- A `sink`/consume use requires an accessor providing the `sink` capability.
+impl Readable Container where
+    let readField (Container n) = n
+
+read : (& c : Container) -> Int
+let read c = readField c
+
+-- POSITIVE: reading via a let-accessor is valid.
+peekContainer : (& c : Container) -> Int
+let peekContainer c = read c
+
+-- POSITIVE: linear Container consumed directly (owned value, not a projection).
+consumeContainer : (1 c : Container) -> Int
+let consumeContainer (Container n) = n
+
+-- NEGATIVE: trying to consume the result of a let-only projection.
+-- The projection does not provide a `sink` capability, so moving its
+-- result is disallowed.
+consumeProjection : (& c : Container) -> Int
+let consumeProjection c =
+    let n = read c
+    consumeContainer (Container n)    --!! kappa.accessor.missing-capability
+
+--! assertDiagnosticFamily error kappa.accessor.missing-capability

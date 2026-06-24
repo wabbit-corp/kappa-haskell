@@ -1,0 +1,48 @@
+-- Source issues: ponyc#1964, ponyc PR#4588, ponyc PR#3953
+-- Spec: types.universes.quantities, expressions.application.subsumption,
+--       traits.instances.associated_static_member_instance_checking
+-- Pony issue #1964: iso being a subtype of trn is unsound with covariant
+-- methods. Class B has a field of type `Counter iso`. Its get() returns
+-- `Counter iso`. B implements trait A whose get() returns `Counter trn`.
+-- Because iso <: trn, the return types are covariant and allowed. However,
+-- aliasing through the trait allows two stable references to the same
+-- Counter, violating the iso guarantee.
+-- In Kappa, a trait method's return type in the instance must not weaken
+-- the uniqueness invariant. Returning a uniquely-owned value (quantity 1)
+-- via a trait that promises a shared value (& borrow) would allow the
+-- caller to alias the unique value.
+
+--! mode check
+
+data Counter : Type = Counter Int
+
+trait Gettable (a : Type) =
+    getCounter : (& self : a) -> (& Counter)
+
+data Holder : Type = Holder (1 inner : Counter)
+
+-- POSITIVE: returning a borrow to the inner Counter from a borrowed Holder.
+instance Gettable Holder =
+    let getCounter (Holder inner) = inner
+
+-- POSITIVE: using the trait to borrow the counter.
+inspect :
+    forall (a : Type).
+    (@_ : Gettable a) ->
+    (& x : a) -> Int
+let inspect x =
+    let Counter n = getCounter x
+    n
+
+h : Holder
+let h = Holder (Counter 42)
+
+result : Int
+let result = inspect h
+
+-- NEGATIVE: trying to extract the unique inner value through a borrow
+-- context — this would alias the linear inner without consuming the Holder.
+badExtract : (& h : Holder) -> Counter
+let badExtract (Holder inner) = inner   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

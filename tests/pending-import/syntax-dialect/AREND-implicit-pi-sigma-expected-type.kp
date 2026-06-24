@@ -1,0 +1,63 @@
+-- Source issues: implicit argument inference when expected type is a
+--   Pi or Sigma but depends on unresolved metavariables; type inference
+--   in let-binding with a Pi-type annotation omitted.
+-- Source issues: jetbrains/arend#20, #75 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: expressions.implicit_parameters,
+--       expressions.implicit_parameters.constraint_sugar,
+--       declarations.let_in
+--
+-- When the expected type of an expression is a Pi type but depends on
+-- an unresolved inference variable, the elaborator must generate fresh
+-- metavariables for the domain and codomain and unify, rather than
+-- failing with "cannot infer type".
+
+--! mode check
+
+-- POSITIVE: a let binding with a Pi-type right-hand side.
+-- The type of `selfPath` is `forall {A : Type} -> (a : A) -> a = a`.
+-- When the elaborator sees the Pi body, it must be able to infer the
+-- implicit `A` from the structure of the Pi type.
+selfPath : forall {A : Type} -> (a : A) -> a = a
+let selfPath a = refl
+
+-- POSITIVE: local let where the annotation is a Pi type.
+-- The elaborator must not fail to type the Pi body.
+useSelfPath : 0 = 0
+let useSelfPath = selfPath 0
+
+-- POSITIVE: a Sigma type whose components are inferred.
+-- Both the first and second projection should be available.
+pairExample : (Nat, Bool)
+let pairExample = (42, True)
+
+fstExample : Nat
+let fstExample = pairExample.1
+
+sndExample : Bool
+let sndExample = pairExample.2
+
+-- POSITIVE: a function whose type is inferred from a Pi annotation.
+-- The elaborator should infer `A` in `applyTwice : (A -> A) -> A -> A`
+-- from the Pi type `(A -> A) -> A -> A` without an explicit annotation.
+applyTwice : forall (A : Type) -> (A -> A) -> A -> A
+let applyTwice f x = f (f x)
+
+applyTwiceNat : Nat -> Nat
+let applyTwiceNat = applyTwice suc
+
+testApply : Nat
+let testApply = applyTwiceNat 5
+
+-- POSITIVE: let binding where the type is a Pi-type dependent on an
+-- implicit that must be inferred, not user-provided.
+compose : forall {A B C : Type} -> (B -> C) -> (A -> B) -> A -> C
+let compose g f x = g (f x)
+
+addThenDouble : Nat -> Nat
+let addThenDouble = compose (\n -> n + n) suc
+
+-- NEGATIVE: applying a non-function as a function produces a type mismatch.
+badApply : Nat
+let badApply = 42 zero    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

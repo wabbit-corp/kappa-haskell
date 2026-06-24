@@ -1,0 +1,40 @@
+-- Source: Racket guide match.scrbl (list patterns), letrec.rktl
+-- Source docs: racket guide match.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/match.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: expressions.patterns.forms, expressions.match
+--
+-- Pattern matching against list constructors (nil and cons). The `[]` pattern
+-- matches the empty list; `(h :: t)` matches a cons cell binding head and tail.
+-- A function over lists must cover both cases to be exhaustive.
+
+--! mode check
+
+-- POSITIVE: sum all elements of a list.
+sumList : List Int -> Int
+let sumList []       = 0
+let sumList (h :: t) = h + sumList t
+
+-- POSITIVE: reverse a list using an accumulator.
+reverseList : (A : Type) -> List A -> List A -> List A
+let reverseList _ acc []       = acc
+let reverseList A acc (h :: t) = reverseList A (h :: acc) t
+
+-- POSITIVE: check whether a list is empty.
+isEmpty : (A : Type) -> List A -> Bool
+let isEmpty _ []      = True
+let isEmpty _ (_ :: _) = False
+
+-- POSITIVE: get the first element if any.
+headOpt : (A : Type) -> List A -> Option A
+let headOpt _ []      = None
+let headOpt _ (h :: _) = Some h
+
+-- POSITIVE: nested list pattern — match first two elements.
+firstTwo : List Int -> Option (Int, Int)
+let firstTwo (a :: b :: _) = Some (a, b)
+let firstTwo _              = None
+
+-- NEGATIVE: function that only handles non-empty list is non-exhaustive.
+unsafeHead : (A : Type) -> List A -> A
+let unsafeHead _ (h :: _) = h    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,31 @@
+-- Source issues: inko#682, docs/concurrency
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: values sent across process boundaries must be sendable — they must
+-- be value types or unique (uni T). A generic container whose type argument
+-- is a borrow (ref T) is not sendable, even if the container structure is.
+-- In Kappa, the quantity constraint for a sendable argument propagates into
+-- type parameters: a container is sendable only if all type arguments are.
+
+--! mode check
+
+data Message (a : Type) : Type = Message a
+
+-- spawnWith: accepts only a linearly-owned (sendable) Message.
+-- Borrows (& T) cannot cross region boundaries.
+spawnWith : forall (a : Type). (1 m : Message a) -> Int
+let spawnWith _ = 0
+
+data Blob : Type = Blob Int
+
+-- POSITIVE: sending a linearly-owned message with a value-type payload.
+ok : Int
+let ok = spawnWith (Message (Blob 99))
+
+
+-- NEGATIVE: constructing a message whose payload is a borrow, then
+-- attempting to send it. The borrow in the type argument makes the
+-- Message non-sendable: it carries a region dependency.
+bad : (& b : Blob) -> Int
+let bad b = spawnWith (Message b)   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

@@ -1,0 +1,68 @@
+-- Source issues: rust#67514 (or-patterns in irrefutable match), rust#65490 (bindings_after_at tracking)
+-- Spec: expressions.patterns.forms, expressions.patterns.validity,
+--       expressions.match.guarded_cases_introduce_guard_success_evidence
+--
+-- Kappa or-patterns admit identical name sets and identical quantities across
+-- alternatives. An or-pattern arm with a guard must:
+--   (a) introduce the same bindings on every alternative,
+--   (b) thread guard-success evidence through to the body, so the body sees
+--       the refined scrutinee facts produced by each alternative.
+-- Kappa's bindings-after-`@` analog: a name introduced via `name @ pat` may
+-- bind inner names from `pat` simultaneously; both names are usable in the
+-- body.
+
+module test
+
+data Result (a e : Type) : Type =
+    Ok a
+    Err e
+
+--! mode check
+
+-- POSITIVE: or-pattern with same-name binders and a guard. The body sees
+-- `x` regardless of which alternative matched and uses guard-success
+-- evidence to refine its return value.
+classify : Result Int Int -> Int
+let classify r =
+    match r
+    case (Ok x | Err x) when x > 0  -> x
+    case (Ok x | Err x) when x < 0  -> 0 - x
+    case _                          -> 0
+
+
+-- POSITIVE: bindings-after-`@`. The outer `whole @` introduces a binder
+-- for the entire scrutinee, and the inner constructor pattern introduces
+-- bindings simultaneously. Both binders are usable in the body.
+sumWithTag : Result Int Int -> Int
+let sumWithTag r =
+    match r
+    case (whole @ Ok x)   -> x + (tag whole)
+    case (whole @ Err e)  -> e + (tag whole)
+
+tag : forall (a e : Type). Result a e -> Int
+let tag _ = 1
+
+
+-- NEGATIVE: an or-pattern whose alternatives bind different names is
+-- ill-formed (§17.2.3). The diagnostic must surface the name set
+-- mismatch.
+illBinders : Result Int Int -> Int
+let illBinders r =
+    match r
+    case (Ok x | Err y) -> x   --!! kappa.pattern.constructor-arity
+    case _              -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: an or-pattern whose alternatives bind the same name at
+-- different types is also ill-formed.
+data Tag : Type =
+    TagA Int
+    TagB String
+
+mixedTypes : Tag -> Int
+let mixedTypes t =
+    match t
+    case (TagA x | TagB x) -> 0   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

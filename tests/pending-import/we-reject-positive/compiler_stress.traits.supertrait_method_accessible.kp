@@ -1,0 +1,36 @@
+-- Stress test: Supertrait methods accessible via derived trait instance
+-- Spec: traits.headers.supertraits
+
+--! mode check
+
+trait Printable (a : Type) =
+    toString : a -> String
+
+trait Printable a => Pretty (a : Type) =
+    prettyPrint : a -> String
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+instance Printable Color =
+    let toString c = match c
+        case Red   -> "red"
+        case Green -> "green"
+        case Blue  -> "blue"
+
+instance Pretty Color =
+    let prettyPrint c = "<" ++ (toString c) ++ ">"
+
+-- Supertrait: Pretty a implies Printable a, so toString is accessible here
+displayList : forall (a : Type). (@_ : Pretty a) -> List a -> String
+let displayList xs = match xs
+    case Nil       -> ""
+    case Cons h t  -> toString h ++ " " ++ displayList t
+
+-- toString is from Printable, but available via Pretty's supertrait evidence
+testDisplay : String
+let testDisplay = displayList (Cons Red (Cons Green (Cons Blue Nil)))
+
+--! assertNoErrors

@@ -1,0 +1,52 @@
+-- Source issues: leo#829 (duplicate function definition causes misleading error;
+--               the second definition was silently accepted and a later use
+--               produced a confusing 'variable not found' error rather than
+--               'duplicate definition'), leo#370 (multiple `main` functions
+--               allowed, the last one wins silently).
+-- Spec: SA-LEO-03 (duplicate top-level name definitions must produce
+--       `kappa.name.ambiguous`),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§SA-LEO-03):
+--   "Two function declarations with the same name at the same scope level must
+--    produce `kappa.name.ambiguous`. The diagnostic must point to both
+--    definition sites. The first definition is canonical for all call sites."
+-- leo#829: `function add_one(arg: u32)` defined twice; instead of reporting a
+--   duplicate, the compiler emitted `failed to resolve variable reference 'arg'`
+--   pointing into the body of the wrong definition.
+
+--! mode check
+
+-- POSITIVE: a single function at each name.
+increment : Int -> Int
+let increment n = n + 1
+
+decrement : Int -> Int
+let decrement n = n - 1
+
+
+-- NEGATIVE: defining `increment` a second time at the top level.
+increment : Bool -> Bool               --!! kappa.name.ambiguous
+let increment b = if b then False else True
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: the original `increment` is still usable after the redefinition error.
+useOriginal : Int
+let useOriginal = increment 5
+
+
+-- NEGATIVE: defining `decrement` a second time; different signature.
+decrement : Int -> Int -> Int          --!! kappa.name.ambiguous
+let decrement x y = x - y
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: defining a top-level value `main` twice is also a duplicate.
+main : Int
+let main = 0
+
+main : Int                             --!! kappa.name.ambiguous
+let main = 1
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

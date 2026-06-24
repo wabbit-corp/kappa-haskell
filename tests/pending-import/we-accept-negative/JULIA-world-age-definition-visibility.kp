@@ -1,0 +1,47 @@
+-- Source: Julia manual, "World Age",
+--         Julia "method too new" world-age restriction
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Julia, a method defined after a function begins executing is not visible
+-- to dispatch within that same invocation ("method too new" / world-age
+-- violation). The portable obligation in Kappa is that every name must be
+-- declared before it is used; a forward reference to an undeclared name is
+-- kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: declaration precedes use.
+helper : Int -> Int
+let helper x = x + 1
+
+useHelper : Int
+let useHelper = helper 5
+
+--! assertType useHelper Int
+
+-- NEGATIVE: using a name before it has been declared.
+earlyUse : Int
+let earlyUse = notYetDefined 3   --!! kappa.name.unresolved
+
+notYetDefined : Int -> Int
+let notYetDefined x = x * 2
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: after its declaration, the name is available.
+lateOk : Int
+let lateOk = notYetDefined 7
+
+-- POSITIVE: a chain of mutually ordered declarations.
+double : Int -> Int
+let double x = x + x
+
+quad : Int -> Int
+let quad x = double (double x)
+
+chained : Int
+let chained = quad 3
+
+--! assertType lateOk  Int
+--! assertType chained Int
+

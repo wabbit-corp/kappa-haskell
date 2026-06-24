@@ -1,0 +1,62 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestMPTCCoerce.curry
+--   (class Coerce a b | a -> b; instance Coerce Bool Int; compCoerce = coerce . coerce).
+-- Spec: traits.headers (§14.1), traits.instances (§14.3),
+--       traits.instances.resolution_algorithm (§14.3.1).
+-- Spec gap: CURRY-SA-09 (functional dependencies on multi-parameter traits).
+--
+-- Kappa prefers an *associated-type* style over Haskell-style
+-- functional-dependency arrows. The Curry test's `Coerce a b | a -> b`
+-- is re-expressed by making the target type an associated type of
+-- the trait; the resolution algorithm then determines the target
+-- uniquely from the source instance head.
+
+module test
+
+--! mode check
+
+trait Convert (a : Type) =
+    Target : Type
+    convert : a -> Target
+
+--! assertNoErrors
+
+instance Convert Bool =
+    let Target = Int
+    let convert b =
+        match b
+        case True  -> 1
+        case False -> 0
+
+instance Convert Int =
+    let Target = Bool
+    let convert n = if n == 0 then False else True
+
+--! assertNoErrors
+
+-- POSITIVE: convert at Bool produces Int (the associated type is
+-- determined by the instance head).
+convertedTrue : Int
+let convertedTrue = convert True
+-- expected: 1
+
+--! assertNoErrors
+--! assertType convertedTrue Int
+
+convertedZero : Bool
+let convertedZero = convert (0 : Int)
+-- expected: False
+
+--! assertNoErrors
+--! assertType convertedZero Bool
+
+-- POSITIVE: round-trip composition.  Convert at Bool yields Int;
+-- convert at Int yields Bool; the result type is uniquely determined.
+convertTwice : Bool -> Bool
+let convertTwice b = convert (convert b : Int)
+
+roundTripTrue : Bool
+let roundTripTrue = convertTwice True
+-- expected: True
+
+--! assertNoErrors
+--! assertType roundTripTrue Bool

@@ -1,0 +1,44 @@
+-- Source issues: vale#131 (Immutable struct should not contain non-final
+--               fields), Vale StructTests (Make empty imm struct)
+-- Spec: types.universes.quantities, types.records.formation,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- In Vale, a struct annotated `imm` should only contain immutable (final)
+-- fields. Declaring a mutable field inside an `imm` struct is a compile-
+-- time error that was absent in Vale 0.1.x (it only manifested at runtime).
+-- In Kappa, a record type declared with no mutation capability must enforce
+-- that none of its fields carry a mutation capability; a mutable field in
+-- an immutable record is kappa.quantity.unsatisfied.
+
+--! mode check
+
+-- POSITIVE: an immutable record with all read-only fields.
+data ImmutablePoint : Type = ImmutablePoint Int Int
+
+readX : (& p : ImmutablePoint) -> Int
+let readX (ImmutablePoint x _) = x
+
+-- POSITIVE: using an immutable record value as a shared read-only borrow.
+sharedRead : (& p : ImmutablePoint) -> Int
+let sharedRead p = readX p
+
+-- NEGATIVE: attempting to declare an immutable record with a field that
+-- has a `var` (writable) qualifier violates the immutability invariant.
+-- The field `name` below is declared as mutable inside an immutable record.
+data BadImmutableShip imm : Type =
+    BadImmutableShip (var String) Int   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: projecting a write-capable accessor from an immutable record
+-- binding — the binding is read-only so write projection is disallowed.
+data Spaceship : Type = Spaceship Int
+
+writeField : (& s : Spaceship) -> Unit
+let writeField s =
+    set s.x = 10   --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: constructing an immutable value and reading fields.
+buildAndRead : Unit -> Int
+let buildAndRead () =
+    let pt = ImmutablePoint 3 4
+    readX pt

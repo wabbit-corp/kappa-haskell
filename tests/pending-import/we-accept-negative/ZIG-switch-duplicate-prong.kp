@@ -1,0 +1,56 @@
+-- Source issues: zig compile_errors/switch_expression-duplicate_enumeration_prong.zig,
+--               zig compile_errors/switch_expression-duplicate_error_prong.zig,
+--               zig compile_errors/switch_expression-duplicate_or_overlapping_integer_value.zig
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Duplicate patterns in a match — two arms matching the same constructor or
+-- the same literal value — make the second arm permanently unreachable. The
+-- compiler must reject the duplicate arm with `kappa.pattern.unreachable`
+-- and point to the earlier, shadowing arm.
+
+--! mode check
+
+data Suit : Type =
+    Clubs
+    Diamonds
+    Hearts
+    Spades
+
+-- POSITIVE: each constructor appears exactly once.
+let suitValue (s : Suit) : Int =
+    match s
+    case Clubs    -> 1
+    case Diamonds -> 2
+    case Hearts   -> 3
+    case Spades   -> 4
+
+
+-- NEGATIVE: `Diamonds` appears twice; the second occurrence is unreachable.
+let suitValueBad (s : Suit) : Int =
+    match s
+    case Clubs    -> 1
+    case Diamonds -> 2
+    case Hearts   -> 3
+    case Spades   -> 4
+    case Diamonds -> 99    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: duplicate wildcard — second `_` is never reached.
+let suit2 (s : Suit) : Bool =
+    match s
+    case Clubs -> True
+    case _     -> False
+    case _     -> True     --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: integer range duplicate — overlapping ranges.
+let classifyInt (n : Int) : String =
+    match n
+    case 0  -> "zero"
+    case 1  -> "one"
+    case 0  -> "also-zero"    --!! kappa.pattern.unreachable
+    case _  -> "other"
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

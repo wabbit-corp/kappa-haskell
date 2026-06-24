@@ -1,0 +1,61 @@
+-- Source issues: Chapel #9181, #13291, #13292
+-- Spec: types.records.syntax, types.universes.erasure_elaboration_time.compile_time_bindings_fields
+-- A closed record may include a compile-time type field (a field whose declared
+-- annotation elaborates to `Type u`). Subsequent value fields may use this type
+-- field as their type, forming a dependent telescope. This pattern is the Kappa
+-- equivalent of Chapel's generic record with a `type T` field plus a `var val: T`
+-- field — a heterogeneous container whose element type is determined at the record
+-- level.
+
+--! mode check
+
+-- A "generic container" record: T is a transparent compile-time type field;
+-- val has type T. This is a sigma type: exists T : Type, T.
+type Box : Type =
+    ( T   : Type   -- compile-time type field; erased at runtime
+    , val : T      -- value field whose type depends on T
+    )
+
+-- POSITIVE: construct a Box Int by supplying T = Int and val = 42.
+intBox : Box
+let intBox = (T = Int, val = 42)
+
+-- POSITIVE: construct a Box Bool.
+boolBox : Box
+let boolBox = (T = Bool, val = True)
+
+-- POSITIVE: project the val field. Its static type is the record's T field.
+-- For a concrete box, T unfolds to the supplied type.
+getVal : Box -> ?
+let getVal b = b.val
+
+
+---
+
+-- A generic record with two fields: a compile-time size and a sized buffer.
+-- This maps to Chapel records with type + shape fields.
+type SizedBuffer : Type =
+    ( n   : Nat              -- runtime size (not compile-time)
+    , buf : Array n Int      -- element array whose size depends on n
+    )
+
+-- POSITIVE: construction of a SizedBuffer.
+mkBuf : (n : Nat) -> Array n Int -> SizedBuffer
+let mkBuf n arr = (n = n, buf = arr)
+
+-- POSITIVE: projection preserves the dependent type.
+getN : SizedBuffer -> Nat
+let getN sb = sb.n
+
+getBuf : (sb : SizedBuffer) -> Array sb.n Int
+let getBuf sb = sb.buf
+
+
+---
+
+-- NEGATIVE: trying to supply a val of the wrong type for a Box.
+-- T is Int but val is provided as a Bool — type mismatch.
+badBox : Box
+let badBox = (T = Int, val = True)  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

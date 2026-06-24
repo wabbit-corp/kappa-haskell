@@ -1,0 +1,53 @@
+-- Source issues: dependent pattern matching on indexed data; constructor
+--   parameter index unification; sigma zero-index rejection.
+-- Source issues: jetbrains/arend#3, #8 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       data_types.data_declarations
+--
+-- When a data constructor carries forced index equalities (GADT-style), the
+-- type-checker must unify those indices at each use site. Two patterns that
+-- reuse the same variable in two different constructor index positions must
+-- satisfy the resulting unification constraints simultaneously. If the
+-- constraints are contradictory, the use site must be rejected.
+
+--! mode check
+
+-- An indexed relation: `Geq x y` witnesses that x ≥ y.
+-- Constructor EqBase requires the second index to be zero.
+-- Constructor EqSuc requires both indices to decrease by one simultaneously.
+data Geq : Nat -> Nat -> Type =
+    EqBase {m : Nat} : Geq m zero
+    EqSuc  {n m : Nat} : Geq n m -> Geq (suc n) (suc m)
+
+-- POSITIVE: explicit pattern matching on Geq respects the index constraints.
+-- In the EqBase branch, `y` is unified to `zero`; `m` is unconstrained.
+-- In the EqSuc branch, both `n` and `m` are unified to their predecessor-forms.
+geq-to-nat : forall {x y : Nat} -> Geq x y -> Nat
+let geq-to-nat EqBase        = zero
+let geq-to-nat (EqSuc inner) = suc (geq-to-nat inner)
+
+-- NEGATIVE: constructing `Geq 1 1` is impossible because EqBase requires
+-- the second index to be zero, and EqSuc requires *both* indices to be
+-- nonzero with matching predecessor shapes. Neither fits `Geq 1 1`.
+bad-geq : Geq (suc zero) (suc zero)
+let bad-geq = EqBase    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A predicate "n+1 is the successor of n": Next n (suc n), indexed.
+-- Constructor `next` forces both index positions to be related (one is suc of the other).
+-- A value of type `Next 1 1` is impossible because `suc 1 ≠ 1`.
+data Next : Nat -> Nat -> Type =
+    next {n : Nat} : Next n (suc n)
+
+-- NEGATIVE: `next` is the only constructor; it unifies the second index with
+-- suc of the first. Type `Next 1 1` requires `suc 1 = 1`, which is false.
+bad-next : Next (suc zero) (suc zero)
+let bad-next = next    --!! kappa.type.mismatch
+
+-- POSITIVE: `next` correctly types `Next 1 2` (first=1, second=suc 1 = 2).
+ok-next : Next (suc zero) (suc (suc zero))
+let ok-next = next
+
+--! assertDiagnosticFamily error kappa.type.mismatch

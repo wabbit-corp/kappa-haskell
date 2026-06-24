@@ -1,0 +1,76 @@
+-- Source issues: CAIRO-2151, CAIRO-2880 (PR), CAIRO-4054 (PR), CAIRO-2816
+-- Spec: traits.instances, traits.instances.resolution_algorithm,
+--       types.universes.trait_evidence (§11.1.4),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- Kappa spec rule (§11.1.4 "Intrinsic compile-time values and trait evidence"):
+--   "Implicit trait evidence arguments are solved at the call site from the
+--    ambient instance environment. An implementation MAY allow anonymous
+--    implicit parameters written as `(@_ : Tr a)` or via context-bound
+--    notation; the name is implementation-generated and not in scope in the
+--    body."
+-- Cairo issue CAIRO-2816: a loop function taking `ref self: Array<T>` with
+-- multiple implicit constraints (`+PartialEq<T>`, `+Drop<T>`, `+Copy<T>`)
+-- rejected the call even though all three instances existed in context.
+-- Cairo issue CAIRO-2151: generic impl parameters (the "+Trait<T>" form)
+-- needed explicit syntax support.
+-- In Kappa: an implicit evidence parameter written `@_ : Eq a` in a function
+-- signature is solved automatically; a call that cannot discharge the
+-- constraint must be rejected.
+
+--! mode check
+
+-- Basic equality trait
+trait Eq (a : Type) =
+    eq : (& x : a) -> (& y : a) -> Bool
+
+-- A trait that additionally requires Eq.
+trait Eq a => OrdEq (a : Type) =
+    lt : (& x : a) -> (& y : a) -> Bool
+
+-- Concrete instances
+data Color : Type =
+    Red | Green | Blue
+
+instance Eq Color =
+    let eq x y = match (x, y)
+        case (Red,   Red  ) -> True
+        case (Green, Green) -> True
+        case (Blue,  Blue ) -> True
+        case _              -> False
+
+instance OrdEq Color =
+    let lt x y = match (x, y)
+        case (Red,   Green) -> True
+        case (Red,   Blue ) -> True
+        case (Green, Blue ) -> True
+        case _              -> False
+
+-- POSITIVE: function with two anonymous implicit evidence params.
+-- Both Eq a and OrdEq a must be in scope at every call site.
+contains :
+    forall (a : Type).
+    (@_ : Eq a) ->
+    (@_ : OrdEq a) ->
+    (& xs : List a) ->
+    (& x : a) ->
+    Bool
+let contains xs x = match xs
+    case []      -> False
+    case y :: ys -> if eq y x then True else contains ys x
+
+-- POSITIVE: calling with Color, whose Eq and OrdEq instances exist.
+hasRed : Bool
+let hasRed = contains [Red, Green] Red
+
+-- NEGATIVE: calling with a type that has no Eq instance.
+data Raw : Type = Raw Int
+
+badContains : Bool
+let badContains = contains [Raw 1] (Raw 1)   --!! kappa.implicit.unsolved
+
+-- POSITIVE: a function needing only Eq (not OrdEq); Color satisfies it.
+eqCheck : Bool
+let eqCheck = eq Red Green
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

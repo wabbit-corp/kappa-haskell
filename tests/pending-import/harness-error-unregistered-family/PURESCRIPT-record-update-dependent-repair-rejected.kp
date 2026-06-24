@@ -1,0 +1,47 @@
+-- Source artifacts: PURESCRIPT-PR-4501 (linked #4500 — fix record type
+--                   inference involving VTA, exposed by a dependent record
+--                   inference bug),
+--                   PURESCRIPT-PR-4224 (linked #3938 — eagerly apply
+--                   substitutions when inferring object binders).
+-- Spec: types.records.update,
+--       compiler.frontir.standard_diagnostic_families.record_projection_accessor_inout
+--       (family kappa.record.dependent-update-repair).
+-- Kappa spec rule (§ types.records.update):
+--   "If an omitted field depends on updated fields and the copied projection
+--    `r.field` no longer has the required type after substitution of the
+--    updated values, the update is rejected."
+-- Family `kappa.record.dependent-update-repair` is emitted when the
+-- ordinary record-update rebuild fails because an omitted copied field's type
+-- becomes ill-typed under the updated dependent prefix.
+
+--! mode check
+
+-- Abstract allocator for the dependent field; type is what matters for this test.
+expect mkSizedArray : (n : Nat) -> SizedArray n Byte
+
+type SizedBuffer : Type =
+    (len : Nat, buffer : SizedArray this.len Byte, checksum : Nat)
+
+mkBuf : SizedBuffer
+let mkBuf = (len = 10, buffer = mkSizedArray 10, checksum = 42)
+
+-- POSITIVE: updating only the non-dependent `checksum` is fine; `buffer`
+-- and `len` are copied unchanged.
+ok_update : SizedBuffer
+let ok_update = mkBuf.{ checksum = 99 }
+
+-- POSITIVE: updating `len` *together with* an expression for `buffer` that
+-- references the updated `this.len` is fine, because the user supplied the
+-- dependent repair explicitly.
+ok_repaired : SizedBuffer
+let ok_repaired =
+    mkBuf.{ len = 20, buffer = mkSizedArray this.len }
+
+-- NEGATIVE: updating only `len` leaves the copied projection
+-- `mkBuf.buffer : SizedArray 10 Byte` mismatched against the demanded
+-- `SizedArray 20 Byte` of the updated record type.
+bad_unrepaired : SizedBuffer
+let bad_unrepaired =
+    mkBuf.{ len = 20 }                        --!! kappa.record.dependent-update-repair
+
+--! assertDiagnosticFamily error kappa.record.dependent-update-repair

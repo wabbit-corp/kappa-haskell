@@ -1,0 +1,35 @@
+-- Source: WebPPL PR #673 (make uniformDraw([]) behave in inference) and
+--   the general distribution-domain principle from #332.
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-03
+--   (proposed portable alias E_CONSTRUCTOR_PARAMETER_DOMAIN — not yet
+--    registered under §3.1.4).
+--
+-- A constructor whose declared parameter is a non-empty list MUST reject
+-- an empty list with a domain diagnostic at the constructor call site.
+
+module test
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+
+data UniformDraw (a : Type) : Type =
+    UniformDraw { vs : List a }
+
+-- POSITIVE: non-empty list accepted.
+uOk : UniformDraw Int
+let uOk = UniformDraw { vs = [1, 2, 3] }
+
+
+uOne : UniformDraw Char
+let uOne = UniformDraw { vs = ['a'] }
+
+
+-- NEGATIVE: empty list rejected at construction.
+uEmpty : UniformDraw Int
+let uEmpty = UniformDraw { vs = [] }          --!! E_CONSTRUCTOR_PARAMETER_DOMAIN
+
+--! assertDiagnostic error E_CONSTRUCTOR_PARAMETER_DOMAIN

@@ -1,0 +1,71 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats (sortdef nat),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (#stacst0 lt_i0_i0 etc.),
+--         tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/gpats.dats (fact with case+)
+-- Spec: types.universes.classifiers (§11.1),
+--       functions.binders.quantities (§12.1, §12.2),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: `sortdef nat = {a:int | a >= 0}` introduces a subsort of int
+--   restricted to non-negative values. A function declared as
+--   `fun fact{n:nat}(x: int(n)): int` is callable only when the actual
+--   argument index `n` satisfies `n >= 0`. Calling with an argument whose
+--   static index is negative violates the sort constraint and must be rejected.
+-- Portable obligation: a constraint annotation `{n : sort | pred(n)}` on a
+--   binder must be discharged at each call site; failure is type-mismatch.
+
+--! mode check
+
+-- Natural number: non-negative integer index.
+-- In Kappa terms: an index constraint that the value is >= 0.
+data NatProxy : Nat -> Type =
+    MkNat : forall (n : Nat). NatProxy n
+
+-- A function that demands a non-negative index.
+natSucc : forall (n : Nat). NatProxy n -> NatProxy (n + 1)
+let natSucc (MkNat) = MkNat
+
+-- POSITIVE: constructing NatProxy at index 0 is fine.
+p0 : NatProxy 0
+let p0 = MkNat
+
+-- POSITIVE: constructing NatProxy at index 5 is fine.
+p5 : NatProxy 5
+let p5 = MkNat
+
+-- POSITIVE: successor of a known nat proxy.
+p6 : NatProxy 6
+let p6 = natSucc p5
+
+-- A function requiring the index to satisfy a strict lower bound.
+data BoundedInt : Int -> Type =
+    MkBounded : forall (n : Int). BoundedInt n
+
+-- A function typed to accept only strictly positive index.
+requirePositive : forall (n : Nat). (n + 1 = n + 1) => BoundedInt n -> Int
+let requirePositive _ = 1
+
+-- POSITIVE: using BoundedInt at a positive index.
+posOk : Int
+let posOk = requirePositive (MkBounded : BoundedInt 3)
+
+-- A size-constrained add: both arguments carry equal index, result doubles.
+doubleIdx : forall (n : Nat). BoundedInt n -> BoundedInt (n + n)
+let doubleIdx _ = MkBounded
+
+-- POSITIVE: doubling index 4 yields 8.
+doubled : BoundedInt 8
+let doubled = doubleIdx (MkBounded : BoundedInt 4)
+
+-- NEGATIVE: claiming the doubled value has index 9 is wrong.
+badDoubled : BoundedInt 9
+let badDoubled = doubleIdx (MkBounded : BoundedInt 4)  --!! kappa.type.mismatch
+
+-- NEGATIVE: annotating a Nat proxy with a negative index is not allowed
+-- (Nat is defined to hold only non-negative indices).
+negIdx : NatProxy (-1)
+let negIdx = MkNat                                     --!! kappa.type.mismatch
+
+-- NEGATIVE: providing index 0 where a strictly positive index is expected.
+zeroWherePosExpected : BoundedInt 0
+let zeroWherePosExpected = doubleIdx (MkBounded : BoundedInt (-1))  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

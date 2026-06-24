@@ -1,0 +1,53 @@
+-- Source issue: rust#71765 (slice > 50000)
+-- Spec: modules.names.lexical_lookup, modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--
+-- A local binding introduced by `let` MUST shadow any names of the same
+-- spelling brought into scope by glob imports. The local-binding scope
+-- is the innermost in the lexical-lookup order (§7.1), so the binding's
+-- spelling is unambiguously the local binding at any use site within
+-- that scope.
+--
+-- The rust#71765 reproducer was `let mut time = ...` where two glob
+-- imports (`use libc::*; use xcb_bindings::*;`) each brought a `time`
+-- function into scope. rustc reported "ambiguous", but the obligation
+-- is that the local binding shadows both imports unambiguously.
+
+module test
+
+-- Inline submodules acting as the two glob-import sources.
+module a =
+    let time : Int = 1
+
+module b =
+    let time : Int = 2
+
+import a.*
+import b.*
+
+--! mode check
+
+-- POSITIVE: a local `time` binding shadows both glob-imported `time`s.
+-- The binding's type is determined by its initializer; the surrounding
+-- arithmetic uses the local, not the imports.
+localShadows : Int
+let localShadows =
+    let time : Int = 100
+    time + 1   -- 101: refers to local `time`, not a.time or b.time
+
+
+-- POSITIVE: explicit qualified access still works.
+explicitAccess : Int
+let explicitAccess =
+    let time : Int = 100
+    a.time + time   -- 1 + 100 = 101; both names are unambiguously resolvable
+
+
+-- NEGATIVE: without a local binding, a bare use of `time` is ambiguous
+-- between the two glob imports. The diagnostic family
+-- `kappa.name.ambiguous` reports both candidate import sites.
+unqualified : Int
+let unqualified = time + 1   --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+--! assertDiagnosticRelated error kappa.name.ambiguous import-site

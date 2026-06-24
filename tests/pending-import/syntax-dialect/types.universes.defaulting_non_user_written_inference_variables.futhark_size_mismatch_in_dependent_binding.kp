@@ -1,0 +1,39 @@
+-- Source issues: FUTHARK-2103, FUTHARK-1993
+-- Spec: types.universes.defaulting_non_user_written_inference_variables,
+--       types.universes.quantities
+-- Futhark #2103: `let [n] (A: [n]i64, B: [n]i64) = (iota 1, iota 2)` should
+-- be rejected: the pattern asserts A and B have the same size n, but the RHS
+-- provides arrays of sizes 1 and 2.
+-- Futhark #1993: inconsistent sizes with polymorphic and unknown sizes should
+-- fail at the type checker.
+-- In Kappa, a dependent pattern binding `(xs : SizedArray n T, ys : SizedArray n T)`
+-- asserts that both components share size n.  If the actual tuple has
+-- components of different sizes, type unification fails.
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+module test
+
+-- NEGATIVE: the pattern claims both arrays share size n, but the RHS has
+-- sizes 1 and 2.  The equality n = 1 ∧ n = 2 is unsatisfiable.
+badSameSizePattern : Int
+let badSameSizePattern =
+  let pair : (SizedArray 1 Int, SizedArray 2 Int) =
+        (replicate 1 0, replicate 2 0)
+  -- The annotation demands the same n; unification must fail.
+  let (xs : SizedArray n Int, ys : SizedArray n Int) = pair   --!! E_TYPE_MISMATCH
+  in sizedArrayLength xs + sizedArrayLength ys
+
+-- NEGATIVE: a function signature claims to return same-size arrays but
+-- the implementation returns different sizes.
+badSameSizeReturn : Nat -> (SizedArray 1 Int, SizedArray 2 Int)
+let badSameSizeReturn _n =
+  -- The declared return type has independent sizes 1 and 2.
+  -- If a caller pattern-matches expecting same size n they will be lied to.
+  -- The signature itself is fine; the error occurs at a dependent use site.
+  (replicate 1 0, replicate 2 0)
+
+-- POSITIVE: correctly annotated same-size pair is accepted.
+goodSameSize : (n : Nat) -> (SizedArray n Int, SizedArray n Int)
+let goodSameSize n = (replicate n 0, replicate n 0)

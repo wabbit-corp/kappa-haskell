@@ -1,0 +1,62 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats,
+--         tests/srcgen1/TEST/DATA/test01.dats (list_vt_length),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (list type declaration)
+-- Spec: types.universes.classifiers (§11.1),
+--       declarations.term_declarations (§9.1),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: `datatype mylist(a:type+)(int)` introduces a two-parameter
+--   type where the second parameter is a static integer index tracking length.
+--   `mylist_nil(a)(0)` has index 0; `mylist_cons(a)(n+1)` has index n+1 when
+--   the tail has index n. The index is a compile-time proof that the length is
+--   exactly `n`. Providing a wrong index annotation is a type error.
+-- Portable obligation: when a type is annotated with a static index `n` but
+--   the actual structural length is `m ≠ n`, the type checker must reject the
+--   program with a type-mismatch diagnostic.
+
+--! mode check
+
+-- A size-indexed list: SizedList a n  means a list of exactly n elements.
+data SizedList : Type -> Nat -> Type =
+    Nil  : forall (a : Type). SizedList a 0
+    Cons : forall (a : Type) (n : Nat). a -> SizedList a n -> SizedList a (n + 1)
+
+-- POSITIVE: Nil has size 0.
+emptyInt : SizedList Int 0
+let emptyInt = Nil
+
+-- POSITIVE: single-element list has size 1.
+one : SizedList Int 1
+let one = Cons 42 Nil
+
+-- POSITIVE: two-element list has size 2.
+two : SizedList Int 2
+let two = Cons 1 (Cons 2 Nil)
+
+-- POSITIVE: length function returns the exact index.
+len : forall (a : Type) (n : Nat). SizedList a n -> Nat
+let len xs =
+    match xs
+    case Nil        -> 0
+    case Cons _ tl  -> 1 + len tl
+
+-- POSITIVE: appending two sized lists: sizes add.
+append : forall (a : Type) (m n : Nat).
+         SizedList a m -> SizedList a n -> SizedList a (m + n)
+let append xs ys =
+    match xs
+    case Nil        -> ys
+    case Cons x tl  -> Cons x (append tl ys)
+
+-- NEGATIVE: claiming a two-element list has size 3 is rejected.
+badTwo : SizedList Int 3
+let badTwo = Cons 1 (Cons 2 Nil)  --!! kappa.type.mismatch
+
+-- NEGATIVE: claiming a non-empty list has size 0 is rejected.
+badOne : SizedList Int 0
+let badOne = Cons 99 Nil            --!! kappa.type.mismatch
+
+-- NEGATIVE: append result annotated with a wrong combined size is rejected.
+badAppend : SizedList Int 5
+let badAppend = append (Cons 1 (Cons 2 Nil)) (Cons 3 Nil)  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

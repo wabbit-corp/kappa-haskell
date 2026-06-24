@@ -1,0 +1,75 @@
+-- Source artifacts: cooltt PR #227 (first-class records), PR #380 (better record
+--               syntax), test record.cooltt, test isos.cooltt.
+-- Spec: declarations.signatures
+--
+-- Record types (signatures) group named fields. A record term (struct) must
+-- supply all fields. Field projection extracts individual fields by name.
+-- Dependent record types allow later fields' types to mention earlier fields.
+-- Eta-expansion: two record values are equal if all their fields are equal.
+
+--! mode check
+
+-- POSITIVE: basic record type with two independent fields.
+data Point : Type =
+    MkPoint : (x : Nat) -> (y : Nat) -> Point
+
+px : Point -> Nat
+let px (MkPoint x _) = x
+
+py : Point -> Nat
+let py (MkPoint _ y) = y
+
+p0 : Point
+let p0 = MkPoint 3 4
+
+xCoord : Nat
+let xCoord = px p0
+
+yCoord : Nat
+let yCoord = py p0
+
+-- POSITIVE: a record type where a later field's type depends on an earlier one.
+-- Sigma-like: the type of `val` depends on `tag`.
+data Tagged : Type =
+    MkTagged : (tag : Bool) -> (val : Nat) -> Tagged
+
+tagOf : Tagged -> Bool
+let tagOf (MkTagged t _) = t
+
+valOf : Tagged -> Nat
+let valOf (MkTagged _ v) = v
+
+ex : Tagged
+let ex = MkTagged True 99
+
+-- POSITIVE: record with a function-typed field.
+data WithFun : Type =
+    MkWithFun : (fn : Nat -> Nat) -> WithFun
+
+applyFn : WithFun -> Nat -> Nat
+let applyFn (MkWithFun f) x = f x
+
+instance0 : WithFun
+let instance0 = MkWithFun suc
+
+result : Nat
+let result = applyFn instance0 5
+
+-- POSITIVE: nested record; the outer record contains an inner record field.
+data Inner : Type =
+    MkInner : (a : Nat) -> (b : Nat) -> Inner
+
+data Outer : Type =
+    MkOuter : (inner : Inner) -> (c : Nat) -> Outer
+
+innerA : Outer -> Nat
+let innerA (MkOuter (MkInner a _) _) = a
+
+nested : Outer
+let nested = MkOuter (MkInner 1 2) 3
+
+-- NEGATIVE: projecting a field that doesn't exist is a resolution error.
+badProj : Nat
+let badProj = p0.z    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

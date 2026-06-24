@@ -1,0 +1,54 @@
+-- Stress test: Two mutually defined data types, each requiring the other
+--   in their Eq instances.  Instance search must not loop; the mutual
+--   dependency is well-founded because the types are finite trees.
+-- Spec: traits.instances.resolution_algorithm,
+--   declarations.totality
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+-- Two mutually defined types.
+data Even : Type = EvenZ | EvenS Odd
+data Odd  : Type = OddS Even
+
+-- Instances that call each other — both must be in scope simultaneously.
+instance Eq Even =
+    let eq EvenZ    EvenZ    = True
+    let eq (EvenS o1) (EvenS o2) = eq o1 o2
+    let eq _          _          = False
+
+instance Eq Odd =
+    let eq (OddS e1) (OddS e2) = eq e1 e2
+
+-- POSITIVE: comparing Even and Odd values.
+testEven : Bool
+let testEven = eq EvenZ EvenZ
+
+testOdd : Bool
+let testOdd = eq (OddS EvenZ) (OddS EvenZ)
+
+testNeq : Bool
+let testNeq = eq EvenZ (EvenS (OddS EvenZ))
+
+-- A mutually recursive function: isEqualParity checks if two Even values
+-- represent the same parity (naive, for test purposes).
+sameEven : Even -> Even -> Bool
+let sameEven e1 e2 = eq e1 e2
+
+-- POSITIVE: generic function using Eq on Even.
+countEqualPairs : forall {a : Type}. (@_ : Eq a) -> List a -> a -> Nat
+let countEqualPairs xs target decreases structural xs =
+    match xs
+    case Nil      -> 0
+    case h :: rest ->
+        let rest_count = countEqualPairs rest target
+        if eq h target then rest_count + 1 else rest_count
+
+testCount : Nat
+let testCount = countEqualPairs (EvenZ :: EvenS (OddS EvenZ) :: EvenZ :: Nil) EvenZ
+
+--! assertNoErrors
+--! assertType testEven Bool
+--! assertType testCount Nat

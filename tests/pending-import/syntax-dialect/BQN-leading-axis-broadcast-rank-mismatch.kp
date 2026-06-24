@@ -1,0 +1,33 @@
+-- Source issues: BQN docs/arithmetic.md (leading-axis agreement),
+-- BQN-52 (confusing Take error in REPL exposes rank-mismatch obligation),
+-- SA-BQN-01.
+-- Spec: modules.prelude.contents (SizedArray n a; n is part of the type),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch).
+-- BQN extends binary scalar primitives over arrays elementwise, with
+-- leading-axis agreement: one shape must be a prefix of the other.
+-- Kappa's SizedArray makes the rank/shape an indexed type, so a
+-- rank-mismatch combination is statically rejected.
+
+--! mode check
+
+-- POSITIVE: same-length elementwise add via SizedArray of equal lengths.
+expect zipWithVec :
+    forall a b c (n : Nat). (a -> b -> c)
+        -> SizedArray n a -> SizedArray n b -> SizedArray n c
+
+expect a3 : SizedArray 3 Integer
+expect b3 : SizedArray 3 Integer
+expect b4 : SizedArray 4 Integer
+
+okSum : SizedArray 3 Integer
+let okSum = zipWithVec (+) a3 b3
+
+-- NEGATIVE: mismatched sizes 3 vs 4 must be rejected at the type level.
+-- The second argument has type `SizedArray 4 Integer`, but the call
+-- demands `SizedArray 3 Integer` (unifying `n` with 3 from the first
+-- argument).
+badSum : SizedArray 3 Integer
+let badSum = zipWithVec (+) a3 b4       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

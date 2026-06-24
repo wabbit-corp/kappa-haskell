@@ -1,0 +1,29 @@
+-- Source artifact: carp-lang/Carp docs/docs/Memory.md "Recursive Types"
+--                  ("Direct recursion is rejected because the compiler must
+--                  be able to determine a concrete size for every type."),
+--                  Carp issue #623
+-- Spec: data_types.well_formedness
+-- Carp rejects unguarded direct recursion at the backend (sized C).
+-- Kappa's portable obligation (§10.4) is the stricter, language-level
+-- one: a `data` declaration is rejected when any recursive occurrence
+-- is in a non-strictly-positive position.  Direct self-occurrence as an
+-- argument type IS strictly positive per §10.4, so the genuinely
+-- rejectable cases are those where the recursive name appears on the
+-- left of a function arrow.
+
+--! mode check
+
+-- NEGATIVE: the recursive occurrence is in negative position (the
+-- domain of a function arrow); strict positivity is violated.
+data BadArrow : Type =
+    MkBadArrow (BadArrow -> Int)         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: parameterised non-strict-positivity (canonical example from
+-- §10.4 of the spec): `Rose a` is in a negative position via the inner
+-- function arrow.
+data Rose (a : Type) : Type =
+    MkRose a ((Rose a -> a) -> Rose a)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,43 @@
+-- Source issues: OCaml#7817, OCaml#8134
+-- Spec: types.unions.expected_type_directed_injection_widening
+-- When the expected type is a wider union, a value of a narrower union type
+-- is widened by elaboration. No explicit coercion syntax is required.
+-- Widening is zero-cost: tags are preserved without rewriting.
+
+module test
+
+-- A value of type `(| Int | String |)` used where `(| Int | String | Bool |)`
+-- is expected. Elaboration must insert the widening coercion.
+narrow : (| Int | String |)
+let narrow = (| 42 : Int |)
+
+wide : (| Int | String | Bool |)
+let wide = narrow     -- widening from (| Int | String |) to (| Int | String | Bool |)
+
+--! mode check
+
+-- Rejected: widening in the wrong direction is not permitted.
+-- A value of the wider type cannot be used where the narrower type is expected
+-- because it may carry a Bool member not present in (| Int | String |).
+narrowExpected : (| Int | String |)
+let narrowExpected = wide    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Direct injection into a wider union works when expected type is known.
+injected : (| Int | String | Bool |)
+let injected = (| "hello" : String |)
+
+
+-- Row-polymorphic widening: passing a narrow union where an open union is expected.
+acceptsOpen : forall (r : VarRow). LacksVar r Int => LacksVar r String => (| Int | String | r |) -> Int
+let acceptsOpen u =
+    match u
+      case (| n : Int |)    -> n
+      case (| _ : String |) -> 0
+      case (| ..rest |)     -> -1
+
+-- Passing narrow (closed) union to a function expecting an open extension.
+result : Int
+let result = acceptsOpen narrow
+

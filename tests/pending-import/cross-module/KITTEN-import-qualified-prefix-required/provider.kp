@@ -1,0 +1,4 @@
+module provider
+
+exportedA : Int
+let exportedA = 1

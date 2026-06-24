@@ -1,0 +1,19 @@
+-- Source artifacts: many rust PRs touching `pub`/`priv`/`pub(crate)` —
+--                   summarized as the privacy enforcement obligation,
+--                   RUST-PR-4640 (enforce coherence rules included privacy),
+--                   RA-3184 (Trait methods from where-clauses on non-parameter
+--                            types should be invisible).
+-- Spec: modules.visibility_opacity_private_opaque.private.
+-- This module declares a private data type and a private term, plus a public
+-- value. Together with `consumer.lang` it tests that the private items are
+-- not name-resolvable outside the defining module by ordinary imports.
+module defs
+
+private data Internal : Type =
+    Internal
+
+private mkInternal : Internal
+let mkInternal = Internal
+
+public_value : Int
+let public_value = 7

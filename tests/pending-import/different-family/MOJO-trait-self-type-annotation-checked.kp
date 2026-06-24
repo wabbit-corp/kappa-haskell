@@ -1,0 +1,51 @@
+-- Source issue: MOJO-1613
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       traits.instances,
+--       kappa.type.mismatch
+-- Inside a trait method declaration, the `self` parameter must have the
+-- type being constrained (the type variable for which the instance is written).
+-- Annotating `self` with a concrete wrong type (e.g. Int instead of the
+-- implementing type) must be rejected as kappa.type.mismatch.
+
+module test
+
+--! mode check
+
+-- A simple trait with a single method.
+trait Describable (a : Type) =
+    describe : (& self : a) -> String
+
+data Widget : Type = Widget String
+
+-- POSITIVE: `self` has the correct type `Widget` in the instance body.
+instance Describable Widget =
+    let describe self =
+            match self
+            case Widget s -> "Widget(" ++ s ++ ")"
+
+useWidget : String
+let useWidget = describe (Widget "gear")
+
+--! assertType useWidget String
+
+data Gadget : Type = Gadget Int
+
+-- NEGATIVE: `self` is annotated as `Int` inside the instance for `Gadget`.
+-- The trait requires `self : Gadget`; `Int` is a different type.
+instance Describable Gadget =
+    let describe (self : Int) =   --!! kappa.type.mismatch
+            show self
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: correct `self` type in a second instance.
+data Sensor : Type = Sensor Bool
+
+instance Describable Sensor =
+    let describe self =
+            match self
+            case Sensor b -> if b then "on" else "off"
+
+useSensor : String
+let useSensor = describe (Sensor True)
+

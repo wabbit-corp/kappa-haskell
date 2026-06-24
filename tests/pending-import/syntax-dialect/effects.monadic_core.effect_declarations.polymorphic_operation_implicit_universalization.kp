@@ -1,0 +1,55 @@
+-- Source issue: Koka #707
+-- Spec: effects.monadic_core.effect_declarations,
+--       types.quantification.implicit_declaration_universalization
+-- A free lowercase type variable in an effect operation signature is implicitly
+-- universalized by §11.3.3. In a handler clause for such an operation, the
+-- universally-quantified type variable must be in scope for the clause body,
+-- so the clause can refer to the argument's type without a separate annotation.
+
+module test
+
+-- Operation 'log' has a polymorphic signature: 'a' is a free type variable
+-- that is implicitly universalized to forall (a : Type). a -> String -> Unit.
+effect Logger =
+    ω log : a -> String -> Unit
+
+-- A deep handler for Logger.
+-- In the clause 'case log val label k -> e', the variable 'val : a' is bound
+-- where 'a' is a fresh universally-quantified type variable for this clause.
+-- The clause body may use 'val' at whatever type 'a' is instantiated to.
+silentLogger : Eff <[logger : Logger]> r -> Eff <[ ]> r
+let silentLogger comp =
+    deep handle logger comp with
+        case return x          -> pure x
+        case log _val _label k -> k ()
+
+--! mode check
+--! assertNoErrors
+--! assertType silentLogger Eff <[logger : Logger]> r -> Eff <[ ]> r
+
+effect Log =
+    ω logStr : String -> Unit
+
+-- A handler that shows the logged value.
+-- 'val : a' is available at its actual type within the clause body.
+-- Passing it to a polymorphic function (like 'show') that works for any 'a'
+-- is admissible here because 'a' is universally quantified.
+showLogger : Eff <[logger : Logger]> r -> Eff <[log : Log]> r
+let showLogger comp =
+    deep handle logger comp with
+        case return x           -> pure x
+        case log val label k    ->
+            log.logStr (label ++ ": <opaque>")   -- val : a (universal), label : String
+            k ()
+
+--! assertNoErrors
+
+-- Using the polymorphic operation with different concrete types.
+useLogger : Eff <[logger : Logger]> Int
+let useLogger = do
+    logger.log (42 : Int) "anInt"
+    logger.log ("hello" : String) "aString"
+    logger.log (True : Bool) "aBool"
+    pure 0
+
+--! assertNoErrors

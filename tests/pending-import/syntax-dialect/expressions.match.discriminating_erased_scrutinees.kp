@@ -1,0 +1,44 @@
+-- Source issue: Idris2 #499
+-- Spec: expressions.match.discriminating_erased_scrutinees
+-- Matching (discriminating) on an erased scrutinee is permitted only when
+-- the scrutinee's constructor shape is already forced by non-erased information.
+-- A single-constructor type that is structurally forced may be matched even
+-- when the field is at quantity 0. A multi-constructor erased value may NOT be
+-- matched.
+
+module test
+
+-- A single-constructor witness type for non-emptiness of a list.
+data NonEmpty (xs : List a) : Type where
+  IsNonEmpty : NonEmpty (x :: rest)
+
+-- A dependent record that pairs a list with a proof that it is non-empty.
+-- The proof field is at quantity 0 (erased at runtime).
+data NonEmptyList (a : Type) : Type =
+  MkNEL : (elems : List a) -> (0 prf : NonEmpty elems) -> NonEmptyList a
+
+-- Accepted: matching on `prf` here is valid because `prf : NonEmpty (x :: rest)`
+-- and `NonEmpty` has exactly one constructor, `IsNonEmpty`, so no runtime
+-- discrimination is needed. The shape is forced by the non-erased `elems` field
+-- having been matched to `x :: rest`.
+getHead : NonEmptyList a -> a
+let getHead (MkNEL (x :: rest) IsNonEmpty) = x
+
+--! mode check
+
+-- A two-constructor type (not a single-constructor forced witness).
+data Evidence : Type where
+  EvA : Evidence
+  EvB : Evidence
+
+data Paired (a : Type) : Type =
+  MkPaired : a -> (0 ev : Evidence) -> Paired a
+
+-- Rejected: the `ev` field is erased and `Evidence` has two constructors.
+-- There is no non-erased index that forces which constructor is present.
+-- Matching on the erased `ev` must be rejected.
+badMatch : Paired Int -> Int
+let badMatch (MkPaired x EvA) = x   --!! kappa.quantity.unsatisfied
+let badMatch (MkPaired x EvB) = x
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

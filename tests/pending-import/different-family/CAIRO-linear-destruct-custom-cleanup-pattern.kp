@@ -1,0 +1,80 @@
+-- Source issues: CAIRO-PR-2537 (Destructors), CAIRO-PR-2594 (derive Destruct),
+--               CAIRO-3943, CAIRO-PR-3233 (PanicDestruct),
+--               CAIRO-PR-3234 (derive PanicDestruct)
+-- Spec: types.universes.quantities (§12.2),
+--       types.universes.quantities.reified_quantity_satisfaction (§12.2.1),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- Kappa spec rule (§12.2):
+--   "A custom destructor pattern: a type may implement a destruction protocol
+--    by providing an explicit `destruct` method (or equivalent) that consumes
+--    the value at quantity 1. The compiler uses this method when the type
+--    goes out of scope. If no droppable or destructible instance exists for
+--    a type and its value is silently dropped, compilation fails."
+-- Cairo: The `Destruct` trait provides a custom destructor that is called
+--   when a value of that type goes out of scope without explicit consumption.
+--   It differs from simple `Drop` in that it performs cleanup work.
+
+--! mode check
+
+-- A linear resource with a registered custom cleanup.
+data Handle : Type =
+    Handle Int
+
+-- A "Destruct"-like trait: custom finalization.
+trait Finalize (a : Type) =
+    finalize : (1 x : a) -> Unit
+
+instance Finalize Handle =
+    let finalize (Handle _) = ()
+
+-- POSITIVE: explicitly calling finalize consumes the Handle.
+explicitCleanup : Unit
+let explicitCleanup =
+    let 1 h = Handle 42
+    finalize h
+
+-- POSITIVE: passing Handle to a function that calls finalize internally.
+wrap : (1 h : Handle) -> Unit
+let wrap h = finalize h
+
+useWrap : Unit
+let useWrap =
+    let 1 h = Handle 7
+    wrap h
+
+-- POSITIVE: pattern-matching on a Handle to extract its value and then
+-- calling finalize on the destructor-less extracted value.
+extract : (1 h : Handle) -> Int
+let extract (Handle n) = n
+
+useExtract : Int
+let useExtract =
+    let 1 h = Handle 99
+    extract h
+
+-- NEGATIVE: silently dropping a Handle without finalization must be rejected.
+silentDrop : Unit
+let silentDrop =
+    let 1 h = Handle 5     --!! kappa.quantity.unsatisfied
+    ()
+
+-- NEGATIVE: creating a Handle inside a conditional branch where one branch
+-- consumes it and the other does not is rejected because on the non-consuming
+-- branch the value goes out of scope without being finalized.
+conditionalDrop : Bool -> Unit
+let conditionalDrop flag =
+    let 1 h = Handle 3
+    if flag
+    then finalize h
+    else ()                --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: both branches consume the Handle.
+conditionalOk : Bool -> Unit
+let conditionalOk flag =
+    let 1 h = Handle 3
+    if flag
+    then finalize h
+    else finalize h
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

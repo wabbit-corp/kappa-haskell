@@ -1,0 +1,30 @@
+-- Source issue: FSTAR-2467
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+-- When a GADT constructor carries dependent parameters (e.g. a dependent
+-- tuple as an index), the exhaustiveness check must unify the constructor's
+-- parameter types with the scrutinee's concrete index before deciding coverage.
+
+--! mode check
+
+-- Dependent GADT: constructor MkG carries a proof of type f x y.
+data G
+    (u : Nat -> Type)
+    (f : (x : Nat) -> u x -> Type)
+    (x : Nat)
+    (y : u x)
+    : Type =
+    MkG : f x y -> G u f x y
+
+-- Pattern match must accept MkG, unifying the implicit index parameters.
+extract :
+    (u : Nat -> Type) ->
+    (f : (x : Nat) -> u x -> Type) ->
+    (x : Nat) ->
+    (y : u x) ->
+    G u f x y ->
+    f x y
+let extract u f x y t =
+    match t
+      case MkG r -> r
+
+--! assertNoErrors

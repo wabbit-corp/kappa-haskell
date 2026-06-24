@@ -1,0 +1,32 @@
+-- Source: granule-project/granule PR #191 (Fix unification);
+--         tests/cases/negative/polymorphism/badExistential.gr
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+-- The unifier MUST distinguish rigid (universally quantified) variables
+-- from flexible (metavariables). Unifying a rigid `t` with a fresh
+-- existential witness `a` introduced by an open-exists pattern is a
+-- type-equality failure surfacing `kappa.type.mismatch` (§3.2.3).
+
+module test
+
+--! mode check
+
+type Exists : (Type -> Type) -> Type
+
+intrinsic mkExists : forall (f : Type -> Type) (a : Type). (1 x : f a) -> Exists f
+intrinsic withExists : forall (f : Type -> Type) (b : Type).
+    (1 e : Exists f) -> (forall (a : Type). (1 y : f a) -> b) -> b
+
+-- POSITIVE: ordinary use of withExists — the body is properly polymorphic.
+useExists : forall (f : Type -> Type). (1 e : Exists f) -> Unit
+let useExists e = withExists e (\(_ : forall (a : Type). f a) -> ())
+
+
+-- NEGATIVE: the body claims it can apply a function specialised to a
+-- specific rigid type `t` to the unpacked witness, but the existential
+-- only guarantees a *fresh* (skolem) `a`.
+unpackBad : forall (f : Type -> Type) (t : Type) (b : Type).
+    (1 e : Exists f) -> (1 g : (1 _ : f t) -> b) -> b
+let unpackBad e g =
+    withExists e g                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

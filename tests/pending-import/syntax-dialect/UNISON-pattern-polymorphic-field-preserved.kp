@@ -1,0 +1,46 @@
+-- Source issue: UNISON#2388 (Pattern matching on constructors with polymorphic fields)
+-- Spec: expressions.patterns, expressions.match.constructor_branches_introduce_explicit_refinement_evidence,
+--       types.functions
+-- When a constructor field has a higher-rank polymorphic type
+-- (e.g. `forall a b. (a -> b) -> f a -> f b`), pattern matching must NOT
+-- ungeneralize that field at the binder. The bound variable carries the
+-- field's full polymorphic type so that the binder can be applied at
+-- multiple instantiations within the branch body. The Unison fix
+-- ungeneralizes only the root scrutinee.
+
+--! mode check
+
+-- A "Functor" record whose `mapf` field is higher-rank.
+data Functor (f : Type -> Type) : Type =
+    Functor (mapf : forall (a b : Type). (a -> b) -> f a -> f b)
+
+-- POSITIVE: pattern-binding the higher-rank field; the binder `m` must
+-- have type `forall a b. (a -> b) -> f a -> f b` so that it can be
+-- instantiated twice — once for `(Int, Int)` and once for `(Bool, Int)`.
+let use_both
+    (forall (f : Type -> Type))
+    (fn_box : Functor f)
+    (xs : f Int)
+    (bs : f Bool)
+    : (f Int, f Int) =
+    match fn_box
+        case Functor m ->
+            (m (\x -> x + 1) xs, m (\b -> if b then 1 else 0) bs)
+
+
+-- NEGATIVE: a pattern that locks `m` to a monotype by binding alongside
+-- an instantiated use. Kappa must reject this because the bound `m` was
+-- generalized at the constructor; locking it to (Int -> Int) -> f Int ->
+-- f Int by the surrounding context conflicts with the use at Bool.
+let lock_then_use
+    (forall (f : Type -> Type))
+    (fn_box : Functor f)
+    (xs : f Int)
+    (bs : f Bool)
+    : f Int =
+    match fn_box
+        case Functor m ->
+            let m_locked : (Int -> Int) -> f Int -> f Int = m
+            m_locked (\x -> x + 1) (m (\b -> if b then 1 else 0) bs) --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,66 @@
+-- Source issues: odin#2042 (parapoly procedure group selection not disambiguated by
+--               where clause), odin#2362 (polymorphic argument causes where clause
+--               to duplicate its error), odin#4139 (illegal declaration cycle
+--               introduced by where clause), OSA-ODIN-02
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved), types.quantification
+-- A type argument that does not satisfy the declared trait constraint must be
+-- rejected at the instantiation site. The diagnostic must appear exactly once
+-- per call site regardless of how many internal attempts are made.
+
+--! mode check
+
+trait Ordered (a : Type) =
+    compare : a -> a -> Int
+
+data Score : Type = Score Int
+
+instance Ordered Score =
+    let compare (Score x) (Score y) =
+        if x < y then 0 - 1
+        else if x > y then 1
+        else 0
+
+data Name : Type = Name String
+
+-- No instance Ordered Name is declared.
+
+-- A polymorphic function requiring Ordered.
+let maxOf {a : Type} (@_ : Ordered a) (x : a) (y : a) : a =
+    if compare x y >= 0 then x else y
+
+-- POSITIVE: Score satisfies Ordered.
+let okMaxScore : Score =
+    maxOf (Score 10) (Score 20)
+
+
+-- NEGATIVE: Name does not satisfy Ordered — constraint unsolved.
+let badMaxName : Name =
+    maxOf (Name "Alice") (Name "Bob")    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- A container requiring Ordered elements.
+data SortedPair (a : Type) : Type =
+    SortedPair a a
+
+let makeSortedPair {a : Type} (@_ : Ordered a) (x : a) (y : a) : SortedPair a =
+    if compare x y <= 0
+    then SortedPair x y
+    else SortedPair y x
+
+-- POSITIVE: Score satisfies Ordered.
+let okPair : SortedPair Score =
+    makeSortedPair (Score 3) (Score 7)
+
+
+-- NEGATIVE: Name does not satisfy Ordered.
+let badPair : SortedPair Name =
+    makeSortedPair (Name "Zara") (Name "Alex")    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NOTE: an `instance Ordered Name` is intentionally omitted from this file.
+-- Adding one would globally satisfy the constraint for all code in this
+-- module (Kappa whole-module instance resolution), which would make the
+-- `badMaxName` and `badPair` negative cases spuriously pass.

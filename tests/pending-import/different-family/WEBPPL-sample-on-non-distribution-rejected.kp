@@ -1,0 +1,44 @@
+-- Source: WebPPL #431 / PR #424 (run-time checks for sample, score, dist
+--   params — descriptive error for sample() with bad dist),
+--   #793 (unexpected arguments throw errors).
+-- Spec: effects.monadic_core.effect_declarations,
+--   effects.monadic_core.eff_effect_rows,
+--   compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch / E_TYPE_MISMATCH),
+--   WEBPPL_SPEC_ADDITIONS WEBPPL-SA-01.
+--
+-- The `sample` operation of the `Prob` effect family accepts a value of
+-- distribution type. Passing a value of any other type is rejected at
+-- the operation application site with E_TYPE_MISMATCH.
+
+module test
+
+--! mode check
+
+data Distribution (a : Type) : Type =
+    DistBernoulli { p : Float }
+
+effect Prob =
+    1 sample : forall a. Distribution a -> a
+
+-- POSITIVE: sample applied to a value of distribution type.
+ok : Eff <[prob : Prob]> Bool
+let ok = prob.sample (DistBernoulli { p = 0.5 })
+
+--! assertType ok (Eff <[prob : Prob]> Bool)
+
+-- NEGATIVE: sample applied to a numeric literal.
+badNumeric : Eff <[prob : Prob]> Float
+let badNumeric = prob.sample 0.5               --!! E_TYPE_MISMATCH
+
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+-- NEGATIVE: sample applied to a record value that is not a
+-- distribution type.
+data Point : Type =
+    Point { x : Float, y : Float }
+
+badRecord : Eff <[prob : Prob]> Point
+let badRecord = prob.sample (Point { x = 0.0, y = 0.0 })    --!! E_TYPE_MISMATCH
+
+--! assertDiagnostic error E_TYPE_MISMATCH

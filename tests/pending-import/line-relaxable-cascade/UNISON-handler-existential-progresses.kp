@@ -1,0 +1,44 @@
+-- Source issue: UNISON#5834 (fixes UNISON#5304)
+-- Spec: compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.recovery_salvage_mode,
+--       compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Recovery contract: when a handler's type cannot be resolved (e.g. the
+-- handler name is unbound or its type is still an unsolved metavariable),
+-- the front-end MUST continue to typecheck the surrounding computation and
+-- report an ordinary unresolved-name (or unsolved-metavariable) diagnostic
+-- rather than failing internally. The PR linked above corrected an internal
+-- failure path in which the handler was assumed to already have a concrete
+-- request type and the compiler bailed out instead of producing a usable
+-- error site.
+
+--! mode check
+
+effect Log =
+    1 logMsg : String -> Unit
+
+-- A simple computation needing the Log effect.
+let comp : Eff <[lLog : Log]> Int =
+    do
+        lLog.logMsg "hi"
+        pure 0
+
+-- NEGATIVE: `handle missing_handler comp` — `missing_handler` is unresolved.
+-- The front-end MUST surface an ordinary unresolved-name diagnostic
+-- (kappa.name.unresolved). It MUST NOT swallow the inner well-typed
+-- computation or crash with an internal-failure code.
+let use_missing : Int =
+    handle missing_handler comp with --!! kappa.name.unresolved
+        case return v -> v
+        case logMsg _ k -> k ()
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: after the failure above the file MUST still be processable. A
+-- subsequent well-typed handler use is accepted (recovery is by-declaration,
+-- §3.1.recovery_salvage_mode + §3.1.minimum_recovery_contract).
+let use_ok : Int =
+    handle lLog comp with
+        case return v -> v
+        case logMsg _ k -> k ()
+

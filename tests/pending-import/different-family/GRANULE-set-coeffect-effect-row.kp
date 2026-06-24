@@ -1,0 +1,46 @@
+-- Source: granule-project/granule PR #308 (Set coeffect issues),
+--         PR #124 (Generalises our graded possibilities — Effect data
+--         merged into Type, IO uses `{Stdin, Stdout}` set syntax)
+-- Spec: effects.monadic_core.eff_effect_rows,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- Kappa effect rows are label-indexed `<[l : E]>`. Sequencing two effect
+-- operations under the same label is permitted if their interfaces match;
+-- using an operation whose label is absent must yield
+-- `kappa.effect.row-mismatch`.
+
+module test
+
+--! mode check
+
+effect IOE =
+    1 stdin  : Unit -> Int
+    1 stdout : Int -> Unit
+
+-- POSITIVE: a computation that only uses stdout.
+hello : Eff <[io : IOE]> Unit
+let hello = io.stdout 42
+
+
+-- POSITIVE: a computation that uses both operations via sequencing
+-- under the same label.
+echo : Eff <[io : IOE]> Unit
+let echo = do
+    n <- io.stdin ()
+    io.stdout n
+
+
+-- NEGATIVE: a declaration that claims the empty row but actually performs
+-- a stdout operation.
+mislabelled : Eff <[]> Unit
+let mislabelled = io.stdout 0  --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: a label not in the declared row.
+effect Net =
+    1 send : Int -> Unit
+
+badNet : Eff <[io : IOE]> Unit
+let badNet = net.send 0        --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

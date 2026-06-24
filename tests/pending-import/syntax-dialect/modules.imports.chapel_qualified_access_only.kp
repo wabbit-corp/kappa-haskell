@@ -1,0 +1,70 @@
+-- Source issues: Chapel #13831, #6093
+-- Spec: modules.imports
+-- `import M` without any item suffix provides only qualified access to M's
+-- public members. Unqualified references to names from M are not in scope.
+-- This is distinct from `import M.*` (which brings all public names into
+-- unqualified scope) and from `import M.(name)` (which brings a specific name
+-- into unqualified scope).
+-- Chapel #13831 proposes adding an `import` statement exactly for this purpose:
+-- enabling qualified access to module symbols without polluting the local namespace.
+
+--! mode check
+
+module chapel_qlib
+
+exported : Int
+let exported = 7
+
+otherFn : Int -> Int
+let otherFn x = x + 1
+
+
+---
+
+-- POSITIVE: module-only import allows qualified access.
+module chapel_qualified_consumer
+
+import chapel_qlib
+
+-- POSITIVE: qualified access using the module name prefix.
+useQualified : Int
+let useQualified = chapel_qlib.exported
+
+useQualifiedFn : Int
+let useQualifiedFn = chapel_qlib.otherFn 3
+
+-- NEGATIVE: unqualified access is NOT in scope; `exported` is not a free name here.
+badUnqualified : Int
+let badUnqualified = exported   --!! kappa.name.unresolved
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+---
+
+-- POSITIVE: importing with .* brings names into unqualified scope.
+module chapel_star_consumer
+
+import chapel_qlib.*
+
+-- Unqualified access works with wildcard import.
+useUnqualified : Int
+let useUnqualified = exported
+
+
+---
+
+-- POSITIVE: importing a specific name brings only that name into scope.
+module chapel_selective_consumer
+
+import chapel_qlib.exported
+
+-- The specific imported name is accessible unqualified.
+useSelected : Int
+let useSelected = exported
+
+-- NEGATIVE: otherFn was not imported; only `exported` was.
+badOther : Int
+let badOther = otherFn 1   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

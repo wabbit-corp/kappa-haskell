@@ -1,0 +1,59 @@
+-- Source issues: lamdu#39 — Lamdu language spec/examples; lamdu#151 —
+--   tags can be given upper-case names, causing ambiguity. Top-level
+--   declarations with the same spelling and kind must be rejected;
+--   the projectional-editor identity layer normally prevents this,
+--   but at the textual surface a textual collision must be flagged.
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--   §7.1: within a single lexical scope, a spelling may contribute
+--   at most one ordinary declaration of a given kind.
+--
+-- Duplicate top-level declarations of the same spelling and kind
+-- must produce `kappa.name.ambiguous`.
+
+--! mode check
+
+-- POSITIVE: a single top-level term declaration.
+unique : Nat
+let unique = 1
+
+-- POSITIVE: a single top-level data declaration.
+data Pair (a b : Type) : Type =
+    MkPair a b
+
+-- POSITIVE: a term and a constructor with related but distinct
+-- spellings — no clash, distinct kinds, distinct identities.
+pairValue : Pair Nat Nat
+let pairValue = MkPair 1 2
+
+-- POSITIVE: distinct module-level names.
+firstHelper : Nat -> Nat
+let firstHelper n = n + 1
+
+secondHelper : Nat -> Nat
+let secondHelper n = n * 2
+
+useBoth : Nat
+let useBoth = firstHelper (secondHelper 5)
+
+-- NEGATIVE: two top-level term declarations sharing a spelling.
+collide : Nat
+let collide = 1
+
+collide : Nat                              --!! kappa.name.ambiguous
+let collide = 2
+
+-- NEGATIVE: re-declaring a parameterized data type.
+data Twin (a : Type) : Type =
+    TwinA
+
+data Twin (a : Type) : Type =              --!! kappa.name.ambiguous
+    TwinB
+
+-- NEGATIVE: re-declaring a top-level signature without changing the
+-- term name.
+sigDup : Nat -> Nat                        --!! kappa.name.ambiguous
+sigDup : Nat -> Nat
+let sigDup n = n
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

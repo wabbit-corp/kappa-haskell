@@ -1,0 +1,58 @@
+-- Source issues: kernel/warning_test.exs "undefined function for behaviour"
+--   ("function foo/0 required by behaviour Sample1 is not implemented in module Sample2"),
+--   kernel/warning_test.exs "undefined macro for behaviour",
+--   kernel/warning_test.exs "wrong kind for behaviour",
+--   kernel/impl_test.exs "warns of callbacks without impl",
+--   spec gap ESA-ELIXIR-04
+-- Spec: traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved)
+-- Kappa spec rule (§3.2.6 kappa.implicit.unsolved):
+--   "Used when an implicit argument, constraint, instance, or proof obligation remains
+--    unsatisfied after elaboration."
+-- In Elixir, a module that declares @behaviour Foo must implement every non-optional callback
+-- declared in Foo. If any callback is missing, the compiler emits a warning. In Kappa,
+-- failing to satisfy a required interface/trait obligation produces kappa.implicit.unsolved.
+-- Per spec gap ESA-ELIXIR-04, the original Elixir severity is warning; Kappa treats incomplete
+-- trait instances as errors (kappa.implicit.unsolved is ERROR per §3.2.6).
+
+--! mode check
+
+-- Define a trait representing a required interface.
+trait Printable (a : Type) =
+    display  : (& x : a) -> String
+    describe : (& x : a) -> String
+
+-- POSITIVE: module that implements all required callbacks.
+record Celsius =
+    value : Float
+
+instance Printable Celsius =
+    let display  c = "Celsius(" ++ Float.show c.value ++ ")"
+    let describe c = "A Celsius temperature of " ++ Float.show c.value
+
+-- POSITIVE: module with a single-function trait, fully implemented.
+trait Named (a : Type) =
+    name : (& x : a) -> String
+
+record Thing =
+    id : Int
+
+instance Named Thing =
+    let name t = "thing-" ++ Int.show t.id
+
+-- NEGATIVE: instance provides neither display nor describe.
+record Kelvin =
+    value : Float
+
+instance Printable Kelvin =     --!! kappa.implicit.unsolved
+
+-- NEGATIVE: instance provides display but omits describe.
+record Fahrenheit =
+    value : Float
+
+instance Printable Fahrenheit = --!! kappa.implicit.unsolved
+    let display f = "Fahrenheit(" ++ Float.show f.value ++ ")"
+    -- describe is intentionally omitted
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

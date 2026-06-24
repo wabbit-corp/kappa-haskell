@@ -1,0 +1,42 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/MissingDeinit.hylo,
+--                   Docs/DefiniteInitialization.md
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (kappa.quantity.satisfies), types.universes.quantities
+-- Hylo: every value created in a function must be either consumed or
+-- deinitialized before the function returns. Failing to use a linear
+-- (quantity-1) value is a definite-initialization error. In Kappa this is
+-- modeled as: a function body must satisfy the `QuantitySatisfies 1 1`
+-- obligation for every linear binder.
+
+--! mode check
+
+data Handle : Type = Handle Int
+
+close : (1 h : Handle) -> Unit
+let close (Handle _) = unit
+
+-- POSITIVE: handle is closed (consumed) exactly once.
+properlyClosed : (1 h : Handle) -> Unit
+let properlyClosed h = close h
+
+-- POSITIVE: handle consumed via a helper.
+helperClose : (1 h : Handle) -> Unit
+let helperClose h =
+    let _ = close h
+    unit
+
+-- NEGATIVE: linear handle dropped without being consumed.
+-- The body returns `unit` without ever calling `close h`, so the
+-- QuantitySatisfies 1 0 obligation fails.
+leakedHandle : (1 h : Handle) -> Unit
+let leakedHandle h =
+    ()    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: linear handle ignored and another value returned.
+ignoredHandle : (1 h : Handle) -> Int
+let ignoredHandle h =
+    42    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

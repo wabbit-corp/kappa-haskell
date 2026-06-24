@@ -1,0 +1,34 @@
+-- Source issue: Idris2 #550
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- When pattern-matching on nested constructors (e.g., a list of lists), the
+-- exhaustiveness checker must correctly enumerate all combinations and accept
+-- a match that covers all of them — even when the coverage proof requires
+-- splitting across multiple branches that together account for every case.
+
+module test
+
+-- Accepted: all five constructor combinations of (List (List a), List (List b))
+-- are covered explicitly. The checker must accept this as exhaustive.
+-- (1) first list is empty
+-- (2) second list is empty (first non-empty)
+-- (3) both lists non-empty, inner list heads both empty
+-- (4) both lists non-empty, first inner head empty, second non-empty
+-- (5) both lists non-empty, both inner heads non-empty
+pairCount : List (List a) -> List (List b) -> Nat
+let pairCount []               _                  = 0
+let pairCount _                []                 = 1
+let pairCount ([] :: xs)       (_ :: ys)          = 2
+let pairCount ((_ :: _) :: xs) ([] :: ys)         = 3
+let pairCount ((_ :: _) :: xs) ((_ :: _) :: ys)   = 4
+
+--! mode check
+
+-- Rejected: only three of the five cases are covered.
+partialCount : List (List a) -> List (List b) -> Nat
+let partialCount []         _        = 0
+let partialCount _          []       = 1
+let partialCount ([] :: xs) (_ :: _) = 2
+-- Missing the two cases where both heads are non-empty
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

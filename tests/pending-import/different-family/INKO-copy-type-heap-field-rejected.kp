@@ -1,0 +1,22 @@
+-- Source issues: docs/types (copy types)
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a 'copy' type (type copy) may only contain other copy types.
+-- Embedding a heap-allocated (non-copy, linear) value inside a copy
+-- type is rejected, because copying the outer type would require copying
+-- the linear inner value, which violates linearity.
+-- In Kappa, a data type that wraps a linear field cannot be duplicated;
+-- treating it as a copyable (unrestricted) value is a type mismatch.
+
+--! mode check
+
+data Handle : Type = Handle Int
+
+-- NEGATIVE: duplicating a value that wraps a linear Handle.
+-- Handle is linear (not copyable); a wrapper containing it cannot be
+-- used as a copy type. Placing a linear value in two positions is rejected.
+data Registry : Type = Registry Handle
+
+dupRegistry : (1 r : Registry) -> (Registry, Registry)
+let dupRegistry r = (r, r)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

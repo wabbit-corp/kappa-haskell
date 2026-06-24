@@ -1,0 +1,51 @@
+-- Source issue: KT-4113 (smart casts for properties to not-null functional
+--   types at invoke calls). (2026-06-11, FAB-020: a second KT citation was
+--   removed — it resolves upstream to an unrelated IDE refactoring bug;
+--   details preserved in reports/FABLE_AUDIT_FINDINGS.jsonl.)
+-- Spec: expressions.lambdas, types.functions
+
+--! mode check
+
+-- POSITIVE: a lambda matches a function type.
+applyFn : (Int -> Int) -> Int -> Int
+let applyFn f x = f x
+
+result : Int
+let result = applyFn (\n -> n * 2) 5
+
+--! assertType result Int
+
+-- POSITIVE: a higher-order function taking an optional function.
+applyOptFn : (Int -> Int)? -> Int -> Int
+let applyOptFn mf x =
+    match mf
+    case Option.None   -> x
+    case Option.Some f -> f x
+
+
+-- POSITIVE: lambda with flow-narrowing: the lambda captures the outer type.
+withOpt : Int? -> Int
+let withOpt mn =
+    if mn != Option.None then
+        (applyFn (\n -> n + 1) mn.value)
+    else
+        0
+
+
+-- POSITIVE: a function value stored in a binding.
+increment : Int -> Int
+let increment = \n -> n + 1
+
+double : Int -> Int
+let double = \n -> n + n
+
+--! assertType increment (Int -> Int)
+--! assertType double (Int -> Int)
+
+-- NEGATIVE: applying a non-function value as a function.
+notAFunction : Int
+let notAFunction =
+    let n = 5
+    n 3   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

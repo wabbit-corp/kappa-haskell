@@ -1,0 +1,38 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system2/type_system2.dl,
+--   souffle-lang #293 (type checker fails to give errors for records of lesser size).
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- A struct or record constructor applied with fewer arguments than declared must be
+-- rejected with kappa.constructor.arity. This mirrors Souffle's "Ambiguous record"
+-- error when a record literal has fewer elements than the declared type.
+
+--! mode check
+
+struct Triple =
+    x : Int
+    y : Int
+    z : Int
+
+struct Pair =
+    a : String
+    b : String
+
+-- POSITIVE: exact field counts.
+let okT : Triple = Triple { x = 1, y = 2, z = 3 }
+let okP : Pair   = Pair   { a = "x", b = "y" }
+
+-- NEGATIVE: Triple given only one field.
+let badT1 : Triple = Triple { x = 1 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Triple given only two fields.
+let badT2 : Triple = Triple { x = 1, y = 2 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Pair given only one field.
+let badP : Pair = Pair { a = "only" }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

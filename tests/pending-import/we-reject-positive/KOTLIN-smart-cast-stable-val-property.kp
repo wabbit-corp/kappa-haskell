@@ -1,0 +1,50 @@
+-- Source issues: KT-5907 (smart cast on public non-open val property), KT-4450
+-- Spec: expressions.conditionals.stable_aliases_transport_refinement_evidence,
+--   expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions
+
+--! mode check
+
+-- POSITIVE: a simple local immutable binding can serve as a stable scrutinee.
+-- Flow typing over a let-bound name is well-defined.
+checkLocal : String? -> String
+let checkLocal s =
+    let local = s
+    if local is Option.None then
+        "missing"
+    else
+        local.value   -- alias 'local' is tracked; narrowing transports
+
+--! assertNoErrors
+
+-- POSITIVE: testing an optional via a local alias and projecting through it.
+useAlias : String? -> Int
+let useAlias ms =
+    let s = ms
+    if s != Option.None then
+        s.value.length
+    else
+        0
+
+--! assertNoErrors
+
+-- POSITIVE: refinement transports through a simple alias chain.
+doubleAlias : Int? -> Int
+let doubleAlias mn =
+    let a = mn
+    let b = a
+    if b != Option.None then
+        b.value + 1   -- b is an alias of a, which aliases mn
+    else
+        0
+
+--! assertNoErrors
+
+-- POSITIVE: once narrowed via is-check, field access is fine in the rest of the branch.
+useSameBinding : String? -> Int
+let useSameBinding ms =
+    if ms != Option.None then
+        ms.value.length + ms.value.length   -- two uses of narrowed ms
+    else
+        0
+
+--! assertNoErrors

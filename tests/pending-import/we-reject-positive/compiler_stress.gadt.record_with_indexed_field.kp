@@ -1,0 +1,31 @@
+-- Stress test: record type where a later field's type is indexed by an earlier field
+-- Spec: types.records, data_types.gadts, expressions.match.index_refinement_constructor_knowledge
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+  VNil  : Vec a 0
+  VCons : a -> Vec a n -> Vec a (n+1)
+
+-- Sized pairs a length with a Vec indexed by that length.
+-- The second field's type depends on the first field's value.
+type Sized (a : Type) : Type = (len : Nat, elems : Vec a len)
+
+-- Construct a Sized record.
+mkSized0 : Sized Int
+let mkSized0 = (len = 0, elems = VNil)
+
+mkSized1 : Sized Int
+let mkSized1 = (len = 1, elems = VCons 7 VNil)
+
+-- Read the length from a Sized record.
+sizedLen : {a : Type} -> Sized a -> Nat
+let sizedLen s = s.len
+
+-- Check that the Vec in a Sized record is non-empty when len > 0.
+sizedHead : {a : Type} -> {n : Nat} -> (s : Sized a) -> s.len = (n+1) -> a
+let sizedHead s _ = match s.elems
+  case VCons x _ -> x
+  case VNil      -> impossible
+
+--! assertNoErrors

@@ -1,0 +1,23 @@
+-- Source issue: FSTAR-1100
+-- Spec: data_types.gadts
+-- SPEC GAP: An unresolved hole in a GADT index position must be rejected
+-- (or deferred) before exhaustiveness is checked. Accepting a match over
+-- a type with an unresolved index hole as exhaustive is unsound.
+
+--! mode check
+
+-- An indexed type with a single constructor.
+data Tagged (i : Nat) : Type =
+    MkTagged : Tagged i
+
+-- NEGATIVE TEST: the scrutinee type has an unsolved hole `_` as the index.
+-- The match appears exhaustive because the hole might be instantiated to a
+-- value that makes the type uninhabited. But since the hole is unresolved,
+-- the exhaustiveness check must not proceed — the compiler must emit a
+-- diagnostic for the unsolved metavariable.
+bad_vacuous : Tagged _ -> Void     --!! kappa.type.unsolved-metavariable
+let bad_vacuous x =
+    match x
+      case impossible
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

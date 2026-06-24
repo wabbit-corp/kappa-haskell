@@ -1,0 +1,46 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system_sum_types/type_system_sum_types.dl
+--   (branch G is defined in both C1 and D1 — "Branch G is defined multiple times"),
+--   souffle-lang spec gap SSA-SOUFFLE-06 (ADT branch global disambiguation).
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.ambiguous).
+-- In Souffle, ADT branch names are globally unique; the same name in two ADTs is an
+-- error. In Kappa, constructor names are scoped to their enclosing data declaration.
+-- Two distinct `data` types may share a constructor name without any declaration-site
+-- diagnostic (§10.1). However, an unqualified use of a name that resolves to multiple
+-- constructors in scope is rejected with kappa.name.ambiguous (§3.2.2). Qualified
+-- use (TypeName.Constructor) is always unambiguous.
+
+--! mode check
+
+data Direction : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: another data type may declare the same constructor names.
+-- No declaration-site diagnostic because constructors are scoped to their type.
+data CardinalPoint : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: different constructor names across types are fine.
+data Boolean : Type =
+    Yes
+    No
+
+data TrafficLight : Type =
+    Green
+    Amber
+    Red
+
+-- POSITIVE: using qualified constructors disambiguates.
+let d1 : Direction    = Direction.North
+let c1 : CardinalPoint = CardinalPoint.North
+
+-- NEGATIVE: unqualified use of an ambiguous constructor name.
+let ambig : Direction = North    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

@@ -1,0 +1,68 @@
+-- Source issues: odin#4249 (compiler ignores `distinct` for generic types),
+--               OSA-ODIN-03
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       types.quantification
+-- When a polymorphic function is instantiated at type T, passing a nominally
+-- distinct wrapper type D (which wraps T) must be rejected. The nominal
+-- distinction is preserved through polymorphic type-argument substitution.
+-- A function `f : forall a. Container a -> Unit` instantiated with `a := Int`
+-- must not accept `DistinctContainer` even if `DistinctContainer` wraps `Int`
+-- identically.
+
+--! mode check
+
+data Box (a : Type) : Type =
+    Box a
+
+data GiftBox (a : Type) : Type =
+    GiftBox a
+
+-- A polymorphic function that accepts Box of any type.
+let openBox {a : Type} (b : Box a) : a =
+    match b
+    case Box x -> x
+
+-- POSITIVE: passing Box Int — accepted.
+let okBox : Int = openBox (Box 42)
+
+
+-- POSITIVE: passing Box String — accepted.
+let okBoxStr : String = openBox (Box "hello")
+
+
+-- NEGATIVE: GiftBox Int ≠ Box Int, even though both wrap Int.
+-- GiftBox is a distinct type constructor; it does not unify with Box.
+let badGiftBox : Int =
+    openBox (GiftBox 42)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A second polymorphic function that operates on two Box values.
+let combineBoxes {a : Type} (b1 : Box a) (b2 : Box a) : Box a =
+    match b1
+    case Box _ -> b2
+
+-- POSITIVE: two Box Int values.
+let okCombine : Box Int =
+    combineBoxes (Box 1) (Box 2)
+
+
+-- NEGATIVE: one Box Int and one GiftBox Int — second arg has wrong type.
+let badCombine : Box Int =
+    combineBoxes (Box 1) (GiftBox 2)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: both arguments are GiftBox — wrong constructor entirely.
+let badCombineAll : Box Int =
+    combineBoxes (GiftBox 1) (GiftBox 2)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: explicit conversion from GiftBox to Box is accepted.
+let giftToBox {a : Type} (g : GiftBox a) : Box a =
+    match g
+    case GiftBox x -> Box x
+
+let okConvert : Box Int = giftToBox (GiftBox 99)
+

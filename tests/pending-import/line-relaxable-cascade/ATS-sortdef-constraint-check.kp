@@ -1,0 +1,86 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`sortdef nat0 = {a:int|a >= 0}`, `sortdef nat01 = (nat0 || nat1)`,
+--          `sortdef sgn = {a:int | -1<=a; a<=1}`, `typedef Nat = [a:int|a>=0] int(a)`),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (lt_i0_i0, etc.)
+-- Spec: types.universes.classifiers (§11.1),
+--       spec_addition ATS-SA-02 (sort-constrained index quantifiers),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- ATS3 pattern: `sortdef nat = {a:int | a >= 0}` constrains a sort to
+--   non-negative integers. A function typed over `{n:nat}` only accepts
+--   arguments whose index satisfies `n >= 0`. Providing an argument whose
+--   static index violates the constraint is rejected.
+-- Portable obligation: sort (index) constraint violation at a call site
+--   must produce kappa.type.mismatch with the failing constraint in
+--   the payload.
+
+--! mode check
+
+-- An index-constrained natural number carrier.
+data Nat_ : Nat -> Type =
+    MkNat_ : forall (n : Nat). Nat_ n
+
+-- A sign-constrained value: index in {-1, 0, 1}.
+data Sign_ : Int -> Type =
+    MkSign_ : forall (s : Int). Sign_ s
+
+-- Add two nat indices; result is their sum.
+addNat : forall (m n : Nat). Nat_ m -> Nat_ n -> Nat_ (m + n)
+let addNat _ _ = MkNat_
+
+-- POSITIVE: adding two valid naturals.
+sum3_4 : Nat_ 7
+let sum3_4 = addNat (MkNat_ : Nat_ 3) (MkNat_ : Nat_ 4)
+
+-- POSITIVE: sum of 0 and 5 is 5.
+sum0_5 : Nat_ 5
+let sum0_5 = addNat (MkNat_ : Nat_ 0) (MkNat_ : Nat_ 5)
+
+-- A bounded-difference operation; result must be non-negative.
+subtractNat : forall (m n : Nat). (n <= m) => Nat_ m -> Nat_ n -> Nat_ (m - n)
+let subtractNat _ _ = MkNat_
+
+-- POSITIVE: 7 - 3 = 4, constraint 3 <= 7 holds.
+diff7_3 : Nat_ 4
+let diff7_3 = subtractNat (MkNat_ : Nat_ 7) (MkNat_ : Nat_ 3)
+
+-- NEGATIVE: result index wrong: 7 - 3 = 4, not 5.
+badDiff : Nat_ 5
+let badDiff = subtractNat (MkNat_ : Nat_ 7) (MkNat_ : Nat_ 3)  --!! kappa.type.mismatch
+
+-- A function that requires both arguments to have equal index.
+sameIdx : forall (n : Nat). Nat_ n -> Nat_ n -> Bool
+let sameIdx _ _ = True
+
+-- POSITIVE: both Nat_ 3.
+okSame : Bool
+let okSame = sameIdx (MkNat_ : Nat_ 3) (MkNat_ : Nat_ 3)
+
+-- NEGATIVE: mismatched indices (3 vs 4).
+badSame : Bool
+let badSame = sameIdx (MkNat_ : Nat_ 3) (MkNat_ : Nat_ 4)  --!! kappa.type.mismatch
+
+-- A sign function: result must be in {-1, 0, 1}.
+signOf : Int -> Sign_ 0   -- always returns zero-sign here for demonstration
+let signOf _ = MkSign_
+
+-- NEGATIVE: annotating the result with an out-of-sign-range index.
+badSignAnnot : Sign_ 5
+let badSignAnnot = (MkSign_ : Sign_ 5)              --!! kappa.type.mismatch
+
+-- A transitivity check: if a <= b and b <= c then a <= c.
+data LEq : Nat -> Nat -> Type =
+    LEqProof : forall (a b : Nat). (a <= b) => LEq a b
+
+transitivity : forall (a b c : Nat). LEq a b -> LEq b c -> LEq a c
+let transitivity _ _ = LEqProof
+
+-- POSITIVE: 1 <= 3 and 3 <= 7 implies 1 <= 7.
+trans1_7 : LEq 1 7
+let trans1_7 = transitivity (LEqProof : LEq 1 3) (LEqProof : LEq 3 7)
+
+-- NEGATIVE: claiming 1 <= 7 is 1 <= 6 is a wrong index annotation.
+badTrans : LEq 1 6
+let badTrans = transitivity (LEqProof : LEq 1 3) (LEqProof : LEq 3 7)  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

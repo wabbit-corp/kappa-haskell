@@ -1,0 +1,40 @@
+-- Source issue: FUTHARK-473
+-- Spec: expressions.application.dotted_forms
+-- Futhark #473: field projection of an array-index operation was wrongly
+-- rejected: `a[0].1` should be a valid expression that indexes an array and
+-- then projects a field from the resulting tuple.
+-- In Kappa, chained dotted forms are supported (spec §16.1): a dotted access
+-- on the result of any expression is well-formed.  In particular, projecting
+-- a field from the result of a subscript, function call, or parenthesized
+-- expression must be accepted.
+
+--! mode check
+--! assertNoErrors
+
+module test
+
+type Point = (x : Int, y : Int)
+
+-- POSITIVE: field projection applied to the result of a record literal.
+zeroX : Int
+let zeroX = (x = 0, y = 0).x
+
+-- POSITIVE: chained projection through two record levels.
+type Line = (p1 : Point, p2 : Point)
+
+line1X : Int
+let line1X =
+  let seg : Line = (p1 = (x = 3, y = 4), p2 = (x = 7, y = 8))
+  in seg.p1.x
+
+-- POSITIVE: field projection after a function call.
+makePoint : Int -> Int -> Point
+let makePoint a b = (x = a, y = b)
+
+callThenProject : Int
+let callThenProject = (makePoint 5 6).x
+
+-- POSITIVE: projecting from the first element of a tuple
+--           (analogous to Futhark a[0].field).
+firstX : (Point, Point) -> Int
+let firstX pair = (fst pair).x

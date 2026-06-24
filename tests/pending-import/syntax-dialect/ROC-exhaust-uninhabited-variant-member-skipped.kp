@@ -1,0 +1,61 @@
+-- Source issue: Roc #4054
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.case_impossible_empty_remainder,
+--       types.unions.formation
+-- When a member type of a variant is itself uninhabited, exhaustiveness need
+-- not require a branch for that member. A `ResultEmpty a` whose error side is
+-- the empty variant `(| |)` has only the `Ok a` member reachable, so a single
+-- arm for `Ok a` must be accepted as exhaustive.
+
+module test
+
+-- A single-constructor wrapper type.
+data Ok (a : Type) : Type =
+    Ok : a -> Ok a
+
+-- The standalone, uninhabited zero-member variant.
+type Empty = (| |)
+
+-- A result whose error member is the uninhabited Empty type.
+type ResultEmpty (a : Type) = (| Ok a | Empty |)
+
+--! mode check
+
+-- POSITIVE: match covers only the `Ok` arm. The `Empty` member is
+-- uninhabited, so exhaustiveness is satisfied without an error branch.
+-- The variant binder `v` holds the `Ok String` value; its inner String
+-- is extracted via a single-constructor nested match.
+extract : ResultEmpty String -> String
+let extract r =
+    match r
+      case (| v : Ok String |) ->
+          match v
+            case Ok s -> s
+
+--! assertType extract ResultEmpty String -> String
+
+-- POSITIVE: a redundant explicit `case impossible` may close the match.
+extractExplicit : ResultEmpty String -> String
+let extractExplicit r =
+    match r
+      case (| v : Ok String |) ->
+          match v
+            case Ok s -> s
+      case impossible
+
+
+-- NEGATIVE: when the error side is inhabited, omitting the error branch
+-- must be flagged as non-exhaustive.
+data Err : Type =
+    Err : String -> Err
+
+type ResultStr (a : Type) = (| Ok a | Err |)
+
+extractPartial : ResultStr String -> String
+let extractPartial r =
+    match r                                  --!! kappa.pattern.non-exhaustive
+      case (| v : Ok String |) ->
+          match v
+            case Ok s -> s
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

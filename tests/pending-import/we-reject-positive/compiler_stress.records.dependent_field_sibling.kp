@@ -1,0 +1,25 @@
+-- Stress test: a record field type that references an earlier sibling field via this.label
+-- Spec: types.records
+
+--! mode check
+
+data Vec : (n : Nat) -> Type -> Type =
+    VNil  : {a : Type} -> Vec 0 a
+    VCons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (n + 1) a
+
+-- Dependent record: data's type references the sibling field len via this.len
+type SizedBuf : Type = (len : Nat, data : Vec Int this.len)
+
+-- POSITIVE: construct a SizedBuf; the data field must have length matching len
+mkBuf : (n : Nat) -> Vec Int n -> SizedBuf
+let mkBuf n v = (len = n, data = v)
+
+-- POSITIVE: extract the length from a SizedBuf
+bufLen : SizedBuf -> Nat
+let bufLen b = b.len
+
+-- POSITIVE: construct a concrete example
+emptyBuf : SizedBuf
+let emptyBuf = mkBuf 0 VNil
+
+--! assertNoErrors

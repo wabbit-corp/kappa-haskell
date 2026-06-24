@@ -1,0 +1,71 @@
+-- Source issues: lamdu#151 — tags can be given upper-case names, causing
+--   ambiguity; lamdu#141 — nominals should have separate disambiguation
+--   tags namespace. The semantic obligation is that name *kinds* (term,
+--   type, tag/constructor, record field) are resolved independently;
+--   a spelling collision across kinds does not by itself produce an
+--   ambiguity error.
+-- Spec: modules.names.kind_qualified_name_expressions,
+--       modules.names.same_spelling_data_families_static_members
+--   §7.2: a spelling may resolve to declarations in different kinds
+--   simultaneously; kind context determines which resolution applies.
+--
+-- Spelling collisions across name kinds are not ambiguous; collisions
+-- within the same kind are.
+
+--! mode check
+
+-- POSITIVE: a type, a term, and a constructor with related spellings
+-- in distinct kinds. Each resolution context picks the right kind.
+data Box (a : Type) : Type =
+    Box a
+
+-- POSITIVE: a let-binding with a spelling that overlaps with a type.
+-- Term and type namespaces are disjoint.
+useBox : Box Nat
+let useBox =
+    let local = 7
+    Box local
+
+-- POSITIVE: a field label with the same spelling as a top-level term.
+-- Record-field namespace is disjoint from term namespace.
+type WithCount = (count : Nat, name : String)
+
+count : Nat
+let count = 100
+
+withC : WithCount
+let withC = (count = count, name = "x")
+
+-- POSITIVE: a constructor identifier with the same spelling as a
+-- term variable. Kappa has no separate tag-label namespace
+-- (LAMDU-SA-01) — instead, the constructor of a nominal sum is in the
+-- constructor namespace and is distinct from a term let-binding.
+data Tagged : Type =
+    Just Nat
+    None
+
+just : Nat
+let just = 5
+
+tagged : Tagged
+let tagged = Just just
+
+-- NEGATIVE: two distinct term declarations at the top level with the
+-- same spelling — collision within the same kind.
+firstDup : Nat
+let firstDup = 1
+
+firstDup : Nat                          --!! kappa.name.ambiguous
+let firstDup = 2
+
+-- NEGATIVE: two record fields with the same label in the same record
+-- type.
+type Bad = (a : Nat, a : Nat)           --!! kappa.name.ambiguous
+
+-- NEGATIVE: two constructors with the same name in the same data
+-- declaration.
+data Conflict : Type =
+    Dup                                  --!! kappa.name.ambiguous
+    Dup
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

@@ -1,0 +1,62 @@
+-- Source issues: AENEAS-75, AENEAS-181
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region,
+--       kappa.borrow.escape
+-- §12.3: A value whose type mentions a rigid region may not escape the
+-- lexical scope that introduced that region.  Specifically, storing a
+-- borrowed value inside a record and returning that record causes the
+-- rigid region to escape the function's return boundary.
+-- Aeneas issue #75 (ADTs with lifetimes / borrow fields) exposes the same
+-- class of obligation: an ADT whose field has a borrow type would carry a
+-- rigid region, and returning the ADT would constitute a region escape.
+
+module test
+
+--! mode check
+
+data Holder : Type = Holder Int
+
+data Snapshot : Type = Snapshot { value : Int }
+
+-- POSITIVE: extract a plain Int from the borrowed Holder (no region captured).
+-- Storing an Int in Snapshot does not carry any rigid region.
+snapshotValue : (& h : Holder) -> Snapshot
+let snapshotValue h =
+    match h case Holder n -> Snapshot { value = n }
+
+--! assertType snapshotValue ((& h : Holder) -> Snapshot)
+
+-- POSITIVE: borrow, read into a plain value, return the plain value.
+-- The closure `\() -> n` does not capture the borrow; it captures `n : Int`.
+readPure : (& h : Holder) -> Int
+let readPure h =
+    match h case Holder n -> n
+
+
+-- NEGATIVE: returning a closure that closes over the borrowed parameter.
+-- The closure's inferred region environment contains the rigid region of `h`;
+-- that region escapes the function's return boundary.
+makeEscape : (& h : Holder) -> (() -> Int)
+let makeEscape h =
+    \() ->                                  --!! kappa.borrow.escape
+        match h case Holder n -> n
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE: nesting the escaping closure in a second closure.
+-- The outer closure still captures the borrow indirectly.
+nestedEscape : (& h : Holder) -> (() -> () -> Int)
+let nestedEscape h =
+    let inner = \() ->                      --!! kappa.borrow.escape
+                    match h case Holder n -> n
+    \() -> inner
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- POSITIVE: copying out the value and returning a closure over the copy.
+makeClean : (& h : Holder) -> (() -> Int)
+let makeClean h =
+    let Holder n = h
+    \() -> n
+

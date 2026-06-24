@@ -1,0 +1,37 @@
+-- Source: Boomerang docs/docs/main.src "Lens record-style projection" table
+--         Boomerang allows `lens.get s` in expression position: a lens is
+--         a value that can be called like a function. Kappa's `pattern`
+--         keyword alters elaboration only for pattern-head use; in
+--         expression position the declared name behaves like an ordinary
+--         function.
+-- Spec: expressions.active_patterns.declaration_grammatical_restrictions
+-- Portable obligation: a `pattern` declared name is callable in
+--   expression position as an ordinary pure function.
+
+module test
+
+--! mode check
+
+data Option a : Type =
+    None
+    Some a
+
+pattern DigitView (& s : String) : Option Int =
+    if s == "0" then Some 0
+    else if s == "1" then Some 1
+    else None
+
+-- POSITIVE: call DigitView as an ordinary function in expression position.
+classify : String -> Option Int
+let classify s = DigitView s
+
+-- POSITIVE: also usable in pattern position.
+isKnown : String -> Bool
+let isKnown s =
+    match s
+    case DigitView (_) -> True
+    case _             -> False
+
+--! assertNoErrors
+--! assertType classify (String -> Option Int)
+--! assertType isKnown (String -> Bool)

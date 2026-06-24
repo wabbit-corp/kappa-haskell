@@ -1,0 +1,23 @@
+-- Source issue: dhall-lang #374 (tabs in multiline strings; see
+--   DHALL_CANDIDATE_LEDGER.md #374)
+-- Spec: literals.string_literals.multiline_strings_fixed_dedent
+-- Split out of dhall-lang.multiline_string_tab_prefix_illformed on 2026-06-11
+--   (suite isolation; see Appendix T.2).
+-- POSITIVE: space-only indent prefix on closing delimiter is well-formed.
+module valid_multiline
+
+--! assertNoErrors
+
+valid1 : String
+let valid1 =
+    '''
+    line one
+    line two
+    '''
+
+valid2 : String
+let valid2 =
+    '''
+  short indent
+  another line
+  '''

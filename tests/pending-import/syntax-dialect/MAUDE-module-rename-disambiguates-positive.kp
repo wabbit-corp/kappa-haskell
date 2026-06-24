@@ -1,0 +1,49 @@
+-- Source: Maude tests/Misc/renaming.maude
+--           fmod FOO' is
+--             sorts Foo Bar Baz .
+--             op _+_ : Foo Foo -> Foo [...] .
+--             op _+_ : Baz Baz -> Foo [...] .
+--             ...
+--           fmod BAR' is
+--             inc FOO' *
+--             (
+--               sort Foo to Quux,
+--               op _+_ : Foo Foo -> Foo to _*_ ...,
+--               op _+_ : Baz Baz -> Foo to _._ ...
+--             ) .
+--           endfm
+--         The rename splits one overloaded operator into two distinctly named
+--         operators in the importing module, eliminating the overload
+--         ambiguity. After renaming, the names _*_ and _._ are unambiguous.
+-- Spec: modules.imports.item_kind_selectors.unhide_clarify_import_items,
+--       lexical.operator_identifiers_fixity.declarations.
+-- Portable obligation: an import-alias (item rename) must rename only the
+--   specified import item, preserving each renamed item's signature
+--   unchanged, so that downstream references through the new spelling
+--   resolve unambiguously.
+
+--! mode check
+
+module shapes
+
+data Shape : Type = MkShape
+
+combineL : Shape -> Shape -> Shape
+let combineL _ _ = MkShape
+
+combineR : Shape -> Shape -> Shape
+let combineR _ _ = MkShape
+
+module test
+
+-- POSITIVE: importing both with distinct local aliases removes any local
+-- ambiguity, because each renamed spelling resolves to exactly one origin.
+import shapes.(combineL as joinL, combineR as joinR)
+
+use1 : Shape -> Shape -> Shape
+let use1 a b = joinL a b
+
+use2 : Shape -> Shape -> Shape
+let use2 a b = joinR a b
+
+--! assertNoErrors

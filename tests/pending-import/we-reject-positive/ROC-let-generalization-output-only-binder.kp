@@ -1,0 +1,52 @@
+-- Source issue: Roc #3661
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       types.universes.defaulting_non_user_written_inference_variables
+-- A let-bound function with a type variable that appears only in an output
+-- position (e.g., only in one branch's result) must still be generalized.
+-- Generalization must not be blocked by the presence of another branch
+-- whose result has a different concrete type used elsewhere.
+
+module test
+
+data Result (a e : Type) : Type =
+    Ok  : a -> Result a e
+    Err : e -> Result a e
+
+--! mode check
+
+-- POSITIVE: `pickOk` is bound at the top level and uses its parameter `xs`
+-- only in the `Err` branch. The type variable `a` appears only in the Ok
+-- branch's result. Generalization must produce
+-- `forall a e. e -> Result a e`, NOT a degenerate
+-- `?a -> Result ?a e` where the `?a` leaks unresolved.
+pickErr : forall (a e : Type). e -> Result a e
+let pickErr e = Err e
+
+--! assertNoErrors
+--! assertType pickErr forall (a e : Type). e -> Result a e
+
+-- POSITIVE: a function whose `a` is bound only by a recursive call's Ok
+-- branch must still be generalized. The Err branch references a separate
+-- `lst` parameter; the Ok branch returns a value whose type is `a`. Both
+-- branches share the same outer type variable.
+mkPair : forall (a e : Type). a -> e -> Result a e -> Result a e
+let mkPair x e prev =
+    match prev
+      case Ok _   -> Ok x
+      case Err _  -> Err e
+
+--! assertNoErrors
+
+-- POSITIVE: a top-level definition that has a polymorphic body and is used
+-- at two distinct concrete types. Generalization must succeed; both call
+-- sites must check.
+errOnly : forall (a : Type). a -> Result a Int
+let errOnly _ = Err 0
+
+useStr : Result String Int
+let useStr = errOnly "ignored"
+
+useBool : Result Bool Int
+let useBool = errOnly True
+
+--! assertNoErrors

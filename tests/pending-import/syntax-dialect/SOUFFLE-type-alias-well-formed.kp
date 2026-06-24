@@ -1,0 +1,57 @@
+-- Source issues: souffle-lang/souffle tests/semantic/alias/alias.dl,
+--   tests/semantic/record_alias/record_alias.dl,
+--   tests/semantic/adt_alias/adt_alias.dl,
+--   syntactic/equivalent_types_in_negation/equivalent_types_in_negation.dl,
+--   souffle-lang #2398 (unexpected type error when aliasing record type).
+-- Spec: data_types.type_aliases (§10.3),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- A type alias introduced with `type A = B` should be transparent: a value of type A
+-- is interchangeable with a value of type B, and pattern matching on the aliased type
+-- supports the original constructors. Souffle #2398 showed that `.type Alias = List`
+-- (record alias) should allow the same rules as `List`. This positive test confirms
+-- Kappa's type aliases are fully transparent.
+
+--! mode check
+
+-- Define a base data type.
+data Node : Type =
+    End
+    Next Int Node
+
+-- Alias the base type.
+type NodeAlias = Node
+
+-- POSITIVE: values of the alias type and the original type are interchangeable.
+let n1 : Node      = Next 1 (Next 2 End)
+let n2 : NodeAlias = Next 1 (Next 2 End)
+
+-- POSITIVE: function declared with alias type is usable with original values.
+let countAlias : NodeAlias -> Int
+let countAlias nd =
+    match nd
+        case End       -> 0
+        case Next _ rest -> 1 + countAlias rest
+
+let ok1 : Int = countAlias n1    -- using original type value with alias-typed fn
+let ok2 : Int = countAlias n2
+
+-- POSITIVE: chained aliases are transparent.
+type NodeAlias2 = NodeAlias
+
+let n3 : NodeAlias2 = End
+let ok3 : Int = countAlias n3
+
+-- POSITIVE: alias in negation context.
+let notEnd : NodeAlias -> Bool
+let notEnd nd =
+    match nd
+        case End     -> False
+        case Next _ _ -> True
+
+-- NEGATIVE: alias does not alias a *different* unrelated type; mismatch is still caught.
+data Other : Type = MkOther Bool
+
+let wrongAlias : NodeAlias -> Bool
+let wrongAlias nd = nd    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

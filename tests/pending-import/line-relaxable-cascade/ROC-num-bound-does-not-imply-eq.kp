@@ -1,0 +1,38 @@
+-- Source issue: Roc #6244
+-- Spec: types.universes.trait_evidence, traits.headers,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- A generic type variable `a` constrained only by a numeric trait `Num a`
+-- must NOT acquire a spurious `Eq a` constraint via inference. Eq evidence
+-- is required only at use sites that demand it; the inferred constraint set
+-- must be exactly the demanded set.
+
+module test
+
+trait Num (a : Type) =
+    zero : a
+    plus : (& x : a) -> (& y : a) -> a
+
+trait Eq (a : Type) =
+    eq : (& x : a) -> (& y : a) -> Bool
+
+--! mode check
+
+-- POSITIVE: `double` uses only `plus` (a `Num`-supplied operation). Its
+-- inferred constraint set must be exactly `Num a`, not `Num a, Eq a`.
+double : forall (a : Type). (@_ : Num a) => a -> a
+let double x = plus x x
+
+--! assertType double forall (a : Type). (@_ : Num a) => a -> a
+
+-- POSITIVE: a separate function that demands Eq does require Eq evidence.
+isZero : forall (a : Type). (@_ : Num a) => (@_ : Eq a) => a -> Bool
+let isZero x = eq x zero
+
+
+-- NEGATIVE: attempting to call eq inside a context where only Num is
+-- available must be rejected by the implicit-trait-proof family — Eq
+-- evidence is not implied by Num.
+badZero : forall (a : Type). (@_ : Num a) => a -> Bool
+let badZero x = eq x zero                    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

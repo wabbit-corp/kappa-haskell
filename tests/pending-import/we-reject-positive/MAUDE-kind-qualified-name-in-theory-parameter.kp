@@ -1,0 +1,54 @@
+-- Source: Maude tests/Misc/parameterization.maude
+--           fth T is
+--             sort Elt .
+--             op f : Elt -> Elt .
+--           endfth
+--           fmod M{X :: T} is
+--             op g : X$Elt -> X$Elt .
+--             var A : X$Elt .
+--             eq g(A) = f(f(A)) .
+--           endfm
+--         The notation `X$Elt` is a kind-qualified projection: it names
+--         the sort `Elt` from the theory bound `T` carried by parameter
+--         `X`. The portable Kappa analogue is an associated-type-style
+--         projection through a trait-bounded type parameter.
+-- Spec: modules.names.kind_qualified_name_expressions,
+--       traits.headers.intrinsic_traits,
+--       traits.instances.associated_static_member_instance_checking.
+-- Portable obligation: when a generic function is parameterized by a
+--   trait that introduces an associated type (or sort), references to
+--   that associated type through the type parameter must resolve.
+
+--! mode check
+
+module test
+
+trait HasElt (a : Type) =
+    Elt : Type
+    pack   : a -> Elt
+    unpack : Elt -> a
+
+data Tag : Type = TagA | TagB
+
+instance HasElt Tag =
+    let Elt = Int
+    let pack t = match t
+        case TagA -> 0
+        case TagB -> 1
+    let unpack n = if n == 0 then TagA else TagB
+
+-- POSITIVE: getElt uses the associated type Elt through the trait constraint.
+getElt :
+    (a : Type) ->
+    (@_ : HasElt a) =>
+    a -> a.Elt
+let getElt x = pack x
+
+-- POSITIVE: round-trip via pack/unpack uses the associated type both ways.
+roundTrip : Tag -> Tag
+let roundTrip t = unpack (pack t)
+
+ok1 : Tag
+let ok1 = roundTrip TagA
+
+--! assertNoErrors

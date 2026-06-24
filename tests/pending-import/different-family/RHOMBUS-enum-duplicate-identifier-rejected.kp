@@ -1,0 +1,62 @@
+-- Source issues: enum.rhm in racket/rhombus
+-- Spec: data_types.data_declarations
+--   In a closed union / enum declaration, all variant/member names must be distinct.
+--   Duplicate variant identifiers within a single enum/data type declaration are a
+--   static error.
+-- Evidence: enum.rhm confirms:
+--   `enum Dup | dup | dup` → "duplicate enum identifier: dup"
+-- The portable obligation is: any closed data type (variant type, enum) must reject
+-- duplicate constructor/member names within the same declaration.
+
+--! mode check
+
+-- POSITIVE: enum/variant type with all distinct member names.
+data Direction : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: enum with many members, all distinct.
+data Season : Type =
+    Spring
+    Summer
+    Autumn
+    Winter
+
+-- POSITIVE: two different data types can have members with the same name — no conflict
+-- between types.
+data Status : Type =
+    Active
+    Inactive
+
+data TaskStatus : Type =
+    Active2
+    Paused
+    Done
+
+-- POSITIVE: recursive data type with distinct constructors.
+data MyList (a : Type) : Type =
+    MyNil
+    MyCons a (MyList a)
+
+-- NEGATIVE: enum/data type with duplicate member name `Yes`.
+-- The second `Yes` is a duplicate of the first — must be rejected.
+data BrokenBool : Type =
+    Yes
+    No
+    Yes    --!! kappa.name.ambiguous
+
+-- NEGATIVE: data type with two constructors both named `Empty`.
+data BrokenOption (a : Type) : Type =
+    Empty
+    Full a
+    Empty    --!! kappa.name.ambiguous
+
+-- NEGATIVE: three-member enum with last two sharing a name.
+data BrokenSize : Type =
+    Small
+    Medium
+    Medium    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

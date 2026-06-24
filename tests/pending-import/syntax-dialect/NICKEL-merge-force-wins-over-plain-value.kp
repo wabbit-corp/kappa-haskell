@@ -1,0 +1,82 @@
+-- Source issues: merging.md (forcing values section), nickel #894
+-- Spec: types.records.merge.priority (NSA-04)
+-- NOTE: This test depends on NSA-04 (merge priority spec gap). The `&` merge
+-- operator and `| force` / `| priority N` annotations are proposed syntax not yet
+-- in Kappa v1.
+-- A field annotated with `force` has the highest merge priority. When merged with
+-- a field that has no special priority (priority 0), the forced value always wins.
+-- Even when merging in the reverse order (plain & force), the force wins.
+-- Two force-annotated fields for the same key can only be merged if their values
+-- are equal or recursively mergeable; otherwise the merge fails.
+
+module test
+
+-- POSITIVE: forced value wins over plain value.
+-- `lock.version | force = "1.0"` beats `project.version = "2.0"`.
+lockConfig : (version : String | force)
+let lockConfig = (version = "1.0")
+
+projectConfig : (version : String)
+let projectConfig = (version = "2.0")
+
+merged1 : (version : String)
+let merged1 = lockConfig & projectConfig
+
+resolvedVersion1 : String
+let resolvedVersion1 = merged1.version
+
+--! mode check
+--! assertType resolvedVersion1 String
+
+-- The resolved version must be "1.0" (forced), not "2.0".
+
+-- POSITIVE: merge is symmetric — even (plain & force), the force still wins.
+merged2 : (version : String)
+let merged2 = projectConfig & lockConfig
+
+resolvedVersion2 : String
+let resolvedVersion2 = merged2.version
+
+--! assertType resolvedVersion2 String
+
+-- POSITIVE: forced value with numeric priority: force > priority 100 > priority 0.
+highPriority : (x : Number | priority 100)
+let highPriority = (x = 42)
+
+forcedX : (x : Number | force)
+let forcedX = (x = 1)
+
+plainX : (x : Number)
+let plainX = (x = 99)
+
+-- force beats both priority 100 and plain.
+forceVsHigh : (x : Number)
+let forceVsHigh = forcedX & highPriority
+
+forceResult : Number
+let forceResult = forceVsHigh.x
+
+--! assertType forceResult Number
+
+-- NEGATIVE: two forced fields with different values cannot be merged.
+force1 : (x : Number | force)
+let force1 = (x = 1)
+
+force2 : (x : Number | force)
+let force2 = (x = 2)
+
+forceConflict : (x : Number)
+let forceConflict = force1 & force2      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: two forced fields with the same value CAN be merged (equal values are idempotent).
+forceEq1 : (x : Number | force)
+let forceEq1 = (x = 7)
+
+forceEq2 : (x : Number | force)
+let forceEq2 = (x = 7)
+
+forceEqMerge : (x : Number)
+let forceEqMerge = forceEq1 & forceEq2
+

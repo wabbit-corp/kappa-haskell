@@ -1,0 +1,35 @@
+-- Stress test: Module values can be reified as first-class values
+-- Spec: modules.names.module_declarations_reified_module_values, modules.names.reified_static_object_facets
+
+--! mode check
+
+import std.math as math
+
+-- A module declaration introduces a lexical binding of kind `module`.
+-- The module can be used as a first-class term value of type `moduleSig math`.
+
+-- Reify the module as an ordinary term binding.
+m : moduleSig math
+let m = math
+
+-- Access exported members through the reified value using dotted selection.
+-- `m.sin` and `math.sin` denote the same member.
+sinViaModule : Float -> Float
+let sinViaModule x = math.sin x
+
+sinViaReified : Float -> Float
+let sinViaReified x = m.sin x
+
+-- Pass the reified module value to a function that accepts a module parameter.
+useMath : (moduleSig math) -> Float -> Float
+let useMath mod x = mod.sin x
+
+result : Float
+let result = useMath m 0.0
+
+-- Qualified access and projection from a reified module value agree:
+-- `math.pi` and `m.pi` must denote the same constant.
+piAgrees : Bool
+let piAgrees = math.pi == m.pi
+
+--! assertNoErrors

@@ -1,0 +1,48 @@
+-- Source artifacts: narya docs/top-level-interface.rst ("axiom NAME : TYPE
+--               asserts a global constant without a definition"),
+--               docs/parametricity.rst (parametric / nonparametric axioms).
+-- Spec: declarations.terms,
+--       declarations.signatures
+--
+-- A definitionless top-level declaration in Kappa is written `expect term
+-- NAME : TYPE` (§9.4). It introduces a global constant whose type is
+-- checked but whose body is supplied by another fragment or by a backend
+-- intrinsic; from the importing site it behaves as an uninterpreted
+-- constant. An expect declaration whose declared type does not check
+-- itself is rejected.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: a simple expect of base type.
+expect term n0 : Nat
+
+-- POSITIVE: an expect of function type.
+expect term plusAx : Nat -> Nat -> Nat
+
+-- POSITIVE: an expect of dependent function type.
+expect term P : Nat -> Type
+expect term pAx : (n : Nat) -> P n
+
+-- POSITIVE: expect terms can be applied like ordinary constants.
+applyAx : Nat
+let applyAx = plusAx n0 (Suc Zero)
+
+useDepAx : (n : Nat) -> P n
+let useDepAx n = pAx n
+
+-- POSITIVE: an expect of polymorphic type using the forall sugar.
+expect term polyId : forall (A : Type). A -> A
+
+useIdNat : Nat -> Nat
+let useIdNat n = polyId n
+
+-- NEGATIVE: an expect-term declaration whose annotation is not a valid
+-- type (here `Zero`, a value of type `Nat`, is supplied in a type
+-- position) must be rejected as a type mismatch against `Type`.
+expect term badAx : Zero    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,62 @@
+-- Source issue: AENEAS-87
+-- Spec: traits.members.overloaded_member_names, traits.instances
+-- §14.2.1: for each term member `m` declared in `trait Tr params`, elaboration
+-- introduces an overloaded term name whose resolution is based on the Tr
+-- evidence in scope.  An inherent (non-trait) function with the same name
+-- is a different binding and is not confused with the trait method.
+-- Aeneas issue #87: a name clash between a struct's inherent method and a
+-- trait method with the same name caused an extraction error.  The portable
+-- Kappa obligation is that both names are accepted; they are resolved through
+-- separate namespaces.
+
+module test
+
+--! mode check
+
+trait Describable (a : Type) =
+    describe : (& x : a) -> String
+
+data Widget : Type = Widget String
+
+-- An inherent function `describe` at the module level.
+-- (Module-level bindings are the Kappa analogue of inherent methods.)
+describe : (& w : Widget) -> String
+let describe (Widget s) = "widget:" ++ s
+
+-- A separate trait instance.
+instance Describable Widget =
+    let describe (Widget s) = "D:" ++ s
+
+-- POSITIVE: calling the module-level `describe` directly.
+useInherent : String
+let useInherent = describe (Widget "gear")
+
+--! assertNoErrors
+--! assertType useInherent String
+
+-- POSITIVE: calling the trait `describe` via an explicit evidence value.
+useTraitViaConstraint : forall (a : Type). Describable a => (& x : a) -> String
+let useTraitViaConstraint x = describe x
+
+useTraitResult : String
+let useTraitResult = useTraitViaConstraint (Widget "cog")
+
+--! assertNoErrors
+--! assertType useTraitResult String
+
+-- POSITIVE: two different types; each has both kinds of describe.
+data Gadget : Type = Gadget Int
+
+describe_ : (& g : Gadget) -> String
+let describe_ (Gadget n) = "gadget:" ++ show n
+
+instance Describable Gadget =
+    let describe (Gadget n) = "D:" ++ show n
+
+gadgetInherent : String
+let gadgetInherent = describe_ (Gadget 3)
+
+gadgetTrait : String
+let gadgetTrait = useTraitViaConstraint (Gadget 7)
+
+--! assertNoErrors

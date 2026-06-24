@@ -1,0 +1,39 @@
+-- Source issue: UNISON#511 (fixes UNISON#343 #409)
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       declarations.signatures, declarations.let_in
+-- An inner local signature inside a function body MUST reference the
+-- enclosing function's type variables when the same lowercase identifier
+-- is used. Kappa's implicit-universalization rule pins outer-introduced
+-- tyvars as available to nested signatures that reference them by name.
+-- A nested `forall` quantifier, however, introduces a fresh binder and
+-- shadows the outer name.
+
+--! mode check
+
+-- POSITIVE: inner `temp : x` refers to the outer signature's `x`, so the
+-- assignment is well-typed (`temp` is the outer-bound `x`).
+let outer_scoped : forall (x y : Type). x -> y -> x
+let outer_scoped a b =
+    let temp : x = a   -- `x` here is the outer scope's binder
+    temp
+
+
+-- POSITIVE: an explicit nested `forall x. ...` introduces a fresh `x`
+-- that shadows the outer one. The inner identity function works at any
+-- type, including the outer `x`'s type at the call site.
+let shadowed : forall (x y : Type). x -> y -> x
+let shadowed a b =
+    id : forall (x : Type). x -> x
+    let id x = x
+    id a
+
+
+-- NEGATIVE: an inner annotation `temp : y` with the outer signature's `y`
+-- is not the same type as `x`. Kappa must reject assigning a value of type
+-- `x` to a binder annotated `y`.
+let cross_scoped : forall (x y : Type). x -> y -> x
+let cross_scoped a b =
+    let temp : y = a   --!! kappa.type.mismatch
+    b
+
+--! assertDiagnosticFamily error kappa.type.mismatch

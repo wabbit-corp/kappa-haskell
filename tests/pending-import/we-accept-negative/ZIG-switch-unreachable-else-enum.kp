@@ -1,0 +1,57 @@
+-- Source issues: zig compile_errors/switch_expression-unreachable_else_prong_enum.zig,
+--               zig#23685
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- When every constructor of a closed ADT is already covered by explicit arms,
+-- a trailing catch-all (`_`) is unreachable. Compilers must reject it with
+-- `kappa.pattern.unreachable`. The goal is to prevent stale "else" arms
+-- from silently absorbing enum members added later.
+
+--! mode check
+
+data Dir : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: all four constructors covered without a catch-all.
+let describeDir (d : Dir) : String =
+    match d
+    case North -> "north"
+    case South -> "south"
+    case East  -> "east"
+    case West  -> "west"
+
+
+-- NEGATIVE: catch-all `_` is unreachable because all constructors are named.
+let describeDirElse (d : Dir) : String =
+    match d
+    case North -> "north"
+    case South -> "south"
+    case East  -> "east"
+    case West  -> "west"
+    case _     -> "unreachable"    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- POSITIVE: catch-all is still needed when one constructor is missing.
+let describeDirPartial (d : Dir) : String =
+    match d
+    case North -> "north"
+    case South -> "south"
+    case _     -> "other"
+
+
+-- NEGATIVE: all constructors named AND an explicit duplicate arm follows.
+data Bit : Type =
+    Zero
+    One
+
+let mapBit (b : Bit) : Int =
+    match b
+    case Zero -> 0
+    case One  -> 1
+    case _    -> 99    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

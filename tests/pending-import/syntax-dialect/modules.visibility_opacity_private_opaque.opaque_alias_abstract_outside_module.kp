@@ -1,0 +1,52 @@
+-- Source issues: Scala3 #5467, #5481
+-- Spec: modules.visibility_opacity_private_opaque.opaque
+-- An opaque type alias's definitional equation is NOT available outside the
+-- defining module. Outside the module, `opaque type Pos = Int` makes `Pos` an
+-- abstract type: `Pos` and `Int` are NOT definitionally equal outside.
+-- Consequently:
+-- 1. A function defined inside the module may use the alias transparently.
+-- 2. Outside the module, passing an `Int` where `Pos` is expected is a type error.
+-- 3. Exhaustiveness checking must treat `Pos` as abstract (see SA-Scala-05).
+
+module defining_module
+
+-- Inside the defining module, `Pos = Int` is transparent.
+opaque type Pos = Int
+
+-- Accepted inside: `fromInt` wraps an Int as a Pos using the transparent alias.
+fromInt : Int -> Pos
+let fromInt n = n   -- transparent: Int and Pos are definitionally equal here
+
+-- Accepted inside: `toInt` unwraps a Pos back to Int.
+toInt : Pos -> Int
+let toInt p = p     -- transparent inside the module
+
+-- Operations on Pos inside the module may use Int operations.
+addPos : Pos -> Pos -> Pos
+let addPos a b = a + b
+
+--! mode check
+
+---
+
+module use_site
+
+import defining_module
+
+-- Outside the defining module, `Pos` is abstract.
+-- `Int` is NOT a subtype of `Pos` and vice versa.
+-- Attempting to pass a literal Int where Pos is expected MUST fail.
+badCoerce : defining_module.Pos
+let badCoerce = 42   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Accepted: using the explicitly exported `fromInt` to create a Pos value.
+goodPos : defining_module.Pos
+let goodPos = defining_module.fromInt 42
+
+
+-- Accepted: using the explicitly exported `toInt` to retrieve the Int.
+goodInt : Int
+let goodInt = defining_module.toInt goodPos
+

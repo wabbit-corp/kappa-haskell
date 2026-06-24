@@ -1,0 +1,27 @@
+-- Source issue: FSTAR-101
+-- Spec: core_semantics.definitional_equality
+-- Two type expressions that are syntactically identical and share the same
+-- free variables must be definitionally equal. The checker must not reject
+-- an ascription whose expected and actual type print identically.
+
+--! mode check
+
+-- A trivially-true predicate type (Any a x holds for every x : a).
+type Any (a : Type) : a -> Type = \_ -> Unit
+
+-- An abstract type parameterized by predicates.
+expect term T : (a : Type) -> (p : a -> Type) -> Type
+
+-- A node type that uses T with the Any predicate.
+data Node (a : Type) : Type =
+    MkNode : T (Node a) (Any (Node a)) -> Node a
+
+-- Projection: the field inside MkNode has type T (Node a) (Any (Node a)).
+-- The projected result must have the same type as the field; the checker
+-- must accept the identity.
+get_field : {a : Type} -> Node a -> T (Node a) (Any (Node a))
+let get_field n =
+    match n
+      case MkNode v -> v
+
+--! assertNoErrors

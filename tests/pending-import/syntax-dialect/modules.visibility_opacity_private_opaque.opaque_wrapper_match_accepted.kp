@@ -1,0 +1,67 @@
+-- Source issue: Rocq #19983 (RSA-13)
+-- Spec: modules.visibility_opacity_private_opaque.data (§8.5.3)
+-- §8.5.3 states: "Pattern matching on [opaque type] constructors outside the
+-- defining module is therefore not possible unless the importing module
+-- explicitly clarifies [the opaque type]."  This restriction applies only to
+-- the OPAQUE TYPE'S OWN constructors.  A non-opaque wrapper type whose
+-- constructors yield values of opaque type is NOT subject to this restriction:
+-- the wrapper's constructors ARE visible and matchable outside the module.
+--
+-- Rocq #19983: case analysis on a non-private type that happens to be
+-- parameterized by a private type was incorrectly rejected.  In Kappa terms the
+-- analogous obligation is: matching the non-opaque Wrapper constructor is
+-- always permitted; only matching Secret's own constructor is forbidden.
+
+--! mode check
+
+module defining_mod
+
+-- Secret is opaque: its constructor is hidden outside this module.
+opaque data Secret : Type =
+    Secret (value : Int)
+
+-- Wrapper is NOT opaque: its constructors are exported.
+data Wrapper : Type =
+    Wrap (inner : Secret)
+
+-- Published smart constructor.
+makeSecret : Int -> Secret
+let makeSecret n = Secret n
+
+wrapIt : Int -> Wrapper
+let wrapIt n = Wrap (makeSecret n)
+
+-- Inside the defining module, matching Secret is fine.
+secretValue : Secret -> Int
+let secretValue s =
+    match s
+    case Secret n -> n
+
+---
+
+module use_site
+
+import defining_mod
+
+-- ACCEPTED: Wrapper is non-opaque; matching on Wrap is permitted outside the
+-- defining module.  The bound `s : Secret` is an opaque value — we hold it
+-- but do not pattern-match on its constructor.
+extractInner : defining_mod.Wrapper -> defining_mod.Secret
+let extractInner w =
+    match w
+    case defining_mod.Wrap s -> s
+
+
+-- ACCEPTED: building a Wrapper using the published API and then extracting
+-- the inner Secret via the wrapper match.
+roundTrip : defining_mod.Wrapper
+let roundTrip = defining_mod.wrapIt 42
+
+-- REJECTED: matching directly on Secret's constructor outside defining_mod
+-- is not allowed — the constructor is hidden.
+badSecretMatch : defining_mod.Secret -> Int
+let badSecretMatch s =
+    match s
+    case defining_mod.Secret n -> n   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

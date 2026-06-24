@@ -1,0 +1,27 @@
+-- Source issues: inko#530, inko#917
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a closure that borrows a unique (uni T) value and then escapes
+-- the unique value's scope violates the uniqueness invariant. The borrow
+-- prevents the unique guarantee from being restored.
+-- In Kappa, a closure that captures a linear (quantity 1) value by reference
+-- escapes the borrow region when the closure itself is returned.
+
+--! mode check
+
+data Resource : Type = Resource Int
+
+inspect : (& r : Resource) -> Int
+let inspect (Resource n) = n
+
+-- POSITIVE: using the resource within the scope of the borrow.
+useInScope : (& r : Resource) -> Int
+let useInScope r = inspect r
+
+
+-- NEGATIVE: a closure that captures a borrow of the linear 'r'.
+-- The closure escapes the borrow region — the borrow outlives the
+-- unique value's lifetime.
+captureEscape : (1 r : Resource) -> (() -> Int)
+let captureEscape r = \() -> inspect r   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

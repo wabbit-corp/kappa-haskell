@@ -1,0 +1,32 @@
+-- Source issue: carp-lang/Carp#1001
+-- Spec: data_types.data_declarations,
+--       data_types.data_declarations.constructor_application_named_arguments_c,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp #1001: `(deftype (Fish a) [x a x a])` emitted code that the C
+-- compiler rejected; the duplicate field name was not caught at
+-- elaboration.  The portable Kappa obligation is that constructor field
+-- labels form a set: §10.1.1 ("Each field label in `{ ... }` must
+-- correspond to a distinct explicit constructor argument name.
+-- Duplicate labels are an error.").  The diagnostic surfaces at named-
+-- argument constructor application using the same label twice.  See
+-- CARP_SPEC_ADDITIONS.md SA-CARP-08 for the proposed direct
+-- declaration-site obligation.
+
+--! mode check
+
+-- POSITIVE: a record-style constructor with distinct field labels is
+-- well-formed and is applicable by name.
+data Pair : Type =
+    MkPair { left : Int, right : Int }
+
+mkOk : Pair
+let mkOk = MkPair { left = 1, right = 2 }
+
+--! assertType mkOk Pair
+
+-- NEGATIVE: applying the constructor with the same label twice is a
+-- duplicate-label error per §10.1.1.
+mkBad : Pair
+let mkBad = MkPair { left = 1, left = 2 }   --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

@@ -1,0 +1,70 @@
+-- Source issues: apple/swift #46058 (wrong error message when calling constructor
+--   with type mismatch), apple/swift #65467 (failed to produce diagnostic when
+--   unable to choose correct initializer).
+--   Calling an overloaded function with an argument whose type does not match
+--   any available overload must produce kappa.type.mismatch. The checker
+--   must not produce an internal error or misleading diagnostic.
+-- Spec: types.quantification §11.3,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+
+--! mode check
+
+-- A family of overloaded functions accepting specific types.
+process : Nat -> String
+let process n = "nat:" ++ n
+
+process : Bool -> String
+let process True  = "true"
+let process False = "false"
+
+process : String -> String
+let process s = "str:" ++ s
+
+-- POSITIVE: each overload resolves with matching argument type.
+pNat : String
+let pNat = process (42 : Nat)
+
+pBool : String
+let pBool = process True
+
+pStr : String
+let pStr = process "hello"
+
+-- A constructor with a specific signature.
+data Point : Type = Point Nat Nat
+
+mkPoint : Nat -> Nat -> Point
+let mkPoint x y = Point x y
+
+-- POSITIVE: correct argument types for constructor.
+origin : Point
+let origin = mkPoint 0 0
+
+-- A higher-order function.
+applyTwice : (Nat -> Nat) -> Nat -> Nat
+let applyTwice f x = f (f x)
+
+-- POSITIVE: applying with correct types.
+doubled : Nat
+let doubled = applyTwice (\n -> n * 2) 3
+
+-- NEGATIVE: calling process with a type that has no matching overload.
+data Raw : Type = Raw Nat
+
+badProcess : String
+let badProcess = process (Raw 1)    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a String where Nat is required.
+badPoint : Point
+let badPoint = mkPoint "x" 0    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a Bool function where a Nat function is expected.
+badApply : Nat
+let badApply = applyTwice (\b -> if b then 1 else 0) 3    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing too many arguments to a non-curried function.
+-- process takes exactly one argument; process 1 2 is not valid.
+extraArg : String
+let extraArg = process 1 2    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

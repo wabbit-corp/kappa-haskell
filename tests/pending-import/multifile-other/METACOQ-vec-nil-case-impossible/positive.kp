@@ -1,0 +1,35 @@
+-- Source issues: METACOQ-238, METACOQ-436
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+--
+-- After matching VNil, the index is forced to 0. A subsequent attempt
+-- to match the same vector against VCons is unreachable. Kappa's
+-- `case impossible` (and `-> impossible`) require the compiler to prove
+-- the remaining remainder uninhabited from index unification.
+
+module positive
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : forall {n : Nat}. (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
+
+-- POSITIVE: a function on `Vec a 0` may use `case impossible` to discharge
+-- the VCons constructor's refinement.
+emptyOnly : forall {a : Type}. Vec a 0 -> Nat
+let emptyOnly v =
+    match v
+    case VNil -> 0
+    case impossible
+
+-- POSITIVE: dependent eliminator for `Vec a (n + 1)` — only VCons remains.
+firstSafe : forall {a : Type} {n : Nat}. Vec a (n + 1) -> a
+let firstSafe v =
+    match v
+    case VCons x _ -> x
+    case impossible
+
+-- Suite-wide budget: exactly the 1 error(s) marked in negative.lang;
+-- every positive declaration in this file must elaborate cleanly.
+--! assertErrorCount 1

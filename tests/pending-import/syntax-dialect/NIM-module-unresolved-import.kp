@@ -1,0 +1,59 @@
+-- Source: nim-lang/Nim#11225 (Generics sandwiched between two modules don't
+--         mixin their scope symbols properly), nim-lang/Nim#18150 (`in` inside
+--         template not lowered when called from another module),
+--         nim-lang/RFCs#410 (Local-scope import proposal)
+-- Spec: modules.imports, modules.names, modules.acyclic_imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved)
+-- Importing a name that does not exist in a module, or using an unresolved
+-- identifier in a typed block, must be rejected with kappa.name.unresolved.
+
+--! mode check
+module MathLib
+
+add : Int -> Int -> Int
+let add x y = x + y
+
+multiply : Int -> Int -> Int
+let multiply x y = x * y
+
+square : Int -> Int
+let square x = x * x
+
+-- (subtract is intentionally NOT defined here)
+
+module test
+import MathLib
+
+-- POSITIVE: using names that exist in MathLib.
+sumResult : Int
+let sumResult = MathLib.add 3 4
+
+productResult : Int
+let productResult = MathLib.multiply 5 6
+
+squareResult : Int
+let squareResult = MathLib.square 9
+
+-- NEGATIVE: referencing a name that does not exist in MathLib.
+badSubtract : Int
+let badSubtract = MathLib.subtract 10 3  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using a completely undefined identifier with no import.
+badUndefined : Int
+let badUndefined = unknownFunction 42    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: accessing module that was not imported.
+badModuleAccess : Int
+let badModuleAccess = UnknownModule.foo 1  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: qualified access to an imported module's public member.
+combinedResult : Int
+let combinedResult = MathLib.add (MathLib.square 3) (MathLib.multiply 2 4)
+

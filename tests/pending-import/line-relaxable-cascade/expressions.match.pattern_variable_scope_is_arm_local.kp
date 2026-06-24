@@ -1,0 +1,58 @@
+-- Source issue: (original — pattern variable scoping)
+-- Spec: expressions.match, declarations.terms.irrefutable_patterns_let_bindings
+-- Pattern-bound variables are scoped to the arm body in which they are bound.
+-- A variable bound in one match arm is not visible in another arm.
+-- A variable bound in a pattern cannot escape the enclosing match expression.
+
+--! mode check
+
+data List (a : Type) : Type =
+    Nil  : List a
+    Cons : a -> List a -> List a
+
+-- POSITIVE: each arm has its own binding; no interference.
+safeHead : forall {a : Type}. List a -> Option a
+let safeHead xs =
+    match xs
+    case Nil      -> Nothing
+    case Cons h _ -> Just h
+
+-- POSITIVE: nested patterns with distinct names in each arm.
+classify : List Int -> String
+let classify xs =
+    match xs
+    case Nil              -> "empty"
+    case Cons _ Nil       -> "singleton"
+    case Cons h (Cons t _) -> "head=" ++ int_to_string h
+
+-- POSITIVE: pattern variable used in nested match — inner bindings are fresh.
+nested : List (List Int) -> Int
+let nested xss =
+    match xss
+    case Nil             -> 0
+    case Cons xs rest ->
+        match xs
+        case Nil       -> nested rest
+        case Cons h _  -> h
+
+-- NEGATIVE: attempting to use a pattern variable outside its arm scope.
+-- The variable `h` bound in the `Cons h _` pattern is only available
+-- within that arm body.  Referring to it outside is an unresolved name.
+escapeAttempt : List Int -> Int
+let escapeAttempt xs =
+    let _ = match xs
+            case Nil      -> 0
+            case Cons h _ -> h
+    h   --!! kappa.name.unresolved
+
+-- POSITIVE: correctly extracting from a match result by returning from the arm.
+getFirst : List Int -> Int
+let getFirst xs =
+    match xs
+    case Nil      -> -1
+    case Cons h _ -> h
+
+first3 : Int
+let first3 = getFirst (Cons 3 Nil)
+
+--! assertDiagnosticFamily error kappa.name.unresolved

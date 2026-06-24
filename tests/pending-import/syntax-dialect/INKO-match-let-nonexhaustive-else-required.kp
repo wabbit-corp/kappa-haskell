@@ -1,0 +1,27 @@
+-- Source issues: docs/pattern-matching
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Inko: a 'let' binding with a refutable pattern (one that does not match
+-- all values of the type) is non-exhaustive. In Inko, such bindings require
+-- an 'else' clause to handle the non-matching case.
+-- In Kappa, destructuring with a partial pattern in a binding position
+-- produces a non-exhaustive pattern error.
+
+--! mode check
+
+data Option (a : Type) : Type = Some a | None
+
+-- POSITIVE: exhaustive extraction using a full match.
+getOrDefault : Option Int -> Int -> Int
+let getOrDefault opt def = match opt with
+    | Some n -> n
+    | None   -> def
+
+
+-- NEGATIVE: binding with a refutable pattern (Some n) in a let.
+-- If the value is None, no case handles it — non-exhaustive.
+getOrFail : Option Int -> Int
+let getOrFail opt =
+    let Some n = opt   --!! kappa.pattern.non-exhaustive
+    n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

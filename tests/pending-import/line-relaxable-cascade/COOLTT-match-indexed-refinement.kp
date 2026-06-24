@@ -1,0 +1,68 @@
+-- Source artifacts: cooltt test nat-path.cooltt (J eliminator derived from coe),
+--               test base-types.cooltt (abort for empty type, sum type case).
+-- Source tests: cooltt test/nat.cooltt (corpus repos/github-redprl-cooltt/tests/test/nat.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+--
+-- When pattern matching on an indexed (GADT-style) data type, each branch's
+-- type environment must be refined by the index equalities forced by the matched
+-- constructor. The return type may depend on those refined indices.
+-- In particular:
+-- - Matching `Vec A zero` against `vnil` refines the length index to `zero`.
+-- - Matching `Vec A (suc n)` against `vcons` refines the length index to `suc n`.
+-- These refinements must be tracked precisely to allow the body of each branch
+-- to use the tighter type information.
+
+--! mode check
+
+data Vec (A : Type) : Nat -> Type =
+    vnil  :                                   Vec A zero
+    vcons : forall {n : Nat} -> A -> Vec A n -> Vec A (suc n)
+
+-- POSITIVE: head of a non-empty vector; the `suc n` case is the only reachable one.
+-- The `vnil` case is impossible for `Vec A (suc n)`, so it may be omitted
+-- or present as an absurd branch.
+head : forall {A : Type} {n : Nat} -> Vec A (suc n) -> A
+let head (vcons x _) = x
+
+-- POSITIVE: tail of a non-empty vector.
+tail : forall {A : Type} {n : Nat} -> Vec A (suc n) -> Vec A n
+let tail (vcons _ xs) = xs
+
+-- POSITIVE: length function, where the index is refined per branch.
+length : forall {A : Type} {n : Nat} -> Vec A n -> Nat
+let length vnil         = zero
+let length (vcons _ xs) = suc (length xs)
+
+-- POSITIVE: append: the output length is the sum of the input lengths.
+append : forall {A : Type} {m n : Nat} -> Vec A m -> Vec A n -> Vec A (add m n)
+let append vnil         ys = ys
+let append (vcons x xs) ys = vcons x (append xs ys)
+
+-- POSITIVE: zip combining two vectors of the same length.
+zip : forall {A B : Type} {n : Nat} -> Vec A n -> Vec B n -> Vec (A, B) n
+let zip vnil         vnil         = vnil
+let zip (vcons x xs) (vcons y ys) = vcons (x, y) (zip xs ys)
+
+-- POSITIVE: replicate — build a vector of length n.
+replicate : forall {A : Type} -> (n : Nat) -> A -> Vec A n
+let replicate zero    _ = vnil
+let replicate (suc n) a = vcons a (replicate n a)
+
+-- POSITIVE: map over a vector.
+mapVec : forall {A B : Type} {n : Nat} -> (A -> B) -> Vec A n -> Vec B n
+let mapVec _ vnil         = vnil
+let mapVec f (vcons x xs) = vcons (f x) (mapVec f xs)
+
+-- NEGATIVE: providing a `vcons` value where `vnil` (Vec A zero) is expected;
+-- index mismatch — `suc n ≠ zero`.
+badVec : Vec Nat zero
+let badVec = vcons 1 vnil    --!! kappa.type.mismatch
+
+-- NEGATIVE: a non-exhaustive match — only covering `vcons` of a `Vec A n`;
+-- but `vnil` (n = zero) is also a possible pattern.
+badLength : forall {A : Type} {n : Nat} -> Vec A n -> Nat
+let badLength (vcons _ xs) = suc (badLength xs)    --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

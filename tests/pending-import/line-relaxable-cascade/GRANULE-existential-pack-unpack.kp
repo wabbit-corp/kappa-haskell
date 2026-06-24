@@ -1,0 +1,43 @@
+-- Source: granule-project/granule
+--         tests/cases/positive/existentials/simple-existential.gr,
+--         tests/cases/negative/polymorphism/badExistential.gr
+-- Spec: types.functions, expressions.match (§13.2.11 anonymous existentials),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Kappa existentials use `exists (a : Type). T` with introduction via
+-- `seal (a = T0, value = e) as exists (a : Type). T` (§13.2.11) and
+-- elimination via `open e as exists (a). y in body` (§13.2.11). An opened
+-- existential witness MUST NOT escape the open body; the resulting
+-- diagnostic surfaces `kappa.type.mismatch` (or a typed-skolem-escape
+-- variant) when the body's type still mentions the opened witness.
+
+module test
+
+--! mode check
+
+-- POSITIVE: introduce an existential packing of Int.
+foo : exists (a : Type). a
+let foo = seal (a = Int, value = 42) as exists (a : Type). a
+
+
+-- POSITIVE: open and use under the existential — `f` accepts every type.
+useExists :
+    (1 e : exists (a : Type). a) ->
+    (forall (a : Type). (1 x : a) -> Int) ->
+    Int
+let useExists e f =
+    open e as exists (a). y in f @a y
+
+
+-- NEGATIVE: the opened type witness `a` appears free in the result type of
+-- the open body, violating the non-escape rule (§13.2.11). The resulting
+-- residual type mentions the opened witness and is rejected.
+data Wrap (a : Type) : Type =
+    MkWrap
+
+leakWitness :
+    (1 e : exists (a : Type). a) -> Wrap Int
+let leakWitness e =
+    open e as exists (a). y in
+        (MkWrap : Wrap a)        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

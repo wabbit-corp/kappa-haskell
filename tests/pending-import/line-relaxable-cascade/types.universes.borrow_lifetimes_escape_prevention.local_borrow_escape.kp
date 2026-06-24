@@ -1,0 +1,35 @@
+-- Source issue: Move #210 (also #95)
+-- Spec: types.universes.borrow_lifetimes_escape_prevention
+-- A borrowed view tethered to a local root must not escape the scope
+-- that introduced that root.  The skolem region for the borrow is rigid
+-- and scoped to the let-body; returning the borrow value from that scope
+-- would let the rigid region escape, which is rejected.
+
+--! mode check
+
+module move_210_local_borrow_escape
+
+-- Rejected: borrow of a temporary escapes the let-scope that created it.
+-- `let & r = n` introduces a rigid region rho tethered to `n`.
+-- Returning `r` outside that scope lets rho escape.
+escapeBorrow : Int -> Int
+let escapeBorrow _ =
+    let 1 n = 42
+    let & r = n
+    r               --!! kappa.borrow.escape
+
+-- Accepted: borrow used only within the scope of its root.
+useLocal : Int
+let useLocal =
+    let 1 n = 100
+    let & r = n
+    r + 1           -- used within scope; n is consumed through the borrow
+
+-- Rejected: closure captures a borrow and escapes the root's scope.
+captureEscape : (Int -> Int)
+let captureEscape =
+    let 1 n = 7
+    let & r = n
+    \ _ -> r        --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

@@ -1,0 +1,55 @@
+-- Source artifacts: synquid corpus uses Cons with two arguments throughout
+--                 (test/comcom/List-Replicate.sq, test/pldi16/List-Append.sq).
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.constructor-arity),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity),
+--       data_types.data_declarations
+--
+-- A constructor pattern that supplies the wrong number of positional
+-- arguments must be rejected with family `kappa.pattern.constructor-arity`.
+-- A constructor application that supplies the wrong number of positional
+-- arguments must be rejected with family `kappa.constructor.arity`.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- A binary constructor: Cons takes (head, tail).
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: pattern with exactly two binders for Cons.
+takeOne : forall (a : Type). List a -> List a
+let takeOne xs =
+    match xs
+      case Nil          -> Nil
+      case (Cons x _)   -> Cons x Nil
+
+-- POSITIVE: constructor application with exactly two arguments.
+twoElems : List PNat
+let twoElems = Cons Z (Cons (S Z) Nil)
+
+-- NEGATIVE: pattern with only one binder for Cons (missing tail).
+badPattern : forall (a : Type). List a -> List a
+let badPattern xs =
+    match xs
+      case Nil       -> Nil
+      case (Cons x)  -> Nil                     --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: pattern with three binders for Cons (extra positional).
+badPattern3 : forall (a : Type). List a -> List a
+let badPattern3 xs =
+    match xs
+      case Nil              -> Nil
+      case (Cons x y z)     -> Nil              --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: constructor application missing its tail argument.
+badCons : List PNat
+let badCons = Cons Z                            --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+--! assertDiagnosticFamily error kappa.constructor.arity

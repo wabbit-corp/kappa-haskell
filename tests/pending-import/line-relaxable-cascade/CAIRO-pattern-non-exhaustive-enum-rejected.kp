@@ -1,0 +1,79 @@
+-- Source issues: CAIRO-3118, CAIRO-2313, CAIRO-PR-3479 (Match improvements roadmap)
+-- Spec: expressions.match (§17),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive, kappa.pattern.unreachable).
+-- Kappa spec rule (§17 "match"):
+--   "A match expression is exhaustive if and only if the union of the
+--    patterns in all case branches covers the full type of the scrutinee.
+--    A non-exhaustive match expression must be rejected."
+-- Cairo issue CAIRO-3118: the language server crashed when encountering
+--   pattern matching on non-felt types; the diagnostics must be produced
+--   without crashing.
+-- Cairo issue CAIRO-2313: an enum with three unit variants required all three
+--   to be listed; missing any caused a rejection.
+
+--! mode check
+
+data Status : Type =
+    Pending | Active | Closed
+
+-- POSITIVE: all three variants covered.
+describeStatus : Status -> String
+let describeStatus s =
+    match s
+    case Pending -> "pending"
+    case Active  -> "active"
+    case Closed  -> "closed"
+
+-- POSITIVE: wildcard covers all remaining.
+isActive : Status -> Bool
+let isActive s =
+    match s
+    case Active -> True
+    case _      -> False
+
+-- NEGATIVE: only two out of three covered — must be rejected.
+statusOk : Status -> Bool
+let statusOk s =
+    match s
+    case Pending -> False
+    case Active  -> True        --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one variant covered.
+onlyActive : Status -> Bool
+let onlyActive s =
+    match s
+    case Active -> True         --!! kappa.pattern.non-exhaustive
+
+-- POSITIVE: nested match; inner match is exhaustive, outer is exhaustive.
+data Result : Type =
+    Ok Status | Fail String
+
+processResult : Result -> Bool
+let processResult r =
+    match r
+    case Ok s  -> match s
+        case Pending -> False
+        case Active  -> True
+        case Closed  -> False
+    case Fail _ -> False
+
+-- NEGATIVE: inner match inside Ok is non-exhaustive (missing Closed).
+badNested : Result -> Bool
+let badNested r =
+    match r
+    case Ok s  -> match s
+        case Pending -> False
+        case Active  -> True   --!! kappa.pattern.non-exhaustive
+    case Fail _ -> False
+
+-- POSITIVE: unreachable branch after wildcard is flagged as unreachable
+-- (implementation may warn rather than error, but must diagnose).
+wildcardFirst : Status -> Bool
+let wildcardFirst s =
+    match s
+    case _ -> True
+    case Pending -> False      --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

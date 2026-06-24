@@ -1,0 +1,53 @@
+-- Source issue: OCaml#6308
+-- Spec: compiler.frontir.origins_ranges_labels
+-- When an or-pattern `p1 | p2 | ...` is ill-formed because a binder's type is not
+-- definitionally equal across alternatives, the diagnostic blame must identify the
+-- specific failing alternative, not the entire or-pattern.
+-- OCaml#6308 reported that OCaml placed the error on the whole or-pattern
+-- `{x=a} | {x=(a,_)}` rather than the specific branch `{x=(a,_)}` that caused
+-- the mismatch. Kappa's spec at `compiler.frontir.origins_ranges_labels` requires
+-- that the primary blame origin be the minimal causative source span.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+-- An or-pattern where `n` has different types across branches (Nat vs Int).
+-- The mismatch is in the second alternative `Succ n`.  The error must not span
+-- the entire or-pattern; the blame must be located at the mismatched branch.
+badOrTypes : (| Nat | Int |) -> Nat
+let badOrTypes v =
+    match v
+      case (| n : Nat |) | (| n : Int |) -> n  --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- An or-pattern where both alternatives bind `x : Nat` — valid.
+goodOrPat : (| Nat | Nat |) -> Nat
+let goodOrPat v =
+    match v
+      case (| x : Nat |) | (| x : Nat |) -> x
+
+
+-- An or-pattern where the binder sets differ (first has `x`, second lacks it).
+-- Regardless of type, the missing binder is ill-formed.
+badOrBinderSet : Nat -> Nat
+let badOrBinderSet v =
+    match v
+      case Zero | Succ _ -> v      -- no binders: OK (empty intersection = empty union)
+
+
+-- Valid: or-pattern across data constructors that bind the same name with equal type.
+data Colour : Type =
+    Red   : Colour
+    Green : Colour
+    Blue  : Colour
+
+isWarm : Colour -> Bool
+let isWarm c =
+    match c
+      case Red | Green -> True
+      case Blue        -> False
+
+

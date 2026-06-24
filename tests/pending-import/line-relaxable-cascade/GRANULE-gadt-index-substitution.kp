@@ -1,0 +1,49 @@
+-- Source: granule-project/granule PR #198/#208 (unification, substitution,
+--         GADT specialisation);
+--         tests/cases/positive/indexed/big.gr (Vec n)
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       data_types.gadts (GSA-08),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- A constructor pattern on a Vec-shaped GADT refines its index parameter.
+-- Matching `Nil` refines `n` to `Z`; matching `Cons _ xs` refines `n` to
+-- `S m` for fresh `m`. Trying to return a value whose type still mentions
+-- the refined index without that refinement holding is a type mismatch.
+
+module test
+
+--! mode check
+
+data Nat : Type =
+    Z
+    S Nat
+
+data Vec (n : Nat) (a : Type) : Type =
+    Nil : Vec Z a
+    Cons : forall (m : Nat). (1 x : a) -> (1 xs : Vec m a) -> Vec (S m) a
+
+-- POSITIVE: head on a non-empty vector — Cons branch refines n to S m,
+-- so the result type matches.
+head : forall (a : Type) (n : Nat). (1 v : Vec (S n) a) -> a
+let head (Cons x _) = x
+
+--! assertType head (forall (a : Type) (n : Nat). (1 v : Vec (S n) a) -> a)
+
+-- POSITIVE: the Nil case under a (S n)-demanding type is `impossible`
+-- because the indices Z and S n are distinct.
+headSafe : forall (a : Type) (n : Nat). (1 v : Vec (S n) a) -> a
+let headSafe v =
+    match v
+      case Cons x _ -> x
+      case Nil      -> impossible
+
+
+-- NEGATIVE: returning a Vec whose index is the wrong constructor is a
+-- type-equality failure (the Cons constructor would force the result
+-- index to S m, but the signature claims Vec Z a).
+data Box (a : Type) : Type =
+    MkBox
+
+badIndex : forall (a : Type) (n : Nat). (1 v : Vec (S n) a) -> Vec Z a
+let badIndex v = v        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,65 @@
+-- Source issues: rhombus-pr#690 (multiple-value patterns in match)
+-- Spec: expressions.match
+--   "All case branches in a match expression must match the same number of values."
+--   A mix of zero-value, one-value, and multi-value branches in the same match is ill-formed.
+-- Evidence: match.rhm in racket/rhombus tests confirm static rejection of arity-inconsistent
+--   clauses with messages: "all clauses must match the same number of values".
+-- See also: SA-RHOMBUS-01 (proposes formalizing this as a match arity consistency rule).
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair a b
+
+-- POSITIVE: all single-value branches — consistent arity 1.
+describeInt : Int -> String
+let describeInt n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "other"
+
+-- POSITIVE: two-value (pair) match with consistent arity 2.
+sameSign : Pair Int Int -> Bool
+let sameSign p =
+    match p
+    case MkPair x y if x >= 0 && y >= 0 -> True
+    case MkPair x y if x < 0  && y < 0  -> True
+    case MkPair _ _                        -> False
+
+-- POSITIVE: consistent arity across three branches.
+classify : Int -> String
+let classify n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case 2 -> "two"
+    case _ -> "many"
+
+-- NEGATIVE: first branch matches a pair pattern (2 positional), second branch matches a single
+-- binder. The scrutinee cannot simultaneously be a pair and a plain value.
+-- The compiler must reject: branches target inconsistent value shapes.
+badMixed1 : Int -> String
+let badMixed1 n =
+    match n
+    case MkPair x y -> "pair"  --!! kappa.type.mismatch
+    case x          -> "one"
+
+-- NEGATIVE: first branch is a unit-tuple pattern (0 values), second branch is a single binder.
+-- Inconsistent: one branch expects nothing, the other expects one value.
+badMixed2 : Int -> String
+let badMixed2 n =
+    match n
+    case ()  -> "void"   --!! kappa.type.mismatch
+    case _   -> "one"
+
+-- NEGATIVE: three branches, first two are consistent (1 value), third introduces a pair.
+-- The mismatch is detected on the third branch.
+badMixed3 : Int -> String
+let badMixed3 n =
+    match n
+    case 0        -> "zero"
+    case 1        -> "one"
+    case (x, y)   -> "pair"  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

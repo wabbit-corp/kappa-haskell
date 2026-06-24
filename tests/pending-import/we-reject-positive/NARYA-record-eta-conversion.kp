@@ -1,0 +1,71 @@
+-- Source artifacts: narya docs/record-types.rst ("Records satisfy
+--               η-conversion: M is convertible with (M.fst, M.snd)"),
+--               narya PR #7 (allow eta-expansion of records when printing).
+-- Spec: declarations.signatures,
+--       types.records.field_projection,
+--       core_semantics.definitional_equality,
+--       core_semantics.record_canonicalization
+--
+-- Records satisfy η-conversion: two record values whose fields are
+-- field-wise convertible are themselves convertible. In particular,
+-- for any record value M whose constructor has named fields fst and
+-- snd, the term (M.fst, M.snd) is definitionally equal to M. The
+-- single-constructor data form with named binders is the portable
+-- record-like type in Kappa (§10.1, §13.2).
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : (fst : a) -> (snd : b) -> Pair a b
+
+pairFst : forall (a : Type) (b : Type). Pair a b -> a
+let pairFst p =
+    match p
+      case MkPair x _ -> x
+
+pairSnd : forall (a : Type) (b : Type). Pair a b -> b
+let pairSnd p =
+    match p
+      case MkPair _ y -> y
+
+data Eq (a : Type) (x : a) : a -> Type =
+    Refl : Eq a x x
+
+-- POSITIVE: η on a Pair — assembling a record from its projections is
+-- definitionally equal to the original. The match canonicalizes to
+-- MkPair (pairFst p) (pairSnd p), and the obligation is then Refl.
+etaPair :
+    (p : Pair Nat Nat) ->
+    Eq (Pair Nat Nat) p (MkPair (pairFst Nat Nat p) (pairSnd Nat Nat p))
+let etaPair p =
+    match p
+      case MkPair _ _ -> Refl
+
+-- POSITIVE: η for a singleton (unit-like) record. The unique inhabitant
+-- is definitionally equal to any other inhabitant of the same type.
+data Unit : Type =
+    Tt : Unit
+
+unitUnique : (u : Unit) -> Eq Unit u Tt
+let unitUnique u =
+    match u
+      case Tt -> Refl
+
+-- POSITIVE: swap composed with swap is the identity, witnessed by
+-- η-conversion at the result type.
+swap : forall (a : Type) (b : Type). Pair a b -> Pair b a
+let swap p =
+    match p
+      case MkPair x y -> MkPair y x
+
+swapSwap :
+    (p : Pair Nat Nat) -> Eq (Pair Nat Nat) (swap Nat Nat (swap Nat Nat p)) p
+let swapSwap p =
+    match p
+      case MkPair _ _ -> Refl
+
+--! assertNoErrors

@@ -1,0 +1,25 @@
+-- Source issues: CREUSOT-1396
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.disjoint_path_borrowing_records,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region,
+--       compiler.diagnostics.path_sensitive_diagnostics.overlapping_borrow_or_update_footprints
+-- Family: kappa.borrow.overlap (Kappa §3.2.7 / §3.3)
+-- `old e` is a value at the pre-state, not a borrow handle; attempts to
+-- pass it where a second live mutable borrow would be needed must
+-- overlap with the existing borrow region.  Pending spec gap
+-- CREUSOT-SA-02 (the `old` operator obligations).
+
+module test
+
+--! mode check
+
+data CellPair : Type = CellPair (inout Int)
+
+-- NEGATIVE: attempting to use `old` to obtain a second live borrow of
+-- an already-borrowed path - i.e. promoting `old` from a value-snapshot
+-- to a mutable place handle - must be rejected by the borrow checker.
+makeOverlap : (inout x : Int) -> CellPair
+let makeOverlap x =
+    CellPair (old x)                  --!! kappa.borrow.overlap
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

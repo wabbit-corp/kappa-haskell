@@ -1,0 +1,68 @@
+-- Source artifacts: synquid test/unit/HigherOrder.sq, test/current/List-Append.sq —
+--                 `measure elems :: List a -> Set a` is a non-Nat measure
+--                 used in refinement contracts ("elems _v == elems xs +
+--                 elems ys"). Kappa does NOT specify a portable Set-valued
+--                 measure (see SYNQUID_SPEC_ADDITIONS.md, SA-SYNQUID-05);
+--                 the structural-descent recursion on the same
+--                 underlying ADT is portable.
+-- Spec: declarations.totality.portable_well_founded_measures,
+--       declarations.totality.primitive_measure_language,
+--       declarations.totality.structural_descent
+--
+-- A non-Nat user-defined measure (Set a, Bag a, Bool, ...) is outside the
+-- Kappa portable measure language. The portable form is a Nat-valued
+-- measure or a tuple of Nat-valued measures. Here we test the portable
+-- Nat measure and document the gap.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- A simple total equality on PNat.
+eqP : PNat -> PNat -> Bool
+let eqP m n =
+    match m
+      case Z      ->
+          match n
+            case Z     -> True
+            case (S _) -> False
+      case (S m') ->
+          match n
+            case Z      -> False
+            case (S n') -> eqP m' n'
+
+-- POSITIVE: a PNat-valued primitive measure on List.
+len : forall (a : Type). List a -> PNat
+let len xs =
+    match xs
+      case Nil          -> Z
+      case (Cons _ ys)  -> S (len ys)
+
+-- POSITIVE: a PNat-valued measure that counts occurrences of Z.
+-- A Synquid multi-argument measure `numeq :: x:a -> List a -> Nat` is
+-- portable only when phrased as an ordinary recursive Nat-returning
+-- function on the structural argument.
+countEqZero : List PNat -> PNat
+let countEqZero xs =
+    match xs
+      case Nil          -> Z
+      case (Cons x ys)  ->
+          if eqP x Z then S (countEqZero ys) else countEqZero ys
+
+-- POSITIVE: a paired-measure structural descent. The recursion descends
+-- on `xs`; both `len xs` and `countEqZero xs` are visible primitive
+-- PNat measures on the same structural argument.
+filterZeros : List PNat -> List PNat
+let filterZeros xs =
+    match xs
+      case Nil          -> Nil
+      case (Cons x ys)  ->
+          if eqP x Z then Cons x (filterZeros ys) else filterZeros ys
+
+--! assertNoErrors

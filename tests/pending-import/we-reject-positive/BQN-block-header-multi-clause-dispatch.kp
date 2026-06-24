@@ -1,0 +1,25 @@
+-- Source issues: BQN tests/test/cases/header.bqn
+--   (`1 {𝕩;2} 3` returns 2, dyadic case; `{2×𝕩;𝕨÷𝕩} 3` returns 6, monadic case).
+-- Spec: expressions.match.
+-- A block with monadic and dyadic header clauses must dispatch on whether
+-- the left argument is supplied. Kappa expresses this with a sum/Option
+-- payload that selects the arm; `None` and `Some` are implicitly imported
+-- prelude constructors (§28.1).
+
+--! mode check
+
+-- POSITIVE: a function whose behavior depends on the presence of a left
+-- argument, encoded as Option Nat (None == monadic call, Some w == dyadic).
+dispatch : Option Nat -> Nat -> Nat
+let dispatch w x =
+    match w
+      case None       -> 2 * x        -- monadic: BQN `{2×𝕩;…} 3` == 6
+      case Some left  -> left / x     -- dyadic:  BQN `1 {…;𝕨÷𝕩} 3`
+
+monadicResult : Nat
+let monadicResult = dispatch None 3
+
+dyadicResult : Nat
+let dyadicResult = dispatch (Some 12) 3
+
+--! assertNoErrors

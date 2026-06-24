@@ -1,0 +1,18 @@
+-- Source issues: FSTAR-542, FSTAR-606
+-- Spec: core_semantics.definitional_equality.refinement_aware_normalization
+-- Unfolding a type alias containing a refinement must preserve the refinement.
+
+--! mode check
+
+-- A type alias for a pair where the second component exceeds the first.
+type PosPair = (x : Int, y : { n : Int | n > x })
+
+-- Using the alias in a function: the refinement must be visible after unfolding.
+fst_pair : PosPair -> Int
+let fst_pair p = p.x
+
+-- The refinement must be accessible after alias expansion.
+snd_positive : (p : PosPair) -> { n : Int | n > p.x }
+let snd_positive p = p.y
+
+--! assertNoErrors

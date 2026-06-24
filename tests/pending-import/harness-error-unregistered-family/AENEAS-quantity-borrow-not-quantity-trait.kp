@@ -1,0 +1,46 @@
+-- Source issue: AENEAS (general borrow/quantity confusion)
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_borrow_confusion,
+--       kappa.quantity.borrow-not-quantity
+-- §3.2.6: `&` is the borrow qualifier for binding and parameter positions;
+-- it is not an expression of classifier `Quantity`.  Using `&` in a position
+-- that expects a `Quantity` value (such as a trait associated type of kind
+-- `Quantity`, or a quantity annotation site) must be rejected with
+-- kappa.quantity.borrow-not-quantity.
+
+module test
+
+--! mode check
+
+-- A trait with an associated Quantity member.
+trait Quantified (a : Type) =
+    Demand : Quantity
+
+-- POSITIVE: correctly assigning a Quantity value — instances compile without error.
+data Strict : Type = Strict Int
+
+instance Quantified Strict =
+    let Demand = 1     -- linear quantity
+
+data Relaxed : Type = Relaxed Int
+
+instance Quantified Relaxed =
+    let Demand = ω    -- unrestricted quantity
+
+
+-- NEGATIVE: assigning `&` (borrow qualifier) where a `Quantity` is expected.
+data Bad : Type = Bad Int
+
+instance Quantified Bad =
+    let Demand = &     --!! kappa.quantity.borrow-not-quantity
+
+--! assertDiagnosticFamily error kappa.quantity.borrow-not-quantity
+
+-- POSITIVE: a function annotated with quantity 1 — correct use of Quantity.
+consumeOnce : (1 x : Int) -> Int
+let consumeOnce x = x
+
+
+-- POSITIVE: a function using ω — correct use of Quantity.
+readMany : (ω x : Int) -> Int
+let readMany x = x + x
+

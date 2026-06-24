@@ -1,0 +1,41 @@
+-- Source issues: ponyc#488, ponyc type_check_subtype.cc
+--   (IsSubTypeClassInterface, IsSubTypeInterfaceInterface)
+-- Spec: traits.instances, expressions.application.subsumption
+-- Pony interfaces provide structural subtyping: a class with the right
+-- methods satisfies an interface without explicitly declaring conformance.
+-- Issue #488: a fieldless object literal lost its structural identity and
+-- was not recognized as satisfying an interface. In Kappa, an instance
+-- provides a trait's methods; without the instance, the type does not
+-- structurally satisfy the trait even if it has identically-typed members.
+-- The check is explicit via the instance mechanism, not implicit structural
+-- duck-typing. This test verifies that a type with the required instance
+-- is accepted while a type without it is rejected.
+
+--! mode check
+
+trait Named (a : Type) =
+    name : (& x : a) -> String
+
+data Person : Type = Person String
+data Anonymous : Type = Anonymous
+
+-- POSITIVE: instance declaring conformance.
+instance Named Person =
+    let name (Person n) = n
+
+-- POSITIVE: using via trait dispatch.
+greet :
+    forall (a : Type).
+    (@_ : Named a) ->
+    (& x : a) -> String
+let greet x = "Hello, " ++ name x
+
+greeting : String
+let greeting = greet (Person "Alice")
+
+-- NEGATIVE: using a type without a Named instance.
+-- No instance Named Anonymous has been declared.
+badGreeting : String
+let badGreeting = greet Anonymous   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

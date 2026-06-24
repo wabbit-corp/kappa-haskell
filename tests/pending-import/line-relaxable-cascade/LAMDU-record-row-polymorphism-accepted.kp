@@ -1,0 +1,70 @@
+-- Source issues: lamdu#164 — there's no way to RecExtend a (non-literal
+--   record) expression; lamdu#9 — adding fields to named tuples;
+--   tests/programs/open-record-with-hole-field.json. The portable
+--   obligation is that record types support row polymorphism: a
+--   function may accept any record that contains a required set of
+--   fields, returning a record of the same shape.
+-- Spec: types.records.row_polymorphism, types.records.row_extension
+--   §13.2.7: an open record type `(f : T | r)` is row-polymorphic;
+--   the residual row `r` must lack the named field.
+--   §13.2.6: row extension `rec.{ ℓ := e }` is the canonical way to
+--   add a fresh field.
+--
+-- Row-polymorphic record functions must accept records with the
+-- required field plus any additional fields, and they must propagate
+-- those extra fields through unchanged.
+
+--! mode check
+
+-- POSITIVE: a row-polymorphic projection.
+getX : forall (r : RecRow). LacksRec r x => (x : Nat | r) -> Nat
+let getX r = r.x
+
+-- POSITIVE: callers with varying additional fields all type-check.
+type Point  = (x : Nat, y : Nat)
+type Named  = (x : Nat, name : String)
+
+p1 : Point
+let p1 = (x = 1, y = 2)
+
+p2 : Named
+let p2 = (x = 5, name = "p")
+
+useGetXOnPoint : Nat
+let useGetXOnPoint = getX p1
+
+useGetXOnNamed : Nat
+let useGetXOnNamed = getX p2
+
+-- POSITIVE: an open-row extension function that adds a fresh field.
+addZ : forall (r : RecRow). LacksRec r z => (x : Nat | r) -> Nat -> (x : Nat, z : Nat | r)
+let addZ r z = r.{ z := z }
+
+useAddZ : (x : Nat, y : Nat, z : Nat)
+let useAddZ = addZ p1 3
+
+-- POSITIVE: a higher-order function that requires two specific fields.
+sumXY : forall (r : RecRow).
+    LacksRec r x => LacksRec r y => (x : Nat, y : Nat | r) -> Nat
+let sumXY r = r.x + r.y
+
+useSumXY : Nat
+let useSumXY = sumXY p1
+
+-- NEGATIVE: a record missing the required `x` field.
+type NoX = (y : Nat)
+
+noXVal : NoX
+let noXVal = (y = 4)
+
+badGetX : Nat
+let badGetX = getX noXVal    --!! kappa.type.mismatch
+
+-- NEGATIVE: extending a record with a field that already exists — the
+-- LacksRec constraint fails.
+duplicateZ : (x : Nat, y : Nat, z : Nat)
+let duplicateZ =
+    let r : (x : Nat, y : Nat, z : Nat) = (x = 1, y = 2, z = 9)
+    r.{ z := 3 }                                  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

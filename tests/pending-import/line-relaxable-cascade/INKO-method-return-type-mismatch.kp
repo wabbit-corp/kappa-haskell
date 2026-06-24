@@ -1,0 +1,22 @@
+-- Source issues: docs/types, inko#896
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a method's implementation must return a value whose type matches
+-- the declared return type. Returning an incompatible type is a compile-time
+-- type mismatch error.
+
+--! mode check
+
+data Celsius : Type = Celsius Float
+data Fahrenheit : Type = Fahrenheit Float
+
+-- POSITIVE: correct conversion returning the declared type.
+toFahrenheitOk : Celsius -> Fahrenheit
+let toFahrenheitOk (Celsius c) = Fahrenheit c
+
+
+-- NEGATIVE: the declared return type is Fahrenheit but the implementation
+-- returns a Celsius value. The types do not match.
+toFahrenheitBad : Celsius -> Fahrenheit
+let toFahrenheitBad c = c   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

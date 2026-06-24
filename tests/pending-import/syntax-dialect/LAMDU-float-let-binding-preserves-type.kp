@@ -1,0 +1,76 @@
+-- Source issues: Tests/Sugar.hs testFloatToRepl, testFloatLetInLam,
+--   floatLetWithGlobalRef. Lamdu's "float to repl" action moves an
+--   inner let-binding outward to an enclosing scope. The portable
+--   obligation is that floating preserves typing: the floated
+--   binding must still type-check at its new position.
+-- Spec: declarations.let_in, declarations.totality.recommended_inference_strategies
+--   §10.x: a let-binding may be moved to an outer enclosing scope
+--   so long as its right-hand side references only bindings still
+--   in scope.
+--
+-- Floating a let-binding outward must produce an equivalent program
+-- when the floated value's free variables are still in scope.
+
+--! mode check
+
+-- POSITIVE: a let-binding floated up — value depends only on
+-- outer-scope bindings.
+useFloated : Nat
+let useFloated =
+    let helper : Nat -> Nat
+        helper n = n + 1
+    helper 5 + helper 6
+
+-- POSITIVE: a let-binding that references a global declaration — can
+-- be floated freely.
+ten : Nat
+let ten = 10
+
+floatableLet : Nat
+let floatableLet =
+    let next : Nat
+        next = ten + 1
+    next * 2
+
+-- POSITIVE: a let-binding nested in a lambda — float only if it does
+-- not capture the lambda parameter.
+floatableLambdaInner : Nat -> Nat
+let floatableLambdaInner x =
+    let k : Nat
+        k = 5
+    x + k
+
+-- POSITIVE: a let-binding that does capture the lambda parameter —
+-- cannot be floated outward, but must still type-check at its
+-- current position.
+unfloatable : Nat -> Nat
+let unfloatable x =
+    let inner : Nat
+        inner = x + 1
+    inner + 2
+
+-- POSITIVE: a let-binding that uses a polymorphic helper — both the
+-- helper and the consumer must typecheck after floating.
+useId : Nat
+let useId =
+    let id : forall (a : Type). a -> a
+        id = \ x -> x
+    id 7 + id 8
+
+-- NEGATIVE: a let-binding that references an undefined name even
+-- inside an inner scope.
+referenceMissing : Nat
+let referenceMissing =
+    let bad : Nat
+        bad = undefined_name + 1    --!! kappa.name.unresolved
+    bad
+
+-- NEGATIVE: a let-binding with a wrong type annotation.
+wrongType : Nat
+let wrongType =
+    let s : Nat
+        s = "hello"    --!! kappa.type.mismatch
+    s + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.type.mismatch

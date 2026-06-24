@@ -1,0 +1,67 @@
+-- Source issues: apple/swift #87227 (conformance with missing requirement),
+--   apple/swift-evolution SE-0267 (protocol requirements checked per member).
+--   A type that declares conformance to a trait but omits one or more required
+--   members must produce kappa.associated.member-undeclared; the checker
+--   MUST NOT silently skip unimplemented obligations.
+-- Spec: traits.instances §14.3,
+--       traits.instances.associated_static_member_instance_checking §14.3.4
+
+--! mode check
+
+-- A trait with two required members.
+trait Displayable (a : Type) =
+    render  : a -> String
+    summary : a -> String
+
+-- POSITIVE: instance that provides both required members.
+data Color : Type = Red | Green | Blue
+
+instance Displayable Color =
+    let render c = match c
+        case Red   -> "red"
+        case Green -> "green"
+        case Blue  -> "blue"
+    let summary c = "Color/" ++ render c
+
+-- POSITIVE: using trait members from a concrete instance.
+showColor : Color -> String
+let showColor c = render c
+
+-- A trait with three required members.
+trait Metered (a : Type) =
+    measure : a -> Nat
+    label   : a -> String
+    isZero  : a -> Bool
+
+data Packet : Type = Packet Nat String
+
+instance Metered Packet =
+    let measure (Packet n _) = n
+    let label   (Packet _ s) = s
+    let isZero  (Packet n _) = n = 0
+
+-- POSITIVE: all three members provided.
+packetOk : Metered Packet => String
+let packetOk = label (Packet 5 "hello")
+
+-- NEGATIVE: instance that omits the required `summary` member.
+data Shape : Type = Circle Nat | Square Nat
+
+instance Displayable Shape =          --!! kappa.associated.member-undeclared
+    let render (Circle r) = "circle"
+    let render (Square s) = "square"
+    -- summary not provided
+
+-- NEGATIVE: instance with no members at all.
+data Empty : Type = Empty
+
+instance Displayable Empty =          --!! kappa.associated.member-undeclared
+
+-- NEGATIVE: instance that omits two of three required members.
+data Tag : Type = Tag String
+
+instance Metered Tag =                --!! kappa.associated.member-undeclared
+    let label (Tag s) = s
+    -- measure and isZero not provided
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

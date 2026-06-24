@@ -1,0 +1,38 @@
+-- Source issues: Circom templates-and-components.md ("Components are immutable.
+--               A component can be declared first and initialized in a second step.
+--               If there are several initialization instructions (in different
+--               execution paths) they all need to be instantiations of the same
+--               template (maybe with different values for the parameters)").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (positive).
+-- Kappa spec rule (§SA-CIRCOM-01, positive):
+--   "A component initialized in multiple branches (if/else) is accepted if all
+--    branches assign an instance of the same template type. Different parameter
+--    values for the same template are allowed."
+
+--! mode check
+
+data Gate (0 n : Int) : Type =
+    MkGate { inputs : Int, output : Int }
+
+-- POSITIVE: component initialized in two branches with the same template,
+-- but different (compile-time) parameter values.
+let branchInit (0 flag : Int) : Gate 2 =
+    if flag > 0
+        then MkGate { inputs = 2, output = 0 }
+        else MkGate { inputs = 2, output = 1 }
+
+-- POSITIVE: component unconditionally initialized — always the same template.
+myGate : Gate 4
+let myGate = MkGate { inputs = 4, output = 0 }
+
+-- POSITIVE: array of components where each element uses the same template.
+data Multiplier : Type =
+    MkMultiplier { a : Int, b : Int, out : Int }
+
+let makeMultipliers : Array Multiplier 3 =
+    [ MkMultiplier { a = 1, b = 2, out = 2 }
+    , MkMultiplier { a = 3, b = 4, out = 12 }
+    , MkMultiplier { a = 5, b = 6, out = 30 }
+    ]
+
+--! assertNoErrors

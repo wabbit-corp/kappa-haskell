@@ -1,0 +1,45 @@
+-- Source artifacts: synquid test/unit/CheckMeasures.sq —
+--                 "termination measure len :: List a -> {Int | _v < 0}" must
+--                 fail to typecheck because the body increases at Cons but is
+--                 asserted to remain negative; equivalently, no decreasing
+--                 well-founded measure is provided.
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.structural_descent,
+--       compiler.frontir.standard_diagnostic_families.termination
+--
+-- A recursive definition with no decreasing argument or measure is rejected
+-- with a termination diagnostic. The portable obligation is that Kappa's
+-- termination checker rejects an SCC where no recursive call strictly
+-- decreases a visible structural subterm or PNat measure.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: structural descent on the tail.
+goodLen : forall (a : Type). List a -> PNat
+let goodLen xs =
+    match xs
+      case Nil          -> Z
+      case (Cons _ ys)  -> S (goodLen ys)
+
+-- NEGATIVE: recursion that calls itself on the same input is non-decreasing
+-- and must be rejected by the termination checker.
+spin : forall (a : Type). List a -> PNat
+let spin xs = spin xs                           --!! kappa.termination.failure
+
+-- NEGATIVE: recursion on a constructed term (Cons x xs) where the recursive
+-- argument is not a structural subterm of the input.
+grow : forall (a : Type). List a -> List a
+let grow xs =
+    match xs
+      case Nil           -> Nil
+      case (Cons x xs')  -> grow (Cons x (Cons x xs'))  --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

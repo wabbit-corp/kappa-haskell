@@ -1,0 +1,46 @@
+-- Source issues: rzk#25 — warn about name shadowing;
+--   section variables or outer scope declarations shadowed by inner bindings
+--   should produce a warning so that unintentional shadowing is caught.
+-- Spec: modules.names.lexical_lookup, compiler.frontir.warning_hygiene
+--   §7.1: inner binding shadows outer binding of the same spelling.
+--   §1.4.n: shadowing warnings are advisory; they should not prevent correct
+--   programs from compiling.
+--
+-- When a local binding shadows an outer declaration of the same spelling,
+-- the implementation should produce a warning. The program should still
+-- typecheck correctly — shadowing is legal, only advisory.
+
+--! mode check
+
+-- POSITIVE: base declarations that will be referenced or shadowed.
+baseValue : Nat
+let baseValue = 10
+
+transform : Nat -> Nat
+let transform n = n * 2
+
+-- POSITIVE: function whose body uses a local let that shadows an outer name.
+-- This is legal but should produce a name.shadowing warning.
+shadowingLet : Nat
+let shadowingLet =
+    let baseValue : Nat = 99    -- shadows the outer `baseValue`
+    baseValue + 1
+
+-- POSITIVE: function parameter that shadows a global declaration.
+shadowingParam : Nat -> Nat
+let shadowingParam transform = transform + 5
+
+-- POSITIVE: lambda that shadows a name from an enclosing let binding.
+shadowingLambda : Nat
+let shadowingLambda =
+    let n : Nat = 7
+    (\n -> n + 1) 42    -- inner lambda `n` shadows the let-bound `n`
+
+-- POSITIVE: despite shadowing, the definitions are otherwise well-typed.
+useBase : Nat
+let useBase = baseValue + transform 3
+
+-- The shadowing warnings are advisory; the program must still compile.
+-- assertNoErrors checks that no *errors* are produced (warnings are OK).
+
+--! assertNoErrors

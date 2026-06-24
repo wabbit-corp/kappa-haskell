@@ -1,0 +1,22 @@
+-- Source issues: CREUSOT-591
+-- Spec: types.quantification, types.quantification.rows_labels,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Family: kappa.implicit.unsolved (Kappa §3.2.4)
+-- Kappa's quantifier elaboration preserves source-level binder order.
+-- The forms `forall x. exists y. P` and `exists y. forall x. P` are NOT
+-- equivalent; if a verifier (or type system) treats the reverse-order
+-- form as if it has the same content, an implicit obligation about that
+-- equivalence is unsolved.  Pending spec gap CREUSOT-SA-09.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: asserting that `exists y. forall x. y == x + 1` holds
+-- (treating it as if it were `forall x. exists y. y == x + 1`) leaves
+-- an unsolved implicit obligation - the meaning depends on binder order.
+sameAsAbove : Bool
+let sameAsAbove =
+    exists (y : Int). forall (x : Int). y == x + 1   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

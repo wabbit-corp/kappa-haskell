@@ -1,0 +1,41 @@
+-- Source issues: souffle-lang/souffle tests/semantic/recursive_unions/recursive_unions.dl,
+--   tests/semantic/recursive_unions2/recursive_unions2.dl,
+--   souffle-lang #891 (recursive unions cause segfault instead of error).
+-- Spec: data_types.type_aliases (§10.3),
+--       compiler.frontir.standard_diagnostic_families.termination (kappa.termination.failure).
+-- A type alias whose expansion directly or immediately refers to itself produces an
+-- infinitely expanding type with no base case. This must be rejected. Souffle reports
+-- "Infinite descent in the definition of type U" for `.type U = U | symbol` and
+-- `.type R = R`. In Kappa, a transparent `type` alias that is self-referential has no
+-- finite normal form and must be rejected with kappa.termination.failure.
+
+--! mode check
+
+-- NEGATIVE: direct self-reference in a type alias.
+type SelfRef = SelfRef    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: self-reference in a union type alias.
+type Cyclic = (| Int | Cyclic |)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: a chain R = R (no base case possible).
+type R = R    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- POSITIVE: A recursive *data* type with a base constructor is well-formed.
+-- The recursion is through a data declaration (strictly positive), not an alias.
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+-- POSITIVE: a type alias that refers to a concrete non-recursive type is fine.
+type MyInt = Int
+type MyList = List Int
+
+-- POSITIVE: an alias that indirectly refers to a non-recursive type is fine.
+type Alias1 = MyInt
+type Alias2 = (| Alias1 | String |)

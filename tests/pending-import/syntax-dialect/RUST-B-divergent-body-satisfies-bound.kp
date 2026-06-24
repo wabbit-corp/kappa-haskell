@@ -1,0 +1,62 @@
+-- Source issue: rust#113875 (return-position impl Trait not satisfied by !, slice > 50000)
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.impossible_unreachable_branch_bodies,
+--       types.universes.defaulting_non_user_written_inference_variables
+--
+-- A function body that diverges (produces a value of Void via
+-- `case impossible`) is acceptable at any declared return type, including
+-- a return type with trait bounds that the divergent value would otherwise
+-- have to satisfy. The reason: the function's runtime result is never
+-- reached, so there is no actual value at the bound-carrying type to
+-- verify against the bound.
+
+module test
+
+data Void : Type =
+
+absurd : forall (a : Type). (1 v : Void) -> a
+let absurd v = match v case impossible
+
+data Option (a : Type) : Type =
+    None
+    Some a
+
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+trait Iterator (a : Type) =
+    Item : Type
+    next : (1 _ : a) -> Option Item
+
+--! mode check
+
+-- POSITIVE: a function whose declared return type requires `Iterator`. The
+-- body is a divergent term (`absurd` applied to a Void). The result is
+-- accepted at any type, including a type with a trait bound.
+divergeAtIter :
+    forall (a : Type) (@_ : Iterator a).
+    (1 v : Void) -> a
+let divergeAtIter v = absurd v
+
+
+-- POSITIVE: a `match` with `case impossible` at the only arm — the scrutinee
+-- has type Void, so the entire body is unreachable; the declared return
+-- type with a trait bound is satisfied vacuously.
+intoIter : (1 v : Void) -> List Int
+let intoIter v = match v case impossible
+
+
+-- NEGATIVE: a function whose declared return type requires `Iterator` and
+-- whose body produces a real value of a type that lacks the bound is
+-- rejected. The divergent escape hatch only applies when the value is
+-- actually unreachable.
+notIter : Int -> List Int
+let notIter n = Cons n Nil
+
+iterFromVal :
+    forall (a : Type) (@_ : Iterator a).
+    Int -> a
+let iterFromVal n = notIter n   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

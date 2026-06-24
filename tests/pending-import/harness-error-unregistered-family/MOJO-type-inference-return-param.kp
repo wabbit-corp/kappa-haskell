@@ -1,0 +1,44 @@
+-- Source issue: MOJO-1362
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       compiler.frontir.standard_diagnostic_families.type_equality,
+--       kappa.type.unsolved-metavariable
+-- A function whose return type is a polymorphic parameter R (independent of
+-- the argument types) cannot have R inferred from a call site that only
+-- supplies argument values.  If the return type cannot be resolved from
+-- context, the metavariable must be reported as unsolved.
+-- Conversely, when the expected type is given at the call site (e.g. via
+-- an explicit annotation), the inference succeeds.
+
+module test
+
+--! mode check
+
+data Wrapper (a : Type) : Type =
+    Wrap a
+
+-- A map-like function over two containers; R depends only on f's result.
+mapWith : forall (A B R : Type). (f : A -> B -> R) -> Wrapper A -> Wrapper B -> Wrapper R
+let mapWith f (Wrap a) (Wrap b) = Wrap (f a b)
+
+-- POSITIVE: explicit element types infer R through f's return type.
+addWrapped : Wrapper Int
+let addWrapped = mapWith (\a b -> a + b) (Wrap 3) (Wrap 4)
+
+--! assertType addWrapped Wrapper Int
+
+-- NEGATIVE: a higher-order function where R cannot be inferred because
+-- the supplied f has type A -> B -> R for an unsolved R.
+-- Here f is `\a b -> show a` which returns String, so R = String is fine;
+-- but if the user omits enough context R is ambiguous.
+-- We test a clearly unsolved case: both A and R are free.
+unknownReturn : forall (A B R : Type). Wrapper A -> Wrapper B -> Wrapper R
+let unknownReturn wa wb =
+    mapWith (\a b -> a) wa wb   --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: R is pinned by an explicit return type annotation.
+stringMap : Wrapper String
+let stringMap = mapWith (\a b -> show a ++ show b) (Wrap 1) (Wrap 2)
+
+--! assertType stringMap Wrapper String

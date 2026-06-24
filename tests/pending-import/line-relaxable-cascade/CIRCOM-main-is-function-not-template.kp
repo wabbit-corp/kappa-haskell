@@ -1,0 +1,40 @@
+-- Source issues: circom#250 (assert failure instead of semantic error when
+--               `component main = foo(2,3)` where `foo` is a function, not a
+--               template; the compiler should produce a semantic error rather than
+--               a Rust assertion failure).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-01):
+--   "The main entry point must be a template (a circuit-defining declaration), not
+--    a function (a pure computation). Using a function as the main component must
+--    produce kappa.type.mismatch."
+
+--! mode check
+
+-- A template type represents a circuit definition.
+data Template : Type =
+    MkTemplate { execute : Int -> Int }
+
+-- POSITIVE: main entry point is a template.
+data MyCircuit : Type =
+    MyCircuit { input : Int, output : Int }
+
+mainCircuit : MyCircuit
+let mainCircuit = MyCircuit { input = 0, output = 1 }
+
+
+-- NEGATIVE: a plain function is used where a Template (circuit) is required.
+let computeValue (x : Int) : Int = x + 1
+
+mainBad : Template
+let mainBad = computeValue    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using a function application result where a Template is expected.
+let makeResult (x : Int) : Int = x * x
+
+mainBad2 : Template
+let mainBad2 = makeResult 5   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,55 @@
+-- Source issues: apple/swift-evolution SE-0244 (opaque result types, single
+--   concrete type invariant), apple/swift #84884 (constraint solver corruption
+--   with opaque + constrained generic methods).
+--   All branches of a function must produce the same concrete type.
+--   Returning different concrete types in different branches, or passing a
+--   concrete type where another is expected, produces kappa.type.mismatch.
+-- Spec: types.quantification §11.3, traits.instances §14.3,
+--       modules.visibility_opacity_private_opaque §8.5.2
+
+--! mode check
+
+trait Shape (a : Type) =
+    area   : a -> Nat
+    label  : a -> String
+
+data Circle : Type = Circle Nat
+data Square : Type = Square Nat
+
+instance Shape Circle =
+    let area  (Circle r) = r * r
+    let label _          = "circle"
+
+instance Shape Square =
+    let area  (Square s) = s * s
+    let label _          = "square"
+
+-- POSITIVE: a function that consistently returns Circle.
+makeCircle : Nat -> Circle
+let makeCircle r = Circle r
+
+-- POSITIVE: using Circle through its Shape instance.
+circleArea : Nat
+let circleArea = area (Circle 5)
+
+-- NEGATIVE: returning two different concrete types in different branches
+-- when the caller expects a single consistent type violates type consistency.
+inconsistentShapeByFlag : Bool -> Circle
+let inconsistentShapeByFlag flag =
+    if flag
+    then Circle 5
+    else Square 3    --!! kappa.type.mismatch
+
+-- NEGATIVE: returning a list of mixed concrete types under a uniform type
+-- annotation — the list literal cannot unify Circle and Square.
+mixedList : List Circle
+let mixedList = [Circle 1, Square 2]    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a Shape instance expecting Circle but given a Square.
+requireCircle : Circle -> Nat
+let requireCircle c = area c
+
+badCall : Nat
+let badCall = requireCircle (Square 4)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

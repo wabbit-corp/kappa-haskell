@@ -1,0 +1,35 @@
+-- Source issue: Kitten #118 (Effect system: tentative core effects
+--   `IO = ST<GlobalHeap> + Fail`, `ST<h :: Heap>`, `Fail`). Kitten #156
+--   (smart resource types require additional permissions such as `+IO`).
+-- Spec: effects.monadic_core.eff_effect_rows,
+--       effects.monadic_core.effect_declarations,
+--       types.quantification.effect_row_syntax,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+--       (family kappa.effect.row-mismatch).
+--
+-- A definition declared as pure (empty effect row) cannot call an
+-- operation drawn from a non-empty effect row; the demanded row must
+-- include the operation's effect.
+
+module test
+
+-- Declare an algebraic IO-style effect.
+effect Console =
+    1 print : String -> Unit
+
+-- POSITIVE: a function that declares the Console effect can use print.
+greet : String -> Eff <[ Console ]> Unit
+let greet name = do
+    print name
+    pure ()
+
+--! mode check
+
+-- NEGATIVE: a function declared with the empty row cannot perform
+-- Console operations.
+greetPure : String -> Eff <[ ]> Unit
+let greetPure name = do                    --!! kappa.effect.row-mismatch
+    print name
+    pure ()
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

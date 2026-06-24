@@ -1,0 +1,44 @@
+-- Source issue: ROSETTE-202 (`apply` can't unsplat — quoted symbol is
+--                data, not a variable reference)
+-- Spec: literals.string_literals.basic_strings,
+--       expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- The Rosette report's confusion stems from treating `'x` as a
+-- reference to a binding `x` when in fact it is a quoted symbol — a
+-- piece of data with type Symbol/String. Kappa has no implicit
+-- quoting; programmers must use a clear value or a variable
+-- reference, not a string literal that happens to spell a name.
+-- Using a String where an Int is required is a type mismatch.
+
+--! mode check
+
+twice : Int -> Int
+let twice n = n * 2
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case []         -> 0
+    case (h :: t)   -> h + sumList t
+
+theX : Int
+let theX = 7
+
+-- POSITIVE: passing the actual binding by name.
+ok : Int
+let ok = twice theX
+
+-- POSITIVE: a String literal stays a String.
+ok2 : String
+let ok2 = "x"
+
+-- NEGATIVE: a String literal passed where Int is expected.
+badArg : Int
+let badArg = twice "x"                              --!! kappa.type.mismatch
+
+-- NEGATIVE: a List String passed to a function expecting List Int.
+badList : Int
+let badList = sumList ["x", "1"]                    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

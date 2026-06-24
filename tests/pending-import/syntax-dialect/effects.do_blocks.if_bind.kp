@@ -1,0 +1,57 @@
+-- Source issue: Lean4 #1120
+-- Spec: effects.do_blocks, lexical.whitespace_indentation_continuation
+-- A monadic bind `let x <- expr` where `expr` is a multi-line `if-then-else`
+-- starting on a continuation line MUST be accepted by the parser.  The `if`
+-- keyword is a valid RHS of a bind regardless of whether it starts on the same
+-- column as subsequent do-items, as long as the `then` and `else` branches are
+-- consistently indented relative to the `if`.
+
+module test
+
+-- Use UIO (= IO Void) from the standard prelude as the monad.
+-- UIO a is a computation that yields a and has no expected typed failures.
+readBool : UIO Bool
+let readBool = pure True
+
+readInt : UIO Int
+let readInt = pure 42
+
+-- Case 1: The `if` occupies the same column as subsequent do-items.
+-- The parser must treat it as the RHS of the bind, not as a new do-item.
+test1 : UIO Int
+let test1 =
+    do
+        let cond <- readBool
+        let x <- if cond
+                 then readInt
+                 else pure 0
+        pure x
+
+--! mode check
+--! assertNoErrors
+
+-- Case 2: Multi-line if-then-else with the branches on separate indented lines.
+test2 : UIO Int
+let test2 =
+    do
+        let flag <- readBool
+        let result <-
+            if flag
+            then
+                readInt
+            else
+                pure 99
+        pure result
+
+--! assertNoErrors
+
+-- Case 3: Nested bind inside the `then` branch.
+test3 : UIO (Int, Int)
+let test3 =
+    do
+        let flag <- readBool
+        let a <- if flag then readInt else pure 0
+        let b <- if flag then pure 1 else readInt
+        pure (a, b)
+
+--! assertNoErrors

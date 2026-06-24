@@ -1,0 +1,49 @@
+-- Source issue: MOJO-1495
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       types.quantification,
+--       kappa.type.unsolved-metavariable
+-- Automatic parametrization: when a struct carries dependent parameters
+-- (e.g., `Container T V` where `V : T`) and a function takes an instance of
+-- that struct, the compiler should infer both T and V from the argument type.
+-- Failure to infer any parameter from the given context must be reported as
+-- kappa.type.unsolved-metavariable.
+
+module test
+
+--! mode check
+
+trait Valued (a : Type) =
+    getValue : (& x : a) -> Int
+
+-- A struct parameterised over a type T and a value V whose type is T.
+-- In practice, V is a compile-time constant of type T.
+data StaticVal (T : Type) (v : Int) : Type =
+    StaticVal
+
+instance Valued (StaticVal T v) =
+    let getValue _ = v
+
+-- POSITIVE: explicit call with both type and value parameters.
+explicitCall : Int
+let explicitCall =
+    let s = (StaticVal : StaticVal Int 7)
+    getValue s
+
+--! assertType explicitCall Int
+
+-- POSITIVE: infer T=Int from the argument type StaticVal Int 5.
+inferFromArg : forall (T : Type) (v : Int). Valued (StaticVal T v) => (& s : StaticVal T v) -> Int
+let inferFromArg s = getValue s
+
+inferredResult : Int
+let inferredResult = inferFromArg (StaticVal : StaticVal Int 5)
+
+--! assertType inferredResult Int
+
+-- NEGATIVE: call with an argument type that cannot supply the value parameter.
+-- If both T and v are left unresolved and no evidence is given, the metavariable
+-- for v is unsolved → kappa.type.unsolved-metavariable.
+badInfer : Int
+let badInfer = inferFromArg StaticVal   --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

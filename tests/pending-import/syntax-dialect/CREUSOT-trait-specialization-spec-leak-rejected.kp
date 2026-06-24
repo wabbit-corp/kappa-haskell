@@ -1,0 +1,46 @@
+-- Source issues: CREUSOT-specialize
+-- Source tests: creusot should_fail/bug/specialize.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/bug/specialize.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: traits.headers, traits.members, traits.instances,
+--       traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Family: kappa.implicit.unsolved (Kappa §3.2.4)
+-- A specialised instance must NOT provide a spec strictly stronger than
+-- the trait declaration's spec from the viewpoint of a generic caller;
+-- otherwise a generic call site could derive contradictory facts.
+-- Pending spec gap CREUSOT-SA-05.
+
+module test
+
+--! mode check
+
+trait T (a : Type) =
+    x : a -> Unit
+
+data Vec : Type -> Type = Vec
+
+-- A generic instance with a postcondition that the trait does NOT promise.
+instance forall (u : Type). T (Vec u) =
+    let x _v = ()
+        ensures False                       -- strictly stronger than T's
+
+-- A more-specific instance with a weaker postcondition.
+instance T (Vec Int) =
+    let x _v = ()
+        ensures True
+
+-- NEGATIVE: a generic call site (only `T u` known) must see ONLY the
+-- trait's spec.  Asserting the strong `ensures False` produces an
+-- unsolved implicit obligation.
+useGeneric : forall (u : Type). T u => u -> Unit
+let useGeneric v =
+    x v
+    ensures False                           --!! kappa.implicit.unsolved
+
+-- NEGATIVE: even at a concrete call site, asserting `ensures False`
+-- would weaken a guarantee the trait declaration has promised.
+useGenericSpecific : Vec Bool -> Unit
+let useGenericSpecific v =
+    x v
+    ensures False                           --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

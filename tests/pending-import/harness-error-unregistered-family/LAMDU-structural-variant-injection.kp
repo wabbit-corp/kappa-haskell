@@ -1,0 +1,70 @@
+-- Source issues: lamdu#147 — applying an inject that generates the correct
+--   type gets an incorrect wrapper fragment; lamdu#156 — redundant value
+--   annotation for injections; lamdu#163 — fragment results do not
+--   include "if". Lamdu has structural (anonymous) variants where a
+--   constructor application `'tag value` injects into an inferred row.
+-- Spec: types.unions.introduction_injection,
+--       types.unions.expected_type_directed_injection_widening
+--   §13.1.2: union injection `(| e : T |)` is permitted when the
+--   expected union row contains the member type `T`; the inferred form
+--   `(| e |)` is valid only when the member is unambiguous from
+--   context.
+--
+-- Lamdu's anonymous tag-label namespace (LAMDU-SA-01) is *not* current
+-- Kappa syntax; this test uses Kappa's portable structural variants of
+-- distinct member types.
+
+--! mode check
+
+-- POSITIVE: explicit injection into a two-member union.
+type IntOrUnit = (| Nat | Unit |)
+
+just42 : IntOrUnit
+let just42 = (| 42 : Nat |)
+
+nothing : IntOrUnit
+let nothing = (| () : Unit |)
+
+-- POSITIVE: inferred-form injection when the expected union determines
+-- the member type unambiguously.
+type IntStr = (| Nat | String |)
+
+intCase : IntStr
+let intCase = (| 5 |)
+
+strCase : IntStr
+let strCase = (| "hi" |)
+
+-- POSITIVE: widening from a narrower union to a wider one — every
+-- member of Narrow is in Wide.
+type Wide   = (| Nat | String | Bool |)
+type Narrow = (| Nat | String |)
+
+widenOk : Narrow -> Wide
+let widenOk x = x
+
+-- POSITIVE: open union accepts any member type whose row constraint
+-- holds.
+projectInt : forall (r : VarRow).
+    LacksVar r Nat => (| Nat | r |) -> Bool
+let projectInt u =
+    match u
+    case (| _x : Nat |) -> True
+    case (| ..rest |)   -> False
+
+-- NEGATIVE: injecting a value whose type is not in the expected union.
+type IntOnly = (| Nat |)
+
+badInject : IntOnly
+let badInject = (| "hello" : String |)    --!! kappa.type.mismatch
+
+-- NEGATIVE: ambiguous inferred injection — the literal `7` could go
+-- into either Int or Nat in a Union containing both. The compiler
+-- cannot pick a member without an explicit annotation.
+type IntOrNat = (| Int | Nat |)
+
+ambigInject : IntOrNat
+let ambigInject = (| 7 |)    --!! kappa.variant.injection-ambiguous
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.variant.injection-ambiguous

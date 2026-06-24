@@ -1,0 +1,30 @@
+-- Source: granule-project/granule PR #199 (Graded base extension),
+--         PR #166 (Pragmas), PR #179 (language CBN improvements)
+-- Spec: design.language_profiles_feature_gates (GSA-01),
+--       compiler.frontir.standard_diagnostic_families.feature_gates
+-- The `language GradedBase` pragma enables the `a % q -> b` arrow form
+-- in Granule. Without the gate, that arrow form must be rejected.
+-- Kappa normalises this rejection to family `kappa.feature.gated`.
+
+module test
+
+--! mode check
+
+-- POSITIVE: under the default profile, the canonical binder form is OK.
+canonical : (1 x : Int) -> Int
+let canonical x = x
+
+
+-- NEGATIVE: a syntactic form that requires a feature gate not enabled in
+-- the default profile must be rejected with `kappa.feature.gated`.
+-- We use a placeholder that depends on an inactive feature gate. The
+-- specific gate-name is implementation-defined; the test only requires
+-- that the resulting diagnostic carry the feature-gated family.
+gradedArrowBad : Int -> Int
+let gradedArrowBad x =
+    -- Use of an unsafe/debug facility outside the safe portable subset
+    -- (§4.1): `unhide` requires the `unsafe-debug` build mode. Without it,
+    -- the construct must be rejected by feature gating.
+    unhide x                              --!! kappa.feature.gated
+
+--! assertDiagnosticFamily error kappa.feature.gated

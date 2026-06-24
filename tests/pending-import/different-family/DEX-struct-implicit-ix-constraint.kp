@@ -1,0 +1,70 @@
+-- Source issues: dex-lang struct-tests.dx
+--   (`struct MissingConstraint(n) = thing : n=>Float` →
+--   `Type error: Couldn't synthesize a class dictionary for: (Ix n)`),
+--   (`data AnotherMissingConstraint(n) = MkAnotherMissingConstraint(n=>Float)` →
+--   `Type error: Couldn't synthesize a class dictionary for: (Ix n)`),
+--   dex-lang #680 (verify index set and data constraints),
+--   dex-lang #1150 (add a Data constraint).
+-- Spec: traits.synthesis.implicit_constraint_from_field_type (§DSA-DEX-04),
+--       compiler.frontir.standard_diagnostic_families.implicit (kappa.implicit.unsolved).
+-- When a data type has a field of array type `n => a`, the index set `n` must
+-- satisfy the `Ix` (index-set) trait. If the type parameter `n` is not
+-- constrained to `Ix n`, the field's type is ill-formed and the compiler must
+-- reject the declaration.
+
+--! mode check
+
+trait Ix (n : Type) =
+    size : Nat
+    ordinal : n -> Nat
+    from_ordinal : Nat -> n
+
+-- NEGATIVE: data type with an array-typed field but no Ix constraint on the
+-- type parameter `n`. Without `Ix n`, `n => Float` is not well-formed.
+data BadTable (n : Type) : Type =
+    MkBadTable (n => Float)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: same issue for a data type constructor.
+data BadVector (n : Type) : Type =
+    MkBadVector (n => Int)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: data type with an array-typed field and explicit Ix constraint.
+data GoodTable (n : Type) : Type given (Ix n) =
+    MkGoodTable (n => Float)
+
+-- POSITIVE: data type with array field and explicit Ix constraint.
+data GoodVector (n : Type) : Type given (Ix n) =
+    MkGoodVector (n => Int)
+
+-- POSITIVE: data type with non-array fields — no Ix constraint needed.
+data PlainPair (a : Type) (b : Type) : Type =
+    MkPlainPair a b
+
+-- NEGATIVE: data type where a constructor argument has nested array types;
+-- the innermost index type `m` also needs Ix.
+data Matrix (n : Type) (m : Type) : Type given (Ix n) =
+    -- Ix n is provided, but Ix m is missing.
+    MkMatrix (n => m => Float)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: data type with all required index-set constraints.
+data FullMatrix (n : Type) (m : Type) : Type given (Ix n) (Ix m) =
+    MkFullMatrix (n => m => Float)
+
+-- POSITIVE: using a concrete index set that already has an Ix instance.
+data Fin : Nat -> Type =
+    FZ : forall (k : Nat). Fin (k + 1)
+    FS : forall (k : Nat). Fin k -> Fin (k + 1)
+
+instance Ix (Fin 3) =
+    let size      = 3
+    let ordinal i = 0   -- placeholder
+    let from_ordinal _ = FZ
+
+data ConcreteTable : Type =
+    MkConcreteTable (Fin 3 => Float)   -- Fin 3 has an Ix instance; fine

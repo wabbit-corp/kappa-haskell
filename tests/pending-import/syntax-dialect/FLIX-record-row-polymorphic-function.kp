@@ -1,0 +1,42 @@
+-- Source issues: FLIX-695, FLIX-700
+-- Spec: types.records.row_polymorphism
+-- A function can be polymorphic over the residual record row `r : RecRow`
+-- with the implicit constraint `LacksRec r label`. Row-polymorphic functions
+-- must accept any record that contains at least the required fields.
+
+--! mode check
+--! assertNoErrors
+
+-- POSITIVE TEST: function polymorphic in the residual row.
+-- Takes any record containing at least field `x : Int`.
+let get_x (forall (r : RecRow)) (rec : (x : Int | r)) : Int =
+    rec.x
+
+-- POSITIVE TEST: passing closed records with extra fields.
+let test_closed : Int =
+    let r1 = (x = 10, y = "hello")
+    let r2 = (x = 20, z = True, w = 3.14)
+    get_x r1 + get_x r2
+
+-- POSITIVE TEST: function polymorphic over multiple fields.
+let add_xy (forall (r : RecRow)) (rec : (x : Int, y : Int | r)) : Int =
+    rec.x + rec.y
+
+let test_add : Int =
+    let r = (x = 3, y = 4, label = "extra")
+    add_xy r
+
+-- POSITIVE TEST: row-polymorphic record extension.
+-- Returns a new record with field `tag` added, preserving all original fields.
+let tag_record (forall (r : RecRow)) (rec : r) (t : String) : (tag : String | r) =
+    (tag = t | rec)
+
+let test_tag : (tag : String, x : Int) =
+    tag_record (x = 7) "hello"
+
+-- POSITIVE TEST: polymorphic function returning open record type.
+let duplicate_x (forall (r : RecRow)) (rec : (x : Int | r)) : (x : Int, orig_x : Int | r) =
+    (orig_x = rec.x | rec)
+
+-- expect: all functions accepted; row polymorphism resolves correctly
+--! assertType test_closed Int

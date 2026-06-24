@@ -1,0 +1,53 @@
+-- Source issue: FLIX-1556
+-- Spec: traits.headers.supertraits
+-- A supertrait constraint on a trait header (`trait Eq a => Ord a`) means
+-- that any function requiring `Ord a` also implicitly has access to `Eq a`
+-- methods. The compiler must propagate supertrait evidence automatically.
+
+--! mode check
+
+-- Define a supertrait chain: Eq is a supertrait of Ord.
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+trait Eq a => Ord (a : Type) =
+    compare : (& x : a) -> (& y : a) -> Int
+
+-- A function requiring only `Ord` must have access to `Eq` methods.
+let min_by_eq (forall (a : Type)) (@_ : Ord a) (x : a) (y : a) : a =
+    -- compare is from Ord; (==) is from Eq via supertrait
+    if (compare x y) < 0 then x else y
+
+-- A function requiring `Ord a` can delegate to `Eq a` functions.
+let contains (forall (a : Type)) (@_ : Ord a) (xs : List a) (target : a) : Bool =
+    match xs
+    case Nil -> False
+    case Cons h t ->
+        if h == target then True    -- uses Eq via supertrait of Ord
+        else contains t target
+
+-- POSITIVE TEST: providing Ord for Int implies Eq for Int.
+data MyInt : Type =
+    MyInt Int
+
+instance Eq MyInt =
+    let (==) (MyInt x) (MyInt y) = x == y
+
+instance Ord MyInt =
+    let compare (MyInt x) (MyInt y) =
+        if x < y then -1
+        else if x > y then 1
+        else 0
+
+let test_contains : Bool =
+    contains (Cons (MyInt 3) (Cons (MyInt 1) (Cons (MyInt 4) Nil))) (MyInt 1)
+
+-- NEGATIVE TEST: a function asking for only `Eq` does not get `Ord` methods.
+let uses_eq_only (forall (a : Type)) (@_ : Eq a) (x : a) (y : a) : Bool =
+    x == y
+
+let bad_compare (forall (a : Type)) (@_ : Eq a) (x : a) (y : a) : Int =
+    compare x y           -- compare requires Ord, not just Eq --!! kappa.implicit.unsolved
+
+-- expect: min_by_eq, contains, test_contains, uses_eq_only accepted;
+--         bad_compare rejected because compare is not available from Eq alone

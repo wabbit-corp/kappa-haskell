@@ -1,0 +1,43 @@
+-- Source issue: effekt #604 (via PR #1279, "Proper flow between result and answer type")
+-- Spec: effects.monadic_core.deep_handlers_deep_handle, effects.monadic_core.eff_effect_rows
+-- A deep handler eliminates its handled label from the surface effect row. When
+-- the original row contained only that label, the handler's result is Eff <[ ]> _
+-- and is therefore eligible for runPure : Eff <[ ]> a -> a. The answer type may
+-- differ from the original computation's result type (here Int -> Option Int).
+
+module test
+
+effect Abort =
+    0 abortWith : String -> Unit
+
+-- Deep handler: original row <[abort : Abort]> -> result row <[ ]>.
+-- Answer type Option Int differs from computation result Int.
+runAbort : Eff <[abort : Abort]> Int -> Option Int
+let runAbort comp =
+    let r : Eff <[ ]> (Option Int) =
+        deep handle abort comp with
+            case return x          -> pure (Some x)
+            case abortWith _msg _k -> pure None
+    runPure r
+
+-- A successful computation produces Some.
+prog_ok : Eff <[abort : Abort]> Int
+let prog_ok = pure 7
+
+-- An aborting computation produces None; resumption is unusable (q = 0).
+prog_abort : Eff <[abort : Abort]> Int
+let prog_abort = do
+    abort.abortWith "stop"
+    pure 99
+
+result_ok : Option Int
+let result_ok = runAbort prog_ok
+
+result_abort : Option Int
+let result_abort = runAbort prog_abort
+
+--! mode check
+--! assertNoErrors
+--! assertType runAbort Eff <[abort : Abort]> Int -> Option Int
+--! assertType result_ok Option Int
+--! assertType result_abort Option Int

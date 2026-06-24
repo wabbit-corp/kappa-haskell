@@ -1,0 +1,59 @@
+-- Source issues: ponyc#2674, ponyc#5116, ponyc#2881
+-- Spec: types.quantification, traits.instances
+-- Pony issue #2674: when a type parameter constraint is a union type,
+-- the compiler was treating the effective capability as #any instead of
+-- respecting the capabilities declared in the union members. Issue #5116:
+-- a constraint that names a type without an explicit cap should use the
+-- type's declared default cap, not #any.
+-- In Kappa, a constraint that names a specific trait forces implicit
+-- resolution to find an instance for exactly that trait. A union constraint
+-- should be satisfied only when the type satisfies at least one member of
+-- the union.
+
+--! mode check
+
+trait Sendable (a : Type) =
+    sendToken : (& x : a) -> Int
+
+trait Receivable (a : Type) =
+    recvToken : (& x : a) -> String
+
+data Msg : Type = Msg Int
+
+-- Instance that satisfies Sendable.
+instance Sendable Msg =
+    let sendToken (Msg n) = n
+
+-- A function with a union-style constraint: either Sendable or Receivable.
+-- (Modeled here as a function that takes both as separate optional implicit args
+-- and uses whichever is available — for clarity we model the Sendable path.)
+processIfSendable :
+    forall (a : Type).
+    (@_ : Sendable a) ->
+    (& x : a) -> Int
+let processIfSendable x = sendToken x
+
+okMsg : Int
+let okMsg = processIfSendable (Msg 42)
+
+-- NEGATIVE: a type satisfying neither Sendable nor Receivable.
+data NoInst : Type = NoInst
+
+badCall : Int
+let badCall = processIfSendable NoInst   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a generic data type parameterized by a Sendable constraint.
+data Channel (a : Type) : Type =
+    Channel a
+
+sendChannel :
+    forall (a : Type).
+    (@_ : Sendable a) ->
+    (& ch : Channel a) -> Int
+let sendChannel (Channel x) = sendToken x
+
+result : Int
+let result = sendChannel (Channel (Msg 7))
+

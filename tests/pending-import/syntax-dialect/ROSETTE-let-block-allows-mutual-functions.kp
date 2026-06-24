@@ -1,0 +1,46 @@
+-- Source issue: ROSETTE-196 (Unsoundness with quantifiers due to
+--                interaction with lexical scope, path conditions, and
+--                rewrite rules)
+-- Spec: declarations.let_in
+--
+-- The Rosette report demonstrates that path-sensitive rewrites can
+-- conflate a quantifier-bound `x` with an outer let-bound `x`. The
+-- portable Kappa lexical-scope obligation: inside a let block, two
+-- mutually recursive functions may freely reference one another, but
+-- introducing a binding for the same name must shadow — not capture —
+-- any outer binding of the same name. This fixture pins down the
+-- positive lexical-scoping rule on which the soundness argument
+-- depends.
+
+--! mode check
+
+-- POSITIVE: mutually recursive local functions in a single let block.
+parity : Int -> String
+let parity n =
+    let
+        ev k = if k == 0 then True  else od (k - 1)
+        od k = if k == 0 then False else ev (k - 1)
+    in
+    if ev n then "even" else "odd"
+
+-- POSITIVE: a let-bound name shadowing an outer same-named binding.
+shadows : Int
+let shadows =
+    let x = 1
+    in
+    let x = 99       -- inner shadowing of outer x
+        y = x        -- y must see inner x = 99
+    in
+    y
+
+-- POSITIVE: nested let with a function that does not capture the
+-- outer x once a new x is introduced.
+nestedShadow : Int
+let nestedShadow =
+    let x = 10
+        f = \n -> n + x      -- captures outer x = 10
+    in
+    let x = 100
+    in f 1                   -- result is 11, not 101
+
+--! assertNoErrors

@@ -1,0 +1,15 @@
+-- Stress test: a recursive function with no measure that does not structurally decrease is rejected
+-- Spec: declarations.terms, compiler.frontir.standard_diagnostic_families.termination
+
+--! mode check
+
+data Nat : Type =
+    Z
+  | S Nat
+
+-- NEGATIVE: loop calls itself with S n (strictly larger), so it never terminates.
+loop : Nat -> Nat
+let loop n =
+    loop (S n)   --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

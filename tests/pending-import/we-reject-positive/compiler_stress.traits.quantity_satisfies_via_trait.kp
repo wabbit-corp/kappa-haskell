@@ -1,0 +1,36 @@
+-- Stress test: QuantitySatisfies used as a trait-style premise in a function signature
+-- Spec: types.universes.quantities, traits.instances
+
+--! mode check
+
+-- A function that consumes x linearly (quantity 1).
+consumeLinear : (1 x : Int) -> Int
+let consumeLinear x = x + 1
+
+-- A polymorphic function with a QuantitySatisfies premise.
+-- The premise `QuantitySatisfies q 1` means q must admit at-least-one demand,
+-- so passing x (of quantity q) to consumeLinear is valid.
+withLinear :
+    forall (q : Quantity) (a : Type).
+    (@_ : QuantitySatisfies q 1) ->
+    (q x : Int) ->
+    Int
+let withLinear x = consumeLinear x
+
+-- Concrete call: q = 1, which satisfies QuantitySatisfies 1 1.
+result : Int
+let result = withLinear (1 x = 42) x
+
+-- A second function demonstrating the droppable premise.
+-- QuantitySatisfies q 0 means q admits dropping (q can be 0, <=1, or omega).
+withDroppable :
+    forall (q : Quantity) (a : Type).
+    (@_ : QuantitySatisfies q 0) ->
+    (q x : Int) ->
+    Int
+let withDroppable _ = 0
+
+result2 : Int
+let result2 = withDroppable (x = 99)
+
+--! assertNoErrors

@@ -1,0 +1,32 @@
+-- Stress test: Two unqualified imports that both export the same unqualified name
+--   create an ambiguous reference.  A conforming implementation must produce
+--   kappa.name.ambiguous at any unqualified use of the ambiguous name.
+--   Qualifying the name or using an explicit alias resolves the ambiguity.
+-- Spec: modules.imports,
+--   compiler.frontir.standard_diagnostic_families.name_import.ambiguous_name_from_two_imports
+
+--! mode check
+
+-- Two library modules that each export `fromString`.
+import std.text.parse as textParse
+import std.numeric.parse as numParse
+
+-- NEGATIVE: bare `fromString` is ambiguous — both modules export a function
+-- by that name.  The compiler cannot select one without further context.
+badConvert : String -> Int
+let badConvert s = fromString s   --!! kappa.name.ambiguous
+
+-- POSITIVE: qualifying the name with the module alias removes the ambiguity.
+parseText : String -> String
+let parseText s = textParse.fromString s
+
+parseNum : String -> Int
+let parseNum s = numParse.fromString s
+
+-- POSITIVE: an explicit local rebinding removes the ambiguity in scope.
+let fromString = textParse.fromString
+
+unambiguous : String -> String
+let unambiguous s = fromString s
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

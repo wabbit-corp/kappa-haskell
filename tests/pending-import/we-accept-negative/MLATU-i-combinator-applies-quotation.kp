@@ -1,0 +1,30 @@
+-- Source issue: MLatu PR#30 ("Added words: cat, i, ifz"). `i` is the
+--   classical concatenative "interpret" combinator: it takes a
+--   quotation and runs it, equivalent to unquote. The portable Kappa
+--   obligation is that the standard `force` operation on a Thunk is
+--   the same elimination form used by `i` and is total when the input
+--   is a well-typed thunk.
+-- Spec: expressions.lambdas.suspension_expressions_forcing.
+
+module test
+
+--! mode check
+
+-- POSITIVE: `i` modeled as `force` over thunks.
+i : forall (a : Type) . Thunk a -> a
+let i t = force t
+
+iInt : Int
+let iInt = i (thunk 42)
+
+iStr : String
+let iStr = i (thunk "answer")
+
+--! assertType iInt Int
+--! assertType iStr String
+
+-- NEGATIVE: applying `i` to a bare value (non-thunk).
+bad : Int
+let bad = i 42                             --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

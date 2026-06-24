@@ -1,0 +1,51 @@
+-- Stress test: A record with a dependent field — updating the base field
+--   without updating the dependent field produces a type error because the
+--   dependent invariant is broken.  A valid update must supply a new value
+--   for all fields that depend on the updated field.
+-- Spec: types.records, types.records.dependent_record_update,
+--   compiler.frontir.standard_diagnostic_families
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : {n : Nat} -> a -> Vec a n -> Vec a (n + 1)
+
+-- A record whose `data` field depends on `len`.
+type Buffer : Type = (len : Nat, data : Vec Int this.len)
+
+-- POSITIVE: construct a valid Buffer.
+emptyBuf : Buffer
+let emptyBuf = (len = 0, data = VNil)
+
+singleBuf : Buffer
+let singleBuf = (len = 1, data = VCons 42 VNil)
+
+-- POSITIVE: update both `len` and `data` simultaneously to maintain the invariant.
+appendBuf : Buffer -> Int -> Buffer
+let appendBuf buf x =
+    buf.{ len = buf.len + 1, data = VCons x buf.data }
+
+-- POSITIVE: read from the buffer.
+bufLength : Buffer -> Nat
+let bufLength buf = buf.len
+
+-- NEGATIVE: updating `len` alone without updating `data` breaks the dependent
+-- invariant.  The type of `data` is `Vec Int this.len`; after setting
+-- `len = buf.len + 1`, the data must also change length.
+-- The compiler MUST reject this inconsistent update.
+brokenUpdate : Buffer -> Buffer
+let brokenUpdate buf =
+    buf.{ len = buf.len + 1 }   --!! kappa.record.dependent-update-repair
+
+-- NEGATIVE: setting `len = 0` without setting `data = VNil`.
+zeroWithData : Buffer -> Buffer
+let zeroWithData buf =
+    buf.{ len = 0 }   --!! kappa.record.dependent-update-repair
+
+-- POSITIVE: it is fine to update only `data` if the new data has the same
+-- length as the existing `len`.
+replaceData : Buffer -> Vec Int 0 -> Buffer
+let replaceData _ _ = emptyBuf   -- construct fresh rather than update
+
+--! assertDiagnosticFamily error kappa.record.dependent-update-repair

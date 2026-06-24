@@ -1,0 +1,60 @@
+-- Source issues: nickel #1369, #2023
+-- Spec: declarations.let_in, types.quantification.implicit_declaration_universalization
+-- In the presence of mutable references or when a term is not a value,
+-- over-generalizing a let-bound type variable is unsound. In particular, a let
+-- binding that captures an outer variable via type unification must not be
+-- generalized as if it were fully polymorphic.
+-- Nickel #1369 showed: `(fun x => let y : forall a. a = x in (y : Number)) : _`
+-- typechecked without error, meaning `x` was generalized to `forall a. a` even
+-- though it was bound to an arbitrary outer variable. This is unsound because
+-- it would allow `x` to be used simultaneously as a Number and as a String.
+-- A conforming implementation must reject unsound generalization by tracking
+-- the unification level of type variables and refusing to generalize those
+-- that escape their scope.
+
+module test
+
+-- NEGATIVE: trying to annotate a bound variable `x` as `forall a. a`.
+-- If `x` is not itself polymorphic, claiming `x : forall a. a` is unsound:
+-- it would let us use `x` as any type simultaneously.
+badGeneralization : Number
+let badGeneralization =
+    (\x ->
+        let y : forall a. a = x in    --!! kappa.type.mismatch
+        (y : Number)
+    ) True
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a let-bound variable whose type should be monomorphic cannot be
+-- explicitly annotated as a more general polymorphic type.
+monomorphicLet : Number
+let monomorphicLet =
+    let z = 42 in
+    let _ : forall a. a = z in       --!! kappa.type.mismatch
+    z
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a genuinely polymorphic function can be let-bound with a polymorphic type.
+genuinelyPoly : Number
+let genuinelyPoly =
+    let f : forall a. a -> a = \x -> x in
+    f 10
+
+
+-- NEGATIVE: confusion from outer scope in recursive records (nickel #2023).
+-- An outer binding `let x = "hi"` must not interfere with a recursive field
+-- `x = 1 + y` inside an inner record `let a = { y = x, x = 1 + y }`.
+-- The outer `x` has type String; the inner `x` should have type Number.
+-- The typechecker must not conflate the outer `x` with the inner `x`.
+outerScopeConfusion : Number
+let outerScopeConfusion =
+    let x = "hi" in
+    let a = (y = x, z = String.length x) in
+    a.z
+
+-- The above should succeed: `x = "hi"`, `y = x = "hi"`, `z = length(x) = 2`.
+-- No conflict with an inner numeric `x` since we don't re-bind `x` here.
+--! assertType outerScopeConfusion Number

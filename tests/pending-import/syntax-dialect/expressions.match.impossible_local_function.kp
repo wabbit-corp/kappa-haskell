@@ -1,0 +1,36 @@
+-- Source issue: Idris2 #164
+-- Spec: expressions.match.impossible_unreachable_branch_bodies
+-- An `impossible` branch body is valid in any definitional position, including
+-- local helper functions defined via `block` or let-binding. The coverage and
+-- unreachability rules apply uniformly regardless of whether the definition is
+-- top-level or local.
+
+module test
+
+-- A GADT where the two index values `True` and `False` are proof-distinct.
+-- Constructors carry propositional evidence about their index.
+data Pred : Bool -> Type where
+  IsTrue : Pred True
+
+-- Top-level function: matching Oh requires index = True; a second argument
+-- at type Pred (not True) = Pred False is then unreachable because
+-- `Pred False` has no constructors. The `impossible` branch is accepted.
+topLemma : Pred True -> Pred False -> a
+let topLemma IsTrue x = match x
+  case impossible
+
+--! mode check
+--! assertNoErrors
+
+-- Local helper inside a block expression: the same `impossible` logic should
+-- work identically. The coverage checker must not treat local functions
+-- differently from top-level definitions.
+useLocal : Bool -> Int
+let useLocal b =
+  block
+    localLemma : Pred True -> Pred False -> Int
+    let localLemma IsTrue x = match x
+      case impossible
+    42
+
+--! assertNoErrors

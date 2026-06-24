@@ -1,0 +1,46 @@
+-- Source issues: rzk#24 — check for duplicate definitions;
+--   defining the same name twice at the top level should be an error.
+-- Spec: modules.names.lexical_lookup
+--   §7.1: within one lexical scope, a spelling may contribute at most one
+--   ordinary declaration of a given kind.
+--
+-- Duplicate top-level definitions of the same spelling and kind must be
+-- rejected. The second definition should produce a diagnostic. Different
+-- kinds (e.g. a type and a term) may coexist under the same spelling.
+
+--! mode check
+
+-- POSITIVE: a single top-level function declaration — no duplication.
+identity : Nat -> Nat
+let identity n = n
+
+-- POSITIVE: a data type with the same spelling as the term above is
+-- distinguishable by kind and is not a duplicate.
+data Result (a : Type) : Type =
+    Ok  : a -> Result a
+    Err : Nat -> Result a
+
+-- POSITIVE: using the unique declarations correctly.
+applyId : Nat
+let applyId = identity 7
+
+wrapOk : Result Nat
+let wrapOk = Ok 42
+
+-- POSITIVE: distinct functions with distinct names — no conflict.
+add : Nat -> Nat -> Nat
+let add m n = m + n
+
+multiply : Nat -> Nat -> Nat
+let multiply m n = m * n
+
+-- NEGATIVE: redefining `identity` at the top level — the second definition
+-- has the same spelling and kind as the first; this must be rejected.
+identity : Nat -> Nat    --!! kappa.name.ambiguous
+let identity n = n + 1
+
+-- NEGATIVE: redefining `add` after it has already been declared.
+add : Nat -> Nat -> Nat    --!! kappa.name.ambiguous
+let add m n = m - n
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

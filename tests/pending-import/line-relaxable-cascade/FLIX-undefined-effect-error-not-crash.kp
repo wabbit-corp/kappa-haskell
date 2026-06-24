@@ -1,0 +1,48 @@
+-- Source issues: FLIX-8401, FLIX-8409, FLIX-8527, FLIX-8551, FLIX-7895, FLIX-10185
+-- Spec: compiler.frontir.ordinary_errors_not_internal_failures,
+--       compiler.frontir.standard_diagnostic_families.name_import,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Using an undefined effect or trait name must produce a structured diagnostic.
+-- The compiler must NOT crash, throw an internal exception, or silently accept.
+-- These are ordinary user mistakes: undefined names, arity errors, and type-level
+-- mistakes that previously caused JVM InternalCompilerException in Flix.
+
+--! mode check
+
+-- NEGATIVE TEST: undefined effect name used as a label type in a function signature.
+-- Must produce a name-resolution error, not an internal crash.
+let uses_undefined_effect (comp : Eff <[e : NonExistentEffect]> Int) : Int =
+    comp  --!! kappa.name.unresolved
+
+-- NEGATIVE TEST: undefined effect label name in a handler expression.
+-- Must produce a name-resolution error, not a crash or silent acceptance.
+effect KnownEffect =
+    knownOp : Unit -> Unit
+
+let handles_undefined_label (comp : Eff <[KnownEffect : KnownEffect]> Unit) : Unit =
+    handle NoSuchEffect comp with  --!! kappa.name.unresolved
+        case return _ -> ()
+        case knownOp _ k -> k ()
+
+-- NEGATIVE TEST: effect type of wrong kind used in an effect row.
+-- An ordinary type `String` is not an effect interface; using it in an effect
+-- row must fail with a type/kind error, not a crash.
+-- (kappa.type.mismatch is used because the spec does not define a separate
+-- kappa.kind.mismatch family; kind errors are subsumed under type mismatches.)
+let wrong_kind_in_effect_row (f : Unit -> Eff <[label : String]> Unit) : Unit =
+    f ()                           --!! kappa.type.mismatch
+
+-- NEGATIVE TEST: effect name that exists but is applied to wrong number of args.
+effect Stateful (s : Type) =
+    get  : Unit -> s
+    put  : s -> Unit
+
+let wrong_arity_effect (f : Unit -> Eff <[st : Stateful]> Unit) : Unit =
+    f ()                           --!! kappa.type.mismatch
+
+-- POSITIVE TEST: well-formed effect application.
+let correct_arity (f : Unit -> Eff <[st : Stateful Int]> Unit) : Unit =
+    f ()
+
+-- expect: undefined names and kind mismatches emit structured diagnostics;
+--         correct_arity accepted; no internal compiler exceptions

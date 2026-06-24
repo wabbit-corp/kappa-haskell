@@ -1,0 +1,46 @@
+-- Source: Racket guide define.scrbl (keyword arguments: #:keyword),
+--         Racket guide lambda.scrbl
+-- Source PRs: racket/racket PR #4906; also guide define.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/define.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: expressions.application.named_function_application
+--
+-- Named arguments (keyword arguments) allow supplying function arguments by
+-- name rather than by position. In Kappa, a named application block `{ key = val }`
+-- immediately follows the callee in an application site.
+-- Required named arguments not supplied produce a type mismatch.
+-- Supplying an unknown named argument key also produces an error.
+
+--! mode check
+
+-- POSITIVE: function with named argument block.
+connect : { host : String, port : Int } -> String
+let connect { host = h, port = p } = h ++ ":" ++ show p
+
+-- POSITIVE: calling with a named block.
+connStr : String
+let connStr = connect { host = "localhost", port = 5432 }
+
+-- POSITIVE: function with a mix of positional and named.
+resizeImage : String -> { width : Int, height : Int } -> String
+let resizeImage name { width = w, height = h } =
+    name ++ "@" ++ show w ++ "x" ++ show h
+
+resized : String
+let resized = resizeImage "photo.png" { width = 1024, height = 768 }
+
+-- POSITIVE: named arguments may be supplied in any order.
+connStr2 : String
+let connStr2 = connect { port = 8080, host = "example.com" }
+
+-- NEGATIVE: missing a required named argument.
+missingPort : String
+let missingPort = connect { host = "localhost" }   --!! kappa.type.mismatch
+
+-- NEGATIVE: supplying an unknown named key.
+unknownKey : String
+let unknownKey = connect { host = "x", port = 80, timeout = 30 }   --!! kappa.type.mismatch
+
+-- NEGATIVE: wrong type for a named argument.
+wrongType : String
+let wrongType = connect { host = "x", port = "not-a-number" }   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

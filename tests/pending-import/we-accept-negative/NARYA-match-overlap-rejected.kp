@@ -1,0 +1,48 @@
+-- Source artifacts: narya docs/data-types.rst (overlapping patterns are
+--               rejected; Narya always insists on exact splits).
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- Pattern coverage must be a strict partition: no two arms may match
+-- the same constructor sequence. If a later arm is shadowed by an
+-- earlier one (so it can never fire), the implementation reports it as
+-- unreachable.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: a strict partition — one arm per constructor.
+isZero : Nat -> Nat
+let isZero n =
+    match n
+      case Zero  -> Zero
+      case Suc _ -> Suc Zero
+
+-- POSITIVE: a constructor arm followed by a catch-all _ is fine; the
+-- catch-all fires only for inputs the earlier arm did not match.
+firstSuc : Nat -> Nat
+let firstSuc n =
+    match n
+      case Suc k -> k
+      case _     -> Zero
+
+-- NEGATIVE: the second arm duplicates Zero and is unreachable.
+overlap1 : Nat -> Nat
+let overlap1 n =
+    match n
+      case Zero  -> Suc Zero
+      case Zero  -> Suc (Suc Zero)    --!! kappa.pattern.unreachable
+      case Suc _ -> Zero
+
+-- NEGATIVE: a catch-all arm first, then a constructor arm — the second
+-- arm is shadowed by the catch-all and cannot fire.
+shadowed : Nat -> Nat
+let shadowed n =
+    match n
+      case _     -> Zero
+      case Suc k -> Suc k    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

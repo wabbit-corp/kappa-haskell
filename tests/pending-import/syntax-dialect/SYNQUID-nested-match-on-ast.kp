@@ -1,0 +1,70 @@
+-- Source artifacts: synquid test/current/Evaluator.sq —
+--                 a nested ADT (`AST` with Zero/One/Two/PlusNode/MinusNode/
+--                 ProductNode) is eliminated by repeated match.
+-- Spec: expressions.match,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       declarations.totality.structural_descent,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive)
+--
+-- The Kappa-portable obligation is structural recursion over a tree-shaped
+-- ADT: each recursive branch decreases on one of the constructor's
+-- subtree fields, and exhaustive coverage of all six constructors is
+-- required.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- A toy AST with three nullary constructors and three binary node
+-- constructors, modelled on Synquid's test/current/Evaluator.sq.
+data Ast : Type =
+    AstZero
+    AstOne
+    AstTwo
+    PlusNode    (l : Ast) (r : Ast)
+    MinusNode   (l : Ast) (r : Ast)
+    ProductNode (l : Ast) (r : Ast)
+
+-- Helper: PNat addition used by `size` below. Structural on the first
+-- argument.
+addP : PNat -> PNat -> PNat
+let addP x y =
+    match x
+      case Z      -> y
+      case (S x') -> S (addP x' y)
+
+-- POSITIVE: size over an Ast, structurally recursive on left and right.
+size : Ast -> PNat
+let size a =
+    match a
+      case AstZero                  -> S Z
+      case AstOne                   -> S Z
+      case AstTwo                   -> S Z
+      case (PlusNode    l r)        -> S (addP (size l) (size r))
+      case (MinusNode   l r)        -> S (addP (size l) (size r))
+      case (ProductNode l r)        -> S (addP (size l) (size r))
+
+-- POSITIVE: a catch-all wildcard arm is portable.
+isLeaf : Ast -> Bool
+let isLeaf a =
+    match a
+      case AstZero -> True
+      case AstOne  -> True
+      case AstTwo  -> True
+      case _       -> False
+
+-- NEGATIVE: an evaluator missing one of the binary-node cases is non-
+-- exhaustive.
+badPartial : Ast -> PNat
+let badPartial a =
+    match a                                      --!! kappa.pattern.non-exhaustive
+      case AstZero               -> S Z
+      case AstOne                -> S Z
+      case AstTwo                -> S Z
+      case (PlusNode    _ _)     -> Z
+      case (MinusNode   _ _)     -> Z
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

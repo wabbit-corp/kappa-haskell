@@ -1,0 +1,53 @@
+-- Source issues: lamdu#189 — deleting first alt/field in an open case
+--   goes to red cursor. The Lamdu calculus has `.case {}` as an
+--   "absurd" eliminator that handles the empty variant row, used at the
+--   tail of a case expression when no further constructors remain.
+-- Spec: types.unions.elimination_match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--   §13.1.4: every branch of a match over a closed union must have the
+--   same result type and the match must be exhaustive; a data type with
+--   zero constructors is uninhabited and a match on it has no branches.
+--
+-- A match on an uninhabited (zero-constructor) data type produces any
+-- result type vacuously. A non-exhaustive match on an inhabited type
+-- must produce kappa.pattern.non-exhaustive.
+
+--! mode check
+
+-- POSITIVE: declare an uninhabited type via a zero-constructor data
+-- declaration.
+data Void : Type =
+
+-- POSITIVE: a function from Void can return any type because the
+-- match has no branches and the scrutinee has no inhabitants.
+absurd : forall (a : Type). Void -> a
+let absurd v =
+    match v
+
+useAbsurd : Nat -> Void -> Nat
+let useAbsurd n v = n + absurd v
+
+-- POSITIVE: complete match over an inhabited nominal sum type.
+data Choice : Type =
+    Left  Nat
+    Right Nat
+
+processChoice : Choice -> Nat
+let processChoice p =
+    match p
+    case Left  x  -> x
+    case Right y  -> y + 1
+
+-- NEGATIVE: a match with no branches on an inhabited type — the
+-- compiler must report non-exhaustiveness.
+notVoidEmpty : Nat -> Bool
+let notVoidEmpty n =                 --!! kappa.pattern.non-exhaustive
+    match n
+
+-- NEGATIVE: a match on Choice that omits one constructor.
+badChoice : Choice -> Nat
+let badChoice p =                    --!! kappa.pattern.non-exhaustive
+    match p
+    case Left  x  -> x
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

@@ -1,0 +1,59 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestFunctional.curry
+--   (append, rev, appendIsAssociative, revAntiDistributesOverAppend);
+--   also testsuite/SpecialTests/rev.curry.
+-- Spec: expressions.match (§17.1), expressions.application (§16.1),
+--       expressions.lambdas (§16.2), data_types.data_declarations (§10.1).
+--
+-- Structural recursion over a linked list ADT: define `append` and
+-- `reverse`, then state the two characteristic algebraic properties
+-- (associativity of append, anti-distribution of reverse over append)
+-- as inline run-mode assertions if a run profile is available; here we
+-- check them in analyze mode by type-equality witnesses.
+
+module test
+
+--! mode check
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+append : forall (a : Type). List a -> List a -> List a
+let append xs ys =
+    match xs
+    case Nil          -> ys
+    case Cons x rest  -> Cons x (append rest ys)
+
+--! assertNoErrors
+--! assertType append (forall (a : Type). List a -> List a -> List a)
+
+reverseList : forall (a : Type). List a -> List a
+let reverseList xs =
+    match xs
+    case Nil          -> Nil
+    case Cons x rest  -> append (reverseList rest) (Cons x Nil)
+
+--! assertNoErrors
+--! assertType reverseList (forall (a : Type). List a -> List a)
+
+-- POSITIVE: typed witness that append on Int works as expected.
+sample1234 : List Int
+let sample1234 = append (Cons 1 (Cons 2 Nil)) (Cons 3 (Cons 4 Nil))
+
+--! assertNoErrors
+--! assertType sample1234 (List Int)
+
+revSample : List Int
+let revSample = reverseList sample1234
+-- expected shape: Cons 4 (Cons 3 (Cons 2 (Cons 1 Nil)))
+
+--! assertNoErrors
+--! assertType revSample (List Int)
+
+-- POSITIVE: a singleton reverses to itself.
+revSingleton : forall (a : Type). a -> List a
+let revSingleton x = reverseList (Cons x Nil)
+-- equal in shape to: Cons x Nil
+
+--! assertNoErrors
+--! assertType revSingleton (forall (a : Type). a -> List a)

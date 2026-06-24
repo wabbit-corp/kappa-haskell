@@ -1,0 +1,35 @@
+-- Source issues: Arend #342 — no error reported about wrong use of \use \coerce;
+--   coercion declarations must be scoped to the source or target type's
+--   declaration block, not at the top level.
+-- Spec: (ARSA-03 spec gap — user-defined coercions not yet in Kappa spec)
+--
+-- The Kappa spec does not yet define a user-defined coercion declaration form.
+-- Attempting to use `coerce` as a declaration keyword at any scope therefore
+-- produces a name-resolution error (`kappa.name.unresolved`) because the
+-- identifier `coerce` is not bound as a declaration form.
+--
+-- This test verifies the negative obligation: an unrecognised declaration
+-- keyword at the top level must produce a diagnostic, not silent acceptance.
+-- The positive shape (coercions scoped to a type's where-block) is tracked in
+-- AREND_SPEC_ADDITIONS.md as ARSA-03 and cannot yet be expressed in Kappa.
+
+--! mode check
+
+data Token : Type =
+    mkToken : Nat -> Token
+
+-- POSITIVE: a normal function that converts Nat to Token — accepted.
+toToken : Nat -> Token
+let toToken n = mkToken n
+
+-- POSITIVE: using the conversion function explicitly — accepted.
+myToken : Token
+let myToken = toToken 42
+
+-- NEGATIVE: `coerce` is not a recognized declaration keyword in Kappa.
+-- Using it as a top-level declaration form produces an unresolved-name
+-- or parse error because `coerce` is not bound in the declaration namespace.
+coerce badCoerce : Nat -> Token    --!! kappa.name.unresolved
+let badCoerce n = mkToken n
+
+--! assertDiagnosticFamily error kappa.name.unresolved

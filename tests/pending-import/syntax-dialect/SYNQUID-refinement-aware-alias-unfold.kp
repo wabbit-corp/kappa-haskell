@@ -1,0 +1,49 @@
+-- Source artifacts: synquid type aliases such as `type Nat = {Int | _v >= 0}`,
+--                 `type Pos = {Int | _v > 0}`, `type Phase = {Int | 0 <= _v
+--                  && _v < 4}` from test/checking/List-Replicate.sq and
+--                  test/security/paper/3-Implicit.sq are routinely unfolded
+--                  at use sites for shape comparisons.
+-- Spec: data_types.type_aliases,
+--       modules.visibility_opacity_private_opaque.opaque
+--
+-- The Kappa-portable obligation is alias unfolding through type definitions:
+-- a transparent type alias must be normalized on demand so that uses at
+-- the alias and uses at the underlying type are interchangeable. An
+-- opaque alias must NOT unfold outside its defining module.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- A transparent alias for the local PNat type.
+type MyPNat : Type = PNat
+
+-- POSITIVE: a value typed at the alias is usable where PNat is expected
+-- (definitional equality unfolds MyPNat to PNat).
+useAsPNat : PNat
+let useAsPNat =
+    let x : MyPNat = S Z in
+    x
+
+-- POSITIVE: a value typed at the underlying type is usable where MyPNat
+-- is expected.
+useAsAlias : MyPNat
+let useAsAlias =
+    let y : PNat = S (S Z) in
+    y
+
+-- POSITIVE: alias used inside a constructor argument unfolds in place.
+data Boxed (a : Type) : Type =
+    Box (val : a)
+
+asBoxedPNat : Boxed MyPNat
+let asBoxedPNat = Box (S Z)
+
+unboxedToPNat : PNat
+let unboxedToPNat =
+    match asBoxedPNat
+      case (Box v) -> v
+
+--! assertNoErrors

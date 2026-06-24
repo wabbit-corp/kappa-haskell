@@ -1,0 +1,31 @@
+-- Source issue: FUTHARK-1690, FUTHARK-1675
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       types.universes.quantities
+-- Futhark #1690: `def f n = let a = iota n in (a, a)` should be rejected
+-- because it returns two results that alias each other, making it unsound
+-- to treat each as independently updatable.
+-- Futhark #1675: functions should not be allowed to return aliases of globals.
+-- In Kappa, returning a linear resource in two positions simultaneously
+-- counts as two demands on a single value and must be rejected.
+-- A function whose return type claims two independent linear values must
+-- produce each from distinct linear sources.
+
+--! mode check
+--! assertDiagnosticFamily error kappa.path.consumed
+
+module test
+
+-- NEGATIVE: a linear argument is placed into two record fields.
+-- The record type claims both fields are independently owned (quantity 1),
+-- but the body aliases them to the same source value.
+badAliasedPair : (1 arr : SizedArray 3 Int) -> (first : SizedArray 3 Int, second : SizedArray 3 Int)
+let badAliasedPair (1 arr) =
+  (first = arr, second = arr)
+
+-- NEGATIVE: returning the same linear value via two local aliases.
+-- Giving two names to one linear source and putting both in the result.
+badTwoNames : (1 src : SizedArray 3 Int) -> (SizedArray 3 Int, SizedArray 3 Int)
+let badTwoNames (1 src) =
+  let a = src
+  let b = src
+  in (a, b)

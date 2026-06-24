@@ -1,0 +1,35 @@
+-- Source issue: FSTAR-1228
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+-- An irrefutable let-pattern binder (e.g., `let () = e`) must be checked
+-- against the type of `e`. If the type of `e` is not a subtype of the
+-- pattern's expected type, the compiler must reject the definition, not
+-- silently coerce the types.
+
+--! mode check
+
+-- POSITIVE TEST: irrefutable unit pattern is valid when expression has type Unit.
+test_ok : Unit -> Unit
+let test_ok u =
+    let () = u
+    ()
+
+
+-- NEGATIVE TEST: irrefutable unit pattern applied to non-Unit expression.
+-- `let () : Int = 4` is ill-typed: Int is not Unit.
+-- The compiler must reject this, not silently accept it.
+test_bad_unit_int : Unit
+let test_bad_unit_int =
+    let () : Int = (4 : Int)   --!! kappa.type.mismatch
+    ()
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE TEST: irrefutable Nil pattern `let Nil = l` where `l : List Nat`.
+-- The pattern Nil is refutable for List Nat (l may be a Cons).
+-- The compiler must reject this non-irrefutable let-pattern.
+test_nonexhaustive_let : List Nat -> Unit
+let test_nonexhaustive_let l =
+    let Nil = l               --!! kappa.pattern.non-exhaustive
+    ()
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

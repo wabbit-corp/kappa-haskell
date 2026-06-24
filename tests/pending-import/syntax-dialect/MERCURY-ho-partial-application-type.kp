@@ -1,0 +1,92 @@
+-- Source issues: invalid/higher_order_mode_mismatch.m, invalid/ho_default_func_1.m,
+--   invalid/ho_default_func_2.m
+-- Spec: types.functions, compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- A higher-order call site must match the function type of the callee. If the
+-- call site provides the wrong number of arguments — more than the function
+-- accepts, or treats a non-function as callable — the checker must reject it.
+
+module test
+
+-- A function that takes a binary function as argument and calls it.
+applyBin :
+    (Int -> Int -> Int) ->
+    Int -> Int -> Int
+let applyBin f x y = f x y
+
+-- A function that takes a unary predicate as argument.
+findFirst :
+    forall (a : Type).
+    (a -> Bool) -> List a -> Option a
+let findFirst _ []        = None
+let findFirst p (x :: xs) = if p x then Some x else findFirst p xs
+
+-- POSITIVE: using applyBin with a binary function.
+useApply : Int -> Int -> Int
+let useApply x y = applyBin (\a b -> a * b) x y
+
+
+-- NEGATIVE: calling `applyBin` with too many arguments (3 where it expects 2
+-- after the function argument).
+-- `applyBin f x y` is valid; `applyBin f x y z` is not.
+tooMany : Int
+let tooMany = applyBin (\a b -> a + b) 1 2 3    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: calling `applyBin` with too few arguments after the function
+-- and returning the partial application, when the result is expected to be
+-- `Int` (not `Int -> Int`).
+tooFew : Int
+let tooFew = applyBin (\a b -> a + b) 5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing a non-function value as the higher-order argument.
+notAFunction : Int
+let notAFunction = 42
+
+badCall : Int
+let badCall = applyBin notAFunction 1 2    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: using findFirst with a correctly-typed predicate.
+findEven : List Int -> Option Int
+let findEven xs = findFirst (\x -> x > 0) xs
+
+
+-- NEGATIVE: passing a binary predicate to findFirst (expects unary).
+binaryPred : Int -> Int -> Bool
+let binaryPred x y = x < y
+
+badFindFirst : List Int -> Option Int
+let badFindFirst xs = findFirst binaryPred xs    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Higher-order with dependent return type (function composition).
+compose :
+    forall (a b c : Type).
+    (b -> c) -> (a -> b) -> a -> c
+let compose f g x = f (g x)
+
+-- POSITIVE: composing two compatible functions.
+plusOneDouble : Int -> Int
+let plusOneDouble = compose (\x -> x * 2) (\x -> x + 1)
+
+
+-- NEGATIVE: composing incompatible functions (type mismatch at the composition
+-- boundary: g returns Int but f expects String).
+intToStr : Int -> String
+let intToStr n = show n
+
+strToInt : String -> Int
+let strToInt _ = 0
+
+badCompose : Int -> Int
+let badCompose = compose strToInt intToStr    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! mode check

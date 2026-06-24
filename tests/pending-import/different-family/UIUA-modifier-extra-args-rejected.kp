@@ -1,0 +1,33 @@
+-- Source issue: Uiua #271 ("Wrong number of modifier arguments in nested
+--   custom modifiers" — `B! ← A!^1` references one modifier argument
+--   externally but the body uses two, so the binding's declared modifier
+--   arity disagrees with its elaborated arity).
+-- Spec: declarations.signatures, types.functions, expressions.application,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_APPLICATION_ARGUMENT_MISMATCH).
+--
+-- A higher-order combinator (modifier) declares how many callable
+-- arguments it takes. Supplying more callable arguments at the call
+-- site than the declaration accepts MUST surface as a normal
+-- E_APPLICATION_ARGUMENT_MISMATCH, not as a silent arity coercion.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a unary higher-order combinator that takes one callable.
+applyOnce : (Int -> Int) -> Int -> Int
+let applyOnce f x = f x
+
+okUse : Int
+let okUse = applyOnce (\y -> y + 1) 5
+
+--! assertType applyOnce (Int -> Int) -> Int -> Int
+--! assertType okUse Int
+
+-- NEGATIVE: applyOnce takes one Int parameter after the callable, but
+-- the call site supplies a function value where an Int is expected.
+twoCallables : Int
+let twoCallables = applyOnce (\y -> y + 1) (\z -> z * 2)  --!! E_APPLICATION_ARGUMENT_MISMATCH
+
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH

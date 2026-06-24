@@ -1,0 +1,22 @@
+-- Stress test: non-strictly-positive data declarations must be rejected
+-- Spec: data_types.well_formedness
+
+--! mode check
+
+-- NEGATIVE: Bad1 appears in negative position (domain of an arrow inside the constructor).
+-- Constructor argument `Bad1 -> Int` places Bad1 to the left of ->, which is negative.
+data Bad1 : Type =
+  MkBad1 : (Bad1 -> Int) -> Bad1   --!! kappa.type.mismatch
+
+-- NEGATIVE: Bad2 has a double-negation structure that is still non-strictly-positive
+-- in Kappa: `(Bad2 -> Int) -> Int` places Bad2 in a negative position inside the outer domain.
+data Bad2 : Type =
+  MkBad2 : ((Bad2 -> Int) -> Int) -> Bad2   --!! kappa.type.mismatch
+
+--! assertErrorCount 2
+
+-- POSITIVE: a strictly-positive recursive type is accepted.
+data NatPos : Type =
+  ZeroP : NatPos
+  SuccP : NatPos -> NatPos
+

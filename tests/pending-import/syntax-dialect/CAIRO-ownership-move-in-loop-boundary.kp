@@ -1,0 +1,83 @@
+-- Source issues: CAIRO-2816, CAIRO-3049, CAIRO-3678
+-- Spec: types.universes.quantities (§12.2),
+--       compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure
+--       (§3.3.2, family kappa.path.consumed),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- Kappa spec rule (§12.2 "Quantities"):
+--   "A loop body that consumes a linear variable from the enclosing scope on
+--    the first iteration makes the variable unavailable on subsequent
+--    iterations. The compiler must detect this and reject the program unless
+--    the loop can be proven to execute at most once."
+-- Cairo issue CAIRO-2816: a loop body using `ref self: Array<T>` was
+--   incorrectly flagged as moving `self` on the second iteration even though
+--   the function signature declared `ref` (inout) semantics.
+-- Cairo issue CAIRO-3049: `loop { ... break ... }` was erroneously flagged
+--   as moving a variable even though the loop always breaks on the first
+--   iteration.
+-- Cairo issue CAIRO-3678: an unexpected `move` + conditional + array
+--   combination produced a confusing error; the loop capture analysis
+--   was unsound for conditional break paths.
+
+--! mode check
+
+-- POSITIVE: a function with an `inout` (ref) parameter inside a loop;
+-- each iteration re-borrows the same parameter, not consuming it.
+sumLoop : (inout items : List Int) -> Int
+let sumLoop items =
+    let acc = 0
+    loop
+        match items
+        case []      -> break acc
+        case x :: xs ->
+            let items = xs
+            let acc = acc + x
+            continue
+
+-- POSITIVE: a loop that always breaks on the first iteration may safely
+-- consume a linear variable.
+singleIter : (1 v : List Int) -> Int
+let singleIter v =
+    loop
+        let _ = v
+        break 0
+
+-- NEGATIVE: a loop body that consumes a linear `v` on the first iteration
+-- would make `v` unavailable on the second iteration if the loop continued.
+-- Since the value of `v` comes from outside the loop, the compiler must
+-- reject consuming it inside a loop that may repeat.
+consumeInLoop : (1 v : List Int) -> Int
+let consumeInLoop v =
+    let acc = 0
+    loop
+        match v                   --!! kappa.path.consumed
+        case []      -> break acc
+        case x :: _  ->
+            let acc = acc + x
+            continue
+
+-- POSITIVE: a while-style loop where the variable is updated on each
+-- iteration rather than consumed; the loop variable is an `inout` rebind.
+countDown : Int -> Int
+let countDown n =
+    let count = n
+    loop
+        if count <= 0
+        then break 0
+        else
+            let count = count - 1
+            continue
+
+-- POSITIVE (Cairo-3678): a loop where the linear value is consumed on the
+-- break path and untouched on the continue path is valid — the value is
+-- consumed exactly once (on the iteration that breaks).  The compiler must
+-- NOT incorrectly flag the continue path as a use-after-consume.
+branchConsumeBreak : (1 v : List Int) -> Int
+let branchConsumeBreak v =
+    loop
+        match v
+        case []      -> break 0     -- v consumed by match; exits loop
+        case _ :: _ ->
+            continue                -- tail of v discarded; next iteration
+
+--! assertDiagnosticFamily error kappa.path.consumed

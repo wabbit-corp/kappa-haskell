@@ -1,0 +1,69 @@
+-- Source issues: leo#28665 (const generics in Leo feature request), leo#28668
+--               (const generics for `struct`), leo#28676 (parameterized array
+--               using const generics), leo PR#28712 (const generics for structs
+--               implementation), leo test `basic_const_generic_structs.leo`.
+-- Spec: declarations.const_generics (SA-LEO-05 adjacent),
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- Kappa spec rule:
+--   "A data type parameterized by a compile-time constant value (const generic)
+--    is a type constructor that produces a distinct type for each distinct value
+--    of the const parameter. Two applications with different const values produce
+--    non-equal types. Instantiation with a compile-time constant is accepted;
+--    instantiation with a runtime value is rejected."
+-- This test verifies the positive side: correct usage of const-generic data types
+-- including definition, instantiation, and field access.
+
+--! mode check
+
+-- A data type parameterized by a compile-time Int — analogous to Leo's
+-- `struct Foo::[N: u32] { arr: [u32; N] }`.
+data Vec (0 n : Int) : Type =
+    Vec { capacity : Int, size : Int }
+
+-- A type parameterized by two compile-time constants.
+data Matrix (0 rows : Int) (0 cols : Int) : Type =
+    Matrix { data_ : Array Int }
+
+-- POSITIVE: instantiating with literal (0-quantity) values.
+vec5 : Vec 5
+let vec5 = Vec { capacity = 5, size = 0 }
+
+vec10 : Vec 10
+let vec10 = Vec { capacity = 10, size = 0 }
+
+mat3x3 : Matrix 3 3
+let mat3x3 = Matrix { data_ = [0, 0, 0, 0, 0, 0, 0, 0, 0] }
+
+mat2x4 : Matrix 2 4
+let mat2x4 = Matrix { data_ = [0, 0, 0, 0, 0, 0, 0, 0] }
+
+
+-- POSITIVE: a function that takes a const-generic type and returns a related type.
+let emptyVec (0 n : Int) : Vec n = Vec { capacity = n, size = 0 }
+
+okEmpty5 : Vec 5
+let okEmpty5 = emptyVec 5
+
+
+-- POSITIVE: Vec 5 and Vec 10 are different types; they cannot be mixed.
+-- The following verifies that the type checker distinguishes them.
+let usesVec5 (v : Vec 5) : Int = v.capacity
+
+ok5 : Int
+let ok5 = usesVec5 vec5
+
+-- NEGATIVE: passing Vec 10 where Vec 5 is expected.
+bad5 : Int
+let bad5 = usesVec5 vec10    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a function generic over any n accepts any Vec n.
+let capacity (0 n : Int) (v : Vec n) : Int = v.capacity
+
+okCap5 : Int
+let okCap5 = capacity 5 vec5
+
+okCap10 : Int
+let okCap10 = capacity 10 vec10
+

@@ -1,0 +1,22 @@
+-- Source issue: Kitten #28 (suggest `x.0` if `x` is an `int` literal
+--   where a `float` was expected; suggest `+.` when both arguments are
+--   floats). Kitten #145 / #147 (exponential and trailing-dot float
+--   literals are accepted).
+-- Spec: literals.numeric_literals.typing,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.literal-domain-mismatch).
+--
+-- A numeric literal whose written form is decided in the integer domain
+-- cannot elaborate against a floating-point expected type without
+-- explicit conversion; the diagnostic family is
+-- kappa.type.literal-domain-mismatch.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: an integer literal where a Float is required.
+needsFloat : Float
+let needsFloat = 1                         --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch

@@ -1,0 +1,68 @@
+-- Source issues: CAIRO-2961, CAIRO-2964, CAIRO-PR-1125 (Fixed pattern destructure in match arms)
+-- Spec: expressions.patterns (§ data_types.data_declarations.constructor_application_named_arguments_c),
+--       data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.constructor-arity).
+-- Kappa spec rule (§10.1.1 "Constructor application with named arguments"):
+--   "A constructor pattern `C { field1 = p1, field2 = p2 }` is well-formed
+--    only when the fields match the constructor's declared parameter telescope.
+--    Supplying extra fields, omitting required fields (unless covered by a `..`
+--    remainder pattern), or duplicating fields is rejected."
+-- Cairo issue CAIRO-2961: struct serde tests revealed that all declared fields
+--   must be listed in patterns unless `..'rest'` is used.
+-- Cairo issue CAIRO-2964: generic structs with multiple type parameters needed
+--   all field patterns to type-check correctly.
+
+--! mode check
+
+-- A simple two-field struct.
+data Point : Type =
+    Point (x : Int) (y : Int)
+
+-- POSITIVE: matching all fields by name.
+getX : (& p : Point) -> Int
+let getX p = match p
+    case Point (x = n) _ -> n
+
+-- POSITIVE: positional pattern matching on all fields.
+addCoords : (& p : Point) -> Int
+let addCoords (Point x y) = x + y
+
+-- POSITIVE: using a wildcard for the second field.
+firstCoord : (& p : Point) -> Int
+let firstCoord (Point x _) = x
+
+-- NEGATIVE: providing a non-existent field in a constructor pattern.
+badField : (& p : Point) -> Int
+let badField p = match p
+    case Point (x = n) (z = _) -> n  --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: too many positional arguments in the constructor pattern.
+tooManyArgs : (& p : Point) -> Int
+let tooManyArgs p = match p
+    case Point x y 0 -> x            --!! kappa.pattern.constructor-arity
+
+-- A three-field struct for richer tests.
+data Rgb : Type =
+    Rgb (r : Int) (g : Int) (b : Int)
+
+-- POSITIVE: complete named pattern.
+toGray : (& c : Rgb) -> Int
+let toGray c = match c
+    case Rgb (r = rv) (g = gv) (b = bv) -> (rv + gv + bv) / 3
+
+-- POSITIVE: positional with wildcard for unused fields.
+onlyRed : (& c : Rgb) -> Int
+let onlyRed (Rgb r _ _) = r
+
+-- NEGATIVE: missing required field `b`.
+missingBlue : (& c : Rgb) -> Int
+let missingBlue c = match c
+    case Rgb (r = rv) (g = gv) -> rv + gv  --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: duplicate field in pattern.
+dupField : (& c : Rgb) -> Int
+let dupField c = match c
+    case Rgb (r = rv) (r = rv2) (b = bv) -> rv + bv  --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

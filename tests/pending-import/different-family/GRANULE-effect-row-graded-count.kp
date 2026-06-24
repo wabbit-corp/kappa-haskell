@@ -1,0 +1,35 @@
+-- Source: granule-project/granule
+--         tests/cases/positive/effects/effApprox.gr,
+--         tests/cases/negative/effects/effApproxBad.gr
+-- Spec: effects.monadic_core.eff_effect_rows,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- GSA-02: a counted effect monad where the effect "row" upper-bounds the
+-- number of operations performed. Kappa's portable surface for counted
+-- effects is approximated by a `Tick` label with a one-shot operation.
+-- Declaring an empty row but invoking the operation must surface
+-- `kappa.effect.row-mismatch` (§3.2.9).
+
+module test
+
+--! mode check
+
+-- A tick-style effect interface.
+effect Tick =
+    1 tick : Unit -> Unit
+
+-- POSITIVE: a computation that uses the Tick row.
+tickOnce : Eff <[t : Tick]> Unit
+let tickOnce = t.tick ()
+
+
+-- POSITIVE: row-polymorphism — the same operation in an extended row.
+tickInExtended : forall (r : EffRow). LacksEff r t =>
+    Eff <[t : Tick | r]> Unit
+let tickInExtended = t.tick ()
+
+
+-- NEGATIVE: declared empty effect row but performs a Tick operation.
+mislabel : Eff <[]> Unit
+let mislabel = t.tick ()         --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

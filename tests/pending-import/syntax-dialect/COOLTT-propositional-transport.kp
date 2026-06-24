@@ -1,0 +1,65 @@
+-- Source artifacts: cooltt test coercion.cooltt (coe/fwd, coe/bwd, transport/fwd,
+--               heterogenize, homogenize), test nat-path.cooltt (J eliminator
+--               derived from coe).
+-- Source tests: cooltt test/coercion.cooltt (corpus repos/github-redprl-cooltt/tests/test/coercion.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: types.propositions.propositional_equality_type_positions,
+--       expressions.application.equality_based_subsumption_automatic_transport_insertion
+--
+-- Transport along a proof of equality moves an element of type `P a` to `P b`
+-- when given a proof `p : a = b`. This is the fundamental elimination form for
+-- the equality type. In Martin-Löf style (J eliminator), it is:
+--   J : forall (P : forall b -> a = b -> Type) -> P a refl -> forall {b} (p : a = b) -> P b p
+-- In Kappa, the key obligations are:
+-- - `transport p x : P b` whenever `p : a = b` and `x : P a`
+-- - transport along `refl` is the identity (computation rule)
+-- - composition of transports is transitivity
+
+--! mode check
+
+-- POSITIVE: basic transport along an equality proof.
+-- Moving a value of type `P a` to `P b` along `p : a = b`.
+transport : forall {A : Type} (P : A -> Type) {a b : A} -> a = b -> P a -> P b
+let transport _ refl x = x
+
+-- POSITIVE: transport along reflexivity is the identity.
+transportRefl : forall {A : Type} (P : A -> Type) {a : A} (x : P a) -> transport P refl x = x
+let transportRefl _ _ = refl
+
+-- POSITIVE: substitutivity — replace a term in a predicate.
+subst : forall {A : Type} {a b : A} -> a = b -> (P : A -> Type) -> P a -> P b
+let subst refl _ x = x
+
+-- POSITIVE: congruence using transport.
+-- If `p : a = b` and `q : P a`, then transport produces an element of `P b`.
+congTransport : forall {A : Type} {a b : A} (P : A -> Type) (p : a = b) (x : P a) -> P b
+let congTransport P p x = transport P p x
+
+-- POSITIVE: the J eliminator (path induction).
+-- If the motive holds at reflexivity, it holds for any path.
+J : forall {A : Type} {a : A}
+    (P : forall (b : A) -> a = b -> Type)
+    -> P a refl
+    -> forall {b : A} (p : a = b) -> P b p
+let J _ d refl = d
+
+-- POSITIVE: using J to prove symmetry.
+symmViaJ : forall {A : Type} {a b : A} -> a = b -> b = a
+let symmViaJ {a = a} p = J (\b _ -> b = a) refl p
+
+-- POSITIVE: using J to prove transport.
+transportViaJ : forall {A : Type} (P : A -> Type) {a b : A} -> a = b -> P a -> P b
+let transportViaJ P {a = a} p x = J (\b _ -> P b) x p
+
+-- POSITIVE: transporting across a function type equality.
+-- If `f = g` then `f a = g a` by congruence.
+funEq : forall {A B : Type} {f g : A -> B} -> f = g -> (a : A) -> f a = g a
+let funEq refl _ = refl
+
+-- NEGATIVE: transport in the wrong direction — type mismatch.
+badTransport : forall {A : Type} (P : A -> Type) {a b : A} -> a = b -> P b -> P a
+let badTransport P refl x = x    -- this is actually fine (refl case)
+-- but constructing with wrong type:
+badT2 : Nat
+let badT2 = transport (\_ -> Bool) refl True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

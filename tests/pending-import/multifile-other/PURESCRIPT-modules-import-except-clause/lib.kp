@@ -1,0 +1,15 @@
+-- Source artifacts: PURESCRIPT-PR-1651 (linked #1507 — allow import hiding
+--                   with qualified imports),
+--                   PURESCRIPT-PR-1545 (give warnings on unused imports),
+--                   PURESCRIPT-PR-4454 (make unqualified imports explicit).
+-- Spec: modules.imports.item_kind_selectors (`.* except (...)` form).
+module lib
+
+alpha : Int
+let alpha = 1
+
+beta : Int
+let beta = 2
+
+gamma : Int
+let gamma = 3

@@ -1,0 +1,71 @@
+-- Source issues: nickel #1771, typecheck/enum_match_variant_not_covered.ncl
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive)
+-- A match on a closed enum type must cover all variants. If any tag is not covered
+-- and no wildcard or catch-all branch is present, the match is non-exhaustive and
+-- must be rejected with kappa.pattern.non-exhaustive.
+
+module test
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- Singleton types for use as union members in polymorphic union functions.
+data A : Type = A
+data B : Type = B
+
+-- NEGATIVE: match on Color that omits Blue — non-exhaustive.
+colorName_missing : Color -> String
+let colorName_missing c = match c         --!! kappa.pattern.non-exhaustive
+    case Red   -> "red"
+    case Green -> "green"
+
+--! mode check
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: match on Color that omits both Green and Blue.
+colorOnlyRed : Color -> String
+let colorOnlyRed c = match c              --!! kappa.pattern.non-exhaustive
+    case Red -> "red"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: match on Color that covers all three variants.
+colorNameFull : Color -> String
+let colorNameFull c = match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+--! assertType colorNameFull Color -> String
+
+-- POSITIVE: match with a wildcard branch — exhaustive.
+colorNameWild : Color -> String
+let colorNameWild c = match c
+    case Red -> "red"
+    case _   -> "other"
+
+
+-- NEGATIVE: match on a polymorphic union row that does not have a catch-all
+-- for the row tail — non-exhaustive.
+-- Kappa union types use `case (| _ : T |)` for member matching; residual row
+-- requires `case (| ..rest |)` or a wildcard `case _`.
+handleAB : forall (r : VarRow). LacksVar r A => LacksVar r B =>
+           (| A | B | r |) -> String
+let handleAB v = match v                  --!! kappa.pattern.non-exhaustive
+    case (| _ : A |) -> "A"
+    case (| _ : B |) -> "B"
+    -- Missing: case (| ..rest |) or case _ for tail r
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: match on polymorphic union row with catch-all for tail.
+handleABCatchall : forall (r : VarRow). LacksVar r A => LacksVar r B =>
+                   (| A | B | r |) -> String
+let handleABCatchall v = match v
+    case (| _ : A |) -> "A"
+    case (| _ : B |) -> "B"
+    case _           -> "other"
+

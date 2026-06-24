@@ -1,0 +1,81 @@
+-- Source issues: rust#53907, rust#54182, rust#62211 (slice > 50000)
+-- Spec: traits.members, traits.members.overloaded_member_names,
+--       traits.instances, traits.instances.associated_static_member_instance_checking
+--
+-- A trait may declare an associated static member (e.g. an associated type)
+-- with a *default*. Two obligations:
+--   (a) An instance may override the default associated type; the default
+--       method body whose signature mentions the abstract name need not be
+--       reimplemented (rust#53907).
+--   (b) The default associated type MUST itself satisfy every trait-
+--       declared constraint that the abstract associated name carries
+--       (rust#62211: Rust historically did not type-check the default, so
+--       it could provide `Self` as the default for an `Output: Copy`
+--       associated type even when `Self: Copy` did not hold).
+
+module test
+
+trait Eq (a : Type) =
+    eq : (& x : a) -> (& y : a) -> Bool
+
+data Color : Type =
+    Red
+    Green
+
+instance Eq Color =
+    let eq x y = match x
+        case Red   -> (match y case Red -> True case Green -> False)
+        case Green -> (match y case Red -> False case Green -> True)
+
+instance Eq Int =
+    let eq x y = int_eq x y
+
+int_eq : (& x : Int) -> (& y : Int) -> Bool
+let int_eq x y = True   -- placeholder
+
+--! mode check
+
+-- Trait with a defaulted associated type AND a default method whose
+-- signature mentions only the abstract associated name.
+trait DeviceApp (a : Type) =
+    Msg : Type
+    let Msg = Unit                 -- default associated type: Unit
+    handleMsg : (1 _ : a) -> Msg -> a
+    let process : (1 _ : a) -> a
+    let process x = x              -- default method, signature does not mention Msg
+
+-- POSITIVE: instance keeps the default Msg = Unit. No override of process
+-- required.
+instance DeviceApp Int =
+    let handleMsg x _ = x
+
+
+-- POSITIVE: instance overrides the associated type to ColorMsg. The
+-- default `process` method's signature (a -> a) does NOT depend on Msg,
+-- so it remains valid without reimplementation.
+data ColorMsg : Type =
+    Picked Color
+
+instance DeviceApp Color =
+    let Msg = ColorMsg
+    let handleMsg c m = match m case Picked c' -> c'
+
+
+-- Use both instances to confirm Msg is correctly resolved per instance.
+useDefault : Int
+let useDefault = handleMsg (5 : Int) ()
+
+useOverride : Color
+let useOverride = handleMsg Red (Picked Green)
+
+
+-- NEGATIVE: a trait declares an associated type with a constraint, AND
+-- supplies a default. The default does NOT satisfy the constraint and
+-- the trait declaration itself MUST be rejected (rust#62211 analog).
+trait WithCopy (a : Type) =
+    Output : Type
+    (@_ : Eq Output)               -- constraint on Output
+    let Output = a                 --!! kappa.implicit.unsolved
+    use : (1 x : a) -> Output
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,47 @@
+-- Source issues: ponyc cap.cc (SubConcrete), ponyc#4989, ponyc PR#2660
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Pony's capability lattice: iso^ <: iso <: trn <: ref, iso^ <: val <: box,
+-- etc. The full lattice determines which capabilities can be used where
+-- another is demanded. In Kappa, the analogous lattice is quantity:
+-- quantity 1 (linear) <: quantity & (borrowed) <: quantity ω (unrestricted).
+-- A linear (1) argument may be used where a borrowed (&) is expected;
+-- the converse is not true.
+
+--! mode check
+
+data Blob : Type = Blob Int
+
+-- Functions demanding different quantities.
+readBorrow : (& b : Blob) -> Int
+let readBorrow (Blob n) = n
+
+consumeLinear : (1 b : Blob) -> Int
+let consumeLinear (Blob n) = n
+
+-- POSITIVE: a linear argument may be passed where a borrow is expected
+-- (the linear can be "weakened" to a borrow for the duration of the call).
+useLinearAsBorrow : (1 b : Blob) -> Int
+let useLinearAsBorrow b = readBorrow b
+
+-- NEGATIVE: a borrow cannot be passed where a linear (owned) is expected.
+-- The caller only has a shared view; the callee demands unique ownership.
+useBorrowAsLinear : (& b : Blob) -> Int
+let useBorrowAsLinear b = consumeLinear b   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: passing an unrestricted (ω) value where a borrow is expected.
+-- Unrestricted values may be borrowed freely.
+unrestricted : Blob -> Int
+let unrestricted b = readBorrow b
+
+-- POSITIVE: a function accepting either a borrowed or an owned argument
+-- through polymorphism over the quantity.
+genericRead :
+    forall (a : Type).
+    (& x : a) -> (& a)
+let genericRead x = x
+
+ok1 : (& Int)
+let ok1 = genericRead 42
+

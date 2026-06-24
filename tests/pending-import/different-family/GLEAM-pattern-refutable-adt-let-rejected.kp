@@ -1,0 +1,39 @@
+-- Source issues: gleam#473, gleam#537, gleam#1517, gleam#668
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+-- A constructor pattern in a plain `let` binding is refutable when the
+-- scrutinee type has more than one constructor. The compiler must reject such
+-- bindings; the user should use `match` or an equivalent safe-binding form.
+
+--! mode check
+
+data Result (e : Type) (a : Type) : Type =
+    Ok a
+    Err e
+
+data Tree (a : Type) : Type =
+    Leaf
+    Node (Tree a) a (Tree a)
+
+-- NEGATIVE: two-constructor type pattern in plain let is refutable.
+let bad_ok_unpack (r : Result String Int) : Int =
+    let Ok x = r in x                   --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE: another two-constructor pattern (Err arm).
+let bad_err_unpack (r : Result String Int) : String =
+    let Err msg = r in msg              --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE: three-constructor tree pattern in plain let.
+let bad_node_unpack (t : Tree Int) : Int =
+    let Node _ v _ = t in v             --!! kappa.pattern.non-exhaustive
+
+-- POSITIVE: wildcard is irrefutable.
+let ok_wildcard (r : Result String Int) : Unit =
+    let _ = r in ()
+
+-- POSITIVE: plain binder is irrefutable.
+let ok_binder (r : Result String Int) : Result String Int =
+    let x = r in x
+
+-- POSITIVE: tuple pattern is irrefutable when scrutinee is a tuple.
+let ok_tuple_binder (p : (Int, String)) : Int =
+    let (n, _) = p in n

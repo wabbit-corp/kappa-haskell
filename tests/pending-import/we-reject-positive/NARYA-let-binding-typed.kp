@@ -1,0 +1,58 @@
+-- Source artifacts: narya docs/typechecking.rst (let-binding section:
+--               `let x ≔ M in N` binds x to M while typechecking N).
+-- Spec: declarations.let_in,
+--       declarations.terms
+--
+-- A let-expression `let x : A = M in N` binds x to the value M in the
+-- body N. The bound term M is checked against A. Inside N, x is in
+-- scope with type A and may be substituted by M for the purposes of
+-- definitional equality. Non-recursive `let ... in` does not allow x
+-- to appear in M.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Eq (a : Type) (x : a) : a -> Type =
+    Refl : Eq a x x
+
+-- POSITIVE: simple let-expression with explicit annotation.
+useLet : Nat
+let useLet =
+    let
+        x : Nat = Suc Zero
+    in
+        Suc x
+
+-- POSITIVE: a let-binding's bound value is definitionally equal to its
+-- right-hand side in the body's checking context, so Refl checks at
+-- Eq Nat x (Suc Zero) when x = Suc Zero.
+letDefEq : Eq Nat (Suc Zero) (Suc Zero)
+let letDefEq =
+    let
+        x : Nat = Suc Zero
+    in
+        Refl
+
+-- POSITIVE: nested let-expressions (two consecutive bindings inside a
+-- single `let ... in` are also valid via the multi-binding form).
+nestedLet : Nat
+let nestedLet =
+    let
+        a : Nat = Suc Zero
+        b : Nat = Suc a
+    in
+        Suc b
+
+-- POSITIVE: let with shadowing — the inner binding hides the parameter
+-- while checking the body.
+shadow : Nat -> Nat
+let shadow x =
+    let
+        x : Nat = Suc x
+    in
+        Suc x
+
+--! assertNoErrors

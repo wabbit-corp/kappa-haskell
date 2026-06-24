@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (g (Just "abc") = True; g (Just "xyz") = True; g _ = False).
+-- Spec: expressions.match (§17.1), expressions.patterns.forms (§17.2.1),
+--       expressions.literals.string_literals (§6.3).
+--
+-- Literal patterns in case arms. A constructor pattern may carry a
+-- string literal in a position whose underlying type is `String`, and
+-- multiple constructor arms may share the same outer constructor with
+-- different literal arguments. The match proceeds by structural
+-- destructuring followed by literal equality.
+
+module test
+
+--! mode check
+
+data Maybe (a : Type) : Type =
+    Nothing
+  | Just a
+
+isFavoured : Maybe String -> Bool
+let isFavoured ms =
+    match ms
+    case Just "abc" -> True
+    case Just "xyz" -> True
+    case _           -> False
+
+--! assertNoErrors
+--! assertType isFavoured (Maybe String -> Bool)
+
+-- POSITIVE: first literal arm matches.
+hitAbc : Bool
+let hitAbc = isFavoured (Just "abc")
+-- expected: True
+
+--! assertNoErrors
+--! assertType hitAbc Bool
+
+-- POSITIVE: second literal arm matches.
+hitXyz : Bool
+let hitXyz = isFavoured (Just "xyz")
+-- expected: True
+
+--! assertNoErrors
+
+-- POSITIVE: same outer constructor, non-matching string — catch-all.
+missAb : Bool
+let missAb = isFavoured (Just "ab")
+-- expected: False
+
+--! assertNoErrors
+
+-- POSITIVE: different outer constructor — catch-all.
+missNothing : Bool
+let missNothing = isFavoured Nothing
+-- expected: False
+
+--! assertNoErrors

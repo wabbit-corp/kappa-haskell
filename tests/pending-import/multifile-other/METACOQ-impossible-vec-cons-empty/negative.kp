@@ -1,0 +1,25 @@
+-- Source issues: METACOQ-238, METACOQ-436
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--
+-- `-> impossible` on a reachable case is rejected with the standard
+-- impossible-reachable family (`kappa.proof.impossible-reachable`,
+-- portable alias `E_INDEXED_IMPOSSIBLE_REACHABLE` per §3.2.4).
+
+module negative
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : forall {n : Nat}. (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
+
+-- NEGATIVE: the scrutinee has unconstrained index `n`, so VCons is
+-- reachable and the `impossible` claim is rejected.
+needsCons : forall (a : Type) (n : Nat). Vec a n -> Bool
+let needsCons v =
+    match v
+    case VNil        -> True
+    case VCons _ _   -> impossible    --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable

@@ -1,0 +1,39 @@
+-- Source issue: FUTHARK-472
+-- Spec: expressions.application.dotted_forms.projection_sections_receiver_projection_sections
+-- Futhark #472: treating field projection as a function, so `map .x rs`
+-- is possible instead of `map (\r -> r.x) rs`.
+-- In Kappa, a parenthesized expression beginning with `.` is a receiver
+-- section (spec §16.1.1.1): `(.field)` elaborates to `\__x -> __x.field`.
+-- This test verifies that receiver sections can be used as first-class
+-- functions and composed with higher-order combinators.
+
+--! mode check
+--! assertNoErrors
+
+module test
+
+type Point = (x : Int, y : Int)
+
+-- POSITIVE: receiver section used as argument to map.
+-- (.x) elaborates to \__r -> __r.x
+getXs : Array Point -> Array Int
+let getXs ps = map (.x) ps
+
+-- POSITIVE: chained receiver section.
+-- (.start.x) elaborates to \__r -> __r.start.x
+type Segment = (start : Point, end : Point)
+
+startXs : Array Segment -> Array Int
+let startXs segs = map (.start.x) segs
+
+-- POSITIVE: receiver section in a let binding — used as a plain function.
+projectX : Point -> Int
+let projectX = (.x)
+
+-- POSITIVE: receiver section with an argument (method-call sugar).
+type Counter = (count : Int)
+-- (.count) used directly in a pipeline
+totalCount : Array Counter -> Int
+let totalCount cs =
+  let counts = map (.count) cs
+  in foldl (+) 0 counts

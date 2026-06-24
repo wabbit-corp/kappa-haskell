@@ -1,0 +1,56 @@
+-- Source issues: WebPPL #655 (specify log space in factor docs),
+--   #889 (user expected factor to be plain weighting, but it is log),
+--   PR #858 (expand docs on conditioning),
+--   PR #839 (increase strictness of check in factor — NaN guard).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-01,
+--   effects.monadic_core.effect_declarations,
+--   effects.monadic_core.eff_effect_rows,
+--   compiler.frontir.standard_diagnostic_families.effect_row_variant
+--   (kappa.effect.row-mismatch),
+--   compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch / E_TYPE_MISMATCH).
+--
+-- The `factor` operation of the `Prob` family accepts a Float interpreted
+-- as a log-weight. Calling factor outside a Prob handler is an effect-row
+-- error. Applying factor to a non-Float argument is a type mismatch.
+
+module test
+
+--! mode check
+
+effect Prob =
+    1 factor    : Float -> Unit
+    1 condition : Bool  -> Unit
+
+-- POSITIVE: factor accepts a finite Float.
+weightOk : Eff <[prob : Prob]> Unit
+let weightOk = do
+    prob.factor 0.0
+    prob.factor (0.0 - 1.5)
+    prob.factor 2.7
+    pure ()
+
+--! assertType weightOk (Eff <[prob : Prob]> Unit)
+
+-- POSITIVE: condition is the dual operation; the spec note WEBPPL-SA-01
+-- defines its desugaring to factor(if b then 0 else -Infinity).
+conditionOk : Eff <[prob : Prob]> Unit
+let conditionOk = do
+    prob.condition True
+    pure ()
+
+
+-- NEGATIVE: factor is a `Prob`-effect operation; calling it from a pure
+-- context (empty effect row) is an effect-row error.
+factorTop : Eff <[ ]> Unit
+let factorTop = prob.factor 0.0
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: applying `factor` to a Bool is a type mismatch — factor takes
+-- a log-score Float, not a Boolean. This catches a common user mistake
+-- (writing `factor(p)` for `p : Bool` when meaning `condition(p)`).
+factorBool : Eff <[prob : Prob]> Unit
+let factorBool = prob.factor True              --!! E_TYPE_MISMATCH
+
+--! assertDiagnostic error E_TYPE_MISMATCH

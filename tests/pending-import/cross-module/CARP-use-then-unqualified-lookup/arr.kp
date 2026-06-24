@@ -1,0 +1,11 @@
+-- Provider module: defines `length` over `List`.
+module arr
+
+export length, List
+
+data List (a : Type) : Type =
+    Nil
+    | Cons a (List a)
+
+length : forall a. List a -> Int
+let length xs = 0

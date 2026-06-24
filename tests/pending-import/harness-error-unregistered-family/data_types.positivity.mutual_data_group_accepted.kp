@@ -1,0 +1,45 @@
+-- Source issue: Rocq #17801 (mutual inductive with inconsistent sort assignment)
+-- Spec: data_types.well_formedness (§10.4)
+-- A group of mutually defined data types MUST be accepted when none of the types
+-- in the group appears in a negative position in any member's constructor argument
+-- types. Per §10.4, the positivity and parameter-positivity signatures of the
+-- whole group are computed simultaneously by fixed-point iteration, not checked
+-- independently. Rocq #17801 showed a case where independent sort inference
+-- assigned inconsistent sorts; Kappa avoids this class of issue by requiring joint
+-- checking for the entire mutual group.
+
+module test
+
+-- A simple mutually defined pair: Even and Odd encode Peano parity.
+-- Neither Even nor Odd appears negatively in any constructor argument type.
+-- The mutual group is strictly positive and MUST be accepted.
+data Even : Type =
+  ZeroE : Even
+  SuccE : Odd -> Even
+
+data Odd : Type =
+  SuccO : Even -> Odd
+
+--! mode check
+
+-- A mutual group where both types reference each other through a container.
+-- MutLeft contains a list of MutRight values; MutRight wraps a MutLeft.
+-- No negative occurrences of either type → mutual group accepted.
+data MutLeft : Type =
+  MLNil  : MutLeft
+  MLCons : MutRight -> MutLeft -> MutLeft
+
+data MutRight : Type =
+  MR : MutLeft -> MutRight
+
+
+-- Rejection: a mutual group where one type does appear negatively.
+-- A's constructor puts A itself in a negative (domain) position.
+-- This must be REJECTED regardless of whether B is in the group.
+data BadA : Type =
+  MkBadA : (BadA -> BadB) -> BadA   --!! kappa.type.mismatch  -- BadA in negative position
+
+data BadB : Type =
+  MkBadB : BadA -> BadB
+
+--! assertErrorCount 1

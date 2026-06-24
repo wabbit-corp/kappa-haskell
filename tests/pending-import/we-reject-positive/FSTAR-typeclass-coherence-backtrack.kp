@@ -1,0 +1,29 @@
+-- Source issue: FSTAR-2572
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Spurious typeclass instances must not cause unbounded resolution backtracking.
+
+--! mode check
+
+expect term intEq : Int -> Int -> Bool
+expect term natEq : Nat -> Nat -> Bool
+
+trait Equatable (T : Type) =
+    eq : T -> T -> Bool
+
+instance Equatable Int =
+    let eq = intEq
+
+instance Equatable Nat =
+    let eq = natEq
+
+-- Resolution of Equatable instances should not cause exponential backtracking.
+check : {T : Type} -> (@_ : Equatable T) => T -> T -> Bool
+let check x y = eq x y
+
+test_int : Bool
+let test_int = check (3 : Int) (3 : Int)
+
+test_nat : Bool
+let test_nat = check (3 : Nat) (3 : Nat)
+
+--! assertNoErrors

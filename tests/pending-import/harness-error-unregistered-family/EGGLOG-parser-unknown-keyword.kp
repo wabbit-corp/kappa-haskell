@@ -1,0 +1,29 @@
+-- Source issues: egraphs-good/egglog #488 (Unintuitive parser errors —
+--   `:unextrac` substring-match instead of token-match),
+--   egraphs-good/egglog #64 (Print Line Number on Parse Error),
+--   egraphs-good/egglog PR#199 (Show parse error's line number and column),
+--   egraphs-good/egglog PR#398 (Reporting source locations for errors),
+--   egraphs-good/egglog PR#469 (Store str instead of String in ParseError),
+--   egraphs-good/egglog PR#489 (S-Expression based parser).
+-- Spec: compiler.frontir.origins_ranges_labels (§3.1),
+--       compiler.frontir.portable_diagnostic_code_aliases (§3.1.4,
+--       E_RECOVERY_SKIPPED_INVALID_SYNTAX, E_RECOVERY_MISSING_NODE).
+-- A typo in a keyword or attribute must produce a token-level diagnostic at
+-- the right source span — not a substring match. Egglog's char-based parser
+-- accepted a prefix `:unextrac` and reported a confusing partial match; Kappa's
+-- diagnostics must point at the offending token and carry a recovery code.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: typo'd `data` keyword (parser must report a recovery diagnostic at
+-- the bad token rather than silently accepting a prefix).
+da ta Color : Type =                     --!! E_RECOVERY_SKIPPED_INVALID_SYNTAX
+    Yellow
+
+--! assertDiagnostic error E_RECOVERY_SKIPPED_INVALID_SYNTAX
+
+-- POSITIVE: well-formed declaration parses cleanly.
+bar : Int
+let bar = 7

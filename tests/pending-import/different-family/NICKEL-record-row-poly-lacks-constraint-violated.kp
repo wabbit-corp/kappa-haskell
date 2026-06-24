@@ -1,0 +1,54 @@
+-- Source issues: nickel #727, #841, #876, #950, #952, #1393, #1906, #2014
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant (kappa.row.lacks-failed),
+--       types.records.row_polymorphism
+-- A polymorphic record type `forall r. LacksRec r x => (x : T | r)` carries the
+-- constraint that row variable `r` Lacks `x`. Instantiating such a function with
+-- a record that already has field `x` must be rejected. At the contract level,
+-- dynamically sealing the row tail and then attempting to access the sealed `x`
+-- must also surface a diagnostic rather than succeeding silently.
+-- Nickel #2014 showed that the function `forall tail. {a : N | tail} -> {a : N | tail}`
+-- when called with `{a=1, b=".."}` stripped the tail, returning only `{a=1}`.
+-- That is a violation: the row variable tail must be preserved.
+
+module test
+
+-- NEGATIVE: calling a function that requires `r Lacks x` with a record that has `x`.
+-- The row variable in `forall r. LacksRec r x => (x : Number | r) -> (x : Number | r)` carries
+-- `r Lacks x`. Passing `(x = 1, x = 2)` would duplicate the field.
+-- More concretely: calling `addX` with a record that already contains field `x`
+-- violates the Lacks x constraint on the tail `r`.
+addX : forall (r : RecRow). LacksRec r x => (x : Number | r) -> (x : Number | r)
+let addX rec = rec
+
+existingX : (x : Number, y : String)
+let existingX = (x = 1, y = "hello")
+
+-- Rejected: the record literal (x = 1, x = 2, y = "hi") has duplicate field `x`.
+-- Row-extending a row that already contains `x` with another `x` violates LacksRec.
+badCall : (x : Number, y : String)
+let badCall = addX (x = 1, x = 2, y = "hi")     --!! kappa.row.lacks-failed
+
+--! mode check
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- POSITIVE: addX called with a record that has `x` only once and a distinct tail.
+goodCall : (x : Number, y : String)
+let goodCall = addX (x = 42, y = "world")
+
+
+-- NEGATIVE: a function that returns a row type where the tail is empty,
+-- but the caller expects the tail to be preserved.
+-- From nickel #2014: `forall tail. LacksRec tail a => (a : Number | tail) -> (a : Number | tail)`
+-- when applied to `{a = 1, b = ".."}` must return `(a : Number, b : String)`,
+-- not strip `b` from the result. Stripping the tail is a type-soundness violation.
+-- We model this as: the declared return type claims the tail is preserved,
+-- but if the implementation discards the tail, the actual result type would be
+-- `(a : Number)` which is not a subtype of `(a : Number | r)` for non-empty `r`.
+preserveTail : forall (r : RecRow). LacksRec r a => (a : Number | r) -> (a : Number | r)
+let preserveTail rec = rec
+
+-- POSITIVE: result must carry both `a` and the tail `b`.
+preservedResult : (a : Number, b : String)
+let preservedResult = preserveTail (a = 1, b = "data")
+
+--! assertType preservedResult (a : Number, b : String)

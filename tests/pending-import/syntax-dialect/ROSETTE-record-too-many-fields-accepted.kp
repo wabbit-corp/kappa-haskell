@@ -1,0 +1,38 @@
+-- Source issue: ROSETTE-147 (Struct with lots of fields: slow compilation)
+-- Spec: data_types.data_declarations,
+--       types.records
+--
+-- The Rosette report demonstrates a quadratic compile-time blow-up when
+-- a struct has many fields; the underlying language has no upper bound
+-- on record field count. Kappa's portable obligation is that a record
+-- with a large number of fields is well-formed and accepted; the test
+-- fixture asserts acceptance so that future implementations cannot
+-- regress to "fails if more than N fields".
+
+--! mode check
+
+-- POSITIVE: a record-style constructor with thirty named fields is a
+-- valid declaration.
+data Wide : Type =
+    MkWide
+        Int Int Int Int Int Int Int Int Int Int
+        Int Int Int Int Int Int Int Int Int Int
+        Int Int Int Int Int Int Int Int Int Int
+
+-- POSITIVE: a value of the wide record.
+mkValue : Wide
+let mkValue =
+    MkWide
+        0 1 2 3 4 5 6 7 8 9
+        10 11 12 13 14 15 16 17 18 19
+        20 21 22 23 24 25 26 27 28 29
+
+-- POSITIVE: a function pattern-matches on the wide record.
+firstAndLast : Wide -> Int
+let firstAndLast w =
+    match w
+    case (MkWide a _ _ _ _ _ _ _ _ _
+                  _ _ _ _ _ _ _ _ _ _
+                  _ _ _ _ _ _ _ _ _ z) -> a + z
+
+--! assertNoErrors

@@ -1,0 +1,42 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_dupl/type_dupl.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       data_types.type_aliases (§10.3),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.shadowing).
+-- In Kappa, lexical shadowing is legal (§3.1.12). Re-declaring a type name at
+-- the same top-level scope merely shadows the earlier binding. An implementation
+-- MAY emit a suspicious-shadowing WARNING (kappa.name.shadowing, code
+-- W_SUSPICIOUS_TOPLEVEL_SHADOWING) but MUST NOT treat this as an error.
+
+--! mode check
+
+-- POSITIVE: single declaration of each type.
+data Node : Type =
+    Leaf
+    InternalNode Int (Node) (Node)
+
+type Label = String
+
+-- POSITIVE (with warning): same data type name declared twice — lexical shadowing.
+data Color : Type = Red | Green | Blue
+data Color : Type = Cyan | Magenta
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+-- POSITIVE (with warning): same type alias declared twice — lexical shadowing.
+type Alias = Int
+type Alias = String
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+-- POSITIVE (with warning): data type and type alias share the same name — shadowing.
+data Shared : Type = MkShared Int
+type Shared = Bool
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+-- POSITIVE: different names are fine.
+data Foo : Type = MkFoo Int
+type Bar = String
+data Baz : Type = MkBaz Bool
+
+--! assertNoErrors

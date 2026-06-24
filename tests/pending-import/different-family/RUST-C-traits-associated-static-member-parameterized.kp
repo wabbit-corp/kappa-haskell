@@ -1,0 +1,51 @@
+-- Source artifacts: CHALK-13 (generic associated types (ATC)),
+--                   CHALK-116 (Implement GATs),
+--                   CHALK-144 (Weird bug around projections — GATs),
+--                   CHALK-815 (Recursive Solver fails on recursive associated type with GAT),
+--                   RA-2603 (Does not infer associated type in another associated type).
+-- Spec: traits.members.overloaded_member_names,
+--       traits.instances.associated_static_member_instance_checking.
+-- Kappa spec rule (§14.2.1): "Associated static members may have any compile-
+-- time type of §11.1.6.1, including `Type`, `Type u`, `Universe`, ...". This
+-- means an associated static member at type `Type -> Type` (a parameterized
+-- associated type) is well-formed. This test pins:
+-- 1. positive: such an associated member is declarable and projectable;
+-- 2. positive: an instance defining the parameterized member is checked
+--    against the substituted declaration shape.
+
+--! mode check
+
+-- A trait whose associated static member takes an additional parameter at
+-- the projection site. This is the GAT analog.
+trait Container (c : Type) =
+    Item : Type -> Type
+    push : (1 this : c) -> c.Item Int -> c
+    label : c -> String
+
+data Vec : Type = Vec
+
+instance Container Vec =
+    -- Define the parameterized associated member.
+    let Item = \(_ : Type) -> Vec
+    let push this _ = this
+    let label _ = "vec"
+
+-- Projection at a specific argument: `Vec.Item Int` evaluates to `Vec`.
+roundtrip : Vec.Item Int -> Vec.Item Int
+let roundtrip x = x
+
+useIt : Vec
+let useIt = roundtrip Vec
+
+
+-- NEGATIVE: an instance whose associated-member definition does not match the
+-- declared shape (substitution mismatch) is rejected at instance-check time.
+data BadCtr : Type = BadCtr
+
+instance Container BadCtr =
+    -- Wrong shape: declared as `Type -> Type`, supplied as a plain `Type`.
+    let Item = Int                          --!! kappa.associated.member-undeclared
+    let push this _ = this
+    let label _ = "bad"
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

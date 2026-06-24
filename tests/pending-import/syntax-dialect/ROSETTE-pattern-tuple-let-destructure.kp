@@ -1,0 +1,48 @@
+-- Source issue: ROSETTE-PR-172 (Add the value destructuring library),
+--                ROSETTE-216 (match inconsistency motivates predictable
+--                destructuring)
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings,
+--       expressions.patterns.forms
+--
+-- A `let` may bind a tuple pattern directly. The components of the
+-- pattern become available in the body. Tuple irrefutable destructuring
+-- has no symbolic-vs-concrete discrepancy; this fixture is the positive
+-- existence proof.
+
+--! mode check
+
+splitInTwo : Int -> (Int, Int)
+let splitInTwo n = (n / 2, n - (n / 2))
+
+-- POSITIVE: tuple destructuring at the let binding.
+sumHalves : Int -> Int
+let sumHalves n =
+    let (a, b) = splitInTwo n
+    in a + b
+
+-- POSITIVE: nested tuple destructuring.
+flatten : ((Int, Int), Int) -> Int
+let flatten t =
+    let ((a, b), c) = t
+    in a + b + c
+
+-- POSITIVE: destructuring within a function parameter (binder pattern).
+addPair : (Int, Int) -> Int
+let addPair (x, y) = x + y
+
+-- POSITIVE: destructuring through a chain of lets.
+chained : Int
+let chained =
+    let p      = (10, 20)
+        (a, b) = p
+        q      = (b, a)
+        (c, d) = q
+    in c - d
+
+-- NEGATIVE: tuple width mismatch in the binding.
+badWidth : Int
+let badWidth =
+    let (a, b, c) = splitInTwo 8                    --!! kappa.type.mismatch
+    in a + b + c
+
+--! assertDiagnosticFamily error kappa.type.mismatch

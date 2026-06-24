@@ -1,0 +1,71 @@
+-- Source issues: dex-lang linear-tests.dx
+--   (`:t eatsLin nonLinFun` →
+--   `Type error: Expected: (Float --o Float)  Actual: (Float -> Float)`),
+--   (`:t eatsNonLin linFun` →
+--   `Type error: Expected: (Float -> Float)  Actual: (Float --o Float)`),
+--   (`:t eatsLin (\x. nonLinFun x)` →
+--   `Linearity error: nonlinear function consumed linear data: [x]`).
+-- Spec: types.quantities.linear_arrow_subtyping (§DSA-DEX-02),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- A linear function type `(1 x : a) -> b` is distinct from a nonlinear
+-- function type `a -> b`. Passing a nonlinear function where a linear one is
+-- expected — or vice versa — is a type error. The two arrow types are not
+-- interchangeable without explicit acknowledgement.
+-- In Kappa: quantity 1 (linear) is a strict subtype of quantity ω (unrestricted)
+-- for function arguments, but NOT for function types themselves: a `1 -> b`
+-- value cannot be used where an `ω -> b` is expected (the function may rely
+-- on the linear discipline).
+
+--! mode check
+
+-- A function that demands a linear function as argument.
+applyLinear : ((1 x : Float) -> Float) -> Float -> Float
+let applyLinear f v = f v
+
+-- A nonlinear function.
+nonlinDouble : Float -> Float
+let nonlinDouble x = x * 2.0
+
+-- A linear function.
+linearId : (1 x : Float) -> Float
+let linearId x = x
+
+-- POSITIVE: passing a linear function where a linear function is expected.
+okLinear : Float
+let okLinear = applyLinear linearId 3.0
+
+-- NEGATIVE: passing a nonlinear function where a linear one is expected.
+-- `nonlinDouble` has type `Float -> Float` (nonlinear), not `(1 Float) -> Float`.
+badPassNonlin : Float
+let badPassNonlin = applyLinear nonlinDouble 3.0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A function that demands a nonlinear function as argument.
+applyNonlinear : (Float -> Float) -> Float -> Float
+let applyNonlinear f v = f (f v)
+
+-- NEGATIVE: passing a linear function where a nonlinear one is expected.
+-- `linearId` has type `(1 Float) -> Float`; calling it twice would violate
+-- linearity. The function type is `(1 x : Float) -> Float`, not `Float -> Float`.
+badPassLinear : Float
+let badPassLinear = applyNonlinear linearId 3.0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: wrapping a nonlinear use inside a linear lambda.
+-- The lambda claims linearity but the body calls nonlinDouble which is nonlinear.
+badWrap : (1 x : Float) -> Float
+let badWrap x = nonlinDouble x    --!! kappa.quantity.unsatisfied
+-- Applying a non-linear function to a linear argument violates linearity.
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: wrapping a nonlinear use inside a nonlinear lambda is fine.
+okWrap : Float -> Float
+let okWrap x = nonlinDouble x
+
+-- POSITIVE: a higher-order function that is polymorphic in quantity
+-- can accept either.
+applyAny : forall (q : Quantity). (q x : Float) -> Float -> Float
+let applyAny f v = f v

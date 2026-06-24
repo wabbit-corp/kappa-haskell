@@ -1,0 +1,40 @@
+-- Source issues: BQN-52 (`3↑2‿2⥊↕4` produces a wrong error message
+--   "Arguments must be numbers" instead of pointing at the rank/shape
+--   issue; CBQN produces the right result).
+-- Spec: modules.prelude.contents (SizedArray n a),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved).
+-- The portable obligation is: a primitive whose argument shape is
+-- statically wrong must report the shape error, not a misleading
+-- type-of-element diagnostic. The proof obligation `(k <= n) = True`
+-- becomes unsolvable when k > n, surfacing as kappa.implicit.unsolved.
+
+--! mode check
+
+-- A `takeFront` whose signature pins both the requested prefix length
+-- and the source length as type-level indices, with an implicit
+-- proof that the prefix is in range.
+expect takeFront :
+    forall a (k : Nat) (n : Nat).
+    (@_ : (k <= n) = True) ->
+    SizedArray n a -> SizedArray k a
+
+expect xs3 : SizedArray 3 Nat
+
+-- POSITIVE: take 2 from a length-3 vector yields a length-2 vector.
+ok2 : SizedArray 2 Nat
+let ok2 = takeFront xs3
+
+-- POSITIVE: take 0 yields an empty SizedArray.
+ok0 : SizedArray 0 Nat
+let ok0 = takeFront xs3
+
+-- NEGATIVE: trying to take 4 elements from a length-3 SizedArray is a
+-- type-level shape mismatch under Kappa's indexed-array contract. (Both
+-- the prefix length `k` and the source length `n` are visible at the
+-- type level; demanding `SizedArray 4 a` from a source `SizedArray 3 a`
+-- is unsatisfiable.)
+overTake : SizedArray 4 Nat
+let overTake = takeFront xs3        --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

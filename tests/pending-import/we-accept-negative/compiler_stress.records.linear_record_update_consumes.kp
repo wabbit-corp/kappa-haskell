@@ -1,0 +1,43 @@
+-- Stress test: Updating a linear record produces a new record; the original
+--   is consumed in the process.  Using the original after update must be
+--   rejected as a use-after-consume.
+-- Spec: types.universes.quantities, types.records,
+--   compiler.frontir.standard_diagnostic_families.quantity_ownership
+
+--! mode check
+
+type Counter : Type = (value : Int, label : String)
+
+-- POSITIVE: create and update a counter; original consumed by update.
+incrementCounter : (1 c : Counter) -> Counter
+let incrementCounter c = c.{ value = c.value + 1 }
+
+-- POSITIVE: chain of updates, each consuming the previous.
+bump3 : (1 c : Counter) -> Counter
+let bump3 c =
+    let c1 = c.{ value = c.value + 1 }
+    let c2 = c1.{ value = c1.value + 1 }
+    c2.{ value = c2.value + 1 }
+
+-- POSITIVE: update and return field from the new record.
+incrementAndGet : (1 c : Counter) -> (Int, Counter)
+let incrementAndGet c =
+    let newC = c.{ value = c.value + 1 }
+    (newC.value, newC)
+
+-- NEGATIVE: using the original record after updating it (use-after-consume).
+-- The update `c.{ value = ... }` consumes `c`; the subsequent `c.label` use
+-- is a second use of a linear value.
+badDoubleUse : (1 c : Counter) -> (Counter, String)
+let badDoubleUse c =
+    let updated = c.{ value = c.value + 1 }
+    (updated, c.label)   --!! kappa.quantity.unsatisfied
+
+-- POSITIVE: extracting a field before the update (consuming order is fine).
+extractThenUpdate : (1 c : Counter) -> (String, Counter)
+let extractThenUpdate c =
+    let lbl = c.label
+    let updated = c.{ label = lbl ++ "!" }
+    (lbl, updated)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

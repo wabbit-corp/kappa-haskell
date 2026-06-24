@@ -1,0 +1,21 @@
+-- Stress test: An operation's result type may not mention the same effect label it declares
+-- Spec: effects.monadic_core.effect_declarations
+
+--! mode check
+
+-- NEGATIVE TEST: the operation 'selfRef' declares a result type that mentions
+-- its own effect label 'selfRef'.  This creates a circular dependency and must
+-- be rejected.
+effect SelfRef =
+    1 selfRef : Unit -> Eff <[selfRef : SelfRef]> Int   --!! kappa.type.mismatch
+
+--! assertErrorCount 1
+
+-- POSITIVE TEST: an operation whose result type mentions a DIFFERENT effect label
+-- is accepted; the prohibition applies only to the same label.
+effect Other =
+    1 otherOp : Unit -> Unit
+
+effect SafeRef =
+    1 safeOp : Unit -> Eff <[other : Other]> Int
+

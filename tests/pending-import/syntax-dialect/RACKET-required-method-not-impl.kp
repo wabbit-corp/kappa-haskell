@@ -1,0 +1,51 @@
+-- Source: Racket PR #4435 (support required methods in racket/generic),
+--         Racket generics protocol (#:methods gen:name [...])
+-- Spec: traits.instances
+--
+-- A trait may declare some methods without default implementations (required
+-- methods). An instance declaration for that trait must provide implementations
+-- for all required methods. Omitting a required method is a compile-time error.
+
+--! mode check
+
+trait Printable (A : Type) where
+    show : A -> String
+
+trait Comparable (A : Type) where
+    compare : A -> A -> Int
+    lessThan : A -> A -> Bool
+    let lessThan x y = compare x y < 0
+
+data Point : Type = MkPoint Int Int
+
+-- POSITIVE: instance provides the required method `show`.
+instance Printable Point where
+    let show (MkPoint x y) = "(" ++ show x ++ ", " ++ show y ++ ")"
+
+-- POSITIVE: instance provides `compare`; `lessThan` gets the default.
+instance Comparable Point where
+    let compare (MkPoint x1 y1) (MkPoint x2 y2) =
+        let dx = compare x1 x2
+        if dx /= 0 then dx else compare y1 y2
+
+-- POSITIVE: instance providing both required and optional methods.
+data IntWrapper : Type = Wrap Int
+
+instance Printable IntWrapper where
+    let show (Wrap n) = "Wrap(" ++ show n ++ ")"
+
+instance Comparable IntWrapper where
+    let compare (Wrap a) (Wrap b) = compare a b
+    let lessThan (Wrap a) (Wrap b) = a < b
+
+-- NEGATIVE: instance for Printable missing the required `show` method.
+data Token : Type = MkToken String
+
+instance Printable Token where    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: instance for Comparable missing `compare` (no default for it).
+data Tag : Type = MkTag Int
+
+instance Comparable Tag where    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

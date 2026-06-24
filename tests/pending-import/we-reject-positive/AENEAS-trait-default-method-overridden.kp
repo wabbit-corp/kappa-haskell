@@ -1,0 +1,63 @@
+-- Source issues: AENEAS-70, AENEAS-133
+-- Spec: traits.members, traits.instances
+-- §14.2: an instance may override a trait default method by providing its
+-- own `let` body.  The instance-local definition takes precedence over the
+-- trait-level default.  Aeneas issue #70 (impossible to override provided
+-- trait methods) requires that override be accepted when it is valid.
+
+module test
+
+--! mode check
+
+trait Printable (a : Type) =
+    name : (& x : a) -> String
+
+    -- default implementation
+    let describe : (& x : a) -> String =
+        \x -> "Printable(" ++ name x ++ ")"
+
+data Simple : Type = Simple String
+
+-- POSITIVE: instance uses the default describe without overriding.
+instance Printable Simple =
+    let name (Simple s) = s
+
+describeSimple : String
+let describeSimple = describe (Simple "hello")
+
+--! assertNoErrors
+--! assertType describeSimple String
+
+data Custom : Type = Custom String Int
+
+-- POSITIVE: instance overrides `describe` with its own implementation.
+instance Printable Custom =
+    let name (Custom s _) = s
+
+    -- override: include the integer in the description
+    let describe (Custom s n) = s ++ ":" ++ show n
+
+describeCustom : String
+let describeCustom = describe (Custom "x" 3)
+
+--! assertNoErrors
+--! assertType describeCustom String
+
+-- POSITIVE: overridden and inherited implementations are individually correct.
+-- The Simple instance should still use the default.
+stillDefault : String
+let stillDefault = describe (Simple "world")
+
+overridden : String
+let overridden = describe (Custom "y" 99)
+
+--! assertNoErrors
+
+-- POSITIVE: a generic context uses dispatch correctly.
+showAny : forall (a : Type). Printable a => (& x : a) -> String
+let showAny x = describe x
+
+useShowAny : String
+let useShowAny = showAny (Simple "z") ++ "|" ++ showAny (Custom "w" 0)
+
+--! assertNoErrors

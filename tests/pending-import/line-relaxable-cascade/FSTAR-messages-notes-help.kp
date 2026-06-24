@@ -1,0 +1,21 @@
+-- Source issue: FSTAR-1082
+-- Spec: compiler.frontir.messages_notes_help_fixits,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- When a type mismatch occurs and the expected and actual types print
+-- identically (because a variable name is shadowed), the error message
+-- must include a note disambiguating the two bindings by location or
+-- by printing the binding site.
+
+--! mode check
+
+-- NEGATIVE TEST: a shadowed variable causes an apparent "identical" type error.
+-- `idx` is declared as a formal parameter (Int), then shadowed by a let binding (Bool).
+-- The error must mention the shadowing, not just say "expected Bool, got Bool".
+shadowed_param : Int -> Int
+let shadowed_param idx =
+    let idx : Bool = True
+    -- `idx` here is Bool, but the expression `idx + 1` expects Int.
+    -- The error must mention that `idx` (Bool) shadows `idx` (Int).
+    idx + 1                    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

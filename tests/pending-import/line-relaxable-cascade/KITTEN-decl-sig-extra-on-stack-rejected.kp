@@ -1,0 +1,28 @@
+-- Source issue: Kitten #94 (`def example6 (->): ->x x`; declared empty
+--   stack effect, body consumes `x` and pushes it; this is an arity
+--   mismatch that must be rejected).
+-- Spec: declarations.terms, declarations.signatures,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- A definition declared with no parameters whose body still consumes or
+-- produces extra values must be rejected; the declared signature is
+-- normative.
+
+module test
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+-- NEGATIVE: declared zero inputs but body has a parameter; the body's
+-- type is `a -> a`, not the declared `Int`.
+zeroInExtra : Int
+let zeroInExtra x = x                      --!! kappa.type.mismatch
+
+-- NEGATIVE: declared `Int -> Int`, body produces a `Pair Int Int`.
+oneInOneOut : Int -> Int
+let oneInOneOut x = Pair x x               --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

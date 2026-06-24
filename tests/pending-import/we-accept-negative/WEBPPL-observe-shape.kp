@@ -1,0 +1,51 @@
+-- Source issues: WebPPL #602 (add observe and condition helpers),
+--   PR #607 (add observe), #756 / #787 (observe forwards options to
+--   sample), PR #794 (make observe pass options to sample).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-01
+--   (Prob effect family — proposed; the realized form here uses
+--    effects.monadic_core.effect_declarations and the
+--    Eff <[label : E]> a row syntax of effects.monadic_core.eff_effect_rows),
+--   compiler.frontir.standard_diagnostic_families.effect_row_variant
+--   (kappa.effect.row-mismatch).
+--
+-- The `Prob` effect family declares `sample`, `observe`, `condition`,
+-- and `factor`. Operations are invoked through an effect label `prob`
+-- and contribute the `prob : Prob` row to the surrounding signature.
+-- A reachable operation outside any installed handler is rejected by the
+-- effect-row diagnostic family.
+
+module test
+
+--! mode check
+
+data Bernoulli : Type =
+    Bernoulli { p : Float }
+
+data Distribution (a : Type) : Type =
+    DistBernoulli Bernoulli
+
+effect Prob =
+    1 sample    : forall a. Distribution a -> a
+    1 observe   : forall a. Distribution a -> a -> a
+    1 condition : Bool -> Unit
+    1 factor    : Float -> Unit
+
+-- POSITIVE: a `Prob`-effectful function may invoke each operation through
+-- the `prob` label.
+modelOk : Eff <[prob : Prob]> Bool
+let modelOk = do
+    let dB = DistBernoulli (Bernoulli { p = 0.7 })
+    let x <- prob.sample dB
+    let _ <- prob.observe dB True
+    prob.condition (x || True)
+    prob.factor 0.0
+    pure x
+
+--! assertType modelOk (Eff <[prob : Prob]> Bool)
+
+-- NEGATIVE: invoking `prob.sample` from a pure context (empty effect row)
+-- is an effect-row error.
+topSample : Eff <[ ]> Bool
+let topSample = prob.sample (DistBernoulli (Bernoulli { p = 0.5 }))
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

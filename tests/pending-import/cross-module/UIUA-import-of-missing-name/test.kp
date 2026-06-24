@@ -1,0 +1,31 @@
+-- Source issue: Uiua #386 ("Crash (2x import of bad file)" — when a
+--   referenced function is missing inside an imported file, the
+--   compiler crashes with "no entry found for key" at
+--   src/compile.rs:427 instead of producing an ordinary
+--   kappa.name.unresolved diagnostic), Uiua #350 (import-from-REPL
+--   crash on missing names).
+-- Spec: modules.imports, modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import,
+--       compiler.frontir.ordinary_errors_not_internal_failures.
+--
+-- An attempt to reference a name that is not exported (or does not
+-- exist) inside an imported module MUST produce
+-- kappa.name.unresolved, not an internal compiler error / panic.
+
+module test
+
+import library
+
+--! mode check
+
+-- POSITIVE: the existing exported value is resolvable.
+ok : Int
+let ok = library.existingValue
+
+
+-- NEGATIVE: the missing function is not exported from `library`. The
+-- failure must be a normal name-resolution error.
+bad : Int
+let bad = library.missingFunction 1         --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,74 @@
+-- Source artifacts: narya docs/record-types.rst ("Self variables for
+--               record types"), narya PR #50 / issue #64 (codata-like
+--               syntax for records: sig (x .fst : A, x .snd : B (x .fst))),
+--               narya issue #104 (anomaly using self variables for 2D
+--               record type — the portable obligation is that self
+--               variables are well-formed binders that can be referenced
+--               in later fields' types).
+-- Spec: declarations.signatures,
+--       types.records.formation,
+--       types.records.syntax.record_field_order_lawful_reorderings
+--
+-- Narya's "self variable" form is a surface convenience for declaring
+-- a record signature whose later fields reference earlier ones via
+-- projection. The portable obligation in Kappa is that a single-
+-- constructor data type with a GADT-style dependent telescope
+-- supports the same pattern: later constructor binders may reference
+-- earlier binders by their declared names.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+expect term Vec : Nat -> Type
+
+-- POSITIVE: a Sigma-like record where the second field's type depends
+-- on the first. The dependent telescope in MkSigmaN is the Kappa
+-- analogue of the self-variable form.
+data SigmaN : Type =
+    MkSigmaN : (n : Nat) -> Vec n -> SigmaN
+
+projN : SigmaN -> Nat
+let projN s =
+    match s
+      case MkSigmaN n _ -> n
+
+projV : (s : SigmaN) -> Vec (projN s)
+let projV s =
+    match s
+      case MkSigmaN _ v -> v
+
+-- POSITIVE: a record with three nested dependent binders.
+data Sig3 : Type =
+    MkSig3 :
+        (a : Type) ->
+        (b : a) ->
+        (c : a) ->
+        Sig3
+
+projA : Sig3 -> Type
+let projA s =
+    match s
+      case MkSig3 a _ _ -> a
+
+projB : (s : Sig3) -> projA s
+let projB s =
+    match s
+      case MkSig3 _ b _ -> b
+
+projC : (s : Sig3) -> projA s
+let projC s =
+    match s
+      case MkSig3 _ _ c -> c
+
+-- POSITIVE: a record can have zero fields (unit-like). The zero-field
+-- form is admissible in both the simple constructor and GADT styles.
+data Trivial : Type =
+    MkTrivial : Trivial
+
+useTrivial : Trivial
+let useTrivial = MkTrivial
+
+--! assertNoErrors

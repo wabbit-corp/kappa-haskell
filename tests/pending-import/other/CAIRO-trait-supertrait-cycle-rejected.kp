@@ -1,0 +1,68 @@
+-- Source issues: CAIRO-generic_cycles (test file), CAIRO-3133, CAIRO-3037
+-- Spec: traits.headers.supertraits.refinement_graph_cycles (§14.1.5),
+--       traits.headers.supertraits (§14.1.4).
+-- Kappa spec rule (§14.1.5):
+--   "A trait declaration group is well-formed only if the refinement graph
+--    induced by that group and all visible referenced trait headers is acyclic
+--    after normalization of transparent aliases available at the declaration
+--    site. If a cycle is found, the checker rejects the whole strongly
+--    connected component as one graph-level error."
+-- Cairo generic_cycles.cairo: `trait ATrait2<T, +ATrait<T>>` with a struct
+--   `B<T, +ATrait<T>, +ATrait2<T>>` created a circular dependency between
+--   the two trait bounds, which the compiler now rejects.
+-- CAIRO-3133: a generic struct where the generic bound is satisfied by an
+--   explicit impl caused a cycle in the compiler's internal check.
+-- In Kappa: a cycle in the supertrait refinement graph — where A depends on B
+--   and B depends on A — must be diagnosed as one graph-level error.
+
+--! mode check
+
+-- NEGATIVE: two-way supertrait cycle between Alpha and Beta.
+-- Refinement edges: Alpha => Beta, Beta => Alpha.
+-- The SCC { Alpha, Beta } must be rejected as one error.
+trait Beta a => Alpha (a : Type) =
+    alphaOp : (& x : a) -> Int
+
+trait Alpha a => Beta (a : Type) =
+    betaOp : (& x : a) -> Int
+
+-- NEGATIVE: three-way cycle: Gamma => Delta => Epsilon => Gamma.
+trait Epsilon a => Gamma (a : Type) =
+    gammaOp : (& x : a) -> Int
+
+trait Gamma a => Delta (a : Type) =
+    deltaOp : (& x : a) -> Int
+
+trait Delta a => Epsilon (a : Type) =
+    epsilonOp : (& x : a) -> Int
+
+-- POSITIVE: a simple non-cyclic supertrait chain. Eq => Ord is acyclic.
+trait Cmp (a : Type) =
+    compare : (& x : a) -> (& y : a) -> Int
+
+trait Cmp a => Ranked (a : Type) =
+    rank : (& x : a) -> Int
+
+-- POSITIVE: A and B are independent, no cycle.
+trait Standalone1 (a : Type) =
+    op1 : (& x : a) -> Int
+
+trait Standalone2 (a : Type) =
+    op2 : (& x : a) -> Int
+
+-- Both traits are fine to instantiate together.
+data Both : Type = Both Int
+
+instance Cmp Both =
+    let compare (Both m) (Both n) = m - n
+
+instance Ranked Both =
+    let rank (Both n) = n
+
+instance Standalone1 Both =
+    let op1 (Both n) = n
+
+instance Standalone2 Both =
+    let op2 (Both n) = n
+
+--! assertErrorCount 2

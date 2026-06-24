@@ -1,0 +1,59 @@
+-- Source: Julia manual, "Composite Types",
+--         Julia mutable structs and field assignment
+-- Spec: data_types.mutability, traits.instances
+-- In Julia, `mutable struct` allows field assignment. In Kappa, controlled
+-- update semantics are modeled through the linear type system: consume the
+-- old value (linear quantity) and produce a new one. A trait providing an
+-- `update` method encapsulates the mutation contract cleanly.
+
+--! mode check
+
+data Counter : Type = Counter Int
+
+trait Mutable (a : Type) =
+    update : (1 x : a) -> a
+
+instance Mutable Counter =
+    let update (Counter n) = Counter (n + 1)
+
+-- POSITIVE: construct and step a Counter.
+c : Counter
+let c = Counter 0
+
+step : (1 c : Counter) -> Counter
+let step c = update c
+
+c1 : Counter
+let c1 = step c
+
+-- POSITIVE: chain of updates — each consumes and produces a new Counter.
+step3 :
+    forall (a : Type).
+    (@_ : Mutable a) ->
+    (1 x : a) -> a
+let step3 x = update (update (update x))
+
+c4 : Counter
+let c4 = step3 (Counter 0)
+
+-- POSITIVE: reading a counter's value.
+getCount : Counter -> Int
+let getCount (Counter n) = n
+
+n : Int
+let n = getCount (step3 (Counter 10))
+
+--! assertType n Int
+
+-- POSITIVE: a data type with a multi-field update.
+data Pair : Type = Pair Int Int
+
+swapPair : (1 p : Pair) -> Pair
+let swapPair (Pair a b) = Pair b a
+
+swapped : Pair
+let swapped = swapPair (Pair 1 2)
+
+--! assertType swapped Pair
+
+--! assertNoErrors

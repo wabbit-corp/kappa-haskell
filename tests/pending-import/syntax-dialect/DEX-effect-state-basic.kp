@@ -1,0 +1,75 @@
+-- Source issues: dex-lang exception-tests.dx, dex-lang eval-tests.dx
+--   (`yield_state 2 \s. x = get s; s := x + 3` → 5),
+--   dex-lang #529 (cannot assign to record reference in state effect),
+--   dex-lang #694 (scan/stateful loops don't work with data classes),
+--   dex-lang docs/doc/functions.dx (State effect explanation and examples).
+-- Spec: effects.monadic_core.state_effect (§DSA-DEX-03),
+--       expressions.application.effectful_function_application.
+-- The state effect allows reading and writing a mutable reference within a
+-- scoped block. The reference is introduced by the handler (`run_state` /
+-- `yield_state`), which returns the final state. The `get` operation reads
+-- the current value; the `:=` (or `put`) operation writes a new value.
+-- Effect polymorphism allows higher-order functions to accept state-threaded
+-- callbacks.
+
+--! mode check
+
+effect State (s : Type) =
+    1 get : Unit -> s
+    1 put : s    -> Unit
+
+-- A handler that runs a stateful computation from an initial value.
+runState : forall (s r : Type). s -> Eff <[State s : State s]> r -> (r, s)
+let runState init comp =
+    deep handle (State s) comp with
+        case return x      -> (x, init)
+        case get _ k       -> k init
+        case put newS k    -> let (result, _) = k () in (result, newS)
+
+-- POSITIVE: basic read-then-write-then-read cycle.
+incrementState : forall (h : EffLabel). Eff <[State Int : State Int]> Int
+let incrementState = do
+    let v <- State Int .get ()
+    State Int .put (v + 1)
+    State Int .get ()
+
+okResult : (Int, Int)
+let okResult = runState 10 incrementState
+-- should yield (11, 11): the returned value is the new state, final state is 11.
+
+-- POSITIVE: a loop that accumulates into state.
+sumIntoState : forall (n : Nat). Fin n => Int -> Eff <[State Int : State Int]> Unit
+let sumIntoState xs = do
+    for_each xs (\x ->
+        let v <- State Int .get ()
+        State Int .put (v + x))
+
+-- POSITIVE: effect-polymorphic higher-order function using the state effect.
+-- The callback `f` may have an arbitrary effect row `eff`; `mapWithState`
+-- threads through both `State s` and `eff`.
+mapWithState : forall (n : Nat) (a b s : Type) (eff : EffRow).
+    (a -> s -> Eff eff (b, s)) ->
+    Fin n => a ->
+    s ->
+    Eff eff (Fin n => b, s)
+let mapWithState f xs init = pure (tabulate (\_ -> error "placeholder"), init)
+
+-- POSITIVE: composing state and exception effects.
+safeDiv : Int -> Int -> Eff <[State String : State String, Except : Except]> Int
+let safeDiv x y = do
+    if y == 0 then do
+        State String .put "division by zero"
+        throw ()
+    else pure (x / y)
+
+-- POSITIVE: testing that get sees the latest put value.
+doubleUpdate : (Int, Int)
+let doubleUpdate =
+    runState 0 (do
+        State Int .put 5
+        State Int .put 10
+        State Int .get ())
+-- expected: (10, 10)
+
+--! assertNoErrors
+--! assertType runState forall (s r : Type). s -> Eff <[State s : State s]> r -> (r, s)

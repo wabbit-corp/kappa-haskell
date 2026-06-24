@@ -1,0 +1,60 @@
+-- Source issues: ponyc traits.cc (CannotProvideClass, IsSubTypeClassClass),
+--   ponyc type_check_subtype.cc
+-- Spec: expressions.application.subsumption, traits.instances
+-- In Pony, a class cannot declare itself as a provider of another class
+-- (only traits and interfaces can be provided). Two distinct class types
+-- are never in a subtype relationship with each other. In Kappa, data types
+-- are nominally typed; one data type is not a subtype of another unless
+-- they are the same type. Using a value of type A where type B is expected
+-- (and A ≠ B) must be rejected.
+
+--! mode check
+
+data Cat : Type = Cat String
+data Dog : Type = Dog String
+
+-- NEGATIVE: passing a Cat where a Dog is expected.
+petDog : Dog -> String
+let petDog (Dog name) = "pet " ++ name
+
+badPet : String
+let badPet = petDog (Cat "Whiskers")   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: binding a Cat value to a Dog annotation.
+mistyped : Dog
+let mistyped = Cat "Felix"   --!! kappa.type.mismatch
+
+-- POSITIVE: using each type with its own function.
+petCat : Cat -> String
+let petCat (Cat name) = "pet " ++ name
+
+ok1 : String
+let ok1 = petDog (Dog "Rex")
+
+ok2 : String
+let ok2 = petCat (Cat "Luna")
+
+-- POSITIVE: a function polymorphic over a trait, accepting different types.
+trait HasName (a : Type) =
+    theName : (& x : a) -> String
+
+instance HasName Cat =
+    let theName (Cat n) = n
+
+instance HasName Dog =
+    let theName (Dog n) = n
+
+greet :
+    forall (a : Type).
+    (@_ : HasName a) ->
+    (& x : a) -> String
+let greet x = "Hello, " ++ theName x
+
+ok3 : String
+let ok3 = greet (Cat "Mia")
+
+ok4 : String
+let ok4 = greet (Dog "Buddy")
+

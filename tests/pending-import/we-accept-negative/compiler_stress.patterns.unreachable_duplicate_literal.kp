@@ -1,0 +1,14 @@
+-- Stress test: a duplicate literal arm in a match is unreachable and must be rejected
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+-- NEGATIVE: the second `case 0` arm is unreachable because the first already matches 0.
+bad : Int -> String
+let bad n =
+    match n
+    case 0 -> "zero"
+    case 0 -> "also zero"   --!! kappa.pattern.unreachable
+    case _ -> "other"
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

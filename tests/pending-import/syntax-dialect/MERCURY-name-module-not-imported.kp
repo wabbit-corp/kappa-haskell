@@ -1,0 +1,68 @@
+-- Source issues: invalid/undef_symbol.m, invalid/nonexistent_import.m,
+--   invalid/arith_wrong_module.m, invalid/type_error_use_module.m
+-- Spec: modules.imports, compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved)
+-- When a qualified name is used but its module has not been imported, the
+-- checker must report an unresolved name. Similarly, importing a module that
+-- does not exist must produce a diagnostic. Unqualified names from non-imported
+-- modules must also be caught as unresolved.
+
+module test
+
+-- Test: using a symbol without importing its module.
+
+-- A local definition in this module.
+localAdd : Int -> Int -> Int
+let localAdd x y = x + y
+
+-- POSITIVE: using a locally defined function — no import needed.
+useLocal : Int
+let useLocal = localAdd 3 4
+
+
+-- NEGATIVE: using a qualified name from a module that is not imported.
+-- `Math.sqrt` is hypothetically defined in a `Math` module, but that module
+-- is not imported here.
+badQualified : Int
+let badQualified = Math.gcd 12 8    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using a name that exists only in an unimported module.
+-- `formatFloat` is hypothetically in module `Fmt` which is not imported.
+badUnqualified : String
+let badUnqualified = formatFloat 3.14    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using a type from an unimported module.
+-- `HashMap` is hypothetically in module `Collections` which is not imported.
+badType : HashMap String Int -> Int
+let badType m = 0    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a typo — the name is close to a locally-defined name but differs
+-- in casing. The checker must report it as unresolved and should suggest the
+-- correctly-spelled local name.
+localValue : Int
+let localValue = 99
+
+badSpelling : Int
+let badSpelling = localvalue    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a module that does not exist cannot be imported.
+import test.nonexistent_module (someFunc)    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a name from the current module used with the wrong module qualifier.
+-- `localAdd` is defined here (module `test`), but referenced as `other.localAdd`.
+wrongQualifier : Int
+let wrongQualifier = other.localAdd 1 2    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! mode check

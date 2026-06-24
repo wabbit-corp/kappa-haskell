@@ -1,0 +1,58 @@
+-- Source issues: invalid/duplicate_instance.m, invalid/typeclass_test_9.m
+-- Spec: traits.instances (coherence check)
+--       (kappa.implicit.ambiguous)
+-- When two instances are provided for the same trait and type, and their
+-- evidence values are not coherent, the program is incoherent and must be
+-- rejected. The checker must report an ambiguity or coherence error.
+
+module test
+
+trait Countable (a : Type) =
+    count : a -> Int
+
+data MyList (a : Type) =
+    Nil
+    Cons a (MyList a)
+
+-- NEGATIVE: two distinct concrete instances for `Countable (MyList a)`.
+-- They produce different evidence values and therefore violate coherence.
+
+instance Countable (MyList a) =
+    let count _ = 0               -- always returns 0
+
+instance Countable (MyList a) =
+    let count Nil         = 0     -- returns actual length
+    let count (Cons _ xs) = 1 + count xs
+
+-- The two instances above are incoherent: using `count` on a `MyList a` value
+-- is now ambiguous. The implementation must reject the second instance (or
+-- both) and report a coherence failure.
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- POSITIVE: a single unambiguous instance is valid.
+data Pair (a : Type) = Pair a a
+
+instance Countable (Pair a) =
+    let count _ = 2
+
+useCount : Pair Int -> Int
+let useCount p = count p
+
+--! assertType useCount Pair Int -> Int
+
+-- NEGATIVE: duplicate instances at different named types still violate
+-- coherence if both contribute to the same implicit goal.
+data Wrap (a : Type) = Wrap a
+
+instance Countable (Wrap Int) =
+    let count _ = 1
+
+instance Countable (Wrap Int) =
+    let count _ = 2
+
+callWrapCount : Wrap Int -> Int
+let callWrapCount w = count w   --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+--! mode check

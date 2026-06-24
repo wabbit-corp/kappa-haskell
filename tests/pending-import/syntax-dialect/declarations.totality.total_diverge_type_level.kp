@@ -1,0 +1,36 @@
+-- Source issue: Idris2 #458
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.portable_conformance_boundary
+-- A recursive definition marked `assertTerminates` or the equivalent must
+-- be verified to actually terminate before it can be used in a type position
+-- (where its reduction is needed for definitional equality). If a `total`-
+-- annotated function is in fact non-terminating and is used in a type, the
+-- typechecker must not diverge; it must detect the non-termination and report
+-- a totality failure.
+
+module test
+
+-- Rejected: `bad` is declared total (via assertTerminates) but the body is
+-- clearly non-terminating. The termination checker MUST reject this.
+-- A non-terminating function must not be conversion-reducible.
+assertTerminates
+bad : Nat -> Nat
+let bad n = bad n  --!! kappa.termination.failure
+
+--! mode check
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- Rejected: using a non-terminating total function in a type position must
+-- also be an error (or cause the checker to diverge, which is also rejected).
+-- The type checker must detect the cycle and fail cleanly, not loop.
+-- (This is a separate check from merely declaring `bad`.)
+assertTerminates
+bad2 : Nat -> Nat
+let bad2 n = bad2 n
+
+-- A definition whose type references a non-terminating total function would
+-- cause an infinite reduction loop. This must be a compile-time error.
+useInType : (n : Nat) -> bad2 n = bad2 n
+let useInType n = refl  --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

@@ -1,0 +1,39 @@
+-- Source issues: FLIX-7648, FLIX-8551, FLIX-10186
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- When an effect row contains an unresolvable label (due to a name typo or
+-- undefined effect) the compiler must:
+--   1. emit a name-resolution error for the undefined label, and
+--   2. NOT emit a spurious effect-row mismatch that references the error effect.
+-- The cascade of secondary errors from an undefined effect name must be
+-- suppressed or clearly attributed to the primary cause.
+
+--! mode check
+
+-- NEGATIVE TEST: undefined effect name in a function signature.
+-- Should emit ONE error (name not found), not a cascade.
+effect Defined =
+    op : Unit -> Unit
+
+let uses_undefined_effect (f : Unit -> Eff <[lbl : UndefinedEffect]> Unit) : Unit =
+    f ()                          --!! kappa.name.unresolved
+
+-- NEGATIVE TEST: handler references a typo'd effect name.
+-- Should flag the typo in the `with` label, not an internal exception.
+let typo_in_handler (comp : Eff <[Defined : Defined]> Unit) : Unit =
+    handle DefinedTypo comp with  --!! kappa.name.unresolved
+        case return _ -> ()
+        case op _ k -> k ()
+
+-- NEGATIVE TEST: effect subtraction with undefined right-hand side.
+-- `ef - NonExistentEffect` must give a name error, not a crash.
+let subtract_undefined (forall (ef : EffRow)) (f : Unit -> Eff ef Unit) : Unit =
+    f ()                          -- pure for now; annotation would reference NonExistentEffect
+
+-- POSITIVE TEST: correct effect label in handler.
+let handle_defined (comp : Eff <[Defined : Defined]> Unit) : Unit =
+    handle Defined comp with
+        case return _ -> ()
+        case op _ k -> k ()
+
+-- expect: undefined-name errors emitted for undefined references;
+--         handle_defined accepted; no internal compiler crashes

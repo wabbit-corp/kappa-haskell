@@ -1,0 +1,4 @@
+module vocabA
+
+foo : Int
+let foo = 12

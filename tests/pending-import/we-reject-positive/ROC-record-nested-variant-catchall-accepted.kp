@@ -1,0 +1,44 @@
+-- Source issue: Roc #3459
+-- Spec: types.records.values, types.unions.elimination_match,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence
+-- A `match` on a record that contains a variant field, with one positive
+-- record-pattern arm and one catch-all arm, must typecheck. The positive arm
+-- `(field = (| _ : A |))` must NOT narrow the scrutinee's *whole record type*
+-- to the closed row {field : (| A |)} — it only contributes branch-local
+-- positive evidence for that arm.
+
+module test
+
+data A : Type =
+    A
+
+data B : Type =
+    B
+
+type AB = (| A | B |)
+
+--! mode check
+
+-- POSITIVE: the outer scrutinee `(a = AB-value)` must remain of type
+-- `(a : AB)` across the whole match. The catch-all arm reads from the
+-- original record type; if the compiler narrowed the scrutinee to
+-- `(a : (| A |))` after seeing the first arm, the catch-all would be
+-- rejected as "the branches' patterns don't all share a type".
+describe : (a : AB) -> String
+let describe rec =
+    match rec
+      case (a = (| _ : A |)) -> "rec-with-A"
+      case _                 -> "rec-with-other"
+
+--! assertNoErrors
+--! assertType describe (a : AB) -> String
+
+-- POSITIVE: omitting the catch-all and explicitly covering B is also
+-- exhaustive and must typecheck without an error.
+describeBoth : (a : AB) -> String
+let describeBoth rec =
+    match rec
+      case (a = (| _ : A |)) -> "rec-with-A"
+      case (a = (| _ : B |)) -> "rec-with-B"
+
+--! assertNoErrors

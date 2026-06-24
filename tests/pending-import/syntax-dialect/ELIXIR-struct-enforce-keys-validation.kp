@@ -1,0 +1,65 @@
+-- Source issues: kernel/errors_test.exs "enforce @enforce_keys"
+--   ("the following keys must also be given when building struct MyStruct: [:name]"),
+--   errors_test.exs "struct fields on defstruct"
+--   ("struct field names must be atoms, got: 1"),
+--   errors_test.exs "struct access on body" (accessing struct fields before definition)
+-- Source tests: elixir kernel/errors_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/kernel/errors_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: data_types.data_declarations.constructor_application,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.constructor-arity)
+-- Kappa spec rule (§3.2.10 kappa.pattern.constructor-arity):
+--   "Used when a constructor pattern supplies the wrong number of positional arguments,
+--    omits required fields in a context where omission is not permitted..."
+-- In Elixir, @enforce_keys [keys...] on a defstruct requires that those fields must be
+-- explicitly provided when constructing the struct (they have no default). Constructing
+-- a struct without all enforced keys produces a compile-time error. In Kappa, constructing
+-- a record without all required fields is rejected with kappa.pattern.constructor-arity.
+
+--! mode check
+
+-- Record with required and optional fields.
+-- Fields without defaults are required; fields with defaults are optional.
+record User =
+    id    : Int         -- required (no default)
+    name  : String      -- required (no default)
+    email : String = "" -- optional (has default)
+
+-- POSITIVE: all required fields (id, name) provided.
+newUser : User
+let newUser = User { id = 1, name = "alice" }
+
+-- POSITIVE: all fields provided explicitly.
+fullUser : User
+let fullUser = User { id = 2, name = "bob", email = "bob@example.com" }
+
+-- POSITIVE: required fields provided; optional field omitted (uses default).
+minimalUser : User
+let minimalUser = User { id = 3, name = "charlie" }
+
+-- Record where all fields are required (no defaults at all).
+record Config =
+    host    : String
+    port    : Int
+    timeout : Int
+
+-- POSITIVE: all three required fields provided.
+goodConfig : Config
+let goodConfig = Config { host = "localhost", port = 8080, timeout = 30 }
+
+-- NEGATIVE: 'name' field is required (no default) but omitted from construction.
+missingName : User
+let missingName = User { id = 4 }       --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: both 'host' and 'timeout' required but only 'port' provided.
+badConfig : Config
+let badConfig = Config { port = 9000 }  --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: all required fields omitted; empty struct construction when fields are required.
+emptyUser : User
+let emptyUser = User {}                 --!! kappa.pattern.constructor-arity
+
+-- NEGATIVE: field name that does not exist on the struct.
+unknownField : User
+let unknownField = User { id = 5, name = "dave", role = "admin" }  --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

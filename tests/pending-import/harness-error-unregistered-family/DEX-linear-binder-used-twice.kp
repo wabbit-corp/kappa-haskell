@@ -1,0 +1,73 @@
+-- Source issues: dex-lang linear-tests.dx
+--   (`:t llam x:Float. x * x` →
+--   `Linearity error: pattern spent twice: [x]`),
+--   (`:t llam x:Float. x * 2.0` → `(Float --o Float)` -- correct),
+--   (`:t llam (x,y). x * y` →
+--   `Linearity error: pattern spent twice: [x]`).
+-- Spec: types.quantities.linear_use_once (§DSA-DEX-02),
+--       compiler.frontir.standard_diagnostic_families.quantity (kappa.quantity.unsatisfied).
+-- A linear binder (quantity 1) must be used exactly once in the body.
+-- Using it zero times (dropped) or more than once (duplicated) violates the
+-- linearity constraint. The diagnostic must name the binder and the use site.
+
+--! mode check
+
+-- POSITIVE: a linear function that uses its argument exactly once.
+linearId : (1 x : Float) -> Float
+let linearId x = x
+
+-- POSITIVE: linear argument used once in an arithmetic expression.
+linearDouble : (1 x : Float) -> Float
+let linearDouble x = x + x    -- linear addition uses x twice but addition is
+                                -- defined to accept two linear copies of a
+                                -- single argument (it combines them); this is
+                                -- fine when the add operation itself is linear.
+
+-- Wait — in Dex: `llam x. x + x` is OK (linear add combines both uses);
+-- but `llam x. x * x` is NOT OK (multiplication uses x as both arguments
+-- independently). The key distinction is whether the operation treats its
+-- arguments as the same linear resource or as independent ones.
+
+-- NEGATIVE: using a linear binder in both arguments of multiplication,
+-- which requires two independent copies of `x`.
+linearSquare : (1 x : Float) -> Float
+let linearSquare x = x * x    --!! kappa.quantity.unsatisfied
+-- x is used as both the left and right operand of *, consuming it twice.
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: binding to a name and then using the original binder again.
+aliasAndReuse : (1 x : Float) -> Float
+let aliasAndReuse x =
+    let y = x    -- y now holds the linear resource; x is consumed
+    y * x        --!! kappa.quantity.unsatisfied (x used after transfer to y)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: using a linear binder inside a tuple constructor twice.
+linearPairDup : (1 x : Float) -> (Float, Float)
+let linearPairDup x = (x, x)    --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: a linear pair component used once each.
+linearPair : (1 x : Float) -> (1 y : Float) -> (Float, Float)
+let linearPair x y = (x, y)
+
+-- POSITIVE: linear binder passed to a function that consumes it.
+consumeLinear : (1 x : Float) -> Float
+let consumeLinear x = x
+
+passLinear : (1 x : Float) -> Float
+let passLinear x = consumeLinear x
+
+-- NEGATIVE: a linear binder that is dropped (never used).
+dropLinear : (1 x : Float) -> Float
+let dropLinear x = 0.0    --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: explicitly discarding via a pattern wildcard is allowed if the
+-- type supports it.
+discardAllowed : (1 _ : ()) -> ()
+let discardAllowed _ = ()

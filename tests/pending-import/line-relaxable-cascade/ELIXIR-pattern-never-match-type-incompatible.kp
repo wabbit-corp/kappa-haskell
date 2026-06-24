@@ -1,0 +1,58 @@
+-- Source issues: ELIXIR-PR-13909 (inference of patterns), ELIXIR-PR-13527 (type checking
+--   across comparison operators), module/types/pattern_test.exs (= describe "reports
+--   incompatible types"), module/types/expr_test.exs
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable)
+-- Elixir's gradual set-theoretic type checker detects patterns that can never match the
+-- statically-inferred type of the scrutinee. For example:
+--   typeerror!([x = 123 = "123"], x) — the pattern `123 = "123"` can never match because
+--   integer and string are disjoint types.
+-- In Kappa, such patterns produce kappa.type.mismatch (the pattern's type is incompatible
+-- with the scrutinee type) or kappa.pattern.unreachable (the arm is dead).
+-- Note: Elixir's `=` binding-alias pattern (x = val meaning "match and also bind") has no
+-- direct Kappa equivalent; Kappa-native constructs are used below.
+
+--! mode check
+
+data Result : Type =
+    Ok Int | Err String
+
+-- POSITIVE: pattern matches the declared type.
+getOk : Result -> Int
+let getOk r =
+    match r
+    case Ok n  -> n
+    case Err _ -> 0
+
+-- POSITIVE: nested tuple pattern consistent with type.
+checkPair : (Bool, Int) -> Int
+let checkPair p =
+    match p
+    case (True,  n) -> n
+    case (False, _) -> 0
+
+-- NEGATIVE: scrutinee is Int; matching against a tuple pattern is a type mismatch.
+badTupleOnInt : Int -> Int
+let badTupleOnInt n =
+    let (a, b) = n              --!! kappa.type.mismatch
+    a
+
+-- NEGATIVE: type-annotated binding forces an impossible coercion (Int → String).
+-- The value n : Int cannot satisfy the String annotation.
+contradictoryLiterals : Int -> String
+let contradictoryLiterals n =
+    let s : String = n          --!! kappa.type.mismatch
+    s
+
+-- NEGATIVE: Ok wraps an Int, so matching Ok "bad" against Result is a type mismatch;
+-- the string literal "bad" cannot unify with the Int payload of Ok.
+impossibleDouble : Result -> Int
+let impossibleDouble r =
+    match r
+    case Ok n     -> n
+    case Ok "bad" -> 0          --!! kappa.type.mismatch
+    case Err _    -> -1
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,70 @@
+-- Source issues: invalid/det_errors.m (duplicate switch arm with same constructor),
+--   invalid/require_complete_nested_switch.m
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.unreachable)
+-- A pattern arm that can never be reached — because a preceding arm already
+-- covers the same values — must be reported as unreachable.
+
+module test
+
+data Dir : Type = North | South | East | West
+
+-- NEGATIVE: duplicate arm for North — the second `North` case is unreachable
+-- because the first one already consumed it.
+describeDir : Dir -> String
+let describeDir d = match d
+    case North -> "north"
+    case South -> "south"
+    case North -> "also north"    --!! kappa.pattern.unreachable
+    case East  -> "east"
+    case West  -> "west"
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: catch-all wildcard followed by another arm — the arm after `_`
+-- is unreachable because `_` already covers everything.
+shortDesc : Dir -> String
+let shortDesc d = match d
+    case North -> "N"
+    case _     -> "other"
+    case South -> "S"    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- POSITIVE: no redundant arms.
+dirToInt : Dir -> Int
+let dirToInt d = match d
+    case North -> 0
+    case South -> 1
+    case East  -> 2
+    case West  -> 3
+
+
+-- NEGATIVE: constructor arm appearing after a wildcard in a nested match.
+data Priority : Type = Low | High
+
+nested : Dir -> Priority -> Int
+let nested d p = match d
+    case North -> match p
+        case Low  -> 1
+        case High -> 2
+    case _     -> match p
+        case Low  -> 3
+        case _    -> 4
+        case High -> 5    --!! kappa.pattern.unreachable
+    case South -> 10      --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- POSITIVE: overlapping literal patterns are distinct; no unreachability.
+data Bit : Type = Zero | One
+
+xorBit : Bit -> Bit -> Bit
+let xorBit a b = match (a, b)
+    case (Zero, Zero) -> Zero
+    case (Zero, One)  -> One
+    case (One,  Zero) -> One
+    case (One,  One)  -> Zero
+
+
+--! mode check

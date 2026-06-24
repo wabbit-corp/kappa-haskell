@@ -1,0 +1,53 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system1/type_system1.dl
+--   (`NumberRelation(nil)` → "Nil constant used as a non-record"),
+--   souffle-lang #420 (segfault with unnamed variable in negated record),
+--   souffle-lang #479 (weird errors on records).
+-- Spec: declarations.terms (§9.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- Using the null/nil value where a non-nullable type is expected must produce
+-- kappa.type.mismatch. Souffle's "Nil constant used as a non-record" error fires
+-- when `nil` is used as an argument to a relation whose column is a scalar type.
+-- In Kappa, passing `Nothing` (or null) where a concrete non-optional type is required
+-- is a type mismatch.
+
+--! mode check
+
+-- POSITIVE: Option type accepts Nothing.
+let maybeVal : Option Int = Nothing
+let justVal  : Option Int = Just 42
+
+-- POSITIVE: function accepting Option correctly handles Nothing.
+let fromOption : Option Int -> Int
+let fromOption opt =
+    match opt
+        case Nothing -> 0
+        case Just n  -> n
+
+-- NEGATIVE: passing Nothing where Int (non-optional) is expected.
+let badInt : Int = Nothing    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: function expecting Int receives Nothing.
+let addOne : Int -> Int
+let addOne n = n + 1
+
+let badCall : Int = addOne Nothing    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: struct field of type String given null/Nothing.
+struct WithString =
+    label : String
+    count : Int
+
+let badStruct : WithString = WithString { label = Nothing, count = 1 }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: nullable field correctly wrapped.
+struct WithOptional =
+    label : Option String
+    count : Int
+
+let goodStruct : WithOptional = WithOptional { label = Nothing, count = 0 }

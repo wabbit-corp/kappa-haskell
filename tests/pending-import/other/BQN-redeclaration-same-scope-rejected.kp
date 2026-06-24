@@ -1,0 +1,28 @@
+-- Source issues: BQN scope.md (*"it is never valid to make two definitions
+--   with the same name at the top level of a single scope"*),
+-- BQN tests/test/cases/syntax.bqn rejected: `a←0⋄a←1`.
+-- Spec: modules.names.lexical_lookup.
+-- Two definitions of the same name in the same module scope must be
+-- rejected. Kappa spec §9.2 requires a single defining occurrence per
+-- name in a module; duplicate definitions fail at elaboration time.
+-- The exact diagnostic family for "duplicate top-level definition" is
+-- not specifically standardized, so the test asserts an error count.
+
+--! mode check
+
+-- POSITIVE: shadowing inside a `let ... in` binding is fine — distinct
+-- scopes.
+outer : Nat
+let outer =
+    let inner = 1
+    in inner + 2
+
+-- NEGATIVE: two top-level definitions of the same name in the same
+-- module are rejected.
+duplicate : Nat
+let duplicate = 1
+
+duplicate : Nat
+let duplicate = 2
+
+--! assertErrorCount 1

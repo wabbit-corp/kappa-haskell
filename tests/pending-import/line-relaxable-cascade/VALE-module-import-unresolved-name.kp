@@ -1,0 +1,30 @@
+-- Source issues: vale#144 (main required, modules need to be implemented),
+--               vale#180 (Import statements), Vale ImportTests
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Vale, `import moduleB.moo;` brings a specific declaration from
+-- another module into the current scope. Importing from a module that
+-- does not exist or importing a name that does not exist in the module
+-- produces a compile-time error. In Kappa, an import path that resolves to
+-- no provider or that names a non-existent member in an otherwise valid
+-- provider is rejected with kappa.name.unresolved.
+
+--! mode check
+
+-- NEGATIVE: importing a module that does not exist in the compilation
+-- unit produces kappa.name.unresolved on the import path.
+import NonExistentModule.someFunction   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: importing a specific name that does not exist in a valid
+-- module is also kappa.name.unresolved (the module exists but the
+-- member does not).
+import Core.doesNotExist   --!! kappa.name.unresolved
+
+-- POSITIVE: importing a name that genuinely exists in the prelude/core.
+-- (This test uses a name that Kappa standard library should provide.)
+import Prelude.show
+
+sayHello : String
+let sayHello = show 42

@@ -1,0 +1,35 @@
+-- Source issues: carp-lang/Carp#381, #806
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.disjoint_path_borrowing_records.stable_places_place_preserving_bindings,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- Carp #381: `&Int.MAX` (a borrow of a global constant value via an
+-- rvalue C macro) emitted `&INT_MAX`, which is not a valid l-value in C.
+-- Carp #806: `(address 1)` emitted `&1`.  The portable Kappa obligation
+-- is that `&` requires a stable place — a binding or a place expression
+-- — not an arbitrary rvalue expression.
+
+--! mode check
+
+-- POSITIVE: a borrow of an l-value (a `let`-bound name) is admitted.
+borrowBinding : Int
+let borrowBinding =
+    let x : Int = 5
+    let r : & Int = &x
+    deref r
+
+deref : (& Int) -> Int
+let deref r = 0
+
+
+-- NEGATIVE: a borrow of a literal has no underlying place; rejected.
+borrowLiteralBad : & Int
+let borrowLiteralBad = &1                 --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE: a borrow of an arbitrary function-call result is similarly
+-- rejected because the call result has no stable place.
+borrowCallResultBad : & Int
+let borrowCallResultBad = &(1 + 2)        --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

@@ -1,0 +1,62 @@
+-- Source issues: nickel #1460, #1707, typing.md (gradual typing section)
+-- Spec: design.boundary_honesty.boundary_contracts, types.gradual (NSA-01)
+-- NSA-01: Kappa v1 does not define ambient gradual typing. Dyn values are managed via
+-- std.gradual. This test documents Nickel behavior: boundary checks at Dyn/typed
+-- transitions. See NSA-01 in NICKEL_SPEC_ADDITIONS.md for the spec gap note.
+-- In Nickel-style gradual typing, `Dyn` is the type of dynamically-typed values.
+-- When a `Dyn` value is used in a statically typed context, a runtime boundary check
+-- is inserted. A function that takes a `Dyn` argument and passes it to a typed
+-- function introduces a gradual boundary check: if the runtime value does not have
+-- the expected type, the check must fail with an observable diagnostic
+-- (kappa.bridge.contract, the runtime contract failure family).
+
+module test
+
+-- A statically typed function.
+add1 : Number -> Number
+let add1 n = n + 1
+
+-- POSITIVE: passing a Number to add1 is accepted statically.
+staticOk : Number
+let staticOk = add1 42
+
+--! mode check
+--! assertType staticOk Number
+
+-- POSITIVE: a Dyn value that happens to be a Number passes the gradual boundary check.
+-- At the boundary, the Dyn value is checked against Number at runtime.
+dynNumber : Dyn
+let dynNumber = (42 : Dyn)
+
+gradualOk : Number
+let gradualOk = add1 dynNumber
+
+
+-- NEGATIVE: a Dyn value that is not a Number fails the gradual boundary check.
+-- The check is a runtime contract violation; the static typechecker should warn
+-- or the runtime should report kappa.bridge.contract.
+dynString : Dyn
+let dynString = ("not a number" : Dyn)
+
+gradualFail : Number
+let gradualFail = add1 dynString            --!! kappa.bridge.contract
+
+--! assertDiagnosticFamily error kappa.bridge.contract
+
+-- POSITIVE: a typed value widened to Dyn carries no static information,
+-- but no static error is raised for the widening itself.
+wideToD : Dyn
+let wideToD = (99 : Dyn)
+
+
+-- POSITIVE: a function annotated with Dyn parameter accepts anything at the static
+-- check level (the check is deferred to runtime).
+acceptDyn : Dyn -> String
+let acceptDyn d = "received"
+
+okPassString : String
+let okPassString = acceptDyn "hello"
+
+okPassNumber : String
+let okPassNumber = acceptDyn 42
+

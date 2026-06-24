@@ -1,0 +1,66 @@
+-- Source: Julia#8748, Julia#15429, Julia manual, "Parametric Types",
+--         Julia docs on invariance
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       data_types.data_declarations
+-- In Julia, parametric types are invariant: Vector{Float64} is NOT a
+-- subtype of Vector{Number}, even though Float64 <: Number. Passing a
+-- Vector{Float64} where a Vector{Number} is expected is a type error.
+-- In Kappa, parameterized data types are invariant by default; using a
+-- container of SubType where a container of SuperType is demanded is
+-- rejected with kappa.type.mismatch.
+
+--! mode check
+
+-- A trait hierarchy representing Julia's numeric tower.
+trait ANumber   (a : Type)
+trait AInteger  (a : Type)  -- more specific than ANumber
+trait AFloat    (a : Type)  -- more specific than ANumber
+
+data MyInt   : Type = MyInt Int
+data MyFloat : Type = MyFloat Float
+
+instance ANumber  MyInt   = ()
+instance AInteger MyInt   = ()
+instance ANumber  MyFloat = ()
+instance AFloat   MyFloat = ()
+
+-- A generic container (invariant in its element type, like Julia's Vector).
+data Container (a : Type) : Type = Container a
+
+readFirst : forall (a : Type). (& c : Container a) -> & a
+let readFirst (Container x) = x
+
+-- A function demanding a Container of ANumber.
+processNumbers :
+    forall (a : Type).
+    (@_ : ANumber a) ->
+    (& c : Container a) -> String
+let processNumbers c = "processed"
+
+-- POSITIVE: Container MyInt used where Container of ANumber is demanded,
+-- passing through the ANumber constraint for MyInt.
+okInts : String
+let okInts = processNumbers (Container (MyInt 1))
+
+-- POSITIVE: Container MyFloat with its own ANumber instance.
+okFloats : String
+let okFloats = processNumbers (Container (MyFloat 1.0))
+
+-- A function demanding exactly Container MyInt (concrete, no polymorphism).
+processExactInts : (& c : Container MyInt) -> String
+let processExactInts c = "ints"
+
+-- NEGATIVE: passing a Container MyFloat where Container MyInt is demanded.
+-- The container type is invariant: Container MyFloat ≠ Container MyInt
+-- even if both satisfy ANumber.
+badFloatsAsInts : String
+let badFloatsAsInts = processExactInts (Container (MyFloat 1.0))   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a function that assumes covariance (unsound if allowed).
+-- If Container were covariant, we could write into a Container MyInt
+-- through a Container MyFloat reference, which would be unsound.
+covariantUnsafe : (& c : Container MyFloat) -> String
+let covariantUnsafe c = processExactInts c   --!! kappa.type.mismatch
+

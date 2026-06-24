@@ -1,0 +1,41 @@
+-- Source issues: ponyc#3927, ponyc#2986, ponyc#2958, ponyc#240
+-- Spec: modules.names.lexical_lookup, compiler.frontir.standard_diagnostic_families.name_import
+-- Calling a method that does not exist or is out of scope must produce a
+-- clear name-resolution diagnostic, not a confusing type error. Pony issue
+-- #3927: trying to access a field from a lambda context produced a confusing
+-- error. Issue #2986: calling a ref function from a box context showed a
+-- misleading error instead of the actual problem.
+
+--! mode check
+
+data Widget : Type = Widget Int
+
+-- POSITIVE: calling a correctly-defined function.
+getVal : Widget -> Int
+let getVal (Widget n) = n
+
+ok1 : Int
+let ok1 = getVal (Widget 5)
+
+-- NEGATIVE: calling a function that doesn't exist.
+-- `nonExistentFn` is never defined anywhere in scope.
+bad1 : Int
+let bad1 = nonExistentFn (Widget 1)   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: accessing a field that doesn't exist on the type.
+data Rect : Type = Rect Int Int
+
+badField : Int
+let badField =
+    let r = Rect 3 4
+    r.area   --!! kappa.name.unresolved
+
+-- POSITIVE: correct field/method access via match.
+area : Rect -> Int
+let area (Rect w h) = w * h
+
+ok2 : Int
+let ok2 = area (Rect 3 4)
+

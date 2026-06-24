@@ -1,0 +1,60 @@
+-- Source artifacts: narya docs/data-types.rst ("a datatype can have zero
+--               constructors, yielding an empty type: def ⊥ : Type := data []").
+-- Spec: data_types.data_declarations,
+--       compiler.coreir.inhabitance_summaries
+--
+-- A data declaration may have zero constructors; the resulting type has
+-- inhabitance summary Empty (§30.2.7). Empty inhabitance lets
+-- `case impossible` close a `match` with an arbitrary result type. An
+-- unsolved hole, by contrast, is a compile-time error of family
+-- kappa.hole.unsolved (§16.3.x).
+
+--! mode check
+
+data Bottom : Type =
+
+-- POSITIVE: Bottom has no constructors; case impossible discharges any
+-- expected result type.
+absurd : forall (a : Type). Bottom -> a
+let absurd e =
+    match e
+      case impossible
+
+-- POSITIVE: from Bottom we may conclude anything; the irrelevant
+-- argument may simply be ignored when a witness is otherwise available.
+notBoth :
+    forall (a : Type). a -> Bottom -> a
+let notBoth x _ = x
+
+-- POSITIVE: two empty matches at different result types are both
+-- well-formed.
+data Color : Type =
+    Red   : Color
+    Green : Color
+    Blue  : Color
+
+bottomToColor : Bottom -> Color
+let bottomToColor e =
+    match e
+      case impossible
+
+bottomToNat : Bottom -> Nat
+let bottomToNat e =
+    match e
+      case impossible
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- NEGATIVE: a closed sum type that does not have inhabitance summary
+-- Empty cannot be eliminated by case impossible; substituting a hole in
+-- the body raises the unsolved-hole error.
+data Light : Type =
+    On  : Light
+    Off : Light
+
+mustCover : Light -> Color
+let mustCover _ = ?missing    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

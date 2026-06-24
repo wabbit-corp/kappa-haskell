@@ -1,0 +1,16 @@
+-- Stress test: A multi-shot operation requires backend capability rt-multishot-effects; without it, it must be rejected
+-- Spec: effects.monadic_core.effect_declarations.oneshot_default_multishot_capability
+
+--! mode check
+
+-- Multi-shot operation: 'ω choice' means the resumption may be invoked more than once.
+-- This requires the rt-multishot-effects backend capability.
+effect Ndet =
+    ω choice : Unit -> Bool
+
+-- NEGATIVE TEST: using a multi-shot operation without the required capability
+-- must be rejected with a gated-feature diagnostic.
+let pickBranch : Eff <[ndet : Ndet]> Bool =
+    do Ndet.choice ()  --!! kappa.feature.gated
+
+--! assertDiagnosticFamily error kappa.feature.gated

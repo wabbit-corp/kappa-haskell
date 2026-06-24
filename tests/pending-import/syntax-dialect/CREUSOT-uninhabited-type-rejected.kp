@@ -1,0 +1,32 @@
+-- Source issues: CREUSOT-114, CREUSOT-881
+-- Spec: types.unions.formation, declarations.totality.termination_certified_definitions,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- A recursive type with no base case has no finite inhabitant; an
+-- attempt to construct a value using only itself is a non-terminating
+-- definition.  Likewise, naming a value of a visibly-empty type by a
+-- self-bound definition has no finite witness and the totality / size-
+-- change check rejects it.
+
+module test
+
+--! mode check
+
+-- Visibly empty type used below.
+data Empty : Type =
+
+-- NEGATIVE: a recursive type with no base case has no finite inhabitant.
+-- The constructor `Stream` takes a Stream, so we cannot build one
+-- without circularity.
+data Stream : Type -> Type =
+  | Stream : forall (a : Type). a -> Stream a -> Stream a
+
+makeStream : Stream Int
+let makeStream = Stream 0 makeStream         --!! kappa.termination.failure
+
+-- NEGATIVE: constructing a value of a visibly-empty type via an
+-- impossible-to-satisfy self-bound definition is rejected.
+useEmpty : Empty
+let useEmpty = useEmpty                      --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

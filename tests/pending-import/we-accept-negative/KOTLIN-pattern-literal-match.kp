@@ -1,0 +1,43 @@
+-- Source issues: KT-80 (optimized code for int range in pattern matching), KT-38
+-- Spec: expressions.patterns.forms, expressions.match
+
+--! mode check
+
+-- POSITIVE: matching on integer literals.
+describeInt : Int -> String
+let describeInt n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "other"
+
+--! assertType describeInt (Int -> String)
+
+-- POSITIVE: matching on string literals.
+greetLang : String -> String
+let greetLang lang =
+    match lang
+    case "en" -> "Hello"
+    case "es" -> "Hola"
+    case "fr" -> "Bonjour"
+    case _    -> "Hi"
+
+--! assertType greetLang (String -> String)
+
+-- POSITIVE: matching on Bool literals (true/false).
+boolToStr : Bool -> String
+let boolToStr b =
+    match b
+    case True  -> "yes"
+    case False -> "no"
+
+
+-- NEGATIVE: mixing incompatible literal types in the same match arm.
+badMix : Int -> String
+let badMix n =
+    match n
+    case 0     -> "zero"
+    case "one" -> "one"   --!! kappa.type.mismatch
+    case _     -> "other"
+
+--! assertDiagnosticFamily error kappa.type.mismatch

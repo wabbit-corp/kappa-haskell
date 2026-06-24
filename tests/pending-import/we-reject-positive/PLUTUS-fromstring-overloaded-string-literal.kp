@@ -1,0 +1,44 @@
+-- Source issue: PLUTUS-4404
+-- Spec: literals.numeric_literals.typing (§6.1.5, `FromString` trait),
+-- literals.string_literals
+-- Source notes: Plinth's `fromString` is sometimes not inlinable for
+-- user-defined wrappers, so OverloadedStrings fails for on-chain code
+-- (#4404). The Kappa spec specifies a portable `FromString` trait in §6.1.5:
+-- when a string literal is checked against a type `T`, elaboration either
+-- defaults `T` to `String` or routes the literal through an in-scope
+-- `FromString T` instance. The instance MUST be considered regardless of
+-- module boundary or visibility, provided the instance is in scope.
+
+--! mode check
+
+-- A nominal wrapper that can be constructed from a string.
+data TokenName : Type =
+    TokenName (raw : String)
+
+-- Provide the `FromString` instance for `TokenName`.
+instance FromString TokenName =
+    let fromString s = TokenName s
+
+-- POSITIVE: a bare string literal at expected type `TokenName` elaborates
+-- through `FromString TokenName`.
+foo : TokenName
+let foo = "foo"
+
+bar : TokenName
+let bar = "bar"
+
+-- POSITIVE: ordinary `String` literals are unaffected by the new instance.
+greeting : String
+let greeting = "hello"
+
+-- POSITIVE: the `FromString` instance is selected by the expected type at the
+-- use site, independent of how `fromString` is spelled in the body.
+asFn : String -> TokenName
+let asFn s = TokenName s
+
+equalConstruction : Bool
+let equalConstruction =
+    match (foo, asFn "foo")
+      case (TokenName a, TokenName b) -> a == b
+
+--! assertNoErrors

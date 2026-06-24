@@ -1,0 +1,62 @@
+-- Source issues: egraphs-good/egglog #243 (The `:when` syntax is easy to make
+--   mistakes — name vs positional),
+--   egraphs-good/egglog #804 (By-name argument order should not matter),
+--   egraphs-good/egglog #799 (Add ability to set name of rewrite — named
+--   attributes).
+-- Spec: data_types.data_declarations (§10.1, named/keyword constructor args),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- Kappa allows constructor application with named arguments, and named arguments
+-- may appear in any order — provided no positional/named duplication and no
+-- missing required fields. Kappa requires kappa.constructor.arity when named
+-- fields are missing, duplicated, or unknown.
+
+module test
+
+--! mode check
+
+data Point : Type =
+    MkPoint (x : Int) (y : Int) (z : Int)
+
+-- POSITIVE: positional application.
+pPos : Point
+let pPos = MkPoint 1 2 3
+
+-- POSITIVE: named application in declared order.
+pNm1 : Point
+let pNm1 = MkPoint { x = 1, y = 2, z = 3 }
+
+-- POSITIVE: named application in reverse order.
+pNm2 : Point
+let pNm2 = MkPoint { z = 3, y = 2, x = 1 }
+
+-- POSITIVE: punned named application.
+px : Int
+let px = 1
+
+py : Int
+let py = 2
+
+pz : Int
+let pz = 3
+
+pNm3 : Point
+let pNm3 = MkPoint { x = px, y = py, z = pz }
+
+-- NEGATIVE: duplicated named field.
+bad1 : Point
+let bad1 = MkPoint { x = 1, x = 2, y = 0, z = 0 }   --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: missing required field.
+bad2 : Point
+let bad2 = MkPoint { x = 1, y = 2 }                  --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: unknown named field.
+bad3 : Point
+let bad3 = MkPoint { x = 1, y = 2, w = 3 }           --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

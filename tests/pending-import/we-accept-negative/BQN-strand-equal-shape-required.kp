@@ -1,0 +1,31 @@
+-- Source issues: BQN docs/arrayrepr.md (strand notation `1‿2‿3` builds a
+--   list whose elements must all be valid expressions);
+-- BQN tests/test/cases/syntax.bqn rejected: `a‿b←3` (LHS strand with
+--   no destructurable RHS), `((A)(b))‿c←4‿5` (strand-LHS shape mismatch).
+-- Spec: expressions.patterns.forms (tuple patterns),
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- A tuple destructuring pattern on the LHS of a `let` must agree with
+-- the type of the RHS. Binding a 2-tuple pattern against a scalar
+-- integer fails the type check.
+
+--! mode check
+
+-- POSITIVE: matching arity.
+ok : Integer
+let ok =
+    let (a, b) = (1, 2)
+    in a + b
+
+-- POSITIVE: nested tuple destructuring.
+nested : Integer
+let nested =
+    let (a, (b, c)) = (1, (2, 3))
+    in a + b + c
+
+-- NEGATIVE: LHS tuple of 2, RHS scalar — pattern/scrutinee type mismatch.
+arityMismatch : Integer
+let arityMismatch =
+    let (a, b) = 3                  --!! kappa.type.mismatch
+    in a + b
+
+--! assertDiagnosticFamily error kappa.type.mismatch

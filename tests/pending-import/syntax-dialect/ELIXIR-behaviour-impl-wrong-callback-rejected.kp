@@ -1,0 +1,54 @@
+-- Source issues: kernel/impl_test.exs "@impl true with callback name not in behaviour"
+--   ("got @impl true for function bar/0 but no behaviour specifies such callback"),
+--   impl_test.exs "@impl true with callback kind not in behaviour",
+--   impl_test.exs "@impl true with wrong arity",
+--   impl_test.exs "warns of @impl true and no behaviour"
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.associated.member-undeclared)
+-- Kappa spec rule (§3.2 kappa.associated.member-undeclared — an instance
+-- member the trait never declared; retagged 2026-06-11 from name.unresolved,
+-- which is for unresolvable *references*, not undeclared instance members):
+--   "Used when an identifier... cannot be resolved."
+-- In Elixir, @impl true on a function that does not match any declared @callback in any
+-- @behaviour module produces a warning: "got @impl true for function bar/0 but no behaviour
+-- specifies such callback". In Kappa, an instance body that defines a method not declared
+-- in the trait cannot resolve that method name against the trait's interface; it produces
+-- kappa.associated.member-undeclared.
+
+--! mode check
+
+trait Worker (a : Type) =
+    process : (& x : a) -> String -> String
+
+-- POSITIVE: instance body names a method that exists in the Worker trait.
+record Task =
+    label : String
+
+instance Worker Task =
+    let process t input = t.label ++ ": " ++ input
+
+-- POSITIVE: explicitly implements Worker.process.
+record Job =
+    priority : Int
+
+instance Worker Job =
+    let process j input = "priority " ++ Int.show j.priority ++ ": " ++ input
+
+-- NEGATIVE: instance body defines 'execute', which is not declared in Worker.
+-- The name 'execute' cannot be resolved against Worker's interface.
+record Command =
+    code : Int
+
+instance Worker Command =
+    let execute c = "cmd " ++ Int.show c.code   --!! kappa.associated.member-undeclared
+    let process c input = "cmd " ++ input
+
+-- NEGATIVE: instance provides 'processThree' (3 args) instead of 'process' (2 args).
+-- 'processThree' is not a method of Worker; the name cannot be resolved.
+record Script =
+    name : String
+
+instance Worker Script =
+    let processThree s a b = s.name ++ a ++ b   --!! kappa.associated.member-undeclared
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

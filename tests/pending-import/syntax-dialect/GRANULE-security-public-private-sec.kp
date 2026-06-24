@@ -1,0 +1,44 @@
+-- Source: granule-project/granule PR #192 (3-element Sec lattice),
+--         PR #118 (security lattice three-element structure);
+--         tests/cases/positive/security/level_pos0.gr,
+--         tests/cases/negative/security/leak.gr
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- A security-level lattice is modeled as a quantity-graded box `Sec q a`.
+-- A leak is a type mismatch: `Sec Public a` is not equal to `Sec Private a`
+-- when one is supplied where the other is demanded.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+-- A Sec-graded value type, modeled as a unary parametric box.
+type Sec : Quantity -> Type -> Type
+
+intrinsic boxAt   : forall (q : Quantity) (a : Type). (1 x : a) -> Sec q a
+intrinsic unboxAt : forall (q : Quantity) (a : Type). (1 s : Sec q a) -> a
+
+intrinsic Public  : Quantity
+intrinsic Private : Quantity
+
+-- POSITIVE: storing a public value, eliminating publicly.
+publicRoundtrip : Bool
+let publicRoundtrip = unboxAt (boxAt True : Sec Public Bool)
+
+
+-- POSITIVE: storing a private value, eliminating privately.
+privateRoundtrip : Bool
+let privateRoundtrip = unboxAt (boxAt True : Sec Private Bool)
+
+
+-- NEGATIVE: leak — the signature claims `Sec Public Bool` but the body
+-- produces a `Sec Private Bool`. The Public and Private quantity-grade
+-- arguments to `Sec` differ, so the types are distinct.
+leak : Sec Public Bool
+let leak = boxAt True : Sec Private Bool   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

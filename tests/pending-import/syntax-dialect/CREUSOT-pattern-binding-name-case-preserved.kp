@@ -1,0 +1,22 @@
+-- Source issues: CREUSOT-181, CREUSOT-195
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--       lexical.identifiers,
+--       compiler.coreir.module_identity_casing_generated_artifacts
+-- Family: kappa.name.unresolved (Kappa §3.2.1)
+-- Source identifier spelling (including case) is preserved through every
+-- internal representation that is visible at the spec/diagnostic
+-- boundary.  Referencing an identifier with the wrong case must be a
+-- name-resolution error, not a silent rewrite to the other-case form.
+-- Pending spec gap CREUSOT-SA-07 covers diagnostic-side stability.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: referencing an identifier with the wrong case must be a
+-- name-resolution error, NOT a silent rewrite to the other-case form.
+wrongCase : (exampleParameter : Int) -> Int
+let wrongCase exampleParameter = exampleParameter
+    ensures result == exampleparameter         --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

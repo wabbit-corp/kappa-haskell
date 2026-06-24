@@ -1,0 +1,39 @@
+-- Source issue: FLIX-5147
+-- Spec: traits.instances
+-- An orphan instance is an instance declaration where neither the trait nor
+-- the type constructor being instantiated is defined in the same module.
+-- Kappa §14.3 permits orphan instances but requires implementations to SHOULD
+-- emit a warning for each orphan instance.
+
+--! mode check
+
+-- Simulate two "external" declarations by importing from different modules.
+-- For this single-file test, we declare the trait and the type in the same file
+-- but annotate them as if they came from a different module by placing the
+-- instance in a different namespace/module context.
+
+trait Display (a : Type) =
+    display : a -> String
+
+data Point : Type =
+    Point Int Int
+
+-- POSITIVE TEST: non-orphan instance (trait and type both local).
+instance Display Point =
+    let display (Point x y) = "(" ++ show x ++ ", " ++ show y ++ ")"
+
+-- POSITIVE TEST: orphan instance should be ACCEPTED (not rejected),
+-- but implementations should warn.
+-- Here we instantiate Display for Int (Int is prelude, Display is local).
+-- This is an orphan: Int is not defined here; Display is.
+instance Display Int =     -- orphan: Int is not local
+    let display n = show n
+
+--! assertWarningCount 1
+
+-- POSITIVE TEST: using the orphan instance works normally.
+let show_int (n : Int) : String = display n
+
+-- expect: Display Point accepted (non-orphan);
+--         Display Int accepted with warning (orphan);
+--         show_int accepted (instance works at use site)

@@ -1,0 +1,49 @@
+-- Source issues: lamdu#166 — "type variable escape" should be presented
+--   differently; the diagnostic currently does not clearly indicate
+--   which variable is escaping or where the binder is.
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §12.3: skolem escape produces a diagnostic that identifies the
+--   binder and the leaked scope.
+--
+-- Type variable escape situations must be detected and produce a
+-- structured diagnostic. This test exercises several escape patterns.
+
+--! mode check
+
+-- POSITIVE: polymorphic function whose returned value reuses its
+-- type parameter — no escape.
+const : forall (a b : Type). a -> b -> a
+let const x _ = x
+
+useConst : Nat
+let useConst = const 5 True
+
+-- POSITIVE: applying a rank-1 polymorphic function at a fully
+-- determined call site.
+choose : forall (a : Type). a -> a -> a
+let choose x _ = x
+
+useChoose : Nat
+let useChoose = choose 1 2
+
+-- POSITIVE: identity used at a single concrete instantiation.
+identity : forall (a : Type). a -> a
+let identity x = x
+
+useIdentity : Nat
+let useIdentity = identity 7
+
+-- NEGATIVE: trying to use the polymorphic identity at a concrete
+-- function-typed result without instantiating its type parameter:
+-- the rigid `a` would have to leak into the outer non-polymorphic type.
+mustInstantiate : Nat -> Nat
+let mustInstantiate = identity    --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a polymorphic function and then attempting to
+-- treat its result at an incompatible type. The rigid variable would
+-- need to bind to both `Nat` and `Bool` simultaneously.
+clashType : Nat
+let clashType = choose 1 True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

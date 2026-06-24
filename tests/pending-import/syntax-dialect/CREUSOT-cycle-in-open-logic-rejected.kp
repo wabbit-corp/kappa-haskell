@@ -1,0 +1,37 @@
+-- Source issues: CREUSOT-cycle
+-- Source tests: creusot should_fail/cycle.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/cycle.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- Two open logic functions whose bodies call each other unconditionally
+-- form a cycle that has no decreasing measure; Kappa's termination check
+-- (declarations.totality.termination_certified_definitions) MUST reject.
+-- Pending spec gap CREUSOT-SA-04 (termination over the elaborated call
+-- graph) and the `logic open` modality is placeholder per CREUSOT-SA-05.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: two open logic functions with unconditional mutual calls
+-- and no variants - direct cycle.
+logic open let f : Unit
+let f = g True                              --!! kappa.termination.failure
+
+logic open let g : Bool -> Unit
+let g x = if x then f else f                --!! kappa.termination.failure
+
+-- NEGATIVE: even a single-call cycle (g True -> f -> g True) where the
+-- argument flips between calls but never structurally decreases is
+-- rejected.  Adding `decreases x` (a Bool) does not provide a
+-- well-founded measure.
+logic open let p : Bool -> Unit
+let p x = q x                                --!! kappa.termination.failure
+    decreases x
+
+logic open let q : Bool -> Unit
+let q x = p x                                --!! kappa.termination.failure
+    decreases x
+
+--! assertDiagnosticFamily error kappa.termination.failure

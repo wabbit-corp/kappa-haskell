@@ -1,0 +1,44 @@
+-- Source artifacts: RA-7550 (Local trait impls for non-local types via unnamed free constants),
+--                   CHALK-DOC-book/src/clauses/coherence.md (orphan).
+-- Spec: traits.instances (local-instance paragraph).
+-- Kappa spec rule: "Local instances are permitted only in block scopes under the
+-- rules of §9.3.1 and §30.1.1. In particular, a local instance MUST mention at
+-- least one trait or type declared in the same block scope or an enclosing
+-- local block scope, participates in implicit resolution only within that
+-- lexical scope, and does not become part of the global instance environment
+-- outside it."
+-- This pins the local-instance head requirement: a local-block instance whose
+-- head names ONLY top-level (non-local) traits and types is rejected — its
+-- head must mention at least one local declaration.
+
+--! mode check
+
+trait LblTr (a : Type) =
+    lblName : a -> String
+
+data Glob : Type = Glob
+
+-- Global instance for the global type. This is fine — it is not a local
+-- instance.
+instance LblTr Glob =
+    let lblName _ = "global"
+
+-- NEGATIVE: a local-block instance whose head names ONLY the top-level
+-- `LblTr` and the top-level `Glob` does not mention any block-scope
+-- declaration. Per §traits.instances, such a local instance is rejected.
+use_only_globals : String
+let use_only_globals =
+    instance LblTr Glob =
+        let lblName _ = "block_local"
+    in lblName Glob
+
+-- POSITIVE control: a local block-scope instance whose head mentions a
+-- block-scope-declared type is accepted.
+use_local_type : String
+let use_local_type =
+    data Local : Type = Local
+    instance LblTr Local =
+        let lblName _ = "block_local_typed"
+    in lblName Local
+
+--! assertErrorCount 1

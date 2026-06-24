@@ -1,0 +1,43 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/AbstractType.hylo,
+--                   PR#370 (implement conformance checking for method bundles)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- Hylo: a type declared to conform to a trait must implement all required
+-- members. If any required member is absent, the type check fails with
+-- "does not conform." In Kappa this is an unsolved trait-proof obligation.
+
+--! mode check
+
+trait Printable a where
+    display : a -> String
+
+trait Comparable a where
+    lessThan : a -> a -> Bool
+
+data Temp : Type = Celsius Float | Fahrenheit Float
+
+data Score : Type = Score Int
+
+-- POSITIVE: Score provides all required members for Printable.
+impl Printable Score where
+    let display (Score n) = "score:" ++ show n
+
+printScore : Score -> String
+let printScore s = display s
+
+-- POSITIVE: Score also provides Comparable.
+impl Comparable Score where
+    let lessThan (Score a) (Score b) = a < b
+
+-- NEGATIVE: Temp claims to conform but provides no implementations.
+-- Both Printable and Comparable obligations are unsolved.
+printTemp : Temp -> String
+let printTemp t = display t    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+compareTemps : Temp -> Temp -> Bool
+let compareTemps a b = lessThan a b    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

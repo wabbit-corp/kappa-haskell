@@ -1,0 +1,53 @@
+-- Source: Coalton issue #512 (add ambiguous instance check — `into (into x)`
+--   should fail), #913 (ambiguous predicate in local closure).
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--   (kappa.implicit.ambiguous §3.2.4).
+--
+-- When implicit resolution finds more than one valid candidate for a trait goal,
+-- it must emit kappa.implicit.ambiguous. The diagnostic must identify the
+-- ambiguous goal, all ambiguous candidates, and a hint for disambiguation.
+-- A chained conversion `f (f x)` where `f`'s output type is not constrained
+-- is the canonical example of a call that is ambiguous in the intermediate type.
+
+--! mode check
+
+-- A multi-instance conversion trait.
+trait Into (a : Type) (b : Type) =
+    into : a -> b
+
+instance Into Int String =
+    let into n = "int"
+
+instance Into String Int =
+    let into s = 0
+
+instance Into Int Bool =
+    let into n = n > 0
+
+-- POSITIVE: a single conversion with both types determined.
+singleInto : String
+let singleInto = into (42 : Int)
+
+--! assertType singleInto String
+
+-- POSITIVE: nested conversions with explicit type annotations to disambiguate.
+doubleIntoAnnotated : Int
+let doubleIntoAnnotated = into (into (42 : Int) : String)
+
+--! assertType doubleIntoAnnotated Int
+
+-- NEGATIVE: chained `into (into x)` where the intermediate type is unknown.
+-- The inner `into` result type `?b` and the outer `into` source type `?b` are
+-- ambiguous: there are multiple instances for the intermediate type.
+doubleIntoAmbiguous : Int
+let doubleIntoAmbiguous = into (into (42 : Int))    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- NEGATIVE: a local closure where the class constraint has an ambiguous
+-- intermediate type. The lambda `fn x -> into (into x)` does not uniquely
+-- determine the intermediate type without additional annotation.
+ambiguousLambda : Int -> Int
+let ambiguousLambda = fn x -> into (into (x : Int))    --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

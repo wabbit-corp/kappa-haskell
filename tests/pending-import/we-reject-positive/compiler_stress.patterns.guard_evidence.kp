@@ -1,0 +1,17 @@
+-- Stress test: a guarded case introduces guard-success evidence into the branch
+-- Spec: expressions.match.guarded_cases_introduce_guard_success_evidence
+
+--! mode check
+
+-- requirePositive demands a proof that n > 0; supplied by the guard evidence.
+requirePositive : (n : Int) -> n > 0 -> String
+let requirePositive n _ = "positive: " ++ toString n
+
+-- POSITIVE: inside the guarded branch, the compiler knows n > 0 from the guard.
+describeInt : Int -> String
+let describeInt n =
+    match n
+    case n if n > 0 -> requirePositive n (guard_evidence)
+    case _          -> "non-positive"
+
+--! assertNoErrors

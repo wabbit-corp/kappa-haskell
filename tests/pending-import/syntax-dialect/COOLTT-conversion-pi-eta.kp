@@ -1,0 +1,68 @@
+-- Source artifacts: cooltt PR #52 (when quoting in pi type, bind var inside lam),
+--               PR #286 (fix bug in conversion checker: exception hidden in lambda).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- Two function values are definitionally equal if they are equal when applied
+-- to any argument (eta-expansion for Pi types). This is the eta rule for
+-- functions: `f = \x -> f x`.
+--
+-- PR #52 exposed a bug where normalizing a pi-typed term did not produce a
+-- lambda-wrapped form, causing an incorrect normal form (`[]` instead of
+-- `\_ -> []`). The conversion checker must correctly eta-expand functions
+-- when comparing them.
+--
+-- PR #286 exposed a bug where the conversion checker's try-catch was wrapped
+-- in a lambda, hiding exceptions. The portable obligation: the conversion
+-- checker must not silently swallow errors.
+
+--! mode check
+
+-- POSITIVE: eta-expansion for functions.
+-- `f` and `\x -> f x` are definitionally equal.
+etaExpand : forall {A B : Type} -> (f : A -> B) -> f = (\x -> f x)
+let etaExpand _ = refl
+
+-- POSITIVE: the identity function is equal to its eta-expansion.
+idEta : forall {A : Type} -> (\x -> x) = ((\f -> \x -> f x) (\x -> x))
+let idEta = refl
+
+-- POSITIVE: two functions that compute the same result are equal
+-- if they are definitionally equal.
+addZeroLeft : (\n -> n + 0) = (\n -> n)
+let addZeroLeft = refl    -- true if + reduces correctly
+
+-- POSITIVE: function that takes a function argument and applies it.
+applyTwice : forall {A : Type} -> (A -> A) -> A -> A
+let applyTwice f x = f (f x)
+
+-- POSITIVE: eta for a constant function.
+const : forall {A B : Type} -> A -> B -> A
+let const x _ = x
+
+etaConst : forall {A B : Type} (x : A) -> const x = (\_ -> x)
+let etaConst _ = refl
+
+-- POSITIVE: applying a pi-typed definition results in the applied function.
+applyPi : forall {A B : Type} -> (A -> B) -> A -> B
+let applyPi f x = f x
+
+-- POSITIVE: function composition.
+compose : forall {A B C : Type} -> (B -> C) -> (A -> B) -> A -> C
+let compose g f x = g (f x)
+
+-- POSITIVE: identity composition with function eta.
+composeId : forall {A B : Type} (f : A -> B) -> compose (\x -> x) f = f
+let composeId _ = refl
+
+-- POSITIVE: a function returning a function; eta applies at each level.
+curry : forall {A B C : Type} -> ((A, B) -> C) -> A -> B -> C
+let curry f x y = f (x, y)
+
+uncurry : forall {A B C : Type} -> (A -> B -> C) -> (A, B) -> C
+let uncurry f p = f p.1 p.2
+
+-- NEGATIVE: passing a term of the wrong type to a function.
+badApply : Nat
+let badApply = applyTwice True 42    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

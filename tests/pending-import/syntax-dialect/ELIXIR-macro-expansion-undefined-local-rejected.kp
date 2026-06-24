@@ -1,0 +1,54 @@
+-- Source issues: kernel/guard_test.exs "refuses to compile nonsensical code"
+--   ("cannot find or invoke local undefined/1"),
+--   ELIXIR-PR-5156 (improve UndefinedFunctionError when using macros without require),
+--   errors_test.exs "macro with undefined local",
+--   errors_test.exs "macros error stacktrace"
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved),
+--       compiler.frontir.standard_diagnostic_families.macro_elaboration
+--       (family kappa.macro.failure)
+-- Kappa spec rule (§3.2.2 kappa.name.unresolved, §3.2.12 kappa.macro.failure):
+-- In Elixir, when a guard macro (defguard/defguardp) or any macro body references a local
+-- function that does not exist at compile time, the compiler rejects it:
+--   defguard foo(x) when undefined(x)  -- "cannot find or invoke local undefined/1"
+-- This is a compile-time name resolution failure during macro expansion.
+-- In Kappa, macro expansion that references an unresolvable name produces
+-- kappa.name.unresolved (and the macro failure context may produce kappa.macro.failure
+-- as an enclosing diagnostic).
+
+--! mode check
+
+-- POSITIVE: macro body references only admissible functions that exist.
+macro isPositiveInt(n) = isInt n and n > 0
+
+-- POSITIVE: macro using a locally-defined helper function.
+let checkRange lo hi v = v >= lo and v <= hi
+
+macro inRange(n) = checkRange 0 100 n
+
+-- POSITIVE: function referencing a macro that is already defined.
+validCount : Int -> Bool
+let validCount n = inRange n
+
+-- NEGATIVE: macro body references 'undefined1' which does not exist anywhere.
+-- Compile-time expansion fails when it cannot find undefined1.
+macro badMacro(x) =
+    undefined1 x                        --!! kappa.name.unresolved
+
+-- NEGATIVE: macro body references 'nonexistentGuard' which is not defined.
+macro badGuardMacro(v) =
+    nonexistentGuard v and isInt v      --!! kappa.name.unresolved
+
+-- NEGATIVE: function body calls a macro that was never imported or defined.
+-- The macro 'formatSpecial' is referenced but does not exist in scope.
+useUndefinedMacro : Int -> String
+let useUndefinedMacro n =
+    formatSpecial n                     --!! kappa.name.unresolved
+
+-- NEGATIVE: macro invoked without the required require/import; using a module's
+-- macros without requiring that module first is an unresolved reference.
+useWithoutRequire : Int -> Bool
+let useWithoutRequire n =
+    SomeLibrary.specialMacro n          --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

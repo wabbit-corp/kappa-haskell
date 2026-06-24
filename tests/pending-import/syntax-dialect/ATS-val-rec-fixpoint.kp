@@ -1,0 +1,76 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`val:rec fact = lam(x:int): int => ...`, `fun:rec fact(x:int):int = ...`),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`val :rec fact = lam(x:int):int =<ntm> if ...`)
+-- Spec: declarations.term_declarations (§9.1),
+--       declarations.totality.local_recursion (§15.14),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- ATS3 pattern: `val:rec f = lam(x) => ... f ...` introduces a recursive
+--   value binding where `f` is in scope inside the lambda body. Without the
+--   `:rec` modifier, the name `f` is not in scope inside the right-hand side.
+-- Kappa mapping: at top level, a preceding signature makes the name available
+--   for recursion (§9.1). In a local block, a local named binding is
+--   non-recursive by default; a preceding local signature enables recursion
+--   (§15.14). Without a local signature, a self-reference is unresolved.
+-- Portable obligation: a local self-reference inside a binding that has no
+--   preceding local signature must produce kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: top-level recursive function (preceding signature enables recursion).
+fact : Int -> Int
+let fact n =
+    if n <= 0 then 1 else n * fact (n - 1)
+
+-- POSITIVE: mutually recursive top-level functions.
+isEven : Int -> Bool
+isOdd  : Int -> Bool
+
+let isEven n =
+    if n == 0 then True else isOdd (n - 1)
+
+let isOdd n =
+    if n == 0 then False else isEven (n - 1)
+
+-- POSITIVE: recursive Fibonacci.
+fib : Int -> Int
+let fib n =
+    if n <= 1 then n else fib (n - 1) + fib (n - 2)
+
+-- POSITIVE: local helper with a preceding local signature is recursive.
+sumList : List Int -> Int
+let sumList xs =
+    go 0 xs
+    where
+        go : Int -> List Int -> Int
+        let go acc ys =
+            match ys
+            case []      -> acc
+            case z :: zs -> go (acc + z) zs
+
+-- NEGATIVE: local binding without a preceding signature cannot self-reference.
+badFactTop : Int -> Int
+let badFactTop n =
+    block
+        -- `innerBad` has no preceding local signature → self-reference unresolved.
+        let innerBad m = innerBad m    --!! kappa.name.unresolved
+        innerBad n
+
+-- NEGATIVE: local lambda that tries to call itself by name without a signature.
+badLamTop : Int -> Int
+let badLamTop n =
+    block
+        let innerLam = \m -> innerLam m   --!! kappa.name.unresolved
+        innerLam n
+
+-- NEGATIVE: two local bindings without signatures that try to call each other
+-- (not mutually recursive via local signatures → both names unresolved).
+badMutualTop : Int -> Bool
+let badMutualTop n =
+    block
+        let localEven m = if m == 0 then True else localOdd (m - 1)   --!! kappa.name.unresolved
+        let localOdd  m = if m == 0 then False else localEven (m - 1) --!! kappa.name.unresolved
+        localEven n
+
+--! assertDiagnosticFamily error kappa.name.unresolved

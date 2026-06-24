@@ -1,0 +1,101 @@
+-- Source issues: CAIRO-2995, CAIRO-3133, CAIRO-3177, CAIRO-7711
+-- Spec: types.universes.inference_sketch (§11.1.3),
+--       types.universes.defaulting_non_user_written_inference_variables (§11.1.3A),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.unsolved-metavariable),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- Kappa spec rule (§11.1.3 "Inference"):
+--   "A type metavariable introduced at an application site is solved by
+--    unification with the elaborated argument types or by trait-bound
+--    propagation. If no solution can be found and the metavariable is
+--    non-user-written, the compiler applies defaulting rules; if no default
+--    applies, compilation fails with kappa.type.unsolved-metavariable."
+-- Cairo issue CAIRO-2995: generic struct with `+ATrait` bound failed type
+--   deduction when the impl was present in the current context.
+-- Cairo issue CAIRO-3177: a type inference regression between 1.0.0 and 1.1.0
+--   caused previously-compiling generic code to fail.
+-- Cairo issue CAIRO-7711: `const` expressions failed to infer types from
+--   context; `assert!(c == 1_u8)` couldn't infer the type of `c`.
+
+--! mode check
+
+-- A trait whose presence enables certain operations.
+trait Numeric (a : Type) =
+    zero  : a
+    add   : (& x : a) -> (& y : a) -> a
+
+instance Numeric Int =
+    let zero = 0
+    let add x y = x + y
+
+-- A generic pair that requires its type parameter to be Numeric.
+data NumPair (a : Type) (@_ : Numeric a) : Type =
+    NumPair a a
+
+-- POSITIVE: the concrete type is inferred to be Int from the arguments.
+pairOfInts : NumPair Int
+let pairOfInts = NumPair (1 : Int) (2 : Int)
+
+-- POSITIVE: inference of the type parameter from a single annotated argument.
+inferredPair : NumPair Int
+let inferredPair = NumPair 3 4
+
+-- POSITIVE: a function that takes a NumPair and adds both components.
+sumPair :
+    forall (a : Type).
+    (@inst : Numeric a) ->
+    (& p : NumPair a) ->
+    a
+let sumPair (NumPair x y) = Numeric.add x y
+
+result : Int
+let result = sumPair (NumPair 5 6)
+
+-- POSITIVE: inferring the Numeric instance from the context of a const binding.
+myConst : Int
+let myConst = Numeric.zero
+
+-- NEGATIVE: trying to construct NumPair with a type that has no Numeric
+-- instance must fail; the bound cannot be discharged.
+data Text : Type = Text String
+
+badPair : NumPair Text
+let badPair = NumPair (Text "a") (Text "b")   --!! kappa.implicit.unsolved
+
+-- POSITIVE: a const expression whose type is inferred from the comparison
+-- context (similar to Cairo's `assert!(c == 1_u8)`).
+checkConst : Bool
+let checkConst =
+    let c : Int = 42
+    Numeric.add c Numeric.zero == 42
+
+instance Numeric Bool =
+    let zero = False
+    let add _ _ = False
+
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+instance Eq Int =
+    let (==) _ _ = True
+
+instance Eq Bool =
+    let (==) x y = True
+
+-- POSITIVE: type of a literal inferred from annotation.
+annotatedLiteral : Int
+let annotatedLiteral = 100
+
+-- NEGATIVE: a literal whose type cannot be uniquely inferred (ambiguous
+-- numeric default); the implementation must report unsolved-metavariable.
+-- We model this as an unannotated literal used only in a context that
+-- accepts any Numeric a.
+ambig : forall (a : Type). (@_ : Numeric a) -> a
+let ambig = Numeric.zero
+
+badLiteral : _
+let badLiteral = ambig                        --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

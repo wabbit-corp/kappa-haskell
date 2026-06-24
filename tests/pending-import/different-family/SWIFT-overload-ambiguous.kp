@@ -1,0 +1,63 @@
+-- Source issues: apple/swift #63428 (wrong overload selected for Decimal),
+--   apple/swift #87566 (overload resolution regression in Swift 6.3 between
+--   concrete extension and protocol extension with default arguments).
+--   When two or more overloaded function definitions match a call site with
+--   equal specificity, the elaborator must produce kappa.name.ambiguous
+--   rather than silently selecting one.
+-- Spec: modules.visibility_opacity_private_opaque §8.5,
+--       compiler.frontir.standard_diagnostic_families.name_import
+
+--! mode check
+
+-- POSITIVE: two overloads that are disambiguated by argument type.
+format : Nat -> String
+let format n = "nat:" ++ n
+
+format : Bool -> String
+let format True  = "true"
+let format False = "false"
+
+-- POSITIVE: call sites resolve unambiguously.
+fmtNat  : String
+let fmtNat  = format (42 : Nat)
+
+fmtBool : String
+let fmtBool = format True
+
+-- POSITIVE: overloading on arity is unambiguous.
+add : Nat -> Nat -> Nat
+let add x y = x + y
+
+add : Nat -> Nat -> Nat -> Nat
+let add x y z = x + y + z
+
+sum2 : Nat
+let sum2 = add 1 2
+
+sum3 : Nat
+let sum3 = add 1 2 3
+
+-- NEGATIVE: two definitions with the same name and identical type —
+-- the call site cannot disambiguate.
+process : String -> Nat
+let process s = 0
+
+process : String -> Nat    --!! kappa.name.ambiguous
+let process s = 1
+
+-- Calling process is now ambiguous.
+processResult : Nat
+let processResult = process "hello"    --!! kappa.name.ambiguous
+
+-- NEGATIVE: two overloads that have the same concrete resolved type at a
+-- particular call site with a polymorphic argument.
+render : forall {a : Type} -> a -> String
+let render _ = "generic"
+
+render : Nat -> String    --!! kappa.name.ambiguous
+let render n = "nat"
+
+renderNat : String
+let renderNat = render (5 : Nat)    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

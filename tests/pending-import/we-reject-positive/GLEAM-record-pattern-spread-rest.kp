@@ -1,0 +1,30 @@
+-- Source issues: gleam#474, gleam#588
+-- Spec: expressions.patterns.forms (17.2.1), types.records.update
+-- Anonymous record patterns support a spread/rest item `..` (discard) and
+-- `..rest` (capture residual). Omitted fields that are not named in the
+-- pattern and not captured by `..rest` are ignored.
+
+--! mode check
+--! assertNoErrors
+
+-- POSITIVE: `..` discards remaining fields.
+let get_x_only (r : (x : Int, y : Int, z : Int)) : Int =
+    let (x = px, ..) = r in px
+
+-- POSITIVE: `..rest` captures residual record.
+let split_record (r : (x : Int, y : Int, z : Int)) : ((y : Int, z : Int), Int) =
+    let (x = px, ..rest) = r in (rest, px)
+
+-- POSITIVE: spread in match branch.
+let first_field (r : (a : String, b : Int, c : Bool)) : String =
+    match r
+    case (a = s, ..) -> s
+
+-- POSITIVE: as-pattern on the record, then spread inside.
+let full_and_part (r : (x : Int, y : Int)) : ((x : Int, y : Int), Int) =
+    match r
+    case whole@(x = n, ..) -> (whole, n)
+
+-- POSITIVE: all fields named explicitly (no spread needed).
+let both_fields (r : (x : Int, y : Int)) : Int =
+    let (x = a, y = b) = r in a + b

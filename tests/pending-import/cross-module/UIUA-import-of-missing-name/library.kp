@@ -1,0 +1,7 @@
+module library
+
+-- Only `existingValue` is declared here; `missingFunction` is
+-- intentionally absent so that a use site of `library.missingFunction`
+-- produces an ordinary kappa.name.unresolved diagnostic.
+existingValue : Int
+let existingValue = 99

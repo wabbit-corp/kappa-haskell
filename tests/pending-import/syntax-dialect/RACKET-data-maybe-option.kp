@@ -1,0 +1,48 @@
+-- Source: spec-derived exercise from Racket's optional value patterns and contracts for optional args (RACKET_CANDIDATE_LEDGER.md staged-tests entry: "Racket option patterns"; no single tracker issue)
+-- Spec: data_types.data_declarations, expressions.match
+--
+-- A parametric data type with two constructors models optional values (Maybe/Option).
+-- Pattern matching on Option must cover both None and Some cases.
+-- The type parameter is threaded through all operations.
+
+--! mode check
+
+data Option : Type -> Type =
+    None : Option A
+  | Some : (A : Type) -> A -> Option A
+
+-- POSITIVE: map over an Option.
+mapOption : (A B : Type) -> (A -> B) -> Option A -> Option B
+let mapOption _ _ _ None       = None
+let mapOption A B f (Some _ x) = Some B (f x)
+
+-- POSITIVE: bind (flatMap) for Option.
+bindOption : (A B : Type) -> Option A -> (A -> Option B) -> Option B
+let bindOption _ _ None       _ = None
+let bindOption A B (Some _ x) f = f x
+
+-- POSITIVE: fromMaybe with a default.
+fromOption : (A : Type) -> A -> Option A -> A
+let fromOption _ def None       = def
+let fromOption _ _   (Some _ x) = x
+
+-- POSITIVE: sequence two Options, keeping the second value.
+andOption : (A B : Type) -> Option A -> Option B -> Option B
+let andOption _ _ None        _   = None
+let andOption _ _ (Some _ _)  mb  = mb
+
+-- POSITIVE: convert a Bool-guarded value to Option.
+guardedOption : (A : Type) -> Bool -> A -> Option A
+let guardedOption _ False _ = None
+let guardedOption A True  x = Some A x
+
+-- NEGATIVE: applying mapOption with wrong function type.
+badMap : Option Bool
+let badMap = mapOption Int Bool (42) (Some Int 5)   --!! kappa.type.mismatch
+
+-- NEGATIVE: using None where Option Int expected — None is polymorphic so this
+-- is accepted; but using a non-Option value where Option is expected fails.
+badOption : Option Int
+let badOption = True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

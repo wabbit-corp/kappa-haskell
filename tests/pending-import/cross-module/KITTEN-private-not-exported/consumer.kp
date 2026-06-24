@@ -1,0 +1,20 @@
+-- Source issue: Kitten #117 (finish module system; "private def" for
+--   hiding internal definitions). Portable signal: names marked
+--   `private` are not visible to importers.
+-- Spec: modules.visibility_opacity_private_opaque.private,
+--       modules.exports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+
+module consumer
+
+import provider
+
+--! mode check
+
+-- NEGATIVE: a `private` declaration in `provider` is not visible across
+-- the module boundary, even with the fully qualified spelling.
+usePrivate : Int
+let usePrivate = provider.privateValue     --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

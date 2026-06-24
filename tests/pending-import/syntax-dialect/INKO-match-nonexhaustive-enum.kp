@@ -1,0 +1,24 @@
+-- Source issues: docs/pattern-matching, inko#563
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Inko: a match expression over an enum must cover every variant.
+-- Omitting one or more variants is a compile-time error.
+
+--! mode check
+
+data Color : Type = Red | Green | Blue
+
+-- POSITIVE: exhaustive match covering all three variants.
+describeAll : Color -> String
+let describeAll c = match c with
+    | Red   -> "red"
+    | Green -> "green"
+    | Blue  -> "blue"
+
+
+-- NEGATIVE: Blue is not covered; the match is non-exhaustive.
+describePartial : Color -> String
+let describePartial c = match c with   --!! kappa.pattern.non-exhaustive
+    | Red   -> "red"
+    | Green -> "green"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

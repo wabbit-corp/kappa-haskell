@@ -1,0 +1,54 @@
+-- Source artifacts: narya docs/interactive.rst (holes report type and
+--               context), narya issue #36 (number holes in textual order),
+--               harvested test test/black/holes.t/holes.ny.
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.diagnostics_records
+--
+-- Every hole left unsolved at the end of elaboration is reported (the
+-- enclosing declaration fails compilation). The diagnostic carries the
+-- hole's expected type and the local context. Holes inside match
+-- branches, constructor literals, function arguments, and let
+-- expressions are all reported; none are silently suppressed.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- POSITIVE: a single hole at the top of a definition is reported.
+topHole : Nat
+let topHole = ?topGoal    --!! kappa.hole.unsolved
+
+-- POSITIVE: holes inside constructor-application fields are reported
+-- once each.
+recordWithHoles : Pair Nat Nat
+let recordWithHoles = MkPair ?lhs ?rhs    --!! kappa.hole.unsolved
+
+-- POSITIVE: holes inside match branches are reported.
+matchHoles : Nat -> Nat
+let matchHoles n =
+    match n
+      case Zero  -> ?zeroBranch    --!! kappa.hole.unsolved
+      case Suc _ -> ?sucBranch     --!! kappa.hole.unsolved
+
+-- POSITIVE: a hole inside a let-expression body is reported.
+letHole : Nat
+let letHole =
+    let
+        x : Nat = Zero
+    in
+        ?bodyGoal    --!! kappa.hole.unsolved
+
+-- POSITIVE: a hole used as a function argument is reported with the
+-- argument's expected type.
+needNat : Nat -> Nat
+let needNat n = n
+
+useHoleArg : Nat
+let useHoleArg = needNat ?argGoal    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

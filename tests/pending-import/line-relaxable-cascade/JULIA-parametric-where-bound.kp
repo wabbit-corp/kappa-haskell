@@ -1,0 +1,70 @@
+-- Source: Julia manual, "Parametric Methods", §12.5 "where" clauses,
+--         JuliaLang/julia bound checking
+-- Spec: types.quantification,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- In Julia, a parametric method `f(x::T) where T<:Number` requires that
+-- the type argument T satisfies T<:Number. Calling with a type that does
+-- not satisfy the bound is a type error. In Kappa, a forall binder with a
+-- trait constraint must have that constraint satisfied at every call site;
+-- an unsatisfied constraint is kappa.implicit.unsolved.
+
+--! mode check
+
+trait Numeric (a : Type) =
+    toFloat : a -> Float
+
+data Real    : Type = Real Float
+data Complex : Type = Complex Float Float
+
+instance Numeric Real =
+    let toFloat (Real x) = x
+
+-- A function that requires its type argument to be Numeric
+-- (Julia: `f(x::T) where T<:Number`).
+norm :
+    forall (a : Type).
+    (@_ : Numeric a) ->
+    (& x : a) -> Float
+let norm x = toFloat x
+
+-- POSITIVE: Real satisfies Numeric.
+normReal : Float
+let normReal = norm (Real 3.0)
+
+-- POSITIVE: a function with multiple bounds (analogous to T<:Number,T<:Real).
+trait Ordered (a : Type) =
+    lt : a -> a -> Bool
+
+instance Ordered Real =
+    let lt (Real x) (Real y) = x < y
+
+clamp :
+    forall (a : Type).
+    (@_ : Numeric a) ->
+    (@_ : Ordered a) ->
+    (& lo : a) -> (& hi : a) -> (& x : a) -> Float
+let clamp lo hi x =
+    if lt x lo then toFloat lo
+    else if lt hi x then toFloat hi
+    else toFloat x
+
+clampOk : Float
+let clampOk = clamp (Real 0.0) (Real 10.0) (Real 5.0)
+
+-- NEGATIVE: Complex does not have a Numeric instance,
+-- so using it where Numeric is required fails.
+normComplex : Float
+let normComplex = norm (Complex 3.0 4.0)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: a function that requires both Numeric and Ordered;
+-- calling with a type that satisfies only one bound also fails.
+data Tag : Type = Tag String
+
+instance Ordered Tag =
+    let lt (Tag x) (Tag y) = True
+
+clampTag : Float
+let clampTag = clamp (Tag "a") (Tag "z") (Tag "m")   --!! kappa.implicit.unsolved
+

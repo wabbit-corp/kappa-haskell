@@ -1,0 +1,57 @@
+-- Source issue: (original — GADT index as witness in match arm)
+-- Spec: data_types.gadts, expressions.match,
+--   compiler.frontir.standard_diagnostic_families.type_equality
+-- When a GADT constructor constrains an index, matching on that constructor
+-- brings the index constraint into scope as a local equality fact.  Functions
+-- that use the equality fact inside the match arm are accepted; functions that
+-- try to use a fact from one arm in another arm are rejected.
+
+--! mode check
+
+-- A typed expression GADT — the index tracks the type.
+data Expr (a : Type) : Type =
+    BoolLit : Bool -> Expr Bool
+    IntLit  : Int  -> Expr Int
+    ITE     : Expr Bool -> Expr a -> Expr a -> Expr a
+
+-- Evaluator: structurally recursive, type-correct by GADT index.
+eval : forall {a : Type}. Expr a -> a
+let eval e decreases structural e =
+    match e
+    case BoolLit b       -> b                         -- a = Bool here
+    case IntLit  n       -> n                         -- a = Int here
+    case ITE c t f       ->
+        let cond = eval c   -- Expr Bool → Bool
+        let tv   = eval t   -- Expr a → a
+        let fv   = eval f   -- Expr a → a
+        if cond then tv else fv
+
+-- POSITIVE: eval on a boolean expression.
+boolResult : Bool
+let boolResult = eval (BoolLit True)
+
+-- POSITIVE: eval on an integer expression.
+intResult : Int
+let intResult = eval (IntLit 42)
+
+-- POSITIVE: a conditional expression with refined index.
+complexExpr : Expr Int
+let complexExpr = ITE (BoolLit False) (IntLit 1) (IntLit 2)
+
+complex : Int
+let complex = eval complexExpr
+
+-- NEGATIVE: attempting to treat the result of eval Bool as Int directly.
+-- The index enforces that `eval (BoolLit x)` returns Bool, not Int.
+badCoerce : Bool -> Int
+let badCoerce b = eval (BoolLit b)   --!! kappa.type.mismatch
+
+-- POSITIVE: a function that inspects the Expr type to decide the fallback.
+defaultValue : forall {a : Type}. Expr a -> a -> a
+let defaultValue e fallback =
+    match e
+    case BoolLit b   -> b
+    case IntLit  n   -> n
+    case ITE _ t _   -> eval t
+
+--! assertDiagnosticFamily error kappa.type.mismatch

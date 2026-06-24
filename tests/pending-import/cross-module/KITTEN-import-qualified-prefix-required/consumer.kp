@@ -1,0 +1,28 @@
+-- Source issue: Kitten #117 (`import qualified foo` requires every use
+--   of foo's names to be prefixed with `foo.`; bare names from foo are
+--   not in scope).
+-- Spec: modules.imports (the bare module-only `import M` form brings
+--       qualified access only; selective and qualified bare-name access
+--       require the `.(...)` or `.*` forms), modules.names.dotted_name_resolution_dotted,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+
+module consumer
+
+-- The bare module-only import form. Per §8.3, this brings `provider`
+-- into scope as a qualifier only; bare names of provider are not
+-- imported.
+import provider
+
+--! mode check
+
+-- POSITIVE: qualified access succeeds.
+useQualified : Int
+let useQualified = provider.exportedA
+
+-- NEGATIVE: bare use of a name from the qualified-only import is
+-- unresolved.
+useBare : Int
+let useBare = exportedA                    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

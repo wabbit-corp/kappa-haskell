@@ -1,0 +1,70 @@
+-- Source issues: vale#405 (Consider making interfaces sealed by default),
+--               Vale VirtualTests, vale#376 (Exported non-sealed interfaces)
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- In Vale, a `sealed interface` limits implementations to the same module,
+-- which enables exhaustive pattern matching over all known implementations.
+-- Matching a sealed interface without covering all known implementations is
+-- rejected. In Kappa, a closed data type is exhaustively matchable; a match
+-- that omits a constructor arm is kappa.pattern.non-exhaustive.
+
+--! mode check
+
+-- A sealed (closed) data type with two known constructors.
+sealed data Shape : Type =
+    Circle Int
+    Rectangle Int Int
+
+-- POSITIVE: a match that covers every constructor of the sealed Shape.
+area : Shape -> Int
+let area s =
+    match s
+    case Circle r           -> r * r * 3
+    case Rectangle w h      -> w * h
+
+-- POSITIVE: same with explicit values.
+isCircle : Shape -> Bool
+let isCircle s =
+    match s
+    case Circle _       -> True
+    case Rectangle _ _  -> False
+
+-- NEGATIVE: a match that omits the Rectangle arm. For a sealed type this
+-- is not exhaustive and must be rejected.
+badPartialMatch : Shape -> Int
+let badPartialMatch s =
+    match s                   --!! kappa.pattern.non-exhaustive
+    case Circle r -> r * r
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: a wildcard arm covers remaining cases.
+withWildcard : Shape -> Int
+let withWildcard s =
+    match s
+    case Circle r   -> r
+    case _          -> 0
+
+-- A second sealed data type with three constructors.
+sealed data Color : Type =
+    Red
+    Green
+    Blue
+
+-- NEGATIVE: matching only two of three cases for a sealed type.
+partialColor : Color -> Int
+let partialColor c =
+    match c             --!! kappa.pattern.non-exhaustive
+    case Red   -> 1
+    case Green -> 2
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: matching all three cases.
+fullColor : Color -> Int
+let fullColor c =
+    match c
+    case Red   -> 1
+    case Green -> 2
+    case Blue  -> 3

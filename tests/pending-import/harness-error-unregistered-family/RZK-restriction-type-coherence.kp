@@ -1,0 +1,77 @@
+-- Source issues: rzk#33 — missing coherence check for restriction types;
+--   a restriction type with multiple branches must require that any two
+--   branches agree on the intersection of their conditions; a checker that
+--   omits this coherence test allows definitionally inconsistent restrictions.
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- A record or function type that carries multiple conditional branches
+-- (analagous to extension types with multiple restrictions in RSTT)
+-- requires that all branches agree wherever their preconditions overlap.
+-- If two branches specify conflicting values on the same input, the type is
+-- ill-formed and must be rejected.
+
+--! mode check
+
+-- Supporting types.
+data Color : Type = Red | Green | Blue
+data Shape : Type = Circle | Square | Triangle
+
+-- POSITIVE: a function that picks a result based on a single condition —
+-- no coherence concern (only one branch).
+singleBranch : Bool -> Nat
+let singleBranch flag = if flag then 1 else 0
+
+-- POSITIVE: two functions with disjoint domains merged into one;
+-- both branches agree trivially because their domains do not overlap.
+data Tag : Type = TagA | TagB | TagC
+
+handleA : Nat
+let handleA = 10
+
+handleB : Nat
+let handleB = 20
+
+dispatch : Tag -> Nat
+let dispatch t =
+    match t
+    case TagA -> 10
+    case TagB -> 20
+    case TagC -> 30
+
+-- POSITIVE: a dependent pair where both components are used coherently.
+coherentPair : (Nat, Bool)
+let coherentPair = (42, True)
+
+-- POSITIVE: pattern matching on a pair coherently.
+swapPair : forall (a b : Type). (a, b) -> (b, a)
+let swapPair (x, y) = (y, x)
+
+-- POSITIVE: record with multiple fields where each field has a distinct name
+-- — no overlap, no coherence issue.
+data NamedPair : Type =
+    MkNamedPair : (fst : Nat) -> (snd : Bool) -> NamedPair
+
+mkPair : NamedPair
+let mkPair = MkNamedPair 1 True
+
+-- NEGATIVE: a function that attempts to give two contradictory values for
+-- the same argument, analogous to a restriction type with incoherent branches.
+-- Two `let` bindings for the same name in the same scope give different values
+-- — the second binding attempts to re-assign the same variable.
+incoherentDef : Nat
+let incoherentDef =
+    let v : Nat = 0
+    let v : Nat = 1    --!! kappa.name.shadowing
+    v
+
+-- NEGATIVE: overlapping pattern match with contradictory outcomes for the
+-- same case — a duplicate arm makes the second arm unreachable.
+redundantArm : Nat -> Nat
+let redundantArm n =
+    match n
+    case 0 -> 10
+    case 0 -> 20    --!! kappa.pattern.unreachable
+    case _ -> 99
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

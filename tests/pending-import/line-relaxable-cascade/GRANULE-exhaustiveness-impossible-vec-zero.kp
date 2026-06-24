@@ -1,0 +1,42 @@
+-- Source: granule-project/granule
+--         tests/cases/positive/indexed/big.gr;
+--         tests/cases/negative/indexed/badIndexingMatch.gr
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A `match` on a `Vec Z a` scrutinee may only see the `Nil` constructor;
+-- a `Cons` branch is unreachable by index refinement. Writing only the
+-- `Cons` clause is a non-exhaustive coverage of the reachable shape.
+
+module test
+
+--! mode check
+
+data Nat : Type =
+    Z
+    S Nat
+
+data Vec (n : Nat) (a : Type) : Type =
+    Nil : Vec Z a
+    Cons : forall (m : Nat). (1 x : a) -> (1 xs : Vec m a) -> Vec (S m) a
+
+-- POSITIVE: matching a Vec Z covers exactly Nil.
+empties : forall (a : Type). (1 v : Vec Z a) -> Unit
+let empties Nil = ()
+
+
+-- POSITIVE: rejecting Cons on Vec Z with an `impossible` body is OK
+-- because the case is provably unreachable (§17.1.4).
+emptyImp : forall (a : Type). (1 v : Vec Z a) -> Unit
+let emptyImp v =
+    match v
+      case Nil      -> ()
+      case Cons _ _ -> impossible
+
+
+-- NEGATIVE: claiming the Cons clause is reachable on a Vec Z scrutinee
+-- is unreachable by index refinement; pattern set is unreachable.
+badImp : forall (a : Type). (1 v : Vec Z a) -> a
+let badImp (Cons x _) = x    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

@@ -1,0 +1,19 @@
+-- Stress test: updating a dependent record field that breaks the invariant must be diagnosed
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.dependent_record_update_repair_failure
+
+--! mode check
+
+data Vec : (n : Nat) -> Type -> Type =
+    VNil  : {a : Type} -> Vec 0 a
+    VCons : {a : Type} -> {n : Nat} -> a -> Vec n a -> Vec (n + 1) a
+
+-- Dependent record: elems type is indexed by the sibling field len
+type SizedVec : Type = (len : Nat, elems : Vec Int this.len)
+
+-- NEGATIVE: updating len without updating elems breaks the invariant;
+-- after the update, elems still has type Vec Int v.len but len is now v.len + 1
+bad : SizedVec -> SizedVec
+let bad v =
+    v.{ len = v.len + 1 }  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,38 @@
+-- Source: granule-project/granule PR #155 (Bidirectional kinding),
+--         PR #145 (Type-level case)
+-- Spec: types.functions, expressions.application.subsumption,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Bidirectional kinding pushes the expected kind down into sub-expressions.
+-- Passing a value of one kind where another is expected is a type-equality
+-- failure, family `kappa.type.mismatch` (§3.2.3).
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+data Nat : Type =
+    Z
+    S Nat
+
+-- POSITIVE: kinds inferred bidirectionally.
+data Vec (n : Nat) (a : Type) : Type =
+    Nil : Vec Z a
+    Cons : forall (m : Nat). (1 x : a) -> (1 xs : Vec m a) -> Vec (S m) a
+
+-- POSITIVE: a polymorphic function whose kinds the checker infers.
+length : forall (a : Type) (n : Nat). (1 v : Vec n a) -> Nat
+let length Nil          = Z
+let length (Cons _ xs)  = S (length xs)
+
+--! assertType length (forall (a : Type) (n : Nat). (1 v : Vec n a) -> Nat)
+
+-- NEGATIVE: applying Vec, which expects (Nat, Type), to (Type, Type)
+-- is a kind/type-equality failure.
+data Bad : Type =
+    MkBad : Vec Bool Int -> Bad   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

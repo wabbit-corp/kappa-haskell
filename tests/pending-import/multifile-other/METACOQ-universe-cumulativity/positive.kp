@@ -1,0 +1,30 @@
+-- Source issues: METACOQ-13, METACOQ-16, METACOQ-74, METACOQ-79, METACOQ-96
+-- Spec: types.universes, types.universes.cumulativity
+--
+-- MetaCoq formalizes Coq's predicative universe hierarchy. Kappa requires
+-- the same stratification: Type0 : Type1, Type1 : Type2, and so on, with
+-- cumulativity Type u <= Type v when u <= v. A value of a smaller universe
+-- may be used where a larger one is expected, never the reverse.
+
+module positive
+
+--! mode check
+
+-- POSITIVE: standard stratification of the universe hierarchy.
+smallSort : Type1
+let smallSort = Type0
+
+midSort : Type2
+let midSort = Type1
+
+-- POSITIVE: cumulativity allows Nat : Type0 to inhabit Type1.
+liftedNat : Type1
+let liftedNat = Nat
+
+-- POSITIVE: a Pi type living at the maximum of its components.
+piType : Type0
+let piType = Nat -> Nat
+
+-- Suite-wide budget: exactly the 2 error(s) marked in negative.lang;
+-- every positive declaration in this file must elaborate cleanly.
+--! assertErrorCount 2

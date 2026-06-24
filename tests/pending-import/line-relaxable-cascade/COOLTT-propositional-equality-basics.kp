@@ -1,0 +1,70 @@
+-- Source artifacts: cooltt test prelude.cooltt (path, refl, symm, trans, cong,
+--               funext), test equation.cooltt (equational reasoning DSL),
+--               PR #305 (equational reasoning DSL).
+-- Spec: types.propositions.propositional_equality_type_positions
+--
+-- Propositional equality supports:
+-- - Reflexivity: `refl : a = a`
+-- - Symmetry: if `p : a = b` then there exists `q : b = a`
+-- - Transitivity: if `p : a = b` and `q : b = c` then there exists `r : a = c`
+-- - Congruence: if `p : a = b` then `f a = f b` for any function `f`
+-- - Function extensionality: if `h : forall x -> f x = g x` then `f = g`
+-- All of these must type-check. Incorrect equality types (wrong endpoints,
+-- wrong types) must be rejected.
+
+--! mode check
+
+-- POSITIVE: reflexivity.
+reflNat : 5 = 5
+let reflNat = refl
+
+reflPoly : forall {A : Type} (a : A) -> a = a
+let reflPoly _ = refl
+
+-- POSITIVE: symmetry (derived from the J eliminator).
+symm : forall {A : Type} {a b : A} -> a = b -> b = a
+let symm refl = refl
+
+-- POSITIVE: transitivity.
+trans : forall {A : Type} {a b c : A} -> a = b -> b = c -> a = c
+let trans refl q = q
+
+-- POSITIVE: congruence (ap / cong).
+cong : forall {A B : Type} {a b : A} -> (f : A -> B) -> a = b -> f a = f b
+let cong _ refl = refl
+
+-- POSITIVE: congruence with a specific function.
+succCong : forall {n m : Nat} -> n = m -> suc n = suc m
+let succCong = cong suc
+
+-- POSITIVE: function extensionality.
+-- If two functions agree on all inputs, they are equal.
+funext : forall {A B : Type} {f g : A -> B} ->
+         (forall (x : A) -> f x = g x) ->
+         f = g
+let funext h = ?funextHole    --!! kappa.hole.unsolved
+
+-- POSITIVE: equational reasoning (multi-step transitivity).
+-- a = b = c is proven by chaining equalities.
+chainedEq : forall {a b c d : Nat} -> a = b -> b = c -> c = d -> a = d
+let chainedEq p q r = trans p (trans q r)
+
+-- POSITIVE: equality is used in a type position.
+-- `transport p x` moves `x : P a` to `P b` along `p : a = b`.
+transport : forall {A : Type} {a b : A} -> (P : A -> Type) -> a = b -> P a -> P b
+let transport _ refl x = x
+
+-- POSITIVE: substitutivity in a type position.
+subst : forall {A : Type} {a b : A} -> (P : A -> Type) -> a = b -> P a -> P b
+let subst P refl x = x
+
+-- NEGATIVE: reflexivity at the wrong type — different values are not equal.
+badRefl : 0 = 1
+let badRefl = refl    --!! kappa.type.mismatch
+
+-- NEGATIVE: providing a proof that `Nat = Bool` (wrong types).
+badTypeEq : Nat = Bool
+let badTypeEq = refl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+--! assertDiagnosticFamily error kappa.type.mismatch

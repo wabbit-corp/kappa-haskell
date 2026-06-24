@@ -1,0 +1,48 @@
+-- Source issues: FLIX-7118, FLIX-7209
+-- Spec: effects.monadic_core.deep_handlers_deep_handle, types.quantification.effect_row_syntax
+-- Nested handling of two effects: after the inner handler eliminates one
+-- effect label, the outer handler sees only the remaining row. Effect-row
+-- inference must correctly track which labels remain after each handler.
+-- Deep handlers are used so that the continuation binds directly into the
+-- target carrier rather than the original unhandled Eff type.
+
+--! mode check
+
+effect Log =
+    logMsg : String -> Unit
+
+effect Counter =
+    tick : Unit -> Int
+
+-- POSITIVE TEST: compose Log and Counter handlers using deep handlers.
+-- run_logged eliminates Log from the row; residual row is r.
+-- run_counter eliminates Counter from the result; final result is pure Int.
+let run_logged (comp : Eff <[Log : Log | r]> a) : Eff r a =
+    deep handle Log comp with
+        case return x -> pure x    -- pure x : Eff r a
+        case logMsg _ k -> k ()    -- k : Unit -> Eff r a
+
+let run_counter (comp : Eff <[Counter : Counter]> Int) (start : Int) : Int =
+    deep handle Counter comp with
+        case return v -> v          -- v : Int (carrier m = id)
+        case tick _ k -> k start    -- k : Int -> Int; k start : Int
+
+let program : Eff <[Log : Log, Counter : Counter]> Int =
+    do
+        Log.logMsg "starting"
+        let n <- Counter.tick ()
+        Log.logMsg "done"
+        pure n
+
+let run_both : Int =
+    run_counter (run_logged program) 0
+
+-- POSITIVE TEST: empty-residual handler chain leaves pure result.
+-- expect: run_both accepted; types are inferred without error
+
+-- NEGATIVE TEST: applying run_logged twice to the same computation is ill-typed.
+-- After the first run_logged call, the Log label is absent from the row.
+-- A second run_logged over a Log-free computation must fail.
+let double_handle_bad (comp : Eff <[Log : Log]> Unit) : Unit =
+    let after_first = run_logged comp      -- Eff <[]> Unit
+    run_logged after_first                 -- Log not in row; must fail --!! kappa.effect.row-mismatch

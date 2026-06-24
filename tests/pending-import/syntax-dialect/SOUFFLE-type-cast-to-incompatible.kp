@@ -1,0 +1,48 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_as2/type_as2.dl,
+--   tests/semantic/type_as3/type_as3.dl,
+--   souffle-lang #657 (type cast using the AS keyword),
+--   souffle-lang #1640 (type conversion with "as" fails).
+-- Spec: declarations.terms (§9.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- A type cast or coercion to an incompatible type must be rejected. Souffle reports
+-- "Atom's argument type is not a subtype of its declared type" when `as(x, symbol)` is
+-- used to cast to a supertype where a subtype is expected, and "Unable to deduce type
+-- of the argument (cast)" when casting to a structurally incompatible type.
+
+--! mode check
+
+-- POSITIVE: coercion to the same type is identity.
+let sameType : Int -> Int
+let sameType x = x
+
+-- POSITIVE: widening to a union member type is valid.
+type NumOrStr = (| Int | String |)
+
+let widen : Int -> NumOrStr
+let widen n = (| n : Int |)
+
+-- NEGATIVE: narrowing cast from String to Int must be explicit or fail.
+-- In Kappa, `x : Int` where x has type String is a type mismatch.
+let badNarrow : String -> Int
+let badNarrow s = s    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: coercing Float to String without a conversion function.
+let floatToStr : Float -> String
+let floatToStr f = f    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: coercing a record type to an unrelated record type.
+struct PointA = x : Int
+struct PointB = y : Int
+
+let castPoint : PointA -> PointB
+let castPoint p = p    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: an explicit numeric conversion function works.
+let intToFloat : Int -> Float
+let intToFloat n = fromInt n    -- fromInt is assumed to be in scope

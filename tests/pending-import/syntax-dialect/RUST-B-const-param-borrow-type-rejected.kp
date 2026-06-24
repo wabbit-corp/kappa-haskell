@@ -1,0 +1,49 @@
+-- Source issues: rust#112219, rust#112124, rust#112125 (slice > 50000)
+-- Spec: types.universes.erasure_elaboration_time.compile_time_bindings_fields,
+--       types.universes.erasure_elaboration_time.static_object_positions,
+--       types.universes.borrow_lifetimes_escape_prevention
+--
+-- A compile-time parameter (`@0` quantity) lives in the static-object
+-- expression position (§11.1.6.2). Its classifier must be one of the
+-- recognized compile-time types: `Type`, `Universe`, `Quantity`, `Region`,
+-- `RecRow`, `VarRow`, `EffRow`, `Label`, `EffLabel`, or an intrinsic ground
+-- value type that is canonicalizable at elaboration.
+--
+-- A borrowed view `&[s] T` carries a runtime region and tethers to a
+-- runtime root; it is NOT a static-object classifier. A compile-time
+-- parameter cannot be classified by a borrow.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a compile-time parameter classified by an ordinary canonical
+-- value type (Int). Accepted.
+data BoxAt (@0 v : Int) : Type =
+    BoxAt
+
+let one : BoxAt 1 = BoxAt
+
+
+-- POSITIVE: a compile-time parameter classified by `Type`. Accepted.
+data BoxTy (@0 a : Type) : Type =
+    BoxTy
+
+let boxInt : BoxTy Int = BoxTy
+
+
+-- NEGATIVE: a compile-time parameter classified by a borrowed view. The
+-- borrow is a runtime carrier, not a static-object classifier; Kappa
+-- rejects the declaration.
+data BadBorrow (@0 v : forall (s : Region). &[s] Int) : Type =   --!! kappa.type.mismatch
+    BadBorrow
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: an explicit borrow whose region `s` is not in scope at the
+-- declaration position. `s` is not a bound region variable at this point;
+-- name resolution fails before any type-system check.
+data BadBorrowLoose (@0 v : &[s] Int) : Type =   --!! kappa.name.unresolved
+    BadBorrowLoose
+
+--! assertDiagnostic error kappa.name.unresolved

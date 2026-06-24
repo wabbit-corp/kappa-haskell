@@ -1,0 +1,47 @@
+-- Source issues: class-method.rhm in racket/rhombus
+-- Spec: types.records
+--   Duplicate field names within a single record type definition are a static error.
+--   Field names must be unique within a record type.
+--   When a derived/subtype explicitly redeclares a field name already present in the base
+--   record, this is also a collision.
+-- Evidence: class-method.rhm confirms:
+--   `class Posn(x, x)` → "duplicate field name"
+--   `class Posn(x, y): field x = 0` → "duplicate field name"
+--   Subclass adding field with same name as superclass → "field name already exists in superclass"
+
+--! mode check
+
+-- POSITIVE: record with distinct field names — no conflict.
+data Point2D : Type =
+    MkPoint2D { x : Int, y : Int }
+
+data Point3D : Type =
+    MkPoint3D { x : Int, y : Int, z : Int }
+
+-- POSITIVE: two different record types with the same field name — each type's fields
+-- are independent; cross-type name reuse is fine.
+data Width : Type =
+    MkWidth { value : Int }
+
+data Height : Type =
+    MkHeight { value : Int }
+
+-- POSITIVE: record with many distinctly-named fields.
+data Rect : Type =
+    MkRect { left : Int, top : Int, right : Int, bottom : Int }
+
+-- NEGATIVE: record type with two fields of the same name `x`.
+-- Duplicate field names in a single record type are a static error.
+data DupField : Type =
+    MkDupField { x : Int, x : Int }   --!! kappa.name.ambiguous
+
+-- NEGATIVE: record type where one constructor introduces a field `width` twice
+-- under different types. The duplicate name is still rejected regardless of type difference.
+data DupWidths : Type =
+    MkDupWidths { width : Int, height : Int, width : String }  --!! kappa.name.ambiguous
+
+-- NEGATIVE: record with three fields where two of the last fields share a name.
+data TripleDup : Type =
+    MkTripleDup { a : Int, b : String, a : Bool }  --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

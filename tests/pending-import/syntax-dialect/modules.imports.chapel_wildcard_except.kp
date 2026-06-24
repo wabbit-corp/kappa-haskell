@@ -1,0 +1,63 @@
+-- Source issues: Chapel #6093
+-- Spec: modules.imports
+-- The `import M.* except (name)` form imports all of M's public names except
+-- the listed ones. A name that appears in the except-list must not be in scope
+-- after the import. A kind-qualified except item `except (type T)` removes only
+-- the type facet, leaving a same-spelling term facet in scope (if one exists).
+
+--! mode check
+
+module chapel_wildcard_source
+
+fooTerm : Int
+let fooTerm = 1
+
+barTerm : Int
+let barTerm = 2
+
+bazTerm : Int
+let bazTerm = 3
+
+data FooType : Type =
+    MkFoo
+
+
+---
+
+-- POSITIVE: import all except fooTerm — barTerm and bazTerm are in scope.
+module chapel_wildcard_except_term
+
+import chapel_wildcard_source.* except (fooTerm)
+
+-- barTerm and bazTerm must be accessible.
+useBar : Int
+let useBar = barTerm
+
+useBaz : Int
+let useBaz = bazTerm
+
+-- NEGATIVE: fooTerm was excluded; it must not be in scope.
+badFoo : Int
+let badFoo = fooTerm   --!! kappa.name.unresolved
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+---
+
+-- POSITIVE: import all except (type FooType) — FooType type constructor removed,
+-- but if there were a same-spelling term it would remain. MkFoo constructor was
+-- not listed separately so it is removed with the type.
+module chapel_wildcard_except_type_only
+
+import chapel_wildcard_source.* except (type FooType)
+
+-- fooTerm, barTerm, bazTerm are still in scope.
+useTerms : Int
+let useTerms = fooTerm + barTerm + bazTerm
+
+-- NEGATIVE: FooType type constructor was excluded.
+badType : FooType   --!! kappa.name.unresolved
+let badType = _
+
+--! assertDiagnosticFamily error kappa.name.unresolved

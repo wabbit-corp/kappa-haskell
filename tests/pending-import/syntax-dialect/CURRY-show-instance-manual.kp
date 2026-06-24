@@ -1,0 +1,81 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestBinInt.curry
+--   (instance Show Nat where showsPrec _ x = showTerm 1 0 x).
+-- Spec: traits.headers (§14.1), traits.instances (§14.3),
+--       traits.members (§14.2), expressions.application.named_function_application (§16.1).
+--
+-- A user-defined `Show`-like instance written by hand (not derived).
+-- The Curry test uses Haskell's `showsPrec` continuation-passing
+-- formulation; Kappa can express the same idea with a direct
+-- `showValue : a -> String` instance method.
+
+module test
+
+--! mode check
+
+data BinTag : Type =
+    IHi
+  | OD BinTag
+  | ID BinTag
+-- "OD n" = even bit, "ID n" = odd bit, IHi = top "1" sentinel.
+
+trait Showable (a : Type) =
+    showValue : a -> String
+
+--! assertNoErrors
+
+-- Reify a BinTag as a small natural-number string by recursive shift.
+-- Encodes IHi as 1, OD n as 2*n, ID n as 2*n + 1.
+binToInt : BinTag -> Int
+let binToInt t =
+    match t
+    case IHi    -> 1
+    case OD n   -> 2 * binToInt n
+    case ID n   -> 2 * binToInt n + 1
+
+--! assertNoErrors
+--! assertType binToInt (BinTag -> Int)
+
+-- A tiny integer-to-string helper; restricted to non-negative inputs.
+showInt : Int -> String
+let showInt n =
+    if n <= 0
+    then "0"
+    else showIntDigits n
+
+showIntDigits : Int -> String
+let showIntDigits n =
+    if n <= 0
+    then ""
+    else showIntDigits (n / 10) ++ digitChar (n - 10 * (n / 10))
+
+digitChar : Int -> String
+let digitChar d =
+    match d
+    case 0 -> "0"
+    case 1 -> "1"
+    case 2 -> "2"
+    case 3 -> "3"
+    case 4 -> "4"
+    case 5 -> "5"
+    case 6 -> "6"
+    case 7 -> "7"
+    case 8 -> "8"
+    case _ -> "9"
+
+--! assertNoErrors
+
+instance Showable BinTag =
+    let showValue t = showInt (binToInt t)
+
+--! assertNoErrors
+
+-- POSITIVE: a sample BinTag (binary "101" = 5).
+sampleTag : BinTag
+let sampleTag = ID (OD IHi)
+
+showSample : String
+let showSample = showValue sampleTag
+-- expected: "5"
+
+--! assertNoErrors
+--! assertType showSample String

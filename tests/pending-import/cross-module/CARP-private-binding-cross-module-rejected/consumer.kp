@@ -1,0 +1,27 @@
+-- Source issue: carp-lang/Carp#467
+-- Spec: modules.visibility_opacity_private_opaque.private,
+--       modules.exports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Carp #467: marking a function `private` was purely informative; the
+-- compiler did not actually prevent the function from being called from
+-- outside its module.  The portable Kappa obligation is that a non-
+-- exported binding is invisible outside its module; cross-module
+-- references to it are rejected at name resolution.
+
+module consumer
+
+import provider
+
+--! mode check
+
+-- POSITIVE: an exported cross-module reference resolves and elaborates.
+usePublic : Int
+let usePublic = provider.publicAnswer
+
+--! assertType usePublic Int
+
+-- NEGATIVE: a non-exported cross-module reference is unresolved.
+useSecret : Int
+let useSecret = provider.secretAnswer   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

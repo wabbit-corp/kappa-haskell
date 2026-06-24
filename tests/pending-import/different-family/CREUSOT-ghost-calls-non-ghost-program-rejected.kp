@@ -1,0 +1,40 @@
+-- Source issues: CREUSOT-non_ghost
+-- Source tests: creusot should_fail/ghost/non_ghost.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/ghost/non_ghost.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: effects.monadic_core.exits_causes_typed_failure_interruption_defects,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- Family: kappa.effect.row-mismatch (Kappa §3.2.9)
+-- A ghost block (a pure-effect-row block) may only invoke functions that
+-- match the same pure row; calling an arbitrary program function inside
+-- a ghost block produces an effect-row mismatch.  Pending spec gap is
+-- CREUSOT-SA-03 (ghost erasure obligations); `ghost { ... }` is
+-- placeholder spelling for that proposed pure-block form.
+
+module test
+
+--! mode check
+
+-- A program-mode (non-ghost) function.
+program let programFn : Unit
+let programFn = ()
+
+-- NEGATIVE: ghost block calls a program function.
+ghostCallsProgram : Unit
+let ghostCallsProgram =
+    do {
+        ghost { programFn };                --!! kappa.effect.row-mismatch
+        ()
+        }
+
+-- NEGATIVE: the same obligation when the program function returns a
+-- value whose result is then snapshotted.
+program let intProgramFn : Int
+let intProgramFn = 7
+
+ghostCallsProgramValued : Int
+let ghostCallsProgramValued =
+    do {
+        let s = ghost { intProgramFn } in   --!! kappa.effect.row-mismatch
+        match s case Snapshot v -> 0
+        }
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

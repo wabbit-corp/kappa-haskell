@@ -1,0 +1,44 @@
+-- Source issues: egraphs-good/egglog #113 (Created map type is always first
+--   defined map type),
+--   egraphs-good/egglog PR#84 (Remove unnecessary restrictions in parser).
+-- Spec: declarations.terms (§9.1, "A non-`expect` top-level term signature
+--       declaration MUST be satisfied by exactly one matching top-level
+--       definition in the same source file"),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.ambiguous),
+--       see also EGGLOG-SA-07 in EGGLOG_SPEC_ADDITIONS.md.
+-- Egglog originally allowed multiple primitive registrations under the same
+-- name and silently picked the first one. Kappa forbids two top-level
+-- declarations sharing a name in the same module: the spec has no dedicated
+-- diagnostic family for "duplicate top-level declaration", so Kappa reports
+-- the colliding lookup as kappa.name.ambiguous. (See EGGLOG-SA-07 for a
+-- proposed dedicated family.)
+
+module test
+
+--! mode check
+
+-- POSITIVE: two distinct names declared at top level.
+createInt : Int -> Int -> Int
+let createInt a b = a + b
+
+createStr : Int -> String -> String
+let createStr _ s = s
+
+-- NEGATIVE: same identifier defined twice at top level.
+dup : Int -> Int
+let dup x = x + 1
+
+dup : Int -> Int -> Int           --!! kappa.name.ambiguous
+let dup x y = x + y
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: a value is redefined.
+const5 : Int
+let const5 = 5
+
+const5 : Int                      --!! kappa.name.ambiguous
+let const5 = 6
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

@@ -1,0 +1,58 @@
+-- Source issues: leo#28706 (const-generic parameter shadows a module-scope
+--               constant of the same name; the error message was incomplete —
+--               it said "variable `N` shadowed by" without saying what `N`
+--               was shadowed *by*), leo PR (fix: improve shadowing errors for
+--               const generics).
+-- Spec: SA-LEO-05 (const generic parameter conflicts with outer name),
+--       SA-LEO-03 (duplicate / shadowing name must report both sites),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§SA-LEO-05, §3.2.2):
+--   "When a const generic parameter has the same name as a declaration already
+--    in scope (e.g., a module-level constant), the compiler must emit
+--    `kappa.name.ambiguous` with a payload that includes:
+--      (a) the outer declaration site (role: previous-definition), and
+--      (b) the const-generic parameter introduction site (role: shadowing-binder).
+--    The error message must identify BOTH what the name refers to and what
+--    shadows it."
+-- leo#28706: the error said "variable `N` shadowed by" but omitted the target,
+--   so the user could not determine what was shadowing `N`.
+
+--! mode check
+
+-- A module-level compile-time binding named `N`.
+N : (0 _ : Int)
+let N = 5
+
+-- POSITIVE: using the module-level `N` in a function that does not introduce
+-- a const parameter of the same name.
+let useGlobalN : Int = N + 1
+
+ok1 : Int
+let ok1 = useGlobalN
+
+
+-- NEGATIVE: a function that introduces a const generic parameter named `N`
+-- which conflicts with the module-level `N` already in scope.
+let conflictN (0 N : Int) : Int =    --!! kappa.name.ambiguous
+    N
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- Another module-level constant.
+M : (0 _ : Int)
+let M = 10
+
+-- NEGATIVE: same conflict for `M`.
+let conflictM (0 M : Int) : Int =    --!! kappa.name.ambiguous
+    M
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: a const generic parameter with a name that does NOT conflict with
+-- any module-level declaration.
+let noConflict (0 k : Int) : Int = k + N
+
+ok2 : Int
+let ok2 = noConflict 3
+

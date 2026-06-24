@@ -1,0 +1,45 @@
+-- Source: granule-project/granule PR #296 (Improve Rename in clone,
+--         fix uniqueness laws)
+-- Spec: types.universes.quantities.are_ownership,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- The OOPSLA-style `clone` law for unique references says: cloning a
+-- reference produces a *fresh* unique reference; the old reference is
+-- consumed by the clone. A subsequent use of the old reference must be
+-- rejected with `kappa.path.consumed` (§3.2.5).
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+type Ref : Type -> Type
+
+intrinsic newRef   : forall (a : Type). (1 x : a) -> Ref a
+intrinsic readRef  : forall (a : Type). (1 r : Ref a) -> (a, Ref a)
+intrinsic cloneRef : forall (a : Type). (1 r : Ref a) -> (Ref a, Ref a)
+intrinsic freeRef  : forall (a : Type). (1 r : Ref a) -> Unit
+
+-- POSITIVE: clone, then use both resulting refs linearly.
+twoUses : (1 r : Ref Bool) -> Bool
+let twoUses r =
+    let (r1, r2)  = cloneRef r in
+    let (v1, r1') = readRef r1 in
+    let (_,  r2') = readRef r2 in
+    let _ = freeRef r1' in
+    let _ = freeRef r2' in
+    v1
+
+
+-- NEGATIVE: attempt to use the original `r` after cloning it (clone
+-- consumes the original).
+badAfterClone : (1 r : Ref Bool) -> (Bool, Bool)
+let badAfterClone r =
+    let (r1, _)   = cloneRef r in
+    let (v1, _)   = readRef r1 in
+    let (v2, _)   = readRef r in    --!! kappa.path.consumed
+    (v1, v2)
+
+--! assertDiagnosticFamily error kappa.path.consumed

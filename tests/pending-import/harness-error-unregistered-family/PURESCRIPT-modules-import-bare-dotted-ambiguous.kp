@@ -1,0 +1,24 @@
+-- Source artifacts: see sibling `a/b.lang` for full citation list.
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.import.ambiguous-dotted).
+-- Kappa spec rule (§ modules.imports):
+--   "The bare form `import A.B.C` is ambiguous between: module-only import
+--    of module `A.B.C`, and singleton-item import of item `C` from module
+--    `A.B`. Disambiguation is performed after module discovery, not by pure
+--    longest-match parsing. If only one interpretation is resolvable, it is
+--    chosen. If both interpretations are resolvable, the form is a
+--    compile-time error."
+-- Module `a.b.C` exists (sibling `a/b/C.lang`) and item `C` exists in
+-- module `a.b` (sibling `a/b.lang`). The bare form `import a.b.C` must be
+-- rejected with `kappa.import.ambiguous-dotted`.
+module consumer
+
+import a.b.C                                    --!! kappa.import.ambiguous-dotted
+
+-- A use site so the import is not eliminated as unused.
+witness : Int
+let witness = 0
+
+--! mode check
+--! assertDiagnosticFamily error kappa.import.ambiguous-dotted

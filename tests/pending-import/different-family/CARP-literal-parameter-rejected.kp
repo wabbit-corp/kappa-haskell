@@ -1,0 +1,25 @@
+-- Source issue: carp-lang/Carp#384
+-- Spec: declarations.terms,
+--       declarations.terms.irrefutable_patterns_let_bindings,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp #384: `(defn x ["lol"] 1)` was accepted by the front end and
+-- failed at code emission with "Invalid parameter: Str \"lol\"".  The
+-- portable Kappa obligation is that the parameter list of a function
+-- definition is a sequence of irrefutable binder patterns; a string
+-- literal is a refutable pattern (matches only "lol") and the function
+-- clause is therefore non-exhaustive over its declared `String` domain.
+
+--! mode check
+
+-- POSITIVE: an ordinary identifier as parameter is a well-formed binder.
+identity : Int -> Int
+let identity x = x
+
+--! assertType identity Int -> Int
+
+-- NEGATIVE: a string literal in parameter position is not a name binder;
+-- the rejection must come from the elaborator, not from later stages.
+badParam : String -> Int
+let badParam "lol" = 1                  --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

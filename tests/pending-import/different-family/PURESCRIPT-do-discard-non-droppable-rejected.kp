@@ -1,0 +1,49 @@
+-- Source artifacts: PURESCRIPT-PR-2653 (linked #1803 — use Discard class
+--                   to catch values which are implicitly discarded),
+--                   PURESCRIPT-PR-2547 (linked #1253 — fail early when
+--                   `bind` is brought into scope inside `do`),
+--                   PURESCRIPT-PR-3220 (linked #3192 — optimize away binds to
+--                   wildcards in Do notation).
+-- Spec: effects.do_blocks (§18.2 "Expression item"),
+--       types.universes.quantities.linear_discharge_discard_destructor_use,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- Kappa spec rule (§ effects.do_blocks "Expression item"):
+--   "If `expr` is followed by a later reachable do-item, its value is
+--    discarded. This discard is permitted only when the result value is
+--    droppable under the linear-discard rules of §12.2.6. If the result
+--    contains a non-droppable component, the program is rejected."
+
+--! mode check
+
+-- A small wrapper for a linear resource that is not droppable: quantity `1`
+-- on the contained payload.
+data Handle : Type =
+    Handle (1 raw : Int)
+
+-- Pretend allocator returning a linear handle inside a monad. We don't
+-- actually run anything; only the elaboration is exercised under
+-- `--! mode analyze`.
+makeHandle : IO () Handle
+let makeHandle = pure (Handle 42)
+
+-- POSITIVE: explicitly binding the linear value and consuming it keeps the
+-- do-block well-typed.
+ok_consume : IO () Unit
+let ok_consume =
+    do
+        let 1 h <- makeHandle
+        let Handle r = h
+        pure ()
+
+-- NEGATIVE: leaving `makeHandle` as a bare expression item before the final
+-- expression discards the linear `Handle` payload. The discard violates the
+-- droppability rule of §18.2 / §12.2.6 and the program is rejected with
+-- `kappa.quantity.unsatisfied`.
+bad_discard : IO () Unit
+let bad_discard =
+    do
+        makeHandle                              --!! kappa.quantity.unsatisfied
+        pure ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

@@ -1,0 +1,41 @@
+-- Source issues: Circom data-types.md ("An array of components must be instantiated
+--               with the same template"); templates-and-components.md ("If the
+--               instruction a = A(0) is replaced with a = C(0), the compilation
+--               fails: 'Assignee and assigned types do not match'").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-01):
+--   "A component variable declared as an instance of template A cannot be assigned
+--    an instance of template B (A ≠ B). The assignment must be rejected with
+--    kappa.type.mismatch."
+
+--! mode check
+
+-- Two distinct circuit templates (types).
+data TemplateA : Type = MkA { inA : Int, outA : Int }
+data TemplateB : Type = MkB { inB : Bool, outB : Bool }
+
+let makeA (x : Int) : TemplateA = MkA { inA = x, outA = x + 1 }
+let makeB (b : Bool) : TemplateB = MkB { inB = b, outB = b }
+
+-- POSITIVE: assigning component array where all elements use the same template.
+goodComp1 : TemplateA
+let goodComp1 = makeA 3
+
+goodComp2 : TemplateA
+let goodComp2 = makeA 5
+
+
+-- NEGATIVE: component declared as TemplateA but assigned a TemplateB instance.
+badComp : TemplateA
+let badComp = makeB True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: mixing templates in a conditional initialization.
+let mixedInit (flag : Bool) : TemplateA =
+    if flag
+        then makeA 1
+        else makeB False    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,22 @@
+-- Stress test: unsafe_debug assert proof bypasses totality checking
+-- Spec: unsafe_debug.termination_assertions
+
+--! mode check
+
+data Nat : Type =
+    Z
+  | S Nat
+
+-- POSITIVE: the unsafe_debug annotation asserts totality without a structural proof.
+-- The Ackermann function does not decrease on a single argument but is still total.
+unsafe_debug
+ackermann : Nat -> Nat -> Nat
+let ackermann m n =
+    match m
+    case Z    -> S n
+    case S m' ->
+        match n
+        case Z    -> ackermann m' (S Z)
+        case S n' -> ackermann m' (ackermann m n')
+
+--! assertNoErrors

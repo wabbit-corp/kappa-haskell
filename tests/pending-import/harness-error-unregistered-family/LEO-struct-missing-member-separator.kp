@@ -1,0 +1,65 @@
+-- Source issues: leo#28375 (parser allows struct expressions where components
+--               have no semicolon or comma separation but are just juxtaposed),
+--               leo#28379 (struct can be parsed without separators; `struct none
+--               { x: u8 \n y: u8 }` was silently accepted).
+-- Spec: compiler.frontir.standard_diagnostic_families (kappa.syntax.*),
+--       §5 (lexical structure, grammar conformance).
+-- Kappa spec rule (§5, §3.1.15):
+--   "A record definition whose members are juxtaposed without a required
+--    separator (comma or semicolon, depending on the grammar) must be rejected
+--    at parse time. The parser must not silently recover by treating line breaks
+--    as implicit separators. The diagnostic must identify the location of the
+--    first missing separator and suggest the correct separator token."
+-- leo#28379: `struct none { x: u8\n y: u8 }` was accepted by the parser even
+--   though the grammar requires either commas or semicolons between members.
+
+--! mode check
+
+-- POSITIVE: record type whose fields are separated by commas.
+data PointComma : Type =
+    PointComma { x : Int, y : Int }
+
+-- POSITIVE: record type whose fields are separated by the layout rule
+-- (newline-based implicit separator, where the grammar permits it).
+data PointLayout : Type =
+    PointLayout
+        { x : Int
+        , y : Int
+        }
+
+-- POSITIVE: constructing a record with proper field separation.
+p1 : PointComma
+let p1 = PointComma { x = 1, y = 2 }
+
+p2 : PointLayout
+let p2 = PointLayout { x = 3, y = 4 }
+
+
+-- NEGATIVE: a record construction expression whose fields lack any separator.
+-- The expression `{ x = 1 y = 2 }` (no comma, no layout rule trigger) must
+-- fail to parse. We model this as a type mismatch that arises because the
+-- parser interprets the juxtaposition as `{ x = (1 y) }` (application) or
+-- produces a syntax error.
+-- The key portable obligation is that the parse must not silently succeed.
+badExpr : PointComma
+let badExpr = PointComma { x = 1 y = 2 }    --!! kappa.syntax.generated-invalid
+
+--! assertDiagnosticFamily error kappa.syntax.generated-invalid
+
+-- NEGATIVE: a field expression ending in a value immediately followed by
+-- another identifier, with no separator token. The parser must reject this.
+data TwoFields : Type =
+    TwoFields { a : Int, b : Bool }
+
+badTwo : TwoFields
+let badTwo = TwoFields { a = 10 b = True }    --!! kappa.syntax.generated-invalid
+
+--! assertDiagnosticFamily error kappa.syntax.generated-invalid
+
+-- POSITIVE: using a multi-line record construction with proper commas.
+goodMultiLine : TwoFields
+let goodMultiLine = TwoFields
+    { a = 10
+    , b = True
+    }
+

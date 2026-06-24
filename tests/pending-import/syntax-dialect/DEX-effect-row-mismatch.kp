@@ -1,0 +1,84 @@
+-- Source issues: dex-lang docs/doc/functions.dx (effect system section),
+--   dex-lang type-tests.dx
+--   (`def fEff() -> {|a} a given (a) = todo` →
+--   `Type error: Expected: Type  Actual: EffKind`),
+--   dex-lang #267 (can't write effect-polymorphic HOFs),
+--   dex-lang algeff-tests.dx (bad_catch_4 with wrong handler return type).
+-- Spec: effects.monadic_core.effect_row_checking (§18.1),
+--       compiler.frontir.standard_diagnostic_families.effect_row (kappa.effect.row-mismatch).
+-- A function declared with a specific effect row (or as pure) must not produce
+-- effects outside that row. Calling an effectful operation in a pure context,
+-- or returning from a handler with the wrong carrier type, must produce
+-- kappa.effect.row-mismatch.
+
+--! mode check
+
+effect Log =
+    1 logMsg : String -> Unit
+
+effect Counter =
+    1 inc : Unit -> Unit
+    1 getCount : Unit -> Int
+
+-- POSITIVE: a pure function with no effects.
+pureFn : Int -> Int
+let pureFn x = x + 1
+
+-- POSITIVE: a function declared with Log, calling a Log operation.
+logOnce : String -> Eff <[Log : Log]> Unit
+let logOnce msg = Log .logMsg msg
+
+-- NEGATIVE: a function declared as pure but calling a Log operation.
+badPure : Int -> Int
+let badPure x =
+    Log .logMsg "oops"    --!! kappa.effect.row-mismatch
+    x + 1
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: a function with only the Log effect trying to call a Counter operation.
+wrongEffect : String -> Eff <[Log : Log]> Unit
+let wrongEffect msg = do
+    Log .logMsg msg
+    Counter .inc ()    --!! kappa.effect.row-mismatch
+    pure ()
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE: a function with both Log and Counter effects.
+logAndCount : String -> Eff <[Log : Log, Counter : Counter]> Unit
+let logAndCount msg = do
+    Log .logMsg msg
+    Counter .inc ()
+    pure ()
+
+-- POSITIVE: an effect-polymorphic higher-order function; the callback's
+-- effects are propagated to the result.
+applyTwice : forall (a : Type) (eff : EffRow).
+    (a -> Eff eff a) -> a -> Eff eff a
+let applyTwice f x = do
+    let y <- f x
+    f y
+
+-- NEGATIVE: a handler return clause that returns the wrong type.
+-- The handler for `Counter` should return `(r, Int)` but instead returns `Float`.
+badHandler : forall (r : Type). Eff <[Counter : Counter]> r -> Float
+let badHandler comp =
+    handle Counter comp with
+        case return x       -> 42.0    --!! kappa.effect.row-mismatch
+        case inc _ k        -> k ()
+        case getCount _ k   -> k 0
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE: correct handler that threads a counter through.
+runCounter : forall (r : Type). Eff <[Counter : Counter]> r -> (r, Int)
+let runCounter comp =
+    handle Counter comp with
+        case return x        -> (x, 0)
+        case inc _ k         ->
+            let (res, n) = k ()
+            (res, n + 1)
+        case getCount _ k    ->
+            let (res, n) = k n
+            (res, n)

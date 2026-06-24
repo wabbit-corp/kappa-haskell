@@ -1,0 +1,35 @@
+-- Source issue: Idris2 #2450
+-- Spec: traits.instances.normalized_instance_heads
+-- A wildcard binder (`_`) in a trait instance head must be treated as a fresh
+-- implicit parameter, equivalent to a named binder that does not appear in the
+-- instance body constraints. Both forms must be accepted and produce the same
+-- normalized instance head.
+
+module test
+
+data Word (n : Nat) : Type =
+  MkWord : String -> Word n
+
+-- Accepted: named parameter in instance head.
+instance Eq (Word n) where
+  (==) (MkWord s1) (MkWord s2) = s1 == s2
+
+--! mode check
+--! assertNoErrors
+
+-- Accepted: wildcard parameter in instance head.
+-- `Word _` is equivalent to `Word n` when `n` does not appear in the instance
+-- body. The implementation must elaborate this as a fresh implicit variable.
+instance Ord (Word _) where
+  compare (MkWord s1) (MkWord s2) = compare s1 s2
+
+--! assertNoErrors
+
+-- Accepted: two different wildcards in the same head (for a two-parameter type).
+data Pair2 (a : Type) (b : Type) : Type =
+  MkPair2 : a -> b -> Pair2 a b
+
+instance Eq (Pair2 _ _) where
+  (==) (MkPair2 a1 b1) (MkPair2 a2 b2) = False
+
+--! assertNoErrors

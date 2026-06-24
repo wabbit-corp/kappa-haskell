@@ -1,0 +1,35 @@
+-- Source issues: OCaml#5821, OCaml#5929
+-- Spec: compiler.frontir.origins_ranges_labels,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- When a record literal names the same field more than once, the diagnostic must
+-- identify the specific duplicated label and its second (duplicate) occurrence as
+-- the primary blame site. It must not report a neighboring field or an earlier
+-- occurrence as the primary error origin.
+
+module test
+
+-- A record type with three fields.
+data T : Type =
+    T : (a : Int, b : Int, c : Int) -> T
+
+-- Rejected: field `a` appears twice; the diagnostic must blame the second `a`.
+badLit : T
+let badLit = T (a = 1, b = 2, a = 3)     --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! mode check
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- The primary blame origin must point to the second occurrence of `a`.
+-- We assert by portable alias that the code fires at all.
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Rejected: field `b` appears twice.
+badLit2 : T
+let badLit2 = T (a = 1, b = 2, b = 0)    --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Accepted: each field named exactly once.
+okLit : T
+let okLit = T (a = 1, b = 2, c = 3)
+

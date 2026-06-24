@@ -1,0 +1,61 @@
+-- Source issues: nickel #1370, #700
+-- Spec: design.boundary_honesty.boundary_contracts, types.gradual (NSA-01)
+-- NSA-01: Kappa v1 does not define ambient gradual typing; boundary contract
+-- generation rules depend on NSA-01 clarification. See NICKEL_SPEC_ADDITIONS.md.
+-- A type annotation in a typed context generates a runtime boundary contract.
+-- This contract must fire when the annotated expression is forced with a value
+-- of the wrong type. Nickel #1370 showed that free-standing type annotations
+-- and let-binding annotations did NOT generate runtime checks — only record field
+-- annotations did. This asymmetry is a conformance gap: every type annotation
+-- must generate an observable runtime check that fires at the static/dynamic boundary.
+
+module test
+
+-- POSITIVE: A type annotation in a record field generates a contract.
+-- The contract is checked when the field is forced.
+recordAnnotated : (value : Number)
+let recordAnnotated = (value = 42)
+
+-- Accessing the field forces the contract check; with the correct value it passes.
+recordOk : Number
+let recordOk = recordAnnotated.value
+
+--! mode check
+
+-- POSITIVE: A type annotation on a function parameter generates a boundary contract
+-- that fires when the function is called with a value of the wrong type from
+-- dynamically typed code.
+typedFun : Number -> Number
+let typedFun n = n * 2
+
+-- Calling from typed code with the correct type.
+typedFunOk : Number
+let typedFunOk = typedFun 5
+
+
+-- POSITIVE: A let binding with a type annotation generates a contract.
+-- When the annotated binding is forced from dynamically typed calling code,
+-- the contract must be checked.
+letAnnotated : Number
+let letAnnotated = (42 : Number)
+
+letAnnotatedOk : Number
+let letAnnotatedOk = letAnnotated
+
+
+-- NEGATIVE: a free-standing type annotation on a value that does not conform.
+-- This must be rejected statically (the literal has type String, the annotation
+-- says Number) and the implementation must report kappa.type.mismatch.
+badFreestanding : Number
+let badFreestanding = ("not-a-number" : Number)     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a let binding whose annotated type conflicts with the inferred type
+-- of the right-hand side must be rejected statically.
+badLetAnnotation : String
+let badLetAnnotation =
+    let x : Number = "hello" in     --!! kappa.type.mismatch
+    x
+
+--! assertDiagnosticFamily error kappa.type.mismatch

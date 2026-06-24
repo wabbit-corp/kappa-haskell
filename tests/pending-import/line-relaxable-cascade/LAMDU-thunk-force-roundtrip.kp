@@ -1,0 +1,63 @@
+-- Source issues: lamdu test suspended-hole-result.json; docs/doc/Language.md
+--   "Suspended computations". A `thunk e` followed by `force e` round-trips
+--   to the original value.
+-- Spec: expressions.lambdas.suspension_expressions_forcing
+--   §16.2.2: if e : A then thunk e : Thunk A and force (thunk e) ≡ e;
+--   if s : Thunk A then thunk (force s) is observationally equal to s
+--   modulo evaluation.
+--
+-- thunk and force form an introduction/elimination pair; the
+-- round-trip yields the original value at the original type.
+
+--! mode check
+
+-- POSITIVE: thunk introduces a Thunk type.
+t1 : Thunk Nat
+let t1 = thunk 1
+
+t2 : Thunk Bool
+let t2 = thunk True
+
+-- POSITIVE: force eliminates a Thunk to the inner value.
+v1 : Nat
+let v1 = force t1
+
+v2 : Bool
+let v2 = force t2
+
+-- POSITIVE: a thunk over a parameterized nominal type.
+data Box (a : Type) : Type = MkBox a
+
+tBox : Thunk (Box Nat)
+let tBox = thunk (MkBox 5)
+
+useBox : Box Nat
+let useBox = force tBox
+
+-- POSITIVE: round-trip — thunk then force returns the same value.
+roundTrip : Nat -> Nat
+let roundTrip n = force (thunk n)
+
+useRT : Nat
+let useRT = roundTrip 9
+
+-- POSITIVE: passing thunks as first-class values.
+applyTwice : forall (a : Type). Thunk a -> Thunk a
+let applyTwice t = t
+
+useApplyTwice : Nat
+let useApplyTwice = force (applyTwice (thunk 11))
+
+-- NEGATIVE: forcing a non-Thunk value.
+badForce : Nat
+let badForce = force 5    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a Thunk where a non-Thunk is expected.
+mustForce : Nat
+let mustForce = thunk 5    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing a Thunk of the wrong inner type.
+wrongInner : Thunk Nat
+let wrongInner = thunk True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

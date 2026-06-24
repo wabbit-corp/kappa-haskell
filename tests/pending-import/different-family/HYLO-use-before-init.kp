@@ -1,0 +1,35 @@
+-- Source artifacts: Hylo DI.hylo (definite-initialization test), Docs/DefiniteInitialization.md
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (kappa.quantity.unsatisfied), types.universes.quantities
+-- Hylo's definite-initialization pass rejects any read of a variable whose
+-- storage has not yet been initialized. In Kappa's quantity model this maps to
+-- demanding a quantity >= 1 from a binding whose current quantity is 0.
+
+--! mode check
+
+data Slot : Type = Slot Int
+
+consume : (1 s : Slot) -> Int
+let consume (Slot n) = n
+
+-- POSITIVE: slot initialized before use.
+wellInitialized : Int
+let wellInitialized =
+    let s = Slot 42
+    consume s
+
+-- POSITIVE: both branches initialize before use.
+conditionalInit : (b : Bool) -> Int
+let conditionalInit b =
+    let s = if b then Slot 1 else Slot 0
+    consume s
+
+-- NEGATIVE: quantity-0 binding read before any initialization.
+-- `unready` is declared at quantity 0; passing it to `consume` demands
+-- quantity 1 — the DI obligation is unsatisfied.
+uninitRead :
+    forall (unused : Type).
+    (0 unready : Slot) -> Int
+let uninitRead unready = consume unready   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

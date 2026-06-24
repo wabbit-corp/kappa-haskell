@@ -1,0 +1,15 @@
+-- Source artifacts: CHALK-DOC-book/src/clauses/coherence.md (axioms 1 & 2),
+--                   RUST-PR-4640 (enforce coherence rules),
+--                   RA-1490 (Trait impls only resolve in the current crate).
+-- Spec: traits.instances (instance environment paragraph).
+-- Kappa spec rule: "Top-level instance declarations from any module in the
+-- compilation unit's module closure contribute to instance resolution. This
+-- remains true whether or not the defining module exports ordinary names,
+-- whether or not another module re-exports it, and whether or not any lexical
+-- import brings its names into scope."
+-- This module declares the trait `Showable`. See `consumer.lang` for the
+-- harness assertions.
+module trait_decl
+
+trait Showable (a : Type) =
+    showIt : a -> String

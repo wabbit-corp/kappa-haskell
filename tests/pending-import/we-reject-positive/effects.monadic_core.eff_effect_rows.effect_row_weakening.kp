@@ -1,0 +1,34 @@
+-- Source issue: Koka #857
+-- Spec: effects.monadic_core.eff_effect_rows
+-- Effect row weakening: Eff r1 a is implicitly coercible to Eff r2 a when r1 ⊆ r2.
+-- A computation with a smaller effect row may be used wherever a larger row is expected,
+-- with no additional operations required.
+
+module test
+
+effect Log =
+    ω write : String -> Unit
+
+effect Counter =
+    1 tick : Unit -> Unit
+
+-- A computation that requires only Log.
+logHello : Eff <[log : Log]> Unit
+let logHello = log.write "hello"
+
+-- Weakening: Eff <[log : Log]> Unit is coercible to Eff <[log : Log, counter : Counter]> Unit.
+-- The assignment is accepted because r1 = <[log : Log]> ⊆ r2 = <[log : Log, counter : Counter]>.
+widened : Eff <[log : Log, counter : Counter]> Unit
+let widened = logHello
+
+--! mode check
+--! assertNoErrors
+
+-- Additional weakening: a pure computation (empty row) coerces to any row.
+alwaysPure : Eff <[ ]> Int
+let alwaysPure = pure 42
+
+usedInCounterContext : Eff <[counter : Counter]> Int
+let usedInCounterContext = alwaysPure
+
+--! assertNoErrors

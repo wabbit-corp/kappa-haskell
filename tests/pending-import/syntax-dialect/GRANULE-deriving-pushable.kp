@@ -1,0 +1,44 @@
+-- Source: granule-project/granule PR #220 (deriving improvements);
+--         PR #239 v0.9.5.0 release notes; PR #326 (pull derivation fixes)
+-- Spec: traits.deriving, types.universes.quantities.are_ownership (GSA-04),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- A derived `push : (List a) [q] -> List (a [q])` requires a `Pushable q`
+-- predicate. A linear grade is not Pushable; the obligation is undischarged
+-- and surfaces `kappa.implicit.unsolved` (§3.2.4).
+
+module test
+
+--! mode check
+
+type Box : Quantity -> Type -> Type
+
+intrinsic box   : forall (q : Quantity) (a : Type). (1 x : a) -> Box q a
+intrinsic unbox : forall (q : Quantity) (a : Type). (1 b : Box q a) -> a
+
+trait Pushable (q : Quantity) =
+    -- Witness that q acts idempotently under push (HSup q q).
+    pushable_witness : Unit
+
+instance Pushable ω =
+    let pushable_witness = ()
+
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+intrinsic push :
+    forall (a : Type) (q : Quantity).
+    Pushable q => (1 xs : Box q (List a)) -> List (Box q a)
+
+-- POSITIVE: push for ω-graded list of Int is well-typed because ω is
+-- Pushable.
+pushOmega : (1 xs : Box ω (List Int)) -> List (Box ω Int)
+let pushOmega xs = push xs
+
+
+-- NEGATIVE: a "linear" grade is not Pushable; the implicit obligation
+-- `Pushable 1` is unresolved.
+pushLinear : (1 xs : Box 1 (List Int)) -> List (Box 1 Int)
+let pushLinear xs = push xs   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

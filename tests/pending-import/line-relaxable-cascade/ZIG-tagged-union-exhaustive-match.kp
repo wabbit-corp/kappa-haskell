@@ -1,0 +1,56 @@
+-- Source issues: zig compile_errors/switch_expression-missing_enumeration_prong.zig
+--               (tagged unions require exhaustive match), zig#12556 (forbid
+--               union and tag enum fields in different order)
+-- Spec: expressions.match, types.unions.formation,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A tagged union (discriminated union) must be matched exhaustively: every
+-- variant must be covered by an explicit arm or a wildcard. The match arms must
+-- also bind the payload of the active variant with the correct type.
+
+--! mode check
+
+data Expr : Type =
+    Lit  Int
+    Add  Expr Expr
+    Neg  Expr
+    BoolLit Bool
+
+-- POSITIVE: all four constructors covered.
+let evalExpr (e : Expr) : Int =
+    match e
+    case Lit n          -> n
+    case Add l r        -> evalExpr l + evalExpr r
+    case Neg x          -> 0 - evalExpr x
+    case BoolLit _      -> 0
+
+
+-- POSITIVE: wildcard covers residual when some constructors are explicitly named.
+let isLiteral (e : Expr) : Bool =
+    match e
+    case Lit _ -> True
+    case _     -> False
+
+
+-- NEGATIVE: `BoolLit` constructor omitted — non-exhaustive.
+let evalPartial (e : Expr) : Int =
+    match e                         --!! kappa.pattern.non-exhaustive
+    case Lit n          -> n
+    case Add l r        -> evalPartial l + evalPartial r
+    case Neg x          -> 0 - evalPartial x
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: no arms at all — trivially non-exhaustive.
+let evalNone (e : Expr) : Int =
+    match e                         --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: payload binding type mismatch. `Lit` carries an `Int`, but the
+-- pattern binds it as if it were a `String`.
+let wrongPayloadType (e : Expr) : String =
+    match e
+    case Lit (s : String) -> s    --!! kappa.type.mismatch
+    case _                -> ""
+
+--! assertDiagnosticFamily error kappa.type.mismatch

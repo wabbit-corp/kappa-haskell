@@ -1,0 +1,44 @@
+-- Source issue: (original — guard purity requirement)
+-- Spec: expressions.match, types.universes.quantities
+-- Match guards must evaluate to Bool in a pure context.  A guard that
+-- performs effects is rejected because guards may be evaluated multiple
+-- times (for coverage checking and runtime dispatch) and cannot participate
+-- in a stateful or effectful computation.
+
+--! mode check
+
+effect IO =
+    1 readInt : Unit -> Int
+
+data Expr : Type = Lit Int | Add Expr Expr
+
+-- POSITIVE: a guard calling a pure function is accepted.
+isPrime : Int -> Bool
+let isPrime n = n > 1   -- simplified; purely for demonstration
+
+classifyPrime : Int -> String
+let classifyPrime n =
+    match n
+    case x if isPrime x -> "prime"
+    case _              -> "composite"
+
+-- POSITIVE: a guard that calls a multi-argument pure function is accepted.
+inRange : Int -> Int -> Int -> Bool
+let inRange lo hi x = x >= lo && x <= hi
+
+classifyRange : Int -> String
+let classifyRange n =
+    match n
+    case x if inRange 0 9 x   -> "single digit"
+    case x if inRange 10 99 x -> "double digit"
+    case _                    -> "large"
+
+-- NEGATIVE: a guard that uses an effectful operation is not pure.
+-- The guard `readInt () == n` attempts to perform IO in a guard position.
+badGuard : Int -> Eff <[io : IO]> String
+let badGuard n =
+    match n
+    case x if IO.readInt () == x -> "matched"   --!! kappa.effect.row-mismatch
+    case _                       -> "no match"
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

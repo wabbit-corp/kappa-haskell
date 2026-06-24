@@ -1,0 +1,44 @@
+-- Source issues: Circom constraint-generation.md ("All constraints must be quadratic
+--               of the form A*B + C = 0, where A, B and C are linear combinations
+--               of signals"); circom#161 (non-quadratic constraint error when user
+--               provides a product of three signals).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-02):
+--   "A circuit constraint expression must be at most quadratic (degree ≤ 2). An
+--    expression of degree 3 or higher used in a constraint position must be
+--    rejected with kappa.type.mismatch, since it is not of the required
+--    Quadratic type."
+
+--! mode check
+
+-- Model constraint expressions as typed by their polynomial degree.
+data Linear   : Type = Linear   { a : Int, b : Int }
+data Quadratic : Type = Quadratic { lhs : Int, rhs : Int }
+data Cubic    : Type = Cubic    { a : Int, b : Int, c : Int }
+
+-- A constraint-generation function that requires a Quadratic expression.
+let addConstraint (c : Quadratic) : Unit = ()
+
+-- POSITIVE: a*b is degree 2 (quadratic) — accepted.
+let goodQuadratic (a b : Int) : Unit =
+    addConstraint (Quadratic { lhs = a * b, rhs = 0 })
+
+-- POSITIVE: linear expression a+b — also accepted as a degenerate quadratic.
+let goodLinear (a b : Int) : Unit =
+    addConstraint (Quadratic { lhs = a + b, rhs = 0 })
+
+
+-- NEGATIVE: a*b*c is degree 3 (cubic); passing a Cubic where Quadratic is required.
+let badCubic (a b c : Int) : Unit =
+    addConstraint (Cubic { a = a, b = b, c = c })   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: nested product of four signals (degree 4).
+data Quartic : Type = Quartic { factors : Int }
+
+let badQuartic (a b c d : Int) : Unit =
+    addConstraint (Quartic { factors = a * b * c * d })   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

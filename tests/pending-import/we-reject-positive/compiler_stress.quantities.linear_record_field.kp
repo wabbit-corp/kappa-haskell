@@ -1,0 +1,25 @@
+-- Stress test: a record with a linear field; consuming the linear field consumes the record
+-- Spec: types.universes.quantities, types.records
+
+--! mode check
+
+-- A record whose first field is linear; the record as a whole must be consumed
+-- exactly once when the linear field is extracted
+type LinearPair : Type = (1 first : Int, second : String)
+
+-- POSITIVE: the record is consumed (linear); first is extracted (satisfying the linear
+-- field constraint) and second is returned as the non-linear result
+getFirst : (1 p : LinearPair) -> Int
+let getFirst p = p.first
+
+-- POSITIVE: extract the non-linear field after consuming the linear field via pattern
+getSecond : (1 p : LinearPair) -> String
+let getSecond (first = _, second = s) = s
+
+-- POSITIVE: construct the linear record and immediately consume it
+roundTrip : (1 n : Int) -> (s : String) -> Int
+let roundTrip n s =
+    let p : LinearPair = (first = n, second = s)
+    getFirst p
+
+--! assertNoErrors

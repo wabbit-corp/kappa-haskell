@@ -1,0 +1,65 @@
+-- Source issues: PR#88 — fix LEM instances and eta for product cubes;
+--   the bug was that the eta rule for product cubes was not applied correctly,
+--   getting stopped by reflexive equalities like `⟨⟨π₁(t₁₂), π₂(t₁₂)⟩, t₃⟩ ≡ ⟨t₁₂, t₃⟩`.
+--   In portable terms: eta expansion for product types must treat a pair `(first p, second p)`
+--   as definitionally equal to `p` for any pair type.
+-- Spec: types.quantification, types.propositions.propositional_equality_type_positions
+--   §11.4.1: definitionally equal terms satisfy the identity type with `refl`.
+--   Eta rules for product types: `(first p, second p) ≡ p`.
+--
+-- The eta rule for product types (and dependent pairs) must be enforced:
+-- any pair must be definitionally equal to `(first p, second p)`. Functions
+-- defined by eta expansion and functions defined by pattern matching must
+-- produce identical results.
+
+--! mode check
+
+-- POSITIVE: eta rule for a built-in pair type.
+-- (first p, second p) must be definitionally equal to p.
+etaPair : forall (a b : Type) (p : (a, b)). (p.1, p.2) = p
+let etaPair _ = refl
+
+-- POSITIVE: eta rule in a nested pair context.
+-- ⟨⟨π₁(π₁ t), π₂(π₁ t)⟩, π₂ t⟩ ≡ t for any t : ((a, b), c)
+etaNested : forall (a b c : Type) (t : ((a, b), c)). ((t.1.1, t.1.2), t.2) = t
+let etaNested _ = refl
+
+-- POSITIVE: a function defined by eta expansion is the same as the identity.
+etaExpandId : forall (a b : Type). (a, b) -> (a, b)
+let etaExpandId p = (p.1, p.2)
+
+etaIdIsId : forall (a b : Type) (p : (a, b)). etaExpandId p = p
+let etaIdIsId _ = refl
+
+-- POSITIVE: swap defined by eta expansion.
+swapEta : forall (a b : Type). (a, b) -> (b, a)
+let swapEta p = (p.2, p.1)
+
+swapSwapIsId : forall (a b : Type) (p : (a, b)). swapEta (swapEta p) = p
+let swapSwapIsId _ = refl
+
+-- POSITIVE: deeply nested eta.
+tripleEta : forall (a b c : Type) (t : (a, b, c)). (t.1, (t.2.1, t.2.2)) = t
+let tripleEta _ = refl
+
+-- POSITIVE: dependent pair (Sigma) eta rule.
+data Sigma (a : Type) (b : a -> Type) : Type =
+    MkSigma : (x : a) -> b x -> Sigma a b
+
+etaSigma : forall (a : Type) (b : a -> Type) (p : Sigma a b).
+    (match p case MkSigma x y -> MkSigma x y) = p
+let etaSigma (MkSigma _ _) = refl
+
+-- POSITIVE: function eta — `\ x -> f x` is definitionally equal to `f`.
+etaFn : forall (a b : Type) (f : a -> b) (x : a). (\x -> f x) x = f x
+let etaFn f x = refl
+
+-- NEGATIVE: claiming eta-equality in a context where the types do not match.
+badEta : (True : Bool) = False
+let badEta = refl    --!! kappa.type.mismatch
+
+-- NEGATIVE: using the eta rule to convert between incompatible product structures.
+wrongEta : forall (a b : Type) (p : (a, b)). (p.1, p.1) = p    --!! kappa.type.mismatch
+let wrongEta _ = refl
+
+--! assertDiagnosticFamily error kappa.type.mismatch

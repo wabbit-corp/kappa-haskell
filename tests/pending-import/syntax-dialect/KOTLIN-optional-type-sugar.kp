@@ -1,0 +1,41 @@
+-- Source issues: KT-153, KT-2336, KT-2293 (nullable generics, T? sugar)
+-- Spec: types.unions.optional_type_sugar
+
+--! mode check
+
+-- POSITIVE: T? is syntactic sugar for Option T.
+-- A function accepting and returning an optional string.
+greet : String? -> String
+let greet ms =
+    match ms
+    case Option.None   -> "hello, anonymous"
+    case Option.Some s -> "hello, " ++ s
+
+--! assertType greet (String? -> String)
+
+-- POSITIVE: Option wrapping is type-correct at Int?.
+wrapInt : Int -> Int?
+let wrapInt n = Option.Some n
+
+--! assertType wrapInt (Int -> Int?)
+
+-- POSITIVE: nested optional (Int??) is Option (Option Int), no flattening.
+nestedOpt : Int -> Int??
+let nestedOpt n = Option.Some (Option.Some n)
+
+--! assertType nestedOpt (Int -> Int??)
+
+-- POSITIVE: optional in a generic context.
+firstOf : forall (a : Type). List a -> a?
+let firstOf xs =
+    match xs
+    case Nil    -> Option.None
+    case h :: _ -> Option.Some h
+
+--! assertType firstOf (forall (a : Type). List a -> a?)
+
+-- NEGATIVE: assigning None (Int?) to Int without unwrapping is a type error.
+badAssign : Int
+let badAssign = Option.None   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

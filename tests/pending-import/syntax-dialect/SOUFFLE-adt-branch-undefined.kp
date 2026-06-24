@@ -1,0 +1,47 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system_sum_types2/type_system_sum_types2.dl,
+--   souffle-lang #2448 (ADTs with negation and undeclared branches).
+-- Spec: modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Using an undeclared constructor/branch name in an expression must produce
+-- kappa.name.unresolved. Souffle reports "Undeclared branch" when a branch
+-- constructor is used that does not exist in any known ADT.
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+data Maybe (a : Type) : Type =
+    Nothing
+    Just a
+
+-- POSITIVE: declared constructors used correctly.
+let c1 : Color = Red
+let c2 : Color = Blue
+let m1 : Maybe Int = Nothing
+let m2 : Maybe Int = Just 42
+
+-- NEGATIVE: Yellow is not declared in Color (or any other type).
+let bad1 : Color = Yellow    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: Some is not a constructor of Maybe.
+let bad2 : Maybe Int = Some 10    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: Completely unknown constructor.
+let bad3 : Color = Magenta    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: pattern matching on declared constructors.
+let describeColor : Color -> String
+let describeColor c =
+    match c
+        case Red   -> "red"
+        case Green -> "green"
+        case Blue  -> "blue"

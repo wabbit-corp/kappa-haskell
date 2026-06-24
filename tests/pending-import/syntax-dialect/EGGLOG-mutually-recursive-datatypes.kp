@@ -1,0 +1,47 @@
+-- Source issues: egraphs-good/egglog #397 (Mutually recursive datatypes),
+--   egraphs-good/egglog #664 (datatype* with mutually recursive families).
+-- Spec: data_types.data_declarations (§10.1),
+--       data_types.well_formedness (§10.4 — mutual fixed-point positivity),
+--       see also EGGLOG-SA-05 in EGGLOG_SPEC_ADDITIONS.md.
+-- Kappa allows mutually recursive data declarations: two or more `data`
+-- declarations may reference each other in their constructor signatures and
+-- be elaborated together. Egglog gained this feature via `datatype*`; Kappa
+-- accepts the same shape natively in a recursive declaration group joined
+-- by `and`.
+
+module test
+
+--! mode check
+
+-- POSITIVE: mutually recursive data types.
+data Expr : Type =
+    EVar (s : String)
+    EApp (f : Expr) (a : Expr)
+    EBlock (b : Block)
+and Block : Type =
+    BNil
+    BCons (e : Expr) (rest : Block)
+
+-- POSITIVE: structurally recursive function across the mutual group.
+exprSize : Expr -> Int
+let exprSize e =
+    match e
+    case (EVar _)    -> 1
+    case (EApp f a)  -> 1 + exprSize f + exprSize a
+    case (EBlock b)  -> blockSize b
+and blockSize : Block -> Int
+let blockSize b =
+    match b
+    case BNil          -> 0
+    case (BCons e r)   -> exprSize e + blockSize r
+
+e1 : Expr
+let e1 = EApp (EVar "f") (EBlock (BCons (EVar "x") BNil))
+
+n1 : Int
+let n1 = exprSize e1
+
+--! assertNoErrors
+--! assertType n1 Int
+--! assertType exprSize (Expr -> Int)
+--! assertType blockSize (Block -> Int)

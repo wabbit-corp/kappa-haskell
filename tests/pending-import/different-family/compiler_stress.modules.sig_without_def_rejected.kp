@@ -1,0 +1,23 @@
+-- Stress test: A top-level term signature without a matching definition must be rejected
+-- Spec: declarations.terms
+
+--! mode check
+
+-- POSITIVE TEST: a signature paired with a matching definition is accepted.
+goodFn : Int -> Int
+let goodFn x = x + 1
+
+-- POSITIVE TEST: a complete signature+definition pair is well-formed.
+anotherFn : String -> Int
+let anotherFn s = 0
+
+-- NEGATIVE TEST: a signature with no matching definition.
+-- A non-`expect` top-level term signature MUST be satisfied by exactly one
+-- matching top-level definition in the same source file.
+-- If no matching definition exists, compilation fails.
+orphanSig : Int -> Int    --!! kappa.name.unresolved
+
+-- NEGATIVE TEST: a second orphan signature.
+missingDef : String       --!! kappa.name.unresolved
+
+--! assertErrorCount 2

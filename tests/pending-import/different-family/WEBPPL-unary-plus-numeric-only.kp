@@ -1,0 +1,58 @@
+-- Source: WebPPL #678 (unary plus semantics — in JS +'1' is 1, but in
+--   WebPPL it was '01' because AD overrode unary plus to 0+x),
+--   PR #871 (fix unary plus),
+--   #303 (numeric literal sign / coercion).
+-- Spec: literals.numeric_literals.sign (leading `-` parses as `negate`),
+--   WEBPPL_SPEC_ADDITIONS WEBPPL-SA-09
+--   (no implicit numeric coercion under unary +/-),
+--   compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch / E_TYPE_MISMATCH),
+--   compiler.frontir.portable_diagnostic_code_aliases
+--   (E_APPLICATION_ARGUMENT_MISMATCH).
+--
+-- Per §6.1.4, a leading `-` is parsed as the prelude function `negate`,
+-- not as part of the literal token. Kappa does not specify a unary `+`
+-- operator at all; the portable lesson from WebPPL #678 is that `negate`
+-- (and any `+` overload) must NOT silently coerce non-numeric operands.
+
+module test
+
+--! mode check
+
+-- POSITIVE: `negate` on a numeric-typed Int operand.
+minusInt : Int
+let minusInt = negate 5
+
+--! assertType minusInt Int
+
+-- POSITIVE: `negate` on a Float-typed operand.
+minusFloat : Float
+let minusFloat = negate 3.14
+
+--! assertType minusFloat Float
+
+-- POSITIVE: surface leading `-` on a literal desugars to `negate`.
+minusLit : Float
+let minusLit = -3.14
+
+--! assertType minusLit Float
+
+-- POSITIVE: `negate` on a numeric-typed variable.
+negOf : Float -> Float
+let negOf x = negate x
+
+--! assertType negOf (Float -> Float)
+
+-- NEGATIVE: `negate` applied to a String operand is a type mismatch.
+-- Kappa's `negate` is defined only at types with a numeric `Group`/`Ring`
+-- structure; passing a `String` violates the binder's expected type.
+negString : String
+let negString = negate "01"               --!! E_TYPE_MISMATCH
+
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+-- NEGATIVE: `negate` applied to a Bool operand is also a type mismatch.
+negBool : Bool
+let negBool = negate True                 --!! E_TYPE_MISMATCH
+
+--! assertDiagnostic error E_TYPE_MISMATCH

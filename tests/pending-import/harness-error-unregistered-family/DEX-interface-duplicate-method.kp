@@ -1,0 +1,53 @@
+-- Source issues: dex-lang typeclass-tests.dx
+--   (`instance InterfaceTest4(Float) { foo = 1; ... ; foo = 1 }` →
+--   `Type error: Duplicate method: foo`),
+--   dex-lang instance-methods-tests.dx (FooBar1 mutual recursion),
+--   dex-lang #323 (instance methods referencing other methods in same instance).
+-- Spec: traits.instances.method_uniqueness (§14.3.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.shadowing).
+-- Each method declared in a trait must appear at most once in any given
+-- instance body. Providing two definitions for the same method name in one
+-- instance block must be rejected. The diagnostic must name the duplicated
+-- method and the instance.
+
+--! mode check
+
+trait Printer (a : Type) =
+    render : a -> String
+    display : a -> String
+
+data Doc : Type = Doc String
+
+-- NEGATIVE: instance provides `render` twice.
+instance Printer Doc =    --!! kappa.name.shadowing
+    let render (Doc s) = s
+    let display (Doc s) = "Doc: " <> s
+    let render (Doc s) = "[" <> s <> "]"    -- duplicate
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: each method provided exactly once — correct instance.
+data Widget : Type = Widget String Int
+
+instance Printer Widget =
+    let render (Widget s n) = s <> show n
+    let display (Widget s _) = "widget:" <> s
+
+-- NEGATIVE: instance provides `display` twice with different bodies.
+data Gadget : Type = Gadget Int
+
+instance Printer Gadget =    --!! kappa.name.shadowing
+    let render (Gadget n) = show n
+    let display (Gadget n) = "Gadget(" <> show n <> ")"
+    let display (Gadget n) = "<" <> show n <> ">"   -- duplicate
+
+--! assertDiagnosticFamily error kappa.name.shadowing
+
+-- POSITIVE: a one-method trait; providing the method exactly once.
+trait Label (a : Type) =
+    label : a -> String
+
+data Point : Type = Point Float Float
+
+instance Label Point =
+    let label (Point x y) = "(" <> show x <> "," <> show y <> ")"

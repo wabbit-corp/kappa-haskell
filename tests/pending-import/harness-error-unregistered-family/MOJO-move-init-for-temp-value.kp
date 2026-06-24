@@ -1,0 +1,51 @@
+-- Source issues: MOJO-1529, MOJO-734
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure,
+--       types.universes.quantities,
+--       kappa.path.consumed
+-- When a value is initialised from an rvalue (temporary or explicitly moved
+-- binding), the move constructor should be invoked, not the copy constructor.
+-- If the source is a linear (quantity-1) value, the assignment consumes it:
+-- the original binding is no longer valid after the assignment.
+
+module test
+
+--! mode check
+
+data Buffer : Type =
+    Buffer Int
+
+-- POSITIVE: assigning from an rvalue/temporary consumes the source.
+-- Only one Buffer exists; transferring it into `b2` is a move.
+moveAssign : Int
+let moveAssign =
+    let b1 = Buffer 10
+    let b2 = b1           -- move: b1 is consumed, b2 owns the value
+    match b2
+    case Buffer n -> n
+
+--! assertType moveAssign Int
+
+-- NEGATIVE: using `b1` after it has been moved into `b2` must be rejected.
+useAfterMove : Int
+let useAfterMove =
+    let b1 = Buffer 20
+    let b2 = b1           -- b1 is consumed here
+    match b1              --!! kappa.path.consumed  -- b1 no longer valid
+    case Buffer n -> n
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: copy from a Copyable type is fine — the original persists.
+data CopyBuf : Type = CopyBuf Int
+
+instance Copyable CopyBuf = ()
+
+copyAssign : Int
+let copyAssign =
+    let c1 = CopyBuf 30
+    let c2 = c1           -- copy: c1 still valid
+    let (CopyBuf a) = c1
+    let (CopyBuf b) = c2
+    a + b
+
+--! assertType copyAssign Int

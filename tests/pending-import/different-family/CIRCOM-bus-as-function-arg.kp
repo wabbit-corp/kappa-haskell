@@ -1,0 +1,40 @@
+-- Source issues: circom#391 (Bus as function input causes panic; passing a bus
+--               value as a function argument where a scalar value is expected
+--               caused a compiler panic instead of a clean error message).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-01):
+--   "A bus (structured/record type) is distinct from a scalar (field element).
+--    Passing a bus value where a scalar argument is expected must produce
+--    kappa.type.mismatch rather than an internal compiler error."
+
+--! mode check
+
+-- Model a bus as a record type containing signals.
+data MyBus : Type =
+    MyBus { px : Int, py : Int }
+
+-- A function that expects a scalar (plain Int) argument.
+let processScalar (x : Int) : Int = x * x + 1
+
+-- POSITIVE: passing a scalar where a scalar is expected.
+goodResult : Int
+let goodResult = processScalar 42
+
+
+-- NEGATIVE: passing a bus (record) value where a scalar is expected.
+myBusVal : MyBus
+let myBusVal = MyBus { px = 3, py = 4 }
+
+badCall : Int
+let badCall = processScalar myBusVal    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: function returning a bus used where scalar return is expected.
+let returnBus : MyBus = MyBus { px = 1, py = 2 }
+
+anotherBad : Int
+let anotherBad = processScalar (returnBus)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

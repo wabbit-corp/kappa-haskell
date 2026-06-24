@@ -1,0 +1,49 @@
+-- Source issues: KT-2127 (smart cast after safe call result is not null)
+-- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
+--   expressions.application.dotted_forms.safe_navigation_safe_navigation
+
+--! mode check
+
+data Container : Type =
+    Container (items : List Int)
+
+-- POSITIVE: if `c?.someField != None` then `c` itself is non-null (Some).
+-- After testing the result of a safe navigation, the receiver is narrowed.
+getItemCount : Container? -> Int
+let getItemCount mc =
+    if mc != Option.None then
+        mc.value.items.length
+    else
+        0
+
+--! assertNoErrors
+--! assertType getItemCount (Container? -> Int)
+
+-- POSITIVE: safe navigation chain — first navigation narrows receiver.
+accessNested : Container? -> Int
+let accessNested mc =
+    match mc
+    case Option.None    -> -1
+    case Option.Some c  -> c.items.length
+
+--! assertNoErrors
+
+-- POSITIVE: testing Optional.Some explicitly and accessing inside.
+processContainer : Container? -> List Int
+let processContainer mc =
+    if mc is Option.Some then
+        mc.value.items
+    else
+        Nil
+
+--! assertNoErrors
+
+-- POSITIVE: safe navigation used twice — both times result is optional.
+firstAndLast : Container? -> Int? -> Int?
+let firstAndLast mc mi =
+    if mc != Option.None && mi != Option.None then
+        Option.Some (mc.value.items.length + mi.value)
+    else
+        Option.None
+
+--! assertNoErrors

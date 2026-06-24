@@ -1,0 +1,60 @@
+-- Source issues: apple/swift #52479 (switching over enum cases with associated
+--   values), apple/swift-evolution SE-0235 (Result matching).
+--   Exhaustiveness checking must account for parameterized constructors and
+--   nested data types. Omitting a constructor whose associated value type
+--   differs from covered constructors must produce kappa.pattern.non-exhaustive.
+-- Spec: expressions.match §17.1,
+--       expressions.match.exhaustiveness_indexed_types_gadts §17.1.1
+
+--! mode check
+
+data Tree (a : Type) : Type
+    = Leaf
+    | Node (Tree a) a (Tree a)
+
+-- POSITIVE: exhaustive match on a parameterized tree type.
+depth : forall {a : Type} -> Tree a -> Nat
+let depth Leaf           = 0
+let depth (Node l _ r)   = 1 + max (depth l) (depth r)
+
+-- POSITIVE: exhaustive fold over a tree.
+foldTree : forall {a b : Type} -> b -> (b -> a -> b -> b) -> Tree a -> b
+let foldTree z _ Leaf          = z
+let foldTree z f (Node l x r)  = f (foldTree z f l) x (foldTree z f r)
+
+data Maybe (a : Type) : Type = Nothing | Just a
+
+-- POSITIVE: both Nothing and Just covered.
+fromMaybe : forall {a : Type} -> a -> Maybe a -> a
+let fromMaybe def Nothing  = def
+let fromMaybe _   (Just x) = x
+
+data Either (a b : Type) : Type = Left a | Right b
+
+-- POSITIVE: both Left and Right covered.
+fromRight : forall {a b : Type} -> b -> Either a b -> b
+let fromRight def (Left _)  = def
+let fromRight _   (Right x) = x
+
+-- NEGATIVE: missing the Node constructor.
+badDepth : forall {a : Type} -> Tree a -> Nat
+let badDepth tree = match tree    --!! kappa.pattern.non-exhaustive
+    case Leaf -> 0
+
+-- NEGATIVE: missing Nothing from Maybe.
+unsafeGet : forall {a : Type} -> Maybe a -> a
+let unsafeGet m = match m    --!! kappa.pattern.non-exhaustive
+    case Just x -> x
+
+-- NEGATIVE: missing Left from Either.
+unsafeRight : forall {a b : Type} -> Either a b -> b
+let unsafeRight e = match e    --!! kappa.pattern.non-exhaustive
+    case Right x -> x
+
+-- NEGATIVE: match on a tree where the Node pattern only partially covers
+-- (missing the inner Leaf case in nested match).
+shallowNodes : forall {a : Type} -> Tree a -> List a
+let shallowNodes tree = match tree    --!! kappa.pattern.non-exhaustive
+    case Node Leaf x Leaf -> [x]
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

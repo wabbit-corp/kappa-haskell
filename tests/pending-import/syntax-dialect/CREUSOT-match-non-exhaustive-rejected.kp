@@ -1,0 +1,35 @@
+-- Source issues: CREUSOT-211
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Family: kappa.pattern.non-exhaustive (Kappa §3.2.10)
+-- Kappa requires `match` on a finite ADT to cover every constructor.
+-- Pattern reachability through a wrapping record is also covered.
+
+module test
+
+--! mode check
+
+data E : Type =
+  | A : E
+  | B : E
+  | C : E
+
+-- NEGATIVE: missing constructors `B` and `C` -> non-exhaustive.
+let onlyA : E -> Int
+let onlyA e =
+    match e                          --!! kappa.pattern.non-exhaustive
+    case A -> 0
+
+-- NEGATIVE: wrapping the scrutinee in a record does not change the
+-- obligation; exhaustiveness must still consider the nested
+-- constructor space.
+data S : Type = S E
+
+let onlyAUnderS : S -> Int
+let onlyAUnderS s =
+    match s
+    case S e ->
+        match e                      --!! kappa.pattern.non-exhaustive
+        case A -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

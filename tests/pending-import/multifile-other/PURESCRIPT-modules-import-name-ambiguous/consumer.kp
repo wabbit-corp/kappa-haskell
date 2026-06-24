@@ -1,0 +1,35 @@
+-- Source artifacts: PURESCRIPT-PR-1105 (Correct ConflictingImport error,
+--                   linked #1088).
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§ compiler.frontir.standard_diagnostic_families.name_import):
+--   "kappa.name.ambiguous — Used when lookup finds multiple admissible
+--    declarations. Payload MUST include: ambiguous spelling; admissible
+--    declaration kinds; candidate declarations with declaration kind, defining
+--    module, and origin; whether a qualification would disambiguate."
+-- Both `lib_a` and `lib_b` export `foo : Int`. Wildcard-importing both
+-- makes unqualified `foo` ambiguous; the compiler MUST emit
+-- `kappa.name.ambiguous`.
+-- Note: `import M.*` does not bring `M` into scope as a qualifier (§ modules.imports);
+-- qualified access requires a separate `import M as A` form.
+module consumer
+
+import lib_a.*
+import lib_b.*
+import lib_a as A
+import lib_b as B
+
+-- POSITIVE: qualified references via module aliases are unambiguous.
+ok_qualified_a : Int
+let ok_qualified_a = A.foo
+
+ok_qualified_b : Int
+let ok_qualified_b = B.foo
+
+-- NEGATIVE: unqualified `foo` is ambiguous between lib_a.foo and lib_b.foo.
+bad_ambiguous : Int
+let bad_ambiguous = foo                         --!! kappa.name.ambiguous
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.ambiguous

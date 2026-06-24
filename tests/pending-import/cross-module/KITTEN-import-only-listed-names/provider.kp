@@ -1,0 +1,9 @@
+module provider
+
+-- Default-exported (no @PrivateByDefault attribute, no `private` modifier).
+
+exportedA : Int
+let exportedA = 1
+
+exportedB : Int
+let exportedB = 2

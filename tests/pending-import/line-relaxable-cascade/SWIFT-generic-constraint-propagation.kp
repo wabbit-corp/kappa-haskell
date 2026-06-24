@@ -1,0 +1,66 @@
+-- Source issues: apple/swift #75711 (conditional conformance constraint propagation
+--   crash), apple/swift #82628 (spurious circular Sendable derivation order-dep).
+--   Trait constraints must propagate through generic call chains. If a function
+--   calls another function that requires a trait instance, the outer function
+--   must either propagate the constraint to its callers or provide a concrete
+--   instance. Missing propagation produces kappa.implicit.unsolved.
+-- Spec: traits.instances.resolution_algorithm §14.3.1,
+--       traits.headers.supertraits §14.1.4
+
+--! mode check
+
+trait Serializable (a : Type) =
+    serialize : a -> String
+
+trait Loggable (a : Type) =
+    logEntry : a -> String
+
+-- POSITIVE: both constraints propagated correctly.
+sendAndLog :
+    forall {a : Type} ->
+    (@_ : Serializable a) ->
+    (@_ : Loggable a) ->
+    a -> String
+let sendAndLog x = serialize x ++ "|" ++ logEntry x
+
+data Event : Type = Event String Nat
+
+instance Serializable Event =
+    let serialize (Event s n) = s ++ ":" ++ n
+
+instance Loggable Event =
+    let logEntry (Event s _) = "[" ++ s ++ "]"
+
+eventMsg : Event -> String
+let eventMsg e = sendAndLog e
+
+-- POSITIVE: wrapper propagates constraint from inner call.
+wrapAndSend :
+    forall {a : Type} ->
+    (@_ : Serializable a) ->
+    (@_ : Loggable a) ->
+    List a -> List String
+let wrapAndSend xs = map sendAndLog xs
+
+eventMsgs : List Event -> List String
+let eventMsgs es = wrapAndSend es
+
+-- NEGATIVE: outer function calls sendAndLog but does NOT propagate constraints;
+-- the implicit evidence for Serializable and Loggable is missing at the call site.
+unconstrained : forall {a : Type} -> a -> String
+let unconstrained x = sendAndLog x    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: only one of two required constraints propagated.
+halfConstrained :
+    forall {a : Type} ->
+    (@_ : Serializable a) ->
+    a -> String
+let halfConstrained x = sendAndLog x    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a data type with no instances at all used in a constrained context.
+data Mystery : Type = Mystery
+
+mysteryMsg : String
+let mysteryMsg = sendAndLog (Mystery)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

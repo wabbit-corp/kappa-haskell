@@ -1,0 +1,57 @@
+-- Source: Flix Test.Handler.MultiShot.Int32.flix
+-- Spec: effects.monadic_core.deep_handlers_deep_handle
+-- A deep handler (`deep handle`) automatically reinstalls itself around each resumption.
+-- The continuation `k` may be invoked multiple times (multi-shot semantics).
+-- A shallow handler would not reinstall, so only a deep handler supports multi-shot safely.
+
+--! mode check
+--! assertNoErrors
+
+-- Effect that receives an Int from the handler and returns an Int.
+effect AskTell =
+    askTell : Int -> Int
+
+-- POSITIVE TEST: deep handler with multi-shot continuation (k invoked twice).
+-- For a computation that calls askTell(42), the handler returns k(42) + k(42) = 84.
+let run_double (comp : Eff <[AskTell : AskTell]> Int) : Int =
+    deep handle AskTell comp with
+        case return x -> x
+        case askTell x k -> k x + k x
+
+let single_ask : Eff <[AskTell : AskTell]> Int =
+    do AskTell.askTell 42
+
+let test_double_result : Int =
+    run_double single_ask
+    -- expected value: 84 (continuation invoked twice with 42)
+
+-- POSITIVE TEST: deep handler with single-shot continuation (k invoked once).
+-- Semantically equivalent to a shallow handler; must also be accepted.
+let run_passthrough (comp : Eff <[AskTell : AskTell]> Int) : Int =
+    deep handle AskTell comp with
+        case return x -> x
+        case askTell x k -> k x
+
+let test_single_result : Int =
+    run_passthrough single_ask
+    -- expected value: 42
+
+-- POSITIVE TEST: deep handler over a computation that performs multiple operations.
+-- Each operation reinstalls the same deep handler around its continuation.
+effect Step =
+    step : Unit -> Int
+
+let two_steps : Eff <[Step : Step]> Int =
+    do
+        let a <- Step.step ()
+        let b <- Step.step ()
+        pure (a + b)
+
+let count_steps : Int =
+    let ref_count = (0 : Int)
+    deep handle Step two_steps with
+        case return x -> x
+        case step _ k -> k ref_count
+
+-- expect: all deep handler functions accepted; multi-shot invocation type-checks
+--! assertType test_double_result Int

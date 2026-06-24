@@ -1,0 +1,23 @@
+-- Source issues: CREUSOT-1398, CREUSOT-1396
+-- Spec: expressions.lambdas.closure_capture_quantities,
+--       types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region
+-- Family: kappa.borrow.escape (Kappa §3.2.7 / §3.3)
+-- When a closure captures a mutable borrow `inout`, the closure's
+-- capture-annotated type exposes the borrow.  Returning such a closure
+-- escapes the borrow's region and must be rejected.  Pending spec gap is
+-- CREUSOT-SA-10 (closure spec / captured borrow obligations).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: a closure tries to OUTLIVE the captured borrow.  Returning
+-- the closure from the function would escape the borrow's region.
+escapeMutCapture : (inout x : Int) -> (Unit -> Unit)
+let escapeMutCapture x =
+    \_ ->                                   --!! kappa.borrow.escape
+        x := !x + 1
+
+--! assertDiagnosticFamily error kappa.borrow.escape

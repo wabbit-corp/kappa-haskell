@@ -1,0 +1,42 @@
+-- Source issues: CREUSOT-non_terminating
+-- Source tests: creusot should_fail/ghost/non_terminating.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/ghost/non_terminating.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: declarations.totality.termination_certified_definitions,
+--       compiler.frontir.standard_diagnostic_families.termination
+-- Family: kappa.termination.failure (Kappa §3.2.11)
+-- Ghost code MUST terminate.  An infinite loop or non-terminating
+-- recursive ghost call would, at proof time, derive `False` from the
+-- assumption that the ghost block ran to completion.  Pending spec gap
+-- CREUSOT-SA-03 (ghost erasure obligations) + CREUSOT-SA-04 (termination
+-- over the elaborated call graph) cover the proposed surface.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `loop {}` (a bare unbounded loop) in a ghost block has no
+-- termination certificate.
+loopInGhost : Int
+let loopInGhost =
+    do {
+        let _g = ghost { loop {} } in       --!! kappa.termination.failure
+        0
+        }
+
+-- NEGATIVE: a ghost-marked recursive function without a variant clause
+-- must be rejected.  The mutual recursion through `f` and `recursive`
+-- has no decreasing argument.
+ghost let recursive : Unit
+let recursive =
+    do {
+        ghost { f };                        --!! kappa.termination.failure
+        ()
+        }
+
+ghost let f : Unit
+let f =
+    do {
+        recursive;                          --!! kappa.termination.failure
+        ()
+        }
+
+--! assertDiagnosticFamily error kappa.termination.failure

@@ -1,0 +1,19 @@
+-- Source issues: METACOQ-96
+-- Spec: types.universes, types.universes.cumulativity,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- A sort cannot inhabit itself, and a sort cannot skip levels: `Type2 : Type3`,
+-- not `Type2 : Type0`. Both rejections use family `kappa.type.mismatch`.
+
+module negative
+
+--! mode check
+
+-- NEGATIVE: a sort cannot inhabit itself.
+sortInItself : Type0
+let sortInItself = Type0   --!! kappa.type.mismatch
+
+skipLevel : Type0
+let skipLevel = Type2   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

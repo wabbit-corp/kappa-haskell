@@ -1,0 +1,56 @@
+-- Source: Coalton issue #396 (unable to create types with higher-kinded type
+--   variables — discussion #393 on higher-kinded types in class definitions).
+-- Spec: types.universes (§11.1), traits.headers (§14.1),
+--   compiler.frontir.standard_diagnostic_families.type_equality (§3.2.3).
+--
+-- Traits (typeclasses) may have higher-kinded type parameters — type variables
+-- that are themselves type constructors of kind `Type -> Type` (or similar).
+-- A `Functor`-style trait parameterized by a container `f : Type -> Type` is
+-- the canonical example. All occurrences of such a parameter in method types
+-- must be applied to a type argument. This test verifies that:
+--   1. Higher-kinded class parameters are accepted in trait declarations.
+--   2. Instances for concrete higher-kinded types are accepted.
+--   3. Methods on higher-kinded types type-check correctly.
+
+--! mode check
+
+-- The standard Functor trait: `f` has kind `Type -> Type`.
+trait Functor (f : Type -> Type) =
+    fmap : forall (a : Type) (b : Type). (a -> b) -> f a -> f b
+
+-- POSITIVE: a simple container.
+data Box (a : Type) : Type =
+    Box a
+
+instance Functor Box =
+    let fmap g (Box x) = Box (g x)
+
+--! assertNoErrors
+
+-- POSITIVE: using fmap on a Box.
+doubleBox : Box Int -> Box Int
+let doubleBox b = fmap (fn n -> n + n) b
+
+--! assertNoErrors
+--! assertType doubleBox (Box Int -> Box Int)
+
+-- A two-level higher-kinded container.
+data Wrap (f : Type -> Type) (a : Type) : Type =
+    Wrap (f a)
+
+-- POSITIVE: Functor for Wrap, given that f is itself a Functor.
+instance Functor f => Functor (Wrap f) =
+    let fmap g (Wrap fa) = Wrap (fmap g fa)
+
+--! assertNoErrors
+
+-- POSITIVE: Applicative-style trait with a higher-kinded parameter.
+trait Applicative (f : Type -> Type) =
+    pure  : forall (a : Type). a -> f a
+    (<*>) : forall (a : Type) (b : Type). f (a -> b) -> f a -> f b
+
+instance Applicative Box =
+    let pure x = Box x
+    let (<*>) (Box f) (Box x) = Box (f x)
+
+--! assertNoErrors

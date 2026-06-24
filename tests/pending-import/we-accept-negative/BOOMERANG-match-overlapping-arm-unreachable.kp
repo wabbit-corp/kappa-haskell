@@ -1,0 +1,38 @@
+-- Source: Boomerang docs/docs/main.src "Operators" table.
+--         Boomerang's `|` (regexp) and `||` (lens) union requires the
+--         two alternatives to be disjoint; an ambiguous union is rejected.
+--         Kappa's portable analog is `match`-arm reachability: an arm
+--         shadowed by an earlier arm is diagnosed.
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable).
+-- Related spec gap: BSA-BOOMERANG-06 (disjoint union of bidirectional
+--   patterns).
+-- Portable obligation: a `match` arm shadowed by an earlier wildcard or
+--   by an equally-general earlier arm is rejected as unreachable.
+
+module test
+
+--! mode check
+
+data Shape : Type =
+    Square Int
+    Circle Int
+    Triangle Int Int Int
+
+-- NEGATIVE: arm after a catch-all wildcard is unreachable.
+classify : Shape -> Int
+let classify s =
+    match s
+    case _              -> 0
+    case Square n       -> n    --!! kappa.pattern.unreachable
+
+-- NEGATIVE: two arms with the same constructor head — second is
+-- unreachable.
+duplicate : Shape -> Int
+let duplicate s =
+    match s
+    case Square n -> n
+    case Square m -> m + 1    --!! kappa.pattern.unreachable
+    case _        -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

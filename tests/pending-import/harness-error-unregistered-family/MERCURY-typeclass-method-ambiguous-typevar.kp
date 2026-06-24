@@ -1,0 +1,83 @@
+-- Source issues: invalid/ambiguous_method_1.m, invalid/typeclass_test_9.m
+-- Spec: traits.headers, traits.instances.resolution_algorithm
+--       (kappa.type.ambiguity-check)
+-- A trait method's type may only involve type variables that appear in the
+-- trait's parameter list, or that are locally introduced by the method
+-- signature via `forall`. A type variable that appears in a trait constraint
+-- on a method but is not determined by the trait's parameters makes the
+-- method's type ambiguous — the evidence required to satisfy the constraint
+-- cannot be inferred from the use site.
+
+module test
+
+-- A two-parameter trait `Coll c e` where `c` is the container and `e` the
+-- element. A method `emptyOf : c` uses only `c`, but the constraint mentions
+-- `e` through the trait header. This is fine if `e` is a trait parameter.
+
+trait Coll (c : Type) (e : Type) =
+    emptyOf : c
+    insertE : e -> c -> c
+
+-- POSITIVE: both type variables appear in the trait header.
+data SimpleList (a : Type) = Nil | Cons a (SimpleList a)
+
+instance Coll (SimpleList Int) Int =
+    let emptyOf = Nil
+    let insertE x xs = Cons x xs
+
+
+-- NEGATIVE: a trait where a method constraint introduces a type variable
+-- that is NOT in the trait header and is NOT locally bounded.
+-- Consider a trait `Printable t` with a method that uses an additional
+-- unconstrained type variable `u` in a constraint but `u` appears nowhere
+-- in the method's argument or result types.
+
+trait Printable (t : Type) =
+    render : t -> String
+    -- A method that mentions a type variable `u` only in its constraint
+    -- but not in its type: this makes the constraint ambiguous at call sites
+    -- because the checker cannot determine which `u` to use.
+    -- (Analogous to the "type variable occurs in constraint but not
+    -- in argument types" class of error.)
+
+-- Attempting to call such a method forces the checker to solve a constraint
+-- whose type variable has no grounding.
+
+data Box (a : Type) = Box a
+
+trait Wrapper (a : Type) =
+    wrap : a -> Box a
+    -- `unwrap` with an extra type variable in a return type via constraint:
+    -- forall (b : Type). (@_ : Convert a b) => Box a -> b
+    -- This is fine when `b` is locally bound (it is a universally quantified
+    -- return variable). The ambiguous case arises when `b` is not constrained
+    -- at call sites.
+
+-- POSITIVE: a well-determined multi-parameter method using `forall` locally.
+trait Convert (a : Type) (b : Type) =
+    conv : a -> b
+
+mapBox :
+    forall (a : Type) (b : Type).
+    (@_ : Convert a b) ->
+    Box a -> Box b
+let mapBox (Box x) = Box (conv x)
+
+data Num : Type = Zero | Succ Num
+
+instance Convert Num Int =
+    let conv Zero     = 0
+    let conv (Succ n) = 1 + conv n
+
+useMapBox : Box Num -> Box Int
+let useMapBox b = mapBox b
+
+
+-- NEGATIVE: ambiguous implicit — calling `mapBox` where the target type `b`
+-- is not inferrable from context.
+ambiguousConv : Box Num -> Box _
+let ambiguousConv b = mapBox b    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+--! mode check

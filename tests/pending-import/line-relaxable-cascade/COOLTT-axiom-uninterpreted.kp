@@ -1,0 +1,71 @@
+-- Source artifacts: cooltt PR #176 (support for top-level axioms; some grammar
+--               changes), PR #370 (resurrect virtual type globals/axioms),
+--               test inequality.cooltt (axiom i j : dim, axiom ij : [i <= j]).
+-- Spec: declarations.terms
+--
+-- An axiom declaration introduces an uninterpreted constant: a name with a
+-- declared type but no defining body. Axioms are accepted at their declared
+-- type during type-checking but are never reduced (no computation rule).
+-- They model hypotheses, abstract interface assumptions, or postulates.
+--
+-- Key obligations:
+-- - `axiom f : T` introduces `f : T` as a globally-scoped constant.
+-- - `f` is never reduced during normalization.
+-- - `f` is usable wherever `T` is expected.
+-- - Two axiom applications `f x` and `f y` are definitionally equal only
+--   if `x = y` definitionally (since `f` is opaque).
+
+--! mode check
+
+-- POSITIVE: an abstract term (postulated without a body via expect term).
+expect term myAxiom : Nat
+
+-- POSITIVE: an abstract function type.
+expect term myFn : Nat -> Nat
+
+-- POSITIVE: applying an abstract term.
+useAxiom : Nat
+let useAxiom = myAxiom
+
+useFn : Nat -> Nat
+let useFn n = myFn n
+
+-- POSITIVE: abstract terms can be passed as arguments.
+applyFnAxiom : (Nat -> Nat) -> Nat -> Nat
+let applyFnAxiom f x = f x
+
+result : Nat
+let result = applyFnAxiom myFn 5
+
+-- POSITIVE: an abstract polymorphic term.
+expect term myId : forall {A : Type} -> A -> A
+
+useId : Nat
+let useId = myId 42
+
+useIdBool : Bool
+let useIdBool = myId True
+
+-- POSITIVE: an abstract type (postulating a new type).
+expect type MyType
+
+-- POSITIVE: using the abstract type in a declaration.
+expect term myVal : MyType
+
+useMyType : MyType -> MyType
+let useMyType x = x
+
+-- POSITIVE: an abstract equality proof (postulating a non-obvious equality).
+-- (Consistent if used carefully in a local analysis context.)
+expect term natEq : zero = suc zero
+
+-- NEGATIVE: applying an abstract function to an argument of the wrong type.
+badAxiomApp : Nat
+let badAxiomApp = myFn True    --!! kappa.type.mismatch
+
+-- NEGATIVE: using an abstract type as a Nat is a type mismatch.
+-- `myVal : MyType`; using it where `Nat` is expected is wrong.
+typeAsNat : Nat
+let typeAsNat = myVal    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

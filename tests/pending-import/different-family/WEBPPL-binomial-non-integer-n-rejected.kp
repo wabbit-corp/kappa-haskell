@@ -1,0 +1,26 @@
+-- Source: WebPPL #457 (Binomial returns non-integer values for large n
+--   because n is not type-checked as Nat), #332 (runtime arg checks).
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c,
+--   compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch / E_TYPE_MISMATCH).
+--
+-- A distribution constructor whose declared parameter is Nat must reject
+-- a non-integer value at the constructor call site with E_TYPE_MISMATCH.
+
+module test
+
+--! mode check
+
+data Binomial : Type =
+    Binomial { p : Float, n : Nat }
+
+-- POSITIVE: an integer literal admissible for Nat.
+binOk : Binomial
+let binOk = Binomial { p = 0.5, n = 10 }
+
+
+-- NEGATIVE: a Float literal is not Nat.
+binFrac : Binomial
+let binFrac = Binomial { p = 0.5, n = 1.5 }   --!! E_TYPE_MISMATCH
+
+--! assertDiagnostic error E_TYPE_MISMATCH

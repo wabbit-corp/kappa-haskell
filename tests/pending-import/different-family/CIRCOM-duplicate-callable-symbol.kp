@@ -1,0 +1,33 @@
+-- Source issues: circom#225 (Duplicated callable symbol — when two included files
+--               both define the same template name, the compiler emits "Duplicated
+--               callable symbol"); circom#370 (duplicate top-level definition).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule:
+--   "Each callable name (template, function, or module-level definition) in the
+--    same scope must be distinct. A second definition of the same callable name
+--    must be rejected with kappa.name.ambiguous."
+
+--! mode check
+
+-- POSITIVE: two distinct function names — no conflict.
+let computeSquare (x : Int) : Int = x * x
+let computeCube (x : Int) : Int = x * x * x
+
+val1 : Int
+let val1 = computeSquare 3
+
+
+-- NEGATIVE: two template-level definitions sharing the same name.
+let compute (x : Int) : Int = x + 1
+
+let compute (y : Int) : Int = y * 2     --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: duplicate data type name at module scope.
+data Multiplier : Type = MkMultiplier Int
+
+data Multiplier : Type = MkMultiplierAlt Bool   --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

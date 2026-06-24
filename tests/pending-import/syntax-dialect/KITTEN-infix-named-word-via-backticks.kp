@@ -1,0 +1,36 @@
+-- Source issue: Kitten #148 (allow named words to be used infix,
+--   `a `f` b == a b f`, borrowing Haskell-style backticks). Kitten
+--   #6 (add infix parsing). Kitten #180 (named precedence levels).
+-- Spec: lexical.operator_identifiers_fixity,
+--       lexical.operator_identifiers_fixity.declarations,
+--       lexical.operator_identifiers_fixity.infix_gating,
+--       expressions.application.
+--
+-- Kappa does not provide Haskell-style backtick-infix on named functions;
+-- portable infix use requires a symbolic operator token plus a `fixity`
+-- declaration. The portable signal here is that a user-defined operator
+-- with a declared infix fixity may be used in infix position. The
+-- backtick-on-named-word form itself is tracked as a Kitten spec-gap
+-- (see KSA-09 / KSA-10 notes).
+
+module test
+
+--! mode check
+
+-- Declare a binary operator and its infix fixity.
+(@+) : Int -> Int -> Int
+let (@+) x y = x + y
+
+infix left 60 (@+)
+
+-- POSITIVE: infix use after fixity is in scope.
+infixForm : Int
+let infixForm = 3 @+ 4
+
+-- POSITIVE: the corresponding bare-name (curried) use.
+bareForm : Int
+let bareForm = (@+) 3 4
+
+--! assertNoErrors
+--! assertType infixForm Int
+--! assertType bareForm Int

@@ -1,0 +1,72 @@
+-- Source: nim-lang/Nim type inference behavior — let bindings infer their type
+--         from the right-hand side; nim-lang/RFCs#340 (Partial generic type
+--         inference: `let x: seq[auto]` style inference), nim-lang/RFCs#339
+--         (Allow specifying type for unpacking assignment)
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       declarations.let_in.irrefutable_patterns_let_bindings
+-- Kappa infers let-binding types from the right-hand expression when no
+-- annotation is provided. Using the inferred value at the wrong type must
+-- be caught. This tests that type inference is sound and that partial
+-- annotation (annotating with the correct type) is accepted.
+
+--! mode check
+module test
+
+-- POSITIVE: let binding type inferred from literal.
+inferredInt : Int
+let inferredInt = 42
+
+inferredStr : String
+let inferredStr = "hello"
+
+inferredBool : Bool
+let inferredBool = True
+
+--! assertType inferredInt Int
+--! assertType inferredStr String
+--! assertType inferredBool Bool
+
+-- POSITIVE: let binding type inferred from function result.
+inferredFromFn : Int
+let inferredFromFn =
+    let double n = n * 2 in
+    double 5
+
+-- POSITIVE: let binding with explicit type annotation matches inferred type.
+explicitInt : Int
+let explicitInt = (42 : Int)
+
+-- POSITIVE: generic let — type variable inferred from usage context.
+pairOfSame : (Int, Int)
+let pairOfSame =
+    let dup x = (x, x) in
+    dup 7
+
+--! assertType pairOfSame (Int, Int)
+
+-- POSITIVE: let with explicit tuple type annotation.
+annotatedTuple : (Int, String)
+let annotatedTuple = (10, "ten")
+
+-- NEGATIVE: let annotation mismatches the right-hand-side type.
+badAnnotation : String
+let badAnnotation = 42          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: let annotation contradicts inferred type from nested expression.
+badNested : Bool
+let badNested =
+    let n : Int = 5 in
+    n                           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: nested let scoping — inner binding shadows outer.
+shadowTest : Int
+let shadowTest =
+    let x : Int = 1 in
+    let x : Int = x + 10 in
+    x
+
+--! assertType shadowTest Int

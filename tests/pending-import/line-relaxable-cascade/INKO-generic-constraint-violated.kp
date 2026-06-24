@@ -1,0 +1,36 @@
+-- Source issues: inko#579, docs/generics
+-- Spec: traits.instances.associated_static_member_instance_checking
+-- Inko: calling a generic function with a type argument that does not
+-- satisfy the function's trait bound is rejected at the call site.
+-- In Kappa, the implicit argument for the missing instance cannot be solved.
+
+--! mode check
+
+trait Stringify (a : Type) =
+    stringify : (& self : a) -> String
+
+-- showAll requires its type parameter to implement Stringify.
+showAll :
+    forall (a : Type).
+    (@_ : Stringify a) ->
+    (& x : a) -> String
+let showAll x = stringify x
+
+data Labeled : Type = Labeled String
+
+instance Stringify Labeled =
+    let stringify (Labeled s) = s
+
+-- POSITIVE: calling showAll with a type that has a Stringify instance.
+ok : String
+let ok = showAll (Labeled "hello")
+
+
+data Opaque : Type = Opaque Int
+-- Opaque has no Stringify instance.
+
+-- NEGATIVE: calling showAll with Opaque, which lacks a Stringify instance.
+bad : String
+let bad = showAll (Opaque 42)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

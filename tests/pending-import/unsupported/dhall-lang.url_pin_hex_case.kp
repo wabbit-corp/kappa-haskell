@@ -1,0 +1,33 @@
+-- Source issue: dhall-lang #389
+-- Spec: modules.imports.url_module_specifiers
+-- URL import pins using sha256: accept both uppercase and lowercase hex digits.
+-- Implementations MUST accept both cases on input and canonicalize to lowercase
+-- for module identity, lockfile entries, and verification.
+-- A pin written with uppercase hex MUST be treated identically to the same pin
+-- written with the equivalent lowercase hex.
+
+-- NOTE: This test requires a URL mock server or pre-fetched content stubs.
+-- On implementations without URL fetch capability, the test result is "unsupported".
+
+--! mode check
+--! scriptMode
+--! requires capability urlMock
+
+-- POSITIVE TEST 1: sha256 pin with lowercase hex is the canonical form.
+-- This is the reference form; the module is loaded and its digest verified.
+import "mock://test-server/lib#sha256:deadbeef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    as lib_lower
+
+-- POSITIVE TEST 2: sha256 pin with UPPERCASE hex must also be accepted.
+-- The uppercase digits A-F must be accepted and treated as identical to a-f.
+-- Both imports below name the same module content.
+import "mock://test-server/lib#sha256:DEADBEEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+    as lib_upper
+
+-- POSITIVE TEST 3: mixed-case hex must also be accepted.
+import "mock://test-server/lib#sha256:DeAdBeEf0123456789AbCdEf0123456789AbCdEf0123456789AbCdEf0123456789"
+    as lib_mixed
+
+-- All three imports must resolve to the same module identity.
+-- lib_lower, lib_upper, and lib_mixed must be the same module.
+--! assertNoErrors

@@ -1,0 +1,64 @@
+-- Source issues: class-method.rhm in racket/rhombus
+-- Spec: traits.instances
+--   An instance body may only define methods that are declared in the corresponding trait.
+--   Providing a method implementation for a name not declared in the trait is a static
+--   name error (kappa.name.unresolved: the method does not exist in the trait).
+
+--! mode check
+
+trait Shape (a : Type) =
+    area      : a -> Int
+    perimeter : a -> Int
+
+trait Named (a : Type) =
+    theName : a -> String
+
+-- POSITIVE: implementing all declared trait methods.
+data Circle : Type =
+    MkCircle { radius : Int }
+
+instance Shape Circle =
+    let area      c = c.radius * c.radius
+    let perimeter c = 2 * c.radius
+
+data Square : Type =
+    MkSquare { side : Int }
+
+instance Shape Square =
+    let area      s = s.side * s.side
+    let perimeter s = 4 * s.side
+
+-- POSITIVE: using a trait-constrained function.
+scaleArea : (@_ : Shape a) -> a -> Int -> Int
+let scaleArea x factor = area x * factor
+
+-- POSITIVE: implementing multiple traits on the same type.
+data LabeledRect : Type =
+    MkLabeledRect { w : Int, h : Int, label : String }
+
+instance Shape LabeledRect =
+    let area      r = r.w * r.h
+    let perimeter r = 2 * (r.w + r.h)
+
+instance Named LabeledRect =
+    let theName r = r.label
+
+-- NEGATIVE: instance body provides `volume` which is not declared in trait Shape.
+-- The method name does not exist in the trait — static name error.
+data BadShape : Type =
+    MkBadShape { side : Int }
+
+instance Shape BadShape =
+    let area      s = s.side * s.side
+    let perimeter s = 4 * s.side
+    let volume    s = s.side * s.side * s.side  --!! kappa.name.unresolved
+
+-- NEGATIVE: instance body provides `area_extra` not declared in trait Named.
+data BadNamed : Type =
+    MkBadNamed { title : String }
+
+instance Named BadNamed =
+    let theName   n = n.title
+    let area_extra n = 0  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

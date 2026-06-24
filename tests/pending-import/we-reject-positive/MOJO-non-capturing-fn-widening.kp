@@ -1,0 +1,41 @@
+-- Source issue: MOJO-2535
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region
+-- Non-capturing functions — those whose inferred capture set is empty because
+-- they close over no free variables — must be accepted wherever a function
+-- type is demanded.  The compiler must not incorrectly reject such functions
+-- due to a spurious unresolved capture-set metavariable.
+
+module test
+
+--! mode check
+
+-- A higher-order function demanding a pure (empty capture set) function.
+applyFn : (f : () -> Int) -> Int
+let applyFn f = f ()
+
+-- POSITIVE: a top-level definition carries no environment; empty capture set.
+alwaysZero : () -> Int
+let alwaysZero () = 0
+
+positiveTopLevel : Int
+let positiveTopLevel = applyFn alwaysZero
+
+--! assertNoErrors
+--! assertType positiveTopLevel Int
+
+-- POSITIVE: a constant lambda with no free variables has an empty capture set.
+positiveConstLambda : Int
+let positiveConstLambda = applyFn (\() -> 42)
+
+--! assertNoErrors
+
+-- POSITIVE: non-capturing functions compose cleanly through HOF chains.
+applyTwice : (f : () -> Int) -> Int
+let applyTwice f = applyFn f + applyFn f
+
+positiveTwice : Int
+let positiveTwice = applyTwice alwaysZero
+
+--! assertNoErrors
+--! assertType positiveTwice Int

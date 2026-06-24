@@ -1,0 +1,48 @@
+-- Source issues: MOJO-918, MOJO-734, MOJO-1500
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       types.universes.quantities
+-- After a value is consumed via a transfer (move) into a callee, any subsequent
+-- use of the original binding must be rejected with kappa.path.consumed.
+-- This is the fundamental linearity invariant: a quantity-1 binding may be
+-- named at most once in each execution path.
+
+module test
+
+--! mode check
+
+data Wrapper : Type =
+    Wrap Int
+
+-- A sink that consumes its argument at quantity 1.
+sink : (1 w : Wrapper) -> Int
+let sink (Wrap n) = n
+
+-- POSITIVE: consume `w` exactly once via `sink`; the result is used,
+-- no second reference to `w` appears.
+consumeOnce : Int
+let consumeOnce =
+    let w = Wrap 42
+    sink w
+
+--! assertType consumeOnce Int
+
+-- NEGATIVE: `w` is consumed by `sink w`, then named again on the next
+-- line. The second occurrence must be diagnosed as kappa.path.consumed
+-- because the binding has quantity 1 and has already been consumed.
+consumeTwiceBad : Int
+let consumeTwiceBad =
+    let w = Wrap 10
+    let _x = sink w        -- consumes w here
+    let _y = sink w        --!! kappa.path.consumed  -- second use is ill-formed
+    0
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: consume a different wrapper each time; no alias involved.
+consumeTwo : Int
+let consumeTwo =
+    let a = Wrap 1
+    let b = Wrap 2
+    sink a + sink b
+

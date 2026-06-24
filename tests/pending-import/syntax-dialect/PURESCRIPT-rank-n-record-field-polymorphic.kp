@@ -1,0 +1,44 @@
+-- Source artifacts: PURESCRIPT-PR-4224 (linked #3938 — eagerly apply
+--                   substitutions when inferring object binders),
+--                   PURESCRIPT-PR-2656 (support polymorphic types in typed
+--                   binders),
+--                   PURESCRIPT-PR-2624 (disallow polymorphic types in binders,
+--                   prevent internalError),
+--                   PURESCRIPT-PR-1614 (linked #1335 — track scoped type
+--                   variables when skolemizing).
+-- Spec: types.records.values,
+--       declarations.let_in,
+--       types.quantification.
+-- Kappa spec rule (§ types.records.values + § declarations.let_in):
+--   A record field whose declared type is a Π-type (e.g. `forall a. a -> a`)
+--   may be bound by a record destructuring pattern; the bound name retains
+--   the polymorphic type of the field.
+
+--! mode check
+
+-- A record carrying a rank-N (polymorphic) field.
+type PolyR : Type =
+    (id : forall (a : Type). a -> a)
+
+-- Constructor: the polymorphic field is defined by an explicit lambda
+-- annotated with `forall`.
+mkPolyR : PolyR
+let mkPolyR = (id = \(forall (a : Type)) (x : a) -> x)
+
+-- POSITIVE: a callee that demands a rank-N argument.
+wat : (forall (b : Type). b -> b) -> Unit
+let wat _ = ()
+
+-- POSITIVE: destructure the record and pass the bound `id` to `wat`. The
+-- inferred type of the binder must be the field type
+-- `forall (a : Type). a -> a`, not a monomorphic instantiation.
+example : Unit
+let example =
+    let (id = poly) = mkPolyR
+    wat poly
+
+-- POSITIVE: a closed update preserving the polymorphic field type.
+mkPolyR2 : PolyR
+let mkPolyR2 = mkPolyR.{ id = \(forall (a : Type)) (x : a) -> x }
+
+--! assertNoErrors

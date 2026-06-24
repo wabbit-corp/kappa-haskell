@@ -1,0 +1,38 @@
+-- Source issues: gleam#254, gleam#2481, gleam#4278
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match on multiple scrutinees (tuple of values) must be exhaustive over the
+-- Cartesian product of their types. The missing-patterns diagnostic must name
+-- the actual uncovered shapes, not an over-approximate superset.
+
+--! mode check
+
+-- Two negative functions produce non-exhaustive errors; two positive functions
+-- must not. The primary origin of a non-exhaustive diagnostic is at the match
+-- expression, not a specific arm, so a count assertion is used.
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: tuple match covering all Bool x Bool combinations.
+let and_gate (a : Bool) (b : Bool) : Bool =
+    match (a, b)
+    case (True,  True)  -> True
+    case (True,  False) -> False
+    case (False, True)  -> False
+    case (False, False) -> False
+
+-- POSITIVE: wildcard covers remaining.
+let or_gate (a : Bool) (b : Bool) : Bool =
+    match (a, b)
+    case (True, _) -> True
+    case _         -> b
+
+-- NEGATIVE: missing (False, _) case in Bool x Bool match.
+let bad_gate (a : Bool) (b : Bool) : Bool =
+    match (a, b)
+    case (True, True)  -> True
+    case (True, False) -> False
+
+-- NEGATIVE: only one arm out of four Bool x Bool combos covered.
+let very_bad (a : Bool) (b : Bool) : Int =
+    match (a, b)
+    case (True, True) -> 1

@@ -1,0 +1,79 @@
+-- Source: Julia manual, "Methods", §8.1 "Abstract Types"
+--         Julia abstract type hierarchy dispatch
+-- Spec: traits.instances.resolution_algorithm,
+--       expressions.application.subsumption
+-- In Julia, a method `f(x::Real)` is available for all concrete subtypes
+-- of Real (Float32, Float64, etc.) via the type hierarchy. In Kappa, a
+-- function constrained by a supertrait is applicable to all types that
+-- have an instance of any subtype of that trait.
+
+--! mode check
+
+-- Trait hierarchy.
+trait Animal     (a : Type)
+trait Mammal     (a : Type)  -- subtype of Animal
+trait Vertebrate (a : Type)  -- subtype of Animal
+
+data Dog  : Type = Dog String
+data Fish : Type = Fish String
+data Cat  : Type = Cat String
+
+instance Animal     Dog = ()
+instance Mammal     Dog = ()
+instance Vertebrate Dog = ()
+
+instance Animal     Fish = ()
+instance Vertebrate Fish = ()
+-- Fish is not a Mammal
+
+instance Animal     Cat = ()
+instance Mammal     Cat = ()
+instance Vertebrate Cat = ()
+
+-- A function that works for any Animal.
+greet :
+    forall (a : Type).
+    (@_ : Animal a) ->
+    (& x : a) -> String
+let greet _ = "Hello, animal!"
+
+-- A function specific to Mammals.
+nurse :
+    forall (a : Type).
+    (@_ : Mammal a) ->
+    (& x : a) -> String
+let nurse _ = "nursing mammal"
+
+-- POSITIVE: Dog is both Animal and Mammal.
+greetDog : String
+let greetDog = greet (Dog "Rex")
+
+nurseDog : String
+let nurseDog = nurse (Dog "Rex")
+
+-- POSITIVE: Fish is an Animal (but not Mammal).
+greetFish : String
+let greetFish = greet (Fish "Nemo")
+
+-- NEGATIVE: Fish is not a Mammal — cannot call nurse on Fish.
+nurseFish : String
+let nurseFish = nurse (Fish "Nemo")   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: a generic function over all Vertebrates works for both Dog and Fish.
+hasSpine :
+    forall (a : Type).
+    (@_ : Vertebrate a) ->
+    (& x : a) -> Bool
+let hasSpine _ = True
+
+dogSpine : Bool
+let dogSpine = hasSpine (Dog "Rex")
+
+fishSpine : Bool
+let fishSpine = hasSpine (Fish "Nemo")
+
+catSpine : Bool
+let catSpine = hasSpine (Cat "Whiskers")
+

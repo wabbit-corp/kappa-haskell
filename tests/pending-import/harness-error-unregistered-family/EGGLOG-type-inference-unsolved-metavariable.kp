@@ -1,0 +1,28 @@
+-- Source issues: egraphs-good/egglog #80 (Type Inference Failure —
+--   "Failed to infer a type for: __rewrite_var"),
+--   egraphs-good/egglog PR#400 (Infer types of functions values based on names).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.unsolved-metavariable — §3.2.3).
+-- Egglog reported "Failed to infer a type for: __rewrite_var" with no source
+-- context. Kappa requires unsolved-type-metavariable diagnostics to be reported
+-- with kappa.type.unsolved-metavariable and to identify the binder, its
+-- source span, and the constraint set that failed to determine the type.
+
+module test
+
+--! mode check
+
+data ListA (a : Type) : Type =
+    NilA
+    ConsA (h : a) (t : ListA a)
+
+-- NEGATIVE: an empty list literal in isolation cannot have its element type
+-- inferred; the type metavariable is unsolved.
+bad1 : ListA _
+let bad1 = NilA                          --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: same expression elaborates once the element type is supplied.
+okN : ListA Int
+let okN = NilA

@@ -1,0 +1,57 @@
+-- Source issues: nickel #384, #579, #701, #758, #942, #1240
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved)
+-- When an identifier used in a type annotation, contract, or typed expression
+-- cannot be resolved, the diagnostic must be kappa.name.unresolved. The
+-- diagnostic must NOT produce a panic, an internal error, or a confusing
+-- "ill-formed type" message. The unresolved spelling and the admissible
+-- declaration kinds at the use site must be included in the payload.
+
+module test
+
+-- NEGATIVE: using an unbound type identifier in a type annotation.
+-- `UnknownType` is not declared; the diagnostic must say the name is unresolved.
+badTypeAnnotation : UnknownType -> Number     --!! kappa.name.unresolved
+let badTypeAnnotation x = 0
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using an unbound type variable in a contract annotation.
+-- A type variable `c` that is not introduced by `forall` in scope is unresolved.
+badContract : Number
+let badContract =
+    let _ : UndeclaredContract = 42   --!! kappa.name.unresolved
+    in 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using an unbound identifier in a value expression.
+badValueRef : Number
+let badValueRef = undeclaredVariable + 1     --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: accessing a field that does not exist on a record type.
+-- `(a : Number).b` — field `b` is not in the record type, so the access
+-- is an unresolved name in field-access position.
+missingFieldAccess : Number
+let missingFieldAccess =
+    let rec : (a : Number) = (a = 1) in
+    rec.nonExistentField    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: a properly declared and in-scope identifier resolves correctly.
+declaredOk : Number
+let declaredOk =
+    let myVal : Number = 99 in
+    myVal
+
+--! assertType declaredOk Number
+
+-- POSITIVE: a type alias used in a type annotation resolves to its definition.
+type MyNum = Number
+
+aliasOk : MyNum -> MyNum
+let aliasOk n = n
+

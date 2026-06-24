@@ -1,0 +1,64 @@
+-- Source issue: rust#72574 (`@ ..` placement, slice > 50000)
+-- Spec: expressions.patterns.forms, expressions.patterns.validity
+--
+-- The pattern rest item `..` (and `..rest`) is permitted ONLY in anonymous
+-- record patterns (§17.2.1). Tuple patterns and tuple-struct constructor
+-- patterns do not gain a rest form. A `name @ ..` inside a tuple is
+-- ill-formed.
+
+module test
+
+-- Helper data type with a positional constructor (rust tuple-struct
+-- analog). Constructor patterns use the prefix-application form, not
+-- tuple syntax.
+data Triple : Type =
+    Triple Int Int Int
+
+--! mode check
+
+-- POSITIVE: full tuple pattern.
+fullTuple : (Int, Int, Int) -> Int
+let fullTuple p =
+    match p
+    case (a, b, c) -> a + b + c
+
+
+-- POSITIVE: rest pattern in an anonymous record pattern.
+data Point : Type =
+    Point (x : Int, y : Int, z : Int)
+
+projX : Point -> Int
+let projX p =
+    match p
+    case Point (x = a, ..) -> a
+
+
+-- NEGATIVE: `..` inside a tuple pattern is ill-formed. Tuples have
+-- exact arity; the pattern's arity must match the scrutinee's arity.
+restInTuple : (Int, Int, Int) -> Int
+let restInTuple p =
+    match p
+    case (a, ..)  -> a   --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: `name @ ..` inside a tuple pattern is the rust#72574 form.
+-- It is ill-formed: the rest item is not a valid pattern, and `@`
+-- requires a real pattern on its right.
+namedRestInTuple : (Int, Int, Int) -> Int
+let namedRestInTuple p =
+    match p
+    case (a, rest @ ..)  -> a   --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: a constructor pattern's arity is fixed by its declaration.
+-- A tuple-struct-style constructor pattern with too-few positional
+-- subpatterns is rejected — there is no rest form to absorb the missing
+-- positions.
+restInCtor : Triple -> Int
+let restInCtor t =
+    match t
+    case Triple a -> a   --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

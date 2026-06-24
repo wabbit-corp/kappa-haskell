@@ -1,0 +1,14 @@
+-- Source issue: FSTAR-786
+-- Spec: types.universes.erasure_elaboration_time
+-- Universe variable must not leak from outer to inner let rec via de Bruijn index.
+
+--! mode check
+
+-- An outer polymorphic function contains an inner local function also polymorphic.
+-- The inner function's type variable B must be independent of the outer A.
+outer : {A : Type} -> A -> Unit
+let outer x =
+    let inner : {B : Type} -> B -> Unit = \y -> ()
+    inner x
+
+--! assertNoErrors

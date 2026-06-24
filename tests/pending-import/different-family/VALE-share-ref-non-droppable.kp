@@ -1,0 +1,64 @@
+-- Source issues: vale#359 (Only allow share refs to things that don't have
+--               drop functions), vale#363 (Prevent user overriding drop for
+--               shared references)
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- In Vale, shared (reference-counted) references are intended for objects
+-- that do not have custom drop (destructor) functions. A type with a
+-- custom drop function carries linear cleanup obligations that cannot be
+-- safely duplicated via reference counting. Allowing shared references to
+-- such types would violate the uniqueness invariant of the destructor.
+-- In Kappa, a value at quantity ω (unrestricted/shared) must be droppable;
+-- placing a non-droppable (linear) value into a shared position is
+-- rejected with kappa.quantity.unsatisfied.
+
+--! mode check
+
+-- A droppable type: no special cleanup is required when the value goes
+-- out of scope. Can be freely shared.
+data Label : Type = Label String
+
+readLabel : (& l : Label) -> String
+let readLabel (Label s) = s
+
+-- POSITIVE: taking multiple borrows of a droppable label is accepted.
+shareLabel : Label -> String
+let shareLabel l =
+    let & a = l
+    let & b = l
+    readLabel a ++ readLabel b
+
+-- A non-droppable (linear) resource: consuming it is mandatory; sharing
+-- would duplicate the cleanup obligation.
+data FileHandle : Type = FileHandle Int
+
+closeHandle : (1 h : FileHandle) -> Unit
+let closeHandle (FileHandle _) = ()
+
+-- POSITIVE: linear file handle used exactly once.
+useOnce : (1 h : FileHandle) -> Unit
+let useOnce h = closeHandle h
+
+-- NEGATIVE: attempting to use a linear FileHandle in an unrestricted
+-- (shared) position. The type carries a non-droppable obligation so the
+-- unrestricted quantity is disallowed.
+badShare : (1 h : FileHandle) -> (FileHandle, FileHandle)
+let badShare h = (h, h)   --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: placing a linear value into an ω-quantity binder (which would
+-- imply the value can be dropped freely) is rejected.
+badUnrestricted : (1 h : FileHandle) -> Unit
+let badUnrestricted h =
+    let ω alias = h   --!! kappa.quantity.unsatisfied
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: a linear value threaded through a chain and ultimately
+-- consumed exactly once is fine regardless of intermediate steps.
+chain : (1 h : FileHandle) -> Unit
+let chain h =
+    let 1 h2 = h
+    closeHandle h2

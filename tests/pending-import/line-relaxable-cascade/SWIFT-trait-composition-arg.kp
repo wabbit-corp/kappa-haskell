@@ -1,0 +1,74 @@
+-- Source issues: apple/swift-evolution SE-0309 (existentials for all protocols),
+--   apple/swift #87566 (overload resolution with composed protocol constraints).
+--   A function can require multiple independent trait constraints on a single
+--   type parameter. Passing a type that satisfies only a subset of those constraints
+--   must produce kappa.implicit.unsolved for the missing obligation.
+-- Spec: traits.instances §14.3, types.quantification §11.3
+
+--! mode check
+
+trait Printable (a : Type) =
+    printVal : a -> String
+
+trait Countable (a : Type) =
+    count : a -> Nat
+
+trait Hashable (a : Type) =
+    hashCode : a -> Nat
+
+-- POSITIVE: all three traits satisfied for Item.
+data Item : Type = Item String Nat
+
+instance Printable Item =
+    let printVal (Item s _) = s
+
+instance Countable Item =
+    let count (Item _ n) = n
+
+instance Hashable Item =
+    let hashCode (Item _ n) = n * 31
+
+-- A function requiring all three traits.
+describeAll :
+    forall {a : Type} ->
+    (@_ : Printable a) ->
+    (@_ : Countable a) ->
+    (@_ : Hashable a) ->
+    a -> String
+let describeAll x =
+    printVal x ++ "/" ++ count x ++ "/" ++ hashCode x
+
+-- POSITIVE: Item satisfies all three.
+itemDesc : Item -> String
+let itemDesc i = describeAll i
+
+-- NEGATIVE: a type with only Printable but not Countable or Hashable.
+data Label : Type = Label String
+
+instance Printable Label =
+    let printVal (Label s) = s
+
+-- No Countable Label or Hashable Label instance.
+badDescLabel : Label -> String
+let badDescLabel l = describeAll l    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a type with Printable and Countable but not Hashable.
+data Entry : Type = Entry String Nat
+
+instance Printable Entry =
+    let printVal (Entry s _) = s
+
+instance Countable Entry =
+    let count (Entry _ n) = n
+
+-- No Hashable Entry instance.
+badDescEntry : Entry -> String
+let badDescEntry e = describeAll e    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: a completely uninstanced type.
+data Ghost : Type = Ghost
+
+badDescGhost : Ghost -> String
+let badDescGhost g = describeAll g    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

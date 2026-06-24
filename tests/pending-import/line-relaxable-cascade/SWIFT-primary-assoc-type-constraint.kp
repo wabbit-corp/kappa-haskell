@@ -1,0 +1,54 @@
+-- Source issues: apple/swift-evolution SE-0346 (lightweight same-type requirements),
+--   SE-0352 (implicitly opened existentials), SE-0309 (existentials for all protocols).
+--   A constrained existential or generic constraint specifying that a primary
+--   associated type must equal a concrete type enforces a same-type requirement.
+--   Passing a value whose primary associated type does not match produces
+--   kappa.type.mismatch.
+-- Spec: traits.instances §14.3,
+--       traits.instances.associated_static_member_instance_checking §14.3.4,
+--       types.quantification §11.3
+
+--! mode check
+
+trait Collection (c : Type) =
+    Element : Type
+    toList  : c -> List c.Element
+    size    : c -> Nat
+
+data IntList : Type = IntList (List Nat)
+
+instance Collection IntList =
+    let Element = Nat
+    let toList (IntList xs) = xs
+    let size   (IntList xs) = length xs
+
+data StrList : Type = StrList (List String)
+
+instance Collection StrList =
+    let Element = String
+    let toList (StrList xs) = xs
+    let size   (StrList xs) = length xs
+
+-- POSITIVE: function requiring Collection c where Element c = Nat.
+sumElements : forall {c : Type} -> (@i : Collection c) -> (c.Element = Nat) -> c -> Nat
+let sumElements _ coll = foldl (+) 0 (toList coll)
+
+intListSum : Nat
+let intListSum = sumElements refl (IntList [1, 2, 3])
+
+-- POSITIVE: function requiring Element c = String.
+joinElements : forall {c : Type} -> (@i : Collection c) -> (c.Element = String) -> c -> String
+let joinElements _ coll = foldl (++) "" (toList coll)
+
+strListJoin : String
+let strListJoin = joinElements refl (StrList ["a", "b"])
+
+-- NEGATIVE: passing a StrList to sumElements — Element StrList = String ≠ Nat.
+badSum : Nat
+let badSum = sumElements refl (StrList ["x", "y"])    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing an IntList to joinElements — Element IntList = Nat ≠ String.
+badJoin : String
+let badJoin = joinElements refl (IntList [1, 2])    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

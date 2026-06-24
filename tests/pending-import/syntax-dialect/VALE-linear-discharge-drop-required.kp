@@ -1,0 +1,54 @@
+-- Source issues: Vale drop system, Vale OwnershipTests (Derive drop),
+--               vale#363 (Prevent user overriding drop for shared refs)
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use,
+--       types.universes.quantities
+-- In Vale, every owned value must either be destructured, passed onward,
+-- or explicitly dropped. Ignoring an owned value without a destructor call
+-- or destructure is an error. In Kappa, a linear (quantity-1) value that is
+-- neither returned, transferred, nor consumed by a destructor-typed call
+-- before its binder scope ends must be reported as
+-- kappa.quantity.unsatisfied.
+
+--! mode check
+
+data Token : Type = Token Int
+
+-- A custom destructor: explicitly consumes a Token.
+destroyToken : (1 t : Token) -> Unit
+let destroyToken (Token _) = ()
+
+-- POSITIVE: consuming a linear value by passing it to a consuming function.
+goodDestroy : (1 t : Token) -> Unit
+let goodDestroy t = destroyToken t
+
+-- POSITIVE: consuming a linear value via pattern destructuring.
+goodDestructure : (1 t : Token) -> Int
+let goodDestructure (Token n) = n
+
+-- POSITIVE: returning the linear value as the result.
+goodReturn : (1 t : Token) -> Token
+let goodReturn t = t
+
+-- NEGATIVE: ignoring a linear value (binder goes out of scope
+-- without being consumed).
+badIgnore : (1 t : Token) -> Unit
+let badIgnore t =       --!! kappa.quantity.unsatisfied
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: discarding a linear value with wildcard pattern `_` is
+-- not a valid discharge for quantity 1, because wildcard is a generic
+-- discard that does not call any destructor.
+badWildcard : (1 t : Token) -> Unit
+let badWildcard t =
+    let _ = t   --!! kappa.quantity.unsatisfied
+    ()
+
+-- POSITIVE: consuming a linear value in every arm of a conditional.
+conditionalConsume : Bool -> (1 t : Token) -> Int
+let conditionalConsume flag t =
+    match flag
+    case True  -> goodDestructure t
+    case False -> destroyToken t
+                  0

@@ -1,0 +1,41 @@
+-- Source issues: PIKELET-200 (PR: implement dependent function types),
+--               PIKELET-110 (fix ambiguous dependent function syntax),
+--               PIKELET-193 (PR: avoid ambiguous syntax in function types).
+-- Spec: types.functions, types.universes
+--
+-- Pi-types: a function whose return type depends on its argument value
+-- (or an earlier-argument value). Kappa uses the disambiguated `(x : T) -> U`
+-- spelling for explicit dependent arrows (§12.1). `forall` is the `@0`-
+-- implicit sugar (§11.3); explicit binders must use the parenthesised
+-- arrow form.
+
+--! mode check
+
+-- POSITIVE: explicit-binder identity polymorphic over a type argument.
+id : (A : Type0) -> A -> A
+let id A x = x
+
+useNat : Nat
+let useNat = id Nat 7
+
+useBool : Bool
+let useBool = id Bool True
+
+-- POSITIVE: explicit-binder const polymorphic over two type arguments.
+constFn : (A : Type0) -> (B : Type0) -> A -> B -> A
+let constFn A B x _ = x
+
+constNat : Nat
+let constNat = constFn Nat Bool 42 True
+
+-- POSITIVE: function type and value-type universe agreement. A Pi over
+-- Type0 lives in Type1.
+idTy : Type1
+let idTy = (A : Type0) -> A -> A
+
+-- NEGATIVE: applying the polymorphic identity at a non-type value (passing
+-- a runtime Nat where a `Type0` is expected) is rejected.
+bad : Nat
+let bad = id 5 7    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

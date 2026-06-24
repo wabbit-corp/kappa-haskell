@@ -1,0 +1,61 @@
+-- Source artifacts: narya docs/typechecking.rst (let rec self-reference;
+--               must give an explicit type), docs/mutual-definitions.rst
+--               (mutually-recursive let bindings via and).
+-- Spec: declarations.let_in,
+--       declarations.totality.local_recursion_examples
+--
+-- Kappa has no `let rec` keyword (§15.17 "Recursion policy"). A local
+-- named binding becomes recursive only when its preceding local
+-- signature declaration is present in the same `block` scope (§9.3.1
+-- "Local recursion"). Each member of a mutually recursive local group
+-- must have a preceding local signature in the same scope. The portable
+-- obligation here is that local recursion requires those preceding
+-- signatures; without them the recursive call's type cannot be
+-- synthesized.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: a self-recursive local function declared via a preceding
+-- local signature inside a `block`.
+length0 : Nat -> Nat
+let length0 m =
+    block
+        go : Nat -> Nat -> Nat
+        let go acc n =
+            match n
+              case Zero  -> acc
+              case Suc k -> go (Suc acc) k
+        go Zero m
+
+-- POSITIVE: mutually recursive local definitions via a pair of
+-- preceding local signatures in the same block scope.
+evenOdd : Nat -> Bool
+let evenOdd n =
+    block
+        ev : Nat -> Bool
+        od : Nat -> Bool
+        let ev k =
+            match k
+              case Zero  -> True
+              case Suc m -> od m
+        let od k =
+            match k
+              case Zero  -> False
+              case Suc m -> ev m
+        ev n
+
+-- NEGATIVE: a local definition that recursively references itself
+-- WITHOUT a preceding local signature in the same block scope cannot
+-- synthesize the recursive call and is rejected. Per §9.3.1 a local
+-- named binding is non-recursive by default.
+badLetRec : Nat -> Nat
+let badLetRec n =
+    block
+        let broken = \m -> broken m    --!! kappa.name.unresolved
+        broken n
+
+--! assertDiagnosticFamily error kappa.name.unresolved

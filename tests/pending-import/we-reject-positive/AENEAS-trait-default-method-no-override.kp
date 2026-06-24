@@ -1,0 +1,56 @@
+-- Source issues: AENEAS-70, AENEAS-133
+-- Spec: traits.members, traits.instances
+-- §14.2: trait members may carry default implementations (`let name = body`).
+-- An instance that does not override such a member inherits the default.
+-- Aeneas issue #70 (impossible to override provided trait methods) and
+-- issue #133 (trait overriding from libstd unsupported) both expose the
+-- obligation that trait default methods must be usable from instances that
+-- omit them.
+
+module test
+
+--! mode check
+
+-- A trait with a required method and one with a default implementation.
+trait Showable (a : Type) =
+    raw : (& x : a) -> String
+
+    -- default: wrap the raw display in angle brackets
+    let display : (& x : a) -> String =
+        \x -> "<" ++ raw x ++ ">"
+
+data Num : Type = Num Int
+
+-- POSITIVE: instance provides only the required `raw`; inherits `display`.
+instance Showable Num =
+    let raw (Num n) = show n
+
+displayNum : String
+let displayNum = display (Num 42)
+
+--! assertNoErrors
+--! assertType displayNum String
+
+data Tag : Type = Tag String
+
+-- POSITIVE: second type inheriting the same default.
+instance Showable Tag =
+    let raw (Tag s) = s
+
+displayTag : String
+let displayTag = display (Tag "info")
+
+--! assertNoErrors
+
+-- POSITIVE: the default can be used in generic contexts too.
+showMany : forall (a : Type). Showable a => (& x : a) -> (& y : a) -> String
+let showMany x y = display x ++ ", " ++ display y
+
+--! assertNoErrors
+
+-- POSITIVE: the required method is also independently usable.
+rawNum : String
+let rawNum = raw (Num 7)
+
+--! assertNoErrors
+--! assertType rawNum String

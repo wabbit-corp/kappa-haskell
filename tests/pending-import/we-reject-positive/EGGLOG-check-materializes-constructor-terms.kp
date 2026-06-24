@@ -1,0 +1,50 @@
+-- Source issues: egraphs-good/egglog #841 (Should Check Materialize Constructors?),
+--   egraphs-good/egglog #189 (What is the meaning of (Check(= .. ..))?),
+--   egraphs-good/egglog PR#843 (Improve `check` error message and document
+--   query-based semantics for constructor terms).
+-- Spec: core_semantics.definitional_equality (§31),
+--       core_semantics.definitional_equality.literal_normalization,
+--       see also EGGLOG-SA-04 in EGGLOG_SPEC_ADDITIONS.md.
+-- In Egglog, `(check (= (Num 6) (Num 6)))` is a query and fails because the
+-- terms are not in the e-graph. The portable Kappa obligation is: two closed
+-- constructor expressions of the same data type that reduce to the same
+-- constructor form are definitionally equal, decidable without a side-effecting
+-- database. Kappa's `==` on definitionally equal closed constructor expressions
+-- evaluates to True.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Add (l : Math) (r : Math)
+
+-- POSITIVE: two structurally equal closed constructor terms are equal.
+ok1 : Bool
+let ok1 = (Num 6) == (Num 6)
+
+ok2 : Bool
+let ok2 = (Add (Num 1) (Num 2)) == (Add (Num 1) (Num 2))
+
+ok3 : Bool
+let ok3 = (Num 6) != (Num 7)
+
+-- POSITIVE: equality through a pure helper.
+plus1 : Int -> Int
+let plus1 n = n + 1
+
+ok4 : Bool
+let ok4 = (Num (plus1 5)) == (Num 6)
+
+-- POSITIVE: equality with literals normalizes by literal normalization.
+ok5 : Bool
+let ok5 = 6 == (2 + 4)
+
+ok6 : Bool
+let ok6 = 6 == ((2 + 2) + 2)
+
+--! assertNoErrors
+--! assertType ok1 Bool
+--! assertType ok4 Bool
+--! assertType ok5 Bool

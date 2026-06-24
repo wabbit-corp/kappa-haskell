@@ -1,0 +1,47 @@
+-- Source issue: Uiua #107 (Stack was empty error when importing — `use
+--   "ReplaceIndex" Array` fires "Stack was empty when evaluating argument
+--   2" without identifying which application site is missing an
+--   argument), Uiua #122 (`f ← (|1.0 ?(&p "..")∘)` triggers "Stack was
+--   empty when evaluating array argument 1" with no information about
+--   the offending callee).
+-- Spec: expressions.application, types.functions,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_APPLICATION_ARGUMENT_MISMATCH).
+--
+-- When a callable value is applied to an argument that cannot satisfy
+-- the selected binder, the diagnostic MUST be
+-- E_APPLICATION_ARGUMENT_MISMATCH (family kappa.type.mismatch). The
+-- user-visible diagnostic must identify the offending callee and the
+-- mismatched argument; it must not collapse to a generic "stack empty"
+-- message.
+
+module test
+
+--! mode check
+
+binary : Int -> Int -> Int
+let binary x y = x + y
+
+unaryInt : Int -> Int
+let unaryInt x = x + 1
+
+-- POSITIVE: a binary applied to two arguments of the expected type.
+applyTwo : Int
+let applyTwo = binary 3 5
+
+--! assertType applyTwo Int
+
+-- NEGATIVE: a callable applied to an argument of the wrong type. The
+-- argument `"oops"` is a String where Int is expected.
+badArgType : Int
+let badArgType = unaryInt "oops"             --!! E_APPLICATION_ARGUMENT_MISMATCH
+
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+
+-- NEGATIVE: a callable applied to a wrong-typed first argument; the
+-- diagnostic must identify the offending callee `binary`.
+badArgType2 : Int
+let badArgType2 = binary "no" 1              --!! E_APPLICATION_ARGUMENT_MISMATCH
+
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+--! assertDiagnosticFamily error kappa.type.mismatch

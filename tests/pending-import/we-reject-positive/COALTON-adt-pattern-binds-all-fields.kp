@@ -1,0 +1,66 @@
+-- Source: Coalton tests/struct-tests.lisp, tests/pattern-matching-tests.lisp,
+--   general ADT and record pattern binding contract.
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings (§9.1.2),
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability (§3.2.10).
+--
+-- A constructor pattern in a match arm binds all fields of the constructor
+-- to fresh names in the arm's scope. Names bound in patterns are usable
+-- in the corresponding right-hand-side expression.
+
+--! mode check
+
+data Person : Type =
+    Person String Int
+
+data Point3D : Type =
+    Point3D Int Int Int
+
+-- POSITIVE: all fields bound and used.
+personName : Person -> String
+let personName (Person name _age) = name
+
+personAge : Person -> Int
+let personAge (Person _name age) = age
+
+--! assertNoErrors
+--! assertType personName (Person -> String)
+--! assertType personAge  (Person -> Int)
+
+-- POSITIVE: all three fields of Point3D bound and used.
+manhattanDist : Point3D -> Int
+let manhattanDist (Point3D x y z) = x + y + z
+
+--! assertNoErrors
+
+-- POSITIVE: nested constructor patterns bind inner fields.
+data Wrapper : Type =
+    Wrap Person
+
+getWrappedName : Wrapper -> String
+let getWrappedName (Wrap (Person name _)) = name
+
+--! assertNoErrors
+--! assertType getWrappedName (Wrapper -> String)
+
+-- POSITIVE: wildcard in pattern position discards fields without naming them.
+isAdult : Person -> Bool
+let isAdult (Person _ age) = age >= 18
+
+--! assertNoErrors
+
+-- POSITIVE: match on a sum type with multiple constructors — each arm binds
+-- its own fields independently.
+data Measurement : Type =
+    Length  Int
+    Area    Int Int
+    Volume  Int Int Int
+
+computeValue : Measurement -> Int
+let computeValue m =
+    match m
+    case Length n        -> n
+    case Area w h        -> w * h
+    case Volume w h d    -> w * h * d
+
+--! assertNoErrors
+--! assertType computeValue (Measurement -> Int)

@@ -1,0 +1,67 @@
+-- Source issues: AENEAS-822, AENEAS-930
+-- Spec: expressions.match, expressions.patterns, declarations.terms
+-- Aeneas translates Rust `return` inside a loop as a conditional exit from
+-- the recursive `_loop` function.  The portable Kappa obligation is that a
+-- recursive function with a conditional early result (guarded by `if` or
+-- `match`) is well-typed and that the result type is consistent across all
+-- return paths.
+-- Issue #822: early returns inside loops that are equivalent to breaks.
+-- Issue #930: "could not match contexts" for loops with early returns.
+
+module test
+
+--! mode check
+
+-- POSITIVE: tail-recursive function with early return modeled as a conditional.
+-- Each call either returns immediately (base/early case) or recurses.
+findFirst : forall (a : Type). (a -> Bool) -> List a -> Option a
+let findFirst pred xs =
+    match xs
+    case []      -> None
+    case h :: t  ->
+        if pred h then Some h      -- early return
+        else findFirst pred t      -- continue loop
+
+--! assertNoErrors
+--! assertType findFirst (forall (a : Type). (a -> Bool) -> List a -> Option a)
+
+-- POSITIVE: early return with a Result-like type.
+data Err : Type = Err String
+
+data Either (a : Type) (b : Type) : Type =
+    Left  : a -> Either a b
+    Right : b -> Either a b
+
+findOrError : forall (a : Type). (a -> Bool) -> List a -> Either a Err
+let findOrError pred xs =
+    match xs
+    case []      -> Right (Err "not found")   -- loop ended without finding
+    case h :: t  ->
+        if pred h then Left h                 -- early return: found
+        else findOrError pred t
+
+--! assertNoErrors
+
+-- POSITIVE: multiple early return conditions.
+findInRange : Int -> Int -> List Int -> Option Int
+let findInRange lo hi xs =
+    match xs
+    case []     -> None
+    case h :: t ->
+        if h < lo then findInRange lo hi t           -- skip too small
+        else if h > hi then None                     -- early abort
+        else Some h                                  -- found in range
+
+--! assertNoErrors
+
+-- POSITIVE: counting loop with early stop.
+countUntil : (Int -> Bool) -> List Int -> Int
+let countUntil stop xs =
+    match xs
+    case []     -> 0
+    case h :: t ->
+        if stop h then 0                -- early stop
+        else 1 + countUntil stop t
+
+--! assertNoErrors
+--! assertType countUntil ((Int -> Bool) -> List Int -> Int)

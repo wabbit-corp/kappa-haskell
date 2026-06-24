@@ -1,0 +1,15 @@
+-- Source issue: dhall-lang #374 (tabs in multiline strings; see
+--   DHALL_CANDIDATE_LEDGER.md #374)
+-- Spec: literals.string_literals.multiline_strings_fixed_dedent
+-- NEGATIVE: tab character as indent prefix on closing delimiter is ill-formed.
+-- The closing triple-quote has a tab (U+0009) before it, not a space.
+module invalid_tab_prefix
+
+--! assertDiagnosticFamily error kappa.syntax.generated-invalid
+
+bad_string : String
+let bad_string =
+    '''
+    line one
+    line two
+	'''

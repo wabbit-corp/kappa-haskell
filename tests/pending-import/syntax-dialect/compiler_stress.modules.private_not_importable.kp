@@ -1,0 +1,31 @@
+-- Stress test: A private item cannot be imported by name outside the defining module
+-- Spec: modules.visibility_opacity_private_opaque.private
+
+--! mode check
+
+-- `private` items are not part of the module's export interface.
+-- They remain fully accessible within this source file.
+
+private let secret : Int = 42
+
+private let secretDouble : Int = secret * 2
+
+-- A public definition may use private helpers freely inside this module.
+expose : Int
+let expose = secret + 1
+
+exposeDouble : Int
+let exposeDouble = secretDouble - secret
+
+-- A private function used internally.
+private let addSecret : Int -> Int
+let addSecret n = n + secret
+
+publicResult : Int
+let publicResult = addSecret 8
+
+-- Document: an importing module that attempts `import ThisModule (secret)`
+-- or `import ThisModule (let secret)` will fail with kappa.name.unresolved
+-- because `secret` is not in the exported interface.
+
+--! assertNoErrors

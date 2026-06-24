@@ -1,0 +1,64 @@
+-- Source issues: leo#2610 (panic when defining tuple of variables;
+--               `let (c,d): (u8,u8,u8) = (1u8,2u8,3u8)` emitted a type error
+--               but still panicked in itertools zip_eq because the type
+--               annotation arity and the pattern arity were not checked
+--               consistently), leo PR#29311 (fix compiler panics in
+--               multi-identifier let destructuring).
+-- Spec: SA-LEO-01 (tuple-destructuring arity), literals.unit_tuples,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule:
+--   "When a tuple destructuring binding carries an explicit type annotation,
+--    the annotation's arity, the pattern's arity, and the RHS expression's
+--    tuple arity must all agree. Any mismatch between annotation arity and
+--    pattern arity, or between annotation arity and RHS arity, must produce
+--    `kappa.type.mismatch` or `kappa.pattern.constructor-arity`.
+--    The compiler must not proceed to later passes without recording all
+--    bound identifiers as erroneous."
+-- leo#2610 showed that `let (c,d): (u8,u8,u8) = (1,2,3)` emitted an error
+--   but then panicked because the zipping of 2 pattern vars vs 3 type elems
+--   was done without verifying the error path.
+
+--! mode check
+
+-- POSITIVE: annotation, pattern, and RHS all agree on arity 2.
+goodA : Int
+goodB : Bool
+let (goodA, goodB) : (Int, Bool) = (42, True)
+
+-- POSITIVE: annotation, pattern, and RHS agree on arity 3.
+goodX : Int
+goodY : Int
+goodZ : Bool
+let (goodX, goodY, goodZ) : (Int, Int, Bool) = (1, 2, False)
+
+
+-- NEGATIVE: annotation says arity 3, pattern has arity 2 (2 variables).
+-- The annotation `(Int, Int, Int)` expects 3 components but the pattern
+-- names only 2 identifiers.
+badAnnotation2 : (Int, Int)
+let (badAnnotation2A, badAnnotation2B) : (Int, Int, Int) = (1, 2, 3)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: annotation says arity 2, RHS has arity 3.
+-- The annotation `(Int, Int)` requires 2 components but the RHS is a 3-tuple.
+badAnnotation3 : (Int, Int)
+let (badAnnotation3A, badAnnotation3B) : (Int, Int) = (1, 2, 3)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: annotation is a scalar type (not a tuple) but the pattern has
+-- multiple variables.
+badScalarAnnotation : Bool
+let (badScalarA, badScalarB) : Bool = (True, False)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: annotation arity matches RHS but the element types conflict.
+-- Pattern (a, b) : (Int, Bool) = (1, 2) — second element should be Bool not Int.
+badElemType1 : Int
+badElemType2 : Bool
+let (badElemType1, badElemType2) : (Int, Bool) = (1, 2)    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

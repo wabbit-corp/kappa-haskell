@@ -1,0 +1,50 @@
+-- Source issue: UNISON#6221 (Improve type checking of recursive lets with a mix of binding annotations)
+-- Spec: declarations.terms, declarations.signatures, declarations.let_in
+-- Kappa's recursive-group elaboration (§15.16) requires that a mutually
+-- recursive group containing both signature-annotated bindings and bindings
+-- that need full inference be partitioned: the inferred-only members are
+-- generalized BEFORE the annotated members are checked. Without the
+-- partition, the inferred member's type is not general enough to satisfy
+-- the annotated member's signature when checked as a single group.
+--
+-- The two members below were the corpus reproducer: `f` has no signature
+-- and must be generalized to `forall a. a -> a` before `g` (annotated) is
+-- checked against `forall a b. a -> b -> a`.
+
+--! mode check
+
+-- POSITIVE: `f` has no signature; `g` does. Kappa must generalize `f` first.
+let g : forall (a b : Type). a -> b -> a
+let g x y = f x   -- inside g's body: f is the already-generalised version
+
+let f : forall (a : Type). a -> a   -- Kappa requires the signature here too,
+                                     -- since the spec does not yet promise
+                                     -- the Unison-style implicit partitioning.
+let f x = g x x
+
+
+-- POSITIVE: same shape, but with an effect row in `g`'s signature. The
+-- typechecker must not attach an ability variable to `f` purely because
+-- `g`'s signature has one — only the last arrow of a chain carries the
+-- inferred row.
+effect IOop =
+    1 doIO : Unit -> Unit
+
+let g2 : forall (a b : Type). a -> b -> Eff <[lIO : IOop]> a
+let g2 x y =
+    do
+        lIO.doIO ()
+        pure (f2 x)
+
+let f2 : forall (a : Type). a -> a
+let f2 x = x
+
+
+-- NEGATIVE: an unannotated recursive group whose only call chain creates a
+-- circular obligation that cannot be solved without an explicit signature.
+-- Kappa's recursive-group elaboration must reject this with a clear
+-- needs-signature diagnostic (§9.2 requires top-level signatures), not crash.
+let loopA = loopB --!! kappa.type.missing-signature
+let loopB = loopA
+
+--! assertDiagnosticFamily error kappa.type.missing-signature

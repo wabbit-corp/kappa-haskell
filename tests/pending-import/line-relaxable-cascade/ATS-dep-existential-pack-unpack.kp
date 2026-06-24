@@ -1,0 +1,76 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`typedef Int = [a:int] int(a)`, `typedef Nat = [a:int | a >= 0] int(a)`),
+--         tests/srcgen1/TEST/DATA/test01.dats (list_vt_length existential return)
+-- Spec: types.universes.classifiers (§11.1),
+--       functions.quantities.binders (§12),
+--       records.existentials (§13.2.11),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: `[n:nat] int(n)` is an existential packing of an integer
+--   together with a proof that its index is non-negative. Unpacking gives the
+--   integer value and the constraint. Packing a value of the wrong index or
+--   providing a value that violates the bound must be rejected.
+-- Portable obligation: existential packing must verify the witnessing
+--   constraint; a mismatch between the supplied value and the stated
+--   existence witness is type-mismatch.
+
+--! mode check
+
+-- A "bounded pair": a value together with a proof that the index is >= 0.
+-- Represents the ATS3 existential  [n:int | n >= 0] T(n).
+data NonNeg : Type =
+    MkNonNeg : forall (n : Nat). Int -> NonNeg
+
+-- Unpack: extract the stored Int and the nat-index evidence.
+unpackNonNeg : NonNeg -> Int
+let unpackNonNeg (MkNonNeg n) = n
+
+-- POSITIVE: packing a non-negative value with its nat witness.
+nn0 : NonNeg
+let nn0 = MkNonNeg 0
+
+nn42 : NonNeg
+let nn42 = MkNonNeg 42
+
+-- POSITIVE: packing zero, the smallest valid natural.
+nnZero : NonNeg
+let nnZero = MkNonNeg 0
+
+-- POSITIVE: round-trip: pack then unpack.
+roundtrip : Int -> Int
+let roundtrip x = unpackNonNeg (MkNonNeg x)
+
+-- A constrained index pair: value must equal index.
+data ExactIdx : Int -> Type =
+    MkExact : forall (n : Int). ExactIdx n
+
+-- POSITIVE: building an exact-index value at a known index.
+exact5 : ExactIdx 5
+let exact5 = MkExact
+
+-- POSITIVE: using the index in a computation.
+doubleExact : forall (n : Int). ExactIdx n -> ExactIdx (n + n)
+let doubleExact _ = MkExact
+
+exact10 : ExactIdx 10
+let exact10 = doubleExact (MkExact : ExactIdx 5)
+
+-- NEGATIVE: the doubled index of 5 is 10, not 11.
+badExact : ExactIdx 11
+let badExact = doubleExact (MkExact : ExactIdx 5)  --!! kappa.type.mismatch
+
+-- NEGATIVE: packing index 3 but annotating with index 4.
+wrongPack : ExactIdx 4
+let wrongPack = (MkExact : ExactIdx 3)             --!! kappa.type.mismatch
+
+-- A bounded range type: lower <= value index <= upper.
+data BetweenIdx : Int -> Int -> Type =
+    MkBetween : forall (lo hi n : Int). BetweenIdx lo hi
+
+between3_7 : BetweenIdx 3 7
+let between3_7 = MkBetween
+
+-- NEGATIVE: bound annotation contradiction (lo > hi is unsatisfiable).
+emptyRange : BetweenIdx 10 5
+let emptyRange = MkBetween                         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,40 @@
+-- Source artifacts: RUST-PR-4914 (Adjust borrow checker algorithm),
+--                   RUST-PR-7849 (borrowck permits moved values to be captured),
+--                   RUST-PR-155600 (Polonius UI tests),
+--                   CHALK-3 (Lifetime inference),
+--                   CHALK-20 (revamp region constraints),
+--                   CHALK-688 (Solving closure goal keeps expanding lifetimes).
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region.
+-- Kappa spec rule (§ types.universes.borrow_lifetimes_escape_prevention):
+--   "A value, including a closure, whose region environment mentions a rigid
+--    rho may not escape the lexical scope that introduced rho."
+-- This test pins the closure-escape diagnostic: a closure that captures a
+-- borrowed local cannot be returned out of the function that introduced the
+-- borrow root.
+
+--! mode check
+
+data Box (a : Type) : Type =
+    Box (val : a)
+
+-- NEGATIVE: closure captures `&local` where the borrow root is a local of the
+-- enclosing function. Returning that closure escapes its region.
+escape_borrow_closure : (Unit -> Unit -> Int)
+let escape_borrow_closure _ =
+    let 1 owned : Box Int = Box 7
+    let & view = owned
+    -- The closure body captures `view`, whose region is the rigid rho
+    -- introduced for the borrow at `let & view`. The closure value would
+    -- carry that rho out through `return`.
+    \_ -> view.val             --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- POSITIVE: a closure that captures only owned/moved values can be returned.
+return_owned_closure : Box Int -> (Unit -> Int)
+let return_owned_closure (Box v) =
+    -- `v` is captured by value, not by borrow; no rigid rho is involved.
+    \_ -> v
+

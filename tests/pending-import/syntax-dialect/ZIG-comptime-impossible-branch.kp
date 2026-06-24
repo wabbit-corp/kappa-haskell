@@ -1,0 +1,67 @@
+-- Source issues: zig#25213 (false positive for errdefer comptime unreachable),
+--               zig#22138 (allow comptime unreachable prong for errors not in set),
+--               zig compile_errors/comptime_unreachable.zig
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       expressions.match.case_impossible_empty_remainder,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Kappa `-> impossible` is accepted only when the compiler can prove that the
+-- corresponding branch is unreachable. Using `-> impossible` (or `case
+-- impossible`) in a branch that *is* still reachable is rejected with
+-- `kappa.proof.impossible-reachable`. Conversely, if the branch truly is
+-- unreachable, `-> impossible` is accepted and the match remains valid.
+
+--! mode check
+
+data Bit : Type =
+    Zero
+    One
+
+-- POSITIVE: uninhabited type — `Empty` has no constructors, so any match on
+-- it may close with `case impossible`.
+data Empty : Type =
+
+let absurdEmpty (e : Empty) : Int =
+    match e
+    case impossible
+
+
+-- POSITIVE: exact coverage of a two-constructor type; `case impossible` on
+-- the remainder after naming both arms is accepted because the remainder is
+-- provably empty.
+let bitToInt (b : Bit) : Int =
+    match b
+    case Zero -> 0
+    case One  -> 1
+    case impossible
+
+
+-- NEGATIVE: `-> impossible` in a reachable branch. Here `One` is still
+-- possible, so marking it impossible is a compile-time error.
+let badImpossible (b : Bit) : Int =
+    match b
+    case Zero -> 0
+    case One  -> impossible    --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable
+
+-- NEGATIVE: `case impossible` as final arm when the scrutinee has reachable
+-- constructors remaining.
+let badCaseImpossible (b : Bit) : Int =
+    match b
+    case Zero  -> 0
+    case impossible    --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable
+
+-- POSITIVE: GADT-style index forces unreachability — an `impossible` branch
+-- is valid in a match where the index unification proves the branch empty.
+data Vec (n : Int) (a : Type) : Type =
+    Nil  : Vec 0 a
+    Cons : a -> Vec n a -> Vec (n + 1) a
+
+-- When the length index is 0, the `Cons` constructor cannot apply.
+let headOfNonEmpty (v : Vec 1 Int) : Int =
+    match v
+    case Cons x _ -> x
+    case Nil -> impossible
+

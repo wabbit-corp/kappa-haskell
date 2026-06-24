@@ -1,0 +1,27 @@
+-- Source issues: FUTHARK-1836, FUTHARK-466
+-- Spec: types.universes.quantities.linear_discharge_discard_destructor_use
+-- Futhark #1836: a confusing type error arose because consumption was tracked
+-- in expression context.  Futhark #466: a uniqueness annotation on a binding
+-- in expression position was silently ignored.
+-- In Kappa, a wildcard `_` is explicitly a discard pattern and does NOT
+-- discharge a linear obligation (spec §12.2.6: "A wildcard pattern _ is a
+-- discard pattern. It does not by itself consume, release, destroy, finalize,
+-- or otherwise discharge a linear obligation.").
+-- A linear value discarded via `_` must be rejected.
+
+--! mode check
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+module test
+
+-- NEGATIVE: discarding a linear value with wildcard pattern.
+-- The spec explicitly states this is rejected for arbitrary T.
+badDiscard : (1 t : Int) -> Unit
+let badDiscard (1 t) =
+  let _ = t
+  ()
+
+-- NEGATIVE: ignoring a linear resource by never using it.
+-- A function binding at quantity 1 must be used; omitting it is an error.
+badIgnore : (1 t : Int) -> Int
+let badIgnore (1 _t) = 0

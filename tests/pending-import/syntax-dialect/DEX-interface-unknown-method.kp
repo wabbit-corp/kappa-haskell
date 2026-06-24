@@ -1,0 +1,54 @@
+-- Source issues: dex-lang typeclass-tests.dx
+--   (`instance InterfaceTest4(Float) { baz = 1 }` →
+--   `Type error: not a method name: baz`),
+--   (`instance InterfaceTest4(Float) { someMethod = 1 }` →
+--   `Type error: someMethod is not a method of InterfaceTest4`),
+--   dex-lang #323 (referencing wrong instance method).
+-- Spec: traits.instances.method_membership_check (§14.3.3),
+--       compiler.frontir.standard_diagnostic_families.associated (kappa.associated.member-undeclared).
+-- An instance body may only define methods that are actually declared in the
+-- trait being instantiated. Providing a definition for a name that is not a
+-- method of the governing trait — whether it is declared elsewhere or is
+-- entirely undefined — must be rejected. The diagnostic must identify the
+-- erroneous name and the trait whose method set was searched.
+
+--! mode check
+
+trait Arithmetic (a : Type) =
+    add : a -> a -> a
+    mul : a -> a -> a
+
+data Vec2 : Type = Vec2 Float Float
+
+-- NEGATIVE: `subtract` is not a method of Arithmetic.
+instance Arithmetic Vec2 =    --!! kappa.associated.member-undeclared
+    let add (Vec2 ax ay) (Vec2 bx by) = Vec2 (ax + bx) (ay + by)
+    let mul (Vec2 ax ay) (Vec2 bx by) = Vec2 (ax * bx) (ay * by)
+    let subtract (Vec2 ax ay) (Vec2 bx by) = Vec2 (ax - bx) (ay - by)
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared
+
+-- NEGATIVE: `display` belongs to a different trait, not Arithmetic.
+trait Display (a : Type) =
+    display : a -> String
+
+data Scalar : Type = Scalar Float
+
+instance Arithmetic Scalar =    --!! kappa.associated.member-undeclared
+    let add (Scalar x) (Scalar y) = Scalar (x + y)
+    let mul (Scalar x) (Scalar y) = Scalar (x * y)
+    let display (Scalar x) = show x   -- display belongs to Display, not Arithmetic
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared
+
+-- POSITIVE: instance providing only the declared methods.
+data Complex : Type = Complex Float Float
+
+instance Arithmetic Complex =
+    let add (Complex ar ai) (Complex br bi) = Complex (ar + br) (ai + bi)
+    let mul (Complex ar ai) (Complex br bi) =
+        Complex (ar * br - ai * bi) (ar * bi + ai * br)
+
+-- POSITIVE: instance providing both declared methods without extras.
+instance Display Complex =
+    let display (Complex r i) = show r <> "+" <> show i <> "i"

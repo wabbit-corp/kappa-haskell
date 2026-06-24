@@ -1,0 +1,57 @@
+-- Source issues: rust#66173, rust#67225 (never-type fallback unsoundness),
+--                rust#113875 (RPIT not satisfied by !), slice > 50000
+-- Spec: types.universes.defaulting_non_user_written_inference_variables,
+--       expressions.match.case_impossible_empty_remainder,
+--       expressions.match.impossible_unreachable_branch_bodies
+--
+-- Kappa's defaulting rule (§11.1.3) says an unsolved inference variable
+-- must be generalized, explicitly defaulted, or the program REJECTED.
+-- There is no silent "default to Unit" behavior — the analog of Rust's
+-- never-type fallback. When the variable can flow to a reachable
+-- runtime-relevant position and no defaulting rule applies, the program
+-- must be rejected with `kappa.type.unsolved-metavariable`.
+
+module test
+
+data Void : Type =
+
+absurd : forall (a : Type). (1 v : Void) -> a
+let absurd v = match v case impossible
+
+--! mode check
+
+-- POSITIVE: a polymorphic function applied at a position whose expected
+-- type is fully determined returns the demanded value type. No defaulting
+-- needed.
+identity : (a : Type) -> a -> a
+let identity _ x = x
+
+useInt : Int
+let useInt = identity _ 42   -- a := Int from the argument type
+
+
+-- POSITIVE: an explicitly diverging branch (case impossible on Void) is
+-- accepted at any return type; this is the analog of Rust's "loop {}"
+-- being accepted at `impl Iterator`. The `case impossible` discharges the
+-- obligation without forcing the elaborator to default the unsolved
+-- variable.
+divergeAtAnyType : Void -> (Int, String, Unit)
+let divergeAtAnyType v = match v case impossible
+
+
+-- NEGATIVE: a value of unsolved type returned into a reachable position
+-- without an external constraint to pin the type. Compare rust#66173's
+-- `unconstrained_return::<_>()` returning a value whose payload is
+-- unconstrained: defaulting to Unit would let the value escape unsafely.
+ambiguous : forall (a : Type). (1 e : a) -> a
+let ambiguous e = e
+
+reachableUnsolved : Int
+let reachableUnsolved =
+    -- The result of `ambiguous _` has type `_`. No external constraint
+    -- pins `a`, so the metavariable is unsolved at the end of the
+    -- binding. MUST reject; MUST NOT default silently to `Unit`.
+    let x = ambiguous _   --!! kappa.type.unsolved-metavariable
+    0
+
+--! assertDiagnostic error kappa.type.unsolved-metavariable

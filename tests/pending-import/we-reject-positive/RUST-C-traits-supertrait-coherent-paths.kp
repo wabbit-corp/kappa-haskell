@@ -1,0 +1,55 @@
+-- Source artifacts: CHALK-12 (Elaborating where clauses on traits),
+--                   CHALK-DOC-book/src/clauses/implied_bounds.md,
+--                   CHALK-777 (Unable to deduce projection types from supertrait bounds).
+-- Spec: traits.instances.supertrait_projection_path_selection,
+--       traits.headers.supertraits.
+-- When two supertrait projection paths reach the same normalized supertrait
+-- goal from the same trait evidence value, the trait declaration is well-formed
+-- only if the projected evidence values are coherent under § identity.hash_uses
+-- .instance_coherence. This test pins the positive case: two paths to the same
+-- supertrait yield definitionally equal evidence, and the program is accepted.
+
+--! mode check
+
+trait Base (a : Type) =
+    baseId : a -> Int
+
+-- Two supertraits, each refining `Base`. From an `Apex` evidence value,
+-- `Base a` is reachable along two declared paths: through `LeftMid` and
+-- through `RightMid`.
+trait Base a => LeftMid (a : Type) =
+    leftLabel : a -> Int
+
+trait Base a => RightMid (a : Type) =
+    rightLabel : a -> Int
+
+trait LeftMid a, RightMid a => Apex (a : Type) =
+    apexTag : a -> Int
+
+data Token : Type = Token
+
+instance Base Token =
+    let baseId _ = 7
+
+instance LeftMid Token =
+    let leftLabel _ = 1
+
+instance RightMid Token =
+    let rightLabel _ = 2
+
+instance Apex Token =
+    let apexTag _ = 99
+
+-- A function that requires `Apex a` can project `Base a` along either path.
+-- The projected `Base` evidence values must be coherent.
+project_both_paths : (@_ : Apex a) => a -> Int
+let project_both_paths x =
+    -- `baseId x` resolves through synthesized implicit evidence for `Base a`,
+    -- reachable via either supertrait edge from the `Apex a` binder. Either
+    -- path projects to the same evidence value: the declaration is accepted.
+    baseId x
+
+use_token : Int
+let use_token = project_both_paths Token
+
+--! assertNoErrors

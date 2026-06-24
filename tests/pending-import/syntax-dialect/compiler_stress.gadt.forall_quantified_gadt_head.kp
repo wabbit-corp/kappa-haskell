@@ -1,0 +1,31 @@
+-- Stress test: GADT constructor with forall-quantified erased implicit; inferred at application sites
+-- Spec: data_types.gadts, expressions.implicit_parameters
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+  MkPair : a -> b -> Pair a b
+
+-- Propositional equality as a GADT; erased implicit x inferred from application context.
+data Eq (a : Type) : a -> a -> Type =
+  Refl : @erased (x : a) -> Eq a x x
+
+-- Construct Refl for a known element; erased x is inferred from the return type.
+eqInt : Eq Int 42 42
+let eqInt = Refl
+
+eqBool : Eq Bool True True
+let eqBool = Refl
+
+-- cong: if x = y then f x = f y.  Erased implicit in Refl inferred at both uses.
+cong : {a b : Type} -> {x y : a} -> (f : a -> b) -> Eq a x y -> Eq b (f x) (f y)
+let cong f pf = match pf
+  case Refl -> Refl
+
+-- trans: transitivity; erased implicits inferred at each Refl.
+trans : {a : Type} -> {x y z : a} -> Eq a x y -> Eq a y z -> Eq a x z
+let trans p q = match p
+  case Refl -> match q
+    case Refl -> Refl
+
+--! assertNoErrors

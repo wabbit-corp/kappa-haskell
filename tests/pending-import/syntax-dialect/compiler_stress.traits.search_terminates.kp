@@ -1,0 +1,40 @@
+-- Stress test: Instance search terminates even with a complex chain of premises
+-- Spec: traits.instances.search_termination
+
+--! mode check
+
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+data Option (a : Type) : Type =
+    None
+    Some a
+
+data Pair (a b : Type) : Type =
+    Pair a b
+
+-- Standard well-founded instances: premise is strictly smaller than head.
+instance Eq a => Eq (Option a) =
+    let (==) x y = match x
+        case None   -> match y case None -> True  case Some _ -> False
+        case Some a -> match y case None -> False case Some b -> a == b
+
+instance Eq a => Eq b => Eq (Pair a b) =
+    let (==) (Pair x1 y1) (Pair x2 y2) = x1 == x2 && y1 == y2
+
+instance Eq Int =
+    let (==) x y = int_eq x y
+
+instance Eq String =
+    let (==) x y = string_eq x y
+
+-- Complex call site: requires Eq (Option (Pair Int String))
+-- Chain: Eq Int, Eq String, Eq (Pair Int String), Eq (Option (Pair Int String))
+testComplex : Bool
+let testComplex =
+    let a : Option (Pair Int String) = Some (Pair 1 "hello")
+    let b : Option (Pair Int String) = Some (Pair 1 "hello")
+    let c : Option (Pair Int String) = None
+    (a == b) && (not (a == c))
+
+--! assertNoErrors

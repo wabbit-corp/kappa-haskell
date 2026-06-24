@@ -1,0 +1,54 @@
+-- Source issues: universe level constraints; universe literal syntax;
+--   universe expressions distinct from ordinary function application.
+-- Source issues: jetbrains/arend#69 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: types.universes, types.universes.cumulativity,
+--       types.universes.inference_sketch,
+--       lexical
+--
+-- Universe literals (Type0, Type1, ...) must be lexically and semantically
+-- distinct from ordinary function application. Universe cumulativity allows
+-- using a value of type `Type n` where `Type m` (m > n) is expected, but
+-- not the reverse. Universe inference must produce satisfiable constraints.
+
+--! mode check
+
+-- POSITIVE: standard universe hierarchy.
+-- `Type0 : Type1`, `Type1 : Type2`, etc.
+smallType : Type1
+let smallType = Type0
+
+medType : Type2
+let medType = Type1
+
+-- POSITIVE: cumulativity — a value of type `Type0` may be used where
+-- `Type1` is expected.
+liftType : Type1
+let liftType = Nat    -- Nat : Type0, and Type0 ≤ Type1
+
+-- POSITIVE: functions are classified in their universe; the Pi type
+-- `Nat -> Nat` lives at the same level as `Nat`.
+funType : Type0
+let funType = Nat -> Nat
+
+-- POSITIVE: universe-polymorphic function.
+-- The bare `Type` introduces a fresh level metavariable inferred at each site.
+identity : forall (A : Type) -> A -> A
+let identity x = x
+
+useIdNat : Nat
+let useIdNat = identity 42
+
+useIdType : Type0
+let useIdType = identity Nat
+
+-- NEGATIVE: using a universe at a level that is too large for the required level.
+-- `Type1` cannot be classified in `Type1`; it requires `Type2` (or larger).
+badUniverse : Type1
+let badUniverse = Type1    --!! kappa.type.mismatch
+
+-- NEGATIVE: using a value of type `Type1` where a `Type0` is expected.
+-- `Type0` is not cumulative downward.
+downLift : Type0
+let downLift = Type1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

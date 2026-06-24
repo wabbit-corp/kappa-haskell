@@ -1,0 +1,59 @@
+-- Source issues: rhombus-pr#579 (~nonempty after ... in repetition patterns)
+-- Spec: expressions.patterns.forms, data_types.data_declarations
+--   Kappa list patterns use the `(::)` constructor form: `Nil` for empty, `x :: xs` for
+--   head-tail. There is no spread `...` or `~nonempty` modifier in Kappa pattern syntax.
+-- Note: SA-RHOMBUS-07 proposes formalizing `~nonempty` pattern repetition for Kappa.
+--   This test covers the portable obligation: list pattern matching with constructor forms.
+--   A match covering only the non-empty case is non-exhaustive (kappa.pattern.non-exhaustive).
+
+--! mode check
+
+-- POSITIVE: matching empty list with Nil.
+describeEmpty : List Int -> String
+let describeEmpty xs =
+    match xs
+    case Nil    -> "empty"
+    case _ :: _ -> "nonempty"
+
+-- POSITIVE: head-tail decomposition.
+headOrZero : List Int -> Int
+let headOrZero xs =
+    match xs
+    case Nil     -> 0
+    case x :: _  -> x
+
+-- POSITIVE: matching exactly one element (Nil tail).
+singletonOrElse : List Int -> String
+let singletonOrElse xs =
+    match xs
+    case x :: Nil -> "singleton"
+    case Nil      -> "empty"
+    case _        -> "multiple"
+
+-- POSITIVE: matching exactly two elements.
+twoOrElse : List Int -> String
+let twoOrElse xs =
+    match xs
+    case x :: y :: Nil -> "exactly two"
+    case Nil           -> "empty"
+    case _ :: Nil      -> "one"
+    case _             -> "more than two"
+
+-- POSITIVE: nested list pattern in a data constructor.
+data Wrapper (a : Type) : Type =
+    Wrap (List a)
+
+firstWrapped : Wrapper Int -> Maybe Int
+let firstWrapped w =
+    match w
+    case Wrap Nil      -> Nothing
+    case Wrap (x :: _) -> Just x
+
+-- NEGATIVE: match covers only the non-empty case — missing Nil branch.
+-- A match without a Nil case is non-exhaustive.
+firstOnly : List Int -> Int
+let firstOnly xs =
+    match xs    --!! kappa.pattern.non-exhaustive
+    case x :: _ -> x
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

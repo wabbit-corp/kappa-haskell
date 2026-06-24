@@ -1,0 +1,62 @@
+-- Source issues: dex-lang type-tests.dx
+--   (`instance I(A, extraneous) given (extraneous)` →
+--   `Type error: Wrong number of positional arguments provided. Expected 1 but got 2`),
+--   (`instance I()` →
+--   `Type error: Wrong number of positional arguments provided. Expected 1 but got 0`),
+--   dex-lang #1140 (compiler bug when providing extraneous arguments to an instance),
+--   dex-lang #1282 (better error message to say "positional arguments").
+-- Spec: traits.instances.head_arity_check (§14.3.2),
+--       compiler.frontir.standard_diagnostic_families.constructor (kappa.constructor.arity).
+-- The head of an instance declaration must supply exactly as many type
+-- arguments as the trait declares parameters. Providing too many or too few
+-- type arguments at the instance head is a static error. The diagnostic must
+-- report the expected and actual counts.
+
+--! mode check
+
+-- A single-parameter trait.
+trait Showable (a : Type) =
+    show' : a -> String
+
+data Item : Type = Item Int
+
+-- POSITIVE: correct single-argument instance.
+instance Showable Item =
+    let show' (Item n) = "Item " <> show n
+
+-- NEGATIVE: two type arguments provided for a single-parameter trait.
+data Extra : Type = Extra
+
+instance Showable Item Extra =    --!! kappa.constructor.arity
+    let show' (Item n) = "Item " <> show n
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: zero type arguments provided for a single-parameter trait.
+instance Showable =    --!! kappa.constructor.arity
+    let show' x = "?"
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- A two-parameter trait.
+trait Convertible (a : Type) (b : Type) =
+    convert : a -> b
+
+data IntVal : Type = IntVal Int
+data FloatVal : Type = FloatVal Float
+
+-- POSITIVE: correct two-argument instance.
+instance Convertible IntVal FloatVal =
+    let convert (IntVal n) = FloatVal (toFloat n)
+
+-- NEGATIVE: three arguments for a two-parameter trait.
+instance Convertible IntVal FloatVal IntVal =    --!! kappa.constructor.arity
+    let convert x = FloatVal 0.0
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: one argument for a two-parameter trait.
+instance Convertible IntVal =    --!! kappa.constructor.arity
+    let convert x = FloatVal 0.0
+
+--! assertDiagnosticFamily error kappa.constructor.arity

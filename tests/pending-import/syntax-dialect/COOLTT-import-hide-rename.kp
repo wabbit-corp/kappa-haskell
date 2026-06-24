@@ -1,0 +1,67 @@
+-- Source artifacts: cooltt PR #234 (name modifiers for imports),
+--               PR #222 (yuujinchou import system), test import.cooltt,
+--               issue #68 (serialization and imports).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--
+-- Imports support name modifiers:
+-- - Renaming: `import M (A -> B)` makes `B` available instead of `A`.
+-- - Hiding: `import M hiding (A)` imports everything except `A`.
+-- - Aliasing: `import M as N` makes all names available under `N.x`.
+--
+-- After renaming, the original name is no longer available.
+-- After hiding, the hidden name is not in scope.
+
+--! mode check
+
+-- Module to be imported.
+module Source where
+    foo : Nat
+    let foo = 42
+
+    bar : Nat
+    let bar = 99
+
+    baz : Nat -> Nat
+    let baz x = x + x
+end
+
+-- POSITIVE: renaming `foo` to `renamed` on import; `renamed` is in scope.
+open Source (foo -> renamed)
+
+renamedVal : Nat
+let renamedVal = renamed
+
+-- POSITIVE: after renaming, the old name `foo` should not resolve
+-- (it was renamed away).
+badOldName : Nat
+let badOldName = foo    --!! kappa.name.unresolved
+
+-- POSITIVE: `bar` is imported without modification.
+open Source (bar)
+
+barVal : Nat
+let barVal = bar
+
+-- POSITIVE: hiding `baz`; everything except `baz` is imported.
+open Source hiding (baz)
+
+useFoo : Nat
+let useFoo = Source.foo
+
+-- NEGATIVE: `baz` was hidden; it is no longer in scope.
+useBaz : Nat -> Nat
+let useBaz = baz    --!! kappa.name.unresolved
+
+-- POSITIVE: module alias — all names under `S`.
+module S = Source
+
+aliasedFoo : Nat
+let aliasedFoo = S.foo
+
+aliasedBar : Nat
+let aliasedBar = S.bar
+
+-- NEGATIVE: importing from a non-existent module.
+open NonExistent (x)    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

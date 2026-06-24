@@ -1,0 +1,71 @@
+-- Source issues: CAIRO-2806, CAIRO-2805, CAIRO-PR-2815 (Better method and impl resolution)
+-- Spec: traits.instances (§14.3), traits.instances.resolution_algorithm (§14.3.1).
+-- Kappa spec rule (§14.3):
+--   "Orphan instances are permitted. An instance is an orphan when neither
+--    the trait definition nor the type constructor being instantiated is
+--    defined in the same module as the instance declaration.
+--    Implementations SHOULD emit a warning for each orphan instance."
+-- Cairo issue CAIRO-2806: implementations don't need to reuse the same
+--   parameter names as their trait, but the `self` keyword is special —
+--   if the trait declares `fn f(self: T)` then `self` is always the method
+--   receiver regardless of the impl's parameter name.
+-- Cairo issue CAIRO-2805: method resolution searched only in the current
+--   context rather than through inference; `arr.clone()` failed unless the
+--   impl was explicitly imported.
+-- In Kappa: instances from the module closure participate in resolution
+-- automatically; an explicit import is not required to enable instance search.
+
+--! mode check
+
+-- Trait and type defined in different modules → orphan scenario.
+module math
+
+trait Add (a : Type) =
+    add : (& x : a) -> (& y : a) -> a
+
+module geometry
+
+data Vec2 : Type =
+    Vec2 Int Int
+
+-- POSITIVE: an orphan instance (Add defined in math, Vec2 in geometry).
+-- Both math and geometry are in the module closure so the instance is found.
+instance math.Add Vec2 =
+    let add (Vec2 x1 y1) (Vec2 x2 y2) = Vec2 (x1 + x2) (y1 + y2)
+
+module consumer
+import math.(Add)
+import geometry.(Vec2)
+
+-- POSITIVE: the orphan instance is found via the module closure — no explicit
+-- import of the instance itself is required.
+sumVec : Vec2
+let sumVec = math.Add.add (Vec2 1 2) (Vec2 3 4)
+
+-- POSITIVE: generic function requiring Add resolves the orphan instance.
+doubleVec :
+    forall (a : Type).
+    (@_ : math.Add a) ->
+    (& v : a) ->
+    a
+let doubleVec v = math.Add.add v v
+
+doubled : Vec2
+let doubled = doubleVec (Vec2 5 6)
+
+-- NEGATIVE: a type with no Add instance at all.
+data Scalar : Type = Scalar Int
+
+badAdd : Scalar
+let badAdd = math.Add.add (Scalar 1) (Scalar 2)  --!! kappa.implicit.unsolved
+
+-- POSITIVE: verifying that method resolution works through the instance
+-- even when the instance is declared in yet another module.
+module extra
+import math.(Add)
+import geometry.(Vec2)
+
+callViaMethod : Vec2
+let callViaMethod = math.Add.add (Vec2 0 0) (Vec2 1 1)
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

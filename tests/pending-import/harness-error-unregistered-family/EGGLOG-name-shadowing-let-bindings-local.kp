@@ -1,0 +1,51 @@
+-- Source issues: egraphs-good/egglog #316 (Confusing scopes of globals & locals),
+--   egraphs-good/egglog tests/fail-typecheck/shadow-local.egg,
+--   egraphs-good/egglog tests/fail-typecheck/shadow-global.egg,
+--   egraphs-good/egglog tests/fail-typecheck/shadow-local-global.egg,
+--   egraphs-good/egglog tests/fail-typecheck/shadow-local-global-no-prefix.egg,
+--   egraphs-good/egglog PR#722 (Warn when globals lack the `$` prefix).
+-- Spec: declarations.let_in (§9.3),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.shadowing — §3.1.10 suspicious-shadowing lint).
+-- Two `let` bindings of the same name in nested scopes may produce a shadowing
+-- diagnostic (warning under default profile, error under strict). The outer
+-- binding is unaffected outside the inner scope.
+
+module test
+
+--! mode check
+
+-- POSITIVE: an inner let with a fresh name does not warn.
+outer1 : Int
+let outer1 = 1
+
+useFresh : Int
+let useFresh =
+    let inner = 2 in
+    outer1 + inner
+
+-- NEGATIVE: inner let shadows the outer binding of the same name. Under the
+-- suspicious-shadowing lint (§3.1.10) this is reported as a warning.
+xLocal : Int
+let xLocal = 1
+
+useShadow : Int
+let useShadow =
+    let xLocal = 2 in            --!! kappa.name.shadowing
+    xLocal + 1
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+-- POSITIVE: outside the inner scope, `xLocal` still refers to the outer 1.
+recheck : Int
+let recheck = xLocal + 10
+
+-- NEGATIVE: lambda parameter shadows a top-level let.
+yLocal : Int
+let yLocal = 5
+
+useLam : Int -> Int
+let useLam yLocal =              --!! kappa.name.shadowing
+    yLocal + 1
+
+--! assertDiagnosticFamily warning kappa.name.shadowing

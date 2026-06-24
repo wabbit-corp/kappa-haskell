@@ -1,0 +1,68 @@
+-- Source issues: apple/swift #57017 (constrained associated type inheritance),
+--   apple/swift #46378 (protocol extension cannot implement associated type).
+--   When a trait instance supplies a member whose type does not match the
+--   member's declared type in the trait, the checker must produce
+--   kappa.type.mismatch at the offending definition.
+-- Spec: traits.instances §14.3,
+--       traits.instances.associated_static_member_instance_checking §14.3.4,
+--       types.quantification §11.3
+
+--! mode check
+
+-- A trait whose members have specific type shapes.
+trait Transformer (a : Type) =
+    transform : a -> a
+    identity  : a
+
+-- POSITIVE: instance where all member types match the trait declaration.
+data Counter : Type = Counter Nat
+
+instance Transformer Counter =
+    let transform (Counter n) = Counter (n + 1)
+    let identity = Counter 0
+
+-- POSITIVE: polymorphic transformer.
+applyTwice : forall {a : Type} -> (@_ : Transformer a) -> a -> a
+let applyTwice x = transform (transform x)
+
+result1 : Counter
+let result1 = applyTwice (Counter 3)
+
+-- A trait with a function-valued member.
+trait Combiner (a : Type) =
+    combine : a -> a -> a
+    unit    : a
+
+instance Combiner Nat =
+    let combine m n = m + n
+    let unit = 0
+
+-- POSITIVE: using Combiner Nat.
+sumTwo : Nat -> Nat -> Nat
+let sumTwo x y = combine x y
+
+-- NEGATIVE: instance providing `transform : Counter -> Nat` instead of
+-- `Counter -> Counter` — return type does not match the trait signature.
+data Wrapper : Type = Wrap Nat
+
+instance Transformer Wrapper =
+    let transform (Wrap n) = n    --!! kappa.type.mismatch
+    let identity = Wrap 0
+
+-- NEGATIVE: `combine` declared `a -> a -> a`; providing `Nat -> Nat -> Bool`
+-- violates the declared shape.
+instance Combiner Bool =
+    let combine x y = x    -- Bool -> Bool -> Bool (OK)
+    let unit = True
+
+usesBoolCombiner : Bool
+let usesBoolCombiner = combine True False
+
+-- NEGATIVE: providing an `identity` with the wrong type.
+data Labeled : Type = Labeled String Nat
+
+instance Transformer Labeled =
+    let transform (Labeled s n) = Labeled s (n + 1)
+    let identity = 0    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

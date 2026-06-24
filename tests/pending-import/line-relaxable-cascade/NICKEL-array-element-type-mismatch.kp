@@ -1,0 +1,56 @@
+-- Source: nickel tests/typecheck/mismatch_array_entry.ncl,
+--         mismatch_array_multiple_entries.ncl, mismatch_array_typed_entry.ncl
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch)
+-- An array literal typed as `Array T` must have all elements of type T.
+-- An element of the wrong type must produce kappa.type.mismatch.
+-- The diagnostic must identify the position of the offending element and the
+-- expected element type from the array's declared type annotation.
+
+module test
+
+-- NEGATIVE: one element has type Bool, but Array Number is expected.
+-- The literal `[1, 2, False]` has a Bool element at position 2.
+badArrayBool : Array Number
+let badArrayBool = [1, 2, False]            --!! kappa.type.mismatch
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: multiple wrong elements — still one diagnostic (or one per wrong element).
+badArrayStr : Array Number
+let badArrayStr = [1, 2, "three"]           --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: the only element has the wrong type.
+badSingleton : Array Bool
+let badSingleton = [42]                     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: all elements have the correct type.
+goodNumbers : Array Number
+let goodNumbers = [1, 2, 3]
+
+goodStrings : Array String
+let goodStrings = ["a", "b", "c"]
+
+goodBools : Array Bool
+let goodBools = [True, False, True]
+
+emptyArray : Array Number
+let emptyArray = []
+
+--! assertType goodNumbers (Array Number)
+--! assertType goodStrings (Array String)
+
+-- NEGATIVE: a typed let-binding with an explicit element annotation conflicts.
+badTypedEntry : Array String
+let badTypedEntry = ["ok", (99 : Number), "also-ok"]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a typed element that matches the array type.
+goodTypedEntry : Array Number
+let goodTypedEntry = [1, (42 : Number), 3]
+

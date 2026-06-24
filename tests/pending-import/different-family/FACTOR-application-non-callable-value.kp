@@ -1,0 +1,38 @@
+-- Source issue: Factor #241 ("Inaccurate 'Cannot apply call to a runtime
+--   value' compile error"), Factor #2404 ("compilation failed because
+--   `call` can't operate on runtime-computed value" is vague; want a
+--   clear diagnostic naming the culprit word).
+-- Spec: expressions.application, types.functions,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_APPLICATION_NON_CALLABLE).
+--
+-- Applying a value whose type is not callable must fire
+-- E_APPLICATION_NON_CALLABLE. The diagnostic must identify the
+-- non-callable value's type at the application site so users can see
+-- the static cause without descending into runtime traces.
+
+module test
+
+--! mode check
+
+-- POSITIVE: ordinary application.
+applyOk : Int
+let applyOk = (\x -> x + 1) 7
+
+--! assertType applyOk Int
+
+-- NEGATIVE: applying an Int value as if it were a function.
+nonCallable : Int
+let nonCallable = 1 2                     --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: applying a constructor value rebound to a non-callable
+-- alias as a function.
+data Tag : Type =
+    Tag
+
+useTag : Int
+let useTag = Tag 1                        --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE

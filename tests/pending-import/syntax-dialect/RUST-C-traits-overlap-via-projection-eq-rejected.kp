@@ -1,0 +1,51 @@
+-- Source artifacts: CHALK-515 (Coherence issue with overlapping impls with assoc types),
+--                   CHALK-234 (Ambiguity problems with associated types),
+--                   CHALK-750 (Ambiguity through unrelated env clauses with implied bounds),
+--                   RA-3232 (Associated types in constraints are not normalized).
+-- Spec: traits.instances.normalized_instance_heads,
+--       traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof.
+-- Kappa spec rule (§ traits.instances.normalized_instance_heads):
+--   "An implementation MUST NOT ignore a possible candidate merely because the
+--    goal head is a transparent family application, transparent associated-
+--    member application, transparent alias, or other normalizable compile-time
+--    form at the first comparison point. ... The program is accepted only when
+--    all surviving normalized candidates are coherent under §33.2.1. It is not
+--    sufficient to accept merely because an overlap is hidden behind an
+--    unreduced family or associated-member head."
+-- Two instance heads that are textually different but, after normalization
+-- through an associated static member, unify on the same head must be detected
+-- as overlapping and rejected when the surviving evidence artifacts are
+-- incoherent.
+
+--! mode check
+
+trait Tag (a : Type) =
+    Out : Type
+
+trait Mark (a : Type) =
+    markName : String
+
+data Foo : Type = Foo
+data U32  : Type = U32
+
+instance Tag Foo =
+    let Out = U32
+
+-- Two instance candidates for `Mark T`. Their heads differ syntactically
+-- (`Mark T where Tag T, T.Out = U32` and `Mark U32`), but at `T = Foo` they
+-- normalize to the same head `Mark U32`. The compiler must detect the
+-- overlap after normalization and reject the program as incoherent if the
+-- chosen members differ.
+instance Tag a, a.Out = U32 => Mark a =
+    let markName = "via_projection_eq"
+
+instance Mark U32 =                       --!! kappa.implicit.ambiguous
+    let markName = "direct_U32"
+
+-- Use site instantiates `a = Foo`. After normalization, both instance heads
+-- match `Mark U32`. Their `markName` strings differ; the program is incoherent.
+use_mark : String
+let use_mark = markName Foo               --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

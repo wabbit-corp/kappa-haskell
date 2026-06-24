@@ -1,0 +1,49 @@
+-- Source issue: PLUTUS-6270
+-- Spec: traits.members (§14.2), traits.instances (§14.3),
+-- compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Source notes: Plinth's `Ord` lacks a MINIMAL pragma, so a user can declare
+-- an instance that omits both `compare` and `<=` and the missing required
+-- method silently bottoms out at runtime. In Kappa, trait members come in two
+-- forms (§14.2): "required" (declaration only) and "default" (definition).
+-- An instance that omits a required member without a default must be rejected
+-- at compile time. Default implementations may delegate to required members,
+-- but they do not absolve an instance of providing every required member.
+
+--! mode check
+
+-- A trait with one required member and one default member that delegates to
+-- the required one. Per §14.2 the required member has no default.
+trait Eqable (a : Type) =
+    eq : a -> a -> Bool
+    let neq : a -> a -> Bool =
+        \x y -> not (eq x y)
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- NEGATIVE: the instance omits the required member `eq`. Even though `neq`
+-- has a default, instance checking must fail because no implementation of
+-- `eq` is supplied. Per §14.3 the instance is rejected.
+instance Eqable Color =
+    let extraneous : Bool = True   --!! kappa.associated.member-undeclared
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared
+
+-- POSITIVE: an instance that provides the required member is accepted, and
+-- the default `neq` is automatically available from the trait body.
+data Coin : Type =
+    Heads
+    Tails
+
+instance Eqable Coin =
+    let eq x y =
+        match (x, y)
+          case (Heads, Heads) -> True
+          case (Tails, Tails) -> True
+          case _              -> False
+
+usesDefault : Bool
+let usesDefault = neq Heads Tails
+

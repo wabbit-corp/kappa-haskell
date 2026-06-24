@@ -1,0 +1,33 @@
+-- Source issues: ponyc#50, ponyc#1931
+-- Spec: types.universes.quantities, compiler.diagnostics.path_sensitive_diagnostics
+-- In Pony, consuming an iso value moves ownership; any subsequent use is
+-- rejected. In Kappa, binding a value at quantity 1 means the binder may be
+-- used exactly once. Using the binding a second time (or after passing it to
+-- a consuming call) must be rejected with kappa.path.consumed.
+
+--! mode check
+
+-- A linear sink: demands the argument exactly once.
+sink : (1 x : Int) -> Bool
+let sink _ = True
+
+-- NEGATIVE: `v` is consumed by the first call to `sink v`; reusing it in
+-- the second argument duplicates the linear binding.
+doubleConsume : (1 v : Int) -> Bool
+let doubleConsume v =
+    let a = sink v
+    let b = sink v   --!! kappa.path.consumed
+    a
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: consuming `v` then returning it.
+consumeThenReturn : (1 v : Int) -> Int
+let consumeThenReturn v =
+    let _ = sink v
+    v   --!! kappa.path.consumed
+
+-- POSITIVE: consuming `v` exactly once is fine.
+consumeOnce : (1 v : Int) -> Bool
+let consumeOnce v = sink v
+

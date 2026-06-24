@@ -1,0 +1,49 @@
+-- Source issue: Uiua #436 ("Interpreter crash: incorrect signature of
+--   recursive function" — `Foo ← |3 ⟨◌|Foo -1⟩±.⊙⊙∘` crashes with a
+--   slice-index panic; the underlying error is that the declared
+--   signature |3 disagrees with the elaborated |3.2), Uiua #125
+--   ("Recur inside each refuses to infer").
+-- Spec: declarations.signatures,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       compiler.frontir.ordinary_errors_not_internal_failures,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- A recursive function whose elaborated body disagrees with the
+-- declared signature must surface as an ordinary kappa.type.mismatch
+-- at the defining site, not as an internal-compiler failure or runtime
+-- panic.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a well-typed recursive function.
+factorial : Int -> Int
+let factorial n =
+    if n <= 1
+        then 1
+        else n * factorial (n - 1)
+
+--! assertType factorial Int -> Int
+
+-- NEGATIVE: declared `Int -> Int` but the body returns a pair. The
+-- recursive reference is fine in isolation; the mismatch is between
+-- declared result type Int and the actual pair (Int, Int) at the
+-- base case. Must be diagnosed as a normal type mismatch, not a crash.
+badRec : Int -> Int
+let badRec n =
+    if n <= 0
+        then (0, 0)                            --!! kappa.type.mismatch
+        else badRec (n - 1)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: declared `Int -> Int` but the recursive call combines an
+-- Int result with a String, forcing a mismatch downstream.
+badRec2 : Int -> Int
+let badRec2 n =
+    if n <= 0
+        then 0
+        else badRec2 (n - 1) + "boom"          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

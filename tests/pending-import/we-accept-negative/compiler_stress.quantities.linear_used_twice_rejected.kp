@@ -1,0 +1,11 @@
+-- Stress test: using a linear binding twice must be rejected
+-- Spec: types.universes.quantities, compiler.frontir.standard_diagnostic_families.quantity_ownership
+
+--! mode check
+
+-- NEGATIVE: x is linear (must be used exactly once) but appears twice in x + x
+bad : (1 x : Int) -> Int
+let bad x =
+    x + x  --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

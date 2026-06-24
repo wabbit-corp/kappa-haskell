@@ -1,0 +1,28 @@
+-- Stress test: Trait evidence records cannot be directly constructed by user code
+-- Spec: traits.headers.abstract_evidence_records
+
+--! mode check
+
+trait MyTrait (a : Type) =
+    op : a -> Int
+
+-- POSITIVE TEST: valid instance declaration accepted.
+data MyData : Type = MyData Int
+
+instance MyTrait MyData =
+    let op (MyData n) = n
+
+-- NEGATIVE TEST: attempting to construct trait evidence using a record literal.
+-- Trait evidence types have compiler-private introduction; no public constructor.
+-- `Eq.{ ... }` and similar record-literal construction forms are rejected.
+badEvidence : MyTrait MyData
+let badEvidence = MyTrait.{ op = \(MyData n) -> n }  --!! kappa.type.mismatch
+
+-- NEGATIVE TEST: attempting to update/extend existing evidence as a record.
+goodEvidence : MyTrait MyData
+let goodEvidence = summon
+
+badUpdate : MyTrait MyData
+let badUpdate = goodEvidence.{ op = \_ -> 0 }  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

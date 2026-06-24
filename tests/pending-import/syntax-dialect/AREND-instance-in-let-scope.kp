@@ -1,0 +1,61 @@
+-- Source issues: instances registered inside let bindings; local instances
+--   participating in instance search within the let body.
+-- Source issues: jetbrains/arend#201 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: traits.instances, declarations.let_in
+--   §14.3: "Local instances are permitted only in block scopes ... participates
+--   in implicit resolution only within that lexical scope."
+--
+-- A let-binding that introduces a local instance must be recognized by the
+-- implicit resolution mechanism within the scope of that binding, allowing
+-- trait methods to be dispatched through it without an explicit witness.
+
+--! mode check
+
+trait Printable (A : Type) =
+    render : A -> String
+
+data Color : Type =
+    Red : Color
+    Green : Color
+    Blue : Color
+
+-- POSITIVE: a local instance in a let-block participates in implicit search
+-- within the body of that block.
+colorExample : String
+let colorExample =
+    let @_ : Printable Color = instance Printable Color =
+          let render Red   = "red"
+          let render Green = "green"
+          let render Blue  = "blue"
+    in render Red
+
+-- POSITIVE: multiple local instances in nested let bindings.
+nestedInstances : (String, String)
+let nestedInstances =
+    let @_ : Printable Color = instance Printable Color =
+          let render Red   = "R"
+          let render Green = "G"
+          let render Blue  = "B"
+    in let @_ : Printable Nat = instance Printable Nat =
+             let render zero    = "Z"
+             let render (suc _) = "S"
+       in (render Red, render zero)
+
+-- POSITIVE: using a local instance from a nested helper function.
+-- The local instance is in scope for the helper inside the let body.
+localHelper : String
+let localHelper =
+    let @_ : Printable Color = instance Printable Color =
+          let render c = match c
+            case Red   -> "red"
+            case Green -> "green"
+            case Blue  -> "blue"
+    in let helper (c : Color) : String = render c
+       in helper Green
+
+-- NEGATIVE: using a trait without any in-scope instance must be rejected.
+-- `Printable Bool` has no registered instance here.
+noInstance : String
+let noInstance = render True    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

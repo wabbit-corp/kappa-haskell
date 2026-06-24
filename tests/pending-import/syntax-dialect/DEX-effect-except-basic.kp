@@ -1,0 +1,89 @@
+-- Source issues: dex-lang exception-tests.dx
+--   (`catch \. assert False` → Nothing,
+--    `catch \. assert True` → Just (),
+--    `catch \. checkFloatInUnitInterval 1.2` → Nothing,
+--    `catch \. checkFloatInUnitInterval 0.2` → Just 0.2),
+--   dex-lang #1220 (can't throw in a context of non-data type),
+--   dex-lang algeff-tests.dx (Exn effect with raise/handler).
+-- Spec: effects.monadic_core.exception_effect (§DSA-DEX-03),
+--       effects.monadic_core.deep_handlers_deep_handle.
+-- The Except effect represents computations that may abort with a failure.
+-- `throw` raises the exception, unwinding to the nearest `catch` handler.
+-- `catch` runs a computation and returns `Just result` on success or
+-- `Nothing` on failure. A computation that throws must have type
+-- `Eff <[Except : Except, ...]> a`; catch converts this to
+-- `Eff <[...]> (Maybe a)`.
+
+--! mode check
+
+effect Except =
+    1 throw : forall (a : Type). Unit -> a
+
+-- A handler that catches an Except and wraps the result in Maybe.
+catch : forall (r : Type) (eff : EffRow).
+    Eff <[Except : Except | eff]> r ->
+    Eff <[| eff]> (Maybe r)
+let catch comp =
+    handle Except comp with
+        case return x   -> pure (Just x)
+        case throw _ _  -> pure Nothing
+
+-- POSITIVE: computation that always succeeds.
+okComp : Eff <[Except : Except]> Int
+let okComp = pure 42
+
+catchOk : Maybe Int
+let catchOk = run (catch okComp)
+-- expected: Just 42
+
+-- POSITIVE: computation that throws.
+failComp : Eff <[Except : Except]> Int
+let failComp = Except .throw ()
+
+catchFail : Maybe Int
+let catchFail = run (catch failComp)
+-- expected: Nothing
+
+-- POSITIVE: conditional throw based on a value.
+checkNonNeg : Float -> Eff <[Except : Except]> Float
+let checkNonNeg x = do
+    if x < 0.0 then Except .throw () else pure x
+
+checkPos : Maybe Float
+let checkPos = run (catch (checkNonNeg 3.14))
+-- expected: Just 3.14
+
+checkNeg : Maybe Float
+let checkNeg = run (catch (checkNonNeg (-1.0)))
+-- expected: Nothing
+
+-- POSITIVE: catch inside a stateful computation — state updates before
+-- the throw are visible; state after the throw is rolled back.
+effect State (s : Type) =
+    1 get : Unit -> s
+    1 put : s    -> Unit
+
+stateWithException : Eff <[State Int : State Int, Except : Except]> Int
+let stateWithException = do
+    State Int .put 1
+    Except .throw ()
+    State Int .put 2
+    State Int .get ()
+
+-- The state effect is handled outside; the throw aborts the inner block.
+-- Inner result is Nothing; outer state reflects the partial update.
+combinedResult : (Maybe Int, Int)
+let combinedResult =
+    runState 0 (catch stateWithException)
+-- expected: (Nothing, 1) — state was 1 when throw occurred; the 2 was not reached.
+
+-- POSITIVE: nested catches — the inner catch intercepts the inner throw,
+-- allowing the outer computation to continue.
+nestedCatch : Maybe (Maybe Int)
+let nestedCatch =
+    run (catch (do
+        inner <- catch (Except .throw ())
+        pure (inner : Maybe Int)))
+-- expected: Just Nothing
+
+--! assertNoErrors

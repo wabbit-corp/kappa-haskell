@@ -1,0 +1,50 @@
+-- Source issues: zig compile_errors/error_set_membership.zig,
+--               zig#25874 (incremental wrong source on narrowed return error set),
+--               zig#25873 (incremental fails for valid source on widened error set),
+--               zig#24150 (unhelpful error when operand to error set merge is runtime)
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant,
+--       compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.quantification.effect_row_syntax
+-- When a function's declared effect row is narrower than the effects it
+-- actually produces, the compiler must emit `kappa.effect.row-mismatch`.
+-- Conversely, a function whose body introduces an effect not declared in its
+-- signature violates the declared purity contract.
+
+--! mode check
+
+effect FileIO =
+    read  : String -> String
+    write : String -> Unit
+
+effect NetworkIO =
+    fetch : String -> String
+
+-- POSITIVE: function declares and uses only FileIO.
+let readFile (path : String) : <FileIO> String =
+    read path
+
+
+-- POSITIVE: function propagates the effect that it actually uses.
+let readAndProcess (path : String) : <FileIO> Int =
+    let content = read path in
+    42
+
+
+-- NEGATIVE: the body performs a NetworkIO effect but the signature declares
+-- only FileIO. The undeclared effect leaks — kappa.effect.row-mismatch.
+let readFileBad (path : String) : <FileIO> String =
+    fetch path    --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: pure function (no effect row) uses an effectful operation.
+let pureFetch (path : String) : String =
+    fetch path    --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE: function declares both effects it uses.
+let readAndFetch (path : String) (url : String) : <FileIO, NetworkIO> String =
+    let local = read path in
+    fetch url
+

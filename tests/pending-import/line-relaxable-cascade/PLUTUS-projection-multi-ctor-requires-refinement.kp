@@ -1,0 +1,43 @@
+-- Source issue: PLUTUS-590
+-- Spec: modules.names (§7.3 dotted name resolution; constructor-field projection
+-- under positive tag refinement)
+-- Source notes: Plinth declines to generate record selectors for data types
+-- with multiple alternatives (Plutus issue #590). In Kappa the analogous rule
+-- is normative: `e.field` is constructor-field projection only when the local
+-- refinement context proves that `e` has the constructor that declares
+-- `field`. Without such refinement, the dotted form is ill-formed.
+
+--! mode check
+
+data Shape : Type =
+    Circle (radius : Int)
+    Square (side : Int)
+
+-- POSITIVE: under `is Circle` refinement, `s.radius` is constructor-field projection.
+guardedRadius : Shape -> Int
+let guardedRadius s =
+    if s is Circle then s.radius else 0
+
+-- POSITIVE: matching `Circle` exposes constructor-field projection on the
+-- refined scrutinee `s` inside the branch body. After `case Circle _`, the
+-- local refinement context proves `s` has constructor `Circle`, so `s.radius`
+-- is valid. The bound wildcard `_` discards the positional field value (an
+-- Int); the projection goes through the refined scrutinee per §7.3.
+matchRadius : Shape -> Int
+let matchRadius s =
+    match s
+      case Circle _ -> s.radius
+      case Square _ -> s.side
+
+
+-- NEGATIVE: bare `s.radius` is ill-formed when `s : Shape` is not refined to
+-- `Circle`. `radius` is declared only on `Circle`, so projection requires
+-- positive tag refinement.
+data Pair : Type =
+    Left  (label : String)
+    Right (count : Int)
+
+unguardedProjection : Pair -> Int
+let unguardedProjection p = p.count   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

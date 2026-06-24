@@ -1,0 +1,37 @@
+-- Source artifacts: RUST-PR-15508 (Improve non-exhaustive pattern witnesses
+--                                  for structs with multiple fields),
+--                   RUST-PR-58380 (Point at enum definition when match patterns
+--                                  are not exhaustive),
+--                   RUST-PR-91993 (Tweak output for non-exhaustive match).
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.exhaustiveness-residual).
+-- Kappa spec rule (§ pattern_exhaustiveness_reachability):
+--   "The renderer MUST preserve enough source-level constructor or member
+--    detail to tell the user which real cases remain uncovered. It MUST NOT
+--    collapse residual cases to a content-free skeleton when the
+--    distinguishing constructor or member information is available."
+-- This test pins that non-exhaustive matches on records with multiple fields
+-- produce a diagnostic whose residual payload identifies the uncovered shapes.
+
+--! mode check
+
+-- A record with a 3-way variant in the first field and a boolean in the
+-- second. The exhaustiveness residual is a structural product over both
+-- fields.
+data Tri : Type =
+    A | B | C
+
+data Compound : Type =
+    Compound { tag : Tri, flag : Bool }
+
+non_exhaustive_residual : Compound -> Int
+let non_exhaustive_residual c =
+    match c                                       --!! kappa.pattern.non-exhaustive
+    case Compound { tag = A, flag = True } -> 1
+    case Compound { tag = B, flag = False } -> 2
+    -- Uncovered residual: { tag = A, flag = False }, { tag = B, flag = True },
+    -- and any pattern with `tag = C`.
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnosticFamily error kappa.pattern.exhaustiveness-residual

@@ -1,0 +1,35 @@
+-- Source issues: CREUSOT-461
+-- Spec: traits.headers, traits.members, types.quantification
+-- Family: kappa.name.shadowing (Kappa §3.1.x suspicious-shadowing lint)
+-- Type parameters introduced by a trait header and type parameters
+-- introduced by an instance head share a single name-resolution space.
+-- An instance MUST NOT reintroduce a binding with the same identifier
+-- as a trait parameter; the lint reports the shadow and a later
+-- diagnostic distinguishes the two semantic objects.  Pending spec gap
+-- CREUSOT-SA-05.
+
+module test
+
+--! mode check
+
+-- Trait introduces a type parameter `a`.
+trait Box (a : Type) =
+    pack : a -> Unit
+
+-- NEGATIVE: the instance reintroduces `a` as its own outer parameter,
+-- shadowing the trait header's `a`.
+data Wrap : Type -> Type = Wrap
+
+instance forall (a : Type). Box (Wrap a) =       --!! kappa.name.shadowing
+    let pack _ = ()
+
+-- NEGATIVE: the same conflict, but the shadow is introduced at the
+-- method level inside the instance body.
+data Tag : Type = Tag
+
+instance Box Tag =
+    let pack
+        : forall (a : Type). Tag -> Unit            --!! kappa.name.shadowing
+      = \_ -> ()
+
+--! assertDiagnosticFamily warning kappa.name.shadowing

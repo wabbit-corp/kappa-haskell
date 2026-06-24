@@ -1,0 +1,46 @@
+-- Source issues: Circom functions.md ("there can be many return statements, but
+--               every execution trace must end in a return statement (otherwise,
+--               a compile error will be produced)"; error: "In example there are
+--               paths without return").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-07):
+--   "Every execution path through a function body must return a value of the
+--    declared type. A function body where one branch returns a type that does
+--    not match the declared return type must be rejected with
+--    kappa.type.mismatch."
+-- Note: In Kappa (§16.4), `if` outside `do` requires a final `else`. The
+--   'missing return path' rule maps to branch type mismatches in Kappa: if one
+--   arm has a different type from the other (or from the declared return), the
+--   type checker produces kappa.type.mismatch.
+
+--! mode check
+
+-- POSITIVE: function with return statements in all branches.
+let conditionalOk (n : Int) : Int =
+    if n > 0 then 1 else 0
+
+let alwaysReturns (n : Int) : Int =
+    if n > 10 then
+        100
+    else
+        n * 2
+
+
+-- NEGATIVE: one branch of an if-else returns a non-Int type, causing a branch
+-- type mismatch. The else arm returns Unit () where Int is expected.
+let mismatchedBranchUnit (n : Int) : Int =
+    if n >= 0
+        then 1
+        else ()    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: two branches return completely incompatible types.
+-- The 'then' arm returns Int; the 'else' arm returns Bool.
+let mismatchedBranchTypes (n : Int) : Int =
+    if n > 0
+        then 42
+        else True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

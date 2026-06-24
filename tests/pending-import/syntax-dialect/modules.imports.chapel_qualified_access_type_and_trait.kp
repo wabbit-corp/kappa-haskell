@@ -1,0 +1,55 @@
+-- Source issue: Chapel #25829
+-- Spec: modules.imports
+-- A module-only import (`import M` without `.*` or `.item`) enables
+-- qualified access `M.x` for ALL exported kinds: terms, types, traits,
+-- and constructors. The companion test `chapel_13831_qualified_access.lang`
+-- covers term/value access; this test covers type-constructor and trait
+-- access via qualified access.
+-- Chapel #25829: using `import Other` and then `Other.II` (an interface)
+-- was rejected, while `use Other` worked. In Kappa, qualified access via a
+-- module-only import must work for type and trait names just as it does
+-- for terms.
+
+--! mode check
+
+module chapel_qtlib_types
+
+-- A data type that will be referenced by qualified access from another module.
+data Shape : Type = Circle | Square | Triangle
+
+-- A trait that will be referenced by qualified access from another module.
+trait Describable (a : Type) =
+    describe : a -> String
+
+
+---
+
+module chapel_qualified_type_consumer
+
+import chapel_qtlib_types
+
+-- POSITIVE: type annotation using a qualified type name from a module-only import.
+myShape : chapel_qtlib_types.Shape
+let myShape = chapel_qtlib_types.Circle
+
+-- POSITIVE: qualified type in function parameter and return type.
+shapeToInt : chapel_qtlib_types.Shape -> Int
+let shapeToInt s = match s
+    case chapel_qtlib_types.Circle   -> 1
+    case chapel_qtlib_types.Square   -> 2
+    case chapel_qtlib_types.Triangle -> 3
+
+-- POSITIVE: trait instance using a qualified trait name from a module-only import.
+-- Both the trait name and the type argument use qualified access.
+instance chapel_qtlib_types.Describable chapel_qtlib_types.Shape =
+    let describe s = match s
+        case chapel_qtlib_types.Circle   -> "circle"
+        case chapel_qtlib_types.Square   -> "square"
+        case chapel_qtlib_types.Triangle -> "triangle"
+
+-- NEGATIVE: bare type name is NOT in scope after a module-only import;
+-- only `chapel_qtlib_types.Shape` is accessible, not bare `Shape`.
+badShape : Shape   --!! kappa.name.unresolved
+let badShape = chapel_qtlib_types.Circle
+
+--! assertDiagnosticFamily error kappa.name.unresolved

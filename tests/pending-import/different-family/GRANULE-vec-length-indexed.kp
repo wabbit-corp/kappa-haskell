@@ -1,0 +1,38 @@
+-- Source: granule-project/granule
+--         tests/cases/positive/indexed/big.gr,
+--         tests/cases/synthesis/vec/vec5.gr ... vec20.gr;
+--         docs/README.md (`map : (a -> b) [n] -> Vec n a -> Vec n b`)
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       data_types.gadts, types.universes.quantities
+-- A length-indexed map function consumes its argument function exactly
+-- `n` times. Mis-grading the function argument (claiming linear when the
+-- type demands `n` uses) surfaces `kappa.quantity.unsatisfied`.
+
+module test
+
+--! mode check
+
+data Nat : Type =
+    Z
+    S Nat
+
+data Vec (n : Nat) (a : Type) : Type =
+    Nil : Vec Z a
+    Cons : forall (m : Nat). (1 x : a) -> (1 xs : Vec m a) -> Vec (S m) a
+
+-- POSITIVE: map on a vector of length n consumes f exactly n times.
+mapVec : forall (a : Type) (b : Type) (n : Nat).
+    (n f : (1 x : a) -> b) -> (1 v : Vec n a) -> Vec n b
+let mapVec _ Nil          = Nil
+let mapVec f (Cons x xs)  = Cons (f x) (mapVec f xs)
+
+--! assertType mapVec (forall (a : Type) (b : Type) (n : Nat). (n f : (1 x : a) -> b) -> (1 v : Vec n a) -> Vec n b)
+
+-- NEGATIVE: claim map needs only one use of f when the recursive call also
+-- consumes it; the linear grade is violated by the second use.
+badMap : forall (a : Type) (b : Type) (n : Nat).
+    (1 f : (1 x : a) -> b) -> (1 v : Vec n a) -> Vec n b
+let badMap _ Nil          = Nil
+let badMap f (Cons x xs)  = Cons (f x) (badMap f xs)   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

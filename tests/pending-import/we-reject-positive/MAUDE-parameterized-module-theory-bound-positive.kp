@@ -1,0 +1,51 @@
+-- Source: Maude tests/Misc/parameterization.maude
+--           fmod FOO{X :: TRIV, Y :: TRIV} is
+--             sort Foo{X,Y} .
+--             op f : Bool -> Bool .
+--           endfm
+--           fmod BAR{Z :: TRIV} is
+--             inc FOO{Z, Nat} .
+--           endfm
+--         A parameterized module declares a type/sort parameter together
+--         with a theory bound (`X :: TRIV` means X must satisfy the TRIV
+--         theory). Instantiation supplies a concrete module (or another
+--         parameter) for each parameter. The Kappa analogue is a trait-
+--         bounded type parameter where the trait acts as the theory.
+-- Spec: traits.headers,
+--       traits.instances,
+--       traits.headers.intrinsic_traits.
+-- Portable obligation: a generic function/module declared over a
+--   trait-bounded type parameter must accept a concrete type that has a
+--   visible instance of the required trait, and must reject otherwise.
+
+--! mode check
+
+module test
+
+-- A "theory" is a trait with one operation `point`.
+trait Pointable (a : Type) =
+    point : a
+
+-- A parameterized container.
+data Box (a : Type) : Type =
+    Empty
+    Full a
+
+-- A function with a theory-bounded parameter.
+makeBox :
+    (@ a : Type) ->
+    (@_ : Pointable a) =>
+    Box a
+let makeBox = Full point
+
+-- A concrete instance.
+data Color : Type = Blue
+
+instance Pointable Color =
+    let point = Blue
+
+-- POSITIVE: instantiation supplies Color, which has a Pointable instance.
+boxedColor : Box Color
+let boxedColor = makeBox
+
+--! assertNoErrors

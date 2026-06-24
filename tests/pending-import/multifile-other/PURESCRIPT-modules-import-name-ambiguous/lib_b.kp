@@ -1,0 +1,6 @@
+-- Companion module: also exports `foo` so that wildcard-importing both
+-- modules produces `kappa.name.ambiguous` at the use site.
+module lib_b
+
+foo : Int
+let foo = 2

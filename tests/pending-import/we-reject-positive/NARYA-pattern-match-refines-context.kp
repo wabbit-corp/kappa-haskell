@@ -1,0 +1,57 @@
+-- Source issues: narya #69 (wrong substitution when matching on datatype:
+--               type of f became (b : B a) -> C b instead of B a -> C a),
+--               harvested test test/black/bugs.t/issue69.ny.
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence
+--
+-- In a constructor branch, the scrutinee is refined by the matched
+-- constructor application. Refinement applies to the types of pattern
+-- variables as well as to the goal, and only to the scrutinee — not to
+-- unrelated variables that happen to share a name. This is exactly
+-- the obligation violated by narya issue #69.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+expect term A : Type
+expect term B : A -> Type
+expect term C : A -> Type
+
+data D : Type =
+    MkD : (a : A) -> (f : B a -> C a) -> D
+
+get_a : D -> A
+let get_a d =
+    match d
+      case MkD a _ -> a
+
+-- POSITIVE: after matching MkD with names (a, f), the type of f must
+-- remain B a -> C a — using the pattern variable a — not B a' -> C b
+-- for some unrelated binder b that happens to appear elsewhere.
+get_f :
+    (d : D) -> B (get_a d) -> C (get_a d)
+let get_f d b =
+    match d
+      case MkD a f -> f b
+
+-- POSITIVE: nested match refines both outer and inner scrutinee types.
+data Pair (x : Type) (y : Type) : Type =
+    MkPair : x -> y -> Pair x y
+
+projectFst : forall (x : Type) (y : Type). Pair x y -> x
+let projectFst p =
+    match p
+      case MkPair a _ -> a
+
+-- POSITIVE: matching against Zero refines the goal so that subsequent
+-- computations on n reduce as expected.
+double : Nat -> Nat
+let double n =
+    match n
+      case Zero  -> Zero
+      case Suc k -> Suc (Suc (double k))
+
+--! assertNoErrors

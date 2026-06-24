@@ -1,0 +1,24 @@
+-- Source issue: FSTAR-70
+-- Spec: expressions.match.case_impossible_empty_remainder
+-- Match on an uninhabited (empty) inductive type must produce a proof of
+-- any proposition vacuously, without requiring a concrete case branch.
+
+--! mode check
+
+-- Empty type: no constructors.
+data Empty : Type
+
+-- Function from Empty to any type is trivially total.
+-- The match with case impossible must be accepted as exhaustive over Empty.
+vacuous_elim : {A : Type} -> Empty -> A
+let vacuous_elim e =
+    match e
+      case impossible
+
+-- A standard use-case: eliminating Empty gives Void.
+ex_falso : Empty -> Void
+let ex_falso e =
+    match e
+      case impossible
+
+--! assertNoErrors

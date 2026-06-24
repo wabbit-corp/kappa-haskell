@@ -1,0 +1,51 @@
+-- Source issues: KT-8700, KT-1882 (Nothing/return in all branches makes when exhaustive)
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--   expressions.match.impossible_unreachable_branch_bodies
+--
+-- Kotlin's `Nothing` (bottom) joins with any expected type so a Nothing-producing arm
+-- contributes to exhaustiveness. Kappa does not expose a `Nothing` runtime type; the
+-- portable analog of "this branch cannot return" is `-> impossible` for a single
+-- branch (§17.1.4), or `case impossible` to close out the residual remainder
+-- (§17.1.5). Both require the compiler to prove the corresponding remainder is
+-- empty using definitional equality / index unification.
+
+--! mode check
+
+-- An uninhabited type: no constructors.
+data Void : Type
+
+-- POSITIVE: `absurd` shows the portable way to dispose of a Void value. The
+-- single match has zero arms because Void has zero constructors; the match is
+-- exhaustive without any catch-all.
+absurd : forall (a : Type). Void -> a
+let absurd v =
+    match v
+
+--! assertNoErrors
+--! assertType absurd (forall (a : Type). Void -> a)
+
+-- POSITIVE: indexed elimination using `-> impossible` for a constructor branch
+-- that is forced empty by definitional equality on indices.
+data Vect (a : Type) : Nat -> Type =
+    VNil  : Vect a 0
+    VCons : forall (n : Nat). a -> Vect a n -> Vect a (n + 1)
+
+-- The Vect length index 0 forces this to be VNil; the would-be VCons branch is
+-- accepted as `-> impossible` because the index makes it unreachable.
+headEmpty : forall (a : Type). Vect a 0 -> Unit
+let headEmpty xs =
+    match xs
+    case VNil          -> ()
+    case VCons _ _     -> impossible
+
+--! assertNoErrors
+
+-- POSITIVE: `case impossible` closes a match whose uncovered remainder is
+-- proven empty. For Void this is the entire scrutinee.
+discardVoid : Void -> Unit
+let discardVoid v =
+    match v
+    case impossible
+
+--! assertNoErrors
+--! assertType discardVoid (Void -> Unit)

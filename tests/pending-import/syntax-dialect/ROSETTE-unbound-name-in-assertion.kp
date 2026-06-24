@@ -1,0 +1,47 @@
+-- Source issue: ROSETTE-119 (Report unbound id — synthesize silently
+--                returned unsat instead of failing),
+--                ROSETTE-194 (`asserts` unbound identifier)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import,
+--       compiler.frontir.diagnostic_codes_families
+--
+-- The Rosette report found that referencing an unbound identifier
+-- inside `(synthesize ... (assert foobar))` silently produced
+-- `(unsat)` rather than reporting the missing name. Kappa requires
+-- every name reference — regardless of syntactic context such as an
+-- assertion body, conditional branch, or guard — to resolve before
+-- elaboration completes. An unresolved name produces
+-- `kappa.name.unresolved`.
+
+--! mode check
+
+isPositive : Int -> Bool
+let isPositive n = n > 0
+
+-- POSITIVE: every name used in the assertion-style expression resolves.
+ok : Bool
+let ok =
+    let x = 7
+    in isPositive x
+
+ok2 : Bool
+let ok2 =
+    let x = 3
+        y = 4
+    in (x + y) > 0
+
+-- NEGATIVE: an unbound name inside a boolean-returning expression that
+-- mirrors an assertion in the Rosette example.
+bad : Bool
+let bad = isPositive foobar                  --!! kappa.name.unresolved
+
+-- NEGATIVE: an unbound name inside a nested conditional.
+bad2 : Int
+let bad2 =
+    let x = 5
+    in if x > 0 then mysteryFn x else x      --!! kappa.name.unresolved
+
+-- NEGATIVE: an unbound name as the head of a function call.
+bad3 : Int
+let bad3 = doesNotExist 1 2                  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

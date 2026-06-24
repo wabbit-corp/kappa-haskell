@@ -1,0 +1,42 @@
+-- Source issues: ponyc#50, ponyc#807, ponyc#548
+-- Spec: types.quantification, types.universes.quantities
+-- Pony issue #50: a generic class with a field of type A must consume the
+-- field when assigning to ensure capability safety. Without consuming,
+-- the assignment would alias a potentially linear value. In Kappa, a type
+-- parameter `a` with no constraint allows any type including linear ones;
+-- code that relies on aliasing or copying the generic value without a
+-- droppable constraint must be rejected.
+
+--! mode check
+
+-- A simple cell parametrized over any type.
+data Cell (a : Type) : Type = Cell a
+
+-- POSITIVE: constructing a Cell from a value.
+mkCell : forall (a : Type). a -> Cell a
+let mkCell x = Cell x
+
+-- POSITIVE: extracting the cell's content, consuming the cell.
+getCell : forall (a : Type). (1 c : Cell a) -> a
+let getCell (Cell x) = x
+
+-- POSITIVE: mapping over a cell by consuming and rebuilding.
+mapCell : forall (a : Type) (b : Type). (a -> b) -> (1 c : Cell a) -> Cell b
+let mapCell f (Cell x) = Cell (f x)
+
+-- NEGATIVE: trying to copy the cell's content without consuming — if `a`
+-- is linear, duplicating it is unsound. The binder `&` allows reading but
+-- not extracting the inner value at quantity 1.
+peekValue :
+    forall (a : Type).
+    (& c : Cell a) -> a
+let peekValue (Cell x) = x   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: reading from a Cell whose content is explicitly borrowed.
+readCell :
+    forall (a : Type).
+    (& c : Cell a) -> (& a)
+let readCell (Cell x) = x
+

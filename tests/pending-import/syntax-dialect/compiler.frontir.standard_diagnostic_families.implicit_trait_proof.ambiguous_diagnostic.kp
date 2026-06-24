@@ -1,0 +1,45 @@
+-- Source issues: Scala3 #9103, #7072
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances.resolution_algorithm
+-- When implicit resolution finds multiple non-coherent candidates,
+-- `kappa.implicit.ambiguous` MUST be emitted. The payload MUST include:
+--   * all ambiguous local candidates at the relevant scope level, or all
+--     ambiguous instance candidates for trait search;
+--   * candidate origins;
+--   * a disambiguation hint.
+-- This test verifies that the diagnostic fires when two local implicit bindings
+-- for the same type are simultaneously in scope at the point of implicit demand.
+
+module test
+
+trait Show (a : Type) =
+    show : a -> String
+
+data Nat : Type =
+    Zero : Nat
+    Succ : Nat -> Nat
+
+-- Two local implicit bindings for Show Nat at the same scope level
+-- produce an ambiguity that MUST be flagged as kappa.implicit.ambiguous.
+ambiguousUse : String
+let ambiguousUse =
+    let @instA : Show Nat =
+        instance =
+            let show _ = "decimal"
+    let @instB : Show Nat =
+        instance =
+            let show _ = "unary"
+    -- Both @instA and @instB are in scope; the bare name `show` is ambiguous.
+    show Zero    --!! kappa.implicit.ambiguous
+
+--! mode check
+--! assertDiagnostic error kappa.implicit.ambiguous
+
+-- Positive control: with a unique implicit in scope, `show` resolves unambiguously.
+unambiguousUse : String
+let unambiguousUse =
+    let @inst : Show Nat =
+        instance =
+            let show n = "nat"
+    show Zero
+

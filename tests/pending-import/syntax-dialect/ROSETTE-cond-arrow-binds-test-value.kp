@@ -1,0 +1,44 @@
+-- Source issue: ROSETTE-83 (Cond missing support for =>),
+--                Rosette PR #84 (Add support for => usage in cond)
+-- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
+--       expressions.match.guarded_cases_introduce_guard_success_evidence
+--
+-- A guarded match arm whose guard returns an Option must propagate the
+-- successful payload into the arm body. This is the Kappa counterpart of
+-- Rosette's `cond` arrow form `[test => proc]`: when `test` yields a
+-- value, `proc` is applied to it; otherwise control falls through to the
+-- next clause.
+
+--! mode check
+
+-- `lookup` returns Some when a key is present.
+lookup : String -> List (String, Int) -> Option Int
+let lookup key table =
+    match table
+    case []                  -> None
+    case ((k, v) :: rest)    ->
+        if key == k then Some v else lookup key rest
+
+-- POSITIVE: the matched value of `lookup` flows into the arm body.
+describe : String -> List (String, Int) -> String
+let describe key table =
+    match lookup key table
+    case (Some n) -> "found " ++ show n
+    case None     -> "absent"
+
+-- POSITIVE: nested arrow form — outer Option drives inner conditional.
+describe2 : String -> List (String, Int) -> Int
+let describe2 key table =
+    match lookup key table
+    case (Some n) -> if n > 0 then n else 0 - n
+    case None     -> 0
+
+-- NEGATIVE: the arm body of `Some n` must reference the bound `n`, not
+-- an unbound name `m`.
+broken : String -> List (String, Int) -> Int
+let broken key table =
+    match lookup key table
+    case (Some n) -> m + 1                  --!! kappa.name.unresolved
+    case None     -> 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

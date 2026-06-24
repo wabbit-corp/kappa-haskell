@@ -1,0 +1,41 @@
+-- Source issue: Noir#12073
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+-- When two modules export distinct types that share the same short name,
+-- passing the wrong one to a function must emit kappa.type.mismatch.
+-- The diagnostic obligation exists because the types are nominally distinct
+-- even though their display names are equal.
+-- (NSA-07 captures the additional quality requirement that the diagnostic
+-- payload disambiguate the two equally-named types.)
+
+module test
+
+module moo =
+    data Foo : Type = MkFoo
+
+    let takeFoo : Foo -> Nat
+    let takeFoo _ = 0
+
+module moo2 =
+    data Foo : Type = MkFoo2
+
+--! mode check
+
+-- Importing moo2.Foo as the unqualified name `Foo` while moo.takeFoo
+-- expects moo.Foo: passing the moo2 variant must trigger type mismatch.
+import moo.takeFoo
+import moo2.Foo as Foo2
+
+wrongFoo : Nat
+let wrongFoo = takeFoo MkFoo2   --!! kappa.type.mismatch
+
+--! assertDiagnostic error kappa.type.mismatch
+
+-- Passing the correctly-typed constructor is accepted.
+rightFoo : Nat
+let rightFoo = takeFoo moo.MkFoo
+
+
+-- Fully qualified usage: moo.takeFoo applied to moo.MkFoo is always fine.
+qualified : Nat
+let qualified = moo.takeFoo moo.MkFoo
+

@@ -1,0 +1,62 @@
+-- Source issues: odin#4379 (switch statement produces extra errors),
+--               related to odin#5043 exhaustiveness checking
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A duplicate arm in a match expression makes the second occurrence permanently
+-- unreachable. The compiler must report the second arm as unreachable
+-- (`kappa.pattern.unreachable`) and point to the earlier shadowing arm.
+-- This is the `unreachable` counterpart to non-exhaustive: too many arms is as
+-- wrong as too few.
+
+--! mode check
+
+data Season : Type =
+    Spring
+    Summer
+    Autumn
+    Winter
+
+-- POSITIVE: each constructor appears exactly once.
+let seasonToNum (s : Season) : Int =
+    match s
+    case Spring -> 1
+    case Summer -> 2
+    case Autumn -> 3
+    case Winter -> 4
+
+
+-- NEGATIVE: Summer appears twice; the second occurrence is unreachable.
+let seasonBad (s : Season) : Int =
+    match s
+    case Spring -> 1
+    case Summer -> 2
+    case Autumn -> 3
+    case Winter -> 4
+    case Summer -> 99    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: Winter covered by a wildcard first, then named again — unreachable.
+let wildcardThenNamed (s : Season) : Int =
+    match s
+    case Spring -> 1
+    case _      -> 0
+    case Winter -> 9     --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: two wildcards — second is unreachable.
+let doubleWildcard (s : Season) : Int =
+    match s
+    case Spring -> 1
+    case _      -> 0
+    case _      -> 99    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- POSITIVE: explicit wildcard as the ONLY arm beyond the first — all covered.
+let firstOrOther (s : Season) : Int =
+    match s
+    case Spring -> 1
+    case _      -> 0
+

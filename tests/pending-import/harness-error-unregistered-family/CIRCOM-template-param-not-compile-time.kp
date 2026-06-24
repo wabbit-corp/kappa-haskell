@@ -1,0 +1,40 @@
+-- Source issues: Circom templates-and-components.md — "The values of the parameters
+--               should be known constants at compile time. The next code produces
+--               this compilation error message: 'Every component instantiation must
+--               be resolved during the constraint generation phase'."
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-CIRCOM-04):
+--   "Template parameters are 0-quantity (compile-time-only). Using a runtime
+--    (1-quantity) value as a template parameter must produce
+--    kappa.quantity.satisfies."
+
+--! mode check
+
+-- Model a parameterized circuit type whose size argument must be compile-time known.
+data Buf (0 n : Int) : Type =
+    MkBuf Int
+
+-- POSITIVE: instantiating with a compile-time (0-quantity) literal.
+goodBuf : Buf 4
+let goodBuf = MkBuf 0
+
+-- POSITIVE: instantiating with a compile-time named constant.
+bufSize : (0 _ : Int)
+let bufSize = 8
+
+goodBuf2 : Buf bufSize
+let goodBuf2 = MkBuf 0
+
+
+-- NEGATIVE: instantiating with a runtime (1-quantity) signal value.
+let makeBuffer (size : Int) : Buf size =   --!! kappa.quantity.satisfies
+    MkBuf 0
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: template parameter obtained from a runtime function argument.
+let makeBuffer2 (x : Int) (y : Int) : Buf (x + y) =  --!! kappa.quantity.satisfies
+    MkBuf 0
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

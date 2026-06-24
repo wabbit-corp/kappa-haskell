@@ -1,0 +1,31 @@
+-- Source issues: CREUSOT-1397, CREUSOT-117
+-- Spec: types.universes.disjoint_path_borrowing_records.stable_places_place_preserving_bindings,
+--       compiler.frontir.standard_diagnostic_families.record_projection_accessor_inout
+-- Family: kappa.accessor.missing-capability (Kappa §3.2.8 / §3.3)
+-- The `old` operator names the pre-state value of a stable place
+-- expression.  Applying it to a value that is not a place expression
+-- (arithmetic combination, function call) lacks the required place
+-- capability and must be rejected.  Pending spec gap CREUSOT-SA-02.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `old` applied to an arithmetic expression has no stable place
+-- to refer to and must be rejected.
+badArith : (inout x : Int) -> Unit
+let badArith x =
+    x := !x + 1
+    ensures !x == old (!x + 1)        --!! kappa.accessor.missing-capability
+
+-- NEGATIVE: `old` applied to a function call - the call has no pre-state
+-- location, only a value.
+let helper : Int -> Int
+let helper n = n + 1
+
+badCall : (inout x : Int) -> Unit
+let badCall x =
+    x := !x + 1
+    ensures !x == old (helper !x)     --!! kappa.accessor.missing-capability
+
+--! assertDiagnosticFamily error kappa.accessor.missing-capability

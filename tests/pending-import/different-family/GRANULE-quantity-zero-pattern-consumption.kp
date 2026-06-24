@@ -1,0 +1,28 @@
+-- Source: granule-project/granule
+--         tests/cases/negative/graded-base/zero-pattern-consumption.gr
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- A binder declared with quantity 0 (erased) must be demanded zero times.
+-- Pattern-matching on a 0-quantity scrutinee is one form of demand and
+-- must be rejected with `kappa.quantity.unsatisfied` (§3.2.5).
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+-- POSITIVE: a 0-quantity argument is accepted when erased in the body.
+ignored : (0 b : Bool) -> Unit
+let ignored b = ()
+
+--! assertType ignored ((0 b : Bool) -> Unit)
+
+-- NEGATIVE: a 0-quantity argument is demanded once by the pattern match.
+neg : (0 b : Bool) -> Bool
+let neg False = True
+let neg True  = False         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

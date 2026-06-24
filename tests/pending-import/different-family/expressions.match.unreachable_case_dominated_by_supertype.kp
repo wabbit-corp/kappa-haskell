@@ -1,0 +1,42 @@
+-- Source issues: Scala3 #4661, #4314
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- When a match case binds a pattern at a type T, subsequent cases whose patterns
+-- are at subtypes of T are unreachable: the first case already matched all
+-- inhabitants of T (including all subtypes). The compiler MUST emit
+-- kappa.pattern.unreachable for each such dominated case.
+
+module test
+
+data Animal : Type =
+    Cat  : Animal
+    Dog  : Animal
+    Bird : Animal
+
+-- Positive: all three cases are reachable, match is exhaustive.
+classify : Animal -> String
+let classify Cat  = "cat"
+let classify Dog  = "dog"
+let classify Bird = "bird"
+
+--! mode check
+
+-- REJECTED: the wildcard `_` in the first arm matches ALL animals.
+-- Every subsequent named case (Cat, Dog, Bird) is unreachable.
+-- The compiler MUST emit kappa.pattern.unreachable for each dominated case.
+dominated : Animal -> String
+let dominated _    = "any"
+let dominated Cat  = "cat"    --!! kappa.pattern.unreachable
+let dominated Dog  = "dog"    --!! kappa.pattern.unreachable
+let dominated Bird = "bird"   --!! kappa.pattern.unreachable
+
+--! assertDiagnostic error kappa.pattern.unreachable
+
+-- A case that is second but still unreachable because the first is a catch-all:
+-- the same rule applies for inline match bodies.
+inlineWildcard : Animal -> String
+let inlineWildcard a =
+    match a
+    case _    -> "default"
+    case Cat  -> "cat"    --!! kappa.pattern.unreachable
+
+--! assertDiagnostic error kappa.pattern.unreachable

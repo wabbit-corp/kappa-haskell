@@ -1,0 +1,65 @@
+-- Source issue: nickel #1316
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch)
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant (kappa.row.lacks-failed)
+-- In a function with a polymorphic enum tail type, if the function body returns a
+-- tag that is NOT in the output row type, the diagnostic must clearly identify the
+-- offending tag and the expected output row — not say "expected type `a`" where `a`
+-- is a raw unresolved type variable from the unifier. Nickel #1316 showed that the
+-- error for a wildcard branch returning `'blo` (which was in the input row but not
+-- in the output row) said "expected type `a`" without explaining why.
+-- Kappa note: Union type members are structural types (not named tags). Each tag is
+-- modelled as a singleton data type. Pattern matching uses `case (| _ : T |)` form.
+
+module test
+
+-- Singleton data types used as union members.
+data Red   : Type = Red
+data Green : Type = Green
+data Crimson : Type = Crimson
+data Emerald : Type = Emerald
+data Bla : Type = Bla
+data Bli : Type = Bli
+data Blo : Type = Blo
+data Ble : Type = Ble
+data Foo : Type = Foo
+data Bar : Type = Bar
+data Baz : Type = Baz
+data Qux : Type = Qux
+
+-- A function mapping a closed input union to a disjoint closed output union.
+mapColors : (| Red | Green |) -> (| Crimson | Emerald |)
+let mapColors c = match c
+    case (| _ : Red   |) -> Crimson
+    case (| _ : Green |) -> Emerald
+
+-- POSITIVE: all input tags covered, all output tags valid.
+--! mode check
+--! assertType mapColors (| Red | Green |) -> (| Crimson | Emerald |)
+
+-- NEGATIVE: a wildcard branch that returns a tag NOT in the declared output row.
+-- `Blo` is not in `(| Bla | Bli |)`, so returning it is a type error.
+-- The error must say which tag was returned and why it doesn't fit the output type.
+badWildcard : forall r. LacksVar r Blo => LacksVar r Ble => (| Blo | Ble | r |) -> (| Bla | Bli |)
+let badWildcard v = match v
+    case (| _ : Blo |) -> Bla
+    case (| _ : Ble |) -> Bli
+    case _             -> Blo    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: function that claims a polymorphic output row but returns a tag
+-- that is not constrained to be in that row.
+badReturnOutOfBounds : forall p. LacksVar p Baz => (| Foo |) -> (| Baz | p |)
+let badReturnOutOfBounds v = match v
+    case (| _ : Foo |) -> Qux    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: returning a tag that IS in the output row type.
+goodPolyReturn : forall p. LacksVar p Foo => LacksVar p Bar => LacksVar p Baz =>
+                 (| Foo | Bar | p |) -> (| Baz | p |)
+let goodPolyReturn v = match v
+    case (| _ : Foo |) -> Baz
+    case (| _ : Bar |) -> Baz
+    case (| ..rest  |) -> (| rest |)
+

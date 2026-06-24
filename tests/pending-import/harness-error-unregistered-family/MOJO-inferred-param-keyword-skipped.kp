@@ -1,0 +1,53 @@
+-- Source issues: MOJO-1711, MOJO-1713 (inferred parameter proposal)
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       types.quantification,
+--       kappa.type.unsolved-metavariable
+-- An "inferred" parameter is one that can only be determined from other
+-- parameters or from the argument types; it must not be supplied explicitly
+-- by the caller (doing so is a type error).
+-- If the compiler cannot infer the parameter's value from context, it must
+-- report kappa.type.unsolved-metavariable.
+
+module test
+
+--! mode check
+
+-- A struct parameterised over both the element type and a capacity constant.
+data FixedVec (T : Type) (n : Int) : Type =
+    FixedVec (List T)
+
+capacity : forall (T : Type) (n : Int). (& v : FixedVec T n) -> Int
+let capacity _ = n
+
+-- A function where `n` is inferred from the argument type, not given explicitly.
+-- The caller need only supply the `FixedVec T n` value; `n` is resolved from
+-- the structure of the type.
+firstElem : forall (T : Type) (n : Int). (n > 0) => (& v : FixedVec T n) -> T
+let firstElem v =
+    match v
+    case FixedVec (x : _) -> x
+
+-- POSITIVE: the `n` parameter is inferred from the concrete argument type.
+testFixed : Int
+let testFixed =
+    let v = FixedVec [1, 2, 3] : FixedVec Int 3
+    firstElem v
+
+--! assertType testFixed Int
+
+-- POSITIVE: capacity is inferrable from the structure of the type.
+testCapacity : Int
+let testCapacity =
+    let v = FixedVec [10, 20] : FixedVec Int 2
+    capacity v
+
+--! assertType testCapacity Int
+
+-- NEGATIVE: the element type and capacity cannot both be inferred from a bare
+-- constructor with no concrete type annotation; the metavariable n is unsolved.
+badConstruct : Int
+let badConstruct =
+    let v = FixedVec []                 --!! kappa.type.unsolved-metavariable
+    capacity v
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

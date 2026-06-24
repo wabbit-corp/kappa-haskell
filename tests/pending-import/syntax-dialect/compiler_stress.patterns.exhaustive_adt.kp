@@ -1,0 +1,28 @@
+-- Stress test: a match on a closed ADT that covers all constructors is exhaustive
+-- Spec: expressions.match
+
+--! mode check
+
+data Direction : Type =
+    North
+  | South
+  | East
+  | West
+
+-- POSITIVE: all four constructors covered; match is exhaustive.
+dirToInt : Direction -> Int
+let dirToInt d =
+    match d
+    case North -> 0
+    case South -> 1
+    case East  -> 2
+    case West  -> 3
+
+-- POSITIVE: wildcard after partial coverage also accepted.
+isNorth : Direction -> Bool
+let isNorth d =
+    match d
+    case North -> True
+    case _     -> False
+
+--! assertNoErrors

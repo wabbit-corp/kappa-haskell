@@ -1,0 +1,39 @@
+-- Source issue: Koka #248
+-- Spec: effects.monadic_core.shallow_handlers
+-- The return clause of a shallow or deep handler may change the result type.
+-- If the handled computation has type 'Eff <[label : E | r]> a' and the target
+-- carrier is 'm b', then the return clause maps 'x : a' to 'm b' (a /= b allowed).
+-- This transformation is what makes handlers into true effect eliminators.
+
+module test
+
+effect Abort =
+    0 abortWith : String -> Unit
+
+-- Deep handler: return clause maps 'a' to 'Maybe a'.
+-- Abort clause: abortive op (quantity 0), k is unusable, returns Nothing.
+withAbort : Eff <[abort : Abort]> Int -> Eff <[ ]> (Maybe Int)
+let withAbort comp =
+    deep handle abort comp with
+        case return x          -> pure (Just x)
+        case abortWith _msg _k -> pure Nothing
+
+--! mode check
+--! assertNoErrors
+--! assertType withAbort Eff <[abort : Abort]> Int -> Eff <[ ]> (Maybe Int)
+
+-- Shallow handler: return clause accumulates yielded values into a list.
+-- Return type changes from Unit (computation result) to List Int (collected).
+effect Yield (a : Type) =
+    1 yield : a -> Unit
+
+collectOne : Eff <[yield : Yield Int]> Unit -> Eff <[ ]> (List Int)
+let collectOne comp =
+    handle yield comp with
+        case return _  -> pure []
+        case yield x k ->
+            let rest = collectOne (k ())
+            rest >>= \rs -> pure (x :: rs)
+
+--! assertNoErrors
+--! assertType collectOne Eff <[yield : Yield Int]> Unit -> Eff <[ ]> (List Int)

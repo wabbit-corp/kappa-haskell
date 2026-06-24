@@ -1,0 +1,85 @@
+-- Source issues: rzk docs (reference/type-layer.rzk.md) — applying a function
+--   to an argument requires the function to have a Pi type; applying a non-
+--   function (e.g. a Nat, a Bool, or a type) produces a type mismatch.
+--   This is a basic well-typedness obligation that every checker must enforce.
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.type_equality
+--   §11.3: function application `f x` is well-typed only when `f : (a : A) → B a`
+--   and `x : A`. Applying a term that does not have a function type must produce
+--   kappa.type.mismatch.
+--
+-- Applying a non-function produces a type mismatch. The typechecker must
+-- verify that the function position of an application has a Pi type.
+
+--! mode check
+
+-- POSITIVE: a simple function application — `f : A -> B` applied to `x : A`.
+increment : Nat -> Nat
+let increment n = n + 1
+
+result1 : Nat
+let result1 = increment 5
+
+-- POSITIVE: a higher-order application.
+applyFn : (Nat -> Nat) -> Nat -> Nat
+let applyFn f x = f x
+
+result2 : Nat
+let result2 = applyFn increment 3
+
+-- POSITIVE: a dependent function application.
+constB : forall (a b : Type). a -> b -> a
+let constB x _ = x
+
+result3 : Nat
+let result3 = constB 7 True
+
+-- POSITIVE: applying a curried function to arguments one at a time.
+add : Nat -> Nat -> Nat
+let add m n = m + n
+
+addFive : Nat -> Nat
+let addFive = add 5
+
+result4 : Nat
+let result4 = addFive 3
+
+-- POSITIVE: applying a polymorphic function at multiple types.
+identity : forall {a : Type} -> a -> a
+let identity x = x
+
+idNat : Nat
+let idNat = identity 42
+
+idBool : Bool
+let idBool = identity True
+
+-- POSITIVE: immediate application of a lambda.
+lamApply : Nat
+let lamApply = (\n -> n + 10) 5
+
+-- NEGATIVE: applying a Nat literal as if it were a function.
+badApplyNat : Nat
+let badApplyNat = 42 True    --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a Bool value as if it were a function.
+badApplyBool : Nat
+let badApplyBool = True 5    --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a pair as if it were a function.
+badApplyPair : Nat
+let badApplyPair = (1, True) 5    --!! kappa.type.mismatch
+
+-- NEGATIVE: using a type (Type) as a function.
+badApplyType : Nat
+let badApplyType = Nat 0    --!! kappa.type.mismatch
+
+-- NEGATIVE: applying a function with the wrong argument type.
+-- `increment : Nat -> Nat` cannot be applied to a Bool.
+wrongArgType : Nat
+let wrongArgType = increment True    --!! kappa.type.mismatch
+
+-- NEGATIVE: a higher-order function applied to a non-function argument.
+badHigherOrder : Nat
+let badHigherOrder = applyFn 99 3    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

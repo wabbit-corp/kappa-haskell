@@ -1,0 +1,35 @@
+-- Source: granule-project/granule PR #220 (Dropable predicate, fixes
+--         #188, #175)
+-- Spec: traits.deriving (GSA-04),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- GSA-04: a derived `drop` on a type containing a linear resource requires
+-- a `Dropable` instance. Channels and unique handles are not `Dropable`;
+-- attempting `drop_ c` on a linear channel surfaces
+-- `kappa.implicit.unsolved` (§3.2.4) because no `Dropable` instance
+-- can be synthesized.
+
+module test
+
+--! mode check
+
+trait Dropable (a : Type) =
+    drop_ : (1 x : a) -> Unit
+
+-- POSITIVE: Int is Dropable (Int is unrestricted).
+instance Dropable Int =
+    let drop_ _ = ()
+
+dropInt : (1 n : Int) -> Unit
+let dropInt n = drop_ n
+
+
+-- An opaque channel-like resource. No Dropable instance is provided.
+type LChan : Type -> Type
+type End   : Type
+
+-- NEGATIVE: LChan End does NOT have a Dropable instance; the implicit
+-- obligation is unsolved.
+badDropChan : (1 c : LChan End) -> Unit
+let badDropChan c = drop_ c   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

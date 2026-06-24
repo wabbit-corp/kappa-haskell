@@ -1,0 +1,50 @@
+-- Source issues: souffle-lang/souffle tests/semantic/witness_check/witness_check.dl,
+--   souffle-lang #556 (aggregator and variable-scoping issue),
+--   souffle-lang #876 (excessive aggregates cause well-typed programs to fail type checking),
+--   souffle-lang #877 (names for variables bound by aggregates are different in errors),
+--   souffle-lang #882 (crash involving record aggregate),
+--   souffle-lang #2486 (unexpected assertion error in aggregation),
+--   souffle-lang #2552 (variable bound outside aggregation used as free within).
+-- Spec: expressions.application (§16),
+--       modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- Spec gap: SSA-SOUFFLE-03 (aggregate grounding / witness semantics).
+-- In Souffle, when a variable is grounded only inside an aggregate's inner scope,
+-- it cannot be used ungrounded in the outer rule scope for count/sum/mean aggregates
+-- (the "witness problem"). In Kappa the analogous constraint is that a variable bound
+-- only inside an inner lambda or comprehension scope must not be used outside that scope.
+
+--! mode check
+
+-- POSITIVE: variable bound in outer scope used inside inner scope.
+let sumUsesOuter : Int -> List Int -> Int
+let sumUsesOuter threshold xs =
+    let filtered = filter (\x -> x > threshold) xs
+    foldl (+) 0 filtered
+
+-- POSITIVE: accumulator bound outside the fold is accessible.
+let runningSum : List Int -> Int
+let runningSum xs = foldl (+) 0 xs
+
+-- NEGATIVE: variable bound only inside a lambda leaks to outer scope.
+let witnessLeak : List Int -> Int
+let witnessLeak xs =
+    let _ = map (\y -> y * 2) xs   -- y is only in scope inside the lambda
+    y + 1    --!! kappa.name.unresolved
+    -- `y` does not exist in the outer scope
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: comprehension-bound variable used outside the comprehension.
+let compLeak : List Int -> Int
+let compLeak xs =
+    let squares = [for z in xs, yield z * z]    -- z is only in scope inside [...]
+    z + 1    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: result of inner computation returned to outer scope via binding.
+let safeResult : List Int -> Int
+let safeResult xs =
+    let doubled = map (\x -> x * 2) xs
+    foldl (+) 0 doubled

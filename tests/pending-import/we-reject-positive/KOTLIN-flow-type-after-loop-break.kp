@@ -1,0 +1,48 @@
+-- Source issues: KT-6283, KT-6284 (no smart cast after do-while / while(true))
+-- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
+--   expressions.conditionals.stable_aliases_transport_refinement_evidence
+
+--! mode check
+
+-- POSITIVE: a var that is initialized before a condition check is narrowed
+-- after the check in the same scope.
+processOpt : Int? -> Int
+let processOpt mn =
+    if mn != Option.None then
+        mn.value + 1
+    else
+        0
+
+--! assertNoErrors
+--! assertType processOpt (Int? -> Int)
+
+-- POSITIVE: narrowed value after a guard-like early return pattern.
+-- Once the None case is handled, the rest of the function uses non-null.
+safeAdd : Int? -> Int -> Int
+let safeAdd mn base =
+    if mn is Option.None then
+        base
+    else
+        mn.value + base
+
+--! assertNoErrors
+
+-- POSITIVE: sequential conditions — both narrowed in the then branch.
+bothNonNull : String? -> Int? -> String
+let bothNonNull ms mn =
+    if ms != Option.None && mn != Option.None then
+        ms.value ++ toString mn.value
+    else
+        "missing"
+
+--! assertNoErrors
+
+-- POSITIVE: narrowing persists across multiple uses in the same branch.
+useMultiple : String? -> String
+let useMultiple ms =
+    if ms != Option.None then
+        ms.value ++ " " ++ ms.value   -- ms used twice while narrowed
+    else
+        ""
+
+--! assertNoErrors

@@ -1,0 +1,43 @@
+-- Source issues: carp-lang/Carp#1040, #1416
+-- Spec: types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types,
+--       types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Carp #1040: capturing a linear String in a closure and then returning
+-- that captured String from the closure body caused a double-free at
+-- runtime — the env owned a copy, and so did the caller.  Carp #1416:
+-- the same shape across two nested closures.  The portable Kappa
+-- obligation is that a closure value co-owns its captured linear fields;
+-- moving a captured linear out of the closure body requires that the
+-- closure value itself be consumed in that step (no further calls
+-- through it remain).
+
+--! mode check
+
+data Buf : Type = Buf Int
+
+consume : (1 b : Buf) -> Int
+let consume (Buf n) = n
+
+-- POSITIVE: the closure captures a linear `b` and consumes it inside the
+-- body; the closure is itself called once and consumed, so the captured
+-- field discharges exactly once.
+moveCapturedOnce : Int
+let moveCapturedOnce =
+    let b = Buf 1
+    let f : Unit -> Int = \() -> consume b
+    f ()
+
+
+-- NEGATIVE: the closure body returns the captured linear, but the
+-- closure is then called twice — the second call would move the same
+-- captured slot a second time.  Calling the same `f` twice with a body
+-- that moves out is rejected at the second call site.
+moveCapturedTwiceBad : Int
+let moveCapturedTwiceBad =
+    let b = Buf 1
+    let f : Unit -> Int = \() -> consume b
+    let a : Int = f ()
+    let c : Int = f ()                  --!! kappa.path.consumed
+    a + c
+
+--! assertDiagnosticFamily error kappa.path.consumed

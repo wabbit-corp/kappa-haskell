@@ -1,0 +1,46 @@
+-- Source artifact: carp-lang/Carp docs/docs/LanguageGuide.md ("Modules and
+--                  Name Lookup"); Carp issue #1183 (long-running fully-
+--                  qualifying requirement).
+-- Spec: modules.imports,
+--       modules.names.lexical_lookup,
+--       modules.names.dotted_name_resolution_dotted,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Carp #1183: requiring fully-qualified spellings even after a `use` was
+-- considered an over-restriction.  The portable Kappa obligation is that
+-- a wildcard import (`import M.*`) brings exported bindings into
+-- unqualified scope.  When two such imports each contribute the same
+-- unqualified spelling, Kappa disambiguates using the surrounding type
+-- when possible; otherwise it reports `kappa.name.ambiguous`.
+
+module consumer
+
+import strs.*
+import arr.*
+
+--! mode check
+
+-- POSITIVE: a wildcard-imported name can be referenced unqualified;
+-- with two providers contributing the same spelling, the surrounding
+-- expected type or argument type pins the call.
+useStrs : Int
+let useStrs = length "hello"
+
+--! assertType useStrs Int
+
+-- POSITIVE: argument type pins the `arr.length` overload.
+useArr : Int
+let useArr =
+    let xs : List Int = Nil
+    length xs
+
+--! assertType useArr Int
+
+-- NEGATIVE: when nothing pins the receiver's type, the unqualified call
+-- is ambiguous between the two `length` providers.
+anyThing : forall a. a
+let anyThing = anyThing
+
+useAmbiguous : Int
+let useAmbiguous = length anyThing       --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

@@ -1,0 +1,40 @@
+-- Source issues: egraphs-good/egglog #329 (Disallow shadowing between let
+--   bindings and constructors),
+--   egraphs-good/egglog #316 (Confusing scopes of globals & locals in egglog),
+--   egraphs-good/egglog PR#330 (Typechecker tests for variable shadowing),
+--   egraphs-good/egglog PR#590 (Typechecker tests for variable shadowing),
+--   egraphs-good/egglog PR#565 (Underscores, shadowing, and misc.),
+--   egraphs-good/egglog tests/fail-typecheck/shadow-global-constructor.egg,
+--   egraphs-good/egglog tests/fail-typecheck/shadow-local-constructor.egg.
+-- Spec: modules.names.same_spelling_data_families_static_members (§7),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.shadowing — §3.1.10),
+--       see also EGGLOG-SA-02 in EGGLOG_SPEC_ADDITIONS.md.
+-- A binder that collides with a data constructor declared in the same scope
+-- yields kappa.name.shadowing under the suspicious-shadowing lint.
+
+module test
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: ordinary use of constructors.
+pickRed : Color
+let pickRed = Red
+
+-- NEGATIVE: pattern-binding named `Red` shadows the constructor (§3.1.10).
+-- (`Red` here is treated as a fresh binder rather than as the constructor.)
+badShadow1 : Int -> Int
+let badShadow1 n =
+    let Red = n in                 --!! kappa.name.shadowing
+    Red + 1
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+-- POSITIVE: `_` does NOT shadow because it does not introduce a binder.
+blackHole : Int -> Color
+let blackHole _ = Green

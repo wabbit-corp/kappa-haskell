@@ -1,0 +1,51 @@
+-- Source issue: Uiua #747 ("Pattern matching variants with default
+--   values" — `°Variant` fails when the runtime value's fields differ
+--   from the default values, because the inverse-of-constructor path
+--   inverts the constants and then mismatches the variant tag).
+-- Spec: expressions.match, expressions.patterns,
+--       data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability.
+--
+-- A pattern matching a tagged variant must match on the tag identity,
+-- not on the literal equality of default-valued fields. A constructor
+-- whose declaration assigns a default to a field can be matched even
+-- when the runtime value has a different value in that field.
+
+module test
+
+--! mode check
+
+-- A variant whose `B` constructor assigns the default 0 to its second
+-- field. Default expressions on constructor fields are construction
+-- metadata only; they do not constrain patterns (§10.1).
+data Test : Type =
+    A { v : Int }
+    B { v : Int, w : Int = 0 }
+
+-- POSITIVE: distinguishing A from B by tag only. The wildcard ignores
+-- all fields, including the defaulted `w`.
+isA : Test -> Bool
+let isA t =
+    match t
+      case A _ -> True
+      case B _ -> False
+
+--! assertNoErrors
+--! assertType isA Test -> Bool
+
+-- POSITIVE: matching `B` whose `w` differs from its default still
+-- succeeds — defaults do not affect deconstruction.
+nonDefaultB : Bool
+let nonDefaultB = isA (B { v = 1, w = 3 })
+
+--! assertType nonDefaultB Bool
+
+-- POSITIVE: explicit destructuring binds both fields regardless of
+-- whether they match the declared default.
+extractW : Test -> Int
+let extractW t =
+    match t
+      case A _ -> 0
+      case B { v = _, w = w } -> w
+
+--! assertType extractW Test -> Int

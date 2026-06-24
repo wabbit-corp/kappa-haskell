@@ -1,0 +1,66 @@
+-- Source issue: UNISON#3198 (fixes UNISON#3196)
+-- Spec: types.quantification.rows_labels, types.quantification.effect_row_syntax,
+--       effects.monadic_core.shallow_handlers
+-- The corpus PR fixed an asymmetry in the typechecker's ability-row equator:
+-- equating `<[g | r]>` with `<[Foo : Foo, g | r']>` only worked when the rows
+-- were supplied in the "right" order to the equator. Kappa's spec §11.3.1
+-- already requires that row equality is *modulo permutation* and that
+-- `SplitEff r l e rest` is symmetric across the choice of which label is
+-- pulled to the head, so this fixture pins the symmetric behaviour by
+-- handling the same residual computation from two directions.
+
+--! mode check
+
+effect Foo =
+    1 foo : Unit -> Int
+
+effect Bar =
+    1 bar : Unit -> Int
+
+-- A computation whose effect row mentions Foo first then Bar.
+let comp_foo_bar : Eff <[lFoo : Foo, lBar : Bar]> Int =
+    do
+        let n = lFoo.foo ()
+        let m = lBar.bar ()
+        pure (n + m)
+
+-- POSITIVE: handle Foo first; Kappa must equate `<[lFoo : Foo | r]>` against the
+-- concrete `<[lFoo : Foo, lBar : Bar]>` row, solving `r = <[lBar : Bar]>`.
+let handle_foo_then_bar : Eff <[lBar : Bar]> Int =
+    handle lFoo comp_foo_bar with
+        case return v -> pure v
+        case foo _ k  -> k 1
+
+-- POSITIVE: now handle Bar from the *other* order: the same row written as
+-- `<[lBar : Bar, lFoo : Foo]>` must equate against the handler's
+-- `<[lBar : Bar | r]>`, solving `r = <[lFoo : Foo]>`. The PR was about this
+-- direction failing first.
+let comp_bar_foo : Eff <[lBar : Bar, lFoo : Foo]> Int =
+    comp_foo_bar
+
+let handle_bar_first : Eff <[lFoo : Foo]> Int =
+    handle lBar comp_bar_foo with
+        case return v -> pure v
+        case bar _ k  -> k 2
+
+-- POSITIVE: full elimination — pair the two handlers, in either order; the
+-- final computation must be well-typed under `<[]>`.
+let run_both_orders : Int =
+    handle lBar
+        (handle lFoo comp_foo_bar with
+            case return v -> pure v
+            case foo _ k  -> k 1)
+    with
+        case return v -> v
+        case bar _ k  -> k 2
+
+let run_other_order : Int =
+    handle lFoo
+        (handle lBar comp_foo_bar with
+            case return v -> pure v
+            case bar _ k  -> k 2)
+    with
+        case return v -> v
+        case foo _ k  -> k 1
+
+--! assertNoErrors

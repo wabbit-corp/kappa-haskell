@@ -1,0 +1,24 @@
+-- Stress test: Unicode identifiers in Kappa code are accepted
+-- Spec: lexical.identifiers
+
+--! mode check
+
+-- POSITIVE: Greek-letter identifiers are valid.
+let α : Int = 42
+let β : Int = α + 1
+
+-- POSITIVE: Unicode data type name and constructor.
+data Σ (a : Type) : Type =
+    MkΣ a
+
+-- POSITIVE: Unicode function name and binding.
+let π : Float = 3.14159
+
+-- POSITIVE: Subscript-style identifier.
+let x₀ : Int = 0
+let x₁ : Int = x₀ + 1
+
+-- Exercise all bindings.
+let total : Int = α + β + x₀ + x₁
+
+--! assertNoErrors

@@ -1,0 +1,48 @@
+-- Source issues: MOJO-895, MOJO-1604, MOJO-747
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure,
+--       types.universes.quantities,
+--       kappa.path.consumed
+-- A linear (quantity-1) value may be consumed exactly once in each execution
+-- path.  Referencing a consumed binding in the same path — including through
+-- a nested alias — must be rejected with kappa.path.consumed.
+-- This test covers the path-sensitive variant: the value is consumed in one
+-- branch of a conditional and then referenced in the join point.
+
+module test
+
+--! mode check
+
+data Handle : Type =
+    Handle Int
+
+close : (1 h : Handle) -> ()
+let close _ = ()
+
+-- POSITIVE: handle is consumed exactly once on every path.
+safeClose : (1 h : Handle) -> ()
+let safeClose h = close h
+
+
+-- NEGATIVE: handle consumed in the `then` branch, then referenced again
+-- in the join point after the conditional.  After the branch, `h` may
+-- already be consumed on the taken path.
+unsafeAfterBranch : Bool -> (1 h : Handle) -> ()
+let unsafeAfterBranch cond h =
+    let _ = if cond then close h else ()
+    close h          --!! kappa.path.consumed   -- consumed on the true path
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: handle consumed twice unconditionally.
+doubleClose : (1 h : Handle) -> ()
+let doubleClose h =
+    let _ = close h
+    close h          --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: handle consumed on exactly one branch each time.
+branchClose : Bool -> (1 h : Handle) -> (1 k : Handle) -> ()
+let branchClose cond h k =
+    if cond then close h else close k
+

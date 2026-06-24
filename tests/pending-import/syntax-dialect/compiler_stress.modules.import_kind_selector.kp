@@ -1,0 +1,40 @@
+-- Stress test: Import by kind selector imports only items of the specified kind
+-- Spec: modules.imports.item_kind_selectors
+
+--! mode check
+
+-- Declarations of multiple kinds in this module; each kind is selectable
+-- by an importing module using kind-qualified import items:
+--   import ThisModule (type MyType)     -- imports only the data type
+--   import ThisModule (let myFn)        -- imports only the term
+--   import ThisModule (trait MyTrait)   -- imports only the trait
+
+data MyType : Type =
+    MyA
+    MyB Int
+
+let myFn : MyType -> Int
+let myFn t = match t
+    case MyA    -> 0
+    case MyB n  -> n
+
+trait MyTrait (a : Type) =
+    myOp : a -> MyType
+
+-- An instance of MyTrait for MyType itself (non-orphan).
+instance MyTrait MyType =
+    let myOp t = t
+
+-- Kind selectors prevent accidental imports of same-named items of the wrong kind.
+-- For example, if another module also exports a term named `MyType`, the selector
+-- `type MyType` unambiguously refers to the type constructor, not the term.
+
+useFn : Int
+let useFn = myFn (MyB 7)
+
+useOp : MyType
+let useOp =
+    let ev : MyTrait MyType = summon
+    ev.myOp MyA
+
+--! assertNoErrors

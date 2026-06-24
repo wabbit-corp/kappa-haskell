@@ -1,0 +1,51 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rel_stratification/rel_stratification.dl,
+--   tests/semantic/rel_stratification2/rel_stratification2.dl,
+--   souffle-lang #719 (cyclic negation not caught in all cases).
+-- Spec: declarations.totality (§15),
+--       compiler.frontir.standard_diagnostic_families.termination (kappa.termination.failure).
+-- Spec gap: SSA-SOUFFLE-02 (negation stratification).
+-- In Souffle, a Datalog program is rejected if negation creates a cycle in the
+-- dependency graph (e.g., `b(X) :- a(X), !c(X). c(X) :- a(X), !b(X).`). This
+-- "stratification" check is a safety property: programs without a stratification
+-- are semantically undefined (no stable model exists). In Kappa the closest analogue
+-- is mutual recursion through negation, which the totality checker should reject when
+-- it cannot assign a well-founded order.
+
+--! mode check
+
+-- POSITIVE: mutually recursive functions that terminate — there is a well-founded order.
+let even : Nat -> Bool
+let even n =
+    match n
+        case Zero -> True
+        case (Succ m) -> odd m
+
+let odd : Nat -> Bool
+let odd n =
+    match n
+        case Zero -> False
+        case (Succ m) -> even m
+
+-- POSITIVE: self-recursion with a decreasing argument.
+let countdown : Nat -> Nat
+let countdown n =
+    match n
+        case Zero -> Zero
+        case (Succ m) -> countdown m
+
+-- NEGATIVE: mutual recursion with no well-founded termination order.
+-- `positiveFn n = not (negativeFn n)` and `negativeFn n = not (positiveFn n)` with
+-- no base case form a stratification cycle.
+let positiveFn : Nat -> Bool
+let positiveFn n = not (negativeFn n)    --!! kappa.termination.failure
+
+let negativeFn : Nat -> Bool
+let negativeFn n = not (positiveFn n)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: self-negating loop (a(X) :- a(X), !a(X) analogue).
+let selfNeg : Nat -> Bool
+let selfNeg n = (selfNeg n) && not (selfNeg n)    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

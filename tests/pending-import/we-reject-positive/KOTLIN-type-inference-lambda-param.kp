@@ -1,0 +1,46 @@
+-- Source issues: KT-5385, KT-4240, KT-11305 (type inference with lambdas and expected type)
+-- Spec: expressions.lambdas, types.universes.inference_sketch
+
+--! mode check
+
+-- POSITIVE: lambda parameter type inferred from the expected function type.
+mapInts : (Int -> Int) -> List Int -> List Int
+let mapInts f xs =
+    match xs
+    case Nil    -> Nil
+    case h :: t -> f h :: mapInts f t
+
+doubled : List Int
+let doubled = mapInts (\n -> n * 2) (1 :: 2 :: 3 :: Nil)
+
+--! assertNoErrors
+--! assertType doubled (List Int)
+
+-- POSITIVE: generic map function with inferred type argument.
+mapList : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
+let mapList f xs =
+    match xs
+    case Nil    -> Nil
+    case h :: t -> f h :: mapList f t
+
+strLengths : List Int
+let strLengths = mapList (\s -> s.length) ("hello" :: "world" :: Nil)
+
+--! assertNoErrors
+
+-- POSITIVE: partial application infers parameter types.
+addN : Int -> Int -> Int
+let addN n m = n + m
+
+add5 : Int -> Int
+let add5 = addN 5
+
+--! assertNoErrors
+--! assertType add5 (Int -> Int)
+
+-- POSITIVE: let-bound function type inferred from body.
+pred : Int -> Bool
+let pred = \n -> n > 0
+
+--! assertNoErrors
+--! assertType pred (Int -> Bool)

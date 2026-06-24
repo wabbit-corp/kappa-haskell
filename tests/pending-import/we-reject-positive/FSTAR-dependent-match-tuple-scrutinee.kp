@@ -1,0 +1,23 @@
+-- Source issues: FSTAR-682, FSTAR-522
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+-- Dependent match over tuple scrutinee with indexed-type arms.
+
+--! mode check
+
+-- A length-indexed vector type.
+data Vec : Nat -> Type =
+    Nil  : Vec 0
+    Cons : {n : Nat} -> Nat -> Vec n -> Vec (n + 1)
+
+-- Matching on a pair (Vec n, Vec n) using a flat tuple pattern should work.
+-- The same semantics as nested match: first match l1 then match l2.
+map2 : {n : Nat} -> Vec n -> Vec n -> Vec n
+let map2 l1 l2 =
+    match (l1, l2)
+      case (Nil, Nil)             -> Nil
+      case (Cons x xs, Cons y ys) -> Cons (x + y) (map2 xs ys)
+
+-- Flat tuple match over indexed types must be accepted, equivalent to nested match.
+-- FSTAR-682: dependent pair match rejected when nested match works.
+
+--! assertNoErrors

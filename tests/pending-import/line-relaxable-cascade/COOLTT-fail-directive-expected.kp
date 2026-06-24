@@ -1,0 +1,44 @@
+-- Source artifacts: cooltt PR #276 (add `fail` top-level form).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       appendices.test_harness.assertion_directives.diagnostic_assertions
+--
+-- The `fail` top-level form (or `#fail` command) asserts that the wrapped
+-- declaration is expected to produce a type error. If the declaration type-checks
+-- successfully, the `fail` wrapper itself becomes an error. If the declaration
+-- fails as expected, no error is emitted for the failing declaration.
+--
+-- This maps to the Kappa test harness's `--!! diagnostic-code` inline marker and
+-- assertion directives: marking a declaration as expected-failing is how test
+-- corpora exercise error-recovery and diagnostic-coverage obligations.
+
+--! mode check
+
+-- POSITIVE: a well-typed function.
+add : Nat -> Nat -> Nat
+let add zero    m = m
+let add (suc n) m = suc (add n m)
+
+-- POSITIVE: applying add to valid arguments.
+two : Nat
+let two = add (suc zero) (suc zero)
+
+-- NEGATIVE: applying a Nat as a function is a type error.
+badApp : Nat
+let badApp = (suc zero) zero    --!! kappa.type.mismatch
+
+-- NEGATIVE: type mismatch in a function return position.
+-- The declared return type is `Nat` but the body is `Bool`.
+wrongReturn : Nat
+let wrongReturn = True    --!! kappa.type.mismatch
+
+-- NEGATIVE: using an undefined name.
+missingName : Nat
+let missingName = undeclared    --!! kappa.name.unresolved
+
+-- POSITIVE: after the errors above, further well-typed definitions are accepted.
+-- Error recovery must not suppress subsequent valid declarations.
+ok : Nat -> Nat
+let ok n = suc n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.name.unresolved

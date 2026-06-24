@@ -1,0 +1,56 @@
+-- Source issue: rust#87335 (let-else tracking issue, slice > 50000)
+-- Spec: effects.do_blocks.refutable_local_binding_let,
+--       expressions.match.case_impossible_empty_remainder,
+--       errors.raise
+--
+-- Kappa's `let? pat = expr else residuePat -> failExpr` is the refutable
+-- local binding form in a `do` block. The failure branch must be:
+--   (a) an abrupt-control do-item (return/break/continue), OR
+--   (b) an expression of type `m Void`.
+-- After the let-else, the binders introduced by `pat` are in scope under
+-- the refined fact that the pattern matched.
+
+module test
+
+data Option (a : Type) : Type =
+    None
+    Some a
+
+-- An empty type. Its `case impossible` is what enables divergent failExpr.
+data Void : Type =
+
+absurd : forall (a : Type). (1 v : Void) -> a
+let absurd v = match v case impossible
+
+data ParseError : Type =
+    NotPresent
+
+--! mode check
+
+-- POSITIVE: refutable let-else where the failure residue is bound and
+-- the failure body uses an abrupt-control `return`. `n : Int` is in
+-- scope after.
+parseOrReturn : Option Int -> Int
+let parseOrReturn opt = do
+    let? Some n = opt else None -> return 0
+    n + 1
+
+
+-- POSITIVE: failure body throws an effect that produces `Void`-typed
+-- abrupt result. `n : Int` is in scope after the let-else.
+parseOrRaise : Option Int -> Eff <[Raise ParseError]> Int
+let parseOrRaise opt = do
+    let? Some n = opt else None -> raise NotPresent
+    pure (n + 1)
+
+
+-- NEGATIVE: the failure body returns an ordinary Int rather than using
+-- abrupt control or producing `m Void`. The let-else is ill-formed:
+-- after the failure branch produces a value, control would have to join
+-- back into the matched-path do-items, but `n` is not in scope there.
+badLetElse : Option Int -> Int
+let badLetElse opt = do
+    let? Some n = opt else None -> 42   --!! kappa.type.mismatch
+    n
+
+--! assertDiagnosticFamily error kappa.type.mismatch

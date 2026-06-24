@@ -1,0 +1,55 @@
+-- Source: Racket guide module-require.scrbl (except-in)
+-- Source docs: racket guide module-require.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-require.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: modules.imports
+--
+-- An except import (`import M.* except (x, y)`) imports all public names from
+-- M except the listed ones. The excepted names are not brought into scope.
+-- Accessing an excepted name without qualification is an error.
+
+--! mode check
+
+module utils
+
+public safeDiv : Int -> Int -> Option Int
+let safeDiv _ 0 = None
+let safeDiv n d = Some (n / d)
+
+public safeMod : Int -> Int -> Option Int
+let safeMod _ 0 = None
+let safeMod n d = Some (n % d)
+
+public double : Int -> Int
+let double x = x * 2
+
+public triple : Int -> Int
+let triple x = x * 3
+
+public identity : (A : Type) -> A -> A
+let identity _ x = x
+
+module consumer
+import utils.* except (safeDiv, identity)
+
+-- POSITIVE: double, triple, and safeMod were not excluded.
+doubled : Int
+let doubled = double 7
+
+tripled : Int
+let tripled = triple 4
+
+maybeMod : Option Int
+let maybeMod = safeMod 10 3
+
+-- POSITIVE: excluded names remain accessible via qualified path.
+qualDiv : Option Int
+let qualDiv = utils.safeDiv 10 2
+
+-- NEGATIVE: safeDiv was excluded from the except import.
+badDiv : Option Int
+let badDiv = safeDiv 10 2    --!! kappa.name.unresolved
+
+-- NEGATIVE: identity was excluded from the except import.
+badId : Int
+let badId = identity Int 5   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

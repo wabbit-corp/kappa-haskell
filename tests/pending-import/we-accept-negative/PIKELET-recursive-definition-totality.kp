@@ -1,0 +1,46 @@
+-- Source issues: PIKELET-46 (recursive definitions),
+--               PIKELET-62 (PR: use explicit substitutions and WHNFs — recursion
+--               support context),
+--               PIKELET-128 (pattern match compilation, dependent patterns).
+-- Spec: declarations.totality, declarations.totality.structural_descent,
+--       declarations.totality.termination_certified_definitions,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Kappa allows recursive definitions but requires the user (or the
+-- elaborator) to certify termination, by default via structural descent
+-- on a recognized argument. We use a user-defined Peano `MyNat` because
+-- Kappa's prelude `Nat` is opaque (§28 `expect data Nat`), so we cannot
+-- pattern-match on its representation.
+
+--! mode check
+
+data MyNat : Type =
+  MZ
+  MS MyNat
+
+-- POSITIVE: structurally-decreasing factorial on MyNat returning Nat.
+fact : MyNat -> Nat
+let fact n =
+  match n
+    case MZ -> 1
+    case MS m -> fact m
+
+-- POSITIVE: mutual recursion is allowed when the SCC certifies as a unit.
+evenN : MyNat -> Bool
+let evenN n =
+  match n
+    case MZ -> True
+    case MS m -> oddN m
+
+oddN : MyNat -> Bool
+let oddN n =
+  match n
+    case MZ -> False
+    case MS m -> evenN m
+
+-- NEGATIVE: a non-structurally-decreasing recursive call is rejected by
+-- the totality checker.
+diverge : Nat -> Nat
+let diverge n = diverge n    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

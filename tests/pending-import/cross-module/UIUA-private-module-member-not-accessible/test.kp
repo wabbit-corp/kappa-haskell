@@ -1,0 +1,29 @@
+-- Source issue: Uiua #587 ("Surprising module scoping" — a binding that
+--   is not exported from a module is not accessible from a sibling
+--   module).
+-- Spec: modules.visibility_opacity_private_opaque.private,
+--       modules.exports, modules.names.dotted_name_resolution_dotted,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+--
+-- A declaration that is not exported from its defining module MUST NOT
+-- be resolvable through a qualified path from another module. Kappa
+-- enforces this at name lookup, so the failure is kappa.name.unresolved.
+
+module test
+
+import provider
+
+--! mode check
+
+-- POSITIVE: the exported binding Y is reachable through the import.
+useY : Int
+let useY = provider.Y 3
+
+
+-- NEGATIVE: the private (non-exported) binding helperInternal is not
+-- reachable from outside its defining module.
+useHelper : Int
+let useHelper = provider.helperInternal 3   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

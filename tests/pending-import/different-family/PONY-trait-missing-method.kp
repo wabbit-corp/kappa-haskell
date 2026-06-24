@@ -1,0 +1,36 @@
+-- Source issues: ponyc traits test suite (TraitMethodAndCLassFieldNamesDoClash),
+--   ponyc#1747–#1749 pattern, ponyc#548
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- When an instance body omits a required trait member, the instance artifact
+-- cannot be constructed and the program must be rejected. The compiler must
+-- diagnose the missing member at the instance declaration site.
+
+--! mode check
+
+trait Serializable (a : Type) =
+    serialize   : (& x : a) -> String
+    deserialize : String -> a
+
+data Point : Type = Point Int Int
+data Empty : Type = Empty
+
+-- NEGATIVE: instance provides `serialize` but omits `deserialize`.
+-- The instance for `Point` is incomplete and must be rejected.
+instance Serializable Point =   --!! kappa.implicit.unsolved
+    let serialize (Point x y) = "(" ++ show x ++ "," ++ show y ++ ")"
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: instance provides neither required method.
+instance Serializable Empty =   --!! kappa.implicit.unsolved
+    let serialize Empty = ""
+    -- deserialize intentionally omitted
+
+-- POSITIVE: instance provides all required members at correct types.
+data Pair : Type = Pair Int Int
+
+instance Serializable Pair =
+    let serialize (Pair a b) = show a ++ ":" ++ show b
+    let deserialize s = Pair 0 0
+

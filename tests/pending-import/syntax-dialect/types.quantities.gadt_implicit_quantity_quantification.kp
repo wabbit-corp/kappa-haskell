@@ -1,0 +1,12 @@
+-- Source issue: GHC#18790
+-- Spec: types.universes.quantities, data_types.gadts
+-- A multiplicity variable appearing in a GADT constructor field must be implicitly
+-- quantified alongside other implicit type variables. Omitting the quantification
+-- is a scoping error.
+
+module test
+
+data Existential (a : Type) : Type =
+  MkE : forall {q} (a : Type) -> (q & x : a) -> Existential a
+
+--! assertNoErrors

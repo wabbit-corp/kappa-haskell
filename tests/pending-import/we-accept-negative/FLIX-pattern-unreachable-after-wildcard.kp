@@ -1,0 +1,42 @@
+-- Source issue: FLIX-1554
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A pattern case that appears after a wildcard (or an irrefutable pattern) earlier in
+-- the same match expression is unreachable. The compiler must emit
+-- `kappa.pattern.unreachable` for the shadowed arm, not silently accept it.
+
+--! mode check
+
+data Color : Type = Red | Green | Blue
+
+-- NEGATIVE TEST: `case Blue` appears after a wildcard that already matches everything.
+-- The wildcard arm dominates; `Blue` is unreachable.
+let shadowed_by_wildcard (c : Color) : String =
+    match c
+    case Red   -> "red"
+    case _     -> "other"
+    case Blue  -> "blue"    --!! kappa.pattern.unreachable
+
+-- NEGATIVE TEST: a catch-all arm in the middle renders subsequent arms unreachable.
+let wildcard_in_middle (n : Int) : String =
+    match n
+    case 1  -> "one"
+    case _  -> "any"
+    case 2  -> "two"    --!! kappa.pattern.unreachable
+    case 3  -> "three"  --!! kappa.pattern.unreachable
+
+-- POSITIVE TEST: wildcard at the end (after all specific arms) is fine.
+let wildcard_at_end (c : Color) : String =
+    match c
+    case Red  -> "red"
+    case Green -> "green"
+    case _    -> "other"
+
+-- POSITIVE TEST: all cases are specific and distinct; none is unreachable.
+let all_specific (c : Color) : String =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- expect: shadowed_by_wildcard and wildcard_in_middle rejected with unreachable warnings;
+--         wildcard_at_end and all_specific accepted

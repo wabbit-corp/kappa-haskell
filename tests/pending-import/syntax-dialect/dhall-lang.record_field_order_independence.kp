@@ -1,0 +1,55 @@
+-- Source issue: dhall-lang #387
+-- Spec: core_semantics.record_canonicalization
+-- Record values are canonically ordered by the dependency-respecting topological
+-- sort with Unicode lex tie-breaking. Two record values that differ only in
+-- field presentation order MUST be definitionally equal.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+data Bool : Type = False : Bool | True : Bool
+
+-- POSITIVE TEST 1: two record literals with fields in different order are equal.
+-- The canonical order of {a, b} with no inter-field dependencies is lex order:
+-- {a = 1, b = True} and {b = True, a = 1} are the same record value.
+record AB : Type =
+    a : Nat
+    b : Bool
+
+val_ab : AB
+let val_ab = AB { a = Zero, b = True }
+
+val_ba : AB
+let val_ba = AB { b = True, a = Zero }
+
+-- A function expecting AB with one field order must accept the other.
+get_a : AB -> Nat
+let get_a r = r.a
+
+check_order : Nat
+let check_order = get_a val_ba
+
+-- POSITIVE TEST 2: three-field record, all orderings produce the same type.
+record XYZ : Type =
+    x : Nat
+    y : Nat
+    z : Bool
+
+make_xyz_1 : XYZ
+let make_xyz_1 = XYZ { x = Zero, y = Zero, z = False }
+
+make_xyz_2 : XYZ
+let make_xyz_2 = XYZ { z = False, x = Zero, y = Zero }
+
+make_xyz_3 : XYZ
+let make_xyz_3 = XYZ { y = Zero, z = False, x = Zero }
+
+-- All three should type-check as XYZ.
+sum_xyz : XYZ -> XYZ -> Bool
+let sum_xyz r1 r2 = r1.z
+
+cross_check : Bool
+let cross_check = sum_xyz make_xyz_1 make_xyz_3
+
+--! mode check
+--! assertNoErrors

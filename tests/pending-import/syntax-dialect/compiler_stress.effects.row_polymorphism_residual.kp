@@ -1,0 +1,42 @@
+-- Stress test: A function polymorphic over residual effect rows -- adding its own effect to an existing row
+-- Spec: effects.monadic_core.eff_effect_rows, types.quantification.effect_row_syntax
+
+--! mode check
+
+-- Effect whose operation yields an Int.
+effect Ask =
+    1 ask : Unit -> Int
+
+-- POSITIVE TEST: 'runAsk' is polymorphic over a residual row 'r'.
+-- It eliminates the 'ask' label from the row and leaves 'r' intact.
+let runAsk
+    (forall (r : EffRow))
+    (comp : Eff <[ask : Ask | r]> Int)
+    : Eff r Int =
+    handle ask comp with
+        case return v -> pure v
+        case ask _ k  -> k 42
+
+-- A computation that uses only Ask.
+let askComp : Eff <[ask : Ask]> Int =
+    do Ask.ask ()
+
+-- Eliminating Ask from a row with no residual yields a pure result.
+let pureResult : Eff <[ ]> Int =
+    runAsk askComp
+
+-- A computation that uses Ask alongside another effect.
+effect Log =
+    1 logMsg : String -> Unit
+
+let askAndLog : Eff <[ask : Ask, log : Log]> Int =
+    do
+        let n = Ask.ask ()
+        Log.logMsg "asked"
+        pure n
+
+-- Eliminating only Ask; Log remains in the residual row.
+let withLogResidual : Eff <[log : Log]> Int =
+    runAsk askAndLog
+
+--! assertNoErrors

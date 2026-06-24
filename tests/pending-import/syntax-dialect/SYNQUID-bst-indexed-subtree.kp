@@ -1,0 +1,57 @@
+-- Source artifacts: synquid test/pldi16/solution/BST-Sort.sq, test/comcom/AVL.sq —
+--                 `data BST a where Node :: x:a -> l:BST {a | _v < x} ->
+--                  r:BST {a | x < _v} -> BST a` uses constructor-level
+--                  refinements to encode the BST invariant. Synquid's
+--                  refinement subset types are not portable to Kappa.
+-- Spec: data_types.gadts,
+--       types.unions.interaction_gadts_indexed_types
+--
+-- The Kappa-portable counterpart is an indexed data type whose subtree
+-- types carry index parameters (e.g. the upper/lower key bounds) rather
+-- than arbitrary refinement subsets. The portable construction is GADT-
+-- style with explicit index telescope, and the elimination match
+-- exposes the indices in each branch.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- A binary tree whose constructor positionally records two PNat indices
+-- that conservatively bound the subtree's depth. (This is a portable
+-- Kappa encoding; Synquid's refinement subset is documented as a spec
+-- gap in SYNQUID_SPEC_ADDITIONS.md.)
+data BoundedTree (lo : PNat) (hi : PNat) : Type =
+    Leaf : BoundedTree lo hi
+    Node :
+        (key   : PNat) ->
+        (left  : BoundedTree lo key) ->
+        (right : BoundedTree key hi) ->
+        BoundedTree lo hi
+
+-- POSITIVE: build a small bounded tree.
+sample : BoundedTree Z (S (S Z))
+let sample = Node Z Leaf (Node (S Z) Leaf Leaf)
+
+-- POSITIVE: elimination on the constructor exposes the key argument.
+rootKey : forall (lo : PNat) (hi : PNat). BoundedTree lo hi -> PNat
+let rootKey t =
+    match t
+      case Leaf           -> Z
+      case (Node k _ _)   -> k
+
+-- POSITIVE: structural descent on the left subtree.
+countLeftSpine : forall (lo : PNat) (hi : PNat). BoundedTree lo hi -> PNat
+let countLeftSpine t =
+    match t
+      case Leaf         -> S Z
+      case (Node _ l _) -> S (countLeftSpine l)
+
+-- NEGATIVE: applying Node with one of its subtree arguments at an
+-- inconsistent index pair is a type mismatch on the subtree argument.
+badNode : BoundedTree Z (S Z)
+let badNode =
+    Node Z Leaf (sample : BoundedTree (S Z) (S Z))   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,41 @@
+-- Source issue: Idris2 #55
+-- Spec: types.universes.quantities, declarations.let_in
+-- A local definition (block, let, where-clause equivalent) inside an erased
+-- (quantity-0) context must itself be typed within the same erased context.
+-- The quantity checker must propagate the ambient erased demand into local
+-- definitions rather than treating them as unrestricted.
+
+module test
+
+-- Accepted: a function at quantity 0 whose body uses the erased argument.
+-- The erased argument is used only at compile time.
+erasedId : (0 b : Bool) -> Bool
+let erasedId b = b
+
+--! mode check
+
+-- Accepted: a function at quantity 0 whose body is computed via a local helper.
+-- The local helper is also called from an erased context, so the access to
+-- the erased argument via the helper must be permitted.
+erasedViaHelper : (0 b : Bool) -> Bool
+let erasedViaHelper b =
+  block
+    helper : Bool
+    let helper = erasedId b
+    helper
+
+
+-- Accepted: erased result from a local let-bound helper.
+-- The definition of `q` in the let expression must be at the ambient erased
+-- context; calling `erasedId` from `q` is valid because both are at quantity 0.
+erasedViaLet : (0 b : Bool) -> Bool
+let erasedViaLet b =
+  let q : Bool = erasedId b
+  q
+
+
+-- Rejected: a non-erased (runtime) definition must not use an erased argument.
+useErasedAtRuntime : (0 b : Bool) -> Bool
+let useErasedAtRuntime b = b  --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

@@ -1,0 +1,60 @@
+-- Source issues: nickel #933, #1098, #1318
+-- Spec: declarations.let_in.irrefutable_patterns_let_bindings, types.records.row_polymorphism
+-- When a statically typed record is destructured into component bindings,
+-- each component binding MUST inherit the static type from the record type,
+-- not be widened to `Dyn`. Nickel #933 showed that in:
+--   `let x : {a : Num} = {a = 1} in let {a} = x in a : Num`
+-- the field `a` after destructuring was inferred as `Dyn` instead of `Num`,
+-- causing the subsequent annotation `a : Num` to fail.
+-- A conforming implementation must propagate field types through destructuring.
+
+module test
+
+-- POSITIVE: destructuring a fully typed record preserves field types.
+recordWithA : (a : Number)
+let recordWithA = (a = 1)
+
+destructureOk : Number
+let destructureOk =
+    let (a) = recordWithA in
+    a
+
+--! mode check
+--! assertType destructureOk Number
+
+-- POSITIVE: multi-field destructuring preserves all field types.
+multiRecord : (name : String, count : Number, active : Bool)
+let multiRecord = (name = "test", count = 42, active = True)
+
+destructureMulti : String
+let destructureMulti =
+    -- `count` has type Number from destructuring; we return `name` (String) to verify
+    -- the type propagation. (show/toString for Number is not in portable stdlib v1.)
+    let (name, count) = multiRecord in
+    let _ : Number = count in
+    name
+
+--! assertType destructureMulti String
+
+-- POSITIVE: nested destructuring also preserves types.
+nestedRecord : (outer : (inner : Number))
+let nestedRecord = (outer = (inner = 7))
+
+destructureNested : Number
+let destructureNested =
+    let (outer = (inner)) = nestedRecord in
+    inner
+
+--! assertType destructureNested Number
+
+-- NEGATIVE: using a destructured field at a type that contradicts the record's
+-- static type annotation must be rejected, not silently succeed via Dyn.
+typedRecord : (value : Number)
+let typedRecord = (value = 100)
+
+badDestructureUsage : String
+let badDestructureUsage =
+    let (value) = typedRecord in
+    (value : String)             --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

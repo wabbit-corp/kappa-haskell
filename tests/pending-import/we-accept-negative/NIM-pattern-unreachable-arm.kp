@@ -1,0 +1,62 @@
+-- Source: nim-lang/Nim case pattern matching semantics — unreachable patterns
+--         after a wildcard are a dead-code concern; related to nim#11474 and
+--         exhaustiveness checker accuracy
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.unreachable), expressions.match
+-- An arm that can never match because a preceding arm already covers all
+-- inputs must be reported as unreachable. In Kappa, an unreachable pattern
+-- arm is kappa.pattern.unreachable.
+
+--! mode check
+module test
+
+data Coin : Type = Penny | Nickel | Dime | Quarter
+
+-- POSITIVE: no unreachable arms — distinct cases in order.
+coinValue : Coin -> Int
+let coinValue c =
+    match c
+    case Penny   -> 1
+    case Nickel  -> 5
+    case Dime    -> 10
+    case Quarter -> 25
+
+-- POSITIVE: wildcard at the end — covers remaining cases but nothing after it.
+coinName : Coin -> String
+let coinName c =
+    match c
+    case Penny   -> "penny"
+    case Nickel  -> "nickel"
+    case _       -> "big coin"
+
+-- NEGATIVE: specific arm after a total wildcard is unreachable.
+badOrder : Coin -> Int
+let badOrder c =
+    match c
+    case _       -> 0
+    case Penny   -> 1    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- NEGATIVE: duplicate arm is unreachable.
+duplicateArm : Coin -> Int
+let duplicateArm c =
+    match c
+    case Penny   -> 1
+    case Penny   -> 9    --!! kappa.pattern.unreachable
+    case Nickel  -> 5
+    case Dime    -> 10
+    case Quarter -> 25
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- POSITIVE: conditional guard on wildcard doesn't make subsequent arm unreachable
+-- if the guard is not always true — separate arms, guard present.
+guardedCoin : Coin -> Int
+let guardedCoin c =
+    match c
+    case Penny   -> 1
+    case Nickel  -> 5
+    case Dime    -> 10
+    case Quarter -> 25
+

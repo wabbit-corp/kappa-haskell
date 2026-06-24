@@ -1,0 +1,64 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Existential.hylo
+--                   (diagnostics: "incompatible types 'Bool' and 'A<_>'",
+--                    "type 'B' does not conform to trait 'Copyable'",
+--                    "type 'B' does not conform to trait 'P3'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ExistentialTraitAPI.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Existential.hylo and ExistentialTraitAPI.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- Hylo: existential types (`any P`) accept only values conforming to the
+-- specified trait(s). Assigning a value of an incompatible type or a type
+-- that does not conform to the required trait is rejected.
+
+--! mode check
+
+trait Renderable a where
+    render : a -> String
+
+trait Measurable a where
+    measure : a -> Int
+
+data Circle  : Type = Circle  Float
+data Square  : Type = Square  Float
+data Unknown : Type = Unknown
+
+impl Renderable Circle where
+    let render (Circle r) = "circle(" ++ show r ++ ")"
+
+impl Renderable Square where
+    let render (Square s) = "square(" ++ show s ++ ")"
+
+impl Measurable Circle where
+    let measure (Circle r) = round r
+
+-- POSITIVE: assigning a conforming type to an existential.
+renderCircle : Circle -> String
+let renderCircle c = render c
+
+renderSquare : Square -> String
+let renderSquare s = render s
+
+-- POSITIVE: using a Renderable existential to abstract over shapes.
+describeAny : forall (a : Type). Renderable a => a -> String
+let describeAny x = render x
+
+-- NEGATIVE: Unknown does not conform to Renderable.
+-- Passing it to a function requiring Renderable is rejected.
+describeUnknown : Unknown -> String
+let describeUnknown u = describeAny u    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: Square does not conform to Measurable.
+measureSquare : Square -> Int
+let measureSquare s = measure s    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: wrong type entirely — Int is not a Renderable shape.
+renderInt : Int -> String
+let renderInt n = describeAny n    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

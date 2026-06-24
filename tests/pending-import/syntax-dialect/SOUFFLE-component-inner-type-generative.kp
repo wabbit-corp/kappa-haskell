@@ -1,0 +1,44 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_types/comp_types.dl,
+--   tests/semantic/comp_inner_types/comp_inner_types.dl.
+-- Spec: modules.imports (§8.3),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- Spec gap: SSA-SOUFFLE-04 (parameterised module generativity).
+-- In Souffle, separate instantiations of the same parameterised component produce
+-- nominally distinct types. In Kappa, the closest analogue is using distinct `opaque`
+-- type aliases or `data` newtypes: two wrappers around Int are nominally distinct even
+-- though they expand to the same base type. This models the core "generative types"
+-- obligation without requiring module functor syntax (not in Kappa v1 spec).
+
+--! mode check
+
+-- Two distinct newtypes wrapping Int — nominally incompatible.
+data IntBox1 : Type = MkBox1 Int
+data IntBox2 : Type = MkBox2 Int
+
+let make1 : Int -> IntBox1
+let make1 x = MkBox1 x
+
+let make2 : Int -> IntBox2
+let make2 x = MkBox2 x
+
+-- POSITIVE: using IntBox1 values where IntBox1 is expected.
+let v1 : IntBox1 = make1 42
+let v2 : IntBox2 = make2 99
+
+-- NEGATIVE: MkBox2 value where IntBox1 expected — nominally distinct newtypes.
+let combined : IntBox1 = make2 10    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Two distinct newtypes wrapping different types.
+data StrBox  : Type = MkStrBox  String
+data BoolBox : Type = MkBoolBox Bool
+
+-- POSITIVE: using each wrapper with its own type.
+let s1 : StrBox  = MkStrBox  "hi"
+let b1 : BoolBox = MkBoolBox True
+
+-- NEGATIVE: StrBox value where BoolBox expected.
+let cross : BoolBox = MkStrBox "oops"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

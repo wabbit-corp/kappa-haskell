@@ -1,0 +1,25 @@
+-- Source issues: inko#610, inko#842
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a generic function that demands owned (linear) access to its
+-- argument cannot be satisfied by a borrow. The ownership quantifier
+-- on a type parameter is part of its type — a mismatch is a type error.
+
+--! mode check
+
+data Box (a : Type) : Type = Box a
+
+-- unwrapLinear: requires exclusive ownership of the Box.
+unwrapLinear : forall (a : Type). (1 b : Box a) -> a
+let unwrapLinear (Box x) = x
+
+-- POSITIVE: calling unwrapLinear with an owned Box.
+ok : Int
+let ok = unwrapLinear (Box 42)
+
+
+-- NEGATIVE: passing a borrowed Box where linear (owned) access is required.
+-- The quantity of the argument does not match the function's demand.
+peekBox : forall (a : Type). (& b : Box a) -> a
+let peekBox b = unwrapLinear b   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

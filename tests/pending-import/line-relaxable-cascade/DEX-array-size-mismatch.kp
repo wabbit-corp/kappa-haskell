@@ -1,0 +1,46 @@
+-- Source issues: dex-lang #912 (exponential compile time from wrong size check),
+--   dex-lang type-tests.dx (`:t [0.0, 1.0]::((Fin 100000000)=>Float)` →
+--   `Expected: (Fin 100000000) Actual: (Fin 2)`),
+--   dex-lang #563 (table literal typing rules).
+-- Spec: types.dependent.index_type_array_size (§DSA-DEX-01),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- An array literal has a statically known size encoded in its index type.
+-- A type annotation declaring a different size must be rejected at compile time;
+-- the diagnostic must report the expected (annotated) size versus the actual
+-- (inferred) size, without constructing a table of 100 million entries.
+
+--! mode check
+
+-- POSITIVE: correct annotation matches the literal size.
+threeFloats : Fin 3 => Float
+let threeFloats = [1.0, 2.0, 3.0]
+
+-- POSITIVE: correct annotation via unannotated inference.
+let inferredSize = [4, 5, 6]
+
+-- NEGATIVE: annotation says Fin 2 but literal has 3 elements.
+wrongSize : Fin 2 => Nat
+let wrongSize = [1, 2, 3]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: annotation says Fin 100 but literal has 2 elements —
+-- the check must not enumerate the annotated index set.
+bigAnnotation : Fin 100 => Float
+let bigAnnotation = [1.0, 2.0]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: 2D nested array — inner literal row count mismatch.
+-- [[1, 2], [3]] has rows of different sizes, so the inner type cannot be Fin 2.
+jagged : Fin 2 => (Fin 2 => Nat)
+let jagged = [[1, 2], [3]]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: correctly sized 2D array.
+square : Fin 2 => (Fin 2 => Nat)
+let square = [[1, 2], [3, 4]]
+
+--! assertType threeFloats (Fin 3 => Float)
+--! assertType square (Fin 2 => (Fin 2 => Nat))

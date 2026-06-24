@@ -1,0 +1,37 @@
+-- Source issues: ponyc#1964, ponyc#1887, ponyc FLIX-pattern-traits pattern
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Pony allows covariant return types in trait implementations (iso is a
+-- subtype of trn). Kappa requires the implementation type to match the
+-- declared type up to the definitional equality or explicit subtyping
+-- coercion admitted by the trait. A method with a wrong argument type or
+-- a return type outside the trait's declared bound must be rejected.
+
+--! mode check
+
+trait Container (a : Type) =
+    get : (& self : a) -> Int
+    put : (1 self : a) -> Int -> a
+
+data Bucket : Type = Bucket Int
+data Mismatch : Type = Mismatch String
+
+-- NEGATIVE: `get` provided with a return type `Bool` instead of `Int`.
+instance Container Mismatch =
+    let get (Mismatch _) = True   --!! kappa.type.mismatch
+    let put (Mismatch _) _ = Mismatch "x"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: `put` takes a `Bool` instead of an `Int` as second argument.
+data WrongArg : Type = WrongArg Int
+
+instance Container WrongArg =
+    let get (WrongArg n) = n
+    let put (WrongArg _) (b : Bool) = WrongArg 0   --!! kappa.type.mismatch
+
+-- POSITIVE: instance with exactly matching signatures.
+instance Container Bucket =
+    let get (Bucket n) = n
+    let put (Bucket _) n = Bucket n
+

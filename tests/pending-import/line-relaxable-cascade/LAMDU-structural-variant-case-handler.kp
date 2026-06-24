@@ -1,0 +1,63 @@
+-- Source issues: lamdu#155 — cannot navigate between applications of a
+--   case function; lamdu#122 — adding to alternatives to case; lamdu#163
+--   — fragment results do not include "if". Lamdu's case expression is
+--   a structural pattern match over a closed or open variant row.
+-- Spec: types.unions.elimination_match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--   §13.1.4: every branch of a match over a closed union must have the
+--   same result type, and the match must be exhaustive. Union members
+--   are types; tags are not labels.
+--
+-- Case handlers must cover every member of a closed union; a missing
+-- arm must be a non-exhaustiveness diagnostic.
+
+--! mode check
+
+-- POSITIVE: a closed union with two distinct member types.
+type Choice = (| Nat | String |)
+
+-- POSITIVE: a complete case over the closed union.
+labelOf : Choice -> Nat
+let labelOf c =
+    match c
+    case (| _ : Nat |)     -> 0
+    case (| _ : String |)  -> 1
+
+-- POSITIVE: nominal sum type, complete match.
+data Light : Type =
+    Red
+    Yellow
+    Green
+
+lightTime : Light -> Nat
+let lightTime l =
+    match l
+    case Red     -> 30
+    case Yellow  -> 5
+    case Green   -> 25
+
+-- POSITIVE: open union case with residual-row catch-all.
+projectFirst : forall (r : VarRow).
+    LacksVar r Nat => (| Nat | r |) -> Nat
+let projectFirst u =
+    match u
+    case (| x : Nat |)     -> x
+    case (| ..rest |)      -> 0
+
+-- NEGATIVE: missing branch on a closed nominal sum — non-exhaustive.
+badLight : Light -> Nat
+let badLight l =                     --!! kappa.pattern.non-exhaustive
+    match l
+    case Red    -> 30
+    case Yellow -> 5
+
+-- NEGATIVE: branches return inconsistent types — must produce a
+-- type mismatch.
+mixedBranch : Choice -> Nat
+let mixedBranch c =
+    match c
+    case (| x : Nat |)     -> x
+    case (| _ : String |)  -> True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnosticFamily error kappa.type.mismatch

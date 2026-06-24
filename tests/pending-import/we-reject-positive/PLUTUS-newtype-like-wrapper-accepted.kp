@@ -1,0 +1,56 @@
+-- Source issues: PLUTUS-967, PLUTUS-4705, PLUTUS-4796
+-- Spec: data_types.well_formedness, core_semantics.runtime_representation (§34.3.8)
+-- Source notes: Plinth wants to treat single-constructor single-field "newtype"
+-- wrappers as their underlying type (#967), and avoid wrapping via `Constr`
+-- when the type is a plain newtype (#4705, #4796). The Kappa spec already
+-- supports this: §34.3.8 permits an implementation to represent a wrapper and
+-- its single payload field identically when permitted by visibility/opacity
+-- rules. Source-level acceptance and equality behavior must match the
+-- explicit wrap/unwrap forms.
+
+--! mode check
+
+-- A nominal wrapper with exactly one constructor and exactly one runtime-
+-- relevant field. §34.3.8 permits shared runtime representation.
+data Wrapped : Type =
+    Wrap (raw : Int)
+
+-- Explicit unwrap via constructor-field projection inside a positive branch.
+unwrap : Wrapped -> Int
+let unwrap w =
+    match w
+      case Wrap r -> r
+
+-- Round-trip equality: wrapping then unwrapping yields the original.
+wrapRoundTrip : Int -> Bool
+let wrapRoundTrip n =
+    let w = Wrap n in unwrap w == n
+
+-- Derived equality is available for single-field wrappers once an Eq instance
+-- is generated. §34.3.8: the wrapper's representation equivalence must not
+-- prevent equality comparison from working identically to the payload.
+derive Eq Wrapped
+
+-- Wrappers participate in ordinary equality: equal payloads yield equal wraps.
+wrapsEqual : Bool
+let wrapsEqual = (Wrap 5) == (Wrap 5)
+
+--! assertNoErrors
+
+-- A nominal wrapper whose payload is itself an algebraic type. The wrapper
+-- and payload remain distinct nominal types; pattern matching is required to
+-- recover the payload.
+data PayloadKind : Type =
+    PKa Int
+    PKb String
+
+data Tagged : Type =
+    Tag (inner : PayloadKind)
+
+readPayload : Tagged -> Int
+let readPayload t =
+    match t
+      case Tag (PKa n) -> n
+      case Tag (PKb _) -> 0
+
+--! assertNoErrors

@@ -1,0 +1,33 @@
+-- Source issues: gleam#546, gleam#593
+-- Spec: modules.visibility_opacity_private_opaque.opaque, data_types.data_declarations
+-- An `opaque data` declaration exports the type name but hides the constructors
+-- from importing modules. Code outside the defining module must not be able to
+-- construct, pattern-match on, or directly project fields of an opaque type.
+-- This single-file test covers the positive obligation: the public API of an
+-- opaque type must be usable from within the module. Testing constructor
+-- inaccessibility from an external module requires a directory suite.
+
+--! mode check
+--! assertNoErrors
+
+@PrivateByDefault module token
+
+public opaque data Token : Type =
+    Token (value : String)
+
+public make_token : String -> Token
+let make_token s = Token s
+
+public token_value : Token -> String
+let token_value (Token s) = s
+
+-- POSITIVE: the public API works; Token constructor accessible within defining module.
+let round_trip (s : String) : String =
+    token_value (make_token s)
+
+-- POSITIVE: pattern match via the public API (no external constructor exposure).
+let check_token (s : String) : Bool =
+    let t = make_token s in
+    token_value t == s
+
+--! assertType make_token (String -> Token)

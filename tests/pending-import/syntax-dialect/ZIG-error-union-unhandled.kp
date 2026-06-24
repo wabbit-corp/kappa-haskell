@@ -1,0 +1,46 @@
+-- Source issues: zig#25412 (error union is discarded should print type),
+--               zig#25308 (misleading error for if without else |err|)
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant,
+--       compiler.frontir.standard_diagnostic_families.type_equality,
+--       declarations.terms
+-- A function that performs an effectful operation (carries a non-empty effect
+-- row, or equivalently, may produce an error value) must not have its result
+-- silently discarded. If the call site does not handle or propagate the effect,
+-- the compiler must emit `kappa.effect.row-mismatch`.
+
+--! mode check
+
+-- Kappa models Zig's `E!T` using effect rows.
+-- Declare a simple "fail" effect for illustration.
+effect Fail =
+    failWith : String -> Void
+
+-- POSITIVE: caller propagates the effect by re-raising it.
+let risky : <Fail> Int =
+    3
+
+let propagates : <Fail> Int =
+    risky
+
+
+-- POSITIVE: caller handles the effect at a handler boundary.
+let handled : Int =
+    handle risky with
+    case failWith _ k -> 0
+
+
+-- NEGATIVE: caller in a pure context discards the effect-carrying call.
+-- The result of `risky` is unused and the Fail effect leaks.
+let discards : Int =
+    let _ = risky in    --!! kappa.effect.row-mismatch
+    0
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: effect-carrying call used in non-effect context without handling.
+-- The declared return type of `pureCtx` is a plain `Int`; `risky` would
+-- require a `<Fail>` context, which `pureCtx` does not declare.
+let pureCtx : Int =
+    risky               --!! kappa.effect.row-mismatch
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

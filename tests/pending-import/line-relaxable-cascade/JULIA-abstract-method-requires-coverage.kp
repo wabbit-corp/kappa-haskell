@@ -1,0 +1,57 @@
+-- Source: Julia manual, , Julia method table design,
+--         Julia MethodError at runtime for unimplemented abstract dispatch
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances
+-- In Julia, defining a function for an abstract type does not automatically
+-- provide it for all subtypes — subtypes must be covered explicitly or
+-- through a catch-all. A concrete subtype with no applicable method triggers
+-- a MethodError. In Kappa, a generic function constrained by a supertrait
+-- can only be called with a type that has both the supertrait and any
+-- additional instances needed.
+
+--! mode check
+
+-- A trait hierarchy for geometric shapes.
+trait Shape (a : Type) =
+    area : a -> Float
+
+data Circle    : Type = Circle Float
+data Rectangle : Type = Rectangle Float Float
+data Triangle  : Type = Triangle Float Float Float
+
+-- Only Circle and Rectangle have Shape instances.
+instance Shape Circle =
+    let area (Circle r) = 3.14159 * r * r
+
+instance Shape Rectangle =
+    let area (Rectangle w h) = w * h
+
+-- POSITIVE: area computable for Circle and Rectangle.
+circleArea : Float
+let circleArea = area (Circle 5.0)
+
+rectArea : Float
+let rectArea = area (Rectangle 3.0 4.0)
+
+-- NEGATIVE: Triangle has no Shape instance.
+-- Analogous to a Julia MethodError for an abstract dispatch without coverage.
+triangleArea : Float
+let triangleArea = area (Triangle 3.0 4.0 5.0)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- A higher-order function that computes total area — works for types with
+-- Shape instances, fails for uncovered types.
+totalArea :
+    forall (a : Type).
+    (@_ : Shape a) ->
+    a -> a -> Float
+let totalArea x y = area x + area y
+
+okTotal : Float
+let okTotal = totalArea (Circle 1.0) (Rectangle 2.0 3.0)
+
+-- NEGATIVE: totalArea called with Triangle, which lacks Shape coverage.
+badTotal : Float
+let badTotal = totalArea (Triangle 3.0 4.0 5.0) (Circle 1.0)   --!! kappa.implicit.unsolved
+

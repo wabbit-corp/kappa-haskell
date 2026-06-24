@@ -1,0 +1,33 @@
+-- Stress test: trait evidence types are universe-polymorphic
+-- Spec: types.universes.trait_evidence
+
+--! mode check
+
+-- A trait parameterised over a type constructor.
+trait Container (f : Type -> Type) =
+    empty : f a
+
+-- Instance for Option.
+data Option a : Type =
+    None
+  | Some a
+
+instance Container Option =
+    let empty = None
+
+-- Instance for List.
+data List a : Type =
+    Nil
+  | Cons a (List a)
+
+instance Container List =
+    let empty = Nil
+
+-- Universe-polymorphic use: the evidence type is inferred at any universe level.
+getEmpty : Container f -> f a
+let getEmpty inst = inst.empty
+
+let noOption : Option Int = getEmpty (instance Container Option)
+let noList   : List  Int = getEmpty (instance Container List)
+
+--! assertNoErrors

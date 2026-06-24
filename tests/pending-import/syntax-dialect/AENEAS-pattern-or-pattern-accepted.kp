@@ -1,0 +1,62 @@
+-- Source issues: AENEAS-78, AENEAS-161
+-- Spec: expressions.patterns.forms, expressions.match
+-- §expressions.patterns.forms: or-patterns (`p1 | p2`) allow multiple
+-- constructor alternatives to share a single arm body.  Aeneas generates
+-- code with match on integers and ADTs; the portable obligation is that
+-- or-patterns are well-typed and exhaustiveness is checked across all
+-- alternatives.
+
+module test
+
+--! mode check
+
+data Status : Type = Active | Inactive | Pending | Archived
+
+-- POSITIVE: or-pattern combining two variants in one arm.
+isLive : Status -> Bool
+let isLive s =
+    match s
+    case Active | Pending -> True
+    case Inactive | Archived -> False
+
+--! assertNoErrors
+--! assertType isLive (Status -> Bool)
+
+-- POSITIVE: or-pattern with a binder common to both alternatives.
+data Msg : Type = Text String | Html String | Json String
+
+extractPayload : Msg -> String
+let extractPayload m =
+    match m
+    case (Text s | Html s | Json s) -> s
+
+--! assertNoErrors
+--! assertType extractPayload (Msg -> String)
+
+-- POSITIVE: or-pattern for integer ranges modeled as constructors.
+data Digit : Type =
+    D0 | D1 | D2 | D3 | D4 | D5 | D6 | D7 | D8 | D9
+
+isSmall : Digit -> Bool
+let isSmall d =
+    match d
+    case D0 | D1 | D2 | D3 -> True
+    case D4 | D5 | D6 | D7 | D8 | D9 -> False
+
+--! assertNoErrors
+
+-- POSITIVE: nested or-patterns.
+data Expr : Type =
+    Lit Int
+  | Add Expr Expr
+  | Sub Expr Expr
+  | Mul Expr Expr
+
+isArith : Expr -> Bool
+let isArith e =
+    match e
+    case (Add _ _ | Sub _ _ | Mul _ _) -> True
+    case (Lit _)                        -> False
+
+--! assertNoErrors
+--! assertType isArith (Expr -> Bool)

@@ -1,0 +1,61 @@
+-- Source issues: zig#25771 (!noreturn result type), zig compile_errors/noreturn_builtins_divert_control_flow.zig
+-- Spec: expressions.match, compiler.frontir.nondeferrable_correctness_failures,
+--       types.functions
+-- A branch whose body performs an abortive operation (one that never returns
+-- a value to the caller) has type `m Void`, which is terminal: it satisfies
+-- any demanded result type T in the same monad m. The match result type is
+-- determined by the non-terminal branches. This mirrors Zig's rule that
+-- `noreturn` unifies with any type in peer type resolution.
+-- In Kappa, the portable model for "runtime abort" is an effect operation
+-- declared to return `Void` (the uninhabited type); such a branch is terminal
+-- (m Void form, §18.2.1) and compatible with any surrounding result type.
+
+--! mode check
+
+-- Abortive effect: `abort` returns Void — the handler never resumes
+-- the continuation, so the call site never receives a Void value.
+effect Abort =
+    abort : String -> Void
+
+data Dir : Type =
+    North
+    South
+    Unknown
+
+-- POSITIVE: `Unknown` branch calls abort (returns Void, terminal m-Void branch);
+-- the match result type is determined by the North/South branches: String.
+let describeKnown (d : Dir) : <Abort> String =
+    match d
+    case North   -> "north"
+    case South   -> "south"
+    case Unknown ->
+        let v = abort "unknown direction is not supported" in
+        absurd v
+
+
+-- POSITIVE: if-expression where the None branch aborts.
+let safeGet (m : Option Int) : <Abort> Int =
+    match m
+    case None   ->
+        let v = abort "empty" in
+        absurd v
+    case Some x -> x
+
+
+-- POSITIVE: all branches abort — the overall expression can have any type T.
+-- (The function is declared to return <Abort> Int even though it always aborts.)
+let alwaysDiverges (n : Int) : <Abort> Int =
+    match n
+    case _ ->
+        let v = abort "not implemented" in
+        absurd v
+
+
+-- NEGATIVE: non-diverging branches disagree on type; the compiler cannot
+-- unify Int with String even though no branch diverges.
+let mixedTypes (b : Bool) (n : Int) : Int =
+    if b
+    then n
+    else "fallback"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

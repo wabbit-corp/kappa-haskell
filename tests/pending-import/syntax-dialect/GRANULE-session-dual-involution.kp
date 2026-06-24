@@ -1,0 +1,42 @@
+-- Source: granule-project/granule PR #205 (Dual is involution)
+-- Spec: types.universes.quantities (session-type duality),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- The session-type Dual operator is an involution: `Dual (Dual s) = s`.
+-- A function from `LChan (Dual (Dual s))` to `LChan s` is accepted by
+-- definitional equality; a single application of Dual is NOT the identity
+-- and would be rejected by a type-mismatch obligation.
+
+module test
+
+--! mode check
+
+type LChan : Type -> Type
+type Send  : Type -> Type -> Type
+type Recv  : Type -> Type -> Type
+type SEnd  : Type
+
+intrinsic Dual : Type -> Type
+
+intrinsic close : (1 c : LChan SEnd) -> Unit
+
+-- Definitional equality (presumed):
+--   Dual (Dual SEnd)     = SEnd,
+--   Dual (Send a s)      = Recv a (Dual s),
+--   Dual (Recv a s)      = Send a (Dual s).
+
+-- POSITIVE: round-tripping through Dual twice is the identity.
+roundTrip : forall (s : Type). (1 c : LChan (Dual (Dual s))) -> LChan s
+let roundTrip c = c
+
+
+-- POSITIVE: Dual on SEnd is definitionally SEnd.
+endDual : (1 c : LChan (Dual SEnd)) -> Unit
+let endDual c = close c
+
+
+-- NEGATIVE: a single application of Dual is NOT the identity — a session
+-- on the dual channel cannot be returned at the original protocol type.
+badDualOnce : forall (s : Type). (1 c : LChan (Dual s)) -> LChan s
+let badDualOnce c = c          --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,38 @@
+-- Source issue: ROSETTE-155 (and-form compilation cost),
+--                ROSETTE-44 (xor argument typing),
+--                Rosette PR #84 (cond `=>` semantics depend on lazy
+--                evaluation of test forms)
+-- Spec: expressions.application.short_circuit,
+--       expressions.conditionals.flow_typing_through_short_circuit_short_circuit_not
+--
+-- Kappa's `&&` and `||` short-circuit: the right-hand side is evaluated
+-- only when the left value does not determine the result. This fixture
+-- exercises the well-typedness obligation across the canonical short-
+-- circuit forms. The negative case asserts that the operands must be
+-- Bool — short-circuiting does not relax type checking.
+
+--! mode check
+
+-- POSITIVE: && short-circuits when the first operand is False.
+isSafe : Int -> Bool
+let isSafe d = (d /= 0) && ((100 / d) > 0)
+
+-- POSITIVE: || short-circuits when the first operand is True.
+either : Int -> Bool
+let either d = (d == 0) || ((100 / d) > 0)
+
+-- POSITIVE: nested && evaluates left-to-right.
+multiCheck : Int -> Int -> Bool
+let multiCheck a b =
+    (a > 0) && (b > 0) && ((a + b) > 10)
+
+-- POSITIVE: combining short-circuit and not.
+isZeroOrPos : Int -> Bool
+let isZeroOrPos n = (n == 0) || not (n < 0)
+
+-- NEGATIVE: && expects a Bool right operand even when the left is
+-- syntactically a constant.
+badRight : Bool
+let badRight = True && 5                            --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

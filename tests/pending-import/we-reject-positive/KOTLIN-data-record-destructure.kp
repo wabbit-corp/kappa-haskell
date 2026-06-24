@@ -1,0 +1,53 @@
+-- Source issues: KT-2628 (componentN for data classes), KT-2783 (skip components)
+-- Spec: data_types.data_declarations, declarations.terms.irrefutable_patterns_let_bindings
+
+--! mode check
+
+data Pair : Type =
+    Pair (first : Int) (second : Int)
+
+-- POSITIVE: pattern-matching in a let binding destructures the constructor fields.
+sumPair : Pair -> Int
+let sumPair p =
+    let Pair a b = p
+    a + b
+
+--! assertNoErrors
+--! assertType sumPair (Pair -> Int)
+
+-- POSITIVE: match arm binds all constructor fields by name.
+showPair : Pair -> String
+let showPair p =
+    match p
+    case Pair a b -> "(" ++ toString a ++ ", " ++ toString b ++ ")"
+
+--! assertNoErrors
+
+-- POSITIVE: wildcard skips an unneeded field.
+firstOfPair : Pair -> Int
+let firstOfPair p =
+    match p
+    case Pair a _ -> a
+
+--! assertNoErrors
+--! assertType firstOfPair (Pair -> Int)
+
+-- POSITIVE: nested destructuring in a pattern.
+data Triple : Type =
+    Triple (fst : Int) (snd : Int) (thd : Int)
+
+sumTriple : Triple -> Int
+let sumTriple t =
+    match t
+    case Triple a b c -> a + b + c
+
+--! assertNoErrors
+
+-- POSITIVE: let-binding for all three fields individually.
+tripleFirst : Triple -> Int
+let tripleFirst t =
+    let Triple x _ _ = t
+    x
+
+--! assertNoErrors
+--! assertType tripleFirst (Triple -> Int)

@@ -1,0 +1,60 @@
+-- Source issues: lamdu#9 — adding fields to named tuples; lamdu#134 —
+--   missing operator disambiguation; lamdu#149 — recursive de-structuring.
+--   Lamdu Calculus has `.field` (postfix get-field) as the primary
+--   record elimination form, with structural row inference.
+-- Spec: types.records.field_projection
+--   §13.2.x: record field projection `.field` selects the named field
+--   from the structural record, using the field-label namespace.
+--
+-- Record field projection must type-check when the row contains the
+-- field at the expected type.
+
+--! mode check
+
+type Person = (name : String, age : Nat)
+
+-- POSITIVE: projecting an existing field.
+getName : Person -> String
+let getName p = p.name
+
+getAge : Person -> Nat
+let getAge p = p.age
+
+alice : Person
+let alice = (name = "Alice", age = 30)
+
+aliceName : String
+let aliceName = alice.name
+
+aliceAge : Nat
+let aliceAge = alice.age
+
+-- POSITIVE: chained projection on a nested record.
+type Wrapped = (inner : Person, tag : Nat)
+
+aliceWrapped : Wrapped
+let aliceWrapped = (inner = alice, tag = 1)
+
+innerAge : Nat
+let innerAge = aliceWrapped.inner.age
+
+-- POSITIVE: row-polymorphic projection.
+getX : forall (r : RecRow). LacksRec r x => (x : Nat | r) -> Nat
+let getX r = r.x
+
+-- POSITIVE: anonymous record literal directly projected.
+anonProjection : Nat
+let anonProjection = ((a = 1, b = 2)).b
+
+-- NEGATIVE: projecting a missing field.
+type Empty = ()
+
+missing : Nat
+let missing = alice.height    --!! kappa.name.unresolved
+
+-- NEGATIVE: projecting with the wrong expected type.
+ageAsString : String
+let ageAsString = alice.age    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.type.mismatch

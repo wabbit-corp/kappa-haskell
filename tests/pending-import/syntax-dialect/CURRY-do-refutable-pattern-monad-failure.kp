@@ -1,0 +1,70 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDoList.curry
+--   (do (True,x) <- return (False,42); return x =-= []).
+-- Spec: effects.do_blocks (§18.2),
+--       effects.do_blocks.refutable_local_binding_let (§18.2.1).
+-- Spec gap (resolved during reverify): CURRY-SA-08 — Kappa's §18.2
+-- rejects refutable patterns in plain `let pat <- expr` at compile
+-- time. Refutable monadic destructuring uses the dedicated `let?`
+-- form of §18.2.1, which short-circuits via `Alternative m`.
+--
+-- This fixture anchors the resolved behavior: `let?` accepts the
+-- refutable case in a monad that has the required `Alternative`
+-- structure.
+
+module test
+
+--! mode check
+
+data Maybe (a : Type) : Type =
+    Nothing
+  | Just a
+
+trait Monad (m : Type -> Type) =
+    bind   : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b
+    pureM  : forall (a : Type). a -> m a
+
+trait Alternative (m : Type -> Type) =
+    empty  : forall (a : Type). m a
+
+instance Monad Maybe =
+    let bind m k =
+        match m
+        case Nothing -> Nothing
+        case Just x  -> k x
+    let pureM x = Just x
+
+instance Alternative Maybe =
+    let empty = Nothing
+
+--! assertNoErrors
+
+-- POSITIVE: an irrefutable bare-binder `let x <- ...` always succeeds.
+sampleIrrefutable : Maybe Int
+let sampleIrrefutable =
+    do
+        let x <- Just 42
+        pureM x
+-- expected: Just 42
+
+--! assertType sampleIrrefutable (Maybe Int)
+
+-- POSITIVE: `let?` accepts a refutable pattern by short-circuiting via
+-- `Alternative.empty` on failure.
+sampleRefutableSucceeds : Maybe Int
+let sampleRefutableSucceeds =
+    do
+        let? (True, x) = (True, 42)
+        pureM x
+-- expected: Just 42
+
+--! assertType sampleRefutableSucceeds (Maybe Int)
+
+-- POSITIVE: `let?` failure path returns `empty` for `Alternative Maybe`.
+sampleRefutableFails : Maybe Int
+let sampleRefutableFails =
+    do
+        let? (True, x) = (False, 42)
+        pureM x
+-- expected: Nothing
+
+--! assertType sampleRefutableFails (Maybe Int)

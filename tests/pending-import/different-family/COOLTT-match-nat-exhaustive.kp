@@ -1,0 +1,53 @@
+-- Source artifacts: cooltt test nat.cooltt (elim with zero/suc branches),
+--               test base-types.cooltt (abort pattern for empty type).
+-- Source tests: cooltt test/nat.cooltt (corpus repos/github-redprl-cooltt/tests/test/nat.cooltt; restored 2026-06-11 from COOLTT_ISSUE_IMPORT_PLAN.md)
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- A match on a type with constructors must cover all constructors.
+-- For `Nat` (with constructors `zero` and `suc`), both branches are required.
+-- Omitting any branch is a non-exhaustive match error.
+-- Extra / unreachable branches should also generate a diagnostic.
+
+--! mode check
+
+-- POSITIVE: complete match on Nat with both constructors covered.
+double : Nat -> Nat
+let double zero    = zero
+let double (suc n) = suc (suc (double n))
+
+-- POSITIVE: match returning a different type (Bool).
+isZero : Nat -> Bool
+let isZero zero    = True
+let isZero (suc _) = False
+
+-- POSITIVE: accumulating match on two Nat arguments.
+add : Nat -> Nat -> Nat
+let add zero    m = m
+let add (suc n) m = suc (add n m)
+
+-- POSITIVE: nested match.
+pred : Nat -> Nat
+let pred zero    = zero
+let pred (suc n) = n
+
+-- POSITIVE: match with a wildcard in the recursive case.
+isPositive : Nat -> Bool
+let isPositive zero  = False
+let isPositive _     = True
+
+-- NEGATIVE: non-exhaustive match — missing the `suc` branch.
+incompleteMatch : Nat -> Nat
+let incompleteMatch zero = zero    --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE: non-exhaustive match — missing the `zero` branch.
+anotherIncomplete : Nat -> Bool
+let anotherIncomplete (suc _) = True    --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE: unreachable pattern — both constructors already covered by wildcards.
+unreachable : Nat -> Nat
+let unreachable _      = zero
+let unreachable (suc n) = n    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

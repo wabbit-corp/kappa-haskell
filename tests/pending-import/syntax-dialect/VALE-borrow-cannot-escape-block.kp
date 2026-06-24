@@ -1,0 +1,55 @@
+-- Source issues: vale#398 (Add borrow references),
+--               vale#585 (Implement basic pure blocks / immutable region borrowing),
+--               Vale WeakTests (borrowing temporaries)
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- In Vale, a borrow reference is valid only as long as the owned value it
+-- was borrowed from is alive. Returning a borrow from a function whose
+-- owned root is a local (and therefore cleaned up on return) is rejected.
+-- In Kappa, a borrowed binder introduces a rigid region variable rho; any
+-- value whose type mentions rho may not escape the scope that introduced
+-- rho, producing kappa.borrow.escape.
+
+--! mode check
+
+data Engine : Type = Engine Int
+
+-- POSITIVE: a function that accepts a borrowed value and returns a
+-- plain non-borrow result computed from it. The borrow does not escape.
+readFuel : (& e : Engine) -> Int
+let readFuel (Engine fuel) = fuel
+
+-- POSITIVE: a function that accepts a borrow and returns it without
+-- escaping — the caller supplies the region, so returning the borrow is
+-- safe because the caller's region remains live.
+passThrough : forall (r : Region). (&[r] e : Engine) -> &[r] Engine
+let passThrough e = e
+
+-- NEGATIVE: a function that borrows a locally-owned Engine, then
+-- attempts to return the borrow. The local owner is destroyed on return,
+-- so the borrow escapes its region.
+escapingBorrow : Unit -> & Engine
+let escapingBorrow () =
+    let owned = Engine 10
+    let & b = owned   --!! kappa.borrow.escape
+    b
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE: storing a borrow of a locally-scoped value into a data
+-- structure that would outlive the owning scope.
+data Container (r : Region) : Type = Container (&[r] Engine)
+
+escapingIntoContainer : Unit -> Container ?
+let escapingIntoContainer () =
+    let owned = Engine 42
+    let & b = owned
+    Container b   --!! kappa.borrow.escape
+
+-- POSITIVE: a borrow used entirely within its introducing scope and never
+-- returned or stored beyond that scope.
+localReadOnly : Unit -> Int
+let localReadOnly () =
+    let owned = Engine 7
+    let & b = owned
+    readFuel b

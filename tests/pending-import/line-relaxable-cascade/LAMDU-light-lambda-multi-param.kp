@@ -1,0 +1,64 @@
+-- Source issues: lamdu#123 — punned light-lambda parameter style;
+--   lamdu#148 — discrepancy with light-lambdas turned into let items;
+--   lamdu#203 — light lambda sugar check broken for nested parameters.
+--   Lamdu sugars multi-parameter "simple" lambdas; at the calculus level
+--   each parameter is a field of a single record parameter.
+-- Spec: expressions.lambdas, types.records.function_parameters
+--   §16.2: lambdas may have multiple parameters; §13.2.x: function
+--   parameter records.
+--
+-- Multi-parameter lambdas must type-check whether expressed as a curried
+-- form, a record-parameter form, or with multi-binder syntax; all three
+-- must produce equivalent results.
+
+--! mode check
+
+-- POSITIVE: curried-style multi-parameter lambda.
+addCurried : Nat -> Nat -> Nat
+let addCurried = \ x y -> x + y
+
+useCurried : Nat
+let useCurried = addCurried 2 3
+
+-- POSITIVE: record-parameter style — single parameter whose type is a
+-- record, fields accessed by projection.
+type AddArgs = (a : Nat, b : Nat)
+
+addRecord : AddArgs -> Nat
+let addRecord r = r.a + r.b
+
+useRecord : Nat
+let useRecord = addRecord (a = 2, b = 3)
+
+-- POSITIVE: multi-binder lambda using a single curried lambda.
+double : Nat -> Nat
+let double = \ x -> x + x
+
+useDouble : Nat
+let useDouble = double 7
+
+-- POSITIVE: higher-order with multi-parameter callback.
+applyBin : (Nat -> Nat -> Nat) -> Nat -> Nat -> Nat
+let applyBin f x y = f x y
+
+useApplyBin : Nat
+let useApplyBin = applyBin (\ x y -> x * y) 3 4
+
+-- POSITIVE: applying a curried function with one argument yields a
+-- partially applied closure of the remaining type.
+plus3 : Nat -> Nat
+let plus3 = addCurried 3
+
+usePlus3 : Nat
+let usePlus3 = plus3 5
+
+-- NEGATIVE: applying with too few arguments where a fully applied
+-- value of a concrete non-function type is required.
+needFlat : Nat
+let needFlat = addCurried 1    --!! kappa.type.mismatch
+
+-- NEGATIVE: passing arguments in the wrong types.
+mistypedArgs : Nat
+let mistypedArgs = addCurried True 1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

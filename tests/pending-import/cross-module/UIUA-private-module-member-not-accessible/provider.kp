@@ -1,0 +1,10 @@
+module provider
+
+-- `Y` is public by default; `helperInternal` is explicitly marked
+-- `private` so it is not visible to importing modules
+-- (§8.5 visibility rules).
+private helperInternal : Int -> Int
+let helperInternal n = n + 100
+
+Y : Int -> Int
+let Y n = helperInternal (n + 1)

@@ -1,0 +1,83 @@
+-- Source issues: apple/swift #57017 (protocol refinement and constrained assoc
+--   type inheritance), apple/swift-evolution SE-0346 (primary associated types
+--   in refinement hierarchies), SE-0358 (stdlib primary associated types).
+--   When a trait B refines trait A and A has a constrained associated type,
+--   conforming types must satisfy both A's and B's associated type requirements.
+--   Failure to provide supertrait instances produces kappa.implicit.unsolved.
+-- Spec: traits.headers.supertraits §14.1.4,
+--       traits.instances.associated_static_member_instance_checking §14.3.4
+
+--! mode check
+
+-- Base trait with an associated type.
+trait Sequence (s : Type) =
+    Element : Type
+    toList  : s -> List s.Element
+
+-- Refining trait: BidirSeq adds a reverse operation; Sequence s is a supertrait.
+trait Sequence s => BidirSeq (s : Type) =
+    toListReversed : s -> List s.Element
+
+-- POSITIVE: type satisfying both Sequence and BidirSeq.
+data IntSeq : Type = IntSeq (List Nat)
+
+instance Sequence IntSeq =
+    let Element = Nat
+    let toList (IntSeq xs) = xs
+
+instance BidirSeq IntSeq =
+    let toListReversed (IntSeq xs) = reverse xs
+
+-- POSITIVE: using both levels of the refinement hierarchy.
+firstAndLast : IntSeq -> (Maybe Nat, Maybe Nat)
+let firstAndLast s =
+    (head (toList s), head (toListReversed s))
+
+-- A further refinement: SortedSeq requires elements to be comparable.
+trait Sortable (a : Type) =
+    lt : a -> a -> Bool
+
+instance Sortable Nat =
+    let lt x y = x < y
+
+trait BidirSeq s, Sortable s.Element => SortedSeq (s : Type) =
+    isSorted : s -> Bool
+
+data SortedInts : Type = SortedInts (List Nat)
+
+instance Sequence SortedInts =
+    let Element = Nat
+    let toList (SortedInts xs) = xs
+
+instance BidirSeq SortedInts =
+    let toListReversed (SortedInts xs) = reverse xs
+
+instance SortedSeq SortedInts =
+    let isSorted (SortedInts xs) = all (\(a, b) -> a < b) (zip xs (tail xs))
+
+-- POSITIVE: all three levels satisfied.
+checkSorted : SortedInts -> Bool
+let checkSorted = isSorted
+
+-- NEGATIVE: BidirSeq instance without a Sequence instance.
+-- Supertrait Sequence FloatList is missing; solver cannot find the evidence.
+data FloatList : Type = FloatList (List Nat)
+
+instance BidirSeq FloatList =    --!! kappa.implicit.unsolved
+    let toListReversed (FloatList xs) = reverse xs
+
+-- NEGATIVE: SortedSeq instance but Element type lacks Sortable.
+-- Sortable String is absent; the supertrait constraint is unmet.
+data StrSeq : Type = StrSeq (List String)
+
+instance Sequence StrSeq =
+    let Element = String
+    let toList (StrSeq xs) = xs
+
+instance BidirSeq StrSeq =
+    let toListReversed (StrSeq xs) = reverse xs
+
+instance SortedSeq StrSeq =    --!! kappa.implicit.unsolved
+    let isSorted _ = True
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

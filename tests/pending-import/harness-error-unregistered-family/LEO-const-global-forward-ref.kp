@@ -1,0 +1,71 @@
+-- Source issues: leo#1145 (using a global const before its declaration caused
+--               `failed to resolve variable reference 'x2'`; `const y2: bool =
+--               x2; const x2: bool = false` failed even though `const y1 = x1;
+--               const x1 = false` (same names, reversed) worked fine).
+-- Spec: SA-LEO-04 (compile-time constant bindings), §8 (module scope and
+--       declaration ordering).
+-- Kappa spec rule:
+--   "Module-level compile-time bindings (0-quantity declarations) that refer to
+--    other module-level compile-time bindings by name must be resolved after all
+--    such declarations in the same scope are collected. The order in which
+--    module-level constant declarations appear in the source text must not affect
+--    whether mutual or forward references among them are accepted, provided no
+--    cycles exist. A reference from one module-level constant to another
+--    module-level constant defined later in the same file must be accepted."
+-- leo#1145: the compiler resolved global consts in declaration order, so a
+--   forward reference from `y2` to `x2` failed even though both were module-scope.
+--   The equivalent Rust code compiles because Rust resolves module items
+--   order-independently.
+
+--! mode check
+
+-- POSITIVE: forward reference to a 0-quantity binding defined later.
+-- `earlyRef` refers to `lateConst` which is defined below it.
+earlyRef : (0 _ : Int)
+let earlyRef = lateConst + 1      -- forward reference: lateConst defined below
+
+lateConst : (0 _ : Int)
+let lateConst = 10
+
+-- The computed value: earlyRef should be 11.
+checkForward : (0 _ : Int)
+let checkForward = earlyRef
+
+
+-- POSITIVE: mutual reference between two 0-quantity non-recursive constants.
+-- Neither directly depends on the other being evaluated first.
+constA : (0 _ : Int)
+let constA = 5
+
+constB : (0 _ : Int)
+let constB = constA * 2      -- references constA
+
+constC : (0 _ : Int)
+let constC = constB + constA -- references both; defined after both
+
+
+-- POSITIVE: a chain of forward references.
+z3 : (0 _ : Int)
+let z3 = z4 + 1
+
+z4 : (0 _ : Int)
+let z4 = z5 + 1
+
+z5 : (0 _ : Int)
+let z5 = 10
+
+-- z3 = 12, z4 = 11, z5 = 10
+chainCheck : (0 _ : Int)
+let chainCheck = z3
+
+
+-- NEGATIVE: a cyclic dependency between two compile-time constants.
+-- `cycA` depends on `cycB` and `cycB` depends on `cycA`; there is no
+-- compile-time value that satisfies both.
+cycA : (0 _ : Int)
+let cycA = cycB + 1   --!! kappa.query.cycle
+
+cycB : (0 _ : Int)
+let cycB = cycA + 1   --!! kappa.query.cycle
+
+--! assertDiagnosticFamily error kappa.query.cycle

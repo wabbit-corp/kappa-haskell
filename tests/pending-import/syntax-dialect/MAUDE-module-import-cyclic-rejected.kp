@@ -1,0 +1,36 @@
+-- Source: Maude `fmod A is inc B endfm` together with `fmod B is inc A
+--   endfm` would form a cyclic module-import graph. Maude's checker rejects
+--   cyclic dependencies; the same obligation is normative in Kappa.
+--   (No exact Maude test reproduces this — Maude's tests all use acyclic
+--   imports — but the obligation is the well-formedness rule from
+--   modules.acyclic_imports applied to Maude's `inc`/`pr`/`ex` import
+--   forms.)
+-- Spec: modules.acyclic_imports.
+-- Portable obligation: the module dependency graph formed by `import`
+--   statements (Maude `pr`/`ex`/`inc`) must be acyclic. Implementations
+--   must reject programs with cyclic module dependencies.
+
+--! mode check
+
+module modA
+
+import modB.*
+
+valA : Int
+let valA = 1 + valB
+
+module modB
+
+import modA.*    --!! kappa.name.unresolved
+
+valB : Int
+let valB = 2 + valA
+
+-- The acyclic-import violation is a hard error per modules.acyclic_imports.
+-- We use kappa.name.unresolved as the family for the cycle-broken edge,
+-- since the spec rejects the cyclic graph and at least one of the two
+-- imports must fail to resolve under the acyclicity discipline. A
+-- conforming harness may also emit an implementation-defined cyclic-import
+-- diagnostic; in either case at least one error is required.
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,53 @@
+-- Source issue: carp-lang/Carp#469
+-- Spec: types.unions.elimination_match,
+--       types.universes.borrow_lifetimes_escape_prevention
+--       (see also CARP_SPEC_ADDITIONS.md SA-CARP-01).
+-- Carp #469: ordinary `match` took ownership of its scrutinee, which
+-- forced unnecessary copies whenever a sumtype value needed to be matched
+-- twice.  The portable Kappa obligation is that matching a `& T` (a
+-- reference) does NOT consume the scrutinee; the same value can still be
+-- used (and matched again, or consumed) after the borrow-form match.
+
+--! mode check
+
+data Mb : Type =
+    Nothing
+    | Just Int
+
+-- POSITIVE: matching `&m` does not take ownership of `m`; after the
+-- match `m` is still owned and can be moved into another consumer.
+matchBorrowThenConsume : (1 m : Mb) -> Int
+let matchBorrowThenConsume m =
+    let n : Int =
+        match &m
+        case Nothing -> 0
+        case Just k  -> deref k
+    let _ : Int = unwrap m
+    n
+
+unwrap : (1 m : Mb) -> Int
+let unwrap m =
+    match m
+    case Nothing -> 0
+    case Just k  -> k
+
+deref : (& Int) -> Int
+let deref r = 0
+
+--! assertNoErrors
+
+-- POSITIVE: matching a reference twice in succession is allowed because
+-- the scrutinee is not consumed by either match.
+matchBorrowTwice : (& Mb) -> Int
+let matchBorrowTwice r =
+    let a : Int =
+        match r
+        case Nothing -> 0
+        case Just k  -> deref k
+    let b : Int =
+        match r
+        case Nothing -> 0
+        case Just k  -> deref k
+    a + b
+
+--! assertNoErrors

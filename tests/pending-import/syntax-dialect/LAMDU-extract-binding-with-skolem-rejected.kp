@@ -1,0 +1,60 @@
+-- Source issues: Tests/Sugar.hs testSkolemScope; tests/programs/
+--   extract-with-skolems.json. Lamdu's "extract" sugar moves an
+--   expression into its own top-level binding. The portable
+--   obligation is that an extracted binding must have a well-formed
+--   inferred type at the top level; if it captures a skolem from
+--   its origin scope, extraction must fail with a clear diagnostic.
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §12.3: a value whose inferred type mentions a local skolem
+--   cannot be lifted to a parent scope.
+--
+-- An attempt to use a value at an outer position when its inferred
+-- type mentions a local skolem must produce a diagnostic.
+
+--! mode check
+
+-- POSITIVE: a non-polymorphic value extracted to top level.
+extractedConst : Nat
+let extractedConst = 42
+
+useExtractedConst : Nat
+let useExtractedConst = extractedConst + 1
+
+-- POSITIVE: a polymorphic value extracted to top level.
+extractedId : forall (a : Type). a -> a
+let extractedId x = x
+
+useExtractedId : Nat
+let useExtractedId = extractedId 5
+
+-- POSITIVE: a higher-rank function extracted with explicit signature.
+extractedTwice : forall (a : Type). a -> (a, a)
+let extractedTwice x = (x, x)
+
+useExtractedTwice : (Nat, Nat)
+let useExtractedTwice = extractedTwice 7
+
+-- POSITIVE: an inner let-binding whose RHS does not mention any
+-- skolem from its lambda parameter.
+extractCleanInner : Nat -> Nat
+let extractCleanInner n =
+    let helper : Nat -> Nat
+        helper m = m + 1
+    helper n
+
+-- NEGATIVE: trying to use a polymorphic identity at a concrete
+-- function-type result without instantiating its type parameter —
+-- the rigid `a` cannot escape to the outer non-polymorphic type.
+needsInstantiate : Nat -> Nat
+let needsInstantiate = extractedId    --!! kappa.type.mismatch
+
+-- NEGATIVE: extracting a binding whose body uses an undefined name.
+escapeAttempt : Nat -> Nat
+let escapeAttempt x =
+    let leak : Nat -> Nat
+        leak n = n + missing_name    --!! kappa.name.unresolved
+    leak
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.name.unresolved

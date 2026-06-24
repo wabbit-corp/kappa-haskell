@@ -1,0 +1,52 @@
+-- Source issues: nickel #1312, #718
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch)
+-- When a type mismatch occurs inside a polymorphic record function body, the
+-- diagnostic MUST report the concrete type of the mismatched expression, not a
+-- raw type-variable name from the unifier. Nickel #1312 showed that in:
+--   `forall a. (blo: a, ble: a | r) -> a`
+-- when the body computed `r.blo + 1`, the error said "expected `r`" rather than
+-- "expected `Number`", because the type variable `r` had already been unified
+-- and the diagnostic was not resolving the variable before printing.
+-- The expected message format: "expected <concrete resolved type>, found <actual type>"
+
+module test
+
+-- A polymorphic function that extracts a field of uniform type from a record.
+-- The function is also applied at a concrete type (Number), so the type variable
+-- resolves to Number inside the body.
+getUniform : forall a. forall (r : RecRow). LacksRec r bla => LacksRec r blo => LacksRec r ble =>
+             (bla : Bool, blo : a, ble : a | r) -> a
+let getUniform rec =
+    if rec.bla then rec.blo else rec.ble
+
+-- NEGATIVE: inside the body, `rec.blo` has type `a` which is unified with `Number`
+-- at the call site `(f { bla = true, blo = 1, ble = 2 } : Number)`.
+-- Adding 1 to `rec.blo` requires `a ~ Number` — that's fine.
+-- But then `rec.ble` is also `a ~ Number`. Any attempt to use `rec.blo` as a
+-- String inside the same body would fail with the concrete type, not "type variable a".
+badBody : Number
+let badBody =
+    let blo_plus_one : Number = (getUniform (bla = True, blo = 1, ble = 2)) in
+    -- Force a mismatch: passing a String where Number is expected
+    let _ : Number = "not a number"      --!! kappa.type.mismatch
+    in blo_plus_one
+
+--! mode check
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: the polymorphic function works correctly when types are consistent.
+goodResult : Number
+let goodResult = getUniform (bla = True, blo = 42, ble = 99)
+
+goodResultStr : String
+let goodResultStr = getUniform (bla = False, blo = "hello", ble = "world")
+
+--! assertType goodResult Number
+--! assertType goodResultStr String
+
+-- NEGATIVE: unifying a type variable `a` used at two conflicting types in one call.
+-- `blo` and `ble` must have the same type `a`, but we supply different types.
+badUniformMismatch : Number
+let badUniformMismatch = getUniform (bla = True, blo = 1, ble = "oops")  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

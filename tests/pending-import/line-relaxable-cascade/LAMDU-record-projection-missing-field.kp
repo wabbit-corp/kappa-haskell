@@ -1,0 +1,61 @@
+-- Source issues: lamdu#142 — de-structure records in let-items; lamdu#149
+--   — recursive de-structuring. Projecting a field that the record's
+--   row does not contain must produce a diagnostic.
+-- Spec: types.records.field_projection,
+--       compiler.frontir.standard_diagnostic_families.record_projection_accessor_inout
+--   §13.2.x: projection of a field not in the record's row is an error.
+--
+-- Missing-field projection must be detected with a specific diagnostic;
+-- a row-polymorphic context must still detect missing fields when the
+-- row constraints rule them out.
+
+--! mode check
+
+type XY = (x : Nat, y : Nat)
+type Empty = ()
+
+p : XY
+let p = (x = 1, y = 2)
+
+-- POSITIVE: projecting fields present in the record.
+useX : Nat
+let useX = p.x
+
+useY : Nat
+let useY = p.y
+
+-- POSITIVE: row polymorphism — the function works on any record
+-- that contains an `x` field.
+getX : forall (r : RecRow). LacksRec r x => (x : Nat | r) -> Nat
+let getX r = r.x
+
+useGetX : Nat
+let useGetX = getX p
+
+-- NEGATIVE: a closed record lacks a field name.
+missingZ : Nat
+let missingZ = p.z    --!! kappa.name.unresolved
+
+-- NEGATIVE: empty record has no fields at all.
+empty : Empty
+let empty = ()
+
+emptyField : Nat
+let emptyField = empty.anything    --!! kappa.name.unresolved
+
+-- NEGATIVE: the row constraint requires the field to be absent, but
+-- the projection tries to use it.
+getXThenZ : forall (r : RecRow). LacksRec r z => (x : Nat | r) -> Nat
+let getXThenZ r = r.z    --!! kappa.name.unresolved
+
+-- NEGATIVE: projecting through a chain where the inner record lacks
+-- the field.
+type Outer = (inner : Empty)
+
+outer : Outer
+let outer = (inner = ())
+
+chainMissing : Nat
+let chainMissing = outer.inner.value    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

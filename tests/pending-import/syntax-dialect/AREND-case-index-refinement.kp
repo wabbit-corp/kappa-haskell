@@ -1,0 +1,50 @@
+-- Source issues: dependent pattern matching with multiple scrutinees;
+--   index refinement across simultaneous case branches.
+-- Source issues: jetbrains/arend#3 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+--
+-- When pattern-matching on multiple scrutinees simultaneously, each branch's
+-- type environment must be refined by the index equalities forced by all
+-- matching constructors at once. The result type of the match may depend on
+-- the refined indices.
+
+--! mode check
+
+-- `Geq x y`: x ≥ y.
+data Geq : Nat -> Nat -> Type =
+    EqBase {m : Nat} : Geq m zero
+    EqSuc  {n m : Nat} : Geq n m -> Geq (suc n) (suc m)
+
+-- A function that computes a Nat from a Geq proof by simultaneous elimination
+-- of the two index arguments alongside the proof. Each branch must have a
+-- consistent type under the refined indices.
+geq-diff : forall {x y : Nat} -> Geq x y -> Nat
+let geq-diff EqBase        = zero
+let geq-diff (EqSuc inner) = suc (geq-diff inner)
+
+-- POSITIVE: multi-scrutinee match where index refinement determines the
+-- available constructors in each branch.
+-- In the (EqBase) branch, the second index is refined to zero.
+-- In the (EqSuc _) branch, both indices are refined to suc-forms.
+geq-desc : forall {x y : Nat} -> Geq x y -> Nat
+let geq-desc p = match p
+  case EqBase        -> zero
+  case (EqSuc inner) -> suc (geq-desc inner)
+
+-- POSITIVE: a transitivity proof via multi-scrutinee pattern matching.
+-- The impossible cases (EqBase,EqSuc) and (EqSuc,EqBase) are omitted:
+-- GADT exhaustiveness recognises they are unreachable because EqBase forces
+-- y=zero while EqSuc forces y=suc n, which are contradictory.
+geq-trans : forall {x y z : Nat} -> Geq x y -> Geq y z -> Geq x z
+let geq-trans EqBase        EqBase        = EqBase
+let geq-trans (EqSuc outer) (EqSuc inner) = EqSuc (geq-trans outer inner)
+
+-- NEGATIVE: claiming a particular impossible branch is possible when the
+-- index constraints are violated produces a type mismatch.
+-- Providing `EqBase` in a context where the second index has been refined to
+-- `suc m` (i.e., non-zero) is a type error.
+mismatch-branch : forall {n : Nat} -> Geq (suc n) (suc n)
+let mismatch-branch = EqBase    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

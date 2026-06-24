@@ -1,0 +1,45 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/ProjectionEscape.hylo,
+--                   Tests/HyloTests/TestCases/Lowering/BindingEscape.hylo,
+--                   Tests/HyloTests/TestCases/Lowering/ParameterEscape.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/Lowering/ProjectionEscape.hylo and BindingEscape.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.borrow_capture_region
+--       (kappa.borrow.escape), types.universes.quantities
+-- Hylo: a borrow or projection that outlives the storage it refers to
+-- constitutes an escape. Specifically a `let` binding that projects into
+-- a local variable cannot be returned or captured, because the local
+-- variable's storage ends when the function returns.
+
+--! mode check
+
+data Container : Type = Container Int
+
+data View (s : Region) : Type = View (&[s] Container)
+
+-- POSITIVE: constructing a View at the same region as the borrow.
+-- The borrow and its view share the same lifetime `s`.
+localView :
+    forall (s : Region).
+    (&[s] c : Container) -> View s
+let localView c = View c
+
+-- POSITIVE: passing a static borrow yields a static view.
+staticView : (&[static] c : Container) -> View static
+let staticView c = View c
+
+-- NEGATIVE: returning a borrow scoped to region `s` as if it were `static`.
+-- The borrow at `s` would outlive its region if returned as `static`.
+escapingBorrow :
+    forall (s : Region).
+    (&[s] c : Container) -> View static
+let escapingBorrow c = View c    --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- NEGATIVE: storing a borrow at region `s` inside a container claiming
+-- the outer `static` region.
+escapingIntoStatic :
+    forall (s : Region).
+    (&[s] c : Container) -> (&[static] Container)
+let escapingIntoStatic c = c    --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape

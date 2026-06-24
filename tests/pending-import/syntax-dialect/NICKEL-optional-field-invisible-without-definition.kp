@@ -1,0 +1,60 @@
+-- Source issues: nickel #697, #1224, #2226, merging.md (optional fields section)
+-- Spec: types.records.optional_fields (NSA-06)
+-- NOTE: This test depends on NSA-06 (optional fields spec gap). The `| optional`
+-- field annotation and `&` merge operator are proposed syntax not yet in the spec.
+-- The `record_fields` enumeration is not in the portable Kappa stdlib v1.
+-- An optional field declared in a record contract without a default value
+-- behaves as if absent until it receives a value through merging or contract
+-- application. Specifically:
+-- (a) An optional field without a definition is NOT returned by field-enumeration
+--     operations (it does not appear in the list of defined fields).
+-- (b) Accessing or forcing an undefined optional field is an error
+--     (the field is missing from the record's concrete extent).
+-- (c) An optional field that has received a value behaves identically to a
+--     required field: its contract is checked when the value is forced.
+
+module test
+
+-- A record type with one required and one optional field.
+type MaybeNamed = (required : Number, nickname | optional : String)
+
+-- POSITIVE: providing only the required field is valid — the optional `nickname` is absent.
+onlyRequired : MaybeNamed
+let onlyRequired = (required = 42)
+
+requiredOk : Number
+let requiredOk = onlyRequired.required
+
+--! mode check
+--! assertType requiredOk Number
+
+-- POSITIVE: providing both fields is also valid.
+bothFields : MaybeNamed
+let bothFields = (required = 7, nickname = "Bob")
+
+bothOk : String
+let bothOk = bothFields.nickname
+
+
+-- NEGATIVE: accessing an undefined optional field is an error.
+-- The optional field `nickname` was not provided, so accessing it must fail.
+accessUndefinedOptional : String
+let accessUndefinedOptional = onlyRequired.nickname    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: the semantic invariant is that optional undefined fields are invisible
+-- to field-enumeration operations. No portable Kappa stdlib v1 function for field
+-- enumeration is specified; this invariant is tested via contract-access behavior
+-- (accessing the undefined optional field fails, as shown in the negative case above).
+
+-- POSITIVE: optional field becomes required when merged with a record
+-- that declares the same field without optional.
+-- After merging, the field is no longer optional and must be defined.
+mergedOptionalRequired : MaybeNamed
+let mergedOptionalRequired = onlyRequired & (nickname = "Alice")
+
+mergedNickname : String
+let mergedNickname = mergedOptionalRequired.nickname
+
+--! assertType mergedNickname String

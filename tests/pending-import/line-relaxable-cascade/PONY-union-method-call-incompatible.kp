@@ -1,0 +1,48 @@
+-- Source issues: ponyc#3824, ponyc#3003, ponyc#1441
+-- Spec: expressions.applications, compiler.frontir.standard_diagnostic_families.type_equality
+-- Pony issue #3824: calling `u.definition()` on a union where the two
+-- members have `definition` returning different types — `None` vs `String`
+-- — caused a confusing "incompatible method signature" error. The union
+-- dispatch fails because there is no single compatible return type.
+-- In Kappa, calling a method that has incompatible signatures across union
+-- members is a type mismatch; the function must match or be resolved via
+-- explicit case analysis.
+
+--! mode check
+
+trait HasCode (a : Type) =
+    code : (& x : a) -> Int
+
+trait HasLabel (a : Type) =
+    label : (& x : a) -> String
+
+data TypeA : Type = TypeA Int
+data TypeB : Type = TypeB String
+
+instance HasCode TypeA =
+    let code (TypeA n) = n
+
+instance HasLabel TypeB =
+    let label (TypeB s) = s
+
+-- NEGATIVE: `code` is not defined for TypeB; calling it on a TypeB value
+-- requires a missing instance.
+badCodeOnB : (& x : TypeB) -> Int
+let badCodeOnB x = code x   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: explicit dispatch when the members have different available methods.
+data Either2 : Type =
+    IsA TypeA
+    IsB TypeB
+
+getInfo : Either2 -> String
+let getInfo e =
+    match e
+    case IsA a -> show (code a)
+    case IsB b -> label b
+
+result : String
+let result = getInfo (IsA (TypeA 42))
+

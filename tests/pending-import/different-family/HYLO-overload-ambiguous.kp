@@ -1,0 +1,45 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Overloading.hylo
+--                   (diagnostic: "ambiguous use of overloaded name"),
+--                   Tests/HyloTests/TestCases/TypeChecking/CallInit.hylo
+--                   (diagnostic: "ambiguous use of 'A'"),
+--                   PR#207 (improve diagnostics for ambiguous overloads)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.ambiguous)
+-- Hylo: when a call expression matches multiple overloaded candidates and type
+-- inference cannot determine a unique winner, the compiler reports an
+-- ambiguous use. In Kappa this is a name-ambiguity diagnostic.
+
+--! mode check
+
+process : Int -> String
+let process x = "int:" ++ show x
+
+process : String -> String
+let process x = "str:" ++ x
+
+-- POSITIVE: distinct argument types disambiguate the overloads.
+let callWithInt : String = process 42
+let callWithStr : String = process "hello"
+
+-- NEGATIVE: when the argument type is itself ambiguous (or both signatures
+-- match after type inference), the call is ambiguous.
+duplicateProcess : Int -> Int
+let duplicateProcess x = x + 1
+
+duplicateProcess : Int -> Int
+let duplicateProcess x = x + 2
+
+let ambiguousCall : Int = duplicateProcess 5    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: two functions with the same name and identical signatures.
+sameSignatureA : String
+let sameSignatureA = "A"
+
+sameSignatureA : String
+let sameSignatureA = "B"
+
+let callSameSignature : String = sameSignatureA    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

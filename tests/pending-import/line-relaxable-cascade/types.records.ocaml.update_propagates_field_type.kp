@@ -1,0 +1,36 @@
+-- Source issue: OCaml#6303
+-- Spec: types.records.update, types.records.values
+-- Record update must propagate the types of updated fields back to constrain the
+-- record type. Specifically, updating a field whose type is `a` with a value of
+-- type `Int` must cause the whole record's type parameter to be inferred as `Int`.
+
+module test
+
+-- A record type whose field type is a type parameter.
+-- In Kappa, this is expressed as a data type parameterized over `a`.
+data Foo (a : Type) : Type =
+    Foo : (x : a, y : Int) -> Foo a
+
+-- A value of type `Foo Int`.
+r : Foo Int
+let r = Foo (x = 0, y = 0)
+
+-- Update the `x` field with an `Int`.
+-- The updated record must have type `Foo Int`, not a polymorphic `Foo ?a`.
+r2 : Foo Int
+let r2 = r.{ x = 1 }
+
+--! mode check
+--! assertType r2 Foo Int
+
+-- Updating `y` leaves `x`'s type constraint intact.
+r3 : Foo Int
+let r3 = r.{ y = 99 }
+
+--! assertType r3 Foo Int
+
+-- Rejected: updating `x` with a String when the record is `Foo Int`.
+badUpdate : Foo Int
+let badUpdate = r.{ x = "hello" }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

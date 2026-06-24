@@ -1,0 +1,48 @@
+-- Source issue: FLIX-1558
+-- Spec: traits.instances.search_termination
+-- An instance declaration is accepted only if each premise is structurally
+-- smaller than its head (Paterson-style condition). An instance that violates
+-- this condition (premise is not smaller, or type variable occurs more often
+-- in premise than in head) must be rejected to guarantee instance search
+-- termination.
+
+--! mode check
+
+trait Container (f : Type -> Type) =
+    empty : f a
+    insert : a -> f a -> f a
+
+-- NEGATIVE TEST: instance premise is the same type as the head.
+-- `Container f => Container f` is circular (premise == head).
+instance Container f => Container f =         --!! kappa.implicit.unsolved
+    let empty = empty
+    let insert x c = insert x c
+
+-- NEGATIVE TEST: type variable occurs more in premise than in head.
+-- Head: `Box (a, b)`. Premise requires `Show a` and `Show b` and `Show (a, b)`.
+-- The number of occurrences of `a` in the premise exceeds those in the head.
+trait Show (a : Type) =
+    show : a -> String
+
+data Box (a : Type) : Type =
+    Box a
+
+instance (Show a, Show a, Show a) => Show (Box a) =   --!! kappa.implicit.unsolved
+    let show (Box x) = "Box(" ++ show x ++ ")"
+
+-- POSITIVE TEST: standard instance with strictly smaller premise.
+instance Show Int =
+    let show n = int_to_string n
+
+instance Show a => Show (Box a) =
+    let show (Box x) = "Box(" ++ show x ++ ")"
+
+-- POSITIVE TEST: multi-parameter premise that is still structurally smaller.
+data Pair (a b : Type) : Type =
+    Pair a b
+
+instance (Show a, Show b) => Show (Pair a b) =
+    let show (Pair x y) = "(" ++ show x ++ ", " ++ show y ++ ")"
+
+-- expect: circular and over-occurrenced instances rejected;
+--         standard Show instances accepted

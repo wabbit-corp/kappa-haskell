@@ -1,0 +1,31 @@
+-- Source issues: PIKELET-23 (case expressions), PIKELET-128 (pattern match compilation).
+-- Spec: expressions.patterns.forms, expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.impossible_unreachable_branch_bodies
+--
+-- A wildcard arm `_ -> ...` matches anything and binds nothing. An
+-- arm placed after a wildcard is unreachable. Kappa uses `match expr case
+-- pat -> body` syntax (no `with`, `of`, or `end`) per §17.1.
+
+--! mode check
+
+-- POSITIVE: wildcard catches all unmatched values.
+classify : Nat -> String
+let classify n =
+  match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "many"
+
+-- POSITIVE: a wildcard binder is allowed in the same pattern position.
+firstOf : Nat -> Nat -> Nat
+let firstOf x _ = x
+
+-- NEGATIVE: arms after a wildcard catchall are unreachable.
+withDeadArm : Nat -> String
+let withDeadArm n =
+  match n
+    case 0 -> "zero"
+    case _ -> "any"
+    case 1 -> "one"    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

@@ -1,0 +1,58 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestInfinite.curry
+--   (from n = n : from (n+1); take 5 (from 0)).
+-- Spec: expressions.application (§11.2 suspension types and non-strict
+--       binders), data_types.data_declarations (§10.1),
+--       totality_termination (§15.10, §15.12 reserved sized-termination).
+-- Spec gap: CURRY-SA-06 (productive corecursion of take n (from k)).
+--
+-- Curry admits the corecursive `from` without an explicit non-strict
+-- annotation. Kappa requires the recursive position to be wrapped in a
+-- suspension; the test demonstrates the canonical form using
+-- explicit thunking. With the spec-gap resolved (CURRY-SA-06), this
+-- definition should be accepted as productive without further evidence.
+
+module test
+
+--! mode check
+
+data Stream (a : Type) : Type =
+    SCons a (() -> Stream a)
+-- Stream is by construction infinite (no Nil); the tail is a thunk so
+-- the recursive call to `from` is not forced at construction time.
+
+from : Int -> Stream Int
+let from n = SCons n (\_ -> from (n + 1))
+
+--! assertNoErrors
+--! assertType from (Int -> Stream Int)
+
+-- A finite consumer that takes the first n elements.
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+takeStream : forall (a : Type). Int -> Stream a -> List a
+let takeStream n s =
+    if n <= 0
+    then Nil
+    else
+        match s
+        case SCons x rest -> Cons x (takeStream (n - 1) (rest ()))
+
+--! assertNoErrors
+--! assertType takeStream (forall (a : Type). Int -> Stream a -> List a)
+
+-- POSITIVE: take 5 of the naturals from 0.
+firstFive : List Int
+let firstFive = takeStream 5 (from 0)
+-- expected shape: Cons 0 (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil))))
+
+--! assertNoErrors
+--! assertType firstFive (List Int)
+
+-- POSITIVE: take 0 produces Nil regardless of the stream.
+takeZero : List Int
+let takeZero = takeStream 0 (from 100)
+
+--! assertNoErrors
+--! assertType takeZero (List Int)

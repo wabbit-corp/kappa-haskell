@@ -1,0 +1,73 @@
+-- Source: Racket guide binding.scrbl, let.scrbl
+-- Source docs: racket guide binding.scrbl and let.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: declarations.let_in
+--
+-- In a let block, bindings are laid out sequentially: each binding is in scope
+-- for subsequent bindings in the same block, and all bindings are in scope for
+-- the body. This corresponds to Racket's let* semantics.
+-- A later binding may reference an earlier binding in the same block.
+--
+-- This test exercises sequential dependency: binding `b` references binding `a`
+-- within the same let block. The body uses both.
+
+--! mode check
+
+-- POSITIVE: each binding in the block may reference earlier bindings.
+sumAB : Int
+let sumAB =
+    let
+        a = 10
+        b = a + 5
+    in
+    a + b
+
+-- POSITIVE: chained dependency of three bindings.
+chained : Int
+let chained =
+    let
+        x = 2
+        y = x * 3
+        z = y + x
+    in
+    z
+
+-- POSITIVE: a let binding that captures a function argument from the outer scope.
+addOffset : Int -> Int -> Int
+let addOffset base n =
+    let
+        offset = base * 2
+        result = n + offset
+    in
+    result
+
+-- POSITIVE: binding shadows a top-level name locally; the outer name is untouched.
+topN : Int
+let topN = 99
+
+shadowedLocal : Int
+let shadowedLocal =
+    let
+        topN = 1        -- local shadows top-level topN
+        doubled = topN * 2
+    in
+    doubled             -- sees the local topN = 1
+
+-- POSITIVE: binding references a function from an earlier binding in the same block.
+composedLocal : Int
+let composedLocal =
+    let
+        double = \x -> x * 2
+        quadruple = \x -> double (double x)
+    in
+    quadruple 3
+
+-- NEGATIVE: a binding may not reference a binding that comes later in the block.
+forwardRefError : Int
+let forwardRefError =
+    let
+        early = late + 1  --!! kappa.name.unresolved
+        late  = 10
+    in
+    early
+
+--! assertDiagnosticFamily error kappa.name.unresolved

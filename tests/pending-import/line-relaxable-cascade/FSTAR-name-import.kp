@@ -1,0 +1,15 @@
+-- Source issues: FSTAR-153, FSTAR-1335
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+-- Importing a module that does not exist must produce an immediate error
+-- at the import site, not a mysterious failure later when a name is used.
+-- Name resolution must be deterministic with respect to import order.
+
+--! mode check
+
+-- NEGATIVE TEST: importing a nonexistent module must fail immediately.
+import NonExistentModule               --!! kappa.name.unresolved
+
+use_it : Nat
+let use_it = NonExistentModule.some_name
+
+--! assertDiagnosticFamily error kappa.name.unresolved

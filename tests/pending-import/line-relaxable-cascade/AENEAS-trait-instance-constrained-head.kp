@@ -1,0 +1,67 @@
+-- Source issues: AENEAS-97, AENEAS-98, AENEAS-118
+-- Spec: traits.instances, traits.instances.resolution_algorithm,
+--       types.universes.trait_evidence
+-- §14.3: instance declarations may have premises — trait constraints on the
+-- type parameters that must be satisfied for the instance to apply.
+-- Aeneas issues #97 (impl parameterized by a trait), #98 (types parameterized
+-- by traits), and #118 (non-primitive Copy types) all reduce to this:
+-- a generic struct or function that is only usable when a type constraint is
+-- satisfied.
+
+module test
+
+--! mode check
+
+trait Eq_ (a : Type) =
+    eq_ : (& x : a) -> (& y : a) -> Bool
+
+trait Printable (a : Type) =
+    print_ : (& x : a) -> String
+
+data Pair (a : Type) : Type = Pair a a
+
+-- POSITIVE: instance of Printable for (Pair a) when a is itself Printable.
+-- The premise `Printable a =>` must be satisfied by the caller.
+instance Printable a => Printable (Pair a) =
+    let print_ (Pair x y) = "(" ++ print_ x ++ ", " ++ print_ y ++ ")"
+
+data Num : Type = Num Int
+
+instance Printable Num =
+    let print_ (Num n) = show n
+
+printPair : String
+let printPair = print_ (Pair (Num 1) (Num 2))
+
+--! assertType printPair String
+
+-- POSITIVE: doubly nested pair; the instance resolves recursively.
+printNestedPair : String
+let printNestedPair = print_ (Pair (Pair (Num 0) (Num 1)) (Pair (Num 2) (Num 3)))
+
+
+-- POSITIVE: a function constrained by a trait that also constrains its arg.
+applyEqAndPrint : forall (a : Type). Eq_ a => Printable a => (& x : a) -> (& y : a) -> String
+let applyEqAndPrint x y =
+    if eq_ x y then "equal: " ++ print_ x
+    else print_ x ++ " /= " ++ print_ y
+
+
+-- POSITIVE: a constrained ADT used as a type parameter in another structure.
+data Container (a : Type) : Type = Container a
+
+instance Printable a => Printable (Container a) =
+    let print_ (Container x) = "[" ++ print_ x ++ "]"
+
+printContainer : String
+let printContainer = print_ (Container (Num 99))
+
+
+-- NEGATIVE: missing instance for a type parameter.
+data Flag : Type = Flag Bool
+-- No Printable Flag instance is declared.
+
+printFlagPair : String
+let printFlagPair = print_ (Pair (Flag True) (Flag False))  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

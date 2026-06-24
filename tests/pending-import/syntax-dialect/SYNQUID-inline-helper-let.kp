@@ -1,0 +1,50 @@
+-- Source artifacts: synquid test/comcom/AVL.sq —
+--                 `inline max x y = if x >= y then x else y` declares a
+--                 helper that is unfolded at every use site. Kappa's
+--                 transparent type aliases / transparent definitions cover
+--                 the portable subset; Synquid's `inline` keyword is a
+--                 synthesizer-specific surface.
+-- Spec: data_types.type_aliases,
+--       declarations.let_in,
+--       declarations.terms
+--
+-- The Kappa-portable counterpart is an ordinary `let` definition with a
+-- type signature. Use sites refer to the helper by name; the elaborator
+-- inlines as part of normalization, not via an `inline` keyword.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a transparent helper expressed as ordinary `let`.
+maxP : PNat -> PNat -> PNat
+let maxP x y =
+    match x
+      case Z      -> y
+      case (S x') ->
+          match y
+            case Z      -> x
+            case (S y') -> S (maxP x' y')
+
+-- POSITIVE: absolute value of a PNat is the value itself.
+absP : PNat -> PNat
+let absP x = x
+
+-- POSITIVE: a function that uses the helper multiple times.
+maxOfThree : PNat -> PNat -> PNat -> PNat
+let maxOfThree a b c = maxP (maxP a b) c
+
+-- POSITIVE: a function that uses absP in a recursive context.
+allAbs : List PNat -> List PNat
+let allAbs xs =
+    match xs
+      case Nil          -> Nil
+      case (Cons x ys)  -> Cons (absP x) (allAbs ys)
+
+--! assertNoErrors

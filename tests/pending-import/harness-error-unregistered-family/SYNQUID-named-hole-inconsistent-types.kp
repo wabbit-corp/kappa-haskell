@@ -1,0 +1,37 @@
+-- Source artifacts: synquid test/checking/List-Append-Bad.sq —
+--                 "Found inconsistent refinements when checking consistency of
+--                  type annotation {List a | len _v > len xs} with
+--                  {List a | len _v >= 0 && len _v < len xs}" arises when the
+--                 same hole site is used in two contradictory positions.
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.hole.inconsistent)
+--
+-- Synquid issues an inconsistent-refinement diagnostic when the same hole goal
+-- yields contradictory constraints. Kappa's named-hole rule is stronger: if the
+-- *same* named hole occurs twice at definitionally-incompatible expected
+-- types, compilation fails with family `kappa.hole.inconsistent` and the
+-- diagnostic MUST list every occurrence with its expected type.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- NEGATIVE: a single named hole used twice at the same expected type
+-- (`PNat`) refers to one metavariable. The hole is unsolved, so the
+-- inline marker is the unsolved-hole family.
+twiceSame : PNat -> PNat
+let twiceSame n = ?same                         --!! kappa.hole.unsolved
+
+-- NEGATIVE: the same named hole used at two incompatible types
+-- (`PNat` then `Bool`) is rejected with family kappa.hole.inconsistent.
+incompatible : PNat -> Bool -> PNat
+let incompatible n b =
+    let x : PNat = ?h in
+    let y : Bool = ?h in                        --!! kappa.hole.inconsistent
+    x
+
+--! assertDiagnosticFamily error kappa.hole.inconsistent
+--! assertDiagnosticFamily error kappa.hole.unsolved

@@ -1,0 +1,33 @@
+-- Source issues: nickel #1284, #1117, #1317, #1392
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant (kappa.row.lacks-failed)
+-- A record type literal that declares the same field label more than once is
+-- ill-formed. The second occurrence violates the row-extension "Lacks" constraint:
+-- extending a row that already contains `foo` with another `foo` entry is rejected.
+-- The implementation MUST report kappa.row.lacks-failed (not silently pick one
+-- occurrence and discard the other, and not produce a confusing downstream mismatch).
+
+module test
+
+-- NEGATIVE: record type with the same label `foo` declared twice.
+-- The row `foo : Number, foo : String` violates the Lacks constraint on `foo`.
+bad1 : (foo : Number, foo : String) -> Number     --!! kappa.row.lacks-failed
+let bad1 r = r.foo
+
+-- NEGATIVE: three-field record type with `bar` declared twice.
+bad2 : (a : String, bar : Bool, bar : Number) -> Bool    --!! kappa.row.lacks-failed
+let bad2 r = r.bar
+
+-- NEGATIVE: a function that uses a record type with duplicate row in return position.
+dupReturn : Number -> (x : Number, x : String)           --!! kappa.row.lacks-failed
+let dupReturn n = (x = n)
+
+--! mode check
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- POSITIVE: all field labels distinct — well-formed record type.
+good1 : (foo : Number, bar : String) -> Number
+let good1 r = r.foo
+
+good2 : (a : String, b : Bool, c : Number) -> Bool
+let good2 r = r.b
+

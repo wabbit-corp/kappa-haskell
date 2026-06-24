@@ -1,0 +1,84 @@
+-- Source issues: invalid/unsatisfiable_super.m, tests/typeclasses/complicated_fundeps.m
+-- Spec: traits.headers.supertraits,
+--       traits.instances.resolution_algorithm
+-- A multi-level supertrait chain must resolve completely. If a function
+-- requires a trait `C` whose supertrait chain includes `B` and `A`, the
+-- instance environment must provide evidence for all three. Providing only
+-- a `C` instance is sufficient when instances for `B` and `A` are available
+-- through the chain. Missing an intermediate link is an error.
+
+module test
+
+-- Three traits in a linear chain: Base <= Mid <= Top.
+trait Base (a : Type) =
+    baseVal : a -> Int
+
+trait Base a => Mid (a : Type) =
+    midVal : a -> Int
+
+trait Mid a => Top (a : Type) =
+    topVal : a -> Int
+
+-- A function that requires the full chain.
+useAll :
+    forall (a : Type).
+    (@_ : Top a) ->
+    a -> Int
+let useAll x = baseVal x + midVal x + topVal x
+
+data Trio : Type = Trio
+
+-- POSITIVE: providing all three instances.
+instance Base Trio =
+    let baseVal _ = 1
+
+instance Mid Trio =
+    let midVal _ = 2
+
+instance Top Trio =
+    let topVal _ = 3
+
+useAllTrio : Trio -> Int
+let useAllTrio t = useAll t
+
+--! assertType useAllTrio Trio -> Int
+
+-- NEGATIVE: only `Top Trio2` is declared but `Mid Trio2` and `Base Trio2`
+-- are absent — supertrait premise solving fails.
+data Trio2 : Type = Trio2
+
+instance Top Trio2 =
+    let topVal _ = 30
+
+useAllTrio2 : Trio2 -> Int
+let useAllTrio2 t = useAll t    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: supertrait evidence is accessible through the chain.
+-- When `Top Trio` is in scope, calling `baseVal` should work because
+-- `Top Trio` implies `Mid Trio` implies `Base Trio`.
+useBaseViaTrio : Trio -> Int
+let useBaseViaTrio t = baseVal t
+
+
+-- POSITIVE: supertrait transitivity with a polymorphic function.
+useTopGeneric :
+    forall (a : Type).
+    (@_ : Top a) ->
+    a -> Int
+let useTopGeneric x = baseVal x
+
+
+-- NEGATIVE: providing `Mid` but not `Base` for a new type.
+data Pair2 : Type = Pair2
+
+instance Mid Pair2 =
+    let midVal _ = 20
+
+usePair2 : Pair2 -> Int
+let usePair2 p = useAll p    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+--! mode check

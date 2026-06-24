@@ -1,0 +1,66 @@
+-- Source: Coalton issue #1391 (error when declaring polymorphic recursive
+--   let binding — "declared type is more general than inferred type").
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings (§9.1.2),
+--   types.quantification.implicit_declaration_universalization (§11.3.3).
+--
+-- A locally-recursive let binding with an explicit type annotation must be
+-- checked against the annotation. If the annotation is exactly as general as
+-- the inferred type (same number of quantifiers, same shape), the check must
+-- succeed. The checker must not spuriously report that the annotation is "more
+-- general than inferred" when the two types are alpha-equivalent.
+
+--! mode check
+
+-- POSITIVE: a recursive let binding with a non-polymorphic type annotation.
+-- The annotation `Int -> String` is a monomorphic type; the body satisfies it.
+countDown : Int -> String
+let countDown n =
+    let go : Int -> String
+        let go k =
+            match k
+            case 0 -> "done"
+            case _ -> go (k - 1)
+    in go n
+
+--! assertNoErrors
+--! assertType countDown (Int -> String)
+
+-- POSITIVE: a recursive let binding that is not polymorphic (concrete types).
+-- No quantifiers, so no "more general" check can fail.
+fibonacci : Int -> Int
+let fibonacci n =
+    let fib : Int -> Int
+        let fib 0 = 0
+        let fib 1 = 1
+        let fib k = fib (k - 1) + fib (k - 2)
+    in fib n
+
+--! assertNoErrors
+
+-- POSITIVE: a locally-recursive helper with a constraint that matches the
+-- inferred constraint. The annotation uses `->` for the implicit parameter
+-- (not `=>`, which is sugar only for the top-level constraint position).
+-- The annotation is exactly what would be inferred; this must be accepted.
+localSearch : forall (a : Type). (@_ : Eq a) -> a -> List a -> Bool
+let localSearch target xs =
+    let go : (@_ : Eq a) -> List a -> Bool
+        let go Nil         = False
+        let go (h :: t)    = if h == target then True else go t
+    in go xs
+
+--! assertNoErrors
+--! assertType localSearch (forall (a : Type). (@_ : Eq a) -> a -> List a -> Bool)
+
+-- POSITIVE: a mutually recursive pair inside a let. Both functions carry the
+-- same constraints and their types must be accepted when annotated.
+checkParity : Int -> Bool
+let checkParity n =
+    let isE : Int -> Bool
+        let isE 0 = True
+        let isE k = isO (k - 1)
+        isO : Int -> Bool
+        let isO 0 = False
+        let isO k = isE (k - 1)
+    in isE n
+
+--! assertNoErrors

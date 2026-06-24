@@ -1,0 +1,36 @@
+-- Source issue: Agda #16
+-- Spec: unsafe_debug.termination_assertions
+-- A function can be admitted by `assertTerminates` when the user asserts that
+-- the definition is total even though the termination checker cannot verify it.
+-- The admitted function is total-certified but NOT conversion-reducible by default
+-- (per §15.1). Accepted under the unsafe portable subset.
+
+module test
+
+-- Case 1: A function that the termination checker cannot prove terminates
+-- (e.g., uses an external oracle) is admitted by assertTerminates.
+-- The compiler MUST accept the declaration and treat it as total-certified.
+
+postulate
+    oracleN : Int -> Int
+
+-- `collatz` is admitted without a termination proof.  The compiler MUST
+-- accept this and emit no termination-failure diagnostic.
+assertTerminates
+collatz : Int -> Int
+let collatz 1 = 1
+let collatz n = if n % 2 == 0
+                then collatz (n / 2)
+                else collatz (3 * n + 1)
+
+--! mode check
+--! assertNoErrors
+
+-- Case 2: A plain recursive function whose structural descent IS checkable
+-- does NOT need assertTerminates and MUST be accepted without it.
+factorial : Int -> Int
+let factorial 0 = 1
+let factorial n = n * factorial (n - 1)
+    decreases n
+
+--! assertNoErrors

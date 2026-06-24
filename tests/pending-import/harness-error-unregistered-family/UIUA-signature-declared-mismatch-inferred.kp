@@ -1,0 +1,42 @@
+-- Source issue: Uiua #45 ("Signature of function with infinite repetition
+--   and break is calculated incorrectly" — declared |0.1 but body
+--   returns 2 values), Uiua #89 ("Wrong stack signature inferred when
+--   picking function from array" — declared |1.1 but inferred |1.2),
+--   Uiua #122 ("Unexpected behavior with `?` inside functions with
+--   explicit signatures").
+-- Spec: declarations.signatures, declarations.terms,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- A declared function signature is a constraint, not advisory. When the
+-- elaborated body produces a function whose arity (input/output count)
+-- disagrees with the declared signature, the defining site MUST report
+-- the mismatch as kappa.type.mismatch. Tooling should also expose
+-- the inferred signature as I_INFERRED_SIGNATURE_AVAILABLE for
+-- automatic rewriting.
+
+module test
+
+--! mode check
+
+-- POSITIVE: declared and inferred agree.
+declaredOk : Int -> Int
+let declaredOk x = x + 1
+
+--! assertType declaredOk Int -> Int
+
+-- NEGATIVE: declared returns Int but body returns a pair (Int, Int).
+declaredTooFewOutputs : Int -> Int
+let declaredTooFewOutputs x = (x, x + 1)     --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: declared a unary function but body uses two arguments via
+-- accidental partial application of a binary primitive.
+declaredTooManyInputs : Int -> Int
+let declaredTooManyInputs x y = x + y        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- The diagnostic should also carry an informational record describing
+-- the inferred signature.
+--! assertDiagnostic info I_INFERRED_SIGNATURE_AVAILABLE

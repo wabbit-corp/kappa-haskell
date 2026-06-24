@@ -1,0 +1,33 @@
+-- Source issue: Move #609
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- When a type constraint (capability / quantity demand) is not satisfied,
+-- the error diagnostic MUST include the supplied capability, the demanded
+-- quantity, and a hint about how to satisfy the obligation.
+-- The test checks that the rejection happens (positive lower-bound obligation
+-- failure) and that the diagnostic family is correct; it does not prescribe
+-- the exact wording, only the family and presence of the error.
+
+--! mode check
+
+module move_609_capability_diagnostic
+
+-- Requires at least one use of `x`; passing it to an unrestricted callee
+-- is not sufficient because the callee may ignore it.
+demandRelevant : (>=1 x : Int) -> IO e Unit
+let demandRelevant x = print "done"   --!! kappa.quantity.positive-lower-bound
+
+-- Accepted: relevant argument is used at least once.
+useRelevant : (>=1 x : Int) -> Int
+let useRelevant x = x + 1
+
+-- Rejected: passing a linear value to a function that accepts unrestricted.
+-- (linear satisfies ω is not always valid; depends on obligation direction)
+consumeLinear : (1 x : Int) -> Unit
+let consumeLinear x = unit   --!! kappa.quantity.unsatisfied
+
+-- Accepted: linear argument consumed exactly once.
+goodLinear : (1 x : Int) -> Int
+let goodLinear x = x
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

@@ -1,0 +1,47 @@
+-- Source issues: PLUTUS-5961, PLUTUS-7208
+-- Spec: expressions.do_blocks (§18 effects and ordering), declarations.terms,
+-- core_semantics.erasure (§31.2), core_semantics.elision_of_mutable_state (§31.5)
+-- Source notes: Plinth has two opposite bugs in this area: a strict
+-- recursive binding's RHS effects are silently delayed (#5961), and a
+-- never-referenced `where` binding's effects are surprisingly observed at
+-- run time (#7208). Kappa has a uniform rule: a value binding produced
+-- by a `let` or top-level definition is a pure value, and its evaluation is
+-- demand-driven for ordinary value types. Effectful actions live in `do`
+-- blocks and run in sequence iff they are actually demanded.
+
+--! mode check
+
+-- POSITIVE: a strict pure binding whose RHS is never used does not
+-- contribute to evaluation; this is permitted by §31.5 elision rules.
+unusedPureBind : Int
+let unusedPureBind =
+    let _spam = 1 + 2
+     in 99
+
+-- POSITIVE: a recursive function definition whose body's recursive call is
+-- reached for non-base cases. Termination is structural on the Nat input.
+data Nat : Type =
+    Z
+    S Nat
+
+double : Nat -> Nat
+let double n decreases structural n =
+    match n
+      case Z    -> Z
+      case S m  -> S (S (double m))
+
+doubleTwo : Nat
+let doubleTwo = double (S (S Z))
+
+-- POSITIVE: a `let`-bound function value whose body is invoked has its body
+-- evaluated; the test is whether the binding mechanism preserves the
+-- function's intended behavior, not whether it is silently erased.
+applyTwice : (Int -> Int) -> Int -> Int
+let applyTwice f x = f (f x)
+
+ans : Int
+let ans =
+    let step = \n -> n + 1
+     in applyTwice step 0
+
+--! assertNoErrors

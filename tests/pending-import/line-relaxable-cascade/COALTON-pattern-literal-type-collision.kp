@@ -1,0 +1,51 @@
+-- Source: Coalton issue #1571 (type-invalid program involving literals in
+--   `match` succeeds compilation -- integer and string literals in same match).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch §3.2.3),
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability (§3.2.10).
+--
+-- When two branches of a match expression have different literal types for the
+-- pattern scrutinee (e.g., an integer literal in one arm and a string literal
+-- in another), the patterns impose contradictory type constraints on the
+-- scrutinee. A correct type-checker must detect this as a type mismatch —
+-- not silently accept it or produce invalid code.
+
+--! mode check
+
+-- POSITIVE: match with consistent integer literals is accepted.
+classifyInt : Int -> String
+let classifyInt n =
+    match n
+    case 0  -> "zero"
+    case 1  -> "one"
+    case _  -> "other"
+
+-- POSITIVE: match with consistent string literals is accepted.
+classifyStr : String -> Bool
+let classifyStr s =
+    match s
+    case "yes" -> True
+    case "no"  -> False
+    case _     -> False
+
+-- NEGATIVE: mixing an integer literal pattern and a string literal pattern
+-- in the same match expression. The scrutinee type cannot be simultaneously
+-- Int and String. A type mismatch must be reported.
+mixedLiterals : String -> String
+let mixedLiterals x =
+    match x
+    case 5       -> "five"       --!! kappa.type.mismatch
+    case "five"  -> "got five"
+    case _       -> "other"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: integer literal in the same match as a boolean scrutinee
+-- constructor. Bool has constructors True/False, not integer patterns.
+boolVsInt : Bool -> Int
+let boolVsInt b =
+    match b
+    case True -> 1
+    case 0    -> 0               --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

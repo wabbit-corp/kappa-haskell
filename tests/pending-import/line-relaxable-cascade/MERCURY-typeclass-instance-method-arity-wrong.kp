@@ -1,0 +1,74 @@
+-- Source issues: invalid/typeclass_test_3.m, invalid/typeclass_test_4.m,
+--   invalid/no_method.m (instance method binding refers to function of wrong arity)
+-- Spec: traits.instances.associated_static_member_instance_checking
+--       (kappa.type.mismatch)
+-- When an instance body provides a method implementation whose type does not
+-- match the trait method's required type (including arity), the checker must
+-- reject the instance.
+
+module test
+
+-- A trait requiring a method that takes exactly one argument of type `a`.
+trait Numbered (a : Type) =
+    typeNum : a -> Int
+
+-- POSITIVE: a correct instance implementation.
+data Color : Type = Red | Green | Blue
+
+instance Numbered Color =
+    let typeNum c = match c
+        case Red   -> 0
+        case Green -> 1
+        case Blue  -> 2
+
+--! assertType typeNum Color -> Int
+
+-- NEGATIVE: instance body defines `typeNum` as a two-argument function
+-- `Int -> Int -> Int` rather than the required `Tag -> Int`.
+-- The implementation has the wrong arity and type.
+data Tag : Type = TagA | TagB
+
+wrongArityImpl : Int -> Int -> Int
+let wrongArityImpl _ _ = 0
+
+instance Numbered Tag =
+    let typeNum = wrongArityImpl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: instance body defines `typeNum` as a nullary `Int` rather than
+-- the required `Shape -> Int`.
+data Shape : Type = Circle | Square
+
+constImpl : Int
+let constImpl = 42
+
+instance Numbered Shape =
+    let typeNum = constImpl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: valid instance using a correctly-typed helper.
+data Widget : Type = ButtonW | LabelW
+
+correctImpl : Widget -> Int
+let correctImpl ButtonW = 0
+let correctImpl LabelW  = 1
+
+instance Numbered Widget =
+    let typeNum = correctImpl
+
+--! assertType typeNum Widget -> Int
+
+-- POSITIVE: inline lambda implementation with correct type.
+data Dir : Type = North | South | East | West
+
+instance Numbered Dir =
+    let typeNum d = match d
+        case North -> 1
+        case South -> 2
+        case East  -> 3
+        case West  -> 4
+
+
+--! mode check

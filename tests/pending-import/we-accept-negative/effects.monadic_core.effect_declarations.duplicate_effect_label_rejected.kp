@@ -1,0 +1,26 @@
+-- Source issues: Koka #183, Koka #509
+-- Spec: types.quantification.effect_row_syntax
+-- Labels in a single effect row must be unique.
+-- A row with the same label appearing twice is ill-formed and must be rejected.
+
+module test
+
+effect Reader (a : Type) =
+    1 ask : Unit -> a
+
+-- ILLEGAL: label 'reader' appears twice in the same effect row.
+-- This violates "Labels in a single effect row must be unique."
+bad : Eff <[reader : Reader Int, reader : Reader Int]> Int
+let bad = reader.ask ()
+
+--! mode check
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- A closed row with two DIFFERENT labels for the same interface is allowed.
+-- The labels are distinct even though the interface is the same.
+effect ReaderStr (a : Type) =
+    1 askStr : Unit -> a
+
+twoDistinctReaders : Eff <[intReader : Reader Int, strReader : Reader String]> Int
+let twoDistinctReaders = intReader.ask ()
+

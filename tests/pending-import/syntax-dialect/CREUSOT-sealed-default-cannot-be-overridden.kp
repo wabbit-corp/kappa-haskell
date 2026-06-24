@@ -1,0 +1,34 @@
+-- Source issues: CREUSOT-sealed
+-- Source tests: creusot should_fail/sealed.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/sealed.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: traits.headers, traits.members, traits.instances,
+--       traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Family: kappa.implicit.unsolved (Kappa §3.2.4)
+-- A trait default declared "sealed" commits the trait to that single
+-- default body; an instance MUST NOT redefine a sealed default.  The
+-- override is rejected as an unsolved implicit (modality-mismatch)
+-- obligation.  Pending spec gap CREUSOT-SA-05 covers the proposed
+-- `sealed`/`default` modalities.
+
+module test
+
+--! mode check
+
+trait Step (a : Type) =
+    f : a -> Int -> Int
+
+    -- sealed default; instances cannot override.
+    sealed default g : a -> Int -> Int =
+        \x n -> f x n + 1
+
+-- NEGATIVE: an instance that tries to redefine the sealed default must
+-- be rejected, even if the new body is "consistent" with the sealed
+-- contract.
+data Mark : Type = Mark Int
+
+instance Step Mark =
+    let f x n = match x case Mark m -> m + n
+
+    let g _x _n = 0                          --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

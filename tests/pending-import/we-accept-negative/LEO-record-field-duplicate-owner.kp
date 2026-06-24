@@ -1,0 +1,66 @@
+-- Source issues: leo#2611 (duplicate record field names silently accepted;
+--               `record Token { owner: address, amount: u64, owner: address }`
+--               compiled without error, with silent use of whichever `owner`
+--               the compiler happened to pick), leo PR#28893 (multi-span error
+--               reporting for structs/records showing both definition sites).
+-- Spec: SA-LEO-03 (duplicate top-level name definitions — applies within a
+--       record to duplicate field names),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Kappa spec rule (§13.1, §SA-LEO-03):
+--   "Each field in a record type declaration must have a distinct name.
+--    Duplicate field names must be reported with `kappa.name.ambiguous`.
+--    The diagnostic payload must identify both occurrences of the field name
+--    (multi-span: `previous-definition` and `redefinition`). The second field
+--    declaration is discarded; the first is kept canonical."
+-- leo#2611 also showed that mapping names (analogous to record field names)
+--   could be duplicated silently, producing non-deterministic behavior.
+
+--! mode check
+
+-- POSITIVE: a record type where `owner` appears exactly once.
+data Token : Type =
+    Token { owner : String, amount : Int }
+
+-- POSITIVE: creating a Token value.
+tok1 : Token
+let tok1 = Token { owner = "alice", amount = 100 }
+
+-- POSITIVE: accessing the unique `owner` field.
+getOwner : Token -> String
+let getOwner t = t.owner
+
+
+-- NEGATIVE: `owner` appears twice in the record definition.
+data BadToken : Type =
+    BadToken
+        { owner  : String
+        , amount : Int
+        , owner  : Bool          --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: three fields with the same name.
+data TripleField : Type =
+    TripleField
+        { value  : Int
+        , label  : String
+        , value  : Bool          --!! kappa.name.ambiguous
+        , extra  : Int
+        , value  : String        --!! kappa.name.ambiguous
+        }
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: different record types may have fields with the same name —
+-- uniqueness is per-record, not global.
+data Alice : Type = Alice { name : String, age : Int }
+data Bob   : Type = Bob   { name : String, age : Int }
+
+a : Alice
+let a = Alice { name = "Alice", age = 25 }
+
+b : Bob
+let b = Bob { name = "Bob", age = 30 }
+

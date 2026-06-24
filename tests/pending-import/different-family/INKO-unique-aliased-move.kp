@@ -1,0 +1,25 @@
+-- Source issues: inko#588, inko#840
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: a unique (uni T) value has exactly one reference at all times.
+-- Attempting to create a second alias of a unique value is rejected —
+-- doing so would allow two consumers, violating the uniqueness invariant.
+-- In Kappa, a linear value cannot appear in two consuming positions.
+
+--! mode check
+
+data Token : Type = Token Int
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken (Token n) = n
+
+-- POSITIVE: consuming a token exactly once.
+consumeOnce : (1 t : Token) -> Int
+let consumeOnce t = consumeToken t
+
+
+-- NEGATIVE: t appears in two consuming positions (both arguments of the
+-- pair). Only one can consume the unique token; the second use is rejected.
+aliasToken : (1 t : Token) -> (Int, Int)
+let aliasToken t = (consumeToken t, consumeToken t)   --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed

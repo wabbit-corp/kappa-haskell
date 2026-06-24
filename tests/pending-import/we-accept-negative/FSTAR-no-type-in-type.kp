@@ -1,0 +1,14 @@
+-- Source issues: FSTAR-1802, FSTAR-571
+-- Spec: types.universes.cumulativity
+-- A GADT constructor that stores a value of type Type1 inside a result
+-- type of Type0 must be rejected: Type1 does not live in Type0.
+
+--! mode check
+
+-- NEGATIVE TEST: constructor stores Type1 (a type itself) inside a Type0 result.
+-- The field b is a Type1 value, but the outer type Bad is at Type0.
+-- This violates the universe hierarchy.
+data Bad (a : Type0) : Type0 =
+    MkBad : (b : Type1) -> a -> Bad a    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

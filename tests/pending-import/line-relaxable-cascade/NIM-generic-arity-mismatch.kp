@@ -1,0 +1,68 @@
+-- Source: nim-lang/Nim#11152 (Cannot mix generic with typedesc — generic
+--         instantiation with wrong number of type arguments),
+--         nim-lang/Nim#16153 (Union typed generics causes error of `cannot
+--         instantiate: 'T'`)
+-- Spec: data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families (kappa.type.mismatch,
+--       kappa.constructor.arity)
+-- In Nim, applying a generic to the wrong number of type arguments was
+-- sometimes incorrectly accepted or reported with a confusing error. In Kappa,
+-- a data type or function generic applied to the wrong number of type
+-- parameters is a type error at the application site.
+
+--! mode check
+module test
+
+data Pair (a b : Type) : Type =
+    MkPair a b
+
+data Triple (a b c : Type) : Type =
+    MkTriple a b c
+
+data Singleton (a : Type) : Type =
+    MkSingleton a
+
+-- POSITIVE: correct arity applications.
+myPair : Pair Int String
+let myPair = MkPair 1 "hello"
+
+myTriple : Triple Int String Bool
+let myTriple = MkTriple 1 "hi" True
+
+mySingleton : Singleton Int
+let mySingleton = MkSingleton 42
+
+-- POSITIVE: generic function with one type parameter.
+fst : forall a b. Pair a b -> a
+let fst p =
+    match p
+    case MkPair x _ -> x
+
+snd : forall a b. Pair a b -> b
+let snd p =
+    match p
+    case MkPair _ y -> y
+
+goodFst : Int
+let goodFst = fst myPair
+
+goodSnd : String
+let goodSnd = snd myPair
+
+-- NEGATIVE: applying Pair to only one type argument in an annotation.
+badOnlyOne : Pair Int   --!! kappa.type.mismatch
+let badOnlyOne = MkPair 1 "oops"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying Triple to only two type arguments in an annotation.
+badTwoForThree : Triple Int String   --!! kappa.type.mismatch
+let badTwoForThree = MkTriple 1 "hi" True
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying Singleton to two type arguments in an annotation.
+badTwoForOne : Singleton Int String  --!! kappa.type.mismatch
+let badTwoForOne = MkSingleton 42
+
+--! assertDiagnosticFamily error kappa.type.mismatch

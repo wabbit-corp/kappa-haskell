@@ -1,0 +1,81 @@
+-- Source: nim-lang/Nim#15251 (new-style concepts — concept supertypes),
+--         nim-lang/RFCs#346 (overload resolution with supertrait priority)
+-- Spec: traits.headers.supertraits, traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- In Nim, a concept that depends on another concept requires both to be
+-- satisfied. In Kappa, when a trait declares a supertrait, an instance of the
+-- subtrait requires a corresponding supertrait instance to exist. Calling a
+-- function that requires the subtrait on a type missing the supertrait is
+-- rejected with kappa.implicit.unsolved.
+
+--! mode check
+module test
+
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+-- Ord requires Eq as supertrait.
+trait Eq a => Ord (a : Type) =
+    compare : (& x : a) -> (& y : a) -> Ordering
+
+data Ordering : Type = LT | EQ | GT
+
+-- POSITIVE: Eq then Ord instances for Int.
+instance Eq Int =
+    let (==) x y = primIntEq x y
+
+instance Ord Int =
+    let compare x y =
+        match primIntCompare x y
+        case -1 -> LT
+        case 0  -> EQ
+        case _  -> GT
+
+-- POSITIVE: function requiring only Eq.
+eq_check : forall a. (@_ : Eq a) -> a -> a -> Bool
+let eq_check x y = x == y
+
+eqInts : Bool
+let eqInts = eq_check 1 1
+
+-- POSITIVE: function requiring Ord (which implies Eq).
+min2 : forall a. (@_ : Ord a) -> a -> a -> a
+let min2 x y =
+    match compare x y
+    case LT -> x
+    case EQ -> x
+    case GT -> y
+
+minInt : Int
+let minInt = min2 3 7
+
+-- A type that has Eq but no Ord.
+data Priority : Type = Low | Medium | High
+
+instance Eq Priority =
+    let (==) x y =
+        match (x, y)
+        case (Low, Low)       -> True
+        case (Medium, Medium) -> True
+        case (High, High)     -> True
+        case _                -> False
+
+-- POSITIVE: calling eq_check with Priority — Eq instance exists.
+priorityEq : Bool
+let priorityEq = eq_check Low Medium
+
+-- NEGATIVE: calling min2 with Priority — no Ord Priority instance.
+priorityMin : Priority
+let priorityMin = min2 Low High  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- A type with neither Eq nor Ord.
+data Blob : Type = Blob String
+
+-- NEGATIVE: calling eq_check with Blob — no Eq Blob instance.
+blobEq : Bool
+let blobEq = eq_check (Blob "a") (Blob "b")  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

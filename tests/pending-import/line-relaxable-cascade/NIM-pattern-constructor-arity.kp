@@ -1,0 +1,67 @@
+-- Source: nim-lang/Nim variant pattern matching — constructor patterns must
+--         have the correct number of fields; related to nim#24430 (generic
+--         object type subtype matching) and nim#25774 (nested case objects)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.constructor-arity)
+-- A constructor pattern must match the arity of the constructor declaration.
+-- Using more or fewer fields than the constructor declares is rejected with
+-- kappa.pattern.constructor-arity.
+
+--! mode check
+module test
+
+data Expr : Type =
+    Lit Int
+    Add Expr Expr
+    Mul Expr Expr
+    Neg Expr
+
+-- POSITIVE: correct arity in all arms.
+evalExpr : Expr -> Int
+let evalExpr e =
+    match e
+    case Lit n      -> n
+    case Add l r    -> evalExpr l + evalExpr r
+    case Mul l r    -> evalExpr l * evalExpr r
+    case Neg x      -> -(evalExpr x)
+
+-- NEGATIVE: Lit pattern expects one field, but two are given.
+badLitArity : Expr -> Int
+let badLitArity e =
+    match e
+    case Lit n m    -> n   --!! kappa.pattern.constructor-arity
+    case Add l r    -> evalExpr l + evalExpr r
+    case Mul l r    -> evalExpr l * evalExpr r
+    case Neg x      -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Add pattern expects two fields, but one is given.
+badAddArity : Expr -> Int
+let badAddArity e =
+    match e
+    case Lit n   -> n
+    case Add l   -> evalExpr l    --!! kappa.pattern.constructor-arity
+    case Mul l r -> evalExpr l * evalExpr r
+    case Neg x   -> -(evalExpr x)
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: Neg expects one field, but zero are given.
+badNegArity : Expr -> Int
+let badNegArity e =
+    match e
+    case Lit n      -> n
+    case Add l r    -> evalExpr l + evalExpr r
+    case Mul l r    -> evalExpr l * evalExpr r
+    case Neg        -> 0  --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- POSITIVE: using wildcard instead of binding for unused fields is valid.
+isLit : Expr -> Bool
+let isLit e =
+    match e
+    case Lit _  -> True
+    case _      -> False
+

@@ -1,0 +1,55 @@
+-- Source: WebPPL #447 (add `mem` primitive), PR #632 (add mem),
+--   #896 (semantics of mem questionable — clarifies per-trace identity),
+--   #850 (mem with mutual recursion).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-04
+--   (proposed effect-aware memoization combinator whose equal arguments
+--    share their sampled side-effects within one handler scope),
+--   effects.monadic_core.effect_declarations,
+--   effects.monadic_core.eff_effect_rows.
+--
+-- The SA-04 proposal types `mem` as a polymorphic combinator that takes
+-- an effectful function and returns an effectful function with the same
+-- effect row residual. Kappa does not yet specify effect-aware
+-- memoization; this fixture pins the proposed shape using an abstract
+-- effect-row variable `r`.
+
+module test
+
+--! mode check
+
+data Distribution (a : Type) : Type =
+    DistBernoulli { p : Float }
+
+effect Prob =
+    1 sample : forall a. Distribution a -> a
+
+-- Proposed SA-04 combinator shape: row-polymorphic and Eq-constrained.
+-- Until SA-04 is adopted, this is declared as an external `expect` so the
+-- staged fixture types check against the proposed contract without
+-- depending on a definition.
+expect term mem : forall (r : EffRow) (a : Type) (b : Type).
+    (a -> Eff r b) -> Eff r (a -> Eff r b)
+
+-- POSITIVE: mem applied to a stochastic Int -> Bool function returns a
+-- function of the same effect signature.
+useMem : Eff <[prob : Prob]> Bool
+let useMem = do
+    let f <- mem (\(k : Int) -> prob.sample (DistBernoulli { p = 0.5 }))
+    let x <- f 1
+    let y <- f 1
+    pure (x == y)
+
+--! assertNoErrors
+--! assertType useMem (Eff <[prob : Prob]> Bool)
+
+-- POSITIVE: distinct argument values still type-check through the same
+-- combinator at the same effect row.
+useMemDistinct : Eff <[prob : Prob]> (Bool, Bool)
+let useMemDistinct = do
+    let f <- mem (\(k : Int) -> prob.sample (DistBernoulli { p = 0.5 }))
+    let x <- f 1
+    let y <- f 2
+    pure (x, y)
+
+--! assertNoErrors
+--! assertType useMemDistinct (Eff <[prob : Prob]> (Bool, Bool))

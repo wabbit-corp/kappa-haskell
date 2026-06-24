@@ -1,0 +1,53 @@
+-- Source issues: FLIX-1041, FLIX-1087
+-- Spec: types.quantification.effect_row_syntax
+-- Functions over data structures (fold, map, etc.) must be effect-polymorphic:
+-- their effect row is determined by the passed-in higher-order function, not
+-- fixed to Pure or a concrete effect. Failing to allow effect polymorphism
+-- means callers must cast or restrict to using only pure callbacks.
+
+--! mode check
+--! assertNoErrors
+
+-- POSITIVE TEST: effect-polymorphic fold.
+-- The callback `f` has effect row `ef`; foldLeft's effect row is `ef`.
+-- Monadic bind (`<-`) sequences the effectful callback inside a `do` block.
+let foldLeft
+    (forall (a b : Type) (ef : EffRow))
+    (f : b -> a -> Eff ef b)
+    (init : b)
+    (xs : List a)
+    : Eff ef b =
+    match xs
+    case Nil -> pure init
+    case Cons x rest ->
+        do
+            let acc <- f init x
+            foldLeft f acc rest
+
+-- POSITIVE TEST: map is effect-polymorphic over its callback.
+let mapList
+    (forall (a b : Type) (ef : EffRow))
+    (f : a -> Eff ef b)
+    (xs : List a)
+    : Eff ef (List b) =
+    match xs
+    case Nil -> pure Nil
+    case Cons x rest ->
+        do
+            let y  <- f x
+            let ys <- mapList f rest
+            pure (Cons y ys)
+
+-- POSITIVE TEST: passing a pure callback is valid (effect row unifies to <[]>).
+let double_all (xs : List Int) : Eff <[]> (List Int) =
+    mapList (\x -> pure (x * 2)) xs
+
+-- POSITIVE TEST: passing an effectful callback is valid.
+effect Emit =
+    emit : Int -> Unit
+
+let emit_all (xs : List Int) : Eff <[Emit : Emit]> Unit =
+    foldLeft (\_ x -> Emit.emit x) () xs
+
+-- expect: foldLeft, mapList, double_all, emit_all all accepted
+--! assertType double_all (List Int -> Eff <[]> (List Int))

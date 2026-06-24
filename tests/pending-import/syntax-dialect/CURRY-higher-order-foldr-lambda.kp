@@ -1,0 +1,64 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestHigher.curry
+--   (map, foldr, foldr with operator section, foldr with lambda).
+-- Spec: expressions.lambdas (§16.2),
+--       expressions.application.named_function_application (§16.1),
+--       data_types.data_declarations (§10.1).
+--
+-- Higher-order pillars: `map_` and `foldr_` re-defined locally to show
+-- the structure, then used with (a) a top-level function, (b) an
+-- operator section, and (c) an explicit lambda. Each yields the same
+-- result. The expected values come straight from the KiCS2 testsuite.
+
+module test
+
+--! mode check
+
+data List (a : Type) : Type =
+    Nil
+  | Cons a (List a)
+
+mapList : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
+let mapList f xs =
+    match xs
+    case Nil          -> Nil
+    case Cons x rest  -> Cons (f x) (mapList f rest)
+
+--! assertNoErrors
+
+foldrList : forall (a : Type) (b : Type). (a -> b -> b) -> b -> List a -> b
+let foldrList f z xs =
+    match xs
+    case Nil          -> z
+    case Cons x rest  -> f x (foldrList f rest z)
+    -- NOTE: argument order on the recursive call matches the spec.
+
+--! assertNoErrors
+
+inc : Int -> Int
+let inc x = x + 1
+
+sample : List Int
+let sample = Cons 0 (Cons 2 (Cons 1 Nil))
+
+-- POSITIVE: top-level function used as the mapped function.
+mapIncSample : List Int
+let mapIncSample = mapList inc sample
+
+--! assertNoErrors
+--! assertType mapIncSample (List Int)
+
+-- POSITIVE: an explicit lambda used as the mapped function.
+mapLambdaSample : List Int
+let mapLambdaSample = mapList (\x -> x + 1) sample
+
+--! assertNoErrors
+
+-- POSITIVE: foldr with a lambda multiplier.
+foldrLambdaSample : Int
+let foldrLambdaSample =
+    foldrList (\x y -> x * y) 1
+        (Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil)))))
+-- expected: 120
+
+--! assertNoErrors
+--! assertType foldrLambdaSample Int

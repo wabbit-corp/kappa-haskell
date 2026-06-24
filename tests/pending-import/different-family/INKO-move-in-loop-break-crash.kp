@@ -1,0 +1,28 @@
+-- Source issues: inko#669, inko#670
+-- Spec: expressions.application.subsumption, types.universes.quantities
+-- Inko: moving an owned value inside a loop body consumes it on the first
+-- iteration; the second iteration attempts to use an already-moved value,
+-- causing a compile-time error (or runtime panic in older Inko versions).
+-- Modeled in Kappa as using a linear value twice in sequence.
+
+--! mode check
+
+data Packet : Type = Packet Int
+
+send : (1 p : Packet) -> Int
+let send (Packet n) = n
+
+-- POSITIVE: sending a packet exactly once.
+sendOnce : (1 p : Packet) -> Int
+let sendOnce p = send p
+
+
+-- NEGATIVE: p is consumed by the first call to send;
+-- the second call uses the already-consumed binding.
+sendTwice : (1 p : Packet) -> Int
+let sendTwice p =
+    let a = send p
+    let b = send p   --!! kappa.path.consumed
+    a
+
+--! assertDiagnosticFamily error kappa.path.consumed

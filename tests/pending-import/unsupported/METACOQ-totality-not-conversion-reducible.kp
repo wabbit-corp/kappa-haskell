@@ -1,0 +1,49 @@
+-- Source issues: METACOQ-377, METACOQ-238
+-- Spec: declarations.totality.termination_certified_definitions,
+--       declarations.totality.relationship_assertions,
+--       unsafe_debug.termination_assertions
+--
+-- MetaCoq #377 proposed an unrestricted-recursion combinator `tmFix` for the
+-- template monad. Kappa's analogue is `assertTerminates`: it prefixes a
+-- declaration to suppress the termination check for *acceptance*; the
+-- resulting definition is not total-certified or conversion-reducible by
+-- default. The portable obligation is that such a definition is admitted,
+-- but downstream code must not rely on its unfolding for definitional
+-- equality.
+
+module test
+
+--! mode check
+--! requires capability allow_assert_terminates
+
+data Peano : Type =
+    PZ
+    PS Peano
+
+-- POSITIVE: a structurally recursive function is conversion-reducible by
+-- default. Calls reduce under definitional equality.
+double : Peano -> Peano
+let double n decreases structural n =
+    match n
+    case PZ      -> PZ
+    case (PS m)  -> PS (PS (double m))
+
+useDouble : Peano
+let useDouble = double (PS PZ)
+
+-- POSITIVE: a function the termination checker cannot accept is admitted
+-- by the declaration-level `assertTerminates` prefix (§4.4). The result
+-- is not conversion-reducible. The body below recurses on an unchanged
+-- argument and is therefore not structurally descending.
+assertTerminates let collatzStep (n : Peano) : Peano =
+    match n
+    case PZ              -> PZ
+    case (PS PZ)         -> PS PZ
+    case (PS (PS _))     -> n
+
+callIt : Peano
+let callIt = collatzStep PZ
+
+--! assertNoErrors
+--! assertType double Peano -> Peano
+--! assertType collatzStep Peano -> Peano

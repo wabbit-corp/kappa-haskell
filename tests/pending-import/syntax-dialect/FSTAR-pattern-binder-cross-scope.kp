@@ -1,0 +1,44 @@
+-- Source issue: FSTAR-4040
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+-- Variables bound by constructor patterns in function parameters must be
+-- in scope in subsequent parameter refinements.
+
+--! mode check
+
+data Box (t : Type) : Type =
+    MkBox : t -> Box t
+
+unbox : {t : Type} -> Box t -> t
+let unbox b =
+    let MkBox x = b
+    x
+
+-- POSITIVE TEST: a bound from an earlier parameter pattern is in scope
+-- in a later parameter's type annotation.
+use_two_boxes :
+    (MkBox a : Box Nat) ->
+    (MkBox b : Box { x : Nat | x > 0 }) ->
+    Nat
+let use_two_boxes (MkBox a) (MkBox b) = a + b
+
+--! assertNoErrors
+
+-- POSITIVE TEST: a bound from an earlier parameter pattern is in scope
+-- in a later parameter's refinement expression.
+cross_scope_works :
+    (MkBox a : Box Nat) ->
+    (_ : { x : Nat | x = a }) ->
+    Nat
+let cross_scope_works (MkBox a) _ = a
+
+--! assertNoErrors
+
+-- POSITIVE TEST: `a` bound in first parameter must be visible in the
+-- second parameter's refinement.
+cross_scope_required :
+    (MkBox a : Box Nat) ->
+    (proof : { x : Nat | x < a }) ->
+    Nat
+let cross_scope_required (MkBox a) proof = proof
+
+--! assertNoErrors

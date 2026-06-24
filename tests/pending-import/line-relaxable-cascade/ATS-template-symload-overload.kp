@@ -1,0 +1,75 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (#symload + with gint_add, #symload + with gfloat_add, priority),
+--         tests/srcgen1/TEST/DATA/test02.dats (g_foldl template with multiple impltmp),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (#sexpdef + = ... overloading)
+-- Spec: modules.names.overloaded_member_names (§14.2.1),
+--       implicit.resolution_algorithm (§14.3.1),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved, kappa.implicit.ambiguous).
+-- ATS3 pattern: `#symload + with gint_add` registers an overloaded symbol `+`
+--   for integer addition. When `+` is applied to a pair (Int, Int), the
+--   resolver picks `gint_add`. When `+` is applied to a pair with no matching
+--   registered overload, the resolver fails with "unsolved". When two equally
+--   specific overloads match, the resolver fails with "ambiguous".
+-- Portable obligation: overloaded name resolution must emit
+--   kappa.implicit.unsolved when no candidate exists, and
+--   kappa.implicit.ambiguous when two equally specific candidates exist.
+
+--! mode check
+
+-- An addition trait overloaded across multiple types.
+trait Add (a : Type) =
+    add : a -> a -> a
+
+instance Add Int =
+    let add x y = x + y
+
+instance Add String =
+    let add x y = x ++ y
+
+-- POSITIVE: overloaded add resolves unambiguously to Int instance.
+sumInts : Int
+let sumInts = add 1 2
+
+-- POSITIVE: overloaded add resolves unambiguously to String instance.
+concatStrs : String
+let concatStrs = add "hello" " world"
+
+-- POSITIVE: explicit type annotation disambiguates.
+explicitInt : Int
+let explicitInt = add (1 : Int) (2 : Int)
+
+-- A second trait with same method name but different type parameter arity.
+trait Combine (a : Type) (b : Type) =
+    combine : a -> b -> String
+
+instance Combine Int String =
+    let combine n s = s
+
+instance Combine String Int =
+    let combine s n = s
+
+-- POSITIVE: combine with explicit types resolves.
+combineOk : String
+let combineOk = combine (1 : Int) ("a" : String)
+
+-- NEGATIVE: ambiguous overload — two equally specific `Combine` instances
+-- match when both arguments are not typed.
+-- (combine applied to two polymorphic holes cannot be resolved.)
+ambiguousCombine : String
+let ambiguousCombine x y = combine x y   --!! kappa.implicit.ambiguous
+
+-- A type with no Add instance.
+data MyData : Type =
+    MyData Int
+
+-- NEGATIVE: calling `add` on a type with no instance.
+noInstance : MyData
+let noInstance = add (MyData 1) (MyData 2)  --!! kappa.implicit.unsolved
+
+-- NEGATIVE: calling `add` when the type is completely unknown (no context).
+unknownAdd : _
+let unknownAdd = add _ _                    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

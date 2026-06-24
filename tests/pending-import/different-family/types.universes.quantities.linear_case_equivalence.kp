@@ -1,0 +1,37 @@
+-- Source issue: Idris2 #440
+-- Spec: types.universes.quantities, expressions.match,
+--       expressions.match.narrowing_is_consuming
+-- Pattern matching on the function arguments and using a `match` expression
+-- on the same linear variable must be semantically equivalent: in both cases,
+-- the linear variable is consumed exactly once (by the match scrutinization).
+-- The quantity checker must not treat these two forms differently.
+
+module test
+
+-- Accepted form A: linear variable consumed by function-argument pattern match.
+-- Each clause pattern matches `x` once; no clause uses `x` more than once.
+foo32A : (1 x : Int) -> Int
+let foo32A 0 = 0
+let foo32A _ = 1
+
+--! mode check
+
+-- Accepted form B: linear variable consumed by `match` expression.
+-- `match x` consumes `x` exactly once (per expressions.match.narrowing_is_consuming).
+-- Both forms must be accepted as valid uses of the linear variable.
+foo32B : (1 x : Int) -> Int
+let foo32B x =
+  match x
+    case 0 -> 0
+    case _ -> 1
+
+
+-- Rejected: consuming a linear variable twice via case.
+-- Referencing `x` in both the scrutinee and a branch is a double use.
+doubleUse : (1 x : Int) -> (Int, Int)
+let doubleUse x =
+  match x
+    case 0 -> (x, 0)  --!! kappa.quantity.unsatisfied
+    case _ -> (x, 1)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

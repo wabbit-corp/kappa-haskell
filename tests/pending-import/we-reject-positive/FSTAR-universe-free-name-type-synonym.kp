@@ -1,0 +1,15 @@
+-- Source issue: FSTAR-1900
+-- Spec: types.universes.erasure_elaboration_time
+-- Free universe name in a type synonym must be resolved, not reported as "not found".
+
+--! mode check
+
+-- A type synonym binding a universe-polymorphic arrow type.
+-- The implicit type parameter A must be correctly generalized.
+type PolyArrow = {A : Type} -> A -> Unit
+
+-- Using the synonym must work: the universe variable is generalized at definition time.
+apply_poly : PolyArrow -> Nat -> Unit
+let apply_poly f x = f x
+
+--! assertNoErrors

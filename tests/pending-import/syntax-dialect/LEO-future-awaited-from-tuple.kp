@@ -1,0 +1,74 @@
+-- Source issues: leo#28312 (type mismatch when awaiting Future from tuple;
+--               `let (output, f) = transfer()` where `transfer` returns
+--               `(Token, Future)` gave "Expected type `Future<Fn()>` but type
+--               `Future<Fn()>` was found" — the type checker compared structural
+--               Future types with different identity tokens), leo PR#28316 (fix:
+--               use relaxed equality `eq_flat_relaxed` for futures in tuples).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch), §10 (product types, tuple projection).
+-- Kappa spec rule (§10, §3.2.3):
+--   "Two applications of the same type constructor with observationally
+--    equivalent arguments are equal types. A type equality check must not use
+--    identity-based comparison when structural/definitional equality would
+--    accept the types. Specifically, a Future type from one call site must be
+--    accepted wherever a Future type from another call site is expected, provided
+--    the effect-row types agree structurally."
+-- leo#28312: the type checker used strict object identity to compare `Future`
+--   types originating from different call sites, which caused spurious type
+--   mismatch errors even when both sides had structurally identical Future types.
+
+--! mode check
+
+-- Model a Future-like type constructor.
+data Future (a : Type) : Type =
+    MkFuture a
+
+-- A type representing a transferable token.
+data Token : Type =
+    Token Int
+
+-- A function that returns a tuple containing a Future.
+let transfer (amount : Int) : (Token, Future Unit) =
+    (Token amount, MkFuture ())
+
+-- POSITIVE: destructuring the tuple result of `transfer` and using both parts.
+let doTransfer (amount : Int) : Token =
+    let (tok, fut) = transfer amount
+    tok
+
+-- POSITIVE: extracting the Future from the tuple by index.
+let getFuture (amount : Int) : Future Unit =
+    let result = transfer amount
+    result.1
+
+-- POSITIVE: two distinct calls to `transfer` produce structurally equal tuple types.
+let twoTransfers (a : Int) (b : Int) : (Token, Token) =
+    let (tok1, _) = transfer a
+    let (tok2, _) = transfer b
+    (tok1, tok2)
+
+
+-- NEGATIVE: attempting to use a `Future Unit` where `Token` is expected.
+-- The two types are structurally distinct.
+let futureAsToken (amount : Int) : Token =
+    let (_, fut) = transfer amount
+    fut                        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using a `Token` where `Future Unit` is expected.
+let tokenAsFuture (amount : Int) : Future Unit =
+    let (tok, _) = transfer amount
+    tok                        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a function that takes a Future-containing tuple and awaits it.
+let awaitFuture (f : Future Unit) : Unit =
+    let MkFuture v = f
+    v
+
+let fullRound (amount : Int) : Unit =
+    let (_, fut) = transfer amount
+    awaitFuture fut
+

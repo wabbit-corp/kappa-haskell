@@ -1,0 +1,24 @@
+-- Source: Boomerang docs/docs/main.src "Coercions" + module surface.
+--         Two Boomerang modules can each define the same identifier
+--         (e.g. both `Xml.elt` and `Html.elt`). Without disambiguation,
+--         an unqualified use is rejected. In Kappa the corresponding
+--         diagnostic family is kappa.name.ambiguous.
+-- Spec: modules.imports,
+--       modules.names.dotted_name_resolution_dotted,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.ambiguous).
+-- Portable obligation: an unqualified use of a name that resolves to
+--   two or more imported items is rejected.
+
+module consumer
+
+-- Both `elt` names are brought into scope unqualified.
+import Xml.(elt)
+import Html.(elt)
+
+-- NEGATIVE: bare `elt` is ambiguous between Xml.elt and Html.elt.
+result : String
+let result = elt "composer"    --!! kappa.name.ambiguous
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.ambiguous

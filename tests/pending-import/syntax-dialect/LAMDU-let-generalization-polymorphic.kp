@@ -1,0 +1,68 @@
+-- Source issues: lamdu#150 — multiple repls, generalize definitions.
+--   The user wants every anonymous top-level definition to behave as
+--   if it were generalized; let-bound values should accept use at any
+--   instantiation of their inferred type.
+-- Spec: declarations.let_in, declarations.totality.recommended_inference_strategies
+--   §10.x: a let-bound value with a polymorphic type may be instantiated
+--   at distinct types at each use site (let-generalization).
+--
+-- A let-bound polymorphic value must be usable at multiple
+-- instantiations; failing to instantiate, or using at incompatible
+-- types simultaneously, must be diagnosed.
+
+--! mode check
+
+-- POSITIVE: a let-bound identity is polymorphic and may be used at
+-- two distinct types.
+useId : Nat
+let useId =
+    let id : forall (a : Type). a -> a
+        id = \ x -> x
+    id 1 + id 2
+
+-- POSITIVE: let-bound value used at two distinct instantiations.
+useIdMulti : Bool
+let useIdMulti =
+    let id : forall (a : Type). a -> a
+        id = \ x -> x
+    let n = id 7
+    let b = id True
+    b
+
+-- POSITIVE: a let-bound polymorphic function passed to a higher-order
+-- caller that fixes its instantiation.
+applyToTwo : (Nat -> Nat) -> Nat
+let applyToTwo f = f 2
+
+useApply : Nat
+let useApply =
+    let twiceId : forall (a : Type). a -> a
+        twiceId = \ x -> x
+    applyToTwo twiceId
+
+-- POSITIVE: a polymorphic function explicitly applied at distinct
+-- instantiations in the same scope.
+mixedTypes : (Nat, Bool)
+let mixedTypes =
+    let const : forall (a b : Type). a -> b -> a
+        const = \ x _ -> x
+    (const 7 True, const True 7)
+
+-- NEGATIVE: using a let-bound value at a type that contradicts its
+-- inferred (monomorphic) type — when the value is inferred without
+-- a generalizing annotation it must not be silently widened.
+monoLet : Nat
+let monoLet =
+    let f = \ x -> x + 1
+    f True    --!! kappa.type.mismatch
+
+-- NEGATIVE: instantiating a polymorphic let-bound value at two
+-- distinct types simultaneously where unification would require
+-- equality.
+clashUse : forall (a : Type). a -> Bool
+let clashUse =
+    let id : forall (a : Type). a -> a
+        id = \ x -> x
+    \ x -> id x == 7    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

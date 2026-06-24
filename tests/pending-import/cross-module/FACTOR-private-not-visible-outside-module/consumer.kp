@@ -1,0 +1,30 @@
+-- Source issue: Factor #1355 (the parser silently accepts unbalanced
+--   or nested `<PRIVATE` / `PRIVATE>` sections), Factor #1603
+--   (a private vocab that doesn't work returns `f`, causing downstream
+--   crashes); the portable signal is that module visibility must be
+--   enforced strictly.
+-- Spec: modules.exports_visibility, modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+--
+-- A declaration marked private to a module must not be resolvable from
+-- another module. Kappa enforces visibility at name lookup, so an
+-- attempt to import or reference the private name yields
+-- kappa.name.unresolved.
+
+module consumer
+
+import provider
+
+--! mode check
+
+-- POSITIVE: the public declaration is visible to the importing module.
+usePublic : Int
+let usePublic = provider.publicValue
+
+-- NEGATIVE: the private declaration cannot be resolved from outside
+-- its defining module.
+usePrivate : Int
+let usePrivate = provider.privateValue  --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

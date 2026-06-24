@@ -1,0 +1,45 @@
+-- Source: granule-project/granule docs/README.md
+--         (`dup : a [2] -> (a, a)` introduced by `dup [x] = (x, x)`);
+--         tests/cases/positive/polymorphism/poly.gr
+-- Spec: expressions.patterns, types.universes.quantities
+-- Granule's `[x]` pattern unboxes a value of graded type `a [q]` into a
+-- binder `x : a` with `q` uses available. Kappa normalises this to a
+-- quantity-graded unboxing where the inner binder gets the outer grade.
+
+module test
+
+--! mode check
+
+type Box : Quantity -> Type -> Type
+
+intrinsic boxq   : forall (q : Quantity) (a : Type). (1 x : a) -> Box q a
+intrinsic unboxq : forall (q : Quantity) (a : Type). (1 b : Box q a) -> a
+
+data Bool : Type =
+    True
+    False
+
+-- POSITIVE: duplicate a value that has been graded for 2 uses.
+dup : forall (a : Type). (1 b : Box 2 a) -> (a, a)
+let dup b = let x = unboxq b in (x, x)
+
+
+-- POSITIVE: a 0-grade box's payload is erased; consuming the box itself
+-- linearly is OK provided no payload demand is made.
+weak : forall (a : Type). (1 b : Box 0 a) -> Unit
+let weak b = let _ = unboxq b in ()
+
+
+-- NEGATIVE: unbox a Box 1 and demand twice.
+badDup1 : forall (a : Type). (1 b : Box 1 a) -> (a, a)
+let badDup1 b =
+    let x = unboxq b in
+    (x, x)                    --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: unbox a Box 0 but demand once.
+badDrop0 : forall (a : Type). (1 b : Box 0 a) -> a
+let badDrop0 b = unboxq b     --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

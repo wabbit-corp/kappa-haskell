@@ -1,0 +1,30 @@
+-- Source issues: links PR #351 ("Allow open variants in handler case patterns"),
+--                links PR #925 ("Testing the IR type-checker's handling of variants and case constructs")
+-- Spec: effects.monadic_core.shallow_handlers, effects.monadic_core.effect_declarations,
+--       types.unions.variant_row_polymorphism, types.unions.elimination_match
+-- A handler operation clause whose parameter type is an open variant must
+-- preserve the residual row through the clause body. Matching with a
+-- residual-row pattern '(| ..rest |)' on the bound value MUST be accepted as
+-- exhaustive over the open union.
+
+module test
+
+-- Effect with an operation taking an open variant payload.
+effect Tag =
+    1 emit : forall (r : VarRow). (| Int | String | r |) -> Unit
+
+-- Handler whose operation clause receives the open-row variant and matches it
+-- with a residual-row catch-all.
+classify : Eff <[t : Tag]> Unit -> Eff <[ ]> Int
+let classify comp =
+    handle t comp with
+        case return _   -> pure 0
+        case emit v _k ->
+            match v
+              case (| n : Int |)    -> pure n
+              case (| s : String |) -> pure (String.length s)
+              case (| ..rest |)     -> pure 0
+
+--! mode check
+--! assertNoErrors
+--! assertType classify Eff <[t : Tag]> Unit -> Eff <[ ]> Int

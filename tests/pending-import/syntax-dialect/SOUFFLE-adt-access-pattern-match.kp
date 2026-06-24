@@ -1,0 +1,55 @@
+-- Source issues: souffle-lang/souffle tests/semantic/adt_access/adt_access.dl,
+--   tests/semantic/adt_alias/adt_alias.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       expressions.match (§16),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive).
+-- ADT values are accessed via pattern matching. A match expression must cover all
+-- declared constructors to be exhaustive; missing cases must produce
+-- kappa.pattern.non-exhaustive. Aliases of ADT types support the same pattern
+-- syntax as the original type.
+
+--! mode check
+
+data Expr : Type =
+    Num  (n : Int)
+    Add  (left : Expr) (right : Expr)
+    Neg  (e : Expr)
+
+-- POSITIVE: exhaustive pattern match.
+let evalExpr : Expr -> Int
+let evalExpr e =
+    match e
+        case Num n        -> n
+        case Add l r      -> evalExpr l + evalExpr r
+        case Neg e        -> -(evalExpr e)
+
+-- NEGATIVE: non-exhaustive match (missing Neg case).
+let partialEval : Expr -> Int
+let partialEval e =
+    match e    --!! kappa.pattern.non-exhaustive
+        case Num n   -> n
+        case Add l r -> partialEval l + partialEval r
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: type alias of an ADT supports the same patterns.
+type ExprAlias = Expr
+
+let evalAlias : ExprAlias -> Int
+let evalAlias e =
+    match e
+        case Num n        -> n
+        case Add l r      -> evalAlias l + evalAlias r
+        case Neg inner    -> -(evalAlias inner)
+
+-- POSITIVE: nested pattern matching.
+data Tree (a : Type) : Type =
+    Leaf
+    Node a (Tree a) (Tree a)
+
+let depth : Tree Int -> Int
+let depth t =
+    match t
+        case Leaf        -> 0
+        case Node _ l r  -> 1 + max (depth l) (depth r)

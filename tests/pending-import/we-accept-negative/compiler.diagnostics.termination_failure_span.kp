@@ -1,0 +1,18 @@
+-- Source issue: Agda #623
+-- Spec: compiler.frontir.origins_ranges_labels, compiler.frontir.diagnostics_records
+-- When a termination-checking failure occurs in a definition in this module,
+-- the diagnostic's primary span MUST anchor to the definition site (the `let`
+-- header or the recursive call site), not to any import declaration.
+-- This is a single-file test; the span-anchoring rule applies equally when
+-- definitions come from imported modules.
+
+module test
+
+-- A non-terminating recursive definition.
+-- The termination failure diagnostic MUST cite this `let` line (or the recursive
+-- call site below it), not any other location such as a module open or import.
+badLoop : Int -> Int
+let badLoop n = badLoop (n + 1)   --!! kappa.termination.failure
+
+--! mode check
+--! assertDiagnostic error kappa.termination.failure

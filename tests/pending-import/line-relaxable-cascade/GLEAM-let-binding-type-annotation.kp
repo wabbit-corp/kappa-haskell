@@ -1,0 +1,31 @@
+-- Source issues: gleam#566, gleam#70
+-- Spec: declarations.let_in
+-- Local `let` bindings may carry an explicit type annotation: `pat : T = expr`.
+-- The annotation constrains the expected type for `expr`. If the annotation is
+-- wrong, the compiler rejects the binding.
+
+--! mode check
+
+-- POSITIVE: annotated let with matching type.
+let annotated_int : Int =
+    let x : Int = 42 in x
+
+-- POSITIVE: annotated let with a data type.
+let annotated_string : String =
+    let s : String = "hello" in s
+
+-- POSITIVE: annotated tuple binding.
+let annotated_tuple : Int =
+    let (a, b) : (Int, Int) = (1, 2) in a + b
+
+-- POSITIVE: annotated let in a chain; later binding sees earlier annotation.
+let chained_annotations : Int =
+    let
+        a : Int = 10
+        b : Int = a + 5
+    in
+        b
+
+-- NEGATIVE: annotation contradicts actual type.
+let bad_annotation : String =
+    let x : String = (42 : Int) in x    --!! kappa.type.mismatch

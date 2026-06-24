@@ -1,0 +1,54 @@
+-- Source issue: Idris2 #1421
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       declarations.totality.recursive_group_elaboration_invariance
+-- Non-overlapping function clauses are elaborated to a case tree. The relative
+-- order of `-> impossible` clauses and regular clauses MUST NOT affect whether
+-- the definition is accepted, since the case tree represents all cases uniformly.
+-- Idris2 bug: clause_order_bad.idr failed when `impossible` clauses appeared
+-- before the final normal clause.
+
+module test
+
+data Bit : Type =
+  O : Bit
+  I : Bit
+
+data BitClass : Type =
+  OneBit : BitClass
+  TwoBit : BitClass
+
+classify : Bit -> BitClass
+let classify O = OneBit
+let classify I = TwoBit
+
+-- Accepted (normal clauses first, impossible clauses last):
+-- All four combinations are covered. `O I` and `I O` are impossible because
+-- the equality proof can't unify distinct bit constructors.
+sameIfEqual1 : (a b : Bit) -> (a = b) -> (classify a = classify b)
+let sameIfEqual1 O O refl = refl
+let sameIfEqual1 I I refl = refl
+let sameIfEqual1 O I _    = -> impossible
+let sameIfEqual1 I O _    = -> impossible
+
+--! mode check
+--! assertNoErrors
+
+-- Accepted (impossible clauses first, normal clauses last):
+-- Identical semantics to sameIfEqual1 — only the source order differs.
+-- The case tree produced MUST be identical; accepted/rejected status MUST match.
+sameIfEqual2 : (a b : Bit) -> (a = b) -> (classify a = classify b)
+let sameIfEqual2 O I _    = -> impossible
+let sameIfEqual2 I O _    = -> impossible
+let sameIfEqual2 O O refl = refl
+let sameIfEqual2 I I refl = refl
+
+--! assertNoErrors
+
+-- Accepted: interspersed order (impossible clauses between normal clauses).
+sameIfEqual3 : (a b : Bit) -> (a = b) -> (classify a = classify b)
+let sameIfEqual3 O O refl = refl
+let sameIfEqual3 O I _    = -> impossible
+let sameIfEqual3 I O _    = -> impossible
+let sameIfEqual3 I I refl = refl
+
+--! assertNoErrors

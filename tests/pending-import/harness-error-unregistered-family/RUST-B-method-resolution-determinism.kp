@@ -1,0 +1,62 @@
+-- Source issue: rust#121453 (slice > 50000)
+-- Spec: modules.names.method_call_receiver_projection_sugar,
+--       compiler.frontir.parallel_execution_determinism,
+--       compiler.frontir.diagnostic_quality_invariants
+--
+-- Method resolution at a receiver-projection call site must be
+-- deterministic with respect to the receiver's currently-elaborated type
+-- and the call-site's surrounding type expectations. A method call must
+-- NOT mutate the receiver's inferred type in a way that changes the
+-- resolution of a subsequent method call on the same binding.
+--
+-- The rust#121453 reproducer was a literal `42` whose first method call
+-- inferred it to `i64` (selecting a user-defined trait `abs`), and a
+-- second method call on the same binding then resolved to the inherent
+-- `i64::abs` instead. Kappa's spec says the binding `let x = 42` produces
+-- a single inferred type for `x` that is used uniformly at every use
+-- site within the binding's scope; receiver-projection sugar may not
+-- silently re-elaborate `x`'s type per call site.
+
+module test
+
+trait NegAbs (a : Type) =
+    absT : a -> a
+
+instance NegAbs Int =
+    let absT n = 0 - n
+
+--! mode check
+
+-- POSITIVE: `let x = 42` introduces `x` with a single inferred type. Two
+-- successive `absT` calls on `x` resolve via the same trait instance and
+-- produce the same result on the same input.
+twoCalls : Int
+let twoCalls =
+    let x : Int = 42
+    let a = absT x
+    let b = absT x
+    a + b   -- both calls invoked absT on Int; sum is deterministic
+
+
+-- POSITIVE: if `x` were genuinely polymorphic, the elaborator would
+-- generalize it; subsequent calls share the generalized scheme and
+-- still resolve deterministically.
+polyTwice : forall (a : Type) (@_ : NegAbs a). a -> a
+let polyTwice x =
+    let y = absT x
+    absT y      -- a single instance dictionary threads through both calls
+
+
+-- NEGATIVE: an unconstrained `42` whose only constraint comes from the
+-- two method calls themselves: Kappa rejects the program when no external
+-- constraint pins the type and no defaulting rule applies. (Compare
+-- rust#121453 where rustc instead resolved nondeterministically.) Kappa
+-- emits an unsolved-metavariable diagnostic.
+nondeterministicWouldBe : Int
+let nondeterministicWouldBe =
+    let x = 42                                --!! kappa.type.unsolved-metavariable
+    -- in rust, the first call mutates x's type silently; Kappa requires
+    -- the type to be solved before any method-call sugar resolution.
+    0
+
+--! assertDiagnostic error kappa.type.unsolved-metavariable

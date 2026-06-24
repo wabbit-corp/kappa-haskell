@@ -1,0 +1,50 @@
+-- Source issue: dhall-lang #387
+-- Spec: core_semantics.record_canonicalization
+-- Record types whose field sets are identical but listed in different order MUST
+-- be definitionally equal. A function that accepts {a : Nat, b : Bool} must
+-- also accept {b : Bool, a : Nat} without coercion or annotation.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+data Bool : Type = False : Bool | True : Bool
+
+-- POSITIVE TEST 1: function parameter type written in one field order
+-- must accept record values constructed in any field order.
+take_ab : {a : Nat, b : Bool} -> Nat
+let take_ab r = r.a
+
+take_ba : {b : Bool, a : Nat} -> Nat
+let take_ba r = r.a
+
+-- Both functions must accept the same record values.
+val1 : {a : Nat, b : Bool}
+let val1 = {a = Zero, b = True}
+
+result_ab : Nat
+let result_ab = take_ab val1
+
+result_ba : Nat
+let result_ba = take_ba val1
+
+-- POSITIVE TEST 2: the two record types are the same type, so a function
+-- expecting one is usable where the other is expected.
+wrapper : ({a : Nat, b : Bool} -> Nat) -> {b : Bool, a : Nat} -> Nat
+let wrapper f r = f r
+
+check_wrap : Nat
+let check_wrap = wrapper take_ab val1
+
+-- POSITIVE TEST 3: three fields, lex-sorted canonical order.
+-- {x : Nat, y : Nat, z : Bool}  and  {z : Bool, y : Nat, x : Nat}  are the same type.
+take_xyz : {x : Nat, y : Nat, z : Bool} -> Bool
+let take_xyz r = r.z
+
+val_xyz_rev : {z : Bool, y : Nat, x : Nat}
+let val_xyz_rev = {z = False, y = Zero, x = Zero}
+
+result_xyz : Bool
+let result_xyz = take_xyz val_xyz_rev
+
+--! mode check
+--! assertNoErrors

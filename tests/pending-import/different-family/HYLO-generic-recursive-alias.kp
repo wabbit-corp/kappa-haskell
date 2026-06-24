@@ -1,0 +1,40 @@
+-- Source artifacts: Hylo PR#1225 (fix infinite recursion caused by nested type aliases,
+--                   fixes #1047 and #1086),
+--                   Tests/HyloTests/TestCases/TypeChecking/RecursiveConstraints.hylo
+--                   (diagnostic: "requirement system too complex to build"),
+--                   PR#1416 (gracefully diagnose recursive definitions)
+-- Spec: compiler.frontir.standard_diagnostic_families.termination
+--       (kappa.termination.failure)
+-- Hylo: a type alias that directly or transitively refers to itself causes
+-- the type-checker to recurse infinitely. The compiler must detect the cycle
+-- and report a termination failure rather than hanging or crashing.
+
+--! mode check
+
+-- POSITIVE: well-founded alias chain (no cycle).
+let Meters : Type = Int
+let Distance : Type = Meters
+
+travelDistance : Distance -> Int
+let travelDistance d = d
+
+-- POSITIVE: generic alias applied to concrete argument.
+data ListOf a : Type = Nil | Cons a (ListOf a)
+
+let IntList : Type = ListOf Int
+
+emptyList : IntList
+let emptyList = Nil
+
+-- NEGATIVE: direct self-referential type alias.
+-- `Alias1` expands to itself; the normalizer would loop.
+let Alias1 : Type = Alias1    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- NEGATIVE: mutually recursive aliases.
+-- `PingType` → `PongType` → `PingType` → ...
+let PingType : Type = PongType    --!! kappa.termination.failure
+let PongType : Type = PingType    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

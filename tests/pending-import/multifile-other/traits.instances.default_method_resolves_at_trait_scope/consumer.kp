@@ -1,0 +1,34 @@
+-- Source issues: Noir#8632, Noir#9020
+-- Spec: traits.members, traits.instances,
+--       modules.visibility_opacity_private_opaque.private
+-- Consumer module. Restructured 2026-06-11 (audit FAB-026): the original
+-- single-module version could not discriminate trait-site from impl-site
+-- resolution. Now the helper is `private` in trait_mod (invisible here), and
+-- this module defines a DECOY `privateHelper` with a different type: if a
+-- harness wrongly re-resolved the default body at the impl site it would
+-- either fail name resolution or pick the decoy and fail type checking.
+module consumer
+
+import trait_mod
+
+--! mode check
+
+-- Decoy with the same spelling but an incompatible type.
+privateHelper : String
+let privateHelper = "decoy"
+
+data Num : Type = Num Int
+
+-- Instance does NOT override `combined`; the trait-site default is inherited.
+instance Combiner Num =
+    let value (Num n) = n
+
+-- Calling the default through the instance must use the trait-site body.
+result : Int
+let result = combined (Num 3) (Num 4)
+
+check : Bool
+let check = (result == 7)
+
+--! assertNoErrors
+--! assertType result Int

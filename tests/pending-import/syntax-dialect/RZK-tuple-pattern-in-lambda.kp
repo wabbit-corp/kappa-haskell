@@ -1,0 +1,81 @@
+-- Source issues: rzk#141 — weird error message "expected a pattern";
+--   several mathematically identical definitions produced spurious errors
+--   when tuple patterns were used in lambda arguments. The elaborator
+--   rejected patterns that should have been valid in anonymous functions.
+-- Spec: expressions.lambdas, declarations.terms.irrefutable_patterns_let_bindings
+--   §13.2: lambda parameters may use irrefutable patterns.
+--   §6.3.2: tuple patterns in function parameters are irrefutable when the
+--   type is a product/record.
+--
+-- Tuple patterns must be accepted in lambda expressions, in function
+-- parameter lists, and in let-binding patterns. All syntactically valid
+-- irrefutable patterns in these positions must produce identical semantics
+-- regardless of the surface form used.
+
+--! mode check
+
+-- POSITIVE: plain pair type.
+data Pair (a b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- POSITIVE: pattern matching in a top-level function declaration.
+swapDecl : forall (a b : Type). Pair a b -> Pair b a
+let swapDecl (MkPair x y) = MkPair y x
+
+-- POSITIVE: pattern matching in a lambda expression.
+swapLambda : forall (a b : Type) -> Pair a b -> Pair b a
+let swapLambda = \ (MkPair x y) -> MkPair y x
+
+-- POSITIVE: pattern matching on the built-in tuple type in a let binding.
+fstLetPat : forall (a b : Type). (a, b) -> a
+let fstLetPat p =
+    let (x, _) = p
+    x
+
+-- POSITIVE: nested tuple pattern in a lambda.
+fst3Lambda : (Nat, Nat, Nat) -> Nat
+let fst3Lambda = \ (a, _) -> a
+
+-- POSITIVE: lambda with a pair pattern used inside a higher-order function.
+mapFirst : forall (a b c : Type). (a -> c) -> (a, b) -> (c, b)
+let mapFirst f = \ (x, y) -> (f x, y)
+
+-- POSITIVE: multiple arguments some of which are tuple patterns.
+zipWith : forall (a b c : Type). (a -> b -> c) -> (a, b) -> c
+let zipWith f (x, y) = f x y
+
+-- POSITIVE: lambda over a nested pair.
+sndOfSnd : ((Nat, Nat), Nat) -> Nat
+let sndOfSnd ((_, _), z) = z
+
+-- POSITIVE: using tuple patterns equivalently in different positions;
+-- all four definitions below should typecheck and produce equal results.
+addPair1 : (Nat, Nat) -> Nat
+let addPair1 p = p.1 + p.2
+
+addPair2 : (Nat, Nat) -> Nat
+let addPair2 (x, y) = x + y
+
+addPair3 : (Nat, Nat) -> Nat
+let addPair3 = \ p -> p.1 + p.2
+
+addPair4 : (Nat, Nat) -> Nat
+let addPair4 = \ (x, y) -> x + y
+
+testEq : Nat
+let testEq = addPair1 (3, 4) + addPair2 (3, 4) + addPair3 (3, 4) + addPair4 (3, 4)
+
+-- NEGATIVE: using a pattern in a position where no pattern is expected
+-- (e.g., inside a type annotation that takes no pattern).
+badTypePattern : (Nat, Bool)
+let badTypePattern =
+    let (x, y) : (Nat, Bool) -> (Bool, Nat) = (1, True)    --!! kappa.type.mismatch
+    (x, y)
+
+-- NEGATIVE: irrefutable pattern that cannot match the actual type.
+badPattern : Nat
+let badPattern =
+    let (x, y) = 42    --!! kappa.type.mismatch
+    x
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,89 @@
+-- Source issues: invalid/uniq_modes.m, invalid/mostly_uniq_1.m, invalid/uniq_neg.m
+-- Spec: types.universes.quantities, types.universes.borrow_lifetimes_escape_prevention
+--       (kappa.quantity.unsatisfied, kappa.path.consumed)
+-- In Mercury, `di` (destructive input) and `uo` (unique output) modes require
+-- linearity: the value may not be used in a backtrackable context because a
+-- second attempt might try to use a resource that has already been consumed.
+-- In Kappa, this is captured by quantity 1 (linear): a linear value must be
+-- demanded exactly once. Using a linear value in both branches of a conditional
+-- (or in a backtracking context) duplicates the demand and must be rejected.
+
+module test
+
+-- A resource-like type whose values must be used exactly once.
+data Handle : Type = Handle Int
+
+-- A function that consumes a Handle (takes quantity 1).
+close : (1 h : Handle) -> Unit
+let close _ = ()
+
+-- A function that reads from a Handle (borrows it, quantity &).
+readValue : (& h : Handle) -> Int
+let readValue (Handle n) = n
+
+-- POSITIVE: using a linear Handle exactly once.
+useOnce : (1 h : Handle) -> Unit
+let useOnce h = close h
+
+
+-- NEGATIVE: using a linear Handle twice — once to read, once to close.
+-- The second use after `close` is a use-after-consume.
+useTwice : (1 h : Handle) -> Int
+let useTwice h =
+    let n = readValue h   -- borrow (ok)
+    close h               -- consume (ok so far)
+    readValue h           --!! kappa.path.consumed  (h already consumed)
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: using a linear value in both branches of an if-then-else.
+-- The then-branch would consume `h`, but the else-branch also needs `h`.
+-- This violates the linear requirement because in one execution only one
+-- branch runs, but the checker must ensure `h` is used exactly once on
+-- ALL paths. Since `close h` appears in only one branch, the other branch
+-- leaves `h` unconsumed, violating the positive lower bound.
+
+useInBranch : (1 h : Handle) -> Bool -> Int
+let useInBranch h cond =
+    if cond
+    then
+        close h        -- consumes h on true path
+        0
+    else
+        readValue h    --!! kappa.quantity.positive-lower-bound
+        -- h is never consumed on the false path
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- NEGATIVE: duplicating a linear value by binding it to two names.
+dupLinear : (1 h : Handle) -> (Handle, Handle)
+let dupLinear h = (h, h)    --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: consuming the linear value in every branch.
+consumeInAllBranches : (1 h : Handle) -> Bool -> Unit
+let consumeInAllBranches h cond =
+    if cond
+    then close h
+    else close h
+
+
+-- POSITIVE: passing a linear value to a single consumer.
+passLinear : (1 h : Handle) -> Unit
+let passLinear h = close h
+
+
+-- NEGATIVE: a linear value ignored (not demanded even once) — violates the
+-- positive lower bound requirement (quantity 1 requires exactly 1 use).
+dropLinear : (1 h : Handle) -> Int
+let dropLinear h = 42    --!! kappa.quantity.positive-lower-bound
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- POSITIVE: an unrestricted (omega) value may be used any number of times.
+readTwice : Handle -> Int
+let readTwice h = readValue h + readValue h
+
+
+--! mode check

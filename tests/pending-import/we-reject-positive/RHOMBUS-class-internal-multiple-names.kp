@@ -1,0 +1,98 @@
+-- Source issues: rhombus#738 (multiple `internal` clauses only give first name all meanings)
+-- Spec: types.records
+--   When a record/class type declares multiple internal (opaque) name aliases, each alias
+--   must independently receive all the meanings that a single alias would receive:
+--   annotation, binding form, and namespace access.
+-- Evidence: rhombus#738 shows:
+--   `class Foo(x): internal Bar; internal Baz; let Baz(_) = Foo()` — fails because
+--   only the first `internal` name (`Bar`) gets all bindings. `Baz` lacks the binding meaning.
+-- The portable obligation: each declared internal alias must be independently usable as a
+-- pattern binder.
+
+--! mode check
+
+-- POSITIVE: a data type with a single opaque alias — the alias works as a pattern binder.
+data PublicBox : Type =
+    InternalBox { secret : Int }
+
+-- The internal/private constructor name can be used as a pattern binder:
+extractSecret : PublicBox -> Int
+let extractSecret b =
+    match b
+    case InternalBox { secret = s } -> s
+
+-- POSITIVE: a data type with multiple constructors — all constructors can be used as binders.
+data Shape : Type =
+    Circle { radius : Int }
+    Rectangle { width : Int, height : Int }
+    Triangle { base : Int, height : Int }
+
+shapeArea : Shape -> Int
+let shapeArea s =
+    match s
+    case Circle    { radius = r }         -> r * r
+    case Rectangle { width = w, height = h } -> w * h
+    case Triangle  { base = b, height = h  } -> (b * h) `div` 2
+
+-- POSITIVE: all three constructors are independently usable as binders.
+isCircle : Shape -> Bool
+let isCircle s =
+    match s
+    case Circle _ -> True
+    case _        -> False
+
+isRectangle : Shape -> Bool
+let isRectangle s =
+    match s
+    case Rectangle _ -> True
+    case _           -> False
+
+isTriangle : Shape -> Bool
+let isTriangle s =
+    match s
+    case Triangle _ -> True
+    case _          -> False
+
+-- POSITIVE: two independent record variants, each independently accessible.
+data Tree (a : Type) : Type =
+    Leaf
+    Node { value : a, left : Tree a, right : Tree a }
+
+treeDepth : Tree Int -> Int
+let treeDepth t =
+    match t
+    case Leaf                           -> 0
+    case Node { left = l, right = r, value = _ } ->
+        1 + max (treeDepth l) (treeDepth r)
+
+-- POSITIVE: pattern binding using the second constructor name.
+-- Both constructors must be independently available as binding forms.
+getNodeValue : Tree Int -> Maybe Int
+let getNodeValue t =
+    match t
+    case Leaf                     -> Nothing
+    case Node { value = v, left = _, right = _ } -> Just v
+
+-- POSITIVE: a data type with four constructors — all independently usable.
+data Compass : Type =
+    North
+    South
+    East
+    West
+
+isNorthOrSouth : Compass -> Bool
+let isNorthOrSouth c =
+    match c
+    case North -> True
+    case South -> True
+    case East  -> False
+    case West  -> False
+
+isEastOrWest : Compass -> Bool
+let isEastOrWest c =
+    match c
+    case East -> True
+    case West -> True
+    case _    -> False
+
+--! assertNoErrors

@@ -1,0 +1,85 @@
+-- Source issues: dex-lang typeclass-tests.dx (diamond superclasses section):
+--   (`interface B(a|A); interface C(a|A); def f1(x: a) -> Int given (a|B|C) = a_ x`
+--   → accepted, no error),
+--   dex-lang #666 (assume and verify global uniqueness of interfaces).
+-- Spec: traits.supertraits.diamond_inheritance (§14.5),
+--       traits.instances.supertrait_projection_path_selection.
+-- When two traits share a common supertrait (forming a diamond), a value
+-- that satisfies both derived traits must be accepted without ambiguity.
+-- The shared supertrait's methods must be accessible exactly once through
+-- either derivation path. Dex enforces that superclass dictionaries are
+-- unique (coherent), so the diamond is well-formed.
+
+--! mode check
+
+-- Base trait.
+trait HasId (a : Type) =
+    getId : a -> Int
+
+-- Two traits that both extend HasId.
+trait HasName (a : Type) given (HasId a) =
+    getName : a -> String
+
+trait HasTag (a : Type) given (HasId a) =
+    getTag : a -> String
+
+-- A concrete type with all three instances.
+data Entity : Type = Entity Int String String
+
+instance HasId Entity =
+    let getId (Entity n _ _) = n
+
+instance HasName Entity =
+    let getName (Entity _ name _) = name
+
+instance HasTag Entity =
+    let getTag (Entity _ _ tag) = tag
+
+-- POSITIVE: a function using both HasName and HasTag — which both share HasId —
+-- must be accepted. getId is accessible through either supertrait.
+describeEntity : forall (a : Type). HasName a => HasTag a => a -> String
+let describeEntity x =
+    let n  = getId x    -- resolved via the shared HasId supertrait
+    let nm = getName x
+    let tg = getTag x
+    show n <> ": " <> nm <> " [" <> tg <> "]"
+
+-- POSITIVE: a function explicitly requiring all three constraints.
+fullInfo : forall (a : Type). HasId a => HasName a => HasTag a => a -> String
+let fullInfo x = show (getId x) <> " " <> getName x <> " " <> getTag x
+
+-- POSITIVE: calling describeEntity on Entity works.
+entityDesc : String
+let entityDesc = describeEntity (Entity 42 "widget" "active")
+
+-- POSITIVE: the multiple-superclass path `(a|HasName|HasTag)` is accepted
+-- even though both paths lead to the same HasId dictionary.
+useViaMultiBound : forall (a : Type). HasName a => HasTag a => a -> Int
+let useViaMultiBound x = getId x   -- HasId available from either path
+
+-- POSITIVE: deeper diamond — three levels.
+trait Printable (a : Type) given (HasId a) =
+    printRepr : a -> String
+
+trait Storable (a : Type) given (HasName a) (Printable a) =
+    storeKey : a -> String
+
+data Record : Type = Record Int String
+
+instance HasId Record =
+    let getId (Record n _) = n
+
+instance HasName Record =
+    let getName (Record _ s) = s
+
+instance Printable Record =
+    let printRepr (Record n s) = show n <> ":" <> s
+
+instance Storable Record =
+    let storeKey r = getName r <> "_" <> show (getId r)
+
+-- POSITIVE: using Storable, which transitively depends on HasId twice.
+makeKey : Record -> String
+let makeKey r = storeKey r
+
+--! assertNoErrors

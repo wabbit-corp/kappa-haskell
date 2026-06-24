@@ -1,0 +1,41 @@
+-- Source artifacts: synquid test/comcom/AVL.sq closes with
+--                 `mutual {insert, insL, insR}` — three definitions form a
+--                 mutual SCC and are jointly checked for termination.
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.recursive_group_elaboration_invariance,
+--       compiler.frontir.standard_diagnostic_families.termination
+--
+-- The Kappa-portable obligation is that a mutually recursive group of let
+-- definitions is elaborated as one SCC. Termination is discharged by
+-- structural descent shared across the SCC; if no decreasing argument
+-- exists on every cross-call cycle, the SCC is rejected with
+-- `kappa.termination.failure`.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- POSITIVE: classic even/odd mutual recursion. The structural measure is
+-- the input PNat, which strictly decreases on each cross-call.
+isEven : PNat -> Bool
+let isEven n =
+    match n
+      case Z      -> True
+      case (S m)  -> isOdd m
+
+isOdd : PNat -> Bool
+let isOdd n =
+    match n
+      case Z      -> False
+      case (S m)  -> isEven m
+
+-- NEGATIVE: mutual recursion with no decreasing argument on either side.
+spinA : PNat -> PNat
+let spinA n = spinB n                            --!! kappa.termination.failure
+
+spinB : PNat -> PNat
+let spinB n = spinA n
+
+--! assertDiagnosticFamily error kappa.termination.failure

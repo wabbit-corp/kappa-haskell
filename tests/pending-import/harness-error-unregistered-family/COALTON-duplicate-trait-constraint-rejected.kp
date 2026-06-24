@@ -1,0 +1,36 @@
+-- Source: Coalton issue #356 (Coalton should error on duplicate explicit
+--   constraints in a type). Duplicate constraints in a type signature are
+--   redundant at best and confusing at worst; a good checker should reject
+--   or warn on them.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.ambiguity-check §3.2.3), or
+--   compiler.frontir.standard_diagnostic_families.name_import (§3.2.2).
+--
+-- A type signature with the same constraint listed more than once should
+-- produce an error or warning. The duplicate constraint carries no additional
+-- information and reveals a likely copy-paste mistake in the programmer's code.
+
+--! mode check
+
+-- POSITIVE: a function with two distinct constraints on the same type variable.
+-- Eq and Ord are different constraints; both are valid and non-duplicate.
+sortThenEq : forall (a : Type). (@_ : Ord a) -> (@_ : Eq a) -> a -> a -> Bool
+let sortThenEq x y = x == y
+
+-- POSITIVE: a function with a constraint on each of two different type variables.
+-- Not a duplicate: Eq a and Eq b are different goals.
+bothEq : forall (a : Type) (b : Type). (@_ : Eq a) -> (@_ : Eq b) -> a -> b -> Bool
+let bothEq _ _ = False
+
+-- NEGATIVE: a function signature with the same Eq a constraint listed twice.
+-- The duplicate serves no purpose and must be rejected or warned.
+dupConstraint : forall (a : Type). (@_ : Eq a) -> (@_ : Eq a) -> a -> Bool --!! kappa.type.ambiguity-check
+let dupConstraint x = x == x
+
+--! assertDiagnosticFamily error kappa.type.ambiguity-check
+
+-- NEGATIVE: the same constraint duplicated on a let-bound definition.
+dupLocal : forall (a : Type). (@_ : Ord a) -> (@_ : Eq a) -> (@_ : Eq a) -> a -> a -> Bool --!! kappa.type.ambiguity-check
+let dupLocal x y = x == y
+
+--! assertDiagnosticFamily error kappa.type.ambiguity-check

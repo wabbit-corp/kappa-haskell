@@ -1,0 +1,34 @@
+-- Source issue: Uiua #53 ('call' and '!' not behaving the same — applying
+--   a value through `∵call arr` panics with "Stack was empty when
+--   evaluating index" instead of reporting that the array element is not
+--   callable), Uiua #112 (`if`'s condition expects a natural number but
+--   receives a function value — needs a clear non-callable diagnostic).
+-- Spec: expressions.application, types.functions,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_APPLICATION_NON_CALLABLE).
+--
+-- Applying a value whose type is not callable at the application site
+-- must surface as E_APPLICATION_NON_CALLABLE with the offending value's
+-- type identified.
+
+module test
+
+--! mode check
+
+-- POSITIVE: ordinary unary application.
+applyOk : Int
+let applyOk = (\x -> x + 1) 7
+
+--! assertType applyOk Int
+
+-- NEGATIVE: applying an Int as if it were a function.
+nonCallable : Int
+let nonCallable = 1 2                       --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: applying a List element (here a list of Ints) as a function.
+applyListElem : Int
+let applyListElem = ([1, 2, 3] : List Int) 0  --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE

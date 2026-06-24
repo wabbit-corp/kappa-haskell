@@ -1,0 +1,58 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_arity/rule_arity.dl,
+--   tests/semantic/fact_arity/fact_arity.dl.
+-- Spec: declarations.terms (§9.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- Applying a curried function to too many arguments produces kappa.type.mismatch
+-- (applying the non-function result to extra args). Constructors applied with wrong
+-- arity produce kappa.constructor.arity. Souffle reports "Mismatching arity of
+-- relation A" for these cases.
+
+--! mode check
+
+let f1 : Int -> String
+let f1 n = "one"
+
+let f2 : Int -> Int -> String
+let f2 a b = "two"
+
+let f3 : Int -> Int -> Int -> String
+let f3 a b c = "three"
+
+-- POSITIVE: correct number of arguments.
+let ok1 : String = f1 1
+let ok2 : String = f2 1 2
+let ok3 : String = f3 1 2 3
+
+-- NEGATIVE: f1 given two arguments.
+let bad1 : String = f1 1 2    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: f2 given three arguments.
+let bad2 : String = f2 1 2 3    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: f3 given one argument — result (Int -> Int -> String) assigned to String.
+let bad3 : String = f3 1    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Constructors and relation-style types with multiple arguments.
+data Triple : Type =
+    MkTriple Int Int Int
+
+-- POSITIVE: correct arity for MkTriple.
+let t : Triple = MkTriple 1 2 3
+
+-- NEGATIVE: MkTriple given 2 arguments instead of 3.
+let badTriple : Triple = MkTriple 1 2    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: MkTriple given 4 arguments.
+let badTriple2 : Triple = MkTriple 1 2 3 4    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

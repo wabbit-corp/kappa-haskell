@@ -1,0 +1,55 @@
+-- Source issues: Circom control-flow.md (positive: for-loops with compile-time
+--               constant bounds are accepted; the loop body can generate constraints
+--               as long as the iteration count is statically known).
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership (positive).
+-- Kappa spec rule (§SA-CIRCOM-03, positive):
+--   "A for-loop whose bounds are 0-quantity (compile-time known) must be accepted
+--    even when the loop body contains constraint-generation or 0-quantity
+--    sub-computations."
+-- Note: Kappa requires `for` inside `do` blocks (§18.6); mutable accumulation uses
+--   `var` and `!(readRef ...)` (§18.6.1). Functions return IO e Int.
+
+--! mode check
+
+-- POSITIVE: loop with literal bounds.
+let sumFirst10 : IO e Int = do
+    var acc = 0
+    for i in 0 ..< 10 do
+        acc = !(readRef acc) + i
+    readRef acc
+
+-- POSITIVE: loop with named compile-time constant as bound.
+loopN : (0 _ : Int)
+let loopN = 8
+
+let sumToN : IO e Int = do
+    var acc = 0
+    for i in 0 ..< loopN do
+        acc = !(readRef acc) + i
+    readRef acc
+
+-- POSITIVE: nested loops with constant bounds.
+rows : (0 _ : Int)
+let rows = 4
+
+cols : (0 _ : Int)
+let cols = 4
+
+let sumMatrix : IO e Int = do
+    var total = 0
+    for r in 0 ..< rows do
+        for c in 0 ..< cols do
+            total = !(readRef total) + (r * cols + c)
+    readRef total
+
+-- POSITIVE: loop bound computed from a compile-time expression.
+compLen : (0 _ : Int)
+let compLen = rows * cols
+
+let sumFlat : IO e Int = do
+    var acc = 0
+    for i in 0 ..< compLen do
+        acc = !(readRef acc) + i
+    readRef acc
+
+--! assertNoErrors

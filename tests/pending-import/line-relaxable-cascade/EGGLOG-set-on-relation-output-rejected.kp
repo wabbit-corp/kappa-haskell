@@ -1,0 +1,34 @@
+-- Source issues: egraphs-good/egglog #810 (Disallow `set` and equalities on the
+--   output of relations),
+--   egraphs-good/egglog #818 (Can't refer to relation in higher order functions
+--   anymore — relations no longer return Unit).
+-- Spec: types.unions (Unit type),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch).
+-- The portable obligation behind egglog #810/#818: an expression whose result
+-- type is Unit cannot be compared with a value of a different type, nor bound
+-- through `let : T` to a non-Unit T. Comparing two Unit values is well-typed
+-- but redundant; comparing Unit to a non-Unit value is a type mismatch.
+
+module test
+
+--! mode check
+
+report : Int -> ()
+let report _ = ()
+
+-- POSITIVE: a Unit expression is fine as a statement value.
+useUnit : ()
+let useUnit = report 1
+
+-- NEGATIVE: equating a Unit-returning call to an Int.
+bad1 : Bool
+let bad1 = (report 1) == 1                --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: trying to bind the result of a Unit-returning call into an Int.
+bad3 : Int
+let bad3 = report 1                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

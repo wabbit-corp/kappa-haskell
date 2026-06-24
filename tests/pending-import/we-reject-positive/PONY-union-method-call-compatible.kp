@@ -1,0 +1,55 @@
+-- Source issues: ponyc#318, ponyc#3003
+-- Spec: expressions.applications, traits.instances
+-- Pony issue #318: calling a method on a union type should be allowed when
+-- every member of the union has that method with compatible signatures.
+-- In Kappa, calling a trait method on a value whose type has the required
+-- instance in scope works regardless of whether the value came from a union
+-- context, as long as the specific concrete type is known.
+-- This tests that trait dispatch through a union-compatible interface works.
+
+--! mode check
+
+trait Describable (a : Type) =
+    describe : (& x : a) -> String
+
+data Apple  : Type = Apple
+data Banana : Type = Banana String
+
+instance Describable Apple =
+    let describe Apple = "apple"
+
+instance Describable Banana =
+    let describe (Banana variety) = "banana: " ++ variety
+
+-- A function that works for either type.
+printThing :
+    forall (a : Type).
+    (@_ : Describable a) ->
+    (& x : a) -> String
+let printThing x = describe x
+
+appleDesc : String
+let appleDesc = printThing Apple
+
+bananaDesc : String
+let bananaDesc = printThing (Banana "cavendish")
+
+-- A union-style container: either an Apple or a Banana. Both have Describable.
+data Fruit : Type =
+    IsFruit_Apple  Apple
+    IsFruit_Banana Banana
+
+-- POSITIVE: dispatching describe based on which constructor is held.
+describeAny : Fruit -> String
+let describeAny f =
+    match f
+    case IsFruit_Apple  a -> describe a
+    case IsFruit_Banana b -> describe b
+
+result1 : String
+let result1 = describeAny (IsFruit_Apple Apple)
+
+result2 : String
+let result2 = describeAny (IsFruit_Banana (Banana "plantain"))
+
+--! assertNoErrors

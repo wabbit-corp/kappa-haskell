@@ -1,0 +1,65 @@
+-- Source: nim-lang/Nim#9156 (Given proc and type from two different modules
+--         named the same thing, Nim prefers the type over the proc),
+--         nim-lang/Nim#22143 (Changing generic weight of tyGenericParam),
+--         nim-lang/RFCs#346 (Improve overload resolution — explicit vs generic)
+-- Spec: traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.ambiguous)
+-- In Nim, multiple candidates of the same name from different modules could
+-- produce confusing ambiguity. In Kappa, when instance search finds multiple
+-- equally-valid candidates, the result is kappa.implicit.ambiguous.
+
+--! mode check
+module test
+
+trait Convert (a b : Type) =
+    convert : a -> b
+
+-- Two instances that both match Convert Int String at the same head.
+instance Convert Int String =
+    let convert n = "int:" ++ show n
+
+-- POSITIVE: unambiguous call — only one matching instance.
+convertIntToString : String
+let convertIntToString = convert 42
+
+-- POSITIVE: a second distinct pair — Convert Bool String.
+instance Convert Bool String =
+    let convert b =
+        match b
+        case True  -> "true"
+        case False -> "false"
+
+convertBoolToString : String
+let convertBoolToString = convert True
+
+-- POSITIVE: a function that uses an unambiguous constraint at a fixed type.
+stringify : Int -> String
+let stringify n = convert n
+
+-- (Rewritten 2026-06-11, FAB-010: the previous version declared a second
+-- instance at a DIFFERENT head, `Convert Int Int`, then marked a call whose
+-- expected type String fully determines the instance — and simultaneously
+-- accepted an identically-typed "disambiguated" call. Real ambiguity needs
+-- two equally-valid instances for the SAME head; house style per the
+-- reverified COALTON/MERCURY/JULIA ambiguity tests.)
+
+-- Two equally-valid instances for the SAME head: Convert Bool Int.
+instance Convert Bool Int =
+    let convert b =
+        match b
+        case True  -> 1
+        case False -> 0
+
+instance Convert Bool Int =     --!! kappa.implicit.ambiguous
+    let convert b =
+        match b
+        case True  -> 100
+        case False -> 0
+
+-- NEGATIVE: any demand for Convert Bool Int now finds two candidates.
+ambiguousConvert : Int
+let ambiguousConvert = convert True   --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+

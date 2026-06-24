@@ -1,0 +1,38 @@
+-- Source issues: nickel row_conflict_poly tests, #1393
+-- Spec: compiler.frontir.standard_diagnostic_families.effect_row_variant (kappa.row.lacks-failed),
+--       types.records.row_polymorphism
+-- When a polymorphic record function is applied to a record where field ordering
+-- would cause a row variable to be unified with a row that already contains a
+-- conflicting label, the error MUST be detected regardless of the alphabetical
+-- order of the extra fields. Nickel #1393 showed that whether a call produced
+-- a type error depended on whether the extra field's name came before or after `x`
+-- alphabetically — `a` vs `y`. This is unsound: the row Lacks constraint must be
+-- checked independent of field ordering.
+
+module test
+
+-- A function that extends a record with field `x : Number`.
+-- The row variable `r` in the input/output must Lack `x` (implicit from LacksRec).
+-- Uses Kappa row-extension syntax `rec.{ x := 1 }` (§13.2.6).
+insertX : forall r. LacksRec r x => (a : String | r) -> (x : Number, a : String | r)
+let insertX rec = rec.{ x := 1 }
+
+-- NEGATIVE: calling insertX on a record that already has `x`.
+-- The tail `r` when unified with `(x : Number)` would violate `r Lacks x`.
+-- Alphabetically, `a` comes BEFORE `x`.
+badAlphaBeforeX : (x : Number, a : String)
+let badAlphaBeforeX = insertX (x = 0, a = "foo")    --!! kappa.row.lacks-failed
+
+-- NEGATIVE: same Lacks violation but extra field `y` comes AFTER `x` alphabetically.
+-- The check must be order-independent: `y` vs `a` must not affect detection.
+badAlphaAfterX : (x : Number, a : String, y : Number)
+let badAlphaAfterX = insertX (x = 0, a = "foo", y = 99)    --!! kappa.row.lacks-failed
+
+--! mode check
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- POSITIVE: calling insertX on a record without `x` — no conflict.
+goodCall : (x : Number, a : String, z : String)
+let goodCall = insertX (a = "hi", z = "world")
+
+--! assertType goodCall (x : Number, a : String, z : String)

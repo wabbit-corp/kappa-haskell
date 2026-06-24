@@ -1,0 +1,62 @@
+-- Source issue: dhall-lang #1109, #1142
+-- Spec: types.records (section 13.2.5 Record update)
+-- Record patch (.{ field = value }) and field projection (.field) must be
+-- applicable to any expression of a record type, including function application
+-- results. Expressions of the form (f x).{ field = v } and (f x).field
+-- must be parsed and type-checked without requiring a named intermediate binding.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+data Bool : Type = False : Bool | True : Bool
+
+record Point : Type =
+    x : Nat
+    y : Nat
+
+-- A function that returns a record value.
+origin : Unit -> Point
+let origin () = Point { x = Zero, y = Zero }
+
+make_point : Nat -> Nat -> Point
+let make_point px py = Point { x = px, y = py }
+
+-- POSITIVE TEST 1: record patch on a function application.
+-- (make_point Zero Zero).{ x = Succ Zero } must be well-typed and produce
+-- Point { x = Succ Zero, y = Zero }.
+patched : Point
+let patched = (make_point Zero Zero).{ x = Succ Zero }
+
+-- Verify the patch took effect.
+patched_x : Nat
+let patched_x = patched.x
+
+-- POSITIVE TEST 2: field projection on a function application.
+-- (make_point Zero (Succ Zero)).y must be well-typed.
+proj_y : Nat
+let proj_y = (make_point Zero (Succ Zero)).y
+
+-- POSITIVE TEST 3: chained patch on application.
+-- (origin ()).{ x = Succ Zero }.{ y = Succ (Succ Zero) }
+chained : Point
+let chained = (origin ()).{ x = Succ Zero }.{ y = Succ (Succ Zero) }
+
+-- POSITIVE TEST 4: record patch updating multiple fields.
+multi_patch : Point
+let multi_patch = (make_point Zero Zero).{ x = Succ Zero, y = Succ Zero }
+
+-- All results must be well-typed.
+use_point : Point -> Nat
+let use_point p = p.x
+
+check1 : Nat
+let check1 = use_point patched
+
+check2 : Nat
+let check2 = use_point chained
+
+check3 : Nat
+let check3 = use_point multi_patch
+
+--! mode check
+--! assertNoErrors

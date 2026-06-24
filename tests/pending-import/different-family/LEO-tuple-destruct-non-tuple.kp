@@ -1,0 +1,79 @@
+-- Source issues: leo#29305 (compiler panic in destructuring pass when RHS is not
+--               a tuple), leo#29311 (fix: compiler panic when destructuring a
+--               non-tuple value), leo#2610 (panic when pattern count mismatches
+--               tuple length).
+-- Spec: SA-LEO-01 (tuple-destructuring pattern arity must be checked at the type
+--       level), compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§10.1, §SA-LEO-01):
+--   "A multi-identifier destructuring binding `let (a, b) = e` is only valid when
+--    `e` has a product/tuple type of exactly the same arity as the number of
+--    pattern variables. When the right-hand side is not a tuple type, the compiler
+--    must emit `kappa.type.mismatch` identifying both the expected tuple shape
+--    and the actual type of `e`, and must not proceed to later passes without
+--    recording the bound identifiers as erroneous."
+-- leo#29305: `let (a, b) = 42u32` caused a panic in the destructuring pass because
+--   the type checker failed to reject the binding before the pass ran.
+-- leo#29311: Fix verified that the type checker now rejects the binding and
+--   registers bound identifiers as `Type::Err` to prevent cascading panics.
+
+--! mode check
+
+-- Helper types used throughout the test.
+data Scalar : Type =
+    Scalar Int
+
+data Pair : Type =
+    Pair Int Int
+
+data Triple : Type =
+    Triple Int Int Int
+
+-- POSITIVE: destructuring a two-element tuple into two variables.
+pairA : Int
+pairB : Int
+let (pairA, pairB) = (1, 2)
+
+-- POSITIVE: destructuring a three-element tuple into three variables.
+triA : Int
+triB : Int
+triC : Int
+let (triA, triB, triC) = (10, 20, 30)
+
+
+-- NEGATIVE: the RHS is a plain Int, not a tuple. A two-variable destructuring
+-- pattern demands a 2-tuple; `Int` is not a product type at all.
+badA : Int
+badB : Int
+let (badA, badB) = 42        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: the RHS is a plain Bool, not a tuple. Same principle.
+badC : Bool
+badD : Bool
+let (badC, badD) = True      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: the RHS has type `Scalar`, a single-constructor data type that is
+-- not a product. Destructuring it as a pair must fail.
+badE : Int
+badF : Int
+let (badE, badF) = Scalar 99    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: function that correctly patterns-matches a Pair constructor.
+getFirst : Pair -> Int
+let getFirst (Pair x _) = x
+
+-- POSITIVE: function that correctly uses a 2-tuple return.
+splitPair : (Int, Int) -> (Int, Int)
+let splitPair p = p
+
+okSplit : Int
+let okSplit =
+    let (x, y) = splitPair (3, 4)
+    x + y
+

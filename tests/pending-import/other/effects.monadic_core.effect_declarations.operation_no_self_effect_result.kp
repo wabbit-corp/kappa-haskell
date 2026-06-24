@@ -1,0 +1,33 @@
+-- Source issue: Koka #548
+-- Spec: effects.monadic_core.effect_declarations
+-- An operation's declared result type must not mention the handled effect label.
+-- This prevents direct circular effect dependence: an operation cannot require
+-- the effect it is part of in order to produce its result.
+-- The spec states: "an operation may not perform the effect it declares, meaning
+-- its declared result type must not itself mention the handled effect label."
+
+module test
+
+-- ILLEGAL: operation result type mentions the handled effect 'myEff'.
+-- This creates a circular dependency: performing 'doOp' requires 'MyEff',
+-- but 'doOp' itself is declared inside 'MyEff'.
+effect MyEff =
+    1 doOp : Unit -> Eff <[myEff : MyEff]> Int
+
+--! mode check
+--! assertErrorCount 1
+
+-- LEGAL: operation result type mentions a DIFFERENT effect label.
+-- The result type may mention other effect labels or abstract effect rows.
+effect OtherEff =
+    ω logIt : String -> Unit
+
+effect SafeEff =
+    1 doSafe : Unit -> Eff <[other : OtherEff]> Int
+
+
+-- LEGAL: operation result type mentions an abstract effect-row variable.
+-- Free lowercase 'e' is an effect-row variable, not the same label as 'polyEff'.
+effect PolyEff =
+    1 polyOp : Unit -> Eff <[other : OtherEff | e]> Int
+

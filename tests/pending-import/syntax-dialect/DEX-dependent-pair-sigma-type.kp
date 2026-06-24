@@ -1,0 +1,73 @@
+-- Source issues: dex-lang #966 (spell dependent pairs in surface syntax),
+--   dex-lang #1131 (can't unpack dependent pairs),
+--   dex-lang type-tests.dx (`tp = (n:Nat &> (Fin n) => Nat)`,
+--   `pair = (5 ,> buffer) :: tp`, `(3 ,> [0, 2, 4])`).
+-- Spec: types.dependent.sigma (§DSA-DEX-05),
+--       expressions.patterns.dependent_pair_destructure.
+-- A dependent pair (sigma type) `(n : A, B n)` packages a first component
+-- together with a second component whose type depends on the first.
+-- The key obligation: when the pair is deconstructed, the first component's
+-- value must be available to type-check the second component. Construction
+-- must check that both components have compatible types. Pattern matching on
+-- a dependent pair must introduce both binders with the correct dependency.
+
+--! mode check
+
+-- A concrete sigma type: the first component is a natural number n;
+-- the second component is an array of exactly n elements.
+PackedArray : Type
+let PackedArray = (n : Nat, Fin n => Nat)
+
+-- POSITIVE: constructing a PackedArray with consistent size.
+mkPacked : PackedArray
+let mkPacked = (3, [10, 20, 30])
+
+-- POSITIVE: constructing with size 0.
+emptyPacked : PackedArray
+let emptyPacked = (0, [])
+
+-- POSITIVE: destructuring a dependent pair; `arr` has type `Fin n => Nat`
+-- where `n` is the first component of `p`.
+sumPacked : PackedArray -> Nat
+let sumPacked p =
+    let (n, arr) = p
+    foldl (\acc x -> acc + x) 0 (toList arr)
+
+-- POSITIVE: a function returning a dependent pair where the size is computed.
+doubleElems : Fin 3 => Nat -> PackedArray
+let doubleElems xs =
+    let doubled = tabulate (\i -> 2 * (xs ! i))
+    (3, doubled)
+
+-- NEGATIVE: the first component says size 2, but the array has 3 elements.
+badPair : PackedArray
+let badPair = (2, [1, 2, 3])    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: trying to annotate as PackedArray a tuple where the array type
+-- does not match the stated size.
+badAnnotation : PackedArray
+let badAnnotation = (5, [1, 2])    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a generalized sigma — dependent pair carrying a proof.
+-- First component: a Nat; second: evidence that the Nat is nonzero.
+data Positive : Nat -> Type =
+    MkPositive : forall (n : Nat). Positive (n + 1)
+
+NonZero : Type
+let NonZero = (n : Nat, Positive n)
+
+mkNonZero : NonZero
+let mkNonZero = (3, MkPositive)
+
+-- POSITIVE: round-trip extraction preserves the type.
+getNat : NonZero -> Nat
+let getNat nz =
+    let (n, _) = nz
+    n
+
+--! assertType mkPacked PackedArray
+--! assertType mkNonZero NonZero

@@ -1,0 +1,21 @@
+-- Stress test: numeric literals with type suffix select the correct type
+-- Spec: literals.numeric_literals.numeric_literal_suffixes
+
+--! mode check
+
+-- POSITIVE: integer suffix i selects the Int type.
+let a : Int = 42i
+
+-- POSITIVE: natural suffix n selects the Nat type.
+let b : Nat = 100n
+
+-- POSITIVE: float suffix f selects the Float type.
+let c : Float = 3.14f
+
+-- POSITIVE: unsigned 32-bit suffix.
+let d : UInt32 = 255u32
+
+-- POSITIVE: signed 64-bit suffix.
+let e : Int64 = 9000000000i64
+
+--! assertNoErrors

@@ -1,0 +1,75 @@
+-- Source issues: lamdu#142 — de-structure records in let-items;
+--   lamdu#149 — recursive de-structuring. Lamdu users want to bind
+--   record fields directly in a let, rather than projecting them one
+--   field at a time. Kappa supports irrefutable record patterns in let
+--   bindings.
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings,
+--       types.records.field_projection
+--   §6.3.x: a let binding whose RHS is a record may use an irrefutable
+--   record pattern on the LHS to bind individual fields.
+--
+-- Record destructuring in a let binding must type-check and bind the
+-- inner fields under their declared types; the pattern must be
+-- irrefutable on the record.
+
+--! mode check
+
+type Person = (name : String, age : Nat)
+type Point  = (x : Nat, y : Nat)
+
+alice : Person
+let alice = (name = "Alice", age = 30)
+
+origin : Point
+let origin = (x = 0, y = 0)
+
+-- POSITIVE: destructure all fields of a record in a let.
+formatPerson : Person -> String
+let formatPerson p =
+    let (name = n, age = _) = p
+    n
+
+formatted : String
+let formatted = formatPerson alice
+
+-- POSITIVE: partial destructuring in a let — wildcard for ignored
+-- fields.
+ageOf : Person -> Nat
+let ageOf p =
+    let (age = a, name = _) = p
+    a
+
+aliceAge : Nat
+let aliceAge = ageOf alice
+
+-- POSITIVE: nested destructuring.
+type Wrapped = (person : Person, tag : Nat)
+
+extractWrapped : Wrapped -> String
+let extractWrapped w =
+    let (person = (name = n, age = _), tag = _) = w
+    n
+
+-- POSITIVE: destructure a record returned by a function call.
+makeOrigin : Unit -> Point
+let makeOrigin _ = (x = 0, y = 0)
+
+useDestructured : Nat
+let useDestructured =
+    let (x = a, y = b) = makeOrigin ()
+    a + b
+
+-- NEGATIVE: pattern with too many fields for the record's type.
+badArity : Nat
+let badArity =
+    let (x = a, y = b, z = c) = origin    --!! kappa.type.mismatch
+    a + b + c
+
+-- NEGATIVE: pattern field name does not match the record.
+wrongField : Nat
+let wrongField =
+    let (foo = a, y = b) = origin    --!! kappa.name.unresolved
+    a + b
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.name.unresolved

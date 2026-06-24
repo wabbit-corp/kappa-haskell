@@ -1,0 +1,5 @@
+-- Declares the data type `Color`. See `trait_decl.lang` for context.
+module data_decl
+
+data Color : Type =
+    Red | Green | Blue

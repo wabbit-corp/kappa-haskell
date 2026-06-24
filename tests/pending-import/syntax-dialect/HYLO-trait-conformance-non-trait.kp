@@ -1,0 +1,35 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo
+--                   (diagnostic: "conformance to non-trait type 'Int'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/TraitDecl.hylo
+--                   (diagnostic: "conformance to non-trait type 'Self.X'")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo and TraitDecl.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- Hylo: declaring a type to inherit from or conform to a concrete type (not a
+-- trait) is rejected because only trait bounds are allowed. In Kappa the
+-- equivalent is: a constraint that names a non-trait (non-interface) type
+-- where a trait is expected fails with a type mismatch.
+
+--! mode check
+
+trait Printable a where
+    display : a -> String
+
+data Box : Type = Box Int
+
+-- POSITIVE: conforming to an actual trait.
+impl Printable Box where
+    let display (Box n) = "box(" ++ show n ++ ")"
+
+-- NEGATIVE: attempting to use a concrete data type as a constraint.
+-- `Int` is not a trait; it cannot appear as a bound.
+requiresInt : forall (a : Int). a -> String    --!! kappa.type.mismatch
+let requiresInt x = display x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: supertype constraint references a concrete type, not a trait.
+trait BadSuper a : Int where    --!! kappa.type.mismatch
+    foo : a -> Int
+
+--! assertDiagnosticFamily error kappa.type.mismatch

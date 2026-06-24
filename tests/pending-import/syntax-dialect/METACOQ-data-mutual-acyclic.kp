@@ -1,0 +1,36 @@
+-- Source issues: METACOQ-1129
+-- Spec: data_types.data_declarations,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Kappa elaborates a mutual `data` group as one recursive SCC. MetaCoq #1129
+-- exposed an anomaly when an inductive defined during a Ltac proof was
+-- later used at proof-closure time; the portable lesson is that the
+-- declaration group must be elaborated coherently, with all sibling headers
+-- visible before any body is checked.
+
+module test
+
+--! mode check
+
+-- POSITIVE: three mutually recursive data types.
+data Stmt : Type =
+    SAssign String Expr
+    SIf     Expr Block Block
+
+data Expr : Type =
+    ELit Nat
+    EAdd Expr Expr
+    EUse String
+
+data Block : Type =
+    BNil
+    BCons Stmt Block
+
+-- POSITIVE: build a value using all three types.
+sample : Block
+let sample =
+    BCons (SAssign "x" (ELit 1))
+          (BCons (SIf (EUse "x") BNil BNil) BNil)
+
+--! assertNoErrors
+--! assertType sample Block

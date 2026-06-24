@@ -1,0 +1,22 @@
+-- Source issue: FSTAR-1857
+-- Spec: declarations.totality.structural_descent
+-- Termination through a non-recursive helper that passes a subterm must be recognized.
+
+--! mode check
+
+-- A helper that strips the head of a non-empty list and calls its continuation.
+process : {A : Type} -> List A -> (List A -> Unit) -> Unit
+let process xs k =
+    match xs
+      case Nil        -> ()
+      case (_ :: tl)  -> k tl
+
+-- recFn calls process with itself; process calls back with a strict sublist.
+-- Termination: each callback receives tl which is structurally smaller than xs.
+recFn : {A : Type} -> List A -> Unit
+let recFn xs decreases xs =
+    match xs
+      case Nil       -> ()
+      case (_ :: _)  -> process xs recFn
+
+--! assertNoErrors

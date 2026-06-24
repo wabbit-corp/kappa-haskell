@@ -1,0 +1,94 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`fun<a:type> append(xs:list(a),ys:list(a)): list(a)`,
+--          list_make_elt loop with {i:nat|i<=n} .<i>. metric),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (typedef List0, List1, listLt, listLte, listGt, listGte, listBtw)
+-- Spec: types.universes.classifiers (§11.1),
+--       algebraic_data_types.data_declarations (§10.1),
+--       functions.binders.quantities (§12.1),
+--       diagnostics.type_equality (family kappa.type.mismatch).
+-- ATS3 pattern: append of `list(a, m)` and `list(a, n)` produces
+--   `list(a, m+n)`. The index arithmetic `m+n` must be provable from the
+--   types of the arguments. Annotating the result with a wrong combined
+--   length is a type error. The spec calls this "index arithmetic
+--   constraint propagation" (ATS-SA-02).
+-- Portable obligation: a dependent function whose declared return index
+--   involves arithmetic over argument indices must check the arithmetic;
+--   a wrong annotation is kappa.type.mismatch.
+
+--! mode check
+
+-- Sized list indexed by length.
+data SL : Type -> Nat -> Type =
+    SLNil  : forall (a : Type). SL a 0
+    SLCons : forall (a : Type) (n : Nat). a -> SL a n -> SL a (n + 1)
+
+-- POSITIVE: append preserves combined length.
+appendSL : forall (a : Type) (m n : Nat). SL a m -> SL a n -> SL a (m + n)
+let appendSL xs ys =
+    match xs
+    case SLNil         -> ys
+    case SLCons x tl   -> SLCons x (appendSL tl ys)
+
+-- POSITIVE: take the first k elements from an SL of size >= k.
+takeSL : forall (a : Type) (k n : Nat). (k <= n) => SL a n -> SL a k
+let takeSL xs =
+    match xs
+    case SLNil         -> SLNil
+    case SLCons x tl   -> SLCons x (takeSL tl)
+
+-- POSITIVE: reverse an SL; size is preserved.
+reverseSL : forall (a : Type) (n : Nat). SL a n -> SL a n
+let reverseSL xs = revAcc xs SLNil
+    where
+        revAcc : forall (a : Type) (n m : Nat). SL a n -> SL a m -> SL a (n + m)
+        let revAcc SLNil acc        = acc
+        let revAcc (SLCons x tl) acc = revAcc tl (SLCons x acc)
+
+-- POSITIVE: map; size is preserved.
+mapSL : forall (a b : Type) (n : Nat). (a -> b) -> SL a n -> SL b n
+let mapSL f xs =
+    match xs
+    case SLNil       -> SLNil
+    case SLCons x tl -> SLCons (f x) (mapSL f tl)
+
+-- POSITIVE: zip; size is minimum of both (min(m,n)).
+-- Simplified: require equal sizes.
+zipSL : forall (a b : Type) (n : Nat). SL a n -> SL b n -> SL (a, b) n
+let zipSL xs ys =
+    match (xs, ys)
+    case (SLNil, SLNil)                     -> SLNil
+    case (SLCons x xt, SLCons y yt)         -> SLCons (x, y) (zipSL xt yt)
+    case _                                  -> SLNil
+
+-- POSITIVE: append of 2-element and 3-element list is 5 elements.
+sl2 : SL Int 2
+let sl2 = SLCons 1 (SLCons 2 SLNil)
+
+sl3 : SL Int 3
+let sl3 = SLCons 3 (SLCons 4 (SLCons 5 SLNil))
+
+sl5 : SL Int 5
+let sl5 = appendSL sl2 sl3
+
+-- NEGATIVE: annotating the append result with size 6 (wrong: 2+3=5, not 6).
+badAppend5 : SL Int 6
+let badAppend5 = appendSL sl2 sl3     --!! kappa.type.mismatch
+
+-- NEGATIVE: annotating the append result with size 4 (wrong: 2+3=5, not 4).
+badAppend4 : SL Int 4
+let badAppend4 = appendSL sl2 sl3     --!! kappa.type.mismatch
+
+-- NEGATIVE: map result annotated with wrong size.
+badMap : SL Int 3
+let badMap = mapSL (\x -> x * 2) sl2  --!! kappa.type.mismatch
+
+-- NEGATIVE: reverse annotated with a different size.
+badReverse : SL Int 3
+let badReverse = reverseSL sl2         --!! kappa.type.mismatch
+
+-- NEGATIVE: constructing a list with 3 elements but annotating as 4.
+badConstruct : SL Int 4
+let badConstruct = SLCons 1 (SLCons 2 (SLCons 3 SLNil))  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

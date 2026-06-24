@@ -1,0 +1,62 @@
+-- Source issues: rzk#20 — add possibility to postulate axioms;
+--   rzk docs (reference/commands/define-postulate.rzk.md) — `#postulate`
+--   introduces an axiom without a defining term. Useful for assuming
+--   function extensionality, univalence, and other axioms not provable
+--   from MLTT alone.
+-- Spec: declarations.signatures, types.quantification
+--   §6.2: a signature-only declaration (postulate/axiom) introduces a name
+--   with a type but no defining term.
+--
+-- A postulate (axiom) declaration introduces a name with a declared type
+-- but no proof body. The name is then available for use in other definitions.
+-- The typechecker must accept postulates as axioms; it must also correctly
+-- check that definitions using postulates have consistent types.
+
+--! mode check
+
+-- POSITIVE: the empty type — no constructors.
+data Void : Type
+
+-- POSITIVE: induction on the empty type via an empty match.
+indVoid : (C : Void -> Type) -> (z : Void) -> C z
+let indVoid _ z = match z
+
+-- POSITIVE: ex falso — from a proof of Void, anything follows.
+absurd : forall (a : Type). Void -> a
+let absurd a z = indVoid (\_ -> a) z
+
+-- POSITIVE: function extensionality, postulated as an axiom (no proof body).
+-- Two pointwise-equal functions are propositionally equal.
+funext :
+    forall {a : Type} {b : a -> Type}
+    {f : (x : a) -> b x} {g : (x : a) -> b x}.
+    ((x : a) -> f x = g x) -> f = g
+
+-- POSITIVE: using funext to prove eta-equality of functions.
+etaEq : forall {a b : Type} (f : a -> b) -> (\x -> f x) = f
+let etaEq f = funext (\_ -> refl)
+
+-- POSITIVE: a theorem that packages funext in a named form.
+extensional :
+    forall {a : Type} {b : a -> Type} ->
+    (f : (x : a) -> b x) ->
+    (g : (x : a) -> b x) ->
+    ((x : a) -> f x = g x) ->
+    f = g
+let extensional f g h = funext h
+
+-- POSITIVE: the type of contractible types (exactly one element up to equality).
+isContr : Type -> Type
+let isContr a = (x : a, (y : a) -> x = y)
+
+-- NEGATIVE: trying to prove that Void is contractible — impossible since
+-- Void has no inhabitants.
+badAxiom : isContr Void
+let badAxiom = _    --!! kappa.hole.unsolved
+
+-- NEGATIVE: a definition that claims to construct any type from another
+-- without a valid proof term — the hole must be reported.
+missingProof : forall {a b : Type} -> a -> b
+let missingProof x = _    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

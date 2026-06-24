@@ -1,0 +1,52 @@
+-- Source issues: apple/swift-evolution SE-0244 (opaque result types hide
+--   concrete type from callers), apple/swift #56573 (type/module name
+--   disambiguation in interfaces).
+--   An `opaque data` declaration exports the type name but not its constructors
+--   to other modules. Within the defining module, constructors remain accessible.
+-- Spec: modules.visibility_opacity_private_opaque.data §8.5.3,
+--       modules.visibility_opacity_private_opaque §8.5
+-- Note: cross-module constructor hiding cannot be tested in a single-file
+--       test; this test covers intra-module usage which must remain valid.
+
+--! mode check
+
+trait Show (a : Type) =
+    show : a -> String
+
+-- An opaque data type: the constructor `MkToken` is hidden outside this module.
+opaque data Token : Type =
+    MkToken Nat String
+
+-- POSITIVE: the Show instance works without exposing the constructor.
+instance Show Token =
+    let show _ = "<token>"
+
+-- POSITIVE: a factory function (in the same module as the type) constructs Token.
+mkToken : Nat -> String -> Token
+let mkToken id name = MkToken id name
+
+-- POSITIVE: using a Token via its Show interface.
+displayToken : Token -> String
+let displayToken t = show t
+
+aToken : Token
+let aToken = mkToken 1 "user"
+
+displayed : String
+let displayed = displayToken aToken
+
+-- POSITIVE: a pair that includes a Token — visible via the exported type.
+data TokenPair : Type = TokenPair Token Token
+
+firstToken : TokenPair -> Token
+let firstToken (TokenPair t _) = t
+
+-- POSITIVE: within-module pattern match on MkToken is valid.
+tokenId : Token -> Nat
+let tokenId (MkToken id _) = id
+
+-- POSITIVE: constructing Token in a list is fine within the module.
+tokenList : List Token
+let tokenList = [MkToken 1 "a", MkToken 2 "b"]
+
+--! assertNoErrors

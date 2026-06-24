@@ -1,0 +1,58 @@
+-- Source issues: lamdu#191 — abbreviation avoidance too strict?
+--   lamdu#186 — don't abbreviate when abbreviation is prefix of another
+--   name. While these are display-level issues, the underlying portable
+--   obligation is that local bindings may shadow outer bindings, and
+--   the compiler should warn (not error) when shadowing happens.
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.warning_hygiene
+--   §7.1: an inner binding shadows an outer binding of the same
+--   spelling and kind; shadowing is advisory.
+--
+-- Inner bindings may shadow outer bindings of the same spelling.
+-- Programs that shadow names must still compile; warnings are
+-- advisory.
+
+--! mode check
+
+-- POSITIVE: top-level declarations.
+base : Nat
+let base = 10
+
+scale : Nat -> Nat
+let scale n = n * 2
+
+-- POSITIVE: a let-binding shadows the outer `base`.
+useShadowLet : Nat
+let useShadowLet =
+    let base : Nat
+        base = 99
+    base + 1
+
+-- POSITIVE: a lambda parameter shadows a top-level declaration.
+useShadowParam : Nat -> Nat
+let useShadowParam scale = scale + 1
+
+useShadow : Nat
+let useShadow = useShadowParam 5
+
+-- POSITIVE: a nested let shadows an enclosing let.
+useNestedShadow : Nat
+let useNestedShadow =
+    let x : Nat
+        x = 1
+    let x : Nat
+        x = 2
+    x
+
+-- POSITIVE: lambdas in expression position shadow let-bindings.
+useLambdaShadow : Nat
+let useLambdaShadow =
+    let n : Nat
+        n = 100
+    (\ n -> n + 1) 5
+
+-- POSITIVE: the shadowing program is well-typed even though the
+-- compiler may emit shadowing warnings. assertNoErrors asserts no
+-- error-severity diagnostics (warnings are permitted).
+
+--! assertNoErrors

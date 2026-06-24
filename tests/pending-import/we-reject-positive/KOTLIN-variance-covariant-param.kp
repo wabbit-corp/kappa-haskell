@@ -1,0 +1,50 @@
+-- Source issues: KT-252, KT-2248, KT-2293 (declaration-site variance)
+-- Spec: types.quantification, types.functions
+
+--! mode check
+
+-- POSITIVE: a generic container where the type parameter appears only in output position.
+-- A covariant container can be used as a supertype container.
+data Box (a : Type) : Type =
+    Box (value : a)
+
+-- POSITIVE: reading from a Box at a covariant type parameter.
+unbox : forall (a : Type). Box a -> a
+let unbox (Box v) = v
+
+--! assertNoErrors
+--! assertType unbox (forall (a : Type). Box a -> a)
+
+-- POSITIVE: mapping over a Box — produces a Box of a different type.
+mapBox : forall (a : Type) (b : Type). (a -> b) -> Box a -> Box b
+let mapBox f (Box v) = Box (f v)
+
+--! assertNoErrors
+
+-- POSITIVE: a function taking a read-only producer type.
+readFrom : forall (a : Type). Box a -> a
+let readFrom b = unbox b
+
+--! assertNoErrors
+
+-- POSITIVE: generic container pair.
+data Pair (a : Type) (b : Type) : Type =
+    Pair (fst : a) (snd : b)
+
+swapPair : forall (a : Type) (b : Type). Pair a b -> Pair b a
+let swapPair (Pair a b) = Pair b a
+
+--! assertNoErrors
+--! assertType swapPair (forall (a : Type) (b : Type). Pair a b -> Pair b a)
+
+-- POSITIVE: covariant usage — Box Int can be used where Box Int is expected.
+useBoxInt : Box Int -> Int
+let useBoxInt b = unbox b
+
+boxInt : Box Int
+let boxInt = Box 42
+
+result : Int
+let result = useBoxInt boxInt
+
+--! assertNoErrors

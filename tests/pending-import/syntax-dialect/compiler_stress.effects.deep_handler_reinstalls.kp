@@ -1,0 +1,39 @@
+-- Stress test: A deep handler automatically reinstalls itself around the resumption; a shallow handler does not
+-- Spec: effects.monadic_core.deep_handlers_deep_handle, effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Effect with a single unit-returning operation.
+effect Counter =
+    1 tick : Unit -> Unit
+
+-- POSITIVE TEST: deep handler counts all ticks.
+-- k : (1 _ : Unit) -> Eff <[ ]> Int (target carrier), so operations after k
+-- are still handled by the same handler without explicit re-installation.
+let deepCount (comp : Eff <[counter : Counter]> Unit) : Eff <[ ]> Int =
+    deep handle counter comp with
+        case return _  -> pure 0
+        case tick () k ->
+            let rest <- k ()
+            pure (1 + rest)
+
+-- POSITIVE TEST: shallow handler must re-install itself manually to count all ticks.
+-- k : (1 _ : Unit) -> Eff <[counter : Counter]> Unit (still in original row).
+let shallowCount (comp : Eff <[counter : Counter]> Unit) : Eff <[ ]> Int =
+    handle counter comp with
+        case return _  -> pure 0
+        case tick () k ->
+            let rest = shallowCount (k ())
+            rest >>= \n -> pure (1 + n)
+
+-- A computation that ticks three times.
+let threeClicks : Eff <[counter : Counter]> Unit =
+    do
+        Counter.tick ()
+        Counter.tick ()
+        Counter.tick ()
+
+let deepResult  : Eff <[ ]> Int = deepCount  threeClicks
+let shallowResult : Eff <[ ]> Int = shallowCount threeClicks
+
+--! assertNoErrors

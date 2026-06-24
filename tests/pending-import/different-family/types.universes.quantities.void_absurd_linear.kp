@@ -1,0 +1,37 @@
+-- Source issue: Idris2 #1545
+-- Spec: types.universes.quantities, types.universes.quantities.linear_discharge_discard_destructor_use
+-- A linear variable of type `Void` (the empty type) may be consumed by `absurd`
+-- regardless of the surrounding context's return type. Applying `absurd` to a
+-- linear Void value discharges the linearity obligation and produces any type.
+-- This must be accepted without a spurious "0 uses of linear name" diagnostic.
+
+module test
+
+-- Accepted: `v` is linear. `absurd v` consumes `v` exactly once.
+-- The return type `a` is determined by context. No quantity violation.
+useAbsurd : (1 v : Void) -> a
+let useAbsurd v = absurd v
+
+--! mode check
+
+-- Accepted: linear Void in an IO context.
+-- The outer value is unrestricted (`a` for IO) but `v` is consumed linearly.
+absurdIO : (1 v : Void) -> IO a
+let absurdIO v = absurd v
+
+
+-- Accepted: linear Void value from a destructured argument.
+data Either (a : Type) (b : Type) : Type =
+  Left  : a -> Either a b
+  Right : b -> Either a b
+
+useFromEither : (1 x : Either Void Int) -> Int
+let useFromEither (Left  v) = absurd v
+let useFromEither (Right n) = n
+
+
+-- Rejected: using a linear Void in a non-linear way (ignoring it, not consuming).
+dropVoid : (1 v : Void) -> Int
+let dropVoid _ = 42  --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

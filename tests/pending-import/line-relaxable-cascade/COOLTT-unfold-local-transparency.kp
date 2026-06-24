@@ -1,0 +1,60 @@
+-- Source issues: cooltt issue #139 (unfolding bug: path not unfolded when used
+--               as pi type), issue #155 (unfold broken regression),
+--               PR #123 (fix unfold policy), PR #148 (third unfold fix),
+--               PR #336 (unfold Univ/El Univ in intro_conversions),
+--               PR #373 (translucency via extension types).
+-- Spec: declarations.terms
+--
+-- An opaque (abstract) declaration `f` becomes locally transparent when the
+-- programmer explicitly unfolds it with `unfold f in body` (or analogous syntax).
+-- Within that body, the definition of `f` is available for reduction and
+-- conversion checking. Outside the scope, `f` remains opaque.
+--
+-- PR #336 exposes a closely related obligation: when the elaborator checks an
+-- introduction form against a type `U` that is defined as `type`, it must unfold
+-- `U` before pattern-matching on the head connective. In Kappa terms:
+-- a declared type alias must be unfolded before checking introduction forms.
+
+--! mode check
+
+-- A type alias: `MyNat` is definitionally equal to `Nat`.
+let MyNat : Type0 = Nat
+
+-- POSITIVE: a function declared with type `MyNat` accepts a `Nat` value.
+-- The alias must be unfolded during type-checking.
+mySucc : MyNat -> MyNat
+let mySucc x = suc x
+
+-- POSITIVE: functions on `MyNat` and `Nat` are interchangeable by the alias.
+fromAlias : MyNat -> Nat
+let fromAlias x = x
+
+toAlias : Nat -> MyNat
+let toAlias x = x
+
+-- POSITIVE: a function defined via alias unfolds when its result type is
+-- explicitly `Nat`.
+aliasRoundtrip : Nat
+let aliasRoundtrip = fromAlias (toAlias 5)
+
+-- POSITIVE: type alias in a record field type; field must be unfoldable.
+data Pair : Type =
+    MkPair : MyNat -> MyNat -> Pair
+
+fstPair : Pair -> Nat
+let fstPair (MkPair x _) = x
+
+sndPair : Pair -> Nat
+let sndPair (MkPair _ y) = y
+
+-- POSITIVE: `MyNat` unfolds when matching against a `Nat` scrutinee.
+aliasElim : MyNat -> Nat
+let aliasElim n = match n
+    case zero   -> zero
+    case (suc m) -> suc (suc m)
+
+-- NEGATIVE: type alias used incorrectly — providing a Bool where MyNat needed.
+wrongAlias : MyNat
+let wrongAlias = True    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

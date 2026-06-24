@@ -1,0 +1,55 @@
+-- Source issues: vale#435 (Rework dot ownership — `.` borrows local,
+--               `(x).` moves), Vale OwnershipTests (Owning ref method call)
+-- Spec: types.universes.quantities, expressions.application.subsumption,
+--       expressions.application.dotted_forms
+-- In Vale, the `.` operator on a local variable introduces a borrow (the
+-- value is not consumed). Using the `(x).` form forces a move of the
+-- owned value. In Kappa, projection through a borrowed binder is the default
+-- and preserves the original binding; projection through an owned (linear)
+-- binder consumes the binder. This test verifies the subsumption rules for
+-- owned vs borrowed projection.
+
+--! mode check
+
+data Rocket : Type = Rocket Int Int
+
+fuelLevel : (& r : Rocket) -> Int
+let fuelLevel (Rocket fuel _) = fuel
+
+altitude : (& r : Rocket) -> Int
+let altitude (Rocket _ alt) = alt
+
+-- POSITIVE: projecting through a borrow preserves the original binding.
+-- Calling a borrow-accepting function on a borrowed local is allowed
+-- multiple times because the borrow does not consume the root.
+borrowProject : (& r : Rocket) -> Int
+let borrowProject r = fuelLevel r + altitude r
+
+-- POSITIVE: passing an owned local to a borrow-accepting function.
+-- The call site subsumes the owned value by introducing a temporary borrow.
+ownedTooBorrow : (1 r : Rocket) -> Int
+let ownedTooBorrow r = fuelLevel r
+
+-- POSITIVE: explicitly passing an owned linear value to a consuming sink.
+sink : (1 r : Rocket) -> Int
+let sink (Rocket fuel _) = fuel
+
+ownedSink : (1 r : Rocket) -> Int
+let ownedSink r = sink r
+
+-- NEGATIVE: using a locally-owned value as both a borrow and then
+-- consuming it in the same expression, creating conflicting demands.
+conflictingDemands : (1 r : Rocket) -> Int
+let conflictingDemands r =
+    let borrowed = fuelLevel r
+    let consumed = sink r   -- this consumes r
+    let _ = fuelLevel r     --!! kappa.path.consumed  (r was consumed above)
+    borrowed + consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- POSITIVE: chaining borrows through multiple field accesses is safe when
+-- the root is never consumed.
+chainBorrows : (& r : Rocket) -> Int
+let chainBorrows r =
+    fuelLevel r + altitude r + fuelLevel r

@@ -1,0 +1,37 @@
+-- Source issue: Idris2 #300
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.recommended_inference_strategies
+-- Structural descent analysis must look through transparent local aliases
+-- (aliases introduced by `let` or pattern destructuring) to identify the
+-- structural parameter. A function that is structurally recursive on a
+-- subterm reached via a local alias must be accepted as total.
+
+module test
+
+-- A simple binary search tree indexed by the element type.
+data BST (a : Type) : Type where
+  Leaf : BST a
+  Node : (root : a) -> BST a -> BST a -> BST a
+
+-- Accepted: `insert` is structural on the `tree` parameter.
+-- The local alias `tree` is bound by a top-level parameter pattern.
+-- The termination checker must see through this alias to establish that
+-- the recursive call on `left` or `right` is structurally smaller than `tree`.
+insert : Nat -> BST Nat -> BST Nat
+let insert x Leaf              = Node x Leaf Leaf
+let insert x tree@(Node root left right) =
+  match x < root
+    case True  -> Node root (insert x left)  right
+    case False -> Node root left              (insert x right)
+
+--! mode check
+--! assertNoErrors
+
+-- Accepted: a similar function that names the parameter alias explicitly.
+-- `t` is an alias introduced through parameter naming; structural descent
+-- must still be identified.
+depth : BST a -> Nat
+let depth Leaf = Zero
+let depth (Node _ left right) = Succ (max (depth left) (depth right))
+
+--! assertNoErrors

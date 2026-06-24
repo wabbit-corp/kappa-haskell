@@ -1,0 +1,67 @@
+-- Source issues: leo#28706 (const-generic parameter `N` could be assigned to;
+--               `N = 5u32` inside an inline function body was not rejected),
+--               leo#29303 (compiler panic when entry-point function has const
+--               generic params), leo PR#29313 (fix: reject const generics in
+--               non-inlinable function contexts).
+-- Spec: SA-LEO-05 (const generic parameters are immutable compile-time bindings),
+--       compiler.frontir.standard_diagnostic_families.quantity_obligations
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-LEO-05):
+--   "A const generic parameter is bound with quantity 0 (compile-time only). It
+--    is immutable: any attempt to use it in a context demanding a runtime (1-quantity
+--    or ω-quantity) value must be rejected with `kappa.quantity.satisfies`,
+--    because the supplied 0-quantity capability does not satisfy a runtime demand."
+-- leo#28706: `N = 5u32` where `N` is a const generic parameter compiled without
+--   a proper error, leading to undefined behavior in the generated circuit.
+-- In Kappa terms we model this as: passing a 0-quantity compile-time parameter to
+-- a function that demands a runtime (1-quantity) argument.
+
+--! mode check
+
+-- A helper that consumes a runtime (1-quantity) value.
+-- Any function demanding a concrete runtime argument models a "mutation site."
+runtimeSink : (1 _ : Int) -> Int
+let runtimeSink x = x
+
+-- POSITIVE: reading a compile-time parameter is valid.
+let readConstParam (0 n : Int) : Int = n
+
+ok1 : Int
+let ok1 = readConstParam 10
+
+
+-- POSITIVE: passing a compile-time parameter to another compile-time function.
+let double (0 n : Int) : Int = n + n
+
+ok2 : Int
+let ok2 = double 7
+
+
+-- NEGATIVE: attempting to use a 0-quantity (compile-time) parameter where a
+-- 1-quantity (runtime) value is demanded. This models Leo's "N = 5" scenario:
+-- the assignment demands runtime write capability that a 0-quantity binding
+-- cannot provide.
+let badAssign (0 n : Int) : Int =
+    runtimeSink n    --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: attempting to bind a 0-quantity parameter into a 1-quantity slot.
+-- Analogous to Leo's `N = N + 1` compound assignment: the re-use demands
+-- runtime quantity which a compile-time-only binding cannot supply.
+let badCompoundAssign (0 n : Int) : Int =
+    let (1 x : Int) = n    --!! kappa.quantity.satisfies
+    x
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- POSITIVE: a local mutable binding may shadow a const-generic parameter name
+-- in languages that allow it — but in Kappa, the shadowing itself is a
+-- redefinition error (see LEO-local-var-shadows-const-generic).
+-- Here we only test that reading the immutable parameter without a runtime
+-- demand is fine.
+let noMutation (0 n : Int) (x : Int) : Int = n + x
+
+okNoMut : Int
+let okNoMut = noMutation 5 3
+

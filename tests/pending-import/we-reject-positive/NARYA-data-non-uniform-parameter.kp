@@ -1,0 +1,57 @@
+-- Source artifacts: narya docs/data-types.rst ("The parameters of a
+--               recursive datatype can be non-uniform, meaning that
+--               occurrences of the datatype in the inputs of a
+--               constructor (as opposed to the output) can be applied to
+--               different parameters"), narya PR #71 (fibrancy of W-types
+--               with non-uniform parameters).
+-- Spec: data_types.data_declarations,
+--       data_types.well_formedness
+--
+-- A non-uniform parameter is a data-type parameter that may be supplied
+-- different argument values at recursive occurrences in constructor
+-- arguments, while still being preserved at the constructor's result.
+-- This is admissible because each recursive occurrence is itself a fully
+-- applied instance of the same data family at a possibly different
+-- parameter.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+expect term A : Type
+
+-- POSITIVE: a "Bush" — the parameter of the recursive occurrence
+-- (Bush a) differs from the parameter at the outer constructor (a).
+data Bush (a : Type) : Type =
+    BLeaf : Bush a
+    BNode : a -> Bush (Bush a) -> Bush a
+
+-- POSITIVE: a small witness.
+emptyBush : Bush A
+let emptyBush = BLeaf
+
+-- POSITIVE: a rose tree — the recursive occurrence applies the type
+-- constructor to a list of trees with the same parameter.
+data List (a : Type) : Type =
+    LNil  : List a
+    LCons : a -> List a -> List a
+
+data Rose (a : Type) : Type =
+    RNode : a -> List (Rose a) -> Rose a
+
+leafRose : Rose A -> Rose A
+let leafRose t = t
+
+-- POSITIVE: a data type whose index shrinks in the recursive occurrence.
+-- The constructor returns Vec a (Suc n) but the recursive field is
+-- Vec a n.
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a Zero
+    VCons : (n : Nat) -> a -> Vec a n -> Vec a (Suc n)
+
+shortVec : Vec A Zero
+let shortVec = VNil
+
+--! assertNoErrors

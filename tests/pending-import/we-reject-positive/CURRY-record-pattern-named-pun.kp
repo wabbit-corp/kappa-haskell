@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestRecords.curry
+--   (isJohn (Person {name = n}) = n == "John").
+-- Spec: expressions.patterns.forms (§17.2.1, record patterns),
+--       expressions.match (§17.1),
+--       data_types.data_declarations (§10.1).
+--
+-- Named-record pattern. The named field binds the matched value; the
+-- pattern need not mention every field. Field punning lets the binder
+-- name match the field name (`Person { name }` ≡ `Person { name = name }`).
+
+module test
+
+--! mode check
+
+data Person : Type =
+    Person { name : String, age : Int }
+
+derive Eq Person
+
+-- POSITIVE: named-field pattern that mentions only `name` and ignores
+-- `age`. Binder `n` carries the value of the `name` field.
+isJohn : Person -> Bool
+let isJohn p =
+    match p
+    case Person { name = n } -> n == "John"
+
+--! assertNoErrors
+--! assertType isJohn (Person -> Bool)
+
+johnA : Person
+let johnA = Person { name = "John", age = 30 }
+
+billA : Person
+let billA = johnA.{ name = "Bill" }
+
+isJohnTrue : Bool
+let isJohnTrue = isJohn johnA
+-- expected: True
+
+--! assertNoErrors
+--! assertType isJohnTrue Bool
+
+isBillFalse : Bool
+let isBillFalse = isJohn billA
+-- expected: False
+
+--! assertNoErrors
+
+-- POSITIVE: field-pun pattern. `Person { name }` introduces a binder
+-- named `name` whose value is the matched name field.
+greet : Person -> String
+let greet p =
+    match p
+    case Person { name } -> "Hello, " ++ name
+
+--! assertNoErrors
+--! assertType greet (Person -> String)

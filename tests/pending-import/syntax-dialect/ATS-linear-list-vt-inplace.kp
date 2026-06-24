@@ -1,0 +1,102 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/dtcon.dats
+--         (double1/double2: list_vt traversal with !x0 borrow and $fold(xs0)),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`case !p0 of | @list_vt(x0, xs) =>`, `$fold(xs)`, `&xs`)
+-- Spec: borrow.disjoint_path (§12.4),
+--       quantities.linear_discharge (§12.2.6),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- ATS3 pattern: `list_vt_cons(!x0, xs1)` borrows the head element `x0` for
+--   mutation. After mutating, the caller must restore the list node with
+--   `$fold(xs0)` before the linear ownership is valid again. Forgetting
+--   `$fold` leaves the list "broken" (partially consumed) and the compiler
+--   rejects the program.
+-- Portable obligation: after borrowing a sub-component of a linear value for
+--   mutation, the outer linear container must be restored before the
+--   enclosing scope releases ownership; failure to restore is
+--   kappa.quantity.unsatisfied.
+
+--! mode check
+
+-- A mutable cell holding an Int.  Models ATS3's `var x: int`.
+data Cell : Type =
+    Cell (1 val : Int)
+
+readCell : (& c : Cell) -> Int
+let readCell (Cell v) = v
+
+writeCell : (1 c : Cell) -> Int -> Cell
+let writeCell _ n = Cell n
+
+-- POSITIVE: borrow a cell, read it, return it.
+useCell : (1 c : Cell) -> (Cell, Int)
+let useCell c =
+    let v = readCell c
+    (c, v)
+
+-- POSITIVE: borrow a cell, write to it, return the updated cell.
+updateCell : (1 c : Cell) -> Int -> Cell
+let updateCell c n = writeCell c n
+
+-- A linear list of cells.
+data CellList : Type =
+    CNil
+    CCons (1 head : Cell) (1 tail : CellList)
+
+-- Destructor for a CellList: consumes all cells.
+destroyCells : (1 cs : CellList) -> Unit
+let destroyCells cs =
+    match cs
+    case CNil            -> ()
+    case CCons (Cell _) tl -> destroyCells tl
+
+-- POSITIVE: traverse and double every cell value.
+doubleAll : (1 cs : CellList) -> CellList
+let doubleAll cs =
+    match cs
+    case CNil              -> CNil
+    case CCons (Cell v) tl -> CCons (Cell (v * 2)) (doubleAll tl)
+
+-- POSITIVE: map over cells in a linear list.
+mapCells : (1 cs : CellList) -> (Int -> Int) -> CellList
+let mapCells cs f =
+    match cs
+    case CNil              -> CNil
+    case CCons (Cell v) tl -> CCons (Cell (f v)) (mapCells tl f)
+
+-- POSITIVE: fold over a linear list, consuming it.
+foldCells : forall (r : Type). (1 cs : CellList) -> r -> (r -> Int -> r) -> r
+let foldCells cs acc f =
+    match cs
+    case CNil              -> acc
+    case CCons (Cell v) tl -> foldCells tl (f acc v) f
+
+-- NEGATIVE: consume part of a linear list (the head) but drop the tail.
+consumeHead : (1 cs : CellList) -> Unit
+let consumeHead cs =
+    match cs
+    case CNil              -> ()
+    case CCons (Cell _) _ -> ()   --!! kappa.quantity.unsatisfied
+
+-- NEGATIVE: use a linear cell after it has been consumed by destructuring.
+doubleUseCell : Unit
+let doubleUseCell =
+    let 1 c = Cell 10
+    let v = readCell c
+    writeCell c 20              --!! kappa.path.consumed
+    ()
+
+-- NEGATIVE: build a CellList and drop it without consuming (no destructor call).
+buildAndDrop : Unit
+let buildAndDrop =
+    let 1 cs = CCons (Cell 1) (CCons (Cell 2) CNil)  --!! kappa.quantity.unsatisfied
+    ()
+
+-- POSITIVE: build and properly consume.
+buildAndConsume : Unit
+let buildAndConsume =
+    let 1 cs = CCons (Cell 1) (CCons (Cell 2) CNil)
+    destroyCells cs
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.path.consumed

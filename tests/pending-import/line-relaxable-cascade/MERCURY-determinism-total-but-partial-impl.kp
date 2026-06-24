@@ -1,0 +1,89 @@
+-- Source issues: invalid/det_errors.m (declared det but inferred semidet),
+--   invalid/not_a_switch.m, invalid/bad_detism.m
+-- Spec: types.functions, compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive)
+-- In the Kappa model, Mercury's `det` determinism annotation corresponds to a
+-- total function returning `T` (not `Option T`). If the implementation can
+-- fail to produce a result (non-exhaustive match, partial function), the
+-- declared type is not satisfied. The checker must reject non-exhaustive
+-- patterns in functions declared as returning a concrete type `T`.
+
+module test
+
+data Compass : Type = North | South | East | West
+data Sign : Type = Positive | Negative | Zero
+
+-- POSITIVE: total function matching all constructors.
+opposite : Compass -> Compass
+let opposite c = match c
+    case North -> South
+    case South -> North
+    case East  -> West
+    case West  -> East
+
+--! assertType opposite Compass -> Compass
+
+-- NEGATIVE: function declared to return `Compass` but match is non-exhaustive
+-- (missing East and West). The inferred type for an incomplete match would be
+-- partial/Option, conflicting with the declared total `Compass` return.
+partialOpposite : Compass -> Compass
+let partialOpposite c = match c    --!! kappa.pattern.non-exhaustive
+    case North -> South
+    case South -> North
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: returning Option explicitly makes partiality visible in the type.
+safeOpposite : Compass -> Option Compass
+let safeOpposite c = match c
+    case North -> Some South
+    case South -> Some North
+    case _     -> None
+
+--! assertType safeOpposite Compass -> Option Compass
+
+-- NEGATIVE: non-exhaustive function over a three-constructor type.
+signToInt : Sign -> Int
+let signToInt s = match s    --!! kappa.pattern.non-exhaustive
+    case Positive -> 1
+    case Negative -> -1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: exhaustive function over the same three-constructor type.
+signToInt2 : Sign -> Int
+let signToInt2 s = match s
+    case Positive -> 1
+    case Negative -> -1
+    case Zero     -> 0
+
+
+-- NEGATIVE: a function with two clauses that omit some constructors.
+-- Both clauses together still don't cover all cases.
+describeCompass : Compass -> String
+let describeCompass North = "north"    --!! kappa.pattern.non-exhaustive
+let describeCompass South = "south"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: using a wildcard completes coverage.
+describeCompassFull : Compass -> String
+let describeCompassFull North = "north"
+let describeCompassFull South = "south"
+let describeCompassFull _     = "other"
+
+
+-- NEGATIVE: record field destructuring with non-exhaustive nested match.
+data Config : Type =
+    Config Sign Compass
+
+configToString : Config -> String
+let configToString (Config sign dir) =
+    let dirStr = match dir    --!! kappa.pattern.non-exhaustive
+        case North -> "N"
+        case South -> "S"
+    show (signToInt2 sign) ++ dirStr
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! mode check

@@ -1,0 +1,60 @@
+-- Source issues: cooltt issue #58 (`let b : A = a in b` raised internal error),
+--               PR #59 (fix let).
+-- Spec: declarations.let_in
+--
+-- A let binding with an explicit type annotation must type-check the right-hand
+-- side against the declared type. The resulting binding is available in the body
+-- at the annotated type. This is the standard let-introduction rule:
+--   Γ ⊢ e : T     Γ, x : T ⊢ body : U
+--   ────────────────────────────────────
+--       Γ ⊢ let x : T = e in body : U
+-- The type annotation is checked, not inferred.
+
+--! mode check
+
+-- POSITIVE: let binding with explicit type annotation; body uses the binding.
+-- The identity function via an annotated let.
+identity : forall (A : Type) -> A -> A
+let identity A a =
+    let b : A = a
+    b
+
+-- POSITIVE: let annotation is a more general type; value is in a subtype
+-- (or the same type). No implicit coercion needed here.
+useIdentity : Nat
+let useIdentity = identity Nat 42
+
+-- POSITIVE: nested let bindings with annotations, each checked separately.
+nestedLet : Nat
+let nestedLet =
+    let x : Nat = 1
+    let y : Nat = x + x
+    y
+
+-- POSITIVE: let binding in a dependent type context.
+-- The annotation type may itself mention bound variables.
+letDependent : forall (A : Type) -> (f : A -> A) -> A -> A
+let letDependent A f a =
+    let result : A = f a
+    result
+
+-- POSITIVE: let binding where the annotated type is a function type.
+letFun : (Nat -> Nat) -> Nat -> Nat
+let letFun h =
+    let g : Nat -> Nat = h
+    g
+
+-- NEGATIVE: the right-hand side does not match the declared annotation type.
+-- A Bool literal is not a Nat.
+badAnnotation : Nat
+let badAnnotation =
+    let x : Nat = True    --!! kappa.type.mismatch
+    x
+
+-- NEGATIVE: function type annotation but value is a plain value.
+badFunAnnotation : Nat
+let badFunAnnotation =
+    let f : Nat -> Nat = 42    --!! kappa.type.mismatch
+    f 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch

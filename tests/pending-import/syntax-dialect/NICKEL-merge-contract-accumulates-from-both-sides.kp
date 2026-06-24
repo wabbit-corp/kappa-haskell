@@ -1,0 +1,84 @@
+-- Source issues: nickel #548, #962, #1056, #1111, #1415, #1700, #1774
+-- Spec: types.records.merge.contract_accumulation (NSA-02)
+-- NOTE: This test depends on NSA-02 (merge contract accumulation spec gap). The `&`
+-- merge operator and {_ : T} dict type (NSA-03) are proposed syntax not yet in Kappa v1.
+-- When two records are merged and both carry contracts for the same field, the
+-- resulting field must satisfy ALL contracts from both sides. Contracts are
+-- accumulated (not replaced). Specifically:
+-- (a) If the left side has contract C1 and the right side has contract C2 on the
+--     same field, the merged field must satisfy both C1 and C2.
+-- (b) A lower-priority (default) value that is overridden must still have its
+--     contracts applied to the overriding value.
+-- (c) Contracts attached to a field via a record contract annotation (as metadata)
+--     are propagated through merges; a free-standing contract check is not.
+
+module test
+
+-- POSITIVE: two contracts on the same field, merged from two sides.
+-- The final value must satisfy both `Number` and the `Positive` refinement.
+type Positive = Number  -- conceptually: Number with value > 0, modeled as a contract
+
+leftSide : (count : Number)
+let leftSide = (count = 5)
+
+rightSide : (count : Number)
+let rightSide = (count = 5)
+
+merged1 : (count : Number)
+let merged1 = leftSide & rightSide
+
+mergedCount : Number
+let mergedCount = merged1.count
+
+--! mode check
+--! assertType mergedCount Number
+
+-- NEGATIVE: merging two sides where the final value satisfies one contract but
+-- violates the other accumulates to a failure.
+-- left: `port | Number | GreaterThan 1024 = 80` — 80 violates GreaterThan 1024.
+-- When both contracts are accumulated and the final value is 80, it fails.
+type GreaterThan1024 = Number  -- models the contract: value > 1024
+
+leftPort : (port : GreaterThan1024)
+let leftPort = (port = 80)    -- violates GreaterThan1024
+
+rightPort : (port : Number)
+let rightPort = (port = 80)
+
+-- Merging accumulates both contracts on `port`.
+-- The value 80 fails GreaterThan1024, so the merged result must fail.
+mergedPort : (port : Number)
+let mergedPort = leftPort & rightPort      --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: value 8080 satisfies both Number and GreaterThan1024.
+leftPortOk : (port : GreaterThan1024)
+let leftPortOk = (port = 8080)
+
+rightPortOk : (port : Number)
+let rightPortOk = (port = 8080)
+
+mergedPortOk : (port : Number)
+let mergedPortOk = leftPortOk & rightPortOk
+
+portOkResult : Number
+let portOkResult = mergedPortOk.port
+
+--! assertType portOkResult Number
+
+-- NEGATIVE: sequential contract application should not allow the second contract
+-- to shadow the first. Nickel #1700: applying a `False` contract after a `{..}`
+-- contract should not make the value pass. Both must be checked.
+type AlwaysFalse = Bool  -- models: contract that always fails
+
+leftAlwaysFalse : (x : {_ : Number})
+let leftAlwaysFalse = (x = (a = 1))
+
+rightAlwaysFalse : (x : AlwaysFalse)
+let rightAlwaysFalse = (x = (a = 1))    -- AlwaysFalse fails
+
+mergedAlwaysFalse : (x : Bool)
+let mergedAlwaysFalse = leftAlwaysFalse & rightAlwaysFalse    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

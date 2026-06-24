@@ -1,0 +1,38 @@
+-- Source issues: KT-79 (check bounds in generic types), KT-11266
+-- Spec: types.quantification, traits.instances.resolution_algorithm
+
+--! mode check
+
+trait Printable (a : Type) =
+    printVal : a -> String
+
+-- POSITIVE: a generic function with an upper bound (constraint) accepts
+-- only types satisfying the bound.
+printFirst : forall (a : Type). (@_ : Printable a) -> List a -> String
+let printFirst xs =
+    match xs
+    case Nil    -> "<empty>"
+    case h :: _ -> printVal h
+
+--! assertType printFirst (forall (a : Type). (@_ : Printable a) -> List a -> String)
+
+instance Printable Int =
+    let printVal n = toString n
+
+-- POSITIVE: calling with a concrete type that satisfies the bound.
+printFirstInt : List Int -> String
+let printFirstInt xs = printFirst xs
+
+
+-- POSITIVE: generic identity with a bound — any Printable can be identity'd.
+idPrintable : forall (a : Type). (@_ : Printable a) -> a -> a
+let idPrintable x = x
+
+
+-- NEGATIVE: calling printFirst with a type that has no Printable instance.
+data Opaque : Type = Opaque
+
+badCall : String
+let badCall = printFirst (Opaque :: Nil)   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

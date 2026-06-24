@@ -1,0 +1,47 @@
+-- Source artifacts: RA-16866 (`min_exhaustive_patterns` false negative on assoc types),
+--                   RA-17031 (non-exhaustive pattern false positive),
+--                   RA-17702 (False positive E0005 with impl_trait_in_assoc_type),
+--                   RA-17851 (Support `min_exhaustive_patterns`),
+--                   RA-18334 (Infallible/uninhabited wrapped types).
+-- Spec: expressions.match,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability.
+-- Kappa spec rule: exhaustiveness checking treats constructors of an uninhabited
+-- type as zero. A `match` on a sum type whose only inhabited constructor is
+-- covered is exhaustive even when other declared constructors of the type are
+-- inhabitants of uninhabited types (and hence themselves uninhabited).
+--
+-- This pins:
+-- 1. positive: a match on a `Result a Void` that covers only `Ok` is
+--    exhaustive, because the `Err` constructor would require a `Void`
+--    inhabitant which does not exist;
+-- 2. negative control: dropping the `Ok` arm makes the match non-exhaustive
+--    even when `Void` is uninhabited.
+
+--! mode check
+
+-- An uninhabited type (no constructors).
+data Void : Type
+
+-- A standard sum type. `Err` carries a `Void`, so any inhabitant of
+-- `Result a Void` must be of the `Ok` form.
+data Result (a : Type) (e : Type) : Type =
+    Ok  : a -> Result a e
+    Err : e -> Result a e
+
+-- POSITIVE: an `Ok` arm alone covers all inhabitants of `Result Int Void`.
+unwrap_infallible : Result Int Void -> Int
+let unwrap_infallible r =
+    match r
+    case Ok n -> n
+    -- No `Err` arm needed: the `Err` constructor requires a `Void`, which
+    -- is uninhabited.
+
+
+-- NEGATIVE control: dropping the `Ok` arm leaves all inhabited cases of
+-- `Result Int Void` uncovered.
+bad_unwrap : Result Int Void -> Int
+let bad_unwrap r =
+    match r                                  --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

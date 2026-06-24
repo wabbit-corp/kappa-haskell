@@ -1,0 +1,32 @@
+-- Stress test: A one-shot resumption may capture a linear value; a multi-shot cannot
+-- Spec: effects.monadic_core.effect_application_linear_soundness
+
+--! mode check
+
+-- A resource type that must be used exactly once.
+data Resource : Type =
+    MkResource : Int -> Resource
+
+-- One-shot ask operation.
+effect Ask =
+    1 ask : Unit -> Int
+
+-- POSITIVE TEST: a one-shot continuation captures a linear Resource.
+-- Because the continuation is invoked exactly once (quantity 1), the linear
+-- binding is consumed exactly once -- linearity is satisfied.
+let useWithAsk (comp : Eff <[ask : Ask]> Int) : Int =
+    handle ask comp with
+        case return x   -> x
+        case ask () k   ->
+            let 1 r = MkResource 99   -- linear binding
+            let MkResource n = r      -- consumed here (exactly once inside one-shot k)
+            k n
+
+-- Computation that performs a single ask.
+let askOnce : Eff <[ask : Ask]> Int =
+    do Ask.ask ()
+
+let result : Int =
+    useWithAsk askOnce
+
+--! assertNoErrors

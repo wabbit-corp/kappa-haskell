@@ -1,0 +1,31 @@
+-- Source issues: elm #555, #536
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+-- When two wildcard imports both bring the same unqualified name into scope,
+-- using that name unqualified must produce kappa.name.ambiguous.
+-- Using the fully-qualified name must be accepted.
+
+--! mode check
+
+module MathA =
+    let square : Int -> Int
+    let square n = n * n
+
+module MathB =
+    let square : Float -> Float
+    let square n = n * n
+
+import MathA.*
+import MathB.*
+
+-- NEGATIVE: `square` is ambiguous between MathA.square and MathB.square.
+bad : Int
+let bad = square 5       --!! kappa.name.ambiguous
+
+-- POSITIVE: fully qualified access resolves the ambiguity.
+good1 : Int
+let good1 = MathA.square 5
+
+good2 : Float
+let good2 = MathB.square 5.0
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

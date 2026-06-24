@@ -1,0 +1,44 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
+--   (newtype Double a = Double { runDouble :: a -> (a, a) }; xDouble = Double $ \x -> (x, x)).
+-- Spec: data_types.data_declarations (§10.1),
+--       data_types.data_declarations.constructor_application_named_arguments_c (§13.2),
+--       expressions.lambdas (§16.2),
+--       expressions.application.named_function_application (§16.1).
+--
+-- A single-constructor single-field wrapper whose field is itself a
+-- function type. The constructor is partially applicable just like
+-- any other data constructor, and the field selector is an ordinary
+-- function from the wrapper to the function-typed payload.
+
+module test
+
+--! mode check
+
+data Doubler (a : Type) : Type =
+    Doubler { runDoubler : a -> (a, a) }
+
+--! assertNoErrors
+--! assertType runDoubler (forall (a : Type). Doubler a -> a -> (a, a))
+
+-- POSITIVE: build a Doubler by passing a lambda to the constructor.
+xDoubler : forall (a : Type). Doubler a
+let xDoubler = Doubler (\x -> (x, x))
+
+--! assertNoErrors
+--! assertType xDoubler (forall (a : Type). Doubler a)
+
+-- POSITIVE: extract the underlying function via the selector and call it.
+runXD : forall (a : Type). a -> (a, a)
+let runXD x = runDoubler xDoubler x
+
+--! assertNoErrors
+--! assertType runXD (forall (a : Type). a -> (a, a))
+
+-- POSITIVE: typed witness that the round-trip is shape-preserving for
+-- a specific instantiation.
+runOnBool : (Bool, Bool)
+let runOnBool = runXD True
+-- expected: (True, True)
+
+--! assertNoErrors
+--! assertType runOnBool (Bool, Bool)

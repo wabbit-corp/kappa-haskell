@@ -1,0 +1,67 @@
+-- Source issues: carp-lang/Carp#1064, #1065, #1395
+-- Spec: types.unions.elimination_match,
+--       types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types
+--       (see also CARP_SPEC_ADDITIONS.md SA-CARP-01, SA-CARP-02).
+-- Carp #1064: allocations made inside a `match-ref` branch were not
+-- freed.  Carp #1065: a `match-ref` inside a `let` and a separate
+-- `match-ref` in the same block confused liveness analysis between the
+-- two.  Carp #1395: a `match-ref` inside a lambda body wrongly reported
+-- the inner binder as not alive.  The portable Kappa obligation is that
+-- each borrow-form match arm is its own scope; bindings inside one arm
+-- do not bleed into siblings, and a borrow-form match inside a closure
+-- inherits the scrutinee's lifetime from the closure's capture set.
+
+--! mode check
+
+data State : Type =
+    Intro Int
+    | Outro Int
+
+deref : (& Int) -> Int
+let deref r = 0
+
+-- POSITIVE: a `match` on a borrowed `State` inside a lambda; each binder
+-- lives only for its arm; the closure captures the borrow and the arms
+-- read through it.
+stateReader : (& State) -> (() -> Int)
+let stateReader s =
+    \() ->
+        match s
+        case Intro tIn  -> deref tIn + 13
+        case Outro tOut -> deref tOut + 13
+
+--! assertNoErrors
+
+-- POSITIVE: two separate `match` forms on the same reference do not
+-- interact; the second match's binders are not constrained by the
+-- first match's binders.
+twoMatchesIndependent : (& State) -> Int
+let twoMatchesIndependent s =
+    let a : Int =
+        match s
+        case Intro _ -> 1
+        case Outro _ -> 2
+    let b : Int =
+        match s
+        case Intro _ -> 3
+        case Outro _ -> 4
+    a + b
+
+--! assertNoErrors
+
+-- POSITIVE: an allocation inside one match arm is destructed at that
+-- arm's join; siblings start with a clean liveness state.
+allocInsideArm : (& State) -> Int
+let allocInsideArm s =
+    match s
+    case Intro _ ->
+        let local : String = "ok"
+        stringLength &local
+    case Outro _ ->
+        let local : String = "bye"
+        stringLength &local
+
+stringLength : (& String) -> Int
+let stringLength r = 0
+
+--! assertNoErrors

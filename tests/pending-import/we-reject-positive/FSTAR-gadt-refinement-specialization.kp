@@ -1,0 +1,25 @@
+-- Source issue: FSTAR-605
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+-- After matching a GADT constructor, its index refinements must be in scope.
+-- Matching on equality evidence must make the unified indices visible in the branch.
+
+--! mode check
+
+-- Propositional equality as a GADT.
+data PropEq (A : Type) (x : A) (y : A) : Type =
+    Refl : {A : Type} -> {x : A} -> PropEq A x x
+
+-- POSITIVE TEST: symmetry via GADT index unification in the match arm.
+-- After matching Refl, x and y are unified so Refl proves PropEq A y x.
+symm : {A : Type} -> {x : A} -> {y : A} -> PropEq A x y -> PropEq A y x
+let symm pf = match pf
+    case Refl -> Refl
+
+-- POSITIVE TEST: type alias for Int-specialized equality.
+type IEq (x : Int) (y : Int) = PropEq Int x y
+
+-- After matching Refl on an IEq, x = y must be in scope.
+useIEq : {x : Int} -> {y : Int} -> IEq x y -> IEq y x
+let useIEq pf = symm pf
+
+--! assertNoErrors

@@ -1,0 +1,57 @@
+-- Source: nickel tests/typecheck/higher_rank_eval.ncl, higher_rank_coeval.ncl
+-- Spec: types.quantification.implicit_declaration_universalization
+-- Higher-rank (rank-2) polymorphism: a function may take an argument whose
+-- type is itself universally quantified. The inner forall must be respected —
+-- the argument may be applied at multiple types within the same invocation.
+-- Nickel's typechecker handles rank-2 types; a conforming implementation must
+-- accept these and typecheck them correctly.
+
+module test
+
+-- POSITIVE: eval applies a rank-2 polymorphic function to a value.
+-- `f : forall b. b -> b` can be applied at any type inside the body.
+eval : forall a. (forall b. b -> b) -> a -> a
+let eval f x = f x
+
+evalNumber : Number
+let evalNumber = eval (\x -> x) 42
+
+evalString : String
+let evalString = eval (\x -> x) "hello"
+
+--! mode check
+--! assertNoErrors
+--! assertType evalNumber Number
+--! assertType evalString String
+
+-- POSITIVE: co-eval — a function that accepts a consumer of polymorphic functions.
+-- The argument `consumer` takes the polymorphic identity and applies it.
+coEval : ((forall a. a -> a) -> Number) -> Number
+let coEval consumer =
+    let id : forall b. b -> b = \y -> y in
+    consumer id
+
+coEvalResult : Number
+let coEvalResult = coEval (\id -> id 42)
+
+--! assertNoErrors
+--! assertType coEvalResult Number
+
+-- POSITIVE: using a rank-2 argument at two different concrete types in one call.
+useAtTwoTypes : (forall a. a -> a) -> (Number, String)
+let useAtTwoTypes f = (f 1, f "two")
+
+twoTypesResult : (Number, String)
+let twoTypesResult = useAtTwoTypes (\x -> x)
+
+--! assertNoErrors
+--! assertType twoTypesResult (Number, String)
+
+-- POSITIVE: passing an explicitly-annotated polymorphic function satisfies rank-2 arg.
+myId : forall a. a -> a
+let myId x = x
+
+directResult : (Number, String)
+let directResult = useAtTwoTypes myId
+
+--! assertNoErrors

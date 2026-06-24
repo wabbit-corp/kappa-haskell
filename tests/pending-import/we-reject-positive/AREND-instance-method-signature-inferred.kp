@@ -1,0 +1,60 @@
+-- Source issues: instance method signature omission when other fields
+--   are already implemented; type inference filling in method signatures
+--   from the trait declaration and the implemented fields.
+-- Source issues: jetbrains/arend#126 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: traits.instances, expressions.implicit_parameters,
+--       types.quantification.implicit_declaration_universalization
+--
+-- When implementing a trait method inside an instance body, the method's
+-- parameter types and return type may be omitted when they can be inferred
+-- by substituting the already-implemented field values into the trait
+-- declaration. The elaborator must infer the full signature in this case.
+
+--! mode check
+
+-- A trait with a field `z` and a method `f` whose signature mentions `z`.
+trait C =
+    z : Nat
+    f : forall (x : Nat) -> x = z -> z = zero
+
+-- POSITIVE: instance that implements `z` first and then implements `f`
+-- with an inferred signature. The elaborator must be able to determine
+-- the type of `f`'s parameters by substituting `z = 0`.
+inst0 : C
+let inst0 = instance C =
+    let z = zero
+    let f x p = match x
+      case zero    -> refl
+      case (suc _) -> refl
+
+-- POSITIVE: a simpler trait where only the return type mentions a field.
+trait HasDefault =
+    base : Nat
+    doubled : Nat
+
+mkHasDefault : Nat -> HasDefault
+let mkHasDefault n = instance HasDefault =
+    let base    = n
+    let doubled = n + n
+
+testBase : Nat
+let testBase = (mkHasDefault 5).base      -- 5
+
+testDoubled : Nat
+let testDoubled = (mkHasDefault 5).doubled    -- 10
+
+-- POSITIVE: using the inferred type for a function inside an instance.
+-- The method `compute` has its argument type inferred from `z`.
+trait Computable =
+    z : Nat
+    compute : Nat -> Nat
+
+mkComputable : Nat -> Computable
+let mkComputable seed = instance Computable =
+    let z       = seed
+    let compute x = x + seed
+
+testCompute : Nat
+let testCompute = (mkComputable 3).compute 7    -- 10
+
+--! assertNoErrors

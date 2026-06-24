@@ -1,0 +1,27 @@
+-- Source issues: docs/types (assigning fields)
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: modifying an object's field requires accessing the object through
+-- 'mut self' (a mutable/exclusive receiver). A regular (immutable) method
+-- cannot assign to fields because it holds only a shared borrow.
+-- In Kappa, field mutation requires exclusive (linear) ownership of the
+-- containing value. A shared borrow cannot satisfy that demand.
+
+--! mode check
+
+data Point : Type = Point Int Int
+
+-- setX: requires exclusive ownership to produce a new Point with x replaced.
+setX : (1 p : Point) -> Int -> Point
+let setX (Point _ y) newX = Point newX y
+
+-- POSITIVE: modifying a point via owned (exclusive) access.
+moveRight : (1 p : Point) -> Point
+let moveRight p = setX p 0
+
+
+-- NEGATIVE: attempting mutation through a shared borrow.
+-- A borrowed Point does not have the exclusive access needed.
+badSet : (& p : Point) -> Int -> Point
+let badSet p newX = setX p newX   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

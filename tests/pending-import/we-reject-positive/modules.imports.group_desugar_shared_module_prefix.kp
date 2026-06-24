@@ -1,0 +1,32 @@
+-- Source issue: Noir#11582
+-- Spec: modules.imports
+-- A grouped import `import M.(a, b, c)` is surface sugar for importing items
+-- `a`, `b`, `c` from module `M`. The desugaring MUST preserve `M` as the common
+-- module prefix for all items in the group, not introduce extra intermediate
+-- path segments that would fail to resolve.
+-- Concretely: `import pkg.macros.(foo, Bar)` must resolve `foo` and `Bar`
+-- against `pkg.macros`, not attempt to re-resolve `macros` as part of a
+-- sub-path for each item separately.
+
+module test
+
+-- This test verifies that importing multiple items from the same module
+-- via grouped import syntax works correctly.
+-- Using std.prelude members as a stand-in for the two-item import:
+import std.prelude.(Int, Bool)
+
+-- Both imported names must be in scope after a grouped import.
+useImports : Int -> Bool -> Int
+let useImports n _ = n
+
+--! mode check
+--! assertNoErrors
+
+-- Variant: grouped import with an alias on one item should not break the
+-- common-prefix rule for other items in the same group.
+import std.prelude.(Int as MyInt, Bool)
+
+useAliased : MyInt -> Bool
+let useAliased _ _ = True
+
+--! assertNoErrors

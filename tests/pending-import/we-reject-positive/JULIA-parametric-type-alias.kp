@@ -1,0 +1,60 @@
+-- Source: Julia manual, "Type Aliases" chapter (cited by name; the
+--   original §-numbering was unverifiable and removed 2026-06-11),
+--         Julia `const MyVector = Vector{Float64}` pattern
+-- Spec: data_types.type_aliases, types.quantification
+-- In Julia, a type alias like `const MyVec = Vector{Float64}` introduces
+-- a name for a specific instantiation of a parameterized type. The alias
+-- is transparent: MyVec and Vector{Float64} are interchangeable. In Kappa,
+-- a type alias desugars to its expanded form and should be transparent
+-- for type-checking purposes.
+
+--! mode check
+
+-- A parameterized container.
+data Container (a : Type) : Type = Container a
+
+-- Kappa type alias for a specific instantiation (spec 10.3: aliases use `type`;
+-- an invented `alias` keyword was corrected here on 2026-06-11, FAB-005/FAB-010).
+type IntContainer = Container Int
+
+-- POSITIVE: constructing and reading using the alias.
+makeInt : IntContainer
+let makeInt = Container 42
+
+getInt : Int
+let getInt =
+    let Container n = makeInt
+    n
+
+-- POSITIVE: using alias and expanded type interchangeably.
+passAlias : (& c : IntContainer) -> Int
+let passAlias (Container n) = n
+
+passExpanded : (& c : Container Int) -> Int
+let passExpanded (Container n) = n
+
+-- These should type-check symmetrically since the alias is transparent.
+aliasResult : Int
+let aliasResult = passExpanded makeInt
+
+expandedResult : Int
+let expandedResult = passAlias (Container 99)
+
+--! assertType aliasResult Int
+--! assertType expandedResult Int
+
+-- A parameterized alias (spec data_types.type_aliases: `type Id (a : Type) = a`).
+type PairOf (a : Type) = Container (a, a)
+
+makePair : PairOf Int
+let makePair = Container (1, 2)
+
+getPairFirst : PairOf Int -> Int
+let getPairFirst (Container (x, _)) = x
+
+firstResult : Int
+let firstResult = getPairFirst makePair
+
+--! assertType firstResult Int
+
+--! assertNoErrors

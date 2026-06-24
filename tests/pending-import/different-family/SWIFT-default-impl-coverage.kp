@@ -1,0 +1,66 @@
+-- Source issues: apple/swift #87227 (default implementation can be invisible
+--   when member import visibility changes), apple/swift-evolution SE-0267.
+--   A trait member with a default implementation does not require instances
+--   to provide their own override; but members WITHOUT a default are still
+--   mandatory. Instances may omit members that have defaults.
+-- Spec: traits §14, traits.instances §14.3
+
+--! mode check
+
+-- A trait where `describe` has a default but `name` is mandatory.
+trait Identifiable (a : Type) =
+    name     : a -> String
+    describe : a -> String
+    let describe x = "Item: " ++ name x
+
+-- POSITIVE: instance providing only the mandatory member; default covers describe.
+data Widget : Type = Widget String
+
+instance Identifiable Widget =
+    let name (Widget s) = s
+
+-- POSITIVE: using the default describe implementation.
+widgetDesc : Widget -> String
+let widgetDesc w = describe w
+
+-- POSITIVE: instance that overrides the default describe.
+data Device : Type = Device String Nat
+
+instance Identifiable Device =
+    let name   (Device s _) = s
+    let describe (Device s n) = "Device:" ++ s ++ "@" ++ n
+
+-- POSITIVE: the overriding describe is used.
+deviceDesc : Device -> String
+let deviceDesc d = describe d
+
+-- A trait with all required (no defaults).
+trait Codec (a : Type) =
+    encode : a -> String
+    decode : String -> a
+
+data Payload : Type = Payload String
+
+instance Codec Payload =
+    let encode (Payload s) = s
+    let decode s = Payload s
+
+-- POSITIVE: all required members provided.
+roundtrip : Payload -> Payload
+let roundtrip p = decode (encode p)
+
+-- NEGATIVE: instance omitting the mandatory `name` member — the default
+-- for `describe` does not substitute for the missing mandatory member.
+data Record : Type = Record Nat
+
+instance Identifiable Record =    --!! kappa.associated.member-undeclared
+    let describe (Record n) = "Record"
+    -- name is mandatory; must be provided even though describe has a default
+
+-- NEGATIVE: instance omitting both mandatory members of Codec.
+data Blob : Type = Blob Nat
+
+instance Codec Blob =             --!! kappa.associated.member-undeclared
+    -- neither encode nor decode provided
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

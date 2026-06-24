@@ -1,0 +1,64 @@
+-- Source issues: lamdu#181 — should be able to mark if-expression's
+--   tails; lamdu#199 — Cmd+Right to move if-expression's condition to
+--   true branch; lamdu#128 — type "if" in fragment behavior. Lamdu
+--   sugars `if/elif/else` to a nested boolean case at the calculus
+--   level; the surface form is `if c then e1 else if c2 then e2 else e3`.
+-- Spec: expressions.conditionals,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §16.x: an `if c then e1 else e2` expression requires `c : Bool`
+--   and both branches to have the same type.
+--
+-- Nested if-elif-else must elaborate identically to a chain of binary
+-- conditionals; branches must agree in type.
+
+--! mode check
+
+-- POSITIVE: simple if-else.
+absDiff : Nat -> Nat -> Nat
+let absDiff x y =
+    if x >= y then x - y else y - x
+
+useAbsDiff : Nat
+let useAbsDiff = absDiff 10 3
+
+-- POSITIVE: nested if as elif chain.
+fizzbuzz : Nat -> String
+let fizzbuzz n =
+    if (n mod 15) == 0 then "FizzBuzz"
+    else if (n mod 3) == 0 then "Fizz"
+    else if (n mod 5) == 0 then "Buzz"
+    else "n"
+
+-- POSITIVE: if-expression as a sub-expression in a larger computation.
+clampToZero : Nat -> Nat
+let clampToZero n =
+    let x = if n >= 100 then 0 else n
+    x + 1
+
+-- POSITIVE: deeply nested elif chain.
+gradeOf : Nat -> String
+let gradeOf score =
+    if score >= 90 then "A"
+    else if score >= 80 then "B"
+    else if score >= 70 then "C"
+    else if score >= 60 then "D"
+    else "F"
+
+-- NEGATIVE: branches of different types.
+mixedBranches : Nat
+let mixedBranches =
+    if True then 1 else "two"    --!! kappa.type.mismatch
+
+-- NEGATIVE: condition is not Bool.
+badCond : Nat
+let badCond =
+    if 5 then 1 else 0    --!! kappa.type.mismatch
+
+-- NEGATIVE: elif branch returns wrong type.
+mixedElif : Nat
+let mixedElif =
+    if True then 1
+    else if False then "x"     --!! kappa.type.mismatch
+    else 2
+
+--! assertDiagnosticFamily error kappa.type.mismatch

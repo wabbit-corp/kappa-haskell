@@ -1,0 +1,39 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         A Boomerang lens always consumes its source. In Kappa, an
+--         `Option`-returning active pattern is intended for borrowed (&)
+--         or unrestricted scrutinees only — using it to consume a linear
+--         (@1) scrutinee would consume the resource on failure without
+--         producing residue, so the compiler must reject this.
+-- Spec: expressions.active_patterns.partial_active_patterns_option_t
+--       (linearity restriction),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- Portable obligation: an `Option`-returning active pattern that consumes
+--   a linear scrutinee must be rejected in a refutable context.
+
+module test
+
+--! mode check
+
+data Option a : Type =
+    None
+    Some a
+
+data Buffer : Type =
+    Buffer String
+
+-- A pattern that consumes its scrutinee linearly and returns Option.
+-- This combination is ill-formed per §17.3.2.
+pattern ConsumeBuffer (1 b : Buffer) : Option String =
+    match b
+    case Buffer s -> if s == "" then None else Some s
+
+-- NEGATIVE: refutable use of an Option-returning pattern with a linear
+-- scrutinee — failure path would have no residue to thread.
+extractOrFail : (1 b : Buffer) -> String
+let extractOrFail b =
+    match b
+    case ConsumeBuffer (s) -> s
+    case _                 -> ""
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

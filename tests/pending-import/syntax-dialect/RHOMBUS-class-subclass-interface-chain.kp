@@ -1,0 +1,78 @@
+-- Source issues: rhombus#686 (subclass overrides method of interfaces but not recognized as subtype)
+-- Spec: traits.instances
+--   Each type that provides instances for a set of traits satisfies those traits for any
+--   context requiring them. Chain/inheritance is modelled by providing instances at each
+--   level; the key obligation is that all required methods are provided.
+
+--! mode check
+
+trait Identifiable (a : Type) =
+    identify : a -> String
+
+trait Serializable (a : Type) =
+    serialize : a -> String
+
+-- First level: base type implements both traits.
+data Animal : Type =
+    MkAnimal { name : String }
+
+instance Identifiable Animal =
+    let identify a = "Animal:" ++ a.name
+
+instance Serializable Animal =
+    let serialize a = "{name:" ++ a.name ++ "}"
+
+-- Second level: intermediate type, independently implements both traits.
+data Pet : Type =
+    MkPet { animal : Animal, owner : String }
+
+instance Identifiable Pet =
+    let identify p = "Pet:" ++ p.animal.name ++ "@" ++ p.owner
+
+instance Serializable Pet =
+    let serialize p = "{pet:" ++ p.animal.name ++ ",owner:" ++ p.owner ++ "}"
+
+-- Third level: leaf type implements both traits.
+data HouseCat : Type =
+    MkHouseCat { pet : Pet, breed : String }
+
+instance Identifiable HouseCat =
+    let identify c = "Cat:" ++ c.pet.animal.name
+
+instance Serializable HouseCat =
+    let serialize c = "{cat:" ++ c.pet.animal.name ++ ",breed:" ++ c.breed ++ "}"
+
+-- POSITIVE: HouseCat satisfies Identifiable.
+showId : (@_ : Identifiable a) -> a -> String
+let showId x = identify x
+
+-- POSITIVE: HouseCat satisfies Serializable.
+showSerial : (@_ : Serializable a) -> a -> String
+let showSerial x = serialize x
+
+-- POSITIVE: HouseCat can be used wherever Identifiable is required.
+describeHouseCat : HouseCat -> String
+let describeHouseCat c = showId c
+
+-- POSITIVE: HouseCat can be used wherever Serializable is required.
+encodeHouseCat : HouseCat -> String
+let encodeHouseCat c = showSerial c
+
+-- POSITIVE: Pet is Identifiable and Serializable.
+describePet : Pet -> String
+let describePet p = showId p
+
+-- POSITIVE: Animals satisfy both traits.
+identifyAny : (@_ : Identifiable a) -> a -> String
+let identifyAny x = identify x
+
+chainTest : String
+let chainTest =
+    let cat = MkHouseCat
+                { pet = MkPet
+                    { animal = MkAnimal { name = "Whiskers" }
+                    , owner  = "Alice" }
+                , breed = "Siamese" }
+    identify cat ++ " | " ++ serialize cat
+
+--! assertNoErrors

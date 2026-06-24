@@ -1,0 +1,77 @@
+-- Source issues: apple/swift #46378 (protocol extension cannot implement
+--   associated type requirement), apple/swift #57017 (constrained associated
+--   type not inherited in protocol refinement).
+--   When a trait declares an associated static member (a member whose value
+--   is a Type) and an instance body cannot supply a concrete binding for it,
+--   the checker must produce kappa.associated.member-undeclared.
+-- Spec: traits §14, traits.instances §14.3,
+--       traits.instances.associated_static_member_instance_checking §14.3.4
+
+--! mode check
+
+-- A trait with an associated type member.
+trait Container (c : Type) =
+    Element : Type
+    empty   : c
+    insert  : c -> Element -> c
+    toList  : c -> List Element
+
+-- POSITIVE: concrete instance providing all members including Element.
+data IntStack : Type = IntStack (List Nat)
+
+instance Container IntStack =
+    let Element = Nat
+    let empty   = IntStack []
+    let insert (IntStack xs) n = IntStack (n :: xs)
+    let toList (IntStack xs) = xs
+
+-- POSITIVE: using the instance to build and inspect a stack.
+stackOf3 : IntStack
+let stackOf3 = insert (insert (insert empty 1) 2) 3
+
+contents : List Nat
+let contents = toList stackOf3
+
+-- A trait with a more specific associated type constraint.
+trait KeyedContainer (c : Type) =
+    Key   : Type
+    Value : Type
+    emptyMap : c
+    insertAt : c -> Key -> Value -> c
+    lookupAt : c -> Key -> Maybe Value
+
+data StrMap : Type = StrMap (List (String, Nat))
+
+instance KeyedContainer StrMap =
+    let Key   = String
+    let Value = Nat
+    let emptyMap = StrMap []
+    let insertAt (StrMap kvs) k v = StrMap ((k, v) :: kvs)
+    let lookupAt (StrMap []) _    = Nothing
+    let lookupAt (StrMap ((k, v) :: rest)) q =
+        if k = q then Just v else lookupAt (StrMap rest) q
+
+-- POSITIVE: insert and lookup in a concrete map.
+testMap : Maybe Nat
+let testMap =
+    let m = insertAt (insertAt emptyMap "a" 1) "b" 2
+    lookupAt m "a"
+
+-- NEGATIVE: instance that omits the Element associated type entirely.
+data FloatStack : Type = FloatStack (List Nat)
+
+instance Container FloatStack =    --!! kappa.associated.member-undeclared
+    let empty = FloatStack []
+    let insert (FloatStack xs) n = FloatStack (n :: xs)
+    let toList (FloatStack xs) = xs
+    -- Element is not declared; checker cannot infer it
+
+-- NEGATIVE: instance omitting Key but providing Value and operations.
+data KeylessMap : Type = KeylessMap Nat
+
+instance KeyedContainer KeylessMap =    --!! kappa.associated.member-undeclared
+    let Value = Nat
+    let emptyMap = KeylessMap 0
+    -- Key missing; lookupAt and insertAt signatures cannot be resolved
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

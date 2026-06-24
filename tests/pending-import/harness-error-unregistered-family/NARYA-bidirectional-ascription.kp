@@ -1,0 +1,50 @@
+-- Source artifacts: narya docs/typechecking.rst (Ascription: a checking
+--               term in a synthesizing position must be ascribed M : A;
+--               narya PR #80 (allow domain-ascribed lambdas (x:A) ↦ M
+--               that synthesize).
+-- Spec: types.functions,
+--       expressions.lambdas,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- Bidirectional typechecking distinguishes synthesizing from checking
+-- positions. Ascription `(M : A)` turns the checking term M into a
+-- synthesizing term of type A. A bare abstraction does not synthesize
+-- (its domain is unknown without context), so applying one in a context
+-- with no expected type requires ascription. A domain-annotated lambda
+-- whose body itself synthesizes makes the whole lambda synthesizing.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: ascribing a checking term so it can be applied as a redex.
+useRedex : Nat
+let useRedex = ((\x -> Suc x) : (Nat -> Nat)) Zero
+
+-- POSITIVE: ascription that recovers a function type, then applied
+-- against the surrounding declared signature.
+ascribeFn : Nat -> Nat
+let ascribeFn = (\x -> Suc x) : (Nat -> Nat)
+
+-- POSITIVE: a domain-annotated lambda whose codomain is fixed by the
+-- enclosing signature.
+domainLam : (x : Nat) -> Nat
+let domainLam = \(x : Nat) -> Suc x
+
+-- POSITIVE: ascription propagates an expected type through to a checking
+-- term in a synthesizing context.
+matchAsc : Nat -> Nat
+let matchAsc n =
+    ((match n
+        case Zero  -> Zero
+        case Suc _ -> Suc Zero) : Nat)
+
+-- NEGATIVE: applying a bare lambda whose domain has no signature or
+-- expected type produces an unsolved-metavariable diagnostic because the
+-- argument type cannot be determined.
+badApply : Nat
+let badApply = (\x -> x) Zero    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

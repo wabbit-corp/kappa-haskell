@@ -1,0 +1,50 @@
+-- Source issue: MOJO-1307
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.functions
+-- A function whose concrete type includes a default-valued parameter has a
+-- different signature arity than a function type that has no default.
+-- Passing `fn(a: Int, b: Int = 0) -> Int` where `fn(Int, Int) -> Int` is
+-- expected must fail: the runtime calling convention differs.
+-- Conversely, a function type annotation of fn(Int) -> Int cannot be satisfied
+-- by fn(Int, Int) -> Int even if the second arg has a default.
+
+module test
+
+--! mode check
+
+-- Helper higher-order function that demands exactly a 2-argument function.
+applyTwo : (f : Int -> Int -> Int) -> Int -> Int -> Int
+let applyTwo f a b = f a b
+
+-- POSITIVE: pass a matching 2-argument lambda.
+addExact : Int -> Int -> Int
+let addExact a b = a + b
+
+goodCall : Int
+let goodCall = applyTwo addExact 3 4
+
+--! assertType goodCall Int
+
+-- A function with a default on the second parameter.
+-- In a strict type system, fn(Int, Int=0) -> Int and fn(Int, Int) -> Int
+-- are NOT the same type: the former can be called with one argument,
+-- the latter cannot.  Passing the one-arg-compatible function where a
+-- strict two-argument function is expected is a mismatch.
+addWithDefault : Int -> Int
+let addWithDefault a = a + 0     -- conceptually: second arg elided
+
+-- NEGATIVE: `addWithDefault` has type `Int -> Int` but applyTwo expects
+-- `Int -> Int -> Int`.  Arity mismatch → kappa.type.mismatch.
+badCall : Int
+let badCall = applyTwo addWithDefault 3 4  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a function that genuinely takes two arguments satisfies the
+-- higher-order parameter even when it has the same name as one with defaults.
+addTwo : Int -> Int -> Int
+let addTwo a b = a + b
+
+goodCall2 : Int
+let goodCall2 = applyTwo addTwo 5 6
+

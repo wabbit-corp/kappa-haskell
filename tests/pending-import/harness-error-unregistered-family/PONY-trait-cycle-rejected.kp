@@ -1,0 +1,40 @@
+-- Source issues: ponyc traits test suite (CannotProvideClass, SingleTraitLoop,
+--   MultiTraitLoop), ponyc#1964, ponyc#2881
+-- Spec: traits.headers.supertraits.refinement_graph_cycles, kappa.query.cycle
+-- Pony rejects both single-trait cycles (T is T) and multi-trait cycles
+-- (T1 is T2, T2 is T3, T3 is T1). Kappa's trait-refinement graph must be
+-- acyclic. A cycle among supertraits is rejected; the diagnostic identifies
+-- every trait application in the cycle.
+
+--! mode check
+
+-- NEGATIVE: CyclicT lists itself as its own supertrait, forming a length-1
+-- cycle in the refinement graph. The strongly connected component consists of
+-- just CyclicT, and the whole declaration is rejected.
+trait CyclicT a => CyclicT (a : Type) =   --!! kappa.query.cycle
+    cycleOp : (& x : a) -> Int
+
+--! assertDiagnosticFamily error kappa.query.cycle
+
+-- POSITIVE: linear supertrait chain with no cycle.
+trait Base (a : Type) =
+    baseOp : (& x : a) -> Bool
+
+trait Base a => Derived (a : Type) =
+    derivedOp : (& x : a) -> Int
+
+trait Base a, Derived a => FullyDerived (a : Type) =
+    fullOp : (& x : a) -> String
+
+-- data instances that satisfy the chain
+data Good : Type = Good Int
+
+instance Base Good =
+    let baseOp (Good _) = True
+
+instance Derived Good =
+    let derivedOp (Good n) = n
+
+instance FullyDerived Good =
+    let fullOp (Good n) = "good"
+

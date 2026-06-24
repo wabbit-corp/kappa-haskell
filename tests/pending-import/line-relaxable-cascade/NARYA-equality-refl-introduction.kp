@@ -1,0 +1,48 @@
+-- Source artifacts: narya docs/observational.rst ("any element x : A
+--               gives rise to refl x : Id A x x"), narya issue #102
+--               (proving 1 + 1 = 2 by reflexivity).
+-- Spec: types.propositions.propositional_equality_type_positions
+--
+-- The propositional equality type `Eq a x y` is inhabited by `Refl`
+-- when `x` and `y` are definitionally equal. Refl introduces equality
+-- at any type and checks against `Eq a x x` whenever the surrounding
+-- context fixes the two sides to definitionally equal terms.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Eq (a : Type) (x : a) : a -> Type =
+    Refl : Eq a x x
+
+-- POSITIVE: reflexivity at a base value.
+zeroEqZero : Eq Nat Zero Zero
+let zeroEqZero = Refl
+
+-- POSITIVE: reflexivity is up to definitional equality, so 1 + 1 = 2
+-- holds by Refl once `plus` reduces.
+plus : Nat -> Nat -> Nat
+let plus m n =
+    match m
+      case Zero  -> n
+      case Suc k -> Suc (plus k n)
+
+onePlusOne : Eq Nat (plus (Suc Zero) (Suc Zero)) (Suc (Suc Zero))
+let onePlusOne = Refl
+
+-- POSITIVE: reflexivity of a function value at a function type.
+identity : forall (a : Type). a -> a
+let identity x = x
+
+idEq : Eq (Nat -> Nat) (identity Nat) (identity Nat)
+let idEq = Refl
+
+-- NEGATIVE: Refl does not type-check when the two sides are not
+-- definitionally equal — Zero and Suc Zero are distinct constructor
+-- canonical forms.
+badEq : Eq Nat Zero (Suc Zero)
+let badEq = Refl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

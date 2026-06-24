@@ -1,0 +1,29 @@
+-- Stress test: GADT match branch impossible when constructor index clashes with scrutinee index
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+
+--! mode check
+
+data Val : Bool -> Type =
+  TrueVal  : Val True
+  FalseVal : Val False
+
+-- onlyTrue: scrutinee has index True; FalseVal has index False — contradiction.
+onlyTrue : Val True -> Int
+let onlyTrue v = match v
+  case TrueVal  -> 1
+  case FalseVal -> impossible
+
+-- onlyFalse: scrutinee has index False; TrueVal has index True — contradiction.
+onlyFalse : Val False -> Int
+let onlyFalse v = match v
+  case FalseVal -> 0
+  case TrueVal  -> impossible
+
+-- Polymorphic version: match on either; both branches are live.
+valToInt : {b : Bool} -> Val b -> Int
+let valToInt v = match v
+  case TrueVal  -> 1
+  case FalseVal -> 0
+
+--! assertNoErrors

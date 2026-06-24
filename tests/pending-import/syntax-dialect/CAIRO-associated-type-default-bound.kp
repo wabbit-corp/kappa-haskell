@@ -1,0 +1,92 @@
+-- Source issues: CAIRO-7060, CAIRO-6954 (roadmap: associated items constraints),
+--               CAIRO-PR-4640 (Added syntax and parsing for associated type),
+--               CAIRO-PR-4641 (Added syntax and parsing for associated constant),
+--               CAIRO-PR-6024 (added associated type bounds with TypeEqual trait),
+--               CAIRO-8962 (Allow using associated consts as Fixed Size Array size)
+-- Spec: traits.members (§14.2), traits.members.overloaded_member_names (§14.2.1),
+--       traits.instances.associated_static_member_instance_checking (§14.3.4),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved, kappa.associated.normalization-blocked).
+-- Kappa spec rule (§14.2 "Trait members"):
+--   "A trait may declare associated static members, including associated types
+--    and constants. An associated type declared in a trait has no default
+--    unless an `= ...` default is provided. An associated constant may carry a
+--    default value. Instances must satisfy every declared constraint on
+--    associated members."
+-- Cairo issue CAIRO-7060: default impl function bodies referencing `Self::S`
+--   failed to resolve the implicit bound `+Drop<Self::S>`.
+-- Cairo issue CAIRO-8962: using an associated const as a type-level array size
+--   was not yet supported; the feature request captures the spec gap.
+
+--! mode check
+
+-- A trait with an associated type carrying a bound.
+trait Serializable (a : Type) =
+    Repr : Type
+    serialize : (& x : a) -> Repr
+    deserialize : (& r : Repr) -> Option a
+
+-- Eq trait used for associated type bounds.
+trait Eq (a : Type) =
+    eq : (& x : a) -> (& y : a) -> Bool
+
+-- A trait that requires its associated type to be Eq.
+trait Comparable (a : Type) =
+    Key : Type
+    (@_ : Eq Key)
+    toKey : (& x : a) -> Key
+    let sameKey : (& x : a) -> (& y : a) -> Bool
+    let sameKey x y = eq (toKey x) (toKey y)
+
+-- Concrete type implementing Comparable with Int key (Eq Int must exist).
+data Widget : Type =
+    Widget Int String
+
+instance Eq Int =
+    let eq x y = True   -- placeholder
+
+instance Comparable Widget =
+    let Key = Int
+    let toKey (Widget n _) = n
+
+-- POSITIVE: using the default `sameKey` method.
+widgetsMatch : Bool
+let widgetsMatch = sameKey (Widget 1 "a") (Widget 1 "b")
+
+-- A type whose Key has no Eq instance — the Comparable instance should fail.
+data Gadget : Type =
+    Gadget String
+
+data Name : Type = Name String   -- no Eq instance
+
+instance Comparable Gadget =     --!! kappa.implicit.unsolved
+    let Key = Name
+    let toKey (Gadget s) = Name s
+
+-- POSITIVE: a trait with an associated constant.
+trait Sized (a : Type) =
+    size : Int   -- associated constant (defaultless)
+    makeArray : (1 _ : a) -> List Int
+    let makeArray x = replicate size 0
+
+replicate : Int -> Int -> List Int
+let replicate n x = if n <= 0 then [] else x :: replicate (n - 1) x
+
+-- An instance providing the required `size` constant.
+data ThingA : Type = ThingA
+
+instance Sized ThingA =
+    let size = 4
+    let makeArray _ = replicate 4 0
+
+-- POSITIVE: using the default makeArray with the overridden size.
+thingArr : List Int
+let thingArr = makeArray ThingA
+
+-- NEGATIVE: an instance that forgets to provide `size` must be rejected.
+data ThingB : Type = ThingB
+
+instance Sized ThingB =
+    let makeArray _ = [0, 0, 0]
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,42 @@
+-- Source: granule-project/granule PR #108 (Approximation for lambda)
+-- Spec: expressions.lambdas.closure_capture_quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- §16.2.1 (Closure capture quantities): the quantity of a captured
+-- variable equates to "delayed use × call count". A linear binding
+-- captured by a closure called twice is demanded twice; that exceeds the
+-- linear declaration and surfaces `kappa.quantity.unsatisfied`.
+
+module test
+
+--! mode check
+
+-- POSITIVE: closure constructed and called once.
+callOnce : (1 x : Int) -> Int
+let callOnce x =
+    let f = \(u : Unit) -> x in
+    f ()
+
+
+-- POSITIVE: closure that captures an ω-graded binding may be called
+-- arbitrarily many times.
+callMany : (ω x : Int) -> Int
+let callMany x =
+    let f = \(u : Unit) -> x in
+    f () + f () + f ()
+
+
+-- NEGATIVE: closure captures a linear x but is called twice.
+callTwice : (1 x : Int) -> Int
+let callTwice x =
+    let f = \(u : Unit) -> x in
+    f () + f ()               --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: closure captures a relevant (>=1) x but is never called.
+neverCalled : (>=1 x : Int) -> Unit
+let neverCalled x =
+    let _ = \(u : Unit) -> x in
+    ()                        --!! kappa.quantity.positive-lower-bound
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

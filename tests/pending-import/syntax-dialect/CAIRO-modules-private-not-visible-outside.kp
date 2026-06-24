@@ -1,0 +1,75 @@
+-- Source issues: CAIRO-2953, CAIRO-3595, CAIRO-PR-3457 (feat: pub visibility),
+--               CAIRO-PR-3631 (feat: pub use), CAIRO-6889
+-- Spec: modules.visibility_opacity_private_opaque (§8.5),
+--       modules.visibility_opacity_private_opaque.private (§8.5.1),
+--       modules.exports (§8.4),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§8.5.1 "private"):
+--   "A private item is not part of the module's export interface. Outside
+--    the defining module, a private item is not name-resolvable except via
+--    unhide/clarify. It cannot be imported by ordinary import forms."
+-- Cairo issue CAIRO-2953: `pub` modifier needed to make items visible.
+-- Cairo issue CAIRO-3595: `pub use` should re-export names with public
+--   visibility so callers can import through the re-exporting module.
+-- Cairo issue CAIRO-6889: glob imports conflicted with prelude items when
+--   non-visible items were also named the same.
+
+--! mode check
+
+module library
+
+-- A public type accessible from outside the module.
+data Token : Type =
+    Token Int
+
+-- A private helper not accessible outside.
+private tokenValue : (& t : Token) -> Int
+let tokenValue (Token n) = n
+
+-- A public function that exposes safe access.
+public peek : (& t : Token) -> Int
+let peek t = tokenValue t
+
+-- A public re-export of a renamed alias.
+public type ExternalToken = Token
+
+module user
+import library.(Token, peek, ExternalToken)
+
+-- POSITIVE: using public Token and peek.
+makeAndPeek : Int
+let makeAndPeek =
+    let t = Token 5
+    peek t
+
+-- POSITIVE: ExternalToken is a re-exported alias for Token.
+sameType : ExternalToken
+let sameType = Token 7
+
+-- NEGATIVE: trying to access private `tokenValue` from outside the module.
+badAccess : Int
+let badAccess =
+    let t = Token 3
+    library.tokenValue t             --!! kappa.name.unresolved
+
+-- NEGATIVE: trying to import a private item directly.
+-- (A module that attempts `import library.(tokenValue)` cannot succeed.)
+-- We model this as a direct qualified reference instead.
+anotherBad : Int
+let anotherBad = library.tokenValue (Token 1)  --!! kappa.name.unresolved
+
+-- POSITIVE: a module that re-exports via `public` can make items visible to
+-- third-party consumers.
+module relay
+import library.(peek, Token)
+public reExportedPeek : (& t : Token) -> Int
+let reExportedPeek = peek
+
+module third
+import relay.(reExportedPeek, Token)
+
+usedViaRelay : Int
+let usedViaRelay = reExportedPeek (Token 9)
+
+--! assertDiagnosticFamily error kappa.name.unresolved

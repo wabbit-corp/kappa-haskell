@@ -1,0 +1,37 @@
+-- Source: Maude tests/Misc/unification.maude
+--           cq f(f(X, Y), Y) = f(Y, X) if X =/= Y .
+--         A conditional equation `cq lhs = rhs if guard` fires only when
+--         the guard reduces to true. The guard binds the same variables as
+--         the LHS pattern. The portable Kappa analogue is a match arm with
+--         a boolean guard, where the guard expression must be a
+--         well-typed Bool computed from the bound pattern variables.
+-- Spec: expressions.match.guarded_cases_introduce_guard_success_evidence.
+-- Portable obligation: a guarded match arm with a boolean guard that
+--   references only bound pattern variables is well-formed and fires only
+--   when the guard evaluates to True.
+
+--! mode check
+
+module test
+
+data Item : Type = ItemA | ItemB | ItemC
+
+equalItem : Item -> Item -> Bool
+let equalItem x y = match x
+    case ItemA -> match y case ItemA -> True case _ -> False
+    case ItemB -> match y case ItemB -> True case _ -> False
+    case ItemC -> match y case ItemC -> True case _ -> False
+
+-- POSITIVE: guard discriminates between (X, Y) pairs where X /= Y.
+classify : Item -> Item -> Int
+let classify x y = match x
+    case _ if equalItem x y -> 0    -- same
+    case _                  -> 1    -- different
+
+ok1 : Int
+let ok1 = classify ItemA ItemA    -- expect 0
+
+ok2 : Int
+let ok2 = classify ItemA ItemB    -- expect 1
+
+--! assertNoErrors

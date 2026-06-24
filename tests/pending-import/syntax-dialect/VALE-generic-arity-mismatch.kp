@@ -1,0 +1,47 @@
+-- Source issues: vale#439 (Need better error if supply wrong number of
+--               struct template args), Vale InferTemplateTests
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.quantification
+-- In Vale, supplying the wrong number of type arguments to a generic
+-- struct or generic function is a compile-time error. In Kappa, applying a
+-- type constructor to the wrong number of arguments fails with
+-- kappa.type.mismatch (too many or too few arguments) or
+-- kappa.name.unresolved when the arity does not match any declaration.
+
+--! mode check
+
+-- A generic pair type parameterised by two type arguments.
+data Pair (a : Type) (b : Type) : Type = Pair a b
+
+getFirst : forall (a : Type) (b : Type). (& p : Pair a b) -> & a
+let getFirst (Pair x _) = x
+
+-- POSITIVE: supplying exactly two type arguments.
+okPair : Pair Int String
+let okPair = Pair 1 "hello"
+
+-- POSITIVE: letting the compiler infer the two arguments.
+okInferred : Int
+let okInferred =
+    let p = Pair 42 True
+    getFirst p
+
+-- NEGATIVE: supplying only one type argument to a two-parameter type.
+badOneArg : Pair Int   --!! kappa.type.mismatch
+let badOneArg = Pair 1 2
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: supplying three type arguments to a two-parameter type.
+badThreeArgs : Pair Int String Bool   --!! kappa.type.mismatch
+let badThreeArgs = Pair 1 "x"
+
+-- POSITIVE: a single-parameter generic type used with exactly one arg.
+data Box (a : Type) : Type = Box a
+
+okBox : Box Int
+let okBox = Box 99
+
+-- NEGATIVE: supplying zero type arguments to a one-parameter type.
+badZeroArgs : Box   --!! kappa.type.mismatch
+let badZeroArgs = Box 7

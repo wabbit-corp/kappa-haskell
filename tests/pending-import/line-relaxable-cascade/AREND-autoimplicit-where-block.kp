@@ -1,0 +1,59 @@
+-- Source issues: implicit universalization in where-block sub-declarations;
+--   outer function's implicit parameters must remain in scope for
+--   nested let-bound helpers.
+-- Source issues: jetbrains/arend#337 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       modules.names.lexical_lookup, declarations.let_in
+--   §11.3.3: free lowercase identifiers in a declaration's signature are
+--   implicitly universalized at that declaration site.
+--
+-- When a function has implicit type parameters, local helpers defined in
+-- its body (via let...in) must be able to reference those parameters.
+-- The universalization rule must not drop the enclosing scope's implicits.
+-- (ARSA-06 spec gap: this test demonstrates the portable subset of the
+--  obligation; Arend-specific where-block behaviour is documented in
+--  AREND_SPEC_ADDITIONS.md as ARSA-06.)
+
+--! mode check
+
+-- POSITIVE: a top-level function with an implicit parameter; the body
+-- closes over the implicit through a let-bound alias.
+useImplicit : forall {X : Type} -> X -> X
+let useImplicit x =
+    let inner = x
+    in inner
+
+-- POSITIVE: a function whose body uses its explicit parameters in a
+-- local let-bound computation.
+applyTwiceLocal : forall (A : Type) -> (A -> A) -> A -> A
+let applyTwiceLocal f x =
+    let once  = f x
+    let twice = f once
+    in twice
+
+-- POSITIVE: implicit type parameter is accessible in the body where
+-- it appears in a local type ascription.
+selfReflex : forall {A : Type} -> A -> A
+let selfReflex x =
+    let y : A = x
+    in y
+
+-- POSITIVE: outer explicit parameter flows through a nested helper function.
+addOffset : Nat -> Nat -> Nat
+let addOffset offset n =
+    let adjusted = n + offset
+    in adjusted
+
+-- POSITIVE: implicit parameter used in both branch arms of a match.
+identityOrDefault : forall {A : Type} -> Bool -> A -> A -> A
+let identityOrDefault flag x def =
+    match flag
+    case True  -> x
+    case False -> def
+
+-- NEGATIVE: referencing an undeclared name inside a let body produces
+-- kappa.name.unresolved.
+badHelper : Nat -> Nat
+let badHelper n = undeclaredFn n    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

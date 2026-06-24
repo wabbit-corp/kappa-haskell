@@ -1,0 +1,68 @@
+-- Source issues: apple/swift #77123 (typed throws nothrow ↔ throws(Never)
+--   conversion crash), apple/swift-evolution SE-0413 (typed throws).
+--   When a function declares that it throws a specific error type, callers
+--   must handle that concrete error type. Mixing incompatible error types
+--   in a typed-throw context produces kappa.type.mismatch.
+-- Spec: types.quantification §11.3, traits.instances §14.3
+
+--! mode check
+
+-- Model typed errors as a trait with an associated error type.
+trait Fallible (a : Type) =
+    ErrorType : Type
+    attempt   : a -> Either a.ErrorType a
+
+-- A concrete error type.
+data ParseError : Type = UnexpectedChar Nat | UnexpectedEOF
+
+data NetworkError : Type = Timeout Nat | Refused
+
+-- POSITIVE: a parser returns Either ParseError result.
+data Parser (a : Type) : Type = Parser String
+
+instance Fallible (Parser a) =
+    let ErrorType = ParseError
+    let attempt (Parser input) =
+        if input = "" then Left UnexpectedEOF else Right (Parser input)
+
+-- POSITIVE: a network call returns Either NetworkError result.
+data NetCall (a : Type) : Type = NetCall String Nat
+
+instance Fallible (NetCall a) =
+    let ErrorType = NetworkError
+    let attempt (NetCall host port) =
+        if port = 0 then Left (Refused) else Right (NetCall host port)
+
+-- POSITIVE: handling the correct error type.
+handleParseError : ParseError -> String
+let handleParseError UnexpectedEOF       = "unexpected end of input"
+let handleParseError (UnexpectedChar n)  = "unexpected char at " ++ n
+
+handleNetError : NetworkError -> String
+let handleNetError (Timeout n)  = "timed out after " ++ n
+let handleNetError Refused      = "connection refused"
+
+-- POSITIVE: using attempt and matching the correct error type.
+tryParse : Parser Nat -> String
+let tryParse p = match attempt p
+    case Left e  -> handleParseError e
+    case Right _ -> "ok"
+
+-- NEGATIVE: handling a parser result with a network error handler —
+-- the error type does not match.
+wrongHandler : Parser Nat -> String
+let wrongHandler p = match attempt p
+    case Left e  -> handleNetError e    --!! kappa.type.mismatch
+    case Right _ -> "ok"
+
+-- NEGATIVE: conflating error types in a combined operation.
+-- attempt returns Either ParseError (Parser Nat); treating the Left as
+-- NetworkError is a type mismatch.
+badCombine : Either NetworkError (Parser Nat)
+let badCombine = attempt (Parser "hello")    --!! kappa.type.mismatch
+
+-- NEGATIVE: returning the wrong error type from an attempt wrapper.
+badAttempt : Parser Nat -> Either NetworkError (Parser Nat)
+let badAttempt p = attempt p    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,26 @@
+-- Source issues: inko#679, docs/pattern-matching
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Inko: an OR pattern with a guard does not contribute to exhaustiveness
+-- coverage. If the OR pattern is the only arm covering certain cases and
+-- has a guard, those cases remain potentially unhandled.
+
+--! mode check
+
+data Status : Type = Active | Idle | Stopped
+
+-- POSITIVE: OR pattern with no guard provides complete coverage.
+classifyOk : Status -> String
+let classifyOk s = match s with
+    | Active | Idle -> "running"
+    | Stopped       -> "stopped"
+
+
+-- NEGATIVE: OR pattern (Active | Idle) has a guard, so it does not
+-- provide exhaustive coverage for Active and Idle. Those cases may
+-- go unhandled when the guard is false.
+classifyGuarded : Status -> Bool -> String
+let classifyGuarded s safe = match s with   --!! kappa.pattern.non-exhaustive
+    | Active | Idle if safe -> "safe and running"
+    | Stopped               -> "stopped"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

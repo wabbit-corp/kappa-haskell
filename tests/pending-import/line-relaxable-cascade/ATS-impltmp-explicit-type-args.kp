@@ -1,0 +1,98 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test02.dats
+--         (`impltmp {x0:type,xs:type,y0:type} gseq_maprev_list<x0,list(x0)><y0>`,
+--          `impltmp <a:tflt1> g_self<a>(x) = x`,
+--          `#impltmp{a:vt} a1ref_length<a><5>(A1) = 5`),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`val x = foo<int>{1}(1)`, `val xy = foo{int}{string}(0, "0")`)
+-- Spec: implicit.resolution_algorithm (§14.3.1),
+--       functions.binders.quantities (§12.1),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- ATS3 pattern: `impltmp {a:type} g_pow<a><Z()>(x) = g_1<a>()` provides an
+--   explicit type-argument instantiation for a parameterized template. The
+--   explicit type arguments `<a>` and `<Z()>` must match the declared
+--   parameter list. Providing the wrong number of type arguments or the
+--   wrong types for type arguments is a type error.
+-- Portable obligation: explicit type arguments at an application or
+--   instantiation site must match the declared type parameters; a mismatch
+--   is kappa.type.mismatch or kappa.implicit.unsolved.
+
+--! mode check
+
+-- A two-parameter generic function.
+identity : forall (a b : Type). a -> b -> (a, b)
+let identity x y = (x, y)
+
+-- POSITIVE: explicit type arguments.
+pairOk : (Int, String)
+let pairOk = identity @Int @String 1 "hello"
+
+-- POSITIVE: inferred type arguments.
+pairInferred : (Int, String)
+let pairInferred = identity 1 "hello"
+
+-- A generic container conversion.
+toList : forall (a : Type). a -> List a
+let toList x = [x]
+
+-- POSITIVE: explicit type.
+listOne : List Int
+let listOne = toList @Int 42
+
+-- A trait with an explicit type-parameter slot.
+trait Convert (a : Type) (b : Type) =
+    convert : a -> b
+
+instance Convert Int String =
+    let convert n = show n
+
+instance Convert Bool String =
+    let convert b = if b then "true" else "false"
+
+-- POSITIVE: explicit type parameters resolve unambiguously.
+intToStr : String
+let intToStr = convert @Int @String 42
+
+boolToStr : String
+let boolToStr = convert @Bool @String True
+
+-- POSITIVE: inferred from context.
+inferred : String
+let inferred = convert (42 : Int)
+
+-- NEGATIVE: providing the wrong type for the second type argument.
+wrongSecond : Int
+let wrongSecond = convert @Int @Int 42     --!! kappa.implicit.unsolved
+
+-- NEGATIVE: providing a type argument for a non-generic function.
+nonGeneric : Int -> Int
+let nonGeneric x = x + 1
+
+badTypeArg : Int
+let badTypeArg = nonGeneric @Int 5         --!! kappa.type.mismatch
+
+-- NEGATIVE: too many explicit type arguments.
+tooManyArgs : (Int, String)
+let tooManyArgs = identity @Int @String @Bool 1 "a"  --!! kappa.type.mismatch
+
+-- NEGATIVE: explicit type argument that contradicts context.
+contextContra : String
+let contextContra = (convert @Bool @String 42 : String)  --!! kappa.type.mismatch
+
+-- A polymorphic "map" with a hidden worker.
+trait MapFn (a : Type) (b : Type) =
+    mapFn : List a -> List b
+
+instance MapFn Int String =
+    let mapFn xs = map show xs
+
+-- POSITIVE: explicit instantiation resolves.
+mapped : List String
+let mapped = mapFn @Int @String [1, 2, 3]
+
+-- NEGATIVE: no instance for MapFn String Int exists.
+badMap : List Int
+let badMap = mapFn @String @Int ["a", "b"]  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertDiagnosticFamily error kappa.type.mismatch

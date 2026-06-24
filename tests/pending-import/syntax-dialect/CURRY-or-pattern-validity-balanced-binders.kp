@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (multi-arm matching with overlapping head binders);
+--   cross-mapped to or-pattern validity. The Curry "functional pattern"
+--   non-linear cases are intentionally excluded — see CURRY-SA-03.
+-- Spec: expressions.patterns.validity (§17.2.3 or-pattern validity),
+--       expressions.match (§17.1), data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- Or-patterns must bind the same set of names, and each bound name
+-- must carry definitionally equal types across all alternatives
+-- (§17.2.3). The positive cases bind a single binder `s`/`n` across
+-- every alternative with consistent type. The negative case has the
+-- same binder name in both alternatives but with two different types,
+-- which is rejected by the type-equality machinery.
+
+module test
+
+--! mode check
+
+data Msg : Type =
+    Greeting String
+  | Question String
+  | Warning String
+
+-- POSITIVE: every alternative binds `s` with type `String`.
+extract : Msg -> String
+let extract m =
+    match m
+    case (Greeting s | Question s | Warning s) -> s
+
+--! assertType extract (Msg -> String)
+
+data Either (a : Type) (b : Type) : Type =
+    Left a
+  | Right b
+
+-- POSITIVE: every alternative binds `n` with type `Int`.
+takeInt : Either Int Int -> Int
+let takeInt e =
+    match e
+    case (Left n | Right n) -> n
+
+--! assertType takeInt (Either Int Int -> Int)
+
+-- NEGATIVE: both alternatives bind the same name `payload`, but the
+-- types disagree (`String` in the first arm, `Int` in the second).
+-- §17.2.3 requires the binder types to be definitionally equal.
+data Mixed : Type =
+    HasString String
+  | HasInt Int
+
+badOr : Mixed -> Int
+let badOr m =
+    match m
+    case (HasString payload | HasInt payload) -> 0  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

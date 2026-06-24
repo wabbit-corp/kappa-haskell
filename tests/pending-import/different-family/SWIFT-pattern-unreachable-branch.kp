@@ -1,0 +1,55 @@
+-- Source issues: apple/swift #53556 (typechecker crash on overloaded enum case
+--   patterns), apple/swift #80736 (pattern matching syntax regression).
+--   A pattern branch that is already covered by an earlier branch in the same
+--   match expression is unreachable and must produce kappa.pattern.unreachable.
+-- Spec: expressions.match §17.1
+
+--! mode check
+
+data Color : Type = Red | Green | Blue | Yellow
+
+-- POSITIVE: each branch is reachable — no overlaps.
+describeColor : Color -> String
+let describeColor c = match c
+    case Red    -> "warm"
+    case Green  -> "cool"
+    case Blue   -> "cool"
+    case Yellow -> "warm"
+
+-- POSITIVE: wildcard at the end covers remaining cases — no overlap.
+isWarm : Color -> Bool
+let isWarm c = match c
+    case Red    -> True
+    case Yellow -> True
+    case _      -> False
+
+data Nat2 : Type = Zero | Succ Nat2
+
+-- POSITIVE: structural match with no overlapping arms.
+isZero2 : Nat2 -> Bool
+let isZero2 Zero     = True
+let isZero2 (Succ _) = False
+
+-- NEGATIVE: wildcard covers all cases; subsequent constructor patterns
+-- are unreachable.
+unreachableAfterWildcard : Color -> String
+let unreachableAfterWildcard c = match c
+    case _    -> "any"
+    case Red  -> "red"    --!! kappa.pattern.unreachable
+
+-- NEGATIVE: duplicate literal arm — second occurrence is unreachable.
+dupArm : Color -> Nat
+let dupArm c = match c
+    case Red   -> 1
+    case Green -> 2
+    case Red   -> 3    --!! kappa.pattern.unreachable
+    case _     -> 0
+
+-- NEGATIVE: constructor covered by an earlier identical arm.
+dupConstructor : Nat2 -> Nat
+let dupConstructor n = match n
+    case Zero   -> 0
+    case Succ _ -> 1
+    case Zero   -> 99    --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

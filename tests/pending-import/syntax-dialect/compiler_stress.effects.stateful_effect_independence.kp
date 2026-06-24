@@ -1,0 +1,67 @@
+-- Stress test: Two independently labeled State effects — their states are
+--   completely isolated.  Reading or modifying one does not affect the other.
+--   The type system enforces this isolation via distinct row labels.
+-- Spec: effects.monadic_core.eff_effect_rows,
+--   effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Parameterized State effect.
+effect State (s : Type) =
+    1 get : Unit -> s
+    1 put : s -> Unit
+
+-- Two distinct State cells running simultaneously.
+type TwoState : Type = Eff <[s1 : State Int, s2 : State String]>
+
+-- Handler for the first State (Int).
+let runStateInt
+    (forall (r : EffRow) (a : Type))
+    (init : Int)
+    (comp : Eff <[s1 : State Int | r]> a)
+    : Eff r a =
+    handle s1 comp with
+        case return v      -> pure v
+        case get _ k       -> k init
+        case put new k     -> runStateInt new (k ())
+
+-- Handler for the second State (String).
+let runStateStr
+    (forall (r : EffRow) (a : Type))
+    (init : String)
+    (comp : Eff <[s2 : State String | r]> a)
+    : Eff r a =
+    handle s2 comp with
+        case return v      -> pure v
+        case get _ k       -> k init
+        case put new k     -> runStateStr new (k ())
+
+-- A computation that uses both state cells independently.
+computation : Eff <[s1 : State Int, s2 : State String]> (Int, String)
+let computation =
+    do
+        let n <- State.get ()    -- gets s1 (Int)
+        State.put (n + 1)        -- updates s1
+        let s <- State.get ()    -- gets s2 (String)
+        State.put (s ++ "!")     -- updates s2
+        let n2 <- State.get ()   -- gets updated s1
+        let s2 <- State.get ()   -- gets updated s2
+        pure (n2, s2)
+
+-- Run both handlers.
+runBoth : Eff <[ ]> (Int, String)
+let runBoth =
+    runStateStr "hello" (runStateInt 0 computation)
+
+-- NEGATIVE: using the wrong state label — `s2` when `s1 : State Int` is expected.
+mislabeledGet : Eff <[s1 : State Int]> Int
+let mislabeledGet =
+    State.get ()   -- This is fine if labels are inferred correctly.
+    -- If we tried to get a String where Int is expected, the type would mismatch.
+
+-- NEGATIVE: wrong payload type for a put operation.
+wrongPut : Eff <[s1 : State Int]> Unit
+let wrongPut =
+    State.put "not an int"   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

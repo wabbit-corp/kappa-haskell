@@ -1,0 +1,61 @@
+-- Source: Coalton issues #1633 (type aliases behave strangely in instance
+--   contexts), #1662 (type constructors with filled-in arguments in type
+--   aliases fail when used in typeclass constraints).
+-- Spec: data_types.type_aliases (§10.3),
+--   traits.instances.normalized_instance_heads (§14.3.2), COALTON-SA-07.
+--
+-- Transparent type aliases must be expanded before instance head comparison.
+-- A type alias `MyAlias = Concrete` should be indistinguishable from `Concrete`
+-- in an instance head or constraint position. A type alias `Container = List Int`
+-- (a fully-applied alias for a parameterized type) should also work correctly
+-- in typeclass constraints.
+
+--! mode check
+
+-- A simple type alias for an existing type (Kappa syntax: `type Name = Body`).
+type IntPair = (Int, Int)
+
+-- POSITIVE: using an alias in a function signature.
+swapPair : IntPair -> IntPair
+let swapPair (a, b) = (b, a)
+
+--! assertNoErrors
+--! assertType swapPair (IntPair -> IntPair)
+
+-- A type alias for a fully-applied container.
+type IntList = List Int
+
+-- POSITIVE: writing an instance for the aliased type is equivalent to writing
+-- it for the expanded type. Instance head normalization must expand the alias.
+trait Countable (a : Type) =
+    count : a -> Int
+
+instance Countable IntList =
+    let count xs = 0
+
+--! assertNoErrors
+
+-- POSITIVE: using the alias in a constraint is transparent.
+countInts : (@_ : Countable (List Int)) -> List Int -> Int
+let countInts xs = count xs
+
+--! assertNoErrors
+
+-- POSITIVE: a function that takes an IntPair via the alias and uses it.
+sumPair : IntPair -> Int
+let sumPair p =
+    let (a, b) = p
+    in a + b
+
+--! assertNoErrors
+--! assertType sumPair (IntPair -> Int)
+
+-- POSITIVE: a parameterized type alias used in a signature should not cause
+-- normalization to loop. The alias must be expanded exactly once at each use.
+type MyMaybe (a : Type) = Option a
+
+wrapInt : MyMaybe Int
+let wrapInt = Some 42
+
+--! assertNoErrors
+--! assertType wrapInt (MyMaybe Int)

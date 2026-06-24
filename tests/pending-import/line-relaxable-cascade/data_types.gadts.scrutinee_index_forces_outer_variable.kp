@@ -1,0 +1,45 @@
+-- Source issue: Scala3 #4323
+-- Spec: data_types.gadts
+-- When matching a GADT constructor whose result index is a concrete type (e.g.,
+-- `Expr Int`), the scrutinee's outer type variable must be narrowed to that
+-- concrete type within the match branch. This is the "index unification" rule
+-- of §10.2: "Exhaustiveness checking and pattern matching treat GADT constructors
+-- identically to ordinary constructors once indices are unified."
+-- In the IExpr branch, T is unified with Int, so the branch body is checked at
+-- type Int. In the BExpr branch, T is unified with Bool, so the branch body is
+-- checked at type Bool.
+
+module test
+
+data Expr (t : Type) : Type =
+    IExpr : Int  -> Expr Int
+    BExpr : Bool -> Expr Bool
+
+-- eval: computes the value of an Expr. The return type is `t`, the index.
+-- In the IExpr branch, t = Int, so `i : Int` is returned as an Int.
+-- In the BExpr branch, t = Bool, so `b : Bool` is returned as a Bool.
+eval : (t : Type) -> Expr t -> t
+let eval _ e =
+    match e
+    case (IExpr i) -> i
+    case (BExpr b) -> b
+
+--! mode check
+
+-- The narrowed type is visible in branches: operations valid for the narrowed
+-- type must type-check without explicit annotation.
+addOne : Expr Int -> Int
+let addOne e =
+    match e
+    case (IExpr i) -> i + 1  -- i : Int in this branch, + is Int -> Int -> Int
+
+
+-- Negative: attempting to use the narrowed type incorrectly.
+-- In the BExpr branch, t = Bool, so returning a literal Int is ill-typed.
+wrongBranch : (t : Type) -> Expr t -> t
+let wrongBranch _ e =
+    match e
+    case (IExpr _) -> 1
+    case (BExpr _) -> 1   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

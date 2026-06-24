@@ -1,0 +1,69 @@
+-- Source issues: dex-lang typeclass-tests.dx
+--   (`def zeroDiag (x:v=>v=>Float): v=>v=>Float = for i j. select (i==j) 0.0 x.i.j`
+--   → `Type error: Couldn't synthesize a class dictionary for: (Eq v)`),
+--   dex-lang type-tests.dx
+--   (`:p (\x:Int. x) == (\x:Int. x)` →
+--   `Type error: Couldn't synthesize a class dictionary for: (Eq ((x.1:Int32) -> Int32))`),
+--   dex-lang #293 (dictionary inference not working for Eq).
+-- Spec: traits.synthesis.required_constraint_missing (§14.2),
+--       compiler.frontir.standard_diagnostic_families.implicit (kappa.implicit.unsolved).
+-- Calling a function (e.g. `==`) that requires an implicit `Eq a` constraint
+-- when the type `a` does not have a synthesizable `Eq` instance must produce
+-- kappa.implicit.unsolved. A type variable `v` used without constraining it
+-- to `Eq v` is not automatically treated as having equality.
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+-- POSITIVE: Eq instance for Int exists.
+instance Eq Int =
+    let eq x y = primEqInt x y
+
+-- POSITIVE: using == on Int is fine.
+checkInts : Bool
+let checkInts = eq 3 4
+
+-- NEGATIVE: a function using equality on an unconstrained type variable.
+-- Without an `Eq a` constraint, `eq x y` cannot be resolved.
+badDiag : forall (v : Type). v -> v -> Bool
+let badDiag x y = eq x y    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: same function with the Eq constraint explicitly provided.
+goodDiag : forall (v : Type). Eq v => v -> v -> Bool
+let goodDiag x y = eq x y
+
+-- NEGATIVE: attempting to compare function values.
+-- Functions have no Eq instance; `eq` cannot be synthesized for function types.
+cmpFunctions : Bool
+let cmpFunctions =
+    let f : Int -> Int = \x -> x
+    let g : Int -> Int = \x -> x
+    eq f g    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: Eq instance for a product type, given Eq on components.
+data Pair (a : Type) (b : Type) : Type = Pair a b
+
+instance Eq (Pair a b) given (Eq a) (Eq b) =
+    let eq (Pair x1 y1) (Pair x2 y2) = eq x1 x2 && eq y1 y2
+
+-- POSITIVE: Eq on pairs of Int.
+checkPair : Bool
+let checkPair = eq (Pair 1 2) (Pair 1 2)
+
+-- NEGATIVE: a zero-diagonal function on tables with no Eq constraint on
+-- the index type, matching the original Dex report.
+-- `n` must have `Eq n` for `eq i j` to be callable.
+zeroDiag : forall (n : Type). Eq n => (n => n => Float) -> (n => n => Float)
+let zeroDiag x = tabulate (\i -> tabulate (\j -> if eq i j then 0.0 else x ! i ! j))
+
+-- NEGATIVE version: missing the Eq n constraint.
+zeroDiagBad : forall (n : Type). (n => n => Float) -> (n => n => Float)
+let zeroDiagBad x = tabulate (\i -> tabulate (\j -> if eq i j then 0.0 else x ! i ! j))    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

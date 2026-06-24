@@ -1,0 +1,39 @@
+-- Source issues: CREUSOT-1248
+-- Spec: expressions.match.impossible_unreachable_branch_bodies,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Family: kappa.pattern.unreachable (Kappa §3.2.10)
+-- A wildcard / catch-all arm following integer-literal arms refines the
+-- scrutinee with the disequality of every preceding literal pattern;
+-- the inner literal arms are then unreachable.  Kappa emits the family
+-- as a warning, so compilation still succeeds.
+
+module test
+
+--! mode check
+
+-- POSITIVE: in the catch-all branch, x != 1 is in scope as a refinement;
+-- a follow-up match on the literal 1 is unreachable.
+let singleValue : Int -> Int
+let singleValue x =
+    match x
+    case 1 -> 11
+    case _ ->
+        match x
+        case 1 -> 999                    --!! kappa.pattern.unreachable
+        case _ -> 22
+
+-- POSITIVE: with multiple literal arms, the catch-all refines by the
+-- conjunction of all literal disequalities.
+let multipleValues : Int -> Int
+let multipleValues x =
+    match x
+    case 1 -> 1
+    case 2 -> 2
+    case 3 -> 3
+    case _ ->
+        match x
+        case 2 -> 0                      --!! kappa.pattern.unreachable
+        case _ -> 4
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

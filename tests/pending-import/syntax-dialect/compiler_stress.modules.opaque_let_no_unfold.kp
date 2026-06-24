@@ -1,0 +1,31 @@
+-- Stress test: An `opaque let` definition is not unfolded outside the defining module
+-- Spec: modules.visibility_opacity_private_opaque.opaque
+
+--! mode check
+
+-- Inside this module, `double` is transparent: its body `x + x` is available
+-- for definitional equality and reduction.
+opaque let double : Int -> Int
+let double x = x + x
+
+-- Inside this module, `double` reduces normally.
+six : Int
+let six = double 3
+
+-- A function using `double` is well-typed because the body is visible here.
+quadruple : Int -> Int
+let quadruple x = double (double x)
+
+twentyFour : Int
+let twentyFour = quadruple 6
+
+-- `opaque` is exported but prevents delta-reduction outside this module.
+-- An importing module sees `double : Int -> Int` as an opaque constant;
+-- it cannot reduce `double 3` to `6` for definitional equality purposes.
+-- Only the declared type is available, not the definition body.
+
+-- Within this module, computation proceeds normally.
+testOpaque : Bool
+let testOpaque = double 5 == 10
+
+--! assertNoErrors

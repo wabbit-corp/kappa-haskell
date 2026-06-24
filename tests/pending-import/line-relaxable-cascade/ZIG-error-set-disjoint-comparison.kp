@@ -1,0 +1,42 @@
+-- Source issues: zig#25046 (program compiles on equality comparison between
+--               errors of disjoint error sets), zig#11022 (proposal: error set
+--               equality behavior)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.propositions
+-- Comparing two values of types that are provably disjoint (share no
+-- constructors) can never be equal. The Zig compiler should (and now does)
+-- reject comparisons between errors drawn from disjoint error sets. Kappa's
+-- type-equality rule is structural: an equality comparison between values of
+-- unrelated closed types must be rejected with `kappa.type.mismatch`.
+
+--! mode check
+
+data ColorError : Type =
+    RedFailed
+    BlueFailed
+
+data ShapeError : Type =
+    CircleError
+    SquareError
+
+-- POSITIVE: comparing two values of the same closed type is allowed.
+let sameTypeEq (a : ColorError) (b : ColorError) : Bool = a == b
+
+
+-- POSITIVE: comparing the same constructor literal against a bound value.
+let isRedFailed (e : ColorError) : Bool = e == RedFailed
+
+
+-- NEGATIVE: comparing a value of ColorError with a value of ShapeError.
+-- These types share no constructors; the comparison can never hold.
+let crossTypeEq (c : ColorError) (s : ShapeError) : Bool =
+    c == s    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: comparing a ColorError with a ShapeError constructor literal.
+-- `CircleError` is not a member of ColorError; the comparison is ill-typed.
+let colorVsShape (c : ColorError) : Bool =
+    c == CircleError    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

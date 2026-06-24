@@ -1,0 +1,46 @@
+-- Source issue: Koka #9
+-- Spec: expressions.match, modules.names.lexical_lookup
+-- When the scrutinee's type is known from a type annotation or prior context,
+-- constructor names in patterns must be resolved to the constructors of that
+-- known type, even if the same name appears in multiple types in scope.
+-- Ambiguity is not permitted when the type is determined.
+
+module test
+
+data Foo : Type =
+    FooA : Foo
+    FooB : Foo
+
+data Bar : Type =
+    FooA : Bar    -- same constructor name as Foo.FooA
+    BarB : Bar
+
+-- Scrutinee annotated as Foo: FooA must resolve to Foo.FooA, not Bar.FooA.
+matchKnownFoo : Foo -> Int
+let matchKnownFoo (x : Foo) =
+    match x
+        case FooA -> 1
+        case FooB -> 2
+
+--! mode check
+--! assertType matchKnownFoo Foo -> Int
+
+-- Scrutinee annotated as Bar: FooA resolves to Bar.FooA.
+matchKnownBar : Bar -> Int
+let matchKnownBar (x : Bar) =
+    match x
+        case FooA -> 10
+        case BarB -> 20
+
+--! assertType matchKnownBar Bar -> Int
+
+-- When scrutinee type is inferred from the match arms and both types are in
+-- scope with the same constructor name, a type annotation is required.
+-- Without annotation, the compiler must report an ambiguity diagnostic.
+matchAmbiguous : _ -> Int
+let matchAmbiguous x =
+    match x
+        case FooA -> 1   -- ambiguous: Foo.FooA or Bar.FooA?
+        case _    -> 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

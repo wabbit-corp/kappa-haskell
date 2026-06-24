@@ -1,0 +1,41 @@
+-- Source issues: Circom templates-and-components.md (positive: template parameters
+--               that are compile-time constants are accepted; component instantiation
+--               with known-at-compile-time parameters succeeds).
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+-- Kappa spec rule (§SA-CIRCOM-04, positive):
+--   "Template parameters that are 0-quantity (compile-time-known) are accepted.
+--    Component instantiation with literal parameters and named compile-time
+--    constants must not produce any error."
+
+--! mode check
+
+-- A parameterized circuit type (template with compile-time parameter).
+data Shifter (0 bits : Int) : Type =
+    MkShifter { shift : Int }
+
+data Adder (0 width : Int) : Type =
+    MkAdder { carry : Int }
+
+-- POSITIVE: instantiation with literal compile-time parameter.
+shift8 : Shifter 8
+let shift8 = MkShifter { shift = 0 }
+
+add16 : Adder 16
+let add16 = MkAdder { carry = 0 }
+
+-- POSITIVE: instantiation with a named compile-time constant.
+defaultWidth : (0 _ : Int)
+let defaultWidth = 32
+
+adder32 : Adder defaultWidth
+let adder32 = MkAdder { carry = 0 }
+
+-- POSITIVE: using template parameters to size arrays.
+let makeShifters (0 n : Int) : Array (Shifter n) 2 =
+    [MkShifter { shift = 0 }, MkShifter { shift = n }]
+
+result : Array (Shifter 4) 2
+let result = makeShifters 4
+
+--! assertNoErrors

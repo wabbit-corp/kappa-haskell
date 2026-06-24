@@ -1,0 +1,68 @@
+-- Source: Coalton issues #125 (self-recursive functions dropping predicates
+--   on recursive call), #163 (bogus type mismatch in locally recursive function).
+-- Spec: declarations.terms (§9), traits.instances.resolution_algorithm (§14.3.1).
+--
+-- A self-recursive function with typeclass constraints must carry those
+-- constraints on every recursive call — the constraint must not be dropped,
+-- duplicated, or incorrectly re-solved at the recursive site. Similarly, a
+-- locally recursive function defined via a let-binding must maintain the
+-- correct constraint through all recursive calls.
+
+--! mode check
+
+-- POSITIVE: a self-recursive function with an Eq constraint.
+-- Every recursive call carries the same Eq evidence as the outer binding.
+findFirst : forall (a : Type). (@_ : Eq a) -> a -> List a -> Option a
+let findFirst target xs =
+    match xs
+    case Nil        -> None
+    case h :: rest  ->
+        if h == target
+        then Some h
+        else findFirst target rest
+
+--! assertNoErrors
+--! assertType findFirst (forall (a : Type). (@_ : Eq a) -> a -> List a -> Option a)
+
+-- POSITIVE: a mutually recursive pair of functions. Both share the same
+-- class constraint and each must carry it on calls to the other.
+isEven : forall (a : Type). (@_ : Eq a) -> List a -> Bool
+isOdd  : forall (a : Type). (@_ : Eq a) -> List a -> Bool
+
+let isEven xs =
+    match xs
+    case Nil        -> True
+    case _ :: rest  -> isOdd rest
+
+let isOdd xs =
+    match xs
+    case Nil        -> False
+    case _ :: rest  -> isEven rest
+
+--! assertNoErrors
+
+-- POSITIVE: a locally-recursive let binding inside a constrained function.
+-- The inner function `go` calls itself and uses methods from the outer
+-- constraint. The constraint must be visible in `go`'s recursive calls.
+countMatches : forall (a : Type). (@_ : Eq a) -> a -> List a -> Int
+let countMatches target xs =
+    let go : List a -> Int
+        let go Nil         = 0
+        let go (h :: t)    = (if h == target then 1 else 0) + go t
+    in go xs
+
+--! assertNoErrors
+--! assertType countMatches (forall (a : Type). (@_ : Eq a) -> a -> List a -> Int)
+
+-- POSITIVE: recursive function with multiple constraints. Both constraints
+-- must persist across all recursive calls.
+sortedInsert : forall (a : Type). (@_ : Eq a) -> (@_ : Ord a) -> a -> List a -> List a
+let sortedInsert x xs =
+    match xs
+    case Nil        -> x :: Nil
+    case h :: rest  ->
+        if x <= h
+        then x :: xs
+        else h :: sortedInsert x rest
+
+--! assertNoErrors

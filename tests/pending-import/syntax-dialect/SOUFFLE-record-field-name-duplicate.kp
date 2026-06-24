@@ -1,0 +1,46 @@
+-- Source issues: souffle-lang/souffle tests/semantic/attrib_dupl/attrib_dupl.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- A struct or record declaration with two fields sharing the same name must be
+-- rejected. Souffle reports "Doubly defined attribute name type:Type" for
+-- `.decl R(type:Type, type:Type)`. In Kappa, the kappa.constructor.arity family
+-- is the closest standardized family; its payload explicitly lists "duplicated fields"
+-- as a required field (§3.2.10). Note: a dedicated family for same-scope duplicate
+-- field names in declarations is a spec gap (see SOUFFLE_SPEC_ADDITIONS.md).
+
+--! mode check
+
+-- POSITIVE: struct with distinct field names.
+struct GoodRecord =
+    first  : Int
+    second : String
+    third  : Bool
+
+-- NEGATIVE: struct with duplicate field name `x`.
+struct BadRecord =
+    x : Int
+    y : String
+    x : Bool    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: struct with all duplicate field names.
+struct AllDup =
+    field : Int
+    field : Int    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: ADT constructor with duplicate parameter names.
+data Shape : Type =
+    Circle (radius : Float)
+    Rect   (side : Float) (side : Float)    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- POSITIVE: two different constructors sharing parameter NAMES is fine (parameters
+-- are local to each constructor).
+data Vec2D : Type =
+    IntVec   (x : Int)   (y : Int)
+    FloatVec (x : Float) (y : Float)

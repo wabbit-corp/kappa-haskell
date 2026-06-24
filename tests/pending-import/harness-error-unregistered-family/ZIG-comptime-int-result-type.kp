@@ -1,0 +1,51 @@
+-- Source issues: zig#25509 (comptime_float return type with tuple containing
+--               non-comptime value), zig#24167 (bitwise complement should
+--               propagate result type), zig#22710 (undefined requires result type),
+--               zig#15737 (allow peer type resolution to expand integer sizes)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.universes.erasure_elaboration_time
+-- Compile-time integer (`comptime_int`) and compile-time float (`comptime_float`)
+-- literals must be elaborated to a concrete type via a result-type-directed
+-- rule. When no result type is available and the literal has no unambiguous
+-- target type, elaboration fails with `kappa.type.unsolved-metavariable`.
+-- When the literal is used in a context where no suitable literal witness exists
+-- (e.g. an integer literal where a String is expected, or a float literal where
+-- Int is expected), the elaboration fails with
+-- `kappa.type.literal-domain-mismatch`.
+
+--! mode check
+
+-- POSITIVE: integer literal has an explicit declared result type.
+let explicitInt : Int = 42
+
+--! assertType explicitInt Int
+
+-- POSITIVE: integer literal inferred from context (function argument).
+let double (n : Int) : Int = n + n
+
+let doubled : Int = double 21
+
+
+-- POSITIVE: floating-point literal elaborates to Double (IEEE-754 binary64).
+let piApprox : Double = 3.14159
+
+
+-- NEGATIVE: integer literal used where a String is required — String has
+-- no FromInteger instance; this is a literal-domain mismatch.
+let intAsString : String = 42    --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: float literal used where Int is demanded — Int has no FromFloat
+-- instance, so the float literal domain is incompatible.
+let tooBig : Int = 1.5    --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: numeric literal ambiguity — the literal `0` is used where neither
+-- an integer nor a float type is determinable from context, so the
+-- metavariable for its type is unsolved.
+let ambiguousZero =
+    let x = 0 in x    --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

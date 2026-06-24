@@ -1,0 +1,55 @@
+-- Source issues: kernel/warning_test.exs "clause not match"
+--   ("this clause for hello/0 cannot match because a previous clause at line 2 always matches"),
+--   ELIXIR-PR-7069 (translate clauses for boolean check),
+--   ELIXIR-PR-7092 (remove multiple clauses warning for default values on bodiless clause),
+--   module/types/expr_test.exs "warns on redundant clauses"
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable)
+-- Kappa spec rule (§3.2.10 kappa.pattern.unreachable):
+--   "Used when a branch, case, or impossible assertion is unreachable."
+-- In Elixir, when a function has multiple clauses and an earlier clause always matches,
+-- any later clause is unreachable and produces a warning. In Kappa, unreachable function
+-- clauses are diagnosed with kappa.pattern.unreachable at WARNING severity.
+-- Note: inline --!! markers are omitted (they imply error severity); only the
+-- assertDiagnosticFamily warning directive is used.
+
+--! mode check
+
+-- POSITIVE: two arms with non-overlapping guards; both reachable.
+classify : Int -> String
+let classify n =
+    match n
+    case _ if n > 0 -> "positive"
+    case _          -> "non-positive"
+
+-- POSITIVE: base case and recursive case; both reachable.
+count : List a -> Int
+let count []       = 0
+let count (_ :: t) = 1 + count t
+
+-- POSITIVE: three clauses each matching distinct constructors; all reachable.
+data Direction : Type = North | South | East | West
+
+opposite : Direction -> Direction
+let opposite North = South
+let opposite South = North
+let opposite East  = West
+let opposite West  = East
+
+-- NEGATIVE: first clause is a catch-all parameter `_`; any subsequent clause is dead.
+badCatchall : Int -> String
+let badCatchall _   = "any"
+let badCatchall 0   = "zero"
+let badCatchall 1   = "one"
+
+-- NEGATIVE: identical function clauses; second is a duplicate of first.
+duplicate : Int -> Int
+let duplicate n = n * 2
+let duplicate n = n * 2
+
+-- NEGATIVE: first clause matches everything; second clause can never be reached.
+alwaysFirst : String -> String
+let alwaysFirst s = s ++ "!"
+let alwaysFirst s = "long: " ++ s
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

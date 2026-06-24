@@ -1,0 +1,45 @@
+-- Source issues: Circom data-types.md (positive: "An array of components must be
+--               instantiated with the same template"; all elements of a component
+--               array using the same template with varying compile-time parameters
+--               is valid).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (positive).
+-- Kappa spec rule (§SA-CIRCOM-01, positive):
+--   "An array of components where every element is an instance of the same template
+--    (with possibly different compile-time parameter values) must be accepted."
+
+--! mode check
+
+-- A parameterized circuit type.
+data HashCircuit (0 bits : Int) : Type =
+    MkHash { rounds : Int, output : Int }
+
+-- POSITIVE: array of components, all of the same parameterized template.
+let makeHashArray : Array (HashCircuit 256) 4 =
+    [ MkHash { rounds = 10, output = 0 }
+    , MkHash { rounds = 20, output = 0 }
+    , MkHash { rounds = 30, output = 0 }
+    , MkHash { rounds = 40, output = 0 }
+    ]
+
+-- POSITIVE: fixed-size array of same-template components (concrete size).
+data AND : Type =
+    AND { inA : Int, inB : Int, out : Int }
+
+let makeANDArray4 : Array AND 4 =
+    [ AND { inA = 0, inB = 0, out = 0 }
+    , AND { inA = 1, inB = 1, out = 0 }
+    , AND { inA = 0, inB = 1, out = 0 }
+    , AND { inA = 1, inB = 0, out = 0 }
+    ]
+
+-- POSITIVE: different compile-time parameter values for the same template.
+h8 : HashCircuit 8
+let h8 = MkHash { rounds = 5, output = 0 }
+
+h16 : HashCircuit 16
+let h16 = MkHash { rounds = 8, output = 0 }
+
+h256 : HashCircuit 256
+let h256 = MkHash { rounds = 64, output = 0 }
+
+--! assertNoErrors

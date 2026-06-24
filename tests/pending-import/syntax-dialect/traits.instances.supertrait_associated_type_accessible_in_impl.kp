@@ -1,0 +1,54 @@
+-- Source issues: Noir#11547, Noir#9732
+-- Spec: traits.instances.supertrait_projection_path_selection,
+--       traits.instances.associated_static_member_instance_checking
+-- When trait B has supertrait A, and A declares an associated static member
+-- `Key : Type`, an instance of B that also implements A MUST be able to refer
+-- to `Self::Key` (or equivalently `<Self as A>::Key`) within the B impl body.
+-- The supertrait evidence is available as a local implicit value, enabling
+-- projection onto its associated static member.
+
+module test
+
+trait KeyType =
+    Key : Type
+
+trait Lookup : KeyType =
+    lookup : Self -> Self.Key -> Int
+
+data StrMap : Type = StrMap
+
+-- Instance of KeyType for StrMap: Key = String.
+instance KeyType StrMap =
+    let Key = String
+
+-- Instance of Lookup for StrMap.
+-- The body of `lookup` may use `Self::Key` (= String) because the
+-- supertrait KeyType evidence is locally available.
+instance Lookup StrMap =
+    let lookup _ _ = 42
+
+--! mode check
+--! assertNoErrors
+
+-- A generic function that requires a Lookup instance must be able to
+-- use `Self::Key` through the supertrait chain.
+doLookup : (@_ : Lookup a) => a -> a.Key -> Int
+let doLookup m k = lookup m k
+
+--! assertNoErrors
+
+result : Int
+let result = doLookup StrMap "hello"
+
+--! assertNoErrors
+
+-- Deeper: supertrait associated type accessible via qualified path from
+-- within a function constrained by the supertrait.
+useKeyDirect : (@_ : Lookup a) => a -> Int
+let useKeyDirect m =
+    -- `a.Key` is accessible because `Lookup a` implies `KeyType a`
+    -- and `KeyType a` provides `a.Key : Type`.
+    let _ : a.Key = lookup m (lookup m (0 : a.Key))
+    0
+
+--! assertNoErrors

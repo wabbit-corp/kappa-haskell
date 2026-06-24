@@ -1,0 +1,25 @@
+-- Stress test: A handler missing one operation must be rejected
+-- Spec: effects.monadic_core.shallow_handlers
+
+--! mode check
+
+-- Two-operation effect.
+effect Console =
+    1 printLine : String -> Unit
+    1 readLine  : Unit   -> String
+
+-- NEGATIVE TEST: handler omits 'readLine'; must be rejected.
+let incomplete_handler (comp : Eff <[Console : Console]> Unit) : Unit =
+    handle Console comp with  --!! kappa.effect.row-mismatch
+        case return _ -> ()
+        case printLine _ k -> k ()
+    -- 'readLine' clause is absent; handler is ill-formed.
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE TEST: handler provides both operations; must be accepted.
+let complete_handler (comp : Eff <[Console : Console]> Unit) : Unit =
+    handle Console comp with
+        case return _ -> ()
+        case printLine _ k -> k ()
+        case readLine  _ k -> k ""

@@ -1,0 +1,36 @@
+-- Source issue: ROSETTE-202 (`apply` can't unsplat in certain situations
+--                which work with a base function)
+-- Spec: expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- The Rosette report shows that `(apply + '(x 1 2))` differs from
+-- `(+ x 1 2)` because the quoted list becomes a list of symbols rather
+-- than variable references. The portable Kappa obligation: passing too
+-- many arguments to a fixed-arity function is rejected, and a
+-- `List String` value does not satisfy the parameter type `Int`.
+
+--! mode check
+
+add3 : Int -> Int -> Int -> Int
+let add3 a b c = a + b + c
+
+-- POSITIVE: exact arity.
+ok : Int
+let ok = add3 1 2 3
+
+-- POSITIVE: applying a curried function in stages.
+ok2 : Int
+let ok2 =
+    let plus1  = add3 1
+        plus12 = plus1 2
+    in plus12 3
+
+-- NEGATIVE: one extra argument supplied.
+badExtra : Int
+let badExtra = add3 1 2 3 4                          --!! kappa.type.mismatch
+
+-- NEGATIVE: a List String passed where the first argument is Int.
+badType : Int
+let badType = add3 ["a"] 2 3                         --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,34 @@
+-- Stress test: Rebinding an effect label preserves its identity; the handler for the rebound name still matches
+-- Spec: effects.monadic_core.effect_labels.identity_and_handler_matching
+
+--! mode check
+
+-- A two-operation effect for integer state.
+effect State =
+    1 get : Unit -> Int
+    1 put : Int  -> Unit
+
+-- POSITIVE TEST: 'myState' is an alias for the 'state' label.
+-- Operations dispatched via 'myState' and handled via 'myState' must match.
+let runState
+    (forall (r : EffRow))
+    (comp : Eff <[myState : State | r]> Int)
+    (init : Int)
+    : Eff r Int =
+    handle myState comp with
+        case return x    -> pure x
+        case get _ k     -> k init
+        case put v k     -> k ()
+
+-- Computation using the rebound label.
+let stateProgram : Eff <[myState : State]> Int =
+    do
+        let v = myState.get ()
+        myState.put (v + 1)
+        myState.get ()
+
+-- The handler resolves against the rebound label without error.
+let finalValue : Int =
+    runState stateProgram 10
+
+--! assertNoErrors

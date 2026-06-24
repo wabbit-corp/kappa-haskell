@@ -1,0 +1,34 @@
+-- Source issues: PIKELET-72 (PR: finish implementing array syntax),
+--               tests/literals.pi (reference fixture mentions Array types),
+--               Pikelet book reference/builtins.md (Array : U32 -> Type -> Type).
+-- Spec: collections.literals, modules.prelude.contents (`Array`, `SizedArray`),
+--       types.records.values
+-- Gap: PIKELET-SA-09 (no bracket-literal form is portable at type
+--      `SizedArray n a` in Kappa; bracket literals elaborate to `List`).
+--
+-- Kappa exposes the dynamic-length `Array a` and the length-indexed
+-- `SizedArray n a` (§28). `sizedArrayToArray` and `arrayAsSized`
+-- are the portable conversions. Bracket literals `[…]` elaborate to
+-- `List a` (§20.1); there is no portable surface form that constructs
+-- a `SizedArray n a` directly. This test confirms the type-level
+-- obligation that `SizedArray` is distinct from `Array` (§28).
+
+--! mode check
+
+-- POSITIVE: SizedArray and Array are distinct prelude types, both
+-- inhabited only via prelude builders.
+arrSized : (n : Nat) -> SizedArray n Nat -> Array Nat
+let arrSized _ xs = sizedArrayToArray xs
+
+-- POSITIVE: existential-packing form converting an Array to a SizedArray
+-- at an existentially quantified length.
+arrToSized : Array Nat -> exists (n : Nat). SizedArray n Nat
+let arrToSized xs = arrayAsSized xs
+
+-- NEGATIVE: a bracket literal does NOT elaborate to `SizedArray n a`;
+-- attempting to use it at that type is a plain type mismatch (List vs
+-- SizedArray are nominally distinct).
+wrongShape : SizedArray 3 Nat
+let wrongShape = [1, 2, 3]    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

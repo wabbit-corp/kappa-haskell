@@ -1,0 +1,84 @@
+-- Source issues: rzk docs (reference/type-layer.rzk.md, getting-started/dependent-types.rzk.md)
+--   — identity type formation, introduction (refl), and elimination (idJ / subst /
+--   path induction). The docs describe `refl_{x : A}` as the canonical proof
+--   of `x =_{A} x` and `idJ(A, a, C, d, x, p)` as the path eliminator.
+-- Spec: types.propositions.propositional_equality_type_positions
+--   §11.4.1: propositional equality `x = y` is a built-in inductive family;
+--   `refl` inhabits `x = x`; `subst` is the primitive eliminator.
+--
+-- Identity type formation, introduction, and elimination must be checked
+-- thoroughly. `refl` is well-typed precisely when both sides are definitionally
+-- equal. The eliminator reduces when the proof is definitionally `refl`.
+-- Proof terms that claim an equality between definitionally unequal terms
+-- must be rejected.
+
+--! mode check
+
+-- POSITIVE: refl for a concrete term.
+reflNat : (42 : Nat) = 42
+let reflNat = refl
+
+reflBool : (True : Bool) = True
+let reflBool = refl
+
+-- POSITIVE: refl for a variable.
+varRefl : forall {a : Type} (x : a) -> x = x
+let varRefl _ = refl
+
+-- POSITIVE: subst / path induction (portable analogue of idJ).
+-- If p : x = y then a proof of C x gives a proof of C y.
+transport : forall {a : Type} (C : a -> Type) {x y : a} -> x = y -> C x -> C y
+let transport _ refl cx = cx
+
+-- POSITIVE: using transport for a concrete family.
+natFamily : Nat -> Type
+let natFamily _ = Bool
+
+transportBool : Bool
+let transportBool = transport natFamily (refl : (0 : Nat) = 0) True
+
+-- POSITIVE: cong / congruence.
+cong : forall {a b : Type} (f : a -> b) {x y : a} -> x = y -> f x = f y
+let cong f refl = refl
+
+congNat : 3 + 1 = 4
+let congNat = cong (\n -> n + 1) (refl : (3 : Nat) = 3)
+
+-- POSITIVE: sym from refl.
+sym : forall {a : Type} {x y : a} -> x = y -> y = x
+let sym refl = refl
+
+-- POSITIVE: trans from refl.
+trans : forall {a : Type} {x y z : a} -> x = y -> y = z -> x = z
+let trans refl q = q
+
+-- POSITIVE: J-eliminator analogue (path induction).
+pathInd :
+    forall {a : Type} {x : a}
+    (P : forall (y : a). x = y -> Type) ->
+    P x refl ->
+    forall {y : a} (p : x = y) -> P y p
+let pathInd d refl = d
+
+-- POSITIVE: a simple consequence of path induction — reflexivity.
+reflFromJ : forall {a : Type} (x : a) -> x = x
+let reflFromJ _ = refl
+
+-- POSITIVE: applying the eliminator to deduce a transported value.
+elimExample : forall {a : Type} {x y : a} (p : x = y) (C : a -> Type) (cx : C x) -> C y
+let elimExample p C cx = transport C p cx
+
+-- NEGATIVE: `refl` cannot prove a false equality between distinct constructors.
+falseEquality : (True : Bool) = False
+let falseEquality = refl    --!! kappa.type.mismatch
+
+-- NEGATIVE: refl at a pair type where components differ.
+badPairEq : ((1 : Nat), True) = (2, True)
+let badPairEq = refl    --!! kappa.type.mismatch
+
+-- NEGATIVE: refl used at a type where the proof obligation cannot be met
+-- because the left and right sides are not definitionally equal.
+badAdd : (1 + 1 : Nat) = 3
+let badAdd = refl    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

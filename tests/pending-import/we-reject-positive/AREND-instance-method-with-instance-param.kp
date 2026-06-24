@@ -1,0 +1,53 @@
+-- Source issues: instance method implementation access to instance parameters;
+--   instance method may reference the enclosing instance's parameters.
+-- Source issues: jetbrains/arend#125 (restored 2026-06-11 from AREND_ISSUE_IMPORT_PLAN.md)
+-- Spec: traits.instances, modules.names.lexical_lookup
+--
+-- When a function is implemented inside an instance declaration, the
+-- implementation body is in scope of all parameters of the instance.
+-- The instance parameters are lexically in scope within each method body,
+-- just as outer function parameters are in scope within a let-body.
+
+--! mode check
+
+-- A trait with a single method parameterized over a natural number.
+trait Mapper =
+    applyTo : Nat -> Nat
+
+-- POSITIVE: an instance with a parameter `offset : Nat`.
+-- The method `applyTo` may reference `offset` from the enclosing instance.
+-- The instance is parameterized: different `offset` values yield different
+-- instances (not global coherent instances; local usage).
+addOffset : Nat -> Mapper
+let addOffset offset = instance Mapper =
+    let applyTo n = n + offset
+
+-- POSITIVE: invoke the instance method through the trait dispatch.
+test1 : Nat
+let test1 = (addOffset 10).applyTo 5    -- expects 15
+
+-- POSITIVE: a trait with two methods; the instance carries a parameter
+-- used by both.
+trait ScaledMapper =
+    scale  : Nat
+    mapVal : Nat -> Nat
+
+mkScaledMapper : Nat -> ScaledMapper
+let mkScaledMapper factor = instance ScaledMapper =
+    let scale   = factor
+    let mapVal n = n * factor
+
+test2 : Nat
+let test2 = (mkScaledMapper 3).mapVal 7    -- expects 21
+
+test3 : Nat
+let test3 = (mkScaledMapper 3).scale       -- expects 3
+
+-- POSITIVE: nested use where the parameter flows through two closures.
+doubleMap : Nat -> Nat -> Nat
+let doubleMap factor x = (mkScaledMapper factor).mapVal ((mkScaledMapper factor).mapVal x)
+
+test4 : Nat
+let test4 = doubleMap 2 3    -- 2*(2*3) = 12
+
+--! assertNoErrors

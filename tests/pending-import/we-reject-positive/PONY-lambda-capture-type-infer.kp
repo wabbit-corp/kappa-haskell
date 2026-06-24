@@ -1,0 +1,57 @@
+-- Source issues: ponyc#1441, ponyc#379, ponyc#375, ponyc#568
+-- Spec: expressions.lambdas, types.quantification
+-- Pony issue #1441: lambda capture types were not inferred from the outer
+-- scope, requiring explicit annotations. Issue #379: capturing a type
+-- parameter from the lexical scope of a lambda should work; it failed with
+-- "Can't specify a capability on a type parameter". Issue #568: lambdas in
+-- array literals were treated as concrete types rather than conforming to
+-- a shared interface.
+
+--! mode check
+
+-- POSITIVE: a lambda that captures a value from its enclosing scope.
+addCapture : Int -> (Int -> Int)
+let addCapture base =
+    let f = \x -> x + base
+    f
+
+result1 : Int
+let result1 = addCapture 10 5
+
+-- POSITIVE: a higher-order function where the lambda captures a type param.
+applyTwice :
+    forall (a : Type).
+    (a -> a) -> a -> a
+let applyTwice f x = f (f x)
+
+doubled : Int
+let doubled = applyTwice (\n -> n + 1) 3
+
+-- POSITIVE: a lambda captures a locally-bound value and satisfies an interface.
+trait Mapper (f : Type) =
+    applyMap : (& m : f) -> Int -> Int
+
+data Adder : Type = Adder Int
+
+instance Mapper Adder =
+    let applyMap (Adder k) n = n + k
+
+mapWith :
+    forall (f : Type).
+    (@_ : Mapper f) ->
+    (& m : f) -> Int -> Int
+let mapWith m n = applyMap m n
+
+adderResult : Int
+let adderResult = mapWith (Adder 5) 10
+
+-- POSITIVE: a generic function working with a polymorphic lambda.
+pairMap :
+    forall (a : Type) (b : Type).
+    (a -> b) -> (a, a) -> (b, b)
+let pairMap f (x, y) = (f x, f y)
+
+pairResult : (Int, Int)
+let pairResult = pairMap (\n -> n * 2) (3, 4)
+
+--! assertNoErrors

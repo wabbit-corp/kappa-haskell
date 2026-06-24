@@ -1,0 +1,45 @@
+-- Source issues: ponyc PR#4901 (Add \exhaustive\ annotation to match blocks),
+--   ponyc full-program-tests/match-exhaustive-all-cases-of-union
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       expressions.match
+-- The \exhaustive\ annotation declares that the programmer believes the match
+-- is total. If it is indeed total, the annotation is satisfied and compilation
+-- proceeds. If it is not total, the compiler must emit an error. This tests
+-- that a complete match on a union with \exhaustive\ is accepted.
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: exhaustive match with annotation — all three constructors covered.
+describe : Color -> String
+let describe c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- POSITIVE: exhaustive match via wildcard — catches all constructors.
+describeWild : Color -> String
+let describeWild c =
+    match c
+    case Red -> "red"
+    case _   -> "other"
+
+-- POSITIVE: nested union match with all cases covered.
+data Side : Type = Left | Right
+
+combine : Color -> Side -> String
+let combine c s =
+    match (c, s)
+    case (Red,   Left)  -> "red-left"
+    case (Red,   Right) -> "red-right"
+    case (Green, Left)  -> "green-left"
+    case (Green, Right) -> "green-right"
+    case (Blue,  Left)  -> "blue-left"
+    case (Blue,  Right) -> "blue-right"
+
+--! assertNoErrors

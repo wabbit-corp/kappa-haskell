@@ -1,0 +1,47 @@
+-- Source issues: MOJO-1676, MOJO-1402
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances,
+--       kappa.implicit.unsolved
+-- A type that claims to implement a trait must provide all declared methods.
+-- Omitting any required method means the instance declaration is incomplete;
+-- the compiler must reject it with kappa.implicit.unsolved.
+
+module test
+
+--! mode check
+
+-- A trait with two required operations.
+trait Container (a : Type) =
+    empty   : a
+    insert  : (1 c : a) -> Int -> a
+    toList  : (& c : a) -> List Int
+
+data Bag : Type = Bag (List Int)
+data Empty : Type = Empty     -- intentionally missing all methods
+
+-- POSITIVE: Bag provides all three methods.
+instance Container Bag =
+    let empty = Bag []
+    let insert (Bag xs) n = Bag (n : xs)
+    let toList (Bag xs) = xs
+
+useBag : List Int
+let useBag = toList (insert (insert empty 1) 2)
+
+--! assertType useBag List Int
+
+-- NEGATIVE: Empty claims Container but provides no methods.
+-- All three required operations are absent → kappa.implicit.unsolved.
+instance Container Empty =    --!! kappa.implicit.unsolved
+    ()                        -- no method bodies
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: partial instance — `insert` and `toList` are missing.
+data Half : Type = Half Int
+
+instance Container Half =     --!! kappa.implicit.unsolved
+    let empty = Half 0
+    -- insert and toList not provided
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

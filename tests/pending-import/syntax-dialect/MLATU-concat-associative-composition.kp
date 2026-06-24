@@ -1,0 +1,46 @@
+-- Source issue: MLatu README.md ("you can concatenate two programs and
+--   the result will be the concatenation of the programs' individual
+--   results"). MLatu is a concatenative language; concatenation is the
+--   monoidal composition of program fragments. The portable obligation
+--   is that Kappa function composition is associative: `(f . g) . h` is
+--   definitionally equal to `f . (g . h)`.
+-- Spec: types.functions, expressions.application,
+--       core_semantics.definitional_equality.
+--
+-- Two compositions differing only in parenthesization yield the same
+-- function and therefore the same result at every input.
+
+module test
+
+--! mode check
+
+compose : forall (a : Type) (b : Type) (c : Type)
+        . (b -> c) -> (a -> b) -> a -> c
+let compose g f x = g (f x)
+
+inc : Int -> Int
+let inc n = n + 1
+
+dbl : Int -> Int
+let dbl n = n * 2
+
+square : Int -> Int
+let square n = n * n
+
+leftAssoc : Int -> Int
+let leftAssoc = compose (compose square dbl) inc
+
+rightAssoc : Int -> Int
+let rightAssoc = compose square (compose dbl inc)
+
+leftAt5 : Int
+let leftAt5 = leftAssoc 5
+
+rightAt5 : Int
+let rightAt5 = rightAssoc 5
+
+--! assertNoErrors
+--! assertType leftAssoc Int -> Int
+--! assertType rightAssoc Int -> Int
+--! assertType leftAt5 Int
+--! assertType rightAt5 Int

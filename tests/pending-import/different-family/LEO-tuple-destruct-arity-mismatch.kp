@@ -1,0 +1,66 @@
+-- Source issues: leo#2610 (panic when pattern variable count mismatches tuple
+--               length; `let (c,d,e): (u8,u8) = (1u8,2u8,3u8)` and
+--               `let (c,d): (u8,u8,u8) = (1u8,2u8,3u8)`),
+--               leo#29305 (related: multi-identifier definition requires matching
+--               tuple type on RHS).
+-- Spec: SA-LEO-01 (tuple-destructuring pattern arity), literals.unit_tuples,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.constructor-arity).
+-- Kappa spec rule:
+--   "When the arity of the destructuring pattern does not match the arity of the
+--    RHS tuple type, the compiler must emit `kappa.pattern.constructor-arity`.
+--    Both directions of mismatch (more variables than components, fewer variables
+--    than components) must be rejected."
+-- leo#2610 showed that `let (c,d,e): (u8,u8) = (1u8,2u8,3u8)` emitted a type
+--   error but still panicked in itertools because the variables and elements were
+--   zipped with `zip_eq` after the mismatching error.
+
+--! mode check
+
+-- POSITIVE: correct destructuring of a 2-tuple.
+ok2A : Int
+ok2B : Int
+let (ok2A, ok2B) = (10, 20)
+
+-- POSITIVE: correct destructuring of a 3-tuple.
+ok3A : Int
+ok3B : Int
+ok3C : Int
+let (ok3A, ok3B, ok3C) = (1, 2, 3)
+
+
+-- NEGATIVE: three pattern variables but RHS has exactly two components.
+-- Pattern arity 3 ≠ tuple arity 2.
+tooManyA : Int
+tooManyB : Int
+tooManyC : Int
+let (tooManyA, tooManyB, tooManyC) = (10, 20)    --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: two pattern variables but RHS has three components.
+-- Pattern arity 2 ≠ tuple arity 3.
+tooFewA : Int
+tooFewB : Int
+let (tooFewA, tooFewB) = (10, 20, 30)            --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: four variables, three components.
+quadA : Int
+quadB : Int
+quadC : Int
+quadD : Int
+let (quadA, quadB, quadC, quadD) = (1, 2, 3)     --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- POSITIVE: function returning a tuple; correct destructuring at call site.
+split3 : Int -> (Int, Int, Int)
+let split3 n = (n, n + 1, n + 2)
+
+okDestr : Int
+let okDestr =
+    let (a, b, c) = split3 5
+    a + b + c
+

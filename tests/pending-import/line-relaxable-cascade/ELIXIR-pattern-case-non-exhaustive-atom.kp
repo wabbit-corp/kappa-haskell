@@ -1,0 +1,67 @@
+-- Source issues: ELIXIR-PR-13909 (inference of patterns), ELIXIR-PR-13527 (type checking
+--   across comparison operators), kernel/warning_test.exs "clause not match",
+--   module/types/pattern_test.exs
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive)
+-- Kappa spec rule (§3.2.10 "Pattern, exhaustiveness, and reachability"):
+--   "Used when a match, try match, function clause group, active-pattern chain, or
+--    equivalent pattern set is not exhaustive."
+-- Elixir's compiler, enhanced with set-theoretic type inference (PR#13909), produces a
+-- warning or error when a case/match expression over a closed algebraic type is missing one
+-- or more constructors and has no wildcard arm. In Kappa, a non-exhaustive match must be
+-- rejected with family kappa.pattern.non-exhaustive (ERROR severity).
+-- Note: --!! markers appear on the `match` line (the origin of non-exhaustiveness).
+
+--! mode check
+
+data Status : Type =
+    Pending | Active | Closed
+
+-- POSITIVE: all three constructors covered — exhaustive.
+describeAll : Status -> String
+let describeAll s =
+    match s
+    case Pending -> "pending"
+    case Active  -> "active"
+    case Closed  -> "closed"
+
+-- POSITIVE: wildcard covers remaining constructors — exhaustive.
+isActive : Status -> Bool
+let isActive s =
+    match s
+    case Active -> True
+    case _      -> False
+
+-- POSITIVE: single wildcard covers all — exhaustive (but loses specificity).
+anything : Status -> Bool
+let anything s =
+    match s
+    case _ -> True
+
+-- NEGATIVE: Closed is not covered; no wildcard present.
+describeTwoOnly : Status -> String
+let describeTwoOnly s =
+    match s                    --!! kappa.pattern.non-exhaustive
+    case Pending -> "pending"
+    case Active  -> "active"
+
+-- NEGATIVE: only Active is covered; Pending and Closed are missing.
+onlyActive : Status -> Bool
+let onlyActive s =
+    match s                    --!! kappa.pattern.non-exhaustive
+    case Active -> True
+
+-- NEGATIVE: nested match — outer is exhaustive but inner match on Status
+-- inside the Ok arm is missing Closed.
+data Outcome : Type = Ok Status | Fail
+
+badNested : Outcome -> Bool
+let badNested o =
+    match o
+    case Ok s  ->
+        match s                --!! kappa.pattern.non-exhaustive
+        case Pending -> False
+        case Active  -> True
+    case Fail -> False
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

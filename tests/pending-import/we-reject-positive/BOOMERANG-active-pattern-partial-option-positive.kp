@@ -1,0 +1,41 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         A Boomerang lens `c : lens` carries a `get : S -> V` direction
+--         that is partial (the source must match the lens's regex). The
+--         partial direction maps cleanly to Kappa's `Option`-returning
+--         active patterns.
+-- Spec: expressions.active_patterns,
+--       expressions.active_patterns.partial_active_patterns_option_t,
+--       expressions.active_patterns.declaration_grammatical_restrictions
+-- Portable obligation: an `Option T`-returning `pattern` declaration is
+--   well-formed and may be used as a pattern head in `match`.
+
+module test
+
+--! mode check
+
+data Option a : Type =
+    None
+    Some a
+
+-- A "lens-style" view: parse a non-empty composer name out of an input
+-- string (placeholder: split on " " into surname/given).
+pattern ComposerView (& s : String) : Option (String, String) =
+    if s == "" then None
+    else if s == "Sibelius" then Some ("Jean", "Sibelius")
+    else Some ("", s)
+
+-- POSITIVE: use the view as a pattern head; both arms are reachable.
+describe : String -> String
+let describe s =
+    match s
+    case ComposerView (given, family) -> given ++ " " ++ family
+    case _                            -> "unrecognized"
+
+r1 : String
+let r1 = describe "Sibelius"
+
+r2 : String
+let r2 = describe ""
+
+--! assertNoErrors
+--! assertType describe (String -> String)

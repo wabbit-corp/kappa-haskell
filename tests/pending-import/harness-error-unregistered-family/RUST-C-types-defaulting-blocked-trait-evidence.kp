@@ -1,0 +1,42 @@
+-- Source artifacts: CHALK-2 (Projection and normalization),
+--                   CHALK-74 (fallback clauses considered harmful),
+--                   CHALK-816 (Fails to solve some existential clause),
+--                   RA-4072 (Integer type variable gets lost during trait solving),
+--                   RA-1592 (Incorrect float literal type inference).
+-- Spec: types.universes.defaulting_non_user_written_inference_variables.
+-- Kappa spec rule:
+--   "A metavariable whose classifier would determine whether a binder ranges
+--    over `Type u`, `RecRow`, `VarRow`, ..., MUST NOT be defaulted. Such a
+--    metavariable must be solved by context, generalized by an explicit rule,
+--    or rejected."
+--   "Defaulting is never an implementation accident. A metavariable may be
+--    defaulted only when this specification explicitly permits defaulting for
+--    its class and phase."
+-- This test pins the obligation that a residual *trait evidence* unification
+-- ambiguity must NOT be resolved by picking the first available candidate.
+
+--! mode check
+
+trait Marker (a : Type) =
+    markVal : a -> Int
+
+data A : Type = A
+data B : Type = B
+
+instance Marker A =
+    let markVal _ = 1
+
+instance Marker B =
+    let markVal _ = 2
+
+-- A goal with two candidate solutions; the compiler MUST report unsolved
+-- metavariable (no silent default to either A or B).
+ambiguous_default : Int
+let ambiguous_default =
+    -- The argument type is unconstrained: both Marker A and Marker B can
+    -- supply `markVal`. Neither candidate is uniquely determined; the
+    -- compiler must reject rather than picking the lexically first.
+    let x = _            --!! kappa.type.unsolved-metavariable
+    markVal x
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable

@@ -1,0 +1,23 @@
+-- Source issue: carp-lang/Carp#89
+-- Spec: appendices.test_harness.configuration_directives ("entry"),
+--       declarations.signatures,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #89: `(defn main [] @"Hi")` was admitted by Carp even though main
+-- must return Int.  The portable Kappa obligation is that the entry
+-- function nominated through `entry <qualifiedName>` must satisfy the
+-- expected entrypoint signature; a return-type mismatch at the entry is
+-- a structured diagnostic.
+
+--! mode run
+entry main
+
+-- POSITIVE: an Int-returning main is admitted.
+main : Int
+let main = 0
+
+--! assertExitCode 0
+--! assertNoErrors
+
+-- (A separate suite covers the negative case, where a main that returns
+-- a non-Int value is rejected; see comments below.  Co-locating the
+-- negative case in this file would shadow `main`.)

@@ -1,0 +1,99 @@
+-- Source issue: (original — constraint capture in closures)
+-- Spec: traits.instances.resolution_algorithm,
+--   types.quantification.implicit_declaration_universalization,
+--   declarations.terms.irrefutable_patterns_let_bindings
+-- A lambda created inside a function that has a typeclass constraint may
+-- close over and use that constraint in the lambda body.  The constraint
+-- evidence must be captured at the closure creation site, not re-discharged
+-- at the lambda call site.
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+-- POSITIVE: closure captures `Eq a` from outer function.
+makeEqChecker :
+    forall {a : Type}.
+    (@_ : Eq a) ->
+    a ->
+    (a -> Bool)
+let makeEqChecker target =
+    fn candidate -> eq target candidate
+
+-- Using the closure.
+data Color : Type = Red | Green | Blue
+
+instance Eq Color =
+    let eq c1 c2 =
+        match (c1, c2)
+        case (Red,   Red)   -> True
+        case (Green, Green) -> True
+        case (Blue,  Blue)  -> True
+        case _              -> False
+
+isRed : Color -> Bool
+let isRed = makeEqChecker Red
+
+checkBlue : Color -> Bool
+let checkBlue = makeEqChecker Blue
+
+-- POSITIVE: closure captures two constraints from outer scope.
+trait Show (a : Type) =
+    show : a -> String
+
+makeFormatter :
+    forall {a : Type}.
+    (@_ : Eq a) ->
+    (@_ : Show a) ->
+    a ->
+    (a -> String)
+let makeFormatter reference =
+    fn x ->
+        let same = eq reference x
+        show x ++ (if same then " (same)" else " (different)")
+
+instance Show Color =
+    let show c =
+        match c
+        case Red   -> "Red"
+        case Green -> "Green"
+        case Blue  -> "Blue"
+
+colorFormatter : Color -> String
+let colorFormatter = makeFormatter Red
+
+testGreen : String
+let testGreen = colorFormatter Green
+
+testRed : String
+let testRed = colorFormatter Red
+
+-- POSITIVE: closure inside a let-local function that also captures.
+filterWith :
+    forall {a : Type}.
+    (@_ : Eq a) ->
+    a ->
+    List a ->
+    List a
+let filterWith target xs decreases structural xs =
+    match xs
+    case Nil      -> Nil
+    case h :: rest ->
+        let pred = fn x -> eq target x
+        let filtered = filterWith target rest
+        if pred h then h :: filtered else filtered
+
+data Nat2 : Type = Z | S Nat2
+
+instance Eq Nat2 =
+    let eq Z     Z     = True
+    let eq (S m) (S n) = eq m n
+    let eq _     _     = False
+
+onlyZeros : List Nat2
+let onlyZeros = filterWith Z (Z :: S Z :: Z :: S (S Z) :: Nil)
+
+--! assertNoErrors
+--! assertType isRed (Color -> Bool)
+--! assertType testGreen String

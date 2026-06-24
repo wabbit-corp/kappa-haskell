@@ -1,0 +1,53 @@
+-- Source: granule-project/granule PR #109/#110/#111 (level approximation);
+--         tests/cases/positive/security/level_pos1.gr
+-- Spec: types.universes.quantities,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- The Sec security lattice supports level subsumption: a value at a
+-- more-restrictive level (Private) can be used where a more-permissive
+-- demand (Public) is also acceptable, but NOT in the leak direction.
+-- An attempted leak (Private branch declared as Public result) is a
+-- type-mismatch obligation under §3.2.3.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+type Sec : Quantity -> Type -> Type
+
+intrinsic boxAt   : forall (q : Quantity) (a : Type). (1 x : a) -> Sec q a
+intrinsic unboxAt : forall (q : Quantity) (a : Type). (1 s : Sec q a) -> a
+
+intrinsic Public  : Quantity
+intrinsic Private : Quantity
+
+-- POSITIVE: a function may produce a Private result from a Private input
+-- by mirroring branches inside the box.
+okay : (1 x : Sec Private Bool) -> Sec Private Bool
+let okay x =
+    let b = unboxAt x in
+    match b
+      case True  -> (boxAt True  : Sec Private Bool)
+      case False -> (boxAt False : Sec Private Bool)
+
+
+-- POSITIVE: a Public value can be weakened to a Private demand via re-boxing
+-- (anti-monotonic on subjects).
+weakenUp : (1 x : Sec Public Bool) -> Sec Private Bool
+let weakenUp x = boxAt (unboxAt x) : Sec Private Bool
+
+
+-- NEGATIVE: information leak — a Private input produces a Public output by
+-- branch-mirroring. The result type `Sec Public Bool` cannot equal the body
+-- `Sec Private Bool` (modulo the absent leak coercion).
+leakBranch : (1 x : Sec Private Bool) -> Sec Public Bool
+let leakBranch x =
+    let b = unboxAt x in
+    match b
+      case True  -> (boxAt True  : Sec Public Bool)
+      case False -> (boxAt False : Sec Public Bool)  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

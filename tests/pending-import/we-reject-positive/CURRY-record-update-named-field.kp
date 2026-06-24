@@ -1,0 +1,54 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestRecords.curry
+--   (john1 {age = 50} == john3, testEqUpdRecords).
+-- Spec: types.records.update (§13.2.5),
+--       data_types.data_declarations.constructor_application_named_arguments_c (§10.1.1),
+--       traits.deriving (§14.5).
+--
+-- Record update syntax `r.{ field = e }` returns a fresh record whose
+-- named field is replaced by `e` and whose remaining fields share the
+-- values of the source record. Kappa's update form uses the `.{ ... }`
+-- patch syntax rather than Haskell-style `r { ... }`.
+
+module test
+
+--! mode check
+
+data Person : Type =
+    Person { name : String, age : Int }
+
+derive Eq Person
+
+johnA : Person
+let johnA = Person { name = "John", age = 30 }
+
+-- POSITIVE: update one field; the other field is preserved.
+johnAged : Person
+let johnAged = johnA.{ age = 50 }
+
+agedEqualsConstructed : Bool
+let agedEqualsConstructed = johnAged == Person { name = "John", age = 50 }
+
+--! assertNoErrors
+--! assertType agedEqualsConstructed Bool
+
+-- POSITIVE: a no-op update produces an equal record.
+johnSame : Person
+let johnSame = johnA.{ age = 30 }
+
+stillEqual : Bool
+let stillEqual = johnSame == johnA
+
+--! assertNoErrors
+
+-- POSITIVE: update two fields at once; both replacements take effect.
+johnRebadged : Person
+let johnRebadged = johnA.{ name = "Jonathan", age = 31 }
+
+rebadgedExpected : Person
+let rebadgedExpected = Person { name = "Jonathan", age = 31 }
+
+bothFieldsReplaced : Bool
+let bothFieldsReplaced = johnRebadged == rebadgedExpected
+
+--! assertNoErrors
+--! assertType bothFieldsReplaced Bool

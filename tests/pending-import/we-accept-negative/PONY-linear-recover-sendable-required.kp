@@ -1,0 +1,38 @@
+-- Source issues: ponyc#4953, ponyc#3572, ponyc#3582, ponyc#1887
+-- Spec: types.universes.quantities, compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape
+-- Pony's recover block converts a ref/trn object to iso/val only when the
+-- object's contents are sendable (no external references escape the block).
+-- In Kappa, elevating a borrowed (non-owned) reference to owned (unique)
+-- requires that the object carries no escaping borrows; otherwise the
+-- uniqueness guarantee is violated. A non-sendable value — one that
+-- carries a live borrow to an outer region — cannot be wrapped and returned
+-- as if uniquely owned.
+
+--! mode check
+
+-- Model: a "region-bound" wrapper carries a borrow scoped to region `s`.
+data Wrapped (a : Type) (s : Region) : Type =
+    Wrap : (&[s] x : a) -> Wrapped a s
+
+-- NEGATIVE: constructing a Wrapped at a local region `s` but claiming the
+-- outer static region. The inner borrow at `s` would escape its scope if the
+-- outer claim succeeded.
+escapingRecover :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> Wrapped a static
+let escapingRecover x = Wrap x   --!! kappa.borrow.escape
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- POSITIVE: constructing a Wrapped at the same region as the borrow.
+localRecover :
+    forall (a : Type) (s : Region).
+    (&[s] x : a) -> Wrapped a s
+let localRecover x = Wrap x
+
+-- POSITIVE: constructing a Wrapped at static from a static borrow.
+staticRecover :
+    forall (a : Type).
+    (&[static] x : a) -> Wrapped a static
+let staticRecover x = Wrap x
+

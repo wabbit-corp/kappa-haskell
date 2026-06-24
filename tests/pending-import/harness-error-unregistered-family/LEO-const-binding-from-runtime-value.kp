@@ -1,0 +1,73 @@
+-- Source issues: leo#514 (const variable may depend on non-const variable;
+--               `const c = x + 1` where `x` is a function parameter compiled
+--               without error), leo#909 (`const y = x > 2 ? 1 : 2` accepted
+--               when `x` is a function parameter even though the value is
+--               runtime-dependent), leo#749 (non-constant loop bounds accepted).
+-- Spec: SA-LEO-04 (compile-time constant bindings may only be initialized from
+--       compile-time-known expressions),
+--       compiler.frontir.standard_diagnostic_families.quantity_obligations
+--       (family kappa.quantity.satisfies).
+-- Kappa spec rule (§SA-LEO-04):
+--   "A `0`-quantity binding may only be initialized from a `0`-quantity
+--    expression. Using a `1`-quantity or `ω`-quantity value (a runtime value)
+--    as the initializer of a `0`-quantity binding must produce
+--    `kappa.quantity.satisfies` with a payload that identifies the demanded
+--    quantity (0, compile-time), the actual quantity of the initializer, and
+--    the source origin of the initializer."
+-- leo#514: `const c = x + 1` where `x : u8` is a runtime function parameter
+--   compiled silently. The resulting program's behaviour was non-deterministic
+--   (prover treated const as runtime).
+-- leo#909: `const y = x > 2 ? 1 : 2` was accepted even though the conditional
+--   selected by `x > 2` is evaluated at runtime.
+
+--! mode check
+
+-- POSITIVE: a compile-time binding initialized from a literal.
+-- A numeric literal has quantity 0 (its value is known at elaboration time).
+compiletimeConst : (0 _ : Int)
+let compiletimeConst = 42
+
+-- POSITIVE: a compile-time binding initialized from another compile-time binding.
+derived : (0 _ : Int)
+let derived = compiletimeConst
+
+
+-- NEGATIVE: a compile-time (0-quantity) binding whose initializer is a
+-- runtime (1-quantity) function parameter. The parameter `x` is runtime;
+-- therefore `x + 1` is also runtime.
+let badConstFromParam (x : Int) : Int =
+    let (0 c : Int) = x + 1    --!! kappa.quantity.satisfies
+    c
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: a compile-time binding initialized from a conditional whose
+-- condition depends on a runtime value. Even if both branches are literals,
+-- the selection is runtime.
+let badConstConditional (x : Int) : Int =
+    let (0 c : Int) = if x > 2 then 1 else 2    --!! kappa.quantity.satisfies
+    c
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- NEGATIVE: a compile-time binding initialized from an unrestricted let
+-- whose initializer is itself runtime.
+let badConstFromLet (x : Int) : Int =
+    let a : Int = x               -- `a` has runtime (1) quantity
+    let (0 c : Int) = a           --!! kappa.quantity.satisfies
+    c
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+
+-- POSITIVE: a function that correctly uses a compile-time parameter separately
+-- from a runtime parameter.
+let goodSeparation (0 n : Int) (x : Int) : Int =
+    n + x
+
+-- POSITIVE: passing a literal (0-quantity) as the compile-time argument.
+someRuntimeValue : Int
+let someRuntimeValue = 42
+
+okSep : Int
+let okSep = goodSeparation 10 someRuntimeValue
+

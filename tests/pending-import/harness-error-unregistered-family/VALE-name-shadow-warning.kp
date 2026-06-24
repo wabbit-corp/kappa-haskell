@@ -1,0 +1,57 @@
+-- Source issues: vale#123 (Shadowing a variable should be a warning or error)
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.warning_hygiene
+-- In Vale, a local variable can be shadowed by a subsequent binding with
+-- the same name (issue #123 discusses whether to warn or error). In Kappa,
+-- shadowing a binding in the same lexical scope is not an error, but the
+-- compiler SHOULD issue a warning via kappa.name.shadowing when a
+-- binding shadows another without explicit acknowledgment.
+-- Note: whether this lint is enabled is implementation-defined per spec
+-- §3.1.12 (compiler.frontir.warning_hygiene); assertNoErrors holds because
+-- shadowing produces warnings, not errors.
+
+--! mode check
+
+-- POSITIVE: normal case — two distinct bindings with different names.
+distinct : Unit -> Int
+let distinct () =
+    let x = 1
+    let y = 2
+    x + y
+
+-- WARNING (kappa.name.shadowing): the second `x` shadows the first `x`
+-- within the same block.
+shadowWarning : Unit -> Int
+let shadowWarning () =
+    let x = 1
+    let x = 2         -- shadowing binding
+    x
+
+-- WARNING: shadowing in nested blocks — a binding in an inner scope that
+-- uses the same name as an outer-scope binding.
+shadowNested : Unit -> Int
+let shadowNested () =
+    let x = 10
+    let inner =
+        let x = 20
+        x
+    x + inner
+
+-- POSITIVE: a fresh name in a nested block that does not shadow anything
+-- is not warned about.
+freshNested : Unit -> Int
+let freshNested () =
+    let x = 5
+    let y =
+        let z = 3
+        z
+    x + y
+
+-- WARNING: function parameter shadowed by a local in the body.
+shadowParam : Int -> Int
+let shadowParam x =
+    let x = x + 1
+    x
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+--! assertNoErrors

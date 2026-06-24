@@ -1,0 +1,36 @@
+-- Source issues: Circom templates-and-components.md ("Assigning a value to an
+--               input signal inside the same template where it has been defined
+--               also generates the error 'Exception caused by invalid assignment'").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-07):
+--   "A function parameter is not a mutable reference cell. Attempting to use
+--    the `do`-block assignment sugar (`x = val`, sugar for `writeRef x val`) on
+--    a parameter of plain type `Int` (not `Ref Int`) must produce
+--    kappa.type.mismatch, because `writeRef` requires its first argument to
+--    be of type `Ref a`, not `a`."
+
+--! mode check
+
+-- POSITIVE: reading an input parameter inside the function body.
+let validRead (inSig : Int) : Int =
+    inSig * 2 + 1
+
+let validRead2 (a : Int) (b : Int) : Int = a + b
+
+
+-- NEGATIVE: applying do-block assignment sugar to a non-Ref parameter.
+-- `inSig = 99` in a do block desugars to `writeRef inSig 99`, but inSig : Int,
+-- not Ref Int, so the first argument of writeRef has the wrong type.
+let badAssignToParam (inSig : Int) : IO e Unit = do
+    inSig = 99    --!! kappa.type.mismatch
+    pure ()
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: same pattern with two plain Int parameters.
+let badSignalAssign (inputA : Int) (inputB : Int) : IO e Unit = do
+    inputA = inputB + 3   --!! kappa.type.mismatch
+    pure ()
+
+--! assertDiagnosticFamily error kappa.type.mismatch

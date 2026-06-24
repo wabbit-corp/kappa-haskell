@@ -1,0 +1,49 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension3.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/WhereClause.hylo
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- Hylo: a method or extension restricted by a `where` clause can only be
+-- called when the constraint is satisfied. Calling it with a type argument
+-- that violates the constraint is rejected with "reference to 'foo' requires
+-- that ... be conforming to ...". In Kappa this is an unsolved implicit proof.
+
+--! mode check
+
+trait Ordered a where
+    cmp : a -> a -> Int
+
+data Container a : Type = Container a
+
+inner : forall (a : Type). Container a -> a
+let inner (Container v) = v
+
+-- A method available only when the element type is Ordered.
+smallerOf : forall (a : Type). Ordered a => Container a -> Container a -> Container a
+let smallerOf x y =
+    match cmp (inner x) (inner y)
+    case 0 -> x
+    case _ -> if (cmp (inner x) (inner y)) < 0 then x else y
+
+data Score : Type = Score Int
+
+impl Ordered Score where
+    let cmp (Score a) (Score b) = a - b
+
+-- POSITIVE: Score is Ordered, so smallerOf is available.
+bestScore : Container Score -> Container Score -> Container Score
+let bestScore x y = smallerOf x y
+
+data Label : Type = Label String
+
+-- POSITIVE: Label is not Ordered — only used for reading, not comparing.
+readLabel : Container Label -> String
+let readLabel x =
+    match inner x
+    case Label s -> s
+
+-- NEGATIVE: Label is not Ordered, so smallerOf cannot be called.
+firstLabel : Container Label -> Container Label -> Container Label
+let firstLabel x y = smallerOf x y    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

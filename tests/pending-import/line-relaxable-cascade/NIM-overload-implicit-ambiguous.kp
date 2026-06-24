@@ -1,0 +1,97 @@
+-- Source: nim-lang/Nim#24783 (False-positive overload resolution error with
+--         enum and object type), nim-lang/Nim#9156 (cross-module name collision
+--         type preferred over proc), nim-lang/Nim#23776 (overload resolution
+--         crash with void-return overloads)
+-- Spec: traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.ambiguous)
+-- When implicit resolution finds equally-applicable instance candidates and
+-- cannot choose between them, the result is kappa.implicit.ambiguous. A
+-- call must be disambiguated by the caller when instances overlap.
+
+--! mode check
+module test
+
+-- A single-parameter trait for pretty printing.
+trait Pretty (a : Type) =
+    pretty : (& x : a) -> String
+
+-- POSITIVE: non-overlapping instances resolve unambiguously.
+instance Pretty Int =
+    let pretty _ = "Int"
+
+instance Pretty String =
+    let pretty s = s
+
+instance Pretty Bool =
+    let pretty b =
+        match b
+        case True  -> "Bool:True"
+        case False -> "Bool:False"
+
+prettyInt : String
+let prettyInt = pretty (1 : Int)
+
+prettyStr : String
+let prettyStr = pretty ("hi" : String)
+
+-- A typeclass with two parameters — for explicit disambiguation test.
+trait Cast (a b : Type) =
+    cast : a -> b
+
+instance Cast Int String =
+    let cast n = show n
+
+instance Cast Bool String =
+    let cast b =
+        match b
+        case True  -> "true"
+        case False -> "false"
+
+-- POSITIVE: cast with explicit type annotation disambiguates.
+castIntStr : String
+let castIntStr = (cast (42 : Int) : String)
+
+castBoolStr : String
+let castBoolStr = (cast True : String)
+
+-- A data type with no Pretty instance.
+data Widget : Type = Widget Int String
+
+-- NEGATIVE: calling pretty on a type with no Pretty instance.
+noPrettyWidget : String
+let noPrettyWidget = pretty (Widget 1 "hello")  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- Two overlapping Pretty instances for a newtype and its base.
+data Wrapped : Type = Wrapped Int
+
+instance Pretty Wrapped =
+    let pretty (Wrapped n) = "Wrapped:" ++ show n
+
+-- POSITIVE: the instance is not ambiguous — Wrapped is distinct from Int.
+prettyWrapped : String
+let prettyWrapped = pretty (Wrapped 5)
+
+-- POSITIVE: explicit annotation resolves ambiguity between two Cast instances.
+explicitCast : String
+let explicitCast = (cast (True : Bool) : String)
+
+
+-- (Added 2026-06-11, audit FAB-026: the suite previously never constructed
+-- the ambiguity its name promises — only an unsolved-instance negative.)
+-- Two equally-valid instances for the SAME head make resolution ambiguous.
+data Gadget : Type = Gadget Int
+
+instance Pretty Gadget =
+    let pretty (Gadget n) = "Gadget:" ++ show n
+
+instance Pretty Gadget =     --!! kappa.implicit.ambiguous
+    let pretty (Gadget n) = "gadget#" ++ show n
+
+-- NEGATIVE: any demand for Pretty Gadget now finds two candidates.
+ambiguousGadget : String
+let ambiguousGadget = pretty (Gadget 7)   --!! kappa.implicit.ambiguous
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

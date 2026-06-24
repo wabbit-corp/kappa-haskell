@@ -1,0 +1,51 @@
+-- Source issues: PLUTUS-1134, PLUTUS-1459, PLUTUS-6020
+-- Spec: data_types.well_formedness (§10.4 fixed-point positivity over a
+-- mutual group)
+-- Source notes: Plinth has long-tracked work to support mutually recursive
+-- datatypes in PIR (#1134, #1459, #6020). Kappa's §10.4 specifies a
+-- fixed-point joint positivity computation for the whole mutually recursive
+-- group: every member is initialized non-positive, signatures are
+-- recomputed using the current signatures of the whole group, and after
+-- convergence the group is rejected if any non-strictly-positive
+-- occurrence remains. This test exercises a mutual group whose recursive
+-- occurrences are carried through a built-in positive container, which
+-- should converge to "every parameter positive" and be accepted.
+
+--! mode check
+
+-- A mutual group: Forest is a list of Trees; Tree wraps a Forest.
+data Forest (a : Type) : Type =
+    FNil
+    FCons (Tree a) (Forest a)
+
+data Tree (a : Type) : Type =
+    Node a (Forest a)
+
+-- Both Forest and Tree appear inside each other in positive positions.
+-- Per §10.4, the mutual group's positivity signatures converge to:
+-- Forest's `a` is positive, Tree's `a` is positive.
+intLeaf : Tree Int
+let intLeaf = Node 1 FNil
+
+intBranch : Tree Int
+let intBranch = Node 0 (FCons intLeaf FNil)
+
+--! assertNoErrors
+
+-- POSITIVE: structurally recursive folds over a mutual group are accepted
+-- when each recursive call descends into a substructure.
+sizeTree : (0 a : Type) -> Tree a -> Nat
+let sizeTree _ t decreases structural t =
+    match t
+      case Node _ children -> 1 + sizeForest _ children
+
+sizeForest : (0 a : Type) -> Forest a -> Nat
+let sizeForest _ xs decreases structural xs =
+    match xs
+      case FNil          -> 0
+      case FCons child rest -> sizeTree _ child + sizeForest _ rest
+
+count : Nat
+let count = sizeTree Int intBranch
+
+--! assertNoErrors

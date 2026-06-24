@@ -1,0 +1,14 @@
+-- Source issue: GHC#1806
+-- Spec: expressions.patterns.validity
+-- Applying an infix constructor to the wrong number of arguments in a pattern
+-- must produce a clear arity error, not a compiler panic.
+
+module test
+
+data Cons (a : Type) : Type = (:::) (head : a) (tail : List a)
+
+-- Rejected: (:::) takes 2 arguments but 3 are given in prefix position.
+badArity : Cons Int -> Int
+let badArity ((:::) _ _ _) = 0  --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

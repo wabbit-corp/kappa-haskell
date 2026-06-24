@@ -1,0 +1,19 @@
+module consumer
+
+import internals.*
+
+-- POSITIVE: importing the public function works.
+publicOk : Int
+let publicOk = reflect 1
+
+-- POSITIVE: even by qualified path, the public name is reachable.
+publicOkQualified : Int
+let publicOkQualified = internals.reflect 5
+
+-- NEGATIVE: a private name is not reachable via unqualified import.
+badUnqualified : Int
+let badUnqualified = privateHelper                  --!! kappa.name.unresolved
+
+-- NEGATIVE: a private name is not reachable via qualified path either.
+badQualified : Int
+let badQualified = internals.privateHelper          --!! kappa.name.unresolved

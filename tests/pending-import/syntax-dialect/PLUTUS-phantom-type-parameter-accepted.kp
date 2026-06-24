@@ -1,0 +1,60 @@
+-- Source issues: PLUTUS-4537, PLUTUS-7498
+-- Spec: data_types.well_formedness, types.universes,
+-- core_semantics.runtime_representation (§31.2 erasure of compile-time-only
+-- parameters)
+-- Source notes: Plinth fails to compile newtype-style wrappers parameterized
+-- by a phantom type whose kind is user-defined (#4537), and also fails when
+-- the phantom is instantiated to certain ADTs in a recursive-let scope
+-- (#7498). In Kappa, a phantom type parameter is a compile-time-only binder:
+-- it has no runtime representation per §31.2 and must not influence
+-- acceptance of the constructor or its uses. This holds regardless of the
+-- phantom's kind and regardless of which constructor the phantom resolves to
+-- at each call site.
+
+--! mode check
+
+-- An ordinary type used to instantiate the phantom parameter.
+data TokenKind : Type =
+    SaleToken
+    PaymentToken
+
+-- Wrapped : single-constructor wrapper with a phantom type parameter `t`.
+-- The constructor stores no value of type `t`, so `t` is erased per §31.2.
+data Wrapped (t : Type) : Type =
+    MkWrapped (raw : Int)
+
+-- POSITIVE: instantiations at different phantom types are independently
+-- well-formed and share the constructor's payload shape.
+sale    : Wrapped TokenKind
+let sale    = MkWrapped 1
+
+payment : Wrapped TokenKind
+let payment = MkWrapped 2
+
+-- POSITIVE: phantom parameter at a different kind (data type with no inhabitants).
+data Marker : Type =
+
+abstractMarker : Wrapped Marker
+let abstractMarker = MkWrapped 3
+
+-- POSITIVE: phantom instantiated at a higher-rank (data-of-data) parameter.
+data Container (a : Type) : Type =
+    Box a
+
+higherKind : Wrapped (Container Int)
+let higherKind = MkWrapped 4
+
+-- POSITIVE: the phantom is fully erased; no constraint is required on `t`
+-- for the projection to be well-formed.
+peek : (0 t : Type) -> Wrapped t -> Int
+let peek _ w =
+    match w
+      case MkWrapped n -> n
+
+readSale : Int
+let readSale = peek TokenKind sale
+
+readMarker : Int
+let readMarker = peek Marker abstractMarker
+
+--! assertNoErrors

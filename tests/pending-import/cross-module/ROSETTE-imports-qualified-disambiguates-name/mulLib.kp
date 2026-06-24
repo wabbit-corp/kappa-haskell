@@ -1,0 +1,4 @@
+module mulLib
+
+public combine : Int -> Int -> Int
+let combine x y = x * y

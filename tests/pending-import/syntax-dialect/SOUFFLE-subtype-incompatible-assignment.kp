@@ -1,0 +1,50 @@
+-- Source issues: souffle-lang/souffle tests/semantic/union_types/union_types.dl,
+--   tests/semantic/rule_typecompat/rule_typecompat.dl,
+--   tests/semantic/type_system3/type_system3.dl,
+--   souffle-lang #201 (union type failing when it expands to different primitive types),
+--   souffle-lang #832 (subtyping not checked — crash instead of error).
+-- Spec: declarations.signatures (§9.2),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- Passing a value of an incompatible type to a function or binding expecting a different
+-- type must produce kappa.type.mismatch. Souffle reports "Atom's argument type is not
+-- a subtype of its declared type" in these cases.
+
+--! mode check
+
+data NumberLike : Type =
+    NatVal  Nat
+    IntVal  Int
+
+data SymbolLike : Type =
+    StrVal  String
+
+-- POSITIVE: function accepts exactly NumberLike.
+let showNum : NumberLike -> String
+let showNum n =
+    match n
+        case NatVal x -> "nat"
+        case IntVal x -> "int"
+
+let ok1 : String = showNum (NatVal 3)
+let ok2 : String = showNum (IntVal -1)
+
+-- NEGATIVE: passing SymbolLike where NumberLike expected.
+let bad1 : String = showNum (StrVal "x")    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing Int literal directly where NumberLike expected.
+let bad2 : String = showNum 42    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: union-typed binding.
+type Either = (| NumberLike | SymbolLike |)
+
+let e1 : Either = (| NatVal 5 : NumberLike |)
+let e2 : Either = (| StrVal "hi" : SymbolLike |)
+
+-- NEGATIVE: Int literal is not a member of Either.
+let bad3 : Either = 99    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

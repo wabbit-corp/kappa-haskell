@@ -1,0 +1,46 @@
+-- Source issues: ponyc#1931, ponyc PR#3953
+-- Spec: types.quantification, types.universes.quantities
+-- Pony issue #1931: instantiating type variables with ephemeral types is
+-- unsound. `Cell[A iso^]` creates a stable field reference of type `A iso^`,
+-- which can be aliased multiple times, breaking the uniqueness guarantee.
+-- In Kappa, a type parameter instantiated with a uniquely-owned (quantity-1)
+-- type at a field site would allow repeated extraction of the same owned value.
+-- The instance head must not allow a quantity-1 type argument to be used
+-- at an aliasable field position.
+
+--! mode check
+
+data Token : Type = Token Int
+
+-- A generic holder with a field.
+data Holder2 (a : Type) : Type = Holder2 a
+
+-- POSITIVE: building and consuming a holder.
+makeHolder : forall (a : Type). a -> Holder2 a
+let makeHolder x = Holder2 x
+
+consumeHolder : forall (a : Type). (1 h : Holder2 a) -> a
+let consumeHolder (Holder2 x) = x
+
+-- POSITIVE: using Holder2 with a non-linear type.
+strHolder : Holder2 String
+let strHolder = makeHolder "hello"
+
+strOut : String
+let strOut = consumeHolder strHolder
+
+-- POSITIVE: using Holder2 with a linear type, consuming exactly once.
+tokenHolder : (1 t : Token) -> Token
+let tokenHolder t =
+    let h = makeHolder t
+    consumeHolder h
+
+-- NEGATIVE: extracting the linear content twice from the holder.
+-- The second extraction sees the holder as already consumed.
+doubleExtract : (1 h : Holder2 Token) -> (Token, Token)
+let doubleExtract h =
+    let t1 = consumeHolder h
+    let t2 = consumeHolder h   --!! kappa.path.consumed
+    (t1, t2)
+
+--! assertDiagnosticFamily error kappa.path.consumed

@@ -1,0 +1,47 @@
+-- Source: granule-project/granule PR #226 (explicit rankN types)
+-- Spec: types.functions, expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- §12.1 dependent arrow types support polymorphic binders; a rank-N
+-- function takes a `forall`-quantified argument and instantiates it at
+-- multiple types in the body. Supplying a monomorphic argument where a
+-- polymorphic one is expected is a type-equality failure.
+
+module test
+
+--! mode check
+
+data MyChar : Type =
+    MkChar
+
+data IntChar : Type =
+    MkIntChar Int MyChar
+
+data IntUnit : Type =
+    MkIntUnit Int Unit
+
+-- POSITIVE: a rank-2 function whose argument is itself ω-polymorphic.
+foo : (ω k : forall (b : Type). (1 x : b) -> (Int, b)) -> (IntChar, IntUnit)
+let foo k =
+    let (n1, c) = k @MyChar MkChar in
+    let (n2, u) = k @Unit () in
+    (MkIntChar n1 c, MkIntUnit n2 u)
+
+
+-- POSITIVE: caller supplies a polymorphic function.
+mkPair : forall (b : Type). (1 x : b) -> (Int, b)
+let mkPair x = (42, x)
+
+result : (IntChar, IntUnit)
+let result = foo mkPair
+
+
+-- NEGATIVE: caller supplies a monomorphic function — cannot be coerced
+-- to the rank-2 forall; the expected type is `forall b. (1 x : b) -> ...`,
+-- the actual is `(1 x : MyChar) -> (Int, MyChar)`.
+mono : (1 x : MyChar) -> (Int, MyChar)
+let mono x = (0, x)
+
+bad : (IntChar, IntUnit)
+let bad = foo mono            --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

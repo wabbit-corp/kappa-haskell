@@ -1,0 +1,44 @@
+-- Source issue: dhall-lang #97, #201
+-- Spec: identity.hash_system.easy_hash_structural_identity_hash
+-- Alpha-equivalence: binder names are irrelevant to term identity.
+-- Function types and lambda terms that differ only in bound variable names
+-- MUST be definitionally equal and produce identical Easy Hash values.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+-- POSITIVE TEST 1: lambda terms alpha-equivalent under different binder names.
+-- \x -> x  and  \y -> y  are definitionally equal (both are the identity).
+-- A function that expects the first form must accept the second form.
+id_nat_x : Nat -> Nat
+let id_nat_x = \x -> x
+
+id_nat_y : Nat -> Nat
+let id_nat_y = \y -> y
+
+-- Alpha-equivalent lambdas inhabit the same type: id_nat_x and id_nat_y
+-- can be used interchangeably.
+use_id : Nat -> Nat
+let use_id n = id_nat_x (id_nat_y n)
+
+-- POSITIVE TEST 2: function types with different bound variable names are equal.
+-- (x : Nat) -> Nat  and  (y : Nat) -> Nat  are the same type.
+-- A value of one type is accepted where the other is expected.
+promote_xy : ((x : Nat) -> Nat) -> (y : Nat) -> Nat
+let promote_xy f = f
+
+-- POSITIVE TEST 3: nested binders, alpha-equivalent.
+-- \f -> \x -> f x  and  \g -> \y -> g y  are definitionally equal.
+apply_xy : (Nat -> Nat) -> Nat -> Nat
+let apply_xy = \f -> \x -> f x
+
+apply_gh : (Nat -> Nat) -> Nat -> Nat
+let apply_gh = \g -> \h -> g h
+
+-- These two must be interchangeable.
+compose_check : ((Nat -> Nat) -> Nat -> Nat) -> (Nat -> Nat) -> Nat -> Nat
+let compose_check higher = higher apply_xy
+
+--! mode check
+--! assertNoErrors

@@ -1,0 +1,38 @@
+-- Stress test: Effect row normalization: <[l1 : E1, l2 : E2]> equals <[l2 : E2, l1 : E1]> up to normalization
+-- Spec: types.quantification.effect_row_syntax, effects.monadic_core.eff_effect_rows
+
+--! mode check
+
+effect E1 =
+    1 op1 : Unit -> Int
+
+effect E2 =
+    1 op2 : Unit -> String
+
+-- POSITIVE TEST: a function typed <[l1 : E1, l2 : E2]> can be passed to a
+-- function expecting <[l2 : E2, l1 : E1]> because rows are equal up to reordering.
+
+-- Computation with row in order l1, l2.
+let mkComp12 : Eff <[l1 : E1, l2 : E2]> Int =
+    do
+        let n = l1.op1 ()
+        l2.op2 ()
+        pure n
+
+-- A consumer expecting the row in order l2, l1.
+let consume21 (comp : Eff <[l2 : E2, l1 : E1]> Int) : Eff <[l2 : E2, l1 : E1]> Int =
+    comp
+
+-- Passing mkComp12 to consume21 must be accepted under row normalization.
+let normalized : Eff <[l2 : E2, l1 : E1]> Int =
+    consume21 mkComp12
+
+-- A consumer expecting the row in the original order.
+let consume12 (comp : Eff <[l1 : E1, l2 : E2]> Int) : Eff <[l1 : E1, l2 : E2]> Int =
+    comp
+
+-- Round-trip: normalized has row <[l2, l1]>; pass it to consume12 requiring <[l1, l2]>.
+let roundTrip : Eff <[l1 : E1, l2 : E2]> Int =
+    consume12 normalized
+
+--! assertNoErrors

@@ -1,0 +1,66 @@
+-- Source: Coalton issue #1869 (wrong typeclass dictionary selected for `map`
+--   when the intended Functor comes from a superclass chain).
+-- Spec: traits.instances.supertrait_projection_path_selection (§14.3.3),
+--   traits.instances.resolution_algorithm (§14.3.1), COALTON-SA-06.
+--
+-- When a function has constraints for both a "direct" trait `Functor f` and
+-- a "superclass" trait `Monad m` (which implies `Functor m` via the superclass
+-- chain), using a Functor method on a value of type `m a` must resolve to the
+-- `Functor m` evidence projected from the `Monad m` constraint — not the
+-- unrelated direct `Functor f` constraint. This test verifies the basic
+-- positive case: a correct implementation must choose the evidence whose
+-- type matches the scrutinee.
+
+--! mode check
+
+-- Declare Functor, Applicative, Monad in a minimal hierarchy.
+trait Functor (f : Type -> Type) =
+    fmap : forall (a : Type) (b : Type). (a -> b) -> f a -> f b
+
+trait Functor f => Applicative (f : Type -> Type) =
+    pure  : forall (a : Type). a -> f a
+    (<*>) : forall (a : Type) (b : Type). f (a -> b) -> f a -> f b
+
+trait Applicative m => Monad (m : Type -> Type) =
+    (>>=) : forall (a : Type) (b : Type). m a -> (a -> m b) -> m b
+
+-- Minimal identity monad.
+data Identity (a : Type) : Type =
+    Identity a
+
+instance Functor Identity =
+    let fmap g (Identity x) = Identity (g x)
+
+instance Applicative Identity =
+    let pure x = Identity x
+    let (<*>) (Identity f) (Identity x) = Identity (f x)
+
+instance Monad Identity =
+    let (>>=) (Identity x) f = f x
+
+-- POSITIVE: a function with both Functor f and Monad m constraints.
+-- Using fmap on a value of type `m a` should select the Functor m evidence
+-- (projected from the Monad m constraint), not the unrelated Functor f.
+-- The correct behavior: `fmap g ma` uses `m`'s Functor instance.
+mapMonad : forall (m : Type -> Type) (f : Type -> Type) (a : Type) (b : Type).
+           (@_ : Monad m) -> (@_ : Functor f) ->
+           (a -> b) -> m a -> m b
+let mapMonad g ma = fmap g ma
+
+--! assertNoErrors
+
+-- POSITIVE: Monads imply Functors, so `fmap` on an `Identity` value should
+-- work using the Functor Identity instance (reached via the Monad chain).
+liftId : forall (a : Type) (b : Type). (a -> b) -> Identity a -> Identity b
+let liftId g ia = fmap g ia
+
+--! assertNoErrors
+--! assertType liftId (forall (a : Type) (b : Type). (a -> b) -> Identity a -> Identity b)
+
+-- POSITIVE: using >>= and then fmap in a single expression.
+-- Both use Identity's evidence from the same chain.
+bindThenMap : Identity Int
+let bindThenMap =
+    (Identity 5) >>= fn n -> fmap (fn x -> x + 1) (Identity n)
+
+--! assertNoErrors

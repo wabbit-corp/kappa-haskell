@@ -1,0 +1,22 @@
+-- Consumer module exercises the rules of §modules.visibility_opacity_private_opaque.private:
+--   "A private item is not part of the module's export interface. Outside the
+--    defining module, a private item is not name-resolvable except when it
+--    appears as the target of an `unhide` or `clarify` import item ... It
+--    cannot be imported by ordinary import forms."
+module consumer
+
+import defs using public_value
+
+-- POSITIVE: the public value resolves normally through qualified projection.
+ok_ref : Int
+let ok_ref = defs.public_value
+
+-- NEGATIVE: the private type is not name-resolvable through an ordinary
+-- qualified reference. The diagnostic family is kappa.name.unresolved.
+bad_internal_use : Int
+let bad_internal_use =
+    let _ : defs.Internal = _      --!! kappa.name.unresolved
+    0
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,48 @@
+-- Source: Coalton issue #1370 (unhandled error: missing method definitions).
+--   An instance that fails to define all required trait methods should produce
+--   a clear diagnostic, not an internal compiler error.
+-- Spec: traits.instances (§14.3), traits.instances.associated_static_member_instance_checking (§14.3.4),
+--   compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--   (kappa.associated.member-undeclared §3.2.4).
+--
+-- Every trait method declared in a trait body must be implemented in each
+-- instance. An instance that omits one or more methods must produce
+-- kappa.implicit.unsolved (the obligation to synthesize the missing method
+-- evidence cannot be met) or kappa.associated.member-undeclared.
+
+--! mode check
+
+-- A trait with two required methods.
+trait Describable (a : Type) =
+    name    : a -> String
+    details : a -> String
+
+-- POSITIVE: an instance that provides all required methods.
+data Widget : Type = Widget String
+
+instance Describable Widget =
+    let name (Widget s)    = s
+    let details (Widget s) = "widget: " ++ s
+
+-- A trait with three methods.
+trait Printable (a : Type) =
+    header  : a -> String
+    body    : a -> String
+    footer  : a -> String
+
+data Report : Type = Report String
+
+-- NEGATIVE: instance that omits the `footer` method.
+-- The checker must report that the required method is missing.
+instance Printable Report =                    --!! kappa.associated.member-undeclared
+    let header (Report s) = "REPORT: " ++ s
+    let body   (Report s) = s
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared
+
+-- NEGATIVE: instance with no methods at all.
+data Empty : Type = Empty
+
+instance Describable Empty =                   --!! kappa.associated.member-undeclared
+
+--! assertDiagnosticFamily error kappa.associated.member-undeclared

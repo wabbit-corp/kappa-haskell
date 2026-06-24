@@ -1,0 +1,70 @@
+-- Source issues: AENEAS-804, AENEAS-891
+-- Spec: expressions.lambdas.closure_capture_quantities,
+--       types.universes.borrow_lifetimes_escape_prevention
+-- §16.2.1: a closure may declare `&`-quantified binders in its own parameter
+-- list.  This is a borrow on the *call-site* argument, not a capture of a
+-- borrow from the enclosing scope.  The resulting closure type mentions an
+-- arrow `(& x : T) -> U` but the closure value itself carries no hidden
+-- region from the enclosing scope — the region is introduced fresh at each
+-- call site.  Aeneas issues #804 and #891 both involve closures that take
+-- references as parameters.
+
+module test
+
+--! mode check
+
+data Buf : Type = Buf (List Int)
+
+-- POSITIVE: a closure that borrows its argument at the call site.
+-- The closure captures no borrows from its environment; it is ω.
+lengthReader : (& b : Buf) -> Int
+let lengthReader (Buf xs) = 0 + 1   -- simplified; just uses xs length concept
+
+-- A higher-order function taking a function from borrow to Int.
+applyToBuf : ((& b : Buf) -> Int) -> Buf -> Int
+let applyToBuf f b = f b
+
+-- POSITIVE: passing a lambda that borrows its argument.
+useApply : Int
+let useApply =
+    let b = Buf [1, 2, 3]
+    applyToBuf (\(& buf : Buf) -> 42) b
+
+--! assertNoErrors
+--! assertType useApply Int
+
+-- POSITIVE: function returning a closure that takes a borrow.
+-- The returned closure is ω (no capture from outer scope).
+makeReader : () -> ((& b : Buf) -> Int)
+let makeReader () =
+    \(& b : Buf) ->
+        match b case Buf _ -> 0
+
+useReader : Int
+let useReader =
+    let r = makeReader ()
+    let b = Buf [10]
+    r b + r b    -- can call r (ω) multiple times
+
+--! assertNoErrors
+--! assertType useReader Int
+
+-- POSITIVE: lambda taking two borrow arguments with independent regions.
+compareBufs : (& a : Buf) -> (& b : Buf) -> Bool
+let compareBufs a b =
+    match (a, b)
+    case (Buf xs, Buf ys) -> 0 == 0   -- structural equality simplified
+
+--! assertNoErrors
+--! assertType compareBufs ((& a : Buf) -> (& b : Buf) -> Bool)
+
+-- POSITIVE: closures with borrow parameters can be nested (HOF of HOF).
+liftReader : ((& b : Buf) -> Int) -> Buf -> String
+let liftReader f b = show (f b)
+
+useLifted : String
+let useLifted =
+    let b = Buf [5]
+    liftReader (\(& x : Buf) -> 7) b
+
+--! assertNoErrors

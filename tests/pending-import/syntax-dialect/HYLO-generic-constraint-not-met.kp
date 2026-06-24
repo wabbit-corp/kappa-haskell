@@ -1,0 +1,55 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CallGenericFunction.hylo
+--                   (diagnostic: "type 'Bool' does not conform to trait 'P'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/Existential.hylo
+--                   (diagnostic: "type 'B' does not conform to trait 'Copyable'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/CallGenericFunction.hylo and Existential.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- Hylo: when a generic function or type requires a trait constraint and the
+-- supplied type argument does not satisfy it, the call is rejected.
+-- In Kappa the trait-proof search fails at the call/instantiation site.
+
+--! mode check
+
+trait Comparable a where
+    lt : a -> a -> Bool
+
+trait Hashable a where
+    hash : a -> Int
+
+data Score : Type = Score Int
+data Name  : Type = Name String
+
+impl Comparable Score where
+    let lt (Score a) (Score b) = a < b
+
+impl Hashable Score where
+    let hash (Score n) = n
+
+-- Generic function requiring Comparable.
+minimum : forall (a : Type). Comparable a => a -> a -> a
+let minimum x y = if lt x y then x else y
+
+-- Generic function requiring both Comparable and Hashable.
+storeMin : forall (a : Type). Comparable a => Hashable a => a -> a -> Int
+let storeMin x y = hash (minimum x y)
+
+-- POSITIVE: Score satisfies both constraints.
+bestScore : Score -> Score -> Score
+let bestScore x y = minimum x y
+
+hashMin : Score -> Score -> Int
+let hashMin x y = storeMin x y
+
+-- NEGATIVE: Name has no Comparable instance.
+badMin : Name -> Name -> Name
+let badMin x y = minimum x y    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: Name lacks both Comparable and Hashable.
+badStore : Name -> Name -> Int
+let badStore x y = storeMin x y    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

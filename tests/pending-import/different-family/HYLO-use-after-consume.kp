@@ -1,0 +1,47 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/DI.hylo,
+--                   Tests/HyloTests/TestCases/Lowering/ParameterEscape.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/Lowering/DI.hylo and ParameterEscape.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (kappa.path.consumed), types.universes.quantities
+-- Hylo: after a value is consumed (moved via `sink`, passed to a `consume`
+-- call, or returned), the original binding is exhausted and any further use
+-- of it must be rejected. This is the Kappa obligation on `kappa.path.consumed`.
+
+--! mode check
+
+data Buffer : Type = Buffer Int
+
+read : (& b : Buffer) -> Int
+let read (Buffer n) = n
+
+consume : (1 b : Buffer) -> Int
+let consume (Buffer n) = n
+
+-- POSITIVE: consume a Buffer exactly once.
+singleConsume : (1 b : Buffer) -> Int
+let singleConsume b = consume b
+
+-- POSITIVE: read (borrow) then consume — borrow ends before consume.
+readThenConsume : (1 b : Buffer) -> Int
+let readThenConsume b =
+    let _ = read b
+    consume b
+
+-- NEGATIVE: pass the same linear Buffer to consume twice.
+-- The first call exhausts `b`; the second call uses the already-consumed path.
+doubleConsume : (1 b : Buffer) -> Int
+let doubleConsume b =
+    let first  = consume b
+    let second = consume b   --!! kappa.path.consumed
+    first
+
+--! assertDiagnosticFamily error kappa.path.consumed
+
+-- NEGATIVE: return a consumed binding.
+-- `b` is consumed by the first `consume b`; the second reference is illegal.
+consumeAndReturn : (1 b : Buffer) -> Int
+let consumeAndReturn b =
+    let _ = consume b
+    consume b              --!! kappa.path.consumed
+
+--! assertDiagnosticFamily error kappa.path.consumed

@@ -1,0 +1,47 @@
+-- Source issue: UNISON#5984 (Try to improve information flow down through 'branching' constructs)
+-- Spec: expressions.match.boolean_matches_introduce_assumptions,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence
+-- An `if`-expression checked against an expected type T must propagate the
+-- *checking* of both arms against T, rather than synthesising each arm
+-- independently and joining. The same rule applies to two-arm `match` over
+-- Bool. Kappa encodes this at §17.1.6 (boolean matches assume the scrutinee
+-- equals the matched literal in each arm), and the §17 family broadly
+-- ensures branch arms are checked under the same expected type. This
+-- fixture pins the rule for the cases that previously failed in Unison.
+
+--! mode check
+
+effect IOop =
+    1 doIO : Unit -> Unit
+
+-- POSITIVE: a function-typed annotation should flow into both arms, so
+-- `do_a` and `do_b` are each checked against `Unit -> Eff <[lIO : IOop]>
+-- Unit` and the inferred-row collapses to `<[lIO : IOop]>`.
+let pick_io (b : Bool) : Unit -> Eff <[lIO : IOop]> Unit =
+    if b then do_a else do_b
+
+let do_a : Unit -> Eff <[lIO : IOop]> Unit
+let do_a _ = lIO.doIO ()
+
+let do_b : Unit -> Eff <[lIO : IOop]> Unit
+let do_b _ = lIO.doIO ()
+
+--! assertNoErrors
+
+-- POSITIVE: same construct, but the annotation drives a *list* element
+-- type. Each arm is a list literal; Kappa's check-mode propagation must
+-- push the expected `List Int` into both arms without first synthesising
+-- a generic list type.
+let pick_list (b : Bool) : List Int =
+    if b then [1, 2, 3] else []
+
+--! assertNoErrors
+
+-- POSITIVE: two-arm `match` over Bool is the same: each arm checked
+-- against `Eff <[lIO : IOop]> Unit`.
+let pick_match (b : Bool) : Eff <[lIO : IOop]> Unit =
+    match b
+        case True  -> do_a ()
+        case False -> do_b ()
+
+--! assertNoErrors

@@ -1,0 +1,50 @@
+-- Source issues: odin#2602 (compiler fails to detect name collision in some cases),
+--               odin#412 (name collision between proc parameters and using-ed members)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import (kappa.name.ambiguous)
+-- When two declarations with the same name and the same type are visible in the
+-- same scope, any call that could match both is ambiguous. A conformant compiler
+-- must emit kappa.name.ambiguous at the use site rather than silently selecting
+-- one declaration or crashing.
+
+--! mode check
+
+-- POSITIVE: two overloads with different types — call site is unambiguous.
+let describe (x : Int) : String = "int"
+let describe (x : Bool) : String = "bool"
+
+let okDescribeInt  : String = describe 42
+let okDescribeTrue : String = describe True
+
+
+-- POSITIVE: local shadowing is accepted; inner binding shadows the outer.
+let outerShadow : Int =
+    let x = 10
+    let x = x + 5
+    in x
+
+
+-- NEGATIVE: two declarations with identical names and identical types — any call
+-- to `duplicateFn` is ambiguous and must emit kappa.name.ambiguous.
+let duplicateFn (x : Int) : Int = x + 1
+let duplicateFn (x : Int) : Int = x + 2
+
+let callDuplicate : Int = duplicateFn 5    --!! kappa.name.ambiguous
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: two parameters with the same name in one function signature.
+-- The second `x` is ambiguous with the first in the same parameter list.
+let duplicateParam (x : Int) (x : Int) : Int =    --!! kappa.name.ambiguous
+    x
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- POSITIVE: qualified disambiguation resolves the ambiguity.
+-- If the two overloads are in separate modules, qualified reference is unambiguous.
+-- (Here we express this as distinctly-named top-level functions.)
+let processFoo (x : Int) : Int = x * 2
+let processBar (x : Int) : Int = x * 3
+
+let okCallFoo : Int = processFoo 7
+let okCallBar : Int = processBar 7
+

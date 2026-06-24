@@ -1,0 +1,55 @@
+-- Source issues: egraphs-good/egglog #476 (Pattern-local `let` binding?).
+-- Spec: declarations.let_in (§9.3),
+--       declarations.terms (§9.1, irrefutable-pattern let bindings),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved).
+-- The user asked for a pattern-local `let` so they could share a sub-expression
+-- across both occurrences of an RHS, e.g., rewriting `(f (g x y) (g x y))` as
+-- `let e = g x y in f e e`. Kappa's irrefutable pattern let-binding gives that
+-- directly: a let-binding may destructure with an irrefutable pattern, and the
+-- bound names are visible only inside the binding's body.
+
+module test
+
+--! mode check
+
+data Pair : Type =
+    MkPair (a : Int) (b : Int)
+
+g : Int -> Int -> Int
+let g x y = x + y
+
+f : Int -> Int -> Int
+let f x y = x * y
+
+-- POSITIVE: shared sub-expression via `let`.
+useShare : Int -> Int -> Int
+let useShare x y =
+    let e = g x y in
+    f e e
+
+-- POSITIVE: irrefutable pattern destructuring let-binding.
+usePair : Pair -> Int
+let usePair p =
+    let MkPair a b = p in
+    a + b
+
+-- POSITIVE: scope of pattern-local let does not escape.
+scope1 : Int
+let scope1 =
+    let inner =
+        let tmp = 5 in
+        tmp + 1
+    in
+    inner
+
+-- NEGATIVE: pattern-local binding does not escape its block.
+bad : Int
+let bad =
+    let outerVal =
+        let tmp = 5 in
+        tmp
+    in
+    tmp + 1                              --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

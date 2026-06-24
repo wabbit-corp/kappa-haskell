@@ -1,0 +1,33 @@
+-- Source artifacts: RUST-PR-67026 (exhaustiveness of empty matches),
+--                   RUST-PR-47630 (Stabilise feature(never_type)),
+--                   RUST-PR-62405 (Remove never_type feature requirement),
+--                   RA-4000 ("Missing Match arm" error caused by empty match on empty enum).
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive),
+--       expressions.match.exhaustiveness_indexed_types_gadts.
+-- A match on an uninhabited (zero-constructor) data type with zero arms is
+-- exhaustive: no case is uncovered because no case exists. The compiler must
+-- accept it without emitting non-exhaustive diagnostics.
+
+--! mode check
+
+-- An uninhabited data type: no constructors.
+data Void : Type
+
+-- POSITIVE: empty match on `Void` is exhaustive.
+absurd : Void -> Int
+let absurd v =
+    match v
+    -- No arms; no missing case.
+
+
+-- NEGATIVE control: non-empty inhabited type with empty match is rejected.
+data Bit : Type =
+    Zero | One
+
+bad_empty : Bit -> Int
+let bad_empty b =
+    match b                            --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

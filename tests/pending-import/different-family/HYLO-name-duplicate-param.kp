@@ -1,0 +1,31 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/DuplicateFunctionParameter.hylo
+--                   (diagnostic: "duplicate parameter name 'a'")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/DuplicateFunctionParameter.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.ambiguous)
+-- Hylo: a function signature with two parameters sharing the same name is
+-- rejected because any use of that name inside the body would be ambiguous.
+-- In Kappa this is a name-ambiguity at the declaration site.
+
+--! mode check
+
+-- POSITIVE: distinct parameter names.
+let add (a : Int) (b : Int) : Int = a + b
+let choose (x : Bool) (y : Int) (z : Int) : Int = if x then y else z
+
+-- POSITIVE: same name in different functions does not conflict.
+let double (n : Int) : Int = n + n
+let halve  (n : Int) : Int = n
+
+-- NEGATIVE: two parameters with the same name in one function.
+-- Any reference to `x` inside the body would be ambiguous.
+let duplicateParam (x : Int) (x : Int) : Int =    --!! kappa.name.ambiguous
+    x
+
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- NEGATIVE: three-parameter function with two sharing a name.
+let threeWithDuplicate (a : Int) (b : Int) (a : String) : Int =    --!! kappa.name.ambiguous
+    a
+
+--! assertDiagnosticFamily error kappa.name.ambiguous

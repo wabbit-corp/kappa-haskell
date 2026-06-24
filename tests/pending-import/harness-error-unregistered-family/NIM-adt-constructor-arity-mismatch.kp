@@ -1,0 +1,63 @@
+-- Source: nim-lang/Nim overload resolution and constructor application bugs;
+--         related to nim#16153 (Union typed generics), nim#24430 (generic
+--         object type matching). Constructor application to wrong number of
+--         arguments must be rejected at the call site.
+-- Spec: data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families (kappa.constructor.arity,
+--       kappa.pattern.constructor-arity)
+-- Constructors applied to the wrong number of arguments must be rejected.
+-- Similarly, constructor patterns with the wrong field count must be rejected.
+
+--! mode check
+module test
+
+data Pair (a b : Type) : Type =
+    MkPair a b
+
+data Triple (a b c : Type) : Type =
+    MkTriple a b c
+
+data Singleton (a : Type) : Type =
+    MkSingleton a
+
+-- POSITIVE: correct constructor application.
+myPair : Pair Int String
+let myPair = MkPair 1 "hello"
+
+-- POSITIVE: correct application to three args.
+myTriple : Triple Int String Bool
+let myTriple = MkTriple 42 "hi" True
+
+-- NEGATIVE: too many arguments for a two-arg constructor.
+tooMany : Pair Int String
+let tooMany = MkPair 1 "hello" True  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: too few arguments for a two-arg constructor.
+tooFew : Pair Int String
+let tooFew = MkPair 1  --!! kappa.type.unsolved-metavariable
+
+--! assertDiagnosticFamily error kappa.type.unsolved-metavariable
+
+-- POSITIVE: correct pattern match on Pair.
+fstOf : forall a b. Pair a b -> a
+let fstOf p =
+    match p
+    case MkPair x _ -> x
+
+-- NEGATIVE: constructor pattern with wrong arity — one field instead of two.
+badPatternPair : Pair Int String -> Int
+let badPatternPair p =
+    match p
+    case MkPair x -> x  --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: constructor pattern with extra fields.
+badPatternTriple : Triple Int Int Int -> Int
+let badPatternTriple t =
+    match t
+    case MkTriple a b c d -> a + b + c  --!! kappa.pattern.constructor-arity
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity

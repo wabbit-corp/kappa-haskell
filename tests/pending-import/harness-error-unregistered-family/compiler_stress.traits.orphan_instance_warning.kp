@@ -1,0 +1,33 @@
+-- Stress test: An orphan instance produces a warning diagnostic
+-- Spec: traits.instances
+
+--! mode check
+--! requires capability proposedDiagnostics
+-- Gap-pin gating (2026-06-11, audit FAB-011): the asserted family/code is a
+-- documented SPEC_ADDITIONS proposal, not yet in spec 3.2/3.1.4. The capability
+-- gate makes a portable harness report `unsupported` (T.4) instead of failing;
+-- harnesses implementing the proposal can opt in via this capability.
+
+-- MyEq is defined here (local trait).
+-- Int is a prelude type (not defined in this module).
+-- An instance of a local trait for a foreign type is an orphan.
+trait MyEq (a : Type) =
+    myEq : (& x : a) -> (& y : a) -> Bool
+
+-- Non-orphan: both MyEq and MyVal are local.
+data MyVal : Type =
+    MyVal Int
+
+instance MyEq MyVal =
+    let myEq (MyVal x) (MyVal y) = x == y
+
+-- Orphan: Int is from prelude, not defined in this file.
+-- Implementations SHOULD warn about orphan instances.
+instance MyEq Int =          -- orphan: Int is not local
+    let myEq x y = x == y
+
+-- Orphan instance is still usable at call sites.
+checkInts : Bool
+let checkInts = myEq (42 : Int) 42
+
+--! assertDiagnosticFamily warning kappa.instance.orphan

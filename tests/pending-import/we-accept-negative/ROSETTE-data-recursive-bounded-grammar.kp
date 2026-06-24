@@ -1,0 +1,47 @@
+-- Source issue: ROSETTE-10 (Bug in using (define-synthax …) without
+--                #:assert — recursive grammars must have a base case),
+--                ROSETTE-204 (Expanding define-grammar with cost budget)
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.recommended_inference_strategies,
+--       compiler.frontir.standard_diagnostic_families.termination
+--
+-- The Rosette report concerns recursive synthesis grammars without a
+-- base case. In Kappa, a recursive data type or recursive function must
+-- have a base case (or `decreases` annotation) so termination/finite
+-- inhabitation can be established. This fixture pins down the
+-- structural-descent obligation through an ADT plus a recursive
+-- consumer.
+
+--! mode check
+
+-- POSITIVE: an inductive expression grammar with a nullary base case.
+data Expr : Type =
+    Lit Int
+    Add Expr Expr
+    Mul Expr Expr
+
+-- POSITIVE: a structurally decreasing interpreter is accepted.
+evalE : Expr -> Int
+let evalE e =
+    match e
+    case (Lit n)   -> n
+    case (Add a b) -> evalE a + evalE b
+    case (Mul a b) -> evalE a * evalE b
+
+-- POSITIVE: a wrapped data type with a base case.
+data RList : Type =
+    RNil
+    RCons Int RList
+
+sumR : RList -> Int
+let sumR xs =
+    match xs
+    case RNil          -> 0
+    case (RCons h t)   -> h + sumR t
+
+-- NEGATIVE: a recursive function with no base case — every right-hand
+-- side recurs on a non-smaller argument.
+divergent : Int -> Int
+let divergent n = divergent n                       --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

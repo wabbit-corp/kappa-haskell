@@ -1,0 +1,48 @@
+-- Source issues: FLIX-122, FLIX-319, FLIX-468, FLIX-984
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match on a closed data type is non-exhaustive when one or more constructors
+-- are not covered. The compiler must reject the program with
+-- `kappa.pattern.non-exhaustive`, not silently accept it or crash.
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- NEGATIVE TEST: only one branch out of three covered.
+let describe_bad (c : Color) : String =
+    match c
+    case Red -> "red"                -- Green and Blue not covered --!! kappa.pattern.non-exhaustive
+
+-- NEGATIVE TEST: two branches covered, one missing.
+let describe_two (c : Color) : String =
+    match c
+    case Red   -> "red"
+    case Green -> "green"            -- Blue not covered --!! kappa.pattern.non-exhaustive
+
+-- POSITIVE TEST: all three constructors covered.
+let describe_all (c : Color) : String =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- POSITIVE TEST: wildcard covers remaining constructors.
+let describe_wildcard (c : Color) : String =
+    match c
+    case Red -> "red"
+    case _   -> "other"
+
+-- POSITIVE TEST: match on a recursive type (List).
+data MyList (a : Type) : Type =
+    Nil
+    Cons a (MyList a)
+
+let my_length (xs : MyList Int) : Int =
+    match xs
+    case Nil        -> 0
+    case Cons _ rest -> 1 + my_length rest
+
+-- expect: describe_bad and describe_two rejected; describe_all, describe_wildcard, my_length accepted

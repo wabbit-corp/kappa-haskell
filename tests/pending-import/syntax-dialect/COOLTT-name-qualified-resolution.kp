@@ -1,0 +1,56 @@
+-- Source artifacts: cooltt test names.cooltt (`x::y`, `x::y::z`, `u::v`),
+--               PR #237 (qualified names everywhere), PR #252 (hole names in parser).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--
+-- Qualified names (A::B::c) resolve through a namespace hierarchy. Each
+-- component of the path must be a valid namespace identifier. An unqualified
+-- binding at the top level is accessible directly; a qualified binding requires
+-- the full path. Attempting to access a non-existent path component is an error.
+
+--! mode check
+
+-- POSITIVE: simple top-level names are accessible without qualification.
+base : Nat
+let base = zero
+
+-- POSITIVE: a function whose name and parameter use namespaced identifiers.
+-- (In Kappa, qualified names are written with module qualification;
+-- this test exercises that the resolution rule handles dotted/qualified paths.)
+
+-- Namespace Arith with two operations.
+module Arith where
+    add : Nat -> Nat -> Nat
+    let add x y = x + y
+
+    mul : Nat -> Nat -> Nat
+    let mul x y = x * y
+end
+
+-- POSITIVE: qualified access Arith.add and Arith.mul.
+sum3 : Nat
+let sum3 = Arith.add 1 (Arith.add 1 1)
+
+product2 : Nat
+let product2 = Arith.mul 3 4
+
+-- POSITIVE: importing a specific name from a module.
+open Arith (add)
+
+importedAdd : Nat
+let importedAdd = add 5 5
+
+-- POSITIVE: aliasing a module.
+module A = Arith
+
+aliasAdd : Nat
+let aliasAdd = A.add 2 3
+
+-- NEGATIVE: using an unresolved qualified name.
+badQual : Nat
+let badQual = Arith.sub 5 3    --!! kappa.name.unresolved
+
+-- NEGATIVE: accessing a field of a non-existent module.
+badMod : Nat
+let badMod = NonExistent.add 1 2    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

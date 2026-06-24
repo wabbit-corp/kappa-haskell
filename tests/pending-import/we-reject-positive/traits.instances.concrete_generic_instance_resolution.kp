@@ -1,0 +1,55 @@
+-- Source issues: Noir#9399, Noir#9430
+-- Spec: traits.instances.resolution_algorithm,
+--       traits.instances.associated_static_member_instance_checking
+-- Instance resolution for `ConcreteType<GenericType>` must succeed when the
+-- appropriate premises hold. The normalized instance head `Trait (Concrete Gen)`
+-- unifies with a declared instance `instance (Trait Gen) => Trait (Concrete Gen)`.
+-- Resolution MUST recurse into premises, solving `Trait Gen` from available context,
+-- rather than failing because the head has a generic argument.
+
+module test
+
+trait Packable (a : Type) =
+    N : Nat   -- associated constant: number of fields needed
+    pack   : a -> List Int
+    unpack : List Int -> a
+
+data Cell (a : Type) : Type = Cell a
+
+-- Base instance: Int is directly packable as 1 field.
+instance Packable Int =
+    let N  = 1
+    let pack   (Cell _) = []   -- simplified
+    let unpack _        = 0
+
+instance Packable Int =
+    let N  = 1
+    let pack   n = [n]
+    let unpack xs = match xs
+        case (x :: _) -> x
+        case _        -> 0
+
+--! mode check
+--! assertNoErrors
+
+-- Generic wrapper instance: `Cell a` is packable when `a` is packable.
+-- Resolution of `Packable (Cell Int)` must traverse the premises and
+-- find the `Packable Int` instance.
+instance (@_ : Packable a) => Packable (Cell a) =
+    let N  = 1   -- simplified; real impl would use inner N
+    let pack   (Cell x) = pack x
+    let unpack xs       = Cell (unpack xs)
+
+--! assertNoErrors
+
+-- Accepted: calling pack on a Cell Int resolves the generic instance.
+packed : List Int
+let packed = pack (Cell (42 : Int))
+
+--! assertNoErrors
+
+-- Accepted: nested: Cell (Cell Int)
+doublyPacked : List Int
+let doublyPacked = pack (Cell (Cell (7 : Int)))
+
+--! assertNoErrors

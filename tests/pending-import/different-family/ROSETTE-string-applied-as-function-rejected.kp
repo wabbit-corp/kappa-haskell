@@ -1,0 +1,40 @@
+-- Source issue: ROSETTE-214 (Error: application: not a procedure)
+-- Spec: expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- The Rosette report tracks a confusing runtime failure where a `synthesize`
+-- body used `(and ...)` as an applicative head, producing the cryptic
+-- `application: not a procedure; given: (unknown)` runtime error.
+-- Kappa's portable obligation: any value used in callee position must
+-- have a function type. Applying a String, Bool, or Int literal to
+-- arguments is a static type error.
+
+--! mode check
+
+greet : String -> String
+let greet name = "Hello, " ++ name
+
+-- POSITIVE: ordinary function call.
+hi : String
+let hi = greet "world"
+
+-- NEGATIVE: a String literal in callee position.
+badString : String
+let badString = "hello" "world"             --!! kappa.type.mismatch
+
+-- NEGATIVE: a Bool used as a callee.
+flag : Bool
+let flag = True
+
+badBool : Int
+let badBool = flag 1                        --!! kappa.type.mismatch
+
+-- NEGATIVE: an Int literal used as a callee.
+badInt : Int
+let badInt = 42 7                           --!! kappa.type.mismatch
+
+-- NEGATIVE: the result of `&&` is Bool, not a procedure.
+badAnd : Int
+let badAnd = (True && False) 0              --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

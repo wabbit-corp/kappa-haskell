@@ -1,0 +1,72 @@
+-- Stress test: A default method implementation in a derived trait calls
+--   methods from a supertrait; an instance of the derived trait that does
+--   not override the default method inherits the cross-supertrait call.
+-- Spec: traits.headers.supertraits, traits.instances.default_methods
+
+--! mode check
+
+-- Base trait: conversion to String.
+trait Describable (a : Type) =
+    describe : a -> String
+
+-- Derived trait: comparison that also uses description.
+-- The default implementation of `compareAndDescribe` calls `describe`
+-- from the supertrait plus the required `compare` method.
+trait Describable a => Reportable (a : Type) =
+    compare : a -> a -> Bool
+
+    -- Default method: uses `describe` from the Describable supertrait.
+    compareAndDescribe : a -> a -> String
+    let compareAndDescribe x y =
+        let result = if compare x y then "same" else "different"
+        describe x ++ " vs " ++ describe y ++ " -> " ++ result
+
+-- A type with both instances.
+data Priority : Type = Low | Medium | High
+
+instance Describable Priority =
+    let describe p =
+        match p
+        case Low    -> "Low"
+        case Medium -> "Medium"
+        case High   -> "High"
+
+instance Reportable Priority =
+    let compare p1 p2 =
+        match (p1, p2)
+        case (Low,    Low)    -> True
+        case (Medium, Medium) -> True
+        case (High,   High)   -> True
+        case _                -> False
+    -- compareAndDescribe is NOT overridden; uses the default.
+
+-- POSITIVE: using the default method that calls the supertrait.
+test1 : String
+let test1 = compareAndDescribe Low Low
+
+test2 : String
+let test2 = compareAndDescribe High Low
+
+-- A second type that overrides the default.
+data Level : Type = Level Int
+
+instance Describable Level =
+    let describe (Level n) = "Level" ++ int_to_string n
+
+instance Reportable Level =
+    let compare (Level a) (Level b) = a == b
+    -- Override the default with a custom implementation.
+    let compareAndDescribe x y =
+        let (Level a) = x
+        let (Level b) = y
+        "L" ++ int_to_string a ++ (if a == b then "==" else "/=") ++ "L" ++ int_to_string b
+
+test3 : String
+let test3 = compareAndDescribe (Level 5) (Level 5)
+
+test4 : String
+let test4 = compareAndDescribe (Level 1) (Level 2)
+
+--! assertNoErrors
+--! assertType test1 String
+--! assertType test3 String

@@ -1,0 +1,59 @@
+-- Source issues: Scala3 #16590, #16603
+-- Spec: expressions.match.index_refinement_constructor_knowledge,
+--       traits.instances.resolution_algorithm
+-- §expressions.match.index_refinement_constructor_knowledge states:
+--   "These equalities participate in definitional equality, reachability,
+--    and implicit resolution within the refined branch."
+-- When a GADT constructor forces the abstract type variable `t` to a
+-- concrete type (e.g., `t = Int`), implicit/instance resolution for goals
+-- involving `t` within that branch must use the refined binding.
+-- A function parameter `val : t` thus becomes usable at any trait whose
+-- instance exists for the refined concrete type.
+-- This is the Kappa portable lesson from Scala3 bugs where GADT refinement
+-- failed to propagate to extension-method / typeclass lookup:
+--   #16590 Can't call `._1` on value inferred by GADT match to be a tuple
+--   #16603 Extension methods not resolved on type inferred by GADT matching
+
+module test
+
+data Tag (t : Type) : Type =
+    IntTag  : Tag Int
+    BoolTag : Tag Bool
+
+trait Printable (a : Type) =
+    printMe : a -> String
+
+instance Printable Int =
+    let printMe _ = "an-int"
+
+instance Printable Bool =
+    let printMe _ = "a-bool"
+
+-- Positive: show_tagged does NOT declare a `Printable t` constraint.
+-- Within each GADT branch the compiler refines `t` to the concrete index;
+-- implicit resolution then succeeds against that concrete instance.
+-- The function MUST be accepted.
+show_tagged : (t : Type) -> Tag t -> t -> String
+let show_tagged _ tag val =
+    match tag
+    case IntTag  -> printMe val    -- t = Int; Printable Int is found globally
+    case BoolTag -> printMe val    -- t = Bool; Printable Bool is found globally
+
+--! mode check
+
+-- Positive: the same logic holds for a return-type obligation.
+-- The GADT refinement makes the value's type concrete so the type check passes.
+cast_to_concrete : (t : Type) -> Tag t -> t -> Int
+let cast_to_concrete _ tag val =
+    match tag
+    case IntTag  -> val    -- val : t, t = Int, so val : Int — type-checks
+    case BoolTag -> 0      -- Bool branch returns a default Int
+
+
+-- Negative: outside any GADT branch, `t` is still abstract.
+-- Calling `printMe` on a value of abstract type `t` with no `Printable t`
+-- constraint at the declaration site MUST be rejected.
+bad_show : (t : Type) -> t -> String
+let bad_show _ val = printMe val    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

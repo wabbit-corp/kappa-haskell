@@ -1,0 +1,43 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CallFunction.hylo
+--                   (diagnostics: "incompatible labels"),
+--                   Tests/HyloTests/TestCases/TypeChecking/LambdaTypeInference.hylo
+--                   (diagnostic: "cannot initialize ... label mismatch"),
+--                   PR#1183 (consider argument labels while enumerating viable overloads)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- Hylo: function calls with wrong argument types, or lambda expressions
+-- assigned to a variable expecting a different type signature, are rejected.
+-- Argument types must match exactly.
+
+--! mode check
+
+-- A two-argument function.
+compute : Int -> Int -> Int
+let compute base factor = base * factor
+
+-- POSITIVE: argument types match.
+callCorrect : Int
+let callCorrect = compute 3 4
+
+-- NEGATIVE: over-applying compute (Int result applied to a further argument).
+wrongArity : Int
+let wrongArity = compute 3 4 5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Higher-order function accepting Int -> Int.
+applyLabeled : (Int -> Int) -> Int -> Int
+let applyLabeled f x = f x
+
+id : Int -> Int
+let id x = x
+
+-- POSITIVE: lambda type matches expected type.
+okLambdaUse : Int
+let okLambdaUse = applyLabeled id 5
+
+-- NEGATIVE: providing a Bool argument where Int is expected in a lambda.
+badLambdaArg : Int
+let badLambdaArg = applyLabeled (\(x : Bool) -> 0) 5    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

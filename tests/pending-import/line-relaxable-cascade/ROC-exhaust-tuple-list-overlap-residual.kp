@@ -1,0 +1,55 @@
+-- Source issues: Roc #8935, #6802
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       expressions.match
+-- A match on a tuple of lists with overlapping branches must enumerate the
+-- residual cases correctly. Specifically:
+--   ([], _)           covers (empty, anything)
+--   (_, [])           covers (anything, empty)
+--   ([_, ..], [_, ..]) covers (non-empty, non-empty)
+-- These three jointly cover every (List a, List a) pair. The first arm
+-- already absorbs (empty, non-empty) and the second arm absorbs (non-empty,
+-- empty), so the only remaining residual is (non-empty, non-empty), which is
+-- explicitly covered.
+
+module test
+
+data List (a : Type) : Type =
+    Nil  : List a
+    Cons : a -> List a -> List a
+
+--! mode check
+
+-- POSITIVE: three branches jointly exhaustive.
+pairCover : List Int -> List Int -> Int
+let pairCover xs ys =
+    match (xs, ys)
+      case (Nil, _)              -> 0
+      case (_,   Nil)            -> 1
+      case (Cons _ _, Cons _ _)  -> 2
+
+--! assertType pairCover List Int -> List Int -> Int
+
+-- NEGATIVE: removing the (Cons _, Cons _) branch leaves a real residual.
+pairMissing : List Int -> List Int -> Int
+let pairMissing xs ys =
+    match (xs, ys)                           --!! kappa.pattern.non-exhaustive
+      case (Nil, _)        -> 0
+      case (_,   Nil)      -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: overlap is not a redundancy here — none of the three accepted
+-- branches above is reachable only through the others, because each restricts
+-- a different residual.
+-- A redundant fourth branch that follows a fully-exhaustive set of arms is
+-- unreachable; conforming implementations should report kappa.pattern.unreachable
+-- at warning level for this case.
+pairRedundantTail : List Int -> List Int -> Int
+let pairRedundantTail xs ys =
+    match (xs, ys)
+      case (Nil, _)              -> 0
+      case (_,   Nil)            -> 1
+      case (Cons _ _, Cons _ _)  -> 2
+      case _                     -> 3
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable

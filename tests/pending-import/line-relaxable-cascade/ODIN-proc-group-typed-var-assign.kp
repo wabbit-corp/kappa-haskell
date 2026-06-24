@@ -1,0 +1,43 @@
+-- Source issues: odin#5392 (Odin crashes when assigning overloaded function to
+--               a variable of a procedure type), odin#6119 (PR: fix assertion
+--               error when imported proc groups passed as proc arguments),
+--               OSA-ODIN-05
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       compiler.frontir.ordinary_errors_not_internal_failures
+-- When an overload set is assigned to a position with a concrete function type,
+-- the compiler must attempt to select a unique matching member. If no unique
+-- member matches (or if the unique member's type is incompatible), the compiler
+-- must emit kappa.type.mismatch, not crash.
+
+--! mode check
+
+-- Two overloaded functions with different signatures.
+let sineApprox (x : Int) : Int = x
+let sineApprox (x : String) : Int = 0
+
+-- POSITIVE: assigning the single matching overload to a typed function slot.
+let selectSineInt : (Int -> Int) = sineApprox
+
+
+-- NEGATIVE: asking for a String -> String function, but no overload returns String.
+-- The assignment must produce a type error.
+let badSineReturnType : (String -> String) =
+    sineApprox    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: passing the overload as a function argument where the type is known.
+-- sineApprox has an Int -> Int overload; applyToFive expects exactly Int -> Int.
+let applyToFive (f : Int -> Int) : Int = f 5
+
+let okPassSine : Int = applyToFive sineApprox
+
+
+-- NEGATIVE: passing the overload where an incompatible return type is expected.
+-- sineApprox always returns Int; no overload returns String.
+let applyToStr (f : String -> String) : String = f "x"
+
+let badPassSineToStr : String =
+    applyToStr sineApprox    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

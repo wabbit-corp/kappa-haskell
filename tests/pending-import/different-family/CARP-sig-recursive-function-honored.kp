@@ -1,0 +1,36 @@
+-- Source issue: carp-lang/Carp#1396
+-- Spec: declarations.signatures,
+--       declarations.terms (mutually recursive groups),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #1396: a `sig f (Fn [Char] Char)` followed by a recursive `defn`
+-- failed to concretize because the recursive call site received a fresh
+-- metavariable that was never linked to the declared signature.  The
+-- portable Kappa obligation is that a `sig`/signature declared on a
+-- recursive definition constrains every recursive call inside its body;
+-- the elaborator must NOT replace the recursive call's expected type
+-- with a fresh metavariable.
+
+--! mode check
+
+-- POSITIVE: a recursive self-call uses the signature's parameter and
+-- return types; elaboration concretizes against the signature.
+f2 : Char -> Char
+let f2 c =
+    if charEq c 'z' then f2 'z' else 'n'
+
+charEq : Char -> Char -> Bool
+let charEq a b = True
+
+--! assertType f2 Char -> Char
+
+-- NEGATIVE: an explicit `sig` on a recursive function is incompatible
+-- with a recursive call site that passes the wrong type; the violation
+-- is at the call site, not at the function header.
+g2 : Char -> Char
+let g2 c =
+    if charEq c 'z' then
+        g2 0                              --!! kappa.type.mismatch
+    else
+        'n'
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,38 @@
+-- Source issues: carp-lang/Carp#1202, #824
+-- Spec: data_types.data_declarations,
+--       data_types.data_declarations.naming_diagnostics,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp #1202: `(deftype X [member []])` — where `member` was given an
+-- empty array as its type — caused the compiler to crash in `validate`.
+-- Carp #824: `(deftype Foo [Int])` was missing a field name, also
+-- crashing `members`.  The portable Kappa obligation is that constructor
+-- field declarations must satisfy the ordinary `ctorBinder` grammar
+-- (§10.1); a malformed binder produces a structured diagnostic at the
+-- data declaration site, not a compiler crash.  See SA-CARP-08 in
+-- CARP_SPEC_ADDITIONS.md for the proposed dedicated family.
+
+--! mode check
+
+-- POSITIVE: a well-formed record-style constructor is admitted.
+data Good : Type =
+    MkGood { value : Int }
+
+mkGoodOne : Good
+let mkGoodOne = MkGood { value = 1 }
+
+--! assertType mkGoodOne Good
+
+-- POSITIVE: a well-formed positional constructor is admitted.
+data GoodTwo : Type = MkGoodTwo Int Int
+
+mkGoodTwo : GoodTwo
+let mkGoodTwo = MkGoodTwo 1 2
+
+
+-- NEGATIVE: applying the record-style constructor with the wrong arity
+-- (a missing required field) is rejected with the constructor-arity
+-- family.
+mkGoodBad : Good
+let mkGoodBad = MkGood { }                  --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity

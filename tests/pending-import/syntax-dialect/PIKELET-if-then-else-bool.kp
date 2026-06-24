@@ -1,0 +1,38 @@
+-- Source issues: PIKELET-50 (PR: add booleans as primitive types and implement if),
+--               PIKELET-131 (don't panic on mismatched fields — also touched if/then),
+--               PIKELET-142 (PR: desugar if expressions into case expressions).
+-- Spec: expressions.conditionals, expressions.match,
+--       types.propositions.boolean_type_coercion_type_positions
+--
+-- An `if c then a else b` expression requires `c : Bool` and that both
+-- arms have the same (or unifiable) result type (§16.4). Pikelet desugars
+-- `if` into a `case`; Kappa treats `if` as a surface form over the same
+-- match elaboration. The `==` operator is provided by `trait Eq` (§14).
+
+--! mode check
+
+-- POSITIVE: simple if at Nat.
+selectNat : Bool -> Nat
+let selectNat b = if b then 1 else 0
+
+-- POSITIVE: if at String.
+selectStr : Bool -> String
+let selectStr b = if b then "yes" else "no"
+
+-- POSITIVE: nested if (via elif) for tristate using `==` from `Eq`.
+classify : Nat -> String
+let classify n =
+  if n == 0
+    then "zero"
+    elif n == 1 then "one"
+    else "many"
+
+-- NEGATIVE: condition must be Bool.
+badCond : Nat
+let badCond = if 1 then 2 else 3    --!! kappa.type.mismatch
+
+-- NEGATIVE: arms must have matching types.
+badArms : Nat
+let badArms = if True then 1 else "two"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

@@ -1,0 +1,38 @@
+-- Source issue: Agda #425
+-- Spec: declarations.totality.structural_descent
+-- The termination checker must recognize structural decrease through transparent
+-- record projections applied to a structural parameter. If a forced pattern binds
+-- `.(proj j)` and the recursive call uses `proj j`, the checker MUST see
+-- `proj j <_s j` (projection-smaller) for the structural parameter `j`.
+
+module test
+
+-- A simple product record with two projections.
+record Pair (A B : Type) : Type =
+    fst : A
+    snd : B
+
+-- A structurally smaller element via projection: fst p <_s p because fst is a
+-- transparent field projection.
+-- This recursive function recurses on fst of a Pair, which is structurally smaller.
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+-- sumFst recurses on fst p, which is a record projection of the structural param p.
+-- The termination checker MUST accept this via projection-based structural descent.
+sumFst : Pair Nat Nat -> Nat
+let sumFst (fst = Zero, snd = _)     = Zero
+let sumFst (fst = Succ n, snd = m)   = Succ (sumFst (fst = n, snd = m))
+
+--! mode check
+--! assertNoErrors
+
+-- Variant: nested projection descent through a chain of records.
+record Wrap (A : Type) : Type =
+    inner : A
+
+-- Recursion descends through Wrap.inner, then pattern matches the Nat inside.
+countDown : Wrap Nat -> Nat
+let countDown (inner = Zero)   = Zero
+let countDown (inner = Succ n) = Succ (countDown (inner = n))
+
+--! assertNoErrors

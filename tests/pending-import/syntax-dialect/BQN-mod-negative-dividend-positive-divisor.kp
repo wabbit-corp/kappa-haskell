@@ -1,0 +1,34 @@
+-- Source issues: BQN-79 (`3 | ¯4` returns 2 in BQN; user expected 1
+--   because they were thinking of truncated remainder, not mathematical
+--   modulus). BQN's `|` is mathematical modulus: result lies in
+--   `[0, |n|)` for positive `n`.
+-- Spec: literals.numeric_literals.integers.
+-- Kappa spec is silent on which modulus convention applies; this test
+-- pins the mathematical-modulus convention as the standard one, matching
+-- BQN, Python, and Haskell `mod`, distinct from C `%` truncated
+-- remainder. See SA-BQN-02 follow-up: the prelude does not yet name a
+-- portable `intMod` operator with this convention, so we declare one
+-- here as an `expect`.
+
+--! mode check
+
+-- The portable modulus contract: intMod a n ∈ [0, n) when n > 0.
+expect intMod : Integer -> Integer -> Integer
+
+-- POSITIVE: small positive case (`7 mod 3 = 1`).
+positiveCase : Integer
+let positiveCase = intMod 7 3
+
+-- POSITIVE: negative dividend, positive divisor; BQN-79's example.
+-- `intMod (-4) 3 = 2` because `-4 = 3 * -2 + 2`.
+negativeCase : Integer
+let negativeCase = intMod (-4) 3
+
+-- POSITIVE: the result is always nonnegative for a positive divisor.
+boundsCheck : Bool
+let boundsCheck =
+    let r = intMod (-100) 7
+    in (r >= 0) && (r < 7)
+
+--! assertNoErrors
+--! assertType intMod (Integer -> Integer -> Integer)

@@ -1,0 +1,15 @@
+-- Stress test: a function abstract over a Quantity variable with explicit QuantitySatisfies premise
+-- Spec: types.universes.quantities
+
+--! mode check
+
+-- POSITIVE: apply is polymorphic over quantity q; the QuantitySatisfies q 1 premise
+-- ensures both fn and x are used at least once (i.e., applied exactly once)
+apply :
+    forall (q : Quantity) (a b : Type).
+    QuantitySatisfies q 1 =>
+    (q fn : a -> b) -> (q x : a) -> b
+
+let apply fn x = fn x
+
+--! assertNoErrors

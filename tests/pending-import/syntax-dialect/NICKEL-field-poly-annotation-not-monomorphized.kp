@@ -1,0 +1,45 @@
+-- Source issue: nickel #1690
+-- Spec: types.records.row_polymorphism, types.quantification.implicit_declaration_universalization
+-- A record field annotated with a polymorphic type `forall a. a -> a` must NOT be
+-- prematurely monomorphized. The annotation is equivalent to writing the value with
+-- a type annotation outside the record field. Both forms must accept the polymorphic
+-- type and allow multi-use at different instantiations.
+-- Nickel #1690 showed that `{ id : forall a. a -> a = std.function.id } : _` failed
+-- with an incompatible-types error, while `{ id = (std.function.id : forall a. a -> a) }`
+-- succeeded. Both forms must be accepted.
+
+module test
+
+-- Identity function.
+myId : forall a. a -> a
+let myId x = x
+
+-- POSITIVE: a record with a field annotated by a polymorphic type.
+-- The annotation form `{id : forall a. a -> a = myId}` must be accepted.
+polyRecord : (id : forall a. a -> a)
+let polyRecord = (id = myId)
+
+-- POSITIVE: using the field at String instantiation.
+polyUsageStr : String
+let polyUsageStr = polyRecord.id "hello"
+
+-- POSITIVE: using the same field at Number instantiation.
+polyUsageNum : Number
+let polyUsageNum = polyRecord.id 42
+
+-- POSITIVE: a function that takes a record with a polymorphic `id` field and
+-- uses it at two different type instantiations must type-check.
+useIdTwice : (id : forall a. a -> a) -> (String, Number)
+let useIdTwice rec =
+    let s = rec.id "world" in
+    let n = rec.id 99 in
+    (s, n)
+
+usedTwice : (String, Number)
+let usedTwice = useIdTwice polyRecord
+
+--! mode check
+--! assertNoErrors
+--! assertType polyUsageStr String
+--! assertType polyUsageNum Number
+--! assertType usedTwice (String, Number)

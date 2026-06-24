@@ -1,0 +1,37 @@
+-- Source artifacts: CHALK-2 (Projection and normalization),
+--                   CHALK-74 (fallback clauses considered harmful / projection equality),
+--                   CHALK-85 (Missing a fallback rule for unselected projections),
+--                   CHALK-235 (Normalization doesn't take into account which impl applied),
+--                   RA-2603 (Does not infer associated type in another associated type),
+--                   RA-3232 (Associated types in constraints are not normalized).
+-- Spec: traits.instances.normalized_instance_heads,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.associated.normalization-blocked).
+-- A projected associated static member cannot normalize because its governing
+-- trait instance is not solved in the current local context. The compiler MUST
+-- emit a diagnostic of family kappa.associated.normalization-blocked, naming
+-- the missing or blocked governing trait instance BEFORE reporting any large
+-- unreduced type mismatch.
+
+--! mode check
+
+trait Iter (it : Type) =
+    Item : Type
+    next : it -> Option it.Item
+
+-- A function whose return type is the projected associated member of `it`.
+-- The function has no `Iter it` binder; the projection has no governing
+-- trait instance available, so normalization is blocked.
+use_item : (it : Type) -> it -> it.Item    --!! kappa.associated.normalization-blocked
+let use_item it x = x
+
+--! assertDiagnosticFamily error kappa.associated.normalization-blocked
+
+-- POSITIVE: with the governing `Iter it` evidence in scope, the projection
+-- normalizes and the function is accepted.
+use_item_ok :
+    (it : Type) ->
+    (@_ : Iter it) =>
+    it -> Option it.Item
+let use_item_ok it x = next x
+

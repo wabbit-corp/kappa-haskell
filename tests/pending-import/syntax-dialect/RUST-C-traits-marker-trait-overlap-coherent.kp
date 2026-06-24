@@ -1,0 +1,37 @@
+-- Source artifacts: CHALK-8 (Tests for partial overlap),
+--                   CHALK-62 (support overlap for marker traits),
+--                   CHALK-DOC-book/src/clauses/coherence.md.
+-- Spec: traits.proof_irrelevance,
+--       traits.instances.resolution_algorithm,
+--       identity.hash_uses.instance_coherence.
+-- Kappa spec rule: trait evidence values are subsingletons (compiler provides
+-- `IsSubsingleton (Tr args)` from `IsTrait (Tr args)`). For an empty trait
+-- (no required members) two impls with the same head produce subsingleton-
+-- equal evidence: their HardIdentity values coincide, and instance resolution
+-- selects a coherent representative.
+
+--! mode check
+
+-- Empty trait: pure marker. Subsingleton evidence by §traits.proof_irrelevance.
+trait IsMarked (a : Type) =
+
+data Token : Type = Token
+
+-- Two declarations of the same instance head. For an empty trait, both
+-- evidence values are subsingleton-equal under the canonical identity rule,
+-- so the program is accepted: a coherent representative is chosen.
+instance IsMarked Token =
+
+-- Second instance with the same head. For an *empty* trait the chosen
+-- representative is irrelevant: both evidence values are subsingleton-equal.
+-- Kappa accepts the program and selects a deterministic representative.
+instance IsMarked Token =
+
+-- A function that requires the marker.
+needs_marker : (@_ : IsMarked a) => a -> Int
+let needs_marker _ = 0
+
+result : Int
+let result = needs_marker Token
+
+--! assertNoErrors

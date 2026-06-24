@@ -1,0 +1,57 @@
+-- Source issues: vale#585 (Implement basic pure blocks / immutable region
+--               borrowing), Vale PureFunctionTests.scala
+-- Spec: declarations.let_in.pure_block_expressions,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- In Vale, a function marked `pure` is only allowed to read from its
+-- arguments; it cannot perform any mutation of the mutable heap. This
+-- guarantees that a pure function seeing an immutable view of its inputs
+-- is referentially transparent. In Kappa, a function whose declared return
+-- type carries an empty (or absent) effect row must not use effectful
+-- operations in its body; any attempt to perform a mutable heap side effect
+-- inside such a function is rejected with kappa.effect.row-mismatch.
+
+--! mode check
+
+effect MutHeap =
+    writeCell : Int -> Unit
+
+data Spaceship : Type = Spaceship Int
+
+-- POSITIVE: a pure reader that accepts a borrowed Spaceship and returns
+-- a plain value derived from it. No mutable heap effects are introduced.
+readFuel : (& s : Spaceship) -> Int
+let readFuel (Spaceship fuel) = fuel
+
+-- POSITIVE: a pure computation over plain (non-mutable) values.
+addFuels : (& s : Spaceship) -> (& t : Spaceship) -> Int
+let addFuels s t = readFuel s + readFuel t
+
+-- NEGATIVE: a function declared to return a plain Int (no effect row) but
+-- whose body uses a MutHeap operation. The declared effect row is empty so
+-- the mutation inside the do-block is a row mismatch.
+impurePureBody : (& s : Spaceship) -> Int
+let impurePureBody s =
+    do
+        writeCell 42   --!! kappa.effect.row-mismatch
+        pure (readFuel s)
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- NEGATIVE: a second pure-declared function that attempts a heap write.
+-- The return type Int carries no effect row, so the do-block with writeCell
+-- is rejected.
+badPureBlock : Unit -> Int
+let badPureBlock () =
+    do
+        writeCell 0   --!! kappa.effect.row-mismatch
+        pure 1
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- POSITIVE: an effectful function that performs a write is accepted when
+-- its signature correctly declares the MutHeap effect.
+writeAndReturn : Int -> <MutHeap> Int
+let writeAndReturn n =
+    do
+        writeCell n
+        pure n

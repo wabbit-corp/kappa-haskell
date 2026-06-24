@@ -1,0 +1,42 @@
+-- Source artifacts: RUST-PR-4914 (Adjust borrow checker algorithm),
+--                   numerous rust NLL/two-phase borrow PRs ("borrow check"),
+--                   RUST-PR-155600 (Polonius UI tests),
+--                   CHALK-DOC-book/src/clauses/coherence.md.
+-- Spec: types.universes.disjoint_path_borrowing_records,
+--       types.universes.disjoint_path_borrowing_records.stable_places_place_preserving_bindings,
+--       compiler.diagnostics.path_sensitive_diagnostics.overlapping_borrow_or_update_footprints.
+-- Kappa spec rule (§ types.universes.disjoint_path_borrowing_records):
+--   "Two record fields with disjoint path identity are distinct stable places.
+--    Mutable borrows of distinct stable places may be held simultaneously."
+-- This test pins:
+-- 1. positive: two simultaneous `& mut` borrows of disjoint named fields of a
+--    single record are accepted;
+-- 2. negative: two `& mut` borrows of the SAME field path overlap and are
+--    rejected.
+
+--! mode check
+
+data Pair : Type =
+    Pair { left : Int, right : Int }
+
+-- POSITIVE: disjoint paths `p.left` and `p.right`.
+two_mut_disjoint_ok : Pair -> Pair
+let two_mut_disjoint_ok p =
+    let & mut a = p.left
+    let & mut b = p.right
+    -- Both borrows are simultaneously live; their footprints are disjoint
+    -- because `left` and `right` are different stable places.
+    let _ = a
+    let _ = b
+    p
+
+
+-- NEGATIVE: two mutable borrows of the same field path overlap.
+two_mut_same_path_rejected : Pair -> Int
+let two_mut_same_path_rejected p =
+    let & mut a = p.left
+    let & mut b = p.left          --!! kappa.borrow.overlap
+    let _ = a
+    b
+
+--! assertDiagnosticFamily error kappa.borrow.overlap

@@ -1,0 +1,32 @@
+-- Source issues: BQN scope.md (*"An identifier can only be exported in
+--   the scope where it is defined, and not in a containing scope"*),
+-- BQN tests/test/cases/namespace.bqn rejected: `⟨a⟩←{a←{a⇐3}}` (export
+-- `a` is in a different scope from its binding).
+-- Spec: modules.exports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved).
+-- Kappa's `export` is a top-level form that re-exports a name from an
+-- imported module (§8.4). Attempting to re-export a name that does not
+-- resolve in the current file's import set is an unresolved-name error,
+-- which is the closest portable analog of BQN's "name not defined in
+-- this scope".
+
+--! mode check
+
+-- POSITIVE: a normal top-level definition that is implicitly exported
+-- (no @PrivateByDefault attribute, so top-level names are exported by
+-- default per §8.5).
+piConst : Double
+let piConst = 3.14159265358979
+
+-- POSITIVE: an ordinary use of the locally defined name.
+useLocal : Double
+let useLocal = piConst
+
+-- NEGATIVE: re-exporting a name that has not been imported in this
+-- file's import set. BQN's `⟨a⟩←{a←{a⇐3}}` is rejected because `a` is
+-- not defined in the outer scope. The Kappa analog is `export <name>`
+-- with `<name>` unresolvable.
+export missingFromImports                --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

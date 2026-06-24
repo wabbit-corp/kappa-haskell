@@ -1,0 +1,45 @@
+-- Source issues: FLIX-7118, FLIX-7209
+-- Spec: effects.monadic_core.deep_handlers_deep_handle, types.quantification.effect_row_syntax
+-- A complete handler for an effect must be accepted even when the operation's
+-- resumption type involves another effect in the residual row. Two effects whose
+-- operations are handled sequentially must compose correctly.
+-- Deep handlers are used here because the continuation in each clause must have
+-- type `(1 _ : B) -> m b` where `m` is the target carrier, not the unhandled Eff type.
+
+--! mode check
+--! assertNoErrors
+
+-- Two effects with unit-returning operations.
+effect Ask =
+    ask : Unit -> Int
+
+effect Gen =
+    gen : Unit -> Int
+
+-- POSITIVE TEST: deep handle Gen first (inner), then Ask (outer).
+-- The inner handler eliminates Gen, leaving only Ask in the residual row.
+-- Inner carrier m = Eff <[Ask : Ask]>; outer carrier m = id.
+let run_gen_ask (comp : Eff <[Ask : Ask, Gen : Gen]> Int) : Int =
+    deep handle Ask
+        (deep handle Gen comp with
+            case return v -> pure v   -- pure v : Eff <[Ask : Ask]> Int
+            case gen _ k -> k 42)    -- k : Int -> Eff <[Ask : Ask]> Int
+    with
+        case return v -> v            -- v : Int (carrier m = id)
+        case ask _ k -> k (k 84)     -- k : Int -> Int; k (k 84) : Int
+
+-- POSITIVE TEST: same pattern with a Unit-returning computation.
+effect Say =
+    say : String -> Unit
+
+let run_ask_say (comp : Eff <[Ask : Ask, Say : Say]> Unit) : Unit =
+    deep handle Ask
+        (deep handle Say comp with
+            case return _ -> pure ()  -- pure () : Eff <[Ask : Ask]> Unit
+            case say s k -> k ())     -- k : Unit -> Eff <[Ask : Ask]> Unit
+    with
+        case return _ -> ()           -- () : Unit (carrier m = id)
+        case ask _ k -> k 0           -- k : Int -> Unit; k 0 : Unit
+
+-- expect: both handler sequences accepted; effect rows eliminated correctly
+--! assertType run_gen_ask (Eff <[Ask : Ask, Gen : Gen]> Int -> Int)

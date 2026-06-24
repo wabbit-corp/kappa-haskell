@@ -1,0 +1,42 @@
+-- Source issue: FLIX-5383
+-- Spec: types.quantification.implicit_declaration_universalization
+-- Duplicate type variable names in a declaration are not permitted.
+-- Kappa §11.3.3 requires that implicitly universalized binders be unique:
+-- each free lowercase identifier at a declaration site introduces a distinct
+-- binder ordered by first left-to-right occurrence. Repeating the same name
+-- is ill-formed and must be rejected.
+-- Note: no single spec-defined diagnostic family covers all duplicate-binder cases.
+-- kappa.name.shadowing fires for suspicious shadowing (SHOULD obligation).
+-- kappa.name.unresolved may fire when the second occurrence can't be resolved
+-- as a fresh binder in the same telescope.
+
+--! mode check
+
+-- NEGATIVE TEST: two type parameters with the same name in an explicit forall.
+-- The second `a` shadows the first; implementations SHOULD emit a suspicious-
+-- shadowing warning or reject the binding as ill-formed.
+let bad_dup (forall (a : Type) (a : Type)) (x : a) : a = x  --!! kappa.name.shadowing
+
+-- NEGATIVE TEST: implicit universalization where the same name appears twice
+-- in a function signature with incompatible kinds inferred.
+-- Even if kinds were consistent, duplicating the binder name is ill-formed.
+let bad_implicit_dup (x : a) (y : a -> a) : a = y x         -- 'a' appears once via implicit universalization
+-- The above should be ACCEPTED (a is unified once).
+
+-- NEGATIVE TEST: two explicit binders with the same name at trait level.
+-- Trait type parameters must be distinct; the second `a` shadows the first.
+trait BadTrait (a : Type) (a : Type) =                      --!! kappa.name.shadowing
+    method : a -> a
+
+-- NEGATIVE TEST: effect declaration with duplicate type parameter.
+effect BadEffect (s : Type) (s : Type) =                    --!! kappa.name.shadowing
+    get : Unit -> s
+
+-- POSITIVE TEST: distinct type parameter names.
+let good_fn (forall (a b : Type)) (f : a -> b) (x : a) : b = f x
+
+trait GoodTrait (f : Type -> Type) =
+    lift : a -> f a
+
+-- expect: bad_dup, BadTrait, BadEffect rejected with duplicate-binder diagnostic;
+--         bad_implicit_dup, good_fn, GoodTrait accepted

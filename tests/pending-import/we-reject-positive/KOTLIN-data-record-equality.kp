@@ -1,0 +1,49 @@
+-- Source issues: KT-5002 (equals/hashCode/toString for data classes), KT-2819
+-- Spec: data_types.data_declarations, traits.hashable, traits.deriving
+
+--! mode check
+
+data Point : Type =
+    Point (x : Int) (y : Int)
+
+derive Eq Point
+
+-- POSITIVE: derived Eq on a data type lets two points be compared structurally.
+samePoint : Point -> Point -> Bool
+let samePoint p q = p == q
+
+--! assertNoErrors
+--! assertType samePoint (Point -> Point -> Bool)
+
+-- POSITIVE: structural equality holds when all fields are equal.
+eqExample : Bool
+let eqExample =
+    Point 1 2 == Point 1 2
+
+--! assertNoErrors
+--! assertType eqExample Bool
+
+-- POSITIVE: structural inequality when any field differs.
+neqExample : Bool
+let neqExample =
+    Point 1 2 != Point 3 4
+
+--! assertNoErrors
+
+-- POSITIVE: data types with more fields have component-wise equality.
+data Person : Type =
+    Person (name : String) (age : Int)
+
+derive Eq Person
+
+samePerson : Person -> Person -> Bool
+let samePerson a b = a == b
+
+--! assertNoErrors
+
+-- POSITIVE: comparing against a freshly-constructed value.
+isOrigin : Point -> Bool
+let isOrigin p = p == Point 0 0
+
+--! assertNoErrors
+--! assertType isOrigin (Point -> Bool)

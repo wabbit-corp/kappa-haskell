@@ -1,0 +1,40 @@
+-- Source issue: Factor #1421 (`GENERIC: foo ( -- )` with no methods is
+--   silently accepted; calling it should be a clear error). Related:
+--   Factor #1963 (boa on a mixin/abstract class throws an internal
+--   "Assertion failed" rather than naming the abstract class).
+-- Spec: traits.headers, traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+--
+-- A trait method invoked at a type for which no instance is in scope
+-- must fire kappa.implicit.unsolved; the diagnostic must name the
+-- unsatisfied trait obligation, not silently succeed or crash.
+
+module test
+
+--! mode check
+
+trait Showable (a : Type) =
+    show : a -> String
+
+data Widget : Type =
+    Widget Int
+
+instance Showable Widget =
+    let show (Widget n) = "Widget"
+
+-- POSITIVE: instance in scope, call resolves.
+ok : String
+let ok = show (Widget 1)
+
+--! assertType ok String
+
+data Gadget : Type =
+    Gadget Int
+
+-- NEGATIVE: no `Showable Gadget` instance is in scope, so the call
+-- cannot be elaborated and Kappa must report an unsolved trait obligation.
+bad : String
+let bad = show (Gadget 1)               --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

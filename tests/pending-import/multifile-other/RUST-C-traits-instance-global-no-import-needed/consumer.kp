@@ -1,0 +1,13 @@
+-- Consumer module: imports only the trait and the data type, NOT the
+-- `instances` module that declares `Showable Color`. Still, instance search
+-- must locate the global instance from `instances.lang`.
+module consumer
+
+import trait_decl using showIt
+import data_decl
+
+use_color : String
+let use_color = showIt data_decl.Red
+
+--! mode check
+--! assertNoErrors

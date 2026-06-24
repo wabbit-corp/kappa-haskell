@@ -1,0 +1,33 @@
+-- Source issues: FSTAR-2062, FSTAR-2806
+-- Spec: core_semantics.definitional_equality.refinement_aware_normalization
+-- When checking a function application, the type of the callee must be
+-- unfolded through record field projections and type aliases to expose the
+-- function arrow. Normalization must not stop at an opaque record field type.
+
+--! mode check
+
+-- A record type wrapping a function type.
+type Pack = (ff : Type -> Type)
+
+-- A concrete implementation: ty a = Unit -> a
+ty : Type -> Type
+let ty a = Unit -> a
+
+impl : Pack
+let impl = (ty)
+
+-- POSITIVE TEST: impl.ff Int is definitionally equal to ty Int = Unit -> Int.
+-- Applying f to () must succeed after unfolding ff through impl.
+f : impl.ff Int
+let f = \_ -> 42
+
+apply_f : Int
+let apply_f = f ()
+
+--! assertNoErrors
+
+-- Equality simplification must not drop refinement constraints.
+-- This proposition type is well-formed.
+type RefProp = (n : Nat) -> (m : Int) -> Unit
+
+--! assertNoErrors

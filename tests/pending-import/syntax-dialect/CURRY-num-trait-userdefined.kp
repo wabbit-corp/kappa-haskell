@@ -1,0 +1,73 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestNat.curry and
+--   testsuite/TypeclassTests/TestBinInt.curry (user-defined `Num` instance).
+-- Spec: traits.headers (§14.1), traits.instances (§14.3),
+--       traits.members (§14.2), data_types.data_declarations (§10.1).
+--
+-- A user-defined ADT may have a trait instance that implements the
+-- portable arithmetic operations. The Curry tests define `Num Nat` by
+-- structural recursion on Peano-style naturals; the operations are
+-- (+), (*), and `fromInt` (the integer-literal constructor).
+
+module test
+
+--! mode check
+
+data Nat : Type =
+    Zero
+  | Succ Nat
+
+-- A miniature numeric trait analogous to Haskell `Num` (just `+`, `*`,
+-- and `fromInt`; abs and negate are omitted to keep the fixture under
+-- the 100-line target).
+trait Numeric (a : Type) =
+    addN    : a -> a -> a
+    mulN    : a -> a -> a
+    fromInt : Int -> a
+
+--! assertNoErrors
+
+instance Numeric Nat =
+    let addN n m =
+        match n
+        case Zero    -> m
+        case Succ p  -> Succ (addN p m)
+
+    let mulN n m =
+        match n
+        case Zero    -> Zero
+        case Succ p  -> addN m (mulN p m)
+
+    let fromInt n =
+        if n <= 0
+        then Zero
+        else Succ (fromInt (n - 1))
+
+--! assertNoErrors
+
+-- POSITIVE: type-check the inferred method types via assertType.
+addNNat : Nat -> Nat -> Nat
+let addNNat = addN
+
+mulNNat : Nat -> Nat -> Nat
+let mulNNat = mulN
+
+fromIntNat : Int -> Nat
+let fromIntNat = fromInt
+
+--! assertType addNNat (Nat -> Nat -> Nat)
+--! assertType mulNNat (Nat -> Nat -> Nat)
+--! assertType fromIntNat (Int -> Nat)
+
+-- POSITIVE: 2 + 3 = 5 in the user-defined numeric.
+sumOfTwoAndThree : Nat
+let sumOfTwoAndThree = addN (fromInt 2) (fromInt 3)
+-- expected shape: Succ (Succ (Succ (Succ (Succ Zero))))
+
+--! assertNoErrors
+--! assertType sumOfTwoAndThree Nat
+
+-- POSITIVE: anything * Zero = Zero on the left.
+zeroAbsorbsLeft : Nat
+let zeroAbsorbsLeft = mulN Zero (fromInt 7)
+
+--! assertNoErrors

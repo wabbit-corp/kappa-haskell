@@ -1,0 +1,30 @@
+-- Source issues: CREUSOT-1762
+-- Spec: compiler.frontir.standard_diagnostic_families.macro_elaboration,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- Family: kappa.macro.failure (Kappa §3.2.12)
+-- A "trusted" annotation MUST NOT bypass orthogonal well-formedness
+-- checks; in particular, the purity check that prevents a program
+-- function from being called inside a `requires`/`ensures` clause
+-- remains in force.  The spec-macro-in-program-context boundary is
+-- the diagnostic.  Pending spec gap CREUSOT-SA-11.
+
+module test
+
+--! mode check
+
+-- A program-mode function (not pure / not ghost / not logic).
+program let progFalse : Bool
+let progFalse = False
+
+-- NEGATIVE: trusted does not let a `requires` clause call a program
+-- function.
+trusted let trustedBad : Unit
+let trustedBad = ()
+    requires progFalse                         --!! kappa.macro.failure
+
+-- NEGATIVE: the same obligation when the program call is in `ensures`.
+trusted let trustedBadEnsures : Unit
+let trustedBadEnsures = ()
+    ensures progFalse                          --!! kappa.macro.failure
+
+--! assertDiagnosticFamily error kappa.macro.failure

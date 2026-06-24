@@ -1,0 +1,45 @@
+-- Source issues: ponyc#4612, ponyc#3737, ponyc traits.cc (InheritMethod,
+--   TransitiveTraits, MultiInheritNoLocal)
+-- Spec: traits.members, traits.instances
+-- Pony trait default methods are inherited by classes that provide the trait.
+-- Issue #4612: a default method that matches on the abstract return type of
+-- a trait method must use the trait's declared type, not the implementor's
+-- narrower type. In Kappa, default methods on a trait may use any member
+-- declared in the same trait; instances inherit the default implementation
+-- unless they override it.
+
+--! mode check
+
+-- A trait with a required method and a default method defined in terms of it.
+trait Classifiable (a : Type) =
+    label : (& x : a) -> String
+
+    let classify : (& x : a) -> Bool =
+        \x -> label x == "active"
+
+data Sensor : Type = Sensor String Bool
+data Beacon : Type = Beacon
+
+-- POSITIVE: instance provides `label`; the default `classify` is inherited.
+instance Classifiable Sensor =
+    let label (Sensor lbl _) = lbl
+
+-- POSITIVE: instance provides both `label` and an override of `classify`.
+instance Classifiable Beacon =
+    let label Beacon = "inactive"
+    let classify Beacon = False
+
+-- verify both work via trait dispatch
+useClassifiable :
+    forall (a : Type).
+    (@_ : Classifiable a) ->
+    (& x : a) -> (String, Bool)
+let useClassifiable x = (label x, classify x)
+
+checkSensor : (String, Bool)
+let checkSensor = useClassifiable (Sensor "active" True)
+
+checkBeacon : (String, Bool)
+let checkBeacon = useClassifiable Beacon
+
+--! assertNoErrors

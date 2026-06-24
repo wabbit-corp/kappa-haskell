@@ -1,0 +1,47 @@
+-- Source: granule-project/granule PR #229 (Fractional permissions for
+--         mutable and immutable borrowing)
+-- Spec: types.universes.borrow_lifetimes_escape_prevention (GSA-05),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- Granule's fractional-borrow modality grades a borrow with a fraction
+-- 0 < q ≤ 1; mutation requires q = 1. Kappa represents this via the
+-- quantity-graded extension lane (§12.2.8); a write through a split
+-- borrow violates the quantity obligation and surfaces
+-- `kappa.quantity.satisfies`.
+
+module test
+
+--! mode check
+
+data Bool : Type =
+    True
+    False
+
+type Ref : Type -> Type
+
+intrinsic newRef       : forall (a : Type). (1 x : a) -> Ref a
+intrinsic readBorrow   : forall (a : Type) (ρ : Region) (q : Quantity).
+    (1 & x : Ref a) -> (a, Unit)
+intrinsic splitBorrow  : forall (a : Type) (ρ : Region).
+    (1 & x : Ref a) -> ((1 & y1 : Ref a), (1 & y2 : Ref a))
+intrinsic writeBorrow  : forall (a : Type) (ρ : Region).
+    QuantitySatisfies 1 1 => (1 & x : Ref a) -> (1 v : a) -> Unit
+
+-- POSITIVE: a read borrow may be split and each half consumed by a read.
+splitRead : forall (ρ : Region). (1 & r : Ref Bool) -> Bool
+let splitRead r =
+    let (b1, b2) = splitBorrow r in
+    let (v, _)   = readBorrow b1 in
+    let (_, _)   = readBorrow b2 in
+    v
+
+
+-- NEGATIVE: attempting to write through a partial (split) borrow.
+-- The write demands the full permission via `QuantitySatisfies 1 1`,
+-- but a split borrow carries only a fractional quantity.
+badWriteSplit : forall (ρ : Region). (1 & r : Ref Bool) -> Unit
+let badWriteSplit r =
+    let (b1, b2) = splitBorrow r in
+    let _ = writeBorrow b1 True in --!! kappa.quantity.satisfies
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies

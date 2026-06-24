@@ -1,0 +1,40 @@
+-- Source issues: elm #2239, #1740, #2332
+-- Spec: declarations.let_in
+-- In a let...in block, a second binding of the same name shadows the first.
+-- The spec says: "A later binding may introduce a name already in scope;
+-- the new binding shadows the old one in subsequent bindings and in the in body."
+-- This is a POSITIVE test: rebinding the same name is allowed.
+
+--! mode check
+
+-- POSITIVE: second let binding of `x` shadows the first.
+-- Body should see the second binding (2), not the first (1).
+testShadow1 : Int
+let testShadow1 =
+    let
+        x = 1
+        x = 2
+    in
+    x
+
+-- POSITIVE: shadowing with string labels.
+testShadow2 : String
+let testShadow2 =
+    let
+        label = "outer"
+        label = "inner"
+    in
+    label
+
+-- POSITIVE: a function that rebinds a name from the outer module scope.
+n : Int
+let n = 99
+
+testShadow3 : Int -> Int
+let testShadow3 outerN =
+    let
+        n = outerN + 1
+    in
+    n
+
+--! assertNoErrors

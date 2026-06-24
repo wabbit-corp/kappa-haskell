@@ -1,0 +1,62 @@
+-- Source issues: apple/swift #46668 (tuples lack conditional Equatable conformance),
+--   apple/swift #82628 (spurious circular reference in implicit Sendable derivation).
+--   Conditional instances are only available when their constraints are satisfied.
+--   Calling a function that requires an instance for a type that does not satisfy
+--   the instance's conditions must produce kappa.implicit.unsolved.
+-- Spec: traits.instances §14.3, traits.instances.resolution_algorithm §14.3.1
+
+--! mode check
+
+-- A wrapper type that has an Eq instance only when its payload has one.
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+instance Eq Nat =
+    let eq x y = x = y
+
+instance Eq Bool =
+    let eq True  True  = True
+    let eq False False = True
+    let eq _     _     = False
+
+data Pair (a b : Type) : Type = Pair a b
+
+-- Conditional instance: Pair a b has Eq only when both a and b have Eq.
+instance Eq a, Eq b => Eq (Pair a b) =
+    let eq (Pair x1 y1) (Pair x2 y2) = eq x1 x2 && eq y1 y2
+
+-- POSITIVE: Pair Nat Nat can use Eq because both components have Eq.
+natPairEq : Pair Nat Nat -> Pair Nat Nat -> Bool
+let natPairEq p q = eq p q
+
+-- POSITIVE: nested pairs work when all levels satisfy Eq.
+nestedPairEq : Pair (Pair Nat Nat) Bool -> Pair (Pair Nat Nat) Bool -> Bool
+let nestedPairEq p q = eq p q
+
+-- A container needing Eq.
+contains : forall {a : Type} -> (@_ : Eq a) -> List a -> a -> Bool
+let contains [] _      = False
+let contains (x :: xs) v = eq x v || contains xs v
+
+-- POSITIVE: contains works for Nat (has Eq).
+hasThree : Bool
+let hasThree = contains [1, 2, 3] 3
+
+-- NEGATIVE: a type with no Eq instance at all.
+data Raw : Type = Raw String Nat
+
+-- No `instance Eq Raw` is declared.
+rawEq : Bool
+let rawEq = eq (Raw "x" 1) (Raw "x" 1)    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: Pair where one component has no Eq.
+-- Pair Nat Raw does not satisfy the conditional instance
+-- because Raw has no Eq.
+rawPairEq : Bool
+let rawPairEq = eq (Pair 1 (Raw "a" 2)) (Pair 1 (Raw "a" 2))    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: using contains with a type that has no Eq.
+rawContains : Bool
+let rawContains = contains [Raw "x" 1] (Raw "x" 1)    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

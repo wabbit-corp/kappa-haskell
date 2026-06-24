@@ -1,0 +1,51 @@
+-- Source issue: ROSETTE-196 (lexical scope interaction with rewrites,
+--                emphasises the importance of strict lexical resolution
+--                order in let blocks)
+-- Spec: declarations.let_in,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--
+-- The portable Kappa obligation: a non-function let binding may not
+-- reference a later binding in the same block. Only function bindings
+-- can be mutually recursive, because their bodies are not evaluated
+-- during the let elaboration.
+
+--! mode check
+
+-- POSITIVE: function bindings can be mutually recursive.
+ok : Int
+let ok =
+    let
+        evenN n = if n == 0 then True  else oddN  (n - 1)
+        oddN  n = if n == 0 then False else evenN (n - 1)
+    in
+    if evenN 4 then 1 else 0
+
+-- POSITIVE: ordered dependency, earlier binding consumed by later.
+ok2 : Int
+let ok2 =
+    let
+        a = 7
+        b = a + 1
+        c = b + 1
+    in
+    c
+
+-- NEGATIVE: a non-function binding references a later binding by name.
+bad1 : Int
+let bad1 =
+    let
+        early = late + 1                 --!! kappa.name.unresolved
+        late  = 10
+    in
+    early
+
+-- NEGATIVE: forward reference inside an expression-position binding.
+bad2 : Int
+let bad2 =
+    let
+        x = y * 2                        --!! kappa.name.unresolved
+        y = 7
+    in
+    x
+
+--! assertDiagnosticFamily error kappa.name.unresolved

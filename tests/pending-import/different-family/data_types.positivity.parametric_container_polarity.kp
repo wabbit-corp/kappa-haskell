@@ -1,0 +1,69 @@
+-- Source issue: Agda #984
+-- Spec: data_types.well_formedness (§10.4)
+-- When a previously accepted parametric data type F records parameter p as
+-- POSITIVE in its parameter-positivity signature, a recursive data type T
+-- that appears in position p of F MUST be accepted as strictly positive.
+-- The parameter-positivity signature mechanism (§10.4 lines 7229-7232) requires
+-- implementations to record polarity for each parameter of every accepted data type
+-- and use that signature in subsequent positivity checks.
+--
+-- Agda #984 showed that Agda incorrectly rejected such definitions (treating
+-- parametric wrapper data types as opaque for polarity purposes). Kappa's spec
+-- explicitly requires polarity propagation through user-defined parametric types.
+
+module test
+
+-- ─── Auxiliary: show that a user-defined parametric type can itself be accepted ───
+
+-- AppContainer wraps a doubly-applied functor: `wrap : F (F A) -> AppContainer F A`.
+-- Parameter F is used positively (as the function in a function application)
+-- in BOTH occurrences of F in the constructor argument type.
+-- After acceptance, F MUST be recorded as POSITIVE in AppContainer's signature.
+data AppContainer (F : Type -> Type) (A : Type) : Type =
+    wrap : F (F A) -> AppContainer F A
+
+--! mode check
+
+-- ─── Primary positive test ───
+
+-- ExprTree uses AppContainer with ExprTree in the first (positive) parameter.
+-- Per §10.4: `AppContainer ExprTree A` is admissible because AppContainer is
+-- a previously accepted data type and ExprTree occupies the parameter position
+-- marked POSITIVE in AppContainer's signature. Therefore ExprTree occurs
+-- strictly positively in `AppContainer ExprTree A -> ExprTree A`.
+-- This MUST be accepted.
+data ExprTree (A : Type) : Type =
+    node : AppContainer ExprTree A -> ExprTree A
+
+
+-- ─── Variant: record-wrapped container also accepted ───
+
+-- RecContainer wraps a single F-application.
+-- F is used positively as the function in `F A`.
+-- The parameter F is positive in RecContainer's signature.
+data RecContainer (F : Type -> Type) (A : Type) : Type =
+    rWrap : F A -> RecContainer F A
+
+-- FlatTree using RecContainer: ExprTree2 appears in positive position.
+-- Must be accepted.
+data FlatTree (A : Type) : Type =
+    fLeaf : A -> FlatTree A
+    fNode : RecContainer FlatTree A -> FlatTree A
+
+
+-- ─── Rejection: a container that uses F negatively ───
+
+-- NegContainer uses F in a NEGATIVE position: `(F A -> A) -> NegContainer F A`.
+-- F appears in the domain of the inner function, which is a negative position.
+-- Parameter F MUST be marked NON-POSITIVE in NegContainer's signature.
+data NegContainer (F : Type -> Type) (A : Type) : Type =
+    negWrap : (F A -> A) -> NegContainer F A
+
+-- BadTree has a constructor whose argument type is `NegContainer BadTree A`.
+-- BadTree occupies the parameter position of NegContainer, which is NON-POSITIVE.
+-- Therefore BadTree appears in a non-strictly-positive position.
+-- This MUST be rejected.
+data BadTree (A : Type) : Type =
+    badNode : NegContainer BadTree A -> BadTree A   --!! kappa.type.mismatch
+
+--! assertErrorCount 1

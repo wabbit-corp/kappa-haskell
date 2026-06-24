@@ -1,0 +1,73 @@
+-- Source issues: CAIRO-2462, CAIRO-2576, CAIRO-2612, CAIRO-2688 (PR: Linear types),
+--               CAIRO-3943, CAIRO-8467
+-- Spec: types.universes.quantities (§12.2),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- Kappa spec rule (§12.2 "Quantities"):
+--   "A binder declared with quantity `1` (linear) must be demanded exactly
+--    once. Dropping a linear value (letting it go out of scope without
+--    consuming it) is rejected. A linear value may be consumed by passing it
+--    to a function, returning it, pattern-matching it, or invoking its
+--    explicit destructor."
+-- Cairo issue CAIRO-2462: structs containing dictionaries could not be
+--   simply dropped because the dictionary required explicit squashing.
+-- Cairo issue CAIRO-2576: automatic dict destruction caused a panic; the
+--   compiler must produce a proper diagnostic instead of crashing.
+-- Cairo issue CAIRO-2612: dict destructor "unexpected variable" internal error.
+-- Cairo issue CAIRO-3943: deriving Destruct on certain types caused a cycle.
+-- Cairo issue CAIRO-8467: Drop-related errors when upgrading; non-droppable
+--   types in certain positions needed explicit destructors.
+-- In Kappa: a linear (quantity-1) value must be consumed exactly once.
+-- Silently dropping it or using it more than once is rejected.
+
+--! mode check
+
+-- A resource type that is NOT droppable (no Drop instance, quantity 1 only).
+data Dict : Type =
+    Dict Int
+
+-- A destructor function that consumes the Dict.
+finalize : (1 d : Dict) -> Unit
+let finalize _ = ()
+
+-- POSITIVE: explicit consumption via finalize.
+useDict1 : Unit
+let useDict1 =
+    let 1 d = Dict 42
+    finalize d
+
+-- POSITIVE: consuming the Dict by returning it.
+passDict : (1 d : Dict) -> Dict
+let passDict d = d
+
+-- NEGATIVE: silently dropping a linear value.
+-- The binding `d` holds a Dict (linear) but is never used.
+dropSilently : Unit
+let dropSilently =
+    let 1 d = Dict 99          --!! kappa.quantity.unsatisfied
+    ()
+
+-- NEGATIVE: using a linear value twice (duplicate use).
+-- After passing to finalize, `d` is consumed; using it again fails.
+doubleUse : Unit
+let doubleUse =
+    let 1 d = Dict 7
+    finalize d
+    finalize d                 --!! kappa.path.consumed
+
+-- POSITIVE: struct containing a linear field must expose the field for
+-- consumption; the whole struct is treated as linear.
+data Wrapper : Type =
+    Wrapper (1 inner : Dict)
+
+consumeWrapper : (1 w : Wrapper) -> Unit
+let consumeWrapper (Wrapper d) = finalize d
+
+-- NEGATIVE: ignoring a Wrapper without consuming its linear field.
+dropWrapper : Unit
+let dropWrapper =
+    let 1 w = Wrapper (Dict 3)  --!! kappa.quantity.unsatisfied
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.path.consumed

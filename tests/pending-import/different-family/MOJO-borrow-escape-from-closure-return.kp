@@ -1,0 +1,46 @@
+-- Source issues: MOJO-217, MOJO-3075
+-- Spec: compiler.diagnostics.path_sensitive_diagnostics.borrow_region_escape,
+--       compiler.frontir.standard_diagnostic_families.borrow_capture_region,
+--       kappa.borrow.escape
+-- A closure returned from a function must not carry a borrow that escapes the
+-- function's region scope.  When a function takes a borrowed parameter (& c)
+-- and the closure captures c, the anonymous rigid region of c would escape the
+-- function's return boundary — kappa.borrow.escape.
+
+module test
+
+--! mode check
+
+data Counter : Type =
+    Counter Int
+
+data Box (a : Type) : Type =
+    Box a
+
+-- NEGATIVE: the closure captures the borrowed `c`; the anonymous rigid
+-- region of the `&` binder escapes the function's return boundary.
+makeReader : (& c : Counter) -> (() -> Int)
+let makeReader c =
+    \() ->                            --!! kappa.borrow.escape
+        match c
+        case Counter n -> n
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- POSITIVE: destructure to copy the Int; the closure captures n : Int only,
+-- which carries no region dependency.
+makeReaderSafe : (& c : Counter) -> (() -> Int)
+let makeReaderSafe c =
+    let (Counter n) = c               -- n : Int, no borrow of c
+    \() -> n
+
+
+-- NEGATIVE: storing the closure in a Box also causes the borrow to escape.
+storeEscape : (& c : Counter) -> Box (() -> Int)
+let storeEscape c =
+    let reader = \() ->               --!! kappa.borrow.escape
+            match c
+            case Counter n -> n
+    Box reader
+
+--! assertDiagnosticFamily error kappa.borrow.escape

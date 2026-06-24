@@ -1,0 +1,49 @@
+-- Source: Maude tests/Misc/attributes.maude (op f : Foo Foo -> Foo declared,
+--           red f(c, c) is well-formed; calling f with one or three args is
+--           ill-sorted because the operator declaration fixes arity 2),
+--         tests/Misc/commands.maude (op f : Int Int -> Int with [assoc comm
+--           id: 1]; f(0, 2) is the well-typed application; f(0) is not).
+-- Spec: lexical.operator_identifiers_fixity.declarations,
+--       expressions.application,
+--       compiler.frontir.standard_diagnostic_families
+--       (family kappa.application.argument-mismatch).
+-- Maude operator declarations fix the operator's arity through the sort
+--   signature `op f : S₁ ... Sₙ -> S₀`. The order-sorted overload mechanism
+--   chooses among declared signatures by the supplied argument sorts but does
+--   not invent new arities. Calling f with the wrong number of positional
+--   arguments is an ill-formed application at parse/check time.
+-- Portable obligation: applying a declared function with the wrong number of
+--   positional arguments must be rejected.
+
+--! mode check
+
+module test
+
+data Foo : Type = MkA | MkB | MkC
+
+f : Foo -> Foo -> Foo
+let f _ _ = MkA
+
+g : Foo -> Foo
+let g _ = MkB
+
+-- POSITIVE: correct arities.
+ok1 : Foo
+let ok1 = f MkA MkB
+
+ok2 : Foo
+let ok2 = g MkC
+
+-- NEGATIVE: f declared with two arguments, applied with one.
+badF1 : Foo
+let badF1 = f MkA    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: f declared with two arguments, applied with three.
+badF3 : Foo
+let badF3 = f MkA MkB MkC    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: g declared with one argument, applied with two.
+badG2 : Foo
+let badG2 = g MkA MkB    --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

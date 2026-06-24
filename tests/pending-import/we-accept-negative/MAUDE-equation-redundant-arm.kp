@@ -1,0 +1,45 @@
+-- Source: Maude tests/BuiltIn/nat.maude
+--           fmod MOD3 is inc NAT . eq s_^3(0) = 0 . endfm
+--         The single equation `eq s_^3(0) = 0` makes the term 3 reduce to
+--         0, and subsequent reductions cascade. The portable signal here
+--         is that when two equations have overlapping LHS patterns where
+--         the second is a strict instance of the first, the second is
+--         unreachable. Maude's order-sorted operational semantics applies
+--         the earlier-listed eq first; in Kappa, the unreachable second arm
+--         must be reported.
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.unreachable).
+-- Portable obligation: a match arm that cannot be reached because an
+--   earlier wildcard or strictly-more-general pattern subsumes it must be
+--   reported as unreachable.
+
+--! mode check
+
+module test
+
+data Letter : Type = A | B | C
+
+-- POSITIVE: distinct arms in order; all reachable.
+classify : Letter -> Int
+let classify l = match l
+    case A -> 0
+    case B -> 1
+    case C -> 2
+
+-- NEGATIVE: the wildcard arm makes the third arm (`case C`) unreachable.
+badAfterWild : Letter -> Int
+let badAfterWild l = match l
+    case A -> 0
+    case _ -> 1
+    case C -> 2    --!! kappa.pattern.unreachable
+
+-- NEGATIVE: a second arm with the same constructor as the first is
+-- unreachable.
+badDup : Letter -> Int
+let badDup l = match l
+    case A -> 0
+    case A -> 1    --!! kappa.pattern.unreachable
+    case B -> 2
+    case C -> 3
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable

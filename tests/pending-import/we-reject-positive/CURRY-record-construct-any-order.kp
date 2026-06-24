@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestRecords.curry
+--   (john1 = Person {age = 30, name = "John"};
+--    john2 = Person {name = "John", age = 30}; testEqRecords).
+-- Spec: data_types.data_declarations (§10.1),
+--       data_types.data_declarations.constructor_application_named_arguments_c (§13.2),
+--       traits.deriving (§14.5).
+--
+-- A record-style data constructor may be applied with named fields in
+-- any order; the value built is independent of the textual field
+-- order. Equality (derived or hand-written) compares the structural
+-- field values, not the source order.
+
+module test
+
+--! mode check
+
+data Person : Type =
+    Person { name : String, age : Int }
+
+derive Eq Person
+
+--! assertNoErrors
+--! assertType Person (String -> Int -> Person)
+
+-- POSITIVE: two records, fields supplied in opposite order, must be
+-- structurally equal.
+johnA : Person
+let johnA = Person { age = 30, name = "John" }
+
+johnB : Person
+let johnB = Person { name = "John", age = 30 }
+
+equalRegardlessOfOrder : Bool
+let equalRegardlessOfOrder = johnA == johnB
+
+--! assertNoErrors
+--! assertType equalRegardlessOfOrder Bool
+
+-- POSITIVE: a positional application yields the same record as a
+-- named-field application with matching fields.
+johnPositional : Person
+let johnPositional = Person "John" 30
+
+equalToPositional : Bool
+let equalToPositional = johnA == johnPositional
+
+--! assertNoErrors
+
+-- POSITIVE: two records with different field values are unequal.
+john50 : Person
+let john50 = Person { name = "John", age = 50 }
+
+distinct : Bool
+let distinct = johnA /= john50
+
+--! assertNoErrors
+--! assertType distinct Bool

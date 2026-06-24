@@ -1,0 +1,54 @@
+-- Source issue: Noir#11552
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       traits.members
+-- A trait may have parameters (e.g., `trait Fillable (n : Nat)`).
+-- Those parameters are in scope in the default method bodies declared inside
+-- the same trait. A default method that references the trait's own generic
+-- parameter MUST compile and the parameter MUST be resolved at the instance
+-- call site by the trait's evidence.
+
+module test
+
+trait Fillable (n : Nat) (a : Type) =
+    value : Self -> a
+
+    -- Default method uses the trait parameter `n` directly.
+    -- `n` is in scope here because it is a trait parameter.
+    let fill : Self -> List a =
+        \self ->
+            let v = value self
+            replicate n v
+
+--! mode check
+--! assertNoErrors
+
+data Source : Type = Source
+
+instance Fillable 3 Int Source =
+    let value _ = 7
+
+-- Calling the default method on Source with n=3 should produce [7, 7, 7].
+filled : List Int
+let filled = fill Source
+
+--! assertNoErrors
+
+-- The size of `filled` must reflect the trait parameter `n = 3`.
+sizeCheck : Bool
+let sizeCheck = length filled == 3
+
+--! assertNoErrors
+
+-- Second instance with a different `n`.
+data AnotherSource : Type = AnotherSrc
+
+instance Fillable 5 Bool AnotherSource =
+    let value _ = True
+
+filled5 : List Bool
+let filled5 = fill AnotherSrc
+
+sizeCheck5 : Bool
+let sizeCheck5 = length filled5 == 5
+
+--! assertNoErrors

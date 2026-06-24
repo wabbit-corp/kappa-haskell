@@ -1,0 +1,41 @@
+-- Source: granule-project/granule PR #144 (Exceptions)
+-- Spec: errors.try_except_finally, effects.monadic_core.eff_effect_rows,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+-- A throwing computation is in an effect row that contains the exception's
+-- label; a handler discharges that label. A declaration claiming no effects
+-- but invoking the operation must surface `kappa.effect.row-mismatch`.
+
+module test
+
+--! mode check
+
+data Nothing : Type =
+
+-- An exception-style abortive effect (resumption quantity 0 forbids the
+-- handler from continuing).
+effect Exn =
+    0 throw : Int -> Nothing
+
+-- POSITIVE: a computation that uses the Exn effect under label `exn`.
+boom : Eff <[exn : Exn]> Int
+let boom =
+    match exn.throw 42
+      case impossible
+
+
+-- POSITIVE: a handler discharges the `exn` label.
+runBoom : Eff <[]> Int
+let runBoom =
+    handle exn boom with
+        case return v -> v
+        case throw e _ -> e
+
+
+-- NEGATIVE: a declaration that claims an empty effect row but performs
+-- a throw must be rejected with `kappa.effect.row-mismatch`.
+mislabel : Eff <[]> Int
+let mislabel =
+    match exn.throw 1            --!! kappa.effect.row-mismatch
+      case impossible
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch

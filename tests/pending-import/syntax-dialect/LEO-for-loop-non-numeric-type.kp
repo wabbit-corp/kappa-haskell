@@ -1,0 +1,51 @@
+-- Source issues: leo#1891 (any type allowed for loop bounds; `for i: bool in
+--               true..false` compiled without error), leo#749 (non-constant
+--               values in loop range not rejected).
+-- Spec: SA-LEO-06 (for-loop iteration variable must have a numeric (ordered) type),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+-- Kappa spec rule (§SA-LEO-06):
+--   "A bounded for-loop requires that the iteration variable type belong to the
+--    Enumerable class. Using Bool, String, or other non-numeric types as the
+--    iteration variable type must produce `kappa.implicit.unsolved` because
+--    no Enumerable instance exists for those types."
+-- Rewrite note: Leo's `for i: bool in true..false` is Leo-specific syntax. In
+-- Kappa, the type-class obligation is expressed as an `Enumerable` constraint;
+-- passing a type with no instance produces `kappa.implicit.unsolved`.
+
+--! mode check
+
+trait Enumerable (t : Type) =
+    fromInt : Int -> t
+    toInt   : t -> Int
+    succ    : t -> t
+
+instance Enumerable Int =
+    let fromInt n = n
+    let toInt n = n
+    let succ n = n + 1
+
+-- A range-count operation that requires an Enumerable instance.
+let countRange [Enumerable a] (lo : a) (hi : a) : Int
+let countRange lo hi = toInt hi - toInt lo
+
+-- POSITIVE: Int has an Enumerable instance.
+ok1 : Int
+let ok1 = countRange 0 10
+
+
+-- NEGATIVE: Bool has no Enumerable instance.
+data MyBool : Type = MyFalse | MyTrue
+
+let badBoolRange : Int =
+    countRange MyFalse MyTrue    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: a custom ADT without an Enumerable instance.
+data Color : Type = Red | Green | Blue
+
+let badColorRange : Int =
+    countRange Red Blue    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,62 @@
+-- Source issues: kernel/errors_test.exs "undefined function"
+--   ("undefined function bar/0 (expected ... to define such a function or for it to be
+--    imported, but none are available)"),
+--   errors_test.exs "undefined function within unused function",
+--   errors_test.exs "undefined non-local function",
+--   errors_test.exs "undefined variables",
+--   ELIXIR-PR-12272 (raise undefined variable compile error, not undefined function),
+--   ELIXIR-PR-4870 (raise error when overriding an undefined function)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved)
+-- Kappa spec rule (§3.2.2 kappa.name.unresolved):
+--   "Used when an identifier... cannot be resolved."
+-- In Elixir, calling a function that does not exist in the current module and is not
+-- imported produces a compile-time error: "undefined function bar/0". In Kappa, any
+-- reference to an unknown name produces kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: function calling another function defined in the same module.
+double : Int -> Int
+let double n = n * 2
+
+halve : Int -> Int
+let halve n = n / 2
+
+roundTrip : Int -> Int
+let roundTrip n = double (halve n)
+
+-- POSITIVE: function calling an imported standard function.
+showInt : Int -> String
+let showInt n = Int.show n
+
+-- POSITIVE: recursive call to the same function — valid self-reference.
+factorial : Int -> Int
+let factorial 0 = 1
+let factorial n = n * factorial (n - 1)
+
+-- NEGATIVE: reference to 'bar' which is never defined anywhere in scope.
+callUndefined : Int -> Int
+let callUndefined n = bar n             --!! kappa.name.unresolved
+
+-- NEGATIVE: reference to an undefined variable 'unboundVar'.
+useUndefinedVar : Int -> Int
+let useUndefinedVar n = n + unboundVar  --!! kappa.name.unresolved
+
+-- NEGATIVE: reference to a function defined in another module without importing it.
+-- 'OtherModule.compute' does not exist in this compilation unit's scope.
+callUnimportedModule : Int -> Int
+let callUnimportedModule n =
+    OtherModule.compute n               --!! kappa.name.unresolved
+
+-- NEGATIVE: private function defined in this module but called from an external context.
+-- This simulates the Elixir behavior where calling a private function from outside the
+-- module produces "function is undefined or private".
+private let secret n = n * 42
+
+module Outsider
+
+callSecret : Int -> Int
+let callSecret n = secret n             --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved

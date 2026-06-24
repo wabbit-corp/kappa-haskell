@@ -1,0 +1,56 @@
+-- Source issues: lamdu#96 — please clearly show holes; lamdu#168 — crash
+--   when skolems are involved at a hole. Holes carry typed completion
+--   goals; repeated references to the *same* named hole within a
+--   declaration must elaborate at definitionally equal expected types,
+--   otherwise the compilation must fail with a clear diagnostic.
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §16.4: repeated occurrences of a named hole must agree on the
+--   expected type.
+--
+-- A named hole with inconsistent expected types across its occurrences
+-- must produce `kappa.hole.inconsistent`. An unsolved hole must
+-- produce `kappa.hole.unsolved` at end of elaboration.
+
+--! mode check
+
+-- POSITIVE: an anonymous hole as a placeholder for completion; the
+-- compiler reports it as unsolved.
+todoVal : Nat
+let todoVal = _    --!! kappa.hole.unsolved
+
+-- POSITIVE: a single named hole used once.
+useNamed : Nat
+let useNamed = ?h + 1    --!! kappa.hole.unsolved
+
+-- POSITIVE: a function with a hole in its body.
+todoFn : Nat -> Nat
+let todoFn n = n + _    --!! kappa.hole.unsolved
+
+-- POSITIVE: a hole in a typed sub-expression where the goal is
+-- inferable.
+makePair : (Nat, Nat)
+let makePair = (1, _)    --!! kappa.hole.unsolved
+
+-- NEGATIVE: the same named hole used at two *incompatible* types.
+inconsistent : Nat
+let inconsistent =
+    let n : Nat = ?x + 1                -- ?x : Nat here
+    let b : Bool = ?x                   --!! kappa.hole.inconsistent
+    if b then n else 0
+
+-- NEGATIVE: the same named hole used at two distinct concrete types
+-- in a record context.
+mixedHole : (Nat, Bool)
+let mixedHole = (?h, ?h)    --!! kappa.hole.inconsistent
+
+-- NEGATIVE: a hole used at one type and then explicitly typed at
+-- another via annotation.
+annotatedClash : Nat
+let annotatedClash =
+    let x = ?h
+    let y : Bool = ?h    --!! kappa.hole.inconsistent
+    x + 1
+
+--! assertDiagnosticFamily error kappa.hole.inconsistent
+--! assertDiagnosticFamily error kappa.hole.unsolved

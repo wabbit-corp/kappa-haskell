@@ -1,0 +1,31 @@
+-- Source issue: FLIX-7148
+-- Spec: effects.monadic_core.shallow_handlers
+-- A shallow handler must provide exactly one clause per operation declared
+-- by the handled effect. A handler that omits one or more operations must be
+-- rejected at compile time, not silently accepted.
+
+--! mode check
+
+-- Declare an effect with two operations.
+effect Console =
+    print   : String -> Unit
+    readLine : Unit -> String
+
+-- NEGATIVE TEST: handler omits `readLine` -- must be rejected.
+let incomplete_handler (comp : Eff <[Console : Console]> Unit) : Unit =
+    handle Console comp with  --!! kappa.effect.row-mismatch
+        case return _ -> ()
+        case print s _ -> ()
+    -- ^^ `readLine` clause is missing: this handler is ill-formed
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+--! assertErrorCount 1
+
+-- POSITIVE TEST: handler provides both operations -- must be accepted.
+let complete_handler (comp : Eff <[Console : Console]> Unit) : Unit =
+    handle Console comp with
+        case return _ -> ()
+        case print s k -> k ()
+        case readLine _ k -> k ""
+
+-- expect: complete_handler accepted; incomplete_handler rejected with handler-clause-mismatch error

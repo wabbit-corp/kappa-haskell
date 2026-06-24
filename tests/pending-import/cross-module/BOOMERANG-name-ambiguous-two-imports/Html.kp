@@ -1,0 +1,7 @@
+-- Sibling helper: provides a same-spelling `elt` to create the ambiguity.
+-- Spec: modules.imports, compiler.frontir.standard_diagnostic_families.name_import.
+
+module Html
+
+elt : String -> String
+let elt tag = tag

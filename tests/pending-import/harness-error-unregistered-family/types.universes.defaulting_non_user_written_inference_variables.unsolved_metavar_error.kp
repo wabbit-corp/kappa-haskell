@@ -1,0 +1,58 @@
+-- Source issues: Scala3 #10747, #12339
+-- Spec: types.universes.defaulting_non_user_written_inference_variables
+-- General rule (§11.1.3): if an inference variable remains unsolved at the end
+-- of the checking unit that owns it, elaboration must either generalize it,
+-- default it (per an explicit defaulting rule), or REJECT the program with
+-- diagnostic family `kappa.type.unsolved-metavariable`.
+-- The implementation MUST NOT silently default an unresolved variable merely
+-- because one possible value would make later checking convenient.
+
+module test
+
+-- Positive: a function whose type parameter is fully determined by its argument.
+-- The type variable `a` is solved by unification with the argument type.
+identity : (a : Type) -> a -> a
+let identity _ x = x
+
+useIdentity : Int
+let useIdentity = identity _ 42   -- `a` solved to Int
+
+--! mode check
+
+-- Positive: a function called at a concrete type — no unsolved variables.
+double : Int -> Int
+let double x = x + x
+
+-- Negative: a local definition whose type cannot be inferred from context.
+-- The type variable `a` in the result is ambiguous: no usage constrains it.
+-- This MUST be rejected with kappa.type.unsolved-metavariable.
+
+unsolvedAmbiguous : Int
+let unsolvedAmbiguous =
+    -- `identity` applied to a hole `_` whose type is unconstrained:
+    -- the result type of identity _ _ cannot be Int because the hole is unsolved.
+    let x : _ = identity _ 0   -- `a` not determinable from context without annotation
+    0   -- only the final Int literal matters; x has an unsolved type
+
+-- Note: the above may be accepted in some interpretations if `a` defaults.
+-- The key obligation is: a type variable introduced for `_` at a position where
+-- no defaulting rule applies MUST NOT be silently discarded.
+
+-- Clearer negative: applying a polymorphic function to a result position where
+-- the type is genuinely ambiguous and no argument constrains it.
+ambiguousResult : (f : (a : Type) -> a) -> Int
+let ambiguousResult f =
+    -- f is applied with an unsolved type argument: which `a` does the caller mean?
+    -- f _ produces a value of unresolved type; returning it as Int requires
+    -- the solver to commit `a := Int`, which is the only possible resolution here.
+    -- In this case, `a` IS constrained by the expected return type `Int`, so this
+    -- should actually be accepted.
+    f _
+
+
+-- Definitively unsolved: a top-level binding with an ambiguous inferred type.
+-- No usage site constrains `a`. MUST produce kappa.type.unsolved-metavariable.
+fullyAmbiguous : _   --!! kappa.type.unsolved-metavariable
+let fullyAmbiguous = identity
+
+--! assertDiagnostic error kappa.type.unsolved-metavariable

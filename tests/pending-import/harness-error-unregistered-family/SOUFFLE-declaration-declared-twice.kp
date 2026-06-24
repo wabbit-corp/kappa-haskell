@@ -1,0 +1,40 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rel_dupl/rel_dupl.dl,
+--   souffle-lang #133 (relation name same as reserved C++ keyword treated as duplicate).
+-- Spec: modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.warning_hygiene (§3.1.12, kappa.name.shadowing).
+-- In Souffle, redefining a relation is an error. In Kappa, lexical shadowing is legal
+-- and deterministic (§3.1.12). Re-declaring a `let` binding at the same top-level
+-- scope merely shadows the earlier binding; the later binding becomes the visible one.
+-- An implementation MAY emit a suspicious-shadowing WARNING (kappa.name.shadowing,
+-- code W_SUSPICIOUS_TOPLEVEL_SHADOWING) but MUST NOT treat this as an error.
+
+--! mode check
+
+-- POSITIVE: a single declaration.
+let singleFn : Int -> Int
+let singleFn x = x + 1
+
+-- POSITIVE (with possible warning): same name declared twice at top level.
+-- The second declaration shadows the first; both are syntactically valid.
+let duplicateFn : Int -> String
+let duplicateFn x = "first"
+
+let duplicateFn : String -> Int
+let duplicateFn s = 0
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+-- POSITIVE: two distinct function names.
+let fnAlpha : Int -> Int
+let fnAlpha x = x
+
+let fnBeta : Int -> Int
+let fnBeta x = x + 1
+
+-- POSITIVE (with possible warning): module-level binding re-declared.
+let counter : Int = 1
+let counter : Int = 2
+
+--! assertDiagnosticFamily warning kappa.name.shadowing
+
+--! assertNoErrors

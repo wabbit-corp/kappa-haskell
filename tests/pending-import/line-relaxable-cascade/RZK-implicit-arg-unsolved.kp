@@ -1,0 +1,77 @@
+-- Source issues: rzk#96 — implicit arguments; Rzk lacked implicit argument
+--   inference, requiring all types to be passed explicitly. In Kappa, implicit
+--   arguments are inferred by the elaborator; failure to infer one is an error.
+-- Spec: expressions.implicit_parameters,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--   §13.4: implicit parameters are solved by the elaborator; if no unique
+--   solution exists, the elaborator emits kappa.implicit.unsolved.
+--
+-- Implicit arguments are solved from the types of explicit arguments and from
+-- the expected type at the use site. When the elaborator cannot uniquely
+-- determine an implicit argument (e.g. no instance in scope, or the type is
+-- genuinely ambiguous), it must produce kappa.implicit.unsolved.
+
+--! mode check
+
+-- POSITIVE: a simple function with an implicit type parameter inferred from
+-- the explicit argument.
+identity : forall {A : Type} -> A -> A
+let identity x = x
+
+idNat : Nat
+let idNat = identity 42
+
+idBool : Bool
+let idBool = identity True
+
+-- POSITIVE: multiple implicit arguments all inferred from the call site.
+const : forall {A B : Type} -> A -> B -> A
+let const x _ = x
+
+constNat : Nat
+let constNat = const 7 True
+
+-- POSITIVE: implicit argument resolved via instance search.
+trait Describable (a : Type) =
+    describe : a -> Nat
+
+instance Describable Nat =
+    let describe n = n
+
+instance Describable Bool =
+    let describe b = if b then 1 else 0
+
+showSize : forall {a : Type} -> (@_ : Describable a) -> a -> Nat
+let showSize x = describe x
+
+natSize : Nat
+let natSize = showSize 42
+
+boolSize : Nat
+let boolSize = showSize True
+
+-- POSITIVE: a function with multiple implicit arguments all inferable.
+compose : forall {A B C : Type} -> (B -> C) -> (A -> B) -> A -> C
+let compose g f x = g (f x)
+
+doubleAndDescribe : Nat -> Nat
+let doubleAndDescribe = compose describe (\n -> n * 2)
+
+-- NEGATIVE: implicit instance cannot be resolved because no instance of
+-- `Describable` exists for the given concrete type at the call site.
+data Pair (a b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- No `instance Describable (Pair ...)` is declared.
+badDescribe : Nat
+let badDescribe = showSize (MkPair 1 True)    --!! kappa.implicit.unsolved
+
+-- NEGATIVE: implicit type argument is genuinely ambiguous — the elaborator
+-- cannot determine which `A` to use because the return type is not constrained.
+phantom : forall {A : Type} -> Nat -> Nat
+let phantom n = n
+
+ambiguousPhantom : Nat
+let ambiguousPhantom = phantom 0    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,63 @@
+-- Source: Julia method ambiguity warnings (JuliaLang/julia),
+--         Julia manual, "Method Ambiguities"
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances.resolution_algorithm
+-- In Julia, when two methods are equally specific for some argument
+-- combination — neither is more specific than the other — Julia emits a
+-- method-ambiguity warning and may error at runtime for the ambiguous call.
+-- For example, f(x::Number, y::Int) and f(x::Int, y::Number) are ambiguous
+-- for f(1::Int, 1::Int). In Kappa, when implicit resolution finds multiple
+-- equally ranked candidates for a trait goal, it must emit
+-- kappa.implicit.ambiguous.
+
+--! mode check
+
+trait Scale (a : Type) (b : Type) =
+    scale : a -> b -> String
+
+data Num : Type = Num Int
+
+-- Two instances that overlap: neither is strictly more specific.
+instance Scale Num Int =
+    let scale _ n = "num-int"
+
+instance Scale Int Num =
+    let scale n _ = "int-num"
+
+-- POSITIVE: calling scale with (Num, Num) — the first arg matches
+-- Scale Num _ and the second arg matches Scale _ Num, but these are
+-- different instances. Actually, neither instance alone covers (Num, Num)
+-- directly, so this needs disambiguation.
+-- (Num, Int): unambiguously picks Scale Num Int.
+okScaleNumInt : String
+let okScaleNumInt = scale (Num 1) (0 : Int)
+
+-- (Int, Num): unambiguously picks Scale Int Num.
+okScaleIntNum : String
+let okScaleIntNum = scale (1 : Int) (Num 0)
+
+-- NEGATIVE: two instances are equally applicable for (Num, Num) when
+-- Num is considered a subtype of both possible positions through
+-- implicit coercion. The ambiguity cannot be resolved without explicit
+-- disambiguation.
+trait Process (a : Type) =
+    process : a -> a -> String
+
+data Alpha : Type = Alpha
+data Beta  : Type = Beta
+
+-- Instance 1: processes two Alphas via a generic fallback.
+instance Process Alpha =
+    let process _ _ = "alpha-alpha"
+
+-- Instance 2: processes via a less-specific rule (also applies to Alpha).
+-- A second instance for Alpha creates genuine overlap.
+instance Process Alpha =    --!! kappa.implicit.ambiguous
+    let process x _ = "alpha-second"
+
+--! assertDiagnosticFamily error kappa.implicit.ambiguous
+
+-- Calling process when two instances are equally applicable.
+ambiguousProcess : String
+let ambiguousProcess = process (Alpha) (Alpha)   --!! kappa.implicit.ambiguous
+

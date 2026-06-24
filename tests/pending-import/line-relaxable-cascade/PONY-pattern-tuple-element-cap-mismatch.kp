@@ -1,0 +1,41 @@
+-- Source issues: ponyc PR#2658 (Fix tuple pattern matching where only some
+--   elements violate caps), ponyc#2196
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families.type_equality
+-- Pony PR #2658: when matching a tuple where only some elements violate
+-- capability constraints, the compiler was incorrectly treating the entire
+-- match as invalid. Each element of a tuple pattern must be independently
+-- capability-checked. A mismatch on one element must not suppress a valid
+-- rejection of another.
+
+--! mode check
+
+data Coin : Type = Heads | Tails
+data Mark : Type = Mark Int | Blank
+
+-- NEGATIVE: second element of the pattern expects Mark but the union allows
+-- Blank, so the match arm that expects only Mark is not exhaustive.
+-- Each element is independently checked.
+matchTupleBad : (Coin, Mark) -> Int
+let matchTupleBad p =
+    match p
+    case (Heads, Mark n) -> n
+    case (Tails, Mark n) -> n + 1   --!! kappa.pattern.non-exhaustive
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: all cells covered, including Blank.
+matchTupleGood : (Coin, Mark) -> Int
+let matchTupleGood p =
+    match p
+    case (Heads, Mark n) -> n
+    case (Tails, Mark n) -> n + 1
+    case (Heads, Blank)  -> -1
+    case (Tails, Blank)  -> -2
+
+-- POSITIVE: wildcard on second element handles both Mark and Blank.
+matchTupleWild : (Coin, Mark) -> Int
+let matchTupleWild p =
+    match p
+    case (Heads, _) -> 1
+    case (Tails, _) -> 0
+

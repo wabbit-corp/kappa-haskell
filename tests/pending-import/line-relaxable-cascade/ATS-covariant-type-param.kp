@@ -1,0 +1,93 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`datatype mylist(a:type+)(int)` covariant type parameter `a:type+`),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (`datatype strmcon(a:type+)`)
+-- Spec: algebraic_data_types.data_declarations (§10.1),
+--       types.universes.classifiers (§11.1),
+--       spec_addition ATS-SA-06 (covariant/contravariant sort annotations),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- ATS3 pattern: `datatype list(a:type+)(int)` marks `a` as covariant (`+`).
+--   This means `list(S, n)` is a subtype of `list(T, n)` whenever `S` is a
+--   subtype of `T`. However, a covariant parameter must not appear in a
+--   contravariant (negative) position such as a function argument type.
+--   Placing a covariant parameter in a function argument position makes the
+--   overall type invariant, which conflicts with the covariance declaration.
+-- Portable obligation: covariant annotation on a type parameter in a
+--   contravariant position is a type-mismatch.
+
+--! mode check
+
+-- A covariant container: can be widened if the element type widens.
+data Box : Type -> Type =
+    Box : forall (a : Type). a -> Box a
+
+-- POSITIVE: covariant parameter in a covariant (positive) position.
+mapBox : forall (a b : Type). (a -> b) -> Box a -> Box b
+let mapBox f (Box x) = Box (f x)
+
+-- POSITIVE: a function that only reads from a Box (covariant position).
+getBox : forall (a : Type). Box a -> a
+let getBox (Box x) = x
+
+-- POSITIVE: widening a Box Int to Box (Maybe Int) via a mapping function.
+widen : Box Int -> Box (Maybe Int)
+let widen = mapBox Just
+
+-- A second container parameterized over the element.
+data Pair : Type -> Type -> Type =
+    Pair : forall (a b : Type). a -> b -> Pair a b
+
+firstPair : forall (a b : Type). Pair a b -> a
+let firstPair (Pair x _) = x
+
+secondPair : forall (a b : Type). Pair a b -> b
+let secondPair (Pair _ y) = y
+
+-- POSITIVE: using a Pair in a covariant context.
+fstInt : Int
+let fstInt = firstPair (Pair 1 True)
+
+-- A read-only sequence type (covariant in element type).
+data ReadSeq : Type -> Type =
+    ReadSeq : forall (a : Type). List a -> ReadSeq a
+
+toList : forall (a : Type). ReadSeq a -> List a
+let toList (ReadSeq xs) = xs
+
+-- POSITIVE: covariant: a ReadSeq Int is acceptable where ReadSeq (Maybe Int)
+-- is not required but the contents can be widened.
+readSeqInt : ReadSeq Int
+let readSeqInt = ReadSeq [1, 2, 3]
+
+-- A trait that uses a type in a contravariant position (function argument).
+trait Consumer (a : Type) =
+    consume : a -> Unit
+
+instance Consumer Int =
+    let consume _ = ()
+
+-- NEGATIVE: providing a Box whose inner type is used as a Consumer input
+-- but the declared parameter is covariant while the usage requires
+-- contravariant.  We model the violation as assigning a Box Int to a Box
+-- that has its element type in argument position, requiring contravariance.
+
+-- A "write-only" slot: the element type appears only in argument position.
+data WriteSlot : Type -> Type =
+    WriteSlot : forall (a : Type). (a -> Unit) -> WriteSlot a
+
+-- POSITIVE: WriteSlot used correctly (contravariant parameter).
+writeInt : WriteSlot Int
+let writeInt = WriteSlot (\_ -> ())
+
+-- NEGATIVE: trying to use a WriteSlot Int where a WriteSlot (Maybe Int) is
+-- expected. Because `a` appears in argument position (contravariant),
+-- widening in the covariant direction is unsound.
+badWidenWrite : WriteSlot (Maybe Int)
+let badWidenWrite = writeInt               --!! kappa.type.mismatch
+
+-- NEGATIVE: assigning a Box of one type to a Box of an unrelated type
+-- (type mismatch even with covariance, because the types are unrelated).
+badBoxType : Box String
+let badBoxType = (Box 42 : Box Int)        --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

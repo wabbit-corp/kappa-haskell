@@ -1,0 +1,48 @@
+-- Source issues: RUST-31287, RUST-29723
+-- Spec: expressions.match.narrowing_is_consuming,
+--       expressions.match.guarded_cases_introduce_guard_success_evidence,
+--       types.universes.quantities,
+--       compiler.diagnostics.path_sensitive_diagnostics.consumed_path_copy_failure
+-- Within a single guarded arm `case pat if guard -> body`, the guard and body
+-- share the arm's local quantity environment. If the guard consumes a linear
+-- (quantity-1) scrutinee via a call demanding `1`, the body of the same arm
+-- must see the scrutinee as consumed: any subsequent reference is rejected
+-- with `kappa.path.consumed`.
+-- This is the intra-arm consequence of the ordinary quantity rules. The
+-- cross-arm soundness consequence (a guard returning False leaves a moved-
+-- from value visible to the next arm) is a separate spec gap recorded as
+-- note RUST-A-N2 in RUST_A_SPEC_ADDITIONS.md.
+
+--! mode check
+
+data Box : Type =
+    Box Int
+
+-- A linear (1) sink that consumes its argument.
+takeBox : (1 b : Box) -> Bool
+let takeBox _ = False
+
+-- A pure read that does not consume; calling it inside a guard is fine
+-- because borrowed access can be discharged inside the guard's expression.
+peekBox : (& b : Box) -> Bool
+let peekBox (Box n) = n > 0
+
+-- NEGATIVE: guard consumes the linear scrutinee `b` via `takeBox b`.
+-- The same arm's body then references the consumed name `b`, which is
+-- rejected by the consumed-path rule.
+classifyBad : (1 b : Box) -> Box
+let classifyBad b =
+    match b
+    case Box _ if takeBox b -> b   --!! kappa.path.consumed
+    case _                  -> Box 0
+
+-- POSITIVE: guard observes the scrutinee through a borrowed view; the body
+-- may then consume the scrutinee at quantity 1 because no prior consumption
+-- has happened.
+classifyOk : (1 b : Box) -> Box
+let classifyOk b =
+    match b
+    case Box _ if peekBox b -> b
+    case _                  -> Box 0
+
+--! assertDiagnosticFamily error kappa.path.consumed

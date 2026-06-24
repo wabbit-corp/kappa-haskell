@@ -1,0 +1,90 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/pswap.dats
+--         (p2tr, at-view @(a,l), dereference !p, in-place mutation :=),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats ($view, $fold, $addr, &xs),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats (absview array_v, abstype arrayref)
+-- Spec: functions.binders.quantities (§12.2),
+--       quantities.linear_discharge (§12.2.6),
+--       borrow.disjoint_path (§12.4),
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership
+--       (family kappa.quantity.unsatisfied).
+-- ATS3 pattern: a pointer `p : ptr(l)` together with an at-view
+--   `pf : @(T, l)` grants mutable access to the T at address l. The view pf
+--   is linear; it must be given back (consumed) after the mutation.
+--   Forgetting to return the view or using the pointer without the view is
+--   a compile-time error.
+-- Portable obligation: a linear capability (view/proof) for a mutable location
+--   must be consumed exactly once; dropping it or duplicating it is rejected.
+
+--! mode check
+
+-- A linear "slot" capability: grants exclusive write access to one Int.
+-- Models ATS3's `@(int, l)` at-view for a specific location.
+data SlotCap : Type =
+    SlotCap
+
+-- Acquire a slot: returns the slot and its linear capability.
+-- (In ATS3 this would be var x: int with pf = 0)
+acquireSlot : (SlotCap, Int)
+let acquireSlot = (SlotCap, 0)
+
+-- Write to a slot: consumes and restores the capability.
+writeSlot : (1 cap : SlotCap) -> Int -> (SlotCap, Unit)
+let writeSlot cap _ = (cap, ())
+
+-- Release (destroy) a slot: consumes the capability permanently.
+releaseSlot : (1 cap : SlotCap) -> Unit
+let releaseSlot _ = ()
+
+-- POSITIVE: acquire, write, release — all capabilities consumed.
+properUse : Unit
+let properUse =
+    let 1 cap = SlotCap
+    let (cap2, _) = writeSlot cap 42
+    releaseSlot cap2
+
+-- POSITIVE: write twice, then release.
+writeTwice : Unit
+let writeTwice =
+    let 1 cap = SlotCap
+    let (cap2, _) = writeSlot cap 1
+    let (cap3, _) = writeSlot cap2 2
+    releaseSlot cap3
+
+-- POSITIVE: write in a conditional, always release.
+conditionalWrite : Bool -> Unit
+let conditionalWrite flag =
+    let 1 cap = SlotCap
+    let (cap2, _) = writeSlot cap (if flag then 1 else 0)
+    releaseSlot cap2
+
+-- NEGATIVE: acquire a capability but never release it (dropped at end of scope).
+dropCap : Unit
+let dropCap =
+    let 1 cap = SlotCap   --!! kappa.quantity.unsatisfied
+    ()
+
+-- NEGATIVE: release the capability in one branch but not the other.
+partialRelease : Bool -> Unit
+let partialRelease flag =
+    let 1 cap = SlotCap
+    if flag
+    then releaseSlot cap
+    else ()               --!! kappa.quantity.unsatisfied
+
+-- NEGATIVE: use the capability after it has been released (consumed).
+useAfterRelease : Unit
+let useAfterRelease =
+    let 1 cap = SlotCap
+    releaseSlot cap
+    releaseSlot cap       --!! kappa.path.consumed
+
+-- NEGATIVE: passing the capability to two parallel consumers.
+duplicateCap : Unit
+let duplicateCap =
+    let 1 cap = SlotCap
+    releaseSlot cap
+    let (_, _) = writeSlot cap 99   --!! kappa.path.consumed
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.path.consumed

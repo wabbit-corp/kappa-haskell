@@ -1,0 +1,70 @@
+-- Source issues: AENEAS-133, AENEAS-824
+-- Spec: traits.headers.supertraits, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- §14.1.4: supertrait projection is transitive.  Evidence for T provides
+-- evidence for all transitively declared supertraits.  Aeneas issues #133
+-- and #824 (trait bounds extract to invalid output) both require that
+-- supertrait evidence chains are followed correctly during resolution.
+
+module test
+
+--! mode check
+
+-- Three-level chain: C → B → A
+trait A (t : Type) =
+    methodA : (& x : t) -> Int
+
+trait A t => B (t : Type) =
+    methodB : (& x : t) -> Int
+
+trait B t => C (t : Type) =
+    methodC : (& x : t) -> Int
+
+data Value : Type = Value Int
+
+instance A Value =
+    let methodA (Value n) = n
+
+instance B Value =
+    let methodB (Value n) = n * 2
+
+instance C Value =
+    let methodC (Value n) = n * 3
+
+-- POSITIVE: given C t, can access methodC (level 3).
+useC : forall (t : Type). C t => (& x : t) -> Int
+let useC x = methodC x
+
+
+-- POSITIVE: given C t, can access methodB (level 2) via supertrait projection.
+useB : forall (t : Type). C t => (& x : t) -> Int
+let useB x = methodB x
+
+
+-- POSITIVE: given C t, can access methodA (level 1) via two-level projection.
+useA : forall (t : Type). C t => (& x : t) -> Int
+let useA x = methodA x
+
+
+-- POSITIVE: a function combining all three levels.
+sumAll : forall (t : Type). C t => (& x : t) -> Int
+let sumAll x = methodA x + methodB x + methodC x
+
+v : Value
+let v = Value 5
+
+result : Int
+let result = sumAll v
+
+--! assertType result Int
+
+-- POSITIVE: a function constrained only at B can access A methods.
+useBGetA : forall (t : Type). B t => (& x : t) -> Int
+let useBGetA x = methodA x
+
+
+-- NEGATIVE: a function constrained only at A cannot access methodB.
+useAGetB : forall (t : Type). A t => (& x : t) -> Int
+let useAGetB x = methodB x    --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

@@ -1,0 +1,57 @@
+-- Source issue: elm #951
+-- Spec: expressions.patterns_chapter, expressions.patterns.forms
+-- Kappa spec explicitly permits qualified/type-scoped constructor patterns
+-- (e.g. Option.Some x, Vec.Cons h t) at any depth inside a larger pattern.
+-- Elm #951 reported a parse error when a qualified constructor was used as
+-- a subpattern argument inside another constructor pattern
+-- (e.g. "BarAction Bar.Baz -> 1" failed with unexpected ".").
+-- This positive test verifies that Kappa correctly accepts a qualified
+-- module constructor at any nesting depth.
+
+--! mode check
+
+module Dir =
+    data Direction : Type =
+        North
+        South
+        East
+        West
+
+module Route =
+    data Step : Type =
+        Move Dir.Direction
+        Stay
+
+-- POSITIVE: match using a qualified nullary constructor (Dir.North, Dir.South,
+-- Dir.East, Dir.West) as a subpattern inside the Move constructor.
+-- The outer constructor Move is from module Route; the inner pattern is
+-- the qualified constructor Dir.North etc.
+describeStep : Route.Step -> String
+let describeStep s = match s
+    case Route.Move Dir.North -> "heading north"
+    case Route.Move Dir.South -> "heading south"
+    case Route.Move Dir.East  -> "heading east"
+    case Route.Move Dir.West  -> "heading west"
+    case Route.Stay           -> "staying"
+
+-- POSITIVE: same structure but with locally-imported names.
+import Route.*
+import Dir.*
+
+describeStep2 : Step -> String
+let describeStep2 s = match s
+    case Move Dir.North -> "north"
+    case Move Dir.South -> "south"
+    case Move Dir.East  -> "east"
+    case Move Dir.West  -> "west"
+    case Stay           -> "stay"
+
+-- POSITIVE: qualified inner constructor inside a nested tuple pattern.
+classify : (Route.Step, Bool) -> String
+let classify pair = match pair
+    case (Route.Move Dir.North, True)  -> "active north"
+    case (Route.Move Dir.North, False) -> "inactive north"
+    case (Route.Stay, _)               -> "stationary"
+    case (_, _)                        -> "other"
+
+--! assertNoErrors

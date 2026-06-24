@@ -1,0 +1,40 @@
+-- Source issues: FSTAR-1964, FSTAR-3263
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Trait resolution for implicit arguments must succeed when the instance
+-- is uniquely determined. Failure must produce a clear diagnostic naming
+-- the unresolved implicit, not a cryptic type mismatch.
+
+--! mode check
+
+-- A simple trait for showing a value as a string.
+trait Show (a : Type) =
+    show : a -> String
+
+-- Instance for Nat.
+instance Show Nat =
+    let show = nat_to_string
+
+-- A function that requires Show.
+display : {a : Type} -> (@_ : Show a) => a -> String
+let display x = show x
+
+-- POSITIVE TEST: instance is available; display must resolve the implicit.
+test_nat_display : String
+let test_nat_display = display 42
+
+--! assertNoErrors
+
+-- POSITIVE TEST: trait resolution with type polymorphism.
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+instance Eq Nat =
+    let eq = nat_eq
+
+find_eq : {a : Type} -> (@_ : Eq a) => a -> a -> Bool
+let find_eq x y = eq x y
+
+test_nat_eq : Bool
+let test_nat_eq = find_eq 3 3
+
+--! assertNoErrors

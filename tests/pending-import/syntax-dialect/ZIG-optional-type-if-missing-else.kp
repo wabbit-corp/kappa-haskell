@@ -1,0 +1,48 @@
+-- Source issues: zig#25308 (if with error union without proper else |err| has
+--               misleading error), zig#24593 (compilation fails casting @embedFile
+--               pointer to optional pointer)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.application.elvis
+-- Extracting the payload of an optional type requires an arm for the
+-- None case. Treating an optional type as though it were the payload type
+-- directly is a type mismatch. Similarly, wrapping a plain value in Option
+-- where a plain value is expected is rejected.
+
+--! mode check
+
+data Wrapper : Type =
+    Wrapper Int
+
+-- POSITIVE: safely extract from Option with both branches.
+let fromOption (m : Option Int) : Int =
+    match m
+    case Some x -> x
+    case None   -> 0
+
+--! assertType fromOption Option Int -> Int
+
+-- POSITIVE: safe-navigation on optional record access.
+let wrapperValue (mw : Option Wrapper) : Int =
+    match mw
+    case Some (Wrapper n) -> n
+    case None             -> -1
+
+
+-- NEGATIVE: applying a function that expects `Int` to an `Option Int` directly —
+-- the outer `Option` wrapping must be stripped first.
+let doubleIfSome (m : Option Int) : Int = m + m    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: returning an `Option Int` where a plain `Int` is declared.
+let badOptionReturn (n : Int) : Int = Some n    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: annotating a plain Int as Option Int in let binding then using it
+-- as Int in arithmetic — the types do not match.
+let confusedLet (x : Int) : Int =
+    let wrapped : Option Int = x in    --!! kappa.type.mismatch
+    wrapped + 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch

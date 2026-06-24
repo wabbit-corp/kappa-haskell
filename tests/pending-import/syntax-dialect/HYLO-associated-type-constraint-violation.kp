@@ -1,0 +1,68 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/AssociatedTypeLookup.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/AssociatedTypesWithConformances.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/AbstractType.hylo,
+--                   PR#1072 (enforce associated type constraints)
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved, kappa.associated.normalization-blocked)
+-- Hylo: a trait may impose constraints on its associated types. Using an
+-- implementation where the associated type does not satisfy those constraints
+-- must be rejected. In Kappa the associated-type normalization is blocked
+-- when the required sub-proof is unsolved.
+
+--! mode check
+
+trait Container a where
+    type Element : Type
+    store : a -> Element a -> a
+    load  : a -> Element a
+
+trait Printable a where
+    display : a -> String
+
+-- A higher-level trait requiring the element to be printable.
+trait PrintableContainer a : Container a where
+    -- The element type must satisfy Printable.
+    type Element : Printable
+
+data IntBox : Type = IntBox Int
+
+data StringBox : Type = StringBox String
+
+impl Printable Int where
+    let display n = show n
+
+impl Printable String where
+    let display s = s
+
+impl Container IntBox where
+    type Element = Int
+    let store _   n = IntBox n
+    let load  (IntBox n) = n
+
+impl Container StringBox where
+    type Element = String
+    let store _   s = StringBox s
+    let load  (StringBox s) = s
+
+-- POSITIVE: IntBox.Element = Int, which is Printable.
+impl PrintableContainer IntBox where
+    type Element = Int
+
+displayBox : IntBox -> String
+let displayBox b = display (load b)
+
+data RawBox : Type = RawBox Bool
+
+-- Bool is not Printable — the constraint on PrintableContainer's Element
+-- will not be satisfied.
+impl Container RawBox where
+    type Element = Bool
+    let store _   b = RawBox b
+    let load  (RawBox b) = b
+
+-- NEGATIVE: RawBox.Element = Bool, which does not conform to Printable.
+-- The associated-type constraint Element: Printable is not satisfied.
+impl PrintableContainer RawBox where    --!! kappa.implicit.unsolved
+    type Element = Bool
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

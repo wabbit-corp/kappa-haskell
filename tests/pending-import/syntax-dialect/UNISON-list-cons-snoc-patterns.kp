@@ -1,0 +1,36 @@
+-- Source issue: UNISON#467 (resolves UNISON#266) — Pattern matching on sequences
+-- Spec: expressions.patterns.forms, collections.literals
+-- Kappa list patterns admit head-cons patterns `h :: t` and empty `[]`.
+-- Nested head-cons patterns express prefix matching of arbitrary length.
+-- `:+` snoc and `++` concat forms are source-specific and not portable to Kappa.
+-- This fixture tests:
+--   * head-cons binding;
+--   * empty-list matching;
+--   * skip-n-elements via nested head-cons.
+
+--! mode check
+
+-- POSITIVE: head-cons binding via `::`.
+let head_and_rest (xs : List Int) : Int =
+    match xs
+        case h :: _ -> h
+        case []     -> 0
+
+--! assertNoErrors
+
+-- POSITIVE: literal prefix match — the first three elements are bound
+-- and the remaining tail is discarded.
+let first_three (xs : List Int) : Maybe (Int, Int, Int) =
+    match xs
+        case a :: b :: c :: _ -> Just (a, b, c)
+        case _                -> Nothing
+
+--! assertNoErrors
+
+-- POSITIVE: skip the first two elements using nested head-cons.
+let drop_two (xs : List Int) : List Int =
+    match xs
+        case _ :: _ :: tail -> tail
+        case xs             -> xs
+
+--! assertNoErrors

@@ -1,0 +1,39 @@
+-- Source issue: Koka #862
+-- Spec: declarations.totality.structural_descent, declarations.totality.portable_conformance_boundary
+-- The termination checker must accept recursion that structurally decreases on
+-- two inductive arguments via lexicographic ordering (first argument decreases,
+-- OR first stays equal and second decreases). This is standard lexicographic
+-- structural termination, which a conforming implementation MUST accept.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+-- Binary structural recursion: outer decreases on first argument.
+-- add recurses on Succ n: the first argument decreases at each call.
+add : Nat -> Nat -> Nat
+let add Zero     m = m
+let add (Succ n) m = Succ (add n m)
+
+--! mode check
+--! assertNoErrors
+
+-- Lexicographic structural descent: outer decreases on first arg,
+-- inner on second, or outer on first of a pair drawn from both args.
+-- This is the Ackermann function (computationally terminating via lex order).
+ack : Nat -> Nat -> Nat
+let ack Zero     m       = Succ m
+let ack (Succ n) Zero    = ack n (Succ Zero)
+let ack (Succ n) (Succ m) = ack n (ack (Succ n) m)
+
+--! assertNoErrors
+
+-- Pattern: merging two lists. Both decrease structurally (list length).
+data List (a : Type) : Type = Nil : List a | Cons : a -> List a -> List a
+
+interleave : List a -> List a -> List a
+let interleave Nil         ys = ys
+let interleave xs          Nil = xs
+let interleave (Cons x xs) (Cons y ys) = Cons x (Cons y (interleave xs ys))
+
+--! assertNoErrors

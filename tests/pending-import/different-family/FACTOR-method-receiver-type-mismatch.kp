@@ -1,0 +1,44 @@
+-- Source issue: Factor #1684 (`\ dup M\ tup foo execute( x -- y )` calls
+--   a method directly with a wrong-type receiver and crashes the VM:
+--   "Expected word or quotation: b0"; the issue requests a real
+--   diagnostic).
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- Calling a trait method specialization on a value of an unrelated type
+-- must be a type-mismatch diagnostic, not a runtime crash. The
+-- diagnostic must surface the expected receiver type and the actual
+-- argument type.
+
+module test
+
+--! mode check
+
+trait Foo (a : Type) =
+    foo : a -> Int
+
+data Tup : Type =
+    Tup Int
+
+instance Foo Tup =
+    let foo (Tup n) = n
+
+-- POSITIVE: calling `foo` on a `Tup` value resolves to the Tup instance.
+ok : Int
+let ok = foo (Tup 7)
+
+--! assertType ok Int
+
+data Other : Type =
+    Other
+
+-- NEGATIVE: calling the Tup specialization on an `Other` value (i.e.
+-- selecting the wrong instance) is a static type mismatch. Kappa must
+-- diagnose the mismatch on the call's receiver argument; it must never
+-- defer to a runtime "Expected word or quotation" crash.
+bad : Int
+let bad = foo Other                  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

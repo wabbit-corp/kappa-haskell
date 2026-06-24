@@ -1,0 +1,50 @@
+-- Source issues: Scala3 #7072, #7092, #11797
+-- Spec: compiler.frontir.standard_diagnostic_families.implicit_trait_proof,
+--       traits.instances.resolution_algorithm
+-- When implicit synthesis fails, the diagnostic family `kappa.implicit.unsolved`
+-- MUST be emitted. Its payload MUST include:
+--   * implicit goal;
+--   * goal classifier;
+--   * binder or application site requiring the implicit;
+--   * local implicit candidates considered;
+--   * instance candidates considered when the goal is a trait evidence goal;
+--   * candidates rejected by head mismatch.
+-- This test verifies that `kappa.implicit.unsolved` fires when no instance is
+-- available, and that the diagnostic site is correctly attributed to the use site
+-- (not an unrelated location such as "package not found").
+
+module test
+
+trait Printable (a : Type) =
+    printIt : a -> String
+
+data Foo : Type = Foo
+
+-- No Printable instance for Foo is declared anywhere.
+-- Calling `printIt` with a Foo argument MUST produce kappa.implicit.unsolved.
+missingInstance : String
+let missingInstance = printIt Foo   --!! kappa.implicit.unsolved
+
+--! mode check
+--! assertDiagnostic error kappa.implicit.unsolved
+
+-- Positive: when an instance IS available, implicit synthesis succeeds.
+data Bar : Type = Bar
+
+instance Printable Bar =
+    let printIt _ = "bar"
+
+hasInstance : String
+let hasInstance = printIt Bar
+
+
+-- Negative: a function that requires Printable for a type variable `a`
+-- with no instance in scope. At the use site where `a = Foo`, MUST fail.
+needsPrintable : (@_ : Printable Foo) => String
+let needsPrintable = printIt Foo
+
+-- Calling needsPrintable requires Printable Foo, which has no instance.
+callNeedsPrintable : String
+let callNeedsPrintable = needsPrintable   --!! kappa.implicit.unsolved
+
+--! assertDiagnostic error kappa.implicit.unsolved

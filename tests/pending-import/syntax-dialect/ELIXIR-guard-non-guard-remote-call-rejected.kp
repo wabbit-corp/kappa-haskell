@@ -1,0 +1,61 @@
+-- Source issues: kernel/guard_test.exs "fails on expressions not allowed in guards"
+--   ("cannot invoke remote function"), kernel/guard_test.exs "refuses to compile nonsensical
+--   code" (undefined/1 in guard context), spec gap ESA-ELIXIR-05
+-- Spec: macros.expansion (§ macro elaboration), spec gap ESA-ELIXIR-05
+--       (family kappa.macro.failure)
+-- Kappa spec rule (§3.2.12 kappa.macro.failure):
+--   "Used when macro expansion, prefixed-string elaboration, splice execution, semantic
+--    reflection, or an Elab action fails."
+-- In Elixir, guard expressions must use only guard-safe constructs. Attempting to call
+-- a remote function or any arbitrary user function inside a `when` guard clause produces
+-- a compile-time error. In Kappa, macro expansion that produces an inadmissible expression
+-- in a guard position fails with kappa.macro.failure (pending the introduction of
+-- kappa.guard.inadmissible per spec gap ESA-ELIXIR-05).
+
+--! mode check
+
+-- POSITIVE: guard using only admissible built-in predicates and comparisons.
+isSmallPositive : Int -> Bool
+let isSmallPositive n =
+    match n
+    case _ if isInt n and n > 0 and n < 100 -> True
+    case _                                   -> False
+
+-- POSITIVE: guard combining multiple admissible predicates with and/or.
+isAtomOrBool : term -> Bool
+let isAtomOrBool v =
+    match v
+    case _ if isAtom v or isBool v -> True
+    case _                         -> False
+
+-- POSITIVE: guard using tuple size predicate (admissible built-in).
+isTwoTuple : term -> Bool
+let isTwoTuple v =
+    match v
+    case _ if isTuple v and tupleSize v == 2 -> True
+    case _                                    -> False
+
+-- NEGATIVE: guard invokes a user-defined function that is not guard-safe.
+-- User functions may perform side effects or raise exceptions, so they are
+-- inadmissible in guard position.
+macro checkExternal(v) =
+    externalCheck v            -- not guard-safe: arbitrary function call
+
+guardWithUserFn : Int -> Bool
+let guardWithUserFn n =
+    match n
+    case _ if checkExternal n -> True   --!! kappa.macro.failure
+    case _                    -> False
+
+-- NEGATIVE: guard invokes a remote module function by dynamic dispatch.
+-- Remote calls are inadmissible in guard position.
+macro dynamicRemoteGuard(v) =
+    SomeModule.validate v      -- not guard-safe: remote call
+
+guardWithRemote : term -> Bool
+let guardWithRemote v =
+    match v
+    case _ if dynamicRemoteGuard v -> True  --!! kappa.macro.failure
+    case _                         -> False
+
+--! assertDiagnosticFamily error kappa.macro.failure

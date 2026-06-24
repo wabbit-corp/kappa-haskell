@@ -1,0 +1,26 @@
+-- Source issues: METACOQ-238, METACOQ-436
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--
+-- `case impossible` over a scrutinee whose remainder is still inhabited
+-- is rejected with the standard impossible-reachable family
+-- (`kappa.proof.impossible-reachable`, portable alias
+-- `E_INDEXED_IMPOSSIBLE_REACHABLE`).
+
+module negative
+
+--! mode check
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : forall {n : Nat}. (head : a) -> (tail : Vec a n) -> Vec a (n + 1)
+
+-- NEGATIVE: `case impossible` on a scrutinee whose remainder is still
+-- inhabited (full `Vec a n` with `n` unconstrained) is rejected.
+maybeNonEmpty : forall {a : Type} {n : Nat}. Vec a n -> Nat
+let maybeNonEmpty v =
+    match v
+    case VNil -> 0
+    case impossible    --!! kappa.proof.impossible-reachable
+
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable

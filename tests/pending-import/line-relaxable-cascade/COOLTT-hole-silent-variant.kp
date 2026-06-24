@@ -1,0 +1,48 @@
+-- Source artifacts: cooltt issue #86 (silent tacit holes `?_`),
+--               PR #339 (support silent holes, closing #86).
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes
+--
+-- A named hole `?name` is reported as an unsolved hole in diagnostics.
+-- A *silent* (tacit) hole `?_` (or `_`) suppresses the diagnostic:
+-- the hole exists but is not reported to the user. This is useful for
+-- intermediate proof steps or placeholders that the programmer intends
+-- to fill later without cluttering the diagnostic output.
+--
+-- Kappa spec obligation: the implementation MUST distinguish between
+-- reported holes and silent/suppressed holes. A silent hole must still
+-- contribute a constraint that propagates types correctly; it must not
+-- be mistaken for a definite term.
+
+--! mode check
+
+-- POSITIVE: a named hole is reported as unsolved.
+withNamedHole : Nat -> Nat
+let withNamedHole n = ?myHole    --!! kappa.hole.unsolved
+
+-- POSITIVE: an anonymous hole `_` is allowed in pattern position
+-- (it is a wildcard, not an unsolved hole).
+ignoreArg : Nat -> Nat
+let ignoreArg _ = zero
+
+-- POSITIVE: a wildcard in a let binding; the bound name is not used.
+withWild : Nat
+let withWild =
+    let _ : Bool = True    -- the binding is discarded
+    42
+
+-- POSITIVE: silent hole `?_` suppresses the unsolved diagnostic.
+-- The term is still incomplete; further type-checking around it proceeds.
+-- No `kappa.hole.unsolved` diagnostic should be emitted for `?_`.
+withSilentHole : Nat -> Nat
+let withSilentHole n = ?_
+
+-- POSITIVE: a hole used in a position where the expected type can be
+-- propagated; the hole is solved by elaboration.
+solvedHole : Nat
+let solvedHole = ?_ + zero    -- elaborator should accept: hole inferred as Nat
+
+-- POSITIVE: mixing named (reported) and silent holes.
+mixed : Nat -> Bool -> Nat
+let mixed n b = ?reported + ?_    --!! kappa.hole.unsolved
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

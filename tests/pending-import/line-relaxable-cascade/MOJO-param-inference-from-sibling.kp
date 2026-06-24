@@ -1,0 +1,46 @@
+-- Source issue: MOJO-1245
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       types.quantification,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- When a function is polymorphic in several type variables and one variable
+-- is determined by the type of the argument (e.g. `x : Container T` infers T),
+-- the compiler must be able to infer the dependent variable automatically.
+-- This is a POSITIVE test: inference from a container argument type.
+
+module test
+
+--! mode check
+
+trait Container (f : Type -> Type) =
+    toElems : forall (a : Type). (& c : f a) -> List a
+
+data Pair (a : Type) : Type =
+    Pair a a
+
+instance Container Pair =
+    let toElems (Pair x y) = [x, y]
+
+-- Function that infers the element type T from the container argument.
+-- Given `c : Pair T`, the compiler should deduce T without explicit annotation.
+sumContainer : forall (T : Type). Container Pair => (& c : Pair T) -> List T
+let sumContainer c = toElems c
+
+-- POSITIVE: call with a Pair Int — T is inferred as Int.
+inferredCall : List Int
+let inferredCall = sumContainer (Pair 3 7)
+
+--! assertType inferredCall List Int
+
+-- POSITIVE: call with a Pair String — T is inferred as String.
+inferredCallStr : List String
+let inferredCallStr = sumContainer (Pair "a" "b")
+
+--! assertType inferredCallStr List String
+
+-- NEGATIVE: explicit annotation conflicts with the inferred type.
+-- Asking for Pair Int but the expression supplies Pair String; the
+-- explicit T = Int does not match.
+conflictAnnotation : List Int
+let conflictAnnotation = sumContainer (Pair "x" "y")  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

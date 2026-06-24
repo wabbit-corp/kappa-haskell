@@ -1,0 +1,68 @@
+-- Source: Coalton tests/class-tests.lisp (class/instance basic contracts),
+--   Coalton general typeclass/instance design.
+-- Spec: traits.instances (§14.3), traits.instances.associated_static_member_instance_checking
+--   (§14.3.4), traits.instances.resolution_algorithm (§14.3.1).
+--
+-- An instance with a concrete type head (no free variables) should resolve
+-- unambiguously. The instance method bodies are type-checked against the
+-- instance head specialization. Multiple concrete instances for different
+-- types must coexist without conflict.
+
+--! mode check
+
+-- A show-like trait.
+trait Display (a : Type) =
+    display : a -> String
+
+-- POSITIVE: three unrelated concrete instances.
+data Celsius    : Type = Celsius    Float
+data Fahrenheit : Type = Fahrenheit Float
+data Kelvin     : Type = Kelvin     Float
+
+instance Display Celsius =
+    let display (Celsius t) = "°C"
+
+instance Display Fahrenheit =
+    let display (Fahrenheit t) = "°F"
+
+instance Display Kelvin =
+    let display (Kelvin t) = "K"
+
+--! assertNoErrors
+
+-- POSITIVE: calling display on each concrete type selects the right instance.
+showC : String
+let showC = display (Celsius 100.0)
+
+showF : String
+let showF = display (Fahrenheit 212.0)
+
+showK : String
+let showK = display (Kelvin 373.15)
+
+--! assertNoErrors
+--! assertType showC String
+--! assertType showF String
+--! assertType showK String
+
+-- POSITIVE: a polymorphic function using Display on a known concrete type.
+displayTwice : String
+let displayTwice =
+    let s1 = display (Celsius 0.0)
+    in let s2 = display (Kelvin 273.15)
+    in s1 ++ s2
+
+--! assertNoErrors
+
+-- POSITIVE: a trait with an instance for a parameterized type.
+instance Display a => Display (Option a) =
+    let display opt =
+        match opt
+        case None    -> "none"
+        case Some x  -> "some(" ++ display x ++ ")"
+
+showOptC : String
+let showOptC = display (Some (Celsius 37.0))
+
+--! assertNoErrors
+--! assertType showOptC String

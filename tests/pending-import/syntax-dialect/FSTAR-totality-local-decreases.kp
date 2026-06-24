@@ -1,0 +1,27 @@
+-- Source issues: FSTAR-120, FSTAR-258
+-- Spec: declarations.totality.explicit_decreases
+-- A decreases annotation must actually decrease on every recursive call.
+-- Providing a decreases clause that does not structurally decrease must be rejected.
+
+--! mode check
+
+data Exp : Type =
+    Var : Nat -> Exp
+    Abs : Exp -> Exp
+    App : Exp -> Exp -> Exp
+
+type Sub = Nat -> Exp
+
+-- NEGATIVE TEST: bogus decreases clause.
+-- The recursive call `subst_bad (s 0) s` passes a term NOT a subterm of `e`,
+-- so `decreases e` is not satisfied for that call.
+subst_bad : Exp -> Sub -> Exp
+let subst_bad e s decreases e =
+    match e
+      case (Var x)     -> s x
+      case (Abs e1)    -> Abs (subst_bad e1 s)
+      case (App e1 e2) ->
+          App (subst_bad e1 s)
+              (subst_bad (s 0) s)   --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure

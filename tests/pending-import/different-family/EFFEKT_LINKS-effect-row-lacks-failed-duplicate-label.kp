@@ -1,0 +1,27 @@
+-- Source: effekt #813, #866 (via PR #1231, "Relax unifyEffects"); Kappa spec §11.3.2
+-- Spec: effects.monadic_core.eff_effect_rows (§18.1.14),
+--       types.quantification.effect_row_syntax (§11.3.2),
+--       compiler.frontir.standard_diagnostic_families (kappa.row.lacks-failed)
+-- §11.3.2: "Labels in a single effect row must be unique."
+-- §11.3.2: "An open row <[l : E | r]> carries the implicit uniqueness side
+-- condition LacksEff r l."
+-- Attempting to declare a function whose type contains a duplicate effect-row
+-- label MUST be diagnosed with kappa.row.lacks-failed.
+
+module test
+
+effect Log =
+    ω write : String -> Unit
+
+-- NEGATIVE TEST: a function type whose effect row repeats the same label is
+-- ill-formed.  <[log : Log, log : Log]> violates §11.3.2.
+bad_dup_label : Eff <[log : Log, log : Log]> Unit -> Unit  --!! kappa.row.lacks-failed
+let bad_dup_label _ = ()
+
+-- POSITIVE TEST: two distinct labels that happen to carry the same effect
+-- interface are well-formed.  <[log1 : Log, log2 : Log]> has unique labels.
+good_two_labels : Eff <[log1 : Log, log2 : Log]> Unit -> Unit
+let good_two_labels _ = ()
+
+--! mode check
+--! assertDiagnosticFamily error kappa.row.lacks-failed

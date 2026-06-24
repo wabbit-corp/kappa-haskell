@@ -1,0 +1,42 @@
+-- Source: Julia manual, "Type Annotations", Julia#24323 (return type assertions)
+-- Spec: types.annotations,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- In Julia, annotating a function return type with `function f()::T` means
+-- the body must produce a T; a body yielding a different type raises a
+-- TypeError. In Kappa, a declared function return type that contradicts the
+-- inferred body type is kappa.type.mismatch.
+
+--! mode check
+
+-- POSITIVE: declared and inferred return types match.
+square : Int -> Int
+let square x = x * x
+
+stringify : Int -> String
+let stringify _ = "a number"
+
+-- NEGATIVE: declared Int return but body yields String.
+broken1 : Int -> Int
+let broken1 _ = "not an int"   --!! kappa.type.mismatch
+
+-- NEGATIVE: declared Bool return but body yields Int.
+broken2 : Int -> Bool
+let broken2 x = x + 1         --!! kappa.type.mismatch
+
+-- NEGATIVE: multi-argument function with wrong return type.
+broken3 : Int -> Int -> String
+let broken3 x y = x + y       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: polymorphic identity — return type annotation matches body.
+identity :
+    forall (a : Type).
+    (& x : a) -> a
+let identity x = x
+
+ok : Int
+let ok = identity 7
+
+--! assertType ok Int
+

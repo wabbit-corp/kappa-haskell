@@ -1,0 +1,32 @@
+-- Source issue: FSTAR-1526
+-- Spec: core_semantics.definitional_equality
+-- Projectors for dependent pair types (sigma types) must have a
+-- definitional reduction: the projector applied to a constructor
+-- must reduce to the projected component.
+
+--! mode check
+
+-- A dependent pair type.
+data DPair (A : Type) (B : A -> Type) : Type =
+    MkDPair : (x : A) -> B x -> DPair A B
+
+-- The first projector must reduce definitionally.
+dpair_fst : {A : Type} -> {B : A -> Type} -> DPair A B -> A
+let dpair_fst p =
+    match p
+      case MkDPair x _ -> x
+
+-- The second projector depends on the first.
+dpair_snd : {A : Type} -> {B : A -> Type} -> (p : DPair A B) -> B (dpair_fst p)
+let dpair_snd p =
+    match p
+      case MkDPair _ y -> y
+
+-- The definitional equality dpair_fst (MkDPair a b) = a
+-- must hold without proof (definitional, not propositional).
+check_fst_reduces : (a : Nat) -> (b : { n : Nat | n > a }) -> { result : Nat | result = a }
+let check_fst_reduces a b =
+    let p : DPair Nat (\x -> { n : Nat | n > x }) = MkDPair a b
+    dpair_fst p
+
+--! assertNoErrors

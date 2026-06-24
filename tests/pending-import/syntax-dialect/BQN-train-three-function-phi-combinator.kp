@@ -1,0 +1,38 @@
+-- Source issues: BQN docs/train.md (3-train: `(F G H) x = (F x) G (H x)`,
+--   `x (F G H) y = (x F y) G (x H y)`),
+-- BQN-PR-53 and BQN-PR-75 (Combinator Birds documentation: 3-train is the
+--   Φ "Phoenix" combinator, S'). See SA-BQN-07.
+-- Spec: expressions.lambdas.
+-- The 3-train Φ-combinator `\x -> g (f x) (h x)` is portable. Kappa does
+-- not yet name it; this test pins its definition.
+
+--! mode check
+
+-- The monadic 3-train Φ-combinator.
+phi : forall a b c x. (a -> b -> c) -> (x -> a) -> (x -> b) -> x -> c
+let phi g f h x = g (f x) (h x)
+
+-- The dyadic 3-train Φ₂-combinator.
+phi2 : forall a b c x y. (a -> b -> c)
+     -> (x -> y -> a) -> (x -> y -> b) -> x -> y -> c
+let phi2 g f h x y = g (f x y) (h x y)
+
+-- POSITIVE: classic train usage applied to a small concrete instance.
+addTwo : Nat -> Nat -> Nat
+let addTwo a b = a + b
+
+succ : Nat -> Nat
+let succ n = n + 1
+
+mul3 : Nat -> Nat
+let mul3 n = n * 3
+
+mixed : Nat -> Nat
+let mixed = phi addTwo succ mul3
+-- mixed n = (succ n) + (mul3 n) = (n + 1) + (n * 3)
+
+example : Nat
+let example = mixed 5    -- (5 + 1) + (5 * 3) = 21
+
+--! assertNoErrors
+--! assertType phi (forall a b c x. (a -> b -> c) -> (x -> a) -> (x -> b) -> x -> c)

@@ -1,0 +1,38 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry +
+--   testsuite/TypeclassTests/TestDeriving.curry (deriving (Eq, Read, Show)
+--   succeeds only for types whose components are themselves derivable).
+-- Spec: traits.deriving (§14.5),
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof.
+--
+-- A `derive Eq T` declaration requires every constructor field to
+-- support the derived trait. A function-typed field is not
+-- equality-derivable; attempting to derive `Eq` for such a type must
+-- be rejected because the field-level Eq evidence cannot be solved.
+
+module test
+
+--! mode check
+
+data Point : Type =
+    Point Int Int
+
+derive Eq Point
+derive Show Point
+
+--! assertType samePoint Bool
+
+-- POSITIVE: equality on Point works as derived.
+samePoint : Bool
+let samePoint = Point 1 2 == Point 1 2
+-- expected: True
+
+-- NEGATIVE: a data type carrying a function-typed field cannot have
+-- `Eq` derived. The field type `Int -> Int` has no Eq instance, so
+-- the implicit Eq goal raised by the derive declaration must be
+-- reported unsolved.
+data Holder : Type =
+    Holder (Int -> Int)
+
+derive Eq Holder            --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved

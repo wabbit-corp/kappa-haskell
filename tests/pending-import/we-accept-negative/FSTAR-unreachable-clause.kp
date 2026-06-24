@@ -1,0 +1,23 @@
+-- Source issues: FSTAR-71, FSTAR-87
+-- Spec: expressions.match.impossible_unreachable_branch_bodies
+-- A redundant pattern arm subsumed by a preceding arm must trigger a diagnostic.
+-- The match is still well-typed; the diagnostic is a warning-class obligation.
+
+--! mode check
+
+data Color : Type =
+    Red   : Color
+    Green : Color
+    Blue  : Color
+
+-- The third arm `case Red -> 10` is unreachable because Red is already handled
+-- by the first arm. The compiler must emit an unreachable-clause warning.
+color_value : Color -> Nat
+let color_value c =
+    match c
+      case Red   -> 1
+      case Green -> 2
+      case Red   -> 10   --!! kappa.pattern.unreachable
+      case Blue  -> 3
+
+--! assertDiagnosticFamily warning kappa.pattern.unreachable
