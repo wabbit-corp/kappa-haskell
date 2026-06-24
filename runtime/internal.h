@@ -44,6 +44,7 @@ enum {
   OP_THEN,                /* [m, next]        ioThen                       */
   OP_CATCH,               /* [body, hclo]     catchIO (hclo : e -> IO a)   */
   OP_THROW,               /* [err]            throwIO                      */
+  OP_RERAISE,             /* [cause]          __reraiseCause (full Cause)  */
   OP_PRINT,               /* [str]            printString  (no newline)    */
   OP_PRINTLN,             /* [str]            printlnString                */
   OP_FORK,                /* [action]         fork        -> Fiber         */
@@ -104,7 +105,7 @@ enum {
 };
 
 /* Reason kinds carried by an abnormal unwind through the continuation. */
-enum { RK_NORMAL, RK_FAIL, RK_RETURN, RK_BREAK, RK_CONTINUE, RK_INTERRUPT };
+enum { RK_NORMAL, RK_FAIL, RK_RETURN, RK_BREAK, RK_CONTINUE, RK_INTERRUPT, RK_RERAISE };
 
 /* Constructor-id used for the prelude-shaped result ctors (Success/Failure/...).
  * Pattern matching in harnesses is name-based (kctor_is), so the id is inert. */

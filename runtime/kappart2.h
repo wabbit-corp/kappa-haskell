@@ -94,6 +94,7 @@ KValue *krt2_then(KValue *m, KValue *next);         /* ioThen  : IO a -> IO b ->
 KValue *krt2_catch(KValue *body, KValue *handler);  /* catchIO : IO a -> (e->IO a) -> IO a */
 KValue *krt2_finally(KValue *body, KValue *fin);    /* finallyIO : IO a -> IO () -> IO a   */
 KValue *krt2_throw(KValue *err);                    /* throwIO : e -> IO a (typed failure) */
+KValue *krt2_reraise(KValue *cause);                /* __reraiseCause : Cause e -> IO a (re-raise as-is) */
 
 /* do-kernel completion channel (§18.7, §18.8): a do-scope whose `defer` actions
  * run on EVERY exit path — normal completion, typed fail, early `return`, loop

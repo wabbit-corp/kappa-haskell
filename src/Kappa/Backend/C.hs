@@ -403,6 +403,7 @@ basePrims =
     , "__absurd"
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen", "throwIO", "catchIO", "finallyIO"
+    , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "newRef", "readRef", "writeRef"
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "check"
@@ -1976,6 +1977,32 @@ compileAppGlob g sargs term = do
               mc <- compileErasableArg m
               nc <- compileErasableArg n
               pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
+        -- catchIO/finallyIO over a may-suspend body must be the CK-machine
+        -- node, not the kpf_io_* bridge — the bridge runs the body via the
+        -- synchronous krun_io, which cannot drive a krt2_bind/await tree (so
+        -- `catchIO (join f) h` would mis-run the join).  Same §3.3 gate.
+        Just "catchIO"
+          | [body, h] <- [a | (Expl, a) <- sargs]
+          , spineHeadSuspends susp body -> do
+              bc <- compileErasableArg body
+              hc <- compileErasableArg h
+              pure ("krt2_catch(" <> bc <> ", " <> hc <> ")")
+        Just "finallyIO"
+          | [body, fin] <- [a | (Expl, a) <- sargs]
+          , spineHeadSuspends susp body -> do
+              bc <- compileErasableArg body
+              fc <- compileErasableArg fin
+              pure ("krt2_finally(" <> bc <> ", " <> fc <> ")")
+        -- §18.1.4 __reraiseCause: re-raise a captured Cause as-is (the
+        -- join/race/timeout failure arms).  A CK-machine OP_RERAISE node (not the
+        -- typed-only kfail bridge): catchable iff the cause is a Fail, else it
+        -- propagates to the fiber's Failure(cause) outcome (mirrors
+        -- Interp.reraiseCauseValue).  These bodies are already CPS (they await),
+        -- so the node is always CK-machine-driven.
+        Just "__reraiseCause"
+          | [c] <- [a | (Expl, a) <- sargs] -> do
+              cc <- compileErasableArg c
+              pure ("krt2_reraise(" <> cc <> ")")
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
@@ -2358,6 +2385,27 @@ sinkResult (SinkVar r) e = emit (r <> " = " <> e <> ";")
 sinkResult (SinkTail _) e = emit ("return " <> e <> ";")
 sinkResult SinkBounce e = emit ("return " <> e <> ";")
 
+-- | Does @term@ compile to a CK-machine action NODE (krt2_bind/then/reraise) via
+-- 'compileAppGlob's special cases?  In tail position such a node must be RETURNED
+-- so the CK-machine drives it next — NOT handed to 'emitTailApp's per-argument
+-- trampoline, which compiles the prim head as a bare reference ('emitPrim') and
+-- loses the lowering (and rejects @__reraiseCause@, which has no @primEntry@).
+cpsNodeApp :: Term -> Gen Bool
+cpsNodeApp term = do
+  let (hd, sargs) = spineOf term
+  case hd of
+    CGlob g -> do
+      mp <- globPrimName g
+      susp <- gets gsSuspenders
+      pure $ case (mp, [a | (Expl, a) <- sargs]) of
+        (Just "ioBind", [m, _]) -> spineHeadSuspends susp m
+        (Just "ioThen", [m, _]) -> spineHeadSuspends susp m
+        (Just "catchIO", [body, _]) -> spineHeadSuspends susp body
+        (Just "finallyIO", [body, _]) -> spineHeadSuspends susp body
+        (Just "__reraiseCause", [_]) -> True
+        _ -> False
+    _ -> pure False
+
 -- | Compile @term@ so its value flows to @sink@, recursing through the
 -- control forms (if/match/let) so that a self-tail-call deep inside a
 -- branch is lowered to a loop rather than a recursive C call.  This single
@@ -2395,21 +2443,27 @@ consume sink term = case term of
     re <- withEnv e2 (compile rhs)
     emit (e2 <> "->val = " <> re <> ";")
     withEnv e2 (consume sink body)
-  _ -> case sink of
-    -- Direct saturated self-call: loop in the worker (no allocation).
-    SinkTail ti | Just args <- selfTailArgs ti term -> emitTailLoop ti args
-    -- Any other tail-position explicit application: return a trampoline
-    -- bounce so the chain (mutual recursion, calls through a value, local
-    -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
-    -- is the kapp/kappi at the non-tail site that demanded the value.
-    SinkTail _ | CApp Expl _ _ <- term -> emitTailApp term
-    -- A closure / local let-rec lambda body in tail position: the same
-    -- bounce, so a tail self-call (the recursive let-rec binder, applied)
-    -- defers to the driving trampoline instead of growing the C stack.
-    SinkBounce | CApp Expl _ _ <- term -> emitTailApp term
-    _ -> do
-      e <- compile term
-      sinkResult sink e
+  _ -> do
+    isCps <- cpsNodeApp term
+    case sink of
+      -- Direct saturated self-call: loop in the worker (no allocation).
+      SinkTail ti | Just args <- selfTailArgs ti term -> emitTailLoop ti args
+      -- A suspending ioBind/ioThen or __reraiseCause in tail position lowers to a
+      -- CK-machine NODE (compileAppGlob): RETURN it so the machine drives it, not
+      -- emitTailApp (which would lose the lowering — see 'cpsNodeApp').
+      SinkTail _ | CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
+      -- Any other tail-position explicit application: return a trampoline
+      -- bounce so the chain (mutual recursion, calls through a value, local
+      -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
+      -- is the kapp/kappi at the non-tail site that demanded the value.
+      SinkTail _ | CApp Expl _ _ <- term -> emitTailApp term
+      -- A closure / local let-rec lambda body in tail position: the same bounce,
+      -- so a tail self-call defers to the driving trampoline (constant C stack).
+      SinkBounce | CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
+      SinkBounce | CApp Expl _ _ <- term -> emitTailApp term
+      _ -> do
+        e <- compile term
+        sinkResult sink e
 
 -- | Compile an if/match/let in expression context: declare a fresh result
 -- variable and consume into it.

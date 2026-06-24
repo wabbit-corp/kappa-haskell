@@ -1,0 +1,9 @@
+-- §18.1.4 catchIO over a suspending join: catchIO must be the CK-machine node
+-- (krt2_catch), not the kpf_io_catchIO bridge, or it cannot drive join`s await/
+-- bind tree. The child fails (throwIO 99); join re-raises; catchIO catches. ≡ interp.
+module main
+main : UIO Unit
+let main = do
+    f <- fork (throwIO 99)
+    r <- catchIO (join f) (\e -> ioPure (addInt e 1))
+    printlnString (showInt r)

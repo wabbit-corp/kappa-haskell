@@ -72,12 +72,20 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 - [ ] **Masking surface** (§18.1.12). `mask`/`uninterruptible`/`poll` are runtime-
       only (`krt2_*`) — NOT yet exposed in the prelude. Requires prelude `prim`
       decls + interpreter handling FIRST, then the (trivial) backend wiring.
-- [x] **General CPS for `ioBind` expressions** (CPS-DESIGN §3.1) — DONE: a
-      saturated `ioBind`/`ioThen` whose FIRST action may-suspend (§3.3) lowers to
-      `krt2_bind`/`krt2_then` in `compileAppGlob`, so an `ioBind (await …) k`
-      EXPRESSION (not just a `CDo`) drives the head through the CK-machine
-      (`iobind-await` case). `join`/`race`/`timeout` still need `__reraiseCause`
-      + the dynamic-named result ctors (below).
+- [x] **General CPS for IO combinator expressions** (CPS-DESIGN §3.1) — DONE: a
+      saturated `ioBind`/`ioThen`/`catchIO`/`finallyIO` whose body action
+      may-suspend (§3.3) lowers to the CK-machine node
+      (`krt2_bind`/`then`/`catch`/`finally`) in `compileAppGlob` — and in tail
+      position too (`cpsNodeApp` routes around `emitTailApp`). So an
+      `ioBind (await …) k` / `catchIO (join f) h` EXPRESSION (not just a `CDo`)
+      drives the body through the CK-machine instead of the synchronous bridge.
+- [x] **`__reraiseCause` + `join`** (§18.1.4) — DONE: `__reraiseCause` lowers to a
+      new `OP_RERAISE`/`RK_RERAISE` that re-raises a full `Cause` as-is (catchable
+      iff `Fail`, else propagates to `Failure(cause)`; mirrors
+      `Interp.reraiseCauseValue`). With the IO-combinator lowering + result-ctor
+      ids, **`join` now runs native** — success, typed-failure, and `catchIO`
+      around it all ≡ interpreter (`join-success`, `join-catch` cases).
+      `race`/`timeout` still need the dynamic-named result ctors (below).
 - [x] **Native result-ctor matching** (§28 shapes) — DONE: the runtime-built
       `Exit`/`Cause` outcomes (`Success`/`Failure`/`Fail`/`Interrupt`/`Defect`/
       `Both`/`Then`) + `Some`/`None` now carry FIXED `KCT_*` ids shared with

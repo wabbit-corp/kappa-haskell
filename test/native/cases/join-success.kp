@@ -1,0 +1,11 @@
+-- §18.1.4 join on the native runtime: await a fiber and project its Exit.
+-- Exercises the full chain — §3.3 detects join as a suspender, its ioBind body
+-- lowers to krt2_bind (driving await), the runtime Exit matches by KCT_ id, and
+-- the __reraiseCause failure arm compiles to a krt2_reraise node. ≡ interpreter.
+module main
+
+main : UIO Unit
+let main = do
+    f <- fork (pure 42)
+    r <- join f
+    printlnString (showInt r)

@@ -69,6 +69,7 @@ KValue *krt2_bind(KValue *m, KValue *k)   { return op2(OP_BIND, "rt.bind", m, k)
 KValue *krt2_then(KValue *m, KValue *n)   { return op2(OP_THEN, "rt.then", m, n); }
 KValue *krt2_catch(KValue *b, KValue *h)  { return op2(OP_CATCH, "rt.catch", b, h); }
 KValue *krt2_throw(KValue *e)             { return op1(OP_THROW, "rt.throw", e); }
+KValue *krt2_reraise(KValue *c)           { return op1(OP_RERAISE, "rt.reraise", c); }
 KValue *krt2_fork(KValue *a)              { return op1(OP_FORK, "rt.fork", a); }
 KValue *krt2_fork_daemon(KValue *a)       { return op1(OP_FORK_DAEMON, "rt.forkDaemon", a); }
 KValue *krt2_await(KValue *f)             { return op1(OP_AWAIT, "rt.await", f); }
@@ -497,6 +498,7 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
           case RK_RETURN:    fiber_finish(rt, f, krt2_success(rval)); return 0;
           case RK_FAIL:      fiber_finish(rt, f, krt2_failure(krt2_cause_fail(rval))); return 0;
           case RK_INTERRUPT: fiber_finish(rt, f, krt2_failure(krt2_cause_interrupt(rval))); return 0;
+          case RK_RERAISE:   fiber_finish(rt, f, krt2_failure(rval)); return 0; /* rval IS the Cause */
           default:           /* break/continue with no enclosing loop (rejected upstream) */
             fiber_finish(rt, f, krt2_failure(krt2_cause_fail(
                 kstr0("internal: break/continue escaped its loop")))); return 0;
@@ -511,6 +513,11 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         f->k = c->next; continue;
       case KK_CATCH:
         if (rkind == RK_FAIL) { f->k = c->next; f->cur = kapp(c->a, rval); return 1; }
+        /* a re-raised Fail cause is still a typed failure — deliver its e to the
+         * handler; a non-Fail reraise (Interrupt/Defect/…) skips catch. */
+        if (rkind == RK_RERAISE && kctor_tagid(rval) == KCT_FAIL) {
+          f->k = c->next; f->cur = kapp(c->a, kctor_arg(rval, 0)); return 1;
+        }
         f->k = c->next; continue;       /* return/break/continue/interrupt skip catch */
       case KK_LOOP:
         if (rkind == RK_BREAK)    { f->k = c->next; f->cur = krt2_pure(kunit()); return 1; } /* exit loop */
@@ -574,6 +581,12 @@ static void fiber_step(Rt *rt, Fiber *f) {
         break;
       case OP_THROW:
         if (!unwind(rt, f, RK_FAIL, kctor_arg(cur, 0), NULL)) return;
+        break;
+      case OP_RERAISE:
+        /* §18.1.4 re-raise a captured Cause as-is: catchable only if it is a
+         * Fail (delivers the typed e); Interrupt/Defect/Both/Then propagate to
+         * the fiber's Failure(cause) outcome.  Mirrors Interp.reraiseCauseValue. */
+        if (!unwind(rt, f, RK_RERAISE, kctor_arg(cur, 0), NULL)) return;
         break;
       case OP_PRINT:
         emit_kstr(kctor_arg(cur, 0), 0);
