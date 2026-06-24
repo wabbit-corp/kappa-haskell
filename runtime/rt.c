@@ -77,6 +77,13 @@ KValue *krt2_uninterruptible(KValue *b)   { return op1(OP_UNINTERRUPTIBLE, "rt.u
 KValue *krt2_poll(void)                   { return op0(OP_POLL, "rt.poll"); }
 KValue *krt2_mask(KValue *f)              { return op1(OP_MASK, "rt.mask", f); }
 KValue *krt2_ensuring(KValue *body, KValue *fin) { return krt2_finally(body, fin); } /* = finally */
+/* §18.1.11 blocking (rt-blocking): run a potentially-blocking action.  v1 runs it
+ * inline on the current worker — semantically faithful (the action runs and its
+ * result/failure propagate).  The dedicated offload lane (uv_queue_work, so a
+ * blocking syscall does not occupy a scheduler worker) is the future increment;
+ * see reactor.c.  Implemented as identity so the advertised rt-blocking
+ * capability is actually backed, not just declared. */
+KValue *krt2_blocking(KValue *body)       { return body; }
 /* structured concurrency */
 KValue *krt2_new_scope(void)              { return op0(OP_NEW_SCOPE, "rt.newScope"); }
 KValue *krt2_fork_in(KValue *s, KValue *a){ return op2(OP_FORK_IN, "rt.forkIn", s, a); }

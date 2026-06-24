@@ -120,7 +120,6 @@ void krt2_safepoint(void);
 KValue *krt2_fork(KValue *action);                  /* (IO e a) -> UIO (Fiber e a) */
 KValue *krt2_fork_daemon(KValue *action);
 KValue *krt2_await(KValue *fiber);                  /* Fiber e a -> UIO (Exit e a) */
-KValue *krt2_join(KValue *fiber);                   /* Fiber e a -> IO e a          */
 KValue *krt2_interrupt(KValue *fiber);              /* request + wait for done      */
 KValue *krt2_interrupt_fork(KValue *fiber);         /* request, no wait             */
 KValue *krt2_interrupt_as(KValue *cause, KValue *fiber);      /* explicit InterruptCause */
@@ -132,14 +131,12 @@ KValue *krt2_cede(void);                            /* UIO Unit (§18.1.5)      
 /* ── time, timers, deadlines, racing (§18.1.6) ─────────────────────────── */
 KValue *krt2_now_monotonic(void);                   /* UIO Instant (ns)             */
 KValue *krt2_sleep_for(KValue *dur);                /* Duration -> UIO Unit         */
-KValue *krt2_sleep_until(KValue *instant);          /* Instant  -> UIO Unit         */
 KValue *krt2_timeout(KValue *dur, KValue *action);  /* -> IO (TimeoutError|e) a     */
 KValue *krt2_race(KValue *l, KValue *r);            /* -> IO (e|f) (RaceResult a b) */
 
 /* ── one-shot promises (§18.1.9) ───────────────────────────────────────── */
 KValue *krt2_new_promise(void);                     /* UIO (Promise e a)            */
 KValue *krt2_await_promise_exit(KValue *p);         /* Promise e a -> UIO (Exit e a)*/
-KValue *krt2_await_promise(KValue *p);              /* Promise e a -> IO e a        */
 KValue *krt2_complete_promise(KValue *p, KValue *exit); /* -> UIO Bool (first wins) */
 
 /* ── explicit scopes and monitors (§18.1.8) ────────────────────────────── */
@@ -151,16 +148,21 @@ KValue *krt2_monitor(KValue *fiber);                /* UIO (Monitor e a)        
 KValue *krt2_await_monitor(KValue *mon);            /* UIO (Exit e a)               */
 KValue *krt2_demonitor(KValue *mon);                /* UIO Unit                     */
 
-/* ── fiber-local state (§18.1.7) ───────────────────────────────────────── */
-KValue *krt2_new_fiber_ref(KValue *init);           /* a -> UIO (FiberRef a)        */
-KValue *krt2_get_fiber_ref(KValue *ref);            /* FiberRef a -> UIO a          */
-KValue *krt2_set_fiber_ref(KValue *ref, KValue *v); /* FiberRef a -> a -> UIO Unit  */
-KValue *krt2_locally_fiber_ref(KValue *ref, KValue *v, KValue *body);
-
-/* ── fiber identity labels (§18.1.10) ──────────────────────────────────── */
-KValue *krt2_get_fiber_label(void);                 /* UIO (Option String)          */
-KValue *krt2_set_fiber_label(KValue *label_opt);    /* Option String -> UIO Unit    */
-KValue *krt2_locally_fiber_label(KValue *label_opt, KValue *body);
+/* ── Planned ABI — NOT yet implemented in the archive ──────────────────────
+ * These entry points are part of the intended kappart2 surface but have no C
+ * definition yet, so they are NOT declared here (a declaration without a
+ * definition is a link-fail trap, and the capability check would pass while the
+ * symbol is absent).  They are reached today via the Kappa-level prelude over
+ * the primitives that ARE implemented (e.g. `join`/`awaitPromise` over `await`
+ * + a `match`, single-agent `FiberRef` over `Ref`), and the krt2_* C ABI for
+ * them lands with the do-kernel CPS rewrite + per-fiber state.  See
+ * docs/PRIMITIVES.md for the plan:
+ *   - krt2_join, krt2_await_promise            (Fiber/Promise -> IO e a: re-raise the Cause)
+ *   - krt2_sleep_until                          (Instant -> UIO Unit)
+ *   - krt2_new/get/set/locally_fiber_ref        (§18.1.7 + copy-on-fork: PRIMITIVES.md ADD #4)
+ *   - krt2_get/set/locally_fiber_label          (§18.1.10: needs a per-fiber label field)
+ *   - krt2_sandbox, krt2_unsandbox              (§18.1.2: expose/absorb the full Cause)
+ */
 
 /* ── interruption, masking, resources (§18.1.11, §18.1.12) ─────────────── */
 KValue *krt2_poll(void);                            /* UIO Unit (explicit ckpt)     */
@@ -169,8 +171,6 @@ KValue *krt2_mask(KValue *f);                       /* (restore -> IO e a) -> IO
 KValue *krt2_ensuring(KValue *body, KValue *fin);   /* IO e a -> IO e () -> IO e a  */
 KValue *krt2_acquire_release(KValue *acq, KValue *rel, KValue *use);
 KValue *krt2_blocking(KValue *body);                /* IO e a -> IO e a (rt-blocking)*/
-KValue *krt2_sandbox(KValue *action);               /* expose full Cause as typed Fail */
-KValue *krt2_unsandbox(KValue *action);             /* reverse of sandbox           */
 
 /* ── STM (§18.1.13, §32.2.9, rt-shared-stm) ────────────────────────────── */
 KValue *krt2_stm_pure(KValue *v);                   /* a -> STM a                   */
