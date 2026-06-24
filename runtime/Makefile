@@ -50,7 +50,7 @@ LIB := build/libkappart2.a
 TEST_SRC := $(wildcard tests/*.c)
 TEST_BIN := $(TEST_SRC:tests/%.c=build/%)
 
-.PHONY: all test clean tsan
+.PHONY: all test clean tsan bench
 all: $(LIB) $(TEST_BIN)
 
 $(LIB): $(RT_OBJ)
@@ -67,6 +67,13 @@ build:
 
 test: all
 	@set -e; for t in $(TEST_BIN); do echo "=== $$t ==="; $$t; done
+
+# Microbenchmark: isolate the runtime cost sources (suspension, CPS node, value
+# boxing) vs raw C and a Go goroutine baseline.  See bench/README.md.
+bench: $(LIB) | build
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) bench/rt_bench.c $(LIB) $(LIBS) -o build/rt_bench
+	@./build/rt_bench
+	@command -v go >/dev/null 2>&1 && (cd bench && go run go_pingpong.go) || echo "(go not found — skipping the goroutine comparison)"
 
 # ThreadSanitizer build — the scheduler/STM/reactor are concurrent; run the
 # harnesses under tsan in CI to catch data races the design must avoid.
