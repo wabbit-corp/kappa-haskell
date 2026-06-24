@@ -1032,14 +1032,14 @@ checkAssertion compileWith root path src files cu diags mRun = \case
     countIs "warnings" n (length warnings)
   ADiag sev code ->
     require
-      (any (\d -> dSeverity d == toSeverity sev && diagHasCode code d) diags)
+      (any (\d -> dSeverity d == toSeverity sev && matchCF code d) diags)
       ("no diagnostic " <> describe sev code <> " was produced" <> sawCodes)
   ADiagNext sev code line ->
     require
       ( any
           ( \d ->
               dSeverity d == toSeverity sev
-                && diagHasCode code d
+                && matchCF code d
                 && spanFile (dPrimary d) == path
                 && posLine (spanStart (dPrimary d)) == line
           )
@@ -1051,7 +1051,7 @@ checkAssertion compileWith root path src files cu diags mRun = \case
       ( any
           ( \d ->
               dSeverity d == toSeverity sev
-                && diagHasCode code d
+                && matchCF code d
                 && T.pack (spanFile (dPrimary d)) `endsWithPath` p
                 && posLine (spanStart (dPrimary d)) == line
                 && maybe True (== posCol (spanStart (dPrimary d))) mcol
@@ -1064,7 +1064,7 @@ checkAssertion compileWith root path src files cu diags mRun = \case
       ( any
           ( \d ->
               dSeverity d == toSeverity sev
-                && diagHasCode code d
+                && matchCF code d
                 && T.pack (spanFile (dPrimary d)) `endsWithPath` p
                 && spanStart (dPrimary d) == Pos sl sc
                 && spanEnd (dPrimary d) == Pos el ec
