@@ -56,7 +56,7 @@ let helpLines =
     , "o: open / close nearby door    r: engrave a ward"
     , "v: cycle combat stance    t: talk to neighbor"
     , ";: look around    A: aimed attack    C: crouch / sneak"
-    , "@: character    B: codex of creatures"
+    , "B: codex of creatures"
     , "k: cast a known spell    U/Z/D: quick use / zap / drop"
     , ">/<: stairs and branch portals"
     , "m: mute / unmute sound    ?: help"

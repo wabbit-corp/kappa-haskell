@@ -222,7 +222,7 @@ let isChilled ws decreases listLength ws =
     case Nil -> False
     case w :: rest ->
         match w
-        case Chilled t -> t > 0
+        case Chilled _ -> True
         case _ -> isChilled rest
 
 woundLabel : Wound -> String
@@ -258,7 +258,7 @@ let applyElemental pack dt defender r0 =
         let roll = rand.range 0 99 r0
         in
             if roll.value < effChance && not (hasStatusKind dt defender.wounds) then
-                let mag = if vuln then sdef.magnitude + 1 elif resist then 1 else sdef.magnitude
+                let mag = if vuln then sdef.magnitude + 1 elif resist then (if dt == Cold then 2 else 1) else sdef.magnitude
                 in (defender = defender.{ wounds = (::) (woundForStatus dt mag) defender.wounds }, rng = roll.rng)
             else (defender = defender, rng = roll.rng)
 

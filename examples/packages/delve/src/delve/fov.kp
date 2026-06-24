@@ -127,9 +127,13 @@ let canSee level facing range origin target =
 
 -- Like canSee, but the target must also be lit: a creature only notices what is
 -- within its own bubble or standing in light it can see. Hiding in the dark works.
+canSeeLitWith : Level -> List Vec2 -> Direction -> Int -> Vec2 -> Vec2 -> Bool
+let canSeeLitWith level emitters facing range origin target =
+    canSee level facing range origin target && lightedFrom level emitters origin target
+
 canSeeLit : Level -> Direction -> Int -> Vec2 -> Vec2 -> Bool
 let canSeeLit level facing range origin target =
-    canSee level facing range origin target && lightedFrom level (emitterCells level) origin target
+    canSeeLitWith level (emitterCells level) facing range origin target
 
 -- Every explored tile this actor can currently see — used to paint its cone in look mode.
 coneCells : Level -> Actor -> Int -> List Vec2

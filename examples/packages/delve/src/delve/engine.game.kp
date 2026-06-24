@@ -166,7 +166,7 @@ let movePlayer dir game =
 onEnteredTile : TileKind -> GameState -> GameState
 let onEnteredTile kind game =
     match kind
-    case Trap -> damagePlayer Physical 2 (message "A trap bites your ankle." game)
+    case Trap -> inventory.damagePlayer Physical 2 (message "A trap bites your ankle." game)
     case Water -> message "You splash through dark water." game
     case Lava -> message "The lava burns you." game
     case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt 12 game)
@@ -181,18 +181,8 @@ let readLoreStone game =
     case Nil -> message "The lore-stone is blank." game
     case r :: rest -> message ("The stone says: " ++ r.text) (game.{ rumors = rest })
 
-damagePlayer : DamageType -> Int -> GameState -> GameState
-let damagePlayer dt amount0 game =
-    match playerActor game
-    case None -> game.{ mode = Dead }
-    case Some p ->
-        let amount = combat.scaleDamage dt amount0 p
-        let hp2 = p.stats.hp - amount
-        let p2a = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
-        let elem = combat.applyElemental game.content dt p2a (natToInt game.rng)
-        let p2 = elem.defender
-        let mode2 = if hp2 > 0 then game.mode else Dead
-        game.{ mode = mode2, rng = intToNat elem.rng, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+-- Player damage application lives in delve.inventory as one shared definition;
+-- engine routes hazards/spells through inventory.damagePlayer to avoid drift.
 
 tickPlayerWounds : GameState -> GameState
 let tickPlayerWounds game =
@@ -389,13 +379,13 @@ let spendWand wand before after p game =
     let game0 = inventory.identifyAndAnnounce wand withActor
     in (charged = wand2, state = game0)
 
-firstVisibleHostile : Actor -> List Actor -> Level -> Option Actor
-let firstVisibleHostile p actors level decreases listLength actors =
+firstVisibleHostile : Actor -> List Actor -> Level -> List Vec2 -> Option Actor
+let firstVisibleHostile p actors level emitters decreases listLength actors =
     match actors
     case Nil -> None
     case a :: rest ->
-        if a.id != p.id && a.alive && hostileTo p a && fov.visibleFrom level p.pos a.pos then Some a
-        else firstVisibleHostile p rest level
+        if a.id != p.id && a.alive && hostileTo p a && fov.visibleWith level emitters p.pos a.pos then Some a
+        else firstVisibleHostile p rest level emitters
 
 firstAdjacentWall : List Vec2 -> Level -> Option Vec2
 let firstAdjacentWall ps level decreases listLength ps =
@@ -426,7 +416,7 @@ let zapFirst game =
             if found.wand.charges <= 0 then message "The wand is dry." game
             elif found.wand.kind == WandDigging then zapDigging found.wand found.before found.after p game
             else
-                match firstVisibleHostile p game.level.actors game.level
+                match firstVisibleHostile p game.level.actors game.level (fov.emitterCells game.level)
                 case None -> message "No visible hostile target." game
                 case Some enemy -> zapWand found.wand found.before found.after p enemy game
 
@@ -471,13 +461,14 @@ let zapWand wand before after p enemy game =
 
 nearestVisibleHostile : Actor -> List Actor -> Level -> Option Actor
 let nearestVisibleHostile p actors level =
+    let emitters = fov.emitterCells level
     block
         go : List Actor -> Option Actor -> Option Actor
         let go xs best decreases listLength xs =
             match xs
             case Nil -> best
             case a :: rest ->
-                if a.id != p.id && a.alive && hostileTo p a && fov.visibleFrom level p.pos a.pos then
+                if a.id != p.id && a.alive && hostileTo p a && fov.visibleWith level emitters p.pos a.pos then
                     let best2 =
                         match best
                         case None -> Some a
@@ -762,7 +753,7 @@ let actionCommand cmd game =
 drinkOutcome : Int -> GameState -> GameState
 let drinkOutcome roll g =
     if roll < 35 then message "The cool water refreshes you." (inventory.healPlayer 6 g)
-    elif roll < 60 then message "The water is foul; your gut twists." (damagePlayer Poison 3 g)
+    elif roll < 60 then message "The water is foul; your gut twists." (inventory.damagePlayer Poison 3 g)
     elif roll < 80 then message "The water is brackish and joyless." g
     elif roll < 92 then message "An oily sheen coats it — it tastes of chaos." (corruption.corrupt 25 g)
     else message "The water shimmers strangely as it goes down." (corruption.gainMutation g)
@@ -957,7 +948,8 @@ let emberlanceSpell target game =
     case None -> message "The lance of flame gutters against bare stone." (game.{ mode = Playing })
     case Some victim ->
         let dmg = combat.scaleDamage Fire 12 victim
-        let victim1 = victim.{ stats = victim.stats.{ hp = max 0 (victim.stats.hp - dmg) }, alive = victim.stats.hp - dmg > 0 }
+        let vhp = victim.stats.hp - dmg
+        let victim1 = victim.{ stats = victim.stats.{ hp = max 0 vhp }, alive = vhp > 0 }
         let elem = combat.applyElemental game.content Fire victim1 (natToInt game.rng)
         let victim2 = elem.defender
         let g1 = game.{ level = game.level.{ actors = removeDeadActors (replaceActor victim2 game.level.actors) }, mode = Playing, rng = intToNat elem.rng }
@@ -1147,7 +1139,7 @@ let hazardTick game =
     case None -> game
     case Some p ->
         match (grid.getTile game.level p.pos).kind
-        case Lava -> damagePlayer Fire 6 (message "The lava sears you." game)
+        case Lava -> inventory.damagePlayer Fire 6 (message "The lava sears you." game)
         case _ -> game
 
 isVentKind : TileKind -> Bool
@@ -1252,7 +1244,7 @@ let tickWorld cmd before game =
         let hungerCost = 1 + tactics.hungerCost game.content game.player.tactic + corruption.mutationHungerTax game.content game.player.mutations
         let hungry = game.{ player = game.player.{ hunger = game.player.hunger - hungerCost }, level = game.level.{ turn = game.level.turn + 1 } }
         let wounded = tickPlayerWounds hungry
-        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then damagePlayer Physical 1 (message "You are starving." wounded) else wounded
+        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then inventory.damagePlayer Physical 1 (message "You are starving." wounded) else wounded
         let hazard = if starving.mode == Playing then hazardTick starving else starving
         let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
         let spread = if corrupted.mode == Playing then spreadChaos corrupted else corrupted

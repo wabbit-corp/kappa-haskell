@@ -95,6 +95,7 @@ let encodePlayer p =
         , field "skills" (arr (map encodeSkillEntry p.skills))
         , field "knowledge" (arr (map encodeKnowledge p.knowledge))
         , field "known_spells" (arr (map str p.knownSpells))
+        , field "crouching" (bool p.crouching)
         ]
 
 encodeLevel : Level -> JsonValue
@@ -143,6 +144,7 @@ let encodeActor a =
         , field "morale" (num a.morale)
         , field "loyalty" (num a.loyalty)
         , field "alive" (bool a.alive)
+        , field "facing" (num (directionCode a.facing))
         , field "resistances" (arr (map (\d -> str (damageTypeName d)) a.resistances))
         , field "vulnerabilities" (arr (map (\d -> str (damageTypeName d)) a.vulnerabilities))
         ]
@@ -359,7 +361,8 @@ let decodePlayer pack value =
         knowledge <- traverse decodeKnowledge knowledgeJson
         spellsJson <- optArrayField Nil "known_spells" value
         knownSpells <- traverse decodeStringJson spellsJson
-        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation False skills knowledge knownSpells)
+        crouching <- optBoolField False "crouching" value
+        pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation crouching skills knowledge knownSpells)
 
 decodeLevel : Size -> JsonValue -> IO GameError Level
 let decodeLevel fallbackSize value =
@@ -440,11 +443,12 @@ let decodeActor value =
         morale <- optIntField 8 "morale" value
         loyalty <- optIntField 0 "loyalty" value
         alive <- optBoolField True "alive" value
+        facingCode0 <- optIntField (directionCode South) "facing" value
         resistJson <- optArrayField Nil "resistances" value
         resistances <- traverse decodeDamageTypeJson resistJson
         vulnJson <- optArrayField Nil "vulnerabilities" value
         vulnerabilities <- traverse decodeDamageTypeJson vulnJson
-        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive South resistances vulnerabilities)
+        pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive (decodeDirectionCode facingCode0) resistances vulnerabilities)
 
 decodeStats : JsonValue -> IO GameError Stats
 let decodeStats value =

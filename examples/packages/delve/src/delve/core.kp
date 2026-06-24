@@ -805,6 +805,18 @@ let directionCode d =
     case SouthEast -> 7
     case Wait -> 8
 
+decodeDirectionCode : Int -> Direction
+let decodeDirectionCode n =
+    if n == 1 then South
+    elif n == 2 then West
+    elif n == 3 then East
+    elif n == 4 then NorthWest
+    elif n == 5 then NorthEast
+    elif n == 6 then SouthWest
+    elif n == 7 then SouthEast
+    elif n == 8 then Wait
+    else North
+
 instance Eq Direction =
     let (==) a b = directionCode a == directionCode b
 

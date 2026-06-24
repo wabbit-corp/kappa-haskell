@@ -49,13 +49,14 @@ let tryMoveActor actor target level =
 
 firstVisibleHostile : Actor -> Level -> Option Actor
 let firstVisibleHostile actor level =
+    let emitters = fov.emitterCells level
     block
         go : List Actor -> Option Actor
         let go actors decreases listLength actors =
             match actors
             case Nil -> None
             case a :: rest ->
-                if a.id != actor.id && a.alive && hostileTo actor a && fov.visibleFrom level actor.pos a.pos then Some a
+                if a.id != actor.id && a.alive && hostileTo actor a && fov.visibleWith level emitters actor.pos a.pos then Some a
                 else go rest
         go level.actors
 
@@ -128,6 +129,7 @@ let castSpell dt dmg0 monster player game =
 -- cones pick them up: when the candidate is that actor, its detection range is cut.
 nearestHostile : ContentPack -> Int -> Int -> Actor -> Level -> Option Actor
 let nearestHostile pack stealthId stealthCut actor level =
+    let emitters = fov.emitterCells level
     block
         go : List Actor -> Option Actor -> Option Actor
         let go xs best decreases listLength xs =
@@ -136,7 +138,7 @@ let nearestHostile pack stealthId stealthCut actor level =
             case a :: rest ->
                 let range = if a.id == stealthId then max 1 (content.sightRangeOf pack actor.species - stealthCut) else content.sightRangeOf pack actor.species
                 in
-                    if a.id != actor.id && a.alive && hostileTo actor a && fov.canSeeLit level actor.facing range actor.pos a.pos then
+                    if a.id != actor.id && a.alive && hostileTo actor a && fov.canSeeLitWith level emitters actor.facing range actor.pos a.pos then
                         let best2 =
                             match best
                             case None -> Some a
