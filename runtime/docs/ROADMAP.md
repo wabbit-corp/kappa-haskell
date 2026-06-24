@@ -35,7 +35,7 @@ the measurement that gates it where one exists.
 The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 **§3.3 suspendability/escape analysis** — which is why it is first.
 
-1. [ ] **§3.3 suspendability analysis** — the shared unblock. ← *in progress*
+1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
 2. [ ] **Unboxing Stage 0** — GC/alignment contract + canonical encoding (safe prep, parallel).
 3. [ ] **CPS loop family** — var-read normalization.
 4. [ ] **Unboxing Stage 1** — immediate-int tagging (the allocation win).
@@ -51,7 +51,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 ## Track: CPS do-kernel rewrite ([`CPS-DESIGN.md`](CPS-DESIGN.md))
 
-- [ ] **§3.3 suspendability analysis** (CPS-DESIGN §3.3, "Stage 1.5"). Replace the
+- [x] **§3.3 suspendability analysis** (CPS-DESIGN §3.3, "Stage 1.5") — DONE: `suspenderGlobals` call-graph closure in `C.hs`; transitive user-helper forks work (`fork-transitive` case). Replace the
       flat syntactic `suspendingNames` spine-head check (`C.hs`) with a sound
       call-graph reachability analysis: a global may-suspend iff it transitively
       references a suspending primitive; conservative default = may-suspend.

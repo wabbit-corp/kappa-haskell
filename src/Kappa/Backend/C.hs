@@ -95,6 +95,7 @@ data GenState = GenState
   , gsGlobals :: !(Map GName GlobalDef)
   , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
   , gsBodies :: !(Map GName Term)
+  , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
@@ -425,6 +426,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsGlobals = csGlobals cs
           , gsEvalCtx = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
           , gsBodies = csCoreBodies cs
+          , gsSuspenders = suspenderGlobals (csCoreBodies cs)
           , gsCtors = csCtors cs
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)
@@ -2651,13 +2653,13 @@ litValue = \case
 -- is lowered to a @krt2_*@ action TREE the CK-machine drives node-by-node
 -- (parking at OP_FORK/OP_AWAIT/…), instead of a @kio@ do-fn.
 --
--- Detection is by the action's spine head (the direct @fork child@ / @await f@
--- shape).  This is a syntactic fast-positive, NOT the sound effect-witness
--- analysis of CPS-DESIGN §3.3: it does not see through a user function that
--- only transitively suspends.  It is sound for the direct shape; a block that
--- suspends only transitively stays on the legacy bridge until the §3.3 analysis
--- lands.  A suspending op inside a defer/loop/if/var/return block is Stage-2
--- work and is not yet CPS-lowered ('cpsEligible' is False, so it falls back).
+-- Detection is the CPS-DESIGN §3.3 suspendability analysis: a bind whose action
+-- reaches a suspending primitive — directly OR transitively through the call
+-- graph ('suspenderGlobals') — may suspend, so the block is CPS-lowered.  This
+-- catches a user helper that forks/awaits, not only a literal @fork@/@await@.
+-- A suspending op inside a defer/loop/if/var/return block is Stage-2 work and is
+-- not yet CPS-lowered ('cpsEligible' is False); such a block is DIAGNOSED
+-- (fail-closed in 'compileDo'), not mis-run on the bridge.
 -- The wired-and-tested suspending operations, by name.  Only the surface
 -- (preludeModule) and prim (primModule) globals are matched — a user global
 -- named e.g. @join@/@race@/@timeout@ in another module never triggers CPS.
@@ -2675,32 +2677,107 @@ suspendingNames =
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
     ]
 
-spineHeadSuspends :: Term -> Bool
-spineHeadSuspends t = case fst (spineOf t) of
-  CGlob (GName m nm) ->
-    (m == primModule || m == ModuleName ["std", "prelude"]) && nm `Set.member` suspendingNames
+-- | Is g one of the suspending / CK-machine primitive ops, by module + name?
+-- Only the prelude / __prim globals match — a user global named join/race never does.
+isSuspendingPrim :: GName -> Bool
+isSuspendingPrim (GName m nm) =
+  (m == primModule || m == ModuleName ["std", "prelude"]) && nm `Set.member` suspendingNames
+
+-- | Every global referenced anywhere in a term — the call-graph out-edges used by
+-- the §3.3 transitive-suspender closure.
+termGlobals :: Term -> Set GName
+termGlobals = goT
+  where
+    goT t = case t of
+      CVar {} -> Set.empty
+      CGlob g -> Set.singleton g
+      CLam _ _ _ b -> goT b
+      CPi _ _ _ _ ty b -> goT ty <> goT b
+      CApp _ a b -> goT a <> goT b
+      CSort {} -> Set.empty
+      CLit {} -> Set.empty
+      CCtor g args -> Set.insert g (goAll args)
+      CMatch s alts -> goT s <> mconcat [maybe Set.empty goT (caGuard a) <> goT (caBody a) | a <- alts]
+      CRecordT fs -> goAll (map snd fs)
+      CRecordV fs -> goAll (map snd fs)
+      CProj e _ -> goT e
+      CProjAt e _ _ -> goT e
+      CVariantT ts -> goAll ts
+      CInject _ e -> goT e
+      CLet _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetRec _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CMeta {} -> Set.empty
+      CDo _ items -> goItems items
+      CSealE _ e -> goT e
+      CSigT _ e -> goT e
+      CThunkE e -> goT e
+      CLazyE e -> goT e
+      CForceE e -> goT e
+      CIf c th el -> goT c <> goT th <> goT el
+      CQuote _ ts -> goAll ts
+    goAll = mconcat . map goT
+    goItems = mconcat . map goItem
+    goItem it = case it of
+      KBind _ _ e -> goT e
+      KLet _ _ e -> goT e
+      KLetQ _ e me -> goT e <> maybe Set.empty (goT . snd) me
+      KExpr e -> goT e
+      KVarItem _ e -> goT e
+      KAssign r _ v -> goT r <> goT v
+      KReturn e -> goT e
+      KBreak _ -> Set.empty
+      KContinue _ -> Set.empty
+      KWhile _ c b me -> goT c <> goItems b <> maybe Set.empty goItems me
+      KFor _ _ s b me -> goT s <> goItems b <> maybe Set.empty goItems me
+      KIf alts me -> mconcat [goT c <> goItems b | (c, b) <- alts] <> maybe Set.empty goItems me
+      KDefer _ e -> goT e
+      KUsing _ a r -> goT a <> goT r
+      KSubDo _ items -> goItems items
+
+-- | §3.3 suspendability analysis: the least set of globals that TRANSITIVELY
+-- reach a suspending primitive — a global whose body references one directly, or
+-- that calls another such global (closed under the call graph).  Computed once
+-- over all recorded core bodies.  This is the SOUND replacement for the old
+-- syntactic spine-head check: it catches a user helper that forks/awaits, not
+-- just a literal @fork@/@await@.  (Higher-order suspension through a value-passed
+-- action is not modelled — a known limitation; such a head is treated as
+-- non-suspending, never miscompiled silently since it falls to the diagnostic.)
+suspenderGlobals :: Map GName Term -> Set GName
+suspenderGlobals bodies = fixpoint seed
+  where
+    refs = Map.map termGlobals bodies
+    seed = Map.keysSet (Map.filter (any isSuspendingPrim) refs)
+    fixpoint s =
+      let s' = s <> Map.keysSet (Map.filter (any (`Set.member` s)) refs)
+       in if s' == s then s else fixpoint s'
+
+-- | Does this action (its spine head) reach a suspending op?  A suspending prim,
+-- or a global in the §3.3 transitive-suspender set.
+spineHeadSuspends :: Set GName -> Term -> Bool
+spineHeadSuspends susp t = case fst (spineOf t) of
+  CGlob g -> isSuspendingPrim g || g `Set.member` susp
   _ -> False
 
 -- | Does any action in the block (recursively, including loop/if bodies) reach a
--- suspending operation?  Used both to gate CPS lowering and — when the block is
--- NOT CPS-able — to DIAGNOSE it (a suspending op in a not-yet-supported shape is
--- a hard error, not a silent fall-through to the bridge that would mis-run it).
-blockSuspends :: [KItem] -> Bool
-blockSuspends = any itemSuspends
+-- suspending operation?  Gates CPS lowering and — when the block is NOT CPS-able
+-- — DIAGNOSES it (a hard error, not a silent fall-through to the bridge).
+blockSuspends :: Set GName -> [KItem] -> Bool
+blockSuspends susp = any itemSuspends
   where
-    itemSuspends (KBind _ _ t) = spineHeadSuspends t
-    itemSuspends (KExpr t) = spineHeadSuspends t
-    itemSuspends (KAssign _ True t) = spineHeadSuspends t
-    itemSuspends (KReturn t) = spineHeadSuspends t
-    itemSuspends (KVarItem _ t) = spineHeadSuspends t
-    itemSuspends (KWhile _ _ b me) = blockSuspends b || maybe False blockSuspends me
-    itemSuspends (KFor _ _ _ b me) = blockSuspends b || maybe False blockSuspends me
-    itemSuspends (KIf alts me) = any (blockSuspends . snd) alts || maybe False blockSuspends me
-    itemSuspends (KUsing _ a _) = spineHeadSuspends a
+    s = spineHeadSuspends susp
+    itemSuspends (KBind _ _ t) = s t
+    itemSuspends (KExpr t) = s t
+    itemSuspends (KAssign _ True t) = s t
+    itemSuspends (KReturn t) = s t
+    itemSuspends (KVarItem _ t) = s t
+    itemSuspends (KWhile _ _ b me) = blockSuspends susp b || maybe False (blockSuspends susp) me
+    itemSuspends (KFor _ _ _ b me) = blockSuspends susp b || maybe False (blockSuspends susp) me
+    itemSuspends (KIf alts me) = any (blockSuspends susp . snd) alts || maybe False (blockSuspends susp) me
+    itemSuspends (KUsing _ a _) = s a
     itemSuspends _ = False
 
-cpsEligible :: [KItem] -> Bool
-cpsEligible items = blockSuspends items && all simpleLinear items
+cpsEligible :: Set GName -> [KItem] -> Bool
+cpsEligible susp items = blockSuspends susp items && all simpleLinear items
   where
     -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
     -- the runtime's OP_DOSCOPE/OP_DEFER).  The loop family (var/assign/while/
@@ -2790,19 +2867,26 @@ emitCpsCont pat rest = do
 -- the scope.  The captured environment is the current one.  A block reaching a
 -- suspending operation is CPS-lowered instead (see 'cpsEligible').
 compileDo :: Maybe Text -> [KItem] -> Gen Text
-compileDo lbl items
-  | cpsEligible items = compileDoCps items
-  -- A block that reaches a suspending op but is not a CPS-able shape would be
-  -- mis-run on the synchronous bridge (fork/await never park) — fail closed with
-  -- a clear diagnostic instead, until the relevant CPS stage lands.
-  | blockSuspends items =
-      unsupported
-        "do-kernel"
-        ( "a suspending operation (fork/await/sleepFor/…) appears in a do-block shape the "
-            <> "native backend does not yet CPS-lower (a loop, if, using, labeled defer, "
-            <> "monadic assignment, or return); see runtime/docs/CPS-DESIGN.md (Stage 2+)"
-        )
 compileDo lbl items = do
+  susp <- gets gsSuspenders
+  if cpsEligible susp items
+    then compileDoCps items
+    -- A block that reaches a suspending op but is not a CPS-able shape would be
+    -- mis-run on the synchronous bridge (fork/await never park) — fail closed
+    -- with a clear diagnostic instead, until the relevant CPS stage lands.
+    else
+      if blockSuspends susp items
+        then
+          unsupported
+            "do-kernel"
+            ( "a suspending operation (fork/await/sleepFor/…) appears in a do-block shape the "
+                <> "native backend does not yet CPS-lower (a loop, if, using, labeled defer, "
+                <> "monadic assignment, or return); see runtime/docs/CPS-DESIGN.md (Stage 2+)"
+            )
+        else compileDoLegacy lbl items
+
+compileDoLegacy :: Maybe Text -> [KItem] -> Gen Text
+compileDoLegacy lbl items = do
   fnName <- freshFn "kdo_"
   env <- gets gsEnv
   -- A do-block is a fresh scope in its own C function: its defer frames,

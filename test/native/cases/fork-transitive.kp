@@ -1,0 +1,13 @@
+module main
+
+-- A user helper that forks/awaits internally (NOT a literal fork in main's block).
+runChild : UIO Unit
+let runChild = do
+    f <- fork (printlnString "child")
+    r <- await f
+    pure ()
+
+main : UIO Unit
+let main = do
+    runChild
+    printlnString "main done"
