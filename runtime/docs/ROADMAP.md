@@ -89,7 +89,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 ## Track: Value unboxing ([`UNBOXING-DESIGN.md`](UNBOXING-DESIGN.md))
 
-- [ ] **Stage 0 — GC/alignment contract + canonical encoding** (UNBOXING §5.2/§5.4/§7).
+- [~] **Stage 0 — GC/alignment contract + canonical encoding** (UNBOXING §5.2/§5.4/§7). Alignment contract VERIFIED (`tests/align.c`: every KValue* 8-aligned, low 3 bits free); canonical-encoding audit (kbool/kunit/kint singletons) folds into the Stage-1 deref audit.
       Verify `GC_MALLOC` 8-byte alignment (low 3 bits 0) + Boehm treats odd words
       as non-pointers; canonicalize `kbool`/`kunit`/`kint`/nullary-ctor encoding to
       a single form; reserve the low 3 tag bits. **Safe, verifiable prep** that
