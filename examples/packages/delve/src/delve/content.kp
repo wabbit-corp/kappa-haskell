@@ -631,8 +631,8 @@ let mkMonster pack id species pos = actorBase pack id (actorDefBySpecies pack sp
 -- A conjured decoy that wears the player's shape. Neutral (never attacks), but
 -- hostile monsters target it; it has 1 hp and a Fading timer so it is a one-hit,
 -- few-turn distraction, not a bodyguard.
-mkPhantom : Int -> Vec2 -> Actor
-let mkPhantom id pos =
+mkPhantom : Int -> Vec2 -> Int -> Actor
+let mkPhantom id pos turns =
     Actor {
         id = id,
         species = PlayerSpecies,
@@ -643,7 +643,7 @@ let mkPhantom id pos =
         attitude = Neutral,
         faction = NeutralFaction,
         inventory = Nil,
-        wounds = [Fading 5],
+        wounds = [Fading turns],
         morale = 0,
         loyalty = 0,
         alive = True,

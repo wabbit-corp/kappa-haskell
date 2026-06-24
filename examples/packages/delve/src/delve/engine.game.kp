@@ -940,7 +940,7 @@ let phantomSpell game =
     case Some pl ->
         match freeAdjacent pl.pos game.level
         case None -> message "There is no room for a phantom." (game.{ mode = Playing })
-        case Some pos -> message "A shimmering double steps out of the air." (game.{ level = game.level.{ actors = (::) (content.mkPhantom (maxActorId game.level.actors + 1) pos) game.level.actors }, mode = Playing })
+        case Some pos -> message "A shimmering double steps out of the air." (game.{ level = game.level.{ actors = (::) (content.mkPhantom (maxActorId game.level.actors + 1) pos 5) game.level.actors }, mode = Playing })
 
 emberlanceSpell : Vec2 -> GameState -> GameState
 let emberlanceSpell target game =
@@ -1015,6 +1015,188 @@ let aimCommand cmd game =
         case None -> game.{ mode = Playing }
         case Some spell -> executeCast spell game.lookPos game
     case _ -> game.{ mode = Playing }
+
+-- ── Generic effect interpreter ───────────────────────────────────────────
+-- One system runs every authored behavior: spells, potions, scrolls, corpses,
+-- and tile hazards are all lists of Effect values fed through applyEffects.
+-- New *compositions* of these verbs are pure JSON; only a new verb needs code.
+
+targetPos : EffectContext -> GameState -> Vec2
+let targetPos ctx game =
+    match ctx.target
+    case TActor pos -> pos
+    case TTile pos -> pos
+    case TSelf ->
+        match playerActor game
+        case Some p -> p.pos
+        case None -> Vec2 0 0
+
+-- Damage (and possibly ignite/poison) whatever actor stands on a tile.
+damageActorAt : Vec2 -> DamageType -> Int -> GameState -> GameState
+let damageActorAt pos dt amount game =
+    match actorAt pos game.level.actors
+    case None -> game
+    case Some victim ->
+        let dmg = combat.scaleDamage dt amount victim
+        let vhp = victim.stats.hp - dmg
+        let victim1 = victim.{ stats = victim.stats.{ hp = max 0 vhp }, alive = vhp > 0 }
+        let elem = combat.applyElemental game.content dt victim1 (natToInt game.rng)
+        let victim2 = elem.defender
+        let g1 = game.{ level = game.level.{ actors = removeDeadActors (replaceActor victim2 game.level.actors) }, rng = intToNat elem.rng }
+        in if victim2.alive then g1 else addCorpseFor victim2 g1
+
+tileEffectsFor : ContentPack -> TileKind -> Option TileEffectDef
+let tileEffectsFor pack kind =
+    block
+        go : List TileEffectDef -> Option TileEffectDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case t :: rest -> if t.kind == kind then Some t else go rest
+        go pack.tileEffects
+
+nourishPlayer : Int -> GameState -> GameState
+let nourishPlayer amount game = game.{ player = game.player.{ hunger = game.player.hunger + amount } }
+
+boostPlayerStat : StatKind -> Int -> GameState -> GameState
+let boostPlayerStat stat n game =
+    match playerActor game
+    case None -> game
+    case Some p ->
+        let s2 =
+            match stat
+            case StrStat -> p.stats.{ str = p.stats.str + n }
+            case DexStat -> p.stats.{ dex = p.stats.dex + n }
+            case DefStat -> p.stats.{ def = p.stats.def + n }
+        in game.{ level = game.level.{ actors = replaceActor (p.{ stats = s2 }) game.level.actors } }
+
+douseTileAt : Vec2 -> GameState -> GameState
+let douseTileAt pos game =
+    match playerActor game
+    case None -> game
+    case Some pl ->
+        let t = grid.getTile game.level pos
+        in
+            match t.kind
+            case Campfire -> game.{ level = fov.refreshVisibility pl.pos (grid.setTile pos t.{ kind = Ashes } game.level) }
+            case _ -> game
+
+areaOffsets : Int -> List Vec2
+let areaOffsets r =
+    let side = 2 * r + 1
+    in
+        block
+            go : Int -> List Vec2 -> List Vec2
+            let go i acc decreases max 0 i =
+                if i <= 0 then acc
+                else
+                    let j = i - 1
+                    in go j ((::) (Vec2 (modInt j side - r) (divInt j side - r)) acc)
+            go (side * side) Nil
+
+revealAreaAt : Int -> Vec2 -> GameState -> GameState
+let revealAreaAt radius pos game = game.{ level = revealCells pos (areaOffsets radius) game.level }
+
+spawnPhantomNear : Int -> GameState -> GameState
+let spawnPhantomNear turns game =
+    match playerActor game
+    case None -> game
+    case Some pl ->
+        match freeAdjacent pl.pos game.level
+        case None -> game
+        case Some pos -> game.{ level = game.level.{ actors = (::) (content.mkPhantom (maxActorId game.level.actors + 1) pos turns) game.level.actors } }
+
+inflictStatusAt : Vec2 -> DamageType -> Int -> GameState -> GameState
+let inflictStatusAt pos dt mag game =
+    match actorAt pos game.level.actors
+    case None -> game
+    case Some a -> game.{ level = game.level.{ actors = replaceActor (a.{ wounds = (::) (combat.woundForStatus dt mag) a.wounds }) game.level.actors } }
+
+setActorAttitudeAt : Vec2 -> Attitude -> GameState -> GameState
+let setActorAttitudeAt pos att game =
+    match actorAt pos game.level.actors
+    case None -> game
+    case Some a -> game.{ level = game.level.{ actors = replaceActor (a.{ attitude = att }) game.level.actors } }
+
+setActorFactionAt : Vec2 -> Faction -> GameState -> GameState
+let setActorFactionAt pos fac game =
+    match actorAt pos game.level.actors
+    case None -> game
+    case Some a -> game.{ level = game.level.{ actors = replaceActor (a.{ faction = fac }) game.level.actors } }
+
+learnTaughtSpell : EffectContext -> GameState -> GameState
+let learnTaughtSpell ctx game =
+    match ctx.item
+    case None -> game
+    case Some it ->
+        if it.teaches == "" then game
+        else
+            let lvl =
+                match content.findSpellDef game.content it.teaches
+                case Some s -> s.skillMinLevel
+                case None -> 1
+            in game.{ player = skill.learnSpell game.content it.teaches lvl game.player }
+
+-- One effect (all verbs except Chance, which applyEffects handles so this stays
+-- non-recursive). Each verb delegates to an existing system helper.
+applyEffect : EffectContext -> Effect -> GameState -> GameState
+let applyEffect ctx fx game =
+    match fx
+    case DealDamage element amount ->
+        match ctx.target
+        case TSelf -> inventory.damagePlayer element amount game
+        case TActor pos -> damageActorAt pos element amount game
+        case TTile pos -> damageActorAt pos element amount game
+    case Heal amount clearWounds -> if clearWounds then inventory.healPlayerAndWounds amount game else inventory.healPlayer amount game
+    case Corrupt amount -> corruption.corrupt amount game
+    case AddCorruption amount -> corruption.addCorruption amount game
+    case GainMutation -> corruption.gainMutation game
+    case BoostStat stat n -> boostPlayerStat stat n game
+    case Nourish amount -> nourishPlayer amount game
+    case GrantSpeciesResist ->
+        match ctx.item
+        case Some it -> inventory.grantSpeciesResistances it.source game
+        case None -> game
+    case DouseTile -> douseTileAt (targetPos ctx game) game
+    case RevealArea radius -> revealAreaAt radius (targetPos ctx game) game
+    case RevealMap -> inventory.revealMap game
+    case MakeNoise loudness -> game.{ noise = Sound (targetPos ctx game) loudness }
+    case SpawnPhantom turns -> spawnPhantomNear turns game
+    case WardTile -> inventory.wardCurrentTile game
+    case IdentifyInventory ->
+        match playerActor game
+        case Some p -> inventory.identifyInventory p game
+        case None -> game
+    case LearnTaughtSpell -> learnTaughtSpell ctx game
+    case CleanseCorruption -> corruption.cleanseOne game
+    case Inflict element magnitude -> inflictStatusAt (targetPos ctx game) element magnitude game
+    case SetAttitude att -> setActorAttitudeAt (targetPos ctx game) att game
+    case SetFaction fac -> setActorFactionAt (targetPos ctx game) fac game
+    case Message text -> message text game
+    case Noop -> game
+    case Chance _ _ -> game
+
+-- Run a list of effects in order. Chance is intercepted here (rolls once, threads
+-- rng on both branches) so applyEffect can stay non-recursive; fuel bounds the
+-- nested Chance recursion for the termination checker.
+applyEffects : Int -> EffectContext -> List Effect -> GameState -> GameState
+let applyEffects fuel ctx fxs game decreases fuel =
+    if fuel <= 0 then game
+    else
+        match fxs
+        case Nil -> game
+        case fx :: rest ->
+            let g2 =
+                match fx
+                case Chance pct sub ->
+                    let roll = rand.range 0 99 (natToInt game.rng)
+                    let g1 = game.{ rng = intToNat roll.rng }
+                    in if roll.value < pct then applyEffects (fuel - 1) ctx sub g1 else g1
+                case _ -> applyEffect ctx fx game
+            in applyEffects (fuel - 1) ctx rest g2
+
+runEffects : EffectContext -> List Effect -> GameState -> GameState
+let runEffects ctx fxs game = applyEffects 64 ctx fxs game
 
 applyModeCommand : Command -> GameState -> GameState
 let applyModeCommand cmd game =
