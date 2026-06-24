@@ -1,0 +1,4 @@
+# Standalone-build artifacts (the Makefile output).
+build/
+*.o
+*.a

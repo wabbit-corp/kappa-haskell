@@ -1,0 +1,80 @@
+# Standalone build of the Kappa runtime (`kappart2`) + its C test harnesses.
+#
+# This does NOT need the Kappa compiler: the harnesses construct KValue IO
+# actions directly (via the kappart constructors + the krt2_* builders) and run
+# them on the real scheduler, so the runtime is testable before backend
+# integration (DESIGN.md §17).  Once integration lands, kappa.build.kp drives
+# the same sources through the Kappa build system.
+#
+#   make            build libkappart2.a and the test harnesses
+#   make test       build + run the harnesses
+#   make tsan       build with ThreadSanitizer (catch the parallel races early)
+#   make clean
+
+# The existing boxed-value runtime we layer over (KValue, Boehm GC, primitives).
+KAPPART_DIR ?= ../../../runtime
+
+CC      ?= cc
+AR      ?= ar
+# -fno-strict-aliasing: the KValue union is type-punned, like kappart itself.
+CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -fno-strict-aliasing -pthread
+CPPFLAGS += -I include -I $(KAPPART_DIR)
+
+# Homebrew prefix (Apple Silicon /opt/homebrew, Intel /usr/local) for gc/gmp/uv.
+# Override BREW=... on non-homebrew systems; on Linux the system paths are used.
+BREW ?= $(shell brew --prefix 2>/dev/null)
+ifneq ($(BREW),)
+  CPPFLAGS += -I$(BREW)/include
+  LDFLAGS  += -L$(BREW)/lib
+  export PKG_CONFIG_PATH := $(BREW)/lib/pkgconfig:$(PKG_CONFIG_PATH)
+endif
+
+# libuv via pkg-config (the reactor + blocking lane); Boehm GC; GMP (bignum).
+UV_CFLAGS := $(shell pkg-config --cflags libuv 2>/dev/null)
+UV_LIBS   := $(shell pkg-config --libs   libuv 2>/dev/null || echo -luv)
+CPPFLAGS  += $(UV_CFLAGS)
+# Boehm needs GC_THREADS for the multicore scheduler (parallel mark + thread regs).
+CPPFLAGS  += -DGC_THREADS
+# -pthread (CFLAGS) + libuv's pkg-config -lpthread already cover threads.
+LIBS      := $(UV_LIBS) -lgc -lgmp
+
+RT_SRC := $(wildcard native/*.c)
+RT_OBJ := $(RT_SRC:.c=.o)
+# kappart.c is the value model + GC; compile it into our archive too.
+KAPPART_OBJ := build/kappart.o
+
+LIB := libkappart2.a
+
+TEST_SRC := $(wildcard test/*.c)
+TEST_BIN := $(TEST_SRC:test/%.c=build/%)
+
+.PHONY: all test clean tsan
+all: $(LIB) $(TEST_BIN)
+
+$(LIB): $(RT_OBJ) $(KAPPART_OBJ)
+	$(AR) rcs $@ $^
+
+native/%.o: native/%.c include/kappart2.h native/internal.h
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+build/kappart.o: $(KAPPART_DIR)/kappart.c | build
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+build/%: test/%.c $(LIB) | build
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< $(LIB) $(LIBS) -o $@
+
+build:
+	mkdir -p build
+
+test: all
+	@set -e; for t in $(TEST_BIN); do echo "=== $$t ==="; $$t; done
+
+# ThreadSanitizer build — the scheduler/STM/reactor are concurrent; run the
+# harnesses under tsan in CI to catch data races the design must avoid.
+tsan: CFLAGS += -fsanitize=thread -DKRT2_TSAN
+tsan: clean all
+	@set -e; for t in $(TEST_BIN); do echo "=== tsan $$t ==="; $$t; done
+
+clean:
+	rm -f $(RT_OBJ) $(LIB)
+	rm -rf build
