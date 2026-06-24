@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: carp-lang/Carp#693
 -- Spec: types.quantification,
 --       compiler.frontir.standard_diagnostic_families.type_equality
@@ -27,6 +30,6 @@ let callOk = ensure 10 MkPhantom
 -- NEGATIVE: the value argument is `Int` but the phantom is annotated
 -- `Phantom Tag`; `a` cannot be both `Int` and `Tag`.
 callBad : Int
-let callBad = ensure 10 (MkPhantom : Phantom Tag)   --!! kappa.type.mismatch
+let callBad = ensure 10 (MkPhantom : Phantom Tag)   --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

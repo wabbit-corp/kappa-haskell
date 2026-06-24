@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.type.literal-domain-mismatch (E_NUMERIC_LITERAL_DOMAIN_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issues: BQN docs/types.md (*"a character is a Unicode code point …
 --   however, it is distinct from this number as a BQN value"*);
 -- BQN tests/test/cases/prim.bqn rejected: `97-'a'` (Integer minus Char is
@@ -17,6 +20,6 @@ let letterA = 'a'
 -- NEGATIVE: comparing UnicodeScalar to Integer with `==` is a type
 -- mismatch because the operands have unrelated types.
 isSame : Bool
-let isSame = letterA == 97        --!! kappa.type.mismatch
+let isSame = letterA == 97        --!! kappa.type.literal-domain-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch

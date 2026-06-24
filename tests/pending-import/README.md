@@ -5,7 +5,15 @@ corpus). These did **not** pass against the current Kappa compiler with a mechan
 convert (`mode analyze`→`check`, `anonlang.`→`kappa.`, `Anon`→`Kappa`). They are staged
 here — OUTSIDE `tests/conformance`, so the gate ignores them — to fix & import later.
 
-360 sibling tests DID import cleanly and live in `tests/conformance/imported-anon/`.
+**391** sibling tests now live in `tests/conformance/imported-anon/`: 360 that
+imported cleanly, plus 31 recovered after two compiler/harness fixes —
+6 rescued by the inline `--!! kappa.family` marker fix (§T.5.1 `matchCF`), and
+25 re-pointed to Kappa's (more specific) diagnostic family where it faithfully
+classifies the same error (e.g. `type.mismatch` → `application.argument-mismatch`,
+`constructor.arity` → `type.mismatch`, `quantity.unsatisfied` →
+`positive-lower-bound`). Those 31 have been removed from the categories below, so
+the per-category counts here are now approximate (they reflect the original
+staging pass).
 
 ## Categories
 

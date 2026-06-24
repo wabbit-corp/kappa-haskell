@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: MOJO-1307
 -- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
 --       types.functions
@@ -34,11 +37,11 @@ addWithDefault : Int -> Int
 let addWithDefault a = a + 0     -- conceptually: second arg elided
 
 -- NEGATIVE: `addWithDefault` has type `Int -> Int` but applyTwo expects
--- `Int -> Int -> Int`.  Arity mismatch → kappa.type.mismatch.
+-- `Int -> Int -> Int`.  Arity mismatch → kappa.application.argument-mismatch.
 badCall : Int
-let badCall = applyTwo addWithDefault 3 4  --!! kappa.type.mismatch
+let badCall = applyTwo addWithDefault 3 4  --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- POSITIVE: a function that genuinely takes two arguments satisfies the
 -- higher-order parameter even when it has the same name as one with defaults.

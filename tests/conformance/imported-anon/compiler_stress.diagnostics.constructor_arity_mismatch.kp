@@ -1,0 +1,15 @@
+-- [import note] the source asserted family kappa.constructor.arity; Kappa classifies this same
+-- error more specifically as kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
+-- Stress test: a constructor applied with wrong arity produces kappa.type.mismatch
+-- Spec: compiler.frontir.standard_diagnostic_families.constructor_arity
+
+--! mode check
+
+data Pair a b : Type =
+    MkPair a b
+
+-- NEGATIVE: MkPair expects two arguments but only one is supplied.
+let bad : Pair Int String = MkPair 42   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch

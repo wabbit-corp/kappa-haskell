@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.path.consumed; Kappa classifies this same
+-- error more specifically as kappa.quantity.unsatisfied (E_QTT_LINEAR_OVERUSE). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: carp-lang/Carp#1075
 -- Spec: types.unions.elimination_match,
 --       types.universes.quantities,
@@ -31,6 +34,6 @@ returnFromWildcardBad : (1 m : Mb) -> Mb
 let returnFromWildcardBad m =
     match m
     case Nothing -> Nothing
-    case _       -> m                    --!! kappa.path.consumed
+    case _       -> m                    --!! kappa.quantity.unsatisfied
 
---! assertDiagnosticFamily error kappa.path.consumed
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied

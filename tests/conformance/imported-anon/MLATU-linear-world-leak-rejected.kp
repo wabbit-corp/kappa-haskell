@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.quantity.unsatisfied; Kappa classifies this same
+-- error more specifically as kappa.quantity.positive-lower-bound (E_QTT_LINEAR_DROP). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: MLatu #25 ("Add a substructural type system"); PR#26
 --   ("Linear types"). A linear World handle must be consumed; dropping
 --   it without using it violates the substructural discipline. The
@@ -6,7 +9,7 @@
 -- Spec: types.universes.quantities,
 --       types.universes.quantities.linear_discharge_discard_destructor_use,
 --       compiler.frontir.standard_diagnostic_families.quantity_ownership
---       (family kappa.quantity.unsatisfied).
+--       (family kappa.quantity.positive-lower-bound).
 
 module test
 
@@ -18,6 +21,6 @@ data World : Type =
 -- NEGATIVE: a linear World parameter is ignored in the body — the
 -- linear obligation is never satisfied.
 leak : (1 w : World) -> Unit
-let leak w = ()                            --!! kappa.quantity.unsatisfied
+let leak w = ()                            --!! kappa.quantity.positive-lower-bound
 
---! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound

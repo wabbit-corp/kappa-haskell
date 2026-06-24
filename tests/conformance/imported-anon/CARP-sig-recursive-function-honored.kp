@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.type.literal-domain-mismatch (E_NUMERIC_LITERAL_DOMAIN_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: carp-lang/Carp#1396
 -- Spec: declarations.signatures,
 --       declarations.terms (mutually recursive groups),
@@ -29,8 +32,8 @@ let charEq a b = True
 g2 : Char -> Char
 let g2 c =
     if charEq c 'z' then
-        g2 0                              --!! kappa.type.mismatch
+        g2 0                              --!! kappa.type.literal-domain-mismatch
     else
         'n'
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch

@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issues: PIKELET-200 (PR: implement dependent function types),
 --               PIKELET-110 (fix ambiguous dependent function syntax),
 --               PIKELET-193 (PR: avoid ambiguous syntax in function types).
@@ -36,6 +39,6 @@ let idTy = (A : Type0) -> A -> A
 -- NEGATIVE: applying the polymorphic identity at a non-type value (passing
 -- a runtime Nat where a `Type0` is expected) is rejected.
 bad : Nat
-let bad = id 5 7    --!! kappa.type.mismatch
+let bad = id 5 7    --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

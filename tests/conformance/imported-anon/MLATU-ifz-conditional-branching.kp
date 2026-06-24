@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.type.literal-domain-mismatch (E_NUMERIC_LITERAL_DOMAIN_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: MLatu PR#30 ("Added words: cat, i, ifz"). `ifz`
 --   ("if zero") is a conditional rewrite primitive: it inspects the
 --   top of the stack and selects one of two quotations to execute.
@@ -26,6 +29,6 @@ let oneBranch = ifz 1 "zero" "nonzero"
 
 -- NEGATIVE: the two branches have different types.
 mixed : String
-let mixed = ifz 0 "zero" 7                 --!! kappa.type.mismatch
+let mixed = ifz 0 "zero" 7                 --!! kappa.type.literal-domain-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch

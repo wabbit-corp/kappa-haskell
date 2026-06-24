@@ -1,13 +1,16 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issues: Circom constraint-generation.md ("All constraints must be quadratic
 --               of the form A*B + C = 0, where A, B and C are linear combinations
 --               of signals"); circom#161 (non-quadratic constraint error when user
 --               provides a product of three signals).
 -- Spec: compiler.frontir.standard_diagnostic_families.type_equality
---       (family kappa.type.mismatch).
+--       (family kappa.application.argument-mismatch).
 -- Kappa spec rule (§SA-CIRCOM-02):
 --   "A circuit constraint expression must be at most quadratic (degree ≤ 2). An
 --    expression of degree 3 or higher used in a constraint position must be
---    rejected with kappa.type.mismatch, since it is not of the required
+--    rejected with kappa.application.argument-mismatch, since it is not of the required
 --    Quadratic type."
 
 --! mode check
@@ -31,14 +34,14 @@ let goodLinear (a b : Int) : Unit =
 
 -- NEGATIVE: a*b*c is degree 3 (cubic); passing a Cubic where Quadratic is required.
 let badCubic (a b c : Int) : Unit =
-    addConstraint (Cubic { a = a, b = b, c = c })   --!! kappa.type.mismatch
+    addConstraint (Cubic { a = a, b = b, c = c })   --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- NEGATIVE: nested product of four signals (degree 4).
 data Quartic : Type = Quartic { factors : Int }
 
 let badQuartic (a b c d : Int) : Unit =
-    addConstraint (Quartic { factors = a * b * c * d })   --!! kappa.type.mismatch
+    addConstraint (Quartic { factors = a * b * c * d })   --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

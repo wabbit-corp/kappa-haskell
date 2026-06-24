@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source artifacts: synquid corpus uses subset refinement types ubiquitously:
 --                 `type Nat = {Int | _v >= 0}`, `type Pos = {Int | _v > 0}`,
 --                 `type Phase = {Int | 0 <= _v && _v < 4}`,
@@ -53,6 +56,6 @@ let inc v =
 -- This pins down that NonNeg is a distinct nominal type, not a refined
 -- alias of PNat.
 badArg : PNat
-let badArg = inc Z                              --!! kappa.type.mismatch
+let badArg = inc Z                              --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

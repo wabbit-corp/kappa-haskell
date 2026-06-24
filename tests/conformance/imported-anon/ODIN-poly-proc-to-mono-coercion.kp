@@ -1,11 +1,14 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issues: odin#5292 (missing errors when accepting proc parameters which
 --               use parapoly when they don't ask for parapoly),
 --               odin#4045 (disabled polymorphic procedure error for different parameter types)
--- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.application.argument-mismatch),
 --       types.quantification
 -- A function value of the wrong type must be rejected when passed to a
 -- higher-order function slot. In particular, passing a function whose argument
--- or return type differs from the expected signature must emit kappa.type.mismatch.
+-- or return type differs from the expected signature must emit kappa.application.argument-mismatch.
 --
 -- NOTE (spec gap): the original Odin obligation ("polymorphic function is not
 -- coercible to a monomorphic slot") is not straightforwardly portable to Kappa,
@@ -28,9 +31,9 @@ let okApply : Int = applyToTen double
 let returnStr (x : Int) : String = ""
 
 let badApplyWrongReturn : Int =
-    applyToTen returnStr    --!! kappa.type.mismatch
+    applyToTen returnStr    --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- A higher-order function that takes a String -> String function.
 let withStringFn (f : String -> String) : String = f "hello"
@@ -43,14 +46,14 @@ let okWithString : String = withStringFn appendBang
 
 -- NEGATIVE: wrong-typed monomorphic function (Int -> Int ≠ String -> String).
 let badWithWrongMono : String =
-    withStringFn double    --!! kappa.type.mismatch
+    withStringFn double    --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
 
 -- NEGATIVE: wrong argument type (Int -> Int passed where String -> Int expected).
 let applyToStr2 (f : String -> Int) : Int = 0
 
 let badArgType : Int =
-    applyToStr2 double    --!! kappa.type.mismatch
+    applyToStr2 double    --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

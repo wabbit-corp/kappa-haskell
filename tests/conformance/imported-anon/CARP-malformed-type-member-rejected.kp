@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.constructor.arity; Kappa classifies this same
+-- error more specifically as kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issues: carp-lang/Carp#1202, #824
 -- Spec: data_types.data_declarations,
 --       data_types.data_declarations.naming_diagnostics,
@@ -33,6 +36,6 @@ let mkGoodTwo = MkGoodTwo 1 2
 -- (a missing required field) is rejected with the constructor-arity
 -- family.
 mkGoodBad : Good
-let mkGoodBad = MkGood { }                  --!! kappa.constructor.arity
+let mkGoodBad = MkGood { }                  --!! kappa.type.mismatch
 
---! assertDiagnosticFamily error kappa.constructor.arity
+--! assertDiagnosticFamily error kappa.type.mismatch

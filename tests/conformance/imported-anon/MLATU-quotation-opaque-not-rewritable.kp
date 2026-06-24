@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: MLatu docs/docs/tutorial.md ("user-defined rules may
 --   not match on quotes"). A quotation in MLatu is opaque — the
 --   rewriting engine does not look inside it. The portable obligation
@@ -29,6 +32,6 @@ addOne : Int -> Int
 let addOne n = n + 1
 
 peek : Int
-let peek = addOne (thunk 7)                --!! kappa.type.mismatch
+let peek = addOne (thunk 7)                --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

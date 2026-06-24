@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: Kitten #27 (`def apply (A... (A... -> B...) -> B...):
 --   __apply`, and analogously for `compose`; the Kitten obligation is
 --   that higher-order callable positions are row-polymorphic so that
@@ -32,6 +35,6 @@ let useCompose = compose (\y -> y * 2) (\y -> y + 1) 5
 -- chaining types: the inner returns String, but the outer demands Int.
 useBad : Int
 let useBad =
-    compose (\y -> y + 1) (\s -> "x") "hi"   --!! kappa.type.mismatch
+    compose (\y -> y + 1) (\s -> "x") "hi"   --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

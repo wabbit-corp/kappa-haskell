@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: Uiua #107 (Stack was empty error when importing — `use
 --   "ReplaceIndex" Array` fires "Stack was empty when evaluating argument
 --   2" without identifying which application site is missing an
@@ -10,7 +13,7 @@
 --
 -- When a callable value is applied to an argument that cannot satisfy
 -- the selected binder, the diagnostic MUST be
--- E_APPLICATION_ARGUMENT_MISMATCH (family kappa.type.mismatch). The
+-- E_APPLICATION_ARGUMENT_MISMATCH (family kappa.application.argument-mismatch). The
 -- user-visible diagnostic must identify the offending callee and the
 -- mismatched argument; it must not collapse to a generic "stack empty"
 -- message.
@@ -44,4 +47,4 @@ badArgType2 : Int
 let badArgType2 = binary "no" 1              --!! E_APPLICATION_ARGUMENT_MISMATCH
 
 --! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

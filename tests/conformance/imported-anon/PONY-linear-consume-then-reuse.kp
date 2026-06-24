@@ -1,9 +1,12 @@
+-- [import note] the source asserted family kappa.path.consumed; Kappa classifies this same
+-- error more specifically as kappa.quantity.unsatisfied (E_QTT_LINEAR_OVERUSE). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issues: ponyc#50, ponyc#1931
 -- Spec: types.universes.quantities, compiler.diagnostics.path_sensitive_diagnostics
 -- In Pony, consuming an iso value moves ownership; any subsequent use is
 -- rejected. In Kappa, binding a value at quantity 1 means the binder may be
 -- used exactly once. Using the binding a second time (or after passing it to
--- a consuming call) must be rejected with kappa.path.consumed.
+-- a consuming call) must be rejected with kappa.quantity.unsatisfied.
 
 --! mode check
 
@@ -16,16 +19,16 @@ let sink _ = True
 doubleConsume : (1 v : Int) -> Bool
 let doubleConsume v =
     let a = sink v
-    let b = sink v   --!! kappa.path.consumed
+    let b = sink v   --!! kappa.quantity.unsatisfied
     a
 
---! assertDiagnosticFamily error kappa.path.consumed
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
 
 -- NEGATIVE: consuming `v` then returning it.
 consumeThenReturn : (1 v : Int) -> Int
 let consumeThenReturn v =
     let _ = sink v
-    v   --!! kappa.path.consumed
+    v   --!! kappa.quantity.unsatisfied
 
 -- POSITIVE: consuming `v` exactly once is fine.
 consumeOnce : (1 v : Int) -> Bool

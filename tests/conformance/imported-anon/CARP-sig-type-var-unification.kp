@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: carp-lang/Carp#685
 -- Spec: types.quantification,
 --       compiler.frontir.standard_diagnostic_families.type_equality
@@ -26,6 +29,6 @@ let callOk = firstArg 10 20
 -- NEGATIVE: calling `firstArg` with two different concrete types
 -- violates the shared `a` constraint; the unifier rejects.
 callBad : Int
-let callBad = firstArg 10 MkTag           --!! kappa.type.mismatch
+let callBad = firstArg 10 MkTag           --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

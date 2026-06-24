@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: MLatu #21 ("Switch from traits to type classes"). The
 --   proposed `instance Eq Int { define = (Int, Int -> Bool) ... }`
 --   states that the method type is fixed by the instance head; passing
@@ -6,7 +9,7 @@
 --   each call site.
 -- Spec: traits.instances, traits.instances.resolution_algorithm,
 --       compiler.frontir.standard_diagnostic_families.type_equality
---       (family kappa.type.mismatch).
+--       (family kappa.application.argument-mismatch).
 
 module test
 
@@ -21,6 +24,6 @@ instance Eq Int =
 -- NEGATIVE: dispatch picks Eq Int from the first argument; the second
 -- argument is then required to have type Int but is given as String.
 mixed : Bool
-let mixed = eq 7 "seven"                   --!! kappa.type.mismatch
+let mixed = eq 7 "seven"                   --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

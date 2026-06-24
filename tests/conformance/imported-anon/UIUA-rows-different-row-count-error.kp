@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.application.argument-mismatch (E_APPLICATION_ARGUMENT_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: Uiua #287 ("Unable to row sum [n] + [x_n] shapes ?" —
 --   row-wise addition of arrays with different row counts fails with a
 --   confusing message), Uiua #301 ("Unclear error message when calling
@@ -15,7 +18,7 @@
 -- See UIUA-SA-03 for the spec gap covering shape-aware obligations.
 -- This fixture pins down the positive case (matching-length zip is
 -- accepted) plus the type-domain mismatch case (element-type
--- disagreement is rejected with kappa.type.mismatch).
+-- disagreement is rejected with kappa.application.argument-mismatch).
 
 module test
 
@@ -42,8 +45,8 @@ let addOk = addRows [1, 2, 3] [10, 20, 30]
 
 -- NEGATIVE: row-wise add applied to a String list where Int is
 -- expected. The element-type mismatch is reported at the call site as
--- kappa.type.mismatch (carrying portable alias E_APPLICATION_ARGUMENT_MISMATCH).
+-- kappa.application.argument-mismatch (carrying portable alias E_APPLICATION_ARGUMENT_MISMATCH).
 addBadElement : List Int
-let addBadElement = addRows ["a", "b"] [1, 2]    --!! kappa.type.mismatch
+let addBadElement = addRows ["a", "b"] [1, 2]    --!! kappa.application.argument-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch

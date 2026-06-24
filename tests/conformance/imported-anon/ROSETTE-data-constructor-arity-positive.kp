@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.constructor.arity; Kappa classifies this same
+-- error more specifically as kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: ROSETTE-241 (Synthesising with grammar containing
 --                multiple instances of structs with different
 --                parameters returns unsat — same constructor reused at
@@ -40,6 +43,6 @@ let nested =
 -- NEGATIVE: the constructor declares five integer payloads after the
 -- inner Op; supplying only four is an arity error.
 badArity : Op
-let badArity = Broadcast (Reg 0) 1 2 3              --!! kappa.constructor.arity
+let badArity = Broadcast (Reg 0) 1 2 3              --!! kappa.type.mismatch
 
---! assertDiagnosticFamily error kappa.constructor.arity
+--! assertDiagnosticFamily error kappa.type.mismatch

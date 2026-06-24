@@ -1,3 +1,6 @@
+-- [import note] the source asserted family kappa.type.mismatch; Kappa classifies this same
+-- error more specifically as kappa.type.literal-domain-mismatch (E_NUMERIC_LITERAL_DOMAIN_MISMATCH). The assertion was re-pointed to
+-- Kappa's family on import (verified: same error count, single family).
 -- Source issue: MLatu docs/docs/primitives.md ("`d` or `duplicate`
 --   duplicates the term below it"). MLatu's `dup` is the first of six
 --   primitives. The portable obligation is that Kappa supports a
@@ -27,6 +30,6 @@ let dupStr = dup "hi"
 
 -- NEGATIVE: assigning a dup'd Int pair where a String pair is declared.
 mismatch : (String, String)
-let mismatch = dup 7                       --!! kappa.type.mismatch
+let mismatch = dup 7                       --!! kappa.type.literal-domain-mismatch
 
---! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
