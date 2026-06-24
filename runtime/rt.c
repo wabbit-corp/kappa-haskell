@@ -120,6 +120,9 @@ KValue *krt2_shutdown_scope(KValue *s)    { return op1(OP_SHUTDOWN_SCOPE, "rt.sh
 KValue *krt2_monitor(KValue *f)           { return op1(OP_MONITOR, "rt.monitor", f); }
 KValue *krt2_await_monitor(KValue *m)     { return op1(OP_AWAIT_MONITOR, "rt.awaitMonitor", m); }
 KValue *krt2_demonitor(KValue *m)         { (void)m; return krt2_pure(kunit()); } /* drop is a no-op (§18.1.8) */
+/* demonitor delivers Unit immediately (a no-op): a kpf shim returning the Unit
+ * VALUE works on both the bridge and the CK-machine, so it needs no krt2_ node. */
+KValue *kpf_demonitor(KValue **a)         { (void)a; return kunit(); }
 
 /* withScope: newScope; run `use scope`; shut the scope down on EVERY exit
  * (normal, failure, interrupt) while PRESERVING the body's result — i.e.

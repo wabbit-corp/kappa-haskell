@@ -92,6 +92,27 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       parity). `race.kp` → `1`, `timeout.kp` → `TIMED-OUT\n42\n`, and a
       `ScopeShutdown` interrupt-cause match all ≡ interpreter (`race`, `timeout`,
       `interrupt-cause` cases).
+- [x] **`withScope` / `interrupt` / `interruptFork` / `demonitor` wired** (§19.5/
+      §18.1.4/§18.1.8) — `withScope`→`krt2_with_scope`, `__interruptWait`→
+      `krt2_interrupt_as`, `__interruptNoWait`→`krt2_interrupt_fork_as` (nodes);
+      `demonitor` a kpf no-op shim.  `scope`/`monitor`/`interrupt` conformance
+      tests run native ≡ interpreter (`withscope`/`monitor`/`interrupt` cases).
+- [ ] **Native effects-suite coverage — remaining gaps** (from a full native
+      sweep of `tests/conformance/effects/`; ~18 run-tests pass native):
+      - `awaitPromise` — make it a `.kp` def over `awaitPromiseExit` (like `join`),
+        not a prim (no `krt2_await_promise` exists). Unblocks `promise`.
+      - `durationCompare` → `Ordering` — needs `LT`/`EQ`/`GT` fixed `KCT_` ids
+        (same pattern as the result ctors). Unblocks `timer-duration`.
+      - `newFiberRef` + FiberRef copy-on-fork (§18.1.7). Unblocks `fiber-local`.
+      - `scheduler-retry` MISMATCH — needs REAL STM retry/parking (the journaled
+        `krt2_atomically`/`OP_ATOMICALLY`, §18.1.13); the single-agent shim can't
+        block-and-resume across fibers.
+      - **`bracket` finalizer-on-interrupt** — surfaces the §3.3 HIGHER-ORDER
+        limitation: `bracketM = ioBind acquire (\r -> finallyIO (use r) …)` — the
+        suspension flows through the `use` PARAMETER (a `CVar`, not a global), so
+        `spineHeadSuspends` is False, `finallyIO` stays on the legacy bridge, and
+        the release is skipped on interrupt. Fix = model higher-order suspension
+        in §3.3 (a value-passed action param taints its callee as may-suspend).
 - [x] **Native result-ctor matching — COMPLETE** (§28 shapes) — every runtime-built
       result ctor now carries a FIXED `KCT_*` id shared with codegen
       (`builtinCtorTag`): `Exit`/`Cause`/`Option` (done earlier) PLUS the

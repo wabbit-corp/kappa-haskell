@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "scope-shutdown\n3\n"
+
+-- §18.1.8 explicit supervision scopes: shutdownScope interrupts every attached
+-- fiber with tag ScopeShutdown and waits; withScope brackets a fresh scope.
+module main
+
+sleeper : UIO Int
+let sleeper = do
+    sleepFor (seconds 10)
+    ioPure 0
+
+three : UIO Int
+let three = ioPure 3
+
+useScope : Scope -> UIO Int
+let useScope sc = do
+    f <- forkIn sc three
+    ex <- await f
+    match ex
+      case Success v -> ioPure v
+      case Failure c -> ioPure 0
+
+main : UIO Unit
+let main = do
+    sc <- newScope
+    f <- forkIn sc sleeper
+    shutdownScope sc
+    ex <- await f
+    match ex
+    case Success v -> printlnString "completed"
+    case Failure (Interrupt (MkInterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
+    case Failure c -> printlnString "other"
+    r <- withScope useScope
+    printlnString (showInt r)

@@ -420,6 +420,8 @@ basePrims =
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen", "throwIO", "catchIO", "finallyIO"
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
+    , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
+    , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "check"
@@ -1880,6 +1882,8 @@ primEntries = Map.fromList
   , ("shutdownScope", PrimEntry "kpf_shutdown_scope" 1 False)
   , ("monitor", PrimEntry "kpf_monitor" 1 False)
   , ("awaitMonitor", PrimEntry "kpf_await_monitor" 1 False)
+  , ("demonitor", PrimEntry "kpf_demonitor" 1 True) -- §18.1.8 no-op -> Unit
+
   -- §18.1.13 STM, single-agent semantics (TVar = cell, atomically runs the
   -- transaction directly — matching the reference interpreter)
   , ("newTVar", PrimEntry "kpf_io_newTVar" 1 True)
@@ -2045,6 +2049,24 @@ compileAppGlob g sargs term = do
               dc <- compileErasableArg d
               ic <- compileErasableArg io
               pure ("krt2_timeout(" <> dc <> ", " <> ic <> ")")
+        -- §19.5 withScope: run a body with a fresh structured scope, shutting it
+        -- down on exit (krt2_with_scope is a krt2_bind tree the CK-machine drives).
+        Just "withScope"
+          | [use] <- [a | (Expl, a) <- sargs] -> do
+              uc <- compileErasableArg use
+              pure ("krt2_with_scope(" <> uc <> ")")
+        -- §18.1.4 interruption: __interruptWait (request + await termination) and
+        -- __interruptNoWait (request, return at once) — OP_INTERRUPT[_FORK] nodes.
+        Just "__interruptWait"
+          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
+              cc <- compileErasableArg cause
+              fc <- compileErasableArg fib
+              pure ("krt2_interrupt_as(" <> cc <> ", " <> fc <> ")")
+        Just "__interruptNoWait"
+          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
+              cc <- compileErasableArg cause
+              fc <- compileErasableArg fib
+              pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
@@ -2447,6 +2469,9 @@ cpsNodeApp term = do
         (Just "__reraiseCause", [_]) -> True
         (Just "__race", [_, _]) -> True
         (Just "__timeout", [_, _]) -> True
+        (Just "withScope", [_]) -> True
+        (Just "__interruptWait", [_, _]) -> True
+        (Just "__interruptNoWait", [_, _]) -> True
         _ -> False
     _ -> pure False
 
@@ -2799,6 +2824,7 @@ suspendingNames =
     , "__forkRun", "__forkDaemon", "__awaitFiber" -- prims (__prim)
     , "cede", "sleepFor", "newPromise", "completePromise", "awaitPromiseExit"
     , "__race", "__timeout" -- §18.1.6 race/timeout (compile to krt2_race/krt2_timeout nodes)
+    , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 scope + interruption nodes
       -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
