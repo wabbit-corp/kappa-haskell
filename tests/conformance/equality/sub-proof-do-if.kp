@@ -1,0 +1,19 @@
+-- §16.4.2: an IO-kernel do-block `if` STATEMENT pushes its condition as
+-- guard-success evidence into the then-suite (as the if-EXPRESSION already
+-- does), so the condition discharges branch-local checked-subtraction.
+--! assertNoErrors
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doIfOk : Nat -> Nat -> UIO Unit
+let doIfOk x y = do
+    if leInt (natToInt y) (natToInt x) then
+        let d = consume (x - y)
+        printlnString "ok"

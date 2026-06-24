@@ -1,0 +1,20 @@
+-- §16.4.2: each `elif` then-suite gets its OWN condition as evidence (a
+-- body runs only when its condition evaluated True — sound per alt).
+--! assertNoErrors
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doElifOk : Nat -> Nat -> UIO Unit
+let doElifOk x y = do
+    if leInt (natToInt x) (natToInt y) then
+        printlnString "le"
+    elif leInt (natToInt y) (natToInt x) then
+        let d = consume (x - y)
+        printlnString "ge"

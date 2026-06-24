@@ -9102,7 +9102,19 @@ elabDoIOItems mlabel _sp ctx mexp items = do
             refs <- condRefines c cond
             let cR = refineCtx refs c
             condTm <- check cR (desugarBang cond) (VGlobN prelBool [])
+            -- §16.4.2: the condition holds while checking its then-suite,
+            -- so push it as boolean evidence (the §3.2.3 proof source the
+            -- if-expression path already feeds), e.g. so
+            -- `do { if y <= x then consume (x - y) }` discharges the
+            -- checked-subtraction obligation. This is sound per-alt: a
+            -- body runs only when its own condition evaluated True. The
+            -- else-suite and the elif preceding-conditions-false facts
+            -- need accumulated-negation threading, and a `while` condition
+            -- needs §18.6.2 versioned `var`s — both deferred.
+            oldBool <- gets csBoolFacts
+            modify' $ \st -> st {csBoolFacts = (condTm, True) : csBoolFacts st}
             bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
+            modify' $ \st -> st {csBoolFacts = oldBool}
             pure (condTm, bodyKs)
           elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
           -- §8.2.2A postdominating refinement: when every branch except
