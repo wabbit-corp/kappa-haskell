@@ -33,8 +33,7 @@
       "sight_range": 9,
       "hearing": 0,
       "language": "",
-      "corpse_nutrition": 0,
-      "corpse_effect": "none"
+      "corpse_nutrition": 0
     },
     {
       "id": "hound",
@@ -66,8 +65,7 @@
       "sight_range": 7,
       "hearing": 6,
       "language": "",
-      "corpse_nutrition": 0,
-      "corpse_effect": "none"
+      "corpse_nutrition": 0
     },
     {
       "id": "rat",
@@ -98,8 +96,7 @@
       "sight_range": 5,
       "hearing": 2,
       "language": "",
-      "corpse_nutrition": 80,
-      "corpse_effect": "none"
+      "corpse_nutrition": 80
     },
     {
       "id": "bat",
@@ -131,8 +128,7 @@
       "sight_range": 6,
       "hearing": 10,
       "language": "",
-      "corpse_nutrition": 60,
-      "corpse_effect": "none"
+      "corpse_nutrition": 60
     },
     {
       "id": "goblin",
@@ -163,8 +159,7 @@
       "sight_range": 7,
       "hearing": 0,
       "language": "goblin",
-      "corpse_nutrition": 120,
-      "corpse_effect": "none"
+      "corpse_nutrition": 120
     },
     {
       "id": "kobold",
@@ -195,8 +190,7 @@
       "sight_range": 7,
       "hearing": 2,
       "language": "goblin",
-      "corpse_nutrition": 100,
-      "corpse_effect": "none"
+      "corpse_nutrition": 100
     },
     {
       "id": "orc",
@@ -231,8 +225,7 @@
       "sight_range": 7,
       "hearing": 0,
       "language": "orcish",
-      "corpse_nutrition": 160,
-      "corpse_effect": "none"
+      "corpse_nutrition": 160
     },
     {
       "id": "skeleton",
@@ -264,7 +257,6 @@
       "hearing": -2,
       "language": "",
       "corpse_nutrition": 0,
-      "corpse_effect": "none",
       "resistances": [
         "cold",
         "poison"
@@ -306,7 +298,6 @@
       "hearing": -2,
       "language": "",
       "corpse_nutrition": 400,
-      "corpse_effect": "heal",
       "resistances": [
         "cold"
       ],
@@ -360,7 +351,6 @@
       "hearing": 2,
       "language": "chaos",
       "corpse_nutrition": 130,
-      "corpse_effect": "taint",
       "ranged_element": "chaos",
       "corpse_effects": [
         {
@@ -406,7 +396,6 @@
       "hearing": 4,
       "language": "chaos",
       "corpse_nutrition": 150,
-      "corpse_effect": "taint",
       "resistances": [
         "chaos"
       ],
@@ -459,7 +448,6 @@
       "hearing": 6,
       "language": "draconic",
       "corpse_nutrition": 600,
-      "corpse_effect": "might",
       "resistances": [
         "fire"
       ],
@@ -509,8 +497,7 @@
       "sight_range": 7,
       "hearing": 0,
       "language": "common",
-      "corpse_nutrition": 140,
-      "corpse_effect": "none"
+      "corpse_nutrition": 140
     }
   ]
 }

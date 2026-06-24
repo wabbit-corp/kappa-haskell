@@ -403,10 +403,9 @@ let decodeSpell value =
         skillRequired <- stringField "skill_required" value
         skillMinLevel <- intField "skill_min_level" value
         needsTarget <- boolField "needs_target" value
-        eff <- stringField "effect" value
         flavor <- optStringField "" "flavor" value
         effects <- decodeEffectsField "effects" value
-        pure (SpellDef id name manaCost skillRequired skillMinLevel needsTarget eff flavor effects)
+        pure (SpellDef id name manaCost skillRequired skillMinLevel needsTarget flavor effects)
 
 loadSpells : String -> IO GameError (List SpellDef)
 let loadSpells path =
@@ -699,12 +698,11 @@ let decodeActor value =
         hearing <- intField "hearing" value
         language <- stringField "language" value
         corpseNutrition <- intField "corpse_nutrition" value
-        corpseEffect <- stringField "corpse_effect" value
         resistances <- optDamageTypes "resistances" value
         vulnerabilities <- optDamageTypes "vulnerabilities" value
         rangedElement <- optDamageType "ranged_element" value
         corpseEffects <- decodeEffectsField "corpse_effects" value
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition corpseEffect resistances vulnerabilities rangedElement corpseEffects)
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition resistances vulnerabilities rangedElement corpseEffects)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =

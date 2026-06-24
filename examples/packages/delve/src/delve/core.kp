@@ -428,7 +428,6 @@ data SpellDef : Type =
         (skillRequired : String)
         (skillMinLevel : Int)
         (needsTarget : Bool)
-        (effect : String)
         (flavor : String)
         (effects : List Effect)
 
@@ -524,7 +523,6 @@ data ActorDef : Type =
         (hearing : Int)
         (language : String)
         (corpseNutrition : Int)
-        (corpseEffect : String)
         (resistances : List DamageType)
         (vulnerabilities : List DamageType)
         (rangedElement : DamageType)

@@ -7,7 +7,6 @@
       "skill_required": "spellcraft",
       "skill_min_level": 1,
       "needs_target": true,
-      "effect": "douse",
       "flavor": "Snuff a fire to its embers; the dark floods back in.",
       "effects": [
         {
@@ -22,7 +21,6 @@
       "skill_required": "spellcraft",
       "skill_min_level": 1,
       "needs_target": true,
-      "effect": "glimmer",
       "flavor": "A cold light blooms where you point, fixing the place in memory.",
       "effects": [
         {
@@ -38,7 +36,6 @@
       "skill_required": "spellcraft",
       "skill_min_level": 2,
       "needs_target": true,
-      "effect": "lure",
       "flavor": "A din erupts elsewhere; curious ears turn from you.",
       "effects": [
         {
@@ -54,7 +51,6 @@
       "skill_required": "spellcraft",
       "skill_min_level": 2,
       "needs_target": false,
-      "effect": "phantom",
       "flavor": "A double of yourself steps from the air to draw the blade meant for you.",
       "effects": [
         {
@@ -70,7 +66,6 @@
       "skill_required": "spellcraft",
       "skill_min_level": 4,
       "needs_target": true,
-      "effect": "emberlance",
       "flavor": "A lance of fire, and most of your strength with it.",
       "effects": [
         {

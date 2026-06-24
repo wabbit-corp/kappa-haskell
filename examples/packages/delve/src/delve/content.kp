@@ -329,7 +329,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 "none" Nil Nil Physical Nil
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 Nil Nil Physical Nil
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =
@@ -381,9 +381,6 @@ let mkBones pack species = (mkItem pack Bones).{ source = species, name = boneNa
 -- the creature, defined in actors.json — not hardcoded per species in the rules.
 corpseNutritionOf : ContentPack -> Species -> Int
 let corpseNutritionOf pack species = (actorDefBySpecies pack species).corpseNutrition
-
-corpseEffectOf : ContentPack -> Species -> String
-let corpseEffectOf pack species = (actorDefBySpecies pack species).corpseEffect
 
 corpseEffectsOf : ContentPack -> Species -> List Effect
 let corpseEffectsOf pack species = (actorDefBySpecies pack species).corpseEffects

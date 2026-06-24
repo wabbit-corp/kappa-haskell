@@ -900,20 +900,6 @@ let freeAdjacent center level =
         let offs = [Vec2 (-1) (-1), Vec2 0 (-1), Vec2 1 (-1), Vec2 (-1) 0, Vec2 1 0, Vec2 (-1) 1, Vec2 0 1, Vec2 1 1]
         go offs
 
--- Snuff a campfire (-> Ashes) and recompute sight: its room falls dark.
-douseSpell : Vec2 -> GameState -> GameState
-let douseSpell target game =
-    match playerActor game
-    case None -> game.{ mode = Playing }
-    case Some pl ->
-        let t = grid.getTile game.level target
-        in
-            match t.kind
-            case Campfire ->
-                let level2 = grid.setTile target t.{ kind = Ashes } game.level
-                in message "You snuff the fire, and darkness rushes in." (game.{ level = fov.refreshVisibility pl.pos level2, mode = Playing })
-            case _ -> message "There is no fire there to douse." (game.{ mode = Playing })
-
 revealCells : Vec2 -> List Vec2 -> Level -> Level
 let revealCells center offs level decreases listLength offs =
     match offs
@@ -922,47 +908,6 @@ let revealCells center offs level decreases listLength offs =
         let p = addPos center o
         let level2 = if grid.inBounds level.size p then grid.setTile p (grid.getTile level p).{ seen = True, lit = True } level else level
         in revealCells center rest level2
-
-glimmerSpell : Vec2 -> GameState -> GameState
-let glimmerSpell target game =
-    let offs = [Vec2 (-1) (-1), Vec2 0 (-1), Vec2 1 (-1), Vec2 (-1) 0, Vec2 0 0, Vec2 1 0, Vec2 (-1) 1, Vec2 0 1, Vec2 1 1]
-    let level2 = revealCells target offs game.level
-    in message "A spectral glow blooms where you point." (game.{ level = level2, mode = Playing })
-
-lureSpell : Vec2 -> GameState -> GameState
-let lureSpell target game = message "A phantom clamor erupts where you point." (game.{ noise = Sound target fov.shoutLoudness, mode = Playing })
-
-phantomSpell : GameState -> GameState
-let phantomSpell game =
-    match playerActor game
-    case None -> game.{ mode = Playing }
-    case Some pl ->
-        match freeAdjacent pl.pos game.level
-        case None -> message "There is no room for a phantom." (game.{ mode = Playing })
-        case Some pos -> message "A shimmering double steps out of the air." (game.{ level = game.level.{ actors = (::) (content.mkPhantom (maxActorId game.level.actors + 1) pos 5) game.level.actors }, mode = Playing })
-
-emberlanceSpell : Vec2 -> GameState -> GameState
-let emberlanceSpell target game =
-    match actorAt target game.level.actors
-    case None -> message "The lance of flame gutters against bare stone." (game.{ mode = Playing })
-    case Some victim ->
-        let dmg = combat.scaleDamage Fire game.content.tuning.emberlanceDamage victim
-        let vhp = victim.stats.hp - dmg
-        let victim1 = victim.{ stats = victim.stats.{ hp = max 0 vhp }, alive = vhp > 0 }
-        let elem = combat.applyElemental game.content Fire victim1 (natToInt game.rng)
-        let victim2 = elem.defender
-        let g1 = game.{ level = game.level.{ actors = removeDeadActors (replaceActor victim2 game.level.actors) }, mode = Playing, rng = intToNat elem.rng }
-        let g2 = if victim2.alive then g1 else addCorpseFor victim2 g1
-        in message ("Searing flame engulfs the " ++ victim.name ++ " for " ++ show dmg ++ "!") g2
-
-castEffect : String -> Vec2 -> GameState -> GameState
-let castEffect eff target game =
-    if eff == "douse" then douseSpell target game
-    elif eff == "phantom" then phantomSpell game
-    elif eff == "glimmer" then glimmerSpell target game
-    elif eff == "lure" then lureSpell target game
-    elif eff == "emberlance" then emberlanceSpell target game
-    else message "The spell sputters and dies." (game.{ mode = Playing })
 
 executeCast : SpellDef -> Vec2 -> GameState -> GameState
 let executeCast spell target game =
