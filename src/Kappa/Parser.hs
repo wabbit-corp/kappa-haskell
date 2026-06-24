@@ -548,14 +548,19 @@ pLetDef = do
       pure (LetDef Nothing True (Just (PVar n)) prefix [] (Just ty) Nothing body)
     named = try $ do
       n <- pSigName
-      binders <- pParamBinders
+      -- parameters may be ordinary binders OR parenthesized destructuring
+      -- patterns (e.g. `let foo (Bar n) = n`), each desugared to a `match`
+      -- on a fresh binder (§9.1.2 irrefutable pattern parameter)
+      parts <- many pNamedParam
+      let binders = concatMap fst parts
+          wrapPats = foldr (.) id (map snd parts)
       -- "decreases" is a global stop keyword, so the result type ends
       -- before any decreases clause
       resTy <- optionMaybe (token TokColon *> noEq pExpr)
       dec <- optionMaybe pDecreases
       token TokEquals
       body <- pDefBody
-      pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec (desugarRecordParams binders body))
+      pure (LetDef (Just n) False Nothing emptyPrefix binders resTy dec (wrapPats (desugarRecordParams binders body)))
     patBinding = do
       -- `let 1 x = e` / `let &b = e` prefixed bindings (§12.2, §12.3.1)
       prefix <- pBinderPrefix
@@ -1303,6 +1308,37 @@ pParamBinder = unitBinder <|> bareImplicit <|> recordParam <|> parenBinder <|> b
 
 pParamBinders :: P [Binder]
 pParamBinders = concat <$> many pParamBinder
+
+-- | A single parameter of a NAMED definition (@let f \<params\> = body@).
+-- Most parameters are ordinary binders, but a parenthesized destructuring
+-- PATTERN — e.g. @(Bar n)@ or @(x, y)@ — is also accepted: it binds a fresh
+-- variable and @match@es it in the body. This is an irrefutable pattern
+-- parameter (§9.1.2) and generalizes the record-parameter destructuring
+-- already handled by 'desugarRecordParams'. Returns the binder(s) plus a
+-- body transformer that introduces the match (composed left-to-right, so a
+-- leading pattern parameter's match is outermost).
+pNamedParam :: P ([Binder], Expr -> Expr)
+pNamedParam = patternParam <|> plain
+  where
+    plain = (\bs -> (bs, id)) <$> pParamBinder
+    patternParam = try $ do
+      sp <- currentSpan
+      token TokLParen
+      pat <- pPattern
+      token TokRParen
+      -- a bare @(x)@ or @(_)@ is an ordinary binder, not a destructuring
+      -- pattern; backtrack so 'pParamBinder' handles it
+      guard (isDestructuringPat pat)
+      let nm =
+            "__pp" <> T.pack (show (posLine (spanStart sp)))
+              <> "_" <> T.pack (show (posCol (spanStart sp)))
+          name = Name nm sp
+          b = Binder False emptyPrefix Nothing NoReceiver False (Just name) False Nothing Nothing sp
+      pure ([b], \body -> EMatch (EVar name) [MatchCase pat Nothing body sp] sp)
+    isDestructuringPat = \case
+      PVar _ -> False
+      PWild _ -> False
+      _ -> True
 
 -- The body of a parenthesized binder. Handles implicit `@`, quantities,
 -- borrow markers, suspension sugar, receiver markers, inout, and (for

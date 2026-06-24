@@ -55,9 +55,16 @@ let showIfEqual x y =
 -- A type with no Show or Eq instance.
 data MyOpaque : Type = MyOpaque Int
 
+-- A type that never gets any instance. Kappa instance resolution is
+-- module-global (not order-sensitive): MyOpaque gains a Show instance later
+-- in this module, so a `printValue (MyOpaque _)` call resolves even when
+-- written earlier. The no-Show negative case therefore uses a dedicated
+-- never-instantiated type.
+data NoInst : Type = NoInst Int
+
 -- NEGATIVE: calling printValue with a type that has no Show instance.
 badPrint : String
-let badPrint = printValue (MyOpaque 5)
+let badPrint = printValue (NoInst 5)
 
 --! assertDiagnosticFamily error kappa.implicit.unsolved
 

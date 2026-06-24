@@ -1,0 +1,36 @@
+--! mode check
+--! assertNoErrors
+--! assertEval unwrapped 3
+--! assertEval combined 7
+
+-- §9.1.2 / §14.3.4: an instance member may be defined with a destructuring
+-- PATTERN argument (an irrefutable pattern parameter), e.g.
+-- `let foo (Bar n) = n`. It desugars to a match on a fresh binder and
+-- correctly registers as defining the member. Previously such a clause was
+-- misparsed as a pattern binding (ldName = Nothing) and the instance was
+-- spuriously rejected with E_INSTANCE_MEMBER_MISSING; only a plain
+-- variable-argument clause (`let foo b = …`) was recognized.
+module main
+
+trait Unwrap (a : Type) =
+    unwrap : a -> Int
+
+data Bar = Bar Int
+
+instance Unwrap Bar =
+    let unwrap (Bar n) = n
+
+-- a member mixing an ordinary binder with a pattern argument
+trait Combine (a : Type) =
+    combine : Int -> a -> Int
+
+data Pair = Pair Int Int
+
+instance Combine Pair =
+    let combine k (Pair a b) = addInt k (addInt a b)
+
+unwrapped : Int
+let unwrapped = unwrap (Bar 3)
+
+combined : Int
+let combined = combine 1 (Pair 2 4)
