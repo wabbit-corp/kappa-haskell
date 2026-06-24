@@ -34,7 +34,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libgc-dev libgmp-dev pkg-config
+          sudo apt-get install -y --no-install-recommends build-essential libgc-dev libgmp-dev libuv1-dev pkg-config
 
       - name: Set up Haskell
         uses: haskell-actions/setup@v2
@@ -217,7 +217,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew update
-          brew install bdw-gc gmp pkg-config
+          brew install bdw-gc gmp libuv pkg-config
 
       - name: Install native dependencies (Windows)
         if: runner.os == 'Windows'
@@ -231,6 +231,7 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-gc
             mingw-w64-x86_64-gmp
+            mingw-w64-x86_64-libuv
             mingw-w64-x86_64-pkgconf
 
       - name: Set up Haskell
@@ -271,9 +272,9 @@ jobs:
           game_dir="$PWD/dist/release/delve-${{ matrix.platform }}"
           mkdir -p "$game_dir/bin"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
-            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)"
           else
-            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp)"
+            cc_cmd="cc $(pkg-config --cflags --libs bdw-gc gmp libuv)"
           fi
           export KAPPA_CC="$cc_cmd"
 
@@ -332,8 +333,8 @@ jobs:
             printf 'PATH=%s\n' "$PATH" >&2
             exit 1
           fi
-          "$pkgconf_bin" --exists bdw-gc gmp
-          cc_cmd="$cc_bin $("$pkgconf_bin" --cflags --libs bdw-gc gmp)"
+          "$pkgconf_bin" --exists bdw-gc gmp libuv
+          cc_cmd="$cc_bin $("$pkgconf_bin" --cflags --libs bdw-gc gmp libuv)"
           export KAPPA_CC="$cc_cmd"
 
           chcp.com 65001 >/dev/null || true
