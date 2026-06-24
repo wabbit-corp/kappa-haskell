@@ -38,7 +38,7 @@ LIBS      := $(UV_LIBS) -lgc -lgmp
 
 # The runtime: kappart.c (the boxed-value model + Boehm GC + primitives) plus
 # the kappart2 scheduler/reactor/structured-concurrency/race/STM translation units.
-RT_SRC  := kappart.c rt.c reactor.c scope.c race.c stm.c
+RT_SRC  := kappart.c rt.c reactor.c scope.c race.c stm.c atomic.c
 RT_OBJ  := $(RT_SRC:%.c=build/%.o)
 RT_HDRS := kappart.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
 

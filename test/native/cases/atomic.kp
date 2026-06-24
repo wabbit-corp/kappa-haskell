@@ -1,0 +1,38 @@
+-- §29.1 std.atomic surface on the native runtime. The std.atomic module is
+-- implemented in Kappa over a Ref cell (single-agent semantics), so this must
+-- print identically under the interpreter and the kappart2 native backend.
+-- Exercises load/store/exchange/fetchAdd and compareExchange (both the success
+-- and failure arms).
+module main
+
+import std.atomic.(ctor LoadSeqCst, ctor StoreSeqCst, ctor RmwSeqCst, ctor CasFailSeqCst)
+import std.atomic.(ctor Exchanged, ctor NotExchanged)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicStore)
+import std.atomic.(term atomicExchange, term atomicFetchAdd, term atomicCompareExchange)
+
+main : UIO Unit
+let main = do
+    let cell <- newAtomicRef 10
+    let v0 <- atomicLoad LoadSeqCst cell
+    printlnString (showInt v0)                 -- 10
+    atomicStore StoreSeqCst cell 25
+    let v1 <- atomicLoad LoadSeqCst cell
+    printlnString (showInt v1)                 -- 25
+    let old <- atomicExchange RmwSeqCst cell 7
+    printlnString (showInt old)                -- 25
+    let oldAdd <- atomicFetchAdd RmwSeqCst cell 3
+    printlnString (showInt oldAdd)             -- 7
+    let v2 <- atomicLoad LoadSeqCst cell
+    printlnString (showInt v2)                 -- 10
+    -- compare-exchange success: expected 10, desired 99 -> Exchanged 10
+    let cas1 <- atomicCompareExchange RmwSeqCst CasFailSeqCst cell 10 99
+    match cas1
+      case Exchanged o -> printlnString (showInt o)    -- 10
+      case NotExchanged c -> printlnString (showInt c)
+    -- compare-exchange failure: expected 10 (now 99), desired 0 -> NotExchanged 99
+    let cas2 <- atomicCompareExchange RmwSeqCst CasFailSeqCst cell 10 0
+    match cas2
+      case Exchanged o -> printlnString (showInt o)
+      case NotExchanged c -> printlnString (showInt c) -- 99
+    let v3 <- atomicLoad LoadSeqCst cell
+    printlnString (showInt v3)                 -- 99

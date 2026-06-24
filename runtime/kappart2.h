@@ -185,7 +185,7 @@ KValue *krt2_atomically(KValue *stm);               /* STM a -> UIO a           
 
 /* ── atomics (§29.1, rt-atomics) ───────────────────────────────────────── */
 /* `order` args are the §29.1 LoadOrder/StoreOrder/RmwOrder/CasFailureOrder
- * constructors (boxed Kappa values); see native/atomic.c for the enum mapping. */
+ * constructors (boxed Kappa values); see atomic.c for the enum mapping. */
 KValue *krt2_new_atomic_ref(KValue *v);             /* a -> UIO (AtomicRef a)       */
 KValue *krt2_atomic_load(KValue *order, KValue *ref);
 KValue *krt2_atomic_store(KValue *order, KValue *ref, KValue *v);
@@ -220,7 +220,7 @@ void krt2_dump(void *out /* FILE* */);
  * v1 advertises FIVE flags: rt-core, rt-parallel, rt-shared-stm, rt-blocking,
  * rt-atomics.  rt-multishot-effects is STAGED to v2 behind a real gate (the
  * static §32.2.20 escape check + per-use clone protocol + native reachability
- * rejection do not exist yet) — see REVIEW.md "Capability staging".  The pure
+ * rejection do not exist yet) — see docs/REVIEW.md "Capability staging".  The pure
  * __EffOp closure encoding (multishot-capable for pure effects) still works;
  * only the multishot-with-IO-segments contract is deferred. */
 extern const char *const KRT2_CAPABILITIES[]; /* rt-core, rt-parallel, rt-shared-stm,

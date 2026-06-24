@@ -222,7 +222,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- self-contained link modes are in runtime/docs/DEPLOYMENT.md.
               rtCFlags = ["-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
               rtSources =
-                [runtimeDir </> f | f <- ["kappart.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c"]]
+                [runtimeDir </> f | f <- ["kappart.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c", "atomic.c"]]
               rtLibs = ["-lgc", "-lgmp", "-L/opt/homebrew/lib", "-luv"]
               args =
                 ccLead

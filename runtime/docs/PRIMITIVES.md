@@ -8,12 +8,20 @@ set is the reference interpreter (`src/Kappa/Interp.hs`, `runPrimIO'`), which th
 native runtime must eventually match.
 
 **Headline:** the cancellation core is already complete and matches ZIO's hard
-cases. The real gaps are: (1) **`std.atomic` is declared in the header but has no
-implementation** — there is no `atomic.c` and no `krt2_atomic_*` definition, and
-the header itself flags `rt-atomics` as "NOT yet built"; (2) a handful of small
-scheduler/continuation-touching primitives (`onInterrupt`/`onExit`, `disconnect`,
-`Promise.poll`/`isDone`, `FiberRef.modify` + copy-on-fork); everything else is a
-derivable library.
+cases. The remaining gaps are a handful of small scheduler/continuation-touching
+primitives (`onInterrupt`/`onExit`, `disconnect`, `Promise.poll`/`isDone`,
+`FiberRef.modify` + copy-on-fork); everything else is a derivable library.
+
+> **UPDATE — #1 (`std.atomic`) is DONE.** [`../atomic.c`](../atomic.c) now
+> implements the full `krt2_atomic_*` ABI with real C11 atomics: an `AtomicRef`
+> is an `_Atomic(int64_t)` cell (covering the required `Bool` + fixed/pointer-width
+> integer `AtomicValue` instances), memory orders map from the boxed §29.1 order
+> constructors by numeric tag id, and `atomicCompareExchange` is a true hardware
+> CAS with exact value semantics. Verified by [`../tests/atomic.c`](../tests/atomic.c):
+> every op's single-thread semantics, plus 64 fibers × 2000 `fetchAdd` conserving
+> 128 000 exactly under 12-core contention (stress-clean ×30). `rt-atomics` in
+> `KRT2_CAPABILITIES` is now honest. (Reaching it from `.kp` still needs the
+> `std.atomic` stdlib module + backend prim wiring, paralleling STM.)
 
 > Status note (single-agent STM): the native backend now lowers
 > `newTVar`/`readTVar`/`writeTVar`/`atomically` to single-agent cell semantics
@@ -61,13 +69,12 @@ result.
 These genuinely need scheduler / interruption / continuation access and cannot be
 a pure Kappa library.
 
-### 1. `std.atomic` — the entire atomics module (§29.1, `rt-atomics`) — HIGHEST PRIORITY
+### 1. `std.atomic` — the entire atomics module (§29.1, `rt-atomics`) — ✅ DONE
 - **Spec ref:** §29.1; capability gate §27.6 (`rt-atomics`, listed in `KRT2_CAPABILITIES`).
-- **Status:** the ABI is declared in `kappart2.h` (`krt2_new_atomic_ref`,
-  `krt2_atomic_load/store/exchange/compare_exchange/fetch_add/sub/and/or/xor`) but
-  **there is no implementation** — no `atomic.c`, zero `krt2_atomic_*` definitions.
-  The header comment itself says "rt-atomics — NOT yet built." This is a
-  *declared-but-empty* ABI: the capability flag is advertised while the code is absent.
+- **Status:** ✅ implemented in [`../atomic.c`](../atomic.c) (see the headline note);
+  the `krt2_atomic_*` ABI is now backed by real C11 atomics and stress-verified.
+  Remaining: the `.kp`-level `std.atomic` stdlib module + `AtomicValue`/`AtomicInteger`
+  instances + backend prim wiring (the surface, paralleling the STM `.kp` wiring).
 - **Why a primitive:** `AtomicRef` is a distinct cell kind (§29.1: "not an ordinary
   `var`, `Ref`, `TVar`, or `MonadRef`"), and the operations must lower to C11
   `atomic_*` with the exact `LoadOrder`/`StoreOrder`/`RmwOrder`/`CasFailureOrder`
@@ -181,10 +188,9 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
 
 ## Recommended priority order
 
-1. **`std.atomic` (`atomic.c`) — ADD #1.** The only place where an advertised
-   capability (`rt-atomics` in `KRT2_CAPABILITIES`) is a lie: the ABI is declared
-   but unimplemented. Highest correctness/credibility risk; self-contained C11
-   work, no scheduler entanglement. Flip the flag only on completion.
+1. ~~**`std.atomic` (`atomic.c`) — ADD #1.**~~ ✅ DONE — `atomic.c` backs the
+   `rt-atomics` capability with real C11 atomics, stress-verified under 12-core
+   contention. (The `.kp` surface module remains.)
 2. **`FiberRef.modify` + copy-on-fork — ADD #4.** Completes a half-built §18.1.7
    primitive; the fork-snapshot is a *semantic conformance* gap (parent/child
    independence is normative). Unblocks the FiberRef test column and `std.supervisor`.
