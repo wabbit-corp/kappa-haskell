@@ -660,6 +660,21 @@ data TuningConfig : Type =
         (levelHpGain : Int)
         (levelStrGain : Int)
         (levelLoyaltyGain : Int)
+        (trapDamage : Int)
+        (lavaDamage : Int)
+        (chaosVentCorruption : Int)
+        (starvationDamage : Int)
+        (emberlanceDamage : Int)
+        (manaRegen : Int)
+        (poolHealBand : Int)
+        (poolPoisonBand : Int)
+        (poolNothingBand : Int)
+        (poolCorruptBand : Int)
+        (poolHealAmount : Int)
+        (poolPoisonAmount : Int)
+        (poolCorruptAmount : Int)
+        (feedTameBand : Int)
+        (feedPacifyBand : Int)
 
 data ContentPack : Type =
     ContentPack

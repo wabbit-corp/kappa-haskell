@@ -113,5 +113,16 @@ let testPack =
         reveal = RevealConfig 2 5 9 "It seems hardy." "It looks frail." "You can't read it yet.",
         spells = Nil,
         statuses = [ StatusDef Fire 50 3 2, StatusDef Poison 60 3 1, StatusDef Cold 40 2 0 ],
-        tuning = TuningConfig 20 8 3 6 2 2 1 2 1 3 1 10 5 1 2
+        tuning = TuningConfig {
+            attackDie = 20, defenseBase = 8, damageSpread = 3,
+            stunThreshold = 6, stunTurns = 2, headBonus = 2,
+            legBleedSeverity = 1, armBruiseSeverity = 2, torsoBruiseSeverity = 1,
+            crippledPenalty = 3, bleedSurcharge = 1,
+            xpFactor = 10, levelHpGain = 5, levelStrGain = 1, levelLoyaltyGain = 2,
+            trapDamage = 2, lavaDamage = 6, chaosVentCorruption = 12, starvationDamage = 1,
+            emberlanceDamage = 12, manaRegen = 1,
+            poolHealBand = 35, poolPoisonBand = 60, poolNothingBand = 80, poolCorruptBand = 92,
+            poolHealAmount = 6, poolPoisonAmount = 3, poolCorruptAmount = 25,
+            feedTameBand = 15, feedPacifyBand = 85
+        }
     }

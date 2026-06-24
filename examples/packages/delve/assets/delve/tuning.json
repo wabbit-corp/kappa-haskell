@@ -13,5 +13,20 @@
   "xp_factor": 10,
   "level_hp_gain": 5,
   "level_str_gain": 1,
-  "level_loyalty_gain": 2
+  "level_loyalty_gain": 2,
+  "trap_damage": 2,
+  "lava_damage": 6,
+  "chaos_vent_corruption": 12,
+  "starvation_damage": 1,
+  "emberlance_damage": 12,
+  "mana_regen": 1,
+  "pool_heal_band": 35,
+  "pool_poison_band": 60,
+  "pool_nothing_band": 80,
+  "pool_corrupt_band": 92,
+  "pool_heal_amount": 6,
+  "pool_poison_amount": 3,
+  "pool_corrupt_amount": 25,
+  "feed_tame_band": 15,
+  "feed_pacify_band": 85
 }

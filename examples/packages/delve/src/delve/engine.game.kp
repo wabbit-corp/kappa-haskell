@@ -166,10 +166,10 @@ let movePlayer dir game =
 onEnteredTile : TileKind -> GameState -> GameState
 let onEnteredTile kind game =
     match kind
-    case Trap -> inventory.damagePlayer Physical 2 (message "A trap bites your ankle." game)
+    case Trap -> inventory.damagePlayer Physical game.content.tuning.trapDamage (message "A trap bites your ankle." game)
     case Water -> message "You splash through dark water." game
     case Lava -> message "The lava burns you." game
-    case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt 12 game)
+    case ChaosVent -> message "The chaos vent floods you with unstable power." (corruption.corrupt game.content.tuning.chaosVentCorruption game)
     case LoreStone -> readLoreStone game
     case Altar -> message "An altar waits here. Press p to pray or offer the first corpse in your pack." game
     case BranchDown -> message "A side-passage branches off here. Press > to descend into it." game
@@ -693,10 +693,10 @@ let adjacentBeast pos actors decreases listLength actors =
     case Nil -> None
     case a :: rest -> if a.alive && a.faction == BeastFaction && chebyshev pos a.pos <= 1 then Some a else adjacentBeast pos rest
 
-feedOutcome : Actor -> Int -> (actor : Actor, text : String)
-let feedOutcome beast roll =
-    if roll < 15 then (actor = beast.{ attitude = Friendly, faction = HeroFaction }, text = "The " ++ beast.name ++ " takes the food and falls in beside you!")
-    elif roll < 85 then (actor = beast.{ attitude = Neutral }, text = "The " ++ beast.name ++ " gulps the food down and loses interest in you.")
+feedOutcome : TuningConfig -> Actor -> Int -> (actor : Actor, text : String)
+let feedOutcome tuning beast roll =
+    if roll < tuning.feedTameBand then (actor = beast.{ attitude = Friendly, faction = HeroFaction }, text = "The " ++ beast.name ++ " takes the food and falls in beside you!")
+    elif roll < tuning.feedPacifyBand then (actor = beast.{ attitude = Neutral }, text = "The " ++ beast.name ++ " gulps the food down and loses interest in you.")
     else (actor = beast, text = "The " ++ beast.name ++ " snatches the food but stays wary.")
 
 -- Offer food to a nearby wild beast: usually it eats and calms (pacifies); rarely
@@ -718,7 +718,7 @@ let feedBeast game =
                     let pick = rand.range 0 99 (natToInt game.rng)
                     let p2 = p.{ inventory = taken.rest }
                     let g1 = game.{ rng = intToNat pick.rng, mode = Playing, invCursor = 0, level = game.level.{ actors = replaceActor p2 game.level.actors } }
-                    let outcome = feedOutcome beast pick.value
+                    let outcome = feedOutcome game.content.tuning beast pick.value
                     in message outcome.text (g1.{ level = g1.level.{ actors = replaceActor outcome.actor g1.level.actors } })
 
 executeVerb : Verb -> GameState -> GameState
@@ -752,10 +752,10 @@ let actionCommand cmd game =
 -- chaos-tainted, rarely something stranger.
 drinkOutcome : Int -> GameState -> GameState
 let drinkOutcome roll g =
-    if roll < 35 then message "The cool water refreshes you." (inventory.healPlayer 6 g)
-    elif roll < 60 then message "The water is foul; your gut twists." (inventory.damagePlayer Poison 3 g)
-    elif roll < 80 then message "The water is brackish and joyless." g
-    elif roll < 92 then message "An oily sheen coats it — it tastes of chaos." (corruption.corrupt 25 g)
+    if roll < g.content.tuning.poolHealBand then message "The cool water refreshes you." (inventory.healPlayer g.content.tuning.poolHealAmount g)
+    elif roll < g.content.tuning.poolPoisonBand then message "The water is foul; your gut twists." (inventory.damagePlayer Poison g.content.tuning.poolPoisonAmount g)
+    elif roll < g.content.tuning.poolNothingBand then message "The water is brackish and joyless." g
+    elif roll < g.content.tuning.poolCorruptBand then message "An oily sheen coats it — it tastes of chaos." (corruption.corrupt g.content.tuning.poolCorruptAmount g)
     else message "The water shimmers strangely as it goes down." (corruption.gainMutation g)
 
 drinkPool : GameState -> GameState
@@ -886,7 +886,7 @@ regenMana : GameState -> GameState
 let regenMana game =
     match playerActor game
     case None -> game
-    case Some pl -> game.{ level = game.level.{ actors = replaceActor (pl.{ stats = pl.stats.{ mp = min pl.stats.maxMp (pl.stats.mp + 1) } }) game.level.actors } }
+    case Some pl -> game.{ level = game.level.{ actors = replaceActor (pl.{ stats = pl.stats.{ mp = min pl.stats.maxMp (pl.stats.mp + game.content.tuning.manaRegen) } }) game.level.actors } }
 
 freeAdjacent : Vec2 -> Level -> Option Vec2
 let freeAdjacent center level =
@@ -947,7 +947,7 @@ let emberlanceSpell target game =
     match actorAt target game.level.actors
     case None -> message "The lance of flame gutters against bare stone." (game.{ mode = Playing })
     case Some victim ->
-        let dmg = combat.scaleDamage Fire 12 victim
+        let dmg = combat.scaleDamage Fire game.content.tuning.emberlanceDamage victim
         let vhp = victim.stats.hp - dmg
         let victim1 = victim.{ stats = victim.stats.{ hp = max 0 vhp }, alive = vhp > 0 }
         let elem = combat.applyElemental game.content Fire victim1 (natToInt game.rng)
@@ -1139,7 +1139,7 @@ let hazardTick game =
     case None -> game
     case Some p ->
         match (grid.getTile game.level p.pos).kind
-        case Lava -> inventory.damagePlayer Fire 6 (message "The lava sears you." game)
+        case Lava -> inventory.damagePlayer Fire game.content.tuning.lavaDamage (message "The lava sears you." game)
         case _ -> game
 
 isVentKind : TileKind -> Bool
@@ -1244,7 +1244,7 @@ let tickWorld cmd before game =
         let hungerCost = 1 + tactics.hungerCost game.content game.player.tactic + corruption.mutationHungerTax game.content game.player.mutations
         let hungry = game.{ player = game.player.{ hunger = game.player.hunger - hungerCost }, level = game.level.{ turn = game.level.turn + 1 } }
         let wounded = tickPlayerWounds hungry
-        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then inventory.damagePlayer Physical 1 (message "You are starving." wounded) else wounded
+        let starving = if wounded.mode == Playing && wounded.player.hunger <= 0 then inventory.damagePlayer Physical wounded.content.tuning.starvationDamage (message "You are starving." wounded) else wounded
         let hazard = if starving.mode == Playing then hazardTick starving else starving
         let corrupted = if hazard.mode == Playing then corruption.tick hazard else hazard
         let spread = if corrupted.mode == Playing then spreadChaos corrupted else corrupted

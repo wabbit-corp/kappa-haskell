@@ -322,7 +322,53 @@ let decodeTuning value =
         levelHpGain <- intField "level_hp_gain" value
         levelStrGain <- intField "level_str_gain" value
         levelLoyaltyGain <- intField "level_loyalty_gain" value
-        pure (TuningConfig attackDie defenseBase damageSpread stunThreshold stunTurns headBonus legBleedSeverity armBruiseSeverity torsoBruiseSeverity crippledPenalty bleedSurcharge xpFactor levelHpGain levelStrGain levelLoyaltyGain)
+        trapDamage <- intField "trap_damage" value
+        lavaDamage <- intField "lava_damage" value
+        chaosVentCorruption <- intField "chaos_vent_corruption" value
+        starvationDamage <- intField "starvation_damage" value
+        emberlanceDamage <- intField "emberlance_damage" value
+        manaRegen <- intField "mana_regen" value
+        poolHealBand <- intField "pool_heal_band" value
+        poolPoisonBand <- intField "pool_poison_band" value
+        poolNothingBand <- intField "pool_nothing_band" value
+        poolCorruptBand <- intField "pool_corrupt_band" value
+        poolHealAmount <- intField "pool_heal_amount" value
+        poolPoisonAmount <- intField "pool_poison_amount" value
+        poolCorruptAmount <- intField "pool_corrupt_amount" value
+        feedTameBand <- intField "feed_tame_band" value
+        feedPacifyBand <- intField "feed_pacify_band" value
+        pure (TuningConfig {
+            attackDie = attackDie,
+            defenseBase = defenseBase,
+            damageSpread = damageSpread,
+            stunThreshold = stunThreshold,
+            stunTurns = stunTurns,
+            headBonus = headBonus,
+            legBleedSeverity = legBleedSeverity,
+            armBruiseSeverity = armBruiseSeverity,
+            torsoBruiseSeverity = torsoBruiseSeverity,
+            crippledPenalty = crippledPenalty,
+            bleedSurcharge = bleedSurcharge,
+            xpFactor = xpFactor,
+            levelHpGain = levelHpGain,
+            levelStrGain = levelStrGain,
+            levelLoyaltyGain = levelLoyaltyGain,
+            trapDamage = trapDamage,
+            lavaDamage = lavaDamage,
+            chaosVentCorruption = chaosVentCorruption,
+            starvationDamage = starvationDamage,
+            emberlanceDamage = emberlanceDamage,
+            manaRegen = manaRegen,
+            poolHealBand = poolHealBand,
+            poolPoisonBand = poolPoisonBand,
+            poolNothingBand = poolNothingBand,
+            poolCorruptBand = poolCorruptBand,
+            poolHealAmount = poolHealAmount,
+            poolPoisonAmount = poolPoisonAmount,
+            poolCorruptAmount = poolCorruptAmount,
+            feedTameBand = feedTameBand,
+            feedPacifyBand = feedPacifyBand
+        })
 
 loadTuning : String -> IO GameError TuningConfig
 let loadTuning path =
