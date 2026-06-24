@@ -239,6 +239,9 @@ data Wound : Type =
     Crippled (part : BodyPart)
     Stunned (turns : Int)
     Fading (turns : Int)
+    Burning (severity : Int)
+    Poisoned (severity : Int)
+    Chilled (turns : Int)
 
 data Tactic : Type =
     Coward
@@ -627,6 +630,16 @@ data RulesConfig : Type =
         (startingHunger : Int)
         (messageLimit : Nat)
 
+-- Maps an element to the status it inflicts (burning/poisoned/chilled): the apply
+-- chance, the magnitude (severity or turns), and a reserved per-turn value.
+-- Authored in status_effects.json.
+data StatusDef : Type =
+    StatusDef
+        (element : DamageType)
+        (chance : Int)
+        (magnitude : Int)
+        (perTurn : Int)
+
 data ContentPack : Type =
     ContentPack
         (packId : String)
@@ -653,6 +666,7 @@ data ContentPack : Type =
         (skills : List SkillDef)
         (reveal : RevealConfig)
         (spells : List SpellDef)
+        (statuses : List StatusDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is

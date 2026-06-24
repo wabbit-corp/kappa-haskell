@@ -74,6 +74,7 @@ let loadPack packPath =
         colorPath <- filePath "colors" filesObject
         skillsPath <- filePath "skills" filesObject
         spellsPath <- filePath "spells" filesObject
+        statusPath <- filePath "status_effects" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -87,6 +88,7 @@ let loadPack packPath =
         colors <- loadColors colorPath
         skills <- loadSkills skillsPath
         spells <- loadSpells spellsPath
+        statuses <- loadStatuses statusPath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
         reveal <- decodeReveal revealObject
@@ -115,7 +117,8 @@ let loadPack packPath =
                 colors = colors,
                 skills = skills,
                 reveal = reveal,
-                spells = spells
+                spells = spells,
+                statuses = statuses
             }
         validateContentPack pack
 
@@ -274,6 +277,29 @@ let loadSpells path =
         root <- readJsonFile path
         xs <- arrayField "spells" root
         traverse decodeSpell xs
+
+decodeStatus : json.JsonValue -> IO GameError StatusDef
+let decodeStatus value =
+    do
+        elementName <- stringField "element" value
+        dt <- decodeDamageType elementName
+        chance <- intField "chance" value
+        magnitude <- intField "magnitude" value
+        perTurn <- intField "per_turn" value
+        pure (StatusDef dt chance magnitude perTurn)
+
+loadStatuses : String -> IO GameError (List StatusDef)
+let loadStatuses path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "statuses" root
+        traverse decodeStatus xs
+
+hasStatusElement : List StatusDef -> DamageType -> Bool
+let hasStatusElement xs dt decreases listLength xs =
+    match xs
+    case Nil -> False
+    case s :: rest -> if s.element == dt then True else hasStatusElement rest dt
 
 decodeSkill : json.JsonValue -> IO GameError SkillDef
 let decodeSkill value =
@@ -805,6 +831,9 @@ let validateContentPack pack =
         elif listLength pack.skills == 0 then raise (ConfigError "content pack has no skills")
         elif not (pack.reveal.vagueAt <= pack.reveal.approxAt) then raise (ConfigError "reveal thresholds must satisfy vague <= approx <= known")
         elif not (pack.reveal.approxAt <= pack.reveal.knownAt) then raise (ConfigError "reveal thresholds must satisfy vague <= approx <= known")
+        elif not (hasStatusElement pack.statuses Fire) then raise (ConfigError "status_effects must define a fire entry")
+        elif not (hasStatusElement pack.statuses Poison) then raise (ConfigError "status_effects must define a poison entry")
+        elif not (hasStatusElement pack.statuses Cold) then raise (ConfigError "status_effects must define a cold entry")
         else pure pack
 
 requireActor : String -> ContentPack -> IO GameError Unit

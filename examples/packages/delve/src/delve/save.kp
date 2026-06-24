@@ -186,6 +186,9 @@ let encodeWound w =
     case Crippled part -> obj [field "type" (str "Crippled"), field "part" (str (bodyPartName part))]
     case Stunned turns -> obj [field "type" (str "Stunned"), field "turns" (num turns)]
     case Fading turns -> obj [field "type" (str "Fading"), field "turns" (num turns)]
+    case Burning sev -> obj [field "type" (str "Burning"), field "severity" (num sev)]
+    case Poisoned sev -> obj [field "type" (str "Poisoned"), field "severity" (num sev)]
+    case Chilled turns -> obj [field "type" (str "Chilled"), field "turns" (num turns)]
 
 encodeEcs : EcsWorld -> JsonValue
 let encodeEcs world =
@@ -495,10 +498,10 @@ decodeWound : JsonValue -> IO GameError Wound
 let decodeWound value =
     do
         typ <- optStringField "Bruised" "type" value
-        if typ == "Stunned" || typ == "Fading" then
+        if typ == "Stunned" || typ == "Fading" || typ == "Chilled" then
             do
                 turns <- optIntField 1 "turns" value
-                pure (if typ == "Fading" then Fading turns else Stunned turns)
+                pure (if typ == "Fading" then Fading turns elif typ == "Chilled" then Chilled turns else Stunned turns)
         else
             do
                 partName0 <- optStringField "Torso" "part" value
@@ -506,6 +509,8 @@ let decodeWound value =
                 severity <- optIntField 1 "severity" value
                 if typ == "Bleeding" then pure (Bleeding part severity)
                 elif typ == "Crippled" then pure (Crippled part)
+                elif typ == "Burning" then pure (Burning severity)
+                elif typ == "Poisoned" then pure (Poisoned severity)
                 else pure (Bruised part severity)
 
 decodeStringJson : JsonValue -> IO GameError String

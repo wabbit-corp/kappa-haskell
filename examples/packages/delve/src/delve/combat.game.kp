@@ -42,6 +42,9 @@ let woundPenalty wounds decreases listLength wounds =
             case Crippled _ -> 3
             case Stunned turns -> turns
             case Fading _ -> 0
+            case Burning _ -> 0
+            case Poisoned _ -> 0
+            case Chilled turns -> turns
         in here + woundPenalty rest
 
 bleedDamage : Actor -> Int
@@ -57,6 +60,24 @@ let countBleeds wounds decreases listLength wounds =
             case Bleeding _ sev -> max 1 sev
             case _ -> 0
         in n + countBleeds rest
+
+countBurns : List Wound -> Int
+let countBurns wounds decreases listLength wounds =
+    match wounds
+    case Nil -> 0
+    case w :: rest ->
+        match w
+        case Burning sev -> sev + countBurns rest
+        case _ -> countBurns rest
+
+countPoisons : List Wound -> Int
+let countPoisons wounds decreases listLength wounds =
+    match wounds
+    case Nil -> 0
+    case w :: rest ->
+        match w
+        case Poisoned sev -> sev + countPoisons rest
+        case _ -> countPoisons rest
 
 bestClassPower : ItemClass -> List Item -> Int
 let bestClassPower cls items decreases listLength items =
@@ -92,6 +113,9 @@ let decayWounds wounds decreases listLength wounds =
         case Bleeding part sev -> if sev <= 1 then (::) (Bruised part 1) (decayWounds rest) else (::) (Bleeding part (sev - 1)) (decayWounds rest)
         case Bruised part sev -> if sev <= 1 then decayWounds rest else (::) (Bruised part (sev - 1)) (decayWounds rest)
         case Crippled part -> (::) (Crippled part) (decayWounds rest)
+        case Burning sev -> if sev <= 1 then decayWounds rest else (::) (Burning (sev - 1)) (decayWounds rest)
+        case Poisoned sev -> if sev <= 1 then decayWounds rest else (::) (Poisoned (sev - 1)) (decayWounds rest)
+        case Chilled turns -> if turns <= 1 then decayWounds rest else (::) (Chilled (turns - 1)) (decayWounds rest)
 
 -- True when a Fading wound is on its last turn — a conjured phantom expiring.
 fadingExpiring : List Wound -> Bool
@@ -157,6 +181,87 @@ let elementTag dt defender =
     elif listMember dt defender.vulnerabilities then " The " ++ content.damageTypeDisplayName dt ++ " bites deep!"
     else ""
 
+-- ── Elemental status effects (burning / poisoned / chilled) ──────────────
+-- These ride the existing Wound list: Burning/Poisoned tick damage each turn,
+-- Chilled slows like a mild Stunned. Which element inflicts what is data-driven.
+statusFor : ContentPack -> DamageType -> Option StatusDef
+let statusFor pack dt =
+    block
+        go : List StatusDef -> Option StatusDef
+        let go xs decreases listLength xs =
+            match xs
+            case Nil -> None
+            case s :: rest -> if s.element == dt then Some s else go rest
+        go pack.statuses
+
+woundForStatus : DamageType -> Int -> Wound
+let woundForStatus dt mag =
+    match dt
+    case Fire -> Burning mag
+    case Poison -> Poisoned mag
+    case Cold -> Chilled mag
+    case _ -> Burning mag
+
+matchesStatus : DamageType -> Wound -> Bool
+let matchesStatus dt w =
+    match w
+    case Burning _ -> dt == Fire
+    case Poisoned _ -> dt == Poison
+    case Chilled _ -> dt == Cold
+    case _ -> False
+
+hasStatusKind : DamageType -> List Wound -> Bool
+let hasStatusKind dt ws decreases listLength ws =
+    match ws
+    case Nil -> False
+    case w :: rest -> if matchesStatus dt w then True else hasStatusKind dt rest
+
+isChilled : List Wound -> Bool
+let isChilled ws decreases listLength ws =
+    match ws
+    case Nil -> False
+    case w :: rest ->
+        match w
+        case Chilled t -> t > 0
+        case _ -> isChilled rest
+
+woundLabel : Wound -> String
+let woundLabel w =
+    match w
+    case Bruised _ _ -> "bruised"
+    case Bleeding _ _ -> "bleeding"
+    case Crippled _ -> "crippled"
+    case Stunned _ -> "stunned"
+    case Fading _ -> "fading"
+    case Burning _ -> "burning"
+    case Poisoned _ -> "poisoned"
+    case Chilled _ -> "chilled"
+
+describeWounds : List Wound -> String
+let describeWounds ws decreases listLength ws =
+    match ws
+    case Nil -> ""
+    case w :: Nil -> woundLabel w
+    case w :: rest -> woundLabel w ++ ", " ++ describeWounds rest
+
+-- Maybe inflict an elemental status on a hit. Resistance lowers the odds and
+-- floors the magnitude; vulnerability raises both. No stacking — a fresh status
+-- only lands once the prior one of its kind has burned out.
+applyElemental : ContentPack -> DamageType -> Actor -> rand.Rng -> (defender : Actor, rng : rand.Rng)
+let applyElemental pack dt defender r0 =
+    match statusFor pack dt
+    case None -> (defender = defender, rng = r0)
+    case Some sdef ->
+        let resist = listMember dt defender.resistances
+        let vuln = listMember dt defender.vulnerabilities
+        let effChance = if resist then divInt sdef.chance 2 elif vuln then min 100 (sdef.chance * 2) else sdef.chance
+        let roll = rand.range 0 99 r0
+        in
+            if roll.value < effChance && not (hasStatusKind dt defender.wounds) then
+                let mag = if vuln then sdef.magnitude + 1 elif resist then 1 else sdef.magnitude
+                in (defender = defender.{ wounds = (::) (woundForStatus dt mag) defender.wounds }, rng = roll.rng)
+            else (defender = defender, rng = roll.rng)
+
 strikeWith : ContentPack -> DamageType -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
 let strikeWith pack dt attackTactic defenseTactic attacker defender r0 =
     let roll = attackRoll pack attackTactic defenseTactic attacker defender r0
@@ -167,15 +272,16 @@ let strikeWith pack dt attackTactic defenseTactic attacker defender r0 =
             let dmg = scaleDamage dt roll.damage defender
             let part = randomPart roll.rng
             let defenderWounded = inflictWound part.part dmg defender
-            let hp2 = defenderWounded.stats.hp - dmg
+            let elem = applyElemental pack dt defenderWounded part.rng
+            let hp2 = elem.defender.stats.hp - dmg
             let alive = hp2 > 0
-            let defender2 = defenderWounded.{ stats = defenderWounded.stats.{ hp = max 0 hp2 }, alive = alive }
+            let defender2 = elem.defender.{ stats = elem.defender.stats.{ hp = max 0 hp2 }, alive = alive }
             let attacker2 = if alive then attacker else awardXp attacker defender2
             let woundText = " in the " ++ partName part.part
             let text =
                 if alive then attacker.name ++ " hits " ++ defender.name ++ woundText ++ " for " ++ show dmg ++ "." ++ elementTag dt defender
                 else attacker.name ++ " kills " ++ defender.name ++ "."
-            in (attacker = attacker2, defender = defender2, log = text, rng = part.rng)
+            in (attacker = attacker2, defender = defender2, log = text, rng = elem.rng)
 
 strike : ContentPack -> DamageType -> Actor -> Actor -> rand.Rng -> (attacker : Actor, defender : Actor, log : String, rng : rand.Rng)
 let strike pack dt attacker defender r0 =
@@ -192,19 +298,23 @@ let targetedStrike pack dt attacker defender r0 =
             let bonus = if part.part == Head then 2 else 0
             let dmg = scaleDamage dt (roll.damage + bonus) defender
             let defenderWounded = inflictWound part.part dmg defender
-            let hp2 = defenderWounded.stats.hp - dmg
+            let elem = applyElemental pack dt defenderWounded roll.rng
+            let hp2 = elem.defender.stats.hp - dmg
             let alive = hp2 > 0
-            let defender2 = defenderWounded.{ stats = defenderWounded.stats.{ hp = max 0 hp2 }, alive = alive }
+            let defender2 = elem.defender.{ stats = elem.defender.stats.{ hp = max 0 hp2 }, alive = alive }
             let attacker2 = if alive then attacker else awardXp attacker defender2
             let text =
                 if alive then attacker.name ++ " maims " ++ defender.name ++ "'s " ++ partName part.part ++ " for " ++ show dmg ++ "." ++ elementTag dt defender
                 else attacker.name ++ " drops " ++ defender.name ++ " with a targeted strike."
-            in (attacker = attacker2, defender = defender2, log = text, rng = roll.rng)
+            in (attacker = attacker2, defender = defender2, log = text, rng = elem.rng)
 
 tickBleeding : Actor -> Actor
 let tickBleeding actor =
-    let b = bleedDamage actor
-    if b <= 0 then actor.{ wounds = decayWounds actor.wounds }
+    let bleed = bleedDamage actor
+    let burn = scaleDamage Fire (countBurns actor.wounds) actor
+    let poison = scaleDamage Poison (countPoisons actor.wounds) actor
+    let total = bleed + burn + poison
+    if total <= 0 then actor.{ wounds = decayWounds actor.wounds }
     else
-        let hp2 = actor.stats.hp - b
+        let hp2 = actor.stats.hp - total
         actor.{ wounds = decayWounds actor.wounds, stats = actor.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }

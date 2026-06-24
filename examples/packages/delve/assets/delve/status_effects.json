@@ -1,0 +1,22 @@
+{
+  "statuses": [
+    {
+      "element": "fire",
+      "chance": 50,
+      "magnitude": 3,
+      "per_turn": 2
+    },
+    {
+      "element": "poison",
+      "chance": 60,
+      "magnitude": 3,
+      "per_turn": 1
+    },
+    {
+      "element": "cold",
+      "chance": 40,
+      "magnitude": 2,
+      "per_turn": 0
+    }
+  ]
+}

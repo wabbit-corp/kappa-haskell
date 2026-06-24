@@ -113,10 +113,12 @@ castSpell : DamageType -> Int -> Actor -> Actor -> GameState -> GameState
 let castSpell dt dmg0 monster player game =
     let dmg = combat.scaleDamage dt dmg0 player
     let hp2 = player.stats.hp - dmg
-    let player2 = player.{ stats = player.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+    let player2a = player.{ stats = player.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+    let elem = combat.applyElemental game.content dt player2a (natToInt game.rng)
+    let player2 = elem.defender
     let monster2 = monster.{ stats = monster.stats.{ mp = max 0 (monster.stats.mp - 3) } }
     let actors1 = replaceActor player2 (replaceActor monster2 game.level.actors)
-    let g = message (monster.name ++ " hurls " ++ content.damageTypeDisplayName dt ++ " at you for " ++ show dmg ++ ".") (game.{ level = game.level.{ actors = actors1 } })
+    let g = message (monster.name ++ " hurls " ++ content.damageTypeDisplayName dt ++ " at you for " ++ show dmg ++ ".") (game.{ level = game.level.{ actors = actors1 }, rng = intToNat elem.rng })
     in if player2.alive then g else g.{ mode = Dead }
 
 -- Nearest visible actor this one is hostile to — could be the player OR a rival
@@ -403,6 +405,7 @@ let actorTurn actor game =
                 let game1 = game.{ level = game.level.{ actors = replaceActor actor2 game.level.actors } }
                 if not actor2.alive then addCorpseFor actor2 game1.{ level = game1.level.{ actors = removeDeadActors game1.level.actors } }
                 elif actor2.faction == HeroFaction then friendlyTurn actor2 player game1
+                elif combat.isChilled actor2.wounds then game1
                 elif actor2.attitude == Neutral then game1
                 else hostileTurn actor2 game1
 

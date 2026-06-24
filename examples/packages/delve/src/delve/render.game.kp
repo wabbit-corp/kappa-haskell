@@ -10,6 +10,7 @@ import delve.tactics as tactics
 import delve.content as content
 import delve.knowledge as know
 import delve.skill as skill
+import delve.combat as combat
 
 -- ── ANSI helpers ────────────────────────────────────────────────────────
 ansiClear : String
@@ -231,13 +232,17 @@ let soundLabel muted = if muted then tcb 230 180 70 "Muted" else tc 150 200 150 
 stanceTag : PlayerState -> String
 let stanceTag player = if player.crouching then tcb 150 210 150 "  [sneaking]" else ""
 
+afflictionTag : Actor -> String
+let afflictionTag p =
+    if listIsEmpty p.wounds then "" else "\r\n" ++ tc 230 140 90 ("Afflicted: " ++ combat.describeWounds p.wounds)
+
 statusLine : ContentPack -> PlayerState -> Actor -> Bool -> String
 let statusLine pack player p muted =
     tc 200 200 210 "HP " ++ hpMeter p.stats.hp p.stats.maxHp ++ " " ++ show p.stats.hp ++ "/" ++ show p.stats.maxHp ++
     tc 200 200 210 "   Chaos " ++ chaosMeter player ++ " " ++ show player.corruption ++ "\r\n" ++
     tc 180 180 195 "Lv " ++ show p.stats.level ++ "  XP " ++ show p.stats.xp ++ "  Gold " ++ tc 235 205 95 (show player.gold) ++
     tc 180 180 195 "  Food " ++ hungerWord player.hunger ++ tc 180 180 195 "  Tactic " ++ tc 150 200 230 (tactics.tacticName pack player.tactic) ++ stanceTag player ++
-    tc 180 180 195 "  Sound " ++ soundLabel muted ++ tc 120 120 140 " (m)"
+    tc 180 180 195 "  Sound " ++ soundLabel muted ++ tc 120 120 140 " (m)" ++ afflictionTag p
 
 -- ── Message log (recency fade: newest brightest, at the bottom) ──────────
 fade : Int -> String -> String
@@ -434,7 +439,8 @@ let groundItemAt pos items decreases listLength items =
 lookActorLines : ContentPack -> PlayerState -> Actor -> List String
 let lookActorLines pack player a =
     let base = [ a.name ++ " — " ++ show a.stats.hp ++ "/" ++ show a.stats.maxHp ++ " hp", content.descriptionOf pack a.species ]
-    in listAppend base (know.revealActorLore pack player a)
+    let afflict = if listIsEmpty a.wounds then Nil else ["Afflictions: " ++ combat.describeWounds a.wounds]
+    in listAppend base (listAppend (know.revealActorLore pack player a) afflict)
 
 lookDescription : ContentPack -> PlayerState -> Level -> Vec2 -> List String
 let lookDescription pack player level pos =

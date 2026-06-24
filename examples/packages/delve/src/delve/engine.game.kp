@@ -188,9 +188,11 @@ let damagePlayer dt amount0 game =
     case Some p ->
         let amount = combat.scaleDamage dt amount0 p
         let hp2 = p.stats.hp - amount
-        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let p2a = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let elem = combat.applyElemental game.content dt p2a (natToInt game.rng)
+        let p2 = elem.defender
         let mode2 = if hp2 > 0 then game.mode else Dead
-        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+        game.{ mode = mode2, rng = intToNat elem.rng, level = game.level.{ actors = replaceActor p2 game.level.actors } }
 
 tickPlayerWounds : GameState -> GameState
 let tickPlayerWounds game =
@@ -437,13 +439,15 @@ let zapWand wand before after p enemy game =
         let dt = content.damageTypeOf game.content wand.kind
         let dmg = combat.scaleDamage dt wand.power enemy
         let hp2 = enemy.stats.hp - dmg
-        let enemy2 = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let enemy2a = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let elem = combat.applyElemental game.content dt enemy2a (natToInt game0.rng)
+        let enemy2 = elem.defender
         let attacker0 =
             match playerActor game0
             case Some current -> current
             case None -> p
         let attacker2 = if enemy2.alive then attacker0 else combat.awardXp attacker0 enemy2
-        let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
+        let g0 = game0.{ rng = intToNat elem.rng, level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
         let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
         let learned = skill.observeSpecies game.level.depth enemy.species (not enemy2.alive) (Some dt) (if not enemy2.alive then Some (content.remainsKind enemy.species) else None) g1.player
         let trained = if enemy2.alive then learned else skill.trainSkill game.content "lore" learned
@@ -953,8 +957,10 @@ let emberlanceSpell target game =
     case None -> message "The lance of flame gutters against bare stone." (game.{ mode = Playing })
     case Some victim ->
         let dmg = combat.scaleDamage Fire 12 victim
-        let victim2 = victim.{ stats = victim.stats.{ hp = max 0 (victim.stats.hp - dmg) }, alive = victim.stats.hp - dmg > 0 }
-        let g1 = game.{ level = game.level.{ actors = removeDeadActors (replaceActor victim2 game.level.actors) }, mode = Playing }
+        let victim1 = victim.{ stats = victim.stats.{ hp = max 0 (victim.stats.hp - dmg) }, alive = victim.stats.hp - dmg > 0 }
+        let elem = combat.applyElemental game.content Fire victim1 (natToInt game.rng)
+        let victim2 = elem.defender
+        let g1 = game.{ level = game.level.{ actors = removeDeadActors (replaceActor victim2 game.level.actors) }, mode = Playing, rng = intToNat elem.rng }
         let g2 = if victim2.alive then g1 else addCorpseFor victim2 g1
         in message ("Searing flame engulfs the " ++ victim.name ++ " for " ++ show dmg ++ "!") g2
 

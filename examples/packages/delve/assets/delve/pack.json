@@ -12,7 +12,8 @@
     "rarities": "assets/delve/rarities.json",
     "colors": "assets/delve/colors.json",
     "skills": "assets/delve/skills.json",
-    "spells": "assets/delve/spells.json"
+    "spells": "assets/delve/spells.json",
+    "status_effects": "assets/delve/status_effects.json"
   },
   "save": {
     "path": "saves/delve-save.json",

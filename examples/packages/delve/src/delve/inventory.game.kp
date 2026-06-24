@@ -143,9 +143,11 @@ let damagePlayer dt amount0 game =
     case Some p ->
         let amount = combat.scaleDamage dt amount0 p
         let hp2 = p.stats.hp - amount
-        let p2 = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let p2a = p.{ stats = p.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
+        let elem = combat.applyElemental game.content dt p2a (natToInt game.rng)
+        let p2 = elem.defender
         let mode2 = if hp2 > 0 then game.mode else Dead
-        game.{ mode = mode2, level = game.level.{ actors = replaceActor p2 game.level.actors } }
+        game.{ mode = mode2, rng = intToNat elem.rng, level = game.level.{ actors = replaceActor p2 game.level.actors } }
 
 revealMap : GameState -> GameState
 let revealMap game =
