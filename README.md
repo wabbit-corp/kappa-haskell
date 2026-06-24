@@ -319,6 +319,7 @@ input/               upstream source bundles used as design references
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Performance notes and measurements. |
 | [`docs/NATIVE_BACKEND.md`](docs/NATIVE_BACKEND.md) | The native (C) backend. |
 | [`docs/BUILD_AND_NATIVE_BINDINGS.md`](docs/BUILD_AND_NATIVE_BINDINGS.md) | Build manifests and native bindings. |
+| [`docs/WORKER_DISCOVERED_ISSUES.md`](docs/WORKER_DISCOVERED_ISSUES.md) | Bugs and pitfalls harvested from Claude worker transcripts. |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history. |
 
 ## The Delve example
