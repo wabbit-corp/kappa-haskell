@@ -581,19 +581,8 @@ evalPurePrim p args = case (p, args) of
   ("divInt", [VLit (LitInt a), VLit (LitInt b)]) | b /= 0 -> int (a `quot` b)
   ("modInt", [VLit (LitInt a), VLit (LitInt b)]) | b /= 0 -> int (a `rem` b)
   ("negInt", [VLit (LitInt a)]) -> int (negate a)
-  -- §18.1/§29: Duration/Instant are monotonic-nanosecond Integers at
-  -- runtime; construction scales to nanos and arithmetic is integer add/sub.
-  ("nanos", [VLit (LitInt n)]) -> int n
-  ("micros", [VLit (LitInt n)]) -> int (n * 1000)
-  ("millis", [VLit (LitInt n)]) -> int (n * 1000000)
-  ("seconds", [VLit (LitInt n)]) -> int (n * 1000000000)
-  ("minutes", [VLit (LitInt n)]) -> int (n * 60000000000)
-  ("durationAdd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a + b)
-  ("durationSub", [VLit (LitInt a), VLit (LitInt b)]) -> int (a - b)
-  ("instantAdd", [VLit (LitInt a), VLit (LitInt b)]) -> int (a + b)
-  ("instantDiff", [VLit (LitInt a), VLit (LitInt b)]) -> int (a - b)
-  ("durationCompare", [VLit (LitInt a), VLit (LitInt b)]) ->
-    Just (VCtor (prelOrdering (compare a b)) [])
+  -- §18.1/§29: Duration/Instant construction + arithmetic now live in the
+  -- std.time prelude fragment (ordinary Kappa over Int); no prim cases here.
   -- §13.2.6/§11.3.1A row extension: append the field to the record
   -- value, keeping canonical lexicographic field order (§31.4)
   ("__rowExtend", [VRecordV fs, VLit (LitStr l), v])

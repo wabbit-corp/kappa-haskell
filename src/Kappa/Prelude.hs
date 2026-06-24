@@ -89,9 +89,9 @@ builtinState =
       , (prel "Region", opaqueTy (tyV tType)) -- §12.3 explicit region variables
       , -- §12.3.1 capture-annotated type former: part of type identity (§31.1)
         (prel "__captures", opaqueTy (tyV (tType ~> tcon "Region" ~> tType)))
-      , (prel "Duration", opaqueTy (tyV tType)) -- §18.1 monotonic time difference
-      , (prel "Instant", opaqueTy (tyV tType)) -- §18.1 monotonic time value
-      , (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
+      , -- §18.1 Duration/Instant are ordinary opaque data over Int (the std.time
+        -- fragment in the prelude library below), NOT compiler-opaque builtins.
+        (prel "STM", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
       , (prel "TVar", opaqueTy (tyV (tType ~> tType))) -- §18.1.13
       , (prel "Promise", opaqueTy (tyV (tType ~> tType ~> tType))) -- §18.11 one-shot promise
       , (prel "Scope", opaqueTy (tyV tType)) -- §18.1.8 explicit supervision scope
@@ -460,10 +460,11 @@ builtinState =
       , -- §18.1.6 timeout/race kernels. The typed-error injection is done in
         -- the Kappa wrappers (below); these return a structured outcome in any
         -- error context (the outcome is pure data, so the result error is free).
-        -- forall e a g. Duration -> IO e a -> IO g (TimeoutOutcome e a)
+        -- forall e a g. Int(ns) -> IO e a -> IO g (TimeoutOutcome e a). Takes raw
+        -- nanoseconds; the `timeout` wrapper unwraps the Duration (std.time below).
         prim "__timeout"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "g" tType
-            (tcon "Duration" ~> io (CVar 3) (CVar 2)
+            (tInt ~> io (CVar 3) (CVar 2)
               ~> io (CVar 2) (CApp Expl (CApp Expl (tcon "TimeoutOutcome") (CVar 4)) (CVar 3)))))))
       , -- forall e f a b g. IO e a -> IO f b -> IO g (RaceOutcome e f a b)
         prim "__race"
@@ -566,23 +567,12 @@ builtinState =
         prim "completePromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
             ~> CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1) ~> io (tcon "Void") tBool))))
-      , -- §18.1/§29 monotonic time: Duration/Instant construction + arithmetic
-        prim "nanos" (tyV (tInt ~> tcon "Duration"))
-      , prim "micros" (tyV (tInt ~> tcon "Duration"))
-      , prim "millis" (tyV (tInt ~> tcon "Duration"))
-      , prim "seconds" (tyV (tInt ~> tcon "Duration"))
-      , prim "minutes" (tyV (tInt ~> tcon "Duration"))
-      , prim "durationAdd" (tyV (tcon "Duration" ~> tcon "Duration" ~> tcon "Duration"))
-      , prim "durationSub" (tyV (tcon "Duration" ~> tcon "Duration" ~> tcon "Duration"))
-      , prim "durationCompare" (tyV (tcon "Duration" ~> tcon "Duration" ~> tcon "Ordering"))
-      , prim "instantAdd" (tyV (tcon "Instant" ~> tcon "Duration" ~> tcon "Instant"))
-      , prim "instantDiff" (tyV (tcon "Instant" ~> tcon "Instant" ~> tcon "Duration"))
-      , -- §18.1 timers (single agent): nowMonotonic reads the agent clock;
-        -- sleepFor/sleepUntil advance instantly (no preemption to schedule
-        -- against on one agent).
-        prim "nowMonotonic" (tyV (io (tcon "Void") (tcon "Instant")))
-      , prim "sleepFor" (tyV (tcon "Duration" ~> io (tcon "Void") tUnit))
-      , prim "sleepUntil" (tyV (tcon "Instant" ~> io (tcon "Void") tUnit))
+      , -- §18.1 monotonic time: the ONLY irreducible time primitives — read the
+        -- agent clock + sleep — both over raw nanosecond Ints. Duration/Instant
+        -- construction + arithmetic + the typed wrappers live in the std.time
+        -- prelude fragment below (ordinary Kappa over Int). sleepUntil is derived.
+        prim "__nowNanos" (tyV (io (tcon "Void") tInt))
+      , prim "__sleepForNanos" (tyV (tInt ~> io (tcon "Void") tUnit))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime
@@ -716,6 +706,59 @@ preludeSource =
     , "    LT"
     , "    EQ"
     , "    GT"
+    , ""
+    , -- §18.1/§29 std.time fragment: Duration/Instant are ordinary opaque data
+      -- over a signed-nanosecond Int; all construction/arithmetic/compare is
+      -- plain Kappa. Only __nowNanos (clock) + __sleepForNanos (timer) are prims.
+      "opaque data Duration : Type ="
+    , "    Duration Integer"
+    , ""
+    , "opaque data Instant : Type ="
+    , "    Instant Integer"
+    , ""
+    , "durationNanos : Duration -> Integer"
+    , "let durationNanos d ="
+    , "    match d"
+    , "    case Duration a -> a"
+    , ""
+    , "instantNanos : Instant -> Integer"
+    , "let instantNanos i ="
+    , "    match i"
+    , "    case Instant a -> a"
+    , ""
+    , "nanos : Integer -> Duration"
+    , "let nanos n = Duration n"
+    , "micros : Integer -> Duration"
+    , "let micros n = Duration (mulInt n 1000)"
+    , "millis : Integer -> Duration"
+    , "let millis n = Duration (mulInt n 1000000)"
+    , "seconds : Integer -> Duration"
+    , "let seconds n = Duration (mulInt n 1000000000)"
+    , "minutes : Integer -> Duration"
+    , "let minutes n = Duration (mulInt n 60000000000)"
+    , ""
+    , "durationAdd : Duration -> Duration -> Duration"
+    , "let durationAdd x y = Duration (addInt (durationNanos x) (durationNanos y))"
+    , "durationSub : Duration -> Duration -> Duration"
+    , "let durationSub x y = Duration (subInt (durationNanos x) (durationNanos y))"
+    , "durationCompare : Duration -> Duration -> Ordering"
+    , "let durationCompare x y ="
+    , "    if ltInt (durationNanos x) (durationNanos y) then LT"
+    , "    elif eqInt (durationNanos x) (durationNanos y) then EQ"
+    , "    else GT"
+    , ""
+    , "instantAdd : Instant -> Duration -> Instant"
+    , "let instantAdd i d = Instant (addInt (instantNanos i) (durationNanos d))"
+    , "instantDiff : Instant -> Instant -> Duration"
+    , "let instantDiff x y = Duration (subInt (instantNanos x) (instantNanos y))"
+    , ""
+    , -- typed timer wrappers over the raw-ns prims (sleepUntil is derived).
+      "nowMonotonic : IO Void Instant"
+    , "let nowMonotonic = ioBind __nowNanos (\\n -> ioPure (Instant n))"
+    , "sleepFor : Duration -> IO Void Unit"
+    , "let sleepFor d = __sleepForNanos (durationNanos d)"
+    , "sleepUntil : Instant -> IO Void Unit"
+    , "let sleepUntil i = ioBind nowMonotonic (\\now -> sleepFor (instantDiff i now))"
     , ""
     , "data Option (a : Type) : Type ="
     , "    None"
@@ -1406,7 +1449,7 @@ preludeSource =
       -- error unifies to the combined channel with no variant widening.
       "timeout : forall (e : Type) (a : Type). Duration -> IO e a -> IO (| TimeoutError | e |) a"
     , "let timeout d io ="
-    , "    ioBind (__timeout d io) (\\o ->"
+    , "    ioBind (__timeout (durationNanos d) io) (\\o ->"
     , "      match o"
     , "      case TOTimedOut -> __failTimeout"
     , "      case TOExit (Success v) -> ioPure v"

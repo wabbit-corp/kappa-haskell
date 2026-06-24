@@ -300,9 +300,6 @@ builtinCtorTag = \case
   "std.prelude.RaceLost" -> Just "KCT_IT_RACE_LOST"
   "std.prelude.External" -> Just "KCT_IT_EXTERNAL"
   -- §11 Ordering (durationCompare builds it in the runtime)
-  "std.prelude.LT" -> Just "KCT_LT"
-  "std.prelude.EQ" -> Just "KCT_EQ"
-  "std.prelude.GT" -> Just "KCT_GT"
   _ -> Nothing
 
 -- | The C tag constant for a constructor, recording a user constructor's use
@@ -372,8 +369,7 @@ basePrims =
       "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
     , "eqInt", "ltInt", "leInt"
       -- §18.1.6 Duration/Instant constructors, compare, arithmetic, clock
-    , "nanos", "micros", "millis", "seconds", "minutes", "durationCompare"
-    , "durationAdd", "durationSub", "instantAdd", "instantDiff", "nowMonotonic"
+    , "__nowNanos" -- §18.1 clock prim (raw ns); Duration/Instant ops are the std.time .kp fragment
       -- double
     , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
     , "eqDouble", "ltDouble", "floatEq"
@@ -431,7 +427,7 @@ basePrims =
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure"
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
-    , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "sleepFor"
+    , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "__sleepForNanos"
     , "newPromise", "completePromise", "awaitPromiseExit"
       -- §18.1.8 structured scopes + monitors (CPS do-kernel, Stage 3)
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
@@ -1843,18 +1839,8 @@ primEntries = Map.fromList
   , ("negDouble", PrimEntry "kpf_negDouble" 1 False)
   , ("negInt", PrimEntry "kpf_negInt" 1 False)
   -- §18.1.6 Duration constructors (pure Int -> nanosecond Int)
-  , ("nanos", PrimEntry "kpf_nanos" 1 False)
-  , ("micros", PrimEntry "kpf_micros" 1 False)
-  , ("millis", PrimEntry "kpf_millis" 1 False)
-  , ("seconds", PrimEntry "kpf_seconds" 1 False)
-  , ("minutes", PrimEntry "kpf_minutes" 1 False)
-  , ("durationCompare", PrimEntry "kpf_durationCompare" 2 False)
     -- §18.1 Duration/Instant arithmetic = signed-ns Int add/sub (reuse kp_addInt/subInt)
-  , ("durationAdd", PrimEntry "kpf_addInt" 2 False)
-  , ("durationSub", PrimEntry "kpf_subInt" 2 False)
-  , ("instantAdd", PrimEntry "kpf_addInt" 2 False)
-  , ("instantDiff", PrimEntry "kpf_subInt" 2 False)
-  , ("nowMonotonic", PrimEntry "kpf_now" 0 True) -- UIO Instant: reads the monotonic clock
+  , ("__nowNanos", PrimEntry "kpf_now" 0 True) -- UIO Instant: reads the monotonic clock
   , ("negRat", PrimEntry "kpf_negRat" 1 False)
   , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
   , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
@@ -1884,7 +1870,7 @@ primEntries = Map.fromList
   , ("__forkDaemon", PrimEntry "kpf_fork_daemon" 1 False)
   , ("__awaitFiber", PrimEntry "kpf_await" 1 False)
   , ("cede", PrimEntry "kpf_cede" 0 False)
-  , ("sleepFor", PrimEntry "kpf_sleep_for" 1 False)
+  , ("__sleepForNanos", PrimEntry "kpf_sleep_for" 1 False)
   , ("newPromise", PrimEntry "kpf_new_promise" 0 False)
   , ("completePromise", PrimEntry "kpf_complete_promise" 2 False)
   , ("awaitPromiseExit", PrimEntry "kpf_await_promise_exit" 1 False)
@@ -1920,16 +1906,6 @@ primDirect = \case
   "divInt" -> Just ("kp_divInt", 2)
   "modInt" -> Just ("kp_modInt", 2)
   "negInt" -> Just ("kp_negInt", 1)
-  "nanos" -> Just ("kp_nanos", 1)
-  "micros" -> Just ("kp_micros", 1)
-  "millis" -> Just ("kp_millis", 1)
-  "seconds" -> Just ("kp_seconds", 1)
-  "minutes" -> Just ("kp_minutes", 1)
-  "durationCompare" -> Just ("kp_durationCompare", 2)
-  "durationAdd" -> Just ("kp_addInt", 2)
-  "durationSub" -> Just ("kp_subInt", 2)
-  "instantAdd" -> Just ("kp_addInt", 2)
-  "instantDiff" -> Just ("kp_subInt", 2)
   "eqInt" -> Just ("kp_eqInt", 2)
   "ltInt" -> Just ("kp_ltInt", 2)
   "leInt" -> Just ("kp_leInt", 2)
@@ -2871,7 +2847,7 @@ suspendingNames =
   Set.fromList
     [ "fork", "forkDaemon", "await", "awaitPromise" -- surface (std.prelude)
     , "__forkRun", "__forkDaemon", "__awaitFiber" -- prims (__prim)
-    , "cede", "sleepFor", "newPromise", "completePromise", "awaitPromiseExit"
+    , "cede", "__sleepForNanos", "newPromise", "completePromise", "awaitPromiseExit"
     , "__race", "__timeout" -- §18.1.6 race/timeout (compile to krt2_race/krt2_timeout nodes)
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 scope + interruption nodes
       -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/

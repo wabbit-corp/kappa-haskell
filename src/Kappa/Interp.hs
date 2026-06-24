@@ -737,18 +737,13 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- §18.1 monotonic timers (single agent): nowMonotonic reads the host
   -- monotonic clock; sleepFor/sleepUntil advance instantly (a single agent
   -- has no other fiber to schedule during a sleep).
-  ("nowMonotonic", _) -> (VLit . LitInt . fromIntegral) <$> getMonotonicTimeNSec
+  -- §18.1 the two irreducible time prims take/return raw ns Ints; the typed
+  -- Duration/Instant wrappers (incl. sleepUntil) are the std.time .kp fragment.
+  ("__nowNanos", _) -> (VLit . LitInt . fromIntegral) <$> getMonotonicTimeNSec
   -- §18.1.6 sleep parks ONLY the current fiber (interruptible threadDelay on
   -- a non-threaded RTS yields to other runnable fibers — it does not block the
-  -- agent; a throwTo wakes it as an interruption point). Nonpositive / past
-  -- deadlines return immediately.
-  ("sleepFor", [dVal]) -> do
-    let ns = durationNanos dVal
-    if ns <= 0 then pure unitV else threadDelay (nanosToMicros ns) >> pure unitV
-  ("sleepUntil", [tVal]) -> do
-    let target = durationNanos tVal
-    now <- fromIntegral <$> getMonotonicTimeNSec
-    let ns = target - now
+  -- agent; a throwTo wakes it as an interruption point). Nonpositive returns now.
+  ("__sleepForNanos", [VLit (LitInt ns)]) ->
     if ns <= 0 then pure unitV else threadDelay (nanosToMicros ns) >> pure unitV
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r

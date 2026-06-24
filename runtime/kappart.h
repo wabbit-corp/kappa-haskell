@@ -94,7 +94,6 @@ enum {
   KCT_MK_INTERRUPT_CAUSE,                                    /* InterruptCause */
   KCT_IT_REQUESTED, KCT_IT_SCOPE_SHUTDOWN, KCT_IT_TIMED_OUT, /* InterruptTag (native)        */
   KCT_IT_RACE_LOST, KCT_IT_EXTERNAL,                         /* InterruptTag (interp/future) */
-  KCT_LT, KCT_EQ, KCT_GT,                                    /* Ordering (durationCompare)   */
   KCT_USER_BASE = 40
 };
 
@@ -204,9 +203,6 @@ KValue *kp_floatEq(KValue *, KValue *);   KValue *kp_eqDouble(KValue *, KValue *
 KValue *kp_stringAppend(KValue *, KValue *); KValue *kp_eqStr(KValue *, KValue *);
 KValue *kp_ltStr(KValue *, KValue *);
 KValue *kp_eqScalar(KValue *, KValue *);  KValue *kp_ltScalar(KValue *, KValue *);
-KValue *kp_nanos(KValue *);  KValue *kp_micros(KValue *);  KValue *kp_millis(KValue *);
-KValue *kp_seconds(KValue *); KValue *kp_minutes(KValue *); /* §18.1.6 Duration constructors */
-KValue *kp_durationCompare(KValue *, KValue *);            /* §18.1.6 Duration -> Duration -> Ordering */
 KValue *kp_showInt(KValue *);   KValue *kp_showDouble(KValue *);
 KValue *kp_showScalar(KValue *); KValue *kp_showStringLit(KValue *);
 KValue *kp_intToDouble(KValue *);
