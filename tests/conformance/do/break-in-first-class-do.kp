@@ -4,7 +4,7 @@
 -- `inner` has no enclosing loop of its own scope, so it is rejected at
 -- compile time rather than silently swallowed when `inner` is spliced
 -- inside a loop (completion is confined per do-scope; see
--- IMPLEMENTATION_NOTES.md "Completion is not first-class").
+-- docs/notes/IMPLEMENTATION_NOTES.md "Completion is not first-class").
 main : UIO Unit
 let main = do
     let inner = do

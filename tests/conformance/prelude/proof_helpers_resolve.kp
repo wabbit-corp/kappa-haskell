@@ -10,7 +10,7 @@
 -- equality helpers subst/sym/trans/cong/pathInd resolve at their declared
 -- signatures here. Ordinary sym/trans/cong use sites are covered in
 -- proof_helpers_use.kp; equality-match helper bodies are still tracked in
--- KNOWN_SPEC_ISSUES.md.
+-- docs/notes/KNOWN_SPEC_ISSUES.md.
 
 module main
 

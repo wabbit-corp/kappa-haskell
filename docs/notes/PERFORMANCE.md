@@ -226,7 +226,7 @@ into ordinary code are unaffected.
   conversion-reducible (§15.1) definitions δ-unfold at all, so
   unverified recursion cannot be forced during checking. Macro/Elab
   execution shares the same fuel discipline (§21.8 delta documented in
-  IMPLEMENTATION_NOTES.md).
+  docs/notes/IMPLEMENTATION_NOTES.md).
 * **External-fixture driver timeout.** `tools/run-external-fixtures.sh`
   applies a per-fixture timeout so a single pathological fixture cannot
   stall the corpus run.

@@ -857,7 +857,7 @@ preludeSource =
       -- structural contract: the supertrait premises (Eq/Zero/Add/Mul/...)
       -- plus the operations they refine. The law members carry no runtime
       -- representation under §11.1.6/§31.2 and are not modelled here; see
-      -- KNOWN_SPEC_ISSUES.md. The supertrait graph is exactly §28.2.2, so
+      -- docs/notes/KNOWN_SPEC_ISSUES.md. The supertrait graph is exactly §28.2.2, so
       -- name resolution and instance coherence (incl. the mandated
       -- "MUST NOT" exclusions) behave as specified.
       "trait (Eq a, Zero a, Add a) => AdditiveMonoid (a : Type)"
@@ -930,7 +930,7 @@ preludeSource =
       -- erased proofs over propositional equality that this
       -- implementation cannot synthesize for neutral terms, so the
       -- traits are surfaced as nameable markers (the supertrait graph
-      -- IsSubsingleton => IsProp is preserved). See KNOWN_SPEC_ISSUES.md.
+      -- IsSubsingleton => IsProp is preserved). See docs/notes/KNOWN_SPEC_ISSUES.md.
       "trait IsEmpty (t : Type) ="
     , "    absurdT : t -> Void"
     , ""
@@ -946,7 +946,7 @@ preludeSource =
     , ""
     , -- §28.2/§15.11 termination: WellFounded/Acc carriers and the
       -- well-founded-relation trait.  The well-foundedness witness is an
-      -- erased proof and is not modelled; see KNOWN_SPEC_ISSUES.md.
+      -- erased proof and is not modelled; see docs/notes/KNOWN_SPEC_ISSUES.md.
       "data WellFounded (a : Type) (rel : a -> a -> Type) : Type ="
     , "    MkWellFounded"
     , ""
@@ -960,7 +960,7 @@ preludeSource =
       -- measure function; its body is the natural pullback of 'rel'.
       -- 'lexRelation' is exported at the spec surface, but the current
       -- checker does not inspect arbitrary WellFoundedRelation dictionaries
-      -- as termination evidence; see KNOWN_SPEC_ISSUES.md.
+      -- as termination evidence; see docs/notes/KNOWN_SPEC_ISSUES.md.
       "measureRelation : forall (a b : Type). (@_ : WellFoundedRelation b) -> (a -> b) -> a -> a -> Type"
     , "let measureRelation f x y = rel (f x) (f y)"
     , ""
@@ -1874,7 +1874,7 @@ preludeSource =
     , ""
     , -- §28.2 proof and equality helpers over propositional equality.
       -- This implementation does not yet propagate the branch-local endpoint
-      -- equality forced by matching 'refl' (see KNOWN_SPEC_ISSUES.md), so
+      -- equality forced by matching 'refl' (see docs/notes/KNOWN_SPEC_ISSUES.md), so
       -- these helpers cannot be defined by 'match eq case refl -> ...'. They
       -- are realized through primitives that respect the operational
       -- meaning of erased, proof-irrelevant equality: 'subst'/'pathInd'
@@ -2030,7 +2030,7 @@ preludeSource =
       -- instances (List/Array/Set/Option/range/QueryCore-identity) are
       -- provided. The for/comprehension lowering iterates these sources
       -- via the §20.10.11 as-if list model; toQuery is the first-class
-      -- surface. See KNOWN_SPEC_ISSUES.md.
+      -- surface. See docs/notes/KNOWN_SPEC_ISSUES.md.
       "trait IntoQuery (src : Type) ="
     , "    IntoItem : Type"
     , "    toQuery : src -> Query IntoItem"
@@ -2108,7 +2108,7 @@ preludeSource =
     , ""
     , -- §20.9/§20.10: borrowed comprehension sources. The associated
       -- result members reference Region/BorrowView in the spec; like
-      -- IntoQuery (see above and KNOWN_SPEC_ISSUES.md) the names are
+      -- IntoQuery (see above and docs/notes/KNOWN_SPEC_ISSUES.md) the names are
       -- surfaced with their associated item type plus a query-producing
       -- member, so 'for &'/'for? &' sources resolve.
       "trait BorrowSourceIntoQuery (src : Type) ="

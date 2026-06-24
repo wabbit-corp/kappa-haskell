@@ -74,7 +74,7 @@ nested parenthesized type arguments (`Wrap (Wrap Integer)`,
 
 **Soft keywords via a two-tier stop set.** Application is
 juxtaposition, so the parser ends an argument run at "stop keywords".
-These are two tiers (§5.2, KNOWN_SPEC_ISSUES.md #11): a structural set
+These are two tiers (§5.2, docs/notes/KNOWN_SPEC_ISSUES.md #11): a structural set
 (`then`/`else`/`with`/`in`/statement starters/…) that always
 terminates, and a query-clause set (`group by order skip take distinct
 join yield into`) that terminates only while a comprehension body is
@@ -162,7 +162,7 @@ operators, instances, list functions — is compiled by the ordinary
 pipeline at startup. The prelude is therefore checked by the same
 elaborator it bootstraps, and prelude names resolve like any module's
 (§28.1). The cost is recompilation per CLI invocation (see
-PERFORMANCE.md).
+docs/notes/PERFORMANCE.md).
 
 **Recursion needs a preceding signature.** Per §9.2/§15.16, bodies are
 checked in a second pass against header types; recursion without a signature
@@ -266,7 +266,7 @@ fixed or justified here).
 3. **Quadratic lexer lookahead** — fixed. `peekAt` is now
    `T.uncons . T.drop n` (n ≤ 2) instead of `T.length`/`T.index` over
    the remaining input. Float-/char-literal-heavy files now scale like
-   int-heavy ones (PERFORMANCE.md §2a; `tools/gen-stress.sh` grew
+   int-heavy ones (docs/notes/PERFORMANCE.md §2a; `tools/gen-stress.sh` grew
    `float`/`char` modes to keep this measurable).
 4. **`sortDiagnostics`** — deleted (it was dead, and its `show`-based
    key was wrong anyway). Diagnostics are emitted in source order by

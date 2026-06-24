@@ -337,7 +337,7 @@ blocking lane, so the §26.1.4:26304 "MUST NOT … starve unrelated runnable
 fibers" rule holds vacuously (there is no concurrent fiber execution). A true
 offloading blocking-work lane (needed only if the native runtime later gains a
 concurrent scheduler) is a low-priority tracked item
-(`KAPPA_SELF_HOSTING_PORT_NOTES.md`, H-7), not claimed as implemented.
+(`docs/notes/KAPPA_SELF_HOSTING_PORT_NOTES.md`, H-7), not claimed as implemented.
 
 ### Lockfile + reproducibility (§36.4, §36.23.2, §3.2.15)
 

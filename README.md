@@ -313,10 +313,10 @@ input/               upstream source bundles used as design references
 | [`docs/CONCEPTS.md`](docs/CONCEPTS.md) | Primer + reading order for understanding the compiler source. Start here. |
 | [`docs/Spec.md`](docs/Spec.md) | The Kappa Language Specification (the normative source). |
 | [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) | What's implemented vs. the spec; remaining gaps to 100%. |
-| [`KNOWN_SPEC_ISSUES.md`](KNOWN_SPEC_ISSUES.md) | Known issues / ambiguities in the spec itself. |
-| [`IMPLEMENTATION_NOTES.md`](IMPLEMENTATION_NOTES.md) | Deep notes on how the implementation works. |
+| [`docs/notes/KNOWN_SPEC_ISSUES.md`](docs/notes/KNOWN_SPEC_ISSUES.md) | Known issues / ambiguities in the spec itself. |
+| [`docs/notes/IMPLEMENTATION_NOTES.md`](docs/notes/IMPLEMENTATION_NOTES.md) | Deep notes on how the implementation works. |
 | [`TESTING.md`](TESTING.md) | Test harness, directives, external corpus. |
-| [`PERFORMANCE.md`](PERFORMANCE.md) | Performance notes and measurements. |
+| [`docs/notes/PERFORMANCE.md`](docs/notes/PERFORMANCE.md) | Performance notes and measurements. |
 | [`docs/NATIVE_BACKEND.md`](docs/NATIVE_BACKEND.md) | The native (C) backend. |
 | [`docs/BUILD_AND_NATIVE_BINDINGS.md`](docs/BUILD_AND_NATIVE_BINDINGS.md) | Build manifests and native bindings. |
 | [`docs/WORKER_DISCOVERED_ISSUES.md`](docs/WORKER_DISCOVERED_ISSUES.md) | Bugs and pitfalls harvested from Claude worker transcripts. |

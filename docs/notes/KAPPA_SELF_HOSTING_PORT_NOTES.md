@@ -31,7 +31,7 @@ Repros in the findings below. H-1 is an enabler (this is the runtime oracle), ke
 Design directive: native bindings discovered/resolved from the manifest `nativeBinding`
 (symbol list + ABI signatures + inputs + link/load + digests), lowered to DIRECT C
 prototypes + typed wrappers + direct typed call sites. NO hardcoded catalog, NO runtime
-string/KValue primitive dispatch in optimized native output. See NATIVE_BACKEND_REDESIGN_PLAN.md.
+string/KValue primitive dispatch in optimized native output. See docs/notes/NATIVE_BACKEND_REDESIGN_PLAN.md.
 
 | ID | Sev | Status | Issue | Fix |
 |----|-----|--------|-------|-----|

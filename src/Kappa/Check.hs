@@ -26,7 +26,7 @@
 --
 -- Deliberate v1 restrictions surface as @E_UNSUPPORTED@ diagnostics and
 -- are catalogued in SPEC_COMPLIANCE.md; approximations (quantity usage
--- checking, termination) are catalogued in IMPLEMENTATION_NOTES.md.
+-- checking, termination) are catalogued in docs/notes/IMPLEMENTATION_NOTES.md.
 module Kappa.Check
   ( CheckState (..)
   , initCheckState

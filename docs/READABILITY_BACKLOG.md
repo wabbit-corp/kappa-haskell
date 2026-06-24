@@ -60,7 +60,7 @@ Each item: what, why it would help, rough size/risk.
 
 - Several `Eval.hs` comments are commit-message archaeology (performance history
   of `force`/spine handling). Useful to a maintainer, noise to a learner — could
-  move to a `NOTES`/`PERFORMANCE.md` cross-reference.
+  move to a `docs/notes/PERFORMANCE.md` cross-reference.
 
 ## Definition ordering (read top-to-bottom)
 

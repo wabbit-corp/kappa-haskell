@@ -180,7 +180,7 @@ N_scope) (~2.6 / 7.3 / 18.8 s for 1,000 / 2,000 / 4,000 distinct
 unresolved names). It is now linear (~2.08 / 4.02 / 8.14 s, ~2.0× per
 doubling) via a once-built, incrementally-extended length-bucketed
 candidate index in `Check.hs` (`csScopeNameCache`); each diagnostic
-consults only the length-compatible buckets. See PERFORMANCE.md §2b and
+consults only the length-compatible buckets. See docs/notes/PERFORMANCE.md §2b and
 the `tests/conformance/diagnostics/unresolved-typo-*` fixtures.
 
 ---

@@ -261,10 +261,10 @@ this implementation's §3.1.2A diagnostic registry, the directive cannot
 be type-checked and is classified a harness error per §T — it is **not**
 silently reconciled (§3.1.4 forbids reusing a portable alias for a
 materially different meaning, and these spellings are not in the §3.1.4
-portable-alias table — see KNOWN_SPEC_ISSUES.md #6 on foreign
+portable-alias table — see docs/notes/KNOWN_SPEC_ISSUES.md #6 on foreign
 diagnostic-code naming). The remaining harness errors and the 76
 failures are predominantly foreign diagnostic-code-spelling divergences
-(KNOWN_SPEC_ISSUES.md #6) plus tracked gaps and a small number of cited
+(docs/notes/KNOWN_SPEC_ISSUES.md #6) plus tracked gaps and a small number of cited
 spec conflicts; every recorded failure is an honest spelling/cascade
 divergence or a tracked gap, never a missed rejection, and no
 cross-implementation code "tolerance" is applied. The 11 unsupported
