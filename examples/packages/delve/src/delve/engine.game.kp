@@ -436,7 +436,7 @@ let zapWand wand before after p enemy game =
             match playerActor game0
             case Some current -> current
             case None -> p
-        let attacker2 = if enemy2.alive then attacker0 else combat.awardXp attacker0 enemy2
+        let attacker2 = if enemy2.alive then attacker0 else combat.awardXp game.content.tuning attacker0 enemy2
         let g0 = game0.{ rng = intToNat elem.rng, level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor attacker2 game0.level.actors)) } }
         let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
         let learned = skill.observeSpecies game.level.depth enemy.species (not enemy2.alive) (Some dt) (if not enemy2.alive then Some (content.remainsKind enemy.species) else None) g1.player
@@ -497,7 +497,7 @@ let throwFirst game =
                 let hp2 = enemy.stats.hp - dmg
                 let enemy2 = enemy.{ stats = enemy.stats.{ hp = max 0 hp2 }, alive = hp2 > 0 }
                 let p2 = p.{ inventory = taken.rest }
-                let p3 = if enemy2.alive then p2 else combat.awardXp p2 enemy2
+                let p3 = if enemy2.alive then p2 else combat.awardXp game.content.tuning p2 enemy2
                 let g0 = game0.{ level = game0.level.{ actors = removeDeadActors (replaceActor enemy2 (replaceActor p3 game0.level.actors)), items = (::) (GroundItem enemy.pos thrown) game0.level.items } }
                 let g1 = if enemy2.alive then g0 else addCorpseFor enemy2 g0
                 let learned = skill.observeSpecies game.level.depth enemy.species (not enemy2.alive) (Some dt) (if not enemy2.alive then Some (content.remainsKind enemy.species) else None) g1.player

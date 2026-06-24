@@ -1,0 +1,17 @@
+{
+  "attack_die": 20,
+  "defense_base": 8,
+  "damage_spread": 3,
+  "stun_threshold": 6,
+  "stun_turns": 2,
+  "head_bonus": 2,
+  "leg_bleed_severity": 1,
+  "arm_bruise_severity": 2,
+  "torso_bruise_severity": 1,
+  "crippled_penalty": 3,
+  "bleed_surcharge": 1,
+  "xp_factor": 10,
+  "level_hp_gain": 5,
+  "level_str_gain": 1,
+  "level_loyalty_gain": 2
+}

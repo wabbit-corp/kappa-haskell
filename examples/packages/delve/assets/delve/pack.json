@@ -13,7 +13,8 @@
     "colors": "assets/delve/colors.json",
     "skills": "assets/delve/skills.json",
     "spells": "assets/delve/spells.json",
-    "status_effects": "assets/delve/status_effects.json"
+    "status_effects": "assets/delve/status_effects.json",
+    "tuning": "assets/delve/tuning.json"
   },
   "save": {
     "path": "saves/delve-save.json",

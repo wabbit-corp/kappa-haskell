@@ -640,6 +640,27 @@ data StatusDef : Type =
         (magnitude : Int)
         (perTurn : Int)
 
+-- Tunable gameplay numbers, authored in tuning.json so balance can change
+-- without recompiling. Grows as more values migrate out of code; grouped by
+-- subsystem in comments. Generic systems read these instead of hardcoding.
+data TuningConfig : Type =
+    TuningConfig
+        (attackDie : Int)
+        (defenseBase : Int)
+        (damageSpread : Int)
+        (stunThreshold : Int)
+        (stunTurns : Int)
+        (headBonus : Int)
+        (legBleedSeverity : Int)
+        (armBruiseSeverity : Int)
+        (torsoBruiseSeverity : Int)
+        (crippledPenalty : Int)
+        (bleedSurcharge : Int)
+        (xpFactor : Int)
+        (levelHpGain : Int)
+        (levelStrGain : Int)
+        (levelLoyaltyGain : Int)
+
 data ContentPack : Type =
     ContentPack
         (packId : String)
@@ -667,6 +688,7 @@ data ContentPack : Type =
         (reveal : RevealConfig)
         (spells : List SpellDef)
         (statuses : List StatusDef)
+        (tuning : TuningConfig)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is

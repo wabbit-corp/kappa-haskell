@@ -75,6 +75,7 @@ let loadPack packPath =
         skillsPath <- filePath "skills" filesObject
         spellsPath <- filePath "spells" filesObject
         statusPath <- filePath "status_effects" filesObject
+        tuningPath <- filePath "tuning" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -89,6 +90,7 @@ let loadPack packPath =
         skills <- loadSkills skillsPath
         spells <- loadSpells spellsPath
         statuses <- loadStatuses statusPath
+        tuning <- loadTuning tuningPath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
         reveal <- decodeReveal revealObject
@@ -118,7 +120,8 @@ let loadPack packPath =
                 skills = skills,
                 reveal = reveal,
                 spells = spells,
-                statuses = statuses
+                statuses = statuses,
+                tuning = tuning
             }
         validateContentPack pack
 
@@ -300,6 +303,32 @@ let hasStatusElement xs dt decreases listLength xs =
     match xs
     case Nil -> False
     case s :: rest -> if s.element == dt then True else hasStatusElement rest dt
+
+decodeTuning : json.JsonValue -> IO GameError TuningConfig
+let decodeTuning value =
+    do
+        attackDie <- intField "attack_die" value
+        defenseBase <- intField "defense_base" value
+        damageSpread <- intField "damage_spread" value
+        stunThreshold <- intField "stun_threshold" value
+        stunTurns <- intField "stun_turns" value
+        headBonus <- intField "head_bonus" value
+        legBleedSeverity <- intField "leg_bleed_severity" value
+        armBruiseSeverity <- intField "arm_bruise_severity" value
+        torsoBruiseSeverity <- intField "torso_bruise_severity" value
+        crippledPenalty <- intField "crippled_penalty" value
+        bleedSurcharge <- intField "bleed_surcharge" value
+        xpFactor <- intField "xp_factor" value
+        levelHpGain <- intField "level_hp_gain" value
+        levelStrGain <- intField "level_str_gain" value
+        levelLoyaltyGain <- intField "level_loyalty_gain" value
+        pure (TuningConfig attackDie defenseBase damageSpread stunThreshold stunTurns headBonus legBleedSeverity armBruiseSeverity torsoBruiseSeverity crippledPenalty bleedSurcharge xpFactor levelHpGain levelStrGain levelLoyaltyGain)
+
+loadTuning : String -> IO GameError TuningConfig
+let loadTuning path =
+    do
+        root <- readJsonFile path
+        decodeTuning root
 
 decodeSkill : json.JsonValue -> IO GameError SkillDef
 let decodeSkill value =

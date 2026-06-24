@@ -30,22 +30,22 @@ let randomPart r0 =
         case _ -> RightLeg
     in (part = p, rng = r.rng)
 
-woundPenalty : List Wound -> Int
-let woundPenalty wounds decreases listLength wounds =
+woundPenalty : TuningConfig -> List Wound -> Int
+let woundPenalty tuning wounds decreases listLength wounds =
     match wounds
     case Nil -> 0
     case w :: rest ->
         let here =
             match w
             case Bruised _ sev -> sev
-            case Bleeding _ sev -> sev + 1
-            case Crippled _ -> 3
+            case Bleeding _ sev -> sev + tuning.bleedSurcharge
+            case Crippled _ -> tuning.crippledPenalty
             case Stunned turns -> turns
             case Fading _ -> 0
             case Burning _ -> 0
             case Poisoned _ -> 0
             case Chilled turns -> turns
-        in here + woundPenalty rest
+        in here + woundPenalty tuning rest
 
 bleedDamage : Actor -> Int
 let bleedDamage actor = countBleeds actor.wounds
@@ -127,35 +127,35 @@ let fadingExpiring ws decreases listLength ws =
         case Fading t -> if t <= 1 then True else fadingExpiring rest
         case _ -> fadingExpiring rest
 
-inflictWound : BodyPart -> Int -> Actor -> Actor
-let inflictWound part damage defender =
+inflictWound : TuningConfig -> BodyPart -> Int -> Actor -> Actor
+let inflictWound tuning part damage defender =
     let wound =
-        if part == Head && damage >= 6 then Stunned 2
-        elif part == LeftLeg || part == RightLeg then Bleeding part 1
-        elif part == LeftArm || part == RightArm then Bruised part 2
-        else Bruised part 1
+        if part == Head && damage >= tuning.stunThreshold then Stunned tuning.stunTurns
+        elif part == LeftLeg || part == RightLeg then Bleeding part tuning.legBleedSeverity
+        elif part == LeftArm || part == RightArm then Bruised part tuning.armBruiseSeverity
+        else Bruised part tuning.torsoBruiseSeverity
     in defender.{ wounds = (::) wound defender.wounds }
 
 attackRoll : ContentPack -> Tactic -> Tactic -> Actor -> Actor -> rand.Rng -> (hit : Bool, damage : Int, rng : rand.Rng)
 let attackRoll pack attackTactic defenseTactic attacker defender r0 =
-    let roll = rand.range 1 20 r0
+    let roll = rand.range 1 pack.tuning.attackDie r0
     let weapon = equippedClassPower WeaponClass attacker.inventory
     let armor = equippedClassPower ArmorClass defender.inventory
-    let attack = roll.value + attacker.stats.dex + tactics.attackBonus pack attackTactic - woundPenalty attacker.wounds
-    let defense = 8 + defender.stats.dex + defender.stats.def + armor - woundPenalty defender.wounds + tactics.defenseBonus pack defenseTactic
+    let attack = roll.value + attacker.stats.dex + tactics.attackBonus pack attackTactic - woundPenalty pack.tuning attacker.wounds
+    let defense = pack.tuning.defenseBase + defender.stats.dex + defender.stats.def + armor - woundPenalty pack.tuning defender.wounds + tactics.defenseBonus pack defenseTactic
     let hit = attack >= defense
     let base = max 1 (attacker.stats.str + weapon + tactics.damageBonus pack attackTactic)
-    let spread = rand.range 0 3 roll.rng
+    let spread = rand.range 0 pack.tuning.damageSpread roll.rng
     in (hit = hit, damage = if hit then max 1 (base + spread.value) else 0, rng = spread.rng)
 
-awardXp : Actor -> Actor -> Actor
-let awardXp killer victim =
+awardXp : TuningConfig -> Actor -> Actor -> Actor
+let awardXp tuning killer victim =
     if killer.species != PlayerSpecies && killer.species != Hound then killer
     else
         let gained = killer.stats.xp + max 1 victim.stats.xp
         let nextLevel = killer.stats.level + 1
-        if gained >= nextLevel * nextLevel * 10 then
-            killer.{ stats = killer.stats.{ xp = gained, level = nextLevel, maxHp = killer.stats.maxHp + 5, hp = killer.stats.hp + 5, str = killer.stats.str + 1 }, loyalty = killer.loyalty + 2 }
+        if gained >= nextLevel * nextLevel * tuning.xpFactor then
+            killer.{ stats = killer.stats.{ xp = gained, level = nextLevel, maxHp = killer.stats.maxHp + tuning.levelHpGain, hp = killer.stats.hp + tuning.levelHpGain, str = killer.stats.str + tuning.levelStrGain }, loyalty = killer.loyalty + tuning.levelLoyaltyGain }
         else killer.{ stats = killer.stats.{ xp = gained } }
 
 listMember : DamageType -> List DamageType -> Bool
@@ -271,12 +271,12 @@ let strikeWith pack dt attackTactic defenseTactic attacker defender r0 =
         else
             let dmg = scaleDamage dt roll.damage defender
             let part = randomPart roll.rng
-            let defenderWounded = inflictWound part.part dmg defender
+            let defenderWounded = inflictWound pack.tuning part.part dmg defender
             let elem = applyElemental pack dt defenderWounded part.rng
             let hp2 = elem.defender.stats.hp - dmg
             let alive = hp2 > 0
             let defender2 = elem.defender.{ stats = elem.defender.stats.{ hp = max 0 hp2 }, alive = alive }
-            let attacker2 = if alive then attacker else awardXp attacker defender2
+            let attacker2 = if alive then attacker else awardXp pack.tuning attacker defender2
             let woundText = " in the " ++ partName part.part
             let text =
                 if alive then attacker.name ++ " hits " ++ defender.name ++ woundText ++ " for " ++ show dmg ++ "." ++ elementTag dt defender
@@ -295,14 +295,14 @@ let targetedStrike pack dt attacker defender r0 =
         if not roll.hit then
             (attacker = attacker, defender = defender, log = attacker.name ++ " aims at " ++ defender.name ++ "'s " ++ partName part.part ++ " and misses.", rng = roll.rng)
         else
-            let bonus = if part.part == Head then 2 else 0
+            let bonus = if part.part == Head then pack.tuning.headBonus else 0
             let dmg = scaleDamage dt (roll.damage + bonus) defender
-            let defenderWounded = inflictWound part.part dmg defender
+            let defenderWounded = inflictWound pack.tuning part.part dmg defender
             let elem = applyElemental pack dt defenderWounded roll.rng
             let hp2 = elem.defender.stats.hp - dmg
             let alive = hp2 > 0
             let defender2 = elem.defender.{ stats = elem.defender.stats.{ hp = max 0 hp2 }, alive = alive }
-            let attacker2 = if alive then attacker else awardXp attacker defender2
+            let attacker2 = if alive then attacker else awardXp pack.tuning attacker defender2
             let text =
                 if alive then attacker.name ++ " maims " ++ defender.name ++ "'s " ++ partName part.part ++ " for " ++ show dmg ++ "." ++ elementTag dt defender
                 else attacker.name ++ " drops " ++ defender.name ++ " with a targeted strike."
