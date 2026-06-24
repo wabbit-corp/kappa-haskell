@@ -85,7 +85,16 @@ enum {
    * non-exhaustive.  Names are retained for diagnostics; dispatch is by id. */
   KCT_SUCCESS, KCT_FAILURE,                                /* Exit  */
   KCT_FAIL, KCT_INTERRUPT, KCT_DEFECT, KCT_BOTH, KCT_THEN, /* Cause */
-  KCT_USER_BASE = 24
+  /* §18.1.6 race/timeout outcomes + §18.1.2 interruption metadata.  Runtime
+   * builds these (race.c/scope.c/rt.c) under DIAGNOSTIC names (RaceWonLeft/
+   * TimeoutDone/InterruptCause); dispatch is by id, so each id is pinned to the
+   * PRELUDE ctor a .kp match names (ROLeft/TOExit/MkInterruptCause/...). */
+  KCT_RO_LEFT, KCT_RO_RIGHT,                                 /* RaceOutcome    */
+  KCT_TO_TIMED_OUT, KCT_TO_EXIT,                             /* TimeoutOutcome */
+  KCT_MK_INTERRUPT_CAUSE,                                    /* InterruptCause */
+  KCT_IT_REQUESTED, KCT_IT_SCOPE_SHUTDOWN, KCT_IT_TIMED_OUT, /* InterruptTag (native)        */
+  KCT_IT_RACE_LOST, KCT_IT_EXTERNAL,                         /* InterruptTag (interp/future) */
+  KCT_USER_BASE = 40
 };
 
 typedef struct KValue KValue;
@@ -194,6 +203,8 @@ KValue *kp_floatEq(KValue *, KValue *);   KValue *kp_eqDouble(KValue *, KValue *
 KValue *kp_stringAppend(KValue *, KValue *); KValue *kp_eqStr(KValue *, KValue *);
 KValue *kp_ltStr(KValue *, KValue *);
 KValue *kp_eqScalar(KValue *, KValue *);  KValue *kp_ltScalar(KValue *, KValue *);
+KValue *kp_nanos(KValue *);  KValue *kp_micros(KValue *);  KValue *kp_millis(KValue *);
+KValue *kp_seconds(KValue *); KValue *kp_minutes(KValue *); /* §18.1.6 Duration constructors */
 KValue *kp_showInt(KValue *);   KValue *kp_showDouble(KValue *);
 KValue *kp_showScalar(KValue *); KValue *kp_showStringLit(KValue *);
 KValue *kp_intToDouble(KValue *);

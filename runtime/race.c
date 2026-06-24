@@ -21,9 +21,12 @@
 #include <gc.h>
 
 /* result constructors (matched by name in harnesses / unwrapped by the prelude) */
-static KValue *won(const char *side, KValue *exit) {
+/* Build a RaceOutcome/TimeoutOutcome wrapper.  `id` is the PRELUDE ctor's fixed
+ * KCT_ id (kappart.h) so a .kp match dispatches by id; `side` is the runtime's
+ * diagnostic name (need not equal the prelude ctor name — matching is by id). */
+static KValue *won(int id, const char *side, KValue *exit) {
   KValue *args[1] = { exit };
-  return kctor(KRT2_RESULT_ID, side, 1, args);
+  return kctor(id, side, 1, args);
 }
 /* a daemon that signals `signal` once `child` (or `delayAction`) completes */
 static KValue *signal_on(KValue *child_action_done, KValue *signal) {
@@ -38,15 +41,15 @@ static KValue *signal_on(KValue *child_action_done, KValue *signal) {
 static KValue *race_decide_r(KEnv *env, KValue *mre) {
   KValue *lf = kvar(env, 0);
   if (kctor_is(mre, "Some"))
-    return krt2_then(krt2_interrupt(lf), krt2_pure(won("RaceWonRight", kctor_arg(mre, 0))));
-  return krt2_pure(won("RaceWonLeft", krt2_failure(krt2_cause_defect(kstr0("race: no winner")))));
+    return krt2_then(krt2_interrupt(lf), krt2_pure(won(KCT_RO_RIGHT, "RaceWonRight", kctor_arg(mre, 0))));
+  return krt2_pure(won(KCT_RO_LEFT, "RaceWonLeft", krt2_failure(krt2_cause_defect(kstr0("race: no winner")))));
 }
 /* \mle -> if Some lex then (interrupt rf; RaceWonLeft lex) else tryExit rf >>= race_decide_r
  *  (env=[lf, rf]) */
 static KValue *race_decide_l(KEnv *env, KValue *mle) {
   KValue *lf = kvar(env, 0), *rf = kvar(env, 1);
   if (kctor_is(mle, "Some"))
-    return krt2_then(krt2_interrupt(rf), krt2_pure(won("RaceWonLeft", kctor_arg(mle, 0))));
+    return krt2_then(krt2_interrupt(rf), krt2_pure(won(KCT_RO_LEFT, "RaceWonLeft", kctor_arg(mle, 0))));
   return krt2_bind(krt2i_try_exit(rf), kclo(race_decide_r, kpush(lf, NULL)));
 }
 /* \rf -> spawn both watchers, await first signal, then decide  (env=[signal, lf]) */
@@ -79,10 +82,10 @@ KValue *krt2_race(KValue *left, KValue *right) {
 static KValue *timeout_decide(KEnv *env, KValue *mae) {
   KValue *af = kvar(env, 0);
   if (kctor_is(mae, "Some"))
-    return krt2_pure(won("TimeoutDone", kctor_arg(mae, 0)));
+    return krt2_pure(won(KCT_TO_EXIT, "TimeoutDone", kctor_arg(mae, 0)));
   KValue *cause = krt2_interrupt_cause("TimedOut", krt2i_none());
   return krt2_then(krt2_interrupt_as(cause, af),
-                   krt2_pure(kctor0(KRT2_RESULT_ID, "TimeoutFired")));
+                   krt2_pure(kctor0(KCT_TO_TIMED_OUT, "TimeoutFired")));
 }
 /* \af -> spawn action-watcher + timer-watcher, await first signal, then decide
  *  (env=[dur, signal]) */

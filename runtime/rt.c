@@ -18,15 +18,10 @@ const char *const KRT2_CAPABILITIES[] = {
   "rt-core", "rt-parallel", "rt-shared-stm", "rt-blocking", "rt-atomics", NULL
 };
 
-/* ── Exit / Cause constructors (§28 shapes; matched by name in harnesses) ── */
-static KValue *ctor1(const char *name, KValue *a) {
-  KValue *args[1] = { a };
-  return kctor(KRT2_RESULT_ID, name, 1, args);
-}
-static KValue *ctor2(const char *name, KValue *a, KValue *b) {
-  KValue *args[2] = { a, b };
-  return kctor(KRT2_RESULT_ID, name, 2, args);
-}
+/* ── Exit / Cause / outcome constructors (§28 shapes) ───────────────────────
+ * All result ctors the runtime builds now carry their FIXED KCT_ id (kappart.h)
+ * so a .kp id-based `match` dispatches correctly; the old by-name ctor1/ctor2
+ * (KRT2_RESULT_ID = KCT_OTHER) are gone — use idc1/idc2 below. */
 KValue *krt2i_unit(void)            { return kunit(); }
 /* idc1/idc2: like ctor1/ctor2 but with the ctor's FIXED KCT_ id (kappart.h), so
  * a runtime-built Exit/Cause matches a codegen id-based `case` (not just the
@@ -53,7 +48,7 @@ KValue *krt2_cause_defect(KValue *di)    { return idc1(KCT_DEFECT, "Defect", di)
 KValue *krt2_cause_both(KValue *a, KValue *b) { return idc2(KCT_BOTH, "Both", a, b); }
 KValue *krt2_cause_then(KValue *a, KValue *b) { return idc2(KCT_THEN, "Then", a, b); }
 KValue *krt2_interrupt_cause(const char *tag, KValue *by_opt) {
-  return ctor2("InterruptCause", kctor0(KRT2_RESULT_ID, tag), by_opt);
+  return krt2i_interrupt_cause(tag, by_opt); /* one impl (scope.c); this was a divergent dup */
 }
 
 /* ── action-node builders (codegen + harness targets) ──────────────────── */

@@ -286,6 +286,19 @@ builtinCtorTag = \case
   "std.prelude.Defect" -> Just "KCT_DEFECT"
   "std.prelude.Both" -> Just "KCT_BOTH"
   "std.prelude.Then" -> Just "KCT_THEN"
+  -- §18.1.6 race/timeout outcomes the runtime builds (race.c) + §18.1.2
+  -- interruption metadata (scope.c/rt.c).  Pinned so a runtime-delivered outcome
+  -- matches a .kp id-based `case` (the runtime's diagnostic name may differ).
+  "std.prelude.ROLeft" -> Just "KCT_RO_LEFT"
+  "std.prelude.RORight" -> Just "KCT_RO_RIGHT"
+  "std.prelude.TOTimedOut" -> Just "KCT_TO_TIMED_OUT"
+  "std.prelude.TOExit" -> Just "KCT_TO_EXIT"
+  "std.prelude.MkInterruptCause" -> Just "KCT_MK_INTERRUPT_CAUSE"
+  "std.prelude.Requested" -> Just "KCT_IT_REQUESTED"
+  "std.prelude.ScopeShutdown" -> Just "KCT_IT_SCOPE_SHUTDOWN"
+  "std.prelude.TimedOut" -> Just "KCT_IT_TIMED_OUT"
+  "std.prelude.RaceLost" -> Just "KCT_IT_RACE_LOST"
+  "std.prelude.External" -> Just "KCT_IT_EXTERNAL"
   _ -> Nothing
 
 -- | The C tag constant for a constructor, recording a user constructor's use
@@ -354,6 +367,8 @@ basePrims =
     [ -- integer
       "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
     , "eqInt", "ltInt", "leInt"
+      -- §18.1.6 Duration constructors
+    , "nanos", "micros", "millis", "seconds", "minutes"
       -- double
     , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
     , "eqDouble", "ltDouble", "floatEq"
@@ -404,6 +419,7 @@ basePrims =
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen", "throwIO", "catchIO", "finallyIO"
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
+    , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
     , "newRef", "readRef", "writeRef"
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "check"
@@ -1819,6 +1835,12 @@ primEntries = Map.fromList
   , ("natToInt", PrimEntry "kpf_natToInt" 1 False)
   , ("negDouble", PrimEntry "kpf_negDouble" 1 False)
   , ("negInt", PrimEntry "kpf_negInt" 1 False)
+  -- §18.1.6 Duration constructors (pure Int -> nanosecond Int)
+  , ("nanos", PrimEntry "kpf_nanos" 1 False)
+  , ("micros", PrimEntry "kpf_micros" 1 False)
+  , ("millis", PrimEntry "kpf_millis" 1 False)
+  , ("seconds", PrimEntry "kpf_seconds" 1 False)
+  , ("minutes", PrimEntry "kpf_minutes" 1 False)
   , ("negRat", PrimEntry "kpf_negRat" 1 False)
   , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
   , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
@@ -1884,6 +1906,11 @@ primDirect = \case
   "divInt" -> Just ("kp_divInt", 2)
   "modInt" -> Just ("kp_modInt", 2)
   "negInt" -> Just ("kp_negInt", 1)
+  "nanos" -> Just ("kp_nanos", 1)
+  "micros" -> Just ("kp_micros", 1)
+  "millis" -> Just ("kp_millis", 1)
+  "seconds" -> Just ("kp_seconds", 1)
+  "minutes" -> Just ("kp_minutes", 1)
   "eqInt" -> Just ("kp_eqInt", 2)
   "ltInt" -> Just ("kp_ltInt", 2)
   "leInt" -> Just ("kp_leInt", 2)
@@ -2003,6 +2030,21 @@ compileAppGlob g sargs term = do
           | [c] <- [a | (Expl, a) <- sargs] -> do
               cc <- compileErasableArg c
               pure ("krt2_reraise(" <> cc <> ")")
+        -- §18.1.6 race/timeout: the krt2_race/krt2_timeout node builders (a
+        -- krt2_bind tree the CK-machine drives — forks both, awaits the first
+        -- signal, interrupts the loser).  The prelude race/timeout bodies are
+        -- `ioBind (__race l r) (\o -> match o …)`, so the surrounding ioBind
+        -- lowers to krt2_bind (§3.3 has __race/__timeout as suspending).
+        Just "__race"
+          | [l, r] <- [a | (Expl, a) <- sargs] -> do
+              lc <- compileErasableArg l
+              rc <- compileErasableArg r
+              pure ("krt2_race(" <> lc <> ", " <> rc <> ")")
+        Just "__timeout"
+          | [d, io] <- [a | (Expl, a) <- sargs] -> do
+              dc <- compileErasableArg d
+              ic <- compileErasableArg io
+              pure ("krt2_timeout(" <> dc <> ", " <> ic <> ")")
         Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
@@ -2403,6 +2445,8 @@ cpsNodeApp term = do
         (Just "catchIO", [body, _]) -> spineHeadSuspends susp body
         (Just "finallyIO", [body, _]) -> spineHeadSuspends susp body
         (Just "__reraiseCause", [_]) -> True
+        (Just "__race", [_, _]) -> True
+        (Just "__timeout", [_, _]) -> True
         _ -> False
     _ -> pure False
 
@@ -2754,6 +2798,7 @@ suspendingNames =
     [ "fork", "forkDaemon", "await", "awaitPromise" -- surface (std.prelude)
     , "__forkRun", "__forkDaemon", "__awaitFiber" -- prims (__prim)
     , "cede", "sleepFor", "newPromise", "completePromise", "awaitPromiseExit"
+    , "__race", "__timeout" -- §18.1.6 race/timeout (compile to krt2_race/krt2_timeout nodes)
       -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.

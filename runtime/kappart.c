@@ -1479,6 +1479,14 @@ KValue *kp_negInt(KValue *x) {
   kload_mpz(x, z); mpz_neg(zr, z);
   return kfrom_mpz(zr);
 }
+/* §18.1.6 Duration constructors: a Duration is a signed-nanosecond Int (Eval.hs
+ * durationNanos); each scales its Int via kp_mulInt so big-Int durations match
+ * the interpreter's Integer arithmetic exactly. */
+KValue *kp_nanos(KValue *x)   { return x; }
+KValue *kp_micros(KValue *x)  { return kp_mulInt(x, kint(1000LL)); }
+KValue *kp_millis(KValue *x)  { return kp_mulInt(x, kint(1000000LL)); }
+KValue *kp_seconds(KValue *x) { return kp_mulInt(x, kint(1000000000LL)); }
+KValue *kp_minutes(KValue *x) { return kp_mulInt(x, kint(60000000000LL)); }
 KValue *kp_eqInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) == 0); }
 KValue *kp_ltInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) < 0); }
 KValue *kp_leInt(KValue *x, KValue *y) { return kbool(kint_cmp(x, y) <= 0); }
@@ -1559,6 +1567,11 @@ KValue *kpf_modInt(KValue **a) {
 KValue *kpf_negInt(KValue **a) {
   return kp_negInt(a[0]);
 }
+KValue *kpf_nanos(KValue **a)   { return kp_nanos(a[0]); }
+KValue *kpf_micros(KValue **a)  { return kp_micros(a[0]); }
+KValue *kpf_millis(KValue **a)  { return kp_millis(a[0]); }
+KValue *kpf_seconds(KValue **a) { return kp_seconds(a[0]); }
+KValue *kpf_minutes(KValue **a) { return kp_minutes(a[0]); }
 KValue *kpf_eqInt(KValue **a) {
   return kp_eqInt(a[0], a[1]);
 }

@@ -14,13 +14,28 @@
 #include "internal.h"
 
 #include <gc.h>
+#include <string.h>
 
 /* ── interruption (§18.1.4) ─────────────────────────────────────────────── */
 
-/* Build InterruptCause(tag, by) — `by` is an Option FiberId (§18.1.2). */
+/* Map an InterruptTag diagnostic name to its fixed KCT_ id (kappart.h) so a .kp
+ * `match` on the tag dispatches by id.  Only the tags the runtime builds need an
+ * entry; an unknown tag stays KCT_OTHER (inert — no .kp match names it). */
+int krt2i_interrupt_tag_id(const char *tag) {
+  if (!strcmp(tag, "Requested"))     return KCT_IT_REQUESTED;
+  if (!strcmp(tag, "ScopeShutdown")) return KCT_IT_SCOPE_SHUTDOWN;
+  if (!strcmp(tag, "TimedOut"))      return KCT_IT_TIMED_OUT;
+  if (!strcmp(tag, "RaceLost"))      return KCT_IT_RACE_LOST;
+  if (!strcmp(tag, "External"))      return KCT_IT_EXTERNAL;
+  return KCT_OTHER;
+}
+
+/* Build MkInterruptCause(tag, by) — `by` is an Option FiberId (§18.1.2).  The
+ * outer ctor and the inner tag carry their fixed KCT_ ids; "InterruptCause" is a
+ * diagnostic name (the prelude ctor is MkInterruptCause — matching is by id). */
 KValue *krt2i_interrupt_cause(const char *tag, KValue *by_opt) {
-  KValue *args[2] = { kctor0(KRT2_RESULT_ID, tag), by_opt };
-  return kctor(KRT2_RESULT_ID, "InterruptCause", 2, args);
+  KValue *args[2] = { kctor0(krt2i_interrupt_tag_id(tag), tag), by_opt };
+  return kctor(KCT_MK_INTERRUPT_CAUSE, "InterruptCause", 2, args);
 }
 
 /* Record a pending interruption on `target` (first request wins, §18.1.12) and,

@@ -85,15 +85,21 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       `Interp.reraiseCauseValue`). With the IO-combinator lowering + result-ctor
       ids, **`join` now runs native** — success, typed-failure, and `catchIO`
       around it all ≡ interpreter (`join-success`, `join-catch` cases).
-      `race`/`timeout` still need the dynamic-named result ctors (below).
-- [x] **Native result-ctor matching** (§28 shapes) — DONE: the runtime-built
-      `Exit`/`Cause` outcomes (`Success`/`Failure`/`Fail`/`Interrupt`/`Defect`/
-      `Both`/`Then`) + `Some`/`None` now carry FIXED `KCT_*` ids shared with
-      codegen (`builtinCtorTag`), so a runtime-delivered `await` result matches a
-      `.kp` id-based `case` (`await-exit` case). Was silently non-exhaustive
-      before (runtime built them with `KCT_OTHER`). Remaining: the DYNAMIC-named
-      runtime ctors (RaceResult sides, InterruptCause tags, TimeoutResult) — a
-      follow-up for full `race`/`timeout`/interrupt-cause matching.
+- [x] **`race`/`timeout` run native** (§18.1.6) — DONE: `__race`/`__timeout` lower
+      to the `krt2_race`/`krt2_timeout` node builders (`compileAppGlob`, suspending
+      per §3.3); the `Duration` constructors (`nanos`/`micros`/`millis`/`seconds`/
+      `minutes`) are wired as pure prims (`kp_*` via `kp_mulInt` for big-Int
+      parity). `race.kp` → `1`, `timeout.kp` → `TIMED-OUT\n42\n`, and a
+      `ScopeShutdown` interrupt-cause match all ≡ interpreter (`race`, `timeout`,
+      `interrupt-cause` cases).
+- [x] **Native result-ctor matching — COMPLETE** (§28 shapes) — every runtime-built
+      result ctor now carries a FIXED `KCT_*` id shared with codegen
+      (`builtinCtorTag`): `Exit`/`Cause`/`Option` (done earlier) PLUS the
+      dynamic-named `RaceOutcome` (`ROLeft`/`RORight`), `TimeoutOutcome`
+      (`TOTimedOut`/`TOExit`), and `InterruptCause`/`InterruptTag`
+      (`MkInterruptCause`/`Requested`/`ScopeShutdown`/`TimedOut`/…).  Zero ctors
+      remain on `KCT_OTHER`; the divergent duplicate `interrupt_cause` (rt.c vs
+      scope.c) is consolidated and the dead `ctor1`/`ctor2` removed.
 - [ ] **`atomically`/`retry` real parking** (§18.1.13). Switch the single-agent
       `Ref` STM shim to the journaled `krt2_atomically`/`OP_ATOMICALLY` so
       transactions park + retry across fibers ([`../stm.c`](../stm.c) already implements it).

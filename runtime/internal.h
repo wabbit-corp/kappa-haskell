@@ -294,6 +294,7 @@ Scope  *krt2i_scope_new(void);                      /* (scope.c) */
 void    krt2i_scope_attach(Rt *rt, Scope *sc, Fiber *child);/* (scope.c) att_scope+link+live; born-interrupted if sc is draining */
 void    krt2i_scope_detach(Rt *rt, Fiber *child);   /* (scope.c) called from fiber_finish */
 KValue *krt2i_interrupt_cause(const char *tag, KValue *by_opt);
+int     krt2i_interrupt_tag_id(const char *tag);    /* (scope.c) InterruptTag name -> KCT_ id */
 void    krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause);
 
 /* interruption + structured-concurrency op handlers (scope.c).  A "parking"
