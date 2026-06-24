@@ -85,13 +85,15 @@ KValue *krt2_monitor(KValue *f)           { return op1(OP_MONITOR, "rt.monitor",
 KValue *krt2_await_monitor(KValue *m)     { return op1(OP_AWAIT_MONITOR, "rt.awaitMonitor", m); }
 KValue *krt2_demonitor(KValue *m)         { (void)m; return krt2_pure(kunit()); } /* drop is a no-op (§18.1.8) */
 
-/* withScope: newScope; use(scope); shutdownScope(scope).  v1 increment runs the
- * shutdown on the NORMAL completion path; the failure/interrupt-path shutdown is
- * the `finally` increment (KK_FINALLY).  Build via a continuation closure that
- * captures `use` in env[0]. */
+/* withScope: newScope; run `use scope`; shut the scope down on EVERY exit
+ * (normal, failure, interrupt) while PRESERVING the body's result — i.e.
+ * `ensuring`, not `then`.  `then` would discard the body's `a` (returning the
+ * shutdown's Unit, contradicting the `IO e a` type) and would skip shutdown on
+ * the failure/interrupt path, leaking child fibers past a failed scoped body
+ * (§32.2.3).  Build via a continuation closure that captures `use` in env[0]. */
 static KValue *with_scope_cont(KEnv *env, KValue *sc) {
   KValue *use = kvar(env, 0);
-  return krt2_then(kapp(use, sc), krt2_shutdown_scope(sc));
+  return krt2_ensuring(kapp(use, sc), krt2_shutdown_scope(sc));
 }
 KValue *krt2_with_scope(KValue *use) {
   return krt2_bind(krt2_new_scope(), kclo(with_scope_cont, kpush(use, NULL)));
@@ -183,11 +185,19 @@ void krt2i_resume(Rt *rt, Fiber *f) {
   krt2i_rq_push(rt, f);
 }
 void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
-  if (resume_val) f->cur = resume_val;
+  /* Idempotent: only the waker that wins the F_PARKED -> F_RUNNABLE CAS may
+   * touch the fiber.  Writing `cur` BEFORE the CAS would let a late/duplicate
+   * wake (one that loses the CAS because the fiber is already runnable, running,
+   * or done) clobber a live fiber's action — a data race.  Once we win the CAS
+   * the fiber is parked (not running) and not yet enqueued, so writing `cur`
+   * here and enqueuing it afterwards is safe; the rq_lock in rq_push publishes
+   * the write to the worker that later pops the fiber. */
   int expected = F_PARKED;
   if (atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNABLE,
-                                              memory_order_acq_rel, memory_order_relaxed))
+                                              memory_order_acq_rel, memory_order_relaxed)) {
+    if (resume_val) f->cur = resume_val;
     krt2i_rq_push(rt, f);
+  }
 }
 /* Block until a runnable fiber is available, or NULL when shutting down. */
 static Fiber *rq_pop(Rt *rt) {
@@ -290,7 +300,7 @@ Fiber *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon) {
   Fiber *child = fiber_new(rt, action);
   child->daemon = daemon;
   child->cur_scope = attach;
-  if (!daemon && attach) krt2i_scope_attach(attach, child); /* att_scope+link+live++ */
+  if (!daemon && attach) krt2i_scope_attach(rt, attach, child); /* att_scope+link+live++ */
   krt2i_all_add(rt, child);
   krt2i_resume(rt, child);
   return child;
@@ -754,8 +764,17 @@ int krt2_exit_is_success(KValue *exit) { return kctor_is(exit, "Success"); }
 KValue *krt2_run_main(KValue *action) {
   Rt *rt = g_rt ? g_rt : krt2_new(0);
 
-  Fiber *m = fiber_new(rt, action);
-  m->cur_scope = krt2i_scope_new();  /* the root supervision scope (§32.2.3) */
+  /* The root supervision scope (§32.2.3).  Wrap main so that on EVERY exit
+   * (normal, failure, interrupt) it shuts the root scope down — interrupting and
+   * awaiting any root-level forked children before main terminates — instead of
+   * abandoning them when the workers are joined.  With no root children the
+   * shutdown is a no-op, so the common case is unaffected. */
+  Scope *root = krt2i_scope_new();
+  KValue *root_h = kfgn(root, KRT2_KIND_SCOPE);
+  KValue *wrapped = krt2_ensuring(action, krt2_shutdown_scope(root_h));
+
+  Fiber *m = fiber_new(rt, wrapped);
+  m->cur_scope = root;
   rt->main_fiber = m;
   krt2i_all_add(rt, m);
 
@@ -781,6 +800,10 @@ void krt2_shutdown(Rt *rt) {
   pthread_mutex_unlock(&rt->rq_lock);
   for (int i = 0; i < rt->nworkers; i++) GC_pthread_join(rt->workers[i], NULL);
   krt2i_reactor_stop(rt);
+  /* A shut-down runtime must not remain the active one: clearing g_rt lets a
+   * subsequent krt2_run_main / krt2_new build a fresh runtime instead of reusing
+   * one with workers joined and shutting_down/main_done still set. */
+  if (g_rt == rt) g_rt = NULL;
 }
 
 void krt2_dump(void *out) {

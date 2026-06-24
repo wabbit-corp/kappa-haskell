@@ -73,10 +73,16 @@ KValue *krt2i_op_new_scope(void) {
   return kfgn(krt2i_scope_new(), KRT2_KIND_SCOPE);
 }
 
-void krt2i_scope_attach(Scope *sc, Fiber *child) {
+void krt2i_scope_attach(Rt *rt, Scope *sc, Fiber *child) {
   ScopeLink *l = (ScopeLink *)GC_MALLOC(sizeof(ScopeLink));
   l->f = child;
   pthread_mutex_lock(&sc->lock);
+  /* Read `shutting` UNDER the lock, serialized with shutdownScope's snapshot:
+   * either shutdown already saw this child (it is in `children` and will be
+   * interrupted), or it has not run yet and we observe `shutting` here and
+   * interrupt the child ourselves.  No child forked into a draining scope can
+   * escape interruption (§32.2.3). */
+  int shutting = atomic_load(&sc->shutting);
   l->prev = NULL; l->next = sc->children;
   if (sc->children) sc->children->prev = l;
   sc->children = l;
@@ -84,6 +90,12 @@ void krt2i_scope_attach(Scope *sc, Fiber *child) {
   pthread_mutex_unlock(&sc->lock);
   child->att_scope = sc;
   child->att_link = l;
+  /* A child born into an already-draining scope is interrupted immediately so
+   * it terminates promptly; it is still counted in `live`, so the drain's
+   * live==0 wait remains correct (it neither returns early nor waits forever). */
+  if (shutting)
+    krt2i_interrupt_request(rt, child,
+        krt2i_interrupt_cause("ScopeShutdown", krt2i_none()));
 }
 
 /* A child has terminated: unlink it from its scope, decrement the live count,

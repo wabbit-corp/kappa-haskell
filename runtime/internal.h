@@ -290,7 +290,7 @@ KValue *krt2i_try_exit(KValue *fiber);    /* action: non-blocking peek -> Option
 /* fiber spawn/attach (rt.c) — used by both fork and forkIn */
 Fiber  *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon);
 Scope  *krt2i_scope_new(void);                      /* (scope.c) */
-void    krt2i_scope_attach(Scope *sc, Fiber *child);/* (scope.c) sets att_scope+link+live */
+void    krt2i_scope_attach(Rt *rt, Scope *sc, Fiber *child);/* (scope.c) att_scope+link+live; born-interrupted if sc is draining */
 void    krt2i_scope_detach(Rt *rt, Fiber *child);   /* (scope.c) called from fiber_finish */
 KValue *krt2i_interrupt_cause(const char *tag, KValue *by_opt);
 void    krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause);
