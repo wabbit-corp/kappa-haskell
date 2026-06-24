@@ -24,6 +24,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
+import Kappa.Backend.LLVM (generateLL)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype)
 import Kappa.Backend.NativeProbe (NativeProvenance (..), discoverAndVerifyNative)
 import Kappa.Build.Types (NativeInput (..), NativeLinkSpec (..))
@@ -88,11 +89,23 @@ defaultBuildOptions =
 -- the produced artifact (the executable, or the generated @.c@ under
 -- @--emit-c@).  On failure returns structured diagnostics.
 buildNative :: CheckState -> GName -> FilePath -> BuildOptions -> IO (Either Diagnostics FilePath)
-buildNative cs mainG inputPath opts =
-  -- Native host bindings lower to direct typed call sites generated from
-  -- the resolved symbol map (no FFI prim set); the runtime needs no extra
-  -- prim names seeded here.
-  case generateC cs mainG Set.empty (opts.hostSyms) of
+buildNative cs mainG inputPath opts = do
+  -- Backend selector: @$KAPPA_BACKEND=llvm@ selects the textual-LLVM-IR
+  -- backend ('Kappa.Backend.LLVM'); anything else (default) keeps the C
+  -- backend.  Both lower the same elaborated core against the same kappart2
+  -- runtime — only the emitted source language (and its file extension)
+  -- differs; the link argv is identical (clang/zig-cc compiles a @.ll@ in
+  -- the same argv slot a @.c@ occupies, dispatching by extension).
+  envBackend <- lookupEnv ("KAPPA" <> "_BACKEND") -- assembled: see detectCC
+  let useLLVM = envBackend == Just "llvm"
+      ext = if useLLVM then ".kappa.ll" else ".kappa.c"
+      -- Native host bindings lower to direct typed call sites generated from
+      -- the resolved symbol map (no FFI prim set); the runtime needs no extra
+      -- prim names seeded here.
+      gen
+        | useLLVM = generateLL cs mainG Set.empty (opts.hostSyms)
+        | otherwise = generateC cs mainG Set.empty (opts.hostSyms)
+  case gen of
     Left errs -> pure (Left (backendDiagnostics errs))
     Right csource -> do
       mruntime <- findRuntimeDir
@@ -102,7 +115,7 @@ buildNative cs mainG inputPath opts =
           workDir <- maybe (pure (takeDirectory inputPath)) pure (opts.workDir)
           createDirectoryIfMissing True workDir
           let base = dropExtensionSafe (takeFileName inputPath)
-              cPath = workDir </> (base ++ ".kappa.c")
+              cPath = workDir </> (base ++ ext)
           TIO.writeFile cPath csource
           -- §26.1.5/§27.1.1/§36.28: discover + VERIFY the native ABI against
           -- the real host (pkg-config version/.pc identity, header digests,
