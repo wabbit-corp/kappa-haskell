@@ -2015,13 +2015,13 @@ compileAppGlob g sargs term = do
         -- ('gsSuspenders') — a sequential @ioBind@ stays on the cheap bridge.
         Just "ioBind"
           | [m, k] <- [a | (Expl, a) <- sargs]
-          , spineHeadSuspends susp m -> do
+          , mayActSuspend susp m -> do
               mc <- compileErasableArg m
               kc <- compileErasableArg k
               pure ("krt2_bind(" <> mc <> ", " <> kc <> ")")
         Just "ioThen"
           | [m, n] <- [a | (Expl, a) <- sargs]
-          , spineHeadSuspends susp m -> do
+          , mayActSuspend susp m -> do
               mc <- compileErasableArg m
               nc <- compileErasableArg n
               pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
@@ -2031,13 +2031,13 @@ compileAppGlob g sargs term = do
         -- `catchIO (join f) h` would mis-run the join).  Same §3.3 gate.
         Just "catchIO"
           | [body, h] <- [a | (Expl, a) <- sargs]
-          , spineHeadSuspends susp body -> do
+          , mayActSuspend susp body -> do
               bc <- compileErasableArg body
               hc <- compileErasableArg h
               pure ("krt2_catch(" <> bc <> ", " <> hc <> ")")
         Just "finallyIO"
           | [body, fin] <- [a | (Expl, a) <- sargs]
-          , spineHeadSuspends susp body -> do
+          , mayActSuspend susp body -> do
               bc <- compileErasableArg body
               fc <- compileErasableArg fin
               pure ("krt2_finally(" <> bc <> ", " <> fc <> ")")
@@ -2479,10 +2479,10 @@ cpsNodeApp term = do
       mp <- globPrimName g
       susp <- gets gsSuspenders
       pure $ case (mp, [a | (Expl, a) <- sargs]) of
-        (Just "ioBind", [m, _]) -> spineHeadSuspends susp m
-        (Just "ioThen", [m, _]) -> spineHeadSuspends susp m
-        (Just "catchIO", [body, _]) -> spineHeadSuspends susp body
-        (Just "finallyIO", [body, _]) -> spineHeadSuspends susp body
+        (Just "ioBind", [m, _]) -> mayActSuspend susp m
+        (Just "ioThen", [m, _]) -> mayActSuspend susp m
+        (Just "catchIO", [body, _]) -> mayActSuspend susp body
+        (Just "finallyIO", [body, _]) -> mayActSuspend susp body
         (Just "__reraiseCause", [_]) -> True
         (Just "__race", [_, _]) -> True
         (Just "__timeout", [_, _]) -> True
@@ -2928,6 +2928,22 @@ spineHeadSuspends :: Set GName -> Term -> Bool
 spineHeadSuspends susp t = case fst (spineOf t) of
   CGlob g -> isSuspendingPrim g || g `Set.member` susp
   _ -> False
+
+-- | §3.3 higher-order: is this action's spine head a local/parameter (a @CVar@)?
+-- Then the action MAY suspend depending on the caller (e.g. @bracketM@'s @use r@,
+-- where @use@ is an IO-action parameter).  A combinator over it is CPS-lowered
+-- conservatively: the CK-machine drives a sequential local action just fine, and
+-- only it can drive a suspending one — whereas the synchronous bridge cannot.
+spineHeadIsLocal :: Term -> Bool
+spineHeadIsLocal t = case fst (spineOf t) of
+  CVar _ -> True
+  _ -> False
+
+-- | An action that an IO combinator (ioBind/catchIO/…) must drive through the
+-- CK-machine: it either reaches a suspending op (§3.3) or is parameter-headed
+-- (higher-order, may-suspend).
+mayActSuspend :: Set GName -> Term -> Bool
+mayActSuspend susp t = spineHeadSuspends susp t || spineHeadIsLocal t
 
 -- | Does any action in the block (recursively, including loop/if bodies) reach a
 -- suspending operation?  Gates CPS lowering and — when the block is NOT CPS-able

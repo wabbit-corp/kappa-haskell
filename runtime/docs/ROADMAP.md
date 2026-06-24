@@ -112,12 +112,24 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       - `scheduler-retry` MISMATCH — needs REAL STM retry/parking (the journaled
         `krt2_atomically`/`OP_ATOMICALLY`, §18.1.13); the single-agent shim can't
         block-and-resume across fibers.
-      - **`bracket` finalizer-on-interrupt** — surfaces the §3.3 HIGHER-ORDER
-        limitation: `bracketM = ioBind acquire (\r -> finallyIO (use r) …)` — the
-        suspension flows through the `use` PARAMETER (a `CVar`, not a global), so
-        `spineHeadSuspends` is False, `finallyIO` stays on the legacy bridge, and
-        the release is skipped on interrupt. Fix = model higher-order suspension
-        in §3.3 (a value-passed action param taints its callee as may-suspend).
+      - **`bracket` finalizer-on-interrupt** — TWO causes, one fixed:
+        1. [x] §3.3 HIGHER-ORDER: `bracketM = ioBind acquire (\r -> finallyIO
+           (use r) …)` suspends through the `use`/`acquire` PARAMETERS (CVars), so
+           the old `spineHeadSuspends` gate kept the combinators on the legacy
+           bridge. FIXED: `mayActSuspend` also CPS-lowers a combinator whose action
+           is parameter-headed (`spineHeadIsLocal`) — bracketM now uses
+           `krt2_finally` (verified). Regression-free (full native suite + effects
+           sweep clean). REMAINING: a §3.3 SEED extension to also mark such
+           higher-order globals may-suspend (so a NON-forked `r <- bracket …` is
+           CPS at the call site too — forked uses already work via the fiber).
+        2. [ ] MASKING SURFACE (§18.1.12): even with (1), the release is skipped
+           because the fiber is BORN-INTERRUPTED — native delivers a pending
+           interrupt at the fiber's first step (`rt.c` fiber_step), before the
+           acquire registers the finalizer. ZIO/bracket semantics require the
+           acquire to be UNINTERRUPTIBLE; the interpreter only gets away without a
+           mask via GHC's lenient async-exception timing. Fix = expose
+           `uninterruptibleMask` (the runtime `krt2_uninterruptible` exists) in the
+           prelude + interp and wrap bracketM's acquire — a distinct piece.
 - [x] **Native result-ctor matching — COMPLETE** (§28 shapes) — every runtime-built
       result ctor now carries a FIXED `KCT_*` id shared with codegen
       (`builtinCtorTag`): `Exit`/`Cause`/`Option` (done earlier) PLUS the
