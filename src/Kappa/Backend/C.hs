@@ -2669,15 +2669,32 @@ spineHeadSuspends t = case fst (spineOf t) of
     (m == primModule || m == ModuleName ["std", "prelude"]) && nm `Set.member` suspendingNames
   _ -> False
 
-cpsEligible :: [KItem] -> Bool
-cpsEligible items = any itemSuspends items && all simpleLinear items
+-- | Does any action in the block (recursively, including loop/if bodies) reach a
+-- suspending operation?  Used both to gate CPS lowering and — when the block is
+-- NOT CPS-able — to DIAGNOSE it (a suspending op in a not-yet-supported shape is
+-- a hard error, not a silent fall-through to the bridge that would mis-run it).
+blockSuspends :: [KItem] -> Bool
+blockSuspends = any itemSuspends
   where
     itemSuspends (KBind _ _ t) = spineHeadSuspends t
     itemSuspends (KExpr t) = spineHeadSuspends t
+    itemSuspends (KAssign _ True t) = spineHeadSuspends t
+    itemSuspends (KReturn t) = spineHeadSuspends t
+    itemSuspends (KVarItem _ t) = spineHeadSuspends t
+    itemSuspends (KWhile _ _ b me) = blockSuspends b || maybe False blockSuspends me
+    itemSuspends (KFor _ _ _ b me) = blockSuspends b || maybe False blockSuspends me
+    itemSuspends (KIf alts me) = any (blockSuspends . snd) alts || maybe False blockSuspends me
+    itemSuspends (KUsing _ a _) = spineHeadSuspends a
     itemSuspends _ = False
+
+cpsEligible :: [KItem] -> Bool
+cpsEligible items = blockSuspends items && all simpleLinear items
+  where
     -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
-    -- the runtime's OP_DOSCOPE/OP_DEFER).  Labeled defer / using / loops / if /
-    -- var / return are still Stage-2+ work (block stays on the legacy bridge).
+    -- the runtime's OP_DOSCOPE/OP_DEFER).  The loop family (var/assign/while/
+    -- break/continue) is Stage-2+ work: a re-run loop body needs var reads to be
+    -- run-time OP_READ_REF actions, not build-time kref_get (§4/R7) — until that
+    -- lands, a suspending loop is DIAGNOSED (see 'compileDo'), not mis-lowered.
     simpleLinear KBind {} = True
     simpleLinear KLet {} = True
     simpleLinear KExpr {} = True
@@ -2763,6 +2780,16 @@ emitCpsCont pat rest = do
 compileDo :: Maybe Text -> [KItem] -> Gen Text
 compileDo lbl items
   | cpsEligible items = compileDoCps items
+  -- A block that reaches a suspending op but is not a CPS-able shape would be
+  -- mis-run on the synchronous bridge (fork/await never park) — fail closed with
+  -- a clear diagnostic instead, until the relevant CPS stage lands.
+  | blockSuspends items =
+      unsupported
+        "do-kernel"
+        ( "a suspending operation (fork/await/sleepFor/…) appears in a do-block shape the "
+            <> "native backend does not yet CPS-lower (a loop, if, using, labeled defer, "
+            <> "monadic assignment, or return); see runtime/docs/CPS-DESIGN.md (Stage 2+)"
+        )
 compileDo lbl items = do
   fnName <- freshFn "kdo_"
   env <- gets gsEnv
