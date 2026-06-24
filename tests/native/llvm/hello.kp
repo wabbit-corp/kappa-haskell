@@ -1,0 +1,5 @@
+-- M0: a saturated effectful primitive over a string literal.  The LLVM
+-- backend's hello-world shape; kept in the corpus so M0 never regresses.
+module main
+main : UIO Unit
+let main = printlnString "hello"

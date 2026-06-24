@@ -57,6 +57,7 @@ data GenState = GenState
   , gsTop :: ![Text] -- ^ completed top-level @define@s, reversed
   , gsDecls :: !(Set Text) -- ^ runtime @declare@ lines (Set-dedup: one fn referenced many times)
   , gsStrs :: ![(Text, Text, Int)] -- ^ string pool: (global name, escaped IR bytes, byte length)
+  , gsCStrs :: ![(Text, Text, Int)] -- ^ NUL-terminated C-string pool for @kbigint_str@: (global name, escaped IR bytes incl. trailing NUL, total length)
   , gsGlobalsExtra :: ![Text] -- ^ extra module-level globals (e.g. each accessor's @.cache@)
   , gsEmitted :: !(Set GName) -- ^ globals already emitted or enqueued
   , gsQueue :: ![GName] -- ^ globals still to emit
@@ -199,6 +200,21 @@ internStr s = do
   emit (r <> " = call ptr @kstr(ptr " <> name <> ", i64 " <> T.pack (show len) <> ")")
   pure r
 
+-- | Intern a NUL-terminated C string into the module's constant pool and
+-- return its @\@.cstr.N@ global name (a @ptr@ operand).  Unlike 'internStr'
+-- (a length-carrying @KValue*@ via @kstr@), this is a raw @const char *@ for
+-- @kbigint_str@: the constant carries a trailing @\\00@ byte so the callee can
+-- @strlen@ it.  A bigint decimal is ASCII @[0-9-]@ only, so no UTF-8 escaping
+-- subtlety applies, but 'llvmBytes' handles it uniformly regardless.
+internCStr :: Text -> Gen Text
+internCStr s = do
+  n <- gets (length . gsCStrs)
+  let name = "@.cstr." <> T.pack (show n)
+      bytes = llvmBytes s <> "\\00" -- explicit NUL terminator
+      len = utf8Len s + 1
+  modify' $ \g -> g {gsCStrs = (name, bytes, len) : gsCStrs g}
+  pure name
+
 -- ── Top-level driver ─────────────────────────────────────────────────
 
 -- | Lower a checked program to a complete LLVM IR translation unit, or
@@ -215,6 +231,7 @@ generateLL cs mainG ffiPrims _hostSyms =
           , gsTop = []
           , gsDecls = Set.empty
           , gsStrs = []
+          , gsCStrs = []
           , gsGlobalsExtra = []
           , gsEmitted = Set.singleton mainG
           , gsQueue = [mainG]
@@ -230,13 +247,21 @@ generateLL cs mainG ffiPrims _hostSyms =
         [] -> Right (assembleLL final)
         errs -> Left errs
 
--- | The base primitives the @kappart@ runtime implements.  M0 only needs to
--- recognise @printlnString@; the full set is owned by 'Kappa.Backend.C'
--- (kept private there), and later milestones can widen this as their prim
--- lowerings land.  A reference to a name outside this set is an honest
--- @E_BACKEND_UNSUPPORTED@.
+-- | The base primitives the @kappart@ runtime implements.  M0 recognised only
+-- @printlnString@/@printString@; M1 widens this to the saturated pure
+-- first-order prims it lowers (the @kp_*@ direct helpers below).  The full set
+-- is owned by 'Kappa.Backend.C' (kept private there); later milestones widen
+-- this further as their lowerings land.  A reference to a name outside this set
+-- is an honest @E_BACKEND_UNSUPPORTED@.
+--
+-- INVARIANT: every name here that is not an IO prim ('ioPrimEntry') must have a
+-- 'pureDirectEntry' lowering, and vice versa — 'globPrimName' returns a name
+-- only when it is in @gsPrims@, and 'compilePrimApp' must then handle it.
 basePrims :: Set Text
-basePrims = Set.fromList ["printlnString", "printString"]
+basePrims =
+  Set.fromList $
+    ["printlnString", "printString"] -- M0 IO prims
+      ++ pureDirectPrims -- M1 pure first-order prims
 
 -- | Emit globals until the work queue is empty (mirrors C's 'drainQueue').
 drainQueue :: Gen ()
@@ -357,6 +382,7 @@ assembleLL st =
     , ""
     ]
       ++ strPool
+      ++ cStrPool
       ++ [""]
       ++ reverse (gsGlobalsExtra st)
       ++ [""]
@@ -370,6 +396,13 @@ assembleLL st =
       [ name <> " = private unnamed_addr constant [" <> T.pack (show len)
           <> " x i8] c\"" <> bytes <> "\", align 1"
       | (name, bytes, len) <- reverse (gsStrs st)
+      ]
+    -- NUL-terminated C-string constants for @kbigint_str@ (length already
+    -- includes the trailing @\\00@ that 'internCStr' appended to @bytes@).
+    cStrPool =
+      [ name <> " = private unnamed_addr constant [" <> T.pack (show len)
+          <> " x i8] c\"" <> bytes <> "\", align 1"
+      | (name, bytes, len) <- reverse (gsCStrs st)
       ]
 
 -- ── Term lowering ────────────────────────────────────────────────────
@@ -415,9 +448,41 @@ compileLit :: Literal -> Gen Text
 compileLit = \case
   LitStr s -> internStr s
   LitGrapheme g -> internStr g
+  -- §6 Integer is arbitrary-precision.  An in-range literal is an inline
+  -- @kint(i64)@; one beyond int64 is a runtime bignum built from its decimal
+  -- text via @kbigint_str@ — the SAME split the C backend makes ('compileLit'
+  -- in "Kappa.Backend.C": @kint(...)@ vs @kbigint_str("...")@), so big-Integer
+  -- literals stay at parity.
+  LitInt n
+    | n >= toInteger (minBound :: Int) && n <= toInteger (maxBound :: Int) ->
+        compileInt n
+    | otherwise -> compileBigInt n
   l ->
     unsupported "literal"
-      ("the LLVM backend M0 supports only String literals, not " <> litName l)
+      ("the LLVM backend M1 supports String and Int literals, not " <> litName l)
+
+-- | An in-range Integer literal: @call ptr \@kint(i64 N)@.  LLVM i64 literals
+-- accept plain signed decimal (including @-9223372036854775808@ for
+-- @INT64_MIN@), so no @INT64_MIN@/@LL@ macro dance is needed — the value is the
+-- same as C's 'cIntLit'.
+compileInt :: Integer -> Gen Text
+compileInt n = do
+  declRuntime "declare ptr @kint(i64)"
+  r <- freshReg
+  emit (r <> " = call ptr @kint(i64 " <> T.pack (show n) <> ")")
+  pure r
+
+-- | An out-of-int64 Integer literal: @call ptr \@kbigint_str(ptr \@.cstr.N)@
+-- over a NUL-terminated decimal C string (mirrors C's @kbigint_str("…")@).
+-- Uses a dedicated NUL-terminated constant pool ('internCStr') because
+-- @kbigint_str@ wants a @const char *@, not a length-carrying @KValue*@.
+compileBigInt :: Integer -> Gen Text
+compileBigInt n = do
+  ptrG <- internCStr (T.pack (show n))
+  declRuntime "declare ptr @kbigint_str(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @kbigint_str(ptr " <> ptrG <> ")")
+  pure r
 
 litName :: Literal -> Text
 litName = \case
@@ -443,7 +508,11 @@ compileGlob g@(GName m nm)
         _ -> do
           enqueue g
           let ident = cGlobIdent g
-          declRuntime ("declare ptr @" <> ident <> "()") -- forward decl for symmetry
+          -- No forward @declare@: the accessor is enqueued and emitted as a
+          -- @define internal@ in THIS module, and LLVM resolves an intra-module
+          -- call by name regardless of definition order.  A @declare@ here would
+          -- be an external-linkage prototype that CLASHES with the later
+          -- @define internal@ (an "invalid redefinition") — so it is omitted.
           r <- freshReg
           emit (r <> " = call ptr @" <> ident <> "()")
           pure r
@@ -461,10 +530,13 @@ spineOf = go []
     go acc (CApp ic f a) = go ((ic, a) : acc) f
     go acc t = (t, acc)
 
--- | Compile an application.  M0: a saturated application whose head is a
--- known IO primitive lowers to @knative_sat@ (the §2.3 lowering); a
--- saturated application whose head is another global is out of M0 scope
--- (no arity-≥1 globals yet) and reported.
+-- | Compile an application.  A saturated application whose head is a known
+-- primitive lowers per its kind: an IO prim to @knative_sat@ (M0, the §2.3
+-- lowering); a PURE first-order prim with a direct @kp_*@ helper to a direct
+-- positional call (M1, mirroring C's 'primDirect' fast path).  A saturated
+-- application whose head is an arity-≥1 global, or an under-/over-saturated
+-- prim, is out of Milestone-A scope (general @kapp@/closures are Milestone C)
+-- and reported.
 compileApp :: Term -> Gen Text
 compileApp term = do
   let (hd, sargs) = spineOf term
@@ -475,48 +547,83 @@ compileApp term = do
         Just pname -> compilePrimApp pname sargs
         Nothing ->
           unsupported "application"
-            ("the LLVM backend M0 cannot lower an application of '"
-              <> gKey g <> "' (only saturated IO primitives are supported)")
+            ("the LLVM backend (Milestone A) cannot lower an application of '"
+              <> gKey g <> "' (only saturated IO and pure first-order "
+              <> "primitives are supported; general application is Milestone C)")
     _ ->
       unsupported "application"
-        "the LLVM backend M0 cannot lower this application head"
+        "the LLVM backend (Milestone A) cannot lower this application head"
 
--- | Lower a saturated application of an IO primitive to @knative_sat@.  For
--- M0 the only prim is @printlnString@ (entry point @kpf_io_printlnString@,
--- arity 1, IO).  Mirrors C's saturated-IO-prim arm (C.hs:2102–2109): build a
--- stack @[N x ptr]@ arg array, store each compiled argument operand, and
--- call @knative_sat(fn, argc, argv, 1)@.
+-- | Lower a saturated application of a known primitive.  IO prims take the M0
+-- @knative_sat@ path; PURE first-order prims take the M1 direct @kp_*@ helper
+-- path ('compilePureDirect').  This mirrors the C backend's dispatch in
+-- 'compileAppGlob' (C.hs:2102–2116): @isio@ ⇒ @knative_sat@, else the QW1
+-- positional @primDirect@ call.  Under-/over-saturation, or an unknown prim,
+-- is reported as unsupported.
 compilePrimApp :: Text -> [(Icit, Term)] -> Gen Text
 compilePrimApp pname sargs =
   case ioPrimEntry pname of
-    Just (cfn, ar) -> do
-      let explArgs = [a | (Expl, a) <- sargs]
-      if length explArgs == ar
-        then do
-          aes <- mapM compile explArgs
-          -- materialise a stack KValue *argv[ar]; store each operand.
-          argv <- freshReg
-          emit (argv <> " = alloca [" <> T.pack (show ar) <> " x ptr], align 8")
-          forM_ (zip [0 :: Int ..] aes) $ \(i, ae) -> do
-            slot <- freshReg
-            emit (slot <> " = getelementptr inbounds [" <> T.pack (show ar)
-                    <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show i) <> "")
-            emit ("store ptr " <> ae <> ", ptr " <> slot <> ", align 8")
-          declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
-          declRuntime ("declare ptr @" <> cfn <> "(ptr)")
-          r <- freshReg
-          emit (r <> " = call ptr @knative_sat(ptr @" <> cfn <> ", i32 "
-                  <> T.pack (show ar) <> ", ptr " <> argv <> ", i32 1)")
-          pure r
-        else
-          unsupported "application"
-            ("the LLVM backend M0 supports only a SATURATED application of '"
-              <> pname <> "' (got " <> T.pack (show (length explArgs))
-              <> " of " <> T.pack (show ar) <> " arguments)")
+    Just (cfn, ar) -> compileIoSat pname cfn ar sargs
     Nothing ->
-      unsupported "primitive"
-        ("the LLVM backend M0 does not implement the primitive '" <> pname
-          <> "' (only printlnString/printString in M0); use the C backend")
+      case pureDirectEntry pname of
+        Just (helper, ar) -> compilePureDirect pname helper ar sargs
+        Nothing ->
+          unsupported "primitive"
+            ("the LLVM backend (Milestone A) does not implement the primitive '"
+              <> pname <> "'; use the C backend")
+
+-- | Lower a saturated IO primitive to @knative_sat@ (M0 path, unchanged):
+-- build a stack @[N x ptr]@ arg array, store each compiled argument operand,
+-- and call @knative_sat(fn, argc, argv, 1)@ (mirrors C.hs:2105–2109).
+compileIoSat :: Text -> Text -> Int -> [(Icit, Term)] -> Gen Text
+compileIoSat pname cfn ar sargs = do
+  let explArgs = [a | (Expl, a) <- sargs]
+  if length explArgs == ar
+    then do
+      aes <- mapM compile explArgs
+      -- materialise a stack KValue *argv[ar]; store each operand.
+      argv <- freshReg
+      emit (argv <> " = alloca [" <> T.pack (show ar) <> " x ptr], align 8")
+      forM_ (zip [0 :: Int ..] aes) $ \(i, ae) -> do
+        slot <- freshReg
+        emit (slot <> " = getelementptr inbounds [" <> T.pack (show ar)
+                <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show i) <> "")
+        emit ("store ptr " <> ae <> ", ptr " <> slot <> ", align 8")
+      declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+      declRuntime ("declare ptr @" <> cfn <> "(ptr)")
+      r <- freshReg
+      emit (r <> " = call ptr @knative_sat(ptr @" <> cfn <> ", i32 "
+              <> T.pack (show ar) <> ", ptr " <> argv <> ", i32 1)")
+      pure r
+    else
+      unsupported "application"
+        ("the LLVM backend supports only a SATURATED application of '"
+          <> pname <> "' (got " <> T.pack (show (length explArgs))
+          <> " of " <> T.pack (show ar) <> " arguments)")
+
+-- | Lower a saturated PURE first-order primitive to its direct @kp_*@ helper:
+-- @call ptr \@kp_NAME(ptr a0, ptr a1, …)@ — a positional call with NO argument
+-- array (the C backend's QW1 fast path, C.hs:2110–2112).  Each argument is
+-- compiled to an operand in order; @declare ptr \@kp_NAME(ptr, …)@ supplies the
+-- prototype.  Parity rests on the helper being the runtime's single source of
+-- truth for the prim (same call the C backend emits).
+compilePureDirect :: Text -> Text -> Int -> [(Icit, Term)] -> Gen Text
+compilePureDirect pname helper ar sargs = do
+  let explArgs = [a | (Expl, a) <- sargs]
+  if length explArgs == ar
+    then do
+      aes <- mapM compile explArgs
+      let ptrParams = T.intercalate ", " (replicate ar "ptr")
+          ptrArgs = T.intercalate ", " ["ptr " <> ae | ae <- aes]
+      declRuntime ("declare ptr @" <> helper <> "(" <> ptrParams <> ")")
+      r <- freshReg
+      emit (r <> " = call ptr @" <> helper <> "(" <> ptrArgs <> ")")
+      pure r
+    else
+      unsupported "application"
+        ("the LLVM backend supports only a SATURATED application of '"
+          <> pname <> "' (got " <> T.pack (show (length explArgs))
+          <> " of " <> T.pack (show ar) <> " arguments)")
 
 -- | The (entry point, arity) of the IO primitives M0 lowers.  A small fixed
 -- table — the C backend's full 'primEntries' is private to it; later
@@ -526,6 +633,41 @@ ioPrimEntry = \case
   "printlnString" -> Just ("kpf_io_printlnString", 1)
   "printString" -> Just ("kpf_io_printString", 1)
   _ -> Nothing
+
+-- | The pure first-order primitives Milestone A lowers, mapping the prim name
+-- to its (direct @kp_*@ helper, explicit arity).  A FAITHFUL transliteration of
+-- the C backend's 'primDirect' (C.hs:1901–1935) restricted to the prims this
+-- milestone needs (arithmetic, integer comparison, and @show@) — every entry
+-- here is also a @primDirect@ entry there with the SAME helper symbol and
+-- arity, so a saturated call emits the identical runtime call in both backends.
+-- (The C backend additionally requires a matching 'primEntries' arity; for
+-- these prims the two tables agree, which this table encodes directly.)
+--
+-- Deliberately NOT yet ported (left to a later milestone): the Double/String/
+-- Scalar/Byte/bitwise @kp_*@ helpers — they need no new lowering machinery
+-- (this same path serves them once their literals are wired), but are out of
+-- this milestone's first-order-arithmetic scope.
+pureDirectEntry :: Text -> Maybe (Text, Int)
+pureDirectEntry = \case
+  "addInt" -> Just ("kp_addInt", 2)
+  "subInt" -> Just ("kp_subInt", 2)
+  "mulInt" -> Just ("kp_mulInt", 2)
+  "divInt" -> Just ("kp_divInt", 2)
+  "modInt" -> Just ("kp_modInt", 2)
+  "negInt" -> Just ("kp_negInt", 1)
+  "eqInt" -> Just ("kp_eqInt", 2)
+  "ltInt" -> Just ("kp_ltInt", 2)
+  "leInt" -> Just ("kp_leInt", 2)
+  "showInt" -> Just ("kp_showInt", 1)
+  _ -> Nothing
+
+-- | The names in 'pureDirectEntry' — the M1 pure prims registered into
+-- @gsPrims@ ('basePrims') so 'globPrimName' recognises them.
+pureDirectPrims :: [Text]
+pureDirectPrims =
+  [ "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
+  , "eqInt", "ltInt", "leInt", "showInt"
+  ]
 
 -- | The runtime primitive name a global resolves to, if any (a @__prim@
 -- module name, or a prelude @prim@ registration whose value is a bare

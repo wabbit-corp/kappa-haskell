@@ -1,0 +1,6 @@
+-- M1: a multi-op nested pure expression mixing addInt/subInt/mulInt/divInt
+-- (each a direct kp_* helper).  mulInt (addInt 3 4) (subInt 10 2) = 7 * 8 = 56;
+-- divInt 56 4 = 14.  Prints "14".
+module main
+main : UIO Unit
+let main = printlnString (showInt (divInt (mulInt (addInt 3 4) (subInt 10 2)) 4))

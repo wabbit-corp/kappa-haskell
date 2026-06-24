@@ -1,0 +1,5 @@
+-- M1: a computed NEGATIVE result (subInt -> kp_subInt).  Exercises a negative
+-- showInt value through the runtime.  Prints "-58".
+module main
+main : UIO Unit
+let main = printlnString (showInt (subInt 42 100))

@@ -1,0 +1,5 @@
+-- M1: a saturated pure first-order prim (addInt -> kp_addInt) over two Int
+-- literals, shown (showInt -> kp_showInt) and printed.  Prints "42".
+module main
+main : UIO Unit
+let main = printlnString (showInt (addInt 40 2))

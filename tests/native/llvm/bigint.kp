@@ -1,0 +1,7 @@
+-- M1: an Integer literal beyond int64 (2^63 = 9223372036854775808) lowers via
+-- kbigint_str over a NUL-terminated decimal C-string constant, exactly as the
+-- C backend does.  Shown directly so the bignum round-trips through showInt.
+-- Prints "9223372036854775808".
+module main
+main : UIO Unit
+let main = printlnString (showInt 9223372036854775808)

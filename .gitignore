@@ -15,6 +15,7 @@ dist/
 # Native-backend generated artifacts
 *.kappa.c
 *.kappa.h
+*.kappa.ll
 *.native.prov
 native-abi-probe.c
 native-header-gen-probe.c

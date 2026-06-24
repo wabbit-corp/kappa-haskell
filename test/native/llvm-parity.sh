@@ -20,7 +20,10 @@ KAPPA=${KAPPA:-"cabal run -v0 kappa --"}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# Built-in corpus grows as milestones land; for now the M0 hello shape.
+# Built-in corpus grows as milestones land.  With no args, run every program in
+# tests/native/llvm/ (M0 hello, M1 arithmetic/show + bigint, M2 cross-CAFs),
+# plus an inline hello as a self-contained smoke (so the harness still exercises
+# the M0 shape even if the corpus dir is empty/missing).
 if [ "$#" -gt 0 ]; then
   CORPUS=("$@")
 else
@@ -30,6 +33,9 @@ main : UIO Unit
 let main = printlnString "hello"
 KP
   CORPUS=("$TMP/hello.kp")
+  for kp in tests/native/llvm/*.kp; do
+    [ -e "$kp" ] && CORPUS+=("$kp")
+  done
 fi
 
 pass=0; fail=0
