@@ -395,6 +395,17 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
                         int rkind, KValue *rval, KValue *rlabel) {
   f->cur_exits = restore;
   if (!xs || xs->n == 0) return apply_reason(rt, f, rkind, rval, rlabel);
+  /* §32.2.5: finalizers run MASKED.  Push a KK_POPMASK beneath the KK_FINSEQ and
+   * raise mask_depth now, so the entire drain — every finalizer body's internal
+   * steps AND the sequence itself — is uninterruptible, and mask is restored
+   * exactly once when the drain completes: on the normal path (KK_FINSEQ done ->
+   * apply_reason descends through the KK_POPMASK) and on the abnormal/abandonment
+   * path (unwind through KK_FINSEQ also descends through it).  Without this an
+   * async interrupt delivered between finalizer steps (the fiber_step-top check
+   * fires while mask_depth==0) would unwind into the KK_FINSEQ and silently
+   * abandon the scope's remaining defers — a §18.7 exactly-once violation. */
+  f->k = cont_new(KK_POPMASK, NULL, f->k);
+  f->mask_depth++;
   FinSeq *fs = (FinSeq *)GC_MALLOC(sizeof(FinSeq));
   fs->xs = xs; fs->i = xs->n - 1; fs->rkind = rkind; fs->rval = rval; fs->rlabel = rlabel;
   f->k = cont_new2(KK_FINSEQ, NULL, fs, NULL, f->k);
@@ -479,8 +490,13 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         return begin_finseq(rt, f, xs, restore, rkind, rval, rlabel);
       }
       case KK_FINSEQ:
-        /* a finalizer itself unwound; abandon this scope's remaining finalizers
-         * and keep propagating (the §32.2.12 Then composition is a refinement). */
+        /* A finalizer itself unwound.  With finalizers now masked (begin_finseq),
+         * an ASYNC interrupt can no longer land mid-finseq, so this is reachable
+         * only from a finalizer that itself fails; we abandon this scope's
+         * remaining finalizers and keep propagating.  (Composing the failing
+         * finalizer's cause with the primary via §32.2.12 `Then` is a remaining
+         * refinement.)  c->next is the begin_finseq KK_POPMASK, so the mask
+         * raised for this drain is restored as we continue unwinding. */
         f->k = c->next; continue;
     }
     return 0;
@@ -631,7 +647,12 @@ static void fiber_step(Rt *rt, Fiber *f) {
         break;
       }
       case OP_DEFER:
-        if (f->cur_exits) exitstack_push(f->cur_exits, kctor_arg(cur, 0));
+        /* §18.7: a defer must run exactly once on every exit, so it must land on
+         * an enclosing do-scope's ExitStack.  A defer with no current scope is a
+         * mis-lowering; silently skipping it (the old behavior) fails OPEN —
+         * trap so a mis-lowered defer is a diagnosed error, not a dropped action. */
+        if (!f->cur_exits) krt_fail("internal: defer outside any do-scope (mis-lowered §18.7 defer)");
+        exitstack_push(f->cur_exits, kctor_arg(cur, 0));
         if (!deliver(rt, f, kunit())) return;
         break;
       case OP_RETURN:
