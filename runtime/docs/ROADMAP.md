@@ -109,9 +109,18 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       runs native ≡ interpreter.
 - [ ] **Native effects-suite — remaining gaps**:
       - `newFiberRef` + FiberRef copy-on-fork (§18.1.7). Unblocks `fiber-local`.
-      - `scheduler-retry` MISMATCH — needs REAL STM retry/parking (the journaled
-        `krt2_atomically`/`OP_ATOMICALLY`, §18.1.13); the single-agent shim can't
-        block-and-resume across fibers.
+      - `scheduler-retry` MISMATCH — needs REAL STM retry/parking. ASSESSED: the
+        journaled runtime is DONE (`stm.c`: `OP_ATOMICALLY` with conflict re-run,
+        retry-park on every read TVar, wake-on-write; `STM_NEW/READ/WRITE/RETRY`
+        nodes built by `krt2_new_tvar`/`read_tvar`/`write_tvar`/`retry`). The
+        MISSING piece is the BACKEND STM-MONAD LOWERING: `STM : Type -> Type` is a
+        separate monad, but native compiles it like IO — `newTVar`/`readTVar`/… →
+        single-agent cell shims (`kpf_io_newTVar` = `kref_new`), `atomically` =
+        `krun_io` (runs the action synchronously). To use the journaled runtime,
+        lower the STM monad's bind + the TVar ops + `retry` to the `STM_*` nodes
+        and `atomically` to `OP_ATOMICALLY` (threading through the `Monad STM`
+        dictionary bind + do-block desugaring — analogous to the IO CPS do-kernel).
+        The LARGEST remaining item; a dedicated multi-step effort.
       - **`bracket` finalizer-on-interrupt** — TWO causes, one fixed:
         1. [x] §3.3 HIGHER-ORDER: `bracketM = ioBind acquire (\r -> finallyIO
            (use r) …)` suspends through the `use`/`acquire` PARAMETERS (CVars), so
