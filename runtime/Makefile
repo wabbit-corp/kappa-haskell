@@ -31,6 +31,9 @@ endif
 UV_CFLAGS := $(shell pkg-config --cflags libuv 2>/dev/null)
 UV_LIBS   := $(shell pkg-config --libs   libuv 2>/dev/null || echo -luv)
 CPPFLAGS  += $(UV_CFLAGS)
+# libuv's Unix headers need glibc feature macros when compiled under -std=c11
+# (notably pthread_rwlock_t from <pthread.h>).
+CPPFLAGS  += -D_GNU_SOURCE
 # Boehm needs GC_THREADS for the multicore scheduler (parallel mark + thread regs).
 CPPFLAGS  += -DGC_THREADS
 # -pthread (CFLAGS) + libuv's pkg-config -lpthread already cover threads.

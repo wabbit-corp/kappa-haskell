@@ -216,11 +216,14 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
               -- The native runtime is kappart2 (the M:N fiber/libuv/STM runtime):
               -- kappart.c (the boxed-value model + Boehm GC + primitives) plus the
               -- scheduler/reactor/scope/race/STM translation units, all in
-              -- @runtime/@, linked against threaded Boehm + GMP + libuv.  NOTE:
+              -- @runtime/@, linked against threaded Boehm + GMP + libuv.  `_GNU_SOURCE`
+              -- is required on glibc when libuv is included under `-std=c11`, because
+              -- uv/unix.h uses POSIX rwlock types hidden by strict feature defaults.
+              -- NOTE:
               -- libuv is wired with dev-machine (homebrew) paths for this first
               -- integration cut; the proper pkg-config discovery + static /
               -- self-contained link modes are in runtime/docs/DEPLOYMENT.md.
-              rtCFlags = ["-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
+              rtCFlags = ["-D_GNU_SOURCE", "-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
               rtSources =
                 [runtimeDir </> f | f <- ["kappart.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c", "atomic.c"]]
               rtLibs = ["-lgc", "-lgmp", "-L/opt/homebrew/lib", "-luv"]
@@ -426,4 +429,3 @@ ccFailMsg cc n output =
     trimOutput o
       | length o <= 4000 = o
       | otherwise = "...\n" ++ drop (length o - 4000) o
-

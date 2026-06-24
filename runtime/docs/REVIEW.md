@@ -86,7 +86,7 @@ only when its evidence exists (§27.6 forbids advertising an unbacked flag).
   `kappart.c:99-103,247-289`). Ordinary `K_REF`/`var` slots are accessed via
   **relaxed atomics** (`_Atomic(KValue*)`), giving §32.2.10's "no ordering, no
   tearing" portably (not the "aligned 64-bit" hand-wave). `kappart` and `kappart2`
-  **must** be compiled with identical `-DGC_THREADS -pthread`; a build-time
+  **must** be compiled with identical `-D_GNU_SOURCE -DGC_THREADS -pthread`; a build-time
   `_Static_assert`/runtime `GC_get_parallel()` check fails closed on mismatch. The
   linked GMP must be the reentrant build. "Reuse the value layer *unchanged*" is
   downgraded to "reuse with startup pre-population + atomic ref accessors."

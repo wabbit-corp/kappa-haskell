@@ -639,7 +639,7 @@ change and the existing native backend keeps working.
 `libkappart2.a` (built by the `Makefile`, or as Driver-owned TUs), and the Driver
 links it **unconditionally** together with `-luv` (libuv via `pkg-config`),
 threaded `-lgc`, and `-pthread` when the target uses kappart2. Both `kappart` and
-`kappart2` TUs MUST be compiled with identical `-DGC_THREADS -pthread`; a
+`kappart2` TUs MUST be compiled with identical `-D_GNU_SOURCE -DGC_THREADS -pthread`; a
 `_Static_assert` + a runtime `GC_get_parallel()` check fail closed on a mismatch.
 
 ---

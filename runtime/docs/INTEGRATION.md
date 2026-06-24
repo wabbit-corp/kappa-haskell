@@ -93,7 +93,7 @@ corresponding `krt2_*`.
   - compiles/links the kappart2 TUs (or links the prebuilt `libkappart2.a`),
   - adds libuv via `pkg-config --cflags/--libs libuv` (Driver-owned, like the
     binding pkg-config path),
-  - adds `-DGC_THREADS -pthread` to **both** `kappart.c` and the kappart2 TUs
+  - adds `-D_GNU_SOURCE -DGC_THREADS -pthread` to **both** `kappart.c` and the kappart2 TUs
     (REVIEW.md M15 — a mismatch is undefined; enforce with a `_Static_assert`).
   The runtime cannot be a `hostBinding`/`pkgConfig` manifest entry (its symbols
   are codegen intrinsics, not FFI; REVIEW.md M14), so this is Driver-owned.
